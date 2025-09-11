@@ -1,10 +1,55 @@
 import * as dotenv from 'dotenv';
+import * as crypto from 'crypto';
 dotenv.config();
+
+function validateJWTSecret(secret: string | undefined, name: string): string {
+  if (!secret) {
+    throw new Error(`${name} environment variable is required for security`);
+  }
+  
+  if (secret.length < 32) {
+    throw new Error(`${name} must be at least 32 characters long`);
+  }
+  
+  if (secret === 'unravl-access-secret-change-in-production' || 
+      secret === 'unravl-refresh-secret-change-in-production') {
+    throw new Error(`${name} contains default value - please set a secure secret`);
+  }
+  
+  const entropy = calculateEntropy(secret);
+  if (entropy < 3.5) {
+    throw new Error(`${name} has insufficient entropy (${entropy.toFixed(2)} bits/char). Use a more complex secret.`);
+  }
+  
+  return secret;
+}
+
+function calculateEntropy(str: string): number {
+  const charCounts: { [key: string]: number } = {};
+  for (const char of str) {
+    charCounts[char] = (charCounts[char] || 0) + 1;
+  }
+  
+  let entropy = 0;
+  const len = str.length;
+  for (const count of Object.values(charCounts)) {
+    const probability = count / len;
+    entropy -= probability * Math.log2(probability);
+  }
+  
+  return entropy;
+}
+
+const isProduction = process.env.NODE_ENV === 'production';
 
 export const authConfig = {
   jwt: {
-    accessSecret: process.env.JWT_ACCESS_SECRET || 'unravl-access-secret-change-in-production',
-    refreshSecret: process.env.JWT_REFRESH_SECRET || 'unravl-refresh-secret-change-in-production',
+    accessSecret: isProduction 
+      ? validateJWTSecret(process.env.JWT_ACCESS_SECRET, 'JWT_ACCESS_SECRET')
+      : process.env.JWT_ACCESS_SECRET || crypto.randomBytes(32).toString('hex'),
+    refreshSecret: isProduction
+      ? validateJWTSecret(process.env.JWT_REFRESH_SECRET, 'JWT_REFRESH_SECRET')
+      : process.env.JWT_REFRESH_SECRET || crypto.randomBytes(32).toString('hex'),
     accessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN || '15m',
     refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
     issuer: process.env.JWT_ISSUER || 'unravl',

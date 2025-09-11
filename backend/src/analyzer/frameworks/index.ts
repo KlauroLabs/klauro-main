@@ -9,6 +9,15 @@ export { NextJSAnalyzer } from './frontend/nextjs-analyzer';
 
 // Backend Framework Analyzers
 export { DjangoAnalyzer } from './backend/django-analyzer';
+export { FastAPIAnalyzer } from './backend/fastapi-analyzer';
+export { FlaskAnalyzer } from './backend/flask-analyzer';
+export { ExpressAnalyzer } from './backend/express-analyzer';
+export { NestJSAnalyzer } from './backend/nestjs-analyzer';
+export { SpringBootAnalyzer } from './backend/springboot-analyzer';
+export { AspNetCoreAnalyzer } from './backend/aspnetcore-analyzer';
+export { GinAnalyzer } from './backend/gin-analyzer';
+export { ActixWebAnalyzer } from './backend/actixweb-analyzer';
+export { LaravelAnalyzer } from './backend/laravel-analyzer';
 
 // Framework Analyzer Registry
 import { BaseAnalyzer } from '../base-analyzer';
@@ -17,6 +26,15 @@ import { VueAnalyzer } from './frontend/vue-analyzer';
 import { AngularAnalyzer } from './frontend/angular-analyzer';
 import { NextJSAnalyzer } from './frontend/nextjs-analyzer';
 import { DjangoAnalyzer } from './backend/django-analyzer';
+import { FastAPIAnalyzer } from './backend/fastapi-analyzer';
+import { FlaskAnalyzer } from './backend/flask-analyzer';
+import { ExpressAnalyzer } from './backend/express-analyzer';
+import { NestJSAnalyzer } from './backend/nestjs-analyzer';
+import { SpringBootAnalyzer } from './backend/springboot-analyzer';
+import { AspNetCoreAnalyzer } from './backend/aspnetcore-analyzer';
+import { GinAnalyzer } from './backend/gin-analyzer';
+import { ActixWebAnalyzer } from './backend/actixweb-analyzer';
+import { LaravelAnalyzer } from './backend/laravel-analyzer';
 
 export interface FrameworkAnalyzerInfo {
   name: string;
@@ -70,6 +88,78 @@ export const FRAMEWORK_ANALYZERS: FrameworkAnalyzerInfo[] = [
     category: 'backend',
     languages: ['python'],
     frameworks: ['django', 'django-rest-framework'],
+    priority: 100
+  },
+  {
+    name: 'FastAPI',
+    analyzer: FastAPIAnalyzer as typeof BaseAnalyzer,
+    category: 'backend',
+    languages: ['python'],
+    frameworks: ['fastapi', 'starlette', 'pydantic'],
+    priority: 105
+  },
+  {
+    name: 'Flask',
+    analyzer: FlaskAnalyzer as typeof BaseAnalyzer,
+    category: 'backend',
+    languages: ['python'],
+    frameworks: ['flask', 'flask-restful'],
+    priority: 95
+  },
+  {
+    name: 'Express',
+    analyzer: ExpressAnalyzer as typeof BaseAnalyzer,
+    category: 'backend',
+    languages: ['javascript', 'typescript'],
+    frameworks: ['express', 'express.js'],
+    priority: 100
+  },
+  {
+    name: 'NestJS',
+    analyzer: NestJSAnalyzer as typeof BaseAnalyzer,
+    category: 'backend',
+    languages: ['typescript'],
+    frameworks: ['nestjs', '@nestjs/core'],
+    priority: 110
+  },
+  {
+    name: 'Spring Boot',
+    analyzer: SpringBootAnalyzer as typeof BaseAnalyzer,
+    category: 'backend',
+    languages: ['java', 'kotlin'],
+    frameworks: ['spring-boot', 'spring', 'spring-mvc'],
+    priority: 100
+  },
+  {
+    name: 'ASP.NET Core',
+    analyzer: AspNetCoreAnalyzer as typeof BaseAnalyzer,
+    category: 'backend',
+    languages: ['csharp'],
+    frameworks: ['aspnetcore', 'aspnet', 'dotnet'],
+    priority: 100
+  },
+  {
+    name: 'Gin',
+    analyzer: GinAnalyzer as typeof BaseAnalyzer,
+    category: 'backend',
+    languages: ['go'],
+    frameworks: ['gin', 'gin-gonic'],
+    priority: 100
+  },
+  {
+    name: 'Actix-web',
+    analyzer: ActixWebAnalyzer as typeof BaseAnalyzer,
+    category: 'backend',
+    languages: ['rust'],
+    frameworks: ['actix-web', 'actix'],
+    priority: 100
+  },
+  {
+    name: 'Laravel',
+    analyzer: LaravelAnalyzer as typeof BaseAnalyzer,
+    category: 'backend',
+    languages: ['php'],
+    frameworks: ['laravel', 'lumen'],
     priority: 100
   }
 ];

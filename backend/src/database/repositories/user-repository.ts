@@ -52,17 +52,56 @@ export class UserRepository extends BaseRepository {
   }
 
   async updateUser(id: string, updates: Partial<User>): Promise<User | null> {
-    const allowedFields = ['first_name', 'last_name', 'avatar_url', 'timezone', 'locale', 'settings'];
+    const allowedFields = ['first_name', 'last_name', 'avatar_url', 'timezone', 'locale', 'settings'] as const;
+    type AllowedField = typeof allowedFields[number];
+    
+    const sanitizedUpdates: Partial<Pick<User, AllowedField>> = {};
+    
+    for (const field of allowedFields) {
+      if (field in updates) {
+        const value = (updates as any)[field];
+        
+        if (field === 'first_name' || field === 'last_name') {
+          if (typeof value !== 'string' || value.length > 100) {
+            throw new Error(`Invalid ${field}: must be a string with max 100 characters`);
+          }
+          sanitizedUpdates[field] = value.trim();
+        } else if (field === 'avatar_url') {
+          if (value !== null && (typeof value !== 'string' || !this.isValidUrl(value))) {
+            throw new Error('Invalid avatar_url: must be a valid URL');
+          }
+          sanitizedUpdates[field] = value;
+        } else if (field === 'timezone') {
+          const validTimezones = ['UTC', 'America/New_York', 'America/Chicago', 'America/Denver', 
+            'America/Los_Angeles', 'Europe/London', 'Europe/Paris', 'Europe/Berlin',
+            'Asia/Tokyo', 'Asia/Shanghai', 'Asia/Singapore', 'Australia/Sydney'];
+          if (value !== null && !validTimezones.includes(value)) {
+            throw new Error('Invalid timezone');
+          }
+          sanitizedUpdates[field] = value;
+        } else if (field === 'locale') {
+          const validLocales = ['en', 'es', 'fr', 'de', 'ja', 'zh', 'pt', 'ru'];
+          if (value !== null && !validLocales.includes(value)) {
+            throw new Error('Invalid locale');
+          }
+          sanitizedUpdates[field] = value;
+        } else if (field === 'settings') {
+          if (value !== null && typeof value !== 'object') {
+            throw new Error('Invalid settings: must be an object');
+          }
+          sanitizedUpdates[field] = value;
+        }
+      }
+    }
+    
     const updateFields: string[] = [];
     const values: any[] = [];
     let paramCount = 1;
 
-    for (const field of allowedFields) {
-      if (field in updates) {
-        updateFields.push(`${field} = $${paramCount}`);
-        values.push((updates as any)[field]);
-        paramCount++;
-      }
+    for (const field of Object.keys(sanitizedUpdates) as AllowedField[]) {
+      updateFields.push(`"${field}" = $${paramCount}`);
+      values.push(sanitizedUpdates[field]);
+      paramCount++;
     }
 
     if (updateFields.length === 0) {
@@ -81,6 +120,15 @@ export class UserRepository extends BaseRepository {
     
     const result = await this.pool.query(query, values);
     return result.rows[0] || null;
+  }
+
+  private isValidUrl(url: string): boolean {
+    try {
+      new URL(url);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async verifyEmail(userId: string): Promise<User | null> {

@@ -6,21 +6,15 @@ import { AuthMiddleware } from '../auth/middleware/auth-middleware';
 import { authConfig } from '../config/auth.config';
 import { AuthRequest, RegisterRequest, OAuthProfile } from '../types';
 import { body, validationResult } from 'express-validator';
-import rateLimit from 'express-rate-limit';
+import { rateLimiters } from '../middleware/rate-limiter';
+import { OAuthSecurity } from '../auth/oauth-security';
 
 export function createAuthRoutes(pool: Pool): Router {
   const router = Router();
   const authService = new AuthService(pool);
   const authMiddleware = new AuthMiddleware(pool);
 
-  // Rate limiting for auth endpoints
-  const authLimiter = rateLimit({
-    windowMs: authConfig.rateLimit.auth.windowMs,
-    max: authConfig.rateLimit.auth.max,
-    message: authConfig.rateLimit.auth.message,
-    standardHeaders: true,
-    legacyHeaders: false,
-  });
+  // Rate limiting is now handled by specific limiters in middleware/rate-limiter.ts
 
   // Validation middleware
   const validateRegister = [
@@ -45,7 +39,7 @@ export function createAuthRoutes(pool: Pool): Router {
   };
 
   // Register endpoint
-  router.post('/register', authLimiter, validateRegister, handleValidationErrors, async (req: Request, res: Response) => {
+  router.post('/register', rateLimiters.auth.register, validateRegister, handleValidationErrors, async (req: Request, res: Response) => {
     try {
       const registerData: RegisterRequest = req.body;
       const authResponse = await authService.register(registerData);
@@ -73,7 +67,7 @@ export function createAuthRoutes(pool: Pool): Router {
   });
 
   // Login endpoint
-  router.post('/login', authLimiter, validateLogin, handleValidationErrors, async (req: Request, res: Response) => {
+  router.post('/login', rateLimiters.auth.login, validateLogin, handleValidationErrors, async (req: Request, res: Response) => {
     try {
       const loginData: AuthRequest = req.body;
       const authResponse = await authService.login(loginData);
@@ -139,7 +133,7 @@ export function createAuthRoutes(pool: Pool): Router {
   });
 
   // Refresh token endpoint
-  router.post('/refresh', authLimiter, async (req: Request, res: Response) => {
+  router.post('/refresh', rateLimiters.auth.tokenRefresh, async (req: Request, res: Response) => {
     try {
       const refreshToken = req.cookies[authConfig.cookies.refreshTokenName] || req.body.refreshToken;
       
@@ -187,19 +181,31 @@ export function createAuthRoutes(pool: Pool): Router {
   providers.forEach(provider => {
     // OAuth initiation endpoint
     router.get(`/oauth/${provider}`, (req, res, next) => {
-      const state = req.query.state || '';
-      passport.authenticate(provider, {
+      const returnUrl = req.query.return_url as string;
+      const { state, codeChallenge } = OAuthSecurity.createOAuthSession(provider, returnUrl);
+      
+      const authOptions: any = {
         scope: (authConfig.oauth as any)[provider].scope,
-        state: state as string,
-      })(req, res, next);
+        state,
+      };
+      
+      if (codeChallenge && provider === 'github') {
+        authOptions.code_challenge = codeChallenge;
+        authOptions.code_challenge_method = 'S256';
+      }
+      
+      passport.authenticate(provider, authOptions)(req, res, next);
     });
 
     // OAuth callback endpoint
-    router.get(`/oauth/${provider}/callback`, 
+    router.get(`/oauth/${provider}/callback`,
+      rateLimiters.auth.oauthCallback,
+      OAuthSecurity.middleware(),
       passport.authenticate(provider, { session: false, failureRedirect: '/login' }),
       async (req: Request, res: Response) => {
         try {
           const profile = req.user as OAuthProfile;
+          const oauthState = (req as any).oauthState;
           const authResponse = await authService.loginWithOAuth(profile);
 
           // Set refresh token cookie
@@ -214,8 +220,8 @@ export function createAuthRoutes(pool: Pool): Router {
 
           // Redirect to frontend with access token
           const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-          const state = req.query.state || '';
-          res.redirect(`${frontendUrl}/auth/callback?token=${authResponse.access_token}&state=${state}`);
+          const returnUrl = oauthState.returnUrl || '/dashboard';
+          res.redirect(`${frontendUrl}/auth/callback?token=${authResponse.access_token}&return=${encodeURIComponent(returnUrl)}`);
         } catch (error: any) {
           res.redirect(`/login?error=${encodeURIComponent(error.message)}`);
         }
@@ -238,7 +244,7 @@ export function createAuthRoutes(pool: Pool): Router {
   });
 
   // Resend verification email endpoint
-  router.post('/resend-verification', authMiddleware.authenticate, authLimiter, async (req: Request, res: Response) => {
+  router.post('/resend-verification', authMiddleware.authenticate, rateLimiters.auth.emailVerification, async (req: Request, res: Response) => {
     try {
       // TODO: Implement email sending service
       res.json({ message: 'Verification email sent' });
@@ -248,7 +254,7 @@ export function createAuthRoutes(pool: Pool): Router {
   });
 
   // Password reset request endpoint
-  router.post('/forgot-password', authLimiter, 
+  router.post('/forgot-password', rateLimiters.auth.passwordReset,
     body('email').isEmail().normalizeEmail(),
     handleValidationErrors,
     async (req: Request, res: Response) => {
@@ -263,7 +269,7 @@ export function createAuthRoutes(pool: Pool): Router {
   );
 
   // Password reset confirmation endpoint
-  router.post('/reset-password', authLimiter,
+  router.post('/reset-password', rateLimiters.auth.passwordReset,
     body('token').notEmpty(),
     body('password').isLength({ min: authConfig.security.passwordMinLength }),
     handleValidationErrors,
