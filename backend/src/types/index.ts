@@ -1570,6 +1570,109 @@ export interface RepositoryCredentials {
   username?: string;
 }
 
+// ===== AUTHENTICATION AND USER MANAGEMENT =====
+
+export interface User {
+  id: string;
+  email: string;
+  email_verified_at?: Date;
+  password_hash?: string;
+  first_name?: string;
+  last_name?: string;
+  avatar_url?: string;
+  timezone?: string;
+  locale?: string;
+  last_login_at?: Date;
+  settings?: Record<string, any>;
+  created_at: Date;
+  updated_at: Date;
+  deleted_at?: Date;
+}
+
+export interface Organization {
+  id: string;
+  name: string;
+  slug: string;
+  description?: string;
+  website_url?: string;
+  logo_url?: string;
+  settings?: Record<string, any>;
+  billing_email?: string;
+  created_at: Date;
+  updated_at: Date;
+  deleted_at?: Date;
+}
+
+export interface Membership {
+  id: string;
+  user_id: string;
+  organization_id: string;
+  team_id?: string;
+  role: 'owner' | 'admin' | 'member' | 'viewer';
+  permissions?: string[];
+  invited_by?: string;
+  invited_at?: Date;
+  joined_at?: Date;
+  created_at: Date;
+  organization_name?: string;
+  organization_slug?: string;
+  team_name?: string;
+  team_slug?: string;
+}
+
+export interface RefreshToken {
+  id: string;
+  user_id: string;
+  token: string;
+  expires_at: Date;
+  created_at: Date;
+  revoked_at?: Date;
+}
+
+export interface JWTPayload {
+  sub: string; // user id
+  email: string;
+  organizations?: {
+    id: string;
+    role: string;
+  }[];
+  iat?: number;
+  exp?: number;
+  type?: 'access' | 'refresh';
+}
+
+export interface AuthRequest {
+  email: string;
+  password: string;
+}
+
+export interface RegisterRequest {
+  email: string;
+  password: string;
+  first_name?: string;
+  last_name?: string;
+  organization_name?: string;
+}
+
+export interface AuthResponse {
+  access_token: string;
+  refresh_token: string;
+  token_type: 'Bearer';
+  expires_in: number;
+  user: User;
+  organizations?: Organization[];
+}
+
+export interface OAuthProfile {
+  id: string;
+  email: string;
+  name?: string;
+  first_name?: string;
+  last_name?: string;
+  avatar_url?: string;
+  provider: string;
+}
+
 // ===== COMPARATIVE ANALYSIS =====
 
 export interface ComparativeAnalysisRequest {
