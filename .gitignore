@@ -1,0 +1,10 @@
+.claude
+CLAUDE.md
+CONTEXT.md
+legacy/
+processors
+node_modules/
+.DS_Store
+.idea
+.vscode
+.env

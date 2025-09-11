@@ -1,0 +1,403 @@
+import * as fs from 'fs-extra';
+import * as path from 'path';
+import { glob } from 'glob';
+import * as acorn from 'acorn';
+import * as walk from 'acorn-walk';
+import { 
+  ArchitectureBlueprint, 
+  ComponentNode, 
+  ComponentType, 
+  Connection, 
+  RiskArea,
+  ProjectMetadata,
+  ComponentMetadata 
+} from '../types';
+
+export class NodeJSAnalyzer {
+  private components: Map<string, ComponentNode> = new Map();
+  private connections: Connection[] = [];
+  private projectPath: string = '';
+
+  async analyzeRepository(repositoryPath: string, options?: any): Promise<ArchitectureBlueprint> {
+    console.log(`🔍 Starting analysis of: ${repositoryPath}`);
+    
+    this.projectPath = repositoryPath;
+    this.components.clear();
+    this.connections.length = 0;
+
+    // Step 1: Discover project structure
+    const packageJson = await this.readPackageJson(repositoryPath);
+    const jsFiles = await this.discoverJavaScriptFiles(repositoryPath);
+    
+    console.log(`📁 Found ${jsFiles.length} JavaScript/TypeScript files`);
+
+    // Step 2: Analyze each file
+    for (const filePath of jsFiles) {
+      await this.analyzeFile(filePath);
+    }
+
+    // Step 3: Identify framework patterns (Express routes, middleware, etc.)
+    await this.identifyFrameworkPatterns();
+
+    // Step 4: Build dependency graph
+    this.buildDependencyGraph();
+
+    // Step 5: Identify orphaned components and risk areas
+    const orphaned = this.identifyOrphanedComponents();
+    const risks = this.assessRiskAreas();
+
+    // Step 6: Create blueprint
+    const blueprint: ArchitectureBlueprint = {
+      projectName: packageJson?.name || path.basename(repositoryPath),
+      framework: this.detectFramework(packageJson),
+      components: Array.from(this.components.values()),
+      connections: this.connections,
+      entryPoints: this.identifyEntryPoints(),
+      orphanedComponents: orphaned,
+      riskAreas: risks,
+      metadata: this.generateProjectMetadata(packageJson)
+    };
+
+    console.log(`✅ Analysis complete: ${blueprint.components.length} components, ${blueprint.connections.length} connections`);
+    return blueprint;
+  }
+
+  private async readPackageJson(projectPath: string): Promise<any> {
+    const packagePath = path.join(projectPath, 'package.json');
+    try {
+      const content = await fs.readFile(packagePath, 'utf-8');
+      return JSON.parse(content);
+    } catch {
+      return null;
+    }
+  }
+
+  private async discoverJavaScriptFiles(projectPath: string): Promise<string[]> {
+    const patterns = [
+      '**/*.js',
+      '**/*.ts',
+      '**/*.jsx',
+      '**/*.tsx'
+    ];
+
+    const excludePatterns = [
+      'node_modules/**',
+      'dist/**',
+      'build/**',
+      'coverage/**',
+      '*.test.*',
+      '*.spec.*'
+    ];
+
+    const files: string[] = [];
+    
+    for (const pattern of patterns) {
+      const matches = await glob(pattern, {
+        cwd: projectPath,
+        ignore: excludePatterns,
+        absolute: true
+      });
+      files.push(...matches);
+    }
+
+    return [...new Set(files)]; // Remove duplicates
+  }
+
+  private async analyzeFile(filePath: string): Promise<void> {
+    try {
+      const content = await fs.readFile(filePath, 'utf-8');
+      const relativePath = path.relative(this.projectPath, filePath);
+      
+      // Parse AST
+      const ast = acorn.parse(content, {
+        ecmaVersion: 2020,
+        sourceType: 'module',
+        allowImportExportEverywhere: true,
+        allowReturnOutsideFunction: true
+      });
+
+      // Extract metadata
+      const metadata = this.extractComponentMetadata(content, ast, filePath);
+      const componentType = this.determineComponentType(relativePath, content, metadata);
+
+      const component: ComponentNode = {
+        id: this.generateComponentId(relativePath),
+        name: path.basename(filePath, path.extname(filePath)),
+        type: componentType,
+        path: relativePath,
+        dependencies: [],
+        dependents: [],
+        metadata
+      };
+
+      this.components.set(component.id, component);
+
+    } catch (error) {
+      console.warn(`⚠️ Could not analyze file ${filePath}: ${error}`);
+    }
+  }
+
+  private extractComponentMetadata(content: string, ast: any, filePath: string): ComponentMetadata {
+    const lines = content.split('\n');
+    const exports: string[] = [];
+    const imports: string[] = [];
+    const httpMethods: string[] = [];
+    const externalCalls: string[] = [];
+
+    // Walk AST to extract information
+    walk.simple(ast, {
+      ImportDeclaration: (node: any) => {
+        imports.push(node.source.value);
+      },
+      CallExpression: (node: any) => {
+        // Detect Express route definitions
+        if (node.callee?.property?.name && ['get', 'post', 'put', 'delete', 'patch'].includes(node.callee.property.name)) {
+          httpMethods.push(node.callee.property.name.toUpperCase());
+        }
+        
+        // Detect external API calls
+        if (node.callee?.name === 'fetch' || 
+            (node.callee?.property?.name && ['get', 'post', 'put', 'delete'].includes(node.callee.property.name))) {
+          if (node.arguments?.[0]?.value && typeof node.arguments[0].value === 'string') {
+            externalCalls.push(node.arguments[0].value);
+          }
+        }
+      },
+      ExportDefaultDeclaration: (node: any) => {
+        exports.push('default');
+      },
+      ExportNamedDeclaration: (node: any) => {
+        if (node.declaration?.id?.name) {
+          exports.push(node.declaration.id.name);
+        }
+      }
+    });
+
+    // Calculate complexity (simple metric based on control flow)
+    const complexity = this.calculateComplexity(content);
+
+    return {
+      lineCount: lines.length,
+      complexity,
+      lastModified: new Date(), // TODO: Get from git or filesystem
+      exports,
+      imports,
+      httpMethods: httpMethods.length > 0 ? [...new Set(httpMethods)] : undefined,
+      externalCalls: externalCalls.length > 0 ? [...new Set(externalCalls)] : undefined,
+      isEntry: false, // Will be determined later
+      isOrphaned: false // Will be determined later
+    };
+  }
+
+  private determineComponentType(filePath: string, content: string, metadata: ComponentMetadata): ComponentType {
+    const fileName = path.basename(filePath).toLowerCase();
+    const dirName = path.dirname(filePath).toLowerCase();
+
+    // Route handlers
+    if (dirName.includes('route') || fileName.includes('route') || metadata.httpMethods?.length) {
+      return 'route';
+    }
+
+    // Controllers
+    if (dirName.includes('controller') || fileName.includes('controller')) {
+      return 'controller';
+    }
+
+    // Middleware
+    if (dirName.includes('middleware') || fileName.includes('middleware') || content.includes('next()')) {
+      return 'middleware';
+    }
+
+    // Models
+    if (dirName.includes('model') || fileName.includes('model') || content.includes('Schema')) {
+      return 'model';
+    }
+
+    // Services
+    if (dirName.includes('service') || fileName.includes('service')) {
+      return 'service';
+    }
+
+    // Config files
+    if (fileName.includes('config') || fileName.includes('setting')) {
+      return 'config';
+    }
+
+    // Utilities
+    if (dirName.includes('util') || fileName.includes('util') || dirName.includes('helper')) {
+      return 'utility';
+    }
+
+    // Default
+    return 'service';
+  }
+
+  private calculateComplexity(content: string): number {
+    // Simple complexity metric based on control flow keywords
+    const complexityKeywords = ['if', 'else', 'while', 'for', 'switch', 'case', 'try', 'catch'];
+    let complexity = 1; // Base complexity
+
+    for (const keyword of complexityKeywords) {
+      const regex = new RegExp(`\\b${keyword}\\b`, 'g');
+      const matches = content.match(regex);
+      if (matches) {
+        complexity += matches.length;
+      }
+    }
+
+    return Math.min(complexity, 10); // Cap at 10
+  }
+
+  private async identifyFrameworkPatterns(): Promise<void> {
+    // Identify Express.js patterns and mark entry points
+    for (const [id, component] of this.components) {
+      const content = await fs.readFile(path.join(this.projectPath, component.path), 'utf-8');
+      
+      // Check if this is an Express app entry point
+      if (content.includes('express()') && (content.includes('app.listen') || content.includes('.listen'))) {
+        component.metadata.isEntry = true;
+      }
+    }
+  }
+
+  private buildDependencyGraph(): void {
+    // Build connections based on imports and function calls
+    for (const [id, component] of this.components) {
+      for (const importPath of component.metadata.imports) {
+        // Find the component this import refers to
+        const targetId = this.findComponentByImport(importPath, component.path);
+        
+        if (targetId) {
+          component.dependencies.push(targetId);
+          
+          const target = this.components.get(targetId);
+          if (target) {
+            target.dependents.push(id);
+          }
+
+          // Create connection
+          this.connections.push({
+            from: id,
+            to: targetId,
+            type: 'import',
+            weight: 1,
+            metadata: { callSites: 1 }
+          });
+        }
+      }
+    }
+  }
+
+  private findComponentByImport(importPath: string, fromPath: string): string | null {
+    // Handle relative imports
+    if (importPath.startsWith('.')) {
+      const resolvedPath = path.resolve(path.dirname(path.join(this.projectPath, fromPath)), importPath);
+      const relativePath = path.relative(this.projectPath, resolvedPath);
+      
+      // Try different extensions
+      for (const ext of ['.js', '.ts', '.jsx', '.tsx', '/index.js', '/index.ts']) {
+        const testPath = relativePath + ext;
+        const componentId = this.generateComponentId(testPath);
+        if (this.components.has(componentId)) {
+          return componentId;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private identifyOrphanedComponents(): string[] {
+    const orphaned: string[] = [];
+    
+    for (const [id, component] of this.components) {
+      if (component.dependencies.length === 0 && component.dependents.length === 0 && !component.metadata.isEntry) {
+        component.metadata.isOrphaned = true;
+        component.type = 'orphaned';
+        orphaned.push(id);
+      }
+    }
+
+    return orphaned;
+  }
+
+  private assessRiskAreas(): RiskArea[] {
+    const risks: RiskArea[] = [];
+
+    for (const [id, component] of this.components) {
+      const reasons: string[] = [];
+      let riskLevel: 'low' | 'medium' | 'high' = 'low';
+
+      // High complexity
+      if (component.metadata.complexity > 7) {
+        reasons.push(`High complexity (${component.metadata.complexity}/10)`);
+        riskLevel = 'high';
+      } else if (component.metadata.complexity > 5) {
+        reasons.push(`Medium complexity (${component.metadata.complexity}/10)`);
+        riskLevel = riskLevel === 'low' ? 'medium' : riskLevel;
+      }
+
+      // Too many dependencies
+      if (component.dependencies.length > 10) {
+        reasons.push(`Many dependencies (${component.dependencies.length})`);
+        riskLevel = 'high';
+      }
+
+      // Critical path (many dependents)
+      if (component.dependents.length > 5) {
+        reasons.push(`Critical component (${component.dependents.length} dependents)`);
+        riskLevel = component.dependents.length > 10 ? 'high' : 'medium';
+      }
+
+      if (reasons.length > 0) {
+        risks.push({
+          componentId: id,
+          riskLevel,
+          reasons,
+          impact: component.dependents.length > 0 ? 
+            `Changes could affect ${component.dependents.length} components` :
+            'Isolated component risk'
+        });
+      }
+    }
+
+    return risks;
+  }
+
+  private identifyEntryPoints(): string[] {
+    return Array.from(this.components.values())
+      .filter(c => c.metadata.isEntry)
+      .map(c => c.id);
+  }
+
+  private generateProjectMetadata(packageJson: any): ProjectMetadata {
+    const components = Array.from(this.components.values());
+    
+    return {
+      totalComponents: components.length,
+      frameworkVersion: packageJson?.dependencies?.express || 'unknown',
+      analysisDate: new Date(),
+      repositoryPath: this.projectPath,
+      entryPointsCount: components.filter(c => c.metadata.isEntry).length,
+      orphanedCount: components.filter(c => c.metadata.isOrphaned).length,
+      complexityAverage: components.reduce((sum, c) => sum + c.metadata.complexity, 0) / components.length
+    };
+  }
+
+  private detectFramework(packageJson: any): string {
+    if (packageJson?.dependencies?.express) {
+      return 'Express.js';
+    }
+    if (packageJson?.dependencies?.next) {
+      return 'Next.js';
+    }
+    if (packageJson?.dependencies?.react) {
+      return 'React';
+    }
+    return 'Node.js';
+  }
+
+  private generateComponentId(filePath: string): string {
+    return filePath.replace(/[^a-zA-Z0-9]/g, '_');
+  }
+}

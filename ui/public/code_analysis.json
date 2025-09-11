@@ -1,0 +1,1649 @@
+{
+    "nodes": [
+        {
+            "id": "main",
+            "type": "function",
+            "tags": [
+                "function"
+            ],
+            "parents": [],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "Category",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "models.Model"
+            ],
+            "documentation": "",
+            "signature": "",
+            "framework": {
+                "framework": "django",
+                "componentType": "model"
+            }
+        },
+        {
+            "id": "models.Model",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "Category.__str__",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "Category"
+            ],
+            "documentation": "",
+            "signature": "self: Any"
+        },
+        {
+            "id": "LetteringItemCategory",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "models.Model"
+            ],
+            "documentation": "",
+            "signature": "",
+            "framework": {
+                "framework": "django",
+                "componentType": "model"
+            }
+        },
+        {
+            "id": "LetteringItemCategory.__str__",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "LetteringItemCategory"
+            ],
+            "documentation": "",
+            "signature": "self: Any"
+        },
+        {
+            "id": "ProductColor",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "models.Model"
+            ],
+            "documentation": "",
+            "signature": "",
+            "framework": {
+                "framework": "django",
+                "componentType": "model"
+            }
+        },
+        {
+            "id": "ProductColor.__str__",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "ProductColor"
+            ],
+            "documentation": "",
+            "signature": "self: Any"
+        },
+        {
+            "id": "Product",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "models.Model"
+            ],
+            "documentation": "",
+            "signature": "",
+            "framework": {
+                "framework": "django",
+                "componentType": "model"
+            }
+        },
+        {
+            "id": "Product.__str__",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "Product"
+            ],
+            "documentation": "",
+            "signature": "self: Any"
+        },
+        {
+            "id": "ProductVariation",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "models.Model"
+            ],
+            "documentation": "",
+            "signature": "",
+            "framework": {
+                "framework": "django",
+                "componentType": "model"
+            }
+        },
+        {
+            "id": "ProductVariation.get_all_lettering_items",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "ProductVariation"
+            ],
+            "documentation": "",
+            "signature": "self: Any"
+        },
+        {
+            "id": "ProductVariation.get_total_price",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "ProductVariation"
+            ],
+            "documentation": "",
+            "signature": "self: Any"
+        },
+        {
+            "id": "ProductVariation.__str__",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "ProductVariation"
+            ],
+            "documentation": "",
+            "signature": "self: Any"
+        },
+        {
+            "id": "LetteringItemVariation",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "models.Model"
+            ],
+            "documentation": "",
+            "signature": "",
+            "framework": {
+                "framework": "django",
+                "componentType": "model"
+            }
+        },
+        {
+            "id": "LetteringItemVariation.__str__",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "LetteringItemVariation"
+            ],
+            "documentation": "",
+            "signature": "self: Any"
+        },
+        {
+            "id": "Payment",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "models.Model"
+            ],
+            "documentation": "",
+            "signature": "",
+            "framework": {
+                "framework": "django",
+                "componentType": "model"
+            }
+        },
+        {
+            "id": "Payment.__str__",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "Payment"
+            ],
+            "documentation": "",
+            "signature": "self: Any"
+        },
+        {
+            "id": "Order",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "models.Model"
+            ],
+            "documentation": "",
+            "signature": "",
+            "framework": {
+                "framework": "django",
+                "componentType": "model"
+            }
+        },
+        {
+            "id": "Order.__str__",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "Order"
+            ],
+            "documentation": "",
+            "signature": "self: Any"
+        },
+        {
+            "id": "Order.get_total_price",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "Order"
+            ],
+            "documentation": "",
+            "signature": "self: Any"
+        },
+        {
+            "id": "Comment",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "models.Model"
+            ],
+            "documentation": "",
+            "signature": "",
+            "framework": {
+                "framework": "django",
+                "componentType": "model"
+            }
+        },
+        {
+            "id": "Comment.__str__",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "Comment"
+            ],
+            "documentation": "",
+            "signature": "self: Any"
+        },
+        {
+            "id": "CategorySerializer",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "serializers.ModelSerializer"
+            ],
+            "documentation": "This is a simplified approach and may not handle all cases.",
+            "signature": "",
+            "framework": {
+                "framework": "rest_framework",
+                "componentType": "serializer"
+            }
+        },
+        {
+            "id": "serializers.ModelSerializer",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "CategorySerializer.get_sample_product_id",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "CategorySerializer"
+            ],
+            "documentation": "",
+            "signature": "self: Any, obj: Any"
+        },
+        {
+            "id": "LetteringItemCategorySerializer",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "serializers.ModelSerializer"
+            ],
+            "documentation": "",
+            "signature": "",
+            "framework": {
+                "framework": "rest_framework",
+                "componentType": "serializer"
+            }
+        },
+        {
+            "id": "LetteringItemVariationSerializer",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "serializers.ModelSerializer"
+            ],
+            "documentation": "",
+            "signature": "",
+            "framework": {
+                "framework": "rest_framework",
+                "componentType": "serializer"
+            }
+        },
+        {
+            "id": "LetteringItemVariationSimpleSerializer",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "serializers.ModelSerializer"
+            ],
+            "documentation": "",
+            "signature": "",
+            "framework": {
+                "framework": "rest_framework",
+                "componentType": "serializer"
+            }
+        },
+        {
+            "id": "ProductColorSerializer",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "serializers.ModelSerializer"
+            ],
+            "documentation": "",
+            "signature": "",
+            "framework": {
+                "framework": "rest_framework",
+                "componentType": "serializer"
+            }
+        },
+        {
+            "id": "ProductSerializer",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "serializers.ModelSerializer"
+            ],
+            "documentation": "",
+            "signature": "",
+            "framework": {
+                "framework": "rest_framework",
+                "componentType": "serializer"
+            }
+        },
+        {
+            "id": "ProductVariationSerializer",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "serializers.ModelSerializer"
+            ],
+            "documentation": "",
+            "signature": "",
+            "framework": {
+                "framework": "rest_framework",
+                "componentType": "serializer"
+            }
+        },
+        {
+            "id": "ProductVariationSerializer.get_total_price",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "ProductVariationSerializer"
+            ],
+            "documentation": "",
+            "signature": "self: Any, obj: Any"
+        },
+        {
+            "id": "PaymentSerializer",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "serializers.ModelSerializer"
+            ],
+            "documentation": "",
+            "signature": "",
+            "framework": {
+                "framework": "rest_framework",
+                "componentType": "serializer"
+            }
+        },
+        {
+            "id": "OrderSerializer",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "serializers.ModelSerializer"
+            ],
+            "documentation": "",
+            "signature": "",
+            "framework": {
+                "framework": "rest_framework",
+                "componentType": "serializer"
+            }
+        },
+        {
+            "id": "CommentSerializer",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "serializers.ModelSerializer"
+            ],
+            "documentation": "",
+            "signature": "",
+            "framework": {
+                "framework": "rest_framework",
+                "componentType": "serializer"
+            }
+        },
+        {
+            "id": "BackendConfig",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "AppConfig"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "AppConfig",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "OrderAdmin",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "admin.ModelAdmin"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "admin.ModelAdmin",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "OrderAdmin.get_product_variation_id",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "OrderAdmin"
+            ],
+            "documentation": "",
+            "signature": "self: Any, obj: Any"
+        },
+        {
+            "id": "OrderAdmin.get_product",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "OrderAdmin"
+            ],
+            "documentation": "",
+            "signature": "self: Any, obj: Any"
+        },
+        {
+            "id": "OrderAdmin.get_product_category",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "OrderAdmin"
+            ],
+            "documentation": "",
+            "signature": "self: Any, obj: Any"
+        },
+        {
+            "id": "CategoryAdmin",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "admin.ModelAdmin"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "LetteringItemCategoryAdmin",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "admin.ModelAdmin"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "ProductColorAdmin",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "admin.ModelAdmin"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "ProductAdmin",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "admin.ModelAdmin"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "ProductVariationAdmin",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "admin.ModelAdmin"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "ProductVariationAdmin.get_amount",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "ProductVariationAdmin"
+            ],
+            "documentation": "",
+            "signature": "self: Any, obj: Any"
+        },
+        {
+            "id": "ProductVariationAdmin.get_amount_of_lettering",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "ProductVariationAdmin"
+            ],
+            "documentation": "",
+            "signature": "self: Any, obj: Any"
+        },
+        {
+            "id": "LetteringItemVariationAdmin",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "admin.ModelAdmin"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "LetteringItemVariationAdmin.get_lettering_item_category",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "LetteringItemVariationAdmin"
+            ],
+            "documentation": "",
+            "signature": "self: Any, obj: Any"
+        },
+        {
+            "id": "LetteringItemVariationAdmin.get_product_variation",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "LetteringItemVariationAdmin"
+            ],
+            "documentation": "",
+            "signature": "self: Any, obj: Any"
+        },
+        {
+            "id": "PaymentAdmin",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "admin.ModelAdmin"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "PaymentAdmin.get_amount",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "PaymentAdmin"
+            ],
+            "documentation": "",
+            "signature": "self: Any, obj: Any"
+        },
+        {
+            "id": "CommentAdmin",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "admin.ModelAdmin"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "CategoryListView",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "ListAPIView"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "ListAPIView",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "LetteringItemCategoryListView",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "ListAPIView"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "ProductListView",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "ListAPIView"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "ProductFromCategoryListView",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "ListAPIView"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "ProductFromCategoryListView.get_queryset",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "ProductFromCategoryListView"
+            ],
+            "documentation": "",
+            "signature": "self: Any"
+        },
+        {
+            "id": "ProductColorListView",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "ListAPIView"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "LogoListView",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "ListAPIView"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "ProductDetail",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "RetrieveAPIView"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "RetrieveAPIView",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "ProductVariationRetrieveView",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "RetrieveAPIView"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "CreateOrder",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "GenericAPIView"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "GenericAPIView",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "CreateOrder.post",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "CreateOrder"
+            ],
+            "documentation": "",
+            "signature": "self: Any, request: Any, id: Any, format: Any"
+        },
+        {
+            "id": "RetrieveOrder",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "RetrieveAPIView"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "PaymentView",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "GenericAPIView"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "PaymentView.get",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "PaymentView"
+            ],
+            "documentation": "",
+            "signature": "self: Any, post: Any, id: Any, format: Any"
+        },
+        {
+            "id": "PaymentView.post",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "PaymentView"
+            ],
+            "documentation": "",
+            "signature": "self: Any, request: Any, id: Any, format: Any"
+        },
+        {
+            "id": "CommentsView",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "ListAPIView"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "CommentCreateView",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "CreateAPIView"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "CreateAPIView",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "UploadCustomerImage",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "GenericAPIView"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "UploadCustomerImage.post",
+            "type": "method",
+            "tags": [
+                "method"
+            ],
+            "parents": [
+                "UploadCustomerImage"
+            ],
+            "documentation": "",
+            "signature": "self: Any, request: Any, form: Any"
+        },
+        {
+            "id": "Migration",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [
+                "migrations.Migration"
+            ],
+            "documentation": "",
+            "signature": ""
+        },
+        {
+            "id": "migrations.Migration",
+            "type": "class",
+            "tags": [
+                "class"
+            ],
+            "parents": [],
+            "documentation": "",
+            "signature": ""
+        }
+    ],
+    "edges": [
+        {
+            "from": "models.Model",
+            "to": "Category"
+        },
+        {
+            "from": "models.Model",
+            "to": "LetteringItemCategory"
+        },
+        {
+            "from": "models.Model",
+            "to": "ProductColor"
+        },
+        {
+            "from": "models.Model",
+            "to": "Product"
+        },
+        {
+            "from": "models.Model",
+            "to": "ProductVariation"
+        },
+        {
+            "from": "models.Model",
+            "to": "LetteringItemVariation"
+        },
+        {
+            "from": "models.Model",
+            "to": "Payment"
+        },
+        {
+            "from": "models.Model",
+            "to": "Order"
+        },
+        {
+            "from": "models.Model",
+            "to": "Comment"
+        },
+        {
+            "from": "serializers.ModelSerializer",
+            "to": "CategorySerializer"
+        },
+        {
+            "from": "serializers.ModelSerializer",
+            "to": "LetteringItemCategorySerializer"
+        },
+        {
+            "from": "serializers.ModelSerializer",
+            "to": "LetteringItemVariationSerializer"
+        },
+        {
+            "from": "serializers.ModelSerializer",
+            "to": "LetteringItemVariationSimpleSerializer"
+        },
+        {
+            "from": "serializers.ModelSerializer",
+            "to": "ProductColorSerializer"
+        },
+        {
+            "from": "serializers.ModelSerializer",
+            "to": "ProductSerializer"
+        },
+        {
+            "from": "serializers.ModelSerializer",
+            "to": "ProductVariationSerializer"
+        },
+        {
+            "from": "serializers.ModelSerializer",
+            "to": "PaymentSerializer"
+        },
+        {
+            "from": "serializers.ModelSerializer",
+            "to": "OrderSerializer"
+        },
+        {
+            "from": "serializers.ModelSerializer",
+            "to": "CommentSerializer"
+        },
+        {
+            "from": "AppConfig",
+            "to": "BackendConfig"
+        },
+        {
+            "from": "admin.ModelAdmin",
+            "to": "OrderAdmin"
+        },
+        {
+            "from": "admin.ModelAdmin",
+            "to": "CategoryAdmin"
+        },
+        {
+            "from": "admin.ModelAdmin",
+            "to": "LetteringItemCategoryAdmin"
+        },
+        {
+            "from": "admin.ModelAdmin",
+            "to": "ProductColorAdmin"
+        },
+        {
+            "from": "admin.ModelAdmin",
+            "to": "ProductAdmin"
+        },
+        {
+            "from": "admin.ModelAdmin",
+            "to": "ProductVariationAdmin"
+        },
+        {
+            "from": "admin.ModelAdmin",
+            "to": "LetteringItemVariationAdmin"
+        },
+        {
+            "from": "admin.ModelAdmin",
+            "to": "PaymentAdmin"
+        },
+        {
+            "from": "admin.ModelAdmin",
+            "to": "CommentAdmin"
+        },
+        {
+            "from": "ListAPIView",
+            "to": "CategoryListView"
+        },
+        {
+            "from": "CategoryListView",
+            "to": "CategorySerializer",
+            "metadata": {
+                "property_name": "serializer_class"
+            }
+        },
+        {
+            "from": "CategoryListView",
+            "to": "Category",
+            "metadata": {
+                "property_name": "model"
+            }
+        },
+        {
+            "from": "ListAPIView",
+            "to": "LetteringItemCategoryListView"
+        },
+        {
+            "from": "LetteringItemCategoryListView",
+            "to": "LetteringItemCategorySerializer",
+            "metadata": {
+                "property_name": "serializer_class"
+            }
+        },
+        {
+            "from": "LetteringItemCategoryListView",
+            "to": "LetteringItemCategory",
+            "metadata": {
+                "property_name": "model"
+            }
+        },
+        {
+            "from": "ListAPIView",
+            "to": "ProductListView"
+        },
+        {
+            "from": "ProductListView",
+            "to": "ProductSerializer",
+            "metadata": {
+                "property_name": "serializer_class"
+            }
+        },
+        {
+            "from": "ProductListView",
+            "to": "Product",
+            "metadata": {
+                "property_name": "model"
+            }
+        },
+        {
+            "from": "ListAPIView",
+            "to": "ProductFromCategoryListView"
+        },
+        {
+            "from": "ProductFromCategoryListView",
+            "to": "ProductSerializer",
+            "metadata": {
+                "property_name": "serializer_class"
+            }
+        },
+        {
+            "from": "ProductFromCategoryListView",
+            "to": "Product",
+            "metadata": {
+                "property_name": "model"
+            }
+        },
+        {
+            "from": "ListAPIView",
+            "to": "ProductColorListView"
+        },
+        {
+            "from": "ProductColorListView",
+            "to": "ProductColorSerializer",
+            "metadata": {
+                "property_name": "serializer_class"
+            }
+        },
+        {
+            "from": "ProductColorListView",
+            "to": "ProductColor",
+            "metadata": {
+                "property_name": "model"
+            }
+        },
+        {
+            "from": "ListAPIView",
+            "to": "LogoListView"
+        },
+        {
+            "from": "LogoListView",
+            "to": "ProductSerializer",
+            "metadata": {
+                "property_name": "serializer_class"
+            }
+        },
+        {
+            "from": "LogoListView",
+            "to": "Product",
+            "metadata": {
+                "property_name": "model"
+            }
+        },
+        {
+            "from": "RetrieveAPIView",
+            "to": "ProductDetail"
+        },
+        {
+            "from": "ProductDetail",
+            "to": "ProductSerializer",
+            "metadata": {
+                "property_name": "serializer_class"
+            }
+        },
+        {
+            "from": "ProductDetail",
+            "to": "Product",
+            "metadata": {
+                "property_name": "model"
+            }
+        },
+        {
+            "from": "RetrieveAPIView",
+            "to": "ProductVariationRetrieveView"
+        },
+        {
+            "from": "ProductVariationRetrieveView",
+            "to": "ProductVariationSerializer",
+            "metadata": {
+                "property_name": "serializer_class"
+            }
+        },
+        {
+            "from": "ProductVariationRetrieveView",
+            "to": "ProductVariation",
+            "metadata": {
+                "property_name": "model"
+            }
+        },
+        {
+            "from": "GenericAPIView",
+            "to": "CreateOrder"
+        },
+        {
+            "from": "CreateOrder",
+            "to": "OrderSerializer",
+            "metadata": {
+                "property_name": "serializer_class"
+            }
+        },
+        {
+            "from": "RetrieveAPIView",
+            "to": "RetrieveOrder"
+        },
+        {
+            "from": "RetrieveOrder",
+            "to": "OrderSerializer",
+            "metadata": {
+                "property_name": "serializer_class"
+            }
+        },
+        {
+            "from": "RetrieveOrder",
+            "to": "Order",
+            "metadata": {
+                "property_name": "model"
+            }
+        },
+        {
+            "from": "GenericAPIView",
+            "to": "PaymentView"
+        },
+        {
+            "from": "PaymentView",
+            "to": "PaymentSerializer",
+            "metadata": {
+                "property_name": "serializer_class"
+            }
+        },
+        {
+            "from": "ListAPIView",
+            "to": "CommentsView"
+        },
+        {
+            "from": "CommentsView",
+            "to": "CommentSerializer",
+            "metadata": {
+                "property_name": "serializer_class"
+            }
+        },
+        {
+            "from": "CommentsView",
+            "to": "Comment",
+            "metadata": {
+                "property_name": "model"
+            }
+        },
+        {
+            "from": "CreateAPIView",
+            "to": "CommentCreateView"
+        },
+        {
+            "from": "CommentCreateView",
+            "to": "CommentSerializer",
+            "metadata": {
+                "property_name": "serializer_class"
+            }
+        },
+        {
+            "from": "GenericAPIView",
+            "to": "UploadCustomerImage"
+        },
+        {
+            "from": "migrations.Migration",
+            "to": "Migration"
+        },
+        {
+            "from": "migrations.Migration",
+            "to": "Migration"
+        },
+        {
+            "from": "migrations.Migration",
+            "to": "Migration"
+        },
+        {
+            "from": "migrations.Migration",
+            "to": "Migration"
+        },
+        {
+            "from": "migrations.Migration",
+            "to": "Migration"
+        },
+        {
+            "from": "migrations.Migration",
+            "to": "Migration"
+        },
+        {
+            "from": "migrations.Migration",
+            "to": "Migration"
+        },
+        {
+            "from": "migrations.Migration",
+            "to": "Migration"
+        },
+        {
+            "from": "migrations.Migration",
+            "to": "Migration"
+        },
+        {
+            "from": "migrations.Migration",
+            "to": "Migration"
+        },
+        {
+            "from": "migrations.Migration",
+            "to": "Migration"
+        },
+        {
+            "from": "migrations.Migration",
+            "to": "Migration"
+        },
+        {
+            "from": "migrations.Migration",
+            "to": "Migration"
+        },
+        {
+            "from": "migrations.Migration",
+            "to": "Migration"
+        },
+        {
+            "from": "migrations.Migration",
+            "to": "Migration"
+        },
+        {
+            "from": "migrations.Migration",
+            "to": "Migration"
+        },
+        {
+            "from": "migrations.Migration",
+            "to": "Migration"
+        }
+    ],
+    "outflows": [
+        {
+            "type": "DatabaseInteraction",
+            "detail": "Product.objects.filter(category=obj)"
+        },
+        {
+            "type": "DatabaseInteraction",
+            "detail": "Product.objects.filter(category__id=category_id)"
+        },
+        {
+            "type": "DatabaseInteraction",
+            "detail": "Product.objects.filter(category__title='Truck Sign', is_uploaded=False)"
+        },
+        {
+            "type": "DatabaseInteraction",
+            "detail": "Product.objects.get(id=id)"
+        },
+        {
+            "type": "DatabaseInteraction",
+            "detail": "LetteringItemCategory.objects.get(title=custom_lettering_item['title'])"
+        },
+        {
+            "type": "DatabaseInteraction",
+            "detail": "ProductColor.objects.get(id=data['product_color_id'])"
+        },
+        {
+            "type": "DatabaseInteraction",
+            "detail": "Order.objects.get(id=id)"
+        },
+        {
+            "type": "DatabaseInteraction",
+            "detail": "Order.objects.get(id=id)"
+        },
+        {
+            "type": "PaymentAPICall",
+            "detail": "stripe.Token.create( card={ \"number\": card_num, \"exp_month\": int(exp_month), \"exp_year\": int(exp_year), \"cvc\": cvc }, )"
+        },
+        {
+            "type": "PaymentAPICall",
+            "detail": "stripe.Charge.create( amount=amount, currency=\"usd\", source=token )"
+        },
+        {
+            "type": "DatabaseInteraction",
+            "detail": "Category.objects.get(title=\"Truck Sign\")"
+        }
+    ],
+    "metadata": {
+        "frameworks": [
+            {
+                "name": "django",
+                "components": {
+                    "django.db.models.Model": "model",
+                    "django.forms": "form",
+                    "django.contrib.admin": "admin",
+                    "django.db.migrations": "migration",
+                    "django.views": "view"
+                }
+            },
+            {
+                "name": "rest_framework",
+                "components": {
+                    "rest_framework.viewsets.ModelViewSet": "view",
+                    "rest_framework.serializers": "serializer",
+                    "rest_framework.views": "view",
+                    "rest_framework.generics": "view",
+                    "rest_framework.response": "response",
+                    "rest_framework.permissions": "permission",
+                    "serializers.ModelSerializer": "serializer",
+                    "serializers.Serializer": "serializer",
+                    "serializers.ListSerializer": "serializer",
+                    "serializers.BaseSerializer": "serializer"
+                }
+            }
+        ],
+        "depth": 3,
+        "erd": {
+            "models": [
+                {
+                    "name": "Category",
+                    "fields": [
+                        "title",
+                        "image",
+                        "base_price",
+                        "max_amount_of_lettering_items",
+                        "height",
+                        "width"
+                    ],
+                    "relationships": []
+                },
+                {
+                    "name": "LetteringItemCategory",
+                    "fields": [
+                        "title",
+                        "price"
+                    ],
+                    "relationships": []
+                },
+                {
+                    "name": "ProductColor",
+                    "fields": [
+                        "color_in_hex",
+                        "color_nickname"
+                    ],
+                    "relationships": []
+                },
+                {
+                    "name": "Product",
+                    "fields": [
+                        "category",
+                        "title",
+                        "image",
+                        "detail_image",
+                        "is_uploaded"
+                    ],
+                    "relationships": [
+                        {
+                            "field_name": "category",
+                            "related_model": "Category",
+                            "relation_type": "ForeignKey"
+                        }
+                    ]
+                },
+                {
+                    "name": "ProductVariation",
+                    "fields": [
+                        "product",
+                        "product_color",
+                        "amount"
+                    ],
+                    "relationships": [
+                        {
+                            "field_name": "product",
+                            "related_model": "Product",
+                            "relation_type": "ForeignKey"
+                        },
+                        {
+                            "field_name": "product_color",
+                            "related_model": "ProductColor",
+                            "relation_type": "ForeignKey"
+                        }
+                    ]
+                },
+                {
+                    "name": "LetteringItemVariation",
+                    "fields": [
+                        "lettering_item_category",
+                        "lettering",
+                        "product_variation"
+                    ],
+                    "relationships": [
+                        {
+                            "field_name": "lettering_item_category",
+                            "related_model": "LetteringItemCategory",
+                            "relation_type": "ForeignKey"
+                        },
+                        {
+                            "field_name": "product_variation",
+                            "related_model": "ProductVariation",
+                            "relation_type": "ForeignKey"
+                        }
+                    ]
+                },
+                {
+                    "name": "Payment",
+                    "fields": [
+                        "user_email",
+                        "stripe_charge_id",
+                        "amount",
+                        "timestamp"
+                    ],
+                    "relationships": []
+                },
+                {
+                    "name": "Order",
+                    "fields": [
+                        "ordered_date",
+                        "user_email",
+                        "user_first_name",
+                        "user_last_name",
+                        "address1",
+                        "address2",
+                        "ordered",
+                        "product",
+                        "comment",
+                        "payment"
+                    ],
+                    "relationships": [
+                        {
+                            "field_name": "product",
+                            "related_model": "ProductVariation",
+                            "relation_type": "ForeignKey"
+                        },
+                        {
+                            "field_name": "payment",
+                            "related_model": "Payment",
+                            "relation_type": "ForeignKey"
+                        }
+                    ]
+                },
+                {
+                    "name": "Comment",
+                    "fields": [
+                        "user_email",
+                        "image",
+                        "text",
+                        "visible"
+                    ],
+                    "relationships": []
+                }
+            ],
+            "relationships": []
+        }
+    },
+    "orchestration": []
+}
