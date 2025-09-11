@@ -120,12 +120,12 @@ export class EnhancedAnalyzerFactory {
           });
         }
       } catch (error) {
-        console.warn('⚠️ Failed to register SystemTopologyAnalyzer:', error.message);
+        console.warn('⚠️ Failed to register SystemTopologyAnalyzer:', error instanceof Error ? error.message : String(error));
       }
 
       console.log('🚀 Enhanced Analyzer Factory initialized with plugin system');
     } catch (error) {
-      console.error('❌ Failed to initialize Enhanced Analyzer Factory:', error.message);
+      console.error('❌ Failed to initialize Enhanced Analyzer Factory:', error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -166,17 +166,17 @@ export class EnhancedAnalyzerFactory {
       return selection;
 
     } catch (error) {
-      console.error('❌ Failed to create analyzer:', error.message);
+      console.error('❌ Failed to create analyzer:', error instanceof Error ? error.message : String(error));
       
       // Fallback to system topology analyzer
       const fallback = await this.createFallbackAnalyzer(context);
       if (fallback) {
         fallback.detectionTime = Date.now() - startTime;
-        fallback.metadata.warnings = [`Using fallback analyzer due to: ${error.message}`];
+        fallback.metadata.warnings = [`Using fallback analyzer due to: ${error instanceof Error ? error.message : String(error)}`];
         return fallback;
       }
       
-      throw new Error(`No suitable analyzer found for project: ${error.message}`);
+      throw new Error(`No suitable analyzer found for project: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -236,7 +236,7 @@ export class EnhancedAnalyzerFactory {
       return analysis;
 
     } catch (error) {
-      console.warn(`⚠️ Project analysis failed: ${error.message}`);
+      console.warn(`⚠️ Project analysis failed: ${error instanceof Error ? error.message : String(error)}`);
       return analysis;
     }
   }
@@ -251,7 +251,7 @@ export class EnhancedAnalyzerFactory {
     try {
       const entries = await fs.readdir(repositoryPath, { recursive: true });
       for (const entry of entries.slice(0, maxFiles)) {
-        const fullPath = path.join(repositoryPath, entry);
+        const fullPath = path.join(repositoryPath, entry.toString());
         try {
           const stat = await fs.stat(fullPath);
           if (stat.isFile()) {
@@ -262,7 +262,7 @@ export class EnhancedAnalyzerFactory {
         }
       }
     } catch (error) {
-      console.warn(`⚠️ Failed to scan project files: ${error.message}`);
+      console.warn(`⚠️ Failed to scan project files: ${error instanceof Error ? error.message : String(error)}`);
     }
 
     return files;
@@ -541,7 +541,11 @@ export class EnhancedAnalyzerFactory {
     // Test top candidates with actual detection
     for (const candidate of candidates.slice(0, 3)) {
       try {
-        const analyzer = new candidate.plugin.analyzer();
+        const AnalyzerClass = candidate.plugin.analyzer;
+        if (!AnalyzerClass || typeof AnalyzerClass !== 'function') {
+          continue;
+        }
+        const analyzer = new (AnalyzerClass as any)();
         analyzer['projectPath'] = context.repositoryPath;
         
         const detection = await analyzer['detectLanguageAndFramework']?.();
@@ -563,7 +567,7 @@ export class EnhancedAnalyzerFactory {
           };
         }
       } catch (error) {
-        console.warn(`⚠️ Analyzer ${candidate.plugin.name} failed detection: ${error.message}`);
+        console.warn(`⚠️ Analyzer ${candidate.plugin.name} failed detection: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 
@@ -577,7 +581,8 @@ export class EnhancedAnalyzerFactory {
     const systemTopologyPlugin = pluginRegistry.getPlugin('system-topology');
     if (systemTopologyPlugin) {
       try {
-        const analyzer = new systemTopologyPlugin.analyzer();
+        const AnalyzerClass = systemTopologyPlugin.analyzer;
+        const analyzer = new (AnalyzerClass as any)();
         
         return {
           analyzer,
@@ -595,7 +600,7 @@ export class EnhancedAnalyzerFactory {
           }
         };
       } catch (error) {
-        console.error('❌ Fallback analyzer failed:', error.message);
+        console.error('❌ Fallback analyzer failed:', error instanceof Error ? error.message : String(error));
       }
     }
     

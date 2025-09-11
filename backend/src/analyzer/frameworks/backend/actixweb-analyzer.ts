@@ -91,11 +91,12 @@ export class ActixWebAnalyzer extends RustAnalyzer {
       const node: ComponentNode = {
         id,
         name: `${route.method} ${route.path}`,
-        type: ComponentType.API_HANDLER,
+        type: 'route',
         path: route.handler,
         language: 'rust',
         framework: 'actix-web',
         dependencies: [...route.guards, ...route.extractors],
+        dependents: [],
         metrics: {
           linesOfCode: 0,
           complexity: route.guards.length + route.extractors.length,
@@ -104,13 +105,15 @@ export class ActixWebAnalyzer extends RustAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
-          frameworkType: 'route',
-          method: route.method,
-          path: route.path,
-          guards: route.guards,
-          extractors: route.extractors
+          lineCount: 0,
+          complexity: route.guards.length + route.extractors.length,
+          lastModified: new Date(),
+          exports: [],
+          imports: [],
+          httpMethods: [route.method],
+          layer: 'presentation',
+          responsibilities: [`Handle ${route.method} requests to ${route.path}`]
         }
       };
       components.set(id, node);
@@ -121,11 +124,12 @@ export class ActixWebAnalyzer extends RustAnalyzer {
       const node: ComponentNode = {
         id,
         name: handler.name,
-        type: ComponentType.SERVICE,
+        type: 'service',
         path: handler.filePath,
         language: 'rust',
         framework: 'actix-web',
         dependencies: handler.extractors,
+        dependents: [],
         metrics: {
           linesOfCode: 0,
           complexity: handler.extractors.length + 1,
@@ -134,12 +138,14 @@ export class ActixWebAnalyzer extends RustAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
-          frameworkType: 'handler',
-          async: handler.async,
-          returnType: handler.returnType,
-          extractors: handler.extractors
+          lineCount: 0,
+          complexity: handler.extractors.length,
+          lastModified: new Date(),
+          exports: [],
+          imports: [],
+          layer: 'business',
+          responsibilities: ['Handle request processing']
         }
       };
       components.set(id, node);
@@ -150,11 +156,12 @@ export class ActixWebAnalyzer extends RustAnalyzer {
       const node: ComponentNode = {
         id,
         name: mw.name,
-        type: ComponentType.MIDDLEWARE,
+        type: 'middleware',
         path: mw.filePath,
         language: 'rust',
         framework: 'actix-web',
         dependencies: [],
+        dependents: [],
         metrics: {
           linesOfCode: 0,
           complexity: 2,
@@ -163,11 +170,14 @@ export class ActixWebAnalyzer extends RustAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
-          frameworkType: 'middleware',
-          wrapsApp: mw.wrapsApp,
-          order: mw.order
+          lineCount: 0,
+          complexity: 1,
+          lastModified: new Date(),
+          exports: [],
+          imports: [],
+          layer: 'infrastructure',
+          responsibilities: ['Middleware processing']
         }
       };
       components.set(id, node);
@@ -177,7 +187,7 @@ export class ActixWebAnalyzer extends RustAnalyzer {
     const apiEndpoints = this.extractActixEndpoints();
     
     telemetry.emit({
-      type: 'component_discovery_completed',
+      type: 'component_discovered',
       source: { analyzer: this.getAnalyzerName() },
       data: {
         totalComponents: components.size,
@@ -352,7 +362,7 @@ export class ActixWebAnalyzer extends RustAnalyzer {
     
     // Match middleware structs
     const structRegex = /struct\s+(\w+Middleware|\w+Guard)/g;
-    let match;
+    let match: RegExpExecArray | null;
     
     while ((match = structRegex.exec(content)) !== null) {
       middleware.push({
@@ -367,7 +377,7 @@ export class ActixWebAnalyzer extends RustAnalyzer {
     const wrapRegex = /\.wrap\((\w+)/g;
     
     while ((match = wrapRegex.exec(content)) !== null) {
-      if (!middleware.find(m => m.name === match[1])) {
+      if (match?.[1] && !middleware.find(m => m.name === match?.[1])) {
         middleware.push({
           name: match[1],
           filePath,
@@ -423,13 +433,13 @@ export class ActixWebAnalyzer extends RustAnalyzer {
       const handlerName = route.handler.split('::').pop() || '';
       if (this.handlers.has(handlerName)) {
         connections.push({
-          source: routeId,
-          target: handlerName,
-          type: 'route-handler',
-          protocol: 'actix',
+          from: routeId,
+          to: handlerName,
+          type: 'function_call',
+          weight: 1,
           metadata: {
-            method: route.method,
-            path: route.path
+            callSites: 1,
+            httpMethod: route.method
           }
         });
       }
@@ -439,12 +449,12 @@ export class ActixWebAnalyzer extends RustAnalyzer {
     for (const [mwId, mw] of this.middleware) {
       if (mw.wrapsApp) {
         connections.push({
-          source: 'actix-app',
-          target: mwId,
-          type: 'middleware-wrap',
-          protocol: 'actix',
+          from: 'actix-app',
+          to: mwId,
+          type: 'middleware_chain',
+          weight: 1,
           metadata: {
-            order: mw.order
+            callSites: 1
           }
         });
       }
@@ -458,15 +468,21 @@ export class ActixWebAnalyzer extends RustAnalyzer {
     
     for (const [id, route] of this.routes) {
       endpoints.push({
+        id,
         path: route.path,
         method: route.method === '*' ? 'ALL' : route.method as APIEndpoint['method'],
+        description: `${route.method} ${route.path}`,
         handler: route.handler,
         parameters: [],
-        responses: [],
+        statusCodes: [{ code: 200, description: 'Success' }],
         middleware: route.guards,
-        authentication: route.guards.length > 0,
+        authentication: {
+          type: route.guards.length > 0 ? 'jwt' : 'none',
+          required: route.guards.length > 0
+        },
         rateLimit: undefined,
-        deprecated: false
+        deprecated: false,
+        componentId: id
       });
     }
     
@@ -483,10 +499,9 @@ export class ActixWebAnalyzer extends RustAnalyzer {
   }
 
   async analyzePerformance(): Promise<any> {
-    const performance = await super.analyzePerformance();
+    // Base performance metrics
     
     return {
-      ...performance,
       actixweb: {
         routesCount: this.routes.size,
         handlersCount: this.handlers.size,

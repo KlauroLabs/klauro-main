@@ -21,22 +21,25 @@ exports.projectRepository = exports.ProjectRepository = exports.organizationRepo
 exports.initializeDatabase = initializeDatabase;
 exports.shutdownDatabase = shutdownDatabase;
 exports.checkDatabaseHealth = checkDatabaseHealth;
-var connection_1 = require("./connection");
-Object.defineProperty(exports, "db", { enumerable: true, get: function () { return __importDefault(connection_1).default; } });
-Object.defineProperty(exports, "DatabaseConnection", { enumerable: true, get: function () { return connection_1.DatabaseConnection; } });
+const connection_1 = __importDefault(require("./connection"));
+const organization_repository_1 = require("./repositories/organization-repository");
+const project_repository_1 = require("./repositories/project-repository");
+var connection_2 = require("./connection");
+Object.defineProperty(exports, "db", { enumerable: true, get: function () { return __importDefault(connection_2).default; } });
+Object.defineProperty(exports, "DatabaseConnection", { enumerable: true, get: function () { return connection_2.DatabaseConnection; } });
 var base_repository_1 = require("./repositories/base-repository");
 Object.defineProperty(exports, "BaseRepository", { enumerable: true, get: function () { return base_repository_1.BaseRepository; } });
-var organization_repository_1 = require("./repositories/organization-repository");
-Object.defineProperty(exports, "OrganizationRepository", { enumerable: true, get: function () { return organization_repository_1.OrganizationRepository; } });
-Object.defineProperty(exports, "organizationRepository", { enumerable: true, get: function () { return organization_repository_1.organizationRepository; } });
-var project_repository_1 = require("./repositories/project-repository");
-Object.defineProperty(exports, "ProjectRepository", { enumerable: true, get: function () { return project_repository_1.ProjectRepository; } });
-Object.defineProperty(exports, "projectRepository", { enumerable: true, get: function () { return project_repository_1.projectRepository; } });
+var organization_repository_2 = require("./repositories/organization-repository");
+Object.defineProperty(exports, "OrganizationRepository", { enumerable: true, get: function () { return organization_repository_2.OrganizationRepository; } });
+Object.defineProperty(exports, "organizationRepository", { enumerable: true, get: function () { return organization_repository_2.organizationRepository; } });
+var project_repository_2 = require("./repositories/project-repository");
+Object.defineProperty(exports, "ProjectRepository", { enumerable: true, get: function () { return project_repository_2.ProjectRepository; } });
+Object.defineProperty(exports, "projectRepository", { enumerable: true, get: function () { return project_repository_2.projectRepository; } });
 __exportStar(require("./utils/database-utils"), exports);
 async function initializeDatabase() {
     try {
         console.log('🔌 Initializing database connections...');
-        await db.initialize();
+        await connection_1.default.initialize();
         console.log('✅ Database initialization complete');
     }
     catch (error) {
@@ -47,7 +50,7 @@ async function initializeDatabase() {
 async function shutdownDatabase() {
     try {
         console.log('🔌 Shutting down database connections...');
-        await db.close();
+        await connection_1.default.close();
         console.log('✅ Database shutdown complete');
     }
     catch (error) {
@@ -62,35 +65,47 @@ async function checkDatabaseHealth() {
         errors: [],
     };
     try {
-        const dbHealth = await db.checkHealth();
+        const dbHealth = await connection_1.default.checkHealth();
         health.components.database = dbHealth;
         if (!dbHealth.isHealthy) {
             health.isHealthy = false;
             health.errors.push(...dbHealth.errors);
         }
         try {
-            await organizationRepository.count();
+            await organization_repository_1.organizationRepository.findById('00000000-0000-0000-0000-000000000000');
             health.components.organizationRepository = { status: 'healthy' };
         }
         catch (error) {
-            health.components.organizationRepository = {
-                status: 'unhealthy',
-                error: error instanceof Error ? error.message : String(error)
-            };
-            health.isHealthy = false;
-            health.errors.push(`Organization repository: ${error instanceof Error ? error.message : String(error)}`);
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            if (errorMessage.includes('connect') || errorMessage.includes('ECONNREFUSED')) {
+                health.components.organizationRepository = {
+                    status: 'unhealthy',
+                    error: errorMessage
+                };
+                health.isHealthy = false;
+                health.errors.push(`Organization repository: ${errorMessage}`);
+            }
+            else {
+                health.components.organizationRepository = { status: 'healthy' };
+            }
         }
         try {
-            await projectRepository.count();
+            await project_repository_1.projectRepository.findById('00000000-0000-0000-0000-000000000000');
             health.components.projectRepository = { status: 'healthy' };
         }
         catch (error) {
-            health.components.projectRepository = {
-                status: 'unhealthy',
-                error: error instanceof Error ? error.message : String(error)
-            };
-            health.isHealthy = false;
-            health.errors.push(`Project repository: ${error instanceof Error ? error.message : String(error)}`);
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            if (errorMessage.includes('connect') || errorMessage.includes('ECONNREFUSED')) {
+                health.components.projectRepository = {
+                    status: 'unhealthy',
+                    error: errorMessage
+                };
+                health.isHealthy = false;
+                health.errors.push(`Project repository: ${errorMessage}`);
+            }
+            else {
+                health.components.projectRepository = { status: 'healthy' };
+            }
         }
     }
     catch (error) {

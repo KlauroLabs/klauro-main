@@ -80,7 +80,7 @@ class LanguageDetector {
                 buildTools.push(...result.buildTools);
             }
             catch (error) {
-                console.warn(`Detection strategy failed: ${error.message}`);
+                console.warn(`Detection strategy failed: ${error instanceof Error ? error.message : String(error)}`);
             }
         }
         const languages = this.rankLanguages(languageScores);

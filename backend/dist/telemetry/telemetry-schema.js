@@ -48,13 +48,6 @@ class TelemetryCollector {
                     value: endTime - startTime,
                     unit: 'ms',
                     memoryDelta: endMemory.heapUsed - startMemory.heapUsed
-                },
-                performance: {
-                    startTime,
-                    endTime,
-                    duration: endTime - startTime,
-                    memoryUsed: endMemory.heapUsed,
-                    memoryDelta: endMemory.heapUsed - startMemory.heapUsed
                 }
             });
             return result;
@@ -85,13 +78,6 @@ class TelemetryCollector {
                     metric: name,
                     value: endTime - startTime,
                     unit: 'ms',
-                    memoryDelta: endMemory.heapUsed - startMemory.heapUsed
-                },
-                performance: {
-                    startTime,
-                    endTime,
-                    duration: endTime - startTime,
-                    memoryUsed: endMemory.heapUsed,
                     memoryDelta: endMemory.heapUsed - startMemory.heapUsed
                 }
             });

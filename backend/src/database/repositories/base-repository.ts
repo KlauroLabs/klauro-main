@@ -177,7 +177,7 @@ export abstract class BaseRepository<T extends BaseEntity> {
         updated_at: now,
       };
 
-      const row = this.mapEntityToRow(entityWithDefaults);
+      const row = this.mapEntityToRow(entityWithDefaults as Partial<T>);
       
       // Add tenant information if applicable
       if (this.tenantColumn && organizationId) {
@@ -212,7 +212,7 @@ export abstract class BaseRepository<T extends BaseEntity> {
         updated_at: new Date(),
       };
 
-      const row = this.mapEntityToRow(updatesWithTimestamp);
+      const row = this.mapEntityToRow(updatesWithTimestamp as Partial<T>);
       
       const columns = Object.keys(row).filter(col => col !== this.primaryKey);
       const setClause = columns.map((col, index) => `${col} = $${index + 1}`).join(', ');

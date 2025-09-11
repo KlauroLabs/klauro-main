@@ -140,11 +140,12 @@ export class VueAnalyzer extends TypeScriptJavaScriptAnalyzer {
       const node: ComponentNode = {
         id,
         name: vueComp.name,
-        type: ComponentType.UI_COMPONENT,
+        type: 'utility',
         path: vueComp.filePath,
         language: 'typescript',
         framework: 'vue',
         dependencies: vueComp.dependencies,
+        dependents: [],
         metrics: {
           linesOfCode: await this.countLinesOfCode(vueComp.filePath),
           complexity: this.calculateVueComplexity(vueComp),
@@ -153,22 +154,28 @@ export class VueAnalyzer extends TypeScriptJavaScriptAnalyzer {
           duplicateCode: 0,
           technicalDebt: this.calculateTechnicalDebt(vueComp)
         },
-        relationships: [],
         metadata: {
+          lineCount: await this.countLinesOfCode(vueComp.filePath),
+          complexity: this.calculateVueComplexity(vueComp),
+          lastModified: new Date(),
+          exports: [],
+          imports: [],
+          layer: 'presentation' as any,
+          responsibilities: [`Vue ${vueComp.type} component`],
           vueType: vueComp.type,
-          props: vueComp.props,
-          emits: vueComp.emits,
-          slots: vueComp.slots,
-          data: vueComp.data,
-          computed: vueComp.computed,
-          methods: vueComp.methods,
-          watchers: vueComp.watchers,
-          lifecycle: vueComp.lifecycle,
-          composables: vueComp.composables,
-          hasSetup: vueComp.hasSetup,
-          hasScriptSetup: vueComp.hasScriptSetup,
-          template: vueComp.template,
-          style: vueComp.style
+          props: vueComp.props.map(p => p.name),
+          // Vue specific data stored in fields and methods
+          fields: [...vueComp.data, ...vueComp.computed],
+          methods: [...vueComp.methods, ...vueComp.watchers],
+          // Vue lifecycle and setup information stored in tags and properties
+          tags: [
+            ...(vueComp.emits.length > 0 ? [`emits-${vueComp.emits.length}`] : []),
+            ...(vueComp.slots.length > 0 ? [`slots-${vueComp.slots.length}`] : []),
+            ...(vueComp.hasSetup ? ['has-setup'] : []),
+            ...(vueComp.hasScriptSetup ? ['script-setup'] : [])
+          ],
+          properties: [...vueComp.lifecycle, ...vueComp.composables]
+          // template and style information stored in properties or tags as needed
         }
       };
       components.set(id, node);
@@ -844,7 +851,7 @@ export class VueAnalyzer extends TypeScriptJavaScriptAnalyzer {
     
     const storeDir = path.join(this.projectPath, 'store');
     if (await fs.pathExists(storeDir)) {
-      const files = await this.findFiles(['**/*.{js,ts}'], [], storeDir);
+      const files = await this.findFiles([path.join(storeDir, '**/*.{js,ts}')], []);
       
       for (const file of files) {
         const content = await fs.readFile(file, 'utf-8');
@@ -976,11 +983,12 @@ export class VueAnalyzer extends TypeScriptJavaScriptAnalyzer {
     for (const [name, component] of this.vueComponents) {
       for (const child of component.template.components) {
         connections.push({
-          source: name,
-          target: child,
-          type: 'composition',
+          from: name,
+          to: child,
+          type: 'contains',
           protocol: 'vue-component',
           metadata: {
+            callSites: 1,
             relationship: 'parent-child'
           }
         });
@@ -992,13 +1000,14 @@ export class VueAnalyzer extends TypeScriptJavaScriptAnalyzer {
       if (route.children.length > 0) {
         for (const childRoute of route.children) {
           connections.push({
-            source: route.component,
-            target: childRoute.component,
-            type: 'navigation',
+            from: route.component,
+            to: childRoute.component,
+            type: 'function_call',
             protocol: 'vue-router',
             metadata: {
-              fromPath: route.path,
-              toPath: childRoute.path
+              callSites: 1,
+              path: route.path,
+              routePath: childRoute.path
             }
           });
         }
@@ -1012,12 +1021,13 @@ export class VueAnalyzer extends TypeScriptJavaScriptAnalyzer {
         if (component.composables.some(c => c.includes('Store')) ||
             component.dependencies.some(d => d.includes('store'))) {
           connections.push({
-            source: 'store',
-            target: name,
-            type: 'data-flow',
+            from: 'store',
+            to: name,
+            type: 'data_flow',
             protocol: this.store.type,
             metadata: {
-              storeType: this.store.type
+              callSites: 1,
+              dataFlow: this.store.type
             }
           });
         }
@@ -1097,10 +1107,9 @@ export class VueAnalyzer extends TypeScriptJavaScriptAnalyzer {
   }
 
   async analyzePerformance(): Promise<any> {
-    const performance = await super.analyzePerformance();
+    // Base performance metrics
     
     return {
-      ...performance,
       vue: {
         componentsCount: this.vueComponents.size,
         sfcCount: Array.from(this.vueComponents.values()).filter(c => c.type === 'sfc').length,

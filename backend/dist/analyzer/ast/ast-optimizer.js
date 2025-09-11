@@ -226,7 +226,7 @@ class ASTOptimizer {
                                 telemetry_schema_1.telemetry.emit({
                                     type: 'error_occurred',
                                     source: { analyzer: 'ast-optimizer', file },
-                                    data: { error: error.message, file }
+                                    data: { error: error instanceof Error ? error.message : String(error), file }
                                 });
                             }
                         }
@@ -345,6 +345,7 @@ class ASTOptimizer {
             return ast;
         }
         const prunedAst = JSON.parse(JSON.stringify(ast));
+        const self = this;
         (0, traverse_1.default)(prunedAst, {
             enter(path) {
                 const nodeType = path.node.type;
@@ -353,12 +354,12 @@ class ASTOptimizer {
                     return;
                 }
                 if (options.includeNodes && !options.includeNodes.includes(nodeType)) {
-                    if (!this.isStructuralNode(nodeType)) {
+                    if (!self.isStructuralNode(nodeType)) {
                         path.remove();
                         return;
                     }
                 }
-                if (options.maxDepth && this.getNodeDepth(path) > options.maxDepth) {
+                if (options.maxDepth && self.getNodeDepth(path) > options.maxDepth) {
                     path.remove();
                 }
             }
@@ -369,8 +370,9 @@ class ASTOptimizer {
         const optimizedVisitor = {};
         if (options.includeNodes) {
             for (const nodeType of options.includeNodes) {
-                if (visitor[nodeType]) {
-                    optimizedVisitor[nodeType] = visitor[nodeType];
+                const visitorMethod = visitor[nodeType];
+                if (visitorMethod) {
+                    optimizedVisitor[nodeType] = visitorMethod;
                 }
             }
         }
@@ -469,10 +471,11 @@ class ASTOptimizer {
             'TryStatement',
             'CatchClause'
         ];
+        const self = this;
         (0, traverse_1.default)(ast, {
             enter(path) {
                 metadata.nodeCount++;
-                const depth = this.getNodeDepth(path);
+                const depth = self.getNodeDepth(path);
                 maxDepth = Math.max(maxDepth, depth);
                 const nodeType = path.node.type;
                 if (complexityPatterns.includes(nodeType)) {

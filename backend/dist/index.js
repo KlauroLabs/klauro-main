@@ -1,57 +1,65 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-const express_1 = __importDefault(require("express"));
-const cors_1 = __importDefault(require("cors"));
-const analyze_1 = require("./routes/analyze");
-const analyzer_bootstrap_1 = require("./analyzer/analyzer-bootstrap");
-const app = (0, express_1.default)();
-const PORT = process.env.PORT || 3001;
+const dotenv = __importStar(require("dotenv"));
+dotenv.config();
+const app_1 = require("./app");
+const logger_service_1 = require("./services/logger.service");
+const PORT = parseInt(process.env.PORT || '3001');
+const logger = new logger_service_1.Logger('Main');
 async function startServer() {
     try {
-        console.log('🔧 Initializing Unravl Platform...');
-        await (0, analyzer_bootstrap_1.initializeAnalyzerSystem)();
-        app.use((0, cors_1.default)());
-        app.use(express_1.default.json());
-        app.use(express_1.default.static('public'));
-        app.use('/api/analyze', analyze_1.analyzeRoutes);
-        app.get('/api/health', (req, res) => {
-            const stats = (0, analyzer_bootstrap_1.getAnalyzerStatistics)();
-            res.json({
-                status: 'OK',
-                message: 'Unravl API is running',
-                analyzers: {
-                    total: stats.totalPlugins,
-                    official: stats.officialPlugins,
-                    community: stats.communityPlugins,
-                    languages: stats.supportedLanguages.length,
-                    frameworks: stats.supportedFrameworks.length
-                },
-                timestamp: new Date().toISOString()
-            });
-        });
-        app.get('/api/analyzers', (req, res) => {
-            const stats = (0, analyzer_bootstrap_1.getAnalyzerStatistics)();
-            res.json(stats);
-        });
-        app.listen(PORT, () => {
-            console.log(`\n🎉 Unravl API Server Ready!`);
-            console.log(`🚀 Server running on: http://localhost:${PORT}`);
-            console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
-            console.log(`🔧 Analyzers info: http://localhost:${PORT}/api/analyzers`);
-            console.log(`📈 Analysis endpoint: http://localhost:${PORT}/api/analyze`);
-            const stats = (0, analyzer_bootstrap_1.getAnalyzerStatistics)();
-            console.log(`\n📋 System Status:`);
-            console.log(`   • ${stats.totalPlugins} analyzers loaded`);
-            console.log(`   • ${stats.supportedLanguages.length} languages supported`);
-            console.log(`   • ${stats.supportedFrameworks.length} frameworks detected`);
-            console.log(`\n✨ Ready to analyze codebases!\n`);
-        });
+        logger.info('Initializing Unravl Platform...');
+        const app = new app_1.App();
+        await app.initialize();
+        app.start(PORT);
+        logger.info('Security features enabled:');
+        logger.info('- JWT Authentication with secure secret validation');
+        logger.info('- OAuth with state validation and PKCE');
+        logger.info('- Comprehensive rate limiting');
+        logger.info('- CSRF protection');
+        logger.info('- Input sanitization and validation');
+        logger.info('- SQL injection prevention');
+        logger.info('- XSS protection');
+        logger.info('- Security headers with Helmet');
+        logger.info('- Structured logging with Winston');
+        logger.info('- Email service ready');
+        logger.info('- Database migration system active');
     }
     catch (error) {
-        console.error('💥 Failed to start Unravl server:', error);
+        logger.error('Failed to start server', error);
         process.exit(1);
     }
 }

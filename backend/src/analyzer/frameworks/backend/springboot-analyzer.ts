@@ -68,7 +68,7 @@ export class SpringBootAnalyzer extends JavaAnalyzer {
   private services: Map<string, SpringService> = new Map();
   private entities: Map<string, SpringEntity> = new Map();
   private hasSpringData: boolean = false;
-  private hasSpringSecuri: boolean = false;
+  private hasSpringSecurity: boolean = false;
   private hasSpringCloud: boolean = false;
   
   getAnalyzerName(): string {
@@ -115,11 +115,12 @@ export class SpringBootAnalyzer extends JavaAnalyzer {
       const node: ComponentNode = {
         id,
         name: controller.name,
-        type: ComponentType.API_HANDLER,
+        type: 'controller',
         path: controller.filePath,
         language: 'java',
         framework: 'spring-boot',
         dependencies: controller.beans,
+        dependents: [],
         metrics: {
           linesOfCode: 0,
           complexity: controller.methods.length,
@@ -128,11 +129,17 @@ export class SpringBootAnalyzer extends JavaAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
+          lineCount: 0,
+          complexity: controller.methods.length,
+          lastModified: new Date(),
+          exports: [controller.name],
+          imports: [],
+          layer: 'presentation' as const,
+          responsibilities: [`Handle HTTP requests for ${controller.requestMapping}`],
           frameworkType: 'controller',
           requestMapping: controller.requestMapping,
-          methods: controller.methods
+          methods: controller.methods.map(m => m.name)
         }
       };
       components.set(id, node);
@@ -143,11 +150,12 @@ export class SpringBootAnalyzer extends JavaAnalyzer {
       const node: ComponentNode = {
         id,
         name: service.name,
-        type: ComponentType.SERVICE,
+        type: 'service',
         path: service.filePath,
         language: 'java',
         framework: 'spring-boot',
         dependencies: service.dependencies,
+        dependents: [],
         metrics: {
           linesOfCode: 0,
           complexity: service.dependencies.length + 2,
@@ -156,11 +164,16 @@ export class SpringBootAnalyzer extends JavaAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
+          lineCount: 0,
+          complexity: 5,
+          lastModified: new Date(),
+          exports: [service.name],
+          imports: [],
+          layer: 'business' as const,
+          responsibilities: [`Provide ${service.stereotype} functionality`],
           frameworkType: 'service',
-          stereotype: service.stereotype,
-          transactional: service.transactional
+          stereotype: service.stereotype
         }
       };
       components.set(id, node);
@@ -171,11 +184,12 @@ export class SpringBootAnalyzer extends JavaAnalyzer {
       const node: ComponentNode = {
         id,
         name: entity.name,
-        type: ComponentType.DATA_MODEL,
+        type: 'model',
         path: entity.filePath,
         language: 'java',
         framework: 'spring-boot',
         dependencies: entity.relationships.map(r => r.targetEntity),
+        dependents: [],
         metrics: {
           linesOfCode: 0,
           complexity: entity.fields.length + entity.relationships.length,
@@ -184,12 +198,17 @@ export class SpringBootAnalyzer extends JavaAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
+          lineCount: 0,
+          complexity: entity.fields.length + entity.relationships.length,
+          lastModified: new Date(),
+          exports: [entity.name],
+          imports: [],
+          layer: 'data' as const,
+          responsibilities: [`Represent ${entity.tableName || entity.name} data entity`],
           frameworkType: 'entity',
           tableName: entity.tableName,
-          fields: entity.fields,
-          relationships: entity.relationships
+          fields: entity.fields.map(f => f.name)
         }
       };
       components.set(id, node);
@@ -397,11 +416,11 @@ export class SpringBootAnalyzer extends JavaAnalyzer {
     for (const [controllerId, controller] of this.controllers) {
       for (const bean of controller.beans) {
         connections.push({
-          source: controllerId,
-          target: bean,
+          from: controllerId,
+          to: bean,
           type: 'dependency-injection',
           protocol: 'spring',
-          metadata: { injectionType: 'autowired' }
+          metadata: { callSites: 1, injectionType: 'autowired' }
         });
       }
     }
@@ -410,11 +429,11 @@ export class SpringBootAnalyzer extends JavaAnalyzer {
     for (const [serviceId, service] of this.services) {
       for (const dep of service.dependencies) {
         connections.push({
-          source: serviceId,
-          target: dep,
+          from: serviceId,
+          to: dep,
           type: 'dependency-injection',
           protocol: 'spring',
-          metadata: { injectionType: 'autowired' }
+          metadata: { callSites: 1, injectionType: 'autowired' }
         });
       }
     }
@@ -423,11 +442,14 @@ export class SpringBootAnalyzer extends JavaAnalyzer {
     for (const [entityId, entity] of this.entities) {
       for (const rel of entity.relationships) {
         connections.push({
-          source: entityId,
-          target: rel.targetEntity,
+          from: entityId,
+          to: rel.targetEntity,
           type: 'data-relationship',
           protocol: 'jpa',
-          metadata: { relationType: rel.type }
+          metadata: { 
+            callSites: 1,
+            relationType: rel.type 
+          }
         });
       }
     }
@@ -442,21 +464,33 @@ export class SpringBootAnalyzer extends JavaAnalyzer {
       const basePath = controller.requestMapping || '';
       
       for (const method of controller.methods) {
+        const endpointId = `${controller.name}.${method.name}`;
         endpoints.push({
+          id: endpointId,
           path: `${basePath}/${method.path}`.replace(/\/+/g, '/'),
           method: method.httpMethod as APIEndpoint['method'],
+          description: `${method.httpMethod} ${method.path}`,
           handler: `${controller.name}.${method.name}`,
           parameters: method.parameters.map(p => ({
             name: p.name,
-            in: p.annotation === '@PathVariable' ? 'path' : p.annotation === '@RequestParam' ? 'query' : 'body',
+            type: (p.annotation === '@PathVariable' ? 'path' : p.annotation === '@RequestParam' ? 'query' : 'body') as 'query' | 'path' | 'body' | 'header',
             required: p.required,
-            type: p.type
+            dataType: p.type
           })),
+          statusCodes: [
+            { code: 200, description: 'Success' },
+            { code: 400, description: 'Bad Request' },
+            { code: 500, description: 'Internal Server Error' }
+          ],
           responses: [],
           middleware: [],
-          authentication: this.hasSpringSecuri,
+          authentication: {
+            type: this.hasSpringSecurity ? 'jwt' : 'none',
+            required: this.hasSpringSecurity
+          },
           rateLimit: undefined,
-          deprecated: false
+          deprecated: false,
+          componentId: `controller-${controller.name}`
         });
       }
     }
@@ -466,15 +500,16 @@ export class SpringBootAnalyzer extends JavaAnalyzer {
 
   private async extractDatabaseConnections(): Promise<DatabaseConnection[]> {
     return [{
+      id: 'spring-data-jpa',
       name: 'Spring Data JPA',
       type: 'postgresql',
       host: 'localhost',
       port: 5432,
       database: 'springboot',
       schema: 'public',
-      tables: this.entities.size,
-      relationships: Array.from(this.entities.values()).reduce((sum, e) => sum + e.relationships.length, 0),
-      indexes: 0
+      tables: Array.from(this.entities.keys()),
+      usage: [],
+      componentIds: Array.from(this.entities.keys())
     }];
   }
 
@@ -487,10 +522,9 @@ export class SpringBootAnalyzer extends JavaAnalyzer {
   }
 
   async analyzePerformance(): Promise<any> {
-    const performance = await super.analyzePerformance();
+    // Base performance metrics
     
     return {
-      ...performance,
       springboot: {
         controllersCount: this.controllers.size,
         servicesCount: this.services.size,
@@ -498,7 +532,7 @@ export class SpringBootAnalyzer extends JavaAnalyzer {
         averageMethodsPerController: this.calculateAverageMethodsPerController(),
         features: {
           hasSpringData: this.hasSpringData,
-          hasSpringSecuri: this.hasSpringSecuri,
+          hasSpringSecurity: this.hasSpringSecurity,
           hasSpringCloud: this.hasSpringCloud
         }
       }

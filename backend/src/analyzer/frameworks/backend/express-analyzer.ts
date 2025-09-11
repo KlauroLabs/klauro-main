@@ -2,7 +2,7 @@
 // Phase 3: Framework Sub-Analyzers - Production-ready Express analyzer
 
 import { TypeScriptJavaScriptAnalyzer } from '../../languages/typescript-javascript-analyzer';
-import { ComponentNode, ComponentType, Connection, APIEndpoint, DatabaseConnection } from '../../../types';
+import { ComponentNode, ComponentType, Connection, APIEndpoint, DatabaseConnection, ComponentMetadata } from '../../../types';
 import { telemetry } from '../../../telemetry/telemetry-schema';
 import * as path from 'path';
 import * as fs from 'fs-extra';
@@ -129,11 +129,10 @@ export class ExpressAnalyzer extends TypeScriptJavaScriptAnalyzer {
       const node: ComponentNode = {
         id,
         name: `${route.method} ${route.path}`,
-        type: ComponentType.API_HANDLER,
+        type: 'route',
         path: route.handler,
-        language: this.isTypeScriptProject ? 'typescript' : 'javascript',
-        framework: 'express',
         dependencies: route.middleware,
+        dependents: [],
         metrics: {
           linesOfCode: 0,
           complexity: route.middleware.length + (route.params.length * 2),
@@ -142,16 +141,17 @@ export class ExpressAnalyzer extends TypeScriptJavaScriptAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
-          frameworkType: 'route',
-          method: route.method,
-          path: route.path,
-          router: route.router,
-          middleware: route.middleware,
-          params: route.params,
-          query: route.query
-        }
+          lineCount: 0,
+          complexity: route.middleware.length + 1,
+          lastModified: new Date(),
+          exports: [],
+          imports: [],
+          httpMethods: [route.method],
+          layer: 'presentation',
+          responsibilities: [`Handle ${route.method} requests to ${route.path}`],
+          path: route.path
+        } as ComponentMetadata & { path: string }
       };
       components.set(id, node);
     }
@@ -161,11 +161,10 @@ export class ExpressAnalyzer extends TypeScriptJavaScriptAnalyzer {
       const node: ComponentNode = {
         id,
         name: router.name,
-        type: ComponentType.MODULE,
+        type: 'service',
         path: router.filePath,
-        language: this.isTypeScriptProject ? 'typescript' : 'javascript',
-        framework: 'express',
         dependencies: router.subRouters,
+        dependents: [],
         metrics: {
           linesOfCode: await this.countLinesOfCode(router.filePath),
           complexity: router.routes.length + router.middleware.length,
@@ -174,13 +173,16 @@ export class ExpressAnalyzer extends TypeScriptJavaScriptAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
-          frameworkType: 'router',
-          basePath: router.basePath,
-          routesCount: router.routes.length,
-          middlewareCount: router.middleware.length
-        }
+          lineCount: 0,
+          complexity: router.routes.length + router.middleware.length,
+          lastModified: new Date(),
+          exports: [],
+          imports: [],
+          layer: 'infrastructure',
+          responsibilities: ['Route handling and middleware management'],
+          basePath: router.basePath
+        } as ComponentMetadata & { basePath: string }
       };
       components.set(id, node);
     }
@@ -190,11 +192,10 @@ export class ExpressAnalyzer extends TypeScriptJavaScriptAnalyzer {
       const node: ComponentNode = {
         id,
         name: mw.name,
-        type: ComponentType.MIDDLEWARE,
+        type: 'middleware',
         path: mw.path || '',
-        language: this.isTypeScriptProject ? 'typescript' : 'javascript',
-        framework: 'express',
         dependencies: [],
+        dependents: [],
         metrics: {
           linesOfCode: 0,
           complexity: 2,
@@ -203,14 +204,17 @@ export class ExpressAnalyzer extends TypeScriptJavaScriptAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
-          frameworkType: 'middleware',
-          type: mw.type,
+          lineCount: 0,
+          complexity: 2,
+          lastModified: new Date(),
+          exports: [mw.name],
+          imports: [],
+          layer: 'infrastructure',
+          responsibilities: ['Express middleware processing'],
           order: mw.order,
-          global: mw.global,
-          errorHandler: mw.errorHandler
-        }
+          global: mw.global
+        } as ComponentMetadata & { order: number; global: boolean }
       };
       components.set(id, node);
     }
@@ -225,7 +229,7 @@ export class ExpressAnalyzer extends TypeScriptJavaScriptAnalyzer {
     const databaseConnections = await this.extractDatabaseConnections();
     
     telemetry.emit({
-      type: 'component_discovery_completed',
+      type: 'component_discovered',
       source: { analyzer: this.getAnalyzerName() },
       data: {
         totalComponents: components.size,
@@ -723,13 +727,13 @@ export class ExpressAnalyzer extends TypeScriptJavaScriptAnalyzer {
     for (const [routeId, route] of this.routes) {
       if (route.router) {
         connections.push({
-          source: route.router,
-          target: routeId,
-          type: 'contains',
-          protocol: 'express',
+          from: route.router,
+          to: routeId,
+          type: 'middleware_chain',
+          weight: 1,
           metadata: {
-            routePath: route.path,
-            method: route.method
+            callSites: 1,
+            httpMethod: route.method
           }
         });
       }
@@ -737,12 +741,12 @@ export class ExpressAnalyzer extends TypeScriptJavaScriptAnalyzer {
       // Route to Middleware connections
       for (const mw of route.middleware) {
         connections.push({
-          source: routeId,
-          target: mw,
-          type: 'uses-middleware',
-          protocol: 'express',
+          from: routeId,
+          to: mw,
+          type: 'middleware_chain',
+          weight: 1,
           metadata: {
-            middlewareName: mw
+            callSites: 1
           }
         });
       }
@@ -751,12 +755,12 @@ export class ExpressAnalyzer extends TypeScriptJavaScriptAnalyzer {
     // Static serve connections
     for (const staticServe of this.staticServes) {
       connections.push({
-        source: 'express-app',
-        target: staticServe.directory,
-        type: 'static-serve',
-        protocol: 'express',
+        from: 'express-app',
+        to: staticServe.directory,
+        type: 'http_call',
+        weight: 1,
         metadata: {
-          servePath: staticServe.path
+          callSites: 1
         }
       });
     }
@@ -764,13 +768,12 @@ export class ExpressAnalyzer extends TypeScriptJavaScriptAnalyzer {
     // WebSocket connections
     for (const [wsId, ws] of this.websockets) {
       connections.push({
-        source: 'express-app',
-        target: wsId,
-        type: 'websocket',
-        protocol: 'socket.io',
+        from: 'express-app',
+        to: wsId,
+        type: 'http_call',
+        weight: 1,
         metadata: {
-          namespace: ws.namespace,
-          events: ws.events
+          callSites: 1
         }
       });
     }
@@ -783,35 +786,41 @@ export class ExpressAnalyzer extends TypeScriptJavaScriptAnalyzer {
     
     for (const [id, route] of this.routes) {
       endpoints.push({
+        id,
         path: route.path,
-        method: route.method === '*' ? 'ALL' : route.method as APIEndpoint['method'],
+        method: route.method === '*' ? 'GET' : route.method as APIEndpoint['method'],
+        description: `${route.method} ${route.path}`,
         handler: route.handler,
         parameters: route.params.map(p => ({
           name: p,
-          in: 'path',
-          required: true,
-          type: 'string'
+          type: 'path',
+          dataType: 'string',
+          required: true
         })),
-        responses: [],
+        statusCodes: [{ code: 200, description: 'Success' }],
         middleware: route.middleware,
-        authentication: route.middleware.includes('authenticate') || route.middleware.includes('auth') || this.hasPassport,
-        rateLimit: route.middleware.includes('rateLimit') ? { requests: 100, window: 60000 } : undefined,
-        deprecated: false
+        authentication: (route.middleware.includes('authenticate') || route.middleware.includes('auth') || this.hasPassport) ? { type: 'bearer', required: true } : { type: 'none', required: false },
+        rateLimit: route.middleware.includes('rateLimit') ? { requests: 100, window: '1m', strategy: 'fixed-window' } : undefined,
+        deprecated: false,
+        componentId: id
       });
     }
     
     // Add WebSocket endpoints
     for (const [wsId, ws] of this.websockets) {
       endpoints.push({
+        id: wsId,
         path: ws.path,
         method: 'WS' as any,
+        description: `WebSocket ${ws.path}`,
         handler: ws.handler,
         parameters: [],
-        responses: [],
+        statusCodes: [{ code: 101, description: 'Switching Protocols' }],
         middleware: [],
-        authentication: false,
+        authentication: { type: 'none', required: false },
         rateLimit: undefined,
-        deprecated: false
+        deprecated: false,
+        componentId: wsId
       });
     }
     
@@ -824,45 +833,42 @@ export class ExpressAnalyzer extends TypeScriptJavaScriptAnalyzer {
     // Check for Mongoose (MongoDB)
     if (this.hasMongoose) {
       connections.push({
+        id: 'mongoose',
         name: 'MongoDB (Mongoose)',
         type: 'mongodb',
         host: 'localhost',
         port: 27017,
         database: 'app',
-        schema: '',
-        tables: 0,
-        relationships: 0,
-        indexes: 0
+        usage: [{ componentId: 'express-models', operations: [{ type: 'read', tables: [], complexity: 1, optimized: true }], frequency: 1, critical: true }],
+        componentIds: ['express-models']
       });
     }
     
     // Check for Sequelize (SQL)
     if (this.hasSequelize) {
       connections.push({
+        id: 'sequelize',
         name: 'SQL (Sequelize)',
         type: 'postgresql',
         host: 'localhost',
         port: 5432,
         database: 'app',
-        schema: 'public',
-        tables: 0,
-        relationships: 0,
-        indexes: 0
+        usage: [{ componentId: 'express-models', operations: [{ type: 'read', tables: [], complexity: 1, optimized: true }], frequency: 1, critical: true }],
+        componentIds: ['express-models']
       });
     }
     
     // Check for Prisma
     if (this.hasPrisma) {
       connections.push({
+        id: 'prisma',
         name: 'Prisma ORM',
         type: 'postgresql',
         host: 'localhost',
         port: 5432,
         database: 'app',
-        schema: 'public',
-        tables: 0,
-        relationships: 0,
-        indexes: 0
+        usage: [{ componentId: 'express-models', operations: [{ type: 'read', tables: [], complexity: 1, optimized: true }], frequency: 1, critical: true }],
+        componentIds: ['express-models']
       });
     }
     
@@ -893,10 +899,9 @@ export class ExpressAnalyzer extends TypeScriptJavaScriptAnalyzer {
   }
 
   async analyzePerformance(): Promise<any> {
-    const performance = await super.analyzePerformance();
+    // Base performance metrics
     
     return {
-      ...performance,
       express: {
         routesCount: this.routes.size,
         routersCount: this.routers.size,

@@ -586,7 +586,7 @@ export class DependencyMapper {
             });
           } else if (t.isImportSpecifier(spec)) {
             specifiers.push({
-              imported: spec.imported.name,
+              imported: 'name' in spec.imported ? spec.imported.name : spec.imported.value,
               local: spec.local.name,
               type: 'named'
             });

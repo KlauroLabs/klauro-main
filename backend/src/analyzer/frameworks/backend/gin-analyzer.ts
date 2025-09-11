@@ -2,7 +2,7 @@
 // Phase 3: Framework Sub-Analyzers - Production-ready Gin analyzer
 
 import { GoAnalyzer } from '../../languages/go-analyzer';
-import { ComponentNode, ComponentType, Connection, APIEndpoint } from '../../../types';
+import { ComponentNode, ComponentType, Connection, APIEndpoint, ComponentMetadata } from '../../../types';
 import { telemetry } from '../../../telemetry/telemetry-schema';
 import * as path from 'path';
 import * as fs from 'fs-extra';
@@ -81,11 +81,12 @@ export class GinAnalyzer extends GoAnalyzer {
       const node: ComponentNode = {
         id,
         name: `${route.method} ${route.path}`,
-        type: ComponentType.API_HANDLER,
+        type: 'controller',
         path: route.handler,
         language: 'go',
         framework: 'gin',
         dependencies: route.middleware,
+        dependents: [],
         metrics: {
           linesOfCode: 0,
           complexity: route.middleware.length + 1,
@@ -94,14 +95,19 @@ export class GinAnalyzer extends GoAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
+          lineCount: 0,
+          complexity: route.middleware.length + 1,
+          lastModified: new Date(),
+          exports: [],
+          imports: [],
+          httpMethods: [route.method],
+          layer: 'presentation',
+          responsibilities: [`Handle ${route.method} requests to ${route.path}`],
           frameworkType: 'route',
           method: route.method,
-          path: route.path,
-          group: route.group,
-          middleware: route.middleware
-        }
+          path: route.path
+        } as ComponentMetadata & { frameworkType: string; method: string; path: string }
       };
       components.set(id, node);
     }
@@ -111,11 +117,12 @@ export class GinAnalyzer extends GoAnalyzer {
       const node: ComponentNode = {
         id,
         name: mw.name,
-        type: ComponentType.MIDDLEWARE,
+        type: 'middleware',
         path: mw.filePath,
         language: 'go',
         framework: 'gin',
         dependencies: [],
+        dependents: [],
         metrics: {
           linesOfCode: 0,
           complexity: 2,
@@ -124,12 +131,18 @@ export class GinAnalyzer extends GoAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
+          lineCount: 0,
+          complexity: 2,
+          lastModified: new Date(),
+          exports: [],
+          imports: [],
+          layer: 'infrastructure',
+          responsibilities: ['Middleware processing'],
           frameworkType: 'middleware',
           global: mw.global,
           order: mw.order
-        }
+        } as ComponentMetadata & { frameworkType: string; global: boolean; order: number }
       };
       components.set(id, node);
     }
@@ -301,11 +314,12 @@ export class GinAnalyzer extends GoAnalyzer {
     for (const [routeId, route] of this.routes) {
       for (const mw of route.middleware) {
         connections.push({
-          source: routeId,
-          target: mw,
+          from: routeId,
+          to: mw,
           type: 'uses-middleware',
           protocol: 'gin',
           metadata: {
+            callSites: 1,
             middlewareName: mw
           }
         });
@@ -316,11 +330,12 @@ export class GinAnalyzer extends GoAnalyzer {
     for (const [groupId, group] of this.routerGroups) {
       for (const route of group.routes) {
         connections.push({
-          source: groupId,
-          target: `${route.method}_${route.path}`,
+          from: groupId,
+          to: `${route.method}_${route.path}`,
           type: 'contains',
           protocol: 'gin',
           metadata: {
+            callSites: 1,
             basePath: group.basePath
           }
         });
@@ -335,15 +350,21 @@ export class GinAnalyzer extends GoAnalyzer {
     
     for (const [id, route] of this.routes) {
       endpoints.push({
+        id: `gin-${id}`,
         path: route.path,
-        method: route.method === '*' ? 'ALL' : route.method as APIEndpoint['method'],
+        method: route.method === '*' ? 'GET' : route.method as APIEndpoint['method'], // Use GET as fallback for '*'
+        description: `Gin ${route.method} endpoint for ${route.path}`,
         handler: route.handler,
         parameters: [],
-        responses: [],
+        statusCodes: [{ code: 200, description: 'Success' }],
         middleware: route.middleware,
-        authentication: route.middleware.some(m => m.toLowerCase().includes('auth')),
+        authentication: {
+          type: route.middleware.some(m => m.toLowerCase().includes('auth')) ? 'jwt' : 'none',
+          required: route.middleware.some(m => m.toLowerCase().includes('auth'))
+        },
         rateLimit: undefined,
-        deprecated: false
+        deprecated: false,
+        componentId: id
       });
     }
     
@@ -359,10 +380,9 @@ export class GinAnalyzer extends GoAnalyzer {
   }
 
   async analyzePerformance(): Promise<any> {
-    const performance = await super.analyzePerformance();
+    // Base performance metrics
     
     return {
-      ...performance,
       gin: {
         routesCount: this.routes.size,
         middlewareCount: this.middleware.size,

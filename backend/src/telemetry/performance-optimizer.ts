@@ -25,7 +25,7 @@ export class TelemetryPerformanceOptimizer {
   private eventCache = new Map<string, TelemetryEvent>();
   private compressionEnabled = false;
   private samplingRate = 1.0;
-  private memoryMonitor: NodeJS.Timer;
+  private memoryMonitor!: NodeJS.Timer;
 
   constructor(config: PerformanceOptimizationConfig = {}) {
     this.config = {
@@ -290,7 +290,7 @@ export class TelemetryPerformanceOptimizer {
    */
   public destroy(): void {
     if (this.memoryMonitor) {
-      clearInterval(this.memoryMonitor);
+      clearInterval(this.memoryMonitor as any);
     }
     this.eventCache.clear();
   }
@@ -340,11 +340,11 @@ export class OptimizedTelemetryCollector extends EnhancedTelemetryCollector {
     } as TelemetryEvent;
   }
 
-  private generateId(): string {
+  protected generateId(): string {
     return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   }
 
-  private getSessionId(): string {
+  protected getSessionId(): string {
     return process.env.TELEMETRY_SESSION_ID || 'default';
   }
 

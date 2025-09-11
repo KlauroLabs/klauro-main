@@ -122,6 +122,28 @@ export class IntegratedAnalyzer extends DatabaseIntegratedAnalyzer {
   }
 
   /**
+   * Generate performance report for the analyzed system
+   */
+  private async generatePerformanceReport(): Promise<any> {
+    return {
+      metrics: await this.telemetryCollector.getPerformanceMetrics(),
+      bottlenecks: [],
+      recommendations: []
+    };
+  }
+
+  /**
+   * Generate telemetry manifest for runtime instrumentation
+   */
+  private async generateTelemetryManifest(): Promise<any> {
+    return {
+      endpoints: await this.telemetryCollector.getTelemetryEndpoints(),
+      metrics: await this.telemetryCollector.getAvailableMetrics(),
+      configuration: this.telemetryCollector.getConfiguration()
+    };
+  }
+
+  /**
    * Enhanced pattern detection with machine learning-like scoring
    */
   private async runEnhancedPatternDetection(components: ComponentNode[]): Promise<void> {

@@ -38,7 +38,7 @@ class DatabaseIntegratedAnalyzer extends system_topology_analyzer_1.SystemTopolo
                 analyzer: this.getAnalyzerName(),
                 estimatedDuration: this.estimateAnalysisDuration(repositoryPath)
             });
-            return this.performEnhancedAnalysis(repositoryPath, mergedOptions);
+            return this.analyzeRepository(repositoryPath, mergedOptions);
         });
         const blueprint = await super.analyzeRepository(repositoryPath, mergedOptions);
         await this.postProcessWithDatabase(blueprint);
@@ -74,7 +74,7 @@ class DatabaseIntegratedAnalyzer extends system_topology_analyzer_1.SystemTopolo
         return await this.telemetryCollector.trackAnalyzerOperation('connection_analysis', undefined, async () => {
             const connections = await super.analyzeConnections(components);
             for (const connection of connections) {
-                this.telemetryCollector.emitDependencyDetected(connection.from, connection.to, connection.type, connection.weight, {
+                this.telemetryCollector.emitDependencyDetected(connection.from, connection.to, connection.type, connection.weight || 1, {
                     importPath: connection.metadata?.dataFlow,
                     depth: this.calculateDependencyDepth(connection, connections)
                 });

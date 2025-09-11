@@ -49,11 +49,13 @@ export interface IntegratedAnalysisResult {
 
 export class IntegratedSystemAnalyzer extends BaseAnalyzer {
   private manifestGenerator?: ManifestGenerator;
-  private options: IntegratedAnalysisOptions = {};
+  protected options: IntegratedAnalysisOptions = {};
   private pluginsUsed: string[] = [];
+  protected frameworkDetector: FrameworkDetector;
 
   constructor() {
     super();
+    this.frameworkDetector = new FrameworkDetector();
   }
 
   getAnalyzerName(): string {
@@ -88,12 +90,7 @@ export class IntegratedSystemAnalyzer extends BaseAnalyzer {
     }
     
     // Start comprehensive telemetry span
-    const span = telemetry.createSpan('integrated-analyzer.analyzeProject', {
-      repositoryPath,
-      organizationId: this.options.organizationId,
-      projectId: this.options.projectId,
-      options: this.options
-    });
+    const span = telemetry.createSpan('integrated-analyzer.analyzeProject');
 
     try {
       console.log('🚀 Starting integrated system analysis...');
@@ -106,7 +103,7 @@ export class IntegratedSystemAnalyzer extends BaseAnalyzer {
       
       // Step 2: Fall back to integrated analysis if no specific analyzer found
       const blueprint = selectedAnalyzer 
-        ? await selectedAnalyzer.analyzeRepository(repositoryPath, this.options)
+        ? await selectedAnalyzer.analyzeRepository(repositoryPath, this.options as any)
         : await this.performIntegratedAnalysis(repositoryPath);
         
       // Step 3: Generate manifest if requested
@@ -130,8 +127,8 @@ export class IntegratedSystemAnalyzer extends BaseAnalyzer {
       
       // Emit comprehensive completion event
       telemetry.emit({
-        type: 'integrated_analysis_completed',
-        source: { analyzer: this.getAnalyzerName(), analysisId: this.analysisId },
+        type: 'analysis_completed',
+        source: { analyzer: this.getAnalyzerName() },
         data: {
           duration: finalDuration,
           componentCount: blueprint.components.length,
@@ -161,7 +158,7 @@ export class IntegratedSystemAnalyzer extends BaseAnalyzer {
     } catch (error) {
       telemetry.emit({
         type: 'error_occurred',
-        source: { analyzer: this.getAnalyzerName(), analysisId: this.analysisId },
+        source: { analyzer: this.getAnalyzerName() },
         data: {
           error: error instanceof Error ? error.message : String(error),
           duration: Date.now() - analysisStartTime
@@ -195,7 +192,7 @@ export class IntegratedSystemAnalyzer extends BaseAnalyzer {
       span.end();
       return analyzer;
     } catch (error) {
-      console.warn('Failed to select analyzer from plugin registry:', error.message);
+      console.warn('Failed to select analyzer from plugin registry:', error instanceof Error ? error.message : String(error));
       span.end();
       return null;
     }
@@ -205,7 +202,7 @@ export class IntegratedSystemAnalyzer extends BaseAnalyzer {
     console.log('🔧 Performing integrated analysis...');
     
     // Use the inherited analyzeRepository method which already has telemetry integration
-    return await this.analyzeRepository(repositoryPath, this.options);
+    return await this.analyzeRepository(repositoryPath, this.options as any);
   }
 
   // Implement abstract methods required by BaseAnalyzer
@@ -214,21 +211,29 @@ export class IntegratedSystemAnalyzer extends BaseAnalyzer {
     
     try {
       // Use the enhanced framework detector
-      const frameworks = await this.frameworkDetector.detectFrameworks(this.projectPath);
+      const techStack = await this.frameworkDetector.detectFrameworks(this.projectPath);
       
-      if (frameworks.length > 0) {
-        const primary = frameworks[0];
+      if (techStack.primaryFramework) {
         span.end();
         return {
-          language: primary.language,
-          confidence: primary.confidence,
-          frameworks: frameworks.map(f => ({
-            name: f.name,
-            version: f.version,
-            confidence: f.confidence,
-            patterns: [],
-            metadata: f.metadata
-          })),
+          language: techStack.primaryFramework.language || 'unknown',
+          confidence: techStack.primaryFramework.confidence || 0.5,
+          frameworks: [
+            ...techStack.additionalFrameworks.map(f => ({
+              name: f.name,
+              version: f.version,
+              confidence: f.confidence || 0.5,
+              patterns: [],
+              metadata: f.metadata
+            })),
+            {
+              name: techStack.primaryFramework.name,
+              version: techStack.primaryFramework.version,
+              confidence: techStack.primaryFramework.confidence || 0.5,
+              patterns: [],
+              metadata: techStack.primaryFramework.metadata
+            }
+          ],
           files: [] // TODO: Get from framework detector
         };
       }
@@ -301,7 +306,7 @@ export class IntegratedSystemAnalyzer extends BaseAnalyzer {
           }
         } catch (error) {
           skippedFiles++;
-          console.warn(`⚠️ Skipped ${filePath}: ${error.message}`);
+          console.warn(`⚠️ Skipped ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
       
@@ -326,21 +331,30 @@ export class IntegratedSystemAnalyzer extends BaseAnalyzer {
     const component: ComponentNode = {
       id: this.generateComponentId(filePath),
       name: path.basename(filePath, path.extname(filePath)),
-      type: this.inferComponentType(filePath, content),
+      type: this.inferComponentType(filePath, content) as any,
       path: relativePath,
       language: this.inferLanguageFromFile(filePath),
       framework: 'unknown',
-      size: Buffer.byteLength(content, 'utf8'),
-      linesOfCode: content.split('\n').length,
       dependencies: [],
       dependents: [],
-      functions: await this.extractFunctions(content, this.inferLanguageFromFile(filePath)),
-      imports: this.extractImports(content),
-      exports: this.extractExports(content),
+      metrics: {
+        linesOfCode: content.split('\n').length,
+        complexity: 1,
+        maintainability: 80,
+        testCoverage: 0,
+        duplicateCode: 0,
+        technicalDebt: 0
+      },
       metadata: {
+        lineCount: content.split('\n').length,
         complexity: this.calculateComplexity(content),
+        lastModified: new Date(),
+        exports: this.extractExports(content),
+        imports: this.extractImports(content),
         isEntry: false,
-        isTest: filePath.includes('test') || filePath.includes('spec')
+        layer: 'application' as any,
+        responsibilities: ['Generic component'],
+        functions: await this.extractFunctions(content, this.inferLanguageFromFile(filePath))
       }
     };
     
@@ -438,7 +452,7 @@ export class IntegratedSystemAnalyzer extends BaseAnalyzer {
     
     // Basic connection analysis based on imports/dependencies
     components.forEach(component => {
-      component.imports.forEach(importPath => {
+      component.metadata.imports.forEach(importPath => {
         const targetComponent = components.find(c => 
           c.name === importPath || 
           c.path.includes(importPath.replace(/[./]/g, '/'))
@@ -446,13 +460,14 @@ export class IntegratedSystemAnalyzer extends BaseAnalyzer {
         
         if (targetComponent) {
           connections.push({
-            id: `${component.id}_to_${targetComponent.id}`,
             from: component.id,
             to: targetComponent.id,
             type: 'import',
             weight: 1,
-            bidirectional: false,
-            metadata: { importPath }
+            metadata: { 
+              callSites: 1,
+              importType: importPath 
+            }
           });
         }
       });
@@ -468,13 +483,10 @@ export class IntegratedSystemAnalyzer extends BaseAnalyzer {
     components.forEach(component => {
       if (component.metadata.complexity > 7) {
         risks.push({
-          id: `risk_${component.id}`,
           componentId: component.id,
-          riskType: 'complexity',
           riskLevel: 'high',
-          description: `High complexity score: ${component.metadata.complexity}`,
-          impact: 'maintainability',
-          recommendation: 'Consider refactoring to reduce complexity'
+          reasons: [`High complexity score: ${component.metadata.complexity}`],
+          impact: 'maintainability'
         });
       }
     });
@@ -487,17 +499,20 @@ export class IntegratedSystemAnalyzer extends BaseAnalyzer {
       nodes: components.map(c => ({
         id: c.id,
         name: c.name,
-        type: c.type,
-        calls: [],
-        calledBy: []
+        type: 'module' as const,
+        file: c.path,
+        complexity: c.metadata.complexity,
+        fanIn: c.dependents.length,
+        fanOut: c.dependencies.length,
+        depth: 0,
+        critical: c.metadata.complexity > 7
       })),
       edges: [],
-      metadata: {
-        totalNodes: components.length,
-        totalEdges: 0,
-        maxDepth: 0,
-        complexity: 0
-      }
+      entryPoints: [],
+      cycles: [],
+      layers: [],
+      hotPaths: [],
+      deadCode: []
     };
   }
 

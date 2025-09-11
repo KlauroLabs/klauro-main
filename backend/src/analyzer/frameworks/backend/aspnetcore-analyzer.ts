@@ -2,7 +2,7 @@
 // Phase 3: Framework Sub-Analyzers - Production-ready ASP.NET Core analyzer
 
 import { CSharpAnalyzer } from '../../languages/csharp-analyzer';
-import { ComponentNode, ComponentType, Connection, APIEndpoint, DatabaseConnection } from '../../../types';
+import { ComponentNode, ComponentType, ComponentMetadata, Connection, APIEndpoint, DatabaseConnection } from '../../../types';
 import { telemetry } from '../../../telemetry/telemetry-schema';
 import * as path from 'path';
 import * as fs from 'fs-extra';
@@ -115,11 +115,12 @@ export class AspNetCoreAnalyzer extends CSharpAnalyzer {
       const node: ComponentNode = {
         id,
         name: controller.name,
-        type: ComponentType.API_HANDLER,
+        type: 'controller',
         path: controller.filePath,
         language: 'csharp',
         framework: 'aspnetcore',
         dependencies: [],
+        dependents: [],
         metrics: {
           linesOfCode: 0,
           complexity: controller.actions.length,
@@ -128,14 +129,20 @@ export class AspNetCoreAnalyzer extends CSharpAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
+          lineCount: 0,
+          complexity: controller.actions.length,
+          lastModified: new Date(),
+          exports: controller.actions.map(a => a.name),
+          imports: [],
+          layer: 'presentation',
+          responsibilities: ['HTTP request handling', 'Business logic orchestration'],
+          // Framework-specific properties
           frameworkType: 'controller',
           routePrefix: controller.routePrefix,
-          actions: controller.actions,
           filters: controller.filters,
           authorization: controller.authorization
-        }
+        } as ComponentMetadata & { frameworkType: string; routePrefix?: string; filters: string[]; authorization: string[] }
       };
       components.set(id, node);
     }
@@ -145,11 +152,12 @@ export class AspNetCoreAnalyzer extends CSharpAnalyzer {
       const node: ComponentNode = {
         id,
         name: service.name,
-        type: ComponentType.SERVICE,
+        type: 'service',
         path: service.filePath,
         language: 'csharp',
         framework: 'aspnetcore',
         dependencies: service.dependencies,
+        dependents: [],
         metrics: {
           linesOfCode: 0,
           complexity: service.dependencies.length + 2,
@@ -158,12 +166,19 @@ export class AspNetCoreAnalyzer extends CSharpAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
+          lineCount: 0,
+          complexity: service.dependencies.length + 2,
+          lastModified: new Date(),
+          exports: service.interface ? [service.interface] : [],
+          imports: service.dependencies,
+          layer: 'business',
+          responsibilities: ['Business logic', 'Service operations'],
+          // Framework-specific properties
           frameworkType: 'service',
           lifetime: service.lifetime,
           interface: service.interface
-        }
+        } as ComponentMetadata & { frameworkType: string; lifetime: string; interface?: string }
       };
       components.set(id, node);
     }
@@ -173,11 +188,12 @@ export class AspNetCoreAnalyzer extends CSharpAnalyzer {
       const node: ComponentNode = {
         id,
         name: entity.name,
-        type: ComponentType.DATA_MODEL,
+        type: 'model',
         path: entity.filePath,
         language: 'csharp',
         framework: 'aspnetcore',
         dependencies: entity.navigationProperties.map(np => np.targetEntity),
+        dependents: [],
         metrics: {
           linesOfCode: 0,
           complexity: entity.properties.length + entity.navigationProperties.length,
@@ -186,13 +202,18 @@ export class AspNetCoreAnalyzer extends CSharpAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
+          lineCount: 0,
+          complexity: entity.properties.length + entity.navigationProperties.length,
+          lastModified: new Date(),
+          exports: entity.properties.map(p => p.name),
+          imports: entity.navigationProperties.map(np => np.targetEntity),
+          layer: 'data',
+          responsibilities: ['Data modeling', 'Entity relations'],
+          // Framework-specific properties
           frameworkType: 'entity',
-          tableName: entity.tableName,
-          properties: entity.properties,
-          navigationProperties: entity.navigationProperties
-        }
+          tableName: entity.tableName
+        } as ComponentMetadata & { frameworkType: string; tableName?: string }
       };
       components.set(id, node);
     }
@@ -379,11 +400,11 @@ export class AspNetCoreAnalyzer extends CSharpAnalyzer {
     for (const [controllerId] of this.controllers) {
       for (const [serviceId] of this.services) {
         connections.push({
-          source: controllerId,
-          target: serviceId,
+          from: controllerId,
+          to: serviceId,
           type: 'dependency-injection',
           protocol: 'aspnetcore',
-          metadata: { injectionType: 'constructor' }
+          metadata: { callSites: 1, injectionType: 'constructor' }
         });
       }
     }
@@ -392,11 +413,11 @@ export class AspNetCoreAnalyzer extends CSharpAnalyzer {
     for (const [entityId, entity] of this.entities) {
       for (const navProp of entity.navigationProperties) {
         connections.push({
-          source: entityId,
-          target: navProp.targetEntity,
+          from: entityId,
+          to: navProp.targetEntity,
           type: 'data-relationship',
           protocol: 'entityframework',
-          metadata: { relationship: navProp.relationship }
+          metadata: { callSites: 1, relationship: navProp.relationship }
         });
       }
     }
@@ -411,21 +432,28 @@ export class AspNetCoreAnalyzer extends CSharpAnalyzer {
       const basePath = controller.routePrefix || `api/${controller.name.replace('Controller', '')}`;
       
       for (const action of controller.actions) {
+        const endpointId = `${id}_${action.name}`;
         endpoints.push({
+          id: endpointId,
           path: `/${basePath}/${action.route}`.replace(/\/+/g, '/'),
           method: action.httpMethod as APIEndpoint['method'],
+          description: `${action.httpMethod} ${action.name}`,
           handler: `${controller.name}.${action.name}`,
           parameters: action.parameters.map(p => ({
             name: p.name,
-            in: p.source === 'FromRoute' ? 'path' : p.source === 'FromQuery' ? 'query' : 'body',
+            type: (p.source === 'FromRoute' ? 'path' : p.source === 'FromQuery' ? 'query' : 'body') as 'query' | 'path' | 'body' | 'header',
             required: p.required,
-            type: p.type
+            dataType: p.type
           })),
-          responses: [],
+          statusCodes: [{ code: 200, description: 'Success' }],
           middleware: controller.filters,
-          authentication: controller.authorization.length > 0,
+          authentication: {
+            type: controller.authorization.length > 0 ? 'jwt' : 'none',
+            required: controller.authorization.length > 0
+          },
           rateLimit: undefined,
-          deprecated: false
+          deprecated: false,
+          componentId: id
         });
       }
     }
@@ -435,15 +463,16 @@ export class AspNetCoreAnalyzer extends CSharpAnalyzer {
 
   private async extractDatabaseConnections(): Promise<DatabaseConnection[]> {
     return [{
+      id: 'entityframework-core',
       name: 'Entity Framework Core',
       type: 'sqlserver',
       host: 'localhost',
       port: 1433,
       database: 'aspnetcore',
       schema: 'dbo',
-      tables: this.entities.size,
-      relationships: Array.from(this.entities.values()).reduce((sum, e) => sum + e.navigationProperties.length, 0),
-      indexes: 0
+      tables: Array.from(this.entities.keys()),
+      usage: [],
+      componentIds: []
     }];
   }
 
@@ -456,10 +485,9 @@ export class AspNetCoreAnalyzer extends CSharpAnalyzer {
   }
 
   async analyzePerformance(): Promise<any> {
-    const performance = await super.analyzePerformance();
+    // Base performance metrics
     
     return {
-      ...performance,
       aspnetcore: {
         controllersCount: this.controllers.size,
         servicesCount: this.services.size,

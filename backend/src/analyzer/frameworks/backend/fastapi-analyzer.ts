@@ -2,7 +2,7 @@
 // Phase 3: Framework Sub-Analyzers - Production-ready FastAPI analyzer
 
 import { PythonAnalyzer } from '../../languages/python-analyzer';
-import { ComponentNode, ComponentType, Connection, APIEndpoint, DatabaseConnection } from '../../../types';
+import { ComponentNode, ComponentType, Connection, APIEndpoint, DatabaseConnection, ComponentMetadata } from '../../../types';
 import { telemetry } from '../../../telemetry/telemetry-schema';
 import * as path from 'path';
 import * as fs from 'fs-extra';
@@ -153,11 +153,10 @@ export class FastAPIAnalyzer extends PythonAnalyzer {
       const node: ComponentNode = {
         id,
         name: `${route.method} ${route.path}`,
-        type: ComponentType.API_HANDLER,
+        type: 'route',
         path: route.handler,
-        language: 'python',
-        framework: 'fastapi',
         dependencies: route.dependencies,
+        dependents: [],
         metrics: {
           linesOfCode: 0,
           complexity: route.parameters.length + (route.requestBody ? 2 : 0),
@@ -166,19 +165,23 @@ export class FastAPIAnalyzer extends PythonAnalyzer {
           duplicateCode: 0,
           technicalDebt: route.deprecated ? 5 : 0
         },
-        relationships: [],
         metadata: {
-          frameworkType: 'route',
-          method: route.method,
-          path: route.path,
+          lineCount: 0,
+          complexity: route.parameters.length + (route.requestBody ? 2 : 0),
+          lastModified: new Date(),
+          exports: [route.method],
+          imports: route.dependencies,
+          layer: 'presentation',
+          responsibilities: ['HTTP request handling', 'API endpoint'],
+          httpMethods: [route.method],
+          externalCalls: [],
+          // Framework-specific properties
           tags: route.tags,
-          summary: route.summary,
           deprecated: route.deprecated,
-          parameters: route.parameters,
           requestBody: route.requestBody,
           responses: route.responses,
           security: route.security
-        }
+        } as ComponentMetadata & { tags: string[]; requestBody?: any; responses: any; security: string[] }
       };
       components.set(id, node);
     }
@@ -188,11 +191,10 @@ export class FastAPIAnalyzer extends PythonAnalyzer {
       const node: ComponentNode = {
         id,
         name: model.name,
-        type: ComponentType.DATA_MODEL,
+        type: 'model',
         path: model.filePath,
-        language: 'python',
-        framework: 'fastapi',
         dependencies: [],
+        dependents: [],
         metrics: {
           linesOfCode: await this.countLinesOfCode(model.filePath),
           complexity: model.fields.length + model.validators.length,
@@ -201,14 +203,18 @@ export class FastAPIAnalyzer extends PythonAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
-          frameworkType: 'pydantic-model',
-          baseModel: model.baseModel,
-          fields: model.fields,
+          lineCount: await this.countLinesOfCode(model.filePath),
+          complexity: model.fields.length + model.validators.length,
+          lastModified: new Date(),
+          exports: model.fields.map(f => f.name),
+          imports: [],
+          layer: 'data',
+          responsibilities: ['Data validation', 'Serialization/deserialization'],
+          // Framework-specific properties
           validators: model.validators,
           config: model.config
-        }
+        } as ComponentMetadata & { validators: string[]; config: any }
       };
       components.set(id, node);
     }
@@ -218,11 +224,10 @@ export class FastAPIAnalyzer extends PythonAnalyzer {
       const node: ComponentNode = {
         id,
         name: dep.name,
-        type: ComponentType.SERVICE,
+        type: 'service',
         path: dep.function,
-        language: 'python',
-        framework: 'fastapi',
         dependencies: [],
+        dependents: [],
         metrics: {
           linesOfCode: 0,
           complexity: 2,
@@ -231,12 +236,17 @@ export class FastAPIAnalyzer extends PythonAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
-          frameworkType: 'dependency',
-          scope: dep.scope,
+          lineCount: 0,
+          complexity: 2,
+          lastModified: new Date(),
+          exports: [dep.name],
+          imports: [],
+          layer: 'business',
+          responsibilities: ['Dependency injection', 'Service provision'],
+          // Framework-specific properties
           cacheable: dep.cacheable
-        }
+        } as ComponentMetadata & { cacheable: boolean }
       };
       components.set(id, node);
     }
@@ -251,7 +261,7 @@ export class FastAPIAnalyzer extends PythonAnalyzer {
     const databaseConnections = await this.extractDatabaseConnections();
     
     telemetry.emit({
-      type: 'component_discovery_completed',
+      type: 'component_discovered',
       source: { analyzer: this.getAnalyzerName() },
       data: {
         totalComponents: components.size,
@@ -796,7 +806,7 @@ export class FastAPIAnalyzer extends PythonAnalyzer {
         const routerName = this.extractRouterName(content);
         if (routerName) {
           this.routers.set(routerName, {
-            file: filePath,
+            file: file,
             prefix: this.extractRouterPrefix(content),
             tags: this.extractRouterTags(content)
           });
@@ -848,12 +858,12 @@ export class FastAPIAnalyzer extends PythonAnalyzer {
     for (const [routeId, route] of this.routes) {
       if (route.requestBody) {
         connections.push({
-          source: routeId,
-          target: route.requestBody.model,
-          type: 'data-input',
-          protocol: 'pydantic',
+          from: routeId,
+          to: route.requestBody.model,
+          type: 'data_flow',
+          weight: 1,
           metadata: {
-            mediaType: route.requestBody.mediaType
+            callSites: 1
           }
         });
       }
@@ -861,12 +871,12 @@ export class FastAPIAnalyzer extends PythonAnalyzer {
       // Route to Dependency connections
       for (const dep of route.dependencies) {
         connections.push({
-          source: routeId,
-          target: dep,
-          type: 'dependency-injection',
-          protocol: 'fastapi',
+          from: routeId,
+          to: dep,
+          type: 'function_call',
+          weight: 1,
           metadata: {
-            injectionType: 'function'
+            callSites: 1
           }
         });
       }
@@ -879,13 +889,13 @@ export class FastAPIAnalyzer extends PythonAnalyzer {
         const fieldType = field.type.replace('Optional[', '').replace(']', '').replace('List[', '').trim();
         if (this.models.has(fieldType)) {
           connections.push({
-            source: modelId,
-            target: fieldType,
-            type: 'data-relationship',
-            protocol: 'pydantic',
+            from: modelId,
+            to: fieldType,
+            type: 'data_flow',
+            weight: 1,
             metadata: {
-              fieldName: field.name,
-              fieldType: field.type
+              callSites: 1,
+              dataFlow: field.name
             }
           });
         }
@@ -900,39 +910,45 @@ export class FastAPIAnalyzer extends PythonAnalyzer {
     
     for (const [id, route] of this.routes) {
       endpoints.push({
+        id,
         path: route.path,
         method: route.method as APIEndpoint['method'],
+        description: route.summary || `${route.method} ${route.path}`,
         handler: route.handler,
         parameters: route.parameters.map(p => ({
           name: p.name,
-          in: p.location,
+          type: p.location === 'cookie' ? 'header' : p.location as 'path' | 'query' | 'body' | 'header',
+          dataType: p.type,
           required: p.required,
-          type: p.type,
           description: p.description
         })),
-        responses: Object.entries(route.responses).map(([code, desc]) => ({
-          statusCode: parseInt(code),
+        statusCodes: Object.entries(route.responses).map(([code, desc]) => ({
+          code: parseInt(code),
           description: desc
         })),
         middleware: this.middleware.map(m => m.name),
-        authentication: route.security.length > 0,
+        authentication: route.security.length > 0 ? { type: 'bearer', required: true } : { type: 'none', required: false },
         rateLimit: undefined,
-        deprecated: route.deprecated
+        deprecated: route.deprecated,
+        componentId: id
       });
     }
     
     // Add WebSocket endpoints
     for (const ws of this.websockets) {
       endpoints.push({
+        id: `ws-${ws.path.replace(/\//g, '_')}`,
         path: ws.path,
-        method: 'WS' as any,
+        method: 'GET' as any, // WebSocket upgrade starts as GET
+        description: `WebSocket endpoint at ${ws.path}`,
         handler: ws.handler,
         parameters: [],
-        responses: [],
+        statusCodes: [{ code: 101, description: 'Switching Protocols' }],
         middleware: [],
-        authentication: false,
+        authentication: { type: 'none', required: false },
         rateLimit: undefined,
-        deprecated: false
+        deprecated: false,
+        componentId: `fastapi-${ws.handler}`
       });
     }
     
@@ -945,45 +961,48 @@ export class FastAPIAnalyzer extends PythonAnalyzer {
     // Check for SQLAlchemy
     if (this.hasSQLAlchemy) {
       connections.push({
+        id: 'sqlalchemy-connection',
         name: 'SQLAlchemy',
         type: 'postgresql',
         host: 'localhost',
         port: 5432,
         database: 'app',
         schema: 'public',
-        tables: 0,
-        relationships: 0,
-        indexes: 0
+        tables: [],
+        usage: [],
+        componentIds: []
       });
     }
     
     // Check for Tortoise ORM
     if (this.hasTortoise) {
       connections.push({
+        id: 'tortoise-connection',
         name: 'Tortoise ORM',
         type: 'postgresql',
         host: 'localhost',
         port: 5432,
         database: 'app',
         schema: 'public',
-        tables: 0,
-        relationships: 0,
-        indexes: 0
+        tables: [],
+        usage: [],
+        componentIds: []
       });
     }
     
     // Check for Redis
     if (this.hasRedis) {
       connections.push({
+        id: 'redis-connection',
         name: 'Redis',
         type: 'redis',
         host: 'localhost',
         port: 6379,
         database: '0',
         schema: '',
-        tables: 0,
-        relationships: 0,
-        indexes: 0
+        tables: [],
+        usage: [],
+        componentIds: []
       });
     }
     
@@ -1020,10 +1039,9 @@ export class FastAPIAnalyzer extends PythonAnalyzer {
   }
 
   async analyzePerformance(): Promise<any> {
-    const performance = await super.analyzePerformance();
+    // Base performance metrics
     
     return {
-      ...performance,
       fastapi: {
         routesCount: this.routes.size,
         modelsCount: this.models.size,

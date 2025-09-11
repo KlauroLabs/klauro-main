@@ -302,6 +302,54 @@ class EnhancedTelemetryCollector extends telemetry_schema_1.TelemetryCollector {
     getEvents() {
         return this.events || [];
     }
+    async getPerformanceMetrics() {
+        const summary = this.getAnalysisPerformanceSummary();
+        const realtimeMetrics = this.getRealTimeMetrics();
+        return {
+            analysis: summary,
+            realtime: realtimeMetrics,
+            aggregated: {
+                totalOperations: summary.totalEvents,
+                averageResponseTime: realtimeMetrics.averageResponseTime,
+                errorRate: summary.errorRate,
+                memoryEfficiency: summary.averageMemoryUsage,
+                throughput: realtimeMetrics.throughput
+            }
+        };
+    }
+    async getTelemetryEndpoints() {
+        return [
+            '/api/telemetry/events',
+            '/api/telemetry/metrics',
+            '/api/telemetry/performance',
+            '/api/telemetry/errors',
+            '/api/telemetry/real-time'
+        ];
+    }
+    async getAvailableMetrics() {
+        return [
+            'component_discovery_rate',
+            'dependency_detection_rate',
+            'pattern_recognition_accuracy',
+            'memory_usage',
+            'cpu_utilization',
+            'analysis_duration',
+            'error_frequency',
+            'cache_hit_ratio',
+            'throughput_rate'
+        ];
+    }
+    getConfiguration() {
+        return {
+            enableDatabase: this.config.enableDatabase,
+            batchSize: this.config.batchSize,
+            flushInterval: this.config.flushInterval,
+            enableRealTimeStreaming: this.config.enableRealTimeStreaming,
+            performanceThresholds: this.performanceThresholds,
+            enableAggregation: this.config.enableAggregation,
+            aggregationInterval: this.config.aggregationInterval
+        };
+    }
     destroy() {
         if (this.aggregationTimer) {
             clearInterval(this.aggregationTimer);

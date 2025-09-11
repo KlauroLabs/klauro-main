@@ -272,7 +272,11 @@ class ProjectRepository extends base_repository_1.BaseRepository {
     }
     async createWithUsageTracking(projectData, client) {
         const executeInTransaction = async (transactionClient) => {
-            const project = await this.create(projectData, projectData.organization_id);
+            const projectWithStatus = {
+                ...projectData,
+                status: 'active'
+            };
+            const project = await this.create(projectWithStatus, projectData.organization_id);
             const usageSql = `
         SELECT update_usage_tracking($1, 'projects', 1)
       `;

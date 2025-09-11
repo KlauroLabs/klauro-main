@@ -206,7 +206,7 @@ export class App {
       logger.error('Unhandled error', err);
       
       const isDevelopment = process.env.NODE_ENV !== 'production';
-      res.status(500).json({
+      return res.status(500).json({
         error: 'Internal Server Error',
         message: isDevelopment ? err.message : 'An unexpected error occurred',
         ...(isDevelopment && { stack: err.stack }),

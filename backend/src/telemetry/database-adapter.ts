@@ -82,6 +82,23 @@ export const EVENT_TYPE_MAPPING: Record<TelemetryEventType, DatabaseEventType> =
   'risk_identified': 'system_metric',
   'call_graph_generated': 'system_metric',
   'complexity_calculated': 'system_metric',
+  
+  // Additional events -> system_metric
+  'component_discovery_completed': 'system_metric',
+  'framework_analyzer_registered': 'system_metric',
+  'framework_analyzer_auto_detected': 'system_metric',
+  'manifest_generation_started': 'system_metric',
+  'manifest_generation_completed': 'system_metric',
+  'manifest_saved': 'system_metric',
+  
+  // Plugin events -> system_metric
+  'plugin_registered': 'system_metric',
+  'plugin_discovery_started': 'system_metric',
+  'plugin_discovery_completed': 'system_metric',
+  'analyzer_selected': 'system_metric',
+  'analyzer_selected_from_cache': 'system_metric',
+  'analyzer_selection_failed': 'error',
+  'plugin_cache_cleared': 'system_metric',
 };
 
 /**

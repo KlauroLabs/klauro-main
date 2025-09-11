@@ -4,7 +4,7 @@
 import { TypeScriptJavaScriptAnalyzer } from '../../languages/typescript-javascript-analyzer';
 import { ComponentNode, ComponentType, Connection, RiskArea, APIEndpoint } from '../../../types';
 import { telemetry } from '../../../telemetry/telemetry-schema';
-import { FrameworkDetection } from '../../base-analyzer';
+import { FrameworkDetection, ComponentDiscovery } from '../../base-analyzer';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 
@@ -141,6 +141,7 @@ export class ReactAnalyzer extends TypeScriptJavaScriptAnalyzer {
         language: 'typescript',
         framework: 'react',
         dependencies: reactComp.dependencies,
+        dependents: [],
         metrics: {
           linesOfCode: await this.countLinesOfCode(reactComp.filePath),
           complexity: this.calculateReactComplexity(reactComp),
@@ -149,16 +150,25 @@ export class ReactAnalyzer extends TypeScriptJavaScriptAnalyzer {
           duplicateCode: 0,
           technicalDebt: this.calculateTechnicalDebt(reactComp)
         },
-        relationships: [],
         metadata: {
+          lineCount: await this.countLinesOfCode(reactComp.filePath),
+          complexity: this.calculateReactComplexity(reactComp),
+          lastModified: new Date(),
+          exports: [],
+          imports: [],
+          layer: 'presentation' as any,
+          responsibilities: [`React ${reactComp.type} component`],
           reactType: reactComp.type,
-          hooks: reactComp.hooks,
-          props: reactComp.props,
-          hasEffects: reactComp.hasEffects,
-          isMemoized: reactComp.isMemoized,
-          isLazy: reactComp.isLazy,
-          stateVariables: reactComp.stateVariables,
-          contextConsumers: reactComp.contextConsumers
+          hooks: reactComp.hooks.map(h => h.name),
+          props: reactComp.props.map(p => p.name),
+          // hasEffects, isMemoized and isLazy moved to tags array
+          tags: [
+            ...(reactComp.hasEffects ? ['has-effects'] : []),
+            ...(reactComp.isMemoized ? ['memoized'] : []),
+            ...(reactComp.isLazy ? ['lazy'] : [])
+          ],
+          // stateVariables and contextConsumers stored in metadata as framework-specific data
+          fields: [...reactComp.stateVariables, ...reactComp.contextConsumers]
         }
       };
       components.set(id, node);
@@ -180,10 +190,10 @@ export class ReactAnalyzer extends TypeScriptJavaScriptAnalyzer {
     
     span.end();
     return {
-      components: Array.from(components.values()),
-      entryPoints: this.findReactEntryPoints(),
-      connections,
-      layers: this.buildReactLayers()
+      totalFiles: baseDiscovery.totalFiles,
+      analyzedFiles: components.size,
+      skippedFiles: baseDiscovery.totalFiles - components.size,
+      components: Array.from(components.values())
     };
   }
 
@@ -504,11 +514,11 @@ export class ReactAnalyzer extends TypeScriptJavaScriptAnalyzer {
     switch (reactType) {
       case 'functional':
       case 'class':
-        return ComponentType.UI_COMPONENT;
+        return 'utility';
       case 'lazy':
-        return ComponentType.LAZY_MODULE;
+        return 'utility';
       default:
-        return ComponentType.MODULE;
+        return 'utility';
     }
   }
 
@@ -571,7 +581,7 @@ export class ReactAnalyzer extends TypeScriptJavaScriptAnalyzer {
     return debt;
   }
 
-  private async countLinesOfCode(filePath: string): Promise<number> {
+  protected async countLinesOfCode(filePath: string): Promise<number> {
     try {
       const content = await fs.readFile(filePath, 'utf-8');
       return content.split('\n').length;
@@ -587,11 +597,12 @@ export class ReactAnalyzer extends TypeScriptJavaScriptAnalyzer {
     for (const [parent, children] of this.componentHierarchy) {
       for (const child of children) {
         connections.push({
-          source: parent,
-          target: child,
-          type: 'composition',
+          from: parent,
+          to: child,
+          type: 'contains',
           protocol: 'react-component',
           metadata: {
+            callSites: 1,
             relationship: 'parent-child'
           }
         });
@@ -603,13 +614,14 @@ export class ReactAnalyzer extends TypeScriptJavaScriptAnalyzer {
       if (route.children.length > 0) {
         for (const childRoute of route.children) {
           connections.push({
-            source: route.component,
-            target: childRoute.component,
-            type: 'navigation',
+            from: route.component,
+            to: childRoute.component,
+            type: 'function_call',
             protocol: 'react-router',
             metadata: {
-              fromPath: route.path,
-              toPath: childRoute.path
+              callSites: 1,
+              path: route.path,
+              routePath: childRoute.path
             }
           });
         }
@@ -623,12 +635,13 @@ export class ReactAnalyzer extends TypeScriptJavaScriptAnalyzer {
           if (component.contextConsumers.includes(store) || 
               component.dependencies.some(d => d.includes(store))) {
             connections.push({
-              source: store,
-              target: name,
-              type: 'data-flow',
+              from: store,
+              to: name,
+              type: 'data_flow',
               protocol: this.stateManagement.type,
               metadata: {
-                stateType: 'store-consumer'
+                callSites: 1,
+                dataFlow: 'store-consumer'
               }
             });
           }
@@ -657,7 +670,7 @@ export class ReactAnalyzer extends TypeScriptJavaScriptAnalyzer {
     return entryPoints;
   }
 
-  private buildReactLayers(): Record<string, string[]> {
+  protected buildReactLayers(): Record<string, string[]> {
     const layers: Record<string, string[]> = {
       'presentation': [],
       'containers': [],
@@ -716,11 +729,10 @@ export class ReactAnalyzer extends TypeScriptJavaScriptAnalyzer {
   }
 
   async analyzePerformance(): Promise<any> {
-    const performance = await super.analyzePerformance();
+    // Base performance metrics
     
     // React-specific performance analysis
     const reactPerf = {
-      ...performance,
       react: {
         componentsCount: this.reactComponents.size,
         functionalComponents: Array.from(this.reactComponents.values()).filter(c => c.type === 'functional').length,

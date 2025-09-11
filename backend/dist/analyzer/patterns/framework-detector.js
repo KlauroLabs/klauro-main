@@ -554,12 +554,10 @@ class FrameworkDetector {
                 type: 'framework_detected',
                 source: { analyzer: 'framework-detector' },
                 data: {
-                    pattern: result.framework.name,
+                    framework: result.framework.name,
+                    version: result.framework.version,
                     confidence: result.confidence,
-                    location: this.projectPath,
-                    indicators: result.indicators,
-                    implications: [`${result.framework.type} framework`, result.framework.name],
-                    category: 'architectural'
+                    indicators: result.indicators
                 }
             });
         }

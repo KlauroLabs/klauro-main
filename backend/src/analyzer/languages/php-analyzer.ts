@@ -137,7 +137,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
       for (const conn of connections) {
         const key = `${conn.from}-${conn.to}-${conn.type}`;
         const existing = connectionMap.get(key);
-        if (existing) existing.weight += conn.weight;
+        if (existing) existing.weight = (existing.weight || 0) + (conn.weight || 0);
         else connectionMap.set(key, conn);
       }
 

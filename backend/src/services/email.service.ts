@@ -61,7 +61,7 @@ export class EmailService {
       
       this.verifyConnection();
     } else {
-      this.transporter = nodemailer.createTransporter({
+      this.transporter = nodemailer.createTransport({
         jsonTransport: true,
       });
       
@@ -234,6 +234,7 @@ export class EmailService {
     
     return this.send({
       to: user.email,
+      subject: 'Welcome to Unravl!',
       template: 'welcome',
       context: {
         firstName: user.firstName || 'there',
@@ -251,6 +252,7 @@ export class EmailService {
     
     return this.send({
       to: user.email,
+      subject: 'Verify Your Email Address',
       template: 'verification',
       context: {
         firstName: user.firstName || 'there',
@@ -268,6 +270,7 @@ export class EmailService {
     
     return this.send({
       to: user.email,
+      subject: 'Reset Your Password',
       template: 'passwordReset',
       context: {
         firstName: user.firstName || 'there',
@@ -288,6 +291,7 @@ export class EmailService {
     
     return this.send({
       to: invitation.recipientEmail,
+      subject: `Invitation to join ${invitation.organizationName}`,
       template: 'invitation',
       context: {
         recipientName: invitation.recipientName || 'there',
@@ -311,6 +315,7 @@ export class EmailService {
     
     return this.send({
       to: alert.email,
+      subject: 'Security Alert - Unusual Activity Detected',
       template: 'securityAlert',
       context: {
         firstName: alert.firstName || 'there',

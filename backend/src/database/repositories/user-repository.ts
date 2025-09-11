@@ -1,11 +1,12 @@
 import { Pool } from 'pg';
 import { User, Organization, Membership, RefreshToken } from '../../types';
-import { BaseRepository } from './base-repository';
 import { v4 as uuidv4 } from 'uuid';
 
-export class UserRepository extends BaseRepository {
+export class UserRepository {
+  private pool: Pool;
+  
   constructor(pool: Pool) {
-    super(pool, 'users');
+    this.pool = pool;
   }
 
   async findByEmail(email: string): Promise<User | null> {

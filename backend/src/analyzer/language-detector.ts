@@ -143,7 +143,7 @@ export class LanguageDetector {
         // Collect build tools
         buildTools.push(...result.buildTools);
       } catch (error) {
-        console.warn(`Detection strategy failed: ${error.message}`);
+        console.warn(`Detection strategy failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 

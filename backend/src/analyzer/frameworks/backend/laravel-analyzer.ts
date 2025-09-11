@@ -2,7 +2,7 @@
 // Phase 3: Framework Sub-Analyzers - Production-ready Laravel analyzer
 
 import { PHPAnalyzer } from '../../languages/php-analyzer';
-import { ComponentNode, ComponentType, Connection, APIEndpoint, DatabaseConnection } from '../../../types';
+import { ComponentNode, ComponentType, Connection, APIEndpoint, DatabaseConnection, ComponentMetadata } from '../../../types';
 import { telemetry } from '../../../telemetry/telemetry-schema';
 import * as path from 'path';
 import * as fs from 'fs-extra';
@@ -136,11 +136,12 @@ export class LaravelAnalyzer extends PHPAnalyzer {
       const node: ComponentNode = {
         id,
         name: controller.name,
-        type: ComponentType.API_HANDLER,
+        type: 'controller',
         path: controller.filePath,
         language: 'php',
         framework: 'laravel',
         dependencies: controller.middleware,
+        dependents: [],
         metrics: {
           linesOfCode: 0,
           complexity: controller.methods.length + controller.middleware.length,
@@ -149,14 +150,19 @@ export class LaravelAnalyzer extends PHPAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
+          lineCount: 0,
+          complexity: controller.methods.length,
+          lastModified: new Date(),
+          exports: [],
+          imports: [],
+          layer: 'presentation',
+          responsibilities: ['Handle HTTP requests and return responses'],
           frameworkType: 'controller',
           namespace: controller.namespace,
-          methods: controller.methods,
-          middleware: controller.middleware,
+          methods: controller.methods.map(m => m.name),
           resourceful: controller.resourceful
-        }
+        } as ComponentMetadata & { frameworkType: string; namespace: string; methods: string[]; resourceful: boolean }
       };
       components.set(id, node);
     }
@@ -166,11 +172,12 @@ export class LaravelAnalyzer extends PHPAnalyzer {
       const node: ComponentNode = {
         id,
         name: model.name,
-        type: ComponentType.DATA_MODEL,
+        type: 'model',
         path: model.filePath,
         language: 'php',
         framework: 'laravel',
         dependencies: model.relationships.map(r => r.relatedModel),
+        dependents: [],
         metrics: {
           linesOfCode: 0,
           complexity: model.fillable.length + model.relationships.length,
@@ -179,16 +186,17 @@ export class LaravelAnalyzer extends PHPAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
+          lineCount: 0,
+          complexity: model.fillable.length + model.relationships.length,
+          lastModified: new Date(),
+          exports: [],
+          imports: [],
+          layer: 'data',
+          responsibilities: ['Data model and database interactions'],
           frameworkType: 'model',
-          table: model.table,
-          fillable: model.fillable,
-          guarded: model.guarded,
-          hidden: model.hidden,
-          casts: model.casts,
-          relationships: model.relationships
-        }
+          table: model.table
+        } as ComponentMetadata & { frameworkType: string; table: string }
       };
       components.set(id, node);
     }
@@ -198,11 +206,12 @@ export class LaravelAnalyzer extends PHPAnalyzer {
       const node: ComponentNode = {
         id,
         name: service.name,
-        type: ComponentType.SERVICE,
+        type: 'service',
         path: service.filePath,
         language: 'php',
         framework: 'laravel',
         dependencies: service.bindings,
+        dependents: [],
         metrics: {
           linesOfCode: 0,
           complexity: service.bindings.length + service.provides.length,
@@ -211,12 +220,16 @@ export class LaravelAnalyzer extends PHPAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
-          frameworkType: 'service-provider',
-          bindings: service.bindings,
-          provides: service.provides
-        }
+          lineCount: 0,
+          complexity: service.bindings.length + service.provides.length,
+          lastModified: new Date(),
+          exports: [],
+          imports: [],
+          layer: 'business',
+          responsibilities: ['Service provider configuration and bindings'],
+          frameworkType: 'service-provider'
+        } as ComponentMetadata & { frameworkType: string }
       };
       components.set(id, node);
     }
@@ -629,11 +642,11 @@ export class LaravelAnalyzer extends PHPAnalyzer {
     for (const [controllerId] of this.controllers) {
       for (const [modelId] of this.models) {
         connections.push({
-          source: controllerId,
-          target: modelId,
+          from: controllerId,
+          to: modelId,
           type: 'uses-model',
           protocol: 'laravel',
-          metadata: { relationship: 'controller-model' }
+          metadata: { callSites: 1, relationship: 'controller-model' }
         });
       }
     }
@@ -643,11 +656,11 @@ export class LaravelAnalyzer extends PHPAnalyzer {
       for (const rel of model.relationships) {
         if (rel.relatedModel) {
           connections.push({
-            source: modelId,
-            target: rel.relatedModel,
+            from: modelId,
+            to: rel.relatedModel,
             type: 'data-relationship',
             protocol: 'eloquent',
-            metadata: { relationType: rel.type }
+            metadata: { callSites: 1, relationType: rel.type }
           });
         }
       }
@@ -657,11 +670,14 @@ export class LaravelAnalyzer extends PHPAnalyzer {
     for (const [routeId, route] of this.routes) {
       if (route.controller) {
         connections.push({
-          source: routeId,
-          target: route.controller,
+          from: routeId,
+          to: route.controller,
           type: 'route-controller',
           protocol: 'laravel',
-          metadata: { methods: route.methods }
+          metadata: { 
+            callSites: 1,
+            methods: route.methods 
+          }
         });
       }
     }
@@ -675,15 +691,21 @@ export class LaravelAnalyzer extends PHPAnalyzer {
     for (const [id, route] of this.routes) {
       for (const method of route.methods) {
         endpoints.push({
+          id: `${id}-${method.toLowerCase()}`,
           path: route.uri,
           method: method as APIEndpoint['method'],
+          description: `Laravel ${method} endpoint for ${route.uri}`,
           handler: route.controller || route.action || 'Closure',
           parameters: [],
-          responses: [],
+          statusCodes: [{ code: 200, description: 'Success' }],
           middleware: route.middleware,
-          authentication: route.middleware.includes('auth') || this.hasSanctum || this.hasPassport,
+          authentication: {
+            type: (route.middleware.includes('auth') || this.hasSanctum || this.hasPassport) ? 'jwt' : 'none',
+            required: route.middleware.includes('auth') || this.hasSanctum || this.hasPassport
+          },
           rateLimit: undefined,
-          deprecated: false
+          deprecated: false,
+          componentId: id
         });
       }
     }
@@ -693,15 +715,16 @@ export class LaravelAnalyzer extends PHPAnalyzer {
 
   private async extractDatabaseConnections(): Promise<DatabaseConnection[]> {
     return [{
+      id: 'laravel-eloquent',
       name: 'Laravel Eloquent ORM',
       type: 'mysql',
       host: 'localhost',
       port: 3306,
       database: 'laravel',
       schema: '',
-      tables: this.models.size,
-      relationships: Array.from(this.models.values()).reduce((sum, m) => sum + m.relationships.length, 0),
-      indexes: 0
+      tables: Array.from(this.models.keys()),
+      usage: [],
+      componentIds: []
     }];
   }
 
@@ -717,10 +740,9 @@ export class LaravelAnalyzer extends PHPAnalyzer {
   }
 
   async analyzePerformance(): Promise<any> {
-    const performance = await super.analyzePerformance();
+    // Base performance metrics
     
     return {
-      ...performance,
       laravel: {
         controllersCount: this.controllers.size,
         modelsCount: this.models.size,

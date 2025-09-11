@@ -157,7 +157,7 @@ class RustAnalyzer extends base_analyzer_1.BaseAnalyzer {
                 const key = `${conn.from}-${conn.to}-${conn.type}`;
                 const existing = connectionMap.get(key);
                 if (existing) {
-                    existing.weight += conn.weight;
+                    existing.weight = (existing.weight || 0) + (conn.weight || 0);
                 }
                 else {
                     connectionMap.set(key, conn);

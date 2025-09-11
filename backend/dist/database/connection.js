@@ -103,7 +103,6 @@ class DatabaseConnection {
                 max: this.config.poolConfig.max,
                 idleTimeoutMillis: this.config.poolConfig.idleTimeoutMillis,
                 connectionTimeoutMillis: this.config.poolConfig.connectionTimeoutMillis,
-                acquireTimeoutMillis: this.config.poolConfig.acquireTimeoutMillis,
                 maxUses: this.config.poolConfig.maxUses,
                 application_name: 'unravl-backend',
                 statement_timeout: 30000,

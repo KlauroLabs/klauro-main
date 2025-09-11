@@ -4,17 +4,7 @@ import { JWTPayload } from '../../types';
 import { AuthService } from '../auth-service';
 import { Pool } from 'pg';
 
-// Extend Express Request to include user
-declare global {
-  namespace Express {
-    interface Request {
-      user?: JWTPayload;
-      userId?: string;
-      organizationId?: string;
-      userRole?: string;
-    }
-  }
-}
+// Express Request extensions handled by casting as any
 
 export class AuthMiddleware {
   private authService: AuthService;
@@ -33,8 +23,8 @@ export class AuthMiddleware {
         return res.status(401).json({ error: 'Unauthorized', message: 'Invalid or missing authentication token' });
       }
 
-      req.user = user;
-      req.userId = user.sub;
+      (req as any).user = user;
+      (req as any).userId = user.sub;
       next();
     })(req, res, next);
   };
@@ -42,8 +32,8 @@ export class AuthMiddleware {
   optionalAuthenticate = (req: Request, res: Response, next: NextFunction) => {
     passport.authenticate('jwt', { session: false }, (err: any, user: JWTPayload | false) => {
       if (!err && user) {
-        req.user = user;
-        req.userId = user.sub;
+        (req as any).user = user;
+        (req as any).userId = user.sub;
       }
       next();
     })(req, res, next);
@@ -56,27 +46,27 @@ export class AuthMiddleware {
       return res.status(400).json({ error: 'Bad Request', message: 'Organization ID is required' });
     }
 
-    if (!req.user) {
+    if (!(req as any).user) {
       return res.status(401).json({ error: 'Unauthorized', message: 'Authentication required' });
     }
 
-    const userOrg = req.user.organizations?.find(org => org.id === organizationId);
+    const userOrg = ((req as any).user as any).organizations?.find((org: any) => org.id === organizationId);
     if (!userOrg) {
       return res.status(403).json({ error: 'Forbidden', message: 'You do not have access to this organization' });
     }
 
-    req.organizationId = organizationId;
-    req.userRole = userOrg.role;
+    (req as any).organizationId = organizationId;
+    (req as any).userRole = userOrg.role;
     next();
   };
 
   requireVerifiedEmail = async (req: Request, res: Response, next: NextFunction) => {
-    if (!req.userId) {
+    if (!(req as any).userId) {
       return res.status(401).json({ error: 'Unauthorized', message: 'Authentication required' });
     }
 
     try {
-      const { user } = await this.authService.getUserWithMemberships(req.userId);
+      const { user } = await this.authService.getUserWithMemberships((req as any).userId);
       
       if (!user.email_verified_at) {
         return res.status(403).json({ 
@@ -123,7 +113,7 @@ export class AuthMiddleware {
   };
 
   requireTwoFactor = async (req: Request, res: Response, next: NextFunction) => {
-    if (!req.userId) {
+    if (!(req as any).userId) {
       return res.status(401).json({ error: 'Unauthorized', message: 'Authentication required' });
     }
 
@@ -134,7 +124,7 @@ export class AuthMiddleware {
   };
 
   checkSessionValidity = async (req: Request, res: Response, next: NextFunction) => {
-    if (!req.user) {
+    if (!(req as any).user) {
       return next();
     }
 
@@ -146,7 +136,7 @@ export class AuthMiddleware {
     // - Check if organization membership is still valid
 
     try {
-      const { user } = await this.authService.getUserWithMemberships(req.userId!);
+      const { user } = await this.authService.getUserWithMemberships((req as any).userId!);
       
       if (user.deleted_at) {
         return res.status(401).json({ error: 'Unauthorized', message: 'Account has been deleted' });

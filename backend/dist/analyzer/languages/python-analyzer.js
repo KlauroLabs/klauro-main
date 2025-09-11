@@ -149,7 +149,7 @@ class PythonAnalyzer extends base_analyzer_1.BaseAnalyzer {
                     }
                 }
                 catch (error) {
-                    console.warn(`⚠️ Failed to analyze ${filePath}: ${error.message}`);
+                    console.warn(`⚠️ Failed to analyze ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
                     skippedFiles++;
                 }
                 if ((analyzedFiles + skippedFiles) % 100 === 0) {
@@ -217,7 +217,7 @@ class PythonAnalyzer extends base_analyzer_1.BaseAnalyzer {
                 const key = `${conn.from}-${conn.to}-${conn.type}`;
                 const existing = connectionMap.get(key);
                 if (existing) {
-                    existing.weight += conn.weight;
+                    existing.weight = (existing.weight || 0) + (conn.weight || 0);
                     existing.metadata.callSites += conn.metadata?.callSites || 0;
                 }
                 else {

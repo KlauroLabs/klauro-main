@@ -281,7 +281,7 @@ export class ASTOptimizer {
                 telemetry.emit({
                   type: 'error_occurred',
                   source: { analyzer: 'ast-optimizer', file },
-                  data: { error: error.message, file }
+                  data: { error: error instanceof Error ? error.message : String(error), file }
                 });
               }
             }
@@ -436,6 +436,7 @@ export class ASTOptimizer {
 
     const prunedAst = JSON.parse(JSON.stringify(ast)); // Deep clone
 
+    const self = this; // Capture 'this' context for use in visitor
     traverse(prunedAst, {
       enter(path: NodePath) {
         const nodeType = path.node.type;
@@ -449,14 +450,14 @@ export class ASTOptimizer {
         // Include only specific nodes
         if (options.includeNodes && !options.includeNodes.includes(nodeType)) {
           // Keep structural nodes to maintain AST integrity
-          if (!this.isStructuralNode(nodeType)) {
+          if (!self.isStructuralNode(nodeType)) {
             path.remove();
             return;
           }
         }
 
         // Respect max depth
-        if (options.maxDepth && this.getNodeDepth(path) > options.maxDepth) {
+        if (options.maxDepth && self.getNodeDepth(path) > options.maxDepth) {
           path.remove();
         }
       }
@@ -471,15 +472,16 @@ export class ASTOptimizer {
     // Only include visitor methods for node types we're interested in
     if (options.includeNodes) {
       for (const nodeType of options.includeNodes) {
-        if (visitor[nodeType]) {
-          optimizedVisitor[nodeType] = visitor[nodeType];
+        const visitorMethod = (visitor as any)[nodeType];
+        if (visitorMethod) {
+          (optimizedVisitor as any)[nodeType] = visitorMethod;
         }
       }
     } else {
       // Copy all visitor methods except excluded ones
-      for (const [nodeType, method] of Object.entries(visitor)) {
+      for (const [nodeType, method] of Object.entries(visitor as any)) {
         if (!options.excludeNodes?.includes(nodeType)) {
-          optimizedVisitor[nodeType] = method;
+          (optimizedVisitor as any)[nodeType] = method;
         }
       }
     }
@@ -596,11 +598,12 @@ export class ASTOptimizer {
       'CatchClause'
     ];
 
+    const self = this;
     traverse(ast, {
       enter(path: NodePath) {
         metadata.nodeCount++;
         
-        const depth = this.getNodeDepth(path);
+        const depth = self.getNodeDepth(path);
         maxDepth = Math.max(maxDepth, depth);
 
         const nodeType = path.node.type;

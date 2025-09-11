@@ -2,7 +2,7 @@
 // Phase 3: Framework Sub-Analyzers - Production-ready NestJS analyzer
 
 import { TypeScriptJavaScriptAnalyzer } from '../../languages/typescript-javascript-analyzer';
-import { ComponentNode, ComponentType, Connection, APIEndpoint, DatabaseConnection } from '../../../types';
+import { ComponentNode, ComponentType, Connection, APIEndpoint, DatabaseConnection, ComponentMetadata } from '../../../types';
 import { telemetry } from '../../../telemetry/telemetry-schema';
 import * as path from 'path';
 import * as fs from 'fs-extra';
@@ -105,7 +105,7 @@ export interface NestEntityColumn {
 export interface NestEntityRelation {
   name: string;
   type: 'one-to-one' | 'one-to-many' | 'many-to-one' | 'many-to-many';
-  target: string;
+  to: string;
   cascade: boolean;
 }
 
@@ -180,11 +180,12 @@ export class NestJSAnalyzer extends TypeScriptJavaScriptAnalyzer {
       const node: ComponentNode = {
         id,
         name: module.name,
-        type: ComponentType.MODULE,
+        type: 'utility',
         path: module.filePath,
         language: 'typescript',
         framework: 'nestjs',
         dependencies: module.imports,
+        dependents: [],
         metrics: {
           linesOfCode: await this.countLinesOfCode(module.filePath),
           complexity: module.controllers.length + module.providers.length,
@@ -193,16 +194,19 @@ export class NestJSAnalyzer extends TypeScriptJavaScriptAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
-          frameworkType: 'module',
-          imports: module.imports,
-          controllers: module.controllers,
-          providers: module.providers,
+          lineCount: 0,
+          complexity: module.controllers.length + module.providers.length,
+          lastModified: new Date(),
           exports: module.exports,
+          imports: module.imports,
+          layer: 'infrastructure',
+          responsibilities: ['Module organization and dependency injection'],
+          frameworkType: 'module',
+          controllers: module.controllers,
           isGlobal: module.isGlobal,
           isDynamic: module.isDynamic
-        }
+        } as ComponentMetadata & { frameworkType: string; controllers: string[]; isGlobal: boolean; isDynamic: boolean }
       };
       components.set(id, node);
     }
@@ -212,11 +216,12 @@ export class NestJSAnalyzer extends TypeScriptJavaScriptAnalyzer {
       const node: ComponentNode = {
         id,
         name: controller.name,
-        type: ComponentType.API_HANDLER,
+        type: 'controller',
         path: controller.filePath,
         language: 'typescript',
         framework: 'nestjs',
         dependencies: [],
+        dependents: [],
         metrics: {
           linesOfCode: await this.countLinesOfCode(controller.filePath),
           complexity: controller.methods.length + controller.guards.length,
@@ -225,16 +230,19 @@ export class NestJSAnalyzer extends TypeScriptJavaScriptAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
+          lineCount: 0,
+          complexity: controller.methods.length + controller.guards.length,
+          lastModified: new Date(),
+          exports: [],
+          imports: [],
+          layer: 'presentation',
+          responsibilities: ['Handle HTTP requests and responses'],
           frameworkType: 'controller',
           path: controller.path,
-          methods: controller.methods,
-          guards: controller.guards,
-          interceptors: controller.interceptors,
-          filters: controller.filters,
-          pipes: controller.pipes
-        }
+          methods: controller.methods.map(m => m.name),
+          guards: controller.guards
+        } as ComponentMetadata & { frameworkType: string; path: string; methods: string[]; guards: string[] }
       };
       components.set(id, node);
     }
@@ -244,11 +252,12 @@ export class NestJSAnalyzer extends TypeScriptJavaScriptAnalyzer {
       const node: ComponentNode = {
         id,
         name: provider.name,
-        type: provider.type === 'service' ? ComponentType.SERVICE : ComponentType.UTILITY,
+        type: provider.type === 'service' ? 'service' : 'utility',
         path: provider.filePath,
         language: 'typescript',
         framework: 'nestjs',
         dependencies: provider.dependencies,
+        dependents: [],
         metrics: {
           linesOfCode: await this.countLinesOfCode(provider.filePath),
           complexity: provider.dependencies.length + 2,
@@ -257,13 +266,17 @@ export class NestJSAnalyzer extends TypeScriptJavaScriptAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
+          lineCount: 0,
+          complexity: provider.dependencies.length + 2,
+          lastModified: new Date(),
+          exports: [],
+          imports: [],
+          layer: 'business',
+          responsibilities: ['Service provider and business logic'],
           frameworkType: provider.type,
-          scope: provider.scope,
-          injectable: provider.injectable,
-          dependencies: provider.dependencies
-        }
+          scope: provider.scope
+        } as ComponentMetadata & { frameworkType: string; scope: string }
       };
       components.set(id, node);
     }
@@ -273,11 +286,12 @@ export class NestJSAnalyzer extends TypeScriptJavaScriptAnalyzer {
       const node: ComponentNode = {
         id,
         name: entity.name,
-        type: ComponentType.DATA_MODEL,
+        type: 'model',
         path: entity.filePath,
         language: 'typescript',
         framework: 'nestjs',
-        dependencies: entity.relations.map(r => r.target),
+        dependencies: entity.relations.map(r => r.to),
+        dependents: [],
         metrics: {
           linesOfCode: await this.countLinesOfCode(entity.filePath),
           complexity: entity.columns.length + entity.relations.length,
@@ -286,14 +300,19 @@ export class NestJSAnalyzer extends TypeScriptJavaScriptAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
+          lineCount: 0,
+          complexity: entity.columns.length + entity.relations.length,
+          lastModified: new Date(),
+          exports: [],
+          imports: [],
+          layer: 'data',
+          responsibilities: ['Data entity and database mapping'],
           frameworkType: 'entity',
           tableName: entity.tableName,
-          columns: entity.columns,
-          relations: entity.relations,
-          indexes: entity.indexes
-        }
+          columns: entity.columns.map(c => c.name),
+          relations: entity.relations.map(r => r.name)
+        } as ComponentMetadata & { frameworkType: string; tableName: string; columns: string[]; relations: string[] }
       };
       components.set(id, node);
     }
@@ -823,7 +842,7 @@ export class NestJSAnalyzer extends TypeScriptJavaScriptAnalyzer {
         relations.push({
           name: match[1],
           type,
-          target: '',
+          to: '',
           cascade: content.includes('cascade: true')
         });
       }
@@ -891,31 +910,34 @@ export class NestJSAnalyzer extends TypeScriptJavaScriptAnalyzer {
     for (const [moduleId, module] of this.modules) {
       for (const importedModule of module.imports) {
         connections.push({
-          source: moduleId,
-          target: importedModule,
+          from: moduleId,
+          to: importedModule,
           type: 'module-import',
           protocol: 'nestjs',
-          metadata: { importType: 'module' }
+          metadata: { 
+            callSites: 1,
+            importType: 'module' 
+          }
         });
       }
       
       for (const controller of module.controllers) {
         connections.push({
-          source: moduleId,
-          target: controller,
+          from: moduleId,
+          to: controller,
           type: 'module-controller',
           protocol: 'nestjs',
-          metadata: { relationship: 'contains' }
+          metadata: { callSites: 1, relationship: 'contains' }
         });
       }
       
       for (const provider of module.providers) {
         connections.push({
-          source: moduleId,
-          target: provider,
+          from: moduleId,
+          to: provider,
           type: 'module-provider',
           protocol: 'nestjs',
-          metadata: { relationship: 'provides' }
+          metadata: { callSites: 1, relationship: 'provides' }
         });
       }
     }
@@ -924,11 +946,14 @@ export class NestJSAnalyzer extends TypeScriptJavaScriptAnalyzer {
     for (const [providerId, provider] of this.providers) {
       for (const dep of provider.dependencies) {
         connections.push({
-          source: providerId,
-          target: dep,
+          from: providerId,
+          to: dep,
           type: 'dependency-injection',
           protocol: 'nestjs',
-          metadata: { scope: provider.scope }
+          metadata: { 
+            callSites: 1,
+            scope: provider.scope 
+          }
         });
       }
     }
@@ -936,15 +961,15 @@ export class NestJSAnalyzer extends TypeScriptJavaScriptAnalyzer {
     // Entity relations
     for (const [entityId, entity] of this.entities) {
       for (const relation of entity.relations) {
-        if (relation.target) {
+        if (relation.to) {
           connections.push({
-            source: entityId,
-            target: relation.target,
+            from: entityId,
+            to: relation.to,
             type: 'data-relationship',
             protocol: 'typeorm',
             metadata: {
-              relationType: relation.type,
-              cascade: relation.cascade
+              callSites: 1,
+              relationType: relation.type
             }
           });
         }
@@ -963,21 +988,25 @@ export class NestJSAnalyzer extends TypeScriptJavaScriptAnalyzer {
       for (const method of controller.methods) {
         const fullPath = `${basePath}/${method.path}`.replace(/\/+/g, '/');
         
+        const endpointId = `${controllerId}_${method.name}`;
         endpoints.push({
+          id: endpointId,
           path: fullPath,
           method: method.httpMethod as APIEndpoint['method'],
+          description: `${method.httpMethod} ${fullPath}`,
           handler: `${controller.name}.${method.name}`,
           parameters: method.params.map(p => ({
             name: p.name,
-            in: p.type as any,
+            type: p.type as 'query' | 'path' | 'body' | 'header',
             required: p.required,
-            type: p.dataType || 'string'
+            dataType: p.dataType || 'string'
           })),
-          responses: [],
+          statusCodes: [{ code: 200, description: 'Success' }],
           middleware: [...controller.guards, ...controller.interceptors, ...controller.pipes],
-          authentication: controller.guards.length > 0,
+          authentication: { type: 'jwt', required: true },
           rateLimit: undefined,
-          deprecated: false
+          deprecated: false,
+          componentId: controllerId
         });
       }
     }
@@ -990,57 +1019,61 @@ export class NestJSAnalyzer extends TypeScriptJavaScriptAnalyzer {
     
     if (this.hasTypeORM) {
       connections.push({
+        id: 'typeorm-connection',
         name: 'TypeORM',
         type: 'postgresql',
         host: 'localhost',
         port: 5432,
         database: 'nestjs',
         schema: 'public',
-        tables: this.entities.size,
-        relationships: Array.from(this.entities.values()).reduce((sum, e) => sum + e.relations.length, 0),
-        indexes: Array.from(this.entities.values()).reduce((sum, e) => sum + e.indexes.length, 0)
+        tables: Array.from(this.entities.keys()),
+        usage: [],
+        componentIds: []
       });
     }
     
     if (this.hasMikroORM) {
       connections.push({
+        id: 'mikroorm-connection',
         name: 'MikroORM',
         type: 'postgresql',
         host: 'localhost',
         port: 5432,
         database: 'nestjs',
         schema: 'public',
-        tables: this.entities.size,
-        relationships: 0,
-        indexes: 0
+        tables: Array.from(this.entities.keys()),
+        usage: [],
+        componentIds: []
       });
     }
     
     if (this.hasMongoose) {
       connections.push({
+        id: 'mongoose-connection',
         name: 'MongoDB (Mongoose)',
         type: 'mongodb',
         host: 'localhost',
         port: 27017,
         database: 'nestjs',
         schema: '',
-        tables: this.entities.size,
-        relationships: 0,
-        indexes: 0
+        tables: Array.from(this.entities.keys()),
+        usage: [],
+        componentIds: []
       });
     }
     
     if (this.hasPrisma) {
       connections.push({
+        id: 'prisma-connection',
         name: 'Prisma ORM',
         type: 'postgresql',
         host: 'localhost',
         port: 5432,
         database: 'nestjs',
         schema: 'public',
-        tables: 0,
-        relationships: 0,
-        indexes: 0
+        tables: [],
+        usage: [],
+        componentIds: []
       });
     }
     
@@ -1065,10 +1098,9 @@ export class NestJSAnalyzer extends TypeScriptJavaScriptAnalyzer {
   }
 
   async analyzePerformance(): Promise<any> {
-    const performance = await super.analyzePerformance();
+    // Base performance metrics
     
     return {
-      ...performance,
       nestjs: {
         modulesCount: this.modules.size,
         controllersCount: this.controllers.size,

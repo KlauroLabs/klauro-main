@@ -37,10 +37,11 @@ export function createOrganizationRoutes(pool: Pool): Router {
     body('team_id').optional().isUUID(),
   ];
 
-  const handleValidationErrors = (req: Request, res: Response, next: any) => {
+  const handleValidationErrors = (req: Request, res: Response, next: any): void => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+      res.status(400).json({ errors: errors.array() });
+      return;
     }
     next();
   };
@@ -73,12 +74,13 @@ export function createOrganizationRoutes(pool: Pool): Router {
           slug: orgSlug,
           description,
           website_url,
-          billing_email: billing_email || req.user!.email,
+          billing_email,
+          settings: {},
         });
 
         // Add creator as owner
         await userRepo.createMembership({
-          user_id: req.userId!,
+          user_id: (req as any).userId!,
           organization_id: organization.id,
           role: 'owner',
         });
@@ -100,8 +102,8 @@ export function createOrganizationRoutes(pool: Pool): Router {
     authMiddleware.authenticate,
     async (req: Request, res: Response) => {
       try {
-        const organizations = await userRepo.getUserOrganizations(req.userId!);
-        const memberships = await userRepo.getUserMemberships(req.userId!);
+        const organizations = await userRepo.getUserOrganizations((req as any).userId!);
+        const memberships = await userRepo.getUserMemberships((req as any).userId!);
         
         const orgsWithRoles = organizations.map(org => {
           const membership = memberships.find(m => m.organization_id === org.id);
@@ -152,7 +154,7 @@ export function createOrganizationRoutes(pool: Pool): Router {
             ...organization,
             member_count: parseInt(memberResult.rows[0].count),
             project_count: parseInt(projectResult.rows[0].count),
-            user_role: req.userRole,
+            user_role: (req as any).userRole,
           }
         });
       } catch (error: any) {
@@ -270,7 +272,7 @@ export function createOrganizationRoutes(pool: Pool): Router {
           organization_id: organizationId,
           team_id,
           role,
-          invited_by: req.userId,
+          invited_by: (req as any).userId,
         });
 
         await client.query('COMMIT');
@@ -308,7 +310,7 @@ export function createOrganizationRoutes(pool: Pool): Router {
         }
 
         // Can't demote yourself if you're the last admin
-        if (userId === req.userId && req.userRole === 'admin' && role !== 'admin') {
+        if (userId === (req as any).userId && (req as any).userRole === 'admin' && role !== 'admin') {
           const adminCountQuery = `
             SELECT COUNT(*) as count 
             FROM memberships 
@@ -350,7 +352,7 @@ export function createOrganizationRoutes(pool: Pool): Router {
         }
 
         // Can't remove yourself if you're the last admin
-        if (userId === req.userId && req.userRole === 'admin') {
+        if (userId === (req as any).userId && (req as any).userRole === 'admin') {
           const adminCountQuery = `
             SELECT COUNT(*) as count 
             FROM memberships 
@@ -386,7 +388,7 @@ export function createOrganizationRoutes(pool: Pool): Router {
         const { organizationId } = req.params;
 
         // Can't leave if you're the owner
-        if (req.userRole === 'owner') {
+        if ((req as any).userRole === 'owner') {
           return res.status(403).json({ 
             error: 'Organization owner cannot leave', 
             message: 'Transfer ownership before leaving the organization' 
@@ -398,7 +400,7 @@ export function createOrganizationRoutes(pool: Pool): Router {
           DELETE FROM memberships 
           WHERE user_id = $1 AND organization_id = $2
         `;
-        await pool.query(deleteQuery, [req.userId, organizationId]);
+        await pool.query(deleteQuery, [(req as any).userId, organizationId]);
 
         res.json({ message: 'Successfully left the organization' });
       } catch (error: any) {

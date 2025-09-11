@@ -370,7 +370,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
     return functionLines;
   }
 
-  private calculateFunctionComplexity(functionContent: string): number {
+  protected calculateFunctionComplexity(functionContent: string): number {
     const complexityPatterns = [
       /\bif\b/g, /\belif\b/g, /\belse\b/g, /\bwhile\b/g, /\bfor\b/g,
       /\btry\b/g, /\bexcept\b/g, /\bfinally\b/g, /\braise\b/g,
@@ -565,7 +565,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
             methods: ['GET', 'POST'],
             description: `Django URL pattern`,
             componentId: component.id,
-            authentication: { type: 'none', required: false }
+            authentication: { type: 'none' as const, required: false }
           })));
         }
         
@@ -578,7 +578,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
           methods: route.methods,
           description: `Flask route`,
           componentId: component.id,
-          authentication: { type: 'none', required: false }
+          authentication: { type: 'none' as const, required: false }
         })));
         
         // FastAPI routes
@@ -590,7 +590,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
           methods: [route.method],
           description: `FastAPI endpoint`,
           componentId: component.id,
-          authentication: { type: 'none', required: false }
+          authentication: { type: 'none' as const, required: false }
         })));
         
         // CLI entry points
@@ -601,7 +601,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
             path: component.path,
             description: `Python script entry point`,
             componentId: component.id,
-            authentication: { type: 'none', required: false }
+            authentication: { type: 'none' as const, required: false }
           });
         }
       } catch (error) {

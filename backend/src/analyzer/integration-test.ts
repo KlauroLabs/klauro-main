@@ -12,7 +12,7 @@
 import { integratedAnalyzer } from './integrated-system-analyzer';
 import { pluginRegistry } from './plugin-registry';
 import { telemetry } from '../telemetry/telemetry-schema';
-import { dbConnection } from '../database';
+import { db as dbConnection } from '../database';
 import { projectRepository } from '../database/repositories/project-repository';
 import * as path from 'path';
 import * as fs from 'fs-extra';
@@ -92,7 +92,7 @@ export class IntegrationTester {
       
     } catch (error) {
       const duration = Date.now() - startTime;
-      this.errors.push(`Integration test failed: ${error.message}`);
+      this.errors.push(`Integration test failed: ${error instanceof Error ? error.message : String(error)}`);
       
       return {
         success: false,
@@ -124,7 +124,7 @@ export class IntegrationTester {
       
       console.log('✅ Test environment ready');
     } catch (error) {
-      this.errors.push(`Failed to setup test environment: ${error.message}`);
+      this.errors.push(`Failed to setup test environment: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -275,7 +275,7 @@ describe('User API', () => {
       
       console.log('✅ Test project created with comprehensive structure');
     } catch (error) {
-      this.errors.push(`Failed to create test project: ${error.message}`);
+      this.errors.push(`Failed to create test project: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -288,7 +288,7 @@ describe('User API', () => {
       console.log('⚠️ Database operations simulated for testing');
       this.warnings.push('Database operations simulated - requires actual DB setup for full test');
     } catch (error) {
-      this.warnings.push(`Database setup simulated: ${error.message}`);
+      this.warnings.push(`Database setup simulated: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -310,7 +310,7 @@ describe('User API', () => {
       console.log(`✅ Analysis completed: ${result.blueprint.components.length} components found`);
       return result;
     } catch (error) {
-      this.errors.push(`Analysis failed: ${error.message}`);
+      this.errors.push(`Analysis failed: ${error instanceof Error ? error.message : String(error)}`);
       return { blueprint: { components: [] } };
     }
   }
@@ -331,7 +331,7 @@ describe('User API', () => {
       
       return { eventCount };
     } catch (error) {
-      this.errors.push(`Telemetry verification failed: ${error.message}`);
+      this.errors.push(`Telemetry verification failed: ${error instanceof Error ? error.message : String(error)}`);
       return { eventCount: 0 };
     }
   }
@@ -352,7 +352,7 @@ describe('User API', () => {
       
       return { persisted };
     } catch (error) {
-      this.warnings.push(`Database verification simulated: ${error.message}`);
+      this.warnings.push(`Database verification simulated: ${error instanceof Error ? error.message : String(error)}`);
       return { persisted: false };
     }
   }
@@ -376,7 +376,7 @@ describe('User API', () => {
       
       return { pluginCount: stats.totalPlugins };
     } catch (error) {
-      this.errors.push(`Plugin system verification failed: ${error.message}`);
+      this.errors.push(`Plugin system verification failed: ${error instanceof Error ? error.message : String(error)}`);
       return { pluginCount: 0 };
     }
   }
@@ -404,7 +404,7 @@ describe('User API', () => {
       
       return { generated: false };
     } catch (error) {
-      this.errors.push(`Manifest verification failed: ${error.message}`);
+      this.errors.push(`Manifest verification failed: ${error instanceof Error ? error.message : String(error)}`);
       return { generated: false };
     }
   }
@@ -445,7 +445,7 @@ describe('User API', () => {
       
       console.log('🧹 Cleanup completed');
     } catch (error) {
-      console.warn('Cleanup warning:', error.message);
+      console.warn('Cleanup warning:', error instanceof Error ? error.message : String(error));
     }
   }
 }

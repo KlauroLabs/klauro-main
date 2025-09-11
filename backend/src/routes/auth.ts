@@ -30,10 +30,11 @@ export function createAuthRoutes(pool: Pool): Router {
     body('password').notEmpty(),
   ];
 
-  const handleValidationErrors = (req: Request, res: Response, next: NextFunction) => {
+  const handleValidationErrors = (req: Request, res: Response, next: NextFunction): void => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+      res.status(400).json({ errors: errors.array() });
+      return;
     }
     next();
   };
@@ -118,7 +119,7 @@ export function createAuthRoutes(pool: Pool): Router {
   // Logout all devices endpoint
   router.post('/logout-all', authMiddleware.authenticate, async (req: Request, res: Response) => {
     try {
-      await authService.logoutAllDevices(req.userId!);
+      await authService.logoutAllDevices((req as any).userId!);
 
       // Clear refresh token cookie
       res.clearCookie(authConfig.cookies.refreshTokenName, {
@@ -168,7 +169,7 @@ export function createAuthRoutes(pool: Pool): Router {
   // Get current user endpoint
   router.get('/me', authMiddleware.authenticate, async (req: Request, res: Response) => {
     try {
-      const { user, memberships } = await authService.getUserWithMemberships(req.userId!);
+      const { user, memberships } = await authService.getUserWithMemberships((req as any).userId!);
       res.json({ user, memberships });
     } catch (error: any) {
       res.status(500).json({ error: 'Failed to fetch user', message: error.message });
@@ -235,7 +236,7 @@ export function createAuthRoutes(pool: Pool): Router {
       // TODO: Implement email verification with token
       // For now, we'll just mark the email as verified
       const userRepo = new (require('../database/repositories/user-repository').UserRepository)(pool);
-      await userRepo.verifyEmail(req.userId!);
+      await userRepo.verifyEmail((req as any).userId!);
       
       res.json({ message: 'Email verified successfully' });
     } catch (error: any) {

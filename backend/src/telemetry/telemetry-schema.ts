@@ -44,7 +44,20 @@ export type TelemetryEventType =
   | 'test_coverage_calculated'
   | 'risk_identified'
   | 'call_graph_generated'
-  | 'complexity_calculated';
+  | 'complexity_calculated'
+  | 'component_discovery_completed'
+  | 'framework_analyzer_registered'
+  | 'framework_analyzer_auto_detected'
+  | 'manifest_generation_started'
+  | 'manifest_generation_completed'
+  | 'manifest_saved'
+  | 'plugin_registered'
+  | 'plugin_discovery_started'
+  | 'plugin_discovery_completed'
+  | 'analyzer_selected'
+  | 'analyzer_selected_from_cache'
+  | 'analyzer_selection_failed'
+  | 'plugin_cache_cleared';
 
 export interface TelemetrySource {
   analyzer: string;
@@ -584,15 +597,8 @@ export class TelemetryCollector {
           value: endTime - startTime,
           unit: 'ms',
           memoryDelta: endMemory.heapUsed - startMemory.heapUsed
-        },
-        performance: {
-          startTime,
-          endTime,
-          duration: endTime - startTime,
-          memoryUsed: endMemory.heapUsed,
-          memoryDelta: endMemory.heapUsed - startMemory.heapUsed
         }
-      } as PerformanceMetricEvent);
+      });
       
       return result;
     } catch (error) {
@@ -626,15 +632,8 @@ export class TelemetryCollector {
           value: endTime - startTime,
           unit: 'ms',
           memoryDelta: endMemory.heapUsed - startMemory.heapUsed
-        },
-        performance: {
-          startTime,
-          endTime,
-          duration: endTime - startTime,
-          memoryUsed: endMemory.heapUsed,
-          memoryDelta: endMemory.heapUsed - startMemory.heapUsed
         }
-      } as PerformanceMetricEvent);
+      });
       
       return result;
     } catch (error) {
@@ -769,11 +768,11 @@ export class TelemetryCollector {
     return [];
   }
 
-  private generateId(): string {
+  protected generateId(): string {
     return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   }
 
-  private getSessionId(): string {
+  protected getSessionId(): string {
     return process.env.TELEMETRY_SESSION_ID || 'default';
   }
 

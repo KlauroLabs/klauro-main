@@ -42,7 +42,7 @@ export function createUserRoutes(pool: Pool): Router {
     authMiddleware.authenticate,
     async (req: Request, res: Response) => {
       try {
-        const user = await userRepo.findById(req.userId!);
+        const user = await userRepo.findById((req as any).userId!);
         if (!user) {
           return res.status(404).json({ error: 'User not found' });
         }
@@ -51,8 +51,8 @@ export function createUserRoutes(pool: Pool): Router {
         const { password_hash, ...userProfile } = user;
 
         // Get user's organizations and teams
-        const memberships = await userRepo.getUserMemberships(req.userId!);
-        const organizations = await userRepo.getUserOrganizations(req.userId!);
+        const memberships = await userRepo.getUserMemberships((req as any).userId!);
+        const organizations = await userRepo.getUserOrganizations((req as any).userId!);
 
         res.json({
           user: userProfile,
@@ -73,7 +73,7 @@ export function createUserRoutes(pool: Pool): Router {
     async (req: Request, res: Response) => {
       try {
         const updates = req.body;
-        const user = await userRepo.updateUser(req.userId!, updates);
+        const user = await userRepo.updateUser((req as any).userId!, updates);
         
         if (!user) {
           return res.status(404).json({ error: 'User not found' });
@@ -99,7 +99,7 @@ export function createUserRoutes(pool: Pool): Router {
         const { settings } = req.body;
         
         // Merge with existing settings
-        const currentUser = await userRepo.findById(req.userId!);
+        const currentUser = await userRepo.findById((req as any).userId!);
         if (!currentUser) {
           return res.status(404).json({ error: 'User not found' });
         }
@@ -109,7 +109,7 @@ export function createUserRoutes(pool: Pool): Router {
           ...settings,
         };
 
-        const user = await userRepo.updateUser(req.userId!, { settings: mergedSettings });
+        const user = await userRepo.updateUser((req as any).userId!, { settings: mergedSettings });
         
         res.json({ settings: user?.settings });
       } catch (error: any) {
@@ -128,7 +128,7 @@ export function createUserRoutes(pool: Pool): Router {
         const { current_password, new_password } = req.body;
 
         // Get user with password hash
-        const user = await userRepo.findById(req.userId!);
+        const user = await userRepo.findById((req as any).userId!);
         if (!user) {
           return res.status(404).json({ error: 'User not found' });
         }
@@ -159,10 +159,10 @@ export function createUserRoutes(pool: Pool): Router {
           SET password_hash = $1, updated_at = NOW() 
           WHERE id = $2
         `;
-        await pool.query(updateQuery, [newPasswordHash, req.userId]);
+        await pool.query(updateQuery, [newPasswordHash, (req as any).userId]);
 
         // Revoke all refresh tokens to force re-login
-        await userRepo.revokeAllUserTokens(req.userId!);
+        await userRepo.revokeAllUserTokens((req as any).userId!);
 
         res.json({ message: 'Password changed successfully. Please log in again.' });
       } catch (error: any) {
@@ -194,7 +194,7 @@ export function createUserRoutes(pool: Pool): Router {
             AND m2.user_id != $1
           )
         `;
-        const ownerResult = await client.query(ownerCheckQuery, [req.userId]);
+        const ownerResult = await client.query(ownerCheckQuery, [(req as any).userId]);
 
         if (ownerResult.rows.length > 0) {
           return res.status(400).json({
@@ -211,16 +211,16 @@ export function createUserRoutes(pool: Pool): Router {
               email = CONCAT(email, '_deleted_', EXTRACT(EPOCH FROM NOW())::TEXT)
           WHERE id = $1
         `;
-        await client.query(deleteQuery, [req.userId]);
+        await client.query(deleteQuery, [(req as any).userId]);
 
         // Remove all memberships
         const removeMembershipsQuery = `
           DELETE FROM memberships WHERE user_id = $1
         `;
-        await client.query(removeMembershipsQuery, [req.userId]);
+        await client.query(removeMembershipsQuery, [(req as any).userId]);
 
         // Revoke all refresh tokens
-        await userRepo.revokeAllUserTokens(req.userId!);
+        await userRepo.revokeAllUserTokens((req as any).userId!);
 
         await client.query('COMMIT');
 
@@ -264,7 +264,7 @@ export function createUserRoutes(pool: Pool): Router {
           WHERE user_id = $1 AND revoked_at IS NULL
           ORDER BY created_at DESC
         `;
-        const result = await pool.query(query, [req.userId]);
+        const result = await pool.query(query, [(req as any).userId]);
 
         res.json({ api_keys: result.rows });
       } catch (error: any) {
@@ -299,7 +299,7 @@ export function createUserRoutes(pool: Pool): Router {
           RETURNING id, name, key_prefix, created_at, expires_at
         `;
         const result = await pool.query(insertQuery, [
-          req.userId,
+          (req as any).userId,
           name,
           keyHash,
           keyPrefix,
@@ -330,7 +330,7 @@ export function createUserRoutes(pool: Pool): Router {
           WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL
           RETURNING id
         `;
-        const result = await pool.query(updateQuery, [req.params.keyId, req.userId]);
+        const result = await pool.query(updateQuery, [req.params.keyId, (req as any).userId]);
 
         if (result.rows.length === 0) {
           return res.status(404).json({ error: 'API key not found' });
@@ -348,7 +348,7 @@ export function createUserRoutes(pool: Pool): Router {
     authMiddleware.authenticate,
     async (req: Request, res: Response) => {
       try {
-        const user = await userRepo.findById(req.userId!);
+        const user = await userRepo.findById((req as any).userId!);
         const notifications = user?.settings?.notifications || {
           email: {
             project_updates: true,
@@ -379,7 +379,7 @@ export function createUserRoutes(pool: Pool): Router {
       try {
         const { notifications } = req.body;
         
-        const currentUser = await userRepo.findById(req.userId!);
+        const currentUser = await userRepo.findById((req as any).userId!);
         if (!currentUser) {
           return res.status(404).json({ error: 'User not found' });
         }
@@ -389,7 +389,7 @@ export function createUserRoutes(pool: Pool): Router {
           notifications,
         };
 
-        await userRepo.updateUser(req.userId!, { settings: updatedSettings });
+        await userRepo.updateUser((req as any).userId!, { settings: updatedSettings });
         
         res.json({ notifications });
       } catch (error: any) {

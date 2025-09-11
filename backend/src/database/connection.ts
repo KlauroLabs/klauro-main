@@ -53,8 +53,9 @@ interface QueryResult<T = any> {
   fields: any[];
 }
 
-interface TransactionClient extends PoolClient {
+interface TransactionClient {
   query<T = any>(text: string, params?: any[]): Promise<QueryResult<T>>;
+  release(err?: Error | boolean): void;
 }
 
 // Configuration validation schema
@@ -134,7 +135,6 @@ class DatabaseConnection {
         max: this.config.poolConfig.max,
         idleTimeoutMillis: this.config.poolConfig.idleTimeoutMillis,
         connectionTimeoutMillis: this.config.poolConfig.connectionTimeoutMillis,
-        acquireTimeoutMillis: this.config.poolConfig.acquireTimeoutMillis,
         maxUses: this.config.poolConfig.maxUses,
         application_name: 'unravl-backend',
         statement_timeout: 30000, // 30 second query timeout

@@ -122,22 +122,18 @@ export abstract class BaseAnalyzer {
     this.metrics.startAnalysis(this.analysisId, repositoryPath);
     
     // Start telemetry span
-    const span = telemetry.createSpan('analyzer.analyzeRepository', {
-      analyzer: this.getAnalyzerName(),
-      repositoryPath,
-      analysisId: this.analysisId
-    });
+    const span = telemetry.createSpan('analyzer.analyzeRepository');
     
     // Emit analysis start event
     telemetry.emit({
       type: 'analysis_started',
       source: { 
-        analyzer: this.getAnalyzerName(), 
-        analysisId: this.analysisId 
+        analyzer: this.getAnalyzerName()
       },
       data: {
         repositoryPath,
-        timestamp: new Date().toISOString()
+        totalFiles: 0,
+        options: this.options
       }
     });
 
@@ -229,16 +225,18 @@ export abstract class BaseAnalyzer {
       telemetry.emit({
         type: 'analysis_completed',
         source: { 
-          analyzer: this.getAnalyzerName(), 
-          analysisId: this.analysisId 
+          analyzer: this.getAnalyzerName()
         },
         data: {
+          success: true,
+          componentsFound: blueprint.components.length,
+          connectionsFound: blueprint.connections.length,
+          entryPointsFound: blueprint.entryPoints.length,
+          exitPointsFound: blueprint.exitPoints.length,
+          orphanedComponents: blueprint.orphanedComponents.length,
+          riskAreas: blueprint.riskAreas.length,
           duration: analysisTime,
-          componentCount: blueprint.components.length,
-          connectionCount: blueprint.connections.length,
-          entryPointCount: blueprint.entryPoints.length,
-          exitPointCount: blueprint.exitPoints.length,
-          riskCount: blueprint.riskAreas.length
+          errors: []
         }
       });
 
@@ -259,14 +257,13 @@ export abstract class BaseAnalyzer {
 
     } catch (error) {
       const analysisTime = Date.now() - this.startTime;
-      this.metrics.failAnalysis(this.analysisId, error as Error, analysisTime);
+      this.metrics.failAnalysis(this.analysisId, error instanceof Error ? error : new Error(String(error)), analysisTime);
       
       // Emit analysis error event
       telemetry.emit({
         type: 'error_occurred',
         source: { 
-          analyzer: this.getAnalyzerName(), 
-          analysisId: this.analysisId 
+          analyzer: this.getAnalyzerName()
         },
         data: {
           error: error instanceof Error ? error.message : String(error),
@@ -282,7 +279,7 @@ export abstract class BaseAnalyzer {
       }
       
       throw new AnalyzerError(
-        `Analysis failed: ${error.message}`,
+        `Analysis failed: ${error instanceof Error ? error.message : String(error)}`,
         'ANALYSIS_FAILED',
         { analysisId: this.analysisId, projectPath: repositoryPath, error }
       );
@@ -314,7 +311,7 @@ export abstract class BaseAnalyzer {
       telemetry.emit({
         type: 'error_occurred',
         source: { 
-          analyzer: this.getAnalyzerName(), 
+          analyzer: this.getAnalyzerName(),
           component: 'entry-point-detection' 
         },
         data: {
@@ -338,7 +335,7 @@ export abstract class BaseAnalyzer {
       telemetry.emit({
         type: 'error_occurred',
         source: { 
-          analyzer: this.getAnalyzerName(), 
+          analyzer: this.getAnalyzerName(),
           component: 'exit-point-detection' 
         },
         data: {

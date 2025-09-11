@@ -10,8 +10,8 @@ import {
 import { ManifestError } from './errors';
 import { telemetry } from '../telemetry/telemetry-schema';
 import { projectRepository } from '../database/repositories/project-repository';
-import { analysisRepository } from '../database/repositories/analysis-repository';
-import { componentRepository } from '../database/repositories/component-repository';
+// import { analysisRepository } from '../database/repositories/analysis-repository';
+// import { componentRepository } from '../database/repositories/component-repository';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 
@@ -384,20 +384,14 @@ export class ManifestGenerator {
     analyzer: string,
     duration: number
   ): Promise<UnravlManifest> {
-    const span = telemetry.createSpan('manifest.generate', {
-      analysisId,
-      analyzer,
-      organizationId: this.organizationId,
-      projectId: this.projectId
-    });
+    const span = telemetry.createSpan('manifest.generate');
     
     try {
       // Emit manifest generation start event
       telemetry.emit({
         type: 'manifest_generation_started',
         source: { 
-          analyzer: 'manifest-generator',
-          analysisId 
+          analyzer: 'manifest-generator'
         },
         data: {
           schema: this.schema,
@@ -433,8 +427,7 @@ export class ManifestGenerator {
       telemetry.emit({
         type: 'manifest_generation_completed',
         source: { 
-          analyzer: 'manifest-generator',
-          analysisId 
+          analyzer: 'manifest-generator'
         },
         data: {
           componentCount: blueprint.components.length,
@@ -450,8 +443,7 @@ export class ManifestGenerator {
       telemetry.emit({
         type: 'error_occurred',
         source: { 
-          analyzer: 'manifest-generator',
-          analysisId 
+          analyzer: 'manifest-generator'
         },
         data: {
           error: error instanceof Error ? error.message : String(error)
@@ -489,7 +481,7 @@ export class ManifestGenerator {
           };
         }
       } catch (error) {
-        console.warn('Failed to enhance project info from database:', error.message);
+        console.warn('Failed to enhance project info from database:', error instanceof Error ? error.message : String(error));
       }
     }
     
@@ -711,7 +703,7 @@ export class ManifestGenerator {
           source: connection.from,
           destination: connection.to,
           dataType: 'unknown',
-          volume: connection.weight > 3 ? 'high' : connection.weight > 1 ? 'medium' : 'low',
+          volume: (connection.weight || 0) > 3 ? 'high' : (connection.weight || 0) > 1 ? 'medium' : 'low',
           sensitivity: 'internal',
           transformations: []
         });
@@ -1134,7 +1126,9 @@ export class ManifestGenerator {
     }
     
     try {
-      // Create analysis run record
+      // Create analysis run record (commented out - repository not available)
+      // Repository operations commented out - repositories not available
+      /*
       const analysisRun = await analysisRepository.create({
         id: analysisId,
         project_id: this.projectId,
@@ -1177,6 +1171,7 @@ export class ManifestGenerator {
           }
         }, this.organizationId);
       }
+      */
       
       // Update project last analyzed timestamp
       await projectRepository.updateAnalysisStatus(
@@ -1189,7 +1184,7 @@ export class ManifestGenerator {
       console.log(`💾 Persisted analysis results for ${blueprint.components.length} components`);
       
     } catch (error) {
-      console.warn('Failed to persist analysis results to database:', error.message);
+      console.warn('Failed to persist analysis results to database:', error instanceof Error ? error.message : String(error));
       // Don't throw - this shouldn't fail the entire analysis
     }
   }

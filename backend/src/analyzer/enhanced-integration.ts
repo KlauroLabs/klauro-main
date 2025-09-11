@@ -47,9 +47,9 @@ export interface DatabaseConfig {
  * Extends SystemTopologyAnalyzer with database and real-time capabilities
  */
 export class DatabaseIntegratedAnalyzer extends SystemTopologyAnalyzer {
-  private telemetryCollector: EnhancedTelemetryCollector;
+  protected telemetryCollector: EnhancedTelemetryCollector;
   private repository?: TelemetryRepository;
-  private options: DatabaseIntegratedAnalyzerOptions;
+  protected options: DatabaseIntegratedAnalyzerOptions;
   private analysisStartTime: number = 0;
 
   constructor(options: DatabaseIntegratedAnalyzerOptions = {}) {
@@ -103,7 +103,7 @@ export class DatabaseIntegratedAnalyzer extends SystemTopologyAnalyzer {
           estimatedDuration: this.estimateAnalysisDuration(repositoryPath)
         });
 
-        return this.performEnhancedAnalysis(repositoryPath, mergedOptions);
+        return this.analyzeRepository(repositoryPath, mergedOptions);
       }
     );
 
@@ -171,7 +171,7 @@ export class DatabaseIntegratedAnalyzer extends SystemTopologyAnalyzer {
             connection.from,
             connection.to,
             connection.type,
-            connection.weight,
+            connection.weight || 1,
             {
               importPath: connection.metadata?.dataFlow,
               depth: this.calculateDependencyDepth(connection, connections)

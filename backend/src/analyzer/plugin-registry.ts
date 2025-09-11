@@ -3,7 +3,7 @@
 
 import { BaseAnalyzer } from './base-analyzer';
 import { telemetry } from '../telemetry/telemetry-schema';
-import { dbConnection } from '../database';
+import { db } from '../database';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 
@@ -22,6 +22,8 @@ export interface AnalyzerPlugin {
   metadata: PluginMetadata;
   dependencies: PluginDependency[];
   configuration?: PluginConfiguration;
+  entry?: string; // Entry point for dynamic loading
+  deprecated?: boolean; // Flag for deprecated plugins
 }
 
 export interface PluginMetadata {
@@ -38,6 +40,7 @@ export interface PluginMetadata {
   rating?: number;
   verified: boolean;
   securityScan?: SecurityScanResult;
+  autoDetected?: boolean;
 }
 
 export interface PluginDependency {
@@ -106,7 +109,7 @@ export class PluginRegistry {
       path.join(__dirname, 'plugins'), // Built-in plugins
       path.join(process.cwd(), 'plugins'), // Project plugins
       path.join(process.cwd(), 'node_modules', '@unravl', 'analyzers'), // NPM plugins
-      path.join(require.os?.homedir?.() || '', '.unravl', 'plugins'), // User plugins
+      path.join(require('os').homedir(), '.unravl', 'plugins'), // User plugins
     ];
 
     this.pluginDirectories = defaultPaths.filter(dir => {
@@ -174,7 +177,7 @@ export class PluginRegistry {
         const dirResults = await this.discoverPluginsInDirectory(directory, options);
         results.push(...dirResults);
       } catch (error) {
-        console.warn(`⚠️ Failed to scan plugin directory ${directory}: ${error.message}`);
+        console.warn(`⚠️ Failed to scan plugin directory ${directory}: ${error instanceof Error ? error.message : String(error)}`);
         
         telemetry.emit({
           type: 'error_occurred',
@@ -286,7 +289,7 @@ export class PluginRegistry {
     } catch (error) {
       return {
         success: false,
-        error: `Failed to load plugin from ${pluginPath}: ${error.message}`
+        error: `Failed to load plugin from ${pluginPath}: ${error instanceof Error ? error.message : String(error)}`
       };
     }
   }
@@ -345,7 +348,7 @@ export class PluginRegistry {
     } catch (error) {
       return {
         success: false,
-        error: `Failed to load analyzer from ${filePath}: ${error.message}`
+        error: `Failed to load analyzer from ${filePath}: ${error instanceof Error ? error.message : String(error)}`
       };
     }
   }
@@ -361,7 +364,7 @@ export class PluginRegistry {
       const module = require(modulePath);
       return module;
     } catch (error) {
-      throw new Error(`Failed to require analyzer module: ${error.message}`);
+      throw new Error(`Failed to require analyzer module: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -471,9 +474,7 @@ export class PluginRegistry {
    * Get analyzer instance for a project
    */
   async getAnalyzerForProject(repositoryPath: string): Promise<BaseAnalyzer | null> {
-    const span = telemetry.createSpan('plugin-registry.getAnalyzerForProject', {
-      repositoryPath
-    });
+    const span = telemetry.createSpan('plugin-registry.getAnalyzerForProject');
     
     const plugins = Array.from(this.plugins.values());
     
@@ -482,7 +483,8 @@ export class PluginRegistry {
 
     for (const plugin of plugins) {
       try {
-        const analyzer = new plugin.analyzer();
+        const AnalyzerClass = plugin.analyzer;
+        const analyzer = new (AnalyzerClass as any)();
         
         // Test if this analyzer can handle the project
         const cacheKey = `${plugin.id}:${repositoryPath}`;
@@ -526,7 +528,7 @@ export class PluginRegistry {
           return analyzer;
         }
       } catch (error) {
-        console.warn(`⚠️ Plugin ${plugin.name} failed project detection: ${error.message}`);
+        console.warn(`⚠️ Plugin ${plugin.name} failed project detection: ${error instanceof Error ? error.message : String(error)}`);
         
         telemetry.emit({
           type: 'analyzer_selection_failed',
@@ -655,7 +657,7 @@ export class PluginRegistry {
     if (!this.organizationId) return;
     
     try {
-      const client = await dbConnection.getClient();
+      const client = await db.getClient();
       
       const query = `
         INSERT INTO analyzer_plugins (
@@ -698,7 +700,7 @@ export class PluginRegistry {
       
       await client.query(query, values);
     } catch (error) {
-      console.warn(`Failed to persist plugin ${plugin.id} to database:`, error.message);
+      console.warn(`Failed to persist plugin ${plugin.id} to database:`, error instanceof Error ? error.message : String(error));
     }
   }
   
@@ -713,7 +715,7 @@ export class PluginRegistry {
         await this.persistPluginMetadata(plugin);
       }
     } catch (error) {
-      console.warn('Failed to sync plugins to database:', error.message);
+      console.warn('Failed to sync plugins to database:', error instanceof Error ? error.message : String(error));
     }
   }
   

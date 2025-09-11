@@ -71,6 +71,20 @@ class IntegratedAnalyzer extends enhanced_integration_1.DatabaseIntegratedAnalyz
             throw error;
         }
     }
+    async generatePerformanceReport() {
+        return {
+            metrics: await this.telemetryCollector.getPerformanceMetrics(),
+            bottlenecks: [],
+            recommendations: []
+        };
+    }
+    async generateTelemetryManifest() {
+        return {
+            endpoints: await this.telemetryCollector.getTelemetryEndpoints(),
+            metrics: await this.telemetryCollector.getAvailableMetrics(),
+            configuration: this.telemetryCollector.getConfiguration()
+        };
+    }
     async runEnhancedPatternDetection(components) {
         await this.detectAdvancedArchitecturalPatterns(components);
         await this.detectDesignPatterns(components);

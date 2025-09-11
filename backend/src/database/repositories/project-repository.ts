@@ -391,9 +391,13 @@ export class ProjectRepository extends BaseRepository<Project> {
     client?: TransactionClient
   ): Promise<Project> {
     const executeInTransaction = async (transactionClient: TransactionClient): Promise<Project> => {
-      // Create project
+      // Create project with default status
+      const projectWithStatus = {
+        ...projectData,
+        status: 'active' as const
+      };
       const project = await this.create(
-        projectData,
+        projectWithStatus as any,
         projectData.organization_id
       );
 

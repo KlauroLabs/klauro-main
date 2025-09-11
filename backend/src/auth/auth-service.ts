@@ -57,6 +57,7 @@ export class AuthService {
           name: data.organization_name,
           slug,
           billing_email: data.email,
+          settings: {},
         });
 
         // Add user as owner of the organization
@@ -134,10 +135,11 @@ export class AuthService {
 
       if (oauthResult.rows.length > 0) {
         // User exists, fetch user data
-        user = await this.userRepo.findById(oauthResult.rows[0].user_id);
-        if (!user) {
+        const foundUser = await this.userRepo.findById(oauthResult.rows[0].user_id);
+        if (!foundUser) {
           throw new Error('User account not found');
         }
+        user = foundUser;
       } else {
         // Check if user exists with this email
         user = await this.userRepo.findByEmail(profile.email) as User;
@@ -282,11 +284,11 @@ export class AuthService {
       type: 'access',
     };
 
-    const accessToken = jwt.sign(accessPayload, authConfig.jwt.accessSecret, {
+    const accessToken = jwt.sign(accessPayload, authConfig.jwt.accessSecret as string, {
       expiresIn: authConfig.jwt.accessExpiresIn,
       issuer: authConfig.jwt.issuer,
       audience: authConfig.jwt.audience,
-    });
+    } as any);
 
     // Generate refresh token
     const refreshPayload: JWTPayload = {
@@ -295,11 +297,11 @@ export class AuthService {
       type: 'refresh',
     };
 
-    const refreshToken = jwt.sign(refreshPayload, authConfig.jwt.refreshSecret, {
+    const refreshToken = jwt.sign(refreshPayload, authConfig.jwt.refreshSecret as string, {
       expiresIn: authConfig.jwt.refreshExpiresIn,
       issuer: authConfig.jwt.issuer,
       audience: authConfig.jwt.audience,
-    });
+    } as any);
 
     // Calculate expiration time
     const expiresIn = this.parseExpiresIn(authConfig.jwt.accessExpiresIn);

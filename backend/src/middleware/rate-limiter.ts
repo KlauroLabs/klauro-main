@@ -1,6 +1,5 @@
 import rateLimit, { RateLimitRequestHandler, Options } from 'express-rate-limit';
 import { Request, Response } from 'express';
-import { createHash } from 'crypto';
 
 interface RateLimitConfig {
   windowMs: number;
@@ -8,19 +7,8 @@ interface RateLimitConfig {
   message?: string;
   skipSuccessfulRequests?: boolean;
   skipFailedRequests?: boolean;
-  keyGenerator?: (req: Request) => string;
 }
 
-const defaultKeyGenerator = (req: Request): string => {
-  const userId = (req as any).userId;
-  const ip = req.ip || req.socket.remoteAddress || 'unknown';
-  
-  if (userId) {
-    return `user:${userId}`;
-  }
-  
-  return `ip:${createHash('sha256').update(ip).digest('hex').substring(0, 16)}`;
-};
 
 const standardHandler = (req: Request, res: Response) => {
   res.status(429).json({
@@ -37,7 +25,6 @@ export const rateLimiters = {
     message: 'Too many attempts, please try again later',
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: defaultKeyGenerator,
     handler: standardHandler,
   }),
   
@@ -49,11 +36,6 @@ export const rateLimiters = {
       standardHeaders: true,
       legacyHeaders: false,
       skipSuccessfulRequests: false,
-      keyGenerator: (req: Request) => {
-        const email = req.body?.email || '';
-        const ip = req.ip || req.socket.remoteAddress || 'unknown';
-        return `login:${createHash('sha256').update(email + ip).digest('hex').substring(0, 16)}`;
-      },
       handler: standardHandler,
     }),
     
@@ -63,7 +45,6 @@ export const rateLimiters = {
       message: 'Too many registration attempts, please try again later',
       standardHeaders: true,
       legacyHeaders: false,
-      keyGenerator: defaultKeyGenerator,
       handler: standardHandler,
     }),
     
@@ -73,10 +54,6 @@ export const rateLimiters = {
       message: 'Too many password reset attempts, please try again later',
       standardHeaders: true,
       legacyHeaders: false,
-      keyGenerator: (req: Request) => {
-        const email = req.body?.email || '';
-        return `reset:${createHash('sha256').update(email).digest('hex').substring(0, 16)}`;
-      },
       handler: standardHandler,
     }),
     
@@ -86,7 +63,6 @@ export const rateLimiters = {
       message: 'Too many email verification attempts, please try again later',
       standardHeaders: true,
       legacyHeaders: false,
-      keyGenerator: defaultKeyGenerator,
       handler: standardHandler,
     }),
     
@@ -96,7 +72,6 @@ export const rateLimiters = {
       message: 'Too many OAuth attempts, please try again later',
       standardHeaders: true,
       legacyHeaders: false,
-      keyGenerator: defaultKeyGenerator,
       handler: standardHandler,
     }),
     
@@ -106,7 +81,6 @@ export const rateLimiters = {
       message: 'Too many token refresh attempts, please try again later',
       standardHeaders: true,
       legacyHeaders: false,
-      keyGenerator: defaultKeyGenerator,
       handler: standardHandler,
     }),
   },
@@ -118,7 +92,6 @@ export const rateLimiters = {
       message: 'Too many requests, please try again later',
       standardHeaders: true,
       legacyHeaders: false,
-      keyGenerator: defaultKeyGenerator,
       handler: standardHandler,
     }),
     
@@ -128,7 +101,6 @@ export const rateLimiters = {
       message: 'Too many requests, please try again later',
       standardHeaders: true,
       legacyHeaders: false,
-      keyGenerator: defaultKeyGenerator,
       handler: standardHandler,
     }),
     
@@ -138,7 +110,6 @@ export const rateLimiters = {
       message: 'Too many search requests, please try again later',
       standardHeaders: true,
       legacyHeaders: false,
-      keyGenerator: defaultKeyGenerator,
       handler: standardHandler,
     }),
     
@@ -148,7 +119,6 @@ export const rateLimiters = {
       message: 'Too many write operations, please try again later',
       standardHeaders: true,
       legacyHeaders: false,
-      keyGenerator: defaultKeyGenerator,
       handler: standardHandler,
     }),
     
@@ -158,7 +128,6 @@ export const rateLimiters = {
       message: 'Too many uploads, please try again later',
       standardHeaders: true,
       legacyHeaders: false,
-      keyGenerator: defaultKeyGenerator,
       handler: standardHandler,
     }),
   },
@@ -172,7 +141,6 @@ export const rateLimiters = {
       legacyHeaders: false,
       skipSuccessfulRequests: config.skipSuccessfulRequests || false,
       skipFailedRequests: config.skipFailedRequests || false,
-      keyGenerator: config.keyGenerator || defaultKeyGenerator,
       handler: standardHandler,
     });
   },
@@ -184,9 +152,5 @@ export const globalRateLimiter = rateLimit({
   message: 'Too many requests from this IP, please try again later',
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req: Request) => {
-    const ip = req.ip || req.socket.remoteAddress || 'unknown';
-    return `global:${createHash('sha256').update(ip).digest('hex').substring(0, 16)}`;
-  },
   handler: standardHandler,
 });

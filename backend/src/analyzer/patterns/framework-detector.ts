@@ -604,14 +604,12 @@ export class FrameworkDetector {
         type: 'framework_detected',
         source: { analyzer: 'framework-detector' },
         data: {
-          pattern: result.framework.name,
+          framework: result.framework.name,
+          version: result.framework.version,
           confidence: result.confidence,
-          location: this.projectPath,
-          indicators: result.indicators,
-          implications: [`${result.framework.type} framework`, result.framework.name],
-          category: 'architectural'
+          indicators: result.indicators
         }
-      } as PatternDetectedEvent);
+      });
     }
 
     span.end();
@@ -870,7 +868,7 @@ export class FrameworkDetector {
       case 'file':
         if (pattern.pattern instanceof RegExp) {
           const files = await this.getAllFiles();
-          return files.some(f => pattern.pattern.test(path.basename(f)));
+          return files.some(f => (pattern.pattern as RegExp).test(path.basename(f)));
         }
         return await this.fileExists(pattern.pattern as string);
       

@@ -76,14 +76,14 @@ export class RBACMiddleware {
 
   requireRole = (...allowedRoles: Role[]) => {
     return (req: Request, res: Response, next: NextFunction) => {
-      if (!req.userRole) {
+      if (!(req as any).userRole) {
         return res.status(403).json({ 
           error: 'Forbidden', 
           message: 'No role assigned for this resource' 
         });
       }
 
-      const userRole = req.userRole as Role;
+      const userRole = (req as any).userRole as Role;
       if (!allowedRoles.includes(userRole)) {
         return res.status(403).json({ 
           error: 'Forbidden', 
@@ -97,14 +97,14 @@ export class RBACMiddleware {
 
   requireMinRole = (minRole: Role) => {
     return (req: Request, res: Response, next: NextFunction) => {
-      if (!req.userRole) {
+      if (!(req as any).userRole) {
         return res.status(403).json({ 
           error: 'Forbidden', 
           message: 'No role assigned for this resource' 
         });
       }
 
-      const userRole = req.userRole as Role;
+      const userRole = (req as any).userRole as Role;
       const userRoleLevel = ROLE_HIERARCHY[userRole];
       const minRoleLevel = ROLE_HIERARCHY[minRole];
 
@@ -121,14 +121,14 @@ export class RBACMiddleware {
 
   requirePermission = (...permissions: Permission[]) => {
     return (req: Request, res: Response, next: NextFunction) => {
-      if (!req.userRole) {
+      if (!(req as any).userRole) {
         return res.status(403).json({ 
           error: 'Forbidden', 
           message: 'No role assigned for this resource' 
         });
       }
 
-      const userRole = req.userRole as Role;
+      const userRole = (req as any).userRole as Role;
       const userPermissions = ROLE_PERMISSIONS[userRole];
 
       const hasPermission = permissions.some(permission => userPermissions.includes(permission));
@@ -146,7 +146,7 @@ export class RBACMiddleware {
 
   requireOwnership = (resourceType: 'project' | 'team' | 'api_key' | 'webhook') => {
     return async (req: Request, res: Response, next: NextFunction) => {
-      if (!req.userId) {
+      if (!(req as any).userId) {
         return res.status(401).json({ error: 'Unauthorized', message: 'Authentication required' });
       }
 
@@ -157,9 +157,9 @@ export class RBACMiddleware {
 
       try {
         // Check if user owns the resource or has admin/owner role in the organization
-        const isOwner = await this.checkResourceOwnership(req.userId, resourceType, resourceId);
+        const isOwner = await this.checkResourceOwnership((req as any).userId, resourceType, resourceId);
         
-        if (!isOwner && req.userRole !== 'owner' && req.userRole !== 'admin') {
+        if (!isOwner && (req as any).userRole !== 'owner' && (req as any).userRole !== 'admin') {
           return res.status(403).json({ 
             error: 'Forbidden', 
             message: `You don't have permission to modify this ${resourceType}` 
@@ -177,7 +177,7 @@ export class RBACMiddleware {
   };
 
   requireTeamMembership = async (req: Request, res: Response, next: NextFunction) => {
-    if (!req.userId) {
+    if (!(req as any).userId) {
       return res.status(401).json({ error: 'Unauthorized', message: 'Authentication required' });
     }
 
@@ -187,7 +187,7 @@ export class RBACMiddleware {
     }
 
     try {
-      const memberships = await this.userRepo.getUserMemberships(req.userId);
+      const memberships = await this.userRepo.getUserMemberships((req as any).userId);
       const isTeamMember = memberships.some(m => m.team_id === teamId);
 
       if (!isTeamMember) {
@@ -208,7 +208,7 @@ export class RBACMiddleware {
 
   checkAccess = (resource: string, action: string) => {
     return async (req: Request, res: Response, next: NextFunction) => {
-      if (!req.userId) {
+      if (!(req as any).userId) {
         return res.status(401).json({ error: 'Unauthorized', message: 'Authentication required' });
       }
 
@@ -216,14 +216,14 @@ export class RBACMiddleware {
       // This can be extended to support more complex permission models
       const permission = `${resource}:${action}` as Permission;
       
-      if (!req.userRole) {
+      if (!(req as any).userRole) {
         return res.status(403).json({ 
           error: 'Forbidden', 
           message: 'No role assigned for this resource' 
         });
       }
 
-      const userRole = req.userRole as Role;
+      const userRole = (req as any).userRole as Role;
       const userPermissions = ROLE_PERMISSIONS[userRole];
 
       if (!userPermissions.includes(permission)) {

@@ -33,7 +33,7 @@ export class EnhancedTelemetryCollector extends TelemetryCollector {
   private batchBuffer: TelemetryEvent[] = [];
   private lastFlushTime: number = Date.now();
   private performanceThresholds: PerformanceThresholds;
-  private aggregationTimer?: NodeJS.Timer;
+  private aggregationTimer?: NodeJS.Timeout;
 
   constructor(config: EnhancedTelemetryConfig = {}) {
     super(config);
@@ -477,6 +477,71 @@ export class EnhancedTelemetryCollector extends TelemetryCollector {
   private getEvents(): TelemetryEvent[] {
     // Access parent class events - this would need to be exposed or use a different approach
     return (this as any).events || [];
+  }
+
+  /**
+   * Get performance metrics for analysis
+   */
+  public async getPerformanceMetrics(): Promise<any> {
+    const summary = this.getAnalysisPerformanceSummary();
+    const realtimeMetrics = this.getRealTimeMetrics();
+    
+    return {
+      analysis: summary,
+      realtime: realtimeMetrics,
+      aggregated: {
+        totalOperations: summary.totalEvents,
+        averageResponseTime: realtimeMetrics.averageResponseTime,
+        errorRate: summary.errorRate,
+        memoryEfficiency: summary.averageMemoryUsage,
+        throughput: realtimeMetrics.throughput
+      }
+    };
+  }
+
+  /**
+   * Get available telemetry endpoints
+   */
+  public async getTelemetryEndpoints(): Promise<string[]> {
+    return [
+      '/api/telemetry/events',
+      '/api/telemetry/metrics',
+      '/api/telemetry/performance',
+      '/api/telemetry/errors',
+      '/api/telemetry/real-time'
+    ];
+  }
+
+  /**
+   * Get available metrics list
+   */
+  public async getAvailableMetrics(): Promise<string[]> {
+    return [
+      'component_discovery_rate',
+      'dependency_detection_rate',
+      'pattern_recognition_accuracy',
+      'memory_usage',
+      'cpu_utilization',
+      'analysis_duration',
+      'error_frequency',
+      'cache_hit_ratio',
+      'throughput_rate'
+    ];
+  }
+
+  /**
+   * Get current telemetry configuration
+   */
+  public getConfiguration(): any {
+    return {
+      enableDatabase: this.config.enableDatabase,
+      batchSize: this.config.batchSize,
+      flushInterval: this.config.flushInterval,
+      enableRealTimeStreaming: this.config.enableRealTimeStreaming,
+      performanceThresholds: this.performanceThresholds,
+      enableAggregation: this.config.enableAggregation,
+      aggregationInterval: this.config.aggregationInterval
+    };
   }
 
   /**

@@ -366,8 +366,12 @@ class EnhancedBaseAnalyzer extends base_analyzer_1.BaseAnalyzer {
             const key = `${conn.from}-${conn.to}-${conn.type}`;
             const existing = connectionMap.get(key);
             if (existing) {
-                existing.weight = Math.max(existing.weight, conn.weight);
-                existing.metadata = { ...existing.metadata, ...conn.metadata };
+                existing.weight = Math.max(existing.weight || 0, conn.weight || 0);
+                existing.metadata = {
+                    callSites: (existing.metadata?.callSites || 0) + (conn.metadata?.callSites || 0),
+                    dataFlow: conn.metadata?.dataFlow || existing.metadata?.dataFlow,
+                    httpMethod: conn.metadata?.httpMethod || existing.metadata?.httpMethod
+                };
             }
             else {
                 connectionMap.set(key, conn);

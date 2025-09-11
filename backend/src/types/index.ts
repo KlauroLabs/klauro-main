@@ -9,6 +9,16 @@ export interface ComponentNode {
   dependents: string[];
   metadata: ComponentMetadata;
   position?: { x: number; y: number };
+  language?: string;
+  framework?: string;
+  metrics?: {
+    linesOfCode: number;
+    complexity: number;
+    maintainability: number;
+    testCoverage?: number;
+    duplicateCode?: number;
+    technicalDebt?: number;
+  };
 }
 
 export type ComponentType = 
@@ -40,6 +50,53 @@ export interface ComponentMetadata {
   functions?: FunctionInfo[]; // Function-level analysis
   testCoverage?: number; // Test coverage percentage
   performanceMetrics?: PerformanceMetrics; // Performance data
+  frameworkType?: string;
+  routePrefix?: string;
+  lifetime?: string;
+  tableName?: string;
+  djangoType?: string;
+  middleware?: string[];
+  fastApiType?: string;
+  flaskType?: string;
+  expressType?: string;
+  nestjsType?: string;
+  springType?: string;
+  ginType?: string;
+  actixType?: string;
+  laravelType?: string;
+  reactType?: string;
+  vueType?: string;
+  angularType?: string;
+  nextjsType?: string;
+  // Additional framework-specific metadata properties
+  actions?: string[];
+  app?: string;
+  baseClass?: string;
+  basePath?: string;
+  bindings?: string[];
+  cacheable?: boolean;
+  columns?: string[];
+  controllers?: string[];
+  fields?: string[];
+  global?: boolean;
+  hooks?: string[];
+  interface?: string;
+  isTest?: boolean;
+  method?: string;
+  methods?: string[];
+  namespace?: string;
+  order?: number;
+  path?: string;
+  properties?: string[];
+  props?: string[];
+  providedIn?: string;
+  requestMapping?: string;
+  scope?: string;
+  selector?: string;
+  stereotype?: string;
+  table?: string;
+  tags?: string[];
+  urlPrefix?: string;
 }
 
 export interface ArchitectureBlueprint {
@@ -65,11 +122,26 @@ export interface Connection {
   from: string; // Component ID
   to: string; // Component ID
   type: ConnectionType;
-  weight: number; // Usage frequency/importance
+  weight?: number; // Usage frequency/importance
+  protocol?: string; // Protocol/framework used
   metadata?: {
     callSites: number;
     dataFlow?: string;
     httpMethod?: string;
+    injectionType?: string;
+    relationship?: string;
+    importType?: string;
+    scope?: string;
+    relationType?: string;
+    middlewareName?: string;
+    basePath?: string;
+    routePath?: string;
+    formName?: string;
+    path?: string;
+    guardType?: string;
+    layoutType?: string;
+    methods?: string[];
+    pageType?: string;
   };
 }
 
@@ -79,7 +151,24 @@ export type ConnectionType =
   | 'database' 
   | 'middleware_chain' 
   | 'function_call'
-  | 'data_flow';
+  | 'data_flow'
+  | 'dependency-injection'
+  | 'data-relationship'
+  | 'contains'
+  | 'form-handling'
+  | 'template-inheritance'
+  | 'template-include'
+  | 'uses-middleware'
+  | 'uses-model'
+  | 'route-controller'
+  | 'module-import'
+  | 'module-controller'
+  | 'module-provider'
+  | 'dependency'
+  | 'navigation'
+  | 'guards'
+  | 'intercepts'
+  | 'api-call';
 
 export interface RiskArea {
   componentId: string;
@@ -411,18 +500,20 @@ export interface TechnologyStack {
 export interface FrameworkInfo {
   name: string;
   version: string;
-  type: 'web' | 'mobile' | 'desktop' | 'api' | 'library';
+  type: 'web' | 'mobile' | 'desktop' | 'api' | 'library' | 'database' | 'testing' | 'build';
   logo?: string;
   usage: 'primary' | 'secondary' | 'development';
   conventions: string[];
   patterns: string[];
   configFiles?: string[];
   detectionConfidence: number;
+  language?: string;
+  confidence?: number;
   metadata?: FrameworkMetadata;
 }
 
 export interface FrameworkMetadata {
-  packageManager?: 'npm' | 'yarn' | 'pnpm' | 'pip' | 'maven' | 'gradle' | 'nuget' | 'cargo';
+  packageManager?: 'npm' | 'yarn' | 'pnpm' | 'pip' | 'maven' | 'gradle' | 'nuget' | 'cargo' | 'go' | 'composer';
   buildSystem?: string;
   testRunner?: string;
   linter?: string;
@@ -435,6 +526,7 @@ export interface FrameworkMetadata {
   httpClient?: string;
   stateManagement?: string;
   router?: string;
+  server?: string;
 }
 
 export interface LanguageInfo {
@@ -564,6 +656,8 @@ export interface DatabaseConnection {
   retryPolicy?: RetryPolicy;
   usage: DatabaseUsage[];
   componentIds: string[];
+  schema?: string;
+  tables?: string[];
 }
 
 export interface DatabaseUsage {
@@ -625,7 +719,7 @@ export interface BackupConfig {
 
 export type DatabaseType = 
   | 'postgresql' | 'mysql' | 'sqlite' | 'mongodb' 
-  | 'redis' | 'elasticsearch' | 'cassandra' | 'dynamodb';
+  | 'redis' | 'elasticsearch' | 'cassandra' | 'dynamodb' | 'sqlserver';
 
 export type ConnectionMethod = 
   | 'orm' | 'query_builder' | 'raw_sql' | 'odm' | 'driver';
@@ -712,6 +806,7 @@ export interface APIEndpoint {
   requestSchema?: any;
   responseSchema?: any;
   statusCodes: StatusCodeInfo[];
+  responses?: StatusCodeInfo[]; // Alias for statusCodes
   middleware: string[];
   authentication: AuthenticationInfo;
   authorization?: AuthorizationInfo;
@@ -771,7 +866,7 @@ export interface EndpointMetrics {
   bandwidthUsage: number;
 }
 
-export type HTTPMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'OPTIONS' | 'HEAD';
+export type HTTPMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'OPTIONS' | 'HEAD' | 'ALL';
 
 export interface APIParameter {
   name: string;

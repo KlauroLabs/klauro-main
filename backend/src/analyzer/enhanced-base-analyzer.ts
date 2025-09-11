@@ -6,7 +6,7 @@
 import { BaseAnalyzer, AnalyzerOptions, LanguageDetection, ComponentDiscovery } from './base-analyzer';
 import { 
   ArchitectureBlueprint, ComponentNode, Connection, RiskArea, EntryPoint, ExitPoint,
-  CallGraph, DatabaseConnection, TestCoverage, TechnologyStack
+  CallGraph, DatabaseConnection, TestCoverage, TechnologyStack, ProjectMetadata
 } from '../types';
 import { telemetry, AnalysisStartedEvent, AnalysisCompletedEvent, TelemetryManifest } from '../telemetry/telemetry-schema';
 import { EntryExitDetector } from './patterns/entry-exit-detector';
@@ -143,7 +143,7 @@ export abstract class EnhancedBaseAnalyzer extends BaseAnalyzer {
             duration,
             errors: []
           }
-        } as AnalysisCompletedEvent);
+        });
       }
 
       console.log(`✅ Enhanced ${this.getAnalyzerName()} analysis complete: ${blueprint.components.length} components, ${blueprint.connections.length} connections`);
@@ -543,8 +543,12 @@ export abstract class EnhancedBaseAnalyzer extends BaseAnalyzer {
       
       if (existing) {
         // Merge metadata
-        existing.weight = Math.max(existing.weight, conn.weight);
-        existing.metadata = { ...existing.metadata, ...conn.metadata };
+        existing.weight = Math.max(existing.weight || 0, conn.weight || 0);
+        existing.metadata = { 
+          callSites: (existing.metadata?.callSites || 0) + (conn.metadata?.callSites || 0),
+          dataFlow: conn.metadata?.dataFlow || existing.metadata?.dataFlow,
+          httpMethod: conn.metadata?.httpMethod || existing.metadata?.httpMethod
+        };
       } else {
         connectionMap.set(key, conn);
       }

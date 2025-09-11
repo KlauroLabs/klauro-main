@@ -1,9 +1,9 @@
 import passport from 'passport';
 import { Strategy as JwtStrategy, ExtractJwt } from 'passport-jwt';
-import { Strategy as GitHubStrategy } from 'passport-github2';
-import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
-import { Strategy as MicrosoftStrategy } from 'passport-microsoft';
-import { Strategy as GitLabStrategy } from 'passport-gitlab2';
+// import { Strategy as GitHubStrategy } from 'passport-github2';
+// import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
+// import { Strategy as MicrosoftStrategy } from 'passport-microsoft';
+// import { Strategy as GitLabStrategy } from 'passport-gitlab2';
 import { authConfig } from '../../config/auth.config';
 import { JWTPayload, OAuthProfile } from '../../types';
 
@@ -30,6 +30,8 @@ export function initializePassport() {
     )
   );
 
+  // OAuth Strategies temporarily disabled for startup
+  /*
   // GitHub OAuth Strategy
   if (authConfig.oauth.github.clientId) {
     passport.use(
@@ -149,6 +151,7 @@ export function initializePassport() {
       )
     );
   }
+  */
 
   // Serialize/Deserialize user for session
   passport.serializeUser((user: any, done) => {

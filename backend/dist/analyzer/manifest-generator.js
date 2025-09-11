@@ -37,8 +37,6 @@ exports.ManifestGenerator = void 0;
 const errors_1 = require("./errors");
 const telemetry_schema_1 = require("../telemetry/telemetry-schema");
 const project_repository_1 = require("../database/repositories/project-repository");
-const analysis_repository_1 = require("../database/repositories/analysis-repository");
-const component_repository_1 = require("../database/repositories/component-repository");
 const fs = __importStar(require("fs-extra"));
 const path = __importStar(require("path"));
 class ManifestGenerator {
@@ -58,18 +56,12 @@ class ManifestGenerator {
         this.projectId = projectId;
     }
     async generateManifest(blueprint, analysisId, analyzer, duration) {
-        const span = telemetry_schema_1.telemetry.createSpan('manifest.generate', {
-            analysisId,
-            analyzer,
-            organizationId: this.organizationId,
-            projectId: this.projectId
-        });
+        const span = telemetry_schema_1.telemetry.createSpan('manifest.generate');
         try {
             telemetry_schema_1.telemetry.emit({
                 type: 'manifest_generation_started',
                 source: {
-                    analyzer: 'manifest-generator',
-                    analysisId
+                    analyzer: 'manifest-generator'
                 },
                 data: {
                     schema: this.schema,
@@ -98,8 +90,7 @@ class ManifestGenerator {
             telemetry_schema_1.telemetry.emit({
                 type: 'manifest_generation_completed',
                 source: {
-                    analyzer: 'manifest-generator',
-                    analysisId
+                    analyzer: 'manifest-generator'
                 },
                 data: {
                     componentCount: blueprint.components.length,
@@ -115,8 +106,7 @@ class ManifestGenerator {
             telemetry_schema_1.telemetry.emit({
                 type: 'error_occurred',
                 source: {
-                    analyzer: 'manifest-generator',
-                    analysisId
+                    analyzer: 'manifest-generator'
                 },
                 data: {
                     error: error instanceof Error ? error.message : String(error)
@@ -151,7 +141,7 @@ class ManifestGenerator {
                 }
             }
             catch (error) {
-                console.warn('Failed to enhance project info from database:', error.message);
+                console.warn('Failed to enhance project info from database:', error instanceof Error ? error.message : String(error));
             }
         }
         return projectInfo;
@@ -327,7 +317,7 @@ class ManifestGenerator {
                     source: connection.from,
                     destination: connection.to,
                     dataType: 'unknown',
-                    volume: connection.weight > 3 ? 'high' : connection.weight > 1 ? 'medium' : 'low',
+                    volume: (connection.weight || 0) > 3 ? 'high' : (connection.weight || 0) > 1 ? 'medium' : 'low',
                     sensitivity: 'internal',
                     transformations: []
                 });
@@ -681,51 +671,11 @@ class ManifestGenerator {
             return;
         }
         try {
-            const analysisRun = await analysis_repository_1.analysisRepository.create({
-                id: analysisId,
-                project_id: this.projectId,
-                analyzer_name: analyzer,
-                status: 'completed',
-                started_at: new Date(Date.now() - duration),
-                completed_at: new Date(),
-                processing_time_ms: duration,
-                commit_sha: undefined,
-                branch: 'main',
-                configuration: {},
-                results: {
-                    componentCount: blueprint.components.length,
-                    connectionCount: blueprint.connections.length,
-                    entryPointCount: blueprint.entryPoints.length,
-                    exitPointCount: blueprint.exitPoints.length,
-                    riskCount: blueprint.riskAreas.length
-                }
-            }, this.organizationId);
-            for (const component of blueprint.components) {
-                await component_repository_1.componentRepository.create({
-                    analysis_run_id: analysisRun.id,
-                    name: component.name,
-                    type: component.type,
-                    path: component.path,
-                    language: component.language,
-                    framework: component.framework,
-                    size_bytes: component.size,
-                    lines_of_code: component.linesOfCode,
-                    complexity_score: component.metadata.complexity,
-                    dependencies: component.dependencies,
-                    dependents: component.dependents,
-                    metadata: {
-                        ...component.metadata,
-                        functions: component.functions,
-                        imports: component.imports,
-                        exports: component.exports
-                    }
-                }, this.organizationId);
-            }
             await project_repository_1.projectRepository.updateAnalysisStatus(this.projectId, 'active', this.organizationId, new Date());
             console.log(`💾 Persisted analysis results for ${blueprint.components.length} components`);
         }
         catch (error) {
-            console.warn('Failed to persist analysis results to database:', error.message);
+            console.warn('Failed to persist analysis results to database:', error instanceof Error ? error.message : String(error));
         }
     }
     async saveAsJSON(manifest, outputPath) {

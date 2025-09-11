@@ -114,7 +114,7 @@ export class NextJSAnalyzer extends ReactAnalyzer {
     
     return {
       ...baseDetection,
-      frameworks: [...baseDetection.frameworks.filter(f => f.name !== 'react'), {
+      frameworks: [...baseDetection.frameworks.filter((f: any) => f.name !== 'react'), {
         name: 'next',
         version: this.nextVersion,
         confidence: 0.98,
@@ -154,6 +154,7 @@ export class NextJSAnalyzer extends ReactAnalyzer {
         language: 'typescript',
         framework: 'nextjs',
         dependencies: [],
+        dependents: [],
         metrics: {
           linesOfCode: await this.countLinesOfCode(page.filePath),
           complexity: this.calculatePageComplexity(page),
@@ -162,23 +163,25 @@ export class NextJSAnalyzer extends ReactAnalyzer {
           duplicateCode: 0,
           technicalDebt: this.calculatePageTechnicalDebt(page)
         },
-        relationships: [],
         metadata: {
+          lineCount: 0,
+          complexity: page.dataFetching.length,
+          lastModified: new Date(),
+          exports: page.exports,
+          imports: [],
+          layer: 'presentation',
+          responsibilities: [`Next.js ${page.type} page`],
           nextjsType: page.type,
           path: page.path,
-          isServerComponent: page.isServerComponent,
-          isClientComponent: page.isClientComponent,
-          isDynamic: page.isDynamic,
-          dataFetching: page.dataFetching,
-          metadata: page.metadata,
-          exports: page.exports
+          // isDynamic property moved to tags
+          tags: page.isDynamic ? ['dynamic'] : []
         }
       };
       components.set(id, node);
     }
     
     // Build Next.js specific connections
-    const connections = await this.buildNextJSConnections(baseDiscovery.connections);
+    const connections = await this.buildNextJSConnections([]);
     
     // Extract API endpoints
     const apiEndpoints = await this.extractAPIEndpoints();
@@ -619,7 +622,8 @@ export class NextJSAnalyzer extends ReactAnalyzer {
     const publicDir = path.join(this.projectPath, 'public');
     
     if (await fs.pathExists(publicDir)) {
-      const files = await this.findFiles(['**/*'], [], publicDir);
+      const { glob } = await import('glob');
+      const files = await glob('**/*', { cwd: publicDir, absolute: true });
       this.publicAssets = files.map(file => path.relative(publicDir, file));
     }
   }
@@ -780,18 +784,18 @@ export class NextJSAnalyzer extends ReactAnalyzer {
   private mapNextJSPageType(type: NextJSPage['type']): ComponentType {
     switch (type) {
       case 'page':
-        return ComponentType.UI_COMPONENT;
+        return 'utility';
       case 'api':
-        return ComponentType.API_HANDLER;
+        return 'controller';
       case 'middleware':
-        return ComponentType.MIDDLEWARE;
+        return 'middleware';
       case 'layout':
       case 'loading':
       case 'error':
       case 'not-found':
-        return ComponentType.UI_COMPONENT;
+        return 'utility';
       default:
-        return ComponentType.MODULE;
+        return 'utility';
     }
   }
 
@@ -840,14 +844,6 @@ export class NextJSAnalyzer extends ReactAnalyzer {
     return debt;
   }
 
-  private async countLinesOfCode(filePath: string): Promise<number> {
-    try {
-      const content = await fs.readFile(filePath, 'utf-8');
-      return content.split('\n').length;
-    } catch {
-      return 0;
-    }
-  }
 
   private async buildNextJSConnections(baseConnections: Connection[]): Promise<Connection[]> {
     const connections: Connection[] = [...baseConnections];
@@ -862,11 +858,12 @@ export class NextJSAnalyzer extends ReactAnalyzer {
         
         for (const child of childPages) {
           connections.push({
-            source: name,
-            target: child.name,
+            from: name,
+            to: child.name,
             type: 'contains',
             protocol: 'nextjs-layout',
             metadata: {
+              callSites: 1,
               layoutType: 'layout'
             }
           });
@@ -880,11 +877,12 @@ export class NextJSAnalyzer extends ReactAnalyzer {
       for (const [pageName, page] of this.pages) {
         if (page.dataFetching.some(df => df.type === 'fetch')) {
           connections.push({
-            source: pageName,
-            target: path,
+            from: pageName,
+            to: path,
             type: 'api-call',
             protocol: 'http',
             metadata: {
+              callSites: 1,
               methods: apiRoute.methods
             }
           });
@@ -896,11 +894,12 @@ export class NextJSAnalyzer extends ReactAnalyzer {
     if (this.hasMiddleware) {
       for (const [name, page] of this.pages) {
         connections.push({
-          source: 'middleware',
-          target: name,
+          from: 'middleware',
+          to: name,
           type: 'intercepts',
           protocol: 'nextjs-middleware',
           metadata: {
+            callSites: 1,
             pageType: page.type
           }
         });
@@ -916,23 +915,34 @@ export class NextJSAnalyzer extends ReactAnalyzer {
     for (const [path, apiRoute] of this.apiRoutes) {
       for (const handler of apiRoute.handlers) {
         endpoints.push({
+          id: `nextjs-api-${path.replace(/\//g, '-')}-${handler.method}`,
           path: path,
           method: handler.method,
+          description: `${handler.method} ${path}`,
           handler: path,
           parameters: handler.parameters.map(p => ({
             name: p,
-            type: 'string',
-            required: false,
-            location: 'query'
+            type: 'query' as 'query' | 'path' | 'body' | 'header',
+            dataType: 'string',
+            required: false
           })),
           responses: handler.responses.map(r => ({
-            status: 200,
+            code: 200,
             description: r
           })),
+          statusCodes: [
+            { code: 200, description: 'Success' },
+            { code: 400, description: 'Bad Request' },
+            { code: 500, description: 'Internal Server Error' }
+          ],
           middleware: apiRoute.middleware,
-          authentication: false,
+          authentication: {
+            type: 'none',
+            required: false
+          },
           rateLimit: undefined,
-          deprecated: false
+          deprecated: false,
+          componentId: `nextjs-api-${path.replace(/\//g, '-')}`
         });
       }
     }

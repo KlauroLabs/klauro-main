@@ -2,7 +2,7 @@
 // Phase 3: Framework Sub-Analyzers - Production-ready Flask analyzer
 
 import { PythonAnalyzer } from '../../languages/python-analyzer';
-import { ComponentNode, ComponentType, Connection, APIEndpoint, DatabaseConnection } from '../../../types';
+import { ComponentNode, ComponentType, Connection, APIEndpoint, DatabaseConnection, ComponentMetadata } from '../../../types';
 import { telemetry } from '../../../telemetry/telemetry-schema';
 import * as path from 'path';
 import * as fs from 'fs-extra';
@@ -139,11 +139,12 @@ export class FlaskAnalyzer extends PythonAnalyzer {
       const node: ComponentNode = {
         id,
         name: `${route.methods.join(',')} ${route.path}`,
-        type: ComponentType.API_HANDLER,
+        type: 'controller',
         path: route.handler,
         language: 'python',
         framework: 'flask',
         dependencies: [],
+        dependents: [],
         metrics: {
           linesOfCode: 0,
           complexity: route.methods.length + route.decorators.length,
@@ -152,15 +153,18 @@ export class FlaskAnalyzer extends PythonAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
+          lineCount: 0,
+          complexity: route.methods.length + route.decorators.length,
+          lastModified: new Date(),
+          exports: [],
+          imports: [],
+          httpMethods: route.methods,
+          layer: 'presentation',
+          responsibilities: [`Handle requests to ${route.path}`],
           frameworkType: 'route',
-          methods: route.methods,
-          path: route.path,
-          blueprint: route.blueprint,
-          decorators: route.decorators,
-          middleware: route.middleware
-        }
+          path: route.path
+        } as ComponentMetadata & { frameworkType: string; path: string }
       };
       components.set(id, node);
     }
@@ -170,11 +174,12 @@ export class FlaskAnalyzer extends PythonAnalyzer {
       const node: ComponentNode = {
         id,
         name: blueprint.name,
-        type: ComponentType.MODULE,
+        type: 'utility',
         path: blueprint.filePath,
         language: 'python',
         framework: 'flask',
         dependencies: [],
+        dependents: [],
         metrics: {
           linesOfCode: await this.countLinesOfCode(blueprint.filePath),
           complexity: blueprint.routes.length,
@@ -183,13 +188,17 @@ export class FlaskAnalyzer extends PythonAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
+          lineCount: 0,
+          complexity: blueprint.routes.length,
+          lastModified: new Date(),
+          exports: [],
+          imports: [],
+          layer: 'infrastructure',
+          responsibilities: ['Blueprint routing and organization'],
           frameworkType: 'blueprint',
-          urlPrefix: blueprint.urlPrefix,
-          routesCount: blueprint.routes.length,
-          errorHandlersCount: blueprint.errorHandlers.size
-        }
+          urlPrefix: blueprint.urlPrefix
+        } as ComponentMetadata & { frameworkType: string; urlPrefix?: string }
       };
       components.set(id, node);
     }
@@ -199,11 +208,12 @@ export class FlaskAnalyzer extends PythonAnalyzer {
       const node: ComponentNode = {
         id,
         name: form.name,
-        type: ComponentType.DATA_MODEL,
+        type: 'model',
         path: form.filePath,
         language: 'python',
         framework: 'flask',
         dependencies: [],
+        dependents: [],
         metrics: {
           linesOfCode: await this.countLinesOfCode(form.filePath),
           complexity: form.fields.length + form.validators.length,
@@ -212,13 +222,18 @@ export class FlaskAnalyzer extends PythonAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
+          lineCount: 0,
+          complexity: form.fields.length + form.validators.length,
+          lastModified: new Date(),
+          exports: [],
+          imports: [],
+          layer: 'presentation',
+          responsibilities: ['Form validation and handling'],
           frameworkType: 'form',
           baseClass: form.baseClass,
-          fields: form.fields,
-          validators: form.validators
-        }
+          fields: form.fields.map(f => f.name)
+        } as ComponentMetadata & { frameworkType: string; baseClass: string; fields: string[] }
       };
       components.set(id, node);
     }
@@ -756,11 +771,12 @@ export class FlaskAnalyzer extends PythonAnalyzer {
     for (const [routeId, route] of this.routes) {
       if (route.blueprint) {
         connections.push({
-          source: route.blueprint,
-          target: routeId,
+          from: route.blueprint,
+          to: routeId,
           type: 'contains',
           protocol: 'flask',
           metadata: {
+            callSites: 1,
             routePath: route.path
           }
         });
@@ -773,11 +789,12 @@ export class FlaskAnalyzer extends PythonAnalyzer {
       for (const [routeId, route] of this.routes) {
         if (route.methods.includes('POST')) {
           connections.push({
-            source: routeId,
-            target: formId,
+            from: routeId,
+            to: formId,
             type: 'form-handling',
             protocol: 'flask-wtf',
             metadata: {
+              callSites: 1,
               formName: form.name
             }
           });
@@ -789,11 +806,12 @@ export class FlaskAnalyzer extends PythonAnalyzer {
     for (const [templateId, template] of this.templates) {
       if (template.extends) {
         connections.push({
-          source: templateId,
-          target: template.extends,
+          from: templateId,
+          to: template.extends,
           type: 'template-inheritance',
           protocol: 'jinja2',
           metadata: {
+            callSites: 1,
             relationship: 'extends'
           }
         });
@@ -801,11 +819,12 @@ export class FlaskAnalyzer extends PythonAnalyzer {
       
       for (const include of template.includes) {
         connections.push({
-          source: templateId,
-          target: include,
+          from: templateId,
+          to: include,
           type: 'template-include',
           protocol: 'jinja2',
           metadata: {
+            callSites: 1,
             relationship: 'includes'
           }
         });
@@ -821,15 +840,21 @@ export class FlaskAnalyzer extends PythonAnalyzer {
     for (const [id, route] of this.routes) {
       for (const method of route.methods) {
         endpoints.push({
+          id: `${id}-${method.toLowerCase()}`,
           path: route.blueprint ? `${this.blueprints.get(route.blueprint)?.urlPrefix || ''}${route.path}` : route.path,
           method: method as APIEndpoint['method'],
+          description: `Flask ${method} endpoint for ${route.path}`,
           handler: route.handler,
           parameters: [],
-          responses: [],
+          statusCodes: [{ code: 200, description: 'Success' }],
           middleware: route.middleware,
-          authentication: route.decorators.includes('login_required'),
+          authentication: {
+            type: route.decorators.includes('login_required') ? 'jwt' : 'none',
+            required: route.decorators.includes('login_required')
+          },
           rateLimit: undefined,
-          deprecated: false
+          deprecated: false,
+          componentId: id
         });
       }
     }
@@ -846,15 +871,16 @@ export class FlaskAnalyzer extends PythonAnalyzer {
       const dbType = this.extractDatabaseType(uri);
       
       connections.push({
+        id: 'flask-sqlalchemy',
         name: 'Flask-SQLAlchemy',
         type: dbType,
         host: this.extractHost(uri),
         port: this.extractPort(uri, dbType),
         database: this.extractDatabase(uri),
         schema: 'public',
-        tables: 0,
-        relationships: 0,
-        indexes: 0
+        tables: [],
+        usage: [],
+        componentIds: []
       });
     }
     
@@ -865,7 +891,9 @@ export class FlaskAnalyzer extends PythonAnalyzer {
     if (uri.includes('postgresql')) return 'postgresql';
     if (uri.includes('mysql')) return 'mysql';
     if (uri.includes('sqlite')) return 'sqlite';
-    return 'other';
+    if (uri.includes('mongodb')) return 'mongodb';
+    if (uri.includes('redis')) return 'redis';
+    return 'postgresql'; // Default fallback
   }
 
   private extractHost(uri: string): string {
@@ -918,10 +946,9 @@ export class FlaskAnalyzer extends PythonAnalyzer {
   }
 
   async analyzePerformance(): Promise<any> {
-    const performance = await super.analyzePerformance();
+    // Base performance metrics
     
     return {
-      ...performance,
       flask: {
         routesCount: this.routes.size,
         blueprintsCount: this.blueprints.size,

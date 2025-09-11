@@ -1,7 +1,7 @@
 // Unit tests for BaseAnalyzer class
 // Production-ready test suite with comprehensive coverage
 
-import { BaseAnalyzer, AnalyzerOptions } from '../../analyzer/base-analyzer';
+import { BaseAnalyzer, AnalyzerOptions, ComponentDiscovery } from '../../analyzer/base-analyzer';
 import { AnalyzerError, ValidationError, FileSystemError } from '../../analyzer/errors';
 import { ComponentNode, ArchitectureBlueprint } from '../../types';
 import * as fs from 'fs-extra';
@@ -340,7 +340,7 @@ describe('BaseAnalyzer', () => {
     it('should aggregate errors during analysis', async () => {
       // Create an analyzer that throws errors
       class ErrorAnalyzer extends TestAnalyzer {
-        protected async discoverComponents() {
+        protected async discoverComponents(): Promise<ComponentDiscovery> {
           throw new AnalyzerError('Test error', 'TEST_ERROR');
         }
       }

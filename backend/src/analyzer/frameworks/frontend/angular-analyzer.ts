@@ -143,6 +143,7 @@ export class AngularAnalyzer extends TypeScriptJavaScriptAnalyzer {
         language: 'typescript',
         framework: 'angular',
         dependencies: angularComp.dependencies,
+        dependents: [],
         metrics: {
           linesOfCode: await this.countLinesOfCode(angularComp.filePath),
           complexity: this.calculateAngularComplexity(angularComp),
@@ -151,17 +152,17 @@ export class AngularAnalyzer extends TypeScriptJavaScriptAnalyzer {
           duplicateCode: 0,
           technicalDebt: this.calculateTechnicalDebt(angularComp)
         },
-        relationships: [],
         metadata: {
+          lineCount: 0,
+          complexity: angularComp.inputs.length + angularComp.outputs.length,
+          lastModified: new Date(),
+          exports: [angularComp.name],
+          imports: angularComp.dependencies,
+          layer: 'presentation',
+          responsibilities: [`Angular ${angularComp.type} component`],
           angularType: angularComp.type,
           selector: angularComp.selector,
-          standalone: angularComp.standalone,
-          inputs: angularComp.inputs,
-          outputs: angularComp.outputs,
-          providers: angularComp.providers,
-          lifecycle: angularComp.lifecycle,
-          changeDetection: angularComp.changeDetection,
-          encapsulation: angularComp.encapsulation
+          // standalone property removed as it doesn't exist in ComponentMetadata
         }
       };
       components.set(id, node);
@@ -172,11 +173,12 @@ export class AngularAnalyzer extends TypeScriptJavaScriptAnalyzer {
       const node: ComponentNode = {
         id,
         name: service.name,
-        type: ComponentType.SERVICE,
+        type: 'service',
         path: service.filePath,
         language: 'typescript',
         framework: 'angular',
         dependencies: service.dependencies,
+        dependents: [],
         metrics: {
           linesOfCode: await this.countLinesOfCode(service.filePath),
           complexity: service.methods.length + service.observables.length,
@@ -185,13 +187,17 @@ export class AngularAnalyzer extends TypeScriptJavaScriptAnalyzer {
           duplicateCode: 0,
           technicalDebt: 0
         },
-        relationships: [],
         metadata: {
+          lineCount: 0,
+          complexity: service.methods.length + service.observables.length,
+          lastModified: new Date(),
+          exports: [service.name],
+          imports: service.dependencies,
+          layer: 'business',
+          responsibilities: [`Angular service providing ${service.providedIn} functionality`],
           angularType: 'service',
           providedIn: service.providedIn,
-          methods: service.methods,
-          observables: service.observables,
-          subjects: service.subjects
+          methods: service.methods
         }
       };
       components.set(id, node);
@@ -665,19 +671,19 @@ export class AngularAnalyzer extends TypeScriptJavaScriptAnalyzer {
   private mapAngularType(type: AngularComponent['type']): ComponentType {
     switch (type) {
       case 'component':
-        return ComponentType.UI_COMPONENT;
+        return 'utility';
       case 'service':
-        return ComponentType.SERVICE;
+        return 'service';
       case 'module':
-        return ComponentType.MODULE;
+        return 'utility';
       case 'directive':
       case 'pipe':
-        return ComponentType.UTILITY;
+        return 'utility';
       case 'guard':
       case 'interceptor':
-        return ComponentType.MIDDLEWARE;
+        return 'middleware';
       default:
-        return ComponentType.MODULE;
+        return 'utility';
     }
   }
 
@@ -754,11 +760,12 @@ export class AngularAnalyzer extends TypeScriptJavaScriptAnalyzer {
       // Connect module to its declarations
       for (const declaration of module.declarations) {
         connections.push({
-          source: moduleName,
-          target: declaration,
+          from: moduleName,
+          to: declaration,
           type: 'contains',
           protocol: 'angular-module',
           metadata: {
+            callSites: 1,
             relationship: 'declares'
           }
         });
@@ -767,11 +774,12 @@ export class AngularAnalyzer extends TypeScriptJavaScriptAnalyzer {
       // Connect module to its imports
       for (const importName of module.imports) {
         connections.push({
-          source: moduleName,
-          target: importName,
+          from: moduleName,
+          to: importName,
           type: 'dependency',
           protocol: 'angular-module',
           metadata: {
+            callSites: 1,
             relationship: 'imports'
           }
         });
@@ -782,11 +790,12 @@ export class AngularAnalyzer extends TypeScriptJavaScriptAnalyzer {
     for (const [name, component] of this.components) {
       for (const dep of component.dependencies) {
         connections.push({
-          source: name,
-          target: dep,
+          from: name,
+          to: dep,
           type: 'dependency',
           protocol: 'angular-di',
           metadata: {
+            callSites: 1,
             relationship: 'injects'
           }
         });
@@ -797,11 +806,12 @@ export class AngularAnalyzer extends TypeScriptJavaScriptAnalyzer {
     for (const [name, service] of this.services) {
       for (const dep of service.dependencies) {
         connections.push({
-          source: name,
-          target: dep,
+          from: name,
+          to: dep,
           type: 'dependency',
           protocol: 'angular-di',
           metadata: {
+            callSites: 1,
             relationship: 'injects'
           }
         });
@@ -812,11 +822,12 @@ export class AngularAnalyzer extends TypeScriptJavaScriptAnalyzer {
     for (const route of this.routes) {
       if (route.component) {
         connections.push({
-          source: 'router',
-          target: route.component,
+          from: 'router',
+          to: route.component,
           type: 'navigation',
           protocol: 'angular-router',
           metadata: {
+            callSites: 1,
             path: route.path
           }
         });
@@ -825,11 +836,12 @@ export class AngularAnalyzer extends TypeScriptJavaScriptAnalyzer {
       if (route.canActivate) {
         for (const guard of route.canActivate) {
           connections.push({
-            source: guard,
-            target: route.component || route.path,
+            from: guard,
+            to: route.component || route.path,
             type: 'guards',
             protocol: 'angular-router',
             metadata: {
+              callSites: 1,
               guardType: 'canActivate'
             }
           });
@@ -899,10 +911,9 @@ export class AngularAnalyzer extends TypeScriptJavaScriptAnalyzer {
   }
 
   async analyzePerformance(): Promise<any> {
-    const performance = await super.analyzePerformance();
+    // Base performance metrics
     
     return {
-      ...performance,
       angular: {
         componentsCount: this.components.size,
         servicesCount: this.services.size,

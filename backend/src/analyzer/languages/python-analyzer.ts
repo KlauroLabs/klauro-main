@@ -141,7 +141,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
             skippedFiles++;
           }
         } catch (error) {
-          console.warn(`⚠️ Failed to analyze ${filePath}: ${error.message}`);
+          console.warn(`⚠️ Failed to analyze ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
           skippedFiles++;
         }
 
@@ -224,7 +224,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
         const key = `${conn.from}-${conn.to}-${conn.type}`;
         const existing = connectionMap.get(key);
         if (existing) {
-          existing.weight += conn.weight;
+          existing.weight = (existing.weight || 0) + (conn.weight || 0);
           existing.metadata!.callSites! += conn.metadata?.callSites || 0;
         } else {
           connectionMap.set(key, conn);
@@ -837,7 +837,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
     }
   }
 
-  private async detectDjangoVersion(): Promise<string | undefined> {
+  protected async detectDjangoVersion(): Promise<string | undefined> {
     try {
       // Try to find Django version in requirements or setup files
       const requirementsPath = path.join(this.projectPath, 'requirements.txt');

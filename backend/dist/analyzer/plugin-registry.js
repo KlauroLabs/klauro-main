@@ -52,7 +52,7 @@ class PluginRegistry {
             path.join(__dirname, 'plugins'),
             path.join(process.cwd(), 'plugins'),
             path.join(process.cwd(), 'node_modules', '@unravl', 'analyzers'),
-            path.join(require.os?.homedir?.() || '', '.unravl', 'plugins'),
+            path.join(require('os').homedir(), '.unravl', 'plugins'),
         ];
         this.pluginDirectories = defaultPaths.filter(dir => {
             try {
@@ -103,7 +103,7 @@ class PluginRegistry {
                 results.push(...dirResults);
             }
             catch (error) {
-                console.warn(`⚠️ Failed to scan plugin directory ${directory}: ${error.message}`);
+                console.warn(`⚠️ Failed to scan plugin directory ${directory}: ${error instanceof Error ? error.message : String(error)}`);
                 telemetry_schema_1.telemetry.emit({
                     type: 'error_occurred',
                     source: { analyzer: 'plugin-registry' },
@@ -181,7 +181,7 @@ class PluginRegistry {
         catch (error) {
             return {
                 success: false,
-                error: `Failed to load plugin from ${pluginPath}: ${error.message}`
+                error: `Failed to load plugin from ${pluginPath}: ${error instanceof Error ? error.message : String(error)}`
             };
         }
     }
@@ -229,7 +229,7 @@ class PluginRegistry {
         catch (error) {
             return {
                 success: false,
-                error: `Failed to load analyzer from ${filePath}: ${error.message}`
+                error: `Failed to load analyzer from ${filePath}: ${error instanceof Error ? error.message : String(error)}`
             };
         }
     }
@@ -240,7 +240,7 @@ class PluginRegistry {
             return module;
         }
         catch (error) {
-            throw new Error(`Failed to require analyzer module: ${error.message}`);
+            throw new Error(`Failed to require analyzer module: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
     parsePluginManifest(manifest) {
@@ -324,14 +324,13 @@ class PluginRegistry {
         return true;
     }
     async getAnalyzerForProject(repositoryPath) {
-        const span = telemetry_schema_1.telemetry.createSpan('plugin-registry.getAnalyzerForProject', {
-            repositoryPath
-        });
+        const span = telemetry_schema_1.telemetry.createSpan('plugin-registry.getAnalyzerForProject');
         const plugins = Array.from(this.plugins.values());
         plugins.sort((a, b) => b.priority - a.priority);
         for (const plugin of plugins) {
             try {
-                const analyzer = new plugin.analyzer();
+                const AnalyzerClass = plugin.analyzer;
+                const analyzer = new AnalyzerClass();
                 const cacheKey = `${plugin.id}:${repositoryPath}`;
                 if (this.loadedAnalyzers.has(cacheKey)) {
                     telemetry_schema_1.telemetry.emit({
@@ -368,7 +367,7 @@ class PluginRegistry {
                 }
             }
             catch (error) {
-                console.warn(`⚠️ Plugin ${plugin.name} failed project detection: ${error.message}`);
+                console.warn(`⚠️ Plugin ${plugin.name} failed project detection: ${error instanceof Error ? error.message : String(error)}`);
                 telemetry_schema_1.telemetry.emit({
                     type: 'analyzer_selection_failed',
                     source: { analyzer: 'plugin-registry' },
@@ -453,7 +452,7 @@ class PluginRegistry {
         if (!this.organizationId)
             return;
         try {
-            const client = await database_1.dbConnection.getClient();
+            const client = await database_1.db.getClient();
             const query = `
         INSERT INTO analyzer_plugins (
           organization_id, plugin_id, name, version, author, type, category,
@@ -494,7 +493,7 @@ class PluginRegistry {
             await client.query(query, values);
         }
         catch (error) {
-            console.warn(`Failed to persist plugin ${plugin.id} to database:`, error.message);
+            console.warn(`Failed to persist plugin ${plugin.id} to database:`, error instanceof Error ? error.message : String(error));
         }
     }
     async syncDiscoveredPluginsToDatabase(plugins) {
@@ -506,7 +505,7 @@ class PluginRegistry {
             }
         }
         catch (error) {
-            console.warn('Failed to sync plugins to database:', error.message);
+            console.warn('Failed to sync plugins to database:', error instanceof Error ? error.message : String(error));
         }
     }
     groupPluginsByType(plugins) {

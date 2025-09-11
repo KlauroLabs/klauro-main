@@ -76,20 +76,16 @@ class BaseAnalyzer {
         }
         console.log(`🔍 Starting ${this.getAnalyzerName()} analysis of: ${repositoryPath}`);
         this.metrics.startAnalysis(this.analysisId, repositoryPath);
-        const span = telemetry_schema_1.telemetry.createSpan('analyzer.analyzeRepository', {
-            analyzer: this.getAnalyzerName(),
-            repositoryPath,
-            analysisId: this.analysisId
-        });
+        const span = telemetry_schema_1.telemetry.createSpan('analyzer.analyzeRepository');
         telemetry_schema_1.telemetry.emit({
             type: 'analysis_started',
             source: {
-                analyzer: this.getAnalyzerName(),
-                analysisId: this.analysisId
+                analyzer: this.getAnalyzerName()
             },
             data: {
                 repositoryPath,
-                timestamp: new Date().toISOString()
+                totalFiles: 0,
+                options: this.options
             }
         });
         try {
@@ -135,16 +131,18 @@ class BaseAnalyzer {
             telemetry_schema_1.telemetry.emit({
                 type: 'analysis_completed',
                 source: {
-                    analyzer: this.getAnalyzerName(),
-                    analysisId: this.analysisId
+                    analyzer: this.getAnalyzerName()
                 },
                 data: {
+                    success: true,
+                    componentsFound: blueprint.components.length,
+                    connectionsFound: blueprint.connections.length,
+                    entryPointsFound: blueprint.entryPoints.length,
+                    exitPointsFound: blueprint.exitPoints.length,
+                    orphanedComponents: blueprint.orphanedComponents.length,
+                    riskAreas: blueprint.riskAreas.length,
                     duration: analysisTime,
-                    componentCount: blueprint.components.length,
-                    connectionCount: blueprint.connections.length,
-                    entryPointCount: blueprint.entryPoints.length,
-                    exitPointCount: blueprint.exitPoints.length,
-                    riskCount: blueprint.riskAreas.length
+                    errors: []
                 }
             });
             if (this.options.enableCache) {
@@ -160,12 +158,11 @@ class BaseAnalyzer {
         }
         catch (error) {
             const analysisTime = Date.now() - this.startTime;
-            this.metrics.failAnalysis(this.analysisId, error, analysisTime);
+            this.metrics.failAnalysis(this.analysisId, error instanceof Error ? error : new Error(String(error)), analysisTime);
             telemetry_schema_1.telemetry.emit({
                 type: 'error_occurred',
                 source: {
-                    analyzer: this.getAnalyzerName(),
-                    analysisId: this.analysisId
+                    analyzer: this.getAnalyzerName()
                 },
                 data: {
                     error: error instanceof Error ? error.message : String(error),
@@ -177,7 +174,7 @@ class BaseAnalyzer {
             if (error instanceof errors_1.AnalyzerError) {
                 throw error;
             }
-            throw new errors_1.AnalyzerError(`Analysis failed: ${error.message}`, 'ANALYSIS_FAILED', { analysisId: this.analysisId, projectPath: repositoryPath, error });
+            throw new errors_1.AnalyzerError(`Analysis failed: ${error instanceof Error ? error.message : String(error)}`, 'ANALYSIS_FAILED', { analysisId: this.analysisId, projectPath: repositoryPath, error });
         }
     }
     async identifyEntryPoints(components) {
