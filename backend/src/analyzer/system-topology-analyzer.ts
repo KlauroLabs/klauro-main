@@ -2,7 +2,11 @@
 // Instead of just parsing code, this understands how systems are actually structured
 
 import { BaseAnalyzer, AnalyzerOptions, LanguageDetection, FrameworkDetection, ComponentDiscovery } from './base-analyzer';
-import { ComponentNode, ComponentType, Connection, ConnectionType, RiskArea, ComponentMetadata } from '../types';
+import { 
+  ComponentNode, ComponentType, Connection, ConnectionType, RiskArea, ComponentMetadata,
+  EntryPoint, ExitPoint, CallGraph, DatabaseConnection, TestCoverage, CallGraphNode,
+  CallGraphEdge
+} from '../types';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 
@@ -828,8 +832,351 @@ export class SystemTopologyAnalyzer extends BaseAnalyzer {
     return matches ? Math.max(1, matches.length - 1) : 1; // Subtract 1 for the import statement itself
   }
 
-  protected async identifyEntryPoints(components: ComponentNode[]): Promise<string[]> {
-    return this.topology.entryPoints.map(ep => ep.id);
+  protected async identifyEntryPoints(components: ComponentNode[]): Promise<EntryPoint[]> {
+    const entryPoints: EntryPoint[] = [];
+    
+    for (const ep of this.topology.entryPoints) {
+      const component = components.find(c => c.path === ep.path);
+      if (component) {
+        entryPoints.push({
+          id: ep.id,
+          type: ep.type as any,
+          path: ep.path,
+          methods: ep.methods,
+          description: ep.description,
+          componentId: component.id,
+          authentication: { type: 'none', required: false }
+        });
+      }
+    }
+    
+    return entryPoints;
+  }
+
+  protected async identifyExitPoints(components: ComponentNode[]): Promise<ExitPoint[]> {
+    const exitPoints: ExitPoint[] = [];
+    
+    // Identify database connections, external APIs, file operations
+    for (const component of components) {
+      try {
+        const fullPath = path.join(this.projectPath, component.path);
+        const content = await this.readFile(fullPath);
+        
+        // Database operations
+        if (content.match(/\.(findOne|find|save|create|update|delete|query)\(/)) {
+          exitPoints.push({
+            id: `${component.id}_db`,
+            type: 'database_query',
+            destination: 'database',
+            description: 'Database operations',
+            critical: true,
+            componentId: component.id
+          });
+        }
+        
+        // External API calls
+        if (content.match(/axios|fetch|http\.request|HttpClient/)) {
+          exitPoints.push({
+            id: `${component.id}_api`,
+            type: 'external_api',
+            destination: 'external',
+            description: 'External API calls',
+            critical: false,
+            componentId: component.id
+          });
+        }
+        
+        // File operations
+        if (content.match(/fs\.|readFile|writeFile|createReadStream|createWriteStream/)) {
+          exitPoints.push({
+            id: `${component.id}_file`,
+            type: 'file_operation',
+            destination: 'filesystem',
+            description: 'File system operations',
+            critical: false,
+            componentId: component.id
+          });
+        }
+      } catch (error) {
+        // Skip files that can't be read
+      }
+    }
+    
+    return exitPoints;
+  }
+
+  protected async generateCallGraph(components: ComponentNode[]): Promise<CallGraph> {
+    const nodes: CallGraphNode[] = [];
+    const edges: CallGraphEdge[] = [];
+    const entryPointIds: string[] = [];
+    const cycles: string[][] = [];
+    const deadCode: string[] = [];
+    
+    // Create nodes for each component
+    for (const component of components) {
+      const node: CallGraphNode = {
+        id: component.id,
+        name: component.name,
+        type: 'module',
+        file: component.path,
+        complexity: component.metadata.complexity,
+        fanIn: component.dependents.length,
+        fanOut: component.dependencies.length,
+        depth: 0, // Will be calculated
+        critical: component.metadata.isEntry || false
+      };
+      nodes.push(node);
+      
+      if (component.metadata.isEntry) {
+        entryPointIds.push(component.id);
+      }
+    }
+    
+    // Create edges based on connections
+    const componentMap = new Map(components.map(c => [c.id, c]));
+    for (const component of components) {
+      for (const depId of component.dependencies) {
+        if (componentMap.has(depId)) {
+          edges.push({
+            from: component.id,
+            to: depId,
+            count: 1,
+            type: 'direct',
+            async: false,
+            conditional: false
+          });
+        }
+      }
+    }
+    
+    // Detect cycles using DFS
+    const visited = new Set<string>();
+    const recursionStack = new Set<string>();
+    
+    const detectCycle = (nodeId: string, path: string[] = []): void => {
+      visited.add(nodeId);
+      recursionStack.add(nodeId);
+      path.push(nodeId);
+      
+      const component = componentMap.get(nodeId);
+      if (component) {
+        for (const depId of component.dependencies) {
+          if (!visited.has(depId)) {
+            detectCycle(depId, [...path]);
+          } else if (recursionStack.has(depId)) {
+            // Found a cycle
+            const cycleStart = path.indexOf(depId);
+            if (cycleStart !== -1) {
+              cycles.push(path.slice(cycleStart));
+            }
+          }
+        }
+      }
+      
+      recursionStack.delete(nodeId);
+    };
+    
+    // Run cycle detection from each unvisited node
+    for (const node of nodes) {
+      if (!visited.has(node.id)) {
+        detectCycle(node.id);
+      }
+    }
+    
+    // Find dead code (components with no entry path)
+    const reachable = new Set<string>();
+    const markReachable = (nodeId: string): void => {
+      if (reachable.has(nodeId)) return;
+      reachable.add(nodeId);
+      
+      const component = componentMap.get(nodeId);
+      if (component) {
+        for (const depId of component.dependencies) {
+          markReachable(depId);
+        }
+      }
+    };
+    
+    for (const entryId of entryPointIds) {
+      markReachable(entryId);
+    }
+    
+    for (const node of nodes) {
+      if (!reachable.has(node.id) && !node.critical) {
+        deadCode.push(node.id);
+      }
+    }
+    
+    return {
+      nodes,
+      edges,
+      entryPoints: entryPointIds,
+      cycles,
+      layers: [],
+      hotPaths: [],
+      deadCode
+    };
+  }
+
+  protected async analyzeDatabaseConnections(components: ComponentNode[]): Promise<DatabaseConnection[]> {
+    const connections: DatabaseConnection[] = [];
+    const connectionMap = new Map<string, DatabaseConnection>();
+    
+    // Analyze each component for database connections
+    for (const component of components) {
+      try {
+        const fullPath = path.join(this.projectPath, component.path);
+        const content = await this.readFile(fullPath);
+        
+        const dbConnections = await this.detectDatabaseConnections(content);
+        
+        for (const conn of dbConnections) {
+          const key = `${conn.type}_${conn.host || 'localhost'}`;
+          
+          if (!connectionMap.has(key)) {
+            connectionMap.set(key, {
+              ...conn,
+              componentIds: [component.id],
+              usage: [{
+                componentId: component.id,
+                operations: this.extractDatabaseOperations(content),
+                frequency: 1,
+                critical: component.metadata.isEntry || false
+              }]
+            });
+          } else {
+            const existing = connectionMap.get(key)!;
+            existing.componentIds.push(component.id);
+            existing.usage.push({
+              componentId: component.id,
+              operations: this.extractDatabaseOperations(content),
+              frequency: 1,
+              critical: component.metadata.isEntry || false
+            });
+          }
+        }
+      } catch (error) {
+        // Skip files that can't be read
+      }
+    }
+    
+    return Array.from(connectionMap.values());
+  }
+
+  private extractDatabaseOperations(content: string): any[] {
+    const operations: any[] = [];
+    
+    // Common ORM/database patterns
+    const patterns = [
+      { regex: /\.find(?:One|All|By)?\(/g, type: 'read' },
+      { regex: /\.create\(/g, type: 'write' },
+      { regex: /\.save\(/g, type: 'write' },
+      { regex: /\.update(?:One|Many)?\(/g, type: 'write' },
+      { regex: /\.delete(?:One|Many)?\(/g, type: 'write' },
+      { regex: /SELECT\s+/gi, type: 'read' },
+      { regex: /INSERT\s+INTO/gi, type: 'write' },
+      { regex: /UPDATE\s+/gi, type: 'write' },
+      { regex: /DELETE\s+FROM/gi, type: 'write' },
+      { regex: /BEGIN\s+TRANSACTION/gi, type: 'transaction' }
+    ];
+    
+    for (const pattern of patterns) {
+      const matches = content.match(pattern.regex);
+      if (matches) {
+        operations.push({
+          type: pattern.type,
+          tables: [], // Would need more analysis to extract table names
+          complexity: 1,
+          optimized: false
+        });
+      }
+    }
+    
+    return operations;
+  }
+
+  protected async analyzeTestCoverage(components: ComponentNode[]): Promise<TestCoverage | null> {
+    // Look for test files
+    const testFiles = await this.findFiles([
+      '**/*.test.ts', '**/*.test.js', '**/*.spec.ts', '**/*.spec.js',
+      '**/__tests__/**/*.ts', '**/__tests__/**/*.js'
+    ]);
+    
+    if (testFiles.length === 0) {
+      return null;
+    }
+    
+    const coverage: TestCoverage = {
+      overall: 0,
+      lines: { covered: 0, total: 0, percentage: 0 },
+      branches: { covered: 0, total: 0, percentage: 0 },
+      functions: { covered: 0, total: 0, percentage: 0 },
+      statements: { covered: 0, total: 0, percentage: 0 },
+      byComponent: {},
+      byType: {},
+      uncoveredFiles: []
+    };
+    
+    // Basic coverage estimation based on test file presence
+    const componentFiles = new Set(components.map(c => c.path));
+    const testedComponents = new Set<string>();
+    
+    for (const testFile of testFiles) {
+      try {
+        const content = await this.readFile(testFile);
+        
+        // Look for import statements to determine what's being tested
+        const importMatches = content.match(/from\s+['"](.*?)['"]|require\(['"](.*?)['"]\)/g);
+        if (importMatches) {
+          for (const match of importMatches) {
+            const importPath = match.match(/['"]([^'"]+)['"]/)?.[1];
+            if (importPath) {
+              const resolvedPath = this.resolveImportPath(importPath, testFile);
+              if (resolvedPath && componentFiles.has(resolvedPath)) {
+                testedComponents.add(resolvedPath);
+              }
+            }
+          }
+        }
+        
+        // Count test cases
+        const testCases = content.match(/\b(it|test|describe)\s*\(/g);
+        if (testCases) {
+          coverage.statements.total += testCases.length;
+          coverage.statements.covered += Math.floor(testCases.length * 0.8); // Estimate 80% pass rate
+        }
+      } catch (error) {
+        // Skip files that can't be read
+      }
+    }
+    
+    // Calculate coverage percentages
+    const coveredCount = testedComponents.size;
+    const totalCount = componentFiles.size;
+    coverage.overall = totalCount > 0 ? Math.round((coveredCount / totalCount) * 100) : 0;
+    
+    coverage.lines.total = totalCount;
+    coverage.lines.covered = coveredCount;
+    coverage.lines.percentage = coverage.overall;
+    
+    coverage.functions = { ...coverage.lines };
+    coverage.branches = { ...coverage.lines };
+    
+    // Mark uncovered files
+    for (const file of componentFiles) {
+      if (!testedComponents.has(file)) {
+        coverage.uncoveredFiles.push(file);
+      }
+      coverage.byComponent[file] = {
+        lines: testedComponents.has(file) ? 80 : 0,
+        branches: testedComponents.has(file) ? 75 : 0,
+        functions: testedComponents.has(file) ? 85 : 0,
+        statements: testedComponents.has(file) ? 80 : 0,
+        tests: 0
+      };
+    }
+    
+    return coverage;
   }
 
   protected async assessRisks(components: ComponentNode[], connections: Connection[]): Promise<RiskArea[]> {
