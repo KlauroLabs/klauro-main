@@ -4,6 +4,16 @@
 import { pluginRegistry } from './plugin-registry';
 import { SystemTopologyAnalyzer } from './system-topology-analyzer';
 import { AnalyzerPlugin } from './plugin-registry';
+import { 
+  PythonAnalyzer, 
+  TypeScriptJavaScriptAnalyzer, 
+  JavaAnalyzer, 
+  CSharpAnalyzer, 
+  GoAnalyzer, 
+  RustAnalyzer, 
+  PHPAnalyzer,
+  ANALYZER_METADATA 
+} from './languages';
 
 /**
  * Bootstrap the analyzer system with official plugins
@@ -293,66 +303,62 @@ async function registerOfficialAnalyzers(): Promise<void> {
     pluginRegistry.registerPlugin(topologyPlugin);
     console.log(`✅ Registered: ${topologyPlugin.name}`);
   } catch (error) {
-    console.error(`❌ Failed to register System Topology Analyzer: ${error.message}`);
+    console.error(`❌ Failed to register System Topology Analyzer: ${(error as Error).message}`);
   }
 
-  // For other analyzers, we'll register placeholders that will be implemented later
-  // This establishes the plugin ecosystem structure
-  for (const analyzerConfig of officialAnalyzers.slice(1)) {
-    try {
-      // Create a placeholder analyzer that extends SystemTopologyAnalyzer
-      // but identifies itself with the specific language/framework focus
-      class PlaceholderAnalyzer extends SystemTopologyAnalyzer {
-        getAnalyzerName(): string {
-          return analyzerConfig.name;
-        }
+  // Register all Phase 2 language base analyzers
+  const languageAnalyzers = [
+    { class: PythonAnalyzer, config: officialAnalyzers[1] },
+    { class: TypeScriptJavaScriptAnalyzer, config: officialAnalyzers[1] }, // Will be updated
+    { class: JavaAnalyzer, config: officialAnalyzers[2] },
+    { class: CSharpAnalyzer, config: officialAnalyzers[3] },
+    { class: GoAnalyzer, config: officialAnalyzers[4] },
+    { class: RustAnalyzer, config: officialAnalyzers[5] },
+    { class: PHPAnalyzer, config: officialAnalyzers[6] }
+  ];
 
-        getSupportedLanguages(): string[] {
-          return analyzerConfig.supportedLanguages;
-        }
-
-        getSupportedFrameworks(): string[] {
-          return analyzerConfig.supportedFrameworks;
-        }
-
-        protected async detectLanguageAndFramework() {
-          const result = await super.detectLanguageAndFramework();
-          
-          // Filter result to only include supported languages and frameworks
-          const supportedLanguages = new Set(this.getSupportedLanguages());
-          const supportedFrameworks = new Set(this.getSupportedFrameworks());
-          
-          if (!supportedLanguages.has(result.language)) {
-            return {
-              language: result.language,
-              confidence: 0.1, // Low confidence for unsupported languages
-              frameworks: [],
-              files: []
-            };
-          }
-
-          const filteredFrameworks = result.frameworks.filter(fw => 
-            supportedFrameworks.has(fw.name.toLowerCase()) || 
-            supportedFrameworks.has('any')
-          );
-
-          return {
-            ...result,
-            frameworks: filteredFrameworks,
-            confidence: filteredFrameworks.length > 0 ? result.confidence : result.confidence * 0.5
-          };
-        }
+  // Register each language analyzer with its metadata
+  for (let i = 0; i < ANALYZER_METADATA.length; i++) {
+    const metadata = ANALYZER_METADATA[i];
+    const analyzerClass = languageAnalyzers[i]?.class;
+    
+    if (analyzerClass) {
+      try {
+        const plugin: AnalyzerPlugin = {
+          id: `unravl-${metadata.name.toLowerCase().replace('analyzer', '')}-analyzer`,
+          name: metadata.name.replace('Analyzer', ' Analyzer'),
+          version: '1.0.0',
+          description: `Production-ready ${metadata.languages.join('/')} analyzer with comprehensive AST parsing`,
+          author: 'Unravl Team',
+          supportedLanguages: [...metadata.languages],
+          supportedFrameworks: [...metadata.frameworks],
+          type: 'official',
+          category: metadata.category as any,
+          priority: metadata.priority,
+          metadata: {
+            minEngineVersion: '1.0.0',
+            license: 'MIT',
+            homepage: 'https://unravl.dev',
+            repository: 'https://github.com/unravl/platform',
+            documentation: `https://docs.unravl.dev/analyzers/${metadata.languages[0]}`,
+            keywords: [
+              ...metadata.languages,
+              ...metadata.frameworks.slice(0, 5), // First 5 frameworks
+              'ast-parsing', 'production-ready', 'official'
+            ],
+            maintainers: ['Unravl Team <team@unravl.dev>'],
+            lastUpdated: new Date(),
+            verified: true
+          },
+          dependencies: [],
+          analyzer: analyzerClass
+        };
+        
+        pluginRegistry.registerPlugin(plugin);
+        console.log(`✅ Registered: ${plugin.name} (${plugin.supportedLanguages.join(', ')})`);
+      } catch (error) {
+        console.error(`❌ Failed to register ${metadata.name}: ${(error as Error).message}`);
       }
-
-      const plugin: AnalyzerPlugin = {
-        ...analyzerConfig,
-        analyzer: PlaceholderAnalyzer
-      };
-      
-      pluginRegistry.registerPlugin(plugin);
-      console.log(`📝 Registered placeholder: ${plugin.name} (${plugin.supportedLanguages.join(', ')})`);
-    } catch (error) {
-      console.error(`❌ Failed to register ${analyzerConfig.name}: ${error.message}`);
     }
   }
 
@@ -410,7 +416,7 @@ export async function loadCommunityAnalyzers(): Promise<void> {
       console.log('📭 No community analyzers found');
     }
   } catch (error) {
-    console.error('❌ Failed to discover community analyzers:', error.message);
+    console.error('❌ Failed to discover community analyzers:', (error as Error).message);
   }
 }
 
@@ -429,7 +435,7 @@ export async function initializeAnalyzerSystem(): Promise<void> {
     console.log(`   Languages: ${stats.supportedLanguages.length}`);
     console.log(`   Frameworks: ${stats.supportedFrameworks.length}\n`);
   } catch (error) {
-    console.error('💥 Failed to initialize analyzer system:', error.message);
+    console.error('💥 Failed to initialize analyzer system:', (error as Error).message);
     throw error;
   }
 }
