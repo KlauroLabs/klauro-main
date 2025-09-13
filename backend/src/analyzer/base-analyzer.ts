@@ -8,6 +8,7 @@ import {
   APIEndpoint, SecurityAnalysis, TestingInfo, DeploymentInfo, CallGraph,
   FrameworkInfo, DatabaseConnection, FunctionInfo, TestCoverage
 } from '../types';
+import { aiAnalyzer } from '../ai/ai-analyzer';
 import { AnalyzerError, ValidationError, FileSystemError } from './errors';
 import { AnalyzerMetrics, MetricsCollector } from './metrics';
 import { CacheManager } from './cache';
@@ -29,6 +30,9 @@ export interface AnalyzerOptions {
   timeout?: number; // Analysis timeout in milliseconds
   parallel?: boolean; // Enable parallel processing
   maxWorkers?: number; // Maximum number of parallel workers
+  enableAI?: boolean; // Enable AI-powered analysis enhancements
+  aiProviders?: string[]; // Specific AI providers to use
+  aiCacheEnabled?: boolean; // Enable AI response caching
 }
 
 export interface LanguageDetection {
@@ -198,7 +202,7 @@ export abstract class BaseAnalyzer {
       console.log(`✅ Test coverage: ${this.testCoverage?.overall || 0}%`);
 
       // Step 6: Generate final blueprint
-      const blueprint: ArchitectureBlueprint = {
+      let blueprint: ArchitectureBlueprint = {
         projectName: await this.getProjectName(),
         framework: detection.frameworks[0]?.name || detection.language,
         components: discovery.components,
@@ -250,6 +254,18 @@ export abstract class BaseAnalyzer {
       
       if (this.warnings.length > 0) {
         console.log(`⚠️ ${this.warnings.length} warnings encountered during analysis`);
+      }
+
+      // AI Enhancement Phase
+      if (this.options.enableAI) {
+        try {
+          console.log('🤖 Enhancing blueprint with AI analysis...');
+          blueprint = await aiAnalyzer.enhanceBlueprint(blueprint);
+          console.log('✅ AI enhancement completed');
+        } catch (error) {
+          console.warn('⚠️ AI enhancement failed, continuing with basic analysis:', error);
+          this.warnings.push(`AI enhancement failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
 
       span.end();
@@ -409,7 +425,10 @@ export abstract class BaseAnalyzer {
       maxFileSize: 10 * 1024 * 1024, // 10MB
       timeout: 5 * 60 * 1000, // 5 minutes
       parallel: false,
-      maxWorkers: 4
+      maxWorkers: 4,
+      enableAI: false, // Default to disabled for performance
+      aiProviders: ['claude', 'openai', 'fallback'],
+      aiCacheEnabled: true
     };
 
     const merged = { ...defaults, ...options };

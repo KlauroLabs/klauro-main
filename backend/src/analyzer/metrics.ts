@@ -224,7 +224,8 @@ export class MetricsCollector {
     const riskDistribution = {
       low: 0,
       medium: 0,
-      high: 0
+      high: 0,
+      critical: 0
     };
 
     blueprint.riskAreas.forEach(risk => {

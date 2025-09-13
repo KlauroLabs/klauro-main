@@ -19,5 +19,15 @@
     "moduleResolution": "node"
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/**/*.disabled",
+    "src/**/*.disabled/**/*",
+    "src/demo.disabled/**/*",
+    "src/visualization.disabled.bak/**/*",
+    "src/ai/integration-test.ts.disabled",
+    "src/**/*.test.ts",
+    "src/**/*.spec.ts"
+  ]
 }

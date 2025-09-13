@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AnalyzerFactory = exports.BaseAnalyzer = void 0;
+const ai_analyzer_1 = require("../ai/ai-analyzer");
 const errors_1 = require("./errors");
 const metrics_1 = require("./metrics");
 const cache_1 = require("./cache");
@@ -108,7 +109,7 @@ class BaseAnalyzer {
             console.log(`🗄️ Found ${this.databaseConnections.length} database connections`);
             this.testCoverage = await this.wrapWithMetrics('test_coverage_analysis', () => this.analyzeTestCoverage(discovery.components));
             console.log(`✅ Test coverage: ${this.testCoverage?.overall || 0}%`);
-            const blueprint = {
+            let blueprint = {
                 projectName: await this.getProjectName(),
                 framework: detection.frameworks[0]?.name || detection.language,
                 components: discovery.components,
@@ -152,6 +153,17 @@ class BaseAnalyzer {
             console.log(`⏱️ Analysis took ${(analysisTime / 1000).toFixed(2)} seconds`);
             if (this.warnings.length > 0) {
                 console.log(`⚠️ ${this.warnings.length} warnings encountered during analysis`);
+            }
+            if (this.options.enableAI) {
+                try {
+                    console.log('🤖 Enhancing blueprint with AI analysis...');
+                    blueprint = await ai_analyzer_1.aiAnalyzer.enhanceBlueprint(blueprint);
+                    console.log('✅ AI enhancement completed');
+                }
+                catch (error) {
+                    console.warn('⚠️ AI enhancement failed, continuing with basic analysis:', error);
+                    this.warnings.push(`AI enhancement failed: ${error instanceof Error ? error.message : String(error)}`);
+                }
             }
             span.end();
             return blueprint;
@@ -271,7 +283,10 @@ class BaseAnalyzer {
             maxFileSize: 10 * 1024 * 1024,
             timeout: 5 * 60 * 1000,
             parallel: false,
-            maxWorkers: 4
+            maxWorkers: 4,
+            enableAI: false,
+            aiProviders: ['claude', 'openai', 'fallback'],
+            aiCacheEnabled: true
         };
         const merged = { ...defaults, ...options };
         if (merged.maxDepth < 1 || merged.maxDepth > 100) {

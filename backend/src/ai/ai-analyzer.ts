@@ -1,429 +1,417 @@
+import { aiService, AIAnalysisContext } from './ai-service';
+import { BaseAnalyzer } from '../analyzer/base-analyzer';
 import { ComponentNode, ArchitectureBlueprint, RiskArea } from '../types';
-import { AIService } from './ai-service';
-import { AIPromptTemplates, PromptContext } from './ai-prompts';
-import { aiConfig } from '../config/ai.config';
-
-export interface AIAnalysisResult {
-  component: string;
-  analysis: {
-    description?: string;
-    risks?: any[];
-    improvements?: any[];
-    security?: any;
-    performance?: any;
-    tests?: any;
-    documentation?: string;
-  };
-  metadata: {
-    provider: string;
-    model: string;
-    cached: boolean;
-    processingTime: number;
-    cost: number;
-  };
-}
-
-export interface AIEnhancedBlueprint extends ArchitectureBlueprint {
-  aiAnalysis?: {
-    summary: string;
-    insights: any;
-    recommendations: any[];
-    risks: any[];
-    timestamp: Date;
-  };
-}
+import * as winston from 'winston';
+import * as fs from 'fs-extra';
+import * as path from 'path';
 
 export class AIAnalyzer {
-  private aiService: AIService;
-  private analysisQueue: Map<string, Promise<AIAnalysisResult>> = new Map();
-  
-  constructor(aiService?: AIService) {
-    this.aiService = aiService || new AIService();
+  private logger: winston.Logger;
+
+  constructor() {
+    this.logger = winston.createLogger({
+      level: 'info',
+      format: winston.format.combine(
+        winston.format.timestamp(),
+        winston.format.errors({ stack: true }),
+        winston.format.json()
+      ),
+      defaultMeta: { component: 'ai-analyzer' },
+      transports: [
+        new winston.transports.Console({
+          format: winston.format.combine(
+            winston.format.colorize(),
+            winston.format.simple()
+          )
+        })
+      ]
+    });
   }
-  
-  async enhanceBlueprint(blueprint: ArchitectureBlueprint): Promise<AIEnhancedBlueprint> {
-    const startTime = Date.now();
-    console.log(`Enhancing blueprint with AI analysis for ${blueprint.projectName}...`);
+
+  async enhanceBlueprint(blueprint: ArchitectureBlueprint): Promise<ArchitectureBlueprint> {
+    this.logger.info(`Enhancing blueprint with AI analysis for ${blueprint.components.length} components`);
     
-    try {
-      // Generate intelligent summary
-      const summaryPrompt = AIPromptTemplates.intelligentSummary(blueprint);
-      const summaryResponse = await this.aiService.complete({
-        prompt: summaryPrompt.user,
-        systemPrompt: summaryPrompt.system,
-        responseFormat: 'json',
-      });
-      
-      const summary = JSON.parse(summaryResponse.content);
-      
-      // Get architectural recommendations
-      const archPrompt = AIPromptTemplates.architecturalRecommendations(blueprint);
-      const archResponse = await this.aiService.complete({
-        prompt: archPrompt.user,
-        systemPrompt: archPrompt.system,
-        responseFormat: 'json',
-      });
-      
-      const recommendations = JSON.parse(archResponse.content);
-      
-      // Analyze high-risk components
-      const highRiskComponents = blueprint.components.filter(
-        c => c.metadata.complexity > 7 || blueprint.riskAreas.some(r => r.componentId === c.id && r.riskLevel === 'high')
-      );
-      
-      const riskAnalyses = await Promise.all(
-        highRiskComponents.slice(0, 5).map(component => this.analyzeComponentRisks(component))
-      );
-      
-      const enhancedBlueprint: AIEnhancedBlueprint = {
-        ...blueprint,
-        aiAnalysis: {
-          summary: summary.executiveSummary || 'AI analysis completed',
-          insights: {
-            technical: summary.technicalSummary,
-            strengths: summary.keyStrengths,
-            concerns: summary.primaryConcerns,
-            metrics: summary.metrics,
-          },
-          recommendations: recommendations.recommendations || [],
-          risks: riskAnalyses.filter(r => r.analysis.risks).flatMap(r => r.analysis.risks),
-          timestamp: new Date(),
-        },
-      };
-      
-      // Add AI descriptions to components if enabled
-      if (aiConfig.features.naturalLanguageDescriptions) {
-        await this.addComponentDescriptions(enhancedBlueprint, 10); // Top 10 components
+    const enhancedComponents = await this.enhanceComponents(blueprint);
+    const enhancedRiskAreas = await this.enhanceRiskAreas(blueprint);
+    const aiGeneratedSummary = await this.generateProjectSummary(blueprint);
+
+    return {
+      ...blueprint,
+      components: enhancedComponents,
+      riskAreas: enhancedRiskAreas,
+      metadata: {
+        ...blueprint.metadata,
+        aiGeneratedSummary
       }
-      
-      const processingTime = Date.now() - startTime;
-      console.log(`AI enhancement completed in ${processingTime}ms`);
-      
-      return enhancedBlueprint;
-    } catch (error) {
-      console.error('Failed to enhance blueprint with AI:', error);
-      // Return original blueprint if AI fails
-      return blueprint;
-    }
-  }
-  
-  async analyzeComponent(
-    component: ComponentNode,
-    code?: string,
-    analysisTypes: Array<'description' | 'risks' | 'improvements' | 'security' | 'performance' | 'tests'> = ['description']
-  ): Promise<AIAnalysisResult> {
-    const startTime = Date.now();
-    const cacheKey = `${component.id}:${analysisTypes.join(',')}`;
-    
-    // Check if analysis is already in progress
-    if (this.analysisQueue.has(cacheKey)) {
-      return this.analysisQueue.get(cacheKey)!;
-    }
-    
-    const analysisPromise = this.performComponentAnalysis(component, code, analysisTypes, startTime);
-    this.analysisQueue.set(cacheKey, analysisPromise);
-    
-    try {
-      const result = await analysisPromise;
-      return result;
-    } finally {
-      this.analysisQueue.delete(cacheKey);
-    }
-  }
-  
-  private async performComponentAnalysis(
-    component: ComponentNode,
-    code: string | undefined,
-    analysisTypes: Array<'description' | 'risks' | 'improvements' | 'security' | 'performance' | 'tests'>,
-    startTime: number
-  ): Promise<AIAnalysisResult> {
-    const analysis: any = {};
-    let totalCost = 0;
-    let cached = false;
-    let provider = 'unknown';
-    let model = 'unknown';
-    
-    const context: PromptContext = {
-      language: component.language,
-      framework: component.framework,
-      componentType: component.type,
-      dependencies: component.dependencies,
-      metrics: component.metrics,
     };
+  }
+
+  async enhanceComponents(blueprint: ArchitectureBlueprint): Promise<ComponentNode[]> {
+    const enhancedComponents: ComponentNode[] = [];
     
-    for (const type of analysisTypes) {
-      try {
-        let response;
-        
-        switch (type) {
-          case 'description':
-            if (code) {
-              const prompt = AIPromptTemplates.codeDescription(code, context);
-              response = await this.aiService.complete({
-                prompt: prompt.user,
-                systemPrompt: prompt.system,
-                responseFormat: 'json',
-              });
-              analysis.description = JSON.parse(response.content);
-            }
-            break;
-            
-          case 'risks':
-            const riskPrompt = AIPromptTemplates.riskAssessment(component, code);
-            response = await this.aiService.complete({
-              prompt: riskPrompt.user,
-              systemPrompt: riskPrompt.system,
-              responseFormat: 'json',
-            });
-            analysis.risks = JSON.parse(response.content).risks;
-            break;
-            
-          case 'security':
-            if (code) {
-              const secPrompt = AIPromptTemplates.securityAnalysis(code, context);
-              response = await this.aiService.complete({
-                prompt: secPrompt.user,
-                systemPrompt: secPrompt.system,
-                responseFormat: 'json',
-              });
-              analysis.security = JSON.parse(response.content);
-            }
-            break;
-            
-          case 'performance':
-            if (code) {
-              const perfPrompt = AIPromptTemplates.performanceAnalysis(code, component.metrics);
-              response = await this.aiService.complete({
-                prompt: perfPrompt.user,
-                systemPrompt: perfPrompt.system,
-                responseFormat: 'json',
-              });
-              analysis.performance = JSON.parse(response.content);
-            }
-            break;
-            
-          case 'tests':
-            const testPrompt = AIPromptTemplates.testStrategy(component, code);
-            response = await this.aiService.complete({
-              prompt: testPrompt.user,
-              systemPrompt: testPrompt.system,
-              responseFormat: 'json',
-            });
-            analysis.tests = JSON.parse(response.content);
-            break;
-            
-          case 'improvements':
-            // Use architectural recommendations for improvements
-            const archPrompt = AIPromptTemplates.architecturalRecommendations(
-              { components: [component], connections: [], metadata: {} as any } as any,
-              'maintainability'
-            );
-            response = await this.aiService.complete({
-              prompt: archPrompt.user,
-              systemPrompt: archPrompt.system,
-              responseFormat: 'json',
-            });
-            const recommendations = JSON.parse(response.content);
-            analysis.improvements = recommendations.recommendations;
-            break;
+    // Process components in batches to avoid overwhelming the AI APIs
+    const batchSize = 5;
+    const batches = this.chunkArray(blueprint.components, batchSize);
+
+    for (let i = 0; i < batches.length; i++) {
+      const batch = batches[i];
+      this.logger.info(`Processing component batch ${i + 1}/${batches.length} (${batch.length} components)`);
+      
+      const batchPromises = batch.map(component => this.enhanceComponent(component, blueprint));
+      const enhancedBatch = await Promise.allSettled(batchPromises);
+      
+      enhancedBatch.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          enhancedComponents.push(result.value);
+        } else {
+          this.logger.error(`Failed to enhance component ${batch[index].name}:`, result.reason);
+          // Add the original component if enhancement fails
+          enhancedComponents.push(batch[index]);
         }
+      });
+
+      // Small delay between batches to respect rate limits
+      if (i < batches.length - 1) {
+        await this.delay(1000);
+      }
+    }
+
+    return enhancedComponents;
+  }
+
+  async enhanceComponent(component: ComponentNode, blueprint: ArchitectureBlueprint): Promise<ComponentNode> {
+    try {
+      // Read the component's source code if available
+      let sourceCode: string | undefined;
+      
+      try {
+        const fullPath = path.isAbsolute(component.path) 
+          ? component.path 
+          : path.join(blueprint.metadata.repositoryPath, component.path);
         
-        if (response) {
-          totalCost += response.cost;
-          cached = cached || response.cached || false;
-          provider = response.provider;
-          model = response.model;
+        if (await fs.pathExists(fullPath)) {
+          sourceCode = await fs.readFile(fullPath, 'utf-8');
+          
+          // Truncate very large files
+          if (sourceCode.length > 10000) {
+            sourceCode = sourceCode.substring(0, 10000) + '\n// ... (truncated for AI analysis)';
+          }
         }
       } catch (error) {
-        console.error(`Failed to analyze ${type} for component ${component.name}:`, error);
+        this.logger.debug(`Could not read source code for ${component.path}:`, error);
       }
-    }
-    
-    return {
-      component: component.id,
-      analysis,
-      metadata: {
-        provider,
-        model,
-        cached,
-        processingTime: Date.now() - startTime,
-        cost: totalCost,
-      },
-    };
-  }
-  
-  async analyzeComponentRisks(component: ComponentNode, code?: string): Promise<AIAnalysisResult> {
-    return this.analyzeComponent(component, code, ['risks', 'security']);
-  }
-  
-  async generateComponentDocumentation(
-    component: ComponentNode,
-    format: 'api' | 'user' | 'technical' = 'technical'
-  ): Promise<string> {
-    const prompt = AIPromptTemplates.documentationGeneration(component, format);
-    const response = await this.aiService.complete({
-      prompt: prompt.user,
-      systemPrompt: prompt.system,
-      responseFormat: 'json',
-    });
-    
-    const doc = JSON.parse(response.content);
-    return this.formatDocumentation(doc, format);
-  }
-  
-  private formatDocumentation(doc: any, format: string): string {
-    const sections = doc.sections || [];
-    let markdown = `# ${doc.title}\n\n${doc.overview}\n\n`;
-    
-    for (const section of sections) {
-      markdown += `## ${section.heading}\n\n${section.content}\n\n`;
+
+      const context: AIAnalysisContext = {
+        component,
+        blueprint,
+        code: sourceCode,
+        language: component.language,
+        framework: component.framework
+      };
+
+      // Generate AI-powered description
+      const aiDescription = await aiService.generateComponentDescription(context);
       
-      if (section.examples?.length) {
-        markdown += '### Examples\n\n';
-        section.examples.forEach((ex: string, i: number) => {
-          markdown += `${i + 1}. ${ex}\n`;
-        });
-        markdown += '\n';
-      }
+      // Assess component-level risks
+      const riskAssessment = await aiService.assessComponentRisk(context);
       
-      if (section.notes?.length) {
-        markdown += '### Notes\n\n';
-        section.notes.forEach((note: string) => {
-          markdown += `- ${note}\n`;
-        });
-        markdown += '\n';
-      }
-    }
-    
-    if (doc.troubleshooting?.length) {
-      markdown += '## Troubleshooting\n\n';
-      doc.troubleshooting.forEach((item: any) => {
-        markdown += `**Issue:** ${item.issue}\n`;
-        markdown += `**Solution:** ${item.solution}\n\n`;
-      });
-    }
-    
-    return markdown;
-  }
-  
-  private async addComponentDescriptions(blueprint: AIEnhancedBlueprint, limit: number = 10): Promise<void> {
-    // Sort components by importance (entry points, high complexity, many dependencies)
-    const importantComponents = [...blueprint.components]
-      .sort((a, b) => {
-        const aScore = (a.metadata.isEntry ? 10 : 0) + 
-                      a.metadata.complexity + 
-                      a.dependencies.length + 
-                      a.dependents.length;
-        const bScore = (b.metadata.isEntry ? 10 : 0) + 
-                      b.metadata.complexity + 
-                      b.dependencies.length + 
-                      b.dependents.length;
-        return bScore - aScore;
-      })
-      .slice(0, limit);
-    
-    const descriptions = await Promise.all(
-      importantComponents.map(async (component) => {
+      // Get architectural recommendations
+      const recommendations = await aiService.generateArchitecturalRecommendations(context);
+
+      // Analyze code if available
+      let codeAnalysis;
+      if (sourceCode) {
         try {
-          const context: PromptContext = {
-            language: component.language,
-            framework: component.framework,
-            componentType: component.type,
-            dependencies: component.dependencies.slice(0, 5),
-          };
-          
-          // Generate a simple description without code
-          const response = await this.aiService.complete({
-            prompt: `Generate a brief, clear description for a ${component.type} component named "${component.name}" in a ${component.framework || component.language || 'software'} application. The component has ${component.dependencies.length} dependencies and ${component.dependents.length} dependents. Complexity: ${component.metadata.complexity}/10. Provide a 1-2 sentence description of its likely purpose and role.`,
-            systemPrompt: 'You are a software architect providing concise component descriptions.',
-            maxTokens: 100,
-          });
-          
-          return {
-            componentId: component.id,
-            description: response.content,
-          };
+          codeAnalysis = await aiService.analyzeCode(context);
         } catch (error) {
-          console.error(`Failed to generate description for ${component.name}:`, error);
-          return null;
-        }
-      })
-    );
-    
-    // Add descriptions to components
-    descriptions.forEach(desc => {
-      if (desc) {
-        const component = blueprint.components.find(c => c.id === desc.componentId);
-        if (component) {
-          component.metadata.aiDescription = desc.description;
+          this.logger.warn(`Code analysis failed for ${component.name}:`, error);
         }
       }
-    });
+
+      // Enhance component metadata with AI insights
+      const enhancedComponent: ComponentNode = {
+        ...component,
+        metadata: {
+          ...component.metadata,
+          aiDescription,
+          aiRiskAssessment: riskAssessment,
+          aiRecommendations: recommendations,
+          aiCodeAnalysis: codeAnalysis
+        }
+      };
+
+      this.logger.debug(`Enhanced component: ${component.name}`);
+      return enhancedComponent;
+
+    } catch (error) {
+      this.logger.error(`Failed to enhance component ${component.name}:`, error);
+      return component;
+    }
   }
-  
-  async identifyArchitecturalPatterns(blueprint: ArchitectureBlueprint): Promise<any> {
-    const prompt = AIPromptTemplates.architecturalRecommendations(blueprint);
-    const response = await this.aiService.complete({
-      prompt: prompt.user,
-      systemPrompt: prompt.system,
-      responseFormat: 'json',
-    });
+
+  async enhanceRiskAreas(blueprint: ArchitectureBlueprint): Promise<RiskArea[]> {
+    const enhancedRiskAreas: RiskArea[] = [];
     
-    const analysis = JSON.parse(response.content);
+    // Process existing risk areas and add AI insights
+    for (const riskArea of blueprint.riskAreas) {
+      try {
+        const component = blueprint.components.find(c => c.id === riskArea.componentId);
+        if (!component) {
+          enhancedRiskAreas.push(riskArea);
+          continue;
+        }
+
+        const context: AIAnalysisContext = {
+          component,
+          blueprint,
+          language: component.language,
+          framework: component.framework
+        };
+
+        const riskAssessment = await aiService.assessComponentRisk(context);
+        
+        // Merge AI insights with existing risk area
+        const enhancedRiskArea: RiskArea = {
+          ...riskArea,
+          reasons: [...riskArea.reasons, ...riskAssessment.reasons],
+          aiInsights: {
+            confidence: riskAssessment.confidence,
+            suggestions: riskAssessment.suggestions,
+            categories: riskAssessment.categories
+          }
+        };
+
+        enhancedRiskAreas.push(enhancedRiskArea);
+
+      } catch (error) {
+        this.logger.error(`Failed to enhance risk area for component ${riskArea.componentId}:`, error);
+        enhancedRiskAreas.push(riskArea);
+      }
+    }
+
+    // Discover new AI-identified risks
+    const newRisks = await this.discoverAdditionalRisks(blueprint);
+    enhancedRiskAreas.push(...newRisks);
+
+    return enhancedRiskAreas;
+  }
+
+  async discoverAdditionalRisks(blueprint: ArchitectureBlueprint): Promise<RiskArea[]> {
+    const additionalRisks: RiskArea[] = [];
+    
+    // Focus on high-risk components that weren't already flagged
+    const existingRiskComponentIds = new Set(blueprint.riskAreas.map(r => r.componentId));
+    
+    const highRiskComponents = blueprint.components.filter(component => {
+      return !existingRiskComponentIds.has(component.id) && (
+        component.metadata.complexity > 7 ||
+        component.dependencies.length > 10 ||
+        component.metadata.isEntry ||
+        (component.metadata.testCoverage !== undefined && component.metadata.testCoverage < 50)
+      );
+    });
+
+    // Analyze a subset of high-risk components
+    const componentsToAnalyze = highRiskComponents.slice(0, 10);
+    
+    for (const component of componentsToAnalyze) {
+      try {
+        const context: AIAnalysisContext = {
+          component,
+          blueprint,
+          language: component.language,
+          framework: component.framework
+        };
+
+        const riskAssessment = await aiService.assessComponentRisk(context);
+        
+        // Only create new risk areas for medium+ risk components
+        if (riskAssessment.riskLevel !== 'low') {
+          const riskArea: RiskArea = {
+            componentId: component.id,
+            riskLevel: riskAssessment.riskLevel,
+            reasons: riskAssessment.reasons,
+            impact: `AI-identified risk: ${riskAssessment.categories.map(c => c.category).join(', ')}`,
+            aiInsights: {
+              confidence: riskAssessment.confidence,
+              suggestions: riskAssessment.suggestions,
+              categories: riskAssessment.categories
+            }
+          };
+
+          additionalRisks.push(riskArea);
+        }
+
+      } catch (error) {
+        this.logger.error(`Failed to analyze component ${component.name} for additional risks:`, error);
+      }
+    }
+
+    this.logger.info(`Discovered ${additionalRisks.length} additional risk areas through AI analysis`);
+    return additionalRisks;
+  }
+
+  async generateProjectSummary(blueprint: ArchitectureBlueprint): Promise<string> {
+    try {
+      // Create a high-level context for project summary
+      const context: AIAnalysisContext = {
+        blueprint,
+        framework: blueprint.framework,
+        additionalContext: {
+          totalComponents: blueprint.components.length,
+          totalConnections: blueprint.connections.length,
+          entryPoints: blueprint.entryPoints.length,
+          riskAreas: blueprint.riskAreas.length,
+          primaryLanguage: blueprint.metadata.primaryLanguage,
+          frameworkVersion: blueprint.metadata.frameworkVersion,
+          complexityStats: this.calculateComplexityStats(blueprint.components),
+          testCoverageStats: this.calculateTestCoverageStats(blueprint.components),
+          dependencyStats: this.calculateDependencyStats(blueprint.components)
+        }
+      };
+
+      const summary = await aiService.generateComponentDescription(context);
+      return summary;
+
+    } catch (error) {
+      this.logger.error('Failed to generate AI project summary:', error);
+      return this.generateFallbackSummary(blueprint);
+    }
+  }
+
+  async generateComponentInsights(component: ComponentNode, code?: string): Promise<{
+    description?: string;
+    risks?: any;
+    recommendations?: any[];
+    codeAnalysis?: any;
+  }> {
+    const context: AIAnalysisContext = {
+      component,
+      code,
+      language: component.language,
+      framework: component.framework
+    };
+
+    const results: any = {};
+
+    try {
+      results.description = await aiService.generateComponentDescription(context);
+    } catch (error) {
+      this.logger.error(`Failed to generate description for ${component.name}:`, error);
+    }
+
+    try {
+      results.risks = await aiService.assessComponentRisk(context);
+    } catch (error) {
+      this.logger.error(`Failed to assess risks for ${component.name}:`, error);
+    }
+
+    try {
+      results.recommendations = await aiService.generateArchitecturalRecommendations(context);
+    } catch (error) {
+      this.logger.error(`Failed to generate recommendations for ${component.name}:`, error);
+    }
+
+    if (code) {
+      try {
+        results.codeAnalysis = await aiService.analyzeCode(context);
+      } catch (error) {
+        this.logger.error(`Failed to analyze code for ${component.name}:`, error);
+      }
+    }
+
+    return results;
+  }
+
+  private calculateComplexityStats(components: ComponentNode[]): any {
+    const complexities = components.map(c => c.metadata.complexity);
+    
     return {
-      patterns: analysis.patterns,
-      antiPatterns: analysis.patterns?.antiPatterns || [],
-      recommendations: analysis.recommendations,
+      average: complexities.length > 0 ? complexities.reduce((a, b) => a + b, 0) / complexities.length : 0,
+      max: Math.max(...complexities),
+      min: Math.min(...complexities),
+      highComplexityCount: complexities.filter(c => c > 7).length
     };
   }
-  
-  async assessSystemSecurity(blueprint: ArchitectureBlueprint): Promise<any> {
-    // Analyze overall system security
-    const systemPrompt = `You are a security architect assessing the overall security posture of a software system.
-Consider: authentication, authorization, data protection, network security, and compliance.`;
-    
-    const userPrompt = `Assess the security of this system architecture:
-    
-System: ${blueprint.projectName}
-Components: ${blueprint.components.length}
-Entry Points: ${blueprint.entryPoints.length}
-External Dependencies: ${blueprint.dependencies?.directDependencies?.length || 0}
-Technologies: ${blueprint.technologyStack?.languages?.map(l => l.name).join(', ')}
 
-Component Types:
-${Object.entries(
-  blueprint.components.reduce((acc, c) => {
-    acc[c.type] = (acc[c.type] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>)
-).map(([type, count]) => `- ${type}: ${count}`).join('\n')}
+  private calculateTestCoverageStats(components: ComponentNode[]): any {
+    const coverageValues = components
+      .map(c => c.metadata.testCoverage)
+      .filter(c => c !== undefined) as number[];
+    
+    if (coverageValues.length === 0) {
+      return { average: 0, componentsWithCoverage: 0 };
+    }
 
-Provide a security assessment in JSON format with vulnerabilities, recommendations, and compliance considerations.`;
-    
-    const response = await this.aiService.complete({
-      prompt: userPrompt,
-      systemPrompt,
-      responseFormat: 'json',
-    });
-    
-    return JSON.parse(response.content);
-  }
-  
-  async suggestPerformanceOptimizations(blueprint: ArchitectureBlueprint): Promise<any> {
-    const prompt = AIPromptTemplates.architecturalRecommendations(blueprint, 'performance');
-    const response = await this.aiService.complete({
-      prompt: prompt.user,
-      systemPrompt: prompt.system,
-      responseFormat: 'json',
-    });
-    
-    return JSON.parse(response.content);
-  }
-  
-  getAnalysisStats() {
     return {
-      queueSize: this.analysisQueue.size,
-      aiServiceStats: this.aiService.getStats(),
+      average: coverageValues.reduce((a, b) => a + b, 0) / coverageValues.length,
+      componentsWithCoverage: coverageValues.length,
+      lowCoverageCount: coverageValues.filter(c => c < 60).length
+    };
+  }
+
+  private calculateDependencyStats(components: ComponentNode[]): any {
+    const dependencyCounts = components.map(c => c.dependencies.length);
+    
+    return {
+      average: dependencyCounts.length > 0 ? dependencyCounts.reduce((a, b) => a + b, 0) / dependencyCounts.length : 0,
+      max: Math.max(...dependencyCounts),
+      highDependencyCount: dependencyCounts.filter(c => c > 10).length
+    };
+  }
+
+  private generateFallbackSummary(blueprint: ArchitectureBlueprint): string {
+    const stats = this.calculateComplexityStats(blueprint.components);
+    const testStats = this.calculateTestCoverageStats(blueprint.components);
+    
+    return `This ${blueprint.framework} project contains ${blueprint.components.length} components ` +
+           `with an average complexity of ${stats.average.toFixed(1)}. ` +
+           `The system has ${blueprint.entryPoints.length} entry points and ${blueprint.riskAreas.length} identified risk areas. ` +
+           `Test coverage information is available for ${testStats.componentsWithCoverage} components ` +
+           `with an average coverage of ${testStats.average.toFixed(1)}%.`;
+  }
+
+  private chunkArray<T>(array: T[], size: number): T[][] {
+    const chunks: T[][] = [];
+    for (let i = 0; i < array.length; i += size) {
+      chunks.push(array.slice(i, i + size));
+    }
+    return chunks;
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  async getUsageStats() {
+    return aiService.getUsageStats();
+  }
+
+  async clearCache() {
+    await aiService.clearCache();
+  }
+
+  getAvailableProviders() {
+    return aiService.getAvailableProviders();
+  }
+}
+
+// Extend the existing types to include AI insights
+declare module '../types' {
+  interface ComponentMetadata {
+    aiDescription?: string;
+    aiRiskAssessment?: any;
+    aiRecommendations?: any[];
+    aiCodeAnalysis?: any;
+  }
+
+  interface RiskArea {
+    aiInsights?: {
+      confidence: number;
+      suggestions: string[];
+      categories: any[];
     };
   }
 }
+
+export const aiAnalyzer = new AIAnalyzer();

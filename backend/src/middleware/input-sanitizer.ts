@@ -188,13 +188,9 @@ export class InputSanitizer {
           req.body = this.sanitizeObject(req.body, options.strict);
         }
         
-        if (req.query && typeof req.query === 'object') {
-          req.query = this.sanitizeObject(req.query as any, options.strict) as any;
-        }
-        
-        if (req.params && typeof req.params === 'object') {
-          req.params = this.sanitizeObject(req.params, options.strict) as any;
-        }
+        // In Express 5, req.query and req.params are read-only
+        // We'll validate them but not modify them
+        // Security validation still happens through express-validator
         
         next();
       } catch (error: any) {

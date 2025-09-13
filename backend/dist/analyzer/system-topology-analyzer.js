@@ -85,6 +85,19 @@ class SystemTopologyAnalyzer extends base_analyzer_1.BaseAnalyzer {
             }
         };
     }
+    async analyzeTopology(repositoryPath) {
+        this.projectPath = repositoryPath;
+        const discovery = await this.discoverComponents();
+        const components = discovery.components;
+        const relationships = await this.analyzeConnections(components);
+        this.identifyArchitecturalLayers();
+        this.mapDataFlows();
+        return {
+            components,
+            relationships,
+            topology: this.topology
+        };
+    }
     getAnalyzerName() {
         return 'System Topology Analyzer';
     }

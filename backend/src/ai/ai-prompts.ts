@@ -1,432 +1,514 @@
-import { ComponentNode, ArchitectureBlueprint, Connection } from '../types';
+import { AIAnalysisContext } from './ai-service';
+import { ComponentNode, ArchitectureBlueprint } from '../types';
 
-export interface PromptContext {
-  language?: string;
-  framework?: string;
-  componentType?: string;
-  dependencies?: string[];
-  metrics?: any;
-  architecture?: Partial<ArchitectureBlueprint>;
+export interface PromptTemplate {
+  systemPrompt: string;
+  userPromptTemplate: string;
+  variables: string[];
+  maxTokens: number;
+  temperature: number;
 }
 
-export class AIPromptTemplates {
-  static readonly MAX_CODE_LENGTH = 4000;
-  static readonly MAX_CONTEXT_LENGTH = 2000;
-  
-  static truncateCode(code: string, maxLength: number = this.MAX_CODE_LENGTH): string {
-    if (code.length <= maxLength) return code;
-    
-    const half = Math.floor(maxLength / 2);
-    return `${code.substring(0, half)}\n\n... [truncated ${code.length - maxLength} characters] ...\n\n${code.substring(code.length - half)}`;
-  }
-  
-  static formatContext(context: PromptContext): string {
-    const parts = [];
-    
-    if (context.language) parts.push(`Language: ${context.language}`);
-    if (context.framework) parts.push(`Framework: ${context.framework}`);
-    if (context.componentType) parts.push(`Component Type: ${context.componentType}`);
-    if (context.dependencies?.length) {
-      parts.push(`Dependencies: ${context.dependencies.slice(0, 10).join(', ')}${context.dependencies.length > 10 ? '...' : ''}`);
-    }
-    
-    return parts.join('\n');
-  }
-  
-  static codeDescription(code: string, context?: PromptContext): { system: string; user: string } {
-    return {
-      system: `You are an expert software architect analyzing code for the Unravl visualization platform.
-Your task is to generate clear, concise descriptions that help developers understand code at a glance.
-Focus on: purpose, key functionality, architectural role, and business value.
-${context ? `\nContext:\n${this.formatContext(context)}` : ''}`,
-      
-      user: `Analyze this code and provide a structured description in JSON format:
+export class AIPrompts {
+  public readonly systemPrompts = {
+    description: `You are a senior software engineer and architect with expertise in code analysis and system design. Your role is to provide clear, accurate, and insightful descriptions of software components.
+
+Guidelines:
+- Focus on the component's purpose, responsibility, and role in the system
+- Explain what the component does in simple, non-technical language that stakeholders can understand
+- Mention key technologies, patterns, or frameworks when relevant
+- Keep descriptions concise but comprehensive (2-3 sentences)
+- Be objective and factual, avoiding speculation
+- Consider the business context and user impact when applicable`,
+
+    riskAssessment: `You are a security and quality expert specializing in code risk assessment. Your job is to identify potential risks, vulnerabilities, and quality issues in software components.
+
+Analyze the provided component and respond with ONLY valid JSON in this exact format:
 {
-  "summary": "One-line description of what this code does",
-  "purpose": "Why this code exists and its business value",
-  "functionality": ["Key function 1", "Key function 2", ...],
-  "architecturalRole": "How this fits in the system architecture",
-  "dependencies": "What this code depends on",
-  "consumers": "What depends on this code",
-  "dataFlow": "How data moves through this component"
+  "riskLevel": "low|medium|high|critical",
+  "confidence": 0.0-1.0,
+  "reasons": ["array", "of", "risk", "reasons"],
+  "suggestions": ["array", "of", "improvement", "suggestions"],
+  "categories": [
+    {
+      "category": "security|performance|maintainability|scalability|reliability",
+      "score": 0-100,
+      "issues": ["specific", "issues"],
+      "recommendations": ["specific", "recommendations"]
+    }
+  ]
 }
 
-Code to analyze:
-\`\`\`
-${this.truncateCode(code)}
-\`\`\``,
-    };
-  }
-  
-  static riskAssessment(component: ComponentNode, code?: string): { system: string; user: string } {
-    return {
-      system: `You are a senior security architect performing risk assessment for the Unravl platform.
-Identify vulnerabilities, anti-patterns, and potential failure points.
-Consider: security, performance, scalability, maintainability, and reliability.`,
-      
-      user: `Perform a comprehensive risk assessment for this component:
+Consider these risk factors:
+- Security vulnerabilities (injection, XSS, authentication bypass, etc.)
+- Performance issues (N+1 queries, memory leaks, inefficient algorithms)
+- Maintainability problems (high complexity, tight coupling, lack of tests)
+- Scalability concerns (resource contention, bottlenecks)
+- Reliability risks (error handling, external dependencies, single points of failure)`,
 
-Component Information:
+    recommendations: `You are an experienced software architect and consultant. Your role is to provide actionable architectural and code improvement recommendations.
+
+Analyze the provided component and respond with ONLY valid JSON in this exact format:
+{
+  "recommendations": [
+    {
+      "type": "architectural|security|performance|testing|refactoring",
+      "priority": "low|medium|high|critical",
+      "title": "Brief recommendation title",
+      "description": "Detailed description of the issue and why it needs attention",
+      "implementation": "Specific steps to implement the recommendation",
+      "impact": "Expected benefits and improvements",
+      "effort": "low|medium|high",
+      "confidence": 0.0-1.0,
+      "tags": ["relevant", "tags"]
+    }
+  ]
+}
+
+Focus on:
+- Architectural improvements (SOLID principles, design patterns, separation of concerns)
+- Security enhancements (input validation, authentication, encryption)
+- Performance optimizations (caching, query optimization, algorithmic improvements)
+- Testing strategies (unit tests, integration tests, test coverage)
+- Code quality (refactoring, documentation, error handling)
+- Best practices for the specific technology stack`,
+
+    codeAnalysis: `You are a code quality expert and static analysis specialist. Your role is to provide comprehensive code analysis including complexity metrics, pattern detection, and quality assessment.
+
+Analyze the provided code and respond with ONLY valid JSON in this exact format:
+{
+  "summary": "Brief summary of the code analysis",
+  "complexity": {
+    "cognitive": 1-15,
+    "cyclomatic": 1-12,
+    "maintainability": 1-10
+  },
+  "patterns": [
+    {
+      "name": "Pattern name",
+      "type": "design-pattern|anti-pattern|architectural-pattern",
+      "confidence": 0.0-1.0,
+      "description": "Pattern description",
+      "impact": "positive|negative|neutral"
+    }
+  ],
+  "issues": [
+    {
+      "type": "bug|vulnerability|code-smell|performance|maintainability",
+      "severity": "info|warning|error|critical",
+      "message": "Issue description",
+      "line": 123,
+      "column": 45,
+      "suggestion": "How to fix the issue"
+    }
+  ],
+  "suggestions": [
+    {
+      "type": "optimization|refactoring|testing|documentation",
+      "message": "Suggestion description",
+      "example": "Code example if applicable",
+      "priority": 1-10
+    }
+  ],
+  "testability": 1-10,
+  "documentation": "Assessment of code documentation quality and suggestions"
+}
+
+Analyze for:
+- Code complexity and maintainability metrics
+- Design patterns and anti-patterns
+- Code smells and potential bugs
+- Security vulnerabilities
+- Performance optimization opportunities
+- Testing and documentation quality`
+  };
+
+  // Generate description prompt
+  generateDescriptionPrompt(context: AIAnalysisContext): string {
+    const { component, blueprint, code, language, framework, additionalContext } = context;
+
+    let prompt = '';
+
+    if (component) {
+      prompt += `Component Analysis Request:
+
+Component Details:
 - Name: ${component.name}
 - Type: ${component.type}
 - Path: ${component.path}
+- Language: ${component.language || language || 'Unknown'}
+- Framework: ${component.framework || framework || 'Unknown'}
+- Complexity Score: ${component.metadata.complexity}/10
+- Line Count: ${component.metadata.lineCount}
 - Dependencies: ${component.dependencies.length} components
-- Complexity: ${component.metadata.complexity}/10
-${component.metrics ? `- Lines of Code: ${component.metrics.linesOfCode}` : ''}
+- Dependents: ${component.dependents.length} components`;
 
-${code ? `\nCode Sample:\n\`\`\`\n${this.truncateCode(code, 2000)}\n\`\`\`` : ''}
+      if (component.metadata.responsibilities.length > 0) {
+        prompt += `\n- Responsibilities: ${component.metadata.responsibilities.join(', ')}`;
+      }
 
-Provide assessment in JSON format:
-{
-  "risks": [
-    {
-      "type": "security|performance|reliability|maintainability",
-      "severity": "critical|high|medium|low",
-      "description": "Clear description of the risk",
-      "impact": "What could happen if this risk materializes",
-      "likelihood": "high|medium|low",
-      "mitigation": "Specific steps to address this risk"
-    }
-  ],
-  "overallRiskLevel": "critical|high|medium|low",
-  "prioritizedActions": ["Action 1", "Action 2", ...],
-  "technicalDebt": "Assessment of technical debt",
-  "securityPosture": "Current security status"
-}`,
-    };
-  }
-  
-  static architecturalRecommendations(
-    blueprint: Partial<ArchitectureBlueprint>,
-    focusArea?: string
-  ): { system: string; user: string } {
-    return {
-      system: `You are a principal architect reviewing system architecture for optimization and improvement.
-Provide strategic, actionable recommendations based on modern architectural patterns and best practices.
-${focusArea ? `Focus specifically on: ${focusArea}` : 'Provide comprehensive architectural assessment.'}`,
-      
-      user: `Review this system architecture and provide recommendations:
+      if (component.metadata.httpMethods && component.metadata.httpMethods.length > 0) {
+        prompt += `\n- HTTP Methods: ${component.metadata.httpMethods.join(', ')}`;
+      }
 
-System Overview:
-- Components: ${blueprint.components?.length || 0}
-- Connections: ${blueprint.connections?.length || 0}
-- Entry Points: ${blueprint.entryPoints?.length || 0}
-- Technologies: ${blueprint.technologyStack?.languages?.map(l => l.name).join(', ') || 'Unknown'}
-- Framework: ${blueprint.framework || 'Unknown'}
+      if (component.metadata.dbQueries && component.metadata.dbQueries.length > 0) {
+        prompt += `\n- Database Queries: ${component.metadata.dbQueries.length}`;
+      }
 
-Component Distribution:
-${blueprint.components ? Object.entries(
-  blueprint.components.reduce((acc, c) => {
-    acc[c.type] = (acc[c.type] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>)
-).map(([type, count]) => `- ${type}: ${count}`).join('\n') : 'No component data'}
+      if (component.metadata.externalCalls && component.metadata.externalCalls.length > 0) {
+        prompt += `\n- External API Calls: ${component.metadata.externalCalls.length}`;
+      }
 
-${blueprint.riskAreas?.length ? `\nIdentified Risks:\n${blueprint.riskAreas.map(r => `- ${r.riskLevel}: ${r.reasons[0]}`).slice(0, 5).join('\n')}` : ''}
+      if (component.metadata.testCoverage !== undefined) {
+        prompt += `\n- Test Coverage: ${component.metadata.testCoverage}%`;
+      }
 
-Provide recommendations in JSON format:
-{
-  "findings": {
-    "strengths": ["Strength 1", "Strength 2", ...],
-    "weaknesses": ["Weakness 1", "Weakness 2", ...],
-    "opportunities": ["Opportunity 1", "Opportunity 2", ...],
-    "threats": ["Threat 1", "Threat 2", ...]
-  },
-  "recommendations": [
-    {
-      "category": "architecture|performance|security|scalability|maintainability",
-      "priority": "critical|high|medium|low",
-      "title": "Clear recommendation title",
-      "description": "Detailed description of what to do",
-      "implementation": "How to implement this recommendation",
-      "effort": "low|medium|high",
-      "impact": "Expected positive impact",
-      "risks": "Any risks in implementing this"
-    }
-  ],
-  "patterns": {
-    "current": ["Pattern 1", "Pattern 2", ...],
-    "recommended": ["Pattern 1", "Pattern 2", ...],
-    "antiPatterns": ["Anti-pattern 1", "Anti-pattern 2", ...]
-  },
-  "modernization": {
-    "currentMaturity": "initial|developing|defined|managed|optimized",
-    "targetMaturity": "initial|developing|defined|managed|optimized",
-    "roadmap": ["Step 1", "Step 2", ...]
-  }
-}`,
-    };
-  }
-  
-  static securityAnalysis(code: string, context?: PromptContext): { system: string; user: string } {
-    return {
-      system: `You are a security expert specializing in application security and secure coding practices.
-Identify vulnerabilities following OWASP Top 10 and CWE classifications.
-Provide specific, actionable remediation guidance.`,
-      
-      user: `Perform a detailed security analysis of this code:
+      if (component.metadata.isEntry) {
+        prompt += `\n- Entry Point: Yes`;
+      }
 
-${context ? `Context:\n${this.formatContext(context)}\n` : ''}
-
-Code to analyze:
-\`\`\`
-${this.truncateCode(code)}
-\`\`\`
-
-Provide security analysis in JSON format:
-{
-  "vulnerabilities": [
-    {
-      "type": "SQL Injection|XSS|CSRF|etc",
-      "cwe": "CWE-XXX",
-      "owasp": "A01:2021|A02:2021|etc",
-      "severity": "critical|high|medium|low",
-      "location": "Line numbers or code section",
-      "description": "What the vulnerability is",
-      "exploitability": "How it could be exploited",
-      "impact": "Potential damage",
-      "remediation": {
-        "immediate": "Quick fix",
-        "longTerm": "Proper solution",
-        "example": "Code example of fix"
+      if (component.metadata.isOrphaned) {
+        prompt += `\n- Orphaned: Yes (no dependencies or dependents)`;
       }
     }
-  ],
-  "secureCodePatterns": ["Pattern 1", "Pattern 2", ...],
-  "insecurePatterns": ["Pattern 1", "Pattern 2", ...],
-  "dependencies": {
-    "vulnerable": ["Package 1", "Package 2", ...],
-    "outdated": ["Package 1", "Package 2", ...]
-  },
-  "recommendations": {
-    "authentication": "Recommendations if applicable",
-    "authorization": "Recommendations if applicable",
-    "dataProtection": "Recommendations if applicable",
-    "inputValidation": "Recommendations if applicable",
-    "errorHandling": "Recommendations if applicable"
-  },
-  "complianceIssues": ["Issue 1", "Issue 2", ...],
-  "securityScore": 0-10
-}`,
-    };
-  }
-  
-  static performanceAnalysis(code: string, metrics?: any): { system: string; user: string } {
-    return {
-      system: `You are a performance engineering expert analyzing code for optimization opportunities.
-Focus on time complexity, space complexity, I/O operations, and resource utilization.
-Provide specific, measurable improvements.`,
-      
-      user: `Analyze the performance characteristics of this code:
 
-${metrics ? `Current Metrics:\n${JSON.stringify(metrics, null, 2)}\n` : ''}
-
-Code to analyze:
-\`\`\`
-${this.truncateCode(code)}
-\`\`\`
-
-Provide performance analysis in JSON format:
-{
-  "complexity": {
-    "time": "O(n)|O(n²)|O(log n)|etc",
-    "space": "O(1)|O(n)|etc",
-    "explanation": "Why this complexity"
-  },
-  "bottlenecks": [
-    {
-      "location": "Function/line",
-      "issue": "What's slow",
-      "impact": "Performance impact",
-      "solution": "How to fix"
-    }
-  ],
-  "optimizations": [
-    {
-      "type": "algorithm|caching|parallelization|io|memory",
-      "current": "Current implementation",
-      "proposed": "Optimized implementation",
-      "improvement": "Expected improvement percentage",
-      "tradeoffs": "Any tradeoffs"
-    }
-  ],
-  "antiPatterns": [
-    {
-      "pattern": "Pattern name",
-      "location": "Where found",
-      "impact": "Performance impact",
-      "fix": "How to fix"
-    }
-  ],
-  "recommendations": {
-    "immediate": ["Quick win 1", "Quick win 2", ...],
-    "shortTerm": ["Improvement 1", "Improvement 2", ...],
-    "longTerm": ["Major refactor 1", "Major refactor 2", ...]
-  },
-  "estimatedImprovements": {
-    "responseTime": "XX% faster",
-    "throughput": "XX% increase",
-    "memoryUsage": "XX% reduction",
-    "cpuUsage": "XX% reduction"
-  }
-}`,
-    };
-  }
-  
-  static testStrategy(component: ComponentNode, code?: string): { system: string; user: string } {
-    return {
-      system: `You are a test automation architect designing comprehensive test strategies.
-Consider unit tests, integration tests, edge cases, and error scenarios.
-Focus on high-value, maintainable tests that ensure reliability.`,
-      
-      user: `Design a test strategy for this component:
-
-Component: ${component.name}
-Type: ${component.type}
-Dependencies: ${component.dependencies.join(', ') || 'None'}
-Complexity: ${component.metadata.complexity}/10
-
-${code ? `\nCode Sample:\n\`\`\`\n${this.truncateCode(code, 2000)}\n\`\`\`` : ''}
-
-Provide test strategy in JSON format:
-{
-  "testCases": [
-    {
-      "type": "unit|integration|e2e|performance|security",
-      "name": "Test case name",
-      "description": "What this tests",
-      "priority": "critical|high|medium|low",
-      "setup": "Required setup",
-      "assertions": ["Assertion 1", "Assertion 2", ...],
-      "edgeCases": ["Edge case 1", "Edge case 2", ...],
-      "example": "Code example if applicable"
-    }
-  ],
-  "coverage": {
-    "targetPercentage": 80-100,
-    "criticalPaths": ["Path 1", "Path 2", ...],
-    "focusAreas": ["Area 1", "Area 2", ...]
-  },
-  "mockingStrategy": {
-    "dependencies": ["What to mock", ...],
-    "approach": "How to mock"
-  },
-  "dataStrategy": {
-    "fixtures": ["Fixture 1", "Fixture 2", ...],
-    "generators": ["Generator 1", "Generator 2", ...]
-  },
-  "automationRecommendations": ["Recommendation 1", "Recommendation 2", ...]
-}`,
-    };
-  }
-  
-  static documentationGeneration(
-    component: ComponentNode,
-    format: 'api' | 'user' | 'technical'
-  ): { system: string; user: string } {
-    const formatInstructions = {
-      api: 'Generate API documentation with endpoints, parameters, responses, and examples.',
-      user: 'Generate user-facing documentation explaining features and usage.',
-      technical: 'Generate technical documentation for developers including architecture and implementation details.',
-    };
-    
-    return {
-      system: `You are a technical writer creating clear, comprehensive documentation.
-Focus on clarity, completeness, and practical examples.
-Documentation format: ${format}`,
-      
-      user: `Generate ${format} documentation for this component:
-
-Component Information:
-${JSON.stringify({
-  name: component.name,
-  type: component.type,
-  path: component.path,
-  exports: component.metadata.exports,
-  imports: component.metadata.imports,
-  httpMethods: component.metadata.httpMethods,
-}, null, 2)}
-
-Requirements: ${formatInstructions[format]}
-
-Provide documentation in JSON format:
-{
-  "title": "Documentation title",
-  "overview": "Component overview",
-  "sections": [
-    {
-      "heading": "Section heading",
-      "content": "Section content (can include markdown)",
-      "examples": ["Example 1", "Example 2", ...],
-      "notes": ["Note 1", "Note 2", ...]
-    }
-  ],
-  "apiReference": {
-    "endpoints": [...] // if applicable
-  },
-  "configuration": {
-    "options": [...] // if applicable
-  },
-  "troubleshooting": [
-    {
-      "issue": "Common issue",
-      "solution": "How to fix"
-    }
-  ],
-  "relatedLinks": ["Link 1", "Link 2", ...]
-}`,
-    };
-  }
-  
-  static intelligentSummary(blueprint: ArchitectureBlueprint): { system: string; user: string } {
-    return {
-      system: `You are creating an executive summary of a software system architecture.
-Focus on business value, technical highlights, risks, and recommendations.
-Make it accessible to both technical and non-technical stakeholders.`,
-      
-      user: `Create an intelligent summary of this system architecture:
-
-System: ${blueprint.projectName}
-Framework: ${blueprint.framework}
-Components: ${blueprint.components.length}
-Technologies: ${blueprint.technologyStack?.languages?.map(l => `${l.name} (${l.percentage}%)`).join(', ')}
-
-Key Metrics:
-- Complexity Average: ${blueprint.metadata.complexityAverage}
-- Code Lines: ${blueprint.metadata.codebaseSize?.totalLines}
+    if (blueprint) {
+      prompt += `\n\nSystem Context:
+- Project: ${blueprint.projectName}
+- Framework: ${blueprint.framework}
+- Total Components: ${blueprint.components.length}
 - Entry Points: ${blueprint.entryPoints.length}
-- Risk Areas: ${blueprint.riskAreas.filter(r => r.riskLevel === 'high').length} high, ${blueprint.riskAreas.filter(r => r.riskLevel === 'medium').length} medium
-
-Provide summary in JSON format:
-{
-  "executiveSummary": "2-3 sentence overview for executives",
-  "technicalSummary": "Technical overview for developers",
-  "keyStrengths": ["Strength 1", "Strength 2", ...],
-  "primaryConcerns": ["Concern 1", "Concern 2", ...],
-  "businessImpact": {
-    "opportunities": ["Opportunity 1", ...],
-    "risks": ["Risk 1", ...],
-    "recommendations": ["Recommendation 1", ...]
-  },
-  "technicalHighlights": {
-    "architecture": "Architecture style and patterns",
-    "scalability": "Scalability assessment",
-    "maintainability": "Maintainability assessment",
-    "security": "Security posture"
-  },
-  "nextSteps": [
-    {
-      "priority": "high|medium|low",
-      "action": "What to do",
-      "rationale": "Why it matters"
+- Risk Areas: ${blueprint.riskAreas.length}`;
     }
-  ],
-  "metrics": {
-    "healthScore": 0-100,
-    "technicalDebtRatio": 0-1,
-    "modernizationNeeded": true/false
+
+    if (code && code.length <= 2000) {
+      prompt += `\n\nCode Sample:\n\`\`\`${language || 'text'}\n${code}\n\`\`\``;
+    } else if (code) {
+      prompt += `\n\nCode Sample (truncated):\n\`\`\`${language || 'text'}\n${code.substring(0, 2000)}...\n\`\`\``;
+    }
+
+    if (additionalContext) {
+      prompt += `\n\nAdditional Context:\n${JSON.stringify(additionalContext, null, 2)}`;
+    }
+
+    prompt += `\n\nPlease provide a clear, concise description of this component that explains its purpose, functionality, and role in the system. Focus on what business value it provides and how it contributes to the overall architecture.`;
+
+    return prompt;
   }
-}`,
-    };
+
+  // Generate risk assessment prompt
+  generateRiskAssessmentPrompt(context: AIAnalysisContext): string {
+    const { component, blueprint, code, language, framework } = context;
+
+    let prompt = `Risk Assessment Request:
+
+Please analyze the following component for potential risks, vulnerabilities, and quality issues.
+
+`;
+
+    if (component) {
+      prompt += `Component Information:
+- Name: ${component.name}
+- Type: ${component.type}
+- Language: ${component.language || language || 'Unknown'}
+- Framework: ${component.framework || framework || 'Unknown'}
+- Complexity: ${component.metadata.complexity}/10
+- Dependencies: ${component.dependencies.length}
+- Dependents: ${component.dependents.length}
+- Line Count: ${component.metadata.lineCount}`;
+
+      if (component.metadata.testCoverage !== undefined) {
+        prompt += `\n- Test Coverage: ${component.metadata.testCoverage}%`;
+      }
+
+      if (component.metadata.isEntry) {
+        prompt += `\n- Is Entry Point: Yes`;
+      }
+
+      if (component.metadata.httpMethods?.length) {
+        prompt += `\n- HTTP Methods: ${component.metadata.httpMethods.join(', ')}`;
+      }
+
+      if (component.metadata.dbQueries?.length) {
+        prompt += `\n- Database Queries: ${component.metadata.dbQueries.length}`;
+      }
+
+      if (component.metadata.externalCalls?.length) {
+        prompt += `\n- External Calls: ${component.metadata.externalCalls.length}`;
+      }
+    }
+
+    if (code && code.length <= 3000) {
+      prompt += `\n\nCode to Analyze:\n\`\`\`${language || 'text'}\n${code}\n\`\`\``;
+    } else if (code) {
+      prompt += `\n\nCode to Analyze (truncated):\n\`\`\`${language || 'text'}\n${code.substring(0, 3000)}...\n\`\`\``;
+    }
+
+    if (blueprint) {
+      prompt += `\n\nSystem Context:
+- Framework: ${blueprint.framework}
+- Total Components: ${blueprint.components.length}
+- Known Risk Areas: ${blueprint.riskAreas.length}`;
+    }
+
+    prompt += `\n\nAnalyze this component for:
+1. Security vulnerabilities and attack vectors
+2. Performance bottlenecks and scalability issues
+3. Maintainability and code quality problems
+4. Reliability and error handling concerns
+5. Architectural and design issues
+
+Provide your assessment in the required JSON format with specific, actionable insights.`;
+
+    return prompt;
+  }
+
+  // Generate recommendations prompt
+  generateRecommendationsPrompt(context: AIAnalysisContext): string {
+    const { component, blueprint, code, language, framework } = context;
+
+    let prompt = `Architectural Recommendations Request:
+
+Please analyze the following component and provide specific, actionable recommendations for improvement.
+
+`;
+
+    if (component) {
+      prompt += `Component Details:
+- Name: ${component.name}
+- Type: ${component.type}
+- Language: ${component.language || language || 'Unknown'}
+- Framework: ${component.framework || framework || 'Unknown'}
+- Complexity: ${component.metadata.complexity}/10
+- Dependencies: ${component.dependencies.length}
+- Dependents: ${component.dependents.length}
+- Line Count: ${component.metadata.lineCount}`;
+
+      if (component.metadata.testCoverage !== undefined) {
+        prompt += `\n- Test Coverage: ${component.metadata.testCoverage}%`;
+      }
+
+      if (component.metadata.responsibilities.length > 0) {
+        prompt += `\n- Responsibilities: ${component.metadata.responsibilities.join(', ')}`;
+      }
+    }
+
+    if (blueprint) {
+      prompt += `\n\nSystem Architecture Context:
+- Framework: ${blueprint.framework}
+- Total Components: ${blueprint.components.length}
+- Technology Stack: ${blueprint.technologyStack?.primaryFramework?.name || 'Unknown'}`;
+
+      if (blueprint.riskAreas.length > 0) {
+        prompt += `\n- Existing Risk Areas: ${blueprint.riskAreas.length}`;
+      }
+    }
+
+    if (code && code.length <= 4000) {
+      prompt += `\n\nCode for Analysis:\n\`\`\`${language || 'text'}\n${code}\n\`\`\``;
+    } else if (code) {
+      prompt += `\n\nCode for Analysis (truncated):\n\`\`\`${language || 'text'}\n${code.substring(0, 4000)}...\n\`\`\``;
+    }
+
+    prompt += `\n\nPlease provide recommendations focusing on:
+
+1. **Architectural Improvements**: SOLID principles, design patterns, separation of concerns
+2. **Security Enhancements**: Input validation, authentication, authorization, data protection
+3. **Performance Optimizations**: Caching strategies, query optimization, algorithmic improvements
+4. **Testing Strategies**: Unit tests, integration tests, coverage improvements
+5. **Code Quality**: Refactoring opportunities, documentation, error handling
+6. **Maintainability**: Code organization, naming conventions, complexity reduction
+
+Prioritize recommendations based on:
+- Impact on system reliability and security
+- Development effort required
+- Business value provided
+- Technical debt reduction
+
+Provide specific implementation guidance and expected outcomes for each recommendation.`;
+
+    return prompt;
+  }
+
+  // Generate code analysis prompt
+  generateCodeAnalysisPrompt(context: AIAnalysisContext): string {
+    const { code, language, framework, component } = context;
+
+    if (!code) {
+      throw new Error('Code is required for code analysis');
+    }
+
+    let prompt = `Code Analysis Request:
+
+Please perform a comprehensive static analysis of the following code.
+
+`;
+
+    if (component) {
+      prompt += `Component Context:
+- Name: ${component.name}
+- Type: ${component.type}
+- Path: ${component.path}`;
+    }
+
+    prompt += `
+Language: ${language || 'Auto-detect'}
+Framework: ${framework || 'Unknown'}
+
+Code to Analyze:
+\`\`\`${language || 'text'}
+${code}
+\`\`\`
+
+Please analyze this code for:
+
+**Complexity Metrics:**
+- Cognitive complexity (how hard it is to understand)
+- Cyclomatic complexity (number of execution paths)
+- Maintainability index (ease of maintenance)
+
+**Code Patterns:**
+- Design patterns (Singleton, Factory, Observer, etc.)
+- Anti-patterns (God Object, Spaghetti Code, etc.)
+- Architectural patterns (MVC, MVP, MVVM, etc.)
+
+**Quality Issues:**
+- Code smells (long methods, duplicate code, etc.)
+- Potential bugs or logic errors
+- Security vulnerabilities
+- Performance bottlenecks
+- Maintainability concerns
+
+**Improvement Suggestions:**
+- Refactoring opportunities
+- Optimization recommendations
+- Testing suggestions
+- Documentation improvements
+
+**Testability Assessment:**
+- How easy is this code to test?
+- Are there dependencies that make testing difficult?
+- Are functions/methods properly isolated?
+
+Provide your analysis in the required JSON format with specific line numbers where applicable and concrete examples for suggestions.`;
+
+    return prompt;
+  }
+
+  // Utility method to truncate code for context length limits
+  private truncateCode(code: string, maxLength: number = 4000): string {
+    if (code.length <= maxLength) {
+      return code;
+    }
+
+    // Try to truncate at a reasonable boundary (end of line)
+    const truncated = code.substring(0, maxLength);
+    const lastNewline = truncated.lastIndexOf('\n');
+    
+    if (lastNewline > maxLength * 0.8) {
+      return code.substring(0, lastNewline) + '\n// ... (truncated)';
+    }
+    
+    return truncated + '... (truncated)';
+  }
+
+  // Estimate token count for a prompt (rough approximation)
+  estimateTokenCount(text: string): number {
+    // Rough approximation: 1 token ≈ 4 characters
+    return Math.ceil(text.length / 4);
+  }
+
+  // Optimize prompt for token limits
+  optimizePromptForTokens(prompt: string, maxTokens: number): string {
+    const estimatedTokens = this.estimateTokenCount(prompt);
+    
+    if (estimatedTokens <= maxTokens) {
+      return prompt;
+    }
+
+    // Calculate how much we need to reduce
+    const targetLength = Math.floor(prompt.length * (maxTokens / estimatedTokens) * 0.9);
+    
+    // Find code blocks and truncate them first
+    const codeBlockRegex = /```[\s\S]*?```/g;
+    const codeBlocks = prompt.match(codeBlockRegex);
+    
+    if (codeBlocks && codeBlocks.length > 0) {
+      let optimizedPrompt = prompt;
+      
+      for (const block of codeBlocks) {
+        if (optimizedPrompt.length > targetLength) {
+          const lines = block.split('\n');
+          const language = lines[0].replace('```', '');
+          const codeLines = lines.slice(1, -1);
+          
+          // Keep first and last few lines, truncate middle
+          const keepLines = Math.floor((targetLength - optimizedPrompt.length + block.length) / 50);
+          
+          if (keepLines < codeLines.length && keepLines > 4) {
+            const start = codeLines.slice(0, keepLines / 2);
+            const end = codeLines.slice(-(keepLines / 2));
+            const truncatedBlock = `\`\`\`${language}\n${start.join('\n')}\n... (truncated ${codeLines.length - keepLines} lines) ...\n${end.join('\n')}\n\`\`\``;
+            optimizedPrompt = optimizedPrompt.replace(block, truncatedBlock);
+          }
+        }
+      }
+      
+      return optimizedPrompt;
+    }
+    
+    // If no code blocks, truncate the entire prompt
+    return prompt.substring(0, targetLength) + '... (truncated for token limits)';
+  }
+
+  // Get appropriate system prompt for analysis type
+  getSystemPrompt(analysisType: 'description' | 'risk' | 'recommendations' | 'code'): string {
+    switch (analysisType) {
+      case 'description':
+        return this.systemPrompts.description;
+      case 'risk':
+        return this.systemPrompts.riskAssessment;
+      case 'recommendations':
+        return this.systemPrompts.recommendations;
+      case 'code':
+        return this.systemPrompts.codeAnalysis;
+      default:
+        return this.systemPrompts.description;
+    }
+  }
+
+  // Generate a context-aware prompt based on available information
+  generateContextAwarePrompt(context: AIAnalysisContext, analysisType: string): string {
+    const hasCode = Boolean(context.code);
+    const hasComponent = Boolean(context.component);
+    const hasBlueprint = Boolean(context.blueprint);
+
+    // Prioritize information sources based on analysis type
+    switch (analysisType) {
+      case 'description':
+        if (hasComponent) {
+          return this.generateDescriptionPrompt(context);
+        } else if (hasCode) {
+          return `Analyze this ${context.language || 'code'} and provide a description:\n\`\`\`\n${context.code}\n\`\`\``;
+        }
+        break;
+
+      case 'risk':
+        return this.generateRiskAssessmentPrompt(context);
+
+      case 'recommendations':
+        return this.generateRecommendationsPrompt(context);
+
+      case 'code':
+        if (hasCode) {
+          return this.generateCodeAnalysisPrompt(context);
+        }
+        break;
+    }
+
+    // Fallback to basic prompt
+    return `Please analyze the provided information and generate insights about this software component.`;
   }
 }
+
+export const prompts = new AIPrompts();

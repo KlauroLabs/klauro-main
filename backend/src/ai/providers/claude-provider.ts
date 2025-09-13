@@ -1,277 +1,356 @@
 import Anthropic from '@anthropic-ai/sdk';
-import pLimit from 'p-limit';
+import { AIProvider, AIAnalysisContext, AIRiskAssessment, AIRecommendation, AICodeAnalysis } from '../ai-service';
+import { AIConfig } from '../../config/ai.config';
+import { prompts } from '../ai-prompts';
+import * as winston from 'winston';
 import pRetry from 'p-retry';
-import { aiConfig } from '../../config/ai.config';
-import { AIRequest, AIResponse } from './openai-provider';
 
-export class ClaudeProvider {
-  private client: Anthropic | null = null;
-  private rateLimiter: ReturnType<typeof pLimit>;
-  private tokenUsage = {
-    current: 0,
-    resetTime: Date.now() + 60000,
-  };
-  
-  constructor(private config = aiConfig.anthropic) {
-    if (config.apiKey) {
-      this.client = new Anthropic({
-        apiKey: config.apiKey,
-        timeout: config.timeout,
-      });
+export class ClaudeProvider implements AIProvider {
+  public readonly name = 'claude';
+  private client: Anthropic;
+  private logger: winston.Logger;
+  private config: AIConfig;
+
+  constructor(config: AIConfig) {
+    this.config = config;
+    
+    if (!config.anthropic.apiKey) {
+      throw new Error('Anthropic API key is required');
     }
-    
-    this.rateLimiter = pLimit(config.rateLimit.requestsPerMinute);
-  }
-  
-  isAvailable(): boolean {
-    return this.client !== null;
-  }
-  
-  private checkTokenLimit(estimatedTokens: number): void {
-    const now = Date.now();
-    
-    if (now > this.tokenUsage.resetTime) {
-      this.tokenUsage.current = 0;
-      this.tokenUsage.resetTime = now + 60000;
-    }
-    
-    if (this.tokenUsage.current + estimatedTokens > this.config.rateLimit.tokensPerMinute) {
-      throw new Error('Token rate limit exceeded. Please try again later.');
-    }
-  }
-  
-  private calculateCost(model: string, inputTokens: number, outputTokens: number): number {
-    const pricing = aiConfig.costTracking.pricing.anthropic;
-    const modelPricing = pricing[model as keyof typeof pricing];
-    
-    if (!modelPricing) {
-      console.warn(`No pricing information for model ${model}`);
-      return 0;
-    }
-    
-    const inputCost = (inputTokens / 1000) * modelPricing.input;
-    const outputCost = (outputTokens / 1000) * modelPricing.output;
-    
-    return inputCost + outputCost;
-  }
-  
-  async complete(request: AIRequest): Promise<AIResponse> {
-    if (!this.client) {
-      throw new Error('Anthropic client not initialized. Please provide an API key.');
-    }
-    
-    const estimatedInputTokens = Math.ceil(request.prompt.length / 4);
-    this.checkTokenLimit(estimatedInputTokens + (request.maxTokens || this.config.maxTokens));
-    
-    return this.rateLimiter(async () => {
-      return pRetry(
-        async () => {
-          const systemPrompt = request.systemPrompt || 'You are a helpful AI assistant specialized in code analysis and software architecture.';
-          
-          const message = await this.client!.messages.create({
-            model: this.config.model,
-            max_tokens: request.maxTokens || this.config.maxTokens,
-            temperature: request.temperature ?? this.config.temperature,
-            system: systemPrompt,
-            messages: [
-              {
-                role: 'user',
-                content: request.prompt,
-              },
-            ],
-          });
-          
-          const content = message.content[0];
-          const textContent = content.type === 'text' ? content.text : '';
-          
-          const usage = message.usage || { input_tokens: 0, output_tokens: 0 };
-          const totalTokens = usage.input_tokens + usage.output_tokens;
-          
-          this.tokenUsage.current += totalTokens;
-          
-          const cost = this.calculateCost(
-            this.config.model,
-            usage.input_tokens,
-            usage.output_tokens
-          );
-          
-          return {
-            content: textContent,
-            model: this.config.model,
-            usage: {
-              inputTokens: usage.input_tokens,
-              outputTokens: usage.output_tokens,
-              totalTokens,
-            },
-            cost,
-            provider: 'anthropic',
-          };
-        },
-        {
-          retries: this.config.maxRetries,
-          onFailedAttempt: (error) => {
-            const errorMessage = (error as any).message || error.toString();
-            console.warn(`Anthropic API attempt ${error.attemptNumber} failed:`, errorMessage);
-            
-            if (errorMessage.includes('rate_limit') || errorMessage.includes('429')) {
-              const delay = Math.min(1000 * Math.pow(2, error.attemptNumber), 30000);
-              return new Promise(resolve => setTimeout(resolve, delay));
-            }
-          },
-        }
-      );
+
+    this.client = new Anthropic({
+      apiKey: config.anthropic.apiKey,
+      timeout: config.anthropic.timeout,
+      maxRetries: config.anthropic.maxRetries,
+    });
+
+    this.logger = winston.createLogger({
+      level: 'info',
+      format: winston.format.combine(
+        winston.format.timestamp(),
+        winston.format.errors({ stack: true }),
+        winston.format.json()
+      ),
+      defaultMeta: { provider: 'claude' },
+      transports: [
+        new winston.transports.Console({
+          format: winston.format.combine(
+            winston.format.colorize(),
+            winston.format.simple()
+          )
+        })
+      ]
     });
   }
-  
-  async analyzeCode(
-    code: string,
-    analysis: 'description' | 'risks' | 'improvements' | 'security' | 'performance',
-    context?: Record<string, any>
-  ): Promise<AIResponse> {
-    const analysisPrompts = {
-      description: `Analyze this code and provide a comprehensive description of its functionality, architecture, and purpose. Focus on:
-- Core business logic and objectives
-- Key components and their interactions
-- Data flow and processing patterns
-- Integration points and dependencies`,
-      
-      risks: `Perform a risk assessment of this code, identifying:
-- Critical vulnerabilities and security issues
-- Performance bottlenecks and scalability concerns
-- Maintainability problems and technical debt
-- Single points of failure
-- Compliance and regulatory risks`,
-      
-      improvements: `Suggest architectural and implementation improvements for this code:
-- Design pattern recommendations
-- Refactoring opportunities
-- Performance optimizations
-- Code organization improvements
-- Best practices that should be applied`,
-      
-      security: `Conduct a thorough security analysis:
-- Identify specific vulnerabilities (injection, XSS, CSRF, etc.)
-- Authentication and authorization issues
-- Data exposure and privacy concerns
-- Cryptographic weaknesses
-- Supply chain vulnerabilities
-Provide specific remediation steps for each issue.`,
-      
-      performance: `Analyze performance characteristics:
-- Time complexity of algorithms
-- Memory usage patterns
-- I/O bottlenecks
-- Database query efficiency
-- Caching opportunities
-- Concurrency and parallelization potential`,
-    };
-    
-    const systemPrompt = `You are Claude, an expert software architect and security analyst working with the Unravl platform.
-Your analysis should be detailed, actionable, and focused on ${analysis}.
-${context ? `Additional context: ${JSON.stringify(context)}` : ''}
-Provide your response in JSON format with clear structure.`;
-    
-    const request: AIRequest = {
-      prompt: `${analysisPrompts[analysis]}\n\nCode to analyze:\n\`\`\`\n${code}\n\`\`\`\n\nProvide your analysis in JSON format.`,
-      systemPrompt,
-      maxTokens: 3000,
-      temperature: 0.2,
-    };
-    
-    return this.complete(request);
+
+  get available(): boolean {
+    return !!this.config.anthropic.apiKey;
   }
-  
-  async generateDocumentation(
-    component: any,
-    format: 'markdown' | 'jsdoc' | 'inline'
-  ): Promise<AIResponse> {
-    const systemPrompt = `You are a technical documentation expert creating clear, comprehensive documentation.
-Focus on clarity, completeness, and following documentation best practices.`;
+
+  async generateDescription(context: AIAnalysisContext): Promise<string> {
+    const prompt = prompts.generateDescriptionPrompt(context);
+    const systemPrompt = prompts.systemPrompts.description;
     
-    const formatTemplates = {
-      markdown: `Create comprehensive Markdown documentation with:
-# Component Name
-## Overview
-## Installation/Setup
-## API Reference
-## Usage Examples
-## Configuration
-## Troubleshooting`,
+    try {
+      const response = await this.makeRequest(prompt, {
+        temperature: 0.3,
+        maxTokens: 500,
+        systemPrompt
+      });
+
+      return this.extractContent(response);
+    } catch (error) {
+      this.logger.error('Failed to generate description:', error);
+      throw error;
+    }
+  }
+
+  async assessRisk(context: AIAnalysisContext): Promise<AIRiskAssessment> {
+    const prompt = prompts.generateRiskAssessmentPrompt(context);
+    const systemPrompt = prompts.systemPrompts.riskAssessment + '\n\nPlease respond with valid JSON only.';
+    
+    try {
+      const response = await this.makeRequest(prompt, {
+        temperature: 0.2,
+        maxTokens: 1000,
+        systemPrompt
+      });
+
+      const content = this.extractContent(response);
+      return this.parseRiskAssessment(content);
+    } catch (error) {
+      this.logger.error('Failed to assess risk:', error);
+      throw error;
+    }
+  }
+
+  async generateRecommendations(context: AIAnalysisContext): Promise<AIRecommendation[]> {
+    const prompt = prompts.generateRecommendationsPrompt(context);
+    const systemPrompt = prompts.systemPrompts.recommendations + '\n\nPlease respond with valid JSON only.';
+    
+    try {
+      const response = await this.makeRequest(prompt, {
+        temperature: 0.4,
+        maxTokens: 1500,
+        systemPrompt
+      });
+
+      const content = this.extractContent(response);
+      return this.parseRecommendations(content);
+    } catch (error) {
+      this.logger.error('Failed to generate recommendations:', error);
+      throw error;
+    }
+  }
+
+  async analyzeCode(context: AIAnalysisContext): Promise<AICodeAnalysis> {
+    if (!context.code) {
+      throw new Error('Code context is required for code analysis');
+    }
+
+    const prompt = prompts.generateCodeAnalysisPrompt(context);
+    const systemPrompt = prompts.systemPrompts.codeAnalysis + '\n\nPlease respond with valid JSON only.';
+    
+    try {
+      const response = await this.makeRequest(prompt, {
+        temperature: 0.2,
+        maxTokens: 2000,
+        systemPrompt
+      });
+
+      const content = this.extractContent(response);
+      return this.parseCodeAnalysis(content);
+    } catch (error) {
+      this.logger.error('Failed to analyze code:', error);
+      throw error;
+    }
+  }
+
+  private async makeRequest(
+    prompt: string, 
+    options: {
+      temperature?: number;
+      maxTokens?: number;
+      systemPrompt?: string;
+    } = {}
+  ): Promise<Anthropic.Messages.Message> {
+    const {
+      temperature = this.config.anthropic.temperature,
+      maxTokens = this.config.anthropic.maxTokens,
+      systemPrompt
+    } = options;
+
+    const requestParams: Anthropic.Messages.MessageCreateParams = {
+      model: this.config.anthropic.model,
+      max_tokens: maxTokens,
+      temperature,
+      messages: [
+        {
+          role: 'user',
+          content: prompt
+        }
+      ]
+    };
+
+    if (systemPrompt) {
+      requestParams.system = systemPrompt;
+    }
+
+    return await pRetry(
+      async () => {
+        this.logger.debug(`Making Claude request with model ${this.config.anthropic.model}`);
+        const start = Date.now();
+        
+        const response = await this.client.messages.create(requestParams);
+        
+        const duration = Date.now() - start;
+        this.logger.debug(`Claude request completed in ${duration}ms`);
+        
+        // Log token usage for cost tracking
+        if (response.usage) {
+          this.logger.info('Token usage:', {
+            inputTokens: response.usage.input_tokens,
+            outputTokens: response.usage.output_tokens
+          });
+        }
+
+        return response;
+      },
+      {
+        retries: this.config.anthropic.maxRetries,
+        onFailedAttempt: (error) => {
+          this.logger.warn(`Claude request attempt ${error.attemptNumber} failed:`, error.message);
+        },
+        factor: 2,
+        minTimeout: 1000,
+        maxTimeout: 30000,
+      }
+    );
+  }
+
+  private extractContent(response: Anthropic.Messages.Message): string {
+    if (!response.content || response.content.length === 0) {
+      throw new Error('No content in Claude response');
+    }
+
+    // Claude returns an array of content blocks
+    const textBlocks = response.content.filter(
+      (block): block is Anthropic.Messages.TextBlock => block.type === 'text'
+    );
+
+    if (textBlocks.length === 0) {
+      throw new Error('No text content in Claude response');
+    }
+
+    return textBlocks.map(block => block.text).join('\n').trim();
+  }
+
+  private parseRiskAssessment(content: string): AIRiskAssessment {
+    try {
+      // Try to extract JSON from the response (Claude sometimes wraps JSON in backticks)
+      const jsonMatch = content.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/) || content.match(/(\{[\s\S]*\})/);
+      const jsonStr = jsonMatch ? jsonMatch[1] : content;
       
-      jsdoc: `Generate complete JSDoc/TSDoc comments including:
-- Function/class descriptions
-- @param tags with types and descriptions
-- @returns descriptions
-- @throws for exceptions
-- @example code snippets
-- @see references`,
+      const parsed = JSON.parse(jsonStr);
       
-      inline: `Add helpful inline comments that:
-- Explain complex algorithms
-- Clarify business logic
-- Document edge cases
-- Note performance considerations
-- Explain architectural decisions`,
-    };
-    
-    const request: AIRequest = {
-      prompt: `Generate ${format} documentation for:\n\n${JSON.stringify(component, null, 2)}\n\nFormat requirements:\n${formatTemplates[format]}`,
-      systemPrompt,
-      maxTokens: 4000,
-    };
-    
-    return this.complete(request);
+      return {
+        riskLevel: parsed.riskLevel || 'low',
+        confidence: parsed.confidence || 0.5,
+        reasons: Array.isArray(parsed.reasons) ? parsed.reasons : [],
+        suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions : [],
+        categories: Array.isArray(parsed.categories) ? parsed.categories : []
+      };
+    } catch (error) {
+      this.logger.warn('Failed to parse risk assessment JSON, using fallback');
+      
+      // Fallback parsing - extract key information from text
+      return {
+        riskLevel: this.extractRiskLevel(content),
+        confidence: 0.6,
+        reasons: this.extractList(content, 'reason'),
+        suggestions: this.extractList(content, 'suggest'),
+        categories: []
+      };
+    }
   }
-  
-  async assessArchitecture(
-    blueprint: any,
-    focusArea?: 'scalability' | 'security' | 'maintainability' | 'performance'
-  ): Promise<AIResponse> {
-    const focusPrompts = {
-      scalability: `Focus on horizontal/vertical scaling, bottlenecks, distributed system concerns, and growth capacity.`,
-      security: `Focus on attack surfaces, defense in depth, zero-trust principles, and compliance requirements.`,
-      maintainability: `Focus on code organization, coupling/cohesion, technical debt, and development velocity.`,
-      performance: `Focus on response times, throughput, resource utilization, and optimization opportunities.`,
-    };
-    
-    const systemPrompt = `You are a senior solutions architect reviewing system architecture for the Unravl platform.
-Provide strategic, actionable recommendations based on industry best practices and modern architectural patterns.
-${focusArea ? focusPrompts[focusArea] : 'Provide a comprehensive architectural assessment.'}`;
-    
-    const request: AIRequest = {
-      prompt: `Assess this system architecture and provide detailed recommendations:\n\n${JSON.stringify(blueprint, null, 2)}\n\nStructure your response as JSON with sections for: findings, risks, recommendations, and priorities.`,
-      systemPrompt,
-      responseFormat: 'json',
-      maxTokens: 5000,
-    };
-    
-    return this.complete(request);
+
+  private parseRecommendations(content: string): AIRecommendation[] {
+    try {
+      // Try to extract JSON from the response
+      const jsonMatch = content.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/) || content.match(/(\{[\s\S]*\})/);
+      const jsonStr = jsonMatch ? jsonMatch[1] : content;
+      
+      const parsed = JSON.parse(jsonStr);
+      
+      if (!Array.isArray(parsed.recommendations)) {
+        return [];
+      }
+
+      return parsed.recommendations.map((rec: any) => ({
+        type: rec.type || 'architectural',
+        priority: rec.priority || 'medium',
+        title: rec.title || 'Recommendation',
+        description: rec.description || '',
+        implementation: rec.implementation || '',
+        impact: rec.impact || '',
+        effort: rec.effort || 'medium',
+        confidence: rec.confidence || 0.7,
+        tags: Array.isArray(rec.tags) ? rec.tags : []
+      }));
+    } catch (error) {
+      this.logger.warn('Failed to parse recommendations JSON, using fallback');
+      
+      // Fallback: extract basic recommendations from text
+      const lines = content.split('\n').filter(line => line.trim());
+      const recommendations: AIRecommendation[] = [];
+      
+      for (const line of lines) {
+        if (line.match(/^\d+\.|\-|\*/)) {
+          recommendations.push({
+            type: 'architectural',
+            priority: 'medium',
+            title: line.replace(/^\d+\.|\-|\*/, '').trim(),
+            description: line.trim(),
+            implementation: 'See description',
+            impact: 'Moderate improvement expected',
+            effort: 'medium',
+            confidence: 0.6,
+            tags: []
+          });
+        }
+      }
+      
+      return recommendations;
+    }
   }
-  
-  async generateTestSuggestions(
-    code: string,
-    existingTests?: string[]
-  ): Promise<AIResponse> {
-    const systemPrompt = `You are a test automation expert suggesting comprehensive test strategies.`;
-    
-    const request: AIRequest = {
-      prompt: `Suggest test cases for this code:\n\`\`\`\n${code}\n\`\`\`\n\n${
-        existingTests ? `Existing tests: ${existingTests.join(', ')}` : ''
-      }\n\nProvide test suggestions including unit tests, integration tests, edge cases, and error scenarios.`,
-      systemPrompt,
-      responseFormat: 'json',
-      maxTokens: 3000,
-    };
-    
-    return this.complete(request);
+
+  private parseCodeAnalysis(content: string): AICodeAnalysis {
+    try {
+      // Try to extract JSON from the response
+      const jsonMatch = content.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/) || content.match(/(\{[\s\S]*\})/);
+      const jsonStr = jsonMatch ? jsonMatch[1] : content;
+      
+      const parsed = JSON.parse(jsonStr);
+      
+      return {
+        summary: parsed.summary || 'Code analysis completed',
+        complexity: {
+          cognitive: parsed.complexity?.cognitive || 1,
+          cyclomatic: parsed.complexity?.cyclomatic || 1,
+          maintainability: parsed.complexity?.maintainability || 8
+        },
+        patterns: Array.isArray(parsed.patterns) ? parsed.patterns : [],
+        issues: Array.isArray(parsed.issues) ? parsed.issues : [],
+        suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions : [],
+        testability: parsed.testability || 7,
+        documentation: parsed.documentation || 'No additional documentation generated'
+      };
+    } catch (error) {
+      this.logger.warn('Failed to parse code analysis JSON, using fallback');
+      
+      return {
+        summary: 'Basic analysis completed - JSON parsing failed',
+        complexity: {
+          cognitive: 5,
+          cyclomatic: 3,
+          maintainability: 6
+        },
+        patterns: [],
+        issues: [],
+        suggestions: [],
+        testability: 5,
+        documentation: content.substring(0, 500) + '...'
+      };
+    }
   }
-  
-  getUsageStats() {
-    return {
-      tokenUsage: this.tokenUsage,
-      rateLimitRemaining: this.config.rateLimit.requestsPerMinute - this.rateLimiter.pendingCount,
-      provider: 'anthropic',
-      model: this.config.model,
-    };
+
+  private extractRiskLevel(content: string): 'low' | 'medium' | 'high' | 'critical' {
+    const lowerContent = content.toLowerCase();
+    
+    if (lowerContent.includes('critical') || lowerContent.includes('severe')) {
+      return 'critical';
+    } else if (lowerContent.includes('high')) {
+      return 'high';
+    } else if (lowerContent.includes('medium') || lowerContent.includes('moderate')) {
+      return 'medium';
+    }
+    
+    return 'low';
+  }
+
+  private extractList(content: string, keyword: string): string[] {
+    const lines = content.split('\n');
+    const items: string[] = [];
+    
+    for (const line of lines) {
+      if (line.toLowerCase().includes(keyword)) {
+        const cleaned = line.replace(/^\d+\.|\-|\*/, '').trim();
+        if (cleaned) {
+          items.push(cleaned);
+        }
+      }
+    }
+    
+    return items;
   }
 }

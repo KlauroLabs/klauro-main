@@ -65,6 +65,35 @@ export class SystemTopologyAnalyzer extends BaseAnalyzer {
     integrations: []
   };
 
+  // Main public method to analyze a repository
+  public async analyzeTopology(repositoryPath: string): Promise<{
+    components: ComponentNode[];
+    relationships: Connection[];
+    topology: TopologyMap;
+  }> {
+    // Set the project path directly
+    this.projectPath = repositoryPath;
+    
+    // Discover components in the repository - returns ComponentDiscovery object
+    const discovery = await this.discoverComponents();
+    const components = discovery.components;
+    
+    // Analyze connections between components
+    const relationships = await this.analyzeConnections(components);
+    
+    // Identify architectural layers
+    this.identifyArchitecturalLayers();
+    
+    // Map data flows
+    this.mapDataFlows();
+    
+    return {
+      components,
+      relationships,
+      topology: this.topology
+    };
+  }
+
   // Architectural patterns we can recognize across any language/framework
   private architecturalPatterns = {
     // Web Application Patterns

@@ -118,12 +118,6 @@ class InputSanitizer {
                 if (req.body && typeof req.body === 'object') {
                     req.body = this.sanitizeObject(req.body, options.strict);
                 }
-                if (req.query && typeof req.query === 'object') {
-                    req.query = this.sanitizeObject(req.query, options.strict);
-                }
-                if (req.params && typeof req.params === 'object') {
-                    req.params = this.sanitizeObject(req.params, options.strict);
-                }
                 next();
             }
             catch (error) {

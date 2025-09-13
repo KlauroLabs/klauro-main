@@ -1,229 +1,348 @@
 import OpenAI from 'openai';
-import pLimit from 'p-limit';
+import { AIProvider, AIAnalysisContext, AIRiskAssessment, AIRecommendation, AICodeAnalysis } from '../ai-service';
+import { AIConfig } from '../../config/ai.config';
+import { prompts } from '../ai-prompts';
+import * as winston from 'winston';
 import pRetry from 'p-retry';
-import { aiConfig } from '../../config/ai.config';
 
-export interface AIResponse {
-  content: string;
-  model: string;
-  usage: {
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-  };
-  cost: number;
-  provider: string;
-  cached?: boolean;
-}
+export class OpenAIProvider implements AIProvider {
+  public readonly name = 'openai';
+  private client: OpenAI;
+  private logger: winston.Logger;
+  private config: AIConfig;
 
-export interface AIRequest {
-  prompt: string;
-  systemPrompt?: string;
-  maxTokens?: number;
-  temperature?: number;
-  responseFormat?: 'json' | 'text';
-  context?: Record<string, any>;
-}
+  constructor(config: AIConfig) {
+    this.config = config;
+    
+    if (!config.openai.apiKey) {
+      throw new Error('OpenAI API key is required');
+    }
 
-export class OpenAIProvider {
-  private client: OpenAI | null = null;
-  private rateLimiter: ReturnType<typeof pLimit>;
-  private tokenUsage = {
-    current: 0,
-    resetTime: Date.now() + 60000,
-  };
-  
-  constructor(private config = aiConfig.openai) {
-    if (config.apiKey) {
-      this.client = new OpenAI({
-        apiKey: config.apiKey,
-        organization: config.organization,
-        timeout: config.timeout,
-      });
-    }
-    
-    this.rateLimiter = pLimit(config.rateLimit.requestsPerMinute);
-  }
-  
-  isAvailable(): boolean {
-    return this.client !== null;
-  }
-  
-  private checkTokenLimit(estimatedTokens: number): void {
-    const now = Date.now();
-    
-    if (now > this.tokenUsage.resetTime) {
-      this.tokenUsage.current = 0;
-      this.tokenUsage.resetTime = now + 60000;
-    }
-    
-    if (this.tokenUsage.current + estimatedTokens > this.config.rateLimit.tokensPerMinute) {
-      throw new Error('Token rate limit exceeded. Please try again later.');
-    }
-  }
-  
-  private calculateCost(model: string, inputTokens: number, outputTokens: number): number {
-    const pricing = aiConfig.costTracking.pricing.openai;
-    const modelPricing = pricing[model as keyof typeof pricing];
-    
-    if (!modelPricing) {
-      console.warn(`No pricing information for model ${model}`);
-      return 0;
-    }
-    
-    const inputCost = (inputTokens / 1000) * modelPricing.input;
-    const outputCost = (outputTokens / 1000) * modelPricing.output;
-    
-    return inputCost + outputCost;
-  }
-  
-  async complete(request: AIRequest): Promise<AIResponse> {
-    if (!this.client) {
-      throw new Error('OpenAI client not initialized. Please provide an API key.');
-    }
-    
-    const estimatedInputTokens = Math.ceil(request.prompt.length / 4);
-    this.checkTokenLimit(estimatedInputTokens + (request.maxTokens || this.config.maxTokens));
-    
-    return this.rateLimiter(async () => {
-      return pRetry(
-        async () => {
-          const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
-          
-          if (request.systemPrompt) {
-            messages.push({
-              role: 'system',
-              content: request.systemPrompt,
-            });
-          }
-          
-          messages.push({
-            role: 'user',
-            content: request.prompt,
-          });
-          
-          const completion = await this.client!.chat.completions.create({
-            model: this.config.model,
-            messages,
-            max_tokens: request.maxTokens || this.config.maxTokens,
-            temperature: request.temperature ?? this.config.temperature,
-            response_format: request.responseFormat === 'json' 
-              ? { type: 'json_object' } 
-              : undefined,
-          });
-          
-          const response = completion.choices[0];
-          const usage = completion.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
-          
-          this.tokenUsage.current += usage.total_tokens;
-          
-          const cost = this.calculateCost(
-            this.config.model,
-            usage.prompt_tokens,
-            usage.completion_tokens
-          );
-          
-          return {
-            content: response.message?.content || '',
-            model: this.config.model,
-            usage: {
-              inputTokens: usage.prompt_tokens,
-              outputTokens: usage.completion_tokens,
-              totalTokens: usage.total_tokens,
-            },
-            cost,
-            provider: 'openai',
-          };
-        },
-        {
-          retries: this.config.maxRetries,
-          onFailedAttempt: (error) => {
-            const errorMessage = (error as any).message || error.toString();
-            console.warn(`OpenAI API attempt ${error.attemptNumber} failed:`, errorMessage);
-            
-            if (errorMessage.includes('rate_limit')) {
-              const delay = Math.min(1000 * Math.pow(2, error.attemptNumber), 30000);
-              return new Promise(resolve => setTimeout(resolve, delay));
-            }
-          },
-        }
-      );
+    this.client = new OpenAI({
+      apiKey: config.openai.apiKey,
+      organization: config.openai.organization,
+      timeout: config.openai.timeout,
+      maxRetries: config.openai.maxRetries,
+    });
+
+    this.logger = winston.createLogger({
+      level: 'info',
+      format: winston.format.combine(
+        winston.format.timestamp(),
+        winston.format.errors({ stack: true }),
+        winston.format.json()
+      ),
+      defaultMeta: { provider: 'openai' },
+      transports: [
+        new winston.transports.Console({
+          format: winston.format.combine(
+            winston.format.colorize(),
+            winston.format.simple()
+          )
+        })
+      ]
     });
   }
-  
-  async analyzeCode(
-    code: string,
-    analysis: 'description' | 'risks' | 'improvements' | 'security' | 'performance',
-    context?: Record<string, any>
-  ): Promise<AIResponse> {
-    const prompts = {
-      description: `Analyze this code and provide a clear, concise description of what it does, its purpose, and key functionality. Focus on business logic and architectural significance.`,
-      risks: `Identify potential risks, vulnerabilities, and problematic patterns in this code. Consider security, performance, maintainability, and reliability issues.`,
-      improvements: `Suggest architectural and code improvements for this component. Focus on design patterns, best practices, and maintainability.`,
-      security: `Perform a security analysis of this code. Identify vulnerabilities, insecure patterns, and provide specific remediation suggestions.`,
-      performance: `Analyze the performance characteristics of this code. Identify bottlenecks, inefficiencies, and suggest optimizations.`,
-    };
-    
-    const systemPrompt = `You are an expert software architect analyzing code for the Unravl platform. 
-Provide detailed, actionable insights focused on ${analysis}.
-${context ? `Context: ${JSON.stringify(context)}` : ''}
 
-Code to analyze:`;
-    
-    const request: AIRequest = {
-      prompt: `${prompts[analysis]}\n\n\`\`\`\n${code}\n\`\`\``,
-      systemPrompt,
-      responseFormat: 'json',
-      context,
-    };
-    
-    return this.complete(request);
+  get available(): boolean {
+    return !!this.config.openai.apiKey;
   }
-  
-  async generateDocumentation(
-    component: any,
-    format: 'markdown' | 'jsdoc' | 'inline'
-  ): Promise<AIResponse> {
-    const systemPrompt = `You are a technical documentation expert. Generate clear, comprehensive documentation for code components.`;
+
+  async generateDescription(context: AIAnalysisContext): Promise<string> {
+    const prompt = prompts.generateDescriptionPrompt(context);
     
-    const formatInstructions = {
-      markdown: 'Generate Markdown documentation with sections for Overview, Usage, API, and Examples.',
-      jsdoc: 'Generate JSDoc/TSDoc comments following standard conventions.',
-      inline: 'Generate inline code comments explaining complex logic and decisions.',
-    };
-    
-    const request: AIRequest = {
-      prompt: `Generate ${format} documentation for this component:\n\n${JSON.stringify(component, null, 2)}\n\n${formatInstructions[format]}`,
-      systemPrompt,
-      maxTokens: 3000,
-    };
-    
-    return this.complete(request);
+    try {
+      const response = await this.makeRequest(prompt, {
+        temperature: 0.3,
+        maxTokens: 500,
+        systemPrompt: prompts.systemPrompts.description
+      });
+
+      return this.extractContent(response);
+    } catch (error) {
+      this.logger.error('Failed to generate description:', error);
+      throw error;
+    }
   }
-  
-  async assessArchitecture(
-    blueprint: any,
-    focusArea?: 'scalability' | 'security' | 'maintainability' | 'performance'
-  ): Promise<AIResponse> {
-    const systemPrompt = `You are a senior solutions architect reviewing system architecture. 
-Provide strategic insights and recommendations ${focusArea ? `focusing on ${focusArea}` : ''}.`;
+
+  async assessRisk(context: AIAnalysisContext): Promise<AIRiskAssessment> {
+    const prompt = prompts.generateRiskAssessmentPrompt(context);
     
-    const request: AIRequest = {
-      prompt: `Assess this system architecture and provide recommendations:\n\n${JSON.stringify(blueprint, null, 2)}`,
-      systemPrompt,
-      responseFormat: 'json',
-      maxTokens: 4000,
-    };
-    
-    return this.complete(request);
+    try {
+      const response = await this.makeRequest(prompt, {
+        temperature: 0.2,
+        maxTokens: 1000,
+        systemPrompt: prompts.systemPrompts.riskAssessment,
+        responseFormat: 'json'
+      });
+
+      const content = this.extractContent(response);
+      return this.parseRiskAssessment(content);
+    } catch (error) {
+      this.logger.error('Failed to assess risk:', error);
+      throw error;
+    }
   }
-  
-  getUsageStats() {
-    return {
-      tokenUsage: this.tokenUsage,
-      rateLimitRemaining: this.config.rateLimit.requestsPerMinute - this.rateLimiter.pendingCount,
-      provider: 'openai',
-      model: this.config.model,
+
+  async generateRecommendations(context: AIAnalysisContext): Promise<AIRecommendation[]> {
+    const prompt = prompts.generateRecommendationsPrompt(context);
+    
+    try {
+      const response = await this.makeRequest(prompt, {
+        temperature: 0.4,
+        maxTokens: 1500,
+        systemPrompt: prompts.systemPrompts.recommendations,
+        responseFormat: 'json'
+      });
+
+      const content = this.extractContent(response);
+      return this.parseRecommendations(content);
+    } catch (error) {
+      this.logger.error('Failed to generate recommendations:', error);
+      throw error;
+    }
+  }
+
+  async analyzeCode(context: AIAnalysisContext): Promise<AICodeAnalysis> {
+    if (!context.code) {
+      throw new Error('Code context is required for code analysis');
+    }
+
+    const prompt = prompts.generateCodeAnalysisPrompt(context);
+    
+    try {
+      const response = await this.makeRequest(prompt, {
+        temperature: 0.2,
+        maxTokens: 2000,
+        systemPrompt: prompts.systemPrompts.codeAnalysis,
+        responseFormat: 'json'
+      });
+
+      const content = this.extractContent(response);
+      return this.parseCodeAnalysis(content);
+    } catch (error) {
+      this.logger.error('Failed to analyze code:', error);
+      throw error;
+    }
+  }
+
+  private async makeRequest(
+    prompt: string, 
+    options: {
+      temperature?: number;
+      maxTokens?: number;
+      systemPrompt?: string;
+      responseFormat?: 'text' | 'json';
+    } = {}
+  ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
+    const {
+      temperature = this.config.openai.temperature,
+      maxTokens = this.config.openai.maxTokens,
+      systemPrompt,
+      responseFormat = 'text'
+    } = options;
+
+    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
+
+    if (systemPrompt) {
+      messages.push({
+        role: 'system',
+        content: systemPrompt
+      });
+    }
+
+    messages.push({
+      role: 'user',
+      content: prompt
+    });
+
+    const requestParams: OpenAI.Chat.Completions.ChatCompletionCreateParams = {
+      model: this.config.openai.model,
+      messages,
+      temperature,
+      max_tokens: maxTokens,
     };
+
+    if (responseFormat === 'json') {
+      requestParams.response_format = { type: 'json_object' };
+    }
+
+    return await pRetry(
+      async () => {
+        this.logger.debug(`Making OpenAI request with model ${this.config.openai.model}`);
+        const start = Date.now();
+        
+        const response = await this.client.chat.completions.create(requestParams);
+        
+        const duration = Date.now() - start;
+        this.logger.debug(`OpenAI request completed in ${duration}ms`);
+        
+        // Log token usage for cost tracking
+        if (response.usage) {
+          this.logger.info('Token usage:', {
+            promptTokens: response.usage.prompt_tokens,
+            completionTokens: response.usage.completion_tokens,
+            totalTokens: response.usage.total_tokens
+          });
+        }
+
+        return response;
+      },
+      {
+        retries: this.config.openai.maxRetries,
+        onFailedAttempt: (error) => {
+          this.logger.warn(`OpenAI request attempt ${error.attemptNumber} failed:`, error.message);
+        },
+        factor: 2,
+        minTimeout: 1000,
+        maxTimeout: 30000,
+      }
+    );
+  }
+
+  private extractContent(response: OpenAI.Chat.Completions.ChatCompletion): string {
+    const choice = response.choices[0];
+    if (!choice || !choice.message?.content) {
+      throw new Error('No content in OpenAI response');
+    }
+
+    return choice.message.content.trim();
+  }
+
+  private parseRiskAssessment(content: string): AIRiskAssessment {
+    try {
+      const parsed = JSON.parse(content);
+      
+      return {
+        riskLevel: parsed.riskLevel || 'low',
+        confidence: parsed.confidence || 0.5,
+        reasons: Array.isArray(parsed.reasons) ? parsed.reasons : [],
+        suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions : [],
+        categories: Array.isArray(parsed.categories) ? parsed.categories : []
+      };
+    } catch (error) {
+      this.logger.warn('Failed to parse risk assessment JSON, using fallback');
+      
+      // Fallback parsing - extract key information from text
+      return {
+        riskLevel: this.extractRiskLevel(content),
+        confidence: 0.6,
+        reasons: this.extractList(content, 'reason'),
+        suggestions: this.extractList(content, 'suggest'),
+        categories: []
+      };
+    }
+  }
+
+  private parseRecommendations(content: string): AIRecommendation[] {
+    try {
+      const parsed = JSON.parse(content);
+      
+      if (!Array.isArray(parsed.recommendations)) {
+        return [];
+      }
+
+      return parsed.recommendations.map((rec: any) => ({
+        type: rec.type || 'architectural',
+        priority: rec.priority || 'medium',
+        title: rec.title || 'Recommendation',
+        description: rec.description || '',
+        implementation: rec.implementation || '',
+        impact: rec.impact || '',
+        effort: rec.effort || 'medium',
+        confidence: rec.confidence || 0.7,
+        tags: Array.isArray(rec.tags) ? rec.tags : []
+      }));
+    } catch (error) {
+      this.logger.warn('Failed to parse recommendations JSON, using fallback');
+      
+      // Fallback: extract basic recommendations from text
+      const lines = content.split('\n').filter(line => line.trim());
+      const recommendations: AIRecommendation[] = [];
+      
+      for (const line of lines) {
+        if (line.match(/^\d+\.|\-|\*/)) {
+          recommendations.push({
+            type: 'architectural',
+            priority: 'medium',
+            title: line.replace(/^\d+\.|\-|\*/, '').trim(),
+            description: line.trim(),
+            implementation: 'See description',
+            impact: 'Moderate improvement expected',
+            effort: 'medium',
+            confidence: 0.6,
+            tags: []
+          });
+        }
+      }
+      
+      return recommendations;
+    }
+  }
+
+  private parseCodeAnalysis(content: string): AICodeAnalysis {
+    try {
+      const parsed = JSON.parse(content);
+      
+      return {
+        summary: parsed.summary || 'Code analysis completed',
+        complexity: {
+          cognitive: parsed.complexity?.cognitive || 1,
+          cyclomatic: parsed.complexity?.cyclomatic || 1,
+          maintainability: parsed.complexity?.maintainability || 8
+        },
+        patterns: Array.isArray(parsed.patterns) ? parsed.patterns : [],
+        issues: Array.isArray(parsed.issues) ? parsed.issues : [],
+        suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions : [],
+        testability: parsed.testability || 7,
+        documentation: parsed.documentation || 'No additional documentation generated'
+      };
+    } catch (error) {
+      this.logger.warn('Failed to parse code analysis JSON, using fallback');
+      
+      return {
+        summary: 'Basic analysis completed - JSON parsing failed',
+        complexity: {
+          cognitive: 5,
+          cyclomatic: 3,
+          maintainability: 6
+        },
+        patterns: [],
+        issues: [],
+        suggestions: [],
+        testability: 5,
+        documentation: content.substring(0, 500) + '...'
+      };
+    }
+  }
+
+  private extractRiskLevel(content: string): 'low' | 'medium' | 'high' | 'critical' {
+    const lowerContent = content.toLowerCase();
+    
+    if (lowerContent.includes('critical') || lowerContent.includes('severe')) {
+      return 'critical';
+    } else if (lowerContent.includes('high')) {
+      return 'high';
+    } else if (lowerContent.includes('medium') || lowerContent.includes('moderate')) {
+      return 'medium';
+    }
+    
+    return 'low';
+  }
+
+  private extractList(content: string, keyword: string): string[] {
+    const lines = content.split('\n');
+    const items: string[] = [];
+    
+    for (const line of lines) {
+      if (line.toLowerCase().includes(keyword)) {
+        const cleaned = line.replace(/^\d+\.|\-|\*/, '').trim();
+        if (cleaned) {
+          items.push(cleaned);
+        }
+      }
+    }
+    
+    return items;
   }
 }

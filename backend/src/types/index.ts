@@ -172,7 +172,7 @@ export type ConnectionType =
 
 export interface RiskArea {
   componentId: string;
-  riskLevel: 'low' | 'medium' | 'high';
+  riskLevel: 'low' | 'medium' | 'high' | 'critical';
   reasons: string[];
   impact: string;
 }

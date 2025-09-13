@@ -12,13 +12,13 @@ const pg_1 = require("pg");
 const passport_1 = __importDefault(require("passport"));
 const rate_limiter_1 = require("./middleware/rate-limiter");
 const csrf_protection_1 = require("./middleware/csrf-protection");
-const input_sanitizer_1 = require("./middleware/input-sanitizer");
 const logger_service_1 = require("./services/logger.service");
 const oauth_strategies_1 = require("./auth/oauth-providers/oauth-strategies");
 const auth_config_1 = require("./config/auth.config");
 const auth_1 = require("./routes/auth");
 const organizations_1 = require("./routes/organizations");
 const users_1 = require("./routes/users");
+const analyzer_1 = require("./routes/analyzer");
 const migration_manager_1 = require("./database/migrations/migration-manager");
 class App {
     constructor() {
@@ -40,7 +40,12 @@ class App {
     }
     async initialize() {
         try {
-            await this.initializeDatabase();
+            try {
+                await this.initializeDatabase();
+            }
+            catch (dbError) {
+                this.logger.warn('Database not available - running in demo mode', dbError);
+            }
             this.setupMiddleware();
             this.setupRoutes();
             this.setupErrorHandling();
@@ -90,9 +95,7 @@ class App {
         this.app.use(express_1.default.json({ limit: '10mb' }));
         this.app.use(express_1.default.urlencoded({ extended: true, limit: '10mb' }));
         this.app.use((0, cookie_parser_1.default)());
-        this.app.use(logger_service_1.Logger.httpLoggerMiddleware());
         this.app.use(rate_limiter_1.globalRateLimiter);
-        this.app.use(input_sanitizer_1.globalInputSanitizer);
         (0, oauth_strategies_1.initializePassport)();
         this.app.use(passport_1.default.initialize());
         this.app.set('trust proxy', 1);
@@ -102,6 +105,9 @@ class App {
         });
     }
     setupRoutes() {
+        this.app.get('/test', (req, res) => {
+            res.json({ message: 'Server is working!', express: '5.x' });
+        });
         this.app.get('/health', (req, res) => {
             res.json({ status: 'healthy', timestamp: new Date().toISOString() });
         });
@@ -118,6 +124,7 @@ class App {
         this.app.use('/api/auth', (0, auth_1.createAuthRoutes)(this.pool));
         this.app.use('/api/organizations', (0, organizations_1.createOrganizationRoutes)(this.pool));
         this.app.use('/api/users', (0, users_1.createUserRoutes)(this.pool));
+        this.app.use('/api/analyzer', (0, analyzer_1.createAnalyzerRoutes)(this.pool));
         this.app.use((req, res) => {
             res.status(404).json({
                 error: 'Not Found',

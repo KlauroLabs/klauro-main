@@ -1,335 +1,490 @@
 import Redis from 'ioredis';
-import crypto from 'crypto';
 import { aiConfig } from '../config/ai.config';
-import { AIRequest, AIResponse } from './providers/openai-provider';
+import * as winston from 'winston';
+import * as crypto from 'crypto';
+import { promisify } from 'util';
 
-export interface CacheEntry {
-  response: AIResponse;
+export interface CacheEntry<T = any> {
+  data: T;
   timestamp: number;
-  hits: number;
-  provider: string;
-  model: string;
+  ttl: number;
+  version: string;
+  contentHash?: string;
 }
 
 export interface CacheStats {
   hits: number;
   misses: number;
+  sets: number;
+  deletes: number;
   size: number;
-  oldestEntry: Date | null;
-  newestEntry: Date | null;
-  providers: Record<string, number>;
-  costSaved: number;
+  hitRate: number;
+  totalRequests: number;
 }
 
 export class AICache {
-  private redis: Redis | null = null;
-  private memoryCache: Map<string, CacheEntry> = new Map();
-  private stats: CacheStats = {
-    hits: 0,
-    misses: 0,
-    size: 0,
-    oldestEntry: null,
-    newestEntry: null,
-    providers: {},
-    costSaved: 0,
-  };
-  
-  constructor(private config = aiConfig.cache) {
-    if (config.enabled && config.redis) {
-      try {
-        this.redis = new Redis({
-          host: config.redis.host,
-          port: config.redis.port,
-          password: config.redis.password,
-          db: config.redis.db,
-          retryStrategy: (times) => {
-            if (times > 3) {
-              console.error('Redis connection failed, falling back to memory cache');
-              this.redis = null;
-              return null;
-            }
-            return Math.min(times * 100, 3000);
-          },
-        });
-        
-        this.redis.on('error', (err) => {
-          console.error('Redis error:', err);
-        });
-        
-        this.redis.on('connect', () => {
-          console.log('Connected to Redis for AI caching');
-        });
-      } catch (error) {
-        console.error('Failed to initialize Redis:', error);
-        this.redis = null;
-      }
-    }
-    
-    // Periodic cleanup of expired entries
-    setInterval(() => this.cleanupExpired(), 60000); // Every minute
-  }
-  
-  private generateCacheKey(request: AIRequest, context?: string): string {
-    const normalized = {
-      prompt: request.prompt.trim(),
-      systemPrompt: request.systemPrompt?.trim() || '',
-      responseFormat: request.responseFormat || 'text',
-      context: context || '',
+  private redis?: Redis;
+  private fallbackCache: Map<string, CacheEntry> = new Map();
+  private logger: winston.Logger;
+  private stats: CacheStats;
+  private readonly CACHE_VERSION = '1.0.0';
+  private readonly MAX_FALLBACK_SIZE = 1000;
+
+  constructor() {
+    this.logger = winston.createLogger({
+      level: 'info',
+      format: winston.format.combine(
+        winston.format.timestamp(),
+        winston.format.errors({ stack: true }),
+        winston.format.json()
+      ),
+      defaultMeta: { component: 'ai-cache' },
+      transports: [
+        new winston.transports.Console({
+          format: winston.format.combine(
+            winston.format.colorize(),
+            winston.format.simple()
+          )
+        })
+      ]
+    });
+
+    this.stats = {
+      hits: 0,
+      misses: 0,
+      sets: 0,
+      deletes: 0,
+      size: 0,
+      hitRate: 0,
+      totalRequests: 0
     };
-    
-    const hash = crypto
-      .createHash('sha256')
-      .update(JSON.stringify(normalized))
-      .digest('hex');
-    
-    return `${this.config.redis?.keyPrefix || 'ai:'}${hash}`;
+
+    this.initializeRedis();
   }
-  
-  async get(request: AIRequest, context?: string): Promise<AIResponse | null> {
-    if (!this.config.enabled) {
-      return null;
-    }
-    
-    const key = this.generateCacheKey(request, context);
-    
-    try {
-      // Try Redis first
-      if (this.redis) {
-        const cached = await this.redis.get(key);
-        if (cached) {
-          const entry: CacheEntry = JSON.parse(cached);
-          
-          // Check if entry is expired
-          if (Date.now() - entry.timestamp > this.config.ttl * 1000) {
-            await this.redis.del(key);
-            return null;
-          }
-          
-          // Update stats
-          this.stats.hits++;
-          this.stats.costSaved += entry.response.cost;
-          entry.hits++;
-          
-          // Update hit count in Redis
-          await this.redis.set(key, JSON.stringify(entry), 'EX', this.config.ttl);
-          
-          return {
-            ...entry.response,
-            cached: true,
-          };
-        }
-      }
-      
-      // Try memory cache
-      const memEntry = this.memoryCache.get(key);
-      if (memEntry) {
-        // Check if entry is expired
-        if (Date.now() - memEntry.timestamp > this.config.ttl * 1000) {
-          this.memoryCache.delete(key);
-          return null;
-        }
-        
-        this.stats.hits++;
-        this.stats.costSaved += memEntry.response.cost;
-        memEntry.hits++;
-        
-        return {
-          ...memEntry.response,
-          cached: true,
-        };
-      }
-    } catch (error) {
-      console.error('Cache get error:', error);
-    }
-    
-    this.stats.misses++;
-    return null;
-  }
-  
-  async set(request: AIRequest, response: AIResponse, context?: string): Promise<void> {
-    if (!this.config.enabled) {
+
+  private initializeRedis(): void {
+    if (!aiConfig.cache.enabled) {
+      this.logger.info('AI cache disabled, using in-memory fallback only');
       return;
     }
-    
-    const key = this.generateCacheKey(request, context);
-    const entry: CacheEntry = {
-      response,
-      timestamp: Date.now(),
-      hits: 0,
-      provider: response.provider,
-      model: response.model,
-    };
-    
+
     try {
-      // Store in Redis if available
-      if (this.redis) {
-        await this.redis.set(
-          key,
-          JSON.stringify(entry),
-          'EX',
-          this.config.ttl
-        );
-      }
-      
-      // Also store in memory cache with size limit
-      if (this.memoryCache.size >= this.config.maxSize) {
-        // Remove oldest entry
-        const oldestKey = Array.from(this.memoryCache.entries())
-          .sort((a, b) => a[1].timestamp - b[1].timestamp)[0]?.[0];
-        
-        if (oldestKey) {
-          this.memoryCache.delete(oldestKey);
-        }
-      }
-      
-      this.memoryCache.set(key, entry);
-      
-      // Update stats
-      this.stats.size = this.memoryCache.size;
-      this.stats.newestEntry = new Date(entry.timestamp);
-      
-      if (!this.stats.oldestEntry) {
-        this.stats.oldestEntry = new Date(entry.timestamp);
-      }
-      
-      this.stats.providers[response.provider] = (this.stats.providers[response.provider] || 0) + 1;
+      this.redis = new Redis({
+        host: aiConfig.cache.redis.host,
+        port: aiConfig.cache.redis.port,
+        password: aiConfig.cache.redis.password,
+        db: aiConfig.cache.redis.db,
+        keyPrefix: aiConfig.cache.redis.keyPrefix,
+        maxRetriesPerRequest: 3,
+        lazyConnect: true
+      });
+
+      this.redis.on('connect', () => {
+        this.logger.info('Connected to Redis for AI caching');
+      });
+
+      this.redis.on('error', (error) => {
+        this.logger.error('Redis connection error:', error);
+        this.logger.warn('Falling back to in-memory cache');
+      });
+
+      this.redis.on('close', () => {
+        this.logger.warn('Redis connection closed');
+      });
+
+      this.redis.on('reconnecting', () => {
+        this.logger.info('Reconnecting to Redis...');
+      });
+
     } catch (error) {
-      console.error('Cache set error:', error);
+      this.logger.error('Failed to initialize Redis:', error);
+      this.logger.warn('Using in-memory fallback cache only');
     }
   }
-  
-  async invalidate(pattern?: string): Promise<number> {
-    let count = 0;
-    
+
+  async get<T = any>(key: string): Promise<T | null> {
+    this.stats.totalRequests++;
+
     try {
-      if (pattern) {
-        // Invalidate by pattern
-        if (this.redis) {
-          const keys = await this.redis.keys(`${this.config.redis?.keyPrefix || 'ai:'}*${pattern}*`);
-          if (keys.length > 0) {
-            count += await this.redis.del(...keys);
-          }
+      const fullKey = this.generateKey(key);
+      
+      // Try Redis first
+      if (this.redis && await this.isRedisAvailable()) {
+        const cached = await this.getFromRedis<T>(fullKey);
+        if (cached !== null) {
+          this.stats.hits++;
+          this.updateHitRate();
+          this.logger.debug(`Cache hit for key: ${key}`);
+          return cached;
         }
-        
-        // Memory cache
-        for (const key of this.memoryCache.keys()) {
-          if (key.includes(pattern)) {
-            this.memoryCache.delete(key);
-            count++;
-          }
-        }
+      }
+
+      // Fallback to in-memory cache
+      const fallbackResult = this.getFromFallback<T>(fullKey);
+      if (fallbackResult !== null) {
+        this.stats.hits++;
+        this.updateHitRate();
+        this.logger.debug(`Fallback cache hit for key: ${key}`);
+        return fallbackResult;
+      }
+
+      this.stats.misses++;
+      this.updateHitRate();
+      this.logger.debug(`Cache miss for key: ${key}`);
+      return null;
+
+    } catch (error) {
+      this.logger.error(`Cache get error for key ${key}:`, error);
+      this.stats.misses++;
+      this.updateHitRate();
+      return null;
+    }
+  }
+
+  async set<T = any>(key: string, value: T, ttl?: number): Promise<void> {
+    try {
+      const fullKey = this.generateKey(key);
+      const cacheTtl = ttl || aiConfig.cache.ttl;
+      const entry: CacheEntry<T> = {
+        data: value,
+        timestamp: Date.now(),
+        ttl: cacheTtl,
+        version: this.CACHE_VERSION,
+        contentHash: this.generateContentHash(value)
+      };
+
+      // Try Redis first
+      if (this.redis && await this.isRedisAvailable()) {
+        await this.setInRedis(fullKey, entry, cacheTtl);
       } else {
-        // Clear all
-        if (this.redis) {
-          const keys = await this.redis.keys(`${this.config.redis?.keyPrefix || 'ai:'}*`);
-          if (keys.length > 0) {
-            count += await this.redis.del(...keys);
-          }
-        }
-        
-        count += this.memoryCache.size;
-        this.memoryCache.clear();
+        // Fallback to in-memory cache
+        this.setInFallback(fullKey, entry);
       }
-      
-      this.stats.size = this.memoryCache.size;
+
+      this.stats.sets++;
+      this.stats.size++;
+      this.logger.debug(`Cached value for key: ${key} (TTL: ${cacheTtl}s)`);
+
     } catch (error) {
-      console.error('Cache invalidation error:', error);
+      this.logger.error(`Cache set error for key ${key}:`, error);
     }
-    
-    return count;
   }
-  
-  private async cleanupExpired(): Promise<void> {
-    const now = Date.now();
-    const ttlMs = this.config.ttl * 1000;
-    
-    // Clean memory cache
-    for (const [key, entry] of this.memoryCache.entries()) {
-      if (now - entry.timestamp > ttlMs) {
-        this.memoryCache.delete(key);
+
+  async delete(key: string): Promise<void> {
+    try {
+      const fullKey = this.generateKey(key);
+
+      // Delete from Redis
+      if (this.redis && await this.isRedisAvailable()) {
+        await this.redis.del(fullKey);
+      }
+
+      // Delete from fallback cache
+      const deleted = this.fallbackCache.delete(fullKey);
+      
+      if (deleted) {
+        this.stats.deletes++;
+        this.stats.size = Math.max(0, this.stats.size - 1);
+      }
+
+      this.logger.debug(`Deleted cache entry for key: ${key}`);
+
+    } catch (error) {
+      this.logger.error(`Cache delete error for key ${key}:`, error);
+    }
+  }
+
+  async clear(): Promise<void> {
+    try {
+      // Clear Redis cache
+      if (this.redis && await this.isRedisAvailable()) {
+        const pattern = aiConfig.cache.redis.keyPrefix + '*';
+        const keys = await this.redis.keys(pattern);
+        if (keys.length > 0) {
+          await this.redis.del(...keys);
+        }
+      }
+
+      // Clear fallback cache
+      this.fallbackCache.clear();
+
+      // Reset stats
+      this.stats.size = 0;
+      this.logger.info('AI cache cleared');
+
+    } catch (error) {
+      this.logger.error('Cache clear error:', error);
+    }
+  }
+
+  async exists(key: string): Promise<boolean> {
+    try {
+      const fullKey = this.generateKey(key);
+
+      // Check Redis first
+      if (this.redis && await this.isRedisAvailable()) {
+        const exists = await this.redis.exists(fullKey);
+        if (exists) return true;
+      }
+
+      // Check fallback cache
+      return this.fallbackCache.has(fullKey) && !this.isExpired(this.fallbackCache.get(fullKey)!);
+
+    } catch (error) {
+      this.logger.error(`Cache exists check error for key ${key}:`, error);
+      return false;
+    }
+  }
+
+  getStats(): CacheStats {
+    return { ...this.stats };
+  }
+
+  async getSize(): Promise<number> {
+    try {
+      let size = this.fallbackCache.size;
+
+      if (this.redis && await this.isRedisAvailable()) {
+        const pattern = aiConfig.cache.redis.keyPrefix + '*';
+        const keys = await this.redis.keys(pattern);
+        size += keys.length;
+      }
+
+      return size;
+    } catch (error) {
+      this.logger.error('Error getting cache size:', error);
+      return this.fallbackCache.size;
+    }
+  }
+
+  async invalidatePattern(pattern: string): Promise<number> {
+    let deletedCount = 0;
+
+    try {
+      // Invalidate in Redis
+      if (this.redis && await this.isRedisAvailable()) {
+        const searchPattern = aiConfig.cache.redis.keyPrefix + pattern;
+        const keys = await this.redis.keys(searchPattern);
+        if (keys.length > 0) {
+          await this.redis.del(...keys);
+          deletedCount += keys.length;
+        }
+      }
+
+      // Invalidate in fallback cache
+      for (const [key] of this.fallbackCache.entries()) {
+        if (key.includes(pattern)) {
+          this.fallbackCache.delete(key);
+          deletedCount++;
+        }
+      }
+
+      this.stats.deletes += deletedCount;
+      this.stats.size = Math.max(0, this.stats.size - deletedCount);
+      
+      this.logger.info(`Invalidated ${deletedCount} cache entries matching pattern: ${pattern}`);
+      return deletedCount;
+
+    } catch (error) {
+      this.logger.error(`Error invalidating pattern ${pattern}:`, error);
+      return 0;
+    }
+  }
+
+  // Cleanup expired entries from fallback cache
+  async cleanup(): Promise<number> {
+    let cleanedCount = 0;
+
+    try {
+      const now = Date.now();
+      
+      for (const [key, entry] of this.fallbackCache.entries()) {
+        if (this.isExpired(entry)) {
+          this.fallbackCache.delete(key);
+          cleanedCount++;
+        }
+      }
+
+      if (cleanedCount > 0) {
+        this.stats.size = Math.max(0, this.stats.size - cleanedCount);
+        this.logger.debug(`Cleaned up ${cleanedCount} expired cache entries`);
+      }
+
+      return cleanedCount;
+
+    } catch (error) {
+      this.logger.error('Error during cache cleanup:', error);
+      return 0;
+    }
+  }
+
+  private async getFromRedis<T>(key: string): Promise<T | null> {
+    try {
+      if (!this.redis) return null;
+
+      const cached = await this.redis.get(key);
+      if (!cached) return null;
+
+      const entry: CacheEntry<T> = JSON.parse(cached);
+      
+      // Validate cache entry
+      if (this.isExpired(entry) || entry.version !== this.CACHE_VERSION) {
+        await this.redis.del(key);
+        return null;
+      }
+
+      return entry.data;
+
+    } catch (error) {
+      this.logger.error('Redis get error:', error);
+      return null;
+    }
+  }
+
+  private async setInRedis<T>(key: string, entry: CacheEntry<T>, ttl: number): Promise<void> {
+    try {
+      if (!this.redis) return;
+
+      const serialized = JSON.stringify(entry);
+      await this.redis.setex(key, ttl, serialized);
+
+    } catch (error) {
+      this.logger.error('Redis set error:', error);
+      throw error;
+    }
+  }
+
+  private getFromFallback<T>(key: string): T | null {
+    const entry = this.fallbackCache.get(key);
+    if (!entry) return null;
+
+    if (this.isExpired(entry) || entry.version !== this.CACHE_VERSION) {
+      this.fallbackCache.delete(key);
+      return null;
+    }
+
+    return entry.data as T;
+  }
+
+  private setInFallback<T>(key: string, entry: CacheEntry<T>): void {
+    // Implement simple LRU eviction if cache is too large
+    if (this.fallbackCache.size >= this.MAX_FALLBACK_SIZE) {
+      const oldestKey = this.fallbackCache.keys().next().value;
+      if (oldestKey) {
+        this.fallbackCache.delete(oldestKey);
       }
     }
-    
-    this.stats.size = this.memoryCache.size;
-    
-    // Redis handles TTL automatically
+
+    this.fallbackCache.set(key, entry);
   }
-  
-  async warmup(requests: Array<{ request: AIRequest; response: AIResponse; context?: string }>): Promise<void> {
-    console.log(`Warming up cache with ${requests.length} entries...`);
-    
-    for (const { request, response, context } of requests) {
-      await this.set(request, response, context);
+
+  private generateKey(key: string): string {
+    // Ensure key is safe for Redis and consistent
+    const safeKey = key.replace(/[^a-zA-Z0-9:_-]/g, '_');
+    return `ai:${safeKey}`;
+  }
+
+  private generateContentHash(content: any): string {
+    try {
+      const serialized = JSON.stringify(content);
+      return crypto.createHash('md5').update(serialized).digest('hex').substring(0, 8);
+    } catch (error) {
+      return 'unknown';
     }
-    
-    console.log(`Cache warmup complete. Size: ${this.stats.size}`);
   }
-  
-  getStats(): CacheStats {
-    return {
-      ...this.stats,
-      hitRate: this.stats.hits / Math.max(1, this.stats.hits + this.stats.misses),
-    } as CacheStats & { hitRate: number };
+
+  private isExpired(entry: CacheEntry): boolean {
+    const now = Date.now();
+    const expirationTime = entry.timestamp + (entry.ttl * 1000);
+    return now > expirationTime;
   }
-  
-  async exportCache(): Promise<Array<{ key: string; entry: CacheEntry }>> {
-    const entries: Array<{ key: string; entry: CacheEntry }> = [];
-    
-    // Export from memory cache
-    for (const [key, entry] of this.memoryCache.entries()) {
-      entries.push({ key, entry });
+
+  private async isRedisAvailable(): Promise<boolean> {
+    if (!this.redis) return false;
+
+    try {
+      await this.redis.ping();
+      return true;
+    } catch (error) {
+      return false;
     }
-    
-    // Export from Redis if available
-    if (this.redis) {
+  }
+
+  private updateHitRate(): void {
+    this.stats.hitRate = this.stats.totalRequests > 0 
+      ? this.stats.hits / this.stats.totalRequests 
+      : 0;
+  }
+
+  // Utility methods for cache warming and optimization
+  async warm(keys: Array<{ key: string; generator: () => Promise<any> }>): Promise<void> {
+    this.logger.info(`Warming cache with ${keys.length} entries`);
+
+    const promises = keys.map(async ({ key, generator }) => {
       try {
-        const keys = await this.redis.keys(`${this.config.redis?.keyPrefix || 'ai:'}*`);
-        for (const key of keys) {
-          const value = await this.redis.get(key);
-          if (value) {
-            entries.push({
-              key,
-              entry: JSON.parse(value),
-            });
-          }
+        const exists = await this.exists(key);
+        if (!exists) {
+          const value = await generator();
+          await this.set(key, value);
+          this.logger.debug(`Cache warmed for key: ${key}`);
         }
       } catch (error) {
-        console.error('Failed to export from Redis:', error);
+        this.logger.error(`Failed to warm cache for key ${key}:`, error);
       }
-    }
-    
-    return entries;
+    });
+
+    await Promise.allSettled(promises);
+    this.logger.info('Cache warming completed');
   }
-  
-  async importCache(entries: Array<{ key: string; entry: CacheEntry }>): Promise<void> {
-    console.log(`Importing ${entries.length} cache entries...`);
-    
-    for (const { key, entry } of entries) {
-      // Only import non-expired entries
-      if (Date.now() - entry.timestamp <= this.config.ttl * 1000) {
-        this.memoryCache.set(key, entry);
-        
-        if (this.redis) {
-          const remainingTtl = Math.floor(
-            (this.config.ttl * 1000 - (Date.now() - entry.timestamp)) / 1000
-          );
-          
-          if (remainingTtl > 0) {
-            await this.redis.set(key, JSON.stringify(entry), 'EX', remainingTtl);
-          }
-        }
-      }
+
+  async getOrSet<T>(
+    key: string, 
+    generator: () => Promise<T>, 
+    ttl?: number
+  ): Promise<T> {
+    // Try to get from cache first
+    const cached = await this.get<T>(key);
+    if (cached !== null) {
+      return cached;
     }
-    
-    this.stats.size = this.memoryCache.size;
-    console.log(`Cache import complete. Size: ${this.stats.size}`);
+
+    // Generate new value
+    try {
+      const value = await generator();
+      await this.set(key, value, ttl);
+      return value;
+    } catch (error) {
+      this.logger.error(`Error generating value for key ${key}:`, error);
+      throw error;
+    }
   }
-  
+
+  async mget<T>(keys: string[]): Promise<(T | null)[]> {
+    const promises = keys.map(key => this.get<T>(key));
+    return Promise.all(promises);
+  }
+
+  async mset<T>(entries: Array<{ key: string; value: T; ttl?: number }>): Promise<void> {
+    const promises = entries.map(({ key, value, ttl }) => this.set(key, value, ttl));
+    await Promise.allSettled(promises);
+  }
+
+  // Start periodic cleanup
+  startCleanup(intervalMs: number = 300000): NodeJS.Timeout { // Default 5 minutes
+    return setInterval(async () => {
+      await this.cleanup();
+    }, intervalMs);
+  }
+
   async close(): Promise<void> {
-    if (this.redis) {
-      await this.redis.quit();
+    try {
+      if (this.redis) {
+        await this.redis.quit();
+        this.logger.info('Redis connection closed');
+      }
+      this.fallbackCache.clear();
+    } catch (error) {
+      this.logger.error('Error closing cache:', error);
     }
-    
-    this.memoryCache.clear();
   }
 }
