@@ -1,5 +1,3 @@
-// Express Framework Analyzer - Specialized analysis for Express.js applications
-// Phase 3: Framework Sub-Analyzers - Production-ready Express analyzer
 
 import { TypeScriptJavaScriptAnalyzer } from '../../languages/typescript-javascript-analyzer';
 import { ComponentNode, ComponentType, Connection, APIEndpoint, DatabaseConnection, ComponentMetadata } from '../../../types';
@@ -87,23 +85,63 @@ export class ExpressAnalyzer extends TypeScriptJavaScriptAnalyzer {
   protected async detectLanguageAndFramework(): Promise<any> {
     const baseDetection = await super.detectLanguageAndFramework();
     
-    // Check for Express in package.json
     await this.detectExpressVersion();
     
-    // Detect Express ecosystem
-    await this.detectExpressPackages();
+    if (!this.expressVersion) {
+      return { ...baseDetection, confidence: 0 };
+    }
     
-    // Find Express app files
+    await this.detectExpressPackages();
     await this.findAppInstances();
+    
+    let confidence = 0;
+    const patterns: string[] = [];
+    
+    if (this.expressVersion) {
+      confidence += 0.3;
+      patterns.push('Express in dependencies');
+    }
+    
+    if (this.appInstances.length > 0) {
+      confidence += 0.4;
+      patterns.push(`${this.appInstances.length} Express app instance(s) found`);
+    }
+    
+    const expressFiles = await this.findFiles(['**/*.{js,ts}'], this.options.excludePatterns || ['node_modules/**', 'dist/**', 'build/**']);
+    let hasExpressRoutes = false;
+    const samplesToCheck = expressFiles.slice(0, 20);
+    
+    for (const file of samplesToCheck) {
+      try {
+        const content = await fs.readFile(file, 'utf-8');
+        if (content.includes('app.get(') || content.includes('app.post(') || 
+            content.includes('app.put(') || content.includes('app.delete(') ||
+            content.includes('router.get(') || content.includes('router.post(')) {
+          hasExpressRoutes = true;
+          break;
+        }
+      } catch {}
+    }
+    
+    if (hasExpressRoutes) {
+      confidence += 0.3;
+      patterns.push('Express routes detected');
+    }
+    
+    if (this.hasCors || this.hasHelmet || this.hasBodyParser) {
+      confidence += 0.1;
+      patterns.push('Express middleware packages detected');
+    }
     
     return {
       ...baseDetection,
+      confidence: Math.min(confidence, 1),
       frameworks: [...baseDetection.frameworks.filter(f => f.name !== 'express'), {
         name: 'express',
         version: this.expressVersion,
-        confidence: 0.95,
-        patterns: ['Express application detected'],
-        configFiles: ['app.js', 'server.js', 'index.js', 'app.ts', 'server.ts'],
+        confidence: Math.min(confidence, 1),
+        patterns,
+        configFiles: this.appInstances,
         dependencies: ['express']
       }]
     };
@@ -256,6 +294,7 @@ export class ExpressAnalyzer extends TypeScriptJavaScriptAnalyzer {
   }
 
   private async detectExpressVersion(): Promise<void> {
+    // First, try the current directory
     const packageJsonPath = path.join(this.projectPath, 'package.json');
     if (await fs.pathExists(packageJsonPath)) {
       const packageJson = await fs.readJson(packageJsonPath);
@@ -263,7 +302,37 @@ export class ExpressAnalyzer extends TypeScriptJavaScriptAnalyzer {
       
       if (dependencies.express) {
         this.expressVersion = dependencies.express.replace(/[\^~]/, '');
+        return;
       }
+    }
+
+    // If not found, search in subdirectories (common in monorepos)
+    try {
+      const items = await fs.readdir(this.projectPath);
+      const subdirs = await Promise.all(
+        items.map(async (item) => {
+          const itemPath = path.join(this.projectPath, item);
+          const isDir = (await fs.stat(itemPath)).isDirectory();
+          return isDir ? item : null;
+        })
+      );
+
+      for (const subdir of subdirs.filter(Boolean)) {
+        const subPackageJsonPath = path.join(this.projectPath, subdir!, 'package.json');
+        if (await fs.pathExists(subPackageJsonPath)) {
+          const packageJson = await fs.readJson(subPackageJsonPath);
+          const dependencies = { ...packageJson.dependencies, ...packageJson.devDependencies };
+          
+          if (dependencies.express) {
+            this.expressVersion = dependencies.express.replace(/[\^~]/, '');
+            // Update projectPath to the subdirectory for more accurate analysis
+            this.projectPath = path.join(this.projectPath, subdir!);
+            return;
+          }
+        }
+      }
+    } catch (error) {
+      // Ignore errors when scanning subdirectories
     }
   }
 

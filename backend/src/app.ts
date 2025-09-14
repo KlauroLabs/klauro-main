@@ -22,6 +22,7 @@ import { authConfig } from './config/auth.config';
 import { createAuthRoutes } from './routes/auth';
 import { createOrganizationRoutes } from './routes/organizations';
 import { createUserRoutes } from './routes/users';
+import { createProjectRoutes } from './routes/projects';
 // import { createVisualizationRouter } from './routes/visualization';
 import { createAnalyzerRoutes } from './routes/analyzer';
 
@@ -30,12 +31,14 @@ import { runMigrations } from './database/migrations/migration-manager';
 
 export class App {
   private app: Application;
-  private pool: Pool;
+  private pool: Pool | null;
   private logger = new Logger('App');
+  private databaseEnabled: boolean;
   
   constructor() {
     this.app = express();
-    this.pool = this.createDatabasePool();
+    this.databaseEnabled = process.env.DISABLE_DATABASE !== 'true';
+    this.pool = this.databaseEnabled ? this.createDatabasePool() : null;
   }
   
   private createDatabasePool(): Pool {
@@ -53,11 +56,14 @@ export class App {
   
   async initialize(): Promise<void> {
     try {
-      // Try database initialization but don't fail if it's not available (for demo)
-      try {
-        await this.initializeDatabase();
-      } catch (dbError) {
-        this.logger.warn('Database not available - running in demo mode', dbError as Error);
+      if (this.databaseEnabled) {
+        try {
+          await this.initializeDatabase();
+        } catch (dbError) {
+          this.logger.warn('Database not available - running in demo mode', dbError as Error);
+        }
+      } else {
+        this.logger.info('Database disabled - running in database-free mode');
       }
       
       this.setupMiddleware();
@@ -72,6 +78,10 @@ export class App {
   }
   
   private async initializeDatabase(): Promise<void> {
+    if (!this.pool) {
+      throw new Error('Database pool not available');
+    }
+    
     try {
       await this.pool.query('SELECT 1');
       this.logger.info('Database connection established');
@@ -148,8 +158,12 @@ export class App {
     
     this.app.get('/health/ready', async (req: Request, res: Response) => {
       try {
-        await this.pool.query('SELECT 1');
-        res.json({ status: 'ready', timestamp: new Date().toISOString() });
+        if (this.databaseEnabled && this.pool) {
+          await this.pool.query('SELECT 1');
+          res.json({ status: 'ready', timestamp: new Date().toISOString(), database: 'connected' });
+        } else {
+          res.json({ status: 'ready', timestamp: new Date().toISOString(), database: 'disabled' });
+        }
       } catch (error) {
         res.status(503).json({ status: 'not ready', error: 'Database unavailable' });
       }
@@ -158,11 +172,16 @@ export class App {
     // CSRF token endpoint
     this.app.get('/api/csrf-token', attachCSRFToken, CSRFProtection.tokenEndpoint());
     
-    // API routes
-    this.app.use('/api/auth', createAuthRoutes(this.pool));
-    this.app.use('/api/organizations', createOrganizationRoutes(this.pool));
-    this.app.use('/api/users', createUserRoutes(this.pool));
-    // this.app.use('/api/visualization', createVisualizationRouter(this.pool));
+    // API routes - only setup database-dependent routes if database is enabled
+    if (this.databaseEnabled && this.pool) {
+      this.app.use('/api/auth', createAuthRoutes(this.pool));
+      this.app.use('/api/organizations', createOrganizationRoutes(this.pool));
+      this.app.use('/api/users', createUserRoutes(this.pool));
+      this.app.use('/api/projects', createProjectRoutes(this.pool));
+      // this.app.use('/api/visualization', createVisualizationRouter(this.pool));
+    }
+    
+    // Always setup analyzer routes as they don't require database
     this.app.use('/api/analyzer', createAnalyzerRoutes(this.pool));
     
     // 404 handler
@@ -248,8 +267,10 @@ export class App {
   
   private async shutdown(): Promise<void> {
     try {
-      this.logger.info('Closing database connections');
-      await this.pool.end();
+      if (this.pool) {
+        this.logger.info('Closing database connections');
+        await this.pool.end();
+      }
       
       this.logger.info('Shutdown complete');
       process.exit(0);
@@ -276,7 +297,7 @@ export class App {
     return this.app;
   }
   
-  getPool(): Pool {
+  getPool(): Pool | null {
     return this.pool;
   }
 }

@@ -1,5 +1,3 @@
-// React Framework Analyzer - Specialized analysis for React applications
-// Phase 3: Framework Sub-Analyzers - Production-ready React analyzer
 
 import { TypeScriptJavaScriptAnalyzer } from '../../languages/typescript-javascript-analyzer';
 import { ComponentNode, ComponentType, Connection, RiskArea, APIEndpoint } from '../../../types';
@@ -78,45 +76,94 @@ export class ReactAnalyzer extends TypeScriptJavaScriptAnalyzer {
   protected async detectLanguageAndFramework(): Promise<any> {
     const baseDetection = await super.detectLanguageAndFramework();
     
-    // Enhance with React-specific detection
+    // First check if React is even in the project
     const packageJsonPath = path.join(this.projectPath, 'package.json');
-    if (await fs.pathExists(packageJsonPath)) {
-      const packageJson = await fs.readJson(packageJsonPath);
+    if (!await fs.pathExists(packageJsonPath)) {
+      return { ...baseDetection, confidence: 0 };
+    }
+    
+    const packageJson = await fs.readJson(packageJsonPath);
+    const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
+    
+    // No React dependency? Not a React project!
+    if (!deps.react) {
+      return { ...baseDetection, confidence: 0 };
+    }
+    
+    this.reactVersion = deps.react;
+    
+    // Now check for ACTUAL React components - look for .jsx or .tsx files
+    const jsxFiles = await this.findFiles(['**/*.jsx'], this.options.excludePatterns || ['node_modules/**', 'dist/**', 'build/**']);
+    const tsxFiles = await this.findFiles(['**/*.tsx'], this.options.excludePatterns || ['node_modules/**', 'dist/**', 'build/**']);
+    const reactComponentFiles = [...jsxFiles, ...tsxFiles];
+    
+    // No JSX/TSX files? Check if there are JS/TS files with React imports
+    let hasReactComponents = reactComponentFiles.length > 0;
+    let confidence = 0;
+    
+    if (!hasReactComponents) {
+      // Sample some JS/TS files to check for React usage
+      const jsFiles = await this.findFiles(['**/*.{js,ts}'], this.options.excludePatterns || ['node_modules/**', 'dist/**', 'build/**']);
+      const samplesToCheck = jsFiles.slice(0, 10); // Check first 10 files
       
-      // Check for React in dependencies
-      const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
-      this.reactVersion = deps.react || '';
-      
-      // Detect React meta-frameworks
-      this.isNextJS = !!deps.next;
-      this.isGatsby = !!deps.gatsby;
-      this.isCreateReactApp = !!deps['react-scripts'];
-      this.isVite = !!deps.vite && (await fs.pathExists(path.join(this.projectPath, 'vite.config.js')) ||
-                                     await fs.pathExists(path.join(this.projectPath, 'vite.config.ts')));
-      
-      // Detect state management
-      if (deps.redux || deps['react-redux']) {
-        this.stateManagement = { type: 'redux', stores: [], actions: [], selectors: [], providers: [], globalState: true };
-      } else if (deps.mobx || deps['mobx-react']) {
-        this.stateManagement = { type: 'mobx', stores: [], actions: [], selectors: [], providers: [], globalState: true };
-      } else if (deps.zustand) {
-        this.stateManagement = { type: 'zustand', stores: [], actions: [], selectors: [], providers: [], globalState: true };
-      } else if (deps.recoil) {
-        this.stateManagement = { type: 'recoil', stores: [], actions: [], selectors: [], providers: [], globalState: true };
-      } else if (deps.jotai) {
-        this.stateManagement = { type: 'jotai', stores: [], actions: [], selectors: [], providers: [], globalState: true };
-      } else if (deps.valtio) {
-        this.stateManagement = { type: 'valtio', stores: [], actions: [], selectors: [], providers: [], globalState: true };
+      for (const file of samplesToCheck) {
+        try {
+          const content = await fs.readFile(file, 'utf-8');
+          if (content.includes('import React') || 
+              content.includes('from "react"') ||
+              content.includes('from \'react\'') ||
+              content.includes('jsx') ||
+              content.includes('ReactDOM')) {
+            hasReactComponents = true;
+            break;
+          }
+        } catch {}
       }
+    }
+    
+    // Calculate confidence based on evidence
+    if (reactComponentFiles.length > 10) {
+      confidence = 0.95; // Strong evidence - many JSX/TSX files
+    } else if (reactComponentFiles.length > 0) {
+      confidence = 0.85; // Good evidence - some JSX/TSX files
+    } else if (hasReactComponents) {
+      confidence = 0.6; // Moderate evidence - React imports found
+    } else if (deps.react && deps['react-dom']) {
+      confidence = 0.3; // Weak evidence - only package.json
+    } else {
+      confidence = 0.1; // Very weak - React in deps but no usage found
+    }
+    
+    // Detect React meta-frameworks
+    this.isNextJS = !!deps.next;
+    this.isGatsby = !!deps.gatsby;
+    this.isCreateReactApp = !!deps['react-scripts'];
+    this.isVite = !!deps.vite && (await fs.pathExists(path.join(this.projectPath, 'vite.config.js')) ||
+                                   await fs.pathExists(path.join(this.projectPath, 'vite.config.ts')));
+    
+    // Detect state management
+    if (deps.redux || deps['react-redux']) {
+      this.stateManagement = { type: 'redux', stores: [], actions: [], selectors: [], providers: [], globalState: true };
+    } else if (deps.mobx || deps['mobx-react']) {
+      this.stateManagement = { type: 'mobx', stores: [], actions: [], selectors: [], providers: [], globalState: true };
+    } else if (deps.zustand) {
+      this.stateManagement = { type: 'zustand', stores: [], actions: [], selectors: [], providers: [], globalState: true };
+    } else if (deps.recoil) {
+      this.stateManagement = { type: 'recoil', stores: [], actions: [], selectors: [], providers: [], globalState: true };
+    } else if (deps.jotai) {
+      this.stateManagement = { type: 'jotai', stores: [], actions: [], selectors: [], providers: [], globalState: true };
+    } else if (deps.valtio) {
+      this.stateManagement = { type: 'valtio', stores: [], actions: [], selectors: [], providers: [], globalState: true };
     }
     
     return {
       ...baseDetection,
+      confidence,
       frameworks: [...baseDetection.frameworks, {
         name: 'react',
         version: this.reactVersion,
-        confidence: 0.95,
-        patterns: ['React components detected'],
+        confidence,
+        patterns: hasReactComponents ? ['React components detected'] : ['React in dependencies only'],
         configFiles: this.getReactConfigFiles(),
         dependencies: ['react', 'react-dom']
       }]

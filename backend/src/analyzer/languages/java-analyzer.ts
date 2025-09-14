@@ -1,18 +1,54 @@
 // Java Base Analyzer - Comprehensive analysis for Java projects
-// Phase 2: Language Base Analyzers - Production-ready Java analyzer
+// Phase 2: Language Base Analyzers - Production-ready Java analyzer with java-parser integration
 
 import { BaseAnalyzer, LanguageDetection, ComponentDiscovery, FrameworkDetection } from '../base-analyzer';
-import { ComponentNode, ComponentType, Connection, RiskArea, CallGraph, DatabaseConnection, TestCoverage, APIEndpoint } from '../../types';
+import { ComponentNode, ComponentType, Connection, RiskArea, CallGraph, DatabaseConnection, TestCoverage, APIEndpoint, FunctionInfo } from '../../types';
 import { telemetry } from '../../telemetry/telemetry-schema';
 import { AnalyzerError } from '../errors';
 import * as path from 'path';
 import * as fs from 'fs-extra';
+// Dynamic import for java-parser to handle ES module compatibility
+let parseJava: any = null;
+
+interface JavaClass {
+  name: string;
+  packageName: string;
+  superClass?: string;
+  interfaces: string[];
+  annotations: string[];
+  methods: JavaMethod[];
+  fields: JavaField[];
+  innerClasses: JavaClass[];
+  isAbstract: boolean;
+  isInterface: boolean;
+  isEnum: boolean;
+}
+
+interface JavaMethod {
+  name: string;
+  returnType: string;
+  parameters: { name: string; type: string }[];
+  annotations: string[];
+  modifiers: string[];
+  throws: string[];
+  body?: any;
+}
+
+interface JavaField {
+  name: string;
+  type: string;
+  modifiers: string[];
+  annotations: string[];
+  initialValue?: any;
+}
 
 export class JavaAnalyzer extends BaseAnalyzer {
   private javaVersion: string = '';
   private buildTool: 'maven' | 'gradle' | 'ant' | 'unknown' = 'unknown';
   private isSpringProject: boolean = false;
   private hasTests: boolean = false;
+  private parsedClasses: Map<string, JavaClass> = new Map();
+  private javaParserLoaded: boolean = false;
   
   getAnalyzerName(): string {
     return 'Java Analyzer';
@@ -33,6 +69,21 @@ export class JavaAnalyzer extends BaseAnalyzer {
       'tomcat', 'jetty', 'undertow',
       'jackson', 'gson', 'lombok'
     ];
+  }
+
+  private async loadJavaParser(): Promise<void> {
+    if (this.javaParserLoaded || parseJava) {
+      return;
+    }
+    
+    try {
+      const javaParserModule = await import('java-parser');
+      parseJava = javaParserModule.parse;
+      this.javaParserLoaded = true;
+    } catch (error) {
+      console.warn('Failed to load java-parser, falling back to regex parsing:', (error as Error).message);
+      this.javaParserLoaded = false;
+    }
   }
 
   protected async detectLanguageAndFramework(): Promise<LanguageDetection> {
@@ -457,25 +508,50 @@ export class JavaAnalyzer extends BaseAnalyzer {
         return null;
       }
 
+      // Parse Java file using java-parser for accurate AST analysis
+      let parsedData: any = null;
+      let javaClass: JavaClass | null = null;
+      
+      if (filePath.endsWith('.java')) {
+        try {
+          // Load java-parser dynamically if not already loaded
+          await this.loadJavaParser();
+          
+          if (parseJava) {
+            parsedData = parseJava(content);
+            javaClass = this.extractJavaClass(parsedData, filePath);
+            if (javaClass) {
+              this.parsedClasses.set(filePath, javaClass);
+            }
+          }
+        } catch (parseError) {
+          console.debug(`Failed to parse Java file ${filePath} with java-parser, falling back to regex`);
+        }
+      }
+
+      const functions = javaClass 
+        ? this.convertJavaMethodsToFunctions(javaClass.methods) 
+        : await this.extractFunctions(content, 'java');
+
       const component: ComponentNode = {
         id: this.generateComponentId(filePath),
-        name: this.extractClassName(content, filePath),
+        name: javaClass?.name || this.extractClassName(content, filePath),
         type: this.determineComponentType(filePath, content),
         path: relativePath,
         dependencies: [],
         dependents: [],
         metadata: {
           lineCount: content.split('\n').length,
-          complexity: this.calculateComplexity(content),
+          complexity: this.calculateJavaComplexity(parsedData, content),
           lastModified: (await fs.stat(filePath)).mtime,
-          exports: this.extractExports(content),
-          imports: this.extractImports(content),
+          exports: javaClass ? [javaClass.name] : this.extractExports(content),
+          imports: this.extractJavaImports(parsedData, content),
           layer: this.determineArchitecturalLayer(filePath, content),
           responsibilities: this.extractResponsibilities(filePath, content),
-          functions: await this.extractFunctions(content, 'java'),
+          functions,
           testCoverage: this.isTestFile(filePath) ? 100 : undefined,
-          isEntry: this.isEntryPoint(filePath, content),
-          httpMethods: this.extractHttpMethods(content),
+          isEntry: this.isJavaEntryPoint(javaClass, content),
+          httpMethods: this.extractSpringEndpoints(javaClass, content),
           dbQueries: this.extractDatabaseQueries(content),
           externalCalls: this.extractExternalCalls(content)
         }
@@ -1132,5 +1208,243 @@ export class JavaAnalyzer extends BaseAnalyzer {
   private extractEndpointPath(filePath: string): string {
     const relativePath = path.relative(this.projectPath, filePath);
     return `/${relativePath.replace(/\\/g, '/').replace(/\.java$/, '')}`;
+  }
+
+  // Java parser specific methods
+  private extractJavaClass(parsedData: any, filePath: string): JavaClass | null {
+    if (!parsedData || !parsedData.types || parsedData.types.length === 0) {
+      return null;
+    }
+
+    const mainType = parsedData.types[0];
+    const className = mainType.identifier?.name || path.basename(filePath, '.java');
+    
+    return {
+      name: className,
+      packageName: parsedData.package?.name?.join('.') || '',
+      superClass: mainType.superclass?.name,
+      interfaces: (mainType.implements || []).map((i: any) => i.name),
+      annotations: this.extractAnnotations(mainType.modifiers),
+      methods: this.extractMethods(mainType.body),
+      fields: this.extractFields(mainType.body),
+      innerClasses: [],
+      isAbstract: this.hasModifier(mainType.modifiers, 'abstract'),
+      isInterface: mainType.typeType === 'InterfaceDeclaration',
+      isEnum: mainType.typeType === 'EnumDeclaration'
+    };
+  }
+
+  private extractAnnotations(modifiers: any[]): string[] {
+    if (!modifiers) return [];
+    return modifiers
+      .filter(m => m.type === 'Annotation')
+      .map(m => m.name?.name || m.name);
+  }
+
+  private hasModifier(modifiers: any[], modifier: string): boolean {
+    if (!modifiers) return false;
+    return modifiers.some(m => m.type === 'Modifier' && m.value === modifier);
+  }
+
+  private extractMethods(body: any): JavaMethod[] {
+    if (!body || !body.declarations) return [];
+    
+    return body.declarations
+      .filter((d: any) => d.type === 'MethodDeclaration')
+      .map((method: any) => ({
+        name: method.name?.identifier || 'unknown',
+        returnType: this.extractType(method.returnType),
+        parameters: this.extractParametersFromAST(method.parameters),
+        annotations: this.extractAnnotations(method.modifiers),
+        modifiers: this.extractModifiers(method.modifiers),
+        throws: method.throws || [],
+        body: method.body
+      }));
+  }
+
+  private extractFields(body: any): JavaField[] {
+    if (!body || !body.declarations) return [];
+    
+    return body.declarations
+      .filter((d: any) => d.type === 'FieldDeclaration')
+      .map((field: any) => ({
+        name: field.variables?.[0]?.name?.identifier || 'unknown',
+        type: this.extractType(field.typeType),
+        modifiers: this.extractModifiers(field.modifiers),
+        annotations: this.extractAnnotations(field.modifiers),
+        initialValue: field.variables?.[0]?.initializer
+      }));
+  }
+
+  private extractType(typeNode: any): string {
+    if (!typeNode) return 'void';
+    if (typeof typeNode === 'string') return typeNode;
+    if (typeNode.type === 'PrimitiveType') return typeNode.value;
+    if (typeNode.type === 'SimpleType') return typeNode.name?.identifier || 'Object';
+    if (typeNode.type === 'ArrayType') return `${this.extractType(typeNode.componentType)}[]`;
+    return 'Object';
+  }
+
+  private extractParametersFromAST(parameters: any[]): { name: string; type: string }[] {
+    if (!parameters) return [];
+    return parameters.map(p => ({
+      name: p.name?.identifier || 'param',
+      type: this.extractType(p.type)
+    }));
+  }
+
+  private extractModifiers(modifiers: any[]): string[] {
+    if (!modifiers) return [];
+    return modifiers
+      .filter(m => m.type === 'Modifier')
+      .map(m => m.value);
+  }
+
+  private convertJavaMethodsToFunctions(methods: JavaMethod[]): FunctionInfo[] {
+    return methods.map(method => ({
+      name: method.name,
+      signature: `${method.name}(${method.parameters.map(p => `${p.type} ${p.name}`).join(', ')})`,
+      parameters: method.parameters.map(p => ({
+        name: p.name,
+        type: p.type,
+        isOptional: false,
+        defaultValue: undefined
+      })),
+      returnType: method.returnType,
+      complexity: this.calculateMethodComplexity(method),
+      lineCount: 0, // Would need line info from parser
+      isPublic: method.modifiers.includes('public'),
+      isAsync: false, // Java doesn't have async keyword like JS
+      isStatic: method.modifiers.includes('static'),
+      isAbstract: method.modifiers.includes('abstract'),
+      calls: [],
+      calledBy: []
+    }));
+  }
+
+  private calculateMethodComplexity(method: JavaMethod): number {
+    // Simplified complexity calculation
+    let complexity = 1;
+    
+    // Add complexity for control flow
+    if (method.body) {
+      const bodyStr = JSON.stringify(method.body);
+      complexity += (bodyStr.match(/if\s*\(/g) || []).length;
+      complexity += (bodyStr.match(/for\s*\(/g) || []).length;
+      complexity += (bodyStr.match(/while\s*\(/g) || []).length;
+      complexity += (bodyStr.match(/case\s+/g) || []).length;
+      complexity += (bodyStr.match(/catch\s*\(/g) || []).length;
+    }
+    
+    return complexity;
+  }
+
+  private extractMethodHttpEndpoints(method: JavaMethod): string[] {
+    const endpoints: string[] = [];
+    
+    for (const annotation of method.annotations) {
+      if (annotation.includes('GetMapping') || 
+          annotation.includes('PostMapping') ||
+          annotation.includes('PutMapping') ||
+          annotation.includes('DeleteMapping') ||
+          annotation.includes('RequestMapping')) {
+        endpoints.push(annotation);
+      }
+    }
+    
+    return endpoints;
+  }
+
+  private calculateJavaComplexity(parsedData: any, content: string): number {
+    if (parsedData) {
+      // Use parsed data for more accurate complexity
+      let complexity = 1;
+      const ast = JSON.stringify(parsedData);
+      
+      // Count control flow structures
+      complexity += (ast.match(/"type":"IfStatement"/g) || []).length;
+      complexity += (ast.match(/"type":"ForStatement"/g) || []).length;
+      complexity += (ast.match(/"type":"WhileStatement"/g) || []).length;
+      complexity += (ast.match(/"type":"DoWhileStatement"/g) || []).length;
+      complexity += (ast.match(/"type":"SwitchStatement"/g) || []).length;
+      complexity += (ast.match(/"type":"TryStatement"/g) || []).length;
+      
+      return complexity;
+    }
+    
+    // Fallback to regex-based calculation
+    return this.calculateComplexity(content);
+  }
+
+  private extractJavaImports(parsedData: any, content: string): string[] {
+    if (parsedData && parsedData.imports) {
+      return parsedData.imports.map((imp: any) => 
+        imp.name ? imp.name.join('.') : ''
+      ).filter((imp: string) => imp);
+    }
+    
+    // Fallback to regex
+    return this.extractImports(content);
+  }
+
+  private isJavaEntryPoint(javaClass: JavaClass | null, content: string): boolean {
+    if (javaClass) {
+      // Check for main method
+      const hasMain = javaClass.methods.some(m => 
+        m.name === 'main' && 
+        m.modifiers.includes('static') &&
+        m.modifiers.includes('public')
+      );
+      
+      // Check for Spring Boot application
+      const isSpringBootApp = javaClass.annotations.some(a => 
+        a.includes('SpringBootApplication')
+      );
+      
+      return hasMain || isSpringBootApp;
+    }
+    
+    // Fallback to regex
+    return this.isEntryPoint('', content);
+  }
+
+  private extractSpringEndpoints(javaClass: JavaClass | null, content: string): string[] {
+    const endpoints: string[] = [];
+    
+    if (javaClass) {
+      // Check class-level mapping
+      const classMapping = javaClass.annotations.find(a => 
+        a.includes('RequestMapping') || a.includes('RestController')
+      );
+      
+      // Extract method-level mappings
+      for (const method of javaClass.methods) {
+        const mappingAnnotations = method.annotations.filter(a =>
+          a.includes('Mapping') || a.includes('Path')
+        );
+        
+        for (const annotation of mappingAnnotations) {
+          const httpMethod = this.extractHttpMethodFromAnnotation(annotation);
+          if (httpMethod) {
+            endpoints.push(httpMethod);
+          }
+        }
+      }
+    } else {
+      // Fallback to regex
+      return this.extractHttpMethods(content);
+    }
+    
+    return endpoints;
+  }
+
+  private extractHttpMethodFromAnnotation(annotation: string): string {
+    if (annotation.includes('GetMapping')) return 'GET';
+    if (annotation.includes('PostMapping')) return 'POST';
+    if (annotation.includes('PutMapping')) return 'PUT';
+    if (annotation.includes('DeleteMapping')) return 'DELETE';
+    if (annotation.includes('PatchMapping')) return 'PATCH';
+    if (annotation.includes('RequestMapping')) return 'REQUEST';
+    return '';
   }
 }

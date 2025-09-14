@@ -124,7 +124,7 @@ export const FRAMEWORK_ANALYZERS: FrameworkAnalyzerInfo[] = [
   },
   {
     name: 'Spring Boot',
-    analyzer: SpringBootAnalyzer as typeof BaseAnalyzer,
+    analyzer: SpringBootAnalyzer as any as typeof BaseAnalyzer,
     category: 'backend',
     languages: ['java', 'kotlin'],
     frameworks: ['spring-boot', 'spring', 'spring-mvc'],

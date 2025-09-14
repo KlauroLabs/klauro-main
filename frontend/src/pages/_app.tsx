@@ -1,38 +1,22 @@
 import React from 'react';
 import type { AppProps } from 'next/app';
 import Head from 'next/head';
-import { ThemeProvider, createTheme } from '@mui/material/styles';
-import CssBaseline from '@mui/material/CssBaseline';
-
-const theme = createTheme({
-  palette: {
-    mode: 'light',
-    primary: {
-      main: '#1976d2',
-    },
-    secondary: {
-      main: '#dc004e',
-    },
-    background: {
-      default: '#f5f5f5',
-    },
-  },
-  typography: {
-    fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif',
-  },
-});
+import { UnravlThemeProvider } from '@/theme/UnravlTheme';
 
 export default function MyApp({ Component, pageProps }: AppProps) {
   return (
     <>
       <Head>
         <meta name="viewport" content="initial-scale=1, width=device-width" />
-        <title>Unravl - Architecture Visualization Platform</title>
+        <title>Unravl - Interactive Architecture Visualization Platform</title>
+        <meta name="description" content="Transform codebases into living, interactive architecture diagrams - the Marauder's Map for software systems" />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
       </Head>
-      <ThemeProvider theme={theme}>
-        <CssBaseline />
+      <UnravlThemeProvider timeOfDay="day">
         <Component {...pageProps} />
-      </ThemeProvider>
+      </UnravlThemeProvider>
     </>
   );
 }

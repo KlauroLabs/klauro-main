@@ -2,7 +2,9 @@ import {
   ArchitectureBlueprint,
   ComponentNode,
   Connection,
-  CallGraph
+  CallGraph,
+  ComponentType,
+  ArchitecturalLayer
 } from '../types';
 import {
   SpatialBlueprint,
@@ -25,6 +27,8 @@ import {
 import { SpatialDataTransformer } from './spatial-data-transformer';
 import { MetaphorMapper } from './metaphor-mapper';
 import { LayoutAlgorithmFactory } from './layout-algorithms';
+import { PatternDetectionResult, DetectedPattern, DetectedAntiPattern, PerformanceHotspot } from '../analyzer/patterns/pattern-detector';
+import { HierarchicalNavigationService, NavigationHierarchy } from './hierarchical-navigation';
 
 export interface SpatialEngineOptions {
   enableRealTimeUpdates?: boolean;
@@ -68,6 +72,8 @@ export class SpatialLayoutEngine {
   private metrics: SpatialEngineMetrics;
   private options: SpatialEngineOptions;
   private webSocketHandlers: Map<string, (data: any) => void> = new Map();
+  private hierarchicalNav: HierarchicalNavigationService | null = null;
+  private patternResults: PatternDetectionResult | null = null;
 
   constructor(options: SpatialEngineOptions = {}) {
     this.options = {
@@ -84,6 +90,7 @@ export class SpatialLayoutEngine {
 
     this.transformer = new SpatialDataTransformer();
     this.metaphorMapper = new MetaphorMapper();
+    this.hierarchicalNav = new HierarchicalNavigationService();
     
     this.metrics = {
       transformationTime: 0,
@@ -130,6 +137,15 @@ export class SpatialLayoutEngine {
         this.animations = this.transformer.generateAnimations(spatialBlueprint);
       }
 
+      // Build hierarchical navigation
+      if (this.hierarchicalNav) {
+        await this.hierarchicalNav.buildHierarchy(
+          optimizedBlueprint.components,
+          optimizedBlueprint.connections,
+          spatialBlueprint
+        );
+      }
+
       // Store current blueprint
       this.currentBlueprint = spatialBlueprint;
 
@@ -165,13 +181,126 @@ export class SpatialLayoutEngine {
       ids.add(component.id);
     }
 
-    // Validate connections reference existing components
+    // Create virtual components for external references and validate connections
     const componentIds = new Set(blueprint.components.map(c => c.id));
+    const externalRefs = new Set<string>();
+    const validConnections: Connection[] = [];
+    
+    // First pass: identify external references from connections
     for (const connection of blueprint.connections) {
-      if (!componentIds.has(connection.from) || !componentIds.has(connection.to)) {
-        throw new Error(`Connection references non-existent component: ${connection.from} -> ${connection.to}`);
+      if (!componentIds.has(connection.from) && this.isExternalComponent(connection.from)) {
+        externalRefs.add(connection.from);
+      }
+      if (!componentIds.has(connection.to) && this.isExternalComponent(connection.to)) {
+        externalRefs.add(connection.to);
       }
     }
+
+    // Create virtual components for external references
+    for (const externalRef of externalRefs) {
+      const virtualComponent = this.createVirtualComponent(externalRef);
+      blueprint.components.push(virtualComponent);
+      componentIds.add(externalRef);
+      console.log(`✅ Created virtual component for external reference: ${externalRef}`);
+    }
+
+    // Second pass: filter connections to only include valid ones
+    for (const connection of blueprint.connections) {
+      if (componentIds.has(connection.from) && componentIds.has(connection.to)) {
+        validConnections.push(connection);
+      } else {
+        console.warn(`⚠️ Filtering invalid connection: ${connection.from} -> ${connection.to}`);
+      }
+    }
+
+    // Update blueprint with only valid connections
+    blueprint.connections = validConnections;
+    
+    console.log(`📊 Validation complete: ${blueprint.components.length} components, ${blueprint.connections.length} valid connections`);
+  }
+
+  private isExternalComponent(componentId: string): boolean {
+    // Check if component ID represents an external/virtual component
+    const externalPrefixes = ['external_', 'virtual_', 'third_party_', 'system_'];
+    const externalTypes = ['external_http', 'external_api', 'external_database', 'external_service', 'filesystem', 'network'];
+    
+    // Also include common external service patterns
+    const commonExternalPatterns = [
+      'http_client', 'api_client', 'rest_client', 'web_service',
+      'database', 'cache', 'queue', 'pubsub', 'storage'
+    ];
+    
+    return externalPrefixes.some(prefix => componentId.startsWith(prefix)) ||
+           externalTypes.includes(componentId) ||
+           commonExternalPatterns.some(pattern => componentId.toLowerCase().includes(pattern));
+  }
+
+  private createVirtualComponent(externalRef: string): ComponentNode {
+    // Map external reference types to component metadata
+    const externalComponentMap: Record<string, any> = {
+      'external_http': {
+        name: 'External HTTP Service',
+        type: 'external_api' as ComponentType,
+        layer: 'external' as ArchitecturalLayer,
+        responsibilities: ['External HTTP communication']
+      },
+      'external_api': {
+        name: 'External API Service',
+        type: 'external_api' as ComponentType,
+        layer: 'external' as ArchitecturalLayer,
+        responsibilities: ['External API integration']
+      },
+      'external_database': {
+        name: 'External Database',
+        type: 'database' as ComponentType,
+        layer: 'data' as ArchitecturalLayer,
+        responsibilities: ['External data storage']
+      },
+      'filesystem': {
+        name: 'File System',
+        type: 'external_api' as ComponentType,
+        layer: 'external' as ArchitecturalLayer,
+        responsibilities: ['File system operations']
+      },
+      'network': {
+        name: 'Network Services',
+        type: 'external_api' as ComponentType,
+        layer: 'external' as ArchitecturalLayer,
+        responsibilities: ['Network communication']
+      }
+    };
+
+    const config = externalComponentMap[externalRef] || {
+      name: `External: ${externalRef}`,
+      type: 'external_api' as ComponentType,
+      layer: 'external' as ArchitecturalLayer,
+      responsibilities: [`External ${externalRef} integration`]
+    };
+
+    return {
+      id: externalRef,
+      name: config.name,
+      type: config.type,
+      path: `virtual://external/${externalRef}`,
+      dependencies: [],
+      dependents: [],
+      metadata: {
+        lineCount: 0,
+        complexity: 1,
+        lastModified: new Date(),
+        exports: [],
+        imports: [],
+        layer: config.layer,
+        responsibilities: config.responsibilities
+      },
+      metrics: {
+        linesOfCode: 0,
+        complexity: 1,
+        maintainability: 1,
+        testCoverage: 0,
+        technicalDebt: 0
+      }
+    };
   }
 
   private optimizeBlueprint(blueprint: ArchitectureBlueprint): ArchitectureBlueprint {
@@ -181,7 +310,7 @@ export class SpatialLayoutEngine {
 
     const optimized = { ...blueprint };
 
-    // Remove duplicate connections
+    // Remove duplicate connections (validation already filtered invalid ones)
     const connectionSet = new Set<string>();
     optimized.connections = blueprint.connections.filter(conn => {
       const key = `${conn.from}-${conn.to}-${conn.type}`;
@@ -197,6 +326,7 @@ export class SpatialLayoutEngine {
       optimized.components = this.mergeSimilarComponents(blueprint.components);
     }
 
+    console.log(`🚀 Optimization complete: ${optimized.components.length} components, ${optimized.connections.length} connections`);
     return optimized;
   }
 
@@ -775,6 +905,435 @@ export class SpatialLayoutEngine {
     if (this.spatialIndex) {
       this.spatialIndex.clear();
     }
+  }
+
+  // Pattern Detection Integration
+
+  /**
+   * Integrate pattern detection results with spatial visualization
+   */
+  integratePatternResults(patternResults: PatternDetectionResult): void {
+    this.patternResults = patternResults;
+    
+    if (this.currentBlueprint) {
+      this.applyPatternVisualization(patternResults);
+    }
+  }
+
+  /**
+   * Apply pattern detection results to spatial visualization
+   */
+  private applyPatternVisualization(patternResults: PatternDetectionResult): void {
+    if (!this.currentBlueprint) return;
+
+    console.log('🎯 Applying pattern visualization to spatial layout...');
+
+    // Apply detected patterns
+    this.visualizeDetectedPatterns(patternResults.patterns);
+    
+    // Apply anti-patterns with warning indicators
+    this.visualizeAntiPatterns(patternResults.antiPatterns);
+    
+    // Apply architecture type styling
+    this.applyArchitectureTypeVisualization(patternResults.architectureType);
+    
+    console.log(`✅ Applied ${patternResults.patterns.length} patterns and ${patternResults.antiPatterns.length} anti-patterns`);
+  }
+
+  /**
+   * Visualize detected patterns in spatial layout
+   */
+  private visualizeDetectedPatterns(patterns: DetectedPattern[]): void {
+    for (const pattern of patterns) {
+      const patternComponents = this.findRoomsByComponentIds(pattern.components);
+      
+      if (patternComponents.length > 0) {
+        // Add pattern indicators to rooms
+        for (const room of patternComponents) {
+          if (!room.metadata.patterns) {
+            room.metadata.patterns = [];
+          }
+          
+          room.metadata.patterns.push({
+            type: pattern.type,
+            confidence: pattern.confidence,
+            description: pattern.description,
+            metadata: pattern.metadata
+          });
+
+          // Apply visual styling based on pattern type
+          this.applyPatternStyling(room, pattern);
+        }
+
+        // Create pattern connections if multiple components
+        if (patternComponents.length > 1) {
+          this.createPatternConnections(patternComponents, pattern);
+        }
+      }
+    }
+  }
+
+  /**
+   * Visualize anti-patterns with warning indicators
+   */
+  private visualizeAntiPatterns(antiPatterns: DetectedAntiPattern[]): void {
+    for (const antiPattern of antiPatterns) {
+      const affectedComponents = this.findRoomsByComponentIds(antiPattern.components);
+      
+      for (const room of affectedComponents) {
+        // Add anti-pattern alerts
+        const alert: Alert = {
+          id: `antipattern_${antiPattern.type}_${room.id}`,
+          severity: antiPattern.severity === 'critical' ? 'critical' : 
+                   antiPattern.severity === 'high' ? 'error' : 
+                   antiPattern.severity === 'medium' ? 'warning' : 'info',
+          message: antiPattern.description,
+          timestamp: new Date(),
+          location: room.position,
+          roomId: room.id,
+          antiPattern: {
+            type: antiPattern.type,
+            recommendation: antiPattern.recommendation,
+            impact: antiPattern.impact
+          }
+        };
+
+        if (!room.metadata.alerts) {
+          room.metadata.alerts = [];
+        }
+        room.metadata.alerts.push(alert);
+
+        // Apply visual warning styling
+        this.applyAntiPatternStyling(room, antiPattern);
+      }
+    }
+  }
+
+  /**
+   * Apply architecture type visualization
+   */
+  private applyArchitectureTypeVisualization(architectureType: string): void {
+    if (!this.currentBlueprint) return;
+
+    // Apply global architecture styling
+    this.currentBlueprint.metadata.architectureType = architectureType;
+    
+    // Apply building-level styling based on architecture
+    for (const building of this.currentBlueprint.buildings) {
+      building.metadata.architectureStyle = architectureType;
+      
+      // Apply specific styling based on architecture type
+      switch (architectureType) {
+        case 'microservices':
+          building.metadata.style = 'modern-distributed';
+          break;
+        case 'layered':
+          building.metadata.style = 'traditional-layered';
+          break;
+        case 'event_driven':
+          building.metadata.style = 'dynamic-flow';
+          break;
+        default:
+          building.metadata.style = 'standard';
+      }
+    }
+  }
+
+  /**
+   * Apply pattern-specific styling to rooms
+   */
+  private applyPatternStyling(room: Room, pattern: DetectedPattern): void {
+    const patternStyles: Record<string, any> = {
+      microservices: { 
+        borderColor: '#2196F3', 
+        backgroundColor: '#E3F2FD',
+        icon: '🏗️'
+      },
+      layered: { 
+        borderColor: '#4CAF50', 
+        backgroundColor: '#E8F5E8',
+        icon: '📚'
+      },
+      event_driven: { 
+        borderColor: '#FF9800', 
+        backgroundColor: '#FFF3E0',
+        icon: '⚡'
+      },
+      mvc: { 
+        borderColor: '#9C27B0', 
+        backgroundColor: '#F3E5F5',
+        icon: '🏛️'
+      },
+      repository: { 
+        borderColor: '#607D8B', 
+        backgroundColor: '#ECEFF1',
+        icon: '🗄️'
+      },
+      factory: { 
+        borderColor: '#795548', 
+        backgroundColor: '#EFEBE9',
+        icon: '🏭'
+      },
+      singleton: { 
+        borderColor: '#FF5722', 
+        backgroundColor: '#FBE9E7',
+        icon: '👑'
+      },
+      observer: { 
+        borderColor: '#3F51B5', 
+        backgroundColor: '#E8EAF6',
+        icon: '👁️'
+      },
+      strategy: { 
+        borderColor: '#009688', 
+        backgroundColor: '#E0F2F1',
+        icon: '🎯'
+      },
+      dependency_injection: { 
+        borderColor: '#8BC34A', 
+        backgroundColor: '#F1F8E9',
+        icon: '💉'
+      }
+    };
+
+    const style = patternStyles[pattern.type] || patternStyles['factory'];
+    
+    room.metadata.styling = {
+      ...room.metadata.styling,
+      ...style,
+      patternConfidence: pattern.confidence
+    };
+  }
+
+  /**
+   * Apply anti-pattern warning styling to rooms
+   */
+  private applyAntiPatternStyling(room: Room, antiPattern: DetectedAntiPattern): void {
+    const severityStyles = {
+      critical: { 
+        borderColor: '#D32F2F', 
+        backgroundColor: '#FFEBEE',
+        pulseAnimation: true,
+        icon: '🚨'
+      },
+      high: { 
+        borderColor: '#F57C00', 
+        backgroundColor: '#FFF3E0',
+        icon: '⚠️'
+      },
+      medium: { 
+        borderColor: '#FBC02D', 
+        backgroundColor: '#FFFDE7',
+        icon: '⚠️'
+      },
+      low: { 
+        borderColor: '#689F38', 
+        backgroundColor: '#F1F8E9',
+        icon: '💡'
+      }
+    };
+
+    const style = severityStyles[antiPattern.severity];
+    
+    room.metadata.styling = {
+      ...room.metadata.styling,
+      ...style,
+      antiPatternSeverity: antiPattern.severity,
+      hasAntiPattern: true
+    };
+
+    // Add pulsing animation for critical issues
+    if (antiPattern.severity === 'critical') {
+      const animation: Animation = {
+        id: `antipattern_pulse_${room.id}`,
+        type: 'pulse',
+        targetId: room.id,
+        duration: 2000,
+        iterations: -1, // infinite
+        properties: {
+          scale: { from: 1, to: 1.1 },
+          opacity: { from: 0.7, to: 1 }
+        },
+        easing: 'ease-in-out',
+        metadata: {
+          reason: 'critical-antipattern',
+          antiPatternType: antiPattern.type
+        }
+      };
+
+      this.animations.push(animation);
+    }
+  }
+
+  /**
+   * Create visual connections between pattern components
+   */
+  private createPatternConnections(rooms: Room[], pattern: DetectedPattern): void {
+    if (rooms.length < 2) return;
+
+    // Create connections between all pattern components
+    for (let i = 0; i < rooms.length - 1; i++) {
+      for (let j = i + 1; j < rooms.length; j++) {
+        const connectionId = `pattern_${pattern.type}_${rooms[i].id}_${rooms[j].id}`;
+        
+        // Check if connection already exists in hallways
+        const existingConnection = this.currentBlueprint!.hallways.find(h => 
+          (h.sourceRoom === rooms[i].id && h.targetRoom === rooms[j].id) ||
+          (h.sourceRoom === rooms[j].id && h.targetRoom === rooms[i].id)
+        );
+
+        if (existingConnection) {
+          // Enhance existing connection
+          existingConnection.metadata.patterns = existingConnection.metadata.patterns || [];
+          existingConnection.metadata.patterns.push({
+            type: pattern.type,
+            confidence: pattern.confidence
+          });
+          
+          // Apply pattern styling to hallway
+          existingConnection.metadata.styling = {
+            ...existingConnection.metadata.styling,
+            patternHighlight: true,
+            patternType: pattern.type,
+            lineStyle: 'dashed',
+            color: this.getPatternColor(pattern.type)
+          };
+        } else {
+          // Create new pattern connection
+          this.currentBlueprint!.hallways.push({
+            id: connectionId,
+            sourceRoom: rooms[i].id,
+            targetRoom: rooms[j].id,
+            path: [rooms[i].position, rooms[j].position],
+            width: 2,
+            metadata: {
+              patterns: [{
+                type: pattern.type,
+                confidence: pattern.confidence
+              }],
+              styling: {
+                patternHighlight: true,
+                patternType: pattern.type,
+                lineStyle: 'dashed',
+                color: this.getPatternColor(pattern.type),
+                opacity: pattern.confidence
+              },
+              virtual: true, // Indicates this is a pattern connection, not architectural
+              patternConnection: true
+            }
+          });
+        }
+      }
+    }
+  }
+
+  /**
+   * Find rooms by component IDs
+   */
+  private findRoomsByComponentIds(componentIds: string[]): Room[] {
+    if (!this.currentBlueprint) return [];
+
+    return this.currentBlueprint.rooms.filter(room =>
+      componentIds.some(componentId => 
+        room.id === componentId || 
+        room.metadata.componentIds?.includes(componentId) ||
+        room.id.includes(componentId)
+      )
+    );
+  }
+
+  /**
+   * Get color for pattern type
+   */
+  private getPatternColor(patternType: string): string {
+    const patternColors: Record<string, string> = {
+      microservices: '#2196F3',
+      layered: '#4CAF50',
+      event_driven: '#FF9800',
+      mvc: '#9C27B0',
+      repository: '#607D8B',
+      factory: '#795548',
+      singleton: '#FF5722',
+      observer: '#3F51B5',
+      strategy: '#009688',
+      dependency_injection: '#8BC34A'
+    };
+
+    return patternColors[patternType] || '#757575';
+  }
+
+  // Hierarchical Navigation Integration
+
+  /**
+   * Get hierarchical navigation context
+   */
+  getNavigationContext(nodeId?: string) {
+    if (!this.hierarchicalNav) return null;
+    
+    const rootNode = nodeId || 'system_root';
+    return this.hierarchicalNav.getNavigationContext(rootNode);
+  }
+
+  /**
+   * Navigate to specific hierarchy node
+   */
+  navigateToNode(nodeId: string) {
+    if (!this.hierarchicalNav) return null;
+    
+    return this.hierarchicalNav.navigateToNode(nodeId);
+  }
+
+  /**
+   * Search navigation hierarchy
+   */
+  searchNavigation(query: string, filter?: any) {
+    if (!this.hierarchicalNav) return [];
+    
+    return this.hierarchicalNav.searchNodes(query, filter);
+  }
+
+  /**
+   * Get navigation paths between nodes
+   */
+  getNavigationPaths(fromNodeId: string, toNodeId: string) {
+    if (!this.hierarchicalNav) return [];
+    
+    return this.hierarchicalNav.getNavigationPaths(fromNodeId, toNodeId);
+  }
+
+  /**
+   * Get pattern detection results
+   */
+  getPatternResults(): PatternDetectionResult | null {
+    return this.patternResults;
+  }
+
+  /**
+   * Get enhanced spatial blueprint with pattern and navigation data
+   */
+  getEnhancedBlueprint(): SpatialBlueprint | null {
+    if (!this.currentBlueprint) return null;
+
+    // Create enhanced copy with pattern and navigation data
+    const enhanced = { ...this.currentBlueprint };
+    
+    // Add pattern detection summary
+    if (this.patternResults) {
+      enhanced.metadata.patternDetection = {
+        totalPatterns: this.patternResults.patterns.length,
+        totalAntiPatterns: this.patternResults.antiPatterns.length,
+        architectureType: this.patternResults.architectureType,
+        confidenceScore: this.patternResults.confidenceScore,
+        recommendations: this.patternResults.recommendations
+      };
+    }
+
+    // Add navigation statistics
+    if (this.hierarchicalNav) {
+      enhanced.metadata.navigation = this.hierarchicalNav.getHierarchyStats();
+    }
+
+    return enhanced;
   }
 }
 

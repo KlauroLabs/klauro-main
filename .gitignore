@@ -1,6 +1,5 @@
 .claude
 CLAUDE.md
-CONTEXT.md
 legacy/
 processors
 node_modules/

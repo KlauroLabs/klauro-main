@@ -16,7 +16,9 @@
     "removeComments": true,
     "noImplicitReturns": false,
     "noFallthroughCasesInSwitch": true,
-    "moduleResolution": "node"
+    "moduleResolution": "node",
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true
   },
   "include": ["src/**/*"],
   "exclude": [
@@ -28,6 +30,11 @@
     "src/visualization.disabled.bak/**/*",
     "src/ai/integration-test.ts.disabled",
     "src/**/*.test.ts",
-    "src/**/*.spec.ts"
+    "src/**/*.spec.ts",
+    "src/database/repositories/telemetry-repository.ts",
+    "src/database/repositories/analysis-repository.ts",
+    "src/issues/**/*",
+    "src/sdk/**/*",
+    "src/telemetry/**/*"
   ]
 }

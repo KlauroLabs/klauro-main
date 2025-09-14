@@ -1,9 +1,7 @@
-// Plugin Registry - Manages analyzer plugins and discovery
-// Production-ready plugin system for community and official analyzers
-
 import { BaseAnalyzer } from './base-analyzer';
 import { telemetry } from '../telemetry/telemetry-schema';
 import { db } from '../database';
+import { AnalyzerSelector } from './analyzer-selector';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 
@@ -470,77 +468,54 @@ export class PluginRegistry {
     return true;
   }
 
-  /**
-   * Get analyzer instance for a project
-   */
   async getAnalyzerForProject(repositoryPath: string): Promise<BaseAnalyzer | null> {
     const span = telemetry.createSpan('plugin-registry.getAnalyzerForProject');
     
+    const cacheKey = `analyzer:${repositoryPath}`;
+    if (this.loadedAnalyzers.has(cacheKey)) {
+      telemetry.emit({
+        type: 'analyzer_selected_from_cache',
+        source: { analyzer: 'plugin-registry' },
+        data: { repositoryPath }
+      });
+      span.end();
+      return this.loadedAnalyzers.get(cacheKey)!;
+    }
+    
+    const analyzers = new Map<string, BaseAnalyzer>();
     const plugins = Array.from(this.plugins.values());
     
-    // Sort by priority (higher first)
-    plugins.sort((a, b) => b.priority - a.priority);
-
     for (const plugin of plugins) {
       try {
         const AnalyzerClass = plugin.analyzer;
         const analyzer = new (AnalyzerClass as any)();
-        
-        // Test if this analyzer can handle the project
-        const cacheKey = `${plugin.id}:${repositoryPath}`;
-        if (this.loadedAnalyzers.has(cacheKey)) {
-          telemetry.emit({
-            type: 'analyzer_selected_from_cache',
-            source: { analyzer: 'plugin-registry' },
-            data: {
-              pluginId: plugin.id,
-              pluginName: plugin.name,
-              repositoryPath
-            }
-          });
-          
-          span.end();
-          return this.loadedAnalyzers.get(cacheKey)!;
-        }
-
-        // Quick capability check
         analyzer['projectPath'] = repositoryPath;
-        const detection = await analyzer['detectLanguageAndFramework']?.();
-        
-        if (detection && detection.confidence > 0.3) {
-          this.loadedAnalyzers.set(cacheKey, analyzer);
-          
-          telemetry.emit({
-            type: 'analyzer_selected',
-            source: { analyzer: 'plugin-registry' },
-            data: {
-              pluginId: plugin.id,
-              pluginName: plugin.name,
-              confidence: detection.confidence,
-              language: detection.language,
-              frameworks: detection.frameworks,
-              repositoryPath
-            }
-          });
-          
-          console.log(`🎯 Selected ${plugin.name} analyzer (confidence: ${(detection.confidence * 100).toFixed(0)}%)`);
-          span.end();
-          return analyzer;
-        }
+        analyzers.set(plugin.name, analyzer);
       } catch (error) {
-        console.warn(`⚠️ Plugin ${plugin.name} failed project detection: ${error instanceof Error ? error.message : String(error)}`);
-        
-        telemetry.emit({
-          type: 'analyzer_selection_failed',
-          source: { analyzer: 'plugin-registry' },
-          data: {
-            pluginId: plugin.id,
-            pluginName: plugin.name,
-            error: error instanceof Error ? error.message : String(error),
-            repositoryPath
-          }
-        });
+        console.warn(`⚠️ Failed to instantiate ${plugin.name}: ${error instanceof Error ? error.message : String(error)}`);
       }
+    }
+    
+    const selector = new AnalyzerSelector(repositoryPath);
+    const result = await selector.selectBestAnalyzer(analyzers);
+    
+    if (result) {
+      this.loadedAnalyzers.set(cacheKey, result.analyzer);
+      
+      telemetry.emit({
+        type: 'analyzer_selected',
+        source: { analyzer: 'plugin-registry' },
+        data: {
+          analyzerName: result.evidence.analyzer,
+          confidence: result.evidence.confidence,
+          score: result.evidence.score,
+          evidence: result.evidence.evidence,
+          repositoryPath
+        }
+      });
+      
+      span.end();
+      return result.analyzer;
     }
     
     span.end();

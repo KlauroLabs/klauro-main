@@ -1,0 +1,405 @@
+.interactive-card-system {
+  width: 100%;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(135deg, #f5f7fa 0%, #e9ecef 100%);
+  position: relative;
+  overflow: hidden;
+}
+
+/* Controls Panel */
+.controls-panel {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  right: 20px;
+  z-index: 100;
+  background: white;
+  border-radius: 12px;
+  padding: 15px 20px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  display: flex;
+  align-items: center;
+  gap: 30px;
+}
+
+.search-box input {
+  width: 250px;
+  padding: 8px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.search-box input:focus {
+  border-color: #3b82f6;
+}
+
+.view-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.view-controls label {
+  font-size: 14px;
+  color: #64748b;
+}
+
+.view-controls input[type="range"] {
+  width: 100px;
+}
+
+.view-controls span {
+  font-size: 14px;
+  font-weight: 600;
+  color: #334155;
+  min-width: 20px;
+}
+
+.zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.zoom-controls button {
+  width: 30px;
+  height: 30px;
+  border: 1px solid #e2e8f0;
+  background: white;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.zoom-controls button:hover {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+.zoom-controls span {
+  font-size: 14px;
+  color: #64748b;
+  min-width: 50px;
+  text-align: center;
+}
+
+/* SVG Canvas */
+.card-canvas {
+  flex: 1;
+  background: transparent;
+  margin-top: 80px;
+}
+
+/* Card Styles */
+.card-node {
+  transition: all 0.3s ease;
+}
+
+.card-rect {
+  transition: all 0.3s ease;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.1));
+}
+
+.card-rect:hover {
+  filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.15));
+}
+
+.card-system {
+  stroke-dasharray: 5, 2;
+}
+
+.card-service {
+  stroke-dasharray: none;
+}
+
+.card-component {
+  stroke-dasharray: none;
+}
+
+.card-class {
+  stroke-dasharray: 2, 2;
+}
+
+.card-function {
+  stroke-dasharray: 1, 1;
+}
+
+/* Status Colors */
+.status-healthy {
+  animation: none;
+}
+
+.status-warning {
+  animation: pulse-warning 2s infinite;
+}
+
+.status-error {
+  animation: pulse-error 1s infinite;
+}
+
+@keyframes pulse-warning {
+  0%, 100% {
+    stroke: #f59e0b;
+    stroke-width: 1;
+  }
+  50% {
+    stroke: #f59e0b;
+    stroke-width: 2;
+  }
+}
+
+@keyframes pulse-error {
+  0%, 100% {
+    stroke: #ef4444;
+    stroke-width: 2;
+  }
+  50% {
+    stroke: #ef4444;
+    stroke-width: 3;
+  }
+}
+
+/* Connection Styles */
+.connection {
+  transition: all 0.3s ease;
+}
+
+.connection:hover {
+  stroke-width: 3;
+  stroke-opacity: 0.8;
+}
+
+.connection-active {
+  animation: flow 2s linear infinite;
+}
+
+@keyframes flow {
+  0% {
+    stroke-dashoffset: 0;
+  }
+  100% {
+    stroke-dashoffset: -20;
+  }
+}
+
+/* Leaflet Content Animation */
+.leaflet-content {
+  animation: expand 0.3s ease-out;
+}
+
+@keyframes expand {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Details Panel */
+.details-panel {
+  position: absolute;
+  right: 20px;
+  top: 100px;
+  width: 320px;
+  background: white;
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+  z-index: 50;
+  animation: slideIn 0.3s ease-out;
+  max-height: calc(100vh - 140px);
+  overflow-y: auto;
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.details-panel h3 {
+  margin: 0 0 10px 0;
+  color: #1e293b;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.details-panel p {
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1.5;
+  margin-bottom: 20px;
+}
+
+.details-panel h4 {
+  margin: 15px 0 10px 0;
+  color: #334155;
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Entry/Exit Points */
+.entry-points, .exit-points {
+  margin-top: 15px;
+}
+
+.entry-point, .exit-point {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding: 8px;
+  background: #f8fafc;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.ep-type {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.entry-point .ep-type {
+  background: #dcfce7;
+  color: #14532d;
+}
+
+.exit-point .ep-type {
+  background: #fed7aa;
+  color: #7c2d12;
+}
+
+.ep-path, .ep-target {
+  flex: 1;
+  color: #475569;
+  font-family: 'Monaco', 'Menlo', monospace;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .controls-panel {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 15px;
+  }
+
+  .search-box input {
+    width: 100%;
+  }
+
+  .zoom-controls {
+    margin-left: 0;
+    justify-content: center;
+  }
+
+  .details-panel {
+    width: calc(100% - 40px);
+    right: 20px;
+    left: 20px;
+  }
+}
+
+/* Card Content Typography */
+text {
+  user-select: none;
+  pointer-events: none;
+}
+
+.card-node rect {
+  pointer-events: all;
+}
+
+.card-node circle {
+  pointer-events: all;
+}
+
+/* Smooth transitions for all interactive elements */
+* {
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+/* Loading state */
+.loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.loading-spinner {
+  width: 50px;
+  height: 50px;
+  border: 3px solid #e2e8f0;
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Tooltip styles */
+.tooltip {
+  position: absolute;
+  background: #1e293b;
+  color: white;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  pointer-events: none;
+  z-index: 1000;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.tooltip.visible {
+  opacity: 1;
+}
+
+.tooltip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: #1e293b;
+}

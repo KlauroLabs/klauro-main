@@ -14,8 +14,7 @@ import {
   Tooltip
 } from '@mui/material';
 import { ArrowBack, Refresh, Analytics, Info } from '@mui/icons-material';
-import { VisualizationCanvas } from '@/components/visualization/VisualizationCanvas';
-import { ArchitectureBlueprint, VisualizationOptions } from '@/types/visualization';
+import { SystemViewer } from '@/components/schematic/SystemViewer';
 import axios from 'axios';
 
 const VisualizationPage: React.FC = () => {
@@ -386,14 +385,15 @@ const VisualizationPage: React.FC = () => {
               {error}
             </Alert>
           </Box>
-        ) : blueprint ? (
-          <VisualizationCanvas
-            blueprint={blueprint}
-            options={options}
-            projectId={projectId as string}
-            onNodeClick={handleNodeClick}
-            onEdgeClick={handleEdgeClick}
-          />
+        ) : (
+          <SystemViewer projectId={projectId as string} />
+        )}
+      </Paper>
+      
+      {/* Hidden for now - old visualization logic preserved */}
+      <div style={{ display: 'none' }}>
+        {blueprint ? (
+          <div>Old VisualizationCanvas would go here</div>
         ) : (
           <Box sx={{ p: 3, height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Typography variant="h6" color="text.secondary">
@@ -401,7 +401,7 @@ const VisualizationPage: React.FC = () => {
             </Typography>
           </Box>
         )}
-      </Paper>
+        </div>
     </Container>
   );
 };

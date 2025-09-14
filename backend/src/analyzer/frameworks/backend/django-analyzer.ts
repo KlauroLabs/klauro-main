@@ -114,7 +114,7 @@ export class DjangoAnalyzer extends PythonAnalyzer {
     
     if (await fs.pathExists(managePyPath)) {
       // Parse requirements for Django version
-      await this.detectDjangoVersion();
+      // Django version will be set from requirements.txt parsing
       
       // Load settings
       if (settingsPath) {

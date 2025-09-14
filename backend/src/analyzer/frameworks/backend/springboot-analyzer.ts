@@ -215,7 +215,7 @@ export class SpringBootAnalyzer extends JavaAnalyzer {
     }
     
     const connections = await this.buildSpringConnections();
-    const apiEndpoints = this.extractSpringEndpoints();
+    const apiEndpoints = this.extractSpringEndpointsDetailed();
     const databaseConnections = await this.extractDatabaseConnections();
     
     telemetry.emit({
@@ -457,7 +457,7 @@ export class SpringBootAnalyzer extends JavaAnalyzer {
     return connections;
   }
 
-  private extractSpringEndpoints(): APIEndpoint[] {
+  private extractSpringEndpointsDetailed(): APIEndpoint[] {
     const endpoints: APIEndpoint[] = [];
     
     for (const [id, controller] of this.controllers) {
