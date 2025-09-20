@@ -75,7 +75,7 @@ export class TelemetryController {
         message: 'Telemetry data accepted',
         timestamp: Date.now(),
       };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to ingest telemetry: ${error.message}`, error.stack);
       throw error;
     }
@@ -113,7 +113,7 @@ export class TelemetryController {
         processed: batch.events.length,
         timestamp: Date.now(),
       };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to process batch: ${error.message}`, error.stack);
       throw error;
     }
@@ -136,7 +136,7 @@ export class TelemetryController {
         metrics,
         timestamp: Date.now(),
       };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to get metrics: ${error.message}`, error.stack);
       throw error;
     }
@@ -169,7 +169,7 @@ export class TelemetryController {
       }
 
       return aggregation;
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to get aggregated metrics: ${error.message}`, error.stack);
       throw error;
     }
@@ -191,7 +191,7 @@ export class TelemetryController {
         count: events.length,
         timestamp: Date.now(),
       };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to get recent telemetry: ${error.message}`, error.stack);
       throw error;
     }
@@ -217,7 +217,7 @@ export class TelemetryController {
         hotspots,
         timestamp: Date.now(),
       };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to detect hotspots: ${error.message}`, error.stack);
       throw error;
     }
@@ -243,7 +243,7 @@ export class TelemetryController {
         bottlenecks,
         timestamp: Date.now(),
       };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to detect bottlenecks: ${error.message}`, error.stack);
       throw error;
     }
@@ -272,7 +272,7 @@ export class TelemetryController {
           : 'No memory leak detected.',
         timestamp: Date.now(),
       };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to check memory leak: ${error.message}`, error.stack);
       throw error;
     }
@@ -291,7 +291,7 @@ export class TelemetryController {
         percentage: ((status.current / status.limit) * 100).toFixed(2),
         timestamp: Date.now(),
       };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to get rate limit status: ${error.message}`, error.stack);
       throw error;
     }
@@ -315,7 +315,7 @@ export class TelemetryController {
         },
         timestamp: Date.now(),
       };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to get backpressure state: ${error.message}`, error.stack);
       throw error;
     }
@@ -335,7 +335,7 @@ export class TelemetryController {
         projectId,
         timestamp: Date.now(),
       };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to reset limits: ${error.message}`, error.stack);
       throw error;
     }

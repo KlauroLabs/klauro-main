@@ -50,7 +50,6 @@ export enum IssueSource {
 @Index({ properties: ['project', 'status', 'severity'] })
 @Index({ properties: ['component', 'type'] })
 @Index({ properties: ['firstDetected', 'lastSeen'] })
-@Index({ properties: ['fingerprint'] })
 export class Issue extends BaseEntity {
   @ManyToOne(() => Project, { deleteRule: 'cascade' })
   @Index()

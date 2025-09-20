@@ -119,33 +119,33 @@ export class PerformanceMetricsDto {
   @ApiProperty()
   @IsNumber()
   @Min(0)
-  p95Latency: number;
+  p95Latency: number = 0;
 
   @ApiProperty()
   @IsNumber()
   @Min(0)
-  p99Latency: number;
+  p99Latency: number = 0;
 
   @ApiProperty()
   @IsNumber()
   @Min(0)
   @Max(100)
-  errorRate: number;
+  errorRate: number = 0;
 
   @ApiProperty()
   @IsNumber()
   @Min(0)
-  throughput: number;
+  throughput: number = 0;
 
   @ApiProperty()
   @IsNumber()
   @Min(0)
-  activeRequests: number;
+  activeRequests: number = 0;
 
   @ApiProperty()
   @IsNumber()
   @Min(0)
-  queuedRequests: number;
+  queuedRequests: number = 0;
 }
 
 export class ActiveConnectionDto {
@@ -160,12 +160,12 @@ export class ActiveConnectionDto {
   @ApiProperty()
   @IsNumber()
   @Min(0)
-  count: number;
+  count: number = 0;
 
   @ApiProperty()
   @IsNumber()
   @Min(0)
-  bandwidth: number;
+  bandwidth: number = 0;
 
   @ApiProperty()
   @IsString()
@@ -174,13 +174,13 @@ export class ActiveConnectionDto {
   @ApiProperty()
   @IsNumber()
   @Min(0)
-  latency: number;
+  latency: number = 0;
 
   @ApiProperty()
   @IsNumber()
   @Min(0)
   @Max(100)
-  packetLoss: number;
+  packetLoss: number = 0;
 
   @ApiProperty()
   @IsNumber()
@@ -206,7 +206,7 @@ export class IssueDto {
 
   @ApiProperty({ enum: ['low', 'medium', 'high', 'critical'] })
   @IsEnum(['low', 'medium', 'high', 'critical'])
-  severity: 'low' | 'medium' | 'high' | 'critical';
+  severity: 'low' | 'medium' | 'high' | 'critical' = 'low';
 
   @ApiProperty()
   @IsString()
@@ -224,7 +224,7 @@ export class IssueDto {
   @ApiProperty()
   @IsNumber()
   @Min(1)
-  count: number;
+  count: number = 1;
 
   @ApiProperty()
   @IsNumber()
@@ -265,12 +265,12 @@ export class ComponentStatusUpdateDto {
   @IsNumber()
   @Min(0)
   @Max(100)
-  health: number;
+  health: number = 100;
 
   @ApiProperty()
   @IsNumber()
   @Min(0)
-  uptime: number;
+  uptime: number = 0;
 
   @ApiProperty()
   @IsNumber()
@@ -312,7 +312,7 @@ export class TelemetryEventDto {
     activeConnections?: ActiveConnectionDto[];
     issues?: IssueDto[];
     componentStatus?: ComponentStatusUpdateDto;
-  };
+  } = {};
 }
 
 export class TelemetryBatchDto {
@@ -332,7 +332,7 @@ export class TelemetryBatchDto {
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => TelemetryEventDto)
-  events: TelemetryEventDto[];
+  events: TelemetryEventDto[] = [];
 
   @ApiPropertyOptional()
   @IsOptional()

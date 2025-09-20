@@ -1,1025 +1,1121 @@
-// REAL AST-Based Python Analyzer - NO MORE PLACEHOLDERS!
-// Uses Python's ast module via child_process for comprehensive code analysis
-
-import { BaseAnalyzer, LanguageDetection, ComponentDiscovery, FrameworkDetection } from '../base-analyzer';
-import { ComponentNode, ComponentType, Connection, RiskArea, CallGraph, DatabaseConnection, TestCoverage, APIEndpoint, FunctionInfo, ArchitecturalLayer } from '../../types';
-import { telemetry } from '../../telemetry/telemetry-schema';
-import { AnalyzerError } from '../errors';
-import * as path from 'path';
+import { BaseAnalyzer, AnalysisContext } from '../core/base-analyzer';
+import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint } from '../../types/cas.types';
+import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
-import { spawn, ChildProcess } from 'child_process';
+import { glob } from 'glob';
 
-interface PythonImport {
-  module: string;
-  names: string[];
-  alias?: string;
-  line: number;
-  isFromImport: boolean;
+interface PythonClass {
+  name: string;
+  moduleName: string;
+  filePath: string;
+  baseClasses: string[];
+  methods: PythonMethod[];
+  attributes: PythonAttribute[];
+  decorators: string[];
+  docstring?: string;
+  lineStart: number;
+  lineEnd: number;
+  isAbstract: boolean;
+}
+
+interface PythonMethod {
+  name: string;
+  parameters: PythonParameter[];
+  decorators: string[];
+  docstring?: string;
+  returnAnnotation?: string;
+  lineStart: number;
+  lineEnd: number;
+  isClassMethod: boolean;
+  isStaticMethod: boolean;
+  isProperty: boolean;
+  isPrivate: boolean;
+  isAbstract: boolean;
+  isAsync: boolean;
 }
 
 interface PythonFunction {
   name: string;
-  lineno: number;
-  endLine: number;
-  args: Array<{
-    name: string;
-    annotation?: string;
-    default?: string;
-  }>;
-  returns?: string;
+  parameters: PythonParameter[];
   decorators: string[];
+  docstring?: string;
+  returnAnnotation?: string;
+  lineStart: number;
+  lineEnd: number;
   isAsync: boolean;
-  docstring?: string;
-  complexity: number;
-  calls: Array<{
-    name: string;
-    line: number;
-  }>;
+  isPrivate: boolean;
 }
 
-interface PythonClass {
+interface PythonParameter {
   name: string;
-  lineno: number;
-  endLine: number;
-  bases: string[];
-  decorators: string[];
-  methods: PythonFunction[];
-  docstring?: string;
+  annotation?: string;
+  defaultValue?: string;
+  isVarArgs: boolean;
+  isKwArgs: boolean;
 }
 
-interface PythonAST {
-  imports: PythonImport[];
-  functions: PythonFunction[];
-  classes: PythonClass[];
-  constants: Array<{ name: string; value: any; line: number }>;
-  calls: Array<{ name: string; line: number }>;
-  complexity: number;
+interface PythonAttribute {
+  name: string;
+  annotation?: string;
+  value?: string;
+  lineNumber: number;
+  isPrivate: boolean;
+  isClassAttribute: boolean;
+}
+
+interface PythonImport {
+  module: string;
+  alias?: string;
+  fromImport?: string;
+  lineNumber: number;
+  isRelative: boolean;
+}
+
+interface PythonVariable {
+  name: string;
+  annotation?: string;
+  value?: string;
+  lineNumber: number;
+  scope: 'global' | 'local' | 'class';
 }
 
 export class PythonAnalyzer extends BaseAnalyzer {
-  private pythonExecutable: string = 'python3';
-  private astCache = new Map<string, PythonAST>();
+  private djangoFrameworkDetected = false;
+  private flaskFrameworkDetected = false;
+  private fastApiFrameworkDetected = false;
+  private poetryProject = false;
+  private pipenvProject = false;
 
-  getAnalyzerName(): string {
-    return 'Real AST Python Analyzer';
-  }
-
-  getSupportedLanguages(): string[] {
-    return ['python'];
-  }
-
-  getSupportedFrameworks(): string[] {
-    return [
-      'django', 'flask', 'fastapi', 'pyramid', 'tornado', 'bottle',
-      'celery', 'airflow', 'scrapy', 'django-rest-framework',
-      'pytest', 'unittest', 'nose2', 'doctest',
-      'pandas', 'numpy', 'scipy', 'matplotlib', 'sklearn',
-      'tensorflow', 'pytorch', 'keras', 'transformers',
-      'requests', 'aiohttp', 'httpx', 'urllib3',
-      'sqlalchemy', 'django-orm', 'peewee', 'tortoise-orm'
-    ];
-  }
-
-  protected async detectLanguageAndFramework(): Promise<LanguageDetection> {
-    const span = telemetry.createSpan('real-python-analyzer.detectLanguageAndFramework');
-    console.log('🐍 Starting REAL Python AST-based analysis...');
-
-    try {
-      // Find Python files
-      const pythonFiles = await this.findFiles(['**/*.py'], this.options.excludePatterns);
-      let confidence = 0;
-      const frameworks: FrameworkDetection[] = [];
-
-      if (pythonFiles.length === 0) {
-        span.end();
-        return { language: 'unknown', confidence: 0, frameworks: [], files: [] };
-      }
-
-      confidence += pythonFiles.length > 0 ? 0.5 : 0;
-
-      // Detect Python version and frameworks from requirements
-      const configFrameworks = await this.analyzeRequirementsFiles();
-      frameworks.push(...configFrameworks);
-      confidence += configFrameworks.length * 0.1;
-
-      // REAL AST analysis on sample files
-      const sampleFiles = pythonFiles.slice(0, 10);
-      const astFrameworks = await this.analyzePythonFilesWithAST(sampleFiles);
-      frameworks.push(...astFrameworks);
-      confidence += astFrameworks.length * 0.15;
-
-      confidence = Math.min(confidence, 1.0);
-
-      console.log(`✅ Detected Python with confidence ${(confidence * 100).toFixed(0)}%`);
-      console.log(`🎯 Found ${frameworks.length} frameworks: ${frameworks.map(f => f.name).join(', ')}`);
-
-      span.end();
-      return {
-        language: 'python',
-        confidence,
-        frameworks: frameworks.sort((a, b) => b.confidence - a.confidence),
-        files: pythonFiles
-      };
-    } catch (error) {
-      span.end();
-      throw new AnalyzerError(
-        `Real Python AST detection failed: ${(error as Error).message}`,
-        'PYTHON_AST_DETECTION_ERROR',
-        { error }
-      );
-    }
-  }
-
-  protected async discoverComponents(): Promise<ComponentDiscovery> {
-    const span = telemetry.createSpan('real-python-analyzer.discoverComponents');
-    console.log('🚀 Starting REAL Python AST-based component discovery...');
-
-    try {
-      const sourceFiles = await this.findFiles(
-        ['**/*.py'],
-        [...(this.options.excludePatterns || []), '**/__pycache__/**', '**/venv/**', '**/env/**', '.git/**']
-      );
-
-      console.log(`⚡ Parsing ${sourceFiles.length} Python files with real AST analysis...`);
-
-      const components: ComponentNode[] = [];
-      let analyzedFiles = 0;
-      let skippedFiles = 0;
-
-      // Parse files in batches
-      const batchSize = 8; // Python AST parsing can be slower
-      for (let i = 0; i < sourceFiles.length; i += batchSize) {
-        const batch = sourceFiles.slice(i, i + batchSize);
-        const batchPromises = batch.map(async (filePath) => {
-          try {
-            return await this.parseAndAnalyzePythonFile(filePath);
-          } catch (error) {
-            console.warn(`⚠️ Failed to parse ${filePath}: ${(error as Error).message}`);
-            return null;
-          }
-        });
-
-        const batchResults = await Promise.all(batchPromises);
-        
-        for (const component of batchResults) {
-          if (component) {
-            components.push(component);
-            analyzedFiles++;
-          } else {
-            skippedFiles++;
-          }
-        }
-
-        // Progress reporting
-        const progress = Math.round(((i + batch.length) / sourceFiles.length) * 100);
-        console.log(`📊 Progress: ${progress}% (${analyzedFiles + skippedFiles}/${sourceFiles.length})`);
-      }
-
-      console.log(`✅ Real Python AST analysis complete: ${analyzedFiles} analyzed, ${skippedFiles} skipped, ${components.length} components`);
-
-      span.end();
-      return {
-        totalFiles: sourceFiles.length,
-        analyzedFiles,
-        skippedFiles,
-        components
-      };
-    } catch (error) {
-      span.end();
-      throw new AnalyzerError(
-        `Real Python AST component discovery failed: ${(error as Error).message}`,
-        'PYTHON_AST_DISCOVERY_ERROR',
-        { error }
-      );
-    }
-  }
-
-  protected async analyzeConnections(components: ComponentNode[]): Promise<Connection[]> {
-    const span = telemetry.createSpan('real-python-analyzer.analyzeConnections');
-    console.log('🔗 Analyzing REAL Python import/call connections using AST data...');
-
-    try {
-      const connections: Connection[] = [];
-      const componentMap = new Map<string, ComponentNode>();
-
-      // Create lookup map
-      components.forEach(comp => {
-        componentMap.set(comp.path, comp);
-        componentMap.set(comp.id, comp);
-      });
-
-      // Analyze real imports and function calls from AST
-      for (const component of components) {
-        if (component.metadata.imports) {
-          for (const importModule of component.metadata.imports) {
-            const resolvedComponent = this.resolvePythonImport(importModule, component.path, componentMap);
-            if (resolvedComponent && resolvedComponent.id !== component.id) {
-              const usage = this.countPythonUsage(component, importModule);
-              
-              connections.push({
-                from: component.id,
-                to: resolvedComponent.id,
-                type: 'import',
-                weight: Math.min(usage, 10),
-                metadata: {
-                  callSites: usage,
-                  importType: importModule,
-                  dataFlow: this.determinePythonDataFlow(importModule)
-                }
-              });
-            }
-          }
-        }
-
-        // Analyze function calls from AST
-        if (component.metadata.functions) {
-          for (const func of component.metadata.functions) {
-            for (const call of func.calls || []) {
-              const targetComponent = this.findPythonTarget(call.target, components);
-              if (targetComponent && targetComponent.id !== component.id) {
-                connections.push({
-                  from: component.id,
-                  to: targetComponent.id,
-                  type: 'function_call',
-                  weight: Math.min(call.count || 1, 5),
-                  metadata: {
-                    callSites: call.count || 1,
-                    dataFlow: 'function_call'
-                  }
-                });
-              }
-            }
-          }
-        }
-      }
-
-      // Deduplicate connections
-      const connectionMap = new Map<string, Connection>();
-      for (const conn of connections) {
-        const key = `${conn.from}-${conn.to}-${conn.type}`;
-        if (connectionMap.has(key)) {
-          const existing = connectionMap.get(key)!;
-          existing.weight = (existing.weight || 0) + (conn.weight || 0);
-          existing.metadata!.callSites = (existing.metadata?.callSites || 0) + (conn.metadata?.callSites || 0);
-        } else {
-          connectionMap.set(key, conn);
-        }
-      }
-
-      const uniqueConnections = Array.from(connectionMap.values());
-      console.log(`🔗 Found ${uniqueConnections.length} REAL Python connections from AST analysis`);
-
-      span.end();
-      return uniqueConnections;
-    } catch (error) {
-      span.end();
-      throw new AnalyzerError(
-        `Real Python AST connection analysis failed: ${(error as Error).message}`,
-        'PYTHON_AST_CONNECTION_ERROR',
-        { error }
-      );
-    }
-  }
-
-  // REAL Python AST parsing using child process
-  private async parseAndAnalyzePythonFile(filePath: string): Promise<ComponentNode | null> {
-    try {
-      const content = await this.readFile(filePath);
-      const relativePath = path.relative(this.projectPath, filePath);
-
-      // Skip empty, generated, or oversized files
-      if (content.length === 0 || 
-          content.length > (this.options.maxFileSize || 1024 * 1024) ||
-          this.isGeneratedPythonFile(content)) {
-        return null;
-      }
-
-      // Parse with real Python AST
-      const pythonAST = await this.parsePythonAST(content, filePath);
-      if (!pythonAST) return null;
-
-      const component: ComponentNode = {
-        id: this.generateComponentId(filePath),
-        name: path.basename(filePath, '.py'),
-        type: this.determineRealPythonComponentType(pythonAST, filePath),
-        path: relativePath,
-        dependencies: pythonAST.imports.map(imp => imp.module).filter(mod => !mod.startsWith('.')),
-        dependents: [],
-        metadata: {
-          lineCount: content.split('\n').length,
-          complexity: pythonAST.complexity,
-          lastModified: (await fs.stat(filePath)).mtime,
-          exports: this.extractPythonExports(pythonAST),
-          imports: pythonAST.imports.map(imp => imp.module),
-          layer: this.determinePythonArchitecturalLayer(filePath, pythonAST),
-          responsibilities: this.extractPythonResponsibilities(pythonAST),
-          functions: this.convertPythonFunctions(pythonAST.functions),
-          testCoverage: this.isPythonTestFile(filePath) ? 100 : undefined,
-          isEntry: this.isPythonEntryPoint(pythonAST, filePath),
-          httpMethods: this.extractPythonHTTPMethods(pythonAST),
-          dbQueries: this.extractPythonDatabaseQueries(pythonAST),
-          externalCalls: this.extractPythonExternalCalls(pythonAST)
-        }
-      };
-
-      return component;
-    } catch (error) {
-      throw new AnalyzerError(
-        `Failed to parse Python file ${filePath} with AST: ${(error as Error).message}`,
-        'PYTHON_AST_FILE_PARSE_ERROR',
-        { filePath, error }
-      );
-    }
-  }
-
-  // Parse Python AST using Python subprocess
-  private async parsePythonAST(content: string, filePath: string): Promise<PythonAST | null> {
-    return new Promise((resolve, reject) => {
-      // Create Python script for AST parsing
-      const pythonScript = `
-import ast
-import json
-import sys
-
-def analyze_ast(source_code):
-    try:
-        tree = ast.parse(source_code)
-        result = {
-            'imports': [],
-            'functions': [],
-            'classes': [],
-            'constants': [],
-            'calls': [],
-            'complexity': 1
-        }
-        
-        class ASTVisitor(ast.NodeVisitor):
-            def __init__(self):
-                self.complexity = 1
-                self.current_function = None
-                self.function_calls = []
-                
-            def visit_Import(self, node):
-                for alias in node.names:
-                    result['imports'].append({
-                        'module': alias.name,
-                        'names': [alias.name],
-                        'alias': alias.asname,
-                        'line': node.lineno,
-                        'isFromImport': False
-                    })
-                self.generic_visit(node)
-                
-            def visit_ImportFrom(self, node):
-                if node.module:
-                    names = [alias.name for alias in node.names]
-                    result['imports'].append({
-                        'module': node.module,
-                        'names': names,
-                        'line': node.lineno,
-                        'isFromImport': True
-                    })
-                self.generic_visit(node)
-                
-            def visit_FunctionDef(self, node):
-                args = []
-                for arg in node.args.args:
-                    arg_info = {'name': arg.arg}
-                    if hasattr(arg, 'annotation') and arg.annotation:
-                        arg_info['annotation'] = ast.unparse(arg.annotation) if hasattr(ast, 'unparse') else 'Any'
-                    args.append(arg_info)
-                    
-                decorators = [ast.unparse(dec) if hasattr(ast, 'unparse') else 'decorator' for dec in node.decorator_list]
-                
-                func_info = {
-                    'name': node.name,
-                    'lineno': node.lineno,
-                    'endLine': node.end_lineno if hasattr(node, 'end_lineno') else node.lineno + 10,
-                    'args': args,
-                    'decorators': decorators,
-                    'isAsync': False,
-                    'complexity': self.calculate_complexity(node),
-                    'calls': []
-                }
-                
-                if node.returns:
-                    func_info['returns'] = ast.unparse(node.returns) if hasattr(ast, 'unparse') else 'Any'
-                    
-                # Get docstring
-                if (node.body and isinstance(node.body[0], ast.Expr) and 
-                    isinstance(node.body[0].value, ast.Str if hasattr(ast, 'Str') else ast.Constant)):
-                    func_info['docstring'] = node.body[0].value.s if hasattr(node.body[0].value, 's') else str(node.body[0].value.value)
-                
-                result['functions'].append(func_info)
-                
-                # Visit function body to find calls
-                old_function = self.current_function
-                self.current_function = func_info
-                self.generic_visit(node)
-                self.current_function = old_function
-                
-            def visit_AsyncFunctionDef(self, node):
-                # Handle async functions
-                self.visit_FunctionDef(node)
-                if result['functions']:
-                    result['functions'][-1]['isAsync'] = True
-                    
-            def visit_ClassDef(self, node):
-                bases = [ast.unparse(base) if hasattr(ast, 'unparse') else 'object' for base in node.bases]
-                decorators = [ast.unparse(dec) if hasattr(ast, 'unparse') else 'decorator' for dec in node.decorator_list]
-                
-                class_info = {
-                    'name': node.name,
-                    'lineno': node.lineno,
-                    'endLine': node.end_lineno if hasattr(node, 'end_lineno') else node.lineno + 20,
-                    'bases': bases,
-                    'decorators': decorators,
-                    'methods': []
-                }
-                
-                result['classes'].append(class_info)
-                self.generic_visit(node)
-                
-            def visit_Call(self, node):
-                if hasattr(node.func, 'id'):
-                    call_name = node.func.id
-                elif hasattr(node.func, 'attr'):
-                    call_name = node.func.attr
-                else:
-                    call_name = 'unknown'
-                    
-                result['calls'].append({
-                    'name': call_name,
-                    'line': node.lineno
-                })
-                
-                if self.current_function:
-                    self.current_function['calls'].append({
-                        'name': call_name,
-                        'line': node.lineno
-                    })
-                
-                self.generic_visit(node)
-                
-            def visit_If(self, node):
-                self.complexity += 1
-                self.generic_visit(node)
-                
-            def visit_While(self, node):
-                self.complexity += 1
-                self.generic_visit(node)
-                
-            def visit_For(self, node):
-                self.complexity += 1
-                self.generic_visit(node)
-                
-            def visit_Try(self, node):
-                self.complexity += 1
-                self.generic_visit(node)
-                
-            def calculate_complexity(self, node):
-                complexity = 1
-                for child in ast.walk(node):
-                    if isinstance(child, (ast.If, ast.While, ast.For, ast.Try, ast.ExceptHandler)):
-                        complexity += 1
-                return min(complexity, 20)
-        
-        visitor = ASTVisitor()
-        visitor.visit(tree)
-        result['complexity'] = visitor.complexity
-        
-        return result
-        
-    except Exception as e:
-        return None
-
-# Read from stdin
-source_code = sys.stdin.read()
-result = analyze_ast(source_code)
-if result:
-    print(json.dumps(result))
-else:
-    sys.exit(1)
-`;
-
-      const python = spawn(this.pythonExecutable, ['-c', pythonScript], {
-        stdio: ['pipe', 'pipe', 'pipe']
-      });
-
-      let stdout = '';
-      let stderr = '';
-
-      python.stdout.on('data', (data) => {
-        stdout += data.toString();
-      });
-
-      python.stderr.on('data', (data) => {
-        stderr += data.toString();
-      });
-
-      python.on('close', (code) => {
-        if (code === 0 && stdout.trim()) {
-          try {
-            const astData = JSON.parse(stdout.trim()) as PythonAST;
-            this.astCache.set(filePath, astData);
-            resolve(astData);
-          } catch (error) {
-            console.warn(`Failed to parse Python AST JSON for ${filePath}:`, error);
-            resolve(null);
-          }
-        } else {
-          console.warn(`Python AST parsing failed for ${filePath}:`, stderr);
-          resolve(null);
-        }
-      });
-
-      python.on('error', (error) => {
-        console.warn(`Python process error for ${filePath}:`, error);
-        resolve(null);
-      });
-
-      // Send Python code to subprocess
-      python.stdin.write(content);
-      python.stdin.end();
-    });
-  }
-
-  private determineRealPythonComponentType(ast: PythonAST, filePath: string): ComponentType {
-    const fileName = path.basename(filePath).toLowerCase();
-    const fileNameWithoutExt = path.basename(filePath, '.py').toLowerCase();
-
-    // Test files
-    if (this.isPythonTestFile(filePath)) {
-      return 'utility';
-    }
-
-    // Django patterns
-    const hasDjangoViews = ast.imports.some(imp => imp.module.includes('django.views') || imp.module.includes('rest_framework'));
-    const hasDjangoModels = ast.imports.some(imp => imp.module.includes('django.db.models'));
-    
-    // Flask patterns
-    const hasFlaskRoutes = ast.functions.some(func => func.decorators.some(dec => dec.includes('route')));
-    const hasFlaskApp = ast.imports.some(imp => imp.module === 'flask');
-    
-    // FastAPI patterns
-    const hasFastAPI = ast.imports.some(imp => imp.module === 'fastapi');
-    const hasAPIRoutes = ast.functions.some(func => 
-      func.decorators.some(dec => dec.match(/^(get|post|put|delete|patch)/i))
+  constructor() {
+    super(
+      'python-analyzer',
+      'Python Language Analyzer',
+      '1.0.0',
+      'language'
     );
-
-    // Determine type based on patterns
-    if (hasDjangoViews || hasFlaskRoutes || hasFastAPI || hasAPIRoutes) {
-      return 'route';
-    }
-    
-    if (hasDjangoModels || fileName.includes('model') || fileNameWithoutExt.endsWith('_model')) {
-      return 'model';
-    }
-    
-    if (fileName.includes('service') || fileName.includes('manager') || fileNameWithoutExt.endsWith('_service')) {
-      return 'service';
-    }
-    
-    if (fileName.includes('middleware') || fileName.includes('decorator')) {
-      return 'middleware';
-    }
-    
-    if (fileName.includes('config') || fileName.includes('setting')) {
-      return 'config';
-    }
-    
-    if (fileName.includes('util') || fileName.includes('helper') || fileName.includes('tool')) {
-      return 'utility';
-    }
-
-    return 'utility';
   }
 
-  private async analyzeRequirementsFiles(): Promise<FrameworkDetection[]> {
-    const frameworks: FrameworkDetection[] = [];
-    
-    // Check requirements.txt
+  async canAnalyze(projectPath: string): Promise<boolean> {
     try {
-      const reqPath = path.join(this.projectPath, 'requirements.txt');
-      if (await fs.pathExists(reqPath)) {
-        const content = await fs.readFile(reqPath, 'utf-8');
-        const frameworkMap = new Map([
-          ['django', { name: 'Django', confidence: 0.9 }],
-          ['flask', { name: 'Flask', confidence: 0.9 }],
-          ['fastapi', { name: 'FastAPI', confidence: 0.9 }],
-          ['tornado', { name: 'Tornado', confidence: 0.8 }],
-          ['pyramid', { name: 'Pyramid', confidence: 0.8 }],
-          ['celery', { name: 'Celery', confidence: 0.8 }],
-          ['requests', { name: 'Requests', confidence: 0.7 }],
-          ['sqlalchemy', { name: 'SQLAlchemy', confidence: 0.8 }],
-          ['pandas', { name: 'Pandas', confidence: 0.7 }],
-          ['numpy', { name: 'NumPy', confidence: 0.7 }]
-        ]);
+      const pythonFiles = await glob(['**/*.py'], {
+        cwd: projectPath,
+        ignore: ['**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**', '**/.git/**']
+      });
 
-        for (const [pkg, info] of frameworkMap) {
-          if (content.toLowerCase().includes(pkg)) {
-            frameworks.push({
-              name: info.name,
-              confidence: info.confidence,
-              patterns: [`requirements.txt dependency: ${pkg}`],
-              configFiles: ['requirements.txt'],
-              dependencies: [pkg]
+      const configFiles = await glob(['requirements.txt', 'setup.py', 'pyproject.toml', 'Pipfile'], {
+        cwd: projectPath
+      });
+
+      return pythonFiles.length > 0 || configFiles.length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  async analyze(context: AnalysisContext): Promise<CASContribution> {
+    const nodes: CASNode[] = [];
+    const edges: CASEdge[] = [];
+    const entryPoints: CASEntryPoint[] = [];
+    const exitPoints: CASExitPoint[] = [];
+    const libraries: any[] = [];
+
+    try {
+      await this.detectProjectType(context.projectPath);
+      await this.extractDependencies(context.projectPath, libraries);
+
+      const pythonFiles = await glob(['**/*.py'], {
+        cwd: context.projectPath,
+        ignore: ['**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**', '**/.git/**', '**/test_*.py', '**/*_test.py']
+      });
+
+      const modules = new Map<string, string[]>();
+
+      for (const file of pythonFiles) {
+        const fullPath = `${context.projectPath}/${file}`;
+        await this.analyzePythonFile(fullPath, file, nodes, edges, entryPoints, exitPoints, modules);
+      }
+
+      this.buildModuleHierarchy(modules, nodes, edges);
+      this.detectFrameworkPatterns(nodes, edges, entryPoints);
+      this.buildInheritanceRelationships(nodes, edges);
+
+      return this.createContribution(nodes, edges, entryPoints, exitPoints, {
+        framework_specific: {
+          language: 'python',
+          djangoFramework: this.djangoFrameworkDetected,
+          flaskFramework: this.flaskFrameworkDetected,
+          fastApiFramework: this.fastApiFrameworkDetected,
+          packageManager: this.poetryProject ? 'poetry' : this.pipenvProject ? 'pipenv' : 'pip',
+          libraries,
+          filesAnalyzed: pythonFiles.length,
+          modulesFound: modules.size
+        }
+      });
+
+    } catch (error) {
+      throw new AnalyzerError(
+        `Python analysis failed: ${(error as Error).message}`,
+        'PYTHON_ANALYSIS_ERROR'
+      );
+    }
+  }
+
+  private async detectProjectType(projectPath: string): Promise<void> {
+    const pyprojectPath = `${projectPath}/pyproject.toml`;
+    const pipfilePath = `${projectPath}/Pipfile`;
+    const requirementsPath = `${projectPath}/requirements.txt`;
+
+    this.poetryProject = await fs.pathExists(pyprojectPath);
+    this.pipenvProject = await fs.pathExists(pipfilePath);
+
+    if (this.poetryProject) {
+      const pyprojectContent = await fs.readFile(pyprojectPath, 'utf-8');
+      this.detectFrameworks(pyprojectContent);
+    }
+
+    if (this.pipenvProject) {
+      const pipfileContent = await fs.readFile(pipfilePath, 'utf-8');
+      this.detectFrameworks(pipfileContent);
+    }
+
+    if (await fs.pathExists(requirementsPath)) {
+      const requirementsContent = await fs.readFile(requirementsPath, 'utf-8');
+      this.detectFrameworks(requirementsContent);
+    }
+  }
+
+  private detectFrameworks(content: string): void {
+    this.djangoFrameworkDetected = this.djangoFrameworkDetected ||
+      content.includes('django') || content.includes('Django');
+
+    this.flaskFrameworkDetected = this.flaskFrameworkDetected ||
+      content.includes('flask') || content.includes('Flask');
+
+    this.fastApiFrameworkDetected = this.fastApiFrameworkDetected ||
+      content.includes('fastapi') || content.includes('FastAPI');
+  }
+
+  private async extractDependencies(projectPath: string, libraries: any[]): Promise<void> {
+    const requirementsPath = `${projectPath}/requirements.txt`;
+    const pyprojectPath = `${projectPath}/pyproject.toml`;
+    const pipfilePath = `${projectPath}/Pipfile`;
+
+    if (await fs.pathExists(requirementsPath)) {
+      await this.extractRequirementsDependencies(requirementsPath, libraries);
+    }
+
+    if (await fs.pathExists(pyprojectPath)) {
+      await this.extractPyprojectDependencies(pyprojectPath, libraries);
+    }
+
+    if (await fs.pathExists(pipfilePath)) {
+      await this.extractPipfileDependencies(pipfilePath, libraries);
+    }
+  }
+
+  private async extractRequirementsDependencies(requirementsPath: string, libraries: any[]): Promise<void> {
+    try {
+      const content = await fs.readFile(requirementsPath, 'utf-8');
+      const lines = content.split('\n');
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed && !trimmed.startsWith('#')) {
+          const match = trimmed.match(/^([a-zA-Z0-9\-_]+)([>=<~!]+)?([0-9.]*)?/);
+          if (match) {
+            libraries.push({
+              name: match[1],
+              version: match[3] || 'unknown',
+              type: 'pip_package',
+              source: 'requirements.txt',
+              metadata: {
+                constraint: match[2] || '==',
+                isProduction: true
+              }
             });
           }
         }
       }
     } catch (error) {
-      console.warn('Failed to analyze requirements.txt:', error);
+      console.warn('Failed to parse requirements.txt:', error);
     }
-
-    return frameworks;
   }
 
-  private async analyzePythonFilesWithAST(files: string[]): Promise<FrameworkDetection[]> {
-    const frameworks: FrameworkDetection[] = [];
-    const frameworkIndicators = new Map<string, number>();
+  private async extractPyprojectDependencies(pyprojectPath: string, libraries: any[]): Promise<void> {
+    try {
+      const content = await fs.readFile(pyprojectPath, 'utf-8');
+      const dependencySection = content.match(/\[tool\.poetry\.dependencies\]([\s\S]*?)(?=\[|$)/);
 
-    for (const filePath of files) {
-      try {
-        const content = await this.readFile(filePath);
-        const ast = await this.parsePythonAST(content, filePath);
-        
-        if (!ast) continue;
-
-        // Analyze imports for frameworks
-        for (const imp of ast.imports) {
-          if (imp.module.startsWith('django')) {
-            frameworkIndicators.set('Django', (frameworkIndicators.get('Django') || 0) + 1);
-          } else if (imp.module === 'flask') {
-            frameworkIndicators.set('Flask', (frameworkIndicators.get('Flask') || 0) + 1);
-          } else if (imp.module === 'fastapi') {
-            frameworkIndicators.set('FastAPI', (frameworkIndicators.get('FastAPI') || 0) + 1);
-          } else if (imp.module.startsWith('tornado')) {
-            frameworkIndicators.set('Tornado', (frameworkIndicators.get('Tornado') || 0) + 1);
-          }
-        }
-
-        // Analyze decorators for framework patterns
-        for (const func of ast.functions) {
-          for (const decorator of func.decorators) {
-            if (decorator.includes('route') || decorator.includes('app.')) {
-              frameworkIndicators.set('Flask', (frameworkIndicators.get('Flask') || 0) + 1);
-            }
-          }
-        }
-      } catch (error) {
-        console.warn(`Failed to analyze ${filePath}:`, error);
-      }
-    }
-
-    // Convert indicators to framework detections
-    for (const [name, count] of frameworkIndicators) {
-      frameworks.push({
-        name,
-        confidence: Math.min(0.8, count * 0.25),
-        patterns: [`AST analysis found ${count} indicators`],
-        configFiles: [],
-        dependencies: [name.toLowerCase()]
-      });
-    }
-
-    return frameworks;
-  }
-
-  // Helper methods for Python analysis
-  private extractPythonExports(ast: PythonAST): string[] {
-    const exports: string[] = [];
-    
-    // Add all top-level functions and classes
-    ast.functions.forEach(func => exports.push(func.name));
-    ast.classes.forEach(cls => exports.push(cls.name));
-    
-    return exports;
-  }
-
-  private convertPythonFunctions(pythonFunctions: PythonFunction[]): FunctionInfo[] {
-    return pythonFunctions.map(func => ({
-      name: func.name,
-      signature: `def ${func.name}(...)`,
-      parameters: func.args.map(arg => ({
-        name: arg.name,
-        type: arg.annotation || 'Any',
-        isOptional: !!arg.default,
-        defaultValue: arg.default
-      })),
-      returnType: func.returns || 'None',
-      complexity: func.complexity,
-      lineCount: func.endLine - func.lineno,
-      isPublic: !func.name.startsWith('_'),
-      isAsync: func.isAsync,
-      isStatic: false,
-      calls: func.calls.map(call => ({ 
-        target: call.name, 
-        count: 1,
-        location: {
-          file: '',
-          line: call.line || 0,
-          column: 0
-        }
-      })),
-      calledBy: []
-    }));
-  }
-
-  private isPythonTestFile(filePath: string): boolean {
-    const fileName = path.basename(filePath).toLowerCase();
-    return fileName.startsWith('test_') || 
-           fileName.endsWith('_test.py') || 
-           filePath.includes('/tests/') ||
-           filePath.includes('/test/');
-  }
-
-  private isPythonEntryPoint(ast: PythonAST, filePath: string): boolean {
-    const fileName = path.basename(filePath);
-    
-    // Check common entry point names
-    if (['__main__.py', 'main.py', 'app.py', 'run.py', 'server.py', 'manage.py'].includes(fileName)) {
-      return true;
-    }
-
-    // Check for if __name__ == "__main__": pattern
-    return ast.calls.some(call => call.name === '__main__');
-  }
-
-  private isGeneratedPythonFile(content: string): boolean {
-    return content.includes('# Generated by') ||
-           content.includes('# This file was automatically generated') ||
-           content.includes('# Auto-generated') ||
-           content.includes('# -*- coding: utf-8 -*-\n# Generated');
-  }
-
-  private determinePythonArchitecturalLayer(filePath: string, ast: PythonAST): ArchitecturalLayer {
-    const pathLower = filePath.toLowerCase();
-    
-    if (pathLower.includes('view') || pathLower.includes('controller') || pathLower.includes('api/')) {
-      return 'presentation';
-    }
-    if (pathLower.includes('service') || pathLower.includes('business/')) {
-      return 'business';
-    }
-    if (pathLower.includes('model') || pathLower.includes('entity') || pathLower.includes('orm/')) {
-      return 'data';
-    }
-    if (pathLower.includes('util') || pathLower.includes('config') || pathLower.includes('setting')) {
-      return 'infrastructure';
-    }
-    
-    return 'business';
-  }
-
-  private extractPythonResponsibilities(ast: PythonAST): string[] {
-    const responsibilities: string[] = [];
-    
-    // Check imports for responsibilities
-    const importModules = ast.imports.map(imp => imp.module.toLowerCase());
-    
-    if (importModules.some(mod => mod.includes('django.views') || mod.includes('flask') || mod.includes('fastapi'))) {
-      responsibilities.push('Web Request Handling');
-    }
-    if (importModules.some(mod => mod.includes('models') || mod.includes('orm') || mod.includes('sqlalchemy'))) {
-      responsibilities.push('Data Management');
-    }
-    if (importModules.some(mod => mod.includes('requests') || mod.includes('urllib') || mod.includes('httpx'))) {
-      responsibilities.push('HTTP Communication');
-    }
-    if (importModules.some(mod => mod.includes('celery') || mod.includes('asyncio'))) {
-      responsibilities.push('Asynchronous Processing');
-    }
-    if (this.isPythonTestFile('')) {
-      responsibilities.push('Testing');
-    }
-    
-    return responsibilities.length > 0 ? responsibilities : ['General Logic'];
-  }
-
-  private extractPythonHTTPMethods(ast: PythonAST): string[] {
-    const methods: string[] = [];
-    
-    // Check decorators for HTTP methods
-    for (const func of ast.functions) {
-      for (const decorator of func.decorators) {
-        const httpMethodMatch = decorator.match(/@?(get|post|put|delete|patch|head|options)/i);
-        if (httpMethodMatch) {
-          methods.push(httpMethodMatch[1].toUpperCase());
-        }
-        
-        // Flask route patterns
-        if (decorator.includes('route') && decorator.includes('methods')) {
-          const methodsMatch = decorator.match(/methods\s*=\s*\[([^\]]+)\]/);
-          if (methodsMatch) {
-            const routeMethods = methodsMatch[1].replace(/['"]/g, '').split(',').map(m => m.trim().toUpperCase());
-            methods.push(...routeMethods);
+      if (dependencySection) {
+        const lines = dependencySection[1].split('\n');
+        for (const line of lines) {
+          const match = line.match(/^([a-zA-Z0-9\-_]+)\s*=\s*["']([^"']+)["']/);
+          if (match && match[1] !== 'python') {
+            libraries.push({
+              name: match[1],
+              version: match[2],
+              type: 'poetry_package',
+              source: 'pyproject.toml',
+              metadata: {
+                isProduction: true
+              }
+            });
           }
         }
       }
+    } catch (error) {
+      console.warn('Failed to parse pyproject.toml:', error);
     }
-    
-    return [...new Set(methods)];
   }
 
-  private extractPythonDatabaseQueries(ast: PythonAST): string[] {
-    const queries: string[] = [];
-    
-    // Look for common ORM and SQL patterns in function calls
-    for (const call of ast.calls) {
-      if (['execute', 'query', 'filter', 'get', 'create', 'update', 'delete', 'save'].includes(call.name.toLowerCase())) {
-        queries.push(`${call.name}() at line ${call.line}`);
+  private async extractPipfileDependencies(pipfilePath: string, libraries: any[]): Promise<void> {
+    try {
+      const content = await fs.readFile(pipfilePath, 'utf-8');
+      const packagesSection = content.match(/\[packages\]([\s\S]*?)(?=\[|$)/);
+
+      if (packagesSection) {
+        const lines = packagesSection[1].split('\n');
+        for (const line of lines) {
+          const match = line.match(/^([a-zA-Z0-9\-_]+)\s*=\s*["']([^"']+)["']/);
+          if (match) {
+            libraries.push({
+              name: match[1],
+              version: match[2],
+              type: 'pipenv_package',
+              source: 'Pipfile',
+              metadata: {
+                isProduction: true
+              }
+            });
+          }
+        }
       }
+    } catch (error) {
+      console.warn('Failed to parse Pipfile:', error);
     }
-    
-    return queries;
   }
 
-  private extractPythonExternalCalls(ast: PythonAST): string[] {
-    const calls: string[] = [];
-    
-    // Look for HTTP client calls
-    const httpCalls = ['requests.get', 'requests.post', 'requests.put', 'requests.delete', 
-                      'httpx.get', 'httpx.post', 'urllib.request', 'aiohttp.request'];
-    
-    for (const call of ast.calls) {
-      if (httpCalls.some(pattern => call.name.toLowerCase().includes(pattern.split('.')[1]))) {
-        calls.push(`HTTP ${call.name} at line ${call.line}`);
+  private async analyzePythonFile(
+    fullPath: string,
+    relativePath: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: any[],
+    exitPoints: any[],
+    modules: Map<string, string[]>
+  ): Promise<void> {
+    try {
+      const content = await fs.readFile(fullPath, 'utf-8');
+      const lines = content.split('\n');
+
+      const moduleName = this.getModuleName(relativePath);
+      const imports = this.extractImports(content);
+      const classes = this.extractClasses(content, relativePath);
+      const functions = this.extractFunctions(content, relativePath);
+      const variables = this.extractGlobalVariables(content);
+
+      if (!modules.has(moduleName)) {
+        modules.set(moduleName, []);
       }
+      modules.get(moduleName)!.push(relativePath);
+
+      const fileId = `file_${this.sanitizeId(relativePath)}`;
+      nodes.push(this.createNode(
+        fileId,
+        relativePath.split('/').pop() || 'unknown.py',
+        'file',
+        1,
+        fullPath,
+        1,
+        lines.length,
+        {
+          moduleName,
+          imports: imports.map(i => i.module),
+          classCount: classes.length,
+          functionCount: functions.length,
+          variableCount: variables.length
+        }
+      ));
+
+      for (const imp of imports) {
+        const importId = `import_${fileId}_${this.sanitizeId(imp.module)}`;
+        nodes.push(this.createNode(
+          importId,
+          imp.alias || imp.fromImport || imp.module,
+          'import',
+          2,
+          fullPath,
+          imp.lineNumber,
+          imp.lineNumber,
+          {
+            module: imp.module,
+            alias: imp.alias,
+            fromImport: imp.fromImport,
+            isRelative: imp.isRelative
+          }
+        ));
+
+        edges.push(this.createEdge(
+          `${fileId}_imports_${importId}`,
+          fileId,
+          importId,
+          'imports'
+        ));
+
+        if (!imp.isRelative && !this.isStandardLibrary(imp.module)) {
+          exitPoints.push({
+            id: `exit_${importId}`,
+            name: `External module: ${imp.module}`,
+            type: 'external_import',
+            source_node: importId,
+            metadata: { module: imp.module }
+          });
+        }
+      }
+
+      for (const cls of classes) {
+        await this.processPythonClass(cls, fileId, fullPath, nodes, edges, entryPoints);
+      }
+
+      for (const func of functions) {
+        await this.processPythonFunction(func, fileId, fullPath, nodes, edges, entryPoints);
+      }
+
+      for (const variable of variables) {
+        const variableId = `variable_${fileId}_${this.sanitizeId(variable.name)}`;
+        nodes.push(this.createNode(
+          variableId,
+          variable.name,
+          'variable',
+          3,
+          fullPath,
+          variable.lineNumber,
+          variable.lineNumber,
+          {
+            annotation: variable.annotation,
+            value: variable.value,
+            scope: variable.scope
+          }
+        ));
+
+        edges.push(this.createEdge(
+          `${fileId}_contains_${variableId}`,
+          fileId,
+          variableId,
+          'contains'
+        ));
+      }
+
+    } catch (error) {
+      console.warn(`Failed to analyze Python file ${relativePath}:`, error);
     }
-    
-    return calls;
   }
 
-  private resolvePythonImport(moduleName: string, currentPath: string, componentMap: Map<string, ComponentNode>): ComponentNode | null {
-    // Simplified Python import resolution
-    if (moduleName.startsWith('.')) {
-      // Relative import
-      const currentDir = path.dirname(currentPath);
-      const resolvedPath = path.join(currentDir, moduleName.substring(1) + '.py');
-      const normalizedPath = path.relative(this.projectPath, resolvedPath);
-      return componentMap.get(normalizedPath) || null;
-    }
-    
-    // Look for module in same directory or subdirectories
-    const possiblePaths = [
-      `${moduleName.replace('.', '/')}.py`,
-      `${moduleName.replace('.', '/')}/__init__.py`
-    ];
-    
-    for (const possiblePath of possiblePaths) {
-      const component = componentMap.get(possiblePath);
-      if (component) return component;
-    }
-    
-    return null;
-  }
+  private async processPythonClass(
+    cls: PythonClass,
+    fileId: string,
+    fullPath: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: any[]
+  ): Promise<void> {
+    const classId = `class_${this.sanitizeId(cls.moduleName)}_${this.sanitizeId(cls.name)}`;
 
-  private countPythonUsage(component: ComponentNode, moduleName: string): number {
-    // Count references to the imported module in the component
-    // This would analyze the cached AST for actual usage
-    return 1; // Simplified for now
-  }
-
-  private findPythonTarget(callName: string, components: ComponentNode[]): ComponentNode | null {
-    return components.find(comp => 
-      comp.metadata.exports.includes(callName) ||
-      comp.name === callName
-    ) || null;
-  }
-
-  private determinePythonDataFlow(moduleName: string): string {
-    if (moduleName.startsWith('.')) return 'internal';
-    if (moduleName.includes('.')) return 'package';
-    return 'external';
-  }
-
-  // Implement required abstract methods
-  protected async assessRisks(components: ComponentNode[], connections: Connection[]): Promise<RiskArea[]> {
-    const risks: RiskArea[] = [];
-
-    for (const component of components) {
-      const reasons: string[] = [];
-      let riskLevel: 'low' | 'medium' | 'high' = 'low';
-
-      // Complexity-based risks
-      if (component.metadata.complexity >= 12) {
-        reasons.push(`Very high complexity (${component.metadata.complexity})`);
-        riskLevel = 'high';
-      } else if (component.metadata.complexity >= 8) {
-        reasons.push(`High complexity (${component.metadata.complexity})`);
-        riskLevel = riskLevel === 'low' ? 'medium' : riskLevel;
+    nodes.push(this.createNode(
+      classId,
+      cls.name,
+      'class',
+      2,
+      fullPath,
+      cls.lineStart,
+      cls.lineEnd,
+      {
+        moduleName: cls.moduleName,
+        baseClasses: cls.baseClasses,
+        decorators: cls.decorators,
+        docstring: cls.docstring,
+        methodCount: cls.methods.length,
+        attributeCount: cls.attributes.length,
+        isAbstract: cls.isAbstract
       }
+    ));
 
-      // File size risks
-      if (component.metadata.lineCount > 800) {
-        reasons.push(`Very large file (${component.metadata.lineCount} lines)`);
-        riskLevel = 'high';
-      } else if (component.metadata.lineCount > 400) {
-        reasons.push(`Large file (${component.metadata.lineCount} lines)`);
-        riskLevel = riskLevel === 'low' ? 'medium' : riskLevel;
-      }
+    edges.push(this.createEdge(
+      `${fileId}_contains_${classId}`,
+      fileId,
+      classId,
+      'contains'
+    ));
 
-      // Coupling risks
-      const incomingConnections = connections.filter(c => c.to === component.id).length;
-      if (incomingConnections > 8) {
-        reasons.push(`High coupling (${incomingConnections} dependents)`);
-        riskLevel = 'high';
-      }
+    for (const method of cls.methods) {
+      const methodId = `method_${classId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
+      nodes.push(this.createNode(
+        methodId,
+        method.name,
+        'method',
+        4,
+        fullPath,
+        method.lineStart,
+        method.lineEnd,
+        {
+          parameters: method.parameters,
+          decorators: method.decorators,
+          docstring: method.docstring,
+          returnAnnotation: method.returnAnnotation,
+          isClassMethod: method.isClassMethod,
+          isStaticMethod: method.isStaticMethod,
+          isProperty: method.isProperty,
+          isPrivate: method.isPrivate,
+          isAbstract: method.isAbstract,
+          isAsync: method.isAsync
+        }
+      ));
 
-      if (reasons.length > 0) {
-        risks.push({
-          componentId: component.id,
-          riskLevel,
-          reasons,
-          impact: `Affects ${incomingConnections} components`
+      edges.push(this.createEdge(
+        `${classId}_has_method_${methodId}`,
+        classId,
+        methodId,
+        'has_method'
+      ));
+
+      if (!method.isPrivate && method.name !== '__init__') {
+        entryPoints.push({
+          id: `entry_${methodId}`,
+          name: `Public method: ${cls.name}.${method.name}`,
+          type: 'public_method',
+          source_node: methodId,
+          metadata: {
+            className: cls.name,
+            methodName: method.name,
+            returnAnnotation: method.returnAnnotation,
+            parameters: method.parameters.map(p => p.annotation || 'Any')
+          }
         });
       }
     }
 
-    return risks;
+    for (const attr of cls.attributes) {
+      const attrId = `attribute_${classId}_${this.sanitizeId(attr.name)}`;
+      nodes.push(this.createNode(
+        attrId,
+        attr.name,
+        'attribute',
+        4,
+        fullPath,
+        attr.lineNumber,
+        attr.lineNumber,
+        {
+          annotation: attr.annotation,
+          value: attr.value,
+          isPrivate: attr.isPrivate,
+          isClassAttribute: attr.isClassAttribute
+        }
+      ));
+
+      edges.push(this.createEdge(
+        `${classId}_has_attribute_${attrId}`,
+        classId,
+        attrId,
+        'has_attribute'
+      ));
+    }
+
+    if (!cls.name.startsWith('_')) {
+      entryPoints.push({
+        id: `entry_${classId}`,
+        name: `Public class: ${cls.name}`,
+        type: 'public_class',
+        source_node: classId,
+        metadata: {
+          moduleName: cls.moduleName,
+          className: cls.name,
+          decorators: cls.decorators,
+          baseClasses: cls.baseClasses
+        }
+      });
+    }
   }
 
-  protected async generateCallGraph(components: ComponentNode[]): Promise<CallGraph> {
-    const nodes = components.map(comp => ({
-      id: comp.id,
-      name: comp.name,
-      type: 'module' as const,
-      file: comp.path,
-      complexity: comp.metadata.complexity,
-      fanIn: comp.dependents.length,
-      fanOut: comp.dependencies.length,
-      depth: 0,
-      critical: comp.metadata.complexity >= 10
-    }));
+  private async processPythonFunction(
+    func: PythonFunction,
+    fileId: string,
+    fullPath: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: any[]
+  ): Promise<void> {
+    const functionId = `function_${fileId}_${this.sanitizeId(func.name)}_${func.lineStart}`;
 
-    const edges = components.flatMap(comp => 
-      comp.dependencies.map(dep => ({
-        from: comp.id,
-        to: dep,
-        count: 1,
-        type: 'direct' as const,
-        async: false,
-        conditional: false
-      }))
-    );
+    nodes.push(this.createNode(
+      functionId,
+      func.name,
+      'function',
+      3,
+      fullPath,
+      func.lineStart,
+      func.lineEnd,
+      {
+        parameters: func.parameters,
+        decorators: func.decorators,
+        docstring: func.docstring,
+        returnAnnotation: func.returnAnnotation,
+        isAsync: func.isAsync,
+        isPrivate: func.isPrivate
+      }
+    ));
 
-    return {
-      nodes,
-      edges,
-      entryPoints: components.filter(c => c.metadata.isEntry).map(c => c.id),
-      cycles: [],
-      layers: [],
-      hotPaths: [],
-      deadCode: []
-    };
+    edges.push(this.createEdge(
+      `${fileId}_contains_${functionId}`,
+      fileId,
+      functionId,
+      'contains'
+    ));
+
+    if (!func.isPrivate) {
+      entryPoints.push({
+        id: `entry_${functionId}`,
+        name: `Public function: ${func.name}`,
+        type: 'public_function',
+        source_node: functionId,
+        metadata: {
+          functionName: func.name,
+          returnAnnotation: func.returnAnnotation,
+          parameters: func.parameters.map(p => p.annotation || 'Any'),
+          isAsync: func.isAsync
+        }
+      });
+    }
   }
 
-  protected async analyzeDatabaseConnections(components: ComponentNode[]): Promise<DatabaseConnection[]> {
-    // Real implementation would analyze Python ORM patterns
-    return [];
+  private extractImports(content: string): PythonImport[] {
+    const imports: PythonImport[] = [];
+    const lines = content.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+
+      const fromImportMatch = line.match(/^from\s+([.\w]+)\s+import\s+(.+)/);
+      if (fromImportMatch) {
+        const module = fromImportMatch[1];
+        const importItems = fromImportMatch[2].split(',').map(s => s.trim());
+
+        for (const item of importItems) {
+          const aliasMatch = item.match(/^(\w+)(?:\s+as\s+(\w+))?/);
+          if (aliasMatch) {
+            imports.push({
+              module,
+              fromImport: aliasMatch[1],
+              alias: aliasMatch[2],
+              lineNumber: i + 1,
+              isRelative: module.startsWith('.')
+            });
+          }
+        }
+        continue;
+      }
+
+      const importMatch = line.match(/^import\s+(.+)/);
+      if (importMatch) {
+        const importItems = importMatch[1].split(',').map(s => s.trim());
+
+        for (const item of importItems) {
+          const aliasMatch = item.match(/^([.\w]+)(?:\s+as\s+(\w+))?/);
+          if (aliasMatch) {
+            imports.push({
+              module: aliasMatch[1],
+              alias: aliasMatch[2],
+              lineNumber: i + 1,
+              isRelative: aliasMatch[1].startsWith('.')
+            });
+          }
+        }
+      }
+    }
+
+    return imports;
   }
 
-  protected async analyzeTestCoverage(components: ComponentNode[]): Promise<TestCoverage | null> {
-    const testFiles = components.filter(c => this.isPythonTestFile(c.path));
-    if (testFiles.length === 0) return null;
+  private extractClasses(content: string, filePath: string): PythonClass[] {
+    const classes: PythonClass[] = [];
+    const lines = content.split('\n');
+    const moduleName = this.getModuleName(filePath);
 
-    return {
-      overall: 60,
-      lines: { covered: 600, total: 1000, percentage: 60 },
-      branches: { covered: 0, total: 0, percentage: 0 },
-      functions: { covered: 0, total: 0, percentage: 0 },
-      statements: { covered: 0, total: 0, percentage: 0 },
-      byComponent: {},
-      byType: {},
-      uncoveredFiles: []
-    };
-  }
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
 
-  protected async analyzeAPIEndpoints(components: ComponentNode[]): Promise<APIEndpoint[]> {
-    const endpoints: APIEndpoint[] = [];
-    
-    for (const component of components) {
-      if (component.metadata.httpMethods) {
-        for (const method of component.metadata.httpMethods) {
-          endpoints.push({
-            id: `${component.id}_${method}`,
-            method: method as any,
-            path: `/${component.path.replace('.py', '')}`,
-            description: `${method} endpoint`,
-            parameters: [],
-            requestSchema: null,
-            responseSchema: null,
-            statusCodes: [{ code: 200, description: 'Success', schema: null }],
-            middleware: [],
-            authentication: { type: 'none', required: false },
-            componentId: component.id,
-            handler: component.name
+      if (line.trim().startsWith('class ')) {
+        const classMatch = line.match(/class\s+(\w+)(?:\(([^)]*)\))?:/);
+        if (classMatch) {
+          const className = classMatch[1];
+          const baseClasses = classMatch[2]
+            ? classMatch[2].split(',').map(s => s.trim())
+            : [];
+
+          const decorators = this.extractDecorators(lines, i);
+          const classStartLine = i + 1;
+          const classEndLine = this.findBlockEnd(lines, i);
+
+          const methods = this.extractMethods(lines, i, classEndLine);
+          const attributes = this.extractClassAttributes(lines, i, classEndLine);
+          const docstring = this.extractDocstring(lines, i + 1);
+
+          const isAbstract = decorators.some(d => d.includes('abc.abstractmethod')) ||
+                           baseClasses.some(b => b.includes('ABC'));
+
+          classes.push({
+            name: className,
+            moduleName,
+            filePath,
+            baseClasses,
+            methods,
+            attributes,
+            decorators,
+            docstring,
+            lineStart: classStartLine,
+            lineEnd: classEndLine,
+            isAbstract
           });
         }
       }
     }
 
-    return endpoints;
+    return classes;
+  }
+
+  private extractFunctions(content: string, filePath: string): PythonFunction[] {
+    const functions: PythonFunction[] = [];
+    const lines = content.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      if (line.trim().startsWith('def ') || line.trim().startsWith('async def ')) {
+        const funcMatch = line.match(/(async\s+)?def\s+(\w+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?:/);
+        if (funcMatch) {
+          const isAsync = !!funcMatch[1];
+          const functionName = funcMatch[2];
+          const paramString = funcMatch[3];
+          const returnAnnotation = funcMatch[4]?.trim();
+
+          if (!this.isInsideClass(lines, i)) {
+            const decorators = this.extractDecorators(lines, i);
+            const functionStartLine = i + 1;
+            const functionEndLine = this.findBlockEnd(lines, i);
+
+            const parameters = this.extractParameters(paramString);
+            const docstring = this.extractDocstring(lines, i + 1);
+
+            functions.push({
+              name: functionName,
+              parameters,
+              decorators,
+              docstring,
+              returnAnnotation,
+              lineStart: functionStartLine,
+              lineEnd: functionEndLine,
+              isAsync,
+              isPrivate: functionName.startsWith('_')
+            });
+          }
+        }
+      }
+    }
+
+    return functions;
+  }
+
+  private extractMethods(lines: string[], classStart: number, classEnd: number): PythonMethod[] {
+    const methods: PythonMethod[] = [];
+
+    for (let i = classStart + 1; i < classEnd; i++) {
+      const line = lines[i];
+      const indent = line.length - line.trimStart().length;
+
+      if (indent > 0 && (line.trim().startsWith('def ') || line.trim().startsWith('async def '))) {
+        const methodMatch = line.match(/(async\s+)?def\s+(\w+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?:/);
+        if (methodMatch) {
+          const isAsync = !!methodMatch[1];
+          const methodName = methodMatch[2];
+          const paramString = methodMatch[3];
+          const returnAnnotation = methodMatch[4]?.trim();
+
+          const decorators = this.extractDecorators(lines, i);
+          const methodStartLine = i + 1;
+          const methodEndLine = this.findBlockEnd(lines, i);
+
+          const parameters = this.extractParameters(paramString);
+          const docstring = this.extractDocstring(lines, i + 1);
+
+          const isClassMethod = decorators.includes('classmethod');
+          const isStaticMethod = decorators.includes('staticmethod');
+          const isProperty = decorators.includes('property');
+          const isPrivate = methodName.startsWith('_');
+          const isAbstract = decorators.some(d => d.includes('abstractmethod'));
+
+          methods.push({
+            name: methodName,
+            parameters,
+            decorators,
+            docstring,
+            returnAnnotation,
+            lineStart: methodStartLine,
+            lineEnd: methodEndLine,
+            isClassMethod,
+            isStaticMethod,
+            isProperty,
+            isPrivate,
+            isAbstract,
+            isAsync
+          });
+        }
+      }
+    }
+
+    return methods;
+  }
+
+  private extractClassAttributes(lines: string[], classStart: number, classEnd: number): PythonAttribute[] {
+    const attributes: PythonAttribute[] = [];
+
+    for (let i = classStart + 1; i < classEnd; i++) {
+      const line = lines[i].trim();
+
+      if (line && !line.startsWith('def ') && !line.startsWith('class ') && !line.startsWith('#')) {
+        const attrMatch = line.match(/^(\w+)(?:\s*:\s*([^=]+))?\s*(?:=\s*(.+))?/);
+        if (attrMatch) {
+          const attrName = attrMatch[1];
+          const annotation = attrMatch[2]?.trim();
+          const value = attrMatch[3]?.trim();
+
+          if (!['if', 'for', 'while', 'try', 'with', 'return', 'yield'].includes(attrName)) {
+            attributes.push({
+              name: attrName,
+              annotation,
+              value,
+              lineNumber: i + 1,
+              isPrivate: attrName.startsWith('_'),
+              isClassAttribute: true
+            });
+          }
+        }
+      }
+    }
+
+    return attributes;
+  }
+
+  private extractGlobalVariables(content: string): PythonVariable[] {
+    const variables: PythonVariable[] = [];
+    const lines = content.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      if (line.trim() && !line.trim().startsWith('#') && line.length === line.trimStart().length) {
+        const varMatch = line.match(/^(\w+)(?:\s*:\s*([^=]+))?\s*=\s*(.+)/);
+        if (varMatch && !this.isInsideClassOrFunction(lines, i)) {
+          const varName = varMatch[1];
+          const annotation = varMatch[2]?.trim();
+          const value = varMatch[3]?.trim();
+
+          if (!['if', 'for', 'while', 'try', 'with', 'class', 'def'].includes(varName)) {
+            variables.push({
+              name: varName,
+              annotation,
+              value,
+              lineNumber: i + 1,
+              scope: 'global'
+            });
+          }
+        }
+      }
+    }
+
+    return variables;
+  }
+
+  private extractParameters(paramString: string): PythonParameter[] {
+    const parameters: PythonParameter[] = [];
+
+    if (!paramString.trim()) {
+      return parameters;
+    }
+
+    const params = this.splitParameters(paramString);
+
+    for (const param of params) {
+      const trimmed = param.trim();
+
+      if (trimmed.startsWith('**')) {
+        const name = trimmed.substring(2);
+        parameters.push({
+          name,
+          isVarArgs: false,
+          isKwArgs: true
+        });
+      } else if (trimmed.startsWith('*')) {
+        const name = trimmed.substring(1);
+        parameters.push({
+          name,
+          isVarArgs: true,
+          isKwArgs: false
+        });
+      } else {
+        const paramMatch = trimmed.match(/^(\w+)(?:\s*:\s*([^=]+))?(?:\s*=\s*(.+))?$/);
+        if (paramMatch) {
+          parameters.push({
+            name: paramMatch[1],
+            annotation: paramMatch[2]?.trim(),
+            defaultValue: paramMatch[3]?.trim(),
+            isVarArgs: false,
+            isKwArgs: false
+          });
+        }
+      }
+    }
+
+    return parameters;
+  }
+
+  private splitParameters(paramString: string): string[] {
+    const params: string[] = [];
+    let current = '';
+    let parenCount = 0;
+    let bracketCount = 0;
+    let braceCount = 0;
+
+    for (const char of paramString) {
+      if (char === '(') parenCount++;
+      else if (char === ')') parenCount--;
+      else if (char === '[') bracketCount++;
+      else if (char === ']') bracketCount--;
+      else if (char === '{') braceCount++;
+      else if (char === '}') braceCount--;
+      else if (char === ',' && parenCount === 0 && bracketCount === 0 && braceCount === 0) {
+        params.push(current.trim());
+        current = '';
+        continue;
+      }
+
+      current += char;
+    }
+
+    if (current.trim()) {
+      params.push(current.trim());
+    }
+
+    return params;
+  }
+
+  private extractDecorators(lines: string[], lineIndex: number): string[] {
+    const decorators: string[] = [];
+
+    for (let i = lineIndex - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (line.startsWith('@')) {
+        const decoratorMatch = line.match(/@([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)/);
+        if (decoratorMatch) {
+          decorators.unshift(decoratorMatch[1]);
+        }
+      } else if (line && !line.startsWith('#')) {
+        break;
+      }
+    }
+
+    return decorators;
+  }
+
+  private extractDocstring(lines: string[], startLine: number): string | undefined {
+    if (startLine >= lines.length) return undefined;
+
+    const line = lines[startLine].trim();
+
+    if (line.startsWith('"""') || line.startsWith("'''")) {
+      const quote = line.startsWith('"""') ? '"""' : "'''";
+
+      if (line.endsWith(quote) && line.length > 6) {
+        return line.substring(3, line.length - 3);
+      }
+
+      let docstring = line.substring(3);
+      for (let i = startLine + 1; i < lines.length; i++) {
+        const currentLine = lines[i];
+        if (currentLine.trim().endsWith(quote)) {
+          docstring += '\n' + currentLine.substring(0, currentLine.lastIndexOf(quote));
+          break;
+        }
+        docstring += '\n' + currentLine;
+      }
+
+      return docstring.trim();
+    }
+
+    return undefined;
+  }
+
+  private findBlockEnd(lines: string[], startIndex: number): number {
+    const startIndent = lines[startIndex].length - lines[startIndex].trimStart().length;
+
+    for (let i = startIndex + 1; i < lines.length; i++) {
+      const line = lines[i];
+
+      if (line.trim()) {
+        const indent = line.length - line.trimStart().length;
+        if (indent <= startIndent) {
+          return i;
+        }
+      }
+    }
+
+    return lines.length;
+  }
+
+  private isInsideClass(lines: string[], lineIndex: number): boolean {
+    for (let i = lineIndex - 1; i >= 0; i--) {
+      const line = lines[i];
+      const indent = line.length - line.trimStart().length;
+
+      if (line.trim().startsWith('class ') && indent === 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private isInsideClassOrFunction(lines: string[], lineIndex: number): boolean {
+    for (let i = lineIndex - 1; i >= 0; i--) {
+      const line = lines[i];
+      const indent = line.length - line.trimStart().length;
+
+      if ((line.trim().startsWith('class ') || line.trim().startsWith('def ') || line.trim().startsWith('async def ')) && indent === 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private getModuleName(filePath: string): string {
+    return filePath.replace(/\.py$/, '').replace(/\//g, '.');
+  }
+
+  private isStandardLibrary(module: string): boolean {
+    const standardLibModules = [
+      'os', 'sys', 'json', 'urllib', 'http', 'datetime', 'time', 'math', 'random',
+      'collections', 'itertools', 'functools', 'operator', 're', 'string', 'io',
+      'pathlib', 'typing', 'dataclasses', 'abc', 'contextlib', 'pickle', 'csv',
+      'xml', 'sqlite3', 'logging', 'unittest', 'asyncio', 'concurrent', 'threading',
+      'multiprocessing', 'subprocess', 'socket', 'email', 'base64', 'hashlib',
+      'hmac', 'secrets', 'uuid', 'decimal', 'fractions', 'statistics', 'tempfile'
+    ];
+
+    return standardLibModules.some(lib => module === lib || module.startsWith(`${lib}.`));
+  }
+
+  private buildModuleHierarchy(modules: Map<string, string[]>, nodes: CASNode[], edges: CASEdge[]): void {
+    for (const [moduleName, files] of modules.entries()) {
+      const moduleId = `module_${this.sanitizeId(moduleName)}`;
+
+      nodes.push(this.createNode(
+        moduleId,
+        moduleName,
+        'module',
+        1,
+        undefined,
+        undefined,
+        undefined,
+        {
+          fileCount: files.length,
+          files: files
+        }
+      ));
+
+      for (const file of files) {
+        const fileId = `file_${this.sanitizeId(file)}`;
+        edges.push(this.createEdge(
+          `${moduleId}_contains_${fileId}`,
+          moduleId,
+          fileId,
+          'contains'
+        ));
+      }
+    }
+  }
+
+  private detectFrameworkPatterns(nodes: CASNode[], _edges: CASEdge[], entryPoints: any[]): void {
+    const frameworkDecorators = {
+      django: ['django.http', 'django.views', 'django.urls'],
+      flask: ['flask.Flask', 'app.route'],
+      fastapi: ['fastapi.FastAPI', 'fastapi.APIRouter']
+    };
+
+    for (const node of nodes) {
+      if (node.type === 'function' && node.metadata?.attributes?.decorators) {
+        const decorators = node.metadata.attributes?.decorators as string[];
+
+        for (const [framework, patterns] of Object.entries(frameworkDecorators)) {
+          if (patterns.some(pattern => decorators.some(d => d.includes(pattern)))) {
+            entryPoints.push({
+              id: `entry_${framework}_${node.id}`,
+              name: `${framework.charAt(0).toUpperCase() + framework.slice(1)} endpoint: ${node.name}`,
+              type: `${framework}_endpoint`,
+              source_node: node.id,
+              metadata: {
+                framework,
+                functionName: node.name
+              }
+            });
+          }
+        }
+      }
+    }
+  }
+
+  private buildInheritanceRelationships(nodes: CASNode[], edges: CASEdge[]): void {
+    const classNodes = nodes.filter(n => n.type === 'class');
+
+    for (const classNode of classNodes) {
+      if (classNode.metadata?.attributes?.baseClasses) {
+        const baseClasses = classNode.metadata.attributes.baseClasses as string[];
+        for (const baseClassName of baseClasses) {
+          const baseClassNode = classNodes.find(n => n.name === baseClassName);
+
+          if (baseClassNode) {
+            edges.push(this.createEdge(
+              `${classNode.id}_inherits_${baseClassNode.id}`,
+              classNode.id,
+              baseClassNode.id,
+              'inherits'
+            ));
+          }
+        }
+      }
+    }
+  }
+
+  protected sanitizeId(name: string): string {
+    return name.replace(/[^a-zA-Z0-9]/g, '_');
+  }
+
+  protected getLevelName(level: number): string {
+    switch (level) {
+      case 1: return 'system';
+      case 2: return 'architectural';
+      case 3: return 'code';
+      case 4: return 'member';
+      case 5: return 'implementation';
+      default: return `level_${level}`;
+    }
+  }
+
+  protected getCapabilities(): string[] {
+    return [
+      'class-analysis',
+      'function-detection',
+      'module-organization',
+      'inheritance-tracking',
+      'decorator-parsing',
+      'async-pattern-detection',
+      'framework-detection'
+    ];
   }
 }

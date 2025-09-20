@@ -70,6 +70,9 @@ export class BackpressureManager {
     }
 
     const bucket = this.tokenBuckets.get(projectId);
+    if (!bucket) {
+      return false;
+    }
 
     // Check if we have enough tokens
     if (bucket.tokens < eventCount) {
@@ -151,7 +154,7 @@ export class BackpressureManager {
       return data;
     }
     
-    return null;
+    return null as unknown as T;
   }
 
   private async getSystemCapacity(): Promise<number> {
@@ -234,7 +237,7 @@ export class BackpressureManager {
       });
     }
 
-    const state = this.projectStates.get(projectId);
+    const state = this.projectStates.get(projectId)!;
     
     // Update events per second using sliding window
     const now = Date.now();

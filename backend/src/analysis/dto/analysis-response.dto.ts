@@ -329,10 +329,6 @@ export class AnalysisResultDto {
   })
   blueprint?: ArchitectureBlueprintDto;
 
-  @ApiPropertyOptional({
-    description: 'Spatial visualization data',
-  })
-  spatialVisualization?: any;
 
   @ApiPropertyOptional({
     description: 'Path to the generated manifest file',

@@ -41,7 +41,7 @@ interface AuthenticatedSocket extends Socket {
 })
 export class TelemetryGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
-  private server: Server;
+  private server!: Server;
 
   private readonly logger = new Logger(TelemetryGateway.name);
   private readonly maxConnectionsPerProject = 100;
@@ -74,7 +74,7 @@ export class TelemetryGateway implements OnGatewayConnection, OnGatewayDisconnec
 
       const connectionCount = await this.connectionPool.addConnection(
         client.id,
-        client.projectId,
+        client.projectId!,
         {
           userId: client.userId,
           organizationId: client.organizationId,
@@ -101,7 +101,7 @@ export class TelemetryGateway implements OnGatewayConnection, OnGatewayDisconnec
       });
 
       await this.telemetryService.trackConnection({
-        projectId: client.projectId,
+        projectId: client.projectId!,
         event: 'connect',
         clientId: client.id,
         metadata: {
@@ -109,7 +109,7 @@ export class TelemetryGateway implements OnGatewayConnection, OnGatewayDisconnec
           organizationId: client.organizationId,
         },
       });
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Connection failed: ${error.message}`, error.stack);
       client.emit('error', { message: error.message });
       client.disconnect();
@@ -136,7 +136,7 @@ export class TelemetryGateway implements OnGatewayConnection, OnGatewayDisconnec
       }
 
       this.logger.log(`Client disconnected: ${client.id}`);
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Disconnect handler error: ${error.message}`, error.stack);
     }
   }
@@ -154,7 +154,7 @@ export class TelemetryGateway implements OnGatewayConnection, OnGatewayDisconnec
       }
 
       const subscriptionId = this.generateSubscriptionId(subscription);
-      client.subscriptions.set(subscriptionId, subscription);
+      client.subscriptions!.set(subscriptionId, subscription);
 
       if (subscription.componentIds?.length) {
         for (const componentId of subscription.componentIds) {
@@ -175,7 +175,7 @@ export class TelemetryGateway implements OnGatewayConnection, OnGatewayDisconnec
         subscriptionId,
         message: 'Subscription created successfully',
       };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Subscribe error: ${error.message}`, error.stack);
       throw new WsException(error.message);
     }
@@ -188,12 +188,12 @@ export class TelemetryGateway implements OnGatewayConnection, OnGatewayDisconnec
     @ConnectedSocket() client: AuthenticatedSocket,
   ) {
     try {
-      const subscription = client.subscriptions.get(data.subscriptionId);
+      const subscription = client.subscriptions?.get(data.subscriptionId);
       if (!subscription) {
         throw new WsException('Subscription not found');
       }
 
-      client.subscriptions.delete(data.subscriptionId);
+      client.subscriptions?.delete(data.subscriptionId);
 
       if (subscription.componentIds?.length) {
         for (const componentId of subscription.componentIds) {
@@ -213,7 +213,7 @@ export class TelemetryGateway implements OnGatewayConnection, OnGatewayDisconnec
         success: true,
         message: 'Unsubscribed successfully',
       };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Unsubscribe error: ${error.message}`, error.stack);
       throw new WsException(error.message);
     }
@@ -251,7 +251,7 @@ export class TelemetryGateway implements OnGatewayConnection, OnGatewayDisconnec
         processed: batch.events.length,
         timestamp: Date.now(),
       };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Telemetry batch error: ${error.message}`, error.stack);
       throw new WsException(error.message);
     }
@@ -288,7 +288,7 @@ export class TelemetryGateway implements OnGatewayConnection, OnGatewayDisconnec
 
       this.server.to(room).emit(event, data);
       this.logger.debug(`Broadcast to ${clients.length} clients in project ${projectId}`);
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Broadcast error: ${error.message}`, error.stack);
     }
   }
@@ -297,7 +297,7 @@ export class TelemetryGateway implements OnGatewayConnection, OnGatewayDisconnec
     try {
       const room = `component:${componentId}`;
       this.server.to(room).emit(event, data);
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Component broadcast error: ${error.message}`, error.stack);
     }
   }
@@ -314,7 +314,7 @@ export class TelemetryGateway implements OnGatewayConnection, OnGatewayDisconnec
           timestamp: Date.now(),
         });
       }
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Stream broadcast error: ${error.message}`, error.stack);
     }
   }
@@ -361,7 +361,7 @@ export class TelemetryGateway implements OnGatewayConnection, OnGatewayDisconnec
       return await this.jwtService.verifyAsync(token, {
         secret: this.configService.get('JWT_SECRET'),
       });
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Token validation failed: ${error.message}`);
       return null;
     }

@@ -433,7 +433,7 @@ export class ForceGraph {
     
     nodeSelection.each(function(d: any) {
       const activity = telemetry.nodeActivity?.[d.id] || 0;
-      const maxActivity = Math.max(...Object.values(telemetry.nodeActivity || {}));
+      const maxActivity = Math.max(...(Object.values(telemetry.nodeActivity || {}) as number[]));
       const intensity = activity / (maxActivity || 1);
       
       d3.select(this)
@@ -450,7 +450,7 @@ export class ForceGraph {
     
     linkSelection.each(function(d: any) {
       const flow = telemetry.edgeFlow?.[`${d.source.id}-${d.target.id}`] || 0;
-      const maxFlow = Math.max(...Object.values(telemetry.edgeFlow || {}));
+      const maxFlow = Math.max(...(Object.values(telemetry.edgeFlow || {}) as number[]));
       const intensity = flow / (maxFlow || 1);
       
       d3.select(this)

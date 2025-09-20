@@ -1,489 +1,1865 @@
-// PHP Base Analyzer - Production-ready PHP analyzer
-// Phase 2: Language Base Analyzers
-
-import { BaseAnalyzer, LanguageDetection, ComponentDiscovery, FrameworkDetection } from '../base-analyzer';
-import { ComponentNode, ComponentType, Connection, RiskArea, CallGraph, DatabaseConnection, TestCoverage, APIEndpoint } from '../../types';
-import { telemetry } from '../../telemetry/telemetry-schema';
-import { AnalyzerError } from '../errors';
-import * as path from 'path';
+import { BaseAnalyzer, AnalysisContext } from '../core/base-analyzer';
+import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint } from '../../types/cas.types';
+import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
+import { glob } from 'glob';
+
+interface PHPClass {
+  name: string;
+  namespace: string;
+  filePath: string;
+  modifiers: string[];
+  extendsClass?: string;
+  implementsInterfaces: string[];
+  properties: PHPProperty[];
+  methods: PHPMethod[];
+  constants: PHPConstant[];
+  traits: string[];
+  docComment?: string;
+  lineStart: number;
+  lineEnd: number;
+  isAbstract: boolean;
+  isFinal: boolean;
+}
+
+interface PHPInterface {
+  name: string;
+  namespace: string;
+  filePath: string;
+  extendsInterfaces: string[];
+  methods: PHPMethod[];
+  constants: PHPConstant[];
+  docComment?: string;
+  lineStart: number;
+  lineEnd: number;
+}
+
+interface PHPTrait {
+  name: string;
+  namespace: string;
+  filePath: string;
+  properties: PHPProperty[];
+  methods: PHPMethod[];
+  usedTraits: string[];
+  docComment?: string;
+  lineStart: number;
+  lineEnd: number;
+}
+
+interface PHPMethod {
+  name: string;
+  visibility: string;
+  modifiers: string[];
+  parameters: PHPParameter[];
+  returnType?: string;
+  docComment?: string;
+  lineStart: number;
+  lineEnd: number;
+  isAbstract: boolean;
+  isFinal: boolean;
+  isStatic: boolean;
+  isConstructor: boolean;
+  isDestructor: boolean;
+}
+
+interface PHPProperty {
+  name: string;
+  visibility: string;
+  modifiers: string[];
+  type?: string;
+  defaultValue?: string;
+  docComment?: string;
+  lineNumber: number;
+  isStatic: boolean;
+  isReadonly: boolean;
+}
+
+interface PHPParameter {
+  name: string;
+  type?: string;
+  defaultValue?: string;
+  isVariadic: boolean;
+  isReference: boolean;
+  isNullable: boolean;
+}
+
+interface PHPFunction {
+  name: string;
+  namespace: string;
+  filePath: string;
+  parameters: PHPParameter[];
+  returnType?: string;
+  docComment?: string;
+  lineStart: number;
+  lineEnd: number;
+}
+
+interface PHPConstant {
+  name: string;
+  value: string;
+  visibility?: string;
+  docComment?: string;
+  lineNumber: number;
+  isClassConstant: boolean;
+}
+
+interface PHPVariable {
+  name: string;
+  scope: 'global' | 'local' | 'static';
+  type?: string;
+  defaultValue?: string;
+  lineNumber: number;
+}
+
+
+interface PHPUse {
+  namespace: string;
+  alias?: string;
+  type: 'class' | 'function' | 'const';
+  lineNumber: number;
+}
+
+interface PHPEnum {
+  name: string;
+  namespace: string;
+  filePath: string;
+  backingType?: string;
+  cases: PHPEnumCase[];
+  methods: PHPMethod[];
+  constants: PHPConstant[];
+  implementsInterfaces: string[];
+  traits: string[];
+  docComment?: string;
+  lineStart: number;
+  lineEnd: number;
+}
+
+interface PHPEnumCase {
+  name: string;
+  value?: string;
+  docComment?: string;
+  lineNumber: number;
+}
 
 export class PHPAnalyzer extends BaseAnalyzer {
-  private phpVersion: string = '';
-  private hasComposer: boolean = false;
-  
-  getAnalyzerName(): string {
-    return 'PHP Analyzer';
+  private laravelFrameworkDetected = false;
+  private symfonyFrameworkDetected = false;
+  private codeIgniterFrameworkDetected = false;
+  private cakePHPFrameworkDetected = false;
+  private drupalFrameworkDetected = false;
+  private wordPressFrameworkDetected = false;
+  private composerProject = false;
+
+  constructor() {
+    super(
+      'php-analyzer',
+      'PHP Language Analyzer',
+      '1.0.0',
+      'language'
+    );
   }
 
-  getSupportedLanguages(): string[] {
-    return ['php'];
-  }
-
-  getSupportedFrameworks(): string[] {
-    return ['laravel', 'symfony', 'codeigniter', 'slim', 'phalcon', 'yii', 'zend', 'cakephp', 'wordpress', 'drupal', 'magento', 'phpunit', 'composer'];
-  }
-
-  protected async detectLanguageAndFramework(): Promise<LanguageDetection> {
-    const span = telemetry.createSpan('php-analyzer.detectLanguageAndFramework');
-    let confidence = 0;
-    const frameworks: FrameworkDetection[] = [];
-    const files: string[] = [];
-
+  async canAnalyze(projectPath: string): Promise<boolean> {
     try {
-      const phpFiles = await this.findFiles(['**/*.php'], this.options.excludePatterns);
-      files.push(...phpFiles);
-      
-      if (phpFiles.length > 0) confidence += 0.5;
-
-      const phpSpecificFiles = ['composer.json', 'composer.lock', 'index.php', 'app.php', 'wp-config.php', 'artisan'];
-      for (const file of phpSpecificFiles) {
-        const filePath = path.join(this.projectPath, file);
-        if (await fs.pathExists(filePath)) {
-          confidence += 0.1;
-          files.push(filePath);
-          if (file === 'composer.json') this.hasComposer = true;
-        }
-      }
-
-      if (this.hasComposer) {
-        const composerFrameworks = await this.analyzeComposerJson();
-        frameworks.push(...composerFrameworks);
-      }
-
-      if (phpFiles.length > 0) {
-        const codeFrameworks = await this.analyzeCodeForFrameworks(phpFiles.slice(0, 20));
-        frameworks.push(...codeFrameworks);
-      }
-
-      confidence = Math.min(confidence, 1.0);
-      
-      telemetry.emit({
-        type: 'analysis_started',
-        source: { analyzer: this.getAnalyzerName() },
-        data: { language: 'php', confidence, filesCount: files.length, frameworksFound: frameworks.length, hasComposer: this.hasComposer }
+      const phpFiles = await glob(['**/*.php'], {
+        cwd: projectPath,
+        ignore: ['**/vendor/**', '**/.git/**', '**/node_modules/**']
       });
 
-      span.end();
-      return { language: 'php', confidence, frameworks: frameworks.sort((a, b) => b.confidence - a.confidence), files };
-    } catch (error) {
-      span.end();
-      throw new AnalyzerError(`PHP language detection failed: ${(error as Error).message}`, 'DETECTION_ERROR', { error });
+      const composerFiles = await glob(['composer.json', 'composer.lock'], {
+        cwd: projectPath
+      });
+
+      return phpFiles.length > 0 || composerFiles.length > 0;
+    } catch {
+      return false;
     }
   }
 
-  protected async discoverComponents(): Promise<ComponentDiscovery> {
-    const span = telemetry.createSpan('php-analyzer.discoverComponents');
-    const components: ComponentNode[] = [];
-    let totalFiles = 0, analyzedFiles = 0, skippedFiles = 0;
+  async analyze(context: AnalysisContext): Promise<CASContribution> {
+    const nodes: CASNode[] = [];
+    const edges: CASEdge[] = [];
+    const entryPoints: CASEntryPoint[] = [];
+    const exitPoints: CASExitPoint[] = [];
+    const libraries: any[] = [];
 
     try {
-      const sourceFiles = await this.findFiles(['**/*.php'], [...(this.options.excludePatterns || []), 'vendor/**', 'storage/**']);
-      totalFiles = sourceFiles.length;
-      console.log(`🐘 Analyzing ${totalFiles} PHP files...`);
+      await this.detectProjectType(context.projectPath);
+      await this.extractDependencies(context.projectPath, libraries);
 
-      for (const filePath of sourceFiles) {
-        try {
-          const component = await this.analyzeFile(filePath);
-          if (component) {
-            components.push(component);
-            analyzedFiles++;
-          } else {
-            skippedFiles++;
-          }
-        } catch (error) {
-          console.warn(`⚠️ Failed to analyze ${filePath}: ${(error as Error).message}`);
-          skippedFiles++;
+      const phpFiles = await glob(['**/*.php'], {
+        cwd: context.projectPath,
+        ignore: ['**/vendor/**', '**/.git/**', '**/node_modules/**']
+      });
+
+      const namespaces = new Map<string, string[]>();
+
+      for (const file of phpFiles) {
+        const fullPath = `${context.projectPath}/${file}`;
+        await this.analyzePHPFile(fullPath, file, nodes, edges, entryPoints, exitPoints, namespaces, context);
+      }
+
+      this.buildNamespaceHierarchy(namespaces, nodes, edges);
+      this.detectFrameworkPatterns(nodes, edges, entryPoints);
+      this.buildInheritanceRelationships(nodes, edges);
+
+      return this.createContribution(nodes, edges, entryPoints, exitPoints, {
+        framework_specific: {
+          language: 'php',
+          laravelFramework: this.laravelFrameworkDetected,
+          symfonyFramework: this.symfonyFrameworkDetected,
+          codeIgniterFramework: this.codeIgniterFrameworkDetected,
+          cakePHPFramework: this.cakePHPFrameworkDetected,
+          drupalFramework: this.drupalFrameworkDetected,
+          wordPressFramework: this.wordPressFrameworkDetected,
+          packageManager: this.composerProject ? 'composer' : 'unknown',
+          libraries,
+          filesAnalyzed: phpFiles.length,
+          namespacesFound: namespaces.size
         }
+      });
 
-        if ((analyzedFiles + skippedFiles) % 50 === 0) {
-          const progress = ((analyzedFiles + skippedFiles) / totalFiles) * 100;
-          console.log(`📊 Progress: ${progress.toFixed(1)}% (${analyzedFiles + skippedFiles}/${totalFiles})`);
+    } catch (error) {
+      throw new AnalyzerError(
+        `PHP analysis failed: ${(error as Error).message}`,
+        'PHP_ANALYSIS_ERROR'
+      );
+    }
+  }
+
+  private async detectProjectType(projectPath: string): Promise<void> {
+    const composerJsonPath = `${projectPath}/composer.json`;
+
+    this.composerProject = await fs.pathExists(composerJsonPath);
+
+    if (this.composerProject) {
+      try {
+        const composerContent = await fs.readFile(composerJsonPath, 'utf-8');
+        this.detectFrameworks(composerContent);
+      } catch (error) {
+        console.warn('Failed to read composer.json:', error);
+      }
+    }
+
+    await this.detectFrameworksByFiles(projectPath);
+  }
+
+  private detectFrameworks(content: string): void {
+    this.laravelFrameworkDetected = this.laravelFrameworkDetected ||
+      content.includes('laravel/framework') || content.includes('illuminate/');
+
+    this.symfonyFrameworkDetected = this.symfonyFrameworkDetected ||
+      content.includes('symfony/symfony') || content.includes('symfony/framework');
+
+    this.codeIgniterFrameworkDetected = this.codeIgniterFrameworkDetected ||
+      content.includes('codeigniter/framework') || content.includes('codeigniter4/framework');
+
+    this.cakePHPFrameworkDetected = this.cakePHPFrameworkDetected ||
+      content.includes('cakephp/cakephp');
+
+    this.drupalFrameworkDetected = this.drupalFrameworkDetected ||
+      content.includes('drupal/core') || content.includes('drupal/drupal');
+
+    this.wordPressFrameworkDetected = this.wordPressFrameworkDetected ||
+      content.includes('wordpress/wordpress') || content.includes('johnpbloch/wordpress');
+  }
+
+  private async detectFrameworksByFiles(projectPath: string): Promise<void> {
+    const artisanPath = `${projectPath}/artisan`;
+    const appKernelPath = `${projectPath}/app/Console/Kernel.php`;
+    const indexPhpPath = `${projectPath}/system/core/CodeIgniter.php`;
+    const cakePhpPath = `${projectPath}/config/bootstrap.php`;
+
+    if (await fs.pathExists(artisanPath) || await fs.pathExists(appKernelPath)) {
+      this.laravelFrameworkDetected = true;
+    }
+
+    if (await fs.pathExists(indexPhpPath)) {
+      this.codeIgniterFrameworkDetected = true;
+    }
+
+    if (await fs.pathExists(cakePhpPath)) {
+      const content = await fs.readFile(cakePhpPath, 'utf-8').catch(() => '');
+      if (content.includes('CakePHP')) {
+        this.cakePHPFrameworkDetected = true;
+      }
+    }
+
+    const wordPressConfigPath = `${projectPath}/wp-config.php`;
+    if (await fs.pathExists(wordPressConfigPath)) {
+      this.wordPressFrameworkDetected = true;
+    }
+  }
+
+  private async extractDependencies(projectPath: string, libraries: any[]): Promise<void> {
+    const composerJsonPath = `${projectPath}/composer.json`;
+    const composerLockPath = `${projectPath}/composer.lock`;
+
+    if (await fs.pathExists(composerJsonPath)) {
+      await this.extractComposerJsonDependencies(composerJsonPath, libraries);
+    }
+
+    if (await fs.pathExists(composerLockPath)) {
+      await this.extractComposerLockDependencies(composerLockPath, libraries);
+    }
+  }
+
+  private async extractComposerJsonDependencies(composerJsonPath: string, libraries: any[]): Promise<void> {
+    try {
+      const composerContent = await fs.readFile(composerJsonPath, 'utf-8');
+      const composer = JSON.parse(composerContent);
+
+      if (composer.require) {
+        for (const [name, version] of Object.entries(composer.require)) {
+          libraries.push({
+            name,
+            version: version as string,
+            type: 'composer_package',
+            source: 'composer.json',
+            metadata: {
+              isProduction: true,
+              isDevelopment: false
+            }
+          });
         }
       }
 
-      console.log(`✅ PHP analysis complete: ${analyzedFiles} analyzed, ${skippedFiles} skipped`);
-      span.end();
-      return { totalFiles, analyzedFiles, skippedFiles, components };
+      if (composer['require-dev']) {
+        for (const [name, version] of Object.entries(composer['require-dev'])) {
+          libraries.push({
+            name,
+            version: version as string,
+            type: 'composer_package',
+            source: 'composer.json',
+            metadata: {
+              isProduction: false,
+              isDevelopment: true
+            }
+          });
+        }
+      }
     } catch (error) {
-      span.end();
-      throw new AnalyzerError(`PHP component discovery failed: ${(error as Error).message}`, 'DISCOVERY_ERROR', { error });
+      console.warn('Failed to parse composer.json:', error);
     }
   }
 
-  protected async analyzeConnections(components: ComponentNode[]): Promise<Connection[]> {
-    const span = telemetry.createSpan('php-analyzer.analyzeConnections');
-    const connections: Connection[] = [];
-
+  private async extractComposerLockDependencies(composerLockPath: string, libraries: any[]): Promise<void> {
     try {
-      console.log(`🔗 Analyzing PHP connections between ${components.length} components...`);
-      
-      for (const component of components) {
-        for (const usePath of component.metadata.imports) {
-          const targetComponent = this.findComponentByUsePath(components, usePath);
-          if (targetComponent && targetComponent.id !== component.id) {
-            connections.push({
-              from: component.id,
-              to: targetComponent.id,
-              type: 'import',
-              weight: 1,
-              metadata: { callSites: 1, dataFlow: 'use/require' }
+      const composerLockContent = await fs.readFile(composerLockPath, 'utf-8');
+      const composerLock = JSON.parse(composerLockContent);
+
+      if (composerLock.packages) {
+        for (const pkg of composerLock.packages) {
+          const existingLib = libraries.find(lib => lib.name === pkg.name);
+          if (existingLib) {
+            existingLib.metadata.exactVersion = pkg.version;
+            existingLib.metadata.source = pkg.source;
+            existingLib.metadata.dist = pkg.dist;
+          }
+        }
+      }
+
+      if (composerLock['packages-dev']) {
+        for (const pkg of composerLock['packages-dev']) {
+          const existingLib = libraries.find(lib => lib.name === pkg.name);
+          if (existingLib) {
+            existingLib.metadata.exactVersion = pkg.version;
+            existingLib.metadata.source = pkg.source;
+            existingLib.metadata.dist = pkg.dist;
+          }
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to parse composer.lock:', error);
+    }
+  }
+
+  private async analyzePHPFile(
+    fullPath: string,
+    relativePath: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: any[],
+    exitPoints: any[],
+    namespaces: Map<string, string[]>,
+    _context: AnalysisContext
+  ): Promise<void> {
+    try {
+      const content = await fs.readFile(fullPath, 'utf-8');
+      const lines = content.split('\n');
+
+      const namespace = this.extractNamespace(content);
+      const uses = this.extractUses(content);
+      const classes = this.extractClasses(content, relativePath);
+      const interfaces = this.extractInterfaces(content, relativePath);
+      const traits = this.extractTraits(content, relativePath);
+      const enums = this.extractEnums(content, relativePath);
+      const functions = this.extractFunctions(content, relativePath);
+      const globalVars = this.extractGlobalVariables(content);
+      const constants = this.extractGlobalConstants(content);
+
+      if (namespace) {
+        if (!namespaces.has(namespace)) {
+          namespaces.set(namespace, []);
+        }
+        namespaces.get(namespace)!.push(relativePath);
+      }
+
+      const fileId = `file_${this.sanitizeId(relativePath)}`;
+      nodes.push(this.createNode(
+        fileId,
+        relativePath.split('/').pop() || 'unknown.php',
+        'file',
+        1,
+        fullPath,
+        1,
+        lines.length,
+        {
+          namespace: namespace || 'global',
+          uses: uses.map(u => u.namespace),
+          classCount: classes.length,
+          interfaceCount: interfaces.length,
+          traitCount: traits.length,
+          enumCount: enums.length,
+          functionCount: functions.length,
+          globalVarCount: globalVars.length,
+          constantCount: constants.length
+        }
+      ));
+
+      for (const use of uses) {
+        const useId = `use_${fileId}_${this.sanitizeId(use.namespace)}`;
+        nodes.push(this.createNode(
+          useId,
+          use.alias || use.namespace,
+          'use',
+          2,
+          fullPath,
+          use.lineNumber,
+          use.lineNumber,
+          {
+            namespace: use.namespace,
+            alias: use.alias,
+            type: use.type
+          }
+        ));
+
+        edges.push(this.createEdge(
+          `${fileId}_uses_${useId}`,
+          fileId,
+          useId,
+          'uses'
+        ));
+
+        if (!this.isBuiltinNamespace(use.namespace)) {
+          exitPoints.push({
+            id: `exit_${useId}`,
+            name: `External namespace: ${use.namespace}`,
+            type: 'external_namespace',
+            source_node: useId,
+            metadata: { namespace: use.namespace }
+          });
+        }
+      }
+
+      for (const cls of classes) {
+        await this.processPHPClass(cls, fileId, fullPath, nodes, edges, entryPoints);
+      }
+
+      for (const intf of interfaces) {
+        await this.processPHPInterface(intf, fileId, fullPath, nodes, edges, entryPoints);
+      }
+
+      for (const trait of traits) {
+        await this.processPHPTrait(trait, fileId, fullPath, nodes, edges, entryPoints);
+      }
+
+      for (const enm of enums) {
+        await this.processPHPEnum(enm, fileId, fullPath, nodes, edges, entryPoints);
+      }
+
+      for (const func of functions) {
+        await this.processPHPFunction(func, fileId, fullPath, nodes, edges, entryPoints);
+      }
+
+      for (const variable of globalVars) {
+        const variableId = `variable_${fileId}_${this.sanitizeId(variable.name)}`;
+        nodes.push(this.createNode(
+          variableId,
+          variable.name,
+          'variable',
+          3,
+          fullPath,
+          variable.lineNumber,
+          variable.lineNumber,
+          {
+            type: variable.type,
+            defaultValue: variable.defaultValue,
+            scope: variable.scope
+          }
+        ));
+
+        edges.push(this.createEdge(
+          `${fileId}_contains_${variableId}`,
+          fileId,
+          variableId,
+          'contains'
+        ));
+      }
+
+      for (const constant of constants) {
+        const constantId = `constant_${fileId}_${this.sanitizeId(constant.name)}`;
+        nodes.push(this.createNode(
+          constantId,
+          constant.name,
+          'constant',
+          3,
+          fullPath,
+          constant.lineNumber,
+          constant.lineNumber,
+          {
+            value: constant.value,
+            docComment: constant.docComment,
+            isClassConstant: constant.isClassConstant
+          }
+        ));
+
+        edges.push(this.createEdge(
+          `${fileId}_contains_${constantId}`,
+          fileId,
+          constantId,
+          'contains'
+        ));
+      }
+
+    } catch (error) {
+      console.warn(`Failed to analyze PHP file ${relativePath}:`, error);
+    }
+  }
+
+  private async processPHPClass(
+    cls: PHPClass,
+    fileId: string,
+    fullPath: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: any[]
+  ): Promise<void> {
+    const classId = `class_${this.sanitizeId(cls.namespace)}_${this.sanitizeId(cls.name)}`;
+
+    nodes.push(this.createNode(
+      classId,
+      cls.name,
+      'class',
+      2,
+      fullPath,
+      cls.lineStart,
+      cls.lineEnd,
+      {
+        namespace: cls.namespace,
+        modifiers: cls.modifiers,
+        extendsClass: cls.extendsClass,
+        implementsInterfaces: cls.implementsInterfaces,
+        traits: cls.traits,
+        docComment: cls.docComment,
+        propertyCount: cls.properties.length,
+        methodCount: cls.methods.length,
+        constantCount: cls.constants.length,
+        isAbstract: cls.isAbstract,
+        isFinal: cls.isFinal
+      }
+    ));
+
+    edges.push(this.createEdge(
+      `${fileId}_contains_${classId}`,
+      fileId,
+      classId,
+      'contains'
+    ));
+
+    for (const property of cls.properties) {
+      const propertyId = `property_${classId}_${this.sanitizeId(property.name)}`;
+      nodes.push(this.createNode(
+        propertyId,
+        property.name,
+        'property',
+        4,
+        fullPath,
+        property.lineNumber,
+        property.lineNumber,
+        {
+          visibility: property.visibility,
+          modifiers: property.modifiers,
+          type: property.type,
+          defaultValue: property.defaultValue,
+          docComment: property.docComment,
+          isStatic: property.isStatic,
+          isReadonly: property.isReadonly
+        }
+      ));
+
+      edges.push(this.createEdge(
+        `${classId}_has_property_${propertyId}`,
+        classId,
+        propertyId,
+        'has_property'
+      ));
+    }
+
+    for (const method of cls.methods) {
+      const methodId = `method_${classId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
+      nodes.push(this.createNode(
+        methodId,
+        method.name,
+        'method',
+        4,
+        fullPath,
+        method.lineStart,
+        method.lineEnd,
+        {
+          visibility: method.visibility,
+          modifiers: method.modifiers,
+          parameters: method.parameters,
+          returnType: method.returnType,
+          docComment: method.docComment,
+          isAbstract: method.isAbstract,
+          isFinal: method.isFinal,
+          isStatic: method.isStatic,
+          isConstructor: method.isConstructor,
+          isDestructor: method.isDestructor
+        }
+      ));
+
+      edges.push(this.createEdge(
+        `${classId}_has_method_${methodId}`,
+        classId,
+        methodId,
+        'has_method'
+      ));
+
+      if (method.visibility === 'public' && !method.isConstructor && !method.isDestructor) {
+        entryPoints.push({
+          id: `entry_${methodId}`,
+          name: `Public method: ${cls.name}.${method.name}`,
+          type: 'public_method',
+          source_node: methodId,
+          metadata: {
+            className: cls.name,
+            methodName: method.name,
+            returnType: method.returnType,
+            parameters: method.parameters.map(p => p.type)
+          }
+        });
+      }
+    }
+
+    for (const constant of cls.constants) {
+      const constantId = `constant_${classId}_${this.sanitizeId(constant.name)}`;
+      nodes.push(this.createNode(
+        constantId,
+        constant.name,
+        'class_constant',
+        4,
+        fullPath,
+        constant.lineNumber,
+        constant.lineNumber,
+        {
+          value: constant.value,
+          visibility: constant.visibility,
+          docComment: constant.docComment
+        }
+      ));
+
+      edges.push(this.createEdge(
+        `${classId}_has_constant_${constantId}`,
+        classId,
+        constantId,
+        'has_constant'
+      ));
+    }
+
+    entryPoints.push({
+      id: `entry_${classId}`,
+      name: `Class: ${cls.name}`,
+      type: 'class',
+      source_node: classId,
+      metadata: {
+        namespace: cls.namespace,
+        className: cls.name,
+        modifiers: cls.modifiers
+      }
+    });
+  }
+
+  private async processPHPInterface(
+    intf: PHPInterface,
+    fileId: string,
+    fullPath: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: any[]
+  ): Promise<void> {
+    const interfaceId = `interface_${this.sanitizeId(intf.namespace)}_${this.sanitizeId(intf.name)}`;
+
+    nodes.push(this.createNode(
+      interfaceId,
+      intf.name,
+      'interface',
+      2,
+      fullPath,
+      intf.lineStart,
+      intf.lineEnd,
+      {
+        namespace: intf.namespace,
+        extendsInterfaces: intf.extendsInterfaces,
+        docComment: intf.docComment,
+        methodCount: intf.methods.length,
+        constantCount: intf.constants.length
+      }
+    ));
+
+    edges.push(this.createEdge(
+      `${fileId}_contains_${interfaceId}`,
+      fileId,
+      interfaceId,
+      'contains'
+    ));
+
+    for (const method of intf.methods) {
+      const methodId = `method_${interfaceId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
+      nodes.push(this.createNode(
+        methodId,
+        method.name,
+        'interface_method',
+        4,
+        fullPath,
+        method.lineStart,
+        method.lineEnd,
+        {
+          visibility: method.visibility,
+          parameters: method.parameters,
+          returnType: method.returnType,
+          docComment: method.docComment
+        }
+      ));
+
+      edges.push(this.createEdge(
+        `${interfaceId}_declares_${methodId}`,
+        interfaceId,
+        methodId,
+        'declares'
+      ));
+    }
+
+    for (const constant of intf.constants) {
+      const constantId = `constant_${interfaceId}_${this.sanitizeId(constant.name)}`;
+      nodes.push(this.createNode(
+        constantId,
+        constant.name,
+        'interface_constant',
+        4,
+        fullPath,
+        constant.lineNumber,
+        constant.lineNumber,
+        {
+          value: constant.value,
+          docComment: constant.docComment
+        }
+      ));
+
+      edges.push(this.createEdge(
+        `${interfaceId}_has_constant_${constantId}`,
+        interfaceId,
+        constantId,
+        'has_constant'
+      ));
+    }
+
+    entryPoints.push({
+      id: `entry_${interfaceId}`,
+      name: `Interface: ${intf.name}`,
+      type: 'interface',
+      source_node: interfaceId,
+      metadata: {
+        namespace: intf.namespace,
+        interfaceName: intf.name
+      }
+    });
+  }
+
+  private async processPHPTrait(
+    trait: PHPTrait,
+    fileId: string,
+    fullPath: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: any[]
+  ): Promise<void> {
+    const traitId = `trait_${this.sanitizeId(trait.namespace)}_${this.sanitizeId(trait.name)}`;
+
+    nodes.push(this.createNode(
+      traitId,
+      trait.name,
+      'trait',
+      2,
+      fullPath,
+      trait.lineStart,
+      trait.lineEnd,
+      {
+        namespace: trait.namespace,
+        usedTraits: trait.usedTraits,
+        docComment: trait.docComment,
+        propertyCount: trait.properties.length,
+        methodCount: trait.methods.length
+      }
+    ));
+
+    edges.push(this.createEdge(
+      `${fileId}_contains_${traitId}`,
+      fileId,
+      traitId,
+      'contains'
+    ));
+
+    for (const property of trait.properties) {
+      const propertyId = `property_${traitId}_${this.sanitizeId(property.name)}`;
+      nodes.push(this.createNode(
+        propertyId,
+        property.name,
+        'property',
+        4,
+        fullPath,
+        property.lineNumber,
+        property.lineNumber,
+        {
+          visibility: property.visibility,
+          modifiers: property.modifiers,
+          type: property.type,
+          defaultValue: property.defaultValue,
+          docComment: property.docComment,
+          isStatic: property.isStatic,
+          isReadonly: property.isReadonly
+        }
+      ));
+
+      edges.push(this.createEdge(
+        `${traitId}_has_property_${propertyId}`,
+        traitId,
+        propertyId,
+        'has_property'
+      ));
+    }
+
+    for (const method of trait.methods) {
+      const methodId = `method_${traitId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
+      nodes.push(this.createNode(
+        methodId,
+        method.name,
+        'trait_method',
+        4,
+        fullPath,
+        method.lineStart,
+        method.lineEnd,
+        {
+          visibility: method.visibility,
+          modifiers: method.modifiers,
+          parameters: method.parameters,
+          returnType: method.returnType,
+          docComment: method.docComment,
+          isAbstract: method.isAbstract,
+          isFinal: method.isFinal,
+          isStatic: method.isStatic
+        }
+      ));
+
+      edges.push(this.createEdge(
+        `${traitId}_has_method_${methodId}`,
+        traitId,
+        methodId,
+        'has_method'
+      ));
+    }
+
+    entryPoints.push({
+      id: `entry_${traitId}`,
+      name: `Trait: ${trait.name}`,
+      type: 'trait',
+      source_node: traitId,
+      metadata: {
+        namespace: trait.namespace,
+        traitName: trait.name
+      }
+    });
+  }
+
+  private async processPHPEnum(
+    enm: PHPEnum,
+    fileId: string,
+    fullPath: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: any[]
+  ): Promise<void> {
+    const enumId = `enum_${this.sanitizeId(enm.namespace)}_${this.sanitizeId(enm.name)}`;
+
+    nodes.push(this.createNode(
+      enumId,
+      enm.name,
+      'enum',
+      2,
+      fullPath,
+      enm.lineStart,
+      enm.lineEnd,
+      {
+        namespace: enm.namespace,
+        backingType: enm.backingType,
+        implementsInterfaces: enm.implementsInterfaces,
+        traits: enm.traits,
+        docComment: enm.docComment,
+        caseCount: enm.cases.length,
+        methodCount: enm.methods.length,
+        constantCount: enm.constants.length
+      }
+    ));
+
+    edges.push(this.createEdge(
+      `${fileId}_contains_${enumId}`,
+      fileId,
+      enumId,
+      'contains'
+    ));
+
+    for (const enumCase of enm.cases) {
+      const caseId = `case_${enumId}_${this.sanitizeId(enumCase.name)}`;
+      nodes.push(this.createNode(
+        caseId,
+        enumCase.name,
+        'enum_case',
+        4,
+        fullPath,
+        enumCase.lineNumber,
+        enumCase.lineNumber,
+        {
+          value: enumCase.value,
+          docComment: enumCase.docComment
+        }
+      ));
+
+      edges.push(this.createEdge(
+        `${enumId}_has_case_${caseId}`,
+        enumId,
+        caseId,
+        'has_case'
+      ));
+    }
+
+    for (const method of enm.methods) {
+      const methodId = `method_${enumId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
+      nodes.push(this.createNode(
+        methodId,
+        method.name,
+        'method',
+        4,
+        fullPath,
+        method.lineStart,
+        method.lineEnd,
+        {
+          visibility: method.visibility,
+          modifiers: method.modifiers,
+          parameters: method.parameters,
+          returnType: method.returnType,
+          docComment: method.docComment,
+          isStatic: method.isStatic
+        }
+      ));
+
+      edges.push(this.createEdge(
+        `${enumId}_has_method_${methodId}`,
+        enumId,
+        methodId,
+        'has_method'
+      ));
+    }
+
+    entryPoints.push({
+      id: `entry_${enumId}`,
+      name: `Enum: ${enm.name}`,
+      type: 'enum',
+      source_node: enumId,
+      metadata: {
+        namespace: enm.namespace,
+        enumName: enm.name,
+        backingType: enm.backingType
+      }
+    });
+  }
+
+  private async processPHPFunction(
+    func: PHPFunction,
+    fileId: string,
+    fullPath: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: any[]
+  ): Promise<void> {
+    const functionId = `function_${this.sanitizeId(func.namespace)}_${this.sanitizeId(func.name)}_${func.lineStart}`;
+
+    nodes.push(this.createNode(
+      functionId,
+      func.name,
+      'function',
+      3,
+      fullPath,
+      func.lineStart,
+      func.lineEnd,
+      {
+        namespace: func.namespace,
+        parameters: func.parameters,
+        returnType: func.returnType,
+        docComment: func.docComment
+      }
+    ));
+
+    edges.push(this.createEdge(
+      `${fileId}_contains_${functionId}`,
+      fileId,
+      functionId,
+      'contains'
+    ));
+
+    entryPoints.push({
+      id: `entry_${functionId}`,
+      name: `Function: ${func.name}`,
+      type: 'function',
+      source_node: functionId,
+      metadata: {
+        namespace: func.namespace,
+        functionName: func.name,
+        returnType: func.returnType,
+        parameters: func.parameters.map(p => p.type)
+      }
+    });
+  }
+
+  private extractNamespace(content: string): string | null {
+    const namespaceMatch = content.match(/namespace\s+([a-zA-Z0-9_\\]+)\s*[;{]/);
+    return namespaceMatch ? namespaceMatch[1] : null;
+  }
+
+  private extractUses(content: string): PHPUse[] {
+    const uses: PHPUse[] = [];
+    const lines = content.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+
+      const useMatch = line.match(/use\s+(function\s+|const\s+)?([a-zA-Z0-9_\\]+)(?:\s+as\s+([a-zA-Z0-9_]+))?\s*;/);
+      if (useMatch) {
+        const typePrefix = useMatch[1]?.trim();
+        const namespace = useMatch[2];
+        const alias = useMatch[3];
+
+        let type: 'class' | 'function' | 'const' = 'class';
+        if (typePrefix === 'function') type = 'function';
+        else if (typePrefix === 'const') type = 'const';
+
+        uses.push({
+          namespace,
+          alias,
+          type,
+          lineNumber: i + 1
+        });
+      }
+    }
+
+    return uses;
+  }
+
+  private extractClasses(content: string, filePath: string): PHPClass[] {
+    const classes: PHPClass[] = [];
+    const lines = content.split('\n');
+    const namespace = this.extractNamespace(content) || '';
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+
+      if (line.includes('class ') && !line.startsWith('//') && !line.startsWith('*')) {
+        const classMatch = line.match(/(abstract\s+|final\s+)?class\s+([a-zA-Z0-9_]+)(?:\s+extends\s+([a-zA-Z0-9_\\]+))?(?:\s+implements\s+([a-zA-Z0-9_\\,\s]+))?/);
+        if (classMatch) {
+          const modifierStr = classMatch[1] || '';
+          const className = classMatch[2];
+          const extendsClass = classMatch[3];
+          const implementsStr = classMatch[4];
+
+          const modifiers = modifierStr.trim().split(/\s+/).filter(m => m);
+          const implementsInterfaces = implementsStr ? implementsStr.split(',').map(i => i.trim()) : [];
+
+          const docComment = this.extractDocComment(lines, i);
+          const classStartLine = i + 1;
+          const classEndLine = this.findBlockEnd(lines, i);
+
+          const properties = this.extractProperties(lines, i, classEndLine);
+          const methods = this.extractMethods(lines, i, classEndLine);
+          const constants = this.extractClassConstants(lines, i, classEndLine);
+          const traits = this.extractUsedTraits(lines, i, classEndLine);
+
+          classes.push({
+            name: className,
+            namespace,
+            filePath,
+            modifiers,
+            extendsClass,
+            implementsInterfaces,
+            properties,
+            methods,
+            constants,
+            traits,
+            docComment,
+            lineStart: classStartLine,
+            lineEnd: classEndLine,
+            isAbstract: modifiers.includes('abstract'),
+            isFinal: modifiers.includes('final')
+          });
+        }
+      }
+    }
+
+    return classes;
+  }
+
+  private extractInterfaces(content: string, filePath: string): PHPInterface[] {
+    const interfaces: PHPInterface[] = [];
+    const lines = content.split('\n');
+    const namespace = this.extractNamespace(content) || '';
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+
+      if (line.includes('interface ') && !line.startsWith('//') && !line.startsWith('*')) {
+        const interfaceMatch = line.match(/interface\s+([a-zA-Z0-9_]+)(?:\s+extends\s+([a-zA-Z0-9_\\,\s]+))?/);
+        if (interfaceMatch) {
+          const interfaceName = interfaceMatch[1];
+          const extendsStr = interfaceMatch[2];
+
+          const extendsInterfaces = extendsStr ? extendsStr.split(',').map(i => i.trim()) : [];
+
+          const docComment = this.extractDocComment(lines, i);
+          const interfaceStartLine = i + 1;
+          const interfaceEndLine = this.findBlockEnd(lines, i);
+
+          const methods = this.extractMethods(lines, i, interfaceEndLine);
+          const constants = this.extractClassConstants(lines, i, interfaceEndLine);
+
+          interfaces.push({
+            name: interfaceName,
+            namespace,
+            filePath,
+            extendsInterfaces,
+            methods,
+            constants,
+            docComment,
+            lineStart: interfaceStartLine,
+            lineEnd: interfaceEndLine
+          });
+        }
+      }
+    }
+
+    return interfaces;
+  }
+
+  private extractTraits(content: string, filePath: string): PHPTrait[] {
+    const traits: PHPTrait[] = [];
+    const lines = content.split('\n');
+    const namespace = this.extractNamespace(content) || '';
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+
+      if (line.includes('trait ') && !line.startsWith('//') && !line.startsWith('*')) {
+        const traitMatch = line.match(/trait\s+([a-zA-Z0-9_]+)/);
+        if (traitMatch) {
+          const traitName = traitMatch[1];
+
+          const docComment = this.extractDocComment(lines, i);
+          const traitStartLine = i + 1;
+          const traitEndLine = this.findBlockEnd(lines, i);
+
+          const properties = this.extractProperties(lines, i, traitEndLine);
+          const methods = this.extractMethods(lines, i, traitEndLine);
+          const usedTraits = this.extractUsedTraits(lines, i, traitEndLine);
+
+          traits.push({
+            name: traitName,
+            namespace,
+            filePath,
+            properties,
+            methods,
+            usedTraits,
+            docComment,
+            lineStart: traitStartLine,
+            lineEnd: traitEndLine
+          });
+        }
+      }
+    }
+
+    return traits;
+  }
+
+  private extractEnums(content: string, filePath: string): PHPEnum[] {
+    const enums: PHPEnum[] = [];
+    const lines = content.split('\n');
+    const namespace = this.extractNamespace(content) || '';
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+
+      if (line.includes('enum ') && !line.startsWith('//') && !line.startsWith('*')) {
+        const enumMatch = line.match(/enum\s+([a-zA-Z0-9_]+)(?:\s*:\s*([a-zA-Z0-9_]+))?(?:\s+implements\s+([a-zA-Z0-9_\\,\s]+))?/);
+        if (enumMatch) {
+          const enumName = enumMatch[1];
+          const backingType = enumMatch[2];
+          const implementsStr = enumMatch[3];
+
+          const implementsInterfaces = implementsStr ? implementsStr.split(',').map(i => i.trim()) : [];
+
+          const docComment = this.extractDocComment(lines, i);
+          const enumStartLine = i + 1;
+          const enumEndLine = this.findBlockEnd(lines, i);
+
+          const cases = this.extractEnumCases(lines, i, enumEndLine);
+          const methods = this.extractMethods(lines, i, enumEndLine);
+          const constants = this.extractClassConstants(lines, i, enumEndLine);
+          const traits = this.extractUsedTraits(lines, i, enumEndLine);
+
+          enums.push({
+            name: enumName,
+            namespace,
+            filePath,
+            backingType,
+            cases,
+            methods,
+            constants,
+            implementsInterfaces,
+            traits,
+            docComment,
+            lineStart: enumStartLine,
+            lineEnd: enumEndLine
+          });
+        }
+      }
+    }
+
+    return enums;
+  }
+
+  private extractFunctions(content: string, filePath: string): PHPFunction[] {
+    const functions: PHPFunction[] = [];
+    const lines = content.split('\n');
+    const namespace = this.extractNamespace(content) || '';
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+
+      if (line.includes('function ') && !line.startsWith('//') && !line.startsWith('*') && !this.isInsideClass(lines, i)) {
+        const functionMatch = line.match(/function\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*:\s*([^{]+))?/);
+        if (functionMatch) {
+          const functionName = functionMatch[1];
+          const paramsStr = functionMatch[2];
+          const returnType = functionMatch[3]?.trim();
+
+          const docComment = this.extractDocComment(lines, i);
+          const functionStartLine = i + 1;
+          const functionEndLine = this.findBlockEnd(lines, i);
+
+          const parameters = this.extractFunctionParameters(paramsStr);
+
+          functions.push({
+            name: functionName,
+            namespace,
+            filePath,
+            parameters,
+            returnType,
+            docComment,
+            lineStart: functionStartLine,
+            lineEnd: functionEndLine
+          });
+        }
+      }
+    }
+
+    return functions;
+  }
+
+  private extractProperties(lines: string[], classStart: number, classEnd: number): PHPProperty[] {
+    const properties: PHPProperty[] = [];
+
+    for (let i = classStart + 1; i < classEnd; i++) {
+      const line = lines[i].trim();
+
+      if (this.isPropertyDeclaration(line)) {
+        const propertyMatch = line.match(/(public|private|protected)(?:\s+(static|readonly))?\s+(?:([a-zA-Z0-9_\\|?]+)\s+)?\$([a-zA-Z0-9_]+)(?:\s*=\s*([^;]+))?/);
+        if (propertyMatch) {
+          const visibility = propertyMatch[1];
+          const modifier = propertyMatch[2];
+          const type = propertyMatch[3];
+          const propertyName = propertyMatch[4];
+          const defaultValue = propertyMatch[5]?.trim();
+
+          const modifiers = [visibility];
+          if (modifier) modifiers.push(modifier);
+
+          const docComment = this.extractDocComment(lines, i);
+
+          properties.push({
+            name: propertyName,
+            visibility,
+            modifiers,
+            type,
+            defaultValue,
+            docComment,
+            lineNumber: i + 1,
+            isStatic: modifier === 'static',
+            isReadonly: modifier === 'readonly'
+          });
+        }
+      }
+    }
+
+    return properties;
+  }
+
+  private extractMethods(lines: string[], classStart: number, classEnd: number): PHPMethod[] {
+    const methods: PHPMethod[] = [];
+
+    for (let i = classStart + 1; i < classEnd; i++) {
+      const line = lines[i].trim();
+
+      if (this.isMethodDeclaration(line)) {
+        const methodMatch = line.match(/(public|private|protected)(?:\s+(static|abstract|final))?\s+function\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*:\s*([^{]+))?/);
+        if (methodMatch) {
+          const visibility = methodMatch[1];
+          const modifier = methodMatch[2];
+          const methodName = methodMatch[3];
+          const paramsStr = methodMatch[4];
+          const returnType = methodMatch[5]?.trim();
+
+          const modifiers = [visibility];
+          if (modifier) modifiers.push(modifier);
+
+          const docComment = this.extractDocComment(lines, i);
+          const methodEndLine = this.findMethodEnd(lines, i);
+
+          const parameters = this.extractFunctionParameters(paramsStr);
+
+          methods.push({
+            name: methodName,
+            visibility,
+            modifiers,
+            parameters,
+            returnType,
+            docComment,
+            lineStart: i + 1,
+            lineEnd: methodEndLine,
+            isAbstract: modifier === 'abstract',
+            isFinal: modifier === 'final',
+            isStatic: modifier === 'static',
+            isConstructor: methodName === '__construct',
+            isDestructor: methodName === '__destruct'
+          });
+        }
+      }
+    }
+
+    return methods;
+  }
+
+  private extractClassConstants(lines: string[], classStart: number, classEnd: number): PHPConstant[] {
+    const constants: PHPConstant[] = [];
+
+    for (let i = classStart + 1; i < classEnd; i++) {
+      const line = lines[i].trim();
+
+      if (this.isConstantDeclaration(line)) {
+        const constantMatch = line.match(/(public|private|protected)?\s*const\s+([a-zA-Z0-9_]+)\s*=\s*([^;]+);/);
+        if (constantMatch) {
+          const visibility = constantMatch[1] || 'public';
+          const constantName = constantMatch[2];
+          const value = constantMatch[3].trim();
+
+          const docComment = this.extractDocComment(lines, i);
+
+          constants.push({
+            name: constantName,
+            value,
+            visibility,
+            docComment,
+            lineNumber: i + 1,
+            isClassConstant: true
+          });
+        }
+      }
+    }
+
+    return constants;
+  }
+
+  private extractEnumCases(lines: string[], enumStart: number, enumEnd: number): PHPEnumCase[] {
+    const cases: PHPEnumCase[] = [];
+
+    for (let i = enumStart + 1; i < enumEnd; i++) {
+      const line = lines[i].trim();
+
+      if (line.startsWith('case ')) {
+        const caseMatch = line.match(/case\s+([a-zA-Z0-9_]+)(?:\s*=\s*([^;]+))?;/);
+        if (caseMatch) {
+          const caseName = caseMatch[1];
+          const value = caseMatch[2]?.trim();
+
+          const docComment = this.extractDocComment(lines, i);
+
+          cases.push({
+            name: caseName,
+            value,
+            docComment,
+            lineNumber: i + 1
+          });
+        }
+      }
+    }
+
+    return cases;
+  }
+
+  private extractUsedTraits(lines: string[], classStart: number, classEnd: number): string[] {
+    const traits: string[] = [];
+
+    for (let i = classStart + 1; i < classEnd; i++) {
+      const line = lines[i].trim();
+
+      if (line.startsWith('use ') && !line.includes('function') && !line.includes('const')) {
+        const traitMatch = line.match(/use\s+([a-zA-Z0-9_\\,\s]+);/);
+        if (traitMatch) {
+          const traitNames = traitMatch[1].split(',').map(t => t.trim());
+          traits.push(...traitNames);
+        }
+      }
+    }
+
+    return traits;
+  }
+
+  private extractGlobalVariables(content: string): PHPVariable[] {
+    const variables: PHPVariable[] = [];
+    const lines = content.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+
+      if (this.isGlobalVariableDeclaration(line)) {
+        const varMatch = line.match(/\$([a-zA-Z0-9_]+)(?:\s*=\s*([^;]+))?;/);
+        if (varMatch) {
+          const varName = varMatch[1];
+          const defaultValue = varMatch[2]?.trim();
+
+          variables.push({
+            name: varName,
+            scope: 'global',
+            defaultValue,
+            lineNumber: i + 1
+          });
+        }
+      }
+    }
+
+    return variables;
+  }
+
+  private extractGlobalConstants(content: string): PHPConstant[] {
+    const constants: PHPConstant[] = [];
+    const lines = content.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+
+      if (line.startsWith('define(') || line.startsWith('const ')) {
+        let constantMatch: RegExpMatchArray | null = null;
+
+        if (line.startsWith('define(')) {
+          constantMatch = line.match(/define\s*\(\s*['"']([^'"']+)['"']\s*,\s*([^)]+)\)/);
+          if (constantMatch) {
+            constants.push({
+              name: constantMatch[1],
+              value: constantMatch[2].trim(),
+              lineNumber: i + 1,
+              isClassConstant: false
+            });
+          }
+        } else {
+          constantMatch = line.match(/const\s+([a-zA-Z0-9_]+)\s*=\s*([^;]+);/);
+          if (constantMatch) {
+            constants.push({
+              name: constantMatch[1],
+              value: constantMatch[2].trim(),
+              lineNumber: i + 1,
+              isClassConstant: false
             });
           }
         }
       }
-
-      const connectionMap = new Map<string, Connection>();
-      for (const conn of connections) {
-        const key = `${conn.from}-${conn.to}-${conn.type}`;
-        const existing = connectionMap.get(key);
-        if (existing) existing.weight = (existing.weight || 0) + (conn.weight || 0);
-        else connectionMap.set(key, conn);
-      }
-
-      const uniqueConnections = Array.from(connectionMap.values());
-      console.log(`🔗 Found ${uniqueConnections.length} unique connections`);
-      span.end();
-      return uniqueConnections;
-    } catch (error) {
-      span.end();
-      throw new AnalyzerError(`PHP connection analysis failed: ${(error as Error).message}`, 'CONNECTION_ERROR', { error });
     }
+
+    return constants;
   }
 
-  protected async assessRisks(components: ComponentNode[], connections: Connection[]): Promise<RiskArea[]> {
-    const risks: RiskArea[] = [];
-    for (const component of components) {
-      const reasons: string[] = [];
-      let riskLevel: 'low' | 'medium' | 'high' = 'low';
+  private extractFunctionParameters(paramsStr: string): PHPParameter[] {
+    const parameters: PHPParameter[] = [];
 
-      if (component.metadata.complexity >= 9) {
-        reasons.push(`High complexity (${component.metadata.complexity})`);
-        riskLevel = 'high';
-      }
-      if (component.metadata.lineCount > 1200) {
-        reasons.push(`Large file (${component.metadata.lineCount} lines)`);
-        riskLevel = 'high';
-      }
-      
-      const incomingConnections = connections.filter(c => c.to === component.id).length;
-      if (incomingConnections > 8) {
-        reasons.push(`High coupling (${incomingConnections} dependents)`);
-        riskLevel = 'high';
-      }
+    if (!paramsStr.trim()) {
+      return parameters;
+    }
 
-      if (reasons.length > 0) {
-        risks.push({
-          componentId: component.id,
-          riskLevel,
-          reasons,
-          impact: this.calculateRiskImpact(riskLevel, incomingConnections)
+    const params = this.splitParameters(paramsStr);
+
+    for (const param of params) {
+      const trimmed = param.trim();
+
+      const paramMatch = trimmed.match(/^(?:([a-zA-Z0-9_\\|?]+)\s+)?(&)?(\.\.\.)?\$([a-zA-Z0-9_]+)(?:\s*=\s*(.+))?$/);
+      if (paramMatch) {
+        const type = paramMatch[1];
+        const isReference = !!paramMatch[2];
+        const isVariadic = !!paramMatch[3];
+        const paramName = paramMatch[4];
+        const defaultValue = paramMatch[5]?.trim();
+
+        parameters.push({
+          name: paramName,
+          type,
+          defaultValue,
+          isVariadic,
+          isReference,
+          isNullable: type?.includes('?') || false
         });
       }
     }
-    return risks;
+
+    return parameters;
   }
 
-  protected async generateCallGraph(components: ComponentNode[]): Promise<CallGraph> {
-    const nodes = components.map(comp => ({
-      id: comp.id, name: comp.name, type: 'module' as const, file: comp.path,
-      complexity: comp.metadata.complexity, fanIn: comp.dependents.length,
-      fanOut: comp.dependencies.length, depth: 0,
-      critical: comp.metadata.complexity >= 8 || comp.dependents.length > 6
-    }));
+  private extractDocComment(lines: string[], lineIndex: number): string | undefined {
+    let docComment = '';
+    let foundDocComment = false;
 
-    const edges = components.flatMap(comp => 
-      comp.dependencies.map(dep => ({ from: comp.id, to: dep, count: 1, type: 'direct' as const, async: false, conditional: false }))
-    );
+    for (let i = lineIndex - 1; i >= 0; i--) {
+      const line = lines[i].trim();
 
-    return { nodes, edges, entryPoints: components.filter(c => c.metadata.isEntry).map(c => c.id), cycles: [], layers: [], hotPaths: [], deadCode: [] };
+      if (line === '*/') {
+        foundDocComment = true;
+        continue;
+      }
+
+      if (foundDocComment) {
+        if (line.startsWith('/**')) {
+          docComment = lines.slice(i, lineIndex).join('\n').trim();
+          break;
+        }
+        if (!line.startsWith('*')) {
+          break;
+        }
+      } else if (line && !line.startsWith('//')) {
+        break;
+      }
+    }
+
+    return foundDocComment ? docComment : undefined;
   }
 
-  protected async analyzeDatabaseConnections(components: ComponentNode[]): Promise<DatabaseConnection[]> {
-    const connections: DatabaseConnection[] = [];
-    const dbPatterns = [
-      { type: 'mysql', patterns: ['mysql', 'mysqli', 'pdo_mysql'] },
-      { type: 'postgresql', patterns: ['pgsql', 'pdo_pgsql'] },
-      { type: 'sqlite', patterns: ['sqlite', 'pdo_sqlite'] },
-      { type: 'mongodb', patterns: ['mongodb', 'mongo'] }
+  private splitParameters(paramsStr: string): string[] {
+    const params: string[] = [];
+    let current = '';
+    let depth = 0;
+
+    for (const char of paramsStr) {
+      if (char === '(') depth++;
+      else if (char === ')') depth--;
+      else if (char === ',' && depth === 0) {
+        params.push(current.trim());
+        current = '';
+        continue;
+      }
+
+      current += char;
+    }
+
+    if (current.trim()) {
+      params.push(current.trim());
+    }
+
+    return params;
+  }
+
+  private isPropertyDeclaration(line: string): boolean {
+    return line.includes('$') &&
+           (line.includes('public') || line.includes('private') || line.includes('protected')) &&
+           !line.includes('function') &&
+           !line.includes('return') &&
+           !line.includes('=');
+  }
+
+  private isMethodDeclaration(line: string): boolean {
+    return line.includes('function ') &&
+           (line.includes('public') || line.includes('private') || line.includes('protected')) &&
+           line.includes('(') &&
+           !line.startsWith('//');
+  }
+
+  private isConstantDeclaration(line: string): boolean {
+    return line.includes('const ') &&
+           !line.startsWith('//') &&
+           line.includes('=');
+  }
+
+  private isGlobalVariableDeclaration(line: string): boolean {
+    return line.startsWith('$') &&
+           !line.includes('function') &&
+           !line.includes('class') &&
+           !line.includes('interface') &&
+           !line.includes('trait');
+  }
+
+  private isInsideClass(lines: string[], lineIndex: number): boolean {
+    let braceCount = 0;
+
+    for (let i = lineIndex - 1; i >= 0; i--) {
+      const line = lines[i];
+
+      for (const char of line) {
+        if (char === '}') {
+          braceCount++;
+        } else if (char === '{') {
+          braceCount--;
+          if (braceCount < 0) {
+            const lineStr = lines[i].trim();
+            return lineStr.includes('class ') || lineStr.includes('interface ') || lineStr.includes('trait ');
+          }
+        }
+      }
+    }
+
+    return false;
+  }
+
+  private findBlockEnd(lines: string[], startIndex: number): number {
+    let braceCount = 0;
+    let foundOpenBrace = false;
+
+    for (let i = startIndex; i < lines.length; i++) {
+      const line = lines[i];
+
+      for (const char of line) {
+        if (char === '{') {
+          braceCount++;
+          foundOpenBrace = true;
+        } else if (char === '}') {
+          braceCount--;
+          if (foundOpenBrace && braceCount === 0) {
+            return i + 1;
+          }
+        }
+      }
+    }
+
+    return lines.length;
+  }
+
+  private findMethodEnd(lines: string[], startIndex: number): number {
+    const line = lines[startIndex];
+
+    if (line.includes(';')) {
+      return startIndex + 1;
+    }
+
+    return this.findBlockEnd(lines, startIndex);
+  }
+
+  private buildNamespaceHierarchy(namespaces: Map<string, string[]>, nodes: CASNode[], edges: CASEdge[]): void {
+    for (const [namespaceName, files] of namespaces.entries()) {
+      const namespaceId = `namespace_${this.sanitizeId(namespaceName)}`;
+
+      nodes.push(this.createNode(
+        namespaceId,
+        namespaceName,
+        'namespace',
+        1,
+        undefined,
+        undefined,
+        undefined,
+        {
+          fileCount: files.length,
+          files: files
+        }
+      ));
+
+      for (const file of files) {
+        const fileId = `file_${this.sanitizeId(file)}`;
+        edges.push(this.createEdge(
+          `${namespaceId}_contains_${fileId}`,
+          namespaceId,
+          fileId,
+          'contains'
+        ));
+      }
+    }
+  }
+
+  private detectFrameworkPatterns(nodes: CASNode[], _edges: CASEdge[], entryPoints: any[]): void {
+    const frameworkPatterns = {
+      laravel: ['Controller', 'Model', 'Illuminate\\', 'Route::', 'Artisan'],
+      symfony: ['Symfony\\', 'Controller', 'Bundle', 'DependencyInjection'],
+      codeigniter: ['CI_Controller', 'CI_Model', 'CodeIgniter\\'],
+      cakephp: ['CakeObject', 'AppController', 'CakePHP\\'],
+      drupal: ['Drupal\\', 'DrupalKernel', 'ModuleHandlerInterface'],
+      wordpress: ['wp_', 'WP_', 'add_action', 'add_filter', 'get_option']
+    };
+
+    for (const node of nodes) {
+      if (node.type === 'class' || node.type === 'function') {
+        const nodeName = node.name;
+        const namespace = node.metadata?.attributes?.namespace as string;
+
+        for (const [framework, patterns] of Object.entries(frameworkPatterns)) {
+          if (patterns.some(pattern =>
+            nodeName.includes(pattern) ||
+            namespace?.includes(pattern) ||
+            (node.metadata?.attributes?.extendsClass as string)?.includes(pattern) ||
+            (node.metadata?.attributes?.implementsInterfaces as string[])?.some(i => i.includes(pattern))
+          )) {
+            entryPoints.push({
+              id: `entry_${framework}_${node.id}`,
+              name: `${framework.charAt(0).toUpperCase() + framework.slice(1)} component: ${node.name}`,
+              type: `${framework}_component`,
+              source_node: node.id,
+              metadata: {
+                framework,
+                componentName: node.name
+              }
+            });
+          }
+        }
+      }
+    }
+  }
+
+  private buildInheritanceRelationships(nodes: CASNode[], edges: CASEdge[]): void {
+    const classNodes = nodes.filter(n => n.type === 'class');
+    const interfaceNodes = nodes.filter(n => n.type === 'interface');
+
+    for (const classNode of classNodes) {
+      if (classNode.metadata?.attributes?.extendsClass) {
+        const parentClassName = classNode.metadata.attributes?.extendsClass as string;
+        const parentClassNode = classNodes.find(n => n.name === parentClassName);
+
+        if (parentClassNode) {
+          edges.push(this.createEdge(
+            `${classNode.id}_extends_${parentClassNode.id}`,
+            classNode.id,
+            parentClassNode.id,
+            'extends'
+          ));
+        }
+      }
+
+      if (classNode.metadata?.attributes?.implementsInterfaces) {
+        const implementedInterfaces = classNode.metadata.attributes?.implementsInterfaces as string[];
+        for (const interfaceName of implementedInterfaces) {
+          const interfaceNode = interfaceNodes.find(n => n.name === interfaceName);
+
+          if (interfaceNode) {
+            edges.push(this.createEdge(
+              `${classNode.id}_implements_${interfaceNode.id}`,
+              classNode.id,
+              interfaceNode.id,
+              'implements'
+            ));
+          }
+        }
+      }
+
+      if (classNode.metadata?.attributes?.traits) {
+        const usedTraits = classNode.metadata.attributes?.traits as string[];
+        for (const traitName of usedTraits) {
+          const traitNode = nodes.find(n => n.type === 'trait' && n.name === traitName);
+
+          if (traitNode) {
+            edges.push(this.createEdge(
+              `${classNode.id}_uses_${traitNode.id}`,
+              classNode.id,
+              traitNode.id,
+              'uses_trait'
+            ));
+          }
+        }
+      }
+    }
+
+    for (const interfaceNode of interfaceNodes) {
+      if (interfaceNode.metadata?.attributes?.extendsInterfaces) {
+        const extendedInterfaces = interfaceNode.metadata.attributes?.extendsInterfaces as string[];
+        for (const parentInterfaceName of extendedInterfaces) {
+          const parentInterfaceNode = interfaceNodes.find(n => n.name === parentInterfaceName);
+
+          if (parentInterfaceNode) {
+            edges.push(this.createEdge(
+              `${interfaceNode.id}_extends_${parentInterfaceNode.id}`,
+              interfaceNode.id,
+              parentInterfaceNode.id,
+              'extends'
+            ));
+          }
+        }
+      }
+    }
+  }
+
+  private isBuiltinNamespace(namespace: string): boolean {
+    const builtinNamespaces = [
+      'stdClass', 'Exception', 'ErrorException', 'Error', 'ParseError', 'TypeError',
+      'ArgumentCountError', 'ArithmeticError', 'AssertionError', 'DivisionByZeroError',
+      'CompileError', 'FatalError', 'Closure', 'Generator', 'WeakReference',
+      'DateTime', 'DateTimeImmutable', 'DateTimeZone', 'DateInterval', 'DatePeriod',
+      'ReflectionClass', 'ReflectionMethod', 'ReflectionProperty', 'ReflectionFunction',
+      'PDO', 'PDOStatement', 'PDOException', 'mysqli', 'SplFileObject'
     ];
 
-    for (const component of components) {
-      for (const pattern of dbPatterns) {
-        const hasPattern = pattern.patterns.some(p => component.metadata.imports.some(imp => imp.includes(p)));
-        if (hasPattern) {
-          connections.push({
-            id: `db_${pattern.type}_${component.id}`, name: `${pattern.type} connection`,
-            type: pattern.type as any, componentIds: [component.id],
-            usage: [{ componentId: component.id, operations: [], frequency: 1, critical: false }]
-          });
-        }
-      }
-    }
-    return connections;
+    return builtinNamespaces.some(builtin => namespace === builtin || namespace.startsWith(builtin));
   }
 
-  protected async analyzeTestCoverage(components: ComponentNode[]): Promise<TestCoverage | null> {
-    const testFiles = components.filter(c => this.isTestFile(c.path));
-    const sourceFiles = components.filter(c => !this.isTestFile(c.path));
-    
-    if (testFiles.length === 0) return null;
-
-    const totalLines = sourceFiles.reduce((sum, c) => sum + c.metadata.lineCount, 0);
-    const estimatedCoveredLines = Math.min(testFiles.length * 35, totalLines * 0.65);
-
-    return {
-      overall: totalLines > 0 ? (estimatedCoveredLines / totalLines) * 100 : 0,
-      lines: { covered: estimatedCoveredLines, total: totalLines, percentage: totalLines > 0 ? (estimatedCoveredLines / totalLines) * 100 : 0 },
-      branches: { covered: 0, total: 0, percentage: 0 }, functions: { covered: 0, total: 0, percentage: 0 },
-      statements: { covered: 0, total: 0, percentage: 0 }, byComponent: {}, byType: { unit: testFiles.length, integration: 0, e2e: 0 },
-      uncoveredFiles: sourceFiles.filter(c => !this.hasCorrespondingTest(c, testFiles)).map(c => c.path)
-    };
+  protected sanitizeId(name: string): string {
+    return name.replace(/[^a-zA-Z0-9]/g, '_');
   }
 
-  // Helper methods
-  private async analyzeFile(filePath: string): Promise<ComponentNode | null> {
-    try {
-      const content = await this.readFile(filePath);
-      const relativePath = path.relative(this.projectPath, filePath);
-      
-      if (content.length === 0) return null;
-
-      return {
-        id: this.generateComponentId(filePath), name: this.extractClassName(content, filePath),
-        type: this.determineComponentType(filePath, content), path: relativePath,
-        dependencies: [], dependents: [],
-        metadata: {
-          lineCount: content.split('\n').length, complexity: this.calculateComplexity(content),
-          lastModified: (await fs.stat(filePath)).mtime, exports: this.extractExports(content),
-          imports: this.extractImports(content), layer: this.determineArchitecturalLayer(filePath, content),
-          responsibilities: this.extractResponsibilities(filePath, content), functions: await this.extractFunctions(content, 'php'),
-          testCoverage: this.isTestFile(filePath) ? 100 : undefined, isEntry: this.isEntryPoint(filePath, content),
-          httpMethods: this.extractHttpMethods(content), dbQueries: this.extractDatabaseQueries(content),
-          externalCalls: this.extractExternalCalls(content)
-        }
-      };
-    } catch (error) {
-      throw new AnalyzerError(`Failed to analyze PHP file ${filePath}: ${(error as Error).message}`, 'FILE_ANALYSIS_ERROR', { filePath, error });
+  protected getLevelName(level: number): string {
+    switch (level) {
+      case 1: return 'system';
+      case 2: return 'architectural';
+      case 3: return 'code';
+      case 4: return 'member';
+      case 5: return 'implementation';
+      default: return `level_${level}`;
     }
   }
 
-  private extractClassName(content: string, filePath: string): string {
-    const classMatch = content.match(/class\s+(\w+)/);
-    if (classMatch) return classMatch[1];
-    
-    const interfaceMatch = content.match(/interface\s+(\w+)/);
-    if (interfaceMatch) return interfaceMatch[1];
-    
-    return path.basename(filePath, path.extname(filePath));
-  }
-
-  private determineComponentType(filePath: string, content: string): ComponentType {
-    const fileName = path.basename(filePath).toLowerCase();
-    if (this.isTestFile(filePath)) return 'utility';
-    if (fileName.includes('controller') || content.includes('Controller extends')) return 'controller';
-    if (fileName.includes('model') || content.includes('Model extends') || content.includes('Eloquent')) return 'model';
-    if (fileName.includes('service')) return 'service';
-    if (fileName.includes('repository')) return 'database';
-    if (fileName.includes('middleware') || content.includes('Middleware')) return 'middleware';
-    if (fileName === 'index.php' || content.includes('$_GET') || content.includes('$_POST')) return 'route';
-    if (fileName.includes('config') || fileName.includes('bootstrap')) return 'config';
-    return 'utility';
-  }
-
-  private extractImports(content: string): string[] {
-    const imports: string[] = [];
-    const useStatements = content.match(/use\s+([^;]+);/g) || [];
-    const requireStatements = content.match(/(?:require|include)(?:_once)?\s*\(?['"]([^'"]+)['"]\)?;/g) || [];
-
-    for (const statement of useStatements) {
-      const usePath = statement.replace(/use\s+/, '').replace(';', '').trim();
-      const parts = usePath.split('\\');
-      if (parts.length > 0) imports.push(parts[parts.length - 1]);
-    }
-
-    for (const statement of requireStatements) {
-      const match = statement.match(/['"]([^'"]+)['"]/);
-      if (match) imports.push(path.basename(match[1], '.php'));
-    }
-
-    return [...new Set(imports)];
-  }
-
-  private extractExports(content: string): string[] {
-    const exports: string[] = [];
-    const publicClasses = content.match(/(?:abstract\s+)?(?:final\s+)?class\s+(\w+)/g);
-    if (publicClasses) exports.push(...publicClasses.map(c => c.split(/\s+/).pop() || ''));
-    
-    const interfaces = content.match(/interface\s+(\w+)/g);
-    if (interfaces) exports.push(...interfaces.map(i => i.split(/\s+/).pop() || ''));
-    
-    const publicMethods = content.match(/public\s+function\s+(\w+)/g);
-    if (publicMethods) exports.push(...publicMethods.map(m => m.split(/\s+/).pop() || ''));
-
-    return [...new Set(exports)];
-  }
-
-  private extractHttpMethods(content: string): string[] {
-    const methods: string[] = [];
-    if (content.includes('$_GET')) methods.push('GET');
-    if (content.includes('$_POST')) methods.push('POST');
-    if (content.includes('$_PUT')) methods.push('PUT');
-    if (content.includes('$_DELETE')) methods.push('DELETE');
-    
-    // Laravel routes
-    const laravelRoutes = content.match(/Route::(get|post|put|delete|patch)\(/g);
-    if (laravelRoutes) methods.push(...laravelRoutes.map(r => r.match(/::(get|post|put|delete|patch)\(/)?.[1]?.toUpperCase() || ''));
-
-    return [...new Set(methods)];
-  }
-
-  private extractDatabaseQueries(content: string): string[] {
-    const queries: string[] = [];
-    const sqlQueries = content.match(/["'](SELECT.*?)["']/gis) || content.match(/["'](INSERT.*?)["']/gis);
-    if (sqlQueries) queries.push(...sqlQueries.map(q => q.slice(1, -1)));
-    
-    // Laravel Eloquent
-    const eloquentCalls = content.match(/\$\w+->(?:find|where|get|all|first|create|update|delete)\(/g);
-    if (eloquentCalls) queries.push(...eloquentCalls);
-
-    return queries;
-  }
-
-  private extractExternalCalls(content: string): string[] {
-    const calls: string[] = [];
-    const curlCalls = content.match(/curl_setopt\s*\([^,]+,\s*CURLOPT_URL,\s*["']([^"']+)["']\)/g);
-    if (curlCalls) calls.push(...curlCalls.map(call => call.match(/["']([^"']+)["']/)?.[1] || ''));
-    
-    const fileGetContents = content.match(/file_get_contents\s*\(\s*["']([^"']+)["']\)/g);
-    if (fileGetContents) calls.push(...fileGetContents.map(call => call.match(/["']([^"']+)["']/)?.[1] || ''));
-
-    return calls;
-  }
-
-  private determineArchitecturalLayer(filePath: string, content: string): any {
-    const fileName = path.basename(filePath).toLowerCase();
-    if (fileName.includes('controller') || content.includes('Controller extends')) return 'presentation';
-    if (fileName.includes('service') || fileName.includes('business')) return 'business';
-    if (fileName.includes('model') || fileName.includes('repository')) return 'data';
-    if (fileName.includes('config') || fileName.includes('helper')) return 'infrastructure';
-    if (content.includes('curl_') || content.includes('file_get_contents')) return 'external';
-    return 'infrastructure';
-  }
-
-  private extractResponsibilities(filePath: string, content: string): string[] {
-    const responsibilities: string[] = [];
-    if (content.includes('Controller extends')) responsibilities.push('HTTP request handling');
-    if (content.includes('Model extends') || content.includes('Eloquent')) responsibilities.push('Data modeling');
-    if (content.includes('$_GET') || content.includes('$_POST')) responsibilities.push('Request processing');
-    if (content.includes('curl_') || content.includes('file_get_contents')) responsibilities.push('External service communication');
-    if (this.isTestFile(filePath)) responsibilities.push('Testing');
-    return responsibilities.length > 0 ? responsibilities : ['General utility'];
-  }
-
-  private isTestFile(filePath: string): boolean {
-    const fileName = path.basename(filePath).toLowerCase();
-    return fileName.includes('test.php') || fileName.includes('tests.php') ||
-           filePath.includes('/test/') || filePath.includes('/tests/') ||
-           filePath.includes('\\test\\') || filePath.includes('\\tests\\');
-  }
-
-  private isEntryPoint(filePath: string, content: string): boolean {
-    const fileName = path.basename(filePath);
-    return fileName === 'index.php' || fileName === 'app.php' || content.includes('$_SERVER[\'REQUEST_METHOD\']');
-  }
-
-  private async analyzeComposerJson(): Promise<FrameworkDetection[]> {
-    const frameworks: FrameworkDetection[] = [];
-    const composerJsonPath = path.join(this.projectPath, 'composer.json');
-    
-    if (await fs.pathExists(composerJsonPath)) {
-      const content = await fs.readFile(composerJsonPath, 'utf-8');
-      const packageJson = JSON.parse(content);
-      const deps = { ...packageJson.require, ...packageJson['require-dev'] };
-      
-      const frameworkMappings = {
-        'laravel/framework': 'laravel',
-        'symfony/symfony': 'symfony',
-        'codeigniter4/framework': 'codeigniter',
-        'slim/slim': 'slim',
-        'phpunit/phpunit': 'phpunit'
-      };
-
-      for (const [dep, name] of Object.entries(frameworkMappings)) {
-        if (deps[dep]) {
-          frameworks.push({ name, version: deps[dep], confidence: 0.9, patterns: ['Found in composer.json'], configFiles: ['composer.json'], dependencies: [name] });
-        }
-      }
-    }
-
-    return frameworks;
-  }
-
-  private async analyzeCodeForFrameworks(files: string[]): Promise<FrameworkDetection[]> {
-    const frameworks: FrameworkDetection[] = [];
-    const indicators = new Map<string, { count: number, files: Set<string> }>();
-
-    for (const filePath of files) {
-      try {
-        const content = await this.readFile(filePath);
-        if (content.includes('use Illuminate\\') || content.includes('Artisan::')) {
-          this.updateFrameworkIndicator(indicators, 'laravel', filePath);
-        }
-        if (content.includes('use Symfony\\')) {
-          this.updateFrameworkIndicator(indicators, 'symfony', filePath);
-        }
-      } catch (error) {
-        // Skip files that can't be read
-      }
-    }
-
-    for (const [name, info] of indicators) {
-      frameworks.push({ name, confidence: Math.min(0.8, info.count * 0.1), patterns: [`Found in ${info.files.size} files`], configFiles: Array.from(info.files), dependencies: [name] });
-    }
-
-    return frameworks;
-  }
-
-  private updateFrameworkIndicator(indicators: Map<string, { count: number, files: Set<string> }>, framework: string, filePath: string): void {
-    const existing = indicators.get(framework);
-    if (existing) {
-      existing.count++;
-      existing.files.add(filePath);
-    } else {
-      indicators.set(framework, { count: 1, files: new Set([filePath]) });
-    }
-  }
-
-  private findComponentByUsePath(components: ComponentNode[], usePath: string): ComponentNode | undefined {
-    return components.find(c => c.metadata.exports.some(exp => usePath.includes(exp)));
-  }
-
-  private calculateRiskImpact(riskLevel: 'low' | 'medium' | 'high', dependentCount: number): string {
-    const baseImpact = riskLevel === 'high' ? 'High' : riskLevel === 'medium' ? 'Medium' : 'Low';
-    const scopeImpact = dependentCount > 8 ? 'system-wide' : dependentCount > 4 ? 'module-wide' : 'localized';
-    return `${baseImpact} impact, ${scopeImpact} scope`;
-  }
-
-  private hasCorrespondingTest(component: ComponentNode, testFiles: ComponentNode[]): boolean {
-    const componentName = path.basename(component.path, '.php');
-    return testFiles.some(test => test.path.includes(`${componentName}Test`) || test.path.includes(`test_${componentName}`));
-  }
-
-  protected async analyzeAPIEndpoints(components: ComponentNode[]): Promise<APIEndpoint[]> {
-    const endpoints: APIEndpoint[] = [];
-    for (const component of components) {
-      if ((component.type === 'controller' || component.type === 'route') && component.metadata.httpMethods) {
-        for (const method of component.metadata.httpMethods) {
-          endpoints.push({
-            id: `${component.id}_${method}`, method: method as any, path: `/${component.name}`,
-            description: `${method} endpoint`, parameters: [], requestSchema: null, responseSchema: null,
-            statusCodes: [{ code: 200, description: 'Success', schema: null }], middleware: [],
-            authentication: { type: 'none', required: false }, componentId: component.id, handler: component.name
-          });
-        }
-      }
-    }
-    return endpoints;
+  protected getCapabilities(): string[] {
+    return [
+      'class-analysis',
+      'interface-detection',
+      'trait-analysis',
+      'method-mapping',
+      'namespace-organization',
+      'inheritance-tracking',
+      'composer-dependency-analysis',
+      'framework-detection'
+    ];
   }
 }

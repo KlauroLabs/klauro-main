@@ -19,12 +19,12 @@ interface RateLimitStore {
 @Injectable()
 export class RateLimitInterceptor implements NestInterceptor {
   private store: RateLimitStore = {};
-  private readonly limit: number;
-  private readonly windowMs: number;
+  private readonly limit: number = 100;
+  private readonly windowMs: number = 60000;
 
-  constructor(limit: number = 100, windowMs: number = 60000) {
-    this.limit = limit;
-    this.windowMs = windowMs;
+  constructor() {
+    // Configuration is now set as class properties with defaults
+    // This allows NestJS to inject the interceptor without parameters
   }
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<any> {

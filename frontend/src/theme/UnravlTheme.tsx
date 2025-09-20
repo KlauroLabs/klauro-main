@@ -33,14 +33,14 @@ export const UnravlThemeProvider: React.FC<UnravlThemeProviderProps> = ({
     palette: {
       mode: 'dark',
       primary: {
-        main: designTokens.spatial.districts.frontend.primary,
-        light: designTokens.spatial.districts.frontend.secondary,
-        dark: designTokens.spatial.activity.high,
+        main: '#e91e63',
+        light: '#f8bbd9',
+        dark: '#c2185b',
       },
       secondary: {
-        main: designTokens.spatial.districts.backend.primary,
-        light: designTokens.spatial.districts.backend.secondary,
-        dark: designTokens.spatial.activity.medium,
+        main: '#2196f3',
+        light: '#90caf9',
+        dark: '#1565c0',
       },
       background: {
         default: '#0a0a0a',
@@ -55,16 +55,16 @@ export const UnravlThemeProvider: React.FC<UnravlThemeProviderProps> = ({
         selected: designTokens.ui.interactive.selected,
       },
       success: {
-        main: designTokens.spatial.traffic.low,
+        main: '#4caf50',
       },
       warning: {
-        main: designTokens.spatial.traffic.medium,
+        main: '#ff9800',
       },
       error: {
-        main: designTokens.spatial.traffic.high,
+        main: '#f44336',
       },
       info: {
-        main: designTokens.spatial.traffic.response,
+        main: '#2196f3',
       },
     },
     typography: {
@@ -161,7 +161,7 @@ export const UnravlThemeProvider: React.FC<UnravlThemeProviderProps> = ({
       MuiSlider: {
         styleOverrides: {
           root: {
-            color: designTokens.spatial.districts.backend.primary,
+            color: '#2196f3',
           },
           thumb: {
             transition: `all ${designTokens.animation.durations.fast}s ${designTokens.animation.easing.standard}`,
@@ -226,13 +226,13 @@ export const UnravlThemeProvider: React.FC<UnravlThemeProviderProps> = ({
           }
           
           ::-webkit-scrollbar-thumb {
-            background: ${designTokens.spatial.districts.backend.primary};
+            background: #2196f3;
             border-radius: 4px;
             transition: background ${designTokens.animation.durations.fast}s;
           }
           
           ::-webkit-scrollbar-thumb:hover {
-            background: ${designTokens.spatial.districts.backend.secondary};
+            background: #90caf9;
           }
           
           /* Selection styling */
@@ -281,16 +281,16 @@ export const UnravlThemeProvider: React.FC<UnravlThemeProviderProps> = ({
             }
           }
           
-          /* Utility classes for spatial components */
-          .spatial-glow {
+          /* Utility classes for visualization components */
+          .viz-glow {
             animation: glow 2s ease-in-out infinite;
           }
           
-          .spatial-float {
+          .viz-float {
             animation: float 3s ease-in-out infinite;
           }
           
-          .spatial-pulse {
+          .viz-pulse {
             animation: pulse 1.5s ease-in-out infinite;
           }
           

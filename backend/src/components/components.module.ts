@@ -3,6 +3,7 @@ import { MikroOrmModule } from '@mikro-orm/nestjs';
 
 import { ComponentsService } from './components.service';
 import { ComponentsController } from './components.controller';
+import { ComponentRepository } from './component.repository';
 import { Component } from '../database/entities/component.entity';
 import { ComponentConnection } from '../database/entities/component-connection.entity';
 
@@ -14,7 +15,7 @@ import { ComponentConnection } from '../database/entities/component-connection.e
     ]),
   ],
   controllers: [ComponentsController],
-  providers: [ComponentsService],
+  providers: [ComponentsService, ComponentRepository],
   exports: [ComponentsService],
 })
 export class ComponentsModule {}

@@ -72,19 +72,19 @@ export class ConnectionPool {
       if (!this.projectConnections.has(projectId)) {
         this.projectConnections.set(projectId, new Set());
       }
-      this.projectConnections.get(projectId).add(connectionId);
+      this.projectConnections.get(projectId)!.add(connectionId);
 
       // Update organization connections
       if (!this.orgConnections.has(connectionInfo.organizationId)) {
         this.orgConnections.set(connectionInfo.organizationId, new Set());
       }
-      this.orgConnections.get(connectionInfo.organizationId).add(connectionId);
+      this.orgConnections.get(connectionInfo.organizationId)!.add(connectionId);
 
       // Update user connections
       if (!this.userConnections.has(connectionInfo.userId)) {
         this.userConnections.set(connectionInfo.userId, new Set());
       }
-      this.userConnections.get(connectionInfo.userId).add(connectionId);
+      this.userConnections.get(connectionInfo.userId)!.add(connectionId);
 
       // Update peak connections
       const totalConnections = this.connections.size;
@@ -96,9 +96,9 @@ export class ConnectionPool {
       await this.storeConnectionInRedis(connectionId, projectId, connectionInfo);
 
       // Return the number of connections for this project
-      return this.projectConnections.get(projectId).size;
+      return this.projectConnections.get(projectId)!.size;
     } catch (error) {
-      this.logger.error(`Failed to add connection: ${error.message}`, error.stack);
+      this.logger.error(`Failed to add connection: ${error instanceof Error ? error.message : String(error)}`, error instanceof Error ? error.stack : undefined);
       throw error;
     }
   }
@@ -145,7 +145,7 @@ export class ConnectionPool {
       // Remove from Redis
       await this.removeConnectionFromRedis(connectionId);
     } catch (error) {
-      this.logger.error(`Failed to remove connection: ${error.message}`, error.stack);
+      this.logger.error(`Failed to remove connection: ${error instanceof Error ? error.message : String(error)}`, error instanceof Error ? error.stack : undefined);
     }
   }
 

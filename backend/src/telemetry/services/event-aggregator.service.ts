@@ -55,7 +55,7 @@ export class EventAggregator {
       if (!grouped.has(type)) {
         grouped.set(type, []);
       }
-      grouped.get(type).push(event);
+      grouped.get(type)!.push(event);
     }
 
     return grouped;
@@ -75,7 +75,7 @@ export class EventAggregator {
       if (!windows.has(windowKey)) {
         windows.set(windowKey, []);
       }
-      windows.get(windowKey).push(event);
+      windows.get(windowKey)!.push(event);
     }
 
     // Aggregate each window
@@ -90,10 +90,22 @@ export class EventAggregator {
         timestamp: windowEvents[0].timestamp,
         data: {
           performanceMetrics: {
-            ...aggregatedMetrics,
             componentId,
-            projectId: windowEvents[0].data.performanceMetrics.projectId,
+            projectId: windowEvents[0].data.performanceMetrics!.projectId,
             timestamp: windowEvents[0].timestamp,
+            cpu: (aggregatedMetrics as any).cpu || 0,
+            memory: (aggregatedMetrics as any).memory || 0,
+            heapUsed: (aggregatedMetrics as any).heapUsed || 0,
+            heapTotal: (aggregatedMetrics as any).heapTotal || 0,
+            requestsPerSecond: (aggregatedMetrics as any).requestsPerSecond || 0,
+            averageLatency: (aggregatedMetrics as any).averageLatency || 0,
+            p50Latency: (aggregatedMetrics as any).p50Latency || 0,
+            p95Latency: (aggregatedMetrics as any).p95Latency || 0,
+            p99Latency: (aggregatedMetrics as any).p99Latency || 0,
+            errorRate: (aggregatedMetrics as any).errorRate || 0,
+            throughput: (aggregatedMetrics as any).throughput || 0,
+            activeRequests: (aggregatedMetrics as any).activeRequests || 0,
+            queuedRequests: (aggregatedMetrics as any).queuedRequests || 0,
           },
         },
       });
@@ -157,7 +169,7 @@ export class EventAggregator {
       if (!traceGroups.has(flow.traceId)) {
         traceGroups.set(flow.traceId, []);
       }
-      traceGroups.get(flow.traceId).push(event);
+      traceGroups.get(flow.traceId)!.push(event);
     }
 
     // Keep only the most recent event for each trace
@@ -184,7 +196,7 @@ export class EventAggregator {
       if (!queryGroups.has(key)) {
         queryGroups.set(key, []);
       }
-      queryGroups.get(key).push(event);
+      queryGroups.get(key)!.push(event);
     }
 
     // Aggregate each group
@@ -196,10 +208,10 @@ export class EventAggregator {
       }
 
       // Calculate aggregate stats
-      const durations = groupEvents.map(e => e.data.databaseQuery.duration);
+      const durations = groupEvents.map(e => e.data.databaseQuery!.duration);
       const avgDuration = durations.reduce((a, b) => a + b, 0) / durations.length;
       const totalRows = groupEvents.reduce((sum, e) => 
-        sum + (e.data.databaseQuery.rowsAffected || 0), 0
+        sum + (e.data.databaseQuery!.rowsAffected || 0), 0
       );
 
       const firstEvent = groupEvents[0];
@@ -209,7 +221,14 @@ export class EventAggregator {
         timestamp: firstEvent.timestamp,
         data: {
           databaseQuery: {
-            ...firstEvent.data.databaseQuery,
+            id: firstEvent.data.databaseQuery?.id || `agg-db-${Date.now()}`,
+            componentId: firstEvent.data.databaseQuery?.componentId || '',
+            projectId: firstEvent.data.databaseQuery?.projectId || '',
+            operation: firstEvent.data.databaseQuery?.operation || 'OTHER',
+            table: firstEvent.data.databaseQuery?.table || '',
+            timestamp: firstEvent.data.databaseQuery?.timestamp || firstEvent.timestamp,
+            success: firstEvent.data.databaseQuery?.success ?? true,
+            error: firstEvent.data.databaseQuery?.error,
             duration: avgDuration,
             rowsAffected: totalRows,
             query: `[Aggregated ${groupEvents.length} queries]`,
@@ -233,7 +252,7 @@ export class EventAggregator {
       if (!queueGroups.has(key)) {
         queueGroups.set(key, []);
       }
-      queueGroups.get(key).push(event);
+      queueGroups.get(key)!.push(event);
     }
 
     // Aggregate each group
@@ -245,10 +264,10 @@ export class EventAggregator {
       }
 
       const totalSize = groupEvents.reduce((sum, e) => 
-        sum + (e.data.messageQueue.messageSize || 0), 0
+        sum + (e.data.messageQueue!.messageSize || 0), 0
       );
       const successCount = groupEvents.filter(e => 
-        e.data.messageQueue.success
+        e.data.messageQueue!.success
       ).length;
 
       const firstEvent = groupEvents[0];
@@ -258,11 +277,18 @@ export class EventAggregator {
         timestamp: firstEvent.timestamp,
         data: {
           messageQueue: {
-            ...firstEvent.data.messageQueue,
+            id: firstEvent.data.messageQueue?.id || `agg-mq-${Date.now()}`,
+            componentId: firstEvent.data.messageQueue?.componentId || '',
+            projectId: firstEvent.data.messageQueue?.projectId || '',
+            queue: firstEvent.data.messageQueue?.queue || '',
+            action: firstEvent.data.messageQueue?.action || 'publish',
+            messageType: firstEvent.data.messageQueue?.messageType || '',
+            timestamp: firstEvent.data.messageQueue?.timestamp || firstEvent.timestamp,
+            duration: firstEvent.data.messageQueue?.duration || 0,
             messageSize: totalSize,
             success: successCount === groupEvents.length,
             attributes: {
-              ...firstEvent.data.messageQueue.attributes,
+              ...firstEvent.data.messageQueue?.attributes,
               aggregatedCount: groupEvents.length,
               successRate: successCount / groupEvents.length,
             },

@@ -21,17 +21,28 @@ export interface ComponentNode {
   };
 }
 
-export type ComponentType = 
-  | 'route' 
-  | 'controller' 
-  | 'middleware' 
-  | 'model' 
-  | 'service' 
-  | 'utility' 
+export type ComponentType =
+  | 'route'
+  | 'controller'
+  | 'middleware'
+  | 'model'
+  | 'service'
+  | 'utility'
   | 'config'
   | 'database'
   | 'external_api'
-  | 'orphaned';
+  | 'orphaned'
+  | 'module'
+  | 'component'
+  | 'guard'
+  | 'interceptor'
+  | 'pipe'
+  | 'filter'
+  | 'repository'
+  | 'provider'
+  | 'hook'
+  | 'hoc'
+  | 'store';
 
 export interface ComponentMetadata {
   lineCount: number;

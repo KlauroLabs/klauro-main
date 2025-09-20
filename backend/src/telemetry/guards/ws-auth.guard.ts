@@ -34,7 +34,7 @@ export class WsAuthGuard implements CanActivate {
       (client as any).roles = payload.roles || [];
 
       return true;
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`WebSocket authentication failed: ${error.message}`);
       throw new WsException('Authentication failed');
     }
@@ -65,7 +65,7 @@ export class WsAuthGuard implements CanActivate {
       return await this.jwtService.verifyAsync(token, {
         secret: this.configService.get('JWT_SECRET'),
       });
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Token validation failed: ${error.message}`);
       return null;
     }

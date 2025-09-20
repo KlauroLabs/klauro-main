@@ -1,11 +1,11 @@
 import React, { useState, useCallback } from 'react';
 import { Box, Typography, Tooltip, Fade, Chip } from '@mui/material';
-import { 
-  CheckCircle, 
-  Warning, 
+import {
+  CheckCircle,
+  Warning,
   Error as ErrorIcon,
   ArrowForward,
-  Database,
+  Storage as Database,
   Api,
   Web,
   Memory
@@ -307,7 +307,7 @@ export const SimpleSystemSchematic: React.FC<SimpleSystemSchematicProps> = ({
         border: '1px solid rgba(64, 181, 246, 0.3)'
       }}>
         <Typography variant="body2" sx={{ color: '#64b5f6' }}>
-          {currentPath.map(p => p.name).join(' › ')}
+          {currentPath.join(' › ')}
         </Typography>
       </Box>
 

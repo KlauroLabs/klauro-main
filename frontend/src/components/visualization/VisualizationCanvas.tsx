@@ -98,7 +98,7 @@ export const VisualizationCanvas: React.FC<VisualizationCanvasProps> = ({
   }, []);
 
   const handleLayoutChange = useCallback((newLayout: string) => {
-    setLayout(newLayout);
+    setLayout(newLayout as 'force' | 'hierarchical' | 'circular' | 'grid' | 'dagre' | 'radial');
   }, []);
 
   const handleSearch = useCallback((query: string) => {
@@ -191,7 +191,6 @@ export const VisualizationCanvas: React.FC<VisualizationCanvasProps> = ({
           options={options}
           projectId={projectId}
           onNodeClick={onNodeClick}
-          onEdgeClick={onEdgeClick}
         />
       ) : (
         <Paper 

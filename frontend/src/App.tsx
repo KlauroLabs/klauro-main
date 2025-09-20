@@ -12,20 +12,20 @@ const App: React.FC<AppProps> = () => {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    loadSpatialData();
+    loadArchitectureData();
     setupTelemetryStream();
   }, []);
 
-  const loadSpatialData = async () => {
+  const loadArchitectureData = async () => {
     try {
       setLoading(true);
       
       // Fetch nodes
-      const nodesResponse = await fetch('http://localhost:3000/api/spatial/nodes');
+      const nodesResponse = await fetch('http://localhost:3000/api/architecture/nodes');
       const nodesData = await nodesResponse.json();
       
       // Fetch connections
-      const connectionsResponse = await fetch('http://localhost:3000/api/spatial/connections');
+      const connectionsResponse = await fetch('http://localhost:3000/api/architecture/connections');
       const connectionsData = await connectionsResponse.json();
       
       setNodes(nodesData.nodes || []);
@@ -33,7 +33,7 @@ const App: React.FC<AppProps> = () => {
       
       setLoading(false);
     } catch (err) {
-      console.error('Failed to load spatial data:', err);
+      console.error('Failed to load architecture data:', err);
       setError('Failed to load architecture data');
       setLoading(false);
       
@@ -44,7 +44,7 @@ const App: React.FC<AppProps> = () => {
 
   const setupTelemetryStream = () => {
     // Set up SSE connection for real-time telemetry
-    const eventSource = new EventSource('http://localhost:3000/api/spatial/telemetry/stream');
+    const eventSource = new EventSource('http://localhost:3000/api/architecture/telemetry/stream');
     
     eventSource.addEventListener('telemetry', (event) => {
       const data = JSON.parse(event.data);
@@ -333,7 +333,7 @@ const App: React.FC<AppProps> = () => {
       <div className="app-error">
         <h2>Error</h2>
         <p>{error}</p>
-        <button onClick={loadSpatialData}>Retry</button>
+        <button onClick={loadArchitectureData}>Retry</button>
       </div>
     );
   }

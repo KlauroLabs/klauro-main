@@ -1,8 +1,8 @@
 # Code Analysis Specification (CAS)
 
-**Version:** 1.1.0
+**Version:** 1.2.0
 **Status:** Active
-**Last Updated:** 2024
+**Last Updated:** 2024-09-19
 
 ## Abstract
 
@@ -23,10 +23,11 @@ The Code Analysis Specification (CAS) defines a universal, language-agnostic for
 
 ## Status of This Document
 
-This document specifies version 1.1.0 of the Code Analysis Specification, which is the current active version. Previous versions are maintained for historical reference:
+This document specifies version 1.2.0 of the Code Analysis Specification, which is the current active version. Previous versions are maintained for historical reference:
 
 - [Version 1.0.0](./v1.0.0.md) - Initial release
-- [Version 1.1.0](./v1.1.0.md) - Current version (this document)
+- [Version 1.1.0](./v1.1.0.md) - Added progressive levels and extended metadata
+- [Version 1.2.0](./v1.2.0.md) - Current version - Multi-perspective support
 
 ## 1. Introduction
 
@@ -84,7 +85,7 @@ The root structure containing complete analysis results:
 
 ```typescript
 interface CASOutput {
-  cas_version: "1.1.0";
+  cas_version: "1.2.0";
   analysis_timestamp: string;  // ISO 8601
   analysis_id: string;          // Unique identifier
 

@@ -141,7 +141,7 @@ export class MetricsCalculator {
 
     // Collect metrics by component
     for (const event of events) {
-      let componentId: string = null;
+      let componentId: string | null = null;
 
       if (event.data.performanceMetrics) {
         componentId = event.data.performanceMetrics.componentId;
@@ -155,7 +155,7 @@ export class MetricsCalculator {
           });
         }
 
-        const metrics = componentMetrics.get(componentId);
+        const metrics = componentMetrics.get(componentId)!;
         const perf = event.data.performanceMetrics;
         
         metrics.cpu.push(perf.cpu);
@@ -177,7 +177,7 @@ export class MetricsCalculator {
           });
         }
 
-        const metrics = componentMetrics.get(componentId);
+        const metrics = componentMetrics.get(componentId)!;
         metrics.requests++;
         
         if (event.data.requestFlow.duration) {
@@ -253,7 +253,7 @@ export class MetricsCalculator {
           if (!queueDepths.has(componentId)) {
             queueDepths.set(componentId, []);
           }
-          queueDepths.get(componentId).push(perf.queuedRequests);
+          queueDepths.get(componentId)!.push(perf.queuedRequests);
 
           // Calculate wait time using Little's Law: W = L/λ
           const arrivalRate = perf.requestsPerSecond;
@@ -262,7 +262,7 @@ export class MetricsCalculator {
             if (!waitTimes.has(componentId)) {
               waitTimes.set(componentId, []);
             }
-            waitTimes.get(componentId).push(waitTime * 1000); // Convert to ms
+            waitTimes.get(componentId)!.push(waitTime * 1000); // Convert to ms
           }
         }
 
@@ -307,7 +307,7 @@ export class MetricsCalculator {
       
       if (avgQueueDepth > 10 || maxQueueDepth > 50) {
         const avgWaitTime = waitTimes.has(componentId) 
-          ? this.calculateAverage(waitTimes.get(componentId))
+          ? this.calculateAverage(waitTimes.get(componentId)!)
           : 0;
 
         bottlenecks.push({
@@ -411,7 +411,7 @@ export class MetricsCalculator {
       this.historicalData.set(key, []);
     }
 
-    const history = this.historicalData.get(key);
+    const history = this.historicalData.get(key)!;
     history.push(metrics.avgLatency);
 
     // Keep only recent history

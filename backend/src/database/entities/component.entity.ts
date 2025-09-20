@@ -22,6 +22,17 @@ export enum ComponentType {
   DATABASE = 'database',
   EXTERNAL_API = 'external_api',
   ORPHANED = 'orphaned',
+  MODULE = 'module',
+  COMPONENT = 'component',
+  GUARD = 'guard',
+  INTERCEPTOR = 'interceptor',
+  PIPE = 'pipe',
+  FILTER = 'filter',
+  REPOSITORY = 'repository',
+  PROVIDER = 'provider',
+  HOOK = 'hook',
+  HOC = 'hoc',
+  STORE = 'store',
 }
 
 export enum ArchitecturalLayer {

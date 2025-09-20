@@ -50,7 +50,7 @@ export class StartAnalysisDto {
       excludePatterns: ['node_modules/**', '*.test.js'],
       generateManifest: true,
       enableTelemetry: true,
-      generateSpatialVisualization: true,
+      generateArchitectureVisualization: true,
       analysisTimeout: 300000,
     },
   })
@@ -62,7 +62,7 @@ export class StartAnalysisDto {
     excludePatterns?: string[];
     generateManifest?: boolean;
     enableTelemetry?: boolean;
-    generateSpatialVisualization?: boolean;
+    generateArchitectureVisualization?: boolean;
     analysisTimeout?: number;
     useSpecificAnalyzer?: string;
     enableRealTimeUpdates?: boolean;

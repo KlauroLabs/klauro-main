@@ -76,6 +76,48 @@ export class ProjectsService {
     return this.mapToResponseDto(project);
   }
 
+  async createWithId(
+    organizationId: string,
+    userId: string,
+    projectId: string,
+    createProjectDto: CreateProjectDto,
+  ): Promise<ProjectResponseDto> {
+    // Get organization
+    const organization = await this.organizationRepository.findOneOrFail(organizationId, {
+      failHandler: () => new NotFoundException('Organization not found'),
+    });
+
+    // Get user
+    const user = await this.userRepository.findOneOrFail(userId, {
+      failHandler: () => new NotFoundException('User not found'),
+    });
+
+    // Check if project name already exists in organization
+    const existingProject = await this.projectRepository.findOne({
+      organization,
+      name: createProjectDto.name,
+      deletedAt: null,
+    });
+
+    if (existingProject) {
+      throw new BadRequestException('Project name already exists in this organization');
+    }
+
+    // Create project with specific ID
+    const project = this.projectRepository.create({
+      id: projectId, // Use the provided ID
+      ...createProjectDto,
+      organization,
+      owner: user,
+      status: ProjectStatus.ACTIVE,
+      defaultBranch: createProjectDto.defaultBranch || 'main',
+    } as any);
+
+    await this.em.persistAndFlush(project);
+
+    return this.mapToResponseDto(project);
+  }
+
   async findAll(
     organizationId: string,
     queryDto: ProjectQueryDto,

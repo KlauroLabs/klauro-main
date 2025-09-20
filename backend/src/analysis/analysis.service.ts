@@ -16,9 +16,8 @@ import {
   ArchitectureBlueprintDto,
 } from './dto/analysis-response.dto';
 
-// Import existing analyzer system
-import { IntegratedSystemAnalyzer } from '../analyzer/integrated-system-analyzer';
-import { SpatialLayoutEngine } from '../spatial';
+// Import CAS analyzer system
+import { CASAnalyzerService } from '../analyzer/services/cas-analyzer.service';
 import * as path from 'path';
 
 @Injectable()
@@ -28,6 +27,7 @@ export class AnalysisService {
 
   constructor(
     private readonly em: EntityManager,
+    private readonly casAnalyzerService: CASAnalyzerService,
   ) {}
 
   async startAnalysis(
@@ -283,8 +283,7 @@ export class AnalysisService {
 
       this.logger.log(`Starting analysis for project ${project.name} (${projectId})`);
 
-      // Create integrated analyzer
-      const integratedAnalyzer = new IntegratedSystemAnalyzer();
+      // Use CAS analyzer service
       
       // Determine repository path
       let repositoryPath = startAnalysisDto.repositoryPath;
@@ -316,63 +315,49 @@ export class AnalysisService {
         progressCallback,
       };
 
-      // Run the analysis
+      // Run the CAS analysis
       await progressCallback(10, 'Initializing analysis...');
-      const result = await integratedAnalyzer.analyzeProject(repositoryPath, analysisOptions);
+      const casResult = await this.casAnalyzerService.analyzeProject({
+        projectPath: repositoryPath,
+        options: analysisOptions
+      });
       
       await progressCallback(80, 'Processing results...');
 
+      // Convert CAS format to legacy blueprint format for database storage
+      const legacyBlueprint = this.convertCASToBlueprint(casResult);
+
       // Store components in database
-      await this.storeAnalysisResults(analysisRun, result.blueprint);
+      await this.storeAnalysisResults(analysisRun, legacyBlueprint);
 
-      await progressCallback(90, 'Generating spatial visualization...');
-
-      // Generate spatial visualization if requested
-      let spatialBlueprint = null;
-      if (analysisOptions.generateSpatialVisualization !== false) {
-        try {
-          const spatialEngine = new SpatialLayoutEngine({
-            enableRealTimeUpdates: analysisOptions.enableRealTimeUpdates || false,
-            optimizationLevel: analysisOptions.optimizationLevel || 'medium',
-            collisionDetection: true,
-            renderingQuality: 'high',
-          });
-          
-          spatialBlueprint = await spatialEngine.generateSpatialLayout(result.blueprint);
-        } catch (spatialError: any) {
-          this.logger.warn('Failed to generate spatial visualization:', spatialError);
-          // Continue without spatial - it's optional
-        }
-      }
+      await progressCallback(90, 'Processing analysis results...');
 
       await progressCallback(100, 'Completing analysis...');
 
       // Complete the analysis
       const enhancedBlueprint = {
-        ...result.blueprint,
+        ...legacyBlueprint,
         id: analysisRun.id,
         projectId: project.id,
         projectName: project.name,
-        spatialVisualization: spatialBlueprint,
         metadata: {
-          ...result.blueprint.metadata,
+          ...legacyBlueprint.metadata,
           analysisDate: new Date(),
           repositoryPath,
-          analyzer: result.metadata.analyzer,
+          cas_version: casResult.cas_version,
           version: '2.0.0',
-          duration: result.duration,
-          pluginsUsed: result.metadata.pluginsUsed,
+          analyzersRun: casResult.analyzer_contributions.map((c: any) => c.analyzer_name),
         },
       };
 
-      analysisRun.complete(enhancedBlueprint, result.manifestPath);
+      analysisRun.complete(enhancedBlueprint, undefined);
       await this.em.flush();
 
       // Update project status
       project.markAsAnalyzed();
       await this.em.flush();
 
-      this.logger.log(`Analysis completed for project ${project.name} (${projectId}) in ${result.duration}ms`);
+      this.logger.log(`Analysis completed for project ${project.name} (${projectId})`);
 
     } catch (error: any) {
       this.logger.error(`Analysis failed for project ${project.name} (${projectId}):`, error);
@@ -621,6 +606,41 @@ export class AnalysisService {
         pageType: connection.pageType,
         ...connection.metadata,
       },
+    };
+  }
+
+  private convertCASToBlueprint(casResult: any): any {
+    return {
+      components: casResult.nodes.map((node: any) => ({
+        id: node.id,
+        name: node.name,
+        type: node.type,
+        path: node.file_path || '',
+        language: node.metadata?.language || 'unknown',
+        framework: node.metadata?.framework,
+        metadata: {
+          ...node.metadata,
+          lineCount: node.line_end ? (node.line_end - (node.line_start || 1)) : undefined,
+          level: node.level
+        }
+      })),
+      connections: casResult.edges.map((edge: any) => ({
+        id: edge.id,
+        from: edge.source,
+        to: edge.target,
+        type: edge.type,
+        weight: edge.metadata?.weight || 1,
+        protocol: edge.metadata?.protocol,
+        metadata: edge.metadata
+      })),
+      entryPoints: casResult.entry_points,
+      exitPoints: casResult.exit_points,
+      dependencies: casResult.libraries,
+      metadata: {
+        cas_version: casResult.cas_version,
+        analyzer_contributions: casResult.analyzer_contributions,
+        system: casResult.system
+      }
     };
   }
 

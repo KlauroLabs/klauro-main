@@ -25,7 +25,7 @@ export class TelemetryRealtimeService implements OnModuleInit, OnModuleDestroy {
   
   // Cache for real-time data aggregation
   private realtimeCache = new Map<string, TelemetryRealtimeData>();
-  private updateInterval: NodeJS.Timer;
+  private updateInterval?: NodeJS.Timer;
 
   constructor(
     @InjectRedis() private readonly redis: Redis,
@@ -49,7 +49,7 @@ export class TelemetryRealtimeService implements OnModuleInit, OnModuleDestroy {
   async onModuleDestroy() {
     try {
       if (this.updateInterval) {
-        clearInterval(this.updateInterval);
+        clearInterval(this.updateInterval as any);
       }
       await this.subscriber.disconnect();
       this.logger.log('Telemetry real-time service stopped');
@@ -72,7 +72,7 @@ export class TelemetryRealtimeService implements OnModuleInit, OnModuleDestroy {
           await this.handleBatchProcessed(channel, message);
         }
       } catch (error) {
-        this.logger.error(`Error processing Redis message: ${error.message}`, error.stack);
+        this.logger.error(`Error processing Redis message: ${error instanceof Error ? error.message : String(error)}`, error instanceof Error ? error.stack : undefined);
       }
     });
 
@@ -93,7 +93,7 @@ export class TelemetryRealtimeService implements OnModuleInit, OnModuleDestroy {
       }
 
     } catch (error) {
-      this.logger.error(`Error handling telemetry message: ${error.message}`);
+      this.logger.error(`Error handling telemetry message: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -108,7 +108,7 @@ export class TelemetryRealtimeService implements OnModuleInit, OnModuleDestroy {
         await this.broadcastTelemetryUpdate(projectId, metrics);
       }
     } catch (error) {
-      this.logger.error(`Error handling batch processed: ${error.message}`);
+      this.logger.error(`Error handling batch processed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -132,7 +132,7 @@ export class TelemetryRealtimeService implements OnModuleInit, OnModuleDestroy {
     // Update based on message type and payload
     const payload = message.payload;
     
-    if (payload.type === 'performance' && payload.data.performanceMetrics) {
+    if (message.type === 'metric' && payload.data.performanceMetrics) {
       const metrics = payload.data.performanceMetrics;
       const componentId = metrics.componentId;
       
@@ -141,7 +141,7 @@ export class TelemetryRealtimeService implements OnModuleInit, OnModuleDestroy {
       cacheData.nodeActivity[componentId] = (cacheData.nodeActivity[componentId] || 0) + 1;
     }
 
-    if (payload.type === 'request' && payload.data.requestFlow) {
+    if (message.type === 'trace' && payload.data.requestFlow) {
       const flow = payload.data.requestFlow;
       const fromComponent = flow.sourceComponent;
       const toComponent = flow.targetComponent;
@@ -152,7 +152,7 @@ export class TelemetryRealtimeService implements OnModuleInit, OnModuleDestroy {
       cacheData.nodeActivity[toComponent] = (cacheData.nodeActivity[toComponent] || 0) + 1;
     }
 
-    if (payload.type === 'error' && payload.data.issues) {
+    if (message.type === 'event' && payload.data.issues) {
       const issues = payload.data.issues;
       for (const issue of issues) {
         const existingError = cacheData.errors.find(e => 
@@ -191,7 +191,7 @@ export class TelemetryRealtimeService implements OnModuleInit, OnModuleDestroy {
         // Clean up old cache entries (older than 5 minutes)
         this.cleanupCache();
       } catch (error) {
-        this.logger.error(`Error in periodic updates: ${error.message}`);
+        this.logger.error(`Error in periodic updates: ${error instanceof Error ? error.message : String(error)}`);
       }
     }, 2000); // 2 second intervals
   }
@@ -226,7 +226,7 @@ export class TelemetryRealtimeService implements OnModuleInit, OnModuleDestroy {
 
       this.logger.debug(`Broadcast telemetry update for project ${projectId}`);
     } catch (error) {
-      this.logger.error(`Error broadcasting telemetry update: ${error.message}`);
+      this.logger.error(`Error broadcasting telemetry update: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

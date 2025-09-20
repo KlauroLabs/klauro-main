@@ -1,275 +1,282 @@
 export const designTokens = {
-  // Spatial Colors - Representing different architectural elements
-  spatial: {
-    // Building Materials
-    glass: {
-      primary: '#81d4fa',
-      selected: '#4fc3f7',
-      opacity: 0.7
+  colors: {
+    primary: {
+      50: '#f0f9ff',
+      100: '#e0f2fe',
+      200: '#bae6fd',
+      300: '#7dd3fc',
+      400: '#38bdf8',
+      500: '#0ea5e9',
+      600: '#0284c7',
+      700: '#0369a1',
+      800: '#075985',
+      900: '#0c4a6e',
     },
-    concrete: {
-      primary: '#90a4ae',
-      selected: '#78909c',
-      opacity: 0.8
+    secondary: {
+      50: '#f8fafc',
+      100: '#f1f5f9',
+      200: '#e2e8f0',
+      300: '#cbd5e1',
+      400: '#94a3b8',
+      500: '#64748b',
+      600: '#475569',
+      700: '#334155',
+      800: '#1e293b',
+      900: '#0f172a',
     },
-    steel: {
-      primary: '#78909c',
-      selected: '#607d8b',
-      opacity: 0.9
+    success: '#10b981',
+    warning: '#f59e0b',
+    error: '#ef4444',
+    info: '#3b82f6',
+
+    componentTypes: {
+      component: '#3b82f6',
+      service: '#10b981',
+      controller: '#8b5cf6',
+      repository: '#f59e0b',
+      entity: '#ef4444',
+      module: '#6b7280',
+      interface: '#06b6d4',
+      class: '#ec4899',
+      function: '#84cc16',
+      constant: '#eab308',
     },
-    brick: {
-      primary: '#bcaaa4',
-      selected: '#a1887f',
-      opacity: 0.8
+
+    connectionTypes: {
+      imports: '#3b82f6',
+      calls: '#10b981',
+      extends: '#8b5cf6',
+      implements: '#f59e0b',
+      uses: '#06b6d4',
+      configures: '#ec4899',
     },
-    
-    // Room Types
-    screen: {
-      primary: '#f48fb1',
-      glow: '#e91e63',
-      intensity: 0.3
-    },
-    component: {
-      primary: '#64b5f6',
-      glow: '#2196f3',
-      intensity: 0.2
-    },
-    service: {
-      primary: '#81c784',
-      glow: '#4caf50',
-      intensity: 0.4
-    },
-    database: {
-      primary: '#ffab91',
-      glow: '#ff5722',
-      intensity: 0.5
-    },
-    api: {
-      primary: '#80deea',
-      glow: '#00bcd4',
-      intensity: 0.3
-    },
-    function: {
-      primary: '#d4b6d4',
-      glow: '#9c27b0',
-      intensity: 0.2
-    },
-    
-    // Building Types
-    module: {
-      primary: '#ffcc80',
-      accent: '#ff9800',
-      district: '#fff3e0'
-    },
-    library: {
-      primary: '#c8e6c9',
-      accent: '#4caf50',
-      district: '#f1f8e9'
-    },
-    
-    // Traffic & Data Flow
-    traffic: {
-      request: '#4caf50',
-      response: '#2196f3',
-      event: '#ff9800',
-      data: '#e91e63',
-      high: '#f44336',
-      medium: '#ff9800',
-      low: '#4caf50'
-    },
-    
-    // Activity Levels
+
     activity: {
-      critical: '#f44336',
-      high: '#ff5722',
-      medium: '#ff9800',
-      low: '#4caf50',
-      idle: '#9e9e9e'
+      critical: '#ef4444',
+      high: '#f97316',
+      medium: '#f59e0b',
+      low: '#84cc16',
+      idle: '#9ca3af',
     },
-    
-    // Districts
-    districts: {
-      frontend: {
-        primary: '#e91e63',
-        secondary: '#f8bbd9',
-        background: 'rgba(233, 30, 99, 0.1)'
-      },
-      backend: {
-        primary: '#2196f3',
-        secondary: '#90caf9',
-        background: 'rgba(33, 150, 243, 0.1)'
-      },
-      database: {
-        primary: '#ff5722',
-        secondary: '#ffab91',
-        background: 'rgba(255, 87, 34, 0.1)'
-      },
-      infrastructure: {
-        primary: '#607d8b',
-        secondary: '#b0bec5',
-        background: 'rgba(96, 125, 139, 0.1)'
-      }
-    }
-  },
-  
-  // UI Colors
-  ui: {
-    // Background gradients for immersive experience
-    backgrounds: {
-      sky: 'linear-gradient(180deg, #87CEEB 0%, #E0F6FF 50%, #C9E4F5 100%)',
-      night: 'linear-gradient(180deg, #1a237e 0%, #283593 50%, #3f51b5 100%)',
-      sunset: 'linear-gradient(180deg, #ff7043 0%, #ff8a65 50%, #ffab91 100%)'
-    },
-    
-    // Control panels and overlays
-    panels: {
-      primary: 'rgba(0, 0, 0, 0.8)',
-      secondary: 'rgba(0, 0, 0, 0.9)',
-      backdrop: 'blur(10px)',
-      border: 'rgba(255, 255, 255, 0.2)'
-    },
-    
-    // Interactive elements
-    interactive: {
-      hover: 'rgba(255, 255, 255, 0.1)',
-      active: 'rgba(255, 255, 255, 0.2)',
-      selected: '#ffeb3b',
-      focus: '#64b5f6'
-    },
-    
-    // Text and labels
-    text: {
+
+    background: {
       primary: '#ffffff',
-      secondary: 'rgba(255, 255, 255, 0.7)',
-      muted: 'rgba(255, 255, 255, 0.5)',
-      outline: '#000000'
-    }
+      secondary: '#f9fafb',
+      tertiary: '#f3f4f6',
+      overlay: 'rgba(0, 0, 0, 0.5)',
+    },
+
+    text: {
+      primary: '#111827',
+      secondary: '#6b7280',
+      tertiary: '#9ca3af',
+      inverse: '#ffffff',
+    },
+
+    border: {
+      default: '#e5e7eb',
+      focus: '#3b82f6',
+      error: '#ef4444',
+    },
   },
-  
-  // Spatial Dimensions
-  dimensions: {
-    // Standard building heights
-    buildings: {
-      small: 20,
-      medium: 30,
-      large: 40,
-      tower: 60
-    },
-    
-    // Room sizes
-    rooms: {
-      small: { width: 6, height: 8, depth: 6 },
-      medium: { width: 10, height: 8, depth: 8 },
-      large: { width: 15, height: 10, depth: 12 },
-      hall: { width: 20, height: 12, depth: 15 }
-    },
-    
-    // Hallway dimensions
-    hallways: {
-      narrow: 2,
-      standard: 4,
-      wide: 6,
-      highway: 8,
-      height: 6
-    },
-    
-    // Vehicle sizes
-    vehicles: {
-      small: 0.3,
-      standard: 0.5,
-      large: 0.8,
-      bulk: 1.2
-    }
+
+  spacing: {
+    xs: '0.25rem',
+    sm: '0.5rem',
+    md: '1rem',
+    lg: '1.5rem',
+    xl: '2rem',
+    '2xl': '3rem',
+    '3xl': '4rem',
+    '4xl': '6rem',
   },
-  
-  // Animation & Interaction
+
+  typography: {
+    fontFamily: {
+      sans: ['Inter', 'system-ui', 'sans-serif'],
+      mono: ['JetBrains Mono', 'Consolas', 'monospace'],
+    },
+    fontSize: {
+      xs: '0.75rem',
+      sm: '0.875rem',
+      base: '1rem',
+      lg: '1.125rem',
+      xl: '1.25rem',
+      '2xl': '1.5rem',
+      '3xl': '1.875rem',
+      '4xl': '2.25rem',
+    },
+    fontWeight: {
+      normal: 400,
+      medium: 500,
+      semibold: 600,
+      bold: 700,
+    },
+    lineHeight: {
+      none: 1,
+      tight: 1.25,
+      snug: 1.375,
+      normal: 1.5,
+      relaxed: 1.625,
+      loose: 2,
+    },
+    ui: {
+      title: '2rem',
+      subtitle: '1.5rem',
+      body: '1rem',
+      caption: '0.875rem',
+      micro: '0.75rem',
+    },
+  },
+
+  borderRadius: {
+    none: '0',
+    sm: '0.125rem',
+    md: '0.375rem',
+    lg: '0.5rem',
+    xl: '0.75rem',
+    '2xl': '1rem',
+    full: '9999px',
+  },
+
+  shadow: {
+    xs: '0 1px 2px 0 rgb(0 0 0 / 0.05)',
+    sm: '0 1px 3px 0 rgb(0 0 0 / 0.1)',
+    md: '0 4px 6px -1px rgb(0 0 0 / 0.1)',
+    lg: '0 10px 15px -3px rgb(0 0 0 / 0.1)',
+    xl: '0 20px 25px -5px rgb(0 0 0 / 0.1)',
+    '2xl': '0 25px 50px -12px rgb(0 0 0 / 0.25)',
+    inner: 'inset 0 2px 4px 0 rgb(0 0 0 / 0.05)',
+    none: '0 0 #0000',
+  },
+
   animation: {
-    // Timing
+    duration: {
+      fast: '150ms',
+      normal: '300ms',
+      slow: '500ms',
+      slower: '1000ms',
+    },
     durations: {
       fast: 0.15,
       standard: 0.3,
-      slow: 0.6,
-      crawl: 1.2
+      slow: 0.5,
     },
-    
-    // Easing
     easing: {
-      standard: 'cubic-bezier(0.4, 0.0, 0.2, 1)',
-      decelerate: 'cubic-bezier(0.0, 0.0, 0.2, 1)',
-      accelerate: 'cubic-bezier(0.4, 0.0, 1, 1)',
-      bounce: 'cubic-bezier(0.68, -0.55, 0.265, 1.55)'
+      linear: 'linear',
+      easeIn: 'cubic-bezier(0.4, 0, 1, 1)',
+      easeOut: 'cubic-bezier(0, 0, 0.2, 1)',
+      easeInOut: 'cubic-bezier(0.4, 0, 0.2, 1)',
+      standard: 'cubic-bezier(0.4, 0, 0.2, 1)',
+      bounce: 'cubic-bezier(0.68, -0.55, 0.265, 1.55)',
     },
-    
-    // Traffic flow speeds
-    traffic: {
-      request: 2.0,
-      response: 1.8,
-      event: 2.5,
-      data: 1.5,
-      bulk: 0.8
-    }
   },
-  
-  // Typography
-  typography: {
-    // 3D Text sizes for spatial labels
-    spatial: {
-      building: 4,
-      room: 2,
-      detail: 1,
-      minimap: 0.8
+
+  visualization: {
+    node: {
+      minSize: 24,
+      maxSize: 96,
+      defaultSize: 48,
+      borderWidth: 2,
+      selectedBorderWidth: 3,
+      padding: '0.5rem',
     },
-    
-    // UI Text sizes
-    ui: {
-      title: 24,
-      subtitle: 18,
-      body: 14,
-      caption: 12,
-      micro: 10
-    }
+
+    connection: {
+      width: {
+        weak: 1,
+        normal: 2,
+        strong: 3,
+      },
+      opacity: {
+        inactive: 0.3,
+        normal: 0.6,
+        active: 1,
+      },
+    },
+
+    card: {
+      width: '320px',
+      maxWidth: '480px',
+      minHeight: '180px',
+      padding: '1rem',
+      gap: '1rem',
+    },
+
+    graph: {
+      nodeSpacing: 100,
+      levelSpacing: 150,
+      clusterPadding: 50,
+    },
+
+    hierarchyLevels: {
+      system: {
+        color: '#1e40af',
+        label: 'System',
+        scale: 1.5,
+      },
+      architectural: {
+        color: '#7c3aed',
+        label: 'Architectural',
+        scale: 1.2,
+      },
+      code: {
+        color: '#059669',
+        label: 'Code',
+        scale: 1.0,
+      },
+      member: {
+        color: '#dc2626',
+        label: 'Member',
+        scale: 0.8,
+      },
+    },
   },
-  
-  // Lighting
-  lighting: {
-    // Ambient lighting
-    ambient: {
-      day: 0.4,
-      evening: 0.2,
-      night: 0.1
-    },
-    
-    // Directional light
-    directional: {
-      intensity: 1,
-      position: [50, 100, 50],
-      shadowMapSize: [2048, 2048]
-    },
-    
-    // Point lights for rooms and hallways
-    point: {
-      room: { intensity: 0.5, distance: 20 },
-      hallway: { intensity: 0.3, distance: 15 },
-      accent: { intensity: 0.8, distance: 10 }
-    }
+
+  zIndex: {
+    background: -1,
+    base: 0,
+    card: 10,
+    dropdown: 1000,
+    overlay: 1100,
+    modal: 1200,
+    popover: 1300,
+    tooltip: 1400,
+    toast: 1500,
   },
-  
-  // Performance
-  performance: {
-    // LOD (Level of Detail) distances
-    lod: {
-      high: 50,    // Full detail within 50 units
-      medium: 100, // Reduced detail 50-100 units
-      low: 200     // Minimal detail beyond 100 units
+
+  breakpoints: {
+    sm: '640px',
+    md: '768px',
+    lg: '1024px',
+    xl: '1280px',
+    '2xl': '1536px',
+  },
+
+  ui: {
+    text: {
+      primary: '#ffffff',
+      secondary: '#9ca3af',
+      muted: '#6b7280',
     },
-    
-    // Rendering limits
-    limits: {
-      maxParticles: 100,
-      maxVehicles: 50,
-      maxLights: 20
-    }
-  }
+    interactive: {
+      hover: 'rgba(255, 255, 255, 0.08)',
+      selected: 'rgba(255, 255, 255, 0.12)',
+      focus: '#3b82f6',
+    },
+    panels: {
+      primary: 'rgba(17, 24, 39, 0.8)',
+      secondary: 'rgba(31, 41, 55, 0.8)',
+      backdrop: 'blur(10px)',
+      border: 'rgba(255, 255, 255, 0.1)',
+    },
+    backgrounds: {
+      sky: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+      sunset: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)',
+      night: 'linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%)',
+    },
+  },
+
 } as const;
 
 export type DesignTokens = typeof designTokens;

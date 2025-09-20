@@ -493,32 +493,41 @@ const InteractiveCardSystem: React.FC<InteractiveCardSystemProps> = ({
       {/* Details panel */}
       {selectedNode && (
         <div className="details-panel">
-          <h3>{nodes.get(selectedNode)?.name}</h3>
-          <p>{nodes.get(selectedNode)?.description}</p>
-          
-          {nodes.get(selectedNode)?.entryPoints.length > 0 && (
-            <div className="entry-points">
-              <h4>Entry Points:</h4>
-              {nodes.get(selectedNode)!.entryPoints.map(ep => (
+          {(() => {
+            const selectedNodeData = nodes.get(selectedNode);
+            if (!selectedNodeData) return null;
+
+            return (
+              <>
+                <h3>{selectedNodeData.name}</h3>
+                <p>{selectedNodeData.description}</p>
+
+                {selectedNodeData.entryPoints && selectedNodeData.entryPoints.length > 0 && (
+                  <div className="entry-points">
+                    <h4>Entry Points:</h4>
+                    {selectedNodeData.entryPoints.map(ep => (
                 <div key={ep.id} className="entry-point">
                   <span className="ep-type">{ep.type}</span>
                   <span className="ep-path">{ep.path || ep.description}</span>
                 </div>
-              ))}
-            </div>
-          )}
+                    ))}
+                  </div>
+                )}
 
-          {nodes.get(selectedNode)?.exitPoints.length > 0 && (
-            <div className="exit-points">
-              <h4>Exit Points:</h4>
-              {nodes.get(selectedNode)!.exitPoints.map(ep => (
-                <div key={ep.id} className="exit-point">
-                  <span className="ep-type">{ep.type}</span>
-                  <span className="ep-target">{ep.target}</span>
-                </div>
-              ))}
-            </div>
-          )}
+                {selectedNodeData.exitPoints && selectedNodeData.exitPoints.length > 0 && (
+                  <div className="exit-points">
+                    <h4>Exit Points:</h4>
+                    {selectedNodeData.exitPoints.map(ep => (
+                      <div key={ep.id} className="exit-point">
+                        <span className="ep-type">{ep.type}</span>
+                        <span className="ep-target">{ep.target}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            );
+          })()}
         </div>
       )}
     </div>

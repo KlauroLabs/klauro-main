@@ -22,12 +22,12 @@ import { authConfig } from './config/auth.config';
 import { createAuthRoutes } from './routes/auth';
 import { createOrganizationRoutes } from './routes/organizations';
 import { createUserRoutes } from './routes/users';
-import { createProjectRoutes } from './routes/projects';
+// import { createProjectRoutes } from './routes/projects'; // Temporarily disabled
 // import { createVisualizationRouter } from './routes/visualization';
 import { createAnalyzerRoutes } from './routes/analyzer';
 
 // Database
-import { runMigrations } from './database/migrations/migration-manager';
+import { runMigrations } from './database/migration-manager';
 
 export class App {
   private app: Application;
@@ -177,7 +177,7 @@ export class App {
       this.app.use('/api/auth', createAuthRoutes(this.pool));
       this.app.use('/api/organizations', createOrganizationRoutes(this.pool));
       this.app.use('/api/users', createUserRoutes(this.pool));
-      this.app.use('/api/projects', createProjectRoutes(this.pool));
+      // this.app.use('/api/projects', createProjectRoutes(this.pool)); // Temporarily disabled
       // this.app.use('/api/visualization', createVisualizationRouter(this.pool));
     }
     

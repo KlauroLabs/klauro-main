@@ -2,6 +2,10 @@ import { defineConfig } from '@mikro-orm/core';
 import { PostgreSqlDriver } from '@mikro-orm/postgresql';
 import { Migrator } from '@mikro-orm/migrations';
 import { TsMorphMetadataProvider } from '@mikro-orm/reflection';
+import { UnderscoreNamingStrategy } from '@mikro-orm/core';
+import * as dotenv from 'dotenv';
+
+dotenv.config();
 
 export default defineConfig({
   driver: PostgreSqlDriver,
@@ -50,41 +54,5 @@ export default defineConfig({
   },
   
   // Naming strategy for snake_case
-  namingStrategy: class {
-    classToTableName(entityName: string): string {
-      return this.camelCaseToSnakeCase(entityName) + 's';
-    }
-    
-    propertyToColumnName(propertyName: string): string {
-      return this.camelCaseToSnakeCase(propertyName);
-    }
-    
-    referenceColumnName(): string {
-      return 'id';
-    }
-    
-    joinColumnName(propertyName: string, referencedColumnName?: string): string {
-      return this.camelCaseToSnakeCase(propertyName) + '_' + (referencedColumnName || 'id');
-    }
-    
-    joinTableName(sourceEntity: string, targetEntity: string, propertyName?: string): string {
-      return this.camelCaseToSnakeCase(sourceEntity) + '_' + this.camelCaseToSnakeCase(targetEntity);
-    }
-    
-    joinKeyColumnName(entityName: string, referencedColumnName?: string): string {
-      return this.camelCaseToSnakeCase(entityName) + '_' + (referencedColumnName || 'id');
-    }
-    
-    indexName(tableName: string, columns: string[], type: 'primary' | 'foreign' | 'unique' | 'index' | 'sequence'): string {
-      if (type === 'primary') {
-        return `${tableName}_pkey`;
-      }
-      const columnsPart = columns.join('_');
-      return `${tableName}_${columnsPart}_${type}`;
-    }
-    
-    private camelCaseToSnakeCase(str: string): string {
-      return str.replace(/([A-Z])/g, '_$1').toLowerCase().replace(/^_/, '');
-    }
-  },
+  namingStrategy: UnderscoreNamingStrategy,
 });

@@ -3,14 +3,15 @@ import { InjectRedis } from '@nestjs-modules/ioredis';
 import { Redis } from 'ioredis';
 import { InjectRepository } from '@mikro-orm/nestjs';
 import { EntityRepository } from '@mikro-orm/postgresql';
-import { TelemetryData } from '../../database/entities/telemetry-data.entity';
+import { TelemetryData, TelemetryPayloadType as EntityTelemetryPayloadType } from '../../database/entities/telemetry-data.entity';
 import { 
   TelemetryMessage, 
   TelemetryBatch, 
   TelemetrySubscription,
   TelemetryAggregation,
   TelemetryStream,
-  PerformanceMetrics 
+  PerformanceMetrics,
+  TelemetryPayloadType
 } from '../types/telemetry.types';
 import { EventAggregator } from './event-aggregator.service';
 import { MetricsCalculator } from './metrics-calculator.service';
@@ -25,7 +26,7 @@ export class TelemetryService {
   private batchTimers: Map<string, NodeJS.Timeout> = new Map();
 
   constructor(
-    @InjectRedis() private readonly redis: Redis,
+    @Optional() @InjectRedis() private readonly redis: Redis | null,
     @Optional() @InjectRepository(TelemetryData)
     private readonly telemetryRepo: EntityRepository<TelemetryData> | null,
     private readonly eventAggregator: EventAggregator,
@@ -53,7 +54,7 @@ export class TelemetryService {
         this.batchQueue.set(projectId, []);
       }
 
-      const batch = this.batchQueue.get(projectId);
+      const batch = this.batchQueue.get(projectId)!;
       batch.push(message);
 
       // Check if batch should be flushed
@@ -74,7 +75,7 @@ export class TelemetryService {
       // Update metrics
       await this.updateMetrics(message);
     } catch (error) {
-      this.logger.error(`Failed to ingest telemetry: ${error.message}`, error.stack);
+      this.logger.error(`Failed to ingest telemetry: ${error instanceof Error ? error.message : String(error)}`, error instanceof Error ? error.stack : undefined);
       throw error;
     }
   }
@@ -86,16 +87,20 @@ export class TelemetryService {
       // Only persist to database if available
       if (this.telemetryRepo) {
         for (const event of aggregatedEvents) {
-          const telemetryData = this.telemetryRepo.create({
-            projectId: batch.projectId,
-            organizationId: batch.organizationId,
-            type: event.type,
-            timestamp: new Date(event.timestamp),
-            data: event.data,
-            metadata: batch.metadata,
-          });
+          const telemetryData = new TelemetryData();
+          telemetryData.projectId = batch.projectId;
+          telemetryData.organizationId = batch.organizationId;
+          telemetryData.type = EntityTelemetryPayloadType.METRIC; // Map event types to payload types
+          telemetryData.timestamp = new Date(event.timestamp);
+          telemetryData.data = event.data;
+          telemetryData.metadata = batch.metadata ? {
+            sdkVersion: batch.metadata.sdkVersion,
+            runtime: batch.metadata.runtime,
+            hostname: batch.metadata.hostname,
+            environment: batch.metadata.environment,
+          } : undefined;
 
-          await this.telemetryRepo.persistAndFlush(telemetryData);
+          await this.telemetryRepo.getEntityManager().persistAndFlush(telemetryData);
         }
       }
 
@@ -103,16 +108,18 @@ export class TelemetryService {
       await this.updateAggregatedMetrics(batch);
       
       // Publish batch processed event
-      await this.redis.publish(
-        `telemetry:batch:processed:${batch.projectId}`,
-        JSON.stringify({
-          projectId: batch.projectId,
-          eventCount: batch.events.length,
-          timestamp: Date.now(),
-        })
-      );
+      if (this.redis) {
+        await this.redis.publish(
+          `telemetry:batch:processed:${batch.projectId}`,
+          JSON.stringify({
+            projectId: batch.projectId,
+            eventCount: batch.events.length,
+            timestamp: Date.now(),
+          })
+        );
+      }
     } catch (error) {
-      this.logger.error(`Failed to process batch: ${error.message}`, error.stack);
+      this.logger.error(`Failed to process batch: ${error instanceof Error ? error.message : String(error)}`, error instanceof Error ? error.stack : undefined);
       throw error;
     }
   }
@@ -138,12 +145,17 @@ export class TelemetryService {
           timestamp: msg.timestamp,
           data: msg.payload.data as TelemetryStream,
         })),
-        metadata: batch[0].metadata,
+        metadata: {
+          sdkVersion: batch[0].metadata?.sdkVersion || '',
+          runtime: batch[0].metadata?.runtime || '',
+          hostname: batch[0].metadata?.hostname || '',
+          environment: batch[0].metadata?.environment || '',
+        },
       };
 
       await this.processBatch(telemetryBatch);
     } catch (error) {
-      this.logger.error(`Failed to flush batch for project ${projectId}: ${error.message}`);
+      this.logger.error(`Failed to flush batch for project ${projectId}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -155,6 +167,10 @@ export class TelemetryService {
   }
 
   private async publishToRedis(message: TelemetryMessage): Promise<void> {
+    if (!this.redis) {
+      return;
+    }
+    
     const channel = `telemetry:${message.projectId}:${message.type}`;
     await this.redis.publish(channel, JSON.stringify(message));
 
@@ -166,6 +182,10 @@ export class TelemetryService {
   }
 
   private async updateMetrics(message: TelemetryMessage): Promise<void> {
+    if (!this.redis) {
+      return;
+    }
+    
     const key = `metrics:${message.projectId}:${message.type}`;
     await this.redis.hincrby(key, 'count', 1);
     await this.redis.hset(key, 'lastUpdate', Date.now());
@@ -196,21 +216,31 @@ export class TelemetryService {
     };
 
     // Store in Redis for quick access
-    const key = `aggregation:${batch.projectId}:1m`;
-    await this.redis.setex(
-      key,
-      60, // 1 minute TTL
-      JSON.stringify(aggregation)
-    );
+    if (this.redis) {
+      const key = `aggregation:${batch.projectId}:1m`;
+      await this.redis.setex(
+        key,
+        60, // 1 minute TTL
+        JSON.stringify(aggregation)
+      );
+    }
   }
 
   async registerSubscription(clientId: string, subscription: TelemetrySubscription): Promise<void> {
+    if (!this.redis) {
+      return;
+    }
+    
     const key = `subscription:${clientId}`;
     await this.redis.hset(key, subscription.projectId, JSON.stringify(subscription));
     await this.redis.expire(key, 3600); // 1 hour TTL
   }
 
   async removeSubscription(clientId: string, subscriptionId: string): Promise<void> {
+    if (!this.redis) {
+      return;
+    }
+    
     const key = `subscription:${clientId}`;
     await this.redis.hdel(key, subscriptionId);
   }
@@ -221,6 +251,10 @@ export class TelemetryService {
     clientId: string;
     metadata?: any;
   }): Promise<void> {
+    if (!this.redis) {
+      return;
+    }
+    
     const key = `connections:${data.projectId}`;
     
     if (data.event === 'connect') {
@@ -238,13 +272,19 @@ export class TelemetryService {
   }
 
   async getProjectMetrics(projectId: string): Promise<any> {
+    if (!this.redis) {
+      return {};
+    }
+    
     const keys = await this.redis.keys(`metrics:${projectId}:*`);
     const metrics: Record<string, any> = {};
 
     for (const key of keys) {
       const type = key.split(':').pop();
       const data = await this.redis.hgetall(key);
-      metrics[type] = data;
+      if (type) {
+        metrics[type] = data;
+      }
     }
 
     return metrics;
@@ -272,12 +312,20 @@ export class TelemetryService {
     projectId: string,
     window: '1m' | '5m' | '15m' | '1h' | '24h',
   ): Promise<TelemetryAggregation | null> {
+    if (!this.redis) {
+      return null;
+    }
+    
     const key = `aggregation:${projectId}:${window}`;
     const data = await this.redis.get(key);
     return data ? JSON.parse(data) : null;
   }
 
   async getConnectionCount(projectId: string): Promise<number> {
+    if (!this.redis) {
+      return 0;
+    }
+    
     const count = await this.redis.get(`connection_count:${projectId}`);
     return count ? parseInt(count, 10) : 0;
   }
@@ -287,8 +335,17 @@ export class TelemetryService {
     limit: number;
     remaining: number;
   }> {
-    const current = await this.redis.get(`ratelimit:${projectId}`);
     const limit = 10000; // 10k events/sec
+    
+    if (!this.redis) {
+      return {
+        current: 0,
+        limit,
+        remaining: limit,
+      };
+    }
+    
+    const current = await this.redis.get(`ratelimit:${projectId}`);
     const currentCount = current ? parseInt(current, 10) : 0;
 
     return {
