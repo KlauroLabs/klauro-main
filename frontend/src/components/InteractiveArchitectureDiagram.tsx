@@ -83,24 +83,31 @@ const InteractiveArchitectureDiagram: React.FC<InteractiveArchitectureDiagramPro
     return { outgoing: outgoingNodes, incoming: incomingNodes };
   };
 
-  // Group connections by type
+  // Group connections by type and deduplicate
   const groupConnectionsByType = (connectionNodes: CASNode[]): ConnectionGroup[] => {
-    const groups = new Map<string, CASNode[]>();
+    const groups = new Map<string, Map<string, { node: CASNode; count: number }>>();
 
+    // Count occurrences of each node
     connectionNodes.forEach(node => {
       const type = node.type || 'unknown';
       if (!groups.has(type)) {
-        groups.set(type, []);
+        groups.set(type, new Map());
       }
-      groups.get(type)!.push(node);
+      const typeGroup = groups.get(type)!;
+
+      if (typeGroup.has(node.id)) {
+        typeGroup.get(node.id)!.count++;
+      } else {
+        typeGroup.set(node.id, { node, count: 1 });
+      }
     });
 
-    return Array.from(groups.entries()).map(([type, nodeList]) => ({
+    return Array.from(groups.entries()).map(([type, nodeMap]) => ({
       type,
       label: formatTypeLabel(type),
       icon: getTypeIcon(type),
       color: getTypeColor(type),
-      components: nodeList
+      components: Array.from(nodeMap.values())
     }));
   };
 
@@ -236,10 +243,10 @@ const InteractiveArchitectureDiagram: React.FC<InteractiveArchitectureDiagramPro
       y: number;
       width: number;
       height: number;
-      nodes: Array<{ node: CASNode; x: number; y: number }>;
+      nodes: Array<{ node: CASNode; x: number; y: number; count?: number }>;
     }> = [];
 
-    const gridSize = 140; // Size of each grid cell (larger for bigger cards)
+    const gridSize = 160; // Size of each grid cell (wider for bigger cards)
     const groupSpacing = 180; // Space between groups
     let currentY = -250; // Start position
 
@@ -251,16 +258,16 @@ const InteractiveArchitectureDiagram: React.FC<InteractiveArchitectureDiagramPro
 
       const baseX = side === 'right' ? 350 : -350 - groupWidth;
 
-      const nodes: Array<{ node: CASNode; x: number; y: number }> = [];
+      const nodes: Array<{ node: CASNode; x: number; y: number; count?: number }> = [];
 
-      group.components.forEach((node, nodeIndex) => {
+      group.components.forEach((item, nodeIndex) => {
         const row = Math.floor(nodeIndex / itemsPerRow);
         const col = nodeIndex % itemsPerRow;
 
         const nodeX = baseX + (col * gridSize) + 70; // Center in cell
         const nodeY = currentY + (row * gridSize) + 50; // Center in cell
 
-        nodes.push({ node, x: nodeX, y: nodeY });
+        nodes.push({ node: item.node, x: nodeX, y: nodeY, count: item.count });
       });
 
       groupData.push({
@@ -561,15 +568,15 @@ const InteractiveArchitectureDiagram: React.FC<InteractiveArchitectureDiagramPro
               </Box>
 
               {/* Individual Cards */}
-              {groupData.nodes.map(({ node, x, y }) => (
+              {groupData.nodes.map(({ node, x, y, count }) => (
                 <Card
                   key={node.id}
                   onClick={() => handleNodeClick(node)}
                   sx={{
                     position: 'absolute',
-                    left: x - groupData.x - 60,
+                    left: x - groupData.x - 70,
                     top: y - groupData.y + 20,
-                    width: 120,
+                    width: 140,
                     height: 80,
                     cursor: 'pointer',
                     border: 1,
@@ -583,6 +590,23 @@ const InteractiveArchitectureDiagram: React.FC<InteractiveArchitectureDiagramPro
                     }
                   }}
                 >
+                  {count && count > 1 && (
+                    <Chip
+                      label={count}
+                      size="small"
+                      sx={{
+                        position: 'absolute',
+                        top: 4,
+                        right: 4,
+                        minWidth: 20,
+                        height: 20,
+                        fontSize: '0.65rem',
+                        bgcolor: groupData.group.color,
+                        color: 'white',
+                        zIndex: 1
+                      }}
+                    />
+                  )}
                   <CardContent sx={{ p: 1, textAlign: 'center', height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
                     <Box sx={{ mb: 0.5, color: groupData.group.color }}>
                       {groupData.group.icon}
@@ -644,15 +668,15 @@ const InteractiveArchitectureDiagram: React.FC<InteractiveArchitectureDiagramPro
               </Box>
 
               {/* Individual Cards */}
-              {groupData.nodes.map(({ node, x, y }) => (
+              {groupData.nodes.map(({ node, x, y, count }) => (
                 <Card
                   key={node.id}
                   onClick={() => handleNodeClick(node)}
                   sx={{
                     position: 'absolute',
-                    left: x - groupData.x - 60,
+                    left: x - groupData.x - 70,
                     top: y - groupData.y + 20,
-                    width: 120,
+                    width: 140,
                     height: 80,
                     cursor: 'pointer',
                     border: 1,
@@ -666,6 +690,23 @@ const InteractiveArchitectureDiagram: React.FC<InteractiveArchitectureDiagramPro
                     }
                   }}
                 >
+                  {count && count > 1 && (
+                    <Chip
+                      label={count}
+                      size="small"
+                      sx={{
+                        position: 'absolute',
+                        top: 4,
+                        right: 4,
+                        minWidth: 20,
+                        height: 20,
+                        fontSize: '0.65rem',
+                        bgcolor: groupData.group.color,
+                        color: 'white',
+                        zIndex: 1
+                      }}
+                    />
+                  )}
                   <CardContent sx={{ p: 1, textAlign: 'center', height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
                     <Box sx={{ mb: 0.5, color: groupData.group.color }}>
                       {groupData.group.icon}

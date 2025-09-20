@@ -61,5 +61,5 @@ export interface ConnectionGroup {
   label: string;
   icon: React.ReactNode;
   color: string;
-  components: CASNode[];
+  components: Array<{ node: CASNode; count: number }>;
 }
