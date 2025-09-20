@@ -1,62 +1,66 @@
 import React, { useState, useEffect } from 'react';
 import {
   Box,
-  Typography,
   Card,
   CardContent,
-  CardActions,
-  Button,
+  Typography,
   Grid,
   Chip,
+  Button,
+  CircularProgress,
+  AppBar,
+  Toolbar,
+  Drawer,
+  List,
+  ListItem,
+  ListItemText,
+  ListItemButton,
+  ListItemIcon,
+  Divider,
+  IconButton,
+  useTheme,
+  useMediaQuery,
+  Paper,
+  Stack,
   Fade,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  TextField,
+  Zoom,
   FormControl,
   InputLabel,
   Select,
   MenuItem,
-  LinearProgress,
-  Alert,
-  List,
-  ListItem,
-  ListItemText,
-  ListItemIcon,
-  Divider,
-  Drawer,
-  IconButton,
-  Avatar,
-  useTheme,
-  useMediaQuery,
-  Fab,
-  Paper,
-  ListItemButton
+  CardMedia,
+  Container,
+  Breadcrumbs,
+  Link
 } from '@mui/material';
 import {
-  Add,
-  Code,
-  Visibility,
-  Settings,
-  CheckCircle,
-  RadioButtonUnchecked,
-  Error as ErrorIcon,
   Menu as MenuIcon,
   Dashboard,
-  Analytics,
+  Code,
   Storage,
-  AccountTree,
-  History,
-  Info as InfoIcon,
-  Close as CloseIcon,
+  Settings,
+  Analytics,
+  Folder,
   Architecture,
+  Hub,
+  Api,
+  ChevronRight,
+  ViewModule,
+  Category,
+  DataObject,
+  Functions,
+  Class,
+  IntegrationInstructions,
+  AccountTree,
+  Layers,
+  Assessment,
+  Launch,
+  Info,
+  Build,
   Speed,
-  Security,
-  BugReport,
-  Timeline
+  Storage as StorageIcon,
+  Cloud
 } from '@mui/icons-material';
-import Link from 'next/link';
 import { useRouter } from 'next/router';
 import InteractiveArchitectureDiagram from '../../components/InteractiveArchitectureDiagram';
 import { AnalysisInfoPanel } from '../../components/AnalysisInfoPanel';
@@ -69,97 +73,104 @@ interface Project {
   name: string;
   repository: string;
   lastAnalyzed: string;
-  status: 'analyzed' | 'analyzing' | 'error';
-  components: number;
-  issues: number;
+  status: 'active' | 'pending' | 'error';
+  components?: number;
+  connections?: number;
+  language?: string;
 }
 
-// Using CAS data directly instead of custom ProjectData
-
-const menuItems = [
-  { id: 'projects', label: 'Projects', icon: Dashboard, path: '/projects' },
-  { id: 'architecture', label: 'Architecture', icon: Architecture, path: '/architecture' },
-  { id: 'performance', label: 'Performance', icon: Speed, path: '/performance' },
-  { id: 'security', label: 'Security', icon: Security, path: '/security' },
-  { id: 'issues', label: 'Issues', icon: BugReport, path: '/issues' },
-  { id: 'database', label: 'Database', icon: Storage, path: '/database' },
-  { id: 'analytics', label: 'Analytics', icon: Analytics, path: '/analytics' },
-  { id: 'telemetry', label: 'Telemetry', icon: Timeline, path: '/telemetry' },
-];
-
 export default function ProjectsPage() {
+  const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const router = useRouter();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
 
-  // Helper function to group nodes based on selected perspective
-  const getNodeGroup = (node: any, perspective: string) => {
-    switch (perspective) {
-      case 'nestjs':
-        if (node.type === 'controller' || node.tags?.includes('controller')) return { key: 'Controllers', color: '#8b5cf6' };
-        if (node.type === 'service' || node.tags?.includes('service')) return { key: 'Services', color: '#10b981' };
-        if (node.type === 'module' || node.tags?.includes('module')) return { key: 'Modules', color: '#f59e0b' };
-        if (node.type === 'repository' || node.tags?.includes('repository')) return { key: 'Repositories', color: '#ef4444' };
-        if (node.type === 'entity' || node.tags?.includes('entity')) return { key: 'Entities', color: '#06b6d4' };
-        if (node.type === 'guard' || node.tags?.includes('guard')) return { key: 'Guards', color: '#f97316' };
-        if (node.type === 'middleware' || node.tags?.includes('middleware')) return { key: 'Middleware', color: '#84cc16' };
-        break;
+  // Group nodes by their type from CAS data
+  const getNodeGroup = (node: any) => {
+    if (!node.type) return null;
 
-      case 'typescript':
-        if (node.type === 'class' || node.tags?.includes('class')) return { key: 'Classes', color: '#3b82f6' };
-        if (node.type === 'interface' || node.tags?.includes('interface')) return { key: 'Interfaces', color: '#8b5cf6' };
-        if (node.type === 'function' || node.tags?.includes('function')) return { key: 'Functions', color: '#10b981' };
-        if (node.type === 'type' || node.tags?.includes('type')) return { key: 'Types', color: '#f59e0b' };
-        if (node.type === 'enum' || node.tags?.includes('enum')) return { key: 'Enums', color: '#ef4444' };
-        break;
+    // Use the node's type as the grouping key
+    // The type should come from the CAS analysis
+    const typeColors: Record<string, string> = {
+      'controller': '#8b5cf6',
+      'service': '#10b981',
+      'module': '#f59e0b',
+      'repository': '#ef4444',
+      'entity': '#06b6d4',
+      'class': '#3b82f6',
+      'interface': '#8b5cf6',
+      'function': '#10b981',
+      'method': '#10b981',
+      'component': '#06b6d4',
+      'hook': '#84cc16',
+      'guard': '#f97316',
+      'middleware': '#84cc16',
+      'router': '#10b981',
+      'route': '#06b6d4',
+      'enum': '#ef4444',
+      'type': '#f59e0b',
+      'context': '#8b5cf6',
+      'provider': '#f59e0b',
+      'page': '#f59e0b'
+    };
 
-      case 'express':
-        if (node.type === 'router' || node.tags?.includes('router')) return { key: 'Routers', color: '#10b981' };
-        if (node.type === 'middleware' || node.tags?.includes('middleware')) return { key: 'Middleware', color: '#f59e0b' };
-        if (node.type === 'controller' || node.tags?.includes('controller')) return { key: 'Controllers', color: '#8b5cf6' };
-        if (node.type === 'route' || node.tags?.includes('route')) return { key: 'Routes', color: '#06b6d4' };
-        break;
+    const color = typeColors[node.type.toLowerCase()] || '#6b7280';
 
-      case 'react':
-        if (node.type === 'component' || node.tags?.includes('component')) return { key: 'Components', color: '#06b6d4' };
-        if (node.type === 'hook' || node.tags?.includes('hook')) return { key: 'Hooks', color: '#10b981' };
-        if (node.type === 'context' || node.tags?.includes('context')) return { key: 'Contexts', color: '#8b5cf6' };
-        if (node.type === 'page' || node.tags?.includes('page')) return { key: 'Pages', color: '#f59e0b' };
-        break;
-
-      case 'all':
-      default:
-        // Group by file type or general categories
-        if (node.source?.file.endsWith('.controller.ts') || node.type === 'controller') return { key: 'Controllers', color: '#8b5cf6' };
-        if (node.source?.file.endsWith('.service.ts') || node.type === 'service') return { key: 'Services', color: '#10b981' };
-        if (node.source?.file.endsWith('.module.ts') || node.type === 'module') return { key: 'Modules', color: '#f59e0b' };
-        if (node.source?.file.includes('component') || node.type === 'component') return { key: 'Components', color: '#06b6d4' };
-        if (node.type === 'function' || node.tags?.includes('function')) return { key: 'Functions', color: '#84cc16' };
-        if (node.type === 'class' || node.tags?.includes('class')) return { key: 'Classes', color: '#ef4444' };
-        break;
+    // Create a plural label from the type
+    let label = node.type.charAt(0).toUpperCase() + node.type.slice(1);
+    if (!label.endsWith('s')) {
+      if (label.endsWith('y')) {
+        label = label.slice(0, -1) + 'ies';
+      } else if (label.endsWith('ss') || label.endsWith('x')) {
+        label = label + 'es';
+      } else {
+        label = label + 's';
+      }
     }
-    return { key: 'Other', color: '#6b7280' };
+
+    return { key: label, color };
   };
 
-  const [selectedProject, setSelectedProject] = useState<Project | null>(null);
-  const [projects] = useState<Project[]>([
+  const [projects, setProjects] = useState<Project[]>([
     {
       id: 'backend',
       name: 'Unravl Backend',
-      repository: 'unravl/backend',
-      lastAnalyzed: '2024-01-15T10:30:00Z',
-      status: 'analyzed',
-      components: 47,
-      issues: 3,
+      repository: 'github.com/unravl/backend',
+      lastAnalyzed: '2 hours ago',
+      status: 'active',
+      components: 124,
+      connections: 487,
+      language: 'TypeScript'
     },
     {
       id: 'frontend',
       name: 'Unravl Frontend',
-      repository: 'unravl/frontend',
-      lastAnalyzed: '2024-01-15T09:15:00Z',
-      status: 'analyzed',
-      components: 23,
-      issues: 1,
+      repository: 'github.com/unravl/frontend',
+      lastAnalyzed: '1 day ago',
+      status: 'active',
+      components: 89,
+      connections: 234,
+      language: 'React/TypeScript'
+    },
+    {
+      id: 'analyzer',
+      name: 'Code Analyzer',
+      repository: 'github.com/unravl/analyzer',
+      lastAnalyzed: '3 days ago',
+      status: 'pending',
+      components: 45,
+      connections: 123,
+      language: 'Python'
+    },
+    {
+      id: 'docs',
+      name: 'Documentation Site',
+      repository: 'github.com/unravl/docs',
+      lastAnalyzed: '1 week ago',
+      status: 'active',
+      components: 34,
+      connections: 89,
+      language: 'MDX'
     },
   ]);
 
@@ -180,11 +191,7 @@ export default function ProjectsPage() {
         fetchProjectData(project.id);
       }
     }
-  }, [router.query, selectedProject]);
-
-  const handleDrawerToggle = () => {
-    setMobileOpen(!mobileOpen);
-  };
+  }, [router.query]);
 
   const fetchProjectData = async (projectId: string) => {
     setLoading(true);
@@ -220,248 +227,109 @@ export default function ProjectsPage() {
     }
   };
 
-  const handleProjectSelect = (project: Project) => {
+  const handleDrawerToggle = () => {
+    setMobileOpen(!mobileOpen);
+  };
+
+  const handleProjectClick = (project: Project) => {
     setSelectedProject(project);
+    router.push(`/projects?projectId=${project.id}`);
     fetchProjectData(project.id);
-
-    // Update URL to preserve navigation state
-    router.push(`/projects?projectId=${project.id}`, undefined, { shallow: true });
-
     if (isMobile) {
       setMobileOpen(false);
     }
   };
 
-  const drawer = (
-    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <Box sx={{
-        p: 3,
-        borderBottom: 1,
-        borderColor: 'divider',
-        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-        color: 'white'
-      }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-          <AccountTree sx={{ fontSize: 32, mr: 2 }} />
-          <Typography variant="h5" sx={{ fontWeight: 700, letterSpacing: 1.2 }}>
-            UNRAVL
-          </Typography>
-        </Box>
-        <Typography variant="body2" sx={{ opacity: 0.9 }}>
-          Architecture Intelligence Platform
-        </Typography>
-      </Box>
+  const getStatusColor = (status: Project['status']) => {
+    switch (status) {
+      case 'active': return 'success';
+      case 'pending': return 'warning';
+      case 'error': return 'error';
+      default: return 'default';
+    }
+  };
 
-      <List sx={{ flexGrow: 1, py: 1 }}>
-        {menuItems.map((item) => (
+  const drawer = (
+    <Box>
+      <Toolbar sx={{ bgcolor: 'primary.main', color: 'white' }}>
+        <Architecture sx={{ mr: 2 }} />
+        <Typography variant="h6" fontWeight={700}>
+          Unravl
+        </Typography>
+      </Toolbar>
+      <Divider />
+
+      <List sx={{ p: 2 }}>
+        <Typography variant="overline" color="text.secondary" sx={{ px: 2, display: 'block', mb: 1 }}>
+          Navigation
+        </Typography>
+        <ListItemButton selected>
+          <ListItemIcon><Dashboard /></ListItemIcon>
+          <ListItemText primary="Projects" />
+        </ListItemButton>
+        <ListItemButton>
+          <ListItemIcon><Analytics /></ListItemIcon>
+          <ListItemText primary="Analytics" />
+        </ListItemButton>
+        <ListItemButton>
+          <ListItemIcon><Code /></ListItemIcon>
+          <ListItemText primary="Code Explorer" />
+        </ListItemButton>
+        <ListItemButton>
+          <ListItemIcon><Storage /></ListItemIcon>
+          <ListItemText primary="Telemetry" />
+        </ListItemButton>
+      </List>
+
+      <Divider />
+
+      <List sx={{ p: 2 }}>
+        <Typography variant="overline" color="text.secondary" sx={{ px: 2, display: 'block', mb: 1 }}>
+          Projects ({projects.length})
+        </Typography>
+        {projects.map((project) => (
           <ListItemButton
-            key={item.id}
-            selected={item.id === 'projects'}
-            onClick={() => router.push(item.path)}
+            key={project.id}
+            selected={selectedProject?.id === project.id}
+            onClick={() => handleProjectClick(project)}
             sx={{
-              mx: 2,
-              my: 0.5,
-              borderRadius: 2,
+              borderRadius: 1,
+              mb: 1,
               '&.Mui-selected': {
-                backgroundColor: 'primary.main',
-                color: 'primary.contrastText',
+                bgcolor: 'action.selected',
                 '&:hover': {
-                  backgroundColor: 'primary.dark',
-                },
-                '& .MuiListItemIcon-root': {
-                  color: 'primary.contrastText',
-                },
-              },
+                  bgcolor: 'action.selected',
+                }
+              }
             }}
           >
             <ListItemIcon>
-              <item.icon />
+              <Folder color={selectedProject?.id === project.id ? 'primary' : 'inherit'} />
             </ListItemIcon>
             <ListItemText
-              primary={item.label}
-              primaryTypographyProps={{
-                fontWeight: item.id === 'projects' ? 600 : 400
-              }}
+              primary={project.name}
+              secondary={
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  <Chip
+                    label={project.status}
+                    size="small"
+                    color={getStatusColor(project.status)}
+                    sx={{ height: 16, fontSize: '0.65rem' }}
+                  />
+                  <Typography variant="caption" color="text.secondary">
+                    • {project.lastAnalyzed}
+                  </Typography>
+                </Box>
+              }
             />
           </ListItemButton>
         ))}
       </List>
-
-      <Box sx={{ p: 2, borderTop: 1, borderColor: 'divider' }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-          <Avatar sx={{ bgcolor: 'primary.main' }}>U</Avatar>
-          <Box>
-            <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-              User Name
-            </Typography>
-            <Typography variant="caption" color="text.secondary">
-              user@company.com
-            </Typography>
-          </Box>
-        </Box>
-      </Box>
     </Box>
   );
 
-  if (!selectedProject) {
-    return (
-      <Box sx={{ display: 'flex', height: '100vh' }}>
-        {/* Sidebar */}
-        <Box
-          component="nav"
-          sx={{
-            width: { md: DRAWER_WIDTH },
-            flexShrink: { md: 0 },
-          }}
-        >
-          {isMobile ? (
-            <Drawer
-              variant="temporary"
-              open={mobileOpen}
-              onClose={handleDrawerToggle}
-              ModalProps={{
-                keepMounted: true,
-              }}
-              sx={{
-                '& .MuiDrawer-paper': {
-                  boxSizing: 'border-box',
-                  width: DRAWER_WIDTH,
-                },
-              }}
-            >
-              {drawer}
-            </Drawer>
-          ) : (
-            <Drawer
-              variant="permanent"
-              sx={{
-                '& .MuiDrawer-paper': {
-                  boxSizing: 'border-box',
-                  width: DRAWER_WIDTH,
-                  border: 'none',
-                  boxShadow: '2px 0 8px rgba(0,0,0,0.1)',
-                },
-              }}
-              open
-            >
-              {drawer}
-            </Drawer>
-          )}
-        </Box>
-
-        {/* Main Content */}
-        <Box
-          component="main"
-          sx={{
-            flexGrow: 1,
-            width: { md: `calc(100% - ${DRAWER_WIDTH}px)` },
-            backgroundColor: 'background.default',
-            minHeight: '100vh',
-          }}
-        >
-          {/* Mobile Header */}
-          {isMobile && (
-            <Box sx={{
-              display: 'flex',
-              alignItems: 'center',
-              p: 2,
-              borderBottom: 1,
-              borderColor: 'divider',
-              bgcolor: 'background.paper'
-            }}>
-              <IconButton onClick={handleDrawerToggle} sx={{ mr: 2 }}>
-                <MenuIcon />
-              </IconButton>
-              <Typography variant="h6">Projects</Typography>
-            </Box>
-          )}
-
-          {/* Project Selection */}
-          <Box sx={{ p: 4 }}>
-            <Typography variant="h4" gutterBottom sx={{ fontWeight: 700, mb: 1 }}>
-              Select a Project
-            </Typography>
-            <Typography variant="body1" color="text.secondary" sx={{ mb: 4 }}>
-              Choose a project to explore its interactive architecture diagram
-            </Typography>
-
-            <Grid container spacing={3}>
-              {projects.map((project) => (
-                <Grid item xs={12} md={6} lg={4} key={project.id}>
-                  <Card
-                    sx={{
-                      height: '100%',
-                      cursor: 'pointer',
-                      transition: 'all 0.3s ease',
-                      '&:hover': {
-                        transform: 'translateY(-4px)',
-                        boxShadow: 6,
-                      }
-                    }}
-                    onClick={() => handleProjectSelect(project)}
-                  >
-                    <CardContent sx={{ pb: 1 }}>
-                      <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', mb: 2 }}>
-                        <Box>
-                          <Typography variant="h6" gutterBottom sx={{ fontWeight: 600 }}>
-                            {project.name}
-                          </Typography>
-                          <Typography variant="body2" color="text.secondary" gutterBottom>
-                            {project.repository}
-                          </Typography>
-                        </Box>
-                        <Chip
-                          label={project.status}
-                          color={project.status === 'analyzed' ? 'success' : project.status === 'analyzing' ? 'warning' : 'error'}
-                          size="small"
-                          sx={{ fontWeight: 600 }}
-                        />
-                      </Box>
-
-                      <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                          <AccountTree fontSize="small" color="primary" />
-                          <Typography variant="body2" color="text.secondary">
-                            {project.components} components
-                          </Typography>
-                        </Box>
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                          <ErrorIcon fontSize="small" color={project.issues > 0 ? 'warning' : 'success'} />
-                          <Typography variant="body2" color="text.secondary">
-                            {project.issues} issues
-                          </Typography>
-                        </Box>
-                      </Box>
-
-                      <Typography variant="caption" color="text.secondary">
-                        Last analyzed: {new Date(project.lastAnalyzed).toLocaleDateString()}
-                      </Typography>
-                    </CardContent>
-
-                    <CardActions>
-                      <Button
-                        variant="contained"
-                        fullWidth
-                        sx={{
-                          fontWeight: 600,
-                          textTransform: 'none'
-                        }}
-                      >
-                        Explore Architecture
-                      </Button>
-                    </CardActions>
-                  </Card>
-                </Grid>
-              ))}
-            </Grid>
-          </Box>
-        </Box>
-      </Box>
-    );
-  }
-
   return (
-    <Box sx={{ display: 'flex', height: '100vh' }}>
+    <Box sx={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
       {/* Sidebar */}
       <Box
         component="nav"
@@ -475,9 +343,7 @@ export default function ProjectsPage() {
             variant="temporary"
             open={mobileOpen}
             onClose={handleDrawerToggle}
-            ModalProps={{
-              keepMounted: true,
-            }}
+            ModalProps={{ keepMounted: true }}
             sx={{
               '& .MuiDrawer-paper': {
                 boxSizing: 'border-box',
@@ -494,8 +360,6 @@ export default function ProjectsPage() {
               '& .MuiDrawer-paper': {
                 boxSizing: 'border-box',
                 width: DRAWER_WIDTH,
-                border: 'none',
-                boxShadow: '2px 0 8px rgba(0,0,0,0.1)',
               },
             }}
             open
@@ -513,219 +377,190 @@ export default function ProjectsPage() {
           width: { md: `calc(100% - ${DRAWER_WIDTH}px)` },
           height: '100vh',
           overflow: 'hidden',
-          position: 'relative',
-          marginRight: infoPanelOpen && !isMobile ? '400px' : 0,
-          transition: 'margin-right 0.3s',
+          display: 'flex',
+          flexDirection: 'column',
+          bgcolor: 'background.default'
         }}
       >
-        {/* Mobile Header */}
+        {/* Header */}
         {isMobile && (
-          <Box sx={{
-            display: 'flex',
-            alignItems: 'center',
-            p: 2,
-            borderBottom: 1,
-            borderColor: 'divider',
-            bgcolor: 'background.paper',
-            zIndex: 10
-          }}>
-            <IconButton onClick={handleDrawerToggle} sx={{ mr: 2 }}>
-              <MenuIcon />
-            </IconButton>
-            <Typography variant="h6">{selectedProject.name}</Typography>
-            <Box sx={{ ml: 'auto' }}>
+          <AppBar position="static">
+            <Toolbar>
               <IconButton
-                onClick={() => setInfoPanelOpen(!infoPanelOpen)}
-                color={infoPanelOpen ? 'primary' : 'default'}
+                color="inherit"
+                edge="start"
+                onClick={handleDrawerToggle}
+                sx={{ mr: 2 }}
               >
-                <InfoIcon />
+                <MenuIcon />
               </IconButton>
-            </Box>
-          </Box>
+              <Typography variant="h6" noWrap component="div">
+                {selectedProject?.name || 'Projects'}
+              </Typography>
+              {selectedProject && (
+                <Box sx={{ ml: 'auto' }}>
+                  <IconButton color="inherit" onClick={() => setInfoPanelOpen(!infoPanelOpen)}>
+                    <Info />
+                  </IconButton>
+                </Box>
+              )}
+            </Toolbar>
+          </AppBar>
         )}
 
-        {/* Desktop Header */}
-        {!isMobile && (
-          <Paper
-            elevation={1}
-            sx={{
-              p: 2,
-              borderRadius: 0,
-              borderBottom: 1,
-              borderColor: 'divider',
-              zIndex: 10,
-              position: 'relative'
-            }}
-          >
-            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <Box>
-                <Typography variant="h6" sx={{ fontWeight: 600 }}>
-                  {selectedProject.name}
-                </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  Interactive Architecture Exploration
-                </Typography>
-              </Box>
-
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                {viewMode === 'perspective' && (
-                  <Button
-                    variant="outlined"
-                    onClick={() => {
-                      setViewMode('overview');
-                      setSelectedPerspectiveGroup(null);
-                    }}
-                    size="small"
-                    sx={{ textTransform: 'none' }}
-                  >
-                    Back to Overview
-                  </Button>
-                )}
-
-                <FormControl size="small" sx={{ minWidth: 150 }}>
-                  <InputLabel>Framework View</InputLabel>
-                  <Select
-                    value={selectedPerspective}
-                    label="Framework View"
-                    onChange={(e) => {
-                      setSelectedPerspective(e.target.value);
-                      // Reset to overview mode when changing perspectives
-                      setViewMode('overview');
-                      setSelectedPerspectiveGroup(null);
-                    }}
-                  >
-                    <MenuItem value="nestjs">NestJS</MenuItem>
-                    <MenuItem value="typescript">TypeScript</MenuItem>
-                    <MenuItem value="express">Express</MenuItem>
-                    <MenuItem value="react">React</MenuItem>
-                    <MenuItem value="all">All Components</MenuItem>
-                  </Select>
-                </FormControl>
-
-                <Button
-                  variant="outlined"
-                  onClick={() => {
-                    setSelectedProject(null);
-                    router.push('/projects', undefined, { shallow: true });
-                  }}
-                  size="small"
-                  sx={{ textTransform: 'none' }}
-                >
-                  Back to Projects
-                </Button>
-                <IconButton
-                  onClick={() => setInfoPanelOpen(!infoPanelOpen)}
-                  color={infoPanelOpen ? 'primary' : 'default'}
-                  sx={{
-                    bgcolor: infoPanelOpen ? 'primary.light' : 'transparent',
-                    '&:hover': {
-                      bgcolor: infoPanelOpen ? 'primary.main' : 'action.hover',
-                    }
-                  }}
-                >
-                  <InfoIcon />
-                </IconButton>
-              </Box>
+        {/* Project Content */}
+        <Box sx={{
+          flexGrow: 1,
+          overflow: 'hidden',
+          position: 'relative',
+          height: '100%'
+        }}>
+          {loading ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
+              <CircularProgress size={60} thickness={4} />
             </Box>
-          </Paper>
-        )}
-
-        {/* Diagram Content */}
-        <Box sx={{ height: isMobile ? 'calc(100vh - 73px)' : 'calc(100vh - 89px)', overflow: 'hidden' }}>
-          {projectData && projectData.nodes && projectData.nodes.length > 0 ? (
-            <Box
-              sx={{
-                flex: 1,
-                position: 'relative',
-                background: 'radial-gradient(circle at center, #0a1929 0%, #000 100%)',
-                overflow: 'hidden',
-                cursor: 'grab'
-              }}
-            >
-              <Box
-                sx={{
-                  position: 'absolute',
-                  inset: 0,
-                  backgroundImage: `
-                    linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
-                    linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px)
-                  `,
-                  backgroundSize: '50px 50px',
-                  opacity: 0.5
-                }}
-              />
-
+          ) : selectedProject && projectData ? (
+            <>
               {viewMode === 'overview' ? (
-              <Box
-                sx={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
-                  gap: 3,
-                  p: 4,
-                  maxWidth: 1200,
-                  margin: '0 auto'
-                }}
-              >
-                {(() => {
-                  // Group nodes based on selected perspective
-                  const groups = new Map<string, { nodes: any[], color: string }>();
+                // Overview mode - show perspective cards
+                <Box sx={{ p: 4, height: '100%', overflow: 'auto' }}>
+                  <Box sx={{ mb: 4 }}>
+                    <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
+                      <Box>
+                        <Breadcrumbs separator={<ChevronRight fontSize="small" />}>
+                          <Link color="inherit" href="/projects" sx={{ cursor: 'pointer', textDecoration: 'none' }}>
+                            Projects
+                          </Link>
+                          <Typography color="text.primary">{selectedProject.name}</Typography>
+                        </Breadcrumbs>
+                        <Typography variant="h3" fontWeight={700} sx={{ mt: 1 }}>
+                          {selectedProject.name}
+                        </Typography>
+                        <Typography variant="body1" color="text.secondary" sx={{ mt: 1 }}>
+                          {projectData.nodes?.length || 0} components • {projectData.edges?.length || 0} connections
+                        </Typography>
+                      </Box>
 
-                  projectData.nodes.forEach(node => {
-                    const { key: groupKey, color } = getNodeGroup(node, selectedPerspective);
-
-                    if (!groups.has(groupKey)) {
-                      groups.set(groupKey, { nodes: [], color });
-                    }
-                    groups.get(groupKey)!.nodes.push(node);
-                  });
-
-                  // Create perspective cards
-                  return Array.from(groups.entries())
-                    .filter(([_, group]) => group.nodes.length > 0)
-                    .map(([groupName, group], index) => (
-                      <Fade in key={groupName} timeout={300 + index * 100}>
-                        <Card
-                          onClick={() => {
-                            setViewMode('perspective');
-                            setSelectedPerspectiveGroup(groupName);
-                          }}
-                          sx={{
-                            cursor: 'pointer',
-                            transition: 'all 0.3s ease',
-                            border: '2px solid transparent',
-                            bgcolor: 'rgba(255, 255, 255, 0.05)',
-                            '&:hover': {
-                              transform: 'scale(1.05)',
-                              borderColor: group.color,
-                              bgcolor: 'rgba(255, 255, 255, 0.1)',
-                              boxShadow: `0 8px 32px ${group.color}40`
-                            }
-                          }}
+                      <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+                        <Button
+                          variant="outlined"
+                          startIcon={<Assessment />}
+                          onClick={() => setInfoPanelOpen(true)}
                         >
-                          <CardContent sx={{ textAlign: 'center', p: 4 }}>
-                            <Typography variant="h5" sx={{ mb: 2, fontWeight: 600, color: 'white' }}>
-                              {groupName}
-                            </Typography>
-                            <Chip
-                              label={`${group.nodes.length} items`}
-                              sx={{
-                                bgcolor: `${group.color}20`,
-                                color: group.color,
-                                fontWeight: 'bold',
-                                mb: 2
-                              }}
-                            />
-                            <Typography variant="body2" color="text.secondary">
-                              Click to explore {groupName.toLowerCase()}
-                            </Typography>
-                          </CardContent>
-                        </Card>
-                      </Fade>
-                    ));
-                })()}
-              </Box>
+                          Analysis Details
+                        </Button>
+                        <Button
+                          variant="contained"
+                          startIcon={<Build />}
+                          onClick={() => fetchProjectData(selectedProject.id)}
+                        >
+                          Re-analyze
+                        </Button>
+                      </Box>
+                    </Stack>
+                  </Box>
+
+                  {/* Architecture Perspectives */}
+                  <Typography variant="h5" fontWeight={600} sx={{ mb: 3 }}>
+                    Architecture Perspectives
+                  </Typography>
+
+                  {/* Perspective Selector */}
+                  <Box sx={{ mb: 3 }}>
+                    <Stack direction="row" alignItems="center" spacing={2}>
+                      <Typography variant="body2" color="text.secondary">
+                        Group by:
+                      </Typography>
+                      <FormControl size="small" sx={{ minWidth: 150 }}>
+                        <Select
+                          value="types"
+                          size="small"
+                        >
+                          <MenuItem value="types">Component Types</MenuItem>
+                          <MenuItem value="layers">Architecture Layers</MenuItem>
+                          <MenuItem value="modules">Modules</MenuItem>
+                        </Select>
+                      </FormControl>
+                    </Stack>
+                  </Box>
+
+                  <Grid container spacing={3}>
+                    {(() => {
+                      // Group nodes by type
+                      const groups = new Map<string, { nodes: any[], color: string }>();
+
+                      projectData.nodes.forEach(node => {
+                        const groupInfo = getNodeGroup(node);
+                        if (!groupInfo) return;
+
+                        const { key: groupKey, color } = groupInfo;
+
+                        if (!groups.has(groupKey)) {
+                          groups.set(groupKey, { nodes: [], color });
+                        }
+                        groups.get(groupKey)!.nodes.push(node);
+                      });
+
+                      // Create perspective cards
+                      return Array.from(groups.entries())
+                        .filter(([_, group]) => group.nodes.length > 0)
+                        .map(([groupName, group], index) => (
+                          <Fade in key={groupName} timeout={300 + index * 100}>
+                            <Grid item xs={12} sm={6} md={4}>
+                              <Card
+                                onClick={() => {
+                                  setViewMode('perspective');
+                                  setSelectedPerspectiveGroup(groupName);
+                                }}
+                                sx={{
+                                  cursor: 'pointer',
+                                  transition: 'all 0.3s ease',
+                                  border: '2px solid transparent',
+                                  bgcolor: 'rgba(255, 255, 255, 0.05)',
+                                  '&:hover': {
+                                    transform: 'scale(1.05)',
+                                    borderColor: group.color,
+                                    bgcolor: 'rgba(255, 255, 255, 0.1)',
+                                    boxShadow: 4
+                                  }
+                                }}
+                              >
+                                <CardContent>
+                                  <Stack direction="row" alignItems="center" spacing={2}>
+                                    <Box
+                                      sx={{
+                                        width: 48,
+                                        height: 48,
+                                        borderRadius: 2,
+                                        bgcolor: group.color + '20',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center'
+                                      }}
+                                    >
+                                      <ViewModule sx={{ color: group.color }} />
+                                    </Box>
+                                    <Box sx={{ flexGrow: 1 }}>
+                                      <Typography variant="h6" fontWeight={600}>
+                                        {groupName}
+                                      </Typography>
+                                      <Typography variant="body2" color="text.secondary">
+                                        {group.nodes.length} {group.nodes.length === 1 ? 'item' : 'items'}
+                                      </Typography>
+                                    </Box>
+                                    <ChevronRight color="action" />
+                                  </Stack>
+                                </CardContent>
+                              </Card>
+                            </Grid>
+                          </Fade>
+                        ));
+                    })()}
+                  </Grid>
+                </Box>
               ) : (
-                <Box sx={{ position: 'relative', height: '100%' }}>
+                // Perspective view - show diagram
+                <Box sx={{ height: '100%', position: 'relative' }}>
                   <Box
                     sx={{
                       position: 'absolute',
@@ -754,12 +589,19 @@ export default function ProjectsPage() {
                     </Button>
                   </Box>
                   <InteractiveArchitectureDiagram
+                    showSelectionView={true}
+                    groupName={selectedPerspectiveGroup || undefined}
+                    allNodes={projectData.nodes}
+                    onInfoPanelOpen={() => setInfoPanelOpen(true)}
                     nodes={(() => {
                       // Filter nodes for selected perspective group
                       const groups = new Map<string, { nodes: any[], color: string }>();
 
                       projectData.nodes.forEach(node => {
-                        const { key: groupKey, color } = getNodeGroup(node, selectedPerspective);
+                        const groupInfo = getNodeGroup(node);
+                        if (!groupInfo) return;
+
+                        const { key: groupKey, color } = groupInfo;
 
                         if (!groups.has(groupKey)) {
                           groups.set(groupKey, { nodes: [], color });
@@ -767,80 +609,69 @@ export default function ProjectsPage() {
                         groups.get(groupKey)!.nodes.push(node);
                       });
 
+                      // Only return nodes that belong to the selected group
                       const selectedNodes = selectedPerspectiveGroup && groups.has(selectedPerspectiveGroup)
                         ? groups.get(selectedPerspectiveGroup)!.nodes
                         : [];
 
-                      // Include connected nodes to show full context
-                      const selectedNodeIds = new Set(selectedNodes.map(n => n.id));
-                      const connectedNodeIds = new Set<string>();
-
-                      // Add nodes that are connected to the selected nodes
-                      projectData.edges?.forEach(edge => {
-                        if (selectedNodeIds.has(edge.source)) {
-                          connectedNodeIds.add(edge.target);
-                        }
-                        if (selectedNodeIds.has(edge.target)) {
-                          connectedNodeIds.add(edge.source);
-                        }
-                      });
-
-                      // Include both selected nodes and their connections
-                      const allRelevantNodes = selectedNodes.slice();
-                      projectData.nodes.forEach(node => {
-                        if (connectedNodeIds.has(node.id) && !selectedNodeIds.has(node.id)) {
-                          allRelevantNodes.push(node);
-                        }
-                      });
-
-                      return allRelevantNodes;
+                      return selectedNodes;
                     })()}
-                    edges={(() => {
-                      // Filter edges to only show connections involving the visible nodes
-                      const visibleNodeIds = new Set(
-                        selectedPerspectiveGroup ?
-                          (() => {
-                            const groups = new Map<string, { nodes: any[], color: string }>();
-                            projectData.nodes.forEach(node => {
-                              const { key: groupKey, color } = getNodeGroup(node, selectedPerspective);
-
-                              if (!groups.has(groupKey)) groups.set(groupKey, { nodes: [], color });
-                              groups.get(groupKey)!.nodes.push(node);
-                            });
-
-                            const selectedNodes = groups.get(selectedPerspectiveGroup)?.nodes || [];
-                            const selectedIds = new Set(selectedNodes.map(n => n.id));
-                            const connectedIds = new Set<string>();
-
-                            projectData.edges?.forEach(edge => {
-                              if (selectedIds.has(edge.source)) connectedIds.add(edge.target);
-                              if (selectedIds.has(edge.target)) connectedIds.add(edge.source);
-                            });
-
-                            return [...selectedIds, ...connectedIds];
-                          })() : []
-                      );
-
-                      return (projectData.edges || []).filter(edge =>
-                        visibleNodeIds.has(edge.source) || visibleNodeIds.has(edge.target)
-                      );
-                    })()}
+                    edges={projectData.edges || []}
                   />
                 </Box>
               )}
-            </Box>
-          ) : (
-            <Box sx={{
+            </>
+          ) : !selectedProject ? (
+            // No project selected
+            <Container maxWidth="md" sx={{
+              height: '100%',
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'center',
-              height: '100%',
-              color: 'white'
+              justifyContent: 'center'
             }}>
-              <Typography>
-                {loading ? 'Loading analysis...' : 'No components found'}
-              </Typography>
-            </Box>
+              <Paper sx={{ p: 6, textAlign: 'center', bgcolor: 'background.paper' }}>
+                <Architecture sx={{ fontSize: 80, color: 'primary.main', mb: 3 }} />
+                <Typography variant="h4" gutterBottom fontWeight={600}>
+                  Welcome to Unravl
+                </Typography>
+                <Typography variant="body1" color="text.secondary" sx={{ mb: 4 }}>
+                  Select a project from the sidebar to begin exploring its architecture
+                </Typography>
+                <Stack direction="row" spacing={2} justifyContent="center">
+                  <Button variant="contained" startIcon={<Folder />} onClick={() => handleProjectClick(projects[0])}>
+                    Open a Project
+                  </Button>
+                  <Button variant="outlined" startIcon={<Settings />}>
+                    Settings
+                  </Button>
+                </Stack>
+              </Paper>
+            </Container>
+          ) : (
+            // Project selected but no data
+            <Container maxWidth="md" sx={{
+              height: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}>
+              <Paper sx={{ p: 6, textAlign: 'center', bgcolor: 'background.paper' }}>
+                <Storage sx={{ fontSize: 80, color: 'text.secondary', mb: 3 }} />
+                <Typography variant="h4" gutterBottom fontWeight={600}>
+                  No Analysis Data Available
+                </Typography>
+                <Typography variant="body1" color="text.secondary" sx={{ mb: 4 }}>
+                  This project hasn't been analyzed yet or the analysis data is unavailable
+                </Typography>
+                <Button
+                  variant="contained"
+                  startIcon={<Build />}
+                  onClick={() => fetchProjectData(selectedProject.id)}
+                >
+                  Analyze Project
+                </Button>
+              </Paper>
+            </Container>
           )}
         </Box>
       </Box>

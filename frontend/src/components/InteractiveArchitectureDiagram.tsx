@@ -28,7 +28,9 @@ import {
   ChevronRight,
   ZoomIn,
   ZoomOut,
-  CenterFocusStrong
+  CenterFocusStrong,
+  Info,
+  ViewModule
 } from '@mui/icons-material';
 
 import { Component, ConnectionGroup } from '../types/diagram.types';
@@ -40,12 +42,20 @@ interface InteractiveArchitectureDiagramProps {
   nodes: CASNode[];
   edges: CASEdge[];
   onNodeSelect?: (nodeId: string) => void;
+  showSelectionView?: boolean; // Force selection view instead of auto-focusing
+  allNodes?: CASNode[]; // All nodes for edge resolution
+  onInfoPanelOpen?: () => void; // Callback to open info panel
+  groupName?: string; // Name of the group we're viewing
 }
 
 const InteractiveArchitectureDiagram: React.FC<InteractiveArchitectureDiagramProps> = ({
   nodes,
   edges,
-  onNodeSelect
+  onNodeSelect,
+  showSelectionView = false,
+  allNodes,
+  onInfoPanelOpen,
+  groupName
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [focusedNode, setFocusedNode] = useState<CASNode | null>(null);
@@ -53,19 +63,21 @@ const InteractiveArchitectureDiagram: React.FC<InteractiveArchitectureDiagramPro
   const [isAnimating, setIsAnimating] = useState(false);
   const [visibleConnections, setVisibleConnections] = useState<string[]>(['incoming', 'outgoing']);
   const [filteredBundleTypes, setFilteredBundleTypes] = useState<string[]>([]);
+  const [isInSelectionMode, setIsInSelectionMode] = useState(showSelectionView);
   const { viewTransform, isDragging, handleMouseDown, handleMouseMove, handleMouseUp, handleZoom, handleResetView } = useDragAndZoom();
 
   // Get connections for the focused node
   const getConnections = (nodeId: string) => {
+    const nodePool = allNodes || nodes; // Use allNodes if provided for finding connected nodes
     const outgoing = edges.filter(edge => edge.source === nodeId);
     const incoming = edges.filter(edge => edge.target === nodeId);
 
     const outgoingNodes = outgoing.map(edge =>
-      nodes.find(node => node.id === edge.target)
+      nodePool.find(node => node.id === edge.target)
     ).filter(Boolean) as CASNode[];
 
     const incomingNodes = incoming.map(edge =>
-      nodes.find(node => node.id === edge.source)
+      nodePool.find(node => node.id === edge.source)
     ).filter(Boolean) as CASNode[];
 
     return { outgoing: outgoingNodes, incoming: incomingNodes };
@@ -102,6 +114,7 @@ const InteractiveArchitectureDiagram: React.FC<InteractiveArchitectureDiagramPro
 
     setTimeout(() => {
       setFocusedNode(node);
+      setIsInSelectionMode(false); // Exit selection mode when a node is clicked
       setIsAnimating(false);
       onNodeSelect?.(node.id);
     }, 300);
@@ -113,13 +126,26 @@ const InteractiveArchitectureDiagram: React.FC<InteractiveArchitectureDiagramPro
       setConnectionHistory(prev => prev.slice(0, -1));
       setFocusedNode(previousNode);
     } else {
-      setFocusedNode(null);
+      // If no history and we started in selection view, go back to selection mode
+      if (showSelectionView) {
+        setIsInSelectionMode(true);
+        setFocusedNode(null);
+      } else {
+        setFocusedNode(null);
+      }
     }
   };
 
-  // Initialize with first node if none selected
+  // Auto-focus logic - only if not in selection mode
   useEffect(() => {
-    if (!focusedNode && nodes.length > 0) {
+    // If we're in selection mode, don't auto-focus
+    if (isInSelectionMode) {
+      setFocusedNode(null);
+      return;
+    }
+
+    // Otherwise, auto-focus on first suitable node if none selected and not initially in selection view
+    if (!focusedNode && nodes.length > 0 && !showSelectionView) {
       const entryPoint = nodes.find(node =>
         node.type === 'controller' ||
         node.tags?.includes('controller') ||
@@ -128,12 +154,66 @@ const InteractiveArchitectureDiagram: React.FC<InteractiveArchitectureDiagramPro
       ) || nodes[0];
       setFocusedNode(entryPoint);
     }
-  }, [nodes, focusedNode]);
+  }, [nodes, focusedNode, isInSelectionMode, showSelectionView]);
 
+  // Show all nodes as cards if no focused node (progressive disclosure)
   if (!focusedNode) {
     return (
-      <Box sx={{ p: 4, textAlign: 'center' }}>
-        <Typography>Select a component to begin exploration</Typography>
+      <Box sx={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        height: '100vh',
+        p: 4
+      }}>
+        <Typography variant="h4" sx={{ mb: 4, color: 'text.primary', fontWeight: 600 }}>
+          {nodes.length > 0 ? 'Select a component to explore' : 'No components available'}
+        </Typography>
+
+        {nodes.length > 0 && (
+          <Box sx={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))',
+            gap: 3,
+            width: '100%',
+            maxWidth: '1200px'
+          }}>
+            {nodes.map((node) => (
+              <Card
+                key={node.id}
+                onClick={() => handleNodeClick(node)}
+                sx={{
+                  cursor: 'pointer',
+                  transition: 'all 0.3s ease',
+                  border: 2,
+                  borderColor: 'transparent',
+                  '&:hover': {
+                    transform: 'translateY(-4px)',
+                    boxShadow: 4,
+                    borderColor: 'primary.main'
+                  }
+                }}
+              >
+                <CardContent>
+                  <Stack spacing={1}>
+                    <Typography variant="h6" fontWeight={600}>
+                      {node.name}
+                    </Typography>
+                    {node.type && (
+                      <Chip label={node.type} size="small" color="primary" variant="outlined" />
+                    )}
+                    {node.source && (
+                      <Typography variant="caption" color="text.secondary">
+                        {node.source.file.split('/').pop()}:{node.source.line}
+                      </Typography>
+                    )}
+                  </Stack>
+                </CardContent>
+              </Card>
+            ))}
+          </Box>
+        )}
       </Box>
     );
   }
@@ -230,10 +310,24 @@ const InteractiveArchitectureDiagram: React.FC<InteractiveArchitectureDiagramPro
         }}
       >
         <Stack direction="row" alignItems="center" spacing={2}>
-          {connectionHistory.length > 0 && (
-            <IconButton onClick={handleBackClick} size="small">
+          {(connectionHistory.length > 0 || showSelectionView) && (
+            <IconButton
+              onClick={handleBackClick}
+              size="small"
+              title={showSelectionView && connectionHistory.length === 0 ? `Back to ${groupName || 'selection'}` : 'Back'}
+            >
               <ArrowBack />
             </IconButton>
+          )}
+
+          {showSelectionView && connectionHistory.length === 0 && groupName && (
+            <Chip
+              icon={<ViewModule />}
+              label={groupName}
+              size="small"
+              variant="outlined"
+              sx={{ mr: 1 }}
+            />
           )}
 
           <Breadcrumbs separator={<ChevronRight fontSize="small" />}>
@@ -312,6 +406,13 @@ const InteractiveArchitectureDiagram: React.FC<InteractiveArchitectureDiagramPro
             </FormControl>
 
             <Box sx={{ display: 'flex', gap: 0.5 }}>
+              {onInfoPanelOpen && (
+                <Tooltip title="Analysis Info">
+                  <IconButton size="small" onClick={onInfoPanelOpen}>
+                    <Info />
+                  </IconButton>
+                </Tooltip>
+              )}
               <Tooltip title="Zoom In">
                 <IconButton size="small" onClick={() => handleZoom('in')}>
                   <ZoomIn />
