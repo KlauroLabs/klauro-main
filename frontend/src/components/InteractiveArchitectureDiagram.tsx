@@ -316,65 +316,52 @@ const InteractiveArchitectureDiagram: React.FC<InteractiveArchitectureDiagramPro
           borderRadius: 2
         }}
       >
-        <Stack direction="row" alignItems="center" spacing={2}>
-          {(connectionHistory.length > 0 || showSelectionView) && (
-            <IconButton
-              onClick={handleBackClick}
-              size="small"
-              title={showSelectionView && connectionHistory.length === 0 ? `Back to ${groupName || 'selection'}` : 'Back'}
-            >
-              <ArrowBack />
-            </IconButton>
-          )}
-
-          {showSelectionView && connectionHistory.length === 0 && groupName && (
-            <Chip
-              icon={<ViewModule />}
-              label={groupName}
-              size="small"
-              variant="outlined"
-              sx={{ mr: 1 }}
-            />
-          )}
-
-          <Breadcrumbs separator={<ChevronRight fontSize="small" />}>
-            {connectionHistory.map((node, index) => (
-              <Link
-                key={node.id}
-                color="inherit"
-                href="#"
-                onClick={(e) => {
-                  e.preventDefault();
-                  const newHistory = connectionHistory.slice(0, index);
-                  setConnectionHistory(newHistory);
-                  setFocusedNode(node);
-                }}
-                sx={{ cursor: 'pointer' }}
+        <Stack direction="row" alignItems="center" spacing={2} justifyContent="space-between">
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            {(connectionHistory.length > 0 || showSelectionView) && (
+              <IconButton
+                onClick={handleBackClick}
+                size="small"
+                title={showSelectionView && connectionHistory.length === 0 ? `Back to ${groupName || 'selection'}` : 'Back'}
               >
-                {node.name}
-              </Link>
-            ))}
-            <Typography color="text.primary" fontWeight={600}>
-              {focusedNode.name}
-            </Typography>
-          </Breadcrumbs>
+                <ArrowBack />
+              </IconButton>
+            )}
+
+            {showSelectionView && connectionHistory.length === 0 && groupName && (
+              <Chip
+                icon={<ViewModule />}
+                label={groupName}
+                size="small"
+                variant="outlined"
+                sx={{ mr: 1 }}
+              />
+            )}
+
+            <Breadcrumbs separator={<ChevronRight fontSize="small" />}>
+              {connectionHistory.map((node, index) => (
+                <Link
+                  key={node.id}
+                  color="inherit"
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    const newHistory = connectionHistory.slice(0, index);
+                    setConnectionHistory(newHistory);
+                    setFocusedNode(node);
+                  }}
+                  sx={{ cursor: 'pointer' }}
+                >
+                  {node.name}
+                </Link>
+              ))}
+              <Typography color="text.primary" fontWeight={600}>
+                {focusedNode.name}
+              </Typography>
+            </Breadcrumbs>
+          </Box>
 
           <Box sx={{ ml: 'auto', display: 'flex', gap: 2, alignItems: 'center' }}>
-            <ToggleButtonGroup
-              value={visibleConnections}
-              onChange={(_, newConnections) => setVisibleConnections(newConnections)}
-              size="small"
-            >
-              <ToggleButton value="incoming" color="info">
-                <CallReceived sx={{ mr: 0.5 }} />
-                Incoming
-              </ToggleButton>
-              <ToggleButton value="outgoing" color="success">
-                <CallMade sx={{ mr: 0.5 }} />
-                Outgoing
-              </ToggleButton>
-            </ToggleButtonGroup>
-
             <FormControl size="small" sx={{ minWidth: 150 }}>
               <InputLabel id="bundle-filter-label" size="small">Hide Types</InputLabel>
               <Select

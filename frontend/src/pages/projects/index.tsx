@@ -95,48 +95,7 @@ export default function ProjectsPage() {
     return `hsl(${hue}, 70%, 50%)`;
   };
 
-  const [projects, setProjects] = useState<Project[]>([
-    {
-      id: 'backend',
-      name: 'Unravl Backend',
-      repository: 'github.com/unravl/backend',
-      lastAnalyzed: '2 hours ago',
-      status: 'active',
-      components: 124,
-      connections: 487,
-      language: 'TypeScript'
-    },
-    {
-      id: 'frontend',
-      name: 'Unravl Frontend',
-      repository: 'github.com/unravl/frontend',
-      lastAnalyzed: '1 day ago',
-      status: 'active',
-      components: 89,
-      connections: 234,
-      language: 'React/TypeScript'
-    },
-    {
-      id: 'analyzer',
-      name: 'Code Analyzer',
-      repository: 'github.com/unravl/analyzer',
-      lastAnalyzed: '3 days ago',
-      status: 'pending',
-      components: 45,
-      connections: 123,
-      language: 'Python'
-    },
-    {
-      id: 'docs',
-      name: 'Documentation Site',
-      repository: 'github.com/unravl/docs',
-      lastAnalyzed: '1 week ago',
-      status: 'active',
-      components: 34,
-      connections: 89,
-      language: 'MDX'
-    },
-  ]);
+  const [projects, setProjects] = useState<Project[]>([]);
 
   const [projectData, setProjectData] = useState<CASOutput | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -146,6 +105,52 @@ export default function ProjectsPage() {
   const [selectedPerspectiveGroup, setSelectedPerspectiveGroup] = useState<string | null>(null);
   const [selectedPerspective, setSelectedPerspective] = useState<string>('all');
   const [activeAnalyzers, setActiveAnalyzers] = useState<string[]>([]);
+
+  // Initialize mock projects data on client side only to avoid hydration mismatch
+  useEffect(() => {
+    setProjects([
+      {
+        id: 'backend',
+        name: 'Unravl Backend',
+        repository: 'github.com/unravl/backend',
+        lastAnalyzed: '2 hours ago',
+        status: 'active',
+        components: 124,
+        connections: 487,
+        language: 'TypeScript'
+      },
+      {
+        id: 'frontend',
+        name: 'Unravl Frontend',
+        repository: 'github.com/unravl/frontend',
+        lastAnalyzed: '1 day ago',
+        status: 'active',
+        components: 89,
+        connections: 234,
+        language: 'React/TypeScript'
+      },
+      {
+        id: 'analyzer',
+        name: 'Code Analyzer',
+        repository: 'github.com/unravl/analyzer',
+        lastAnalyzed: '3 days ago',
+        status: 'pending',
+        components: 45,
+        connections: 123,
+        language: 'Python'
+      },
+      {
+        id: 'docs',
+        name: 'Documentation Site',
+        repository: 'github.com/unravl/docs',
+        lastAnalyzed: '1 week ago',
+        status: 'active',
+        components: 34,
+        connections: 89,
+        language: 'MDX'
+      },
+    ]);
+  }, []);
 
   useEffect(() => {
     const { projectId } = router.query;
@@ -179,12 +184,14 @@ export default function ProjectsPage() {
         console.log('CAS Data loaded:', casData);
         console.log('Nodes count:', casData.nodes?.length || 0);
         setProjectData(casData);
-        // Initialize only analyzers that created nodes as active
-        setActiveAnalyzers(
-          casData.analyzer_contributions
-            ?.filter(c => c.nodes_created > 0)
-            ?.map(c => c.analyzer_id) || []
-        );
+        // Initialize all analyzers that contributed nodes as active by default
+        // This ensures users see all available perspectives initially
+        const contributingAnalyzers = casData.analyzer_contributions
+          ?.filter(c => (c.nodes_contributed > 0 || c.nodes_created > 0))
+          ?.map(c => c.analyzer_id) || [];
+
+        // Start with all analyzers selected for better UX
+        setActiveAnalyzers(contributingAnalyzers);
         setInfoPanelOpen(true);
       } else {
         console.error('CAS analysis failed:', response.statusText);
@@ -444,7 +451,7 @@ export default function ProjectsPage() {
                       </Typography>
                       <Stack direction="row" spacing={1} flexWrap="wrap" gap={1}>
                         {projectData.analyzer_contributions
-                          ?.filter(contribution => contribution.nodes_created > 0) // Only show analyzers that created nodes
+                          ?.filter(contribution => (contribution.nodes_contributed > 0 || contribution.nodes_created > 0)) // Only show analyzers that contributed nodes
                           ?.map((contribution) => (
                           <Chip
                             key={contribution.analyzer_id}
@@ -473,37 +480,37 @@ export default function ProjectsPage() {
                   <Grid container spacing={3}>
                     {(() => {
                       // Filter nodes based on active analyzers
+                      // If no analyzers selected, show all top-level nodes. If some selected, filter by them.
                       const filteredNodes = projectData.nodes.filter(node => {
-                        // Check if node was created/tagged by any active analyzer
-                        const nodeAnalyzer = node.metadata?.framework ||
-                                           node.metadata?.analyzer ||
-                                           (node.metadata?.perspective_data && Object.keys(node.metadata.perspective_data)[0]);
-
-                        if (nodeAnalyzer && activeAnalyzers.includes(nodeAnalyzer)) {
+                        // If no analyzers are active, show all nodes
+                        if (activeAnalyzers.length === 0) {
                           return true;
                         }
 
-                        // Check tags for framework analyzers
-                        if (node.tags?.some(tag =>
-                          activeAnalyzers.some(analyzer => tag.includes(analyzer))
-                        )) {
-                          return true;
+                        // Check if this node was contributed by any active analyzer
+                        // First check tags (new system)
+                        if (node.tags && node.tags.length > 0) {
+                          const hasAnalyzerTag = node.tags.some(tag =>
+                            activeAnalyzers.some(analyzerId =>
+                              tag === `analyzer:${analyzerId}`
+                            )
+                          );
+                          if (hasAnalyzerTag) return true;
                         }
 
-                        // Language analyzers typically don't tag, so check by type patterns
-                        if (activeAnalyzers.includes('typescript-javascript') &&
-                            ['class', 'function', 'method', 'interface', 'module'].includes(node.type)) {
-                          return true;
-                        }
-                        if (activeAnalyzers.includes('python') &&
-                            ['class', 'function', 'method', 'module'].includes(node.type)) {
-                          return true;
-                        }
-
-                        // Framework-specific types
-                        if (activeAnalyzers.includes('nestjs') &&
-                            ['controller', 'service', 'module', 'guard', 'provider'].includes(node.type)) {
-                          return true;
+                        // Fallback: check metadata for analyzer/framework info
+                        if (node.metadata) {
+                          // Check if the node's framework matches any active analyzer name
+                          const nodeFramework = node.metadata.framework;
+                          if (nodeFramework) {
+                            const matchesAnalyzer = activeAnalyzers.some(analyzerId => {
+                              const analyzer = projectData.analyzer_contributions?.find(
+                                c => c.analyzer_id === analyzerId
+                              );
+                              return analyzer && analyzer.analyzer_name.toLowerCase().includes(nodeFramework.toLowerCase());
+                            });
+                            if (matchesAnalyzer) return true;
+                          }
                         }
 
                         return false;

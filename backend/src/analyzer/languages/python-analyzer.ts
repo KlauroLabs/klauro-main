@@ -99,7 +99,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
     try {
       const pythonFiles = await glob(['**/*.py'], {
         cwd: projectPath,
-        ignore: ['**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**', '**/.git/**']
+        ignore: ['**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**', '**/.git/**', '**/src/analyzer/**', '**/analyzer/**', '**/analyzers/**']
       });
 
       const configFiles = await glob(['requirements.txt', 'setup.py', 'pyproject.toml', 'Pipfile'], {
@@ -123,9 +123,11 @@ export class PythonAnalyzer extends BaseAnalyzer {
       await this.detectProjectType(context.projectPath);
       await this.extractDependencies(context.projectPath, libraries);
 
+      const ignorePatterns = this.getIgnorePatterns(context);
+      const pythonIgnorePatterns = [...ignorePatterns, '**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**', '**/test_*.py', '**/*_test.py'];
       const pythonFiles = await glob(['**/*.py'], {
         cwd: context.projectPath,
-        ignore: ['**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**', '**/.git/**', '**/test_*.py', '**/*_test.py']
+        ignore: pythonIgnorePatterns
       });
 
       const modules = new Map<string, string[]>();

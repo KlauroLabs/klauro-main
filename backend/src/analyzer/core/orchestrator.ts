@@ -56,7 +56,10 @@ export class AnalyzerOrchestrator {
     const analysisId = `analysis_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
     const detectedAnalyzers = await this.detectAnalyzers(projectPath);
-    const context: AnalysisContext = { projectPath };
+    const context: AnalysisContext = {
+      projectPath,
+      filters: ['**/src/analyzer/**', '**/analyzer/**', '**/analyzers/**']
+    };
 
     const allNodes: CASNode[] = [];
     const allEdges: CASEdge[] = [];

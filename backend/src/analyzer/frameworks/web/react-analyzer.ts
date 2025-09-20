@@ -112,7 +112,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
       const tsFiles = await glob(['**/*.{ts,tsx,js,jsx}'], {
         cwd: projectPath,
-        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/coverage/**', '**/.nyc_output/**']
+        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/coverage/**', '**/.nyc_output/**', '**/src/analyzer/**', '**/analyzer/**', '**/analyzers/**']
       });
 
       for (const file of tsFiles) {
@@ -136,9 +136,10 @@ export class ReactAnalyzer extends BaseAnalyzer {
     const perspectives: CASPerspective[] = [];
 
     try {
+      const ignorePatterns = this.getIgnorePatterns(context);
       const reactFiles = await glob(['**/*.{ts,tsx,js,jsx}'], {
         cwd: context.projectPath,
-        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/coverage/**', '**/.nyc_output/**', '**/*.test.*', '**/*.spec.*']
+        ignore: [...ignorePatterns, '**/*.test.*', '**/*.spec.*']
       });
 
       const application = await this.analyzeApplication(context.projectPath, nodes);

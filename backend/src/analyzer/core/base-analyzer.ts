@@ -133,6 +133,23 @@ export abstract class BaseAnalyzer {
 
   protected abstract getCapabilities(): string[];
 
+  protected getIgnorePatterns(context: AnalysisContext): string[] {
+    const defaultIgnore = [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/build/**',
+      '**/.git/**',
+      '**/coverage/**',
+      '**/.nyc_output/**'
+    ];
+
+    if (context.filters && Array.isArray(context.filters)) {
+      return [...defaultIgnore, ...context.filters];
+    }
+
+    return defaultIgnore;
+  }
+
   protected createNodeBuilder(id: string, name: string, type: string): CASNodeBuilder {
     return new CASNodeBuilder(id, name, type);
   }
@@ -157,12 +174,15 @@ export abstract class BaseAnalyzer {
       builder.withSource({ file: filePath, line: lineStart, end_line: lineEnd });
     }
 
-    if (metadata) {
+    if (metadata || this.analyzerName) {
       builder.withMetadata({
         framework: this.analyzerName.toLowerCase().replace(' analyzer', ''),
         ...metadata
       });
     }
+
+    // Add analyzer tag for filtering
+    builder.withTags([`analyzer:${this.analyzerId}`]);
 
     return builder.build();
   }
