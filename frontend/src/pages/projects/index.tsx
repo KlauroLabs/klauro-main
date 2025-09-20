@@ -85,50 +85,14 @@ export default function ProjectsPage() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
 
-  // Group nodes by their type from CAS data
-  const getNodeGroup = (node: any) => {
-    if (!node.type) return null;
-
-    // Use the node's type as the grouping key
-    // The type should come from the CAS analysis
-    const typeColors: Record<string, string> = {
-      'controller': '#8b5cf6',
-      'service': '#10b981',
-      'module': '#f59e0b',
-      'repository': '#ef4444',
-      'entity': '#06b6d4',
-      'class': '#3b82f6',
-      'interface': '#8b5cf6',
-      'function': '#10b981',
-      'method': '#10b981',
-      'component': '#06b6d4',
-      'hook': '#84cc16',
-      'guard': '#f97316',
-      'middleware': '#84cc16',
-      'router': '#10b981',
-      'route': '#06b6d4',
-      'enum': '#ef4444',
-      'type': '#f59e0b',
-      'context': '#8b5cf6',
-      'provider': '#f59e0b',
-      'page': '#f59e0b'
-    };
-
-    const color = typeColors[node.type.toLowerCase()] || '#6b7280';
-
-    // Create a plural label from the type
-    let label = node.type.charAt(0).toUpperCase() + node.type.slice(1);
-    if (!label.endsWith('s')) {
-      if (label.endsWith('y')) {
-        label = label.slice(0, -1) + 'ies';
-      } else if (label.endsWith('ss') || label.endsWith('x')) {
-        label = label + 'es';
-      } else {
-        label = label + 's';
-      }
+  // Dynamically generate color from string hash
+  const getColorFromString = (str: string) => {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = str.charCodeAt(i) + ((hash << 5) - hash);
     }
-
-    return { key: label, color };
+    const hue = hash % 360;
+    return `hsl(${hue}, 70%, 50%)`;
   };
 
   const [projects, setProjects] = useState<Project[]>([
@@ -181,6 +145,7 @@ export default function ProjectsPage() {
   const [viewMode, setViewMode] = useState<'overview' | 'perspective'>('overview');
   const [selectedPerspectiveGroup, setSelectedPerspectiveGroup] = useState<string | null>(null);
   const [selectedPerspective, setSelectedPerspective] = useState<string>('all');
+  const [activeAnalyzers, setActiveAnalyzers] = useState<string[]>([]);
 
   useEffect(() => {
     const { projectId } = router.query;
@@ -214,6 +179,12 @@ export default function ProjectsPage() {
         console.log('CAS Data loaded:', casData);
         console.log('Nodes count:', casData.nodes?.length || 0);
         setProjectData(casData);
+        // Initialize only analyzers that created nodes as active
+        setActiveAnalyzers(
+          casData.analyzer_contributions
+            ?.filter(c => c.nodes_created > 0)
+            ?.map(c => c.analyzer_id) || []
+        );
         setInfoPanelOpen(true);
       } else {
         console.error('CAS analysis failed:', response.statusText);
@@ -460,101 +431,172 @@ export default function ProjectsPage() {
                     </Stack>
                   </Box>
 
-                  {/* Architecture Perspectives */}
-                  <Typography variant="h5" fontWeight={600} sx={{ mb: 3 }}>
-                    Architecture Perspectives
-                  </Typography>
-
-                  {/* Perspective Selector */}
+                  {/* Architecture Components */}
                   <Box sx={{ mb: 3 }}>
-                    <Stack direction="row" alignItems="center" spacing={2}>
-                      <Typography variant="body2" color="text.secondary">
-                        Group by:
+                    <Typography variant="h5" fontWeight={600} sx={{ mb: 2 }}>
+                      Architecture Components
+                    </Typography>
+
+                    {/* Analyzer Filters */}
+                    <Box sx={{ mb: 3, p: 2, bgcolor: 'background.paper', borderRadius: 2 }}>
+                      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+                        Filter by Analyzer:
                       </Typography>
-                      <FormControl size="small" sx={{ minWidth: 150 }}>
-                        <Select
-                          value="types"
-                          size="small"
-                        >
-                          <MenuItem value="types">Component Types</MenuItem>
-                          <MenuItem value="layers">Architecture Layers</MenuItem>
-                          <MenuItem value="modules">Modules</MenuItem>
-                        </Select>
-                      </FormControl>
-                    </Stack>
+                      <Stack direction="row" spacing={1} flexWrap="wrap" gap={1}>
+                        {projectData.analyzer_contributions
+                          ?.filter(contribution => contribution.nodes_created > 0) // Only show analyzers that created nodes
+                          ?.map((contribution) => (
+                          <Chip
+                            key={contribution.analyzer_id}
+                            label={contribution.analyzer_name}
+                            onClick={() => {
+                              setActiveAnalyzers(prev =>
+                                prev.includes(contribution.analyzer_id)
+                                  ? prev.filter(id => id !== contribution.analyzer_id)
+                                  : [...prev, contribution.analyzer_id]
+                              );
+                            }}
+                            color={activeAnalyzers.includes(contribution.analyzer_id) ? 'primary' : 'default'}
+                            variant={activeAnalyzers.includes(contribution.analyzer_id) ? 'filled' : 'outlined'}
+                            icon={
+                              contribution.analyzer_type === 'language' ? <Code /> :
+                              contribution.analyzer_type === 'framework' ? <Architecture /> :
+                              contribution.analyzer_type === 'library' ? <Layers /> :
+                              <ViewModule />
+                            }
+                          />
+                        ))}
+                      </Stack>
+                    </Box>
                   </Box>
 
                   <Grid container spacing={3}>
                     {(() => {
-                      // Group nodes by type
-                      const groups = new Map<string, { nodes: any[], color: string }>();
+                      // Filter nodes based on active analyzers
+                      const filteredNodes = projectData.nodes.filter(node => {
+                        // Check if node was created/tagged by any active analyzer
+                        const nodeAnalyzer = node.metadata?.framework ||
+                                           node.metadata?.analyzer ||
+                                           (node.metadata?.perspective_data && Object.keys(node.metadata.perspective_data)[0]);
 
-                      projectData.nodes.forEach(node => {
-                        const groupInfo = getNodeGroup(node);
-                        if (!groupInfo) return;
-
-                        const { key: groupKey, color } = groupInfo;
-
-                        if (!groups.has(groupKey)) {
-                          groups.set(groupKey, { nodes: [], color });
+                        if (nodeAnalyzer && activeAnalyzers.includes(nodeAnalyzer)) {
+                          return true;
                         }
-                        groups.get(groupKey)!.nodes.push(node);
+
+                        // Check tags for framework analyzers
+                        if (node.tags?.some(tag =>
+                          activeAnalyzers.some(analyzer => tag.includes(analyzer))
+                        )) {
+                          return true;
+                        }
+
+                        // Language analyzers typically don't tag, so check by type patterns
+                        if (activeAnalyzers.includes('typescript-javascript') &&
+                            ['class', 'function', 'method', 'interface', 'module'].includes(node.type)) {
+                          return true;
+                        }
+                        if (activeAnalyzers.includes('python') &&
+                            ['class', 'function', 'method', 'module'].includes(node.type)) {
+                          return true;
+                        }
+
+                        // Framework-specific types
+                        if (activeAnalyzers.includes('nestjs') &&
+                            ['controller', 'service', 'module', 'guard', 'provider'].includes(node.type)) {
+                          return true;
+                        }
+
+                        return false;
                       });
 
-                      // Create perspective cards
-                      return Array.from(groups.entries())
-                        .filter(([_, group]) => group.nodes.length > 0)
-                        .map(([groupName, group], index) => (
-                          <Fade in key={groupName} timeout={300 + index * 100}>
-                            <Grid item xs={12} sm={6} md={4}>
-                              <Card
-                                onClick={() => {
-                                  setViewMode('perspective');
-                                  setSelectedPerspectiveGroup(groupName);
-                                }}
-                                sx={{
-                                  cursor: 'pointer',
-                                  transition: 'all 0.3s ease',
-                                  border: '2px solid transparent',
-                                  bgcolor: 'rgba(255, 255, 255, 0.05)',
-                                  '&:hover': {
-                                    transform: 'scale(1.05)',
-                                    borderColor: group.color,
-                                    bgcolor: 'rgba(255, 255, 255, 0.1)',
-                                    boxShadow: 4
-                                  }
-                                }}
-                              >
-                                <CardContent>
-                                  <Stack direction="row" alignItems="center" spacing={2}>
-                                    <Box
-                                      sx={{
-                                        width: 48,
-                                        height: 48,
-                                        borderRadius: 2,
-                                        bgcolor: group.color + '20',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center'
-                                      }}
-                                    >
-                                      <ViewModule sx={{ color: group.color }} />
-                                    </Box>
-                                    <Box sx={{ flexGrow: 1 }}>
-                                      <Typography variant="h6" fontWeight={600}>
-                                        {groupName}
-                                      </Typography>
-                                      <Typography variant="body2" color="text.secondary">
-                                        {group.nodes.length} {group.nodes.length === 1 ? 'item' : 'items'}
-                                      </Typography>
-                                    </Box>
-                                    <ChevronRight color="action" />
-                                  </Stack>
-                                </CardContent>
-                              </Card>
-                            </Grid>
-                          </Fade>
-                        ));
+                      // Group filtered nodes by type
+                      const typeGroups = new Map<string, { nodes: any[], color: string }>();
+
+                      filteredNodes.forEach(node => {
+                        if (!node.type) return;
+
+                        const color = getColorFromString(node.type);
+                        if (!typeGroups.has(node.type)) {
+                          typeGroups.set(node.type, { nodes: [], color });
+                        }
+                        typeGroups.get(node.type)!.nodes.push(node);
+                      });
+
+                      // Sort by node count and create cards
+                      return Array.from(typeGroups.entries())
+                        .sort(([, a], [, b]) => b.nodes.length - a.nodes.length)
+                        .slice(0, 12) // Show top 12 types
+                        .map(([typeName, group], index) => {
+                          // Format the type name for display
+                          let displayName = typeName.charAt(0).toUpperCase() + typeName.slice(1);
+                          if (displayName.includes('_')) {
+                            displayName = displayName.split('_').map(part =>
+                              part.charAt(0).toUpperCase() + part.slice(1)
+                            ).join(' ');
+                          }
+                          // Pluralize
+                          if (!displayName.endsWith('s')) {
+                            if (displayName.endsWith('y')) {
+                              displayName = displayName.slice(0, -1) + 'ies';
+                            } else if (displayName.endsWith('ss') || displayName.endsWith('x')) {
+                              displayName = displayName + 'es';
+                            } else {
+                              displayName = displayName + 's';
+                            }
+                          }
+
+                          return (
+                            <Fade in key={typeName} timeout={300 + index * 100}>
+                              <Grid item xs={12} sm={6} md={4}>
+                                <Card
+                                  onClick={() => {
+                                    setViewMode('perspective');
+                                    setSelectedPerspectiveGroup(typeName);
+                                  }}
+                                  sx={{
+                                    cursor: 'pointer',
+                                    transition: 'all 0.3s ease',
+                                    border: '2px solid transparent',
+                                    bgcolor: 'rgba(255, 255, 255, 0.05)',
+                                    '&:hover': {
+                                      transform: 'scale(1.05)',
+                                      borderColor: group.color,
+                                      bgcolor: 'rgba(255, 255, 255, 0.1)',
+                                      boxShadow: 4
+                                    }
+                                  }}
+                                >
+                                  <CardContent>
+                                    <Stack direction="row" alignItems="center" spacing={2}>
+                                      <Box
+                                        sx={{
+                                          width: 48,
+                                          height: 48,
+                                          borderRadius: 2,
+                                          bgcolor: group.color + '20',
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          justifyContent: 'center'
+                                        }}
+                                      >
+                                        <ViewModule sx={{ color: group.color }} />
+                                      </Box>
+                                      <Box sx={{ flexGrow: 1 }}>
+                                        <Typography variant="h6" fontWeight={600}>
+                                          {displayName}
+                                        </Typography>
+                                        <Typography variant="body2" color="text.secondary">
+                                          {group.nodes.length} {group.nodes.length === 1 ? 'item' : 'items'}
+                                        </Typography>
+                                      </Box>
+                                      <ChevronRight color="action" />
+                                    </Stack>
+                                  </CardContent>
+                                </Card>
+                              </Grid>
+                            </Fade>
+                          );
+                        });
                     })()}
                   </Grid>
                 </Box>
@@ -594,27 +636,12 @@ export default function ProjectsPage() {
                     allNodes={projectData.nodes}
                     onInfoPanelOpen={() => setInfoPanelOpen(true)}
                     nodes={(() => {
-                      // Filter nodes for selected perspective group
-                      const groups = new Map<string, { nodes: any[], color: string }>();
+                      // Filter nodes by the selected type
+                      if (!selectedPerspectiveGroup) return [];
 
-                      projectData.nodes.forEach(node => {
-                        const groupInfo = getNodeGroup(node);
-                        if (!groupInfo) return;
-
-                        const { key: groupKey, color } = groupInfo;
-
-                        if (!groups.has(groupKey)) {
-                          groups.set(groupKey, { nodes: [], color });
-                        }
-                        groups.get(groupKey)!.nodes.push(node);
-                      });
-
-                      // Only return nodes that belong to the selected group
-                      const selectedNodes = selectedPerspectiveGroup && groups.has(selectedPerspectiveGroup)
-                        ? groups.get(selectedPerspectiveGroup)!.nodes
-                        : [];
-
-                      return selectedNodes;
+                      return projectData.nodes.filter(node =>
+                        node.type === selectedPerspectiveGroup
+                      );
                     })()}
                     edges={projectData.edges || []}
                   />

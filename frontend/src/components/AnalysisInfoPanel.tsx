@@ -178,33 +178,6 @@ export const AnalysisInfoPanel: React.FC<AnalysisInfoPanelProps> = ({
         </Paper>
       )}
 
-      {/* Analyzers Used */}
-      {analysisData.analyzer_contributions && analysisData.analyzer_contributions.length > 0 && (
-        <Paper sx={{ p: 2, mb: 3 }}>
-          <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 2 }}>
-            <Language color="primary" />
-            <Typography variant="subtitle1" fontWeight={600}>
-              Analyzers Used
-            </Typography>
-          </Stack>
-
-          <Stack spacing={1}>
-            {analysisData.analyzer_contributions.map((contribution: any, index: number) => (
-              <Box key={index} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <Chip
-                  label={`${contribution.analyzer_name} (${contribution.analyzer_type})`}
-                  size="small"
-                  variant="outlined"
-                  color={contribution.confidence > 0.8 ? 'success' : contribution.confidence > 0.6 ? 'warning' : 'default'}
-                />
-                <Typography variant="caption" color="text.secondary">
-                  {Math.round(contribution.confidence * 100)}% confidence
-                </Typography>
-              </Box>
-            ))}
-          </Stack>
-        </Paper>
-      )}
 
       {/* Nodes/Components */}
       <Paper sx={{ p: 2 }}>
