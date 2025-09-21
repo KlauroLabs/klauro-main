@@ -1,6 +1,7 @@
 import { BaseAnalyzer, AnalysisContext } from '../../core/base-analyzer';
 import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint, CASPerspective } from '../../../types/cas.types';
 import { AnalyzerError } from '../../core/errors';
+import { EnhancedCallGraphExtractor } from '../../enhanced-call-graph-extractor';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { parse, TSESTree } from '@typescript-eslint/typescript-estree';
@@ -59,6 +60,8 @@ interface NestMiddleware {
 }
 
 export class NestJSAnalyzer extends BaseAnalyzer {
+  private callGraphExtractor?: EnhancedCallGraphExtractor;
+
   constructor() {
     super(
       'nestjs-analyzer',
@@ -100,6 +103,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
 
     try {
+      this.callGraphExtractor = new EnhancedCallGraphExtractor(context.projectPath);
+
       const nestFiles = await glob(['**/*.{ts,js}'], {
         cwd: context.projectPath,
         ignore: ['node_modules/**', 'dist/**', 'build/**', '.git/**', 'test/**', '**/*.spec.ts', '**/*.test.ts']
@@ -113,6 +118,9 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
       // Analyze all additional entry points
       await this.analyzeEntryPoints(nestFiles, context.projectPath, allNodes, edges, entryPoints, newNodes);
+
+      // Enhanced call graph analysis for NestJS patterns
+      await this.performEnhancedCallGraphAnalysis(nestFiles, context.projectPath, allNodes, edges, entryPoints, exitPoints);
 
       this.buildNestJSRelationships(modules, controllers, providers, guards, middleware, allNodes, edges);
       this.identifyDatabaseConnections(providers, exitPoints);
@@ -2459,5 +2467,207 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       }
     };
     return priorityMap[perspectiveId]?.[edgeType] || 99;
+  }
+
+  private async performEnhancedCallGraphAnalysis(
+    files: string[],
+    projectPath: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[]
+  ): Promise<void> {
+    for (const file of files) {
+      const fullPath = path.join(projectPath, file);
+      const content = await fs.readFile(fullPath, 'utf-8');
+
+      try {
+        const ast = parse(content, { loc: true, jsx: false });
+        const { functions: extractedFunctions } = this.callGraphExtractor!.extractFromAST(ast, fullPath);
+
+        extractedFunctions.forEach(func => {
+          func.calls.forEach((call: any) => {
+            // HTTP endpoints from decorators - create entry points
+            if (call.httpMethod && call.httpPath) {
+              const funcNode = nodes.find(n => n.name === func.name && (n.type === 'method' || n.type === 'function'));
+              if (funcNode) {
+                entryPoints.push({
+                  id: `http_enhanced_${func.name}_${call.httpMethod}`,
+                  source_node: funcNode.id,
+                  type: 'http',
+                  name: `${call.httpMethod} ${call.httpPath}`,
+                  trigger: {
+                    method: call.httpMethod,
+                    path: call.httpPath
+                  },
+                  metadata: {
+                    decorators: call.decorators,
+                    framework: 'nestjs',
+                    enhanced_call_graph: true
+                  }
+                });
+              }
+            }
+
+            // Library calls - create exit points
+            if (call.targetType === 'library' && call.library) {
+              const funcNode = nodes.find(n => n.name === func.name && (n.type === 'method' || n.type === 'function'));
+              if (funcNode) {
+                exitPoints.push({
+                  id: `exit_enhanced_${func.name}_${call.target}`,
+                  source_node: funcNode.id,
+                  type: 'sdk',
+                  name: `${call.library}.${call.target.split('.').pop()}`,
+                  target: {
+                    sdk: call.library,
+                    endpoint: call.target.split('.').pop() || call.target
+                  },
+                  operation: {
+                    action: call.target.split('.').pop() || call.target,
+                    async: call.isAsync
+                  },
+                  metadata: {
+                    line: call.line,
+                    call_expression: call.callExpression,
+                    enhanced_call_graph: true
+                  }
+                });
+              }
+            }
+
+            // Abstract method calls - create behavior edges
+            if (call.targetType === 'abstract') {
+              const sourceNode = nodes.find(n => n.name === func.name && (n.type === 'method' || n.type === 'function'));
+              const targetNode = this.findNodeByMethodName(call.target, nodes);
+
+              if (sourceNode && targetNode) {
+                edges.push({
+                  id: `abstract_enhanced_${sourceNode.id}_${targetNode.id}`,
+                  source: sourceNode.id,
+                  target: targetNode.id,
+                  type: 'calls',
+                  metadata: {
+                    attributes: {
+                      call_type: 'abstract',
+                      is_async: call.isAsync,
+                      line: call.line,
+                      method_name: call.target.split('.').pop(),
+                      enhanced_call_graph: true
+                    }
+                  }
+                });
+              }
+            }
+
+            // Dependency injection calls - create dependency edges
+            if (call.injectionType) {
+              const sourceNode = nodes.find(n => n.name === func.name || (n.type === 'class' && n.name === func.className));
+              const targetNode = this.findNodeByTypeName(call.target, nodes);
+
+              if (sourceNode && targetNode) {
+                edges.push({
+                  id: `injection_enhanced_${sourceNode.id}_${targetNode.id}`,
+                  source: sourceNode.id,
+                  target: targetNode.id,
+                  type: 'calls',
+                  metadata: {
+                    attributes: {
+                      call_type: 'injection',
+                      injection_type: call.injectionType,
+                      line: call.line,
+                      enhanced_call_graph: true
+                    }
+                  }
+                });
+              }
+            }
+
+            // Regular method/function calls - create behavior edges
+            if ((call.targetType === 'method' || call.targetType === 'function') && !call.injectionType) {
+              const sourceNode = nodes.find(n => n.name === func.name && (n.type === 'method' || n.type === 'function'));
+              const targetNode = this.findNodeByMethodName(call.target, nodes);
+
+              if (sourceNode && targetNode && sourceNode.id !== targetNode.id) {
+                edges.push({
+                  id: `call_enhanced_${sourceNode.id}_${targetNode.id}`,
+                  source: sourceNode.id,
+                  target: targetNode.id,
+                  type: 'calls',
+                  metadata: {
+                    attributes: {
+                      call_type: call.targetType,
+                      is_async: call.isAsync,
+                      is_conditional: call.isConditional,
+                      is_in_loop: call.isInLoop,
+                      line: call.line,
+                      enhanced_call_graph: true
+                    }
+                  }
+                });
+              }
+            }
+          });
+        });
+
+      } catch (error) {
+        console.warn(`Failed to perform enhanced call graph analysis on ${file}:`, error);
+      }
+    }
+  }
+
+  private findNodeByMethodName(targetName: string, nodes: CASNode[]): CASNode | undefined {
+    // Try exact match first
+    let targetNode = nodes.find(n => n.name === targetName && (n.type === 'method' || n.type === 'function'));
+
+    // Try method name from object.method format
+    if (!targetNode && targetName.includes('.')) {
+      const methodName = targetName.split('.').pop();
+      targetNode = nodes.find(n => n.name === methodName && n.type === 'method');
+    }
+
+    // Try function name
+    if (!targetNode) {
+      targetNode = nodes.find(n => n.name === targetName && n.type === 'function');
+    }
+
+    // Special NestJS patterns
+    if (!targetNode) {
+      // Try looking for common NestJS method patterns
+      const nestjsMethodPatterns = ['canActivate', 'validate', 'transform', 'use', 'intercept'];
+      const methodPattern = nestjsMethodPatterns.find(pattern => targetName.includes(pattern));
+      if (methodPattern) {
+        targetNode = nodes.find(n => n.name === methodPattern && n.type === 'method');
+      }
+    }
+
+    return targetNode;
+  }
+
+  private findNodeByTypeName(typeName: string, nodes: CASNode[]): CASNode | undefined {
+    // Try exact match for class/service/repository
+    let targetNode = nodes.find(n =>
+      n.name === typeName &&
+      (n.type === 'class' || n.type === 'service' || n.type === 'repository' || n.type === 'controller')
+    );
+
+    // Try without "Service" suffix
+    if (!targetNode && typeName.endsWith('Service')) {
+      const baseName = typeName.replace('Service', '');
+      targetNode = nodes.find(n =>
+        n.name === baseName &&
+        (n.type === 'service' || n.type === 'class')
+      );
+    }
+
+    // Try without "Repository" suffix
+    if (!targetNode && typeName.endsWith('Repository')) {
+      const baseName = typeName.replace('Repository', '');
+      targetNode = nodes.find(n =>
+        n.name === baseName &&
+        (n.type === 'repository' || n.type === 'class')
+      );
+    }
+
+    return targetNode;
   }
 }

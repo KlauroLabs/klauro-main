@@ -3,6 +3,8 @@ import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint } from '
 import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
+import { ASTRunner, CSharpASTNode } from '../core/ast-runner';
+import * as path from 'path';
 
 interface CSharpClass {
   name: string;
@@ -134,6 +136,8 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   private entityFrameworkDetected = false;
   private dotNetCoreProject = false;
   private dotNetFrameworkProject = false;
+  private astRunner: ASTRunner;
+  private astCache = new Map<string, CSharpASTNode>();
 
   constructor() {
     super(
@@ -142,6 +146,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       '1.0.0',
       'language'
     );
+    this.astRunner = new ASTRunner();
   }
 
   async canAnalyze(projectPath: string): Promise<boolean> {
@@ -187,6 +192,8 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       this.buildNamespaceHierarchy(namespaces, nodes, edges);
       this.detectAspNetPatterns(nodes, edges, entryPoints);
       this.buildInheritanceRelationships(nodes, edges);
+
+      await this.analyzeCallGraph(context.projectPath, nodes, edges, exitPoints);
 
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
         framework_specific: {
@@ -1190,15 +1197,6 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     return values;
   }
 
-  private isMethodDeclaration(line: string): boolean {
-    return line.includes('(') && line.includes(')') &&
-           !line.startsWith('//') && !line.includes('if') &&
-           !line.includes('while') && !line.includes('for') &&
-           !line.includes('=') && !line.includes('{') &&
-           (line.includes('public') || line.includes('private') ||
-            line.includes('protected') || line.includes('internal') ||
-            !!line.match(/\w+\s+\w+\s*\(/));
-  }
 
   private isPropertyDeclaration(line: string): boolean {
     return line.includes('{') && !line.includes('(') &&
@@ -1478,6 +1476,356 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     ];
 
     return systemNamespaces.some(sys => namespace === sys || namespace.startsWith(`${sys}.`));
+  }
+
+  private async analyzeCallGraph(projectPath: string, nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[]): Promise<void> {
+    const csharpFiles = await glob(['**/*.cs'], {
+      cwd: projectPath,
+      ignore: ['**/bin/**', '**/obj/**', '**/.git/**']
+    });
+
+    const methodNodes = nodes.filter(n => n.type === 'method');
+    const classNodes = nodes.filter(n => n.type === 'class' || n.type === 'interface' || n.type === 'struct');
+
+    for (const file of csharpFiles) {
+      const fullPath = path.join(projectPath, file);
+
+      const ast = await this.astRunner.parseCSharpAST(fullPath);
+      if (!ast) {
+        await this.analyzeCallGraphFallback(fullPath, file, nodes, edges, exitPoints, methodNodes, classNodes, projectPath);
+        continue;
+      }
+
+      this.astCache.set(file, ast);
+      const currentNamespace = ast.namespace || 'global';
+
+      for (const child of ast.children || []) {
+        if (child.kind === 'Method' && child.invocations) {
+          const callerMethod = methodNodes.find(n =>
+            n.name === child.name &&
+            n.source?.file === fullPath
+          );
+
+          if (!callerMethod) continue;
+
+          for (const invocation of child.invocations) {
+            let targetMethod: CASNode | undefined;
+
+            if (invocation.target) {
+              const targetClass = classNodes.find(c => c.name === invocation.target);
+              if (targetClass) {
+                targetMethod = methodNodes.find(n =>
+                  n.name === invocation.method &&
+                  edges.some(e => e.source === targetClass.id && e.target === n.id && e.type === 'has_method')
+                );
+              }
+            } else {
+              targetMethod = methodNodes.find(n =>
+                n.name === invocation.method &&
+                n.type === 'method'
+              );
+            }
+
+            if (targetMethod && targetMethod.id !== callerMethod.id) {
+              const callEdgeId = `call_${callerMethod.id}_to_${targetMethod.id}_line_${invocation.line}`;
+              if (!edges.some(e => e.id === callEdgeId)) {
+                edges.push(this.createEdge(
+                  callEdgeId,
+                  callerMethod.id,
+                  targetMethod.id,
+                  'calls',
+                  'behavior',
+                  {
+                    line: invocation.line,
+                    callType: invocation.target ? 'method' : 'static',
+                    targetClass: invocation.target,
+                    targetMethod: invocation.method
+                  }
+                ));
+              }
+            } else if (this.isExternalLibraryCall(invocation.target || invocation.method, invocation.target ? invocation.method : '', currentNamespace)) {
+              const exitId = `exit_call_${callerMethod.id}_${invocation.target || ''}_${invocation.method}_${invocation.line}`;
+              if (!exitPoints.some(e => e.id === exitId)) {
+                exitPoints.push(this.createExitPoint(
+                  exitId,
+                  callerMethod.id,
+                  'sdk',
+                  invocation.target ? `External call: ${invocation.target}.${invocation.method}` : `External call: ${invocation.method}`,
+                  `Library call to ${this.identifyCSharpLibrary(invocation.target || invocation.method)}`,
+                  invocation.target ? { sdk: invocation.target } : undefined,
+                  invocation.method ? { method: invocation.method } : undefined,
+                  {
+                    targetClass: invocation.target || invocation.method,
+                    targetMethod: invocation.method,
+                    line: invocation.line,
+                    library: this.identifyCSharpLibrary(invocation.target || invocation.method)
+                  }
+                ));
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private async analyzeCallGraphFallback(
+    fullPath: string,
+    file: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    exitPoints: CASExitPoint[],
+    methodNodes: CASNode[],
+    classNodes: CASNode[],
+    projectPath: string
+  ): Promise<void> {
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const lines = content.split('\n');
+    const currentNamespace = this.extractNamespace(content) || 'global';
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+
+        const methodCalls = [
+          ...Array.from(line.matchAll(/(\w+)\.(\w+)\s*\(/g)),
+          ...Array.from(line.matchAll(/new\s+(\w+)\s*\(/g)).map(m => [m[0], m[1], 'ctor']),
+          ...Array.from(line.matchAll(/(\w+)\s*\.\s*(\w+)\s*\(/g)),
+          ...Array.from(line.matchAll(/base\.(\w+)\s*\(/g)).map(m => [m[0], 'base', m[1]]),
+          ...Array.from(line.matchAll(/this\.(\w+)\s*\(/g)).map(m => [m[0], 'this', m[1]]),
+          ...Array.from(line.matchAll(/await\s+(\w+)\.(\w+)\s*\(/g)),
+          ...Array.from(line.matchAll(/(\w+)\s*\?\.\s*(\w+)\s*\(/g))
+        ];
+
+        const linqOperations = [
+          ...Array.from(line.matchAll(/\.(?:Where|Select|OrderBy|GroupBy|Join|Take|Skip|First|Last|Any|All|Count|Sum)\s*\(/g))
+        ];
+
+        for (const match of methodCalls) {
+          const fullMatch = match[0];
+          const objectOrClass = match[1];
+          const methodName = match[2];
+
+          const callerMethod = methodNodes.find(n =>
+            n.source?.file === fullPath &&
+            n.source?.line !== undefined && n.source.line <= i + 1 &&
+            n.source?.end_line !== undefined && n.source.end_line >= i + 1
+          );
+
+          if (callerMethod) {
+            let targetMethod: CASNode | undefined;
+
+            if (objectOrClass === 'this' || objectOrClass === 'base') {
+              const containingClass = classNodes.find(c =>
+                edges.some(e => e.source === c.id && e.target === callerMethod.id && e.type === 'has_method')
+              );
+
+              if (containingClass) {
+                const className = objectOrClass === 'base' && containingClass.metadata?.attributes?.baseClass
+                  ? containingClass.metadata.attributes.baseClass
+                  : containingClass.name;
+
+                targetMethod = methodNodes.find(n => {
+                  const parentClass = classNodes.find(c =>
+                    c.name === className &&
+                    edges.some(e => e.source === c.id && e.target === n.id && e.type === 'has_method')
+                  );
+                  return parentClass && n.name === methodName;
+                });
+              }
+            } else if (fullMatch.startsWith('new ')) {
+              const targetClass = classNodes.find(c => c.name === objectOrClass);
+              if (targetClass) {
+                targetMethod = methodNodes.find(n =>
+                  n.metadata?.attributes?.isConstructor &&
+                  edges.some(e => e.source === targetClass.id && e.target === n.id && e.type === 'has_method')
+                );
+              }
+            } else {
+              targetMethod = methodNodes.find(n => n.name === methodName);
+
+              if (!targetMethod) {
+                const targetClass = classNodes.find(c => c.name === objectOrClass);
+                if (targetClass) {
+                  targetMethod = methodNodes.find(n =>
+                    n.name === methodName &&
+                    edges.some(e => e.source === targetClass.id && e.target === n.id && e.type === 'has_method')
+                  );
+                }
+              }
+            }
+
+            if (targetMethod) {
+              const callEdgeId = `call_${callerMethod.id}_to_${targetMethod.id}_${i}`;
+              if (!edges.some(e => e.id === callEdgeId)) {
+                edges.push(this.createEdge(
+                  callEdgeId,
+                  callerMethod.id,
+                  targetMethod.id,
+                  'calls',
+                  'behavior',
+                  {
+                    line: i + 1,
+                    callType: fullMatch.startsWith('new ') ? 'constructor' :
+                             fullMatch.includes('await') ? 'async' :
+                             objectOrClass === 'base' ? 'base' :
+                             objectOrClass === 'this' ? 'internal' :
+                             fullMatch.includes('?.') ? 'null-conditional' : 'method'
+                  }
+                ));
+              }
+            } else if (this.isExternalLibraryCall(objectOrClass, methodName, currentNamespace)) {
+              const exitId = `exit_call_${callerMethod.id}_${objectOrClass}_${methodName}_${i}`;
+              if (!exitPoints.some(e => e.id === exitId)) {
+                exitPoints.push(this.createExitPoint(
+                  exitId,
+                  callerMethod.id,
+                  'sdk',
+                  `External call: ${objectOrClass}.${methodName}`,
+                  `Library call to ${this.identifyCSharpLibrary(objectOrClass)}`,
+                  undefined,
+                  undefined,
+                  {
+                    targetClass: objectOrClass,
+                    targetMethod: methodName,
+                    line: i + 1,
+                    library: this.identifyCSharpLibrary(objectOrClass),
+                    isAsync: fullMatch.includes('await')
+                  }
+                ));
+              }
+            }
+          }
+        }
+
+        for (const linqOp of linqOperations) {
+          const operation = linqOp[0].slice(1).replace(/\s*\(/, '');
+          const callerMethod = methodNodes.find(n =>
+            n.source?.file === fullPath &&
+            n.source?.line !== undefined && n.source.line <= i + 1 &&
+            n.source?.end_line !== undefined && n.source.end_line >= i + 1
+          );
+
+          if (callerMethod) {
+            const exitId = `exit_linq_${callerMethod.id}_${operation}_${i}`;
+            if (!exitPoints.some(e => e.id === exitId)) {
+              exitPoints.push(this.createExitPoint(
+                exitId,
+                callerMethod.id,
+                'sdk',
+                `LINQ operation: ${operation}`,
+                'LINQ query operation',
+                undefined,
+                undefined,
+                {
+                  operation,
+                  line: i + 1,
+                  library: 'System.Linq'
+                }
+              ));
+            }
+          }
+        }
+
+        const httpAttributes = [
+          ...Array.from(line.matchAll(/\[(?:HttpGet|HttpPost|HttpPut|HttpDelete|HttpPatch|Route)\s*(?:\(\s*["']([^"']+)["']\s*\))?\]/g))
+        ];
+
+        for (const attr of httpAttributes) {
+          const route = attr[1] || '';
+          const attributeType = attr[0].match(/\[(\w+)/)?.[1];
+
+          const nextMethodLine = this.findNextMethodDeclaration(lines, i);
+          if (nextMethodLine !== -1) {
+            const methodAtLine = methodNodes.find(n =>
+              n.source?.file === fullPath &&
+              n.source?.line === nextMethodLine + 1
+            );
+
+            if (methodAtLine && attributeType) {
+              const endpointEdgeId = `http_endpoint_${methodAtLine.id}_${attributeType}_${i}`;
+              if (!edges.some(e => e.id === endpointEdgeId)) {
+                edges.push(this.createEdge(
+                  endpointEdgeId,
+                  `entry_${methodAtLine.id}`,
+                  methodAtLine.id,
+                  'exposes',
+                  'behavior',
+                  {
+                    httpMethod: attributeType.replace('Http', '').toUpperCase(),
+                    route,
+                    attribute: `[${attributeType}]`
+                  }
+                ));
+              }
+            }
+          }
+        }
+      }
+    }
+
+  private findNextMethodDeclaration(lines: string[], startIndex: number): number {
+    for (let i = startIndex + 1; i < lines.length; i++) {
+      if (this.isMethodDeclaration(lines[i])) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  private isMethodDeclaration(line: string): boolean {
+    const trimmed = line.trim();
+    const methodPattern = /^(public|private|protected|internal|static|virtual|override|abstract|async)*(\s+\w+)*\s+(\w+)\s*\([^)]*\)\s*(\{|$)/;
+    return methodPattern.test(trimmed) && !trimmed.startsWith('//');
+  }
+
+  private isExternalLibraryCall(objectOrClass: string, methodName: string, currentNamespace: string): boolean {
+    const systemTypes = [
+      'Console', 'String', 'Int32', 'Double', 'Decimal', 'DateTime', 'TimeSpan',
+      'Math', 'Array', 'List', 'Dictionary', 'HashSet', 'Queue', 'Stack',
+      'File', 'Directory', 'Path', 'Stream', 'StreamReader', 'StreamWriter',
+      'Task', 'HttpClient', 'WebRequest', 'JsonSerializer'
+    ];
+
+    const frameworkTypes = [
+      'DbContext', 'DbSet', 'Controller', 'ActionResult', 'ViewResult',
+      'ILogger', 'IConfiguration', 'IServiceCollection', 'IServiceProvider',
+      'HttpContext', 'HttpRequest', 'HttpResponse'
+    ];
+
+    return systemTypes.includes(objectOrClass) ||
+           frameworkTypes.includes(objectOrClass) ||
+           objectOrClass.startsWith('System.') ||
+           objectOrClass.startsWith('Microsoft.') ||
+           (!objectOrClass.startsWith(currentNamespace) && objectOrClass.includes('.'));
+  }
+
+  private identifyCSharpLibrary(className: string): string {
+    if (className.startsWith('System.Collections')) return 'System.Collections';
+    if (className.startsWith('System.IO')) return 'System.IO';
+    if (className.startsWith('System.Net')) return 'System.Net';
+    if (className.startsWith('System.Threading')) return 'System.Threading';
+    if (className.startsWith('System.Linq')) return 'System.Linq';
+    if (className.startsWith('Microsoft.EntityFrameworkCore')) return 'Entity Framework Core';
+    if (className.startsWith('Microsoft.AspNetCore')) return 'ASP.NET Core';
+
+    const standardTypes: Record<string, string> = {
+      'Console': 'System',
+      'String': 'System',
+      'Math': 'System',
+      'DateTime': 'System',
+      'File': 'System.IO',
+      'Directory': 'System.IO',
+      'Path': 'System.IO',
+      'HttpClient': 'System.Net.Http',
+      'Task': 'System.Threading.Tasks',
+      'List': 'System.Collections.Generic',
+      'Dictionary': 'System.Collections.Generic',
+      'DbContext': 'Entity Framework Core',
+      'Controller': 'ASP.NET Core MVC',
+      'ILogger': 'Microsoft.Extensions.Logging'
+    };
+
+    return standardTypes[className] || 'External Library';
   }
 
   protected sanitizeId(name: string): string {

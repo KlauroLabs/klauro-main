@@ -3,6 +3,8 @@ import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint } from '
 import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
+import { ASTRunner, GoASTNode } from '../core/ast-runner';
+import * as path from 'path';
 
 interface GoStruct {
   name: string;
@@ -118,6 +120,8 @@ export class GoAnalyzer extends BaseAnalyzer {
   private fiberFrameworkDetected = false;
   private goModulesProject = false;
   private vendorProject = false;
+  private astRunner: ASTRunner;
+  private astCache = new Map<string, GoASTNode>();
 
   constructor() {
     super(
@@ -126,6 +130,7 @@ export class GoAnalyzer extends BaseAnalyzer {
       '1.0.0',
       'language'
     );
+    this.astRunner = new ASTRunner();
   }
 
   async canAnalyze(projectPath: string): Promise<boolean> {
@@ -171,6 +176,8 @@ export class GoAnalyzer extends BaseAnalyzer {
       this.buildPackageHierarchy(packages, nodes, edges);
       this.detectFrameworkPatterns(nodes, edges, entryPoints);
       this.buildTypeRelationships(nodes, edges);
+
+      await this.analyzeCallGraph(context.projectPath, nodes, edges, exitPoints);
 
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
         framework_specific: {
@@ -1435,6 +1442,403 @@ export class GoAnalyzer extends BaseAnalyzer {
 
   private isExported(name: string): boolean {
     return name.length > 0 && name[0] >= 'A' && name[0] <= 'Z';
+  }
+
+  private async analyzeCallGraph(projectPath: string, nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[]): Promise<void> {
+    const goFiles = await glob(['**/*.go'], {
+      cwd: projectPath,
+      ignore: ['**/vendor/**', '**/.git/**']
+    });
+
+    const functionNodes = nodes.filter(n => n.type === 'function' || n.type === 'method');
+    const structNodes = nodes.filter(n => n.type === 'struct' || n.type === 'interface');
+
+    for (const file of goFiles) {
+      const fullPath = path.join(projectPath, file);
+
+      try {
+        const ast = await this.astRunner.parseGoAST(fullPath);
+        if (ast) {
+          this.astCache.set(file, ast);
+          await this.processGoASTCallGraph(ast, fullPath, file, nodes, edges, exitPoints, functionNodes, structNodes);
+          continue;
+        }
+      } catch (error) {
+        console.debug('AST parsing failed, using enhanced fallback for', file);
+      }
+
+      await this.analyzeCallGraphEnhanced(fullPath, file, nodes, edges, exitPoints, functionNodes, structNodes, projectPath);
+    }
+  }
+
+  private async processGoASTCallGraph(
+    ast: GoASTNode,
+    fullPath: string,
+    file: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    exitPoints: CASExitPoint[],
+    functionNodes: CASNode[],
+    structNodes: CASNode[]
+  ): Promise<void> {
+    const currentPackage = ast.package || 'main';
+
+    for (const child of ast.children || []) {
+      if (child.type === 'Function' && child.calls) {
+        const callerFunction = functionNodes.find(n =>
+          n.name === child.name &&
+          n.source?.file === fullPath
+        );
+
+        if (!callerFunction) continue;
+
+        for (const call of child.calls) {
+          let targetFunction: CASNode | undefined;
+
+          if (call.package) {
+            targetFunction = functionNodes.find(n =>
+              n.name === call.function &&
+              (n.type === 'method' || n.metadata?.attributes?.receiver?.type === call.package)
+            );
+
+            if (!targetFunction) {
+              const targetStruct = structNodes.find(s => s.name === call.package);
+              if (targetStruct) {
+                targetFunction = functionNodes.find(n =>
+                  n.name === call.function &&
+                  edges.some(e => e.source === targetStruct.id && e.target === n.id && e.type === 'has_method')
+                );
+              }
+            }
+          } else {
+            targetFunction = functionNodes.find(n =>
+              n.name === call.function &&
+              n.type === 'function'
+            );
+          }
+
+          if (targetFunction && targetFunction.id !== callerFunction.id) {
+            const callEdgeId = `call_${callerFunction.id}_to_${targetFunction.id}_line_${call.line}`;
+            if (!edges.some(e => e.id === callEdgeId)) {
+              edges.push(this.createEdge(
+                callEdgeId,
+                callerFunction.id,
+                targetFunction.id,
+                'calls',
+                'behavior',
+                {
+                  line: call.line,
+                  column: call.column,
+                  callType: call.package ? 'method' : 'function',
+                  targetPackage: call.package,
+                  targetFunction: call.function
+                }
+              ));
+            }
+          } else if (this.isExternalLibraryCall(call.package || call.function, call.package ? call.function : undefined, currentPackage)) {
+            const exitId = `exit_call_${callerFunction.id}_${call.package || ''}_${call.function}_${call.line}`;
+            if (!exitPoints.some(e => e.id === exitId)) {
+              exitPoints.push(this.createExitPoint(
+                exitId,
+                callerFunction.id,
+                'sdk',
+                call.package ? `External call: ${call.package}.${call.function}` : `External call: ${call.function}`,
+                `Library call to ${this.identifyGoLibrary(call.package || call.function)}`,
+                undefined,
+                undefined,
+                {
+                  targetPackage: call.package || call.function,
+                  targetFunction: call.function,
+                  line: call.line,
+                  column: call.column,
+                  library: this.identifyGoLibrary(call.package || call.function)
+                }
+              ));
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private async analyzeCallGraphEnhanced(
+    fullPath: string,
+    file: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    exitPoints: CASExitPoint[],
+    functionNodes: CASNode[],
+    structNodes: CASNode[],
+    projectPath: string
+  ): Promise<void> {
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const lines = content.split('\n');
+    const currentPackage = this.extractPackage(content) || 'main';
+
+    let currentFunction: CASNode | undefined;
+    let currentScope: { start: number; end: number; node: CASNode } | undefined;
+    const scopeStack: { start: number; end: number; node: CASNode }[] = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const lineNum = i + 1;
+
+      if (line.includes('func ')) {
+        const funcMatch = line.match(/func(?:\s+\(([^)]+)\))?\s+(\w+)\s*\(/);
+        if (funcMatch) {
+          const funcName = funcMatch[2];
+          currentFunction = functionNodes.find(n =>
+            n.name === funcName &&
+            n.source?.file === fullPath &&
+            n.source?.line !== undefined && Math.abs(n.source.line - lineNum) <= 2
+          );
+          if (currentFunction) {
+            currentScope = {
+              start: lineNum,
+              end: currentFunction.source?.end_line || lineNum + 100,
+              node: currentFunction
+            };
+          }
+        }
+      }
+
+      if (currentScope && lineNum > currentScope.end) {
+        currentScope = scopeStack.pop();
+        if (!currentScope) {
+          currentFunction = undefined;
+        }
+      }
+
+      if (!currentFunction) {
+        currentFunction = functionNodes.find(n =>
+          n.source?.file === fullPath &&
+          n.source?.line !== undefined && n.source.line <= lineNum &&
+          n.source?.end_line !== undefined && n.source.end_line >= lineNum
+        );
+      }
+
+      if (currentFunction) {
+        const functionCalls = this.extractGoCallsFromLine(line, structNodes);
+
+        for (const call of functionCalls) {
+          const { target, method, isGoroutine, isDefer, isChannel } = call;
+
+          let targetFunction: CASNode | undefined;
+
+          if (method) {
+            targetFunction = functionNodes.find(n => {
+              if (n.type !== 'method' || n.name !== method) return false;
+
+              const methodReceiver = n.metadata?.attributes?.receiver as GoReceiver;
+              if (!methodReceiver) return false;
+
+              const receiverType = methodReceiver.type;
+              const normalizedTarget = target.replace(/^\*/, '').replace(/^&/, '');
+
+              return receiverType === normalizedTarget ||
+                     receiverType === target ||
+                     (target === 'this' && edges.some(e =>
+                       e.type === 'has_method' && e.target === n.id &&
+                       nodes.find(s => s.id === e.source)?.source?.file === fullPath
+                     ));
+            });
+
+            if (!targetFunction && target !== 'this') {
+              const targetStruct = structNodes.find(s =>
+                s.name === target.replace(/^\*/, '').replace(/^&/, '')
+              );
+              if (targetStruct) {
+                targetFunction = functionNodes.find(n =>
+                  n.name === method &&
+                  edges.some(e => e.source === targetStruct.id && e.target === n.id && e.type === 'has_method')
+                );
+              }
+            }
+          } else {
+            targetFunction = functionNodes.find(n =>
+              n.name === target &&
+              n.type === 'function' &&
+              (n.metadata?.attributes?.packageName === currentPackage ||
+               n.metadata?.attributes?.packageName === undefined)
+            );
+          }
+
+          if (targetFunction && targetFunction.id !== currentFunction.id) {
+            const callEdgeId = `call_${currentFunction.id}_to_${targetFunction.id}_line_${lineNum}`;
+            if (!edges.some(e => e.id === callEdgeId)) {
+              edges.push(this.createEdge(
+                callEdgeId,
+                currentFunction.id,
+                targetFunction.id,
+                'calls',
+                'behavior',
+                {
+                  line: lineNum,
+                  callType: method ? 'method' : 'function',
+                  isGoroutine,
+                  isDefer,
+                  isChannel,
+                  targetObject: method ? target : undefined,
+                  targetMethod: method || target
+                }
+              ));
+            }
+          } else if (this.isExternalLibraryCall(target, method, currentPackage)) {
+            const exitId = `exit_call_${currentFunction.id}_${target}_${method || 'func'}_${lineNum}`;
+            if (!exitPoints.some(e => e.id === exitId)) {
+              exitPoints.push(this.createExitPoint(
+                exitId,
+                currentFunction.id,
+                'sdk',
+                method ? `External call: ${target}.${method}` : `External call: ${target}`,
+                `Library call to ${this.identifyGoLibrary(target)}`,
+                undefined,
+                undefined,
+                {
+                  targetPackage: target,
+                  targetFunction: method || target,
+                  line: lineNum,
+                  library: this.identifyGoLibrary(target),
+                  isGoroutine,
+                  isDefer
+                }
+              ));
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private extractGoCallsFromLine(line: string, structNodes: CASNode[]): Array<{target: string, method?: string, isGoroutine: boolean, isDefer: boolean, isChannel: boolean}> {
+    const calls: Array<{target: string, method?: string, isGoroutine: boolean, isDefer: boolean, isChannel: boolean}> = [];
+
+    const patterns = [
+      /(?:go\s+)?(?:defer\s+)?([a-zA-Z_][\w]*(?:\.[a-zA-Z_][\w]*)*)\s*\(/g,
+      /(?:go\s+)?(?:defer\s+)?([a-zA-Z_][\w]*)\s*\.\s*([a-zA-Z_][\w]*)\s*\(/g,
+      /<-\s*([a-zA-Z_][\w]*)(?:\.([a-zA-Z_][\w]*))?\s*\(/g,
+      /([a-zA-Z_][\w]*)\s*<-/g,
+      /make\s*\(\s*chan\s+/g,
+      /\bnew\s*\(\s*([a-zA-Z_][\w]*)\s*\)/g
+    ];
+
+    for (const pattern of patterns) {
+      let match;
+      while ((match = pattern.exec(line)) !== null) {
+        const fullMatch = match[0];
+        const isGoroutine = fullMatch.includes('go ');
+        const isDefer = fullMatch.includes('defer ');
+        const isChannel = fullMatch.includes('<-') || fullMatch.includes('chan');
+
+        if (match[2]) {
+          calls.push({
+            target: match[1],
+            method: match[2],
+            isGoroutine,
+            isDefer,
+            isChannel
+          });
+        } else if (match[1] && !['if', 'for', 'switch', 'select', 'case', 'return', 'func', 'type', 'var', 'const', 'import', 'package'].includes(match[1])) {
+          calls.push({
+            target: match[1],
+            isGoroutine,
+            isDefer,
+            isChannel
+          });
+        }
+      }
+    }
+
+    const typeAssertions = line.matchAll(/\.\((\*?[a-zA-Z_][\w]*)\)/g);
+    for (const match of typeAssertions) {
+      const typeName = match[1].replace(/^\*/, '');
+      if (typeName && structNodes.find(s => s.name === typeName)) {
+        calls.push({
+          target: typeName,
+          method: 'type_assertion',
+          isGoroutine: false,
+          isDefer: false,
+          isChannel: false
+        });
+      }
+    }
+
+    const interfaceCalls = line.matchAll(/([a-zA-Z_][\w]*)\s*\.\s*\(\s*([a-zA-Z_][\w]*)\s*\)/g);
+    for (const match of interfaceCalls) {
+      calls.push({
+        target: match[1],
+        method: match[2],
+        isGoroutine: false,
+        isDefer: false,
+        isChannel: false
+      });
+    }
+
+    return calls;
+  }
+
+  private findHandlerFunction(lines: string[], startIndex: number): string | null {
+    const line = lines[startIndex];
+    const handlerMatch = line.match(/,\s*(\w+)\s*[,)]/);
+    if (handlerMatch) {
+      return handlerMatch[1];
+    }
+    return null;
+  }
+
+  private isExternalLibraryCall(packageOrFunc: string, methodName: string | undefined, currentPackage: string): boolean {
+    const standardPackages = [
+      'fmt', 'log', 'os', 'io', 'strings', 'strconv', 'time', 'math',
+      'net', 'http', 'json', 'encoding', 'crypto', 'bytes', 'bufio',
+      'context', 'sync', 'errors', 'reflect', 'runtime', 'sort'
+    ];
+
+    const frameworkPackages = [
+      'gin', 'echo', 'mux', 'fiber', 'chi', 'martini',
+      'gorm', 'sqlx', 'mongo', 'redis', 'grpc', 'protobuf'
+    ];
+
+    return standardPackages.includes(packageOrFunc) ||
+           frameworkPackages.includes(packageOrFunc) ||
+           (packageOrFunc.includes('/') && !packageOrFunc.startsWith(currentPackage)) ||
+           (packageOrFunc.includes('.') && packageOrFunc !== currentPackage);
+  }
+
+  private identifyGoLibrary(packageName: string): string {
+    const standardLibraries: Record<string, string> = {
+      'fmt': 'Go Standard Library - Formatting',
+      'log': 'Go Standard Library - Logging',
+      'os': 'Go Standard Library - OS Interface',
+      'io': 'Go Standard Library - I/O',
+      'net': 'Go Standard Library - Networking',
+      'http': 'Go Standard Library - HTTP',
+      'json': 'Go Standard Library - JSON',
+      'time': 'Go Standard Library - Time',
+      'sync': 'Go Standard Library - Synchronization',
+      'context': 'Go Standard Library - Context',
+      'gin': 'Gin Web Framework',
+      'echo': 'Echo Web Framework',
+      'mux': 'Gorilla Mux Router',
+      'fiber': 'Fiber Web Framework',
+      'gorm': 'GORM ORM',
+      'sqlx': 'sqlx Database Library',
+      'redis': 'Redis Client',
+      'grpc': 'gRPC Framework'
+    };
+
+    if (standardLibraries[packageName]) {
+      return standardLibraries[packageName];
+    }
+
+    if (packageName.startsWith('github.com/')) {
+      return `GitHub Package: ${packageName}`;
+    }
+
+    if (packageName.startsWith('golang.org/')) {
+      return `Go Official Package: ${packageName}`;
+    }
+
+    return 'External Package';
   }
 
   protected sanitizeId(name: string): string {

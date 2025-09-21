@@ -79,12 +79,34 @@ interface PythonVariable {
   scope: 'global' | 'local' | 'class';
 }
 
+interface PythonMethodCall {
+  caller: string;
+  callee: string;
+  callType: 'method' | 'function' | 'builtin' | 'library' | 'abstract';
+  line: number;
+  isAsync: boolean;
+  parameters: string[];
+  isConditional: boolean;
+  isInLoop: boolean;
+}
+
+interface PythonLibraryCall {
+  library: string;
+  method: string;
+  module?: string;
+  isAsync: boolean;
+  callType: 'http' | 'database' | 'fs' | 'logging' | 'generic';
+  line: number;
+}
+
 export class PythonAnalyzer extends BaseAnalyzer {
   private djangoFrameworkDetected = false;
   private flaskFrameworkDetected = false;
   private fastApiFrameworkDetected = false;
   private poetryProject = false;
   private pipenvProject = false;
+  private methodCalls: PythonMethodCall[] = [];
+  private libraryCalls: PythonLibraryCall[] = [];
 
   constructor() {
     super(
@@ -140,6 +162,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
       this.buildModuleHierarchy(modules, nodes, edges);
       this.detectFrameworkPatterns(nodes, edges, entryPoints);
       this.buildInheritanceRelationships(nodes, edges);
+      this.buildCallGraph(nodes, edges, entryPoints, exitPoints);
 
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
         framework_specific: {
@@ -382,6 +405,8 @@ export class PythonAnalyzer extends BaseAnalyzer {
       for (const func of functions) {
         await this.processPythonFunction(func, fileId, fullPath, nodes, edges, entryPoints);
       }
+
+      this.extractFunctionCalls(content, fullPath, relativePath, classes, functions, nodes, edges, exitPoints);
 
       for (const variable of variables) {
         const variableId = `variable_${fileId}_${this.sanitizeId(variable.name)}`;
@@ -1092,6 +1117,521 @@ export class PythonAnalyzer extends BaseAnalyzer {
         }
       }
     }
+  }
+
+  private extractFunctionCalls(
+    content: string,
+    fullPath: string,
+    relativePath: string,
+    classes: PythonClass[],
+    functions: PythonFunction[],
+    nodes: CASNode[],
+    edges: CASEdge[],
+    exitPoints: CASExitPoint[]
+  ): void {
+    const lines = content.split('\n');
+    const fileId = `file_${this.sanitizeId(relativePath)}`;
+    const builtinFunctions = ['print', 'len', 'range', 'int', 'str', 'float', 'bool', 'list', 'dict', 'set',
+                             'tuple', 'open', 'input', 'eval', 'exec', 'compile', 'globals', 'locals',
+                             'vars', 'dir', 'help', 'type', 'isinstance', 'issubclass', 'hasattr',
+                             'getattr', 'setattr', 'delattr', 'callable', 'id', 'hash', 'repr',
+                             'abs', 'all', 'any', 'bin', 'chr', 'hex', 'oct', 'ord', 'round',
+                             'max', 'min', 'sum', 'sorted', 'reversed', 'enumerate', 'zip', 'map',
+                             'filter', 'reduce', 'next', 'iter', 'super', '__import__'];
+
+    const knownLibraryModules = ['os', 'sys', 'json', 'math', 'datetime', 'random', 're', 'urllib',
+                                 'requests', 'pandas', 'numpy', 'matplotlib', 'sqlite3', 'asyncio',
+                                 'threading', 'multiprocessing', 'subprocess', 'logging', 'functools',
+                                 'itertools', 'collections', 'pathlib', 'shutil', 'tempfile', 'io'];
+
+    for (const cls of classes) {
+      const classId = `class_${fileId}_${this.sanitizeId(cls.name)}_${cls.lineStart}`;
+      const classNode = nodes.find(n => n.id === classId);
+      if (!classNode) continue;
+
+      for (const method of cls.methods) {
+        const methodId = `method_${classId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
+        const methodNode = nodes.find(n => n.id === methodId);
+        if (!methodNode) continue;
+
+        const methodLines = lines.slice(method.lineStart - 1, method.lineEnd);
+        this.extractCallsFromBlock(methodLines, method.lineStart, methodNode, nodes, edges, exitPoints, builtinFunctions, knownLibraryModules);
+      }
+    }
+
+    for (const func of functions) {
+      const functionId = `function_${fileId}_${this.sanitizeId(func.name)}_${func.lineStart}`;
+      const functionNode = nodes.find(n => n.id === functionId);
+      if (!functionNode) continue;
+
+      const funcLines = lines.slice(func.lineStart - 1, func.lineEnd);
+      this.extractCallsFromBlock(funcLines, func.lineStart, functionNode, nodes, edges, exitPoints, builtinFunctions, knownLibraryModules);
+    }
+  }
+
+  private extractCallsFromBlock(
+    lines: string[],
+    startLine: number,
+    callerNode: CASNode,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    exitPoints: CASExitPoint[],
+    builtinFunctions: string[],
+    knownLibraryModules: string[]
+  ): void {
+    const callPatterns = [
+      /([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g,
+      /self\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g,
+      /([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g,
+      /await\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g,
+      /await\s+self\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g,
+      /await\s+([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g
+    ];
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const lineNumber = startLine + i;
+
+      if (line.trim().startsWith('#')) continue;
+      if (line.includes('def ') || line.includes('class ')) continue;
+
+      for (const pattern of callPatterns) {
+        let match;
+        while ((match = pattern.exec(line)) !== null) {
+          let targetObject: string | undefined;
+          let targetMethod: string;
+          let isAsync = false;
+
+          if (pattern.source.includes('await')) {
+            isAsync = true;
+          }
+
+          if (pattern.source.includes('self\\.')) {
+            targetMethod = match[1];
+            const classNode = nodes.find(n => n.id === callerNode.parent);
+            if (classNode) {
+              const targetNode = nodes.find(n =>
+                n.name === targetMethod &&
+                n.type === 'method' &&
+                n.parent === classNode.id
+              );
+
+              if (targetNode && targetNode.id !== callerNode.id) {
+                const edgeId = `${callerNode.id}_calls_${targetNode.id}_line_${lineNumber}`;
+                if (!edges.find(e => e.id === edgeId)) {
+                  edges.push(this.createEdge(
+                    edgeId,
+                    callerNode.id,
+                    targetNode.id,
+                    'calls',
+                    'behavior',
+                    {
+                      call_type: 'self_method_call',
+                      is_async: isAsync,
+                      line: lineNumber
+                    }
+                  ));
+                }
+              }
+            }
+          } else if (match.length === 3) {
+            targetObject = match[1];
+            targetMethod = match[2];
+
+            if (knownLibraryModules.includes(targetObject)) {
+              const exitPointId = `exit_${callerNode.id}_to_${targetObject}_${targetMethod}`;
+              if (!exitPoints.find(e => e.id === exitPointId)) {
+                exitPoints.push({
+                  id: exitPointId,
+                  source_node: callerNode.id,
+                  type: 'sdk',
+                  name: `Call to ${targetObject}.${targetMethod}`,
+                  target: {
+                    sdk: targetObject,
+                    endpoint: targetMethod
+                  },
+                  operation: {
+                    action: targetMethod,
+                    async: isAsync
+                  },
+                  metadata: {
+                    line: lineNumber
+                  }
+                } as CASExitPoint);
+
+                const edgeId = `${callerNode.id}_calls_external_${targetObject}_${targetMethod}`;
+                if (!edges.find(e => e.id === edgeId)) {
+                  edges.push(this.createEdge(
+                    edgeId,
+                    callerNode.id,
+                    exitPointId,
+                    'calls',
+                    'behavior',
+                    {
+                      call_type: 'library_call',
+                      library: targetObject,
+                      method: targetMethod,
+                      is_async: isAsync,
+                      line: lineNumber
+                    }
+                  ));
+                }
+              }
+            } else {
+              const possibleTargets = nodes.filter(n =>
+                n.name === targetMethod &&
+                (n.type === 'method' || n.type === 'function')
+              );
+
+              if (possibleTargets.length === 1) {
+                const targetNode = possibleTargets[0];
+                if (targetNode.id !== callerNode.id) {
+                  const edgeId = `${callerNode.id}_calls_${targetNode.id}_line_${lineNumber}`;
+                  if (!edges.find(e => e.id === edgeId)) {
+                    edges.push(this.createEdge(
+                      edgeId,
+                      callerNode.id,
+                      targetNode.id,
+                      'calls',
+                      'behavior',
+                      {
+                        call_type: 'method_call',
+                        target_object: targetObject,
+                        is_async: isAsync,
+                        line: lineNumber
+                      }
+                    ));
+                  }
+                }
+              }
+            }
+          } else if (match.length === 2) {
+            targetMethod = match[1];
+
+            if (builtinFunctions.includes(targetMethod)) {
+              const exitPointId = `exit_${callerNode.id}_to_builtin_${targetMethod}`;
+              if (!exitPoints.find(e => e.id === exitPointId)) {
+                exitPoints.push({
+                  id: exitPointId,
+                  source_node: callerNode.id,
+                  type: 'sdk',
+                  name: `Call to builtin ${targetMethod}`,
+                  target: {
+                    sdk: 'python_builtin',
+                    endpoint: targetMethod
+                  },
+                  operation: {
+                    action: targetMethod,
+                    async: isAsync
+                  },
+                  metadata: {
+                    line: lineNumber
+                  }
+                } as CASExitPoint);
+              }
+            } else {
+              const targetNode = nodes.find(n =>
+                n.name === targetMethod &&
+                n.type === 'function'
+              );
+
+              if (targetNode && targetNode.id !== callerNode.id) {
+                const edgeId = `${callerNode.id}_calls_${targetNode.id}_line_${lineNumber}`;
+                if (!edges.find(e => e.id === edgeId)) {
+                  edges.push(this.createEdge(
+                    edgeId,
+                    callerNode.id,
+                    targetNode.id,
+                    'calls',
+                    'behavior',
+                    {
+                      call_type: 'function_call',
+                      is_async: isAsync,
+                      line: lineNumber
+                    }
+                  ));
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private buildCallGraph(nodes: CASNode[], edges: CASEdge[], entryPoints: CASEntryPoint[], exitPoints: CASExitPoint[]): void {
+    const decoratorPatterns = [
+      { pattern: /@app\.route\(['"]([^'"]+)['"]/, framework: 'flask', method: 'GET' },
+      { pattern: /@app\.get\(['"]([^'"]+)['"]/, framework: 'flask', method: 'GET' },
+      { pattern: /@app\.post\(['"]([^'"]+)['"]/, framework: 'flask', method: 'POST' },
+      { pattern: /@app\.put\(['"]([^'"]+)['"]/, framework: 'flask', method: 'PUT' },
+      { pattern: /@app\.delete\(['"]([^'"]+)['"]/, framework: 'flask', method: 'DELETE' },
+      { pattern: /@router\.get\(['"]([^'"]+)['"]/, framework: 'fastapi', method: 'GET' },
+      { pattern: /@router\.post\(['"]([^'"]+)['"]/, framework: 'fastapi', method: 'POST' },
+      { pattern: /@router\.put\(['"]([^'"]+)['"]/, framework: 'fastapi', method: 'PUT' },
+      { pattern: /@router\.delete\(['"]([^'"]+)['"]/, framework: 'fastapi', method: 'DELETE' },
+    ];
+
+    for (const node of nodes) {
+      if (node.type === 'function' || node.type === 'method') {
+        const decorators = node.metadata?.attributes?.decorators as string[] || [];
+
+        for (const decorator of decorators) {
+          for (const { pattern, framework, method } of decoratorPatterns) {
+            const match = decorator.match(pattern);
+            if (match) {
+              const routePath = match[1];
+              const entryPointId = `entry_http_${node.id}_${method.toLowerCase()}`;
+
+              if (!entryPoints.find(e => e.id === entryPointId)) {
+                entryPoints.push({
+                  id: entryPointId,
+                  source_node: node.id,
+                  type: 'http',
+                  name: `HTTP ${method} ${routePath}`,
+                  trigger: {
+                    method,
+                    path: routePath
+                  },
+                  metadata: {
+                    framework,
+                    decorator
+                  }
+                } as CASEntryPoint);
+              }
+
+              if (!node.metadata) node.metadata = {};
+              if (!node.metadata.attributes) node.metadata.attributes = {};
+              node.metadata.attributes.httpEndpoint = true;
+              node.metadata.attributes.httpMethod = method;
+              node.metadata.attributes.httpPath = routePath;
+              node.metadata.attributes.framework = framework;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private extractEnhancedCallGraph(content: string, filePath: string, nodes: CASNode[]): void {
+    const lines = content.split('\n');
+    let currentFunction = '';
+    let currentClass = '';
+    let indentLevel = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmed = line.trim();
+      const lineIndent = line.length - line.trimStart().length;
+
+      // Track current context
+      if (trimmed.startsWith('class ')) {
+        currentClass = this.extractClassName(trimmed);
+        indentLevel = lineIndent;
+      } else if (trimmed.startsWith('def ') || trimmed.startsWith('async def ')) {
+        if (lineIndent > indentLevel) {
+          currentFunction = this.extractFunctionName(trimmed);
+        } else {
+          currentClass = '';
+          currentFunction = this.extractFunctionName(trimmed);
+        }
+      }
+
+      // Extract method calls
+      this.extractMethodCallsFromLine(trimmed, i + 1, currentFunction, currentClass, filePath);
+
+      // Extract library calls
+      this.extractLibraryCallsFromLine(trimmed, i + 1, currentFunction, filePath);
+
+      // Extract abstract method calls
+      this.extractAbstractCallsFromLine(trimmed, i + 1, currentFunction, currentClass);
+    }
+
+    // Create edges from extracted calls
+    this.createCallGraphEdges(nodes);
+  }
+
+  private extractMethodCallsFromLine(line: string, lineNumber: number, currentFunction: string, currentClass: string, filePath: string): void {
+    // Pattern for method calls: object.method() or self.method() or function()
+    const methodCallPatterns = [
+      /(\w+)\.(\w+)\s*\(/g,  // object.method()
+      /self\.(\w+)\s*\(/g,   // self.method()
+      /(\w+)\s*\(/g          // function()
+    ];
+
+    methodCallPatterns.forEach(pattern => {
+      let match;
+      while ((match = pattern.exec(line)) !== null) {
+        const isAsync = line.includes('await ');
+        const isConditional = line.includes('if ') || line.includes('elif ') || line.includes('else:');
+        const isInLoop = line.includes('for ') || line.includes('while ');
+
+        if (pattern === methodCallPatterns[0]) {
+          // object.method() call
+          this.methodCalls.push({
+            caller: currentFunction || currentClass || 'module',
+            callee: `${match[1]}.${match[2]}`,
+            callType: 'method',
+            line: lineNumber,
+            isAsync,
+            parameters: this.extractCallParameters(line, match.index || 0),
+            isConditional,
+            isInLoop
+          });
+        } else if (pattern === methodCallPatterns[1]) {
+          // self.method() call
+          this.methodCalls.push({
+            caller: currentFunction || currentClass || 'module',
+            callee: `${currentClass}.${match[1]}`,
+            callType: 'method',
+            line: lineNumber,
+            isAsync,
+            parameters: this.extractCallParameters(line, match.index || 0),
+            isConditional,
+            isInLoop
+          });
+        } else {
+          // function() call
+          const callType = this.determineCallType(match[1]);
+          this.methodCalls.push({
+            caller: currentFunction || currentClass || 'module',
+            callee: match[1],
+            callType,
+            line: lineNumber,
+            isAsync,
+            parameters: this.extractCallParameters(line, match.index || 0),
+            isConditional,
+            isInLoop
+          });
+        }
+      }
+    });
+  }
+
+  private extractLibraryCallsFromLine(line: string, lineNumber: number, currentFunction: string, filePath: string): void {
+    const libraryPatterns: Array<{pattern: RegExp, library: string, callType: PythonLibraryCall['callType']}> = [
+      { pattern: /requests\.(get|post|put|delete|patch)\s*\(/g, library: 'requests', callType: 'http' },
+      { pattern: /httpx\.(get|post|put|delete|patch)\s*\(/g, library: 'httpx', callType: 'http' },
+      { pattern: /aiohttp\.(get|post|put|delete|patch)\s*\(/g, library: 'aiohttp', callType: 'http' },
+      { pattern: /sqlite3\.(connect|execute|cursor)\s*\(/g, library: 'sqlite3', callType: 'database' },
+      { pattern: /psycopg2\.(connect|cursor)\s*\(/g, library: 'psycopg2', callType: 'database' },
+      { pattern: /pymongo\.(MongoClient|find|insert|update|delete)\s*\(/g, library: 'pymongo', callType: 'database' },
+      { pattern: /open\s*\(/g, library: 'builtins', callType: 'fs' },
+      { pattern: /os\.(listdir|mkdir|remove|rename)\s*\(/g, library: 'os', callType: 'fs' },
+      { pattern: /pathlib\.Path\s*\(/g, library: 'pathlib', callType: 'fs' },
+      { pattern: /logging\.(info|debug|warning|error|critical)\s*\(/g, library: 'logging', callType: 'logging' },
+      { pattern: /print\s*\(/g, library: 'builtins', callType: 'logging' }
+    ];
+
+    libraryPatterns.forEach(({pattern, library, callType}) => {
+      let match;
+      while ((match = pattern.exec(line)) !== null) {
+        const methodName = match[1] || match[0].split('(')[0].split('.').pop() || 'unknown';
+        const isAsync = line.includes('await ');
+
+        this.libraryCalls.push({
+          library,
+          method: methodName,
+          isAsync,
+          callType,
+          line: lineNumber
+        });
+      }
+    });
+  }
+
+  private extractAbstractCallsFromLine(line: string, lineNumber: number, currentFunction: string, currentClass: string): void {
+    // Common abstract method patterns in Python
+    const abstractPatterns = [
+      /\.process\s*\(/g,
+      /\.handle\s*\(/g,
+      /\.execute\s*\(/g,
+      /\.validate\s*\(/g,
+      /\.transform\s*\(/g,
+      /super\(\)\.([\w_]+)\s*\(/g
+    ];
+
+    abstractPatterns.forEach(pattern => {
+      let match;
+      while ((match = pattern.exec(line)) !== null) {
+        const methodName = match[1] || match[0].split('(')[0].split('.').pop();
+        if (methodName) {
+          this.methodCalls.push({
+            caller: currentFunction || currentClass || 'module',
+            callee: methodName,
+            callType: 'abstract',
+            line: lineNumber,
+            isAsync: line.includes('await '),
+            parameters: this.extractCallParameters(line, match.index || 0),
+            isConditional: line.includes('if ') || line.includes('elif '),
+            isInLoop: line.includes('for ') || line.includes('while ')
+          });
+        }
+      }
+    });
+  }
+
+  private extractClassName(line: string): string {
+    const match = line.match(/class\s+(\w+)/);
+    return match ? match[1] : '';
+  }
+
+  private extractFunctionName(line: string): string {
+    const match = line.match(/(?:async\s+)?def\s+(\w+)/);
+    return match ? match[1] : '';
+  }
+
+  private extractCallParameters(line: string, callIndex: number): string[] {
+    const afterCall = line.substring(callIndex);
+    const parenStart = afterCall.indexOf('(');
+    const parenEnd = afterCall.indexOf(')', parenStart);
+
+    if (parenStart === -1 || parenEnd === -1) return [];
+
+    const paramString = afterCall.substring(parenStart + 1, parenEnd);
+    return paramString.split(',').map(p => p.trim()).filter(p => p.length > 0);
+  }
+
+  private determineCallType(functionName: string): PythonMethodCall['callType'] {
+    const builtins = ['print', 'len', 'str', 'int', 'float', 'bool', 'list', 'dict', 'set', 'tuple', 'range', 'enumerate', 'zip', 'map', 'filter', 'sorted', 'max', 'min', 'sum', 'any', 'all'];
+
+    if (builtins.includes(functionName)) {
+      return 'builtin';
+    }
+
+    // Check if it looks like a library call
+    if (functionName.includes('_') || functionName[0] === functionName[0].toUpperCase()) {
+      return 'library';
+    }
+
+    return 'function';
+  }
+
+  private createCallGraphEdges(nodes: CASNode[]): void {
+    // Create edges for method calls
+    this.methodCalls.forEach(call => {
+      const sourceNode = this.findNodeByName(call.caller, nodes);
+      const targetNode = this.findNodeByName(call.callee, nodes);
+
+      if (sourceNode && targetNode && sourceNode.id !== targetNode.id) {
+        // Add edge tracking if not already present in the main analysis
+      }
+    });
+
+    // Library calls are handled as exit points in the main analysis
+  }
+
+  private findNodeByName(name: string, nodes: CASNode[]): CASNode | undefined {
+    // Try exact match first
+    let node = nodes.find(n => n.name === name);
+
+    // Try method name from object.method format
+    if (!node && name.includes('.')) {
+      const methodName = name.split('.').pop();
+      node = nodes.find(n => n.name === methodName && n.type === 'method');
+    }
+
+    return node;
   }
 
   protected sanitizeId(name: string): string {

@@ -3,6 +3,8 @@ import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint } from '
 import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
+import { ASTRunner, PHPASTNode } from '../core/ast-runner';
+import * as path from 'path';
 
 interface PHPClass {
   name: string;
@@ -149,6 +151,8 @@ export class PHPAnalyzer extends BaseAnalyzer {
   private drupalFrameworkDetected = false;
   private wordPressFrameworkDetected = false;
   private composerProject = false;
+  private astRunner: ASTRunner;
+  private astCache = new Map<string, PHPASTNode>();
 
   constructor() {
     super(
@@ -157,6 +161,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
       '1.0.0',
       'language'
     );
+    this.astRunner = new ASTRunner();
   }
 
   async canAnalyze(projectPath: string): Promise<boolean> {
@@ -202,6 +207,8 @@ export class PHPAnalyzer extends BaseAnalyzer {
       this.buildNamespaceHierarchy(namespaces, nodes, edges);
       this.detectFrameworkPatterns(nodes, edges, entryPoints);
       this.buildInheritanceRelationships(nodes, edges);
+
+      await this.analyzeCallGraph(context.projectPath, nodes, edges, exitPoints);
 
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
         framework_specific: {
@@ -1607,12 +1614,6 @@ export class PHPAnalyzer extends BaseAnalyzer {
            !line.includes('=');
   }
 
-  private isMethodDeclaration(line: string): boolean {
-    return line.includes('function ') &&
-           (line.includes('public') || line.includes('private') || line.includes('protected')) &&
-           line.includes('(') &&
-           !line.startsWith('//');
-  }
 
   private isConstantDeclaration(line: string): boolean {
     return line.includes('const ') &&
@@ -1833,6 +1834,399 @@ export class PHPAnalyzer extends BaseAnalyzer {
     ];
 
     return builtinNamespaces.some(builtin => namespace === builtin || namespace.startsWith(builtin));
+  }
+
+  private async analyzeCallGraph(projectPath: string, nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[]): Promise<void> {
+    const phpFiles = await glob(['**/*.php'], {
+      cwd: projectPath,
+      ignore: ['**/vendor/**', '**/.git/**', '**/node_modules/**']
+    });
+
+    const methodNodes = nodes.filter(n => n.type === 'method' || n.type === 'function');
+    const classNodes = nodes.filter(n => n.type === 'class' || n.type === 'interface' || n.type === 'trait');
+
+    for (const file of phpFiles) {
+      const fullPath = path.join(projectPath, file);
+
+      const ast = await this.astRunner.parsePHPAST(fullPath);
+      if (!ast) {
+        await this.analyzeCallGraphFallback(fullPath, file, nodes, edges, exitPoints, methodNodes, classNodes, projectPath);
+        continue;
+      }
+
+      this.astCache.set(file, ast);
+      const currentNamespace = ast.namespace || 'global';
+
+      if (ast.calls) {
+        for (const call of ast.calls) {
+          const callerMethod = methodNodes.find(n => {
+            if (call.method) {
+              return n.name === call.method && n.source?.file === fullPath;
+            }
+            return n.source?.file === fullPath &&
+                   n.source?.line !== undefined && n.source.line <= call.line &&
+                   n.source?.end_line !== undefined && n.source.end_line >= call.line;
+          });
+
+          if (!callerMethod) continue;
+
+          let targetMethod: CASNode | undefined;
+
+          if (call.class) {
+            const targetClass = classNodes.find(c => c.name === call.class);
+            if (targetClass && call.method) {
+              targetMethod = methodNodes.find(n =>
+                n.name === call.method &&
+                edges.some(e => e.source === targetClass.id && e.target === n.id && e.type === 'has_method')
+              );
+            }
+          } else if (call.function) {
+            targetMethod = methodNodes.find(n =>
+              n.name === call.function &&
+              n.type === 'function'
+            );
+          } else if (call.method && call.class) {
+            const containingClass = classNodes.find(c => c.name === call.class);
+            if (containingClass) {
+              targetMethod = methodNodes.find(n =>
+                n.name === call.method &&
+                edges.some(e => e.source === containingClass.id && e.target === n.id && e.type === 'has_method')
+              );
+            }
+          }
+
+          if (targetMethod && targetMethod.id !== callerMethod.id) {
+            const callEdgeId = `call_${callerMethod.id}_to_${targetMethod.id}_line_${call.line}`;
+            if (!edges.some(e => e.id === callEdgeId)) {
+              edges.push(this.createEdge(
+                callEdgeId,
+                callerMethod.id,
+                targetMethod.id,
+                'calls',
+                'behavior',
+                {
+                  line: call.line,
+                  callType: call.class ? 'static' : call.method ? 'method' : 'function',
+                  targetClass: call.class,
+                  targetMethod: call.method || call.function
+                }
+              ));
+            }
+          } else if (this.isExternalLibraryCall(call.class || call.function || '', call.method || '', currentNamespace)) {
+            const exitId = `exit_call_${callerMethod.id}_${call.class || call.function || 'unknown'}_${call.method || ''}_${call.line}`;
+            if (!exitPoints.some(e => e.id === exitId)) {
+              exitPoints.push(this.createExitPoint(
+                exitId,
+                callerMethod.id,
+                'sdk',
+                call.class && call.method ? `External call: ${call.class}::${call.method}` :
+                call.function ? `External call: ${call.function}` : 'External call',
+                `Library call to ${this.identifyPHPLibrary(call.class || call.function || '')}`,
+                call.class ? { sdk: call.class } : undefined,
+                (call.method || call.function) ? { method: call.method || call.function } : undefined,
+                {
+                  targetClass: call.class,
+                  targetMethod: call.method,
+                  targetFunction: call.function,
+                  line: call.line,
+                  library: this.identifyPHPLibrary(call.class || call.function || '')
+                }
+              ));
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private async analyzeCallGraphFallback(
+    fullPath: string,
+    file: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    exitPoints: CASExitPoint[],
+    methodNodes: CASNode[],
+    classNodes: CASNode[],
+    projectPath: string
+  ): Promise<void> {
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const lines = content.split('\n');
+    const currentNamespace = this.extractNamespace(content) || 'global';
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+
+        const functionCalls = [
+          ...Array.from(line.matchAll(/(\$\w+)->(\w+)\s*\(/g)),
+          ...Array.from(line.matchAll(/(\w+)::(\w+)\s*\(/g)),
+          ...Array.from(line.matchAll(/new\s+(\w+)\s*\(/g)).map(m => [m[0], m[1], '__construct']),
+          ...Array.from(line.matchAll(/\$this->(\w+)\s*\(/g)).map(m => [m[0], '$this', m[1]]),
+          ...Array.from(line.matchAll(/self::(\w+)\s*\(/g)).map(m => [m[0], 'self', m[1]]),
+          ...Array.from(line.matchAll(/parent::(\w+)\s*\(/g)).map(m => [m[0], 'parent', m[1]]),
+          ...Array.from(line.matchAll(/static::(\w+)\s*\(/g)).map(m => [m[0], 'static', m[1]]),
+          ...Array.from(line.matchAll(/(\w+)\s*\(/g))
+        ];
+
+        for (const match of functionCalls) {
+          const fullMatch = match[0];
+          const objectOrClass = match[1];
+          const methodName = match[2];
+
+          const callerMethod = methodNodes.find(n =>
+            n.source?.file === fullPath &&
+            n.source?.line !== undefined && n.source.line <= i + 1 &&
+            n.source?.end_line !== undefined && n.source.end_line >= i + 1
+          );
+
+          if (callerMethod) {
+            let targetMethod: CASNode | undefined;
+
+            if (objectOrClass === '$this' || objectOrClass === 'self' || objectOrClass === 'static') {
+              const containingClass = classNodes.find(c =>
+                edges.some(e => e.source === c.id && e.target === callerMethod.id && e.type === 'has_method')
+              );
+
+              if (containingClass) {
+                targetMethod = methodNodes.find(n =>
+                  n.name === methodName &&
+                  edges.some(e => e.source === containingClass.id && e.target === n.id && e.type === 'has_method')
+                );
+              }
+            } else if (objectOrClass === 'parent') {
+              const containingClass = classNodes.find(c =>
+                edges.some(e => e.source === c.id && e.target === callerMethod.id && e.type === 'has_method')
+              );
+
+              if (containingClass && containingClass.metadata?.attributes?.extendsClass) {
+                const parentClassName = containingClass.metadata.attributes.extendsClass;
+                const parentClass = classNodes.find(c => c.name === parentClassName);
+
+                if (parentClass) {
+                  targetMethod = methodNodes.find(n =>
+                    n.name === methodName &&
+                    edges.some(e => e.source === parentClass.id && e.target === n.id && e.type === 'has_method')
+                  );
+                }
+              }
+            } else if (fullMatch.startsWith('new ')) {
+              const targetClass = classNodes.find(c => c.name === objectOrClass);
+              if (targetClass) {
+                targetMethod = methodNodes.find(n =>
+                  n.name === '__construct' &&
+                  edges.some(e => e.source === targetClass.id && e.target === n.id && e.type === 'has_method')
+                );
+              }
+            } else if (methodName) {
+              const targetClass = classNodes.find(c => c.name === objectOrClass);
+              if (targetClass) {
+                targetMethod = methodNodes.find(n =>
+                  n.name === methodName &&
+                  edges.some(e => e.source === targetClass.id && e.target === n.id && e.type === 'has_method')
+                );
+              }
+            } else {
+              targetMethod = methodNodes.find(n => n.name === objectOrClass && n.type === 'function');
+            }
+
+            if (targetMethod) {
+              const callEdgeId = `call_${callerMethod.id}_to_${targetMethod.id}_${i}`;
+              if (!edges.some(e => e.id === callEdgeId)) {
+                edges.push(this.createEdge(
+                  callEdgeId,
+                  callerMethod.id,
+                  targetMethod.id,
+                  'calls',
+                  'behavior',
+                  {
+                    line: i + 1,
+                    callType: fullMatch.startsWith('new ') ? 'constructor' :
+                             objectOrClass === 'parent' ? 'parent' :
+                             objectOrClass === 'self' || objectOrClass === 'static' ? 'static' :
+                             objectOrClass === '$this' ? 'internal' :
+                             methodName ? 'method' : 'function'
+                  }
+                ));
+              }
+            } else if (this.isExternalLibraryCall(objectOrClass, methodName || objectOrClass, currentNamespace)) {
+              const exitId = `exit_call_${callerMethod.id}_${objectOrClass}_${methodName || 'func'}_${i}`;
+              if (!exitPoints.some(e => e.id === exitId)) {
+                exitPoints.push(this.createExitPoint(
+                  exitId,
+                  callerMethod.id,
+                  'sdk',
+                  methodName ? `External call: ${objectOrClass}::${methodName}` : `External call: ${objectOrClass}`,
+                  `Library call to ${this.identifyPHPLibrary(objectOrClass)}`,
+                  undefined,
+                  undefined,
+                  {
+                    targetClass: objectOrClass,
+                    targetFunction: methodName || objectOrClass,
+                    line: i + 1,
+                    library: this.identifyPHPLibrary(objectOrClass)
+                  }
+                ));
+              }
+            }
+          }
+        }
+
+        const laravelRoutes = [
+          ...Array.from(line.matchAll(/Route::(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/g)),
+          ...Array.from(line.matchAll(/@(Get|Post|Put|Delete|Patch)Mapping\s*\(\s*['"]([^'"]+)['"]/g))
+        ];
+
+        for (const route of laravelRoutes) {
+          const httpMethod = route[1].toUpperCase();
+          const path = route[2];
+
+          const controllerMatch = line.match(/\[([\w\\]+)::class\s*,\s*['"](\w+)['"]/);
+          if (controllerMatch) {
+            const controllerClass = controllerMatch[1];
+            const actionMethod = controllerMatch[2];
+
+            const controllerNode = classNodes.find(c =>
+              c.name === controllerClass.split('\\').pop()
+            );
+
+            if (controllerNode) {
+              const actionNode = methodNodes.find(m =>
+                m.name === actionMethod &&
+                edges.some(e => e.source === controllerNode.id && e.target === m.id && e.type === 'has_method')
+              );
+
+              if (actionNode) {
+                const endpointEdgeId = `http_endpoint_${actionNode.id}_${httpMethod}_${i}`;
+                if (!edges.some(e => e.id === endpointEdgeId)) {
+                  edges.push(this.createEdge(
+                    endpointEdgeId,
+                    `entry_${actionNode.id}`,
+                    actionNode.id,
+                    'exposes',
+                    'behavior',
+                    {
+                      httpMethod,
+                      path,
+                      framework: 'Laravel'
+                    }
+                  ));
+                }
+              }
+            }
+          }
+        }
+
+        const symfonyRoutes = [
+          ...Array.from(line.matchAll(/#\[Route\s*\(\s*['"]([^'"]+)['"]\s*,\s*methods:\s*\[['"](\w+)['"]\]/g))
+        ];
+
+        for (const route of symfonyRoutes) {
+          const path = route[1];
+          const httpMethod = route[2].toUpperCase();
+
+          const nextMethodLine = this.findNextMethodDeclaration(lines, i);
+          if (nextMethodLine !== -1) {
+            const methodAtLine = methodNodes.find(n =>
+              n.source?.file === fullPath &&
+              n.source?.line === nextMethodLine + 1
+            );
+
+            if (methodAtLine) {
+              const endpointEdgeId = `http_endpoint_${methodAtLine.id}_${httpMethod}_${i}`;
+              if (!edges.some(e => e.id === endpointEdgeId)) {
+                edges.push(this.createEdge(
+                  endpointEdgeId,
+                  `entry_${methodAtLine.id}`,
+                  methodAtLine.id,
+                  'exposes',
+                  'behavior',
+                  {
+                    httpMethod,
+                    path,
+                    framework: 'Symfony'
+                  }
+                ));
+              }
+            }
+          }
+        }
+      }
+    }
+
+  private findNextMethodDeclaration(lines: string[], startIndex: number): number {
+    for (let i = startIndex + 1; i < lines.length; i++) {
+      if (this.isMethodDeclaration(lines[i])) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  private isMethodDeclaration(line: string): boolean {
+    const trimmed = line.trim();
+    const methodPattern = /^(public|private|protected|static|final|abstract)?\s*(function)\s+(\w+)\s*\(/;
+    return methodPattern.test(trimmed) && !trimmed.startsWith('//');
+  }
+
+  private isExternalLibraryCall(classOrFunc: string, functionName: string, currentNamespace: string): boolean {
+    const phpFunctions = [
+      'echo', 'print', 'die', 'exit', 'isset', 'empty', 'include', 'require',
+      'include_once', 'require_once', 'array_map', 'array_filter', 'array_reduce',
+      'json_encode', 'json_decode', 'file_get_contents', 'file_put_contents',
+      'curl_init', 'curl_exec', 'mysqli_connect', 'PDO'
+    ];
+
+    const frameworkClasses = [
+      'DB', 'Cache', 'Session', 'Request', 'Response', 'View', 'Redirect',
+      'Auth', 'Hash', 'Validator', 'Mail', 'Queue', 'Event', 'Log',
+      'Eloquent', 'Model', 'Controller', 'Middleware'
+    ];
+
+    return phpFunctions.includes(functionName) ||
+           frameworkClasses.includes(classOrFunc) ||
+           classOrFunc.startsWith('\\') ||
+           (classOrFunc.includes('\\') && !classOrFunc.startsWith(currentNamespace));
+  }
+
+  private identifyPHPLibrary(className: string): string {
+    if (className.startsWith('\\PDO') || className === 'PDO') return 'PHP PDO';
+    if (className.startsWith('\\mysqli') || className === 'mysqli') return 'MySQLi';
+    if (className.startsWith('\\Redis') || className === 'Redis') return 'Redis Extension';
+    if (className.startsWith('\\Memcached') || className === 'Memcached') return 'Memcached Extension';
+
+    const frameworkClasses: Record<string, string> = {
+      'DB': 'Laravel Database',
+      'Eloquent': 'Laravel Eloquent ORM',
+      'Auth': 'Laravel Authentication',
+      'Cache': 'Framework Cache',
+      'Session': 'Framework Session',
+      'Request': 'HTTP Request',
+      'Response': 'HTTP Response',
+      'Controller': 'MVC Controller',
+      'Model': 'MVC Model',
+      'View': 'MVC View'
+    };
+
+    if (frameworkClasses[className]) {
+      return frameworkClasses[className];
+    }
+
+    const builtinFunctions = [
+      'echo', 'print', 'die', 'exit', 'isset', 'empty',
+      'json_encode', 'json_decode', 'file_get_contents', 'file_put_contents'
+    ];
+
+    if (builtinFunctions.includes(className)) {
+      return 'PHP Built-in Function';
+    }
+
+    if (className.includes('\\')) {
+      const parts = className.split('\\');
+      if (parts[0] === 'Illuminate' || parts[1] === 'Illuminate') return 'Laravel Framework';
+      if (parts[0] === 'Symfony' || parts[1] === 'Symfony') return 'Symfony Framework';
+      if (parts[0] === 'Doctrine' || parts[1] === 'Doctrine') return 'Doctrine ORM';
+    }
+
+    return 'External Library';
   }
 
   protected sanitizeId(name: string): string {

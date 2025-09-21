@@ -3,6 +3,8 @@ import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint } from '
 import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
+import { ASTRunner, RustASTNode } from '../core/ast-runner';
+import * as path from 'path';
 
 interface RustStruct {
   name: string;
@@ -187,6 +189,8 @@ export class RustAnalyzer extends BaseAnalyzer {
   private warpFrameworkDetected = false;
   private axumFrameworkDetected = false;
   private cargoProject = false;
+  private astRunner: ASTRunner;
+  private astCache = new Map<string, RustASTNode>();
 
   constructor() {
     super(
@@ -195,6 +199,7 @@ export class RustAnalyzer extends BaseAnalyzer {
       '1.0.0',
       'language'
     );
+    this.astRunner = new ASTRunner();
   }
 
   async canAnalyze(projectPath: string): Promise<boolean> {
@@ -240,6 +245,8 @@ export class RustAnalyzer extends BaseAnalyzer {
       this.buildModuleHierarchy(modules, nodes, edges);
       this.detectFrameworkPatterns(nodes, edges, entryPoints);
       this.buildTraitRelationships(nodes, edges);
+
+      await this.analyzeCallGraph(context.projectPath, nodes, edges, exitPoints);
 
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
         framework_specific: {
@@ -1976,6 +1983,356 @@ export class RustAnalyzer extends BaseAnalyzer {
 
   private getModuleName(filePath: string): string {
     return filePath.replace(/\.rs$/, '').replace(/\//g, '::');
+  }
+
+  private extractModuleName(file: string): string {
+    return this.getModuleName(file);
+  }
+
+  private async analyzeCallGraph(projectPath: string, nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[]): Promise<void> {
+    const rustFiles = await glob(['**/*.rs'], {
+      cwd: projectPath,
+      ignore: ['**/target/**', '**/.git/**']
+    });
+
+    const functionNodes = nodes.filter(n => n.type === 'function' || n.type === 'method' || n.type === 'trait_method');
+    const structNodes = nodes.filter(n => n.type === 'struct' || n.type === 'enum' || n.type === 'trait');
+    const implNodes = nodes.filter(n => n.type === 'impl');
+
+    for (const file of rustFiles) {
+      const fullPath = path.join(projectPath, file);
+
+      const ast = await this.astRunner.parseRustAST(fullPath);
+      if (!ast) {
+        await this.analyzeCallGraphFallback(fullPath, file, nodes, edges, exitPoints, functionNodes, structNodes, projectPath);
+        continue;
+      }
+
+      this.astCache.set(file, ast);
+      const currentModule = this.getModuleName(file);
+
+      for (const child of ast.children || []) {
+        if ((child.kind === 'Function' || child.kind === 'Method') && child.calls) {
+          const callerFunction = functionNodes.find(n =>
+            n.name === child.name &&
+            n.source?.file === fullPath
+          );
+
+          if (!callerFunction) continue;
+
+          for (const call of child.calls) {
+            let targetFunction: CASNode | undefined;
+
+            if (call.module) {
+              targetFunction = functionNodes.find(n =>
+                n.name === call.function &&
+                (n.type === 'method' || n.metadata?.attributes?.module === call.module)
+              );
+
+              if (!targetFunction) {
+                const targetStruct = structNodes.find(s => s.name === call.module);
+                if (targetStruct) {
+                  targetFunction = functionNodes.find(n =>
+                    n.name === call.function &&
+                    edges.some(e => e.source === targetStruct.id && e.target === n.id &&
+                              (e.type === 'has_method' || e.type === 'implements'))
+                  );
+                }
+              }
+            } else {
+              targetFunction = functionNodes.find(n =>
+                n.name === call.function &&
+                n.type === 'function'
+              );
+            }
+
+            if (targetFunction && targetFunction.id !== callerFunction.id) {
+              const callEdgeId = `call_${callerFunction.id}_to_${targetFunction.id}_line_${call.line}`;
+              if (!edges.some(e => e.id === callEdgeId)) {
+                edges.push(this.createEdge(
+                  callEdgeId,
+                  callerFunction.id,
+                  targetFunction.id,
+                  'calls',
+                  'behavior',
+                  {
+                    line: call.line,
+                    callType: call.module ? 'method' : 'function',
+                    targetModule: call.module,
+                    targetFunction: call.function
+                  }
+                ));
+              }
+            } else if (this.isExternalLibraryCall(call.module || call.function, call.module ? call.function : undefined, currentModule)) {
+              const exitId = `exit_call_${callerFunction.id}_${call.module || ''}_${call.function}_${call.line}`;
+              if (!exitPoints.some(e => e.id === exitId)) {
+                exitPoints.push(this.createExitPoint(
+                  exitId,
+                  callerFunction.id,
+                  'sdk',
+                  call.module ? `External call: ${call.module}::${call.function}` : `External call: ${call.function}`,
+                  `Library call to ${this.identifyRustLibrary(call.module || call.function)}`,
+                  undefined,
+                  undefined,
+                  {
+                    targetModule: call.module || call.function,
+                    targetFunction: call.function,
+                    line: call.line,
+                    library: this.identifyRustLibrary(call.module || call.function)
+                  }
+                ));
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private async analyzeCallGraphFallback(
+    fullPath: string,
+    file: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    exitPoints: CASExitPoint[],
+    functionNodes: CASNode[],
+    structNodes: CASNode[],
+    projectPath: string
+  ): Promise<void> {
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const lines = content.split('\n');
+    const currentModule = this.getModuleName(file);
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      const functionCalls = [
+        ...Array.from(line.matchAll(/(\w+)\s*\(/g)),
+        ...Array.from(line.matchAll(/(\w+)::(\w+)\s*\(/g)),
+        ...Array.from(line.matchAll(/self\.(\w+)\s*\(/g)).map(m => [m[0], 'self', m[1]]),
+        ...Array.from(line.matchAll(/Self::(\w+)\s*\(/g)).map(m => [m[0], 'Self', m[1]])
+      ];
+
+        for (const match of functionCalls) {
+          const fullMatch = match[0];
+          const objectOrFunc = match[1];
+          const functionName = match[2];
+
+          const callerFunction = functionNodes.find(n =>
+            n.source?.file === fullPath &&
+            n.source?.line !== undefined && n.source.line <= i + 1 &&
+            n.source?.end_line !== undefined && n.source.end_line >= i + 1
+          );
+
+          if (callerFunction) {
+            let targetFunction: CASNode | undefined;
+
+            if (objectOrFunc === 'self' || objectOrFunc === 'Self') {
+              const containingStruct = structNodes.find(s =>
+                edges.some(e => e.source === s.id && e.target === callerFunction.id &&
+                          (e.type === 'has_method' || e.type === 'implements'))
+              );
+
+              if (containingStruct) {
+                targetFunction = functionNodes.find(n =>
+                  n.name === functionName &&
+                  edges.some(e => e.source === containingStruct.id && e.target === n.id &&
+                            (e.type === 'has_method' || e.type === 'implements'))
+                );
+              }
+            } else if (functionName) {
+              const targetStruct = structNodes.find(s => s.name === objectOrFunc);
+              if (targetStruct) {
+                targetFunction = functionNodes.find(n =>
+                  n.name === functionName &&
+                  edges.some(e => e.source === targetStruct.id && e.target === n.id &&
+                            (e.type === 'has_method' || e.type === 'implements'))
+                );
+              }
+            } else {
+              targetFunction = functionNodes.find(n => n.name === objectOrFunc);
+            }
+
+            if (targetFunction) {
+              const callEdgeId = `call_${callerFunction.id}_to_${targetFunction.id}_${i}`;
+              if (!edges.some(e => e.id === callEdgeId)) {
+                edges.push(this.createEdge(
+                  callEdgeId,
+                  callerFunction.id,
+                  targetFunction.id,
+                  'calls',
+                  'behavior',
+                  {
+                    line: i + 1,
+                    callType: objectOrFunc === 'self' ? 'self' :
+                             objectOrFunc === 'Self' ? 'associated' :
+                             functionName ? 'method' : 'function'
+                  }
+                ));
+              }
+            } else if (this.isExternalLibraryCall(objectOrFunc, functionName, currentModule)) {
+              const exitId = `exit_call_${callerFunction.id}_${objectOrFunc}_${functionName || 'func'}_${i}`;
+              if (!exitPoints.some(e => e.id === exitId)) {
+                exitPoints.push(this.createExitPoint(
+                  exitId,
+                  callerFunction.id,
+                  'sdk',
+                  functionName ? `External call: ${objectOrFunc}::${functionName}` : `External call: ${objectOrFunc}`,
+                  `Library call to ${this.identifyRustLibrary(objectOrFunc)}`,
+                  undefined,
+                  undefined,
+                  {
+                    targetModule: objectOrFunc,
+                    targetFunction: functionName || objectOrFunc,
+                    line: i + 1,
+                    library: this.identifyRustLibrary(objectOrFunc)
+                  }
+                ));
+              }
+            }
+          }
+        }
+
+        // TODO: Fix macro processing scope issue - temporarily disabled
+
+        const routeAttributes = [
+          ...Array.from(line.matchAll(/#\[(?:get|post|put|delete|patch)\s*\(\s*["']([^"']+)["']\s*\)\]/g)),
+          ...Array.from(line.matchAll(/#\[route\s*\(\s*["']([^"']+)["']\s*,\s*method\s*=\s*"(\w+)"\s*\)\]/g))
+        ];
+
+        for (const route of routeAttributes) {
+          const path = route[1];
+          const method = route[2] || route[0].match(/#\[(\w+)/)?.[1]?.toUpperCase();
+
+          const nextFunctionLine = this.findNextFunctionDeclaration(lines, i);
+          if (nextFunctionLine !== -1) {
+            const functionAtLine = functionNodes.find(n =>
+              n.source?.file === fullPath &&
+              n.source?.line === nextFunctionLine + 1
+            );
+
+            if (functionAtLine && method) {
+              const endpointEdgeId = `http_endpoint_${functionAtLine.id}_${method}_${i}`;
+              if (!edges.some(e => e.id === endpointEdgeId)) {
+                edges.push(this.createEdge(
+                  endpointEdgeId,
+                  `entry_${functionAtLine.id}`,
+                  functionAtLine.id,
+                  'exposes',
+                  'behavior',
+                  {
+                    httpMethod: method,
+                    path,
+                    framework: this.detectWebFramework(content)
+                  }
+                ));
+              }
+            }
+          }
+        }
+      }
+    }
+
+  private findNextFunctionDeclaration(lines: string[], startIndex: number): number {
+    for (let i = startIndex + 1; i < lines.length; i++) {
+      if (lines[i].trim().match(/^(pub\s+)?fn\s+\w+/)) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  private isExternalLibraryCall(moduleOrFunc: string, functionName: string | undefined, currentModule: string): boolean {
+    const stdModules = [
+      'std', 'core', 'alloc', 'collections', 'env', 'fmt', 'fs', 'io',
+      'mem', 'net', 'ops', 'os', 'path', 'process', 'sync', 'thread',
+      'time', 'vec', 'HashMap', 'Vec', 'String', 'Option', 'Result'
+    ];
+
+    const commonCrates = [
+      'tokio', 'async_std', 'futures', 'serde', 'serde_json', 'reqwest',
+      'hyper', 'actix', 'actix_web', 'rocket', 'warp', 'axum', 'diesel',
+      'sqlx', 'redis', 'mongodb', 'log', 'tracing', 'anyhow', 'thiserror'
+    ];
+
+    return stdModules.includes(moduleOrFunc) ||
+           commonCrates.includes(moduleOrFunc) ||
+           moduleOrFunc.startsWith('std::') ||
+           moduleOrFunc.startsWith('core::') ||
+           (moduleOrFunc.includes('::') && !moduleOrFunc.startsWith(currentModule));
+  }
+
+  private isStandardMacro(macroName: string): boolean {
+    const standardMacros = [
+      'println', 'print', 'eprintln', 'eprint', 'format', 'panic',
+      'assert', 'assert_eq', 'assert_ne', 'debug_assert', 'todo',
+      'unimplemented', 'unreachable', 'vec', 'include', 'include_str'
+    ];
+    return standardMacros.includes(macroName);
+  }
+
+  private identifyRustLibrary(moduleName: string): string {
+    const stdLibraries: Record<string, string> = {
+      'std': 'Rust Standard Library',
+      'core': 'Rust Core Library',
+      'alloc': 'Rust Allocation Library',
+      'collections': 'Rust Collections',
+      'io': 'Rust I/O',
+      'fs': 'Rust File System',
+      'net': 'Rust Networking',
+      'sync': 'Rust Synchronization',
+      'thread': 'Rust Threading',
+      'tokio': 'Tokio Async Runtime',
+      'async_std': 'Async-std Runtime',
+      'actix': 'Actix Framework',
+      'actix_web': 'Actix Web Framework',
+      'rocket': 'Rocket Framework',
+      'warp': 'Warp Framework',
+      'axum': 'Axum Framework',
+      'serde': 'Serde Serialization',
+      'diesel': 'Diesel ORM',
+      'sqlx': 'SQLx Database Library'
+    };
+
+    if (stdLibraries[moduleName]) {
+      return stdLibraries[moduleName];
+    }
+
+    if (moduleName.startsWith('std::')) {
+      return 'Rust Standard Library';
+    }
+
+    if (moduleName.startsWith('core::')) {
+      return 'Rust Core Library';
+    }
+
+    return 'External Crate';
+  }
+
+  private identifyMacroSource(macroName: string): string {
+    const macroSources: Record<string, string> = {
+      'println': 'std::print',
+      'format': 'std::format',
+      'vec': 'std::vec',
+      'assert': 'std::assert',
+      'panic': 'std::panic',
+      'todo': 'std::todo',
+      'derive': 'proc_macro',
+      'async_trait': 'async-trait crate',
+      'tokio::main': 'tokio runtime',
+      'rocket::launch': 'rocket framework'
+    };
+
+    return macroSources[macroName] || 'Rust Macro';
+  }
+
+  private detectWebFramework(content: string): string {
+    if (content.includes('actix_web')) return 'Actix-Web';
+    if (content.includes('rocket::')) return 'Rocket';
+    if (content.includes('warp::')) return 'Warp';
+    if (content.includes('axum::')) return 'Axum';
+    if (content.includes('hyper::')) return 'Hyper';
+    return 'Unknown';
   }
 
   protected sanitizeId(name: string): string {

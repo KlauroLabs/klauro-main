@@ -1,6 +1,7 @@
 import { BaseAnalyzer, AnalysisContext } from '../core/base-analyzer';
 import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint, CASCategories, CASPerspective } from '../../types/cas.types';
 import { AnalyzerError } from '../core/errors';
+import { EnhancedCallGraphExtractor } from '../enhanced-call-graph-extractor';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { parse, TSESTree } from '@typescript-eslint/typescript-estree';
@@ -53,6 +54,7 @@ interface VariableInfo {
 export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private astCache = new Map<string, ParsedAST>();
   private isTypeScriptProject = false;
+  private callGraphExtractor!: EnhancedCallGraphExtractor;
 
   constructor() {
     super(
@@ -84,6 +86,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     const perspectives: CASPerspective[] = [];
 
     try {
+      this.callGraphExtractor = new EnhancedCallGraphExtractor(context.projectPath);
+
       const sourceFiles = await glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
         cwd: context.projectPath,
         ignore: ['node_modules/**', 'dist/**', 'build/**', '.git/**']
@@ -103,7 +107,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         await this.analyzeFile(fullPath, file, nodes, edges, entryPoints, exitPoints, context);
       }
 
-      this.buildCallGraph(nodes, edges);
+      this.buildEnhancedCallGraph(nodes, edges, entryPoints, exitPoints);
 
       const categories = this.buildCategories();
 
@@ -172,6 +176,10 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       this.extractClasses(ast, relativePath, nodes, edges);
       this.extractVariables(ast, relativePath, nodes);
       this.extractExports(ast, relativePath, entryPoints);
+
+      // Use enhanced call graph extractor for comprehensive analysis
+      const { functions: extractedFunctions } = this.callGraphExtractor.extractFromAST(ast, fullPath);
+      this.integrateEnhancedCallGraphData(extractedFunctions, nodes, edges, entryPoints, exitPoints, relativePath);
 
     } catch (error) {
       console.warn(`Failed to analyze ${relativePath}:`, error);
@@ -413,9 +421,12 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
   private findFunctionsInAST(ast: TSESTree.Program): FunctionInfo[] {
     const functions: FunctionInfo[] = [];
+    const visited = new WeakSet();
 
     const walk = (node: any) => {
       if (!node || typeof node !== 'object') return;
+      if (visited.has(node)) return;
+      visited.add(node);
 
       if (node.type === 'FunctionDeclaration' && node.id) {
         functions.push({
@@ -450,6 +461,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       }
 
       for (const key in node) {
+        if (key === 'parent') continue; // Skip parent references to avoid circular recursion
+
         if (Array.isArray(node[key])) {
           node[key].forEach(walk);
         } else if (typeof node[key] === 'object') {
@@ -464,9 +477,12 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
   private findClassesInAST(ast: TSESTree.Program): ClassInfo[] {
     const classes: ClassInfo[] = [];
+    const visited = new WeakSet();
 
     const walk = (node: any) => {
       if (!node || typeof node !== 'object') return;
+      if (visited.has(node)) return;
+      visited.add(node);
 
       if (node.type === 'ClassDeclaration' && node.id) {
         const methods = node.body.body
@@ -508,6 +524,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       }
 
       for (const key in node) {
+        if (key === 'parent') continue; // Skip parent references to avoid circular recursion
+
         if (Array.isArray(node[key])) {
           node[key].forEach(walk);
         } else if (typeof node[key] === 'object') {
@@ -522,9 +540,12 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
   private findVariablesInAST(ast: TSESTree.Program): VariableInfo[] {
     const variables: VariableInfo[] = [];
+    const visited = new WeakSet();
 
     const walk = (node: any) => {
       if (!node || typeof node !== 'object') return;
+      if (visited.has(node)) return;
+      visited.add(node);
 
       if (node.type === 'VariableDeclaration') {
         node.declarations.forEach((declaration: any) => {
@@ -542,6 +563,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       }
 
       for (const key in node) {
+        if (key === 'parent') continue; // Skip parent references to avoid circular recursion
+
         if (Array.isArray(node[key])) {
           node[key].forEach(walk);
         } else if (typeof node[key] === 'object') {
@@ -570,19 +593,197 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     });
   }
 
-  private buildCallGraph(nodes: CASNode[], edges: CASEdge[]): void {
-    const classNodes = nodes.filter(n => n.type === 'class');
-    const methodNodes = nodes.filter(n => n.type === 'method');
-    const functionNodes = nodes.filter(n => n.type === 'function');
+  private buildEnhancedCallGraph(nodes: CASNode[], edges: CASEdge[], entryPoints: CASEntryPoint[], exitPoints: CASExitPoint[]): void {
+    // Legacy method calls are now handled by integrateEnhancedCallGraphData
+    // This method now focuses on final integration and validation
+    this.validateCallGraph(nodes, edges);
+    this.enrichNodesWithCallData(nodes, edges);
+  }
 
-    for (const [filePath, parsedData] of this.astCache) {
-      const ast = parsedData.ast;
-      const content = parsedData.content;
+  private integrateEnhancedCallGraphData(
+    extractedFunctions: any[],
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[],
+    filePath: string
+  ): void {
+    extractedFunctions.forEach(func => {
+      // HTTP endpoints from decorators
+      func.calls.forEach((call: any) => {
+        if (call.httpMethod && call.httpPath) {
+          entryPoints.push({
+            id: `http_${func.name}_${call.httpMethod}`,
+            source_node: `function_${filePath}_${func.name}_0`,
+            type: 'http',
+            name: `${call.httpMethod} ${call.httpPath}`,
+            trigger: {
+              method: call.httpMethod,
+              path: call.httpPath
+            },
+            metadata: {
+              decorators: call.decorators,
+              framework: 'nestjs'
+            }
+          });
+        }
 
-      this.extractConstructorDependencyEdges(ast, filePath, nodes, edges);
-      this.extractMethodCallEdges(ast, filePath, nodes, edges);
-      this.extractFunctionCallEdges(ast, filePath, nodes, edges);
+        // Library calls as exit points
+        if (call.targetType === 'library' && call.library) {
+          exitPoints.push({
+            id: `exit_${func.name}_${call.target}`,
+            source_node: `function_${filePath}_${func.name}_0`,
+            type: 'sdk',
+            name: `${call.library}.${call.target.split('.').pop()}`,
+            target: {
+              sdk: call.library,
+              endpoint: call.target.split('.').pop() || call.target
+            },
+            operation: {
+              action: call.target.split('.').pop() || call.target,
+              async: call.isAsync
+            },
+            metadata: {
+              line: call.line,
+              call_expression: call.callExpression
+            }
+          });
+        }
+
+        // Abstract method calls
+        if (call.targetType === 'abstract') {
+          const sourceNodeId = `function_${filePath}_${func.name}_0`;
+          const targetNodeId = this.findNodeIdByName(call.target, nodes);
+
+          if (targetNodeId) {
+            edges.push({
+              id: `abstract_call_${sourceNodeId}_${targetNodeId}`,
+              source: sourceNodeId,
+              target: targetNodeId,
+              type: 'calls',
+              metadata: {
+                attributes: {
+                  call_type: 'abstract',
+                  is_async: call.isAsync,
+                  line: call.line,
+                  method_name: call.target.split('.').pop()
+                }
+              }
+            });
+          }
+        }
+
+        // Dependency injection calls
+        if (call.injectionType) {
+          const sourceNodeId = `function_${filePath}_${func.name}_0`;
+          const targetNodeId = this.findNodeIdByName(call.target, nodes);
+
+          if (targetNodeId) {
+            edges.push({
+              id: `injection_${sourceNodeId}_${targetNodeId}`,
+              source: sourceNodeId,
+              target: targetNodeId,
+              type: 'calls',
+              metadata: {
+                attributes: {
+                  call_type: 'injection',
+                  injection_type: call.injectionType,
+                  line: call.line
+                }
+              }
+            });
+          }
+        }
+
+        // Regular method/function calls
+        if (call.targetType === 'method' || call.targetType === 'function') {
+          const sourceNodeId = `function_${filePath}_${func.name}_0`;
+          const targetNodeId = this.findNodeIdByName(call.target, nodes);
+
+          if (targetNodeId && sourceNodeId !== targetNodeId) {
+            edges.push({
+              id: `call_${sourceNodeId}_${targetNodeId}`,
+              source: sourceNodeId,
+              target: targetNodeId,
+              type: 'calls',
+              metadata: {
+                attributes: {
+                  call_type: call.targetType,
+                  is_async: call.isAsync,
+                  is_conditional: call.isConditional,
+                  is_in_loop: call.isInLoop,
+                  line: call.line
+                }
+              }
+            });
+          }
+        }
+      });
+    });
+  }
+
+  private findNodeIdByName(targetName: string, nodes: CASNode[]): string | undefined {
+    // Try exact match first
+    let targetNode = nodes.find(n => n.name === targetName);
+
+    // Try method name from object.method format
+    if (!targetNode && targetName.includes('.')) {
+      const methodName = targetName.split('.').pop();
+      targetNode = nodes.find(n => n.name === methodName && n.type === 'method');
     }
+
+    // Try function name
+    if (!targetNode) {
+      targetNode = nodes.find(n => n.name === targetName && (n.type === 'function' || n.type === 'method'));
+    }
+
+    return targetNode?.id;
+  }
+
+  private validateCallGraph(nodes: CASNode[], edges: CASEdge[]): void {
+    // Validate that all edge sources and targets exist as nodes
+    const nodeIds = new Set(nodes.map(n => n.id));
+
+    edges.forEach((edge, index) => {
+      if (!nodeIds.has(edge.source) && !edge.source.startsWith('exit_') && !edge.source.startsWith('library_')) {
+        console.warn(`Edge ${edge.id} has invalid source: ${edge.source}`);
+      }
+      if (!nodeIds.has(edge.target) && !edge.target.startsWith('exit_') && !edge.target.startsWith('library_')) {
+        console.warn(`Edge ${edge.id} has invalid target: ${edge.target}`);
+      }
+    });
+  }
+
+  private enrichNodesWithCallData(nodes: CASNode[], edges: CASEdge[]): void {
+    // Enrich nodes with call statistics
+    const callCounts = new Map<string, { incoming: number; outgoing: number }>();
+
+    edges.forEach(edge => {
+      if (edge.type === 'calls') {
+        // Outgoing calls
+        const sourceStats = callCounts.get(edge.source) || { incoming: 0, outgoing: 0 };
+        sourceStats.outgoing++;
+        callCounts.set(edge.source, sourceStats);
+
+        // Incoming calls
+        const targetStats = callCounts.get(edge.target) || { incoming: 0, outgoing: 0 };
+        targetStats.incoming++;
+        callCounts.set(edge.target, targetStats);
+      }
+    });
+
+    nodes.forEach(node => {
+      const stats = callCounts.get(node.id);
+      if (stats) {
+        if (!node.metadata) node.metadata = {};
+        if (!node.metadata.attributes) node.metadata.attributes = {};
+
+        node.metadata.attributes.incoming_calls = stats.incoming;
+        node.metadata.attributes.outgoing_calls = stats.outgoing;
+        node.metadata.attributes.is_leaf = stats.outgoing === 0;
+        node.metadata.attributes.is_entry = stats.incoming === 0;
+      }
+    });
   }
 
   private extractConstructorDependencyEdges(
@@ -591,8 +792,12 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     nodes: CASNode[],
     edges: CASEdge[]
   ): void {
+    const visited = new WeakSet();
+
     const walk = (node: any) => {
       if (!node || typeof node !== 'object') return;
+      if (visited.has(node)) return;
+      visited.add(node);
 
       if (node.type === 'ClassDeclaration' && node.id) {
         const className = node.id.name;
@@ -689,6 +894,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       }
 
       for (const key in node) {
+        if (key === 'parent') continue; // Skip parent references to avoid circular recursion
+
         if (Array.isArray(node[key])) {
           node[key].forEach(walk);
         } else if (typeof node[key] === 'object') {
@@ -700,180 +907,282 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     walk(ast);
   }
 
-  private extractMethodCallEdges(
+  private extractAllCallExpressions(
     ast: TSESTree.Program,
     filePath: string,
     nodes: CASNode[],
-    edges: CASEdge[]
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[]
   ): void {
-    const walk = (node: any, currentClass?: string, currentMethod?: string) => {
+
+    interface CallContext {
+      containingClass?: string;
+      containingMethod?: string;
+      containingFunction?: string;
+      containingNode?: CASNode;
+    }
+
+    const findNodeForContext = (ctx: CallContext): CASNode | undefined => {
+      if (ctx.containingMethod && ctx.containingClass) {
+        return nodes.find(n =>
+          n.name === ctx.containingMethod &&
+          n.type === 'method' &&
+          edges.some(e => e.type === 'has_method' && e.target === n.id && e.source.includes(ctx.containingClass || ''))
+        );
+      }
+      if (ctx.containingFunction) {
+        return nodes.find(n =>
+          n.name === ctx.containingFunction &&
+          n.type === 'function'
+        );
+      }
+      return undefined;
+    };
+
+    const extractCallInfo = (node: any): {target?: string, method?: string, isLibrary?: boolean, callType?: string} => {
+      if (node.callee.type === 'MemberExpression') {
+        const getObjectName = (obj: any): string | null => {
+          if (obj.type === 'Identifier') return obj.name;
+          if (obj.type === 'ThisExpression') return 'this';
+          if (obj.type === 'MemberExpression') {
+            const baseObj = getObjectName(obj.object);
+            if (baseObj) return `${baseObj}.${obj.property?.name || 'unknown'}`;
+          }
+          if (obj.type === 'CallExpression') return 'call_result';
+          return null;
+        };
+
+        const objectName = getObjectName(node.callee.object);
+        const methodName = node.callee.property?.name || 'unknown';
+
+        const commonLibraries = ['fs', 'path', 'http', 'https', 'crypto', 'os', 'util', 'stream',
+                               'console', 'process', 'Buffer', 'Promise', 'Array', 'Object',
+                               'String', 'Number', 'Math', 'Date', 'JSON', 'RegExp'];
+
+        const isLibrary = commonLibraries.some(lib => objectName?.startsWith(lib));
+
+        return {
+          target: objectName || undefined,
+          method: methodName,
+          isLibrary,
+          callType: objectName === 'this' ? 'internal' : isLibrary ? 'library' : 'external'
+        };
+      } else if (node.callee.type === 'Identifier') {
+        return {
+          method: node.callee.name,
+          callType: 'function'
+        };
+      } else if (node.callee.type === 'CallExpression') {
+        return {
+          method: 'dynamic_call',
+          callType: 'dynamic'
+        };
+      }
+      return {};
+    };
+
+    const visited = new WeakSet();
+
+    const walk = (node: any, context: CallContext = {}): void => {
       if (!node || typeof node !== 'object') return;
+      if (visited.has(node)) return;
+      visited.add(node);
+
+      let currentContext = {...context};
 
       if (node.type === 'ClassDeclaration' && node.id) {
-        const className = node.id.name;
-        if (node.body?.body) {
-          node.body.body.forEach((member: any) => {
-            if (member.type === 'MethodDefinition' && member.key?.name) {
-              walk(member.value, className, member.key.name);
+        currentContext.containingClass = node.id.name;
+        currentContext.containingMethod = undefined;
+        currentContext.containingFunction = undefined;
+      } else if (node.type === 'MethodDefinition' && node.key?.name) {
+        currentContext.containingMethod = node.key.name;
+        currentContext.containingFunction = undefined;
+        currentContext.containingNode = findNodeForContext(currentContext);
+
+        if (node.decorators && currentContext.containingNode) {
+          node.decorators.forEach((decorator: any) => {
+            if (decorator.expression?.type === 'CallExpression' &&
+                decorator.expression.callee?.type === 'Identifier') {
+              const decoratorName = decorator.expression.callee.name;
+              const httpMethods = ['Get', 'Post', 'Put', 'Delete', 'Patch', 'Options', 'Head'];
+
+              if (httpMethods.includes(decoratorName)) {
+                const routePath = decorator.expression.arguments?.[0]?.value || '/';
+                entryPoints.push({
+                  id: `entry_http_${currentContext.containingNode!.id}`,
+                  source_node: currentContext.containingNode!.id,
+                  type: 'http',
+                  name: `HTTP ${decoratorName.toUpperCase()} ${routePath}`,
+                  trigger: {
+                    method: decoratorName.toUpperCase(),
+                    path: routePath
+                  },
+                  metadata: {
+                    decorator: decoratorName,
+                    framework: 'nestjs'
+                  }
+                } as CASEntryPoint);
+
+                if (!currentContext.containingNode!.metadata) {
+                  currentContext.containingNode!.metadata = {};
+                }
+                if (!currentContext.containingNode!.metadata.attributes) {
+                  currentContext.containingNode!.metadata.attributes = {};
+                }
+                currentContext.containingNode!.metadata.attributes.httpEndpoint = true;
+                currentContext.containingNode!.metadata.attributes.httpMethod = decoratorName.toUpperCase();
+                currentContext.containingNode!.metadata.attributes.httpPath = routePath;
+              }
             }
           });
         }
+      } else if (node.type === 'FunctionDeclaration' && node.id) {
+        currentContext.containingFunction = node.id.name;
+        currentContext.containingClass = undefined;
+        currentContext.containingMethod = undefined;
+        currentContext.containingNode = findNodeForContext(currentContext);
+      } else if (node.type === 'ArrowFunctionExpression' || node.type === 'FunctionExpression') {
+        if (node.parent?.type === 'VariableDeclarator' && node.parent.id?.type === 'Identifier') {
+          currentContext.containingFunction = node.parent.id.name;
+          currentContext.containingClass = undefined;
+          currentContext.containingMethod = undefined;
+          currentContext.containingNode = findNodeForContext(currentContext);
+        }
       }
 
-      if (node.type === 'CallExpression' && currentClass && currentMethod) {
-        const callerId = `method_class_${filePath}_${currentClass}_0_${currentMethod}_0`;
-        const callerNode = nodes.find(n => n.id === callerId ||
-          (n.name === currentMethod && n.type === 'method' && n.parent?.includes(currentClass)));
+      if (node.type === 'CallExpression') {
+        const callInfo = extractCallInfo(node);
+        const callerNode = currentContext.containingNode;
 
-        if (!callerNode) return;
-
-        let targetName: string | null = null;
-        let targetMethod: string | null = null;
-        let isThisCall = false;
-
-        if (node.callee.type === 'MemberExpression') {
-          // Handle this.serviceProperty.method() calls
-          if (node.callee.object?.type === 'MemberExpression' &&
-              node.callee.object.object?.type === 'ThisExpression') {
-            targetName = node.callee.object.property?.name;
-            targetMethod = node.callee.property?.name;
-          }
-          // Handle this.method() calls
-          else if (node.callee.object?.type === 'ThisExpression') {
-            targetMethod = node.callee.property?.name;
-            targetName = currentClass; // Same class
-            isThisCall = true;
-          }
-          // Handle serviceProperty.method() calls
-          else if (node.callee.object?.type === 'Identifier') {
-            targetName = node.callee.object.name;
-            targetMethod = node.callee.property?.name;
-          }
-        }
-
-        if (targetMethod) {
-          let targetNode: CASNode | undefined;
-
-          if (isThisCall) {
-            // Find method in same class
-            targetNode = nodes.find(n =>
-              n.name === targetMethod &&
-              n.type === 'method' &&
-              n.parent === callerNode.parent
-            );
-          } else if (targetName) {
-            // Find method in injected service
-            // First, find what type was injected with this property name
-            const classNode = nodes.find(n => n.id === callerNode.parent);
-            if (classNode && classNode.metadata) {
-              const deps = (classNode.metadata as any).attributes?.dependencies || [];
-              // Look for a dependency that might match the property name
-              const depType = deps.find((d: string) =>
-                d.toLowerCase().includes(targetName.toLowerCase()) ||
-                targetName.toLowerCase().includes(d.toLowerCase())
-              );
-
-              if (depType) {
-                const depClassNode = nodes.find(n => n.name === depType);
-                if (depClassNode) {
-                  targetNode = nodes.find(n =>
-                    n.name === targetMethod &&
-                    n.type === 'method' &&
-                    n.parent === depClassNode.id
-                  );
-                }
+        if (callerNode && callInfo.method) {
+          if (callInfo.isLibrary) {
+            const exitPointId = `exit_${callerNode.id}_to_${callInfo.target}_${callInfo.method}`;
+            exitPoints.push({
+              id: exitPointId,
+              source_node: callerNode.id,
+              type: 'sdk',
+              name: `Call to ${callInfo.target}.${callInfo.method}`,
+              target: {
+                sdk: callInfo.target,
+                endpoint: callInfo.method
+              },
+              operation: {
+                action: callInfo.method,
+                async: node.parent?.type === 'AwaitExpression'
+              },
+              metadata: {
+                line: node.loc?.start.line
               }
-            }
+            } as CASExitPoint);
 
-            // Fallback: try to find method by name pattern
-            if (!targetNode) {
-              targetNode = nodes.find(n =>
-                n.name === targetMethod &&
-                n.type === 'method'
-              );
-            }
-          }
-
-          if (targetNode && targetNode.id !== callerNode.id) {
-            const edgeId = `${callerNode.id}_calls_${targetNode.id}_method`;
+            const edgeId = `${callerNode.id}_calls_external_${callInfo.target}_${callInfo.method}`;
             if (!edges.find(e => e.id === edgeId)) {
               edges.push(this.createEdge(
                 edgeId,
                 callerNode.id,
-                targetNode.id,
+                exitPointId,
                 'calls',
                 'behavior',
                 {
-                  call_type: isThisCall ? 'internal_method_call' : 'method_invocation',
-                  from_method: `${currentClass}.${currentMethod}`,
-                  to_method: targetMethod,
-                  via_property: !isThisCall ? targetName : undefined
+                  call_type: 'library_call',
+                  library: callInfo.target,
+                  method: callInfo.method,
+                  is_async: node.parent?.type === 'AwaitExpression',
+                  line: node.loc?.start.line
                 }
               ));
+            }
+          } else {
+            let targetNode: CASNode | undefined;
+
+            if (callInfo.callType === 'internal' && callInfo.method) {
+              targetNode = nodes.find(n =>
+                n.name === callInfo.method &&
+                n.type === 'method' &&
+                n.parent === callerNode.parent
+              );
+            } else if (callInfo.callType === 'external' && callInfo.target && callInfo.method) {
+              const possibleTargets = nodes.filter(n =>
+                n.name === callInfo.method &&
+                (n.type === 'method' || n.type === 'function')
+              );
+
+              if (possibleTargets.length === 1) {
+                targetNode = possibleTargets[0];
+              } else if (possibleTargets.length > 1 && currentContext.containingClass) {
+                const injectedDeps = edges.filter(e =>
+                  e.source.includes(currentContext.containingClass!) &&
+                  e.type === 'calls' &&
+                  e.metadata?.attributes?.call_type === 'injection'
+                );
+
+                for (const dep of injectedDeps) {
+                  const depClass = nodes.find(n => n.id === dep.target);
+                  if (depClass) {
+                    targetNode = possibleTargets.find(n => n.parent === depClass.id);
+                    if (targetNode) break;
+                  }
+                }
+              }
+            } else if (callInfo.callType === 'function' && callInfo.method) {
+              targetNode = nodes.find(n =>
+                n.name === callInfo.method &&
+                n.type === 'function'
+              );
+            }
+
+            if (targetNode && targetNode.id !== callerNode.id) {
+              const edgeId = `${callerNode.id}_calls_${targetNode.id}`;
+              if (!edges.find(e => e.id === edgeId)) {
+                edges.push(this.createEdge(
+                  edgeId,
+                  callerNode.id,
+                  targetNode.id,
+                  'calls',
+                  'behavior',
+                  {
+                    call_type: callInfo.callType || 'unknown',
+                    is_async: node.parent?.type === 'AwaitExpression',
+                    is_callback: node.parent?.type === 'CallExpression',
+                    line: node.loc?.start.line,
+                    target_object: callInfo.target,
+                    target_method: callInfo.method
+                  }
+                ));
+              }
             }
           }
         }
       }
 
-      for (const key in node) {
-        if (key === 'body' || key === 'consequent' || key === 'alternate' ||
-            key === 'expression' || key === 'argument' || key === 'arguments' ||
-            key === 'init' || key === 'declarations' || key === 'elements') {
-          if (Array.isArray(node[key])) {
-            node[key].forEach((child: any) => walk(child, currentClass, currentMethod));
-          } else if (typeof node[key] === 'object') {
-            walk(node[key], currentClass, currentMethod);
-          }
-        }
-      }
-    };
+      if (node.type === 'NewExpression' && node.callee?.type === 'Identifier') {
+        const callerNode = currentContext.containingNode;
+        const className = node.callee.name;
 
-    walk(ast);
-  }
+        if (callerNode) {
+          const targetClass = nodes.find(n => n.name === className && n.type === 'class');
+          if (targetClass) {
+            const constructor = nodes.find(n =>
+              n.name === 'constructor' &&
+              n.type === 'method' &&
+              n.parent === targetClass.id
+            );
 
-  private extractFunctionCallEdges(
-    ast: TSESTree.Program,
-    filePath: string,
-    nodes: CASNode[],
-    edges: CASEdge[]
-  ): void {
-    const walk = (node: any, currentFunction?: string) => {
-      if (!node || typeof node !== 'object') return;
+            const targetId = constructor?.id || targetClass.id;
+            const edgeId = `${callerNode.id}_instantiates_${targetId}`;
 
-      if (node.type === 'FunctionDeclaration' && node.id) {
-        walk(node.body, node.id.name);
-      }
-
-      if (node.type === 'CallExpression' && currentFunction) {
-        const callerId = `function_${filePath}_${currentFunction}_0`;
-        const callerNode = nodes.find(n => n.id === callerId);
-
-        if (!callerNode) return;
-
-        let targetName: string | null = null;
-
-        if (node.callee.type === 'Identifier') {
-          targetName = node.callee.name;
-        }
-
-        if (targetName) {
-          const targetNode = nodes.find(n =>
-            n.name === targetName &&
-            n.type === 'function'
-          );
-
-          if (targetNode) {
-            const edgeId = `${callerId}_calls_${targetNode.id}`;
             if (!edges.find(e => e.id === edgeId)) {
               edges.push(this.createEdge(
                 edgeId,
-                callerId,
-                targetNode.id,
+                callerNode.id,
+                targetId,
                 'calls',
                 'behavior',
                 {
-                  call_type: 'function_call',
-                  from_function: currentFunction
+                  call_type: 'constructor',
+                  class_name: className,
+                  line: node.loc?.start.line
                 }
               ));
             }
@@ -882,16 +1191,25 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       }
 
       for (const key in node) {
+        if (key === 'parent') continue; // Skip parent references to avoid circular recursion
+
         if (Array.isArray(node[key])) {
-          node[key].forEach((child: any) => walk(child, currentFunction));
-        } else if (typeof node[key] === 'object') {
-          walk(node[key], currentFunction);
+          node[key].forEach((child: any) => {
+            if (child && typeof child === 'object') {
+              child.parent = node;
+              walk(child, currentContext);
+            }
+          });
+        } else if (typeof node[key] === 'object' && node[key]) {
+          node[key].parent = node;
+          walk(node[key], currentContext);
         }
       }
     };
 
     walk(ast);
   }
+
 
   private extractTypeNameFromAnnotation(typeNode: any): string | null {
     if (!typeNode) return null;

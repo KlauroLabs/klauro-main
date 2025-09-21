@@ -1,4 +1,5 @@
 import { TSESTree } from '@typescript-eslint/typescript-estree';
+import { CASNode, CASEdge, CASEntryPoint, CASExitPoint } from '../types/cas.types';
 import * as path from 'path';
 
 export interface ExtractedFunction {
@@ -29,7 +30,7 @@ export interface ExtractedFunction {
 
 export interface ExtractedCall {
   target: string;
-  targetType: 'function' | 'method' | 'constructor' | 'external' | 'unknown';
+  targetType: 'function' | 'method' | 'constructor' | 'external' | 'unknown' | 'library' | 'abstract' | 'property';
   line: number;
   column: number;
   argumentCount: number;
@@ -39,6 +40,11 @@ export interface ExtractedCall {
   callExpression: string;
   context: CallContext;
   resolvedTarget?: ResolvedTarget;
+  library?: string;
+  decorators?: string[];
+  httpMethod?: string;
+  httpPath?: string;
+  injectionType?: 'constructor' | 'property' | 'parameter';
 }
 
 export interface CallContext {
@@ -148,6 +154,16 @@ export class EnhancedCallGraphExtractor {
   }
 
   private extractFunctions(node: any, parent?: any): void {
+    // First extract HTTP endpoints, library calls, dependency injection, and abstract calls
+    const httpEndpoints = this.extractHTTPEndpoints(node);
+    const libraryCalls = this.extractLibraryCalls(node, this.createDefaultContext(''));
+    const injections = this.extractDependencyInjection(node);
+    const abstractCalls = this.extractAbstractMethodCalls(node, this.createDefaultContext(''));
+
+    // Add all enhanced calls to the current function being processed
+    const allEnhancedCalls = [...httpEndpoints, ...libraryCalls, ...injections, ...abstractCalls];
+
+    // Continue with original function extraction
     // Extract function declarations
     if (node.type === 'FunctionDeclaration' && node.id) {
       this.extractFunctionNode(node, 'function', node.id.name, parent);
@@ -236,6 +252,13 @@ export class EnhancedCallGraphExtractor {
     // Extract calls within this function
     const calls = this.extractCalls(node.body || node, functionId);
 
+    // Add enhanced calls for this specific function
+    if (node.type === 'MethodDefinition') {
+      const httpEndpoints = this.extractHTTPEndpoints(node);
+      const injections = this.extractDependencyInjection(parent); // parent should be ClassDeclaration
+      calls.push(...httpEndpoints, ...injections);
+    }
+
     // Calculate complexity
     const complexity = this.calculateComplexity(node);
 
@@ -322,6 +345,11 @@ export class EnhancedCallGraphExtractor {
       if (call) {
         calls.push(call);
       }
+
+      // Also check for library calls and abstract method calls
+      const libraryCalls = this.extractLibraryCalls(node, updatedContext);
+      const abstractCalls = this.extractAbstractMethodCalls(node, updatedContext);
+      calls.push(...libraryCalls, ...abstractCalls);
     }
 
     // Handle new expressions (constructor calls)
@@ -760,5 +788,390 @@ export class EnhancedCallGraphExtractor {
         this.traverseCallChain(target, [...path], visited, chains, depth + 1);
       }
     }
+  }
+
+  // Enhanced methods for comprehensive call graph tracking
+
+  extractHTTPEndpoints(node: any): ExtractedCall[] {
+    const httpEndpoints: ExtractedCall[] = [];
+
+    if (node.type === 'MethodDefinition' && node.decorators) {
+      const httpMethods = ['Get', 'Post', 'Put', 'Delete', 'Patch', 'Options', 'Head'];
+
+      node.decorators.forEach((decorator: any) => {
+        if (decorator.expression?.type === 'CallExpression' &&
+            decorator.expression.callee?.type === 'Identifier') {
+          const decoratorName = decorator.expression.callee.name;
+
+          if (httpMethods.includes(decoratorName)) {
+            const routePath = decorator.expression.arguments?.[0]?.value || '/';
+            httpEndpoints.push({
+              target: node.key?.name || 'handler',
+              targetType: 'method',
+              line: decorator.loc?.start.line || 0,
+              column: decorator.loc?.start.column || 0,
+              argumentCount: 0,
+              isAsync: node.value?.async || false,
+              isConditional: false,
+              isInLoop: false,
+              callExpression: `@${decoratorName}('${routePath}')`,
+              context: this.createDefaultContext(node.key?.name || 'handler'),
+              httpMethod: decoratorName.toUpperCase(),
+              httpPath: routePath,
+              decorators: [decoratorName]
+            });
+          }
+        }
+      });
+    }
+
+    return httpEndpoints;
+  }
+
+  extractLibraryCalls(node: any, context: CallContext): ExtractedCall[] {
+    const libraryCalls: ExtractedCall[] = [];
+
+    if (node.type === 'CallExpression' && node.callee?.type === 'MemberExpression') {
+      const objectName = this.getObjectName(node.callee.object);
+      const methodName = node.callee.property?.name;
+
+      if (objectName && methodName) {
+        const libraryType = this.detectLibraryType(objectName);
+        if (libraryType !== 'unknown') {
+          libraryCalls.push({
+            target: `${objectName}.${methodName}`,
+            targetType: 'library',
+            line: node.loc?.start.line || 0,
+            column: node.loc?.start.column || 0,
+            argumentCount: node.arguments?.length || 0,
+            isAsync: node.parent?.type === 'AwaitExpression',
+            isConditional: context.conditionalDepth > 0,
+            isInLoop: context.loopDepth > 0,
+            callExpression: `${objectName}.${methodName}()`,
+            context,
+            library: objectName
+          });
+        }
+      }
+    }
+
+    return libraryCalls;
+  }
+
+  extractDependencyInjection(node: any): ExtractedCall[] {
+    const injections: ExtractedCall[] = [];
+
+    if (node.type === 'ClassDeclaration' && node.id) {
+      const className = node.id.name;
+
+      // Constructor injection
+      const constructor = node.body?.body?.find((member: any) =>
+        member.type === 'MethodDefinition' && member.kind === 'constructor'
+      );
+
+      if (constructor?.value?.params) {
+        constructor.value.params.forEach((param: any, index: number) => {
+          if (param.typeAnnotation?.typeAnnotation) {
+            const depType = this.extractTypeFromAnnotation(param.typeAnnotation.typeAnnotation);
+            if (depType) {
+              injections.push({
+                target: depType,
+                targetType: 'constructor',
+                line: param.loc?.start.line || 0,
+                column: param.loc?.start.column || 0,
+                argumentCount: 0,
+                isAsync: false,
+                isConditional: false,
+                isInLoop: false,
+                callExpression: `constructor(${param.name || `param${index}`}: ${depType})`,
+                context: this.createDefaultContext(className),
+                injectionType: 'constructor'
+              });
+            }
+          }
+        });
+      }
+
+      // Property injection
+      if (node.body?.body) {
+        node.body.body.forEach((member: any) => {
+          if (member.type === 'PropertyDefinition' &&
+              member.typeAnnotation?.typeAnnotation &&
+              member.decorators?.some((d: any) => d.expression?.callee?.name === 'Inject')) {
+            const propType = this.extractTypeFromAnnotation(member.typeAnnotation.typeAnnotation);
+            if (propType) {
+              injections.push({
+                target: propType,
+                targetType: 'property',
+                line: member.loc?.start.line || 0,
+                column: member.loc?.start.column || 0,
+                argumentCount: 0,
+                isAsync: false,
+                isConditional: false,
+                isInLoop: false,
+                callExpression: `@Inject() ${member.key?.name}: ${propType}`,
+                context: this.createDefaultContext(className),
+                injectionType: 'property'
+              });
+            }
+          }
+        });
+      }
+    }
+
+    return injections;
+  }
+
+  extractAbstractMethodCalls(node: any, context: CallContext): ExtractedCall[] {
+    const abstractCalls: ExtractedCall[] = [];
+
+    if (node.type === 'CallExpression' && node.callee?.type === 'MemberExpression') {
+      const objectName = this.getObjectName(node.callee.object);
+      const methodName = node.callee.property?.name;
+
+      // Common abstract method patterns
+      const abstractMethods = ['canAnalyze', 'analyze', 'shouldUse', 'detect', 'process'];
+
+      if (methodName && abstractMethods.includes(methodName)) {
+        abstractCalls.push({
+          target: `${objectName || 'unknown'}.${methodName}`,
+          targetType: 'abstract',
+          line: node.loc?.start.line || 0,
+          column: node.loc?.start.column || 0,
+          argumentCount: node.arguments?.length || 0,
+          isAsync: node.parent?.type === 'AwaitExpression',
+          isConditional: context.conditionalDepth > 0,
+          isInLoop: context.loopDepth > 0,
+          callExpression: `${objectName || 'unknown'}.${methodName}()`,
+          context
+        });
+      }
+    }
+
+    return abstractCalls;
+  }
+
+  private getObjectName(node: any): string | null {
+    if (node.type === 'Identifier') return node.name;
+    if (node.type === 'ThisExpression') return 'this';
+    if (node.type === 'MemberExpression') {
+      const baseObj = this.getObjectName(node.object);
+      if (baseObj) return `${baseObj}.${node.property?.name || 'unknown'}`;
+    }
+    return null;
+  }
+
+  private detectLibraryType(libraryName: string): string {
+    const libraryMap: Record<string, string> = {
+      'fs': 'filesystem',
+      'fs-extra': 'filesystem',
+      'path': 'path',
+      'http': 'http',
+      'https': 'http',
+      'axios': 'http',
+      'fetch': 'http',
+      'console': 'logging',
+      'process': 'system',
+      'crypto': 'crypto',
+      'os': 'system',
+      'stream': 'stream',
+      'Buffer': 'buffer',
+      'Promise': 'async',
+      'Array': 'builtin',
+      'Object': 'builtin',
+      'String': 'builtin',
+      'Number': 'builtin',
+      'Math': 'builtin',
+      'Date': 'builtin',
+      'JSON': 'builtin',
+      'RegExp': 'builtin'
+    };
+
+    return libraryMap[libraryName] || 'unknown';
+  }
+
+  private extractTypeFromAnnotation(typeNode: any): string | null {
+    if (!typeNode) return null;
+    if (typeNode.type === 'TSTypeReference' && typeNode.typeName) {
+      if (typeNode.typeName.type === 'Identifier') {
+        return typeNode.typeName.name;
+      }
+    }
+    if (typeNode.type === 'Identifier') {
+      return typeNode.name;
+    }
+    return null;
+  }
+
+  private createDefaultContext(functionName: string): CallContext {
+    return {
+      enclosingFunction: functionName,
+      blockDepth: 0,
+      isInTry: false,
+      isInCatch: false,
+      isInFinally: false,
+      isInCallback: false,
+      isInPromise: false,
+      conditionalDepth: 0,
+      loopDepth: 0
+    };
+  }
+
+  // Create CAS format outputs
+  toCASNodes(): CASNode[] {
+    const nodes: CASNode[] = [];
+
+    for (const [funcId, func] of this.functions) {
+      nodes.push({
+        id: funcId,
+        name: func.name,
+        type: func.type === 'constructor' ? 'constructor' :
+              func.type === 'method' ? 'method' : 'function',
+        level: func.className ? 3 : 2,
+        level_name: func.className ? 'Method/Function' : 'Class/Interface',
+        category: func.className ? 'methods' : 'functions',
+        subcategories: func.className ? ['class-methods'] : ['standalone'],
+        source: {
+          file: func.file,
+          line: func.lineStart,
+          end_line: func.lineEnd,
+          column: func.columnStart,
+          end_column: func.columnEnd
+        },
+        metadata: {
+          is_exported: func.isExported,
+          is_async: func.isAsync,
+          is_generated: func.isGenerator,
+          attributes: {
+            signature: func.signature,
+            complexity: func.complexity,
+            parameter_count: func.parameters.length
+          }
+        },
+        parent: func.className ? `class_${func.className}` : undefined,
+        signature: {
+          parameters: func.parameters,
+          return_type: func.returnType
+        }
+      });
+    }
+
+    return nodes;
+  }
+
+  toCASEdges(): CASEdge[] {
+    const edges: CASEdge[] = [];
+    let edgeIndex = 0;
+
+    for (const [callerFuncId, func] of this.functions) {
+      for (const call of func.calls) {
+        const targetFuncId = this.resolveTargetToFunctionId(call.target);
+
+        edges.push({
+          id: `call_${edgeIndex++}`,
+          source: callerFuncId,
+          target: targetFuncId || call.target,
+          type: 'calls',
+          metadata: {
+            attributes: {
+              call_type: call.targetType,
+              is_async: call.isAsync,
+              is_conditional: call.isConditional,
+              is_in_loop: call.isInLoop,
+              line: call.line,
+              library: call.library,
+              http_method: call.httpMethod,
+              http_path: call.httpPath,
+              injection_type: call.injectionType,
+              decorators: call.decorators
+            }
+          }
+        });
+      }
+    }
+
+    return edges;
+  }
+
+  toCASEntryPoints(): CASEntryPoint[] {
+    const entryPoints: CASEntryPoint[] = [];
+
+    for (const [funcId, func] of this.functions) {
+      // HTTP endpoints
+      for (const call of func.calls) {
+        if (call.httpMethod && call.httpPath) {
+          entryPoints.push({
+            id: `http_${funcId}`,
+            source_node: funcId,
+            type: 'http',
+            name: `${call.httpMethod} ${call.httpPath}`,
+            trigger: {
+              method: call.httpMethod,
+              path: call.httpPath
+            },
+            metadata: {
+              decorators: call.decorators,
+              framework: 'nestjs'
+            }
+          });
+        }
+      }
+
+      // Exported functions
+      if (func.isExported) {
+        entryPoints.push({
+          id: `export_${funcId}`,
+          source_node: funcId,
+          type: 'file',
+          name: `Exported function: ${func.name}`,
+          metadata: {
+            signature: func.signature
+          }
+        });
+      }
+    }
+
+    return entryPoints;
+  }
+
+  toCASExitPoints(): CASExitPoint[] {
+    const exitPoints: CASExitPoint[] = [];
+
+    for (const [funcId, func] of this.functions) {
+      for (const call of func.calls) {
+        if (call.targetType === 'library' && call.library) {
+          exitPoints.push({
+            id: `library_${funcId}_${call.target}`,
+            source_node: funcId,
+            type: 'sdk',
+            name: `${call.library} call`,
+            target: {
+              sdk: call.library,
+              endpoint: call.target.split('.').pop() || call.target
+            },
+            operation: {
+              action: call.target.split('.').pop() || call.target,
+              async: call.isAsync
+            },
+            metadata: {
+              line: call.line,
+              call_expression: call.callExpression
+            }
+          });
+        }
+      }
+    }
+
+    return exitPoints;
+  }
+
+  private resolveTargetToFunctionId(target: string): string | null {
+    // Simple resolution - in production this would be more sophisticated
+    for (const [funcId, func] of this.functions) {
+      if (func.name === target || funcId.endsWith(`::${target}`)) {
+        return funcId;
+      }
+    }
+    return null;
   }
 }

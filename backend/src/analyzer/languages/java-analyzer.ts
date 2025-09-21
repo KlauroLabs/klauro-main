@@ -129,6 +129,8 @@ export class JavaAnalyzer extends BaseAnalyzer {
       this.detectSpringPatterns(nodes, edges, entryPoints);
       this.buildInheritanceRelationships(nodes, edges);
 
+      await this.analyzeCallGraph(context.projectPath, nodes, edges, exitPoints);
+
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
         framework_specific: {
           language: 'java',
@@ -986,6 +988,221 @@ export class JavaAnalyzer extends BaseAnalyzer {
     const regex = new RegExp(`<${tagName}>(.*?)</${tagName}>`, 's');
     const match = content.match(regex);
     return match ? match[1].trim() : null;
+  }
+
+  private async analyzeCallGraph(projectPath: string, nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[]): Promise<void> {
+    const javaFiles = await glob(['**/*.java'], {
+      cwd: projectPath,
+      ignore: ['**/target/**', '**/build/**', '**/.git/**']
+    });
+
+    const methodNodes = nodes.filter(n => n.type === 'method' || n.type === 'interface_method');
+    const classNodes = nodes.filter(n => n.type === 'class' || n.type === 'interface');
+
+    for (const file of javaFiles) {
+      const fullPath = `${projectPath}/${file}`;
+      const content = await fs.readFile(fullPath, 'utf-8');
+      const lines = content.split('\n');
+      const packageName = this.extractPackage(content) || 'default';
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+
+        const methodCalls = [
+          ...Array.from(line.matchAll(/(\w+)\.(\w+)\s*\(/g)),
+          ...Array.from(line.matchAll(/new\s+(\w+)\s*\(/g)).map(m => [m[0], m[1], m[1]]),
+          ...Array.from(line.matchAll(/(\w+)::(\w+)/g)),
+          ...Array.from(line.matchAll(/super\.(\w+)\s*\(/g)).map(m => [m[0], 'super', m[1]]),
+          ...Array.from(line.matchAll(/this\.(\w+)\s*\(/g)).map(m => [m[0], 'this', m[1]])
+        ];
+
+        for (const match of methodCalls) {
+          const fullMatch = match[0];
+          const objectOrClass = match[1];
+          const methodName = match[2] || objectOrClass;
+
+          const callerMethod = methodNodes.find(n =>
+            n.source?.file === fullPath &&
+            n.source?.line !== undefined && n.source.line <= i + 1 &&
+            n.source?.end_line !== undefined && n.source.end_line >= i + 1
+          );
+
+          if (callerMethod) {
+            let targetMethod: CASNode | undefined;
+
+            if (objectOrClass === 'this' || objectOrClass === 'super') {
+              const containingClass = classNodes.find(c =>
+                edges.some(e => e.source === c.id && e.target === callerMethod.id && e.type === 'has_method')
+              );
+
+              if (containingClass) {
+                const className = objectOrClass === 'super' && containingClass.metadata?.attributes?.extends
+                  ? containingClass.metadata.attributes.extends
+                  : containingClass.name;
+
+                targetMethod = methodNodes.find(n => {
+                  const parentClass = classNodes.find(c =>
+                    c.name === className &&
+                    edges.some(e => e.source === c.id && e.target === n.id && e.type === 'has_method')
+                  );
+                  return parentClass && n.name === methodName;
+                });
+              }
+            } else if (fullMatch.startsWith('new ')) {
+              const targetClass = classNodes.find(c => c.name === objectOrClass);
+              if (targetClass) {
+                targetMethod = methodNodes.find(n =>
+                  n.name === objectOrClass &&
+                  n.metadata?.attributes?.isConstructor &&
+                  edges.some(e => e.source === targetClass.id && e.target === n.id && e.type === 'has_method')
+                );
+              }
+            } else {
+              targetMethod = methodNodes.find(n => n.name === methodName);
+
+              if (!targetMethod) {
+                const targetClass = classNodes.find(c => c.name === objectOrClass);
+                if (targetClass) {
+                  targetMethod = methodNodes.find(n =>
+                    n.name === methodName &&
+                    edges.some(e => e.source === targetClass.id && e.target === n.id && e.type === 'has_method')
+                  );
+                }
+              }
+            }
+
+            if (targetMethod) {
+              const callEdgeId = `call_${callerMethod.id}_to_${targetMethod.id}_${i}`;
+              if (!edges.some(e => e.id === callEdgeId)) {
+                edges.push(this.createEdge(
+                  callEdgeId,
+                  callerMethod.id,
+                  targetMethod.id,
+                  'calls',
+                  'behavior',
+                  {
+                    line: i + 1,
+                    callType: fullMatch.startsWith('new ') ? 'constructor' :
+                             objectOrClass === 'super' ? 'super' :
+                             objectOrClass === 'this' ? 'internal' : 'method'
+                  }
+                ));
+              }
+            } else if (this.isExternalLibraryCall(objectOrClass, methodName, packageName)) {
+              exitPoints.push(this.createExitPoint(
+                `exit_call_${callerMethod.id}_${objectOrClass}_${methodName}_${i}`,
+                callerMethod.id,
+                'sdk',
+                `External call: ${objectOrClass}.${methodName}`,
+                `Library call to ${this.identifyJavaLibrary(objectOrClass)}`,
+                undefined,
+                undefined,
+                {
+                  targetClass: objectOrClass,
+                  targetMethod: methodName,
+                  line: i + 1,
+                  library: this.identifyJavaLibrary(objectOrClass)
+                }
+              ));
+            }
+          }
+        }
+
+        const springMappings = [
+          ...Array.from(line.matchAll(/@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\s*\(\s*["']([^"']+)["']/g))
+        ];
+
+        for (const mapping of springMappings) {
+          const mappingType = mapping[1];
+          const path = mapping[2];
+
+          const nextMethodLine = this.findNextMethodDeclaration(lines, i);
+          if (nextMethodLine !== -1) {
+            const methodAtLine = methodNodes.find(n =>
+              n.source?.file === fullPath &&
+              n.source?.line === nextMethodLine + 1
+            );
+
+            if (methodAtLine) {
+              edges.push(this.createEdge(
+                `http_endpoint_${methodAtLine.id}`,
+                `entry_${methodAtLine.id}`,
+                methodAtLine.id,
+                'exposes',
+                'behavior',
+                {
+                  httpMethod: mappingType.replace('Mapping', '').toUpperCase(),
+                  path,
+                  annotation: `@${mappingType}`
+                }
+              ));
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private findNextMethodDeclaration(lines: string[], startIndex: number): number {
+    for (let i = startIndex + 1; i < lines.length; i++) {
+      if (this.isMethodDeclaration(lines[i])) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  private isExternalLibraryCall(objectOrClass: string, methodName: string, currentPackage: string): boolean {
+    const javaLibraries = [
+      'System', 'String', 'Integer', 'Double', 'Float', 'Long', 'Boolean',
+      'Math', 'Arrays', 'Collections', 'List', 'Map', 'Set', 'HashMap', 'ArrayList',
+      'File', 'Path', 'Files', 'IOException', 'Stream', 'Optional',
+      'LocalDate', 'LocalDateTime', 'Instant', 'Duration',
+      'Logger', 'LoggerFactory', 'Log'
+    ];
+
+    const springClasses = [
+      'RestTemplate', 'WebClient', 'JdbcTemplate', 'RedisTemplate',
+      'ApplicationContext', 'Environment', 'ResponseEntity'
+    ];
+
+    return javaLibraries.includes(objectOrClass) ||
+           springClasses.includes(objectOrClass) ||
+           (objectOrClass.startsWith('java.') ||
+            objectOrClass.startsWith('javax.') ||
+            objectOrClass.startsWith('org.springframework.') ||
+            objectOrClass.startsWith('com.') && !objectOrClass.startsWith(currentPackage));
+  }
+
+  private identifyJavaLibrary(className: string): string {
+    if (className.startsWith('java.lang')) return 'Java Core';
+    if (className.startsWith('java.util')) return 'Java Utilities';
+    if (className.startsWith('java.io') || className.startsWith('java.nio')) return 'Java I/O';
+    if (className.startsWith('java.net')) return 'Java Networking';
+    if (className.startsWith('java.sql') || className.startsWith('javax.sql')) return 'JDBC';
+    if (className.startsWith('javax.servlet')) return 'Servlet API';
+    if (className.startsWith('org.springframework')) return 'Spring Framework';
+    if (className === 'Logger' || className === 'LoggerFactory') return 'SLF4J';
+
+    const standardClasses: Record<string, string> = {
+      'System': 'Java Core',
+      'String': 'Java Core',
+      'Math': 'Java Core',
+      'Arrays': 'Java Utilities',
+      'Collections': 'Java Utilities',
+      'List': 'Java Collections',
+      'Map': 'Java Collections',
+      'Set': 'Java Collections',
+      'HashMap': 'Java Collections',
+      'ArrayList': 'Java Collections',
+      'File': 'Java I/O',
+      'Files': 'Java NIO',
+      'Path': 'Java NIO',
+      'Stream': 'Java Streams',
+      'Optional': 'Java Utilities'
+    };
+
+    return standardClasses[className] || 'External Library';
   }
 
   protected sanitizeId(name: string): string {
