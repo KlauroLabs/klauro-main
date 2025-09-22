@@ -1,5 +1,5 @@
 import { BaseAnalyzer, AnalysisContext } from '../core/base-analyzer';
-import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint } from '../../types/cas.types';
+import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint, CASDocumentation, CASComment, CASTodo, CASImplementationStatus } from '../../types/cas.types';
 import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
@@ -186,7 +186,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
       const pomContent = await fs.readFile(pomPath, 'utf-8');
       const dependencyMatches = pomContent.matchAll(/<dependency>([\s\S]*?)<\/dependency>/g);
 
-      for (const match of dependencyMatches) {
+      for (const match of Array.from(dependencyMatches)) {
         const depContent = match[1];
         const groupId = this.extractXmlValue(depContent, 'groupId');
         const artifactId = this.extractXmlValue(depContent, 'artifactId');
@@ -261,6 +261,8 @@ export class JavaAnalyzer extends BaseAnalyzer {
       const imports = this.extractImports(content);
       const classes = this.extractClasses(content, relativePath);
       const interfaces = this.extractInterfaces(content, relativePath);
+      const comments = this.extractComments(content, relativePath);
+      const todos = this.extractTodos(content, relativePath);
 
       if (packageName) {
         if (!packages.has(packageName)) {
@@ -270,7 +272,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
       }
 
       const fileId = `file_${this.sanitizeId(relativePath)}`;
-      nodes.push(this.createNode(
+      const fileNode = this.createNode(
         fileId,
         relativePath.split('/').pop() || 'unknown.java',
         'file',
@@ -282,9 +284,20 @@ export class JavaAnalyzer extends BaseAnalyzer {
           packageName: packageName || 'default',
           imports: imports.map(i => i.importPath),
           classCount: classes.length,
-          interfaceCount: interfaces.length
+          interfaceCount: interfaces.length,
+          commentCount: comments.length,
+          todoCount: todos.length
         }
-      ));
+      );
+
+      if (comments.length > 0) {
+        fileNode.comments = comments;
+      }
+      if (todos.length > 0) {
+        fileNode.todos = todos;
+      }
+
+      nodes.push(fileNode);
 
       for (const imp of imports) {
         const importId = `import_${fileId}_${this.sanitizeId(imp.importPath)}`;
@@ -321,11 +334,11 @@ export class JavaAnalyzer extends BaseAnalyzer {
       }
 
       for (const cls of classes) {
-        await this.processJavaClass(cls, fileId, fullPath, nodes, edges, entryPoints);
+        await this.processJavaClass(cls, fileId, fullPath, nodes, edges, entryPoints, comments, todos, content, lines);
       }
 
       for (const intf of interfaces) {
-        await this.processJavaInterface(intf, fileId, fullPath, nodes, edges, entryPoints);
+        await this.processJavaInterface(intf, fileId, fullPath, nodes, edges, entryPoints, comments, todos, content, lines);
       }
 
     } catch (error) {
@@ -339,31 +352,55 @@ export class JavaAnalyzer extends BaseAnalyzer {
     fullPath: string,
     nodes: CASNode[],
     edges: CASEdge[],
-    entryPoints: any[]
+    entryPoints: any[],
+    comments: CASComment[],
+    todos: CASTodo[],
+    content: string,
+    lines: string[]
   ): Promise<void> {
     const classId = `class_${this.sanitizeId(cls.packageName)}_${this.sanitizeId(cls.name)}`;
 
-    nodes.push(this.createNode(
+    const classJavadoc = this.extractJavaDoc(lines, cls.lineStart - 1);
+    const classComments = comments.filter(c =>
+      c.location.line >= cls.lineStart && c.location.line <= cls.lineEnd
+    );
+    const classTodos = todos.filter(t =>
+      t.location.line >= cls.lineStart && t.location.line <= cls.lineEnd
+    );
+
+    const classStatus = (cls.modifiers.includes('abstract') || cls.annotations.includes('Deprecated'))
+      ? this.analyzeImplementationStatus(lines, cls.lineStart - 1, cls.lineEnd - 1, cls.annotations)
+      : undefined;
+
+    const classNode = this.createNodeBuilder(
       classId,
       cls.name,
-      'class',
-      2,
-      fullPath,
-      cls.lineStart,
-      cls.lineEnd,
-      {
-        packageName: cls.packageName,
-        modifiers: cls.modifiers,
-        extends: cls.extends,
-        implementsInterfaces: cls.implementsInterfaces,
-        annotations: cls.annotations,
-        fieldCount: cls.fields.length,
-        methodCount: cls.methods.length,
-        isPublic: cls.modifiers.includes('public'),
-        isAbstract: cls.modifiers.includes('abstract'),
-        isFinal: cls.modifiers.includes('final')
-      }
-    ));
+      'class'
+    )
+      .withLevel(2, 'Class/Interface')
+      .withCategory('structures', ['classes'])
+      .withSource({ file: fullPath, line: cls.lineStart, end_line: cls.lineEnd })
+      .withMetadata({
+        attributes: {
+          packageName: cls.packageName,
+          modifiers: cls.modifiers,
+          extends: cls.extends,
+          implementsInterfaces: cls.implementsInterfaces,
+          annotations: cls.annotations,
+          fieldCount: cls.fields.length,
+          methodCount: cls.methods.length,
+          isPublic: cls.modifiers.includes('public'),
+          isAbstract: cls.modifiers.includes('abstract'),
+          isFinal: cls.modifiers.includes('final')
+        }
+      })
+      .withDocumentation(classJavadoc)
+      .withComments(classComments.length > 0 ? classComments : undefined)
+      .withTodos(classTodos.length > 0 ? classTodos : undefined)
+      .withImplementationStatus(classStatus)
+      .build();
+
+    nodes.push(classNode);
 
     edges.push(this.createEdge(
       `${fileId}_contains_${classId}`,
@@ -402,26 +439,46 @@ export class JavaAnalyzer extends BaseAnalyzer {
 
     for (const method of cls.methods) {
       const methodId = `method_${classId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
-      nodes.push(this.createNode(
+
+      const javadoc = this.extractJavaDoc(lines, method.lineStart - 1);
+      const implementationStatus = this.analyzeImplementationStatus(lines, method.lineStart - 1, method.lineEnd - 1, method.annotations);
+
+      const methodComments = comments.filter(c =>
+        c.location.line >= method.lineStart && c.location.line <= method.lineEnd
+      );
+      const methodTodos = todos.filter(t =>
+        t.location.line >= method.lineStart && t.location.line <= method.lineEnd
+      );
+
+      const methodNode = this.createNodeBuilder(
         methodId,
         method.name,
-        'method',
-        4,
-        fullPath,
-        method.lineStart,
-        method.lineEnd,
-        {
-          returnType: method.returnType,
-          parameters: method.parameters,
-          modifiers: method.modifiers,
-          annotations: method.annotations,
-          throwsExceptions: method.throwsExceptions,
-          isConstructor: method.isConstructor,
-          isAbstract: method.isAbstract,
-          isStatic: method.isStatic,
-          isPublic: method.modifiers.includes('public')
-        }
-      ));
+        'method'
+      )
+        .withLevel(4, 'Method/Function')
+        .withCategory('methods', ['class-methods'])
+        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withMetadata({
+          attributes: {
+            returnType: method.returnType,
+            parameters: method.parameters,
+            modifiers: method.modifiers,
+            annotations: method.annotations,
+            throwsExceptions: method.throwsExceptions,
+            isConstructor: method.isConstructor,
+            isAbstract: method.isAbstract,
+            isStatic: method.isStatic,
+            isPublic: method.modifiers.includes('public')
+          }
+        })
+        .withParent(classId)
+        .withDocumentation(javadoc)
+        .withComments(methodComments.length > 0 ? methodComments : undefined)
+        .withTodos(methodTodos.length > 0 ? methodTodos : undefined)
+        .withImplementationStatus(implementationStatus)
+        .build();
+
+      nodes.push(methodNode);
 
       edges.push(this.createEdge(
         `${classId}_has_method_${methodId}`,
@@ -467,11 +524,23 @@ export class JavaAnalyzer extends BaseAnalyzer {
     fullPath: string,
     nodes: CASNode[],
     edges: CASEdge[],
-    entryPoints: any[]
+    entryPoints: any[],
+    comments: CASComment[],
+    todos: CASTodo[],
+    content: string,
+    lines: string[]
   ): Promise<void> {
     const interfaceId = `interface_${this.sanitizeId(intf.packageName)}_${this.sanitizeId(intf.name)}`;
 
-    nodes.push(this.createNode(
+    const interfaceJavadoc = this.extractJavaDoc(lines, intf.lineStart - 1);
+    const interfaceComments = comments.filter(c =>
+      c.location.line >= intf.lineStart && c.location.line <= intf.lineEnd
+    );
+    const interfaceTodos = todos.filter(t =>
+      t.location.line >= intf.lineStart && t.location.line <= intf.lineEnd
+    );
+
+    const interfaceNode = this.createNode(
       interfaceId,
       intf.name,
       'interface',
@@ -486,7 +555,19 @@ export class JavaAnalyzer extends BaseAnalyzer {
         methodCount: intf.methods.length,
         fieldCount: intf.fields.length
       }
-    ));
+    );
+
+    if (interfaceJavadoc) {
+      interfaceNode.documentation = interfaceJavadoc;
+    }
+    if (interfaceComments.length > 0) {
+      interfaceNode.comments = interfaceComments;
+    }
+    if (interfaceTodos.length > 0) {
+      interfaceNode.todos = interfaceTodos;
+    }
+
+    nodes.push(interfaceNode);
 
     edges.push(this.createEdge(
       `${fileId}_contains_${interfaceId}`,
@@ -497,20 +578,38 @@ export class JavaAnalyzer extends BaseAnalyzer {
 
     for (const method of intf.methods) {
       const methodId = `method_${interfaceId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
-      nodes.push(this.createNode(
+
+      const javadoc = this.extractJavaDoc(lines, method.lineStart - 1);
+
+      const methodComments = comments.filter(c =>
+        c.location.line >= method.lineStart && c.location.line <= method.lineEnd
+      );
+      const methodTodos = todos.filter(t =>
+        t.location.line >= method.lineStart && t.location.line <= method.lineEnd
+      );
+
+      const methodNode = this.createNodeBuilder(
         methodId,
         method.name,
-        'interface_method',
-        4,
-        fullPath,
-        method.lineStart,
-        method.lineEnd,
-        {
-          returnType: method.returnType,
-          parameters: method.parameters,
-          annotations: method.annotations
-        }
-      ));
+        'interface_method'
+      )
+        .withLevel(4, 'Method/Function')
+        .withCategory('methods', ['interface-methods'])
+        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withMetadata({
+          attributes: {
+            returnType: method.returnType,
+            parameters: method.parameters,
+            annotations: method.annotations
+          }
+        })
+        .withParent(interfaceId)
+        .withDocumentation(javadoc)
+        .withComments(methodComments.length > 0 ? methodComments : undefined)
+        .withTodos(methodTodos.length > 0 ? methodTodos : undefined)
+        .build();
+
+      nodes.push(methodNode);
 
       edges.push(this.createEdge(
         `${interfaceId}_declares_${methodId}`,
@@ -833,6 +932,590 @@ export class JavaAnalyzer extends BaseAnalyzer {
     return annotations;
   }
 
+  private extractJavaDoc(lines: string[], lineIndex: number): CASDocumentation | undefined {
+    let javadocStart = -1;
+    let javadocEnd = -1;
+
+    for (let i = lineIndex - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (line === '*/') {
+        javadocEnd = i;
+      } else if (line.startsWith('/**')) {
+        javadocStart = i;
+        break;
+      } else if (line && !line.startsWith('*') && !line.startsWith('//') && javadocEnd === -1) {
+        break;
+      }
+    }
+
+    if (javadocStart === -1 || javadocEnd === -1) {
+      return undefined;
+    }
+
+    const javadocLines = lines.slice(javadocStart, javadocEnd + 1);
+    const rawDoc = javadocLines.join('\n');
+    const cleanedLines = javadocLines
+      .map(line => line.trim())
+      .map(line => line.replace(/^\/\*\*/, '').replace(/^\*\//, '').replace(/^\*/, '').trim())
+      .filter(line => line.length > 0);
+
+    if (cleanedLines.length === 0) {
+      return undefined;
+    }
+
+    const parameters: Array<{ name: string; type?: string; description?: string; optional?: boolean; default_value?: string }> = [];
+    const throws: Array<{ type?: string; description?: string }> = [];
+    const tags: Array<{ tag: string; value: string; metadata?: Record<string, any> }> = [];
+    let summary = '';
+    let description = '';
+    let returns: { type?: string; description?: string } | undefined;
+
+    let currentSection = 'description';
+    const descriptionLines: string[] = [];
+
+    for (const line of cleanedLines) {
+      if (line.startsWith('@param')) {
+        currentSection = 'param';
+        const paramMatch = line.match(/@param\s+(\{([^}]+)\})?\s*(\w+)\s*(.*)/);
+        if (paramMatch) {
+          parameters.push({
+            name: paramMatch[3],
+            type: paramMatch[2],
+            description: paramMatch[4]?.trim() || undefined
+          });
+        }
+      } else if (line.startsWith('@return')) {
+        currentSection = 'return';
+        const returnMatch = line.match(/@return\s+(\{([^}]+)\})?\s*(.*)/);
+        if (returnMatch) {
+          returns = {
+            type: returnMatch[2],
+            description: returnMatch[3]?.trim() || undefined
+          };
+        }
+      } else if (line.startsWith('@throws') || line.startsWith('@exception')) {
+        currentSection = 'throws';
+        const throwsMatch = line.match(/@(?:throws|exception)\s+(\w+)\s*(.*)/);
+        if (throwsMatch) {
+          throws.push({
+            type: throwsMatch[1],
+            description: throwsMatch[2]?.trim() || undefined
+          });
+        }
+      } else if (line.startsWith('@deprecated')) {
+        const deprecatedMatch = line.match(/@deprecated\s*(.*)/);
+        tags.push({
+          tag: '@deprecated',
+          value: deprecatedMatch?.[1]?.trim() || 'true'
+        });
+      } else if (line.startsWith('@since')) {
+        const sinceMatch = line.match(/@since\s*(.*)/);
+        if (sinceMatch) {
+          tags.push({
+            tag: '@since',
+            value: sinceMatch[1].trim()
+          });
+        }
+      } else if (line.startsWith('@author')) {
+        const authorMatch = line.match(/@author\s*(.*)/);
+        if (authorMatch) {
+          tags.push({
+            tag: '@author',
+            value: authorMatch[1].trim()
+          });
+        }
+      } else if (line.startsWith('@see')) {
+        const seeMatch = line.match(/@see\s*(.*)/);
+        if (seeMatch) {
+          tags.push({
+            tag: '@see',
+            value: seeMatch[1].trim()
+          });
+        }
+      } else if (line.startsWith('@')) {
+        const tagMatch = line.match(/@(\w+)\s*(.*)/);
+        if (tagMatch) {
+          tags.push({
+            tag: `@${tagMatch[1]}`,
+            value: tagMatch[2]?.trim() || ''
+          });
+        }
+      } else {
+        if (currentSection === 'description') {
+          descriptionLines.push(line);
+        }
+      }
+    }
+
+    if (descriptionLines.length > 0) {
+      summary = descriptionLines[0];
+      if (descriptionLines.length > 1) {
+        description = descriptionLines.slice(1).join(' ').trim();
+      }
+    }
+
+    return {
+      type: 'javadoc',
+      raw: rawDoc,
+      summary: summary || undefined,
+      description: description || undefined,
+      parameters: parameters.length > 0 ? parameters : undefined,
+      returns,
+      throws: throws.length > 0 ? throws : undefined,
+      tags: tags.length > 0 ? tags : undefined,
+      location: {
+        start_line: javadocStart + 1,
+        end_line: javadocEnd + 1
+      }
+    };
+  }
+
+  private extractComments(content: string, filePath: string): CASComment[] {
+    const comments: CASComment[] = [];
+    const lines = content.split('\n');
+    let commentId = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      const singleLineMatch = line.match(/\/\/\s*(.*)/);
+      if (singleLineMatch) {
+        const commentText = singleLineMatch[1].trim();
+        if (commentText) {
+          comments.push({
+            id: `comment_${filePath}_${++commentId}`,
+            type: 'single-line',
+            style: '//',
+            text: commentText,
+            purpose: this.classifyCommentPurpose(commentText),
+            location: {
+              file: filePath,
+              line: i + 1,
+              relative_to: 'inline'
+            },
+            markers: this.extractCommentMarkers(commentText)
+          });
+        }
+      }
+
+      const multiLineStart = line.indexOf('/*');
+      if (multiLineStart !== -1 && !line.includes('/**')) {
+        let endLine = i;
+        let multiLineContent = line.substring(multiLineStart + 2);
+
+        const sameLineEnd = multiLineContent.indexOf('*/');
+        if (sameLineEnd !== -1) {
+          multiLineContent = multiLineContent.substring(0, sameLineEnd);
+        } else {
+          for (let j = i + 1; j < lines.length; j++) {
+            const nextLine = lines[j];
+            const endIndex = nextLine.indexOf('*/');
+            if (endIndex !== -1) {
+              multiLineContent += '\n' + nextLine.substring(0, endIndex);
+              endLine = j;
+              break;
+            } else {
+              multiLineContent += '\n' + nextLine;
+            }
+          }
+        }
+
+        const cleanedText = multiLineContent.trim();
+        if (cleanedText) {
+          comments.push({
+            id: `comment_${filePath}_${++commentId}`,
+            type: 'multi-line',
+            style: '/* */',
+            text: cleanedText,
+            purpose: this.classifyCommentPurpose(cleanedText),
+            location: {
+              file: filePath,
+              line: i + 1,
+              relative_to: endLine > i ? 'above' : 'inline'
+            },
+            markers: this.extractCommentMarkers(cleanedText)
+          });
+        }
+      }
+    }
+
+    return comments;
+  }
+
+  private classifyCommentPurpose(text: string): 'explanation' | 'todo' | 'warning' | 'note' | 'hack' | 'clarification' | 'disabled-code' | 'other' {
+    const lowerText = text.toLowerCase();
+
+    if (lowerText.includes('todo') || lowerText.includes('fixme') || lowerText.includes('xxx')) {
+      return 'todo';
+    }
+    if (lowerText.includes('warning') || lowerText.includes('caution') || lowerText.includes('danger')) {
+      return 'warning';
+    }
+    if (lowerText.includes('hack') || lowerText.includes('workaround') || lowerText.includes('temporary')) {
+      return 'hack';
+    }
+    if (lowerText.includes('note') || lowerText.includes('nb:') || lowerText.includes('important')) {
+      return 'note';
+    }
+    if (text.trim().match(/^\s*\/\/\s*[a-zA-Z_][a-zA-Z0-9_]*\s*\(.*\)/) ||
+        text.includes('return') || text.includes('if (') || text.includes('for (')) {
+      return 'disabled-code';
+    }
+
+    return 'explanation';
+  }
+
+  private extractCommentMarkers(text: string): CASComment['markers'] {
+    const lowerText = text.toLowerCase();
+
+    return {
+      is_todo: lowerText.includes('todo'),
+      is_fixme: lowerText.includes('fixme'),
+      is_hack: lowerText.includes('hack') || lowerText.includes('workaround'),
+      is_warning: lowerText.includes('warning') || lowerText.includes('caution'),
+      is_note: lowerText.includes('note') || lowerText.includes('nb:'),
+      is_question: lowerText.includes('?') || lowerText.includes('why'),
+      is_important: lowerText.includes('important') || lowerText.includes('!!!'),
+      custom_markers: this.extractCustomMarkers(text)
+    };
+  }
+
+  private extractCustomMarkers(text: string): string[] {
+    const markers: string[] = [];
+    const customPatterns = [
+      /\b(OPTIMIZE|REFACTOR|REVIEW|PERFORMANCE)\b/gi,
+      /\b(BUG|ISSUE|PROBLEM)\b/gi,
+      /\b(SECURITY|VULNERABILITY)\b/gi
+    ];
+
+    for (const pattern of customPatterns) {
+      const matches = text.match(pattern);
+      if (matches) {
+        markers.push(...matches.map(m => m.toUpperCase()));
+      }
+    }
+
+    return Array.from(new Set(markers));
+  }
+
+  private extractTodos(content: string, filePath: string): CASTodo[] {
+    const todos: CASTodo[] = [];
+    const lines = content.split('\n');
+    let todoId = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmedLine = line.trim();
+
+      const todoPatterns = [
+        { pattern: /\/\/\s*TODO(?:\(([^)]+)\))?\s*:?\s*(.*)/i, type: 'TODO' as const },
+        { pattern: /\/\/\s*FIXME(?:\(([^)]+)\))?\s*:?\s*(.*)/i, type: 'FIXME' as const },
+        { pattern: /\/\/\s*XXX(?:\(([^)]+)\))?\s*:?\s*(.*)/i, type: 'XXX' as const },
+        { pattern: /\/\/\s*HACK(?:\(([^)]+)\))?\s*:?\s*(.*)/i, type: 'HACK' as const },
+        { pattern: /\/\/\s*NOTE(?:\(([^)]+)\))?\s*:?\s*(.*)/i, type: 'NOTE' as const },
+        { pattern: /\/\/\s*WARNING(?:\(([^)]+)\))?\s*:?\s*(.*)/i, type: 'WARNING' as const },
+        { pattern: /\/\/\s*OPTIMIZE(?:\(([^)]+)\))?\s*:?\s*(.*)/i, type: 'OPTIMIZE' as const },
+        { pattern: /\/\/\s*REFACTOR(?:\(([^)]+)\))?\s*:?\s*(.*)/i, type: 'REFACTOR' as const }
+      ];
+
+      for (const { pattern, type } of todoPatterns) {
+        const match = trimmedLine.match(pattern);
+        if (match) {
+          const assignee = match[1];
+          const text = match[2]?.trim() || '';
+
+          if (text) {
+            const priority = this.determineTodoPriority(type, text);
+            const category = this.categorizeTodo(type, text);
+
+            todos.push({
+              id: `todo_${filePath}_${++todoId}`,
+              type,
+              text,
+              priority,
+              assignee: assignee || undefined,
+              location: {
+                file: filePath,
+                line: i + 1
+              },
+              classification: {
+                category,
+                technical_debt: ['TODO', 'FIXME', 'HACK', 'REFACTOR'].includes(type),
+                blocking: this.isTodoBlocking(text)
+              }
+            });
+          }
+          break;
+        }
+      }
+
+      const multiLineTodoStart = trimmedLine.match(/\/\*\s*(TODO|FIXME|XXX|HACK|NOTE|WARNING|OPTIMIZE|REFACTOR)(?:\(([^)]+)\))?\s*:?\s*(.*)/i);
+      if (multiLineTodoStart) {
+        const type = multiLineTodoStart[1].toUpperCase() as CASTodo['type'];
+        const assignee = multiLineTodoStart[2];
+        let todoText = multiLineTodoStart[3] || '';
+
+        for (let j = i + 1; j < lines.length; j++) {
+          const nextLine = lines[j].trim();
+          if (nextLine.includes('*/')) {
+            const endContent = nextLine.substring(0, nextLine.indexOf('*/')).trim();
+            if (endContent) {
+              todoText += ' ' + endContent;
+            }
+            break;
+          } else {
+            todoText += ' ' + nextLine.replace(/^\*\s*/, '').trim();
+          }
+        }
+
+        if (todoText.trim()) {
+          const priority = this.determineTodoPriority(type, todoText);
+          const category = this.categorizeTodo(type, todoText);
+
+          todos.push({
+            id: `todo_${filePath}_${++todoId}`,
+            type,
+            text: todoText.trim(),
+            priority,
+            assignee: assignee || undefined,
+            location: {
+              file: filePath,
+              line: i + 1
+            },
+            classification: {
+              category,
+              technical_debt: ['TODO', 'FIXME', 'HACK', 'REFACTOR'].includes(type),
+              blocking: this.isTodoBlocking(todoText)
+            }
+          });
+        }
+      }
+    }
+
+    return todos;
+  }
+
+  private determineTodoPriority(type: CASTodo['type'], text: string): 'low' | 'medium' | 'high' | 'critical' {
+    const lowerText = text.toLowerCase();
+
+    if (type === 'FIXME' || lowerText.includes('critical') || lowerText.includes('urgent') || lowerText.includes('asap')) {
+      return 'critical';
+    }
+    if (type === 'XXX' || lowerText.includes('important') || lowerText.includes('security') || lowerText.includes('bug')) {
+      return 'high';
+    }
+    if (type === 'TODO' || type === 'REFACTOR' || type === 'OPTIMIZE') {
+      return 'medium';
+    }
+
+    return 'low';
+  }
+
+  private categorizeTodo(type: CASTodo['type'], text: string): 'bug' | 'feature' | 'refactor' | 'performance' | 'security' | 'documentation' | 'test' {
+    const lowerText = text.toLowerCase();
+
+    if (type === 'FIXME' || lowerText.includes('bug') || lowerText.includes('error') || lowerText.includes('broken')) {
+      return 'bug';
+    }
+    if (lowerText.includes('security') || lowerText.includes('vulnerability') || lowerText.includes('auth')) {
+      return 'security';
+    }
+    if (type === 'OPTIMIZE' || lowerText.includes('performance') || lowerText.includes('slow') || lowerText.includes('memory')) {
+      return 'performance';
+    }
+    if (type === 'REFACTOR' || lowerText.includes('refactor') || lowerText.includes('cleanup') || lowerText.includes('restructure')) {
+      return 'refactor';
+    }
+    if (lowerText.includes('test') || lowerText.includes('coverage') || lowerText.includes('assertion')) {
+      return 'test';
+    }
+    if (lowerText.includes('document') || lowerText.includes('comment') || lowerText.includes('javadoc')) {
+      return 'documentation';
+    }
+
+    return 'feature';
+  }
+
+  private isTodoBlocking(text: string): boolean {
+    const lowerText = text.toLowerCase();
+    return lowerText.includes('blocking') ||
+           lowerText.includes('critical') ||
+           lowerText.includes('must fix') ||
+           lowerText.includes('broken') ||
+           lowerText.includes('prevents');
+  }
+
+  private analyzeImplementationStatus(lines: string[], startIndex: number, endIndex: number, annotations: string[]): CASImplementationStatus {
+    const methodLines = lines.slice(startIndex, endIndex);
+    const methodContent = methodLines.join('\n').toLowerCase();
+
+    const indicators = {
+      has_todo_markers: methodContent.includes('todo') || methodContent.includes('fixme') || methodContent.includes('xxx'),
+      has_not_implemented_exceptions: methodContent.includes('unsupportedoperationexception') ||
+                                      methodContent.includes('notimplementedexception') ||
+                                      methodContent.includes('throw new unsupportedoperationexception'),
+      has_stub_returns: this.hasStubReturns(methodLines),
+      has_placeholder_code: this.hasPlaceholderCode(methodContent),
+      has_hardcoded_values: this.hasHardcodedValues(methodContent),
+      has_commented_out_code: this.hasCommentedOutCode(methodLines)
+    };
+
+    let status: CASImplementationStatus['status'] = 'complete';
+
+    if (annotations.includes('Deprecated')) {
+      status = 'deprecated';
+    } else if (this.isExperimentalCode(methodContent, annotations)) {
+      status = 'experimental';
+    } else if (indicators.has_not_implemented_exceptions) {
+      status = 'not-implemented';
+    } else if (this.isStubMethod(methodLines)) {
+      status = 'stub';
+    } else if (indicators.has_todo_markers || indicators.has_placeholder_code) {
+      status = 'partial';
+    }
+
+    const implementationStatus: CASImplementationStatus = {
+      status,
+      indicators
+    };
+
+    if (status === 'deprecated') {
+      implementationStatus.deprecation = {
+        is_deprecated: true,
+        deprecated_since: this.extractDeprecatedSince(lines, startIndex),
+        replacement: this.extractDeprecationReplacement(lines, startIndex)
+      };
+    }
+
+    if (status === 'experimental') {
+      implementationStatus.experimental = {
+        is_experimental: true,
+        stability_level: this.determineStabilityLevel(methodContent, annotations)
+      };
+    }
+
+    return implementationStatus;
+  }
+
+  private hasStubReturns(methodLines: string[]): boolean {
+    const content = methodLines.join(' ').toLowerCase();
+    return content.includes('return null') ||
+           content.includes('return 0') ||
+           content.includes('return false') ||
+           content.includes('return ""') ||
+           content.includes('return new') && content.includes('()') ||
+           /return\s+[a-z_][a-z0-9_]*\s*;/.test(content);
+  }
+
+  private hasPlaceholderCode(content: string): boolean {
+    return content.includes('placeholder') ||
+           content.includes('implement me') ||
+           content.includes('fill in') ||
+           content.includes('add implementation') ||
+           content.includes('stub') ||
+           /\/\/\s*implement/.test(content);
+  }
+
+  private hasHardcodedValues(content: string): boolean {
+    const hardcodedPatterns = [
+      /"[^"]*localhost[^"]*"/,
+      /"[^"]*127\.0\.0\.1[^"]*"/,
+      /"[^"]*test[^"]*"/,
+      /"[^"]*example[^"]*"/,
+      /\b(true|false)\s*;/,
+      /\b\d{4,}\b/
+    ];
+
+    return hardcodedPatterns.some(pattern => pattern.test(content));
+  }
+
+  private hasCommentedOutCode(methodLines: string[]): boolean {
+    const commentedCodePatterns = [
+      /\/\/\s*[a-zA-Z_][a-zA-Z0-9_]*\s*\(/,
+      /\/\/\s*return\s+/,
+      /\/\/\s*if\s*\(/,
+      /\/\/\s*for\s*\(/,
+      /\/\/\s*while\s*\(/,
+      /\/\/\s*try\s*\{/
+    ];
+
+    return methodLines.some(line =>
+      commentedCodePatterns.some(pattern => pattern.test(line))
+    );
+  }
+
+  private isExperimentalCode(content: string, annotations: string[]): boolean {
+    return annotations.includes('Experimental') ||
+           annotations.includes('Beta') ||
+           content.includes('experimental') ||
+           content.includes('alpha') ||
+           content.includes('beta');
+  }
+
+  private isStubMethod(methodLines: string[]): boolean {
+    const nonEmptyLines = methodLines
+      .map(line => line.trim())
+      .filter(line => line.length > 0 && !line.startsWith('//') && !line.startsWith('/*'));
+
+    if (nonEmptyLines.length <= 3) {
+      const content = nonEmptyLines.join(' ').toLowerCase();
+      return content.includes('throw new unsupportedoperationexception') ||
+             content.includes('return null') ||
+             content.includes('return false') ||
+             content.includes('return 0') ||
+             content.includes('return ""');
+    }
+
+    return false;
+  }
+
+  private extractDeprecatedSince(lines: string[], lineIndex: number): string | undefined {
+    for (let i = lineIndex - 10; i < lineIndex; i++) {
+      if (i >= 0 && i < lines.length) {
+        const line = lines[i];
+        const sinceMatch = line.match(/@since\s+([\d.]+)/);
+        if (sinceMatch) {
+          return sinceMatch[1];
+        }
+        const deprecatedMatch = line.match(/@deprecated.*since\s+([\d.]+)/i);
+        if (deprecatedMatch) {
+          return deprecatedMatch[1];
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private extractDeprecationReplacement(lines: string[], lineIndex: number): string | undefined {
+    for (let i = lineIndex - 10; i < lineIndex; i++) {
+      if (i >= 0 && i < lines.length) {
+        const line = lines[i];
+        const replacementMatch = line.match(/@deprecated.*use\s+([a-zA-Z_][a-zA-Z0-9_.]*)/i);
+        if (replacementMatch) {
+          return replacementMatch[1];
+        }
+        const seeMatch = line.match(/@see\s+([a-zA-Z_][a-zA-Z0-9_.#]*)/);
+        if (seeMatch) {
+          return seeMatch[1];
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private determineStabilityLevel(content: string, annotations: string[]): 'unstable' | 'experimental' | 'beta' | 'stable' {
+    if (annotations.includes('Beta') || content.includes('beta')) {
+      return 'beta';
+    }
+    if (annotations.includes('Experimental') || content.includes('experimental')) {
+      return 'experimental';
+    }
+    if (content.includes('alpha') || content.includes('unstable')) {
+      return 'unstable';
+    }
+    return 'stable';
+  }
+
   private findClassEnd(lines: string[], startIndex: number): number {
     let braceCount = 0;
     let foundOpenBrace = false;
@@ -886,7 +1569,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
   }
 
   private buildPackageHierarchy(packages: Map<string, string[]>, nodes: CASNode[], edges: CASEdge[]): void {
-    for (const [packageName, files] of packages.entries()) {
+    for (const [packageName, files] of Array.from(packages.entries())) {
       const packageId = `package_${this.sanitizeId(packageName)}`;
 
       nodes.push(this.createNode(
@@ -1228,7 +1911,14 @@ export class JavaAnalyzer extends BaseAnalyzer {
       'package-organization',
       'inheritance-tracking',
       'annotation-parsing',
-      'spring-framework-detection'
+      'spring-framework-detection',
+      'javadoc-extraction',
+      'comment-analysis',
+      'todo-detection',
+      'implementation-status-analysis',
+      'deprecation-tracking',
+      'experimental-code-detection',
+      'technical-debt-analysis'
     ];
   }
 }

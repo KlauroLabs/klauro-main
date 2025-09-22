@@ -20,7 +20,7 @@ export class OrganizationsService {
 
   async findOne(id: string): Promise<Organization | null> {
     return this.organizationRepository.findOne(id, {
-      populate: ['projects', 'memberships'],
+      populate: ['memberships'],
     });
   }
 

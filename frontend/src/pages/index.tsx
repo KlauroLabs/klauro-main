@@ -6,8 +6,8 @@ const HomePage: React.FC = () => {
   const router = useRouter();
 
   useEffect(() => {
-    // Redirect to projects page to eliminate duplication
-    router.replace('/projects');
+    // Redirect to workspaces page
+    router.replace('/workspaces');
   }, [router]);
 
   return (
@@ -21,7 +21,7 @@ const HomePage: React.FC = () => {
     >
       <CircularProgress />
       <Typography variant="body1" color="text.secondary">
-        Redirecting to projects...
+        Loading...
       </Typography>
     </Box>
   );

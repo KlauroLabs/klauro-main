@@ -323,8 +323,8 @@ export class AnalyzerController {
       }
 
       // Use the CAS analyzer for the actual analysis
-      this.logger.log(`🚀 Starting CAS-based analysis for ${projectPath}`);
-      this.logger.log(`🔍 Will run ALL applicable language and framework analyzers`);
+      this.logger.log(`Starting CAS-based analysis for ${projectPath}`);
+      this.logger.log(`Will run ALL applicable language and framework analyzers`);
 
       const casResult = await this.casAnalyzerService.analyzeProject({
         projectPath,

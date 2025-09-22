@@ -1,5 +1,8 @@
 import { BaseAnalyzer, AnalysisContext } from '../core/base-analyzer';
-import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint } from '../../types/cas.types';
+import {
+  CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint,
+  CASDocumentation, CASComment, CASTodo, CASImplementationStatus
+} from '../../types/cas.types';
 import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
@@ -153,6 +156,8 @@ export class PHPAnalyzer extends BaseAnalyzer {
   private composerProject = false;
   private astRunner: ASTRunner;
   private astCache = new Map<string, PHPASTNode>();
+  private todoCounter = 0;
+  private commentCounter = 0;
 
   constructor() {
     super(
@@ -413,43 +418,56 @@ export class PHPAnalyzer extends BaseAnalyzer {
       }
 
       const fileId = `file_${this.sanitizeId(relativePath)}`;
-      nodes.push(this.createNode(
+      const fileComments = this.extractCommentsFromFile(content, fullPath);
+      const fileTodos = this.extractTodosFromComments(fileComments, fullPath);
+
+      nodes.push(this.createNodeBuilder(
         fileId,
         relativePath.split('/').pop() || 'unknown.php',
-        'file',
-        1,
-        fullPath,
-        1,
-        lines.length,
-        {
-          namespace: namespace || 'global',
-          uses: uses.map(u => u.namespace),
-          classCount: classes.length,
-          interfaceCount: interfaces.length,
-          traitCount: traits.length,
-          enumCount: enums.length,
-          functionCount: functions.length,
-          globalVarCount: globalVars.length,
-          constantCount: constants.length
-        }
-      ));
+        'file'
+      )
+        .withLevel(1, 'File/Module')
+        .withCategory('modules', ['php-files'])
+        .withSource({ file: fullPath, line: 1, end_line: lines.length })
+        .withMetadata({
+          attributes: {
+            namespace: namespace || 'global',
+            uses: uses.map(u => u.namespace),
+            classCount: classes.length,
+            interfaceCount: interfaces.length,
+            traitCount: traits.length,
+            enumCount: enums.length,
+            functionCount: functions.length,
+            globalVarCount: globalVars.length,
+            constantCount: constants.length,
+            extension: '.php',
+            commentCount: fileComments.length,
+            todoCount: fileTodos.length
+          }
+        })
+        .withComments(fileComments.length > 0 ? fileComments : undefined)
+        .withTodos(fileTodos.length > 0 ? fileTodos : undefined)
+        .build());
 
       for (const use of uses) {
         const useId = `use_${fileId}_${this.sanitizeId(use.namespace)}`;
-        nodes.push(this.createNode(
+        nodes.push(this.createNodeBuilder(
           useId,
           use.alias || use.namespace,
-          'use',
-          2,
-          fullPath,
-          use.lineNumber,
-          use.lineNumber,
-          {
-            namespace: use.namespace,
-            alias: use.alias,
-            type: use.type
-          }
-        ));
+          'use'
+        )
+          .withLevel(2, 'Import/Dependency')
+          .withCategory('imports', ['php-uses'])
+          .withSource({ file: fullPath, line: use.lineNumber })
+          .withMetadata({
+            attributes: {
+              namespace: use.namespace,
+              alias: use.alias,
+              type: use.type,
+              importType: this.isBuiltinNamespace(use.namespace) ? 'builtin' : 'external'
+            }
+          })
+          .build());
 
         edges.push(this.createEdge(
           `${fileId}_uses_${useId}`,
@@ -491,20 +509,23 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
       for (const variable of globalVars) {
         const variableId = `variable_${fileId}_${this.sanitizeId(variable.name)}`;
-        nodes.push(this.createNode(
+        nodes.push(this.createNodeBuilder(
           variableId,
           variable.name,
-          'variable',
-          3,
-          fullPath,
-          variable.lineNumber,
-          variable.lineNumber,
-          {
-            type: variable.type,
-            defaultValue: variable.defaultValue,
-            scope: variable.scope
-          }
-        ));
+          'variable'
+        )
+          .withLevel(3, 'Variable/Property')
+          .withCategory('data', ['php-variables'])
+          .withSource({ file: fullPath, line: variable.lineNumber })
+          .withMetadata({
+            attributes: {
+              type: variable.type,
+              defaultValue: variable.defaultValue,
+              scope: variable.scope,
+              variableType: variable.type || 'mixed'
+            }
+          })
+          .build());
 
         edges.push(this.createEdge(
           `${fileId}_contains_${variableId}`,
@@ -516,20 +537,25 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
       for (const constant of constants) {
         const constantId = `constant_${fileId}_${this.sanitizeId(constant.name)}`;
-        nodes.push(this.createNode(
+        const constantDocs = this.extractDocumentationFromPhpDoc(constant.docComment);
+
+        nodes.push(this.createNodeBuilder(
           constantId,
           constant.name,
-          'constant',
-          3,
-          fullPath,
-          constant.lineNumber,
-          constant.lineNumber,
-          {
-            value: constant.value,
-            docComment: constant.docComment,
-            isClassConstant: constant.isClassConstant
-          }
-        ));
+          'constant'
+        )
+          .withLevel(3, 'Constant/Property')
+          .withCategory('data', ['php-constants'])
+          .withSource({ file: fullPath, line: constant.lineNumber })
+          .withMetadata({
+            attributes: {
+              value: constant.value,
+              isClassConstant: constant.isClassConstant,
+              hasDocumentation: !!constantDocs
+            }
+          })
+          .withDocumentation(constantDocs)
+          .build());
 
         edges.push(this.createEdge(
           `${fileId}_contains_${constantId}`,
@@ -553,29 +579,41 @@ export class PHPAnalyzer extends BaseAnalyzer {
     entryPoints: any[]
   ): Promise<void> {
     const classId = `class_${this.sanitizeId(cls.namespace)}_${this.sanitizeId(cls.name)}`;
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const classComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+      c.location.line >= cls.lineStart - 3 && c.location.line <= cls.lineStart
+    );
+    const classTodos = this.extractTodosFromComments(classComments, classId);
+    const classDocs = this.extractDocumentationFromPhpDoc(cls.docComment);
 
-    nodes.push(this.createNode(
+    nodes.push(this.createNodeBuilder(
       classId,
       cls.name,
-      'class',
-      2,
-      fullPath,
-      cls.lineStart,
-      cls.lineEnd,
-      {
-        namespace: cls.namespace,
-        modifiers: cls.modifiers,
-        extendsClass: cls.extendsClass,
-        implementsInterfaces: cls.implementsInterfaces,
-        traits: cls.traits,
-        docComment: cls.docComment,
-        propertyCount: cls.properties.length,
-        methodCount: cls.methods.length,
-        constantCount: cls.constants.length,
-        isAbstract: cls.isAbstract,
-        isFinal: cls.isFinal
-      }
-    ));
+      'class'
+    )
+      .withLevel(2, 'Class/Interface')
+      .withCategory('structures', ['php-classes'])
+      .withSource({ file: fullPath, line: cls.lineStart, end_line: cls.lineEnd })
+      .withMetadata({
+        is_exported: cls.modifiers.includes('public'),
+        attributes: {
+          namespace: cls.namespace,
+          modifiers: cls.modifiers,
+          extendsClass: cls.extendsClass,
+          implementsInterfaces: cls.implementsInterfaces,
+          traits: cls.traits,
+          propertyCount: cls.properties.length,
+          methodCount: cls.methods.length,
+          constantCount: cls.constants.length,
+          isAbstract: cls.isAbstract,
+          isFinal: cls.isFinal,
+          hasDocumentation: !!classDocs
+        }
+      })
+      .withDocumentation(classDocs)
+      .withComments(classComments.length > 0 ? classComments : undefined)
+      .withTodos(classTodos.length > 0 ? classTodos : undefined)
+      .build());
 
     edges.push(this.createEdge(
       `${fileId}_contains_${classId}`,
@@ -586,24 +624,32 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
     for (const property of cls.properties) {
       const propertyId = `property_${classId}_${this.sanitizeId(property.name)}`;
-      nodes.push(this.createNode(
+      const propertyDocs = this.extractDocumentationFromPhpDoc(property.docComment);
+
+      nodes.push(this.createNodeBuilder(
         propertyId,
         property.name,
-        'property',
-        4,
-        fullPath,
-        property.lineNumber,
-        property.lineNumber,
-        {
-          visibility: property.visibility,
-          modifiers: property.modifiers,
-          type: property.type,
-          defaultValue: property.defaultValue,
-          docComment: property.docComment,
-          isStatic: property.isStatic,
-          isReadonly: property.isReadonly
-        }
-      ));
+        'property'
+      )
+        .withLevel(4, 'Property/Field')
+        .withCategory('data', ['class-properties'])
+        .withSource({ file: fullPath, line: property.lineNumber })
+        .withMetadata({
+          is_exported: property.visibility === 'public',
+          attributes: {
+            type: property.type,
+            defaultValue: property.defaultValue,
+            visibility: property.visibility,
+            modifiers: property.modifiers,
+            isStatic: property.isStatic,
+            isReadonly: property.isReadonly,
+            propertyType: property.type || 'mixed',
+            hasDocumentation: !!propertyDocs
+          }
+        })
+        .withParent(classId)
+        .withDocumentation(propertyDocs)
+        .build());
 
       edges.push(this.createEdge(
         `${classId}_has_property_${propertyId}`,
@@ -615,27 +661,46 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
     for (const method of cls.methods) {
       const methodId = `method_${classId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
-      nodes.push(this.createNode(
+      const methodDocs = this.extractDocumentationFromPhpDoc(method.docComment);
+      const methodComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+        c.location.line >= method.lineStart && c.location.line <= method.lineEnd
+      );
+      const methodTodos = this.extractTodosFromComments(methodComments, methodId);
+      const lines = content.split('\n');
+      const methodBody = lines.slice(method.lineStart - 1, method.lineEnd);
+      const implementationStatus = this.detectImplementationStatus(method, methodBody);
+
+      nodes.push(this.createNodeBuilder(
         methodId,
         method.name,
-        'method',
-        4,
-        fullPath,
-        method.lineStart,
-        method.lineEnd,
-        {
-          visibility: method.visibility,
-          modifiers: method.modifiers,
+        'method'
+      )
+        .withLevel(4, 'Method/Function')
+        .withCategory('methods', ['class-methods'])
+        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withMetadata({
+          is_exported: method.visibility === 'public',
+          attributes: {
+            visibility: method.visibility,
+            modifiers: method.modifiers,
+            isAbstract: method.isAbstract,
+            isFinal: method.isFinal,
+            isStatic: method.isStatic,
+            isConstructor: method.isConstructor,
+            isDestructor: method.isDestructor,
+            hasDocumentation: !!methodDocs
+          }
+        })
+        .withSignature({
           parameters: method.parameters,
-          returnType: method.returnType,
-          docComment: method.docComment,
-          isAbstract: method.isAbstract,
-          isFinal: method.isFinal,
-          isStatic: method.isStatic,
-          isConstructor: method.isConstructor,
-          isDestructor: method.isDestructor
-        }
-      ));
+          return_type: method.returnType
+        })
+        .withParent(classId)
+        .withDocumentation(methodDocs)
+        .withComments(methodComments.length > 0 ? methodComments : undefined)
+        .withTodos(methodTodos.length > 0 ? methodTodos : undefined)
+        .withImplementationStatus(implementationStatus)
+        .build());
 
       edges.push(this.createEdge(
         `${classId}_has_method_${methodId}`,
@@ -662,20 +727,27 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
     for (const constant of cls.constants) {
       const constantId = `constant_${classId}_${this.sanitizeId(constant.name)}`;
-      nodes.push(this.createNode(
+      const constantDocs = this.extractDocumentationFromPhpDoc(constant.docComment);
+
+      nodes.push(this.createNodeBuilder(
         constantId,
         constant.name,
-        'class_constant',
-        4,
-        fullPath,
-        constant.lineNumber,
-        constant.lineNumber,
-        {
-          value: constant.value,
-          visibility: constant.visibility,
-          docComment: constant.docComment
-        }
-      ));
+        'class_constant'
+      )
+        .withLevel(4, 'Constant/Property')
+        .withCategory('data', ['class-constants'])
+        .withSource({ file: fullPath, line: constant.lineNumber })
+        .withMetadata({
+          is_exported: constant.visibility === 'public',
+          attributes: {
+            value: constant.value,
+            visibility: constant.visibility,
+            hasDocumentation: !!constantDocs
+          }
+        })
+        .withParent(classId)
+        .withDocumentation(constantDocs)
+        .build());
 
       edges.push(this.createEdge(
         `${classId}_has_constant_${constantId}`,
@@ -707,23 +779,35 @@ export class PHPAnalyzer extends BaseAnalyzer {
     entryPoints: any[]
   ): Promise<void> {
     const interfaceId = `interface_${this.sanitizeId(intf.namespace)}_${this.sanitizeId(intf.name)}`;
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const interfaceComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+      c.location.line >= intf.lineStart - 3 && c.location.line <= intf.lineStart
+    );
+    const interfaceTodos = this.extractTodosFromComments(interfaceComments, interfaceId);
+    const interfaceDocs = this.extractDocumentationFromPhpDoc(intf.docComment);
 
-    nodes.push(this.createNode(
+    nodes.push(this.createNodeBuilder(
       interfaceId,
       intf.name,
-      'interface',
-      2,
-      fullPath,
-      intf.lineStart,
-      intf.lineEnd,
-      {
-        namespace: intf.namespace,
-        extendsInterfaces: intf.extendsInterfaces,
-        docComment: intf.docComment,
-        methodCount: intf.methods.length,
-        constantCount: intf.constants.length
-      }
-    ));
+      'interface'
+    )
+      .withLevel(2, 'Interface/Contract')
+      .withCategory('structures', ['php-interfaces'])
+      .withSource({ file: fullPath, line: intf.lineStart, end_line: intf.lineEnd })
+      .withMetadata({
+        is_exported: true,
+        attributes: {
+          namespace: intf.namespace,
+          extendsInterfaces: intf.extendsInterfaces,
+          methodCount: intf.methods.length,
+          constantCount: intf.constants.length,
+          hasDocumentation: !!interfaceDocs
+        }
+      })
+      .withDocumentation(interfaceDocs)
+      .withComments(interfaceComments.length > 0 ? interfaceComments : undefined)
+      .withTodos(interfaceTodos.length > 0 ? interfaceTodos : undefined)
+      .build());
 
     edges.push(this.createEdge(
       `${fileId}_contains_${interfaceId}`,
@@ -2227,6 +2311,337 @@ export class PHPAnalyzer extends BaseAnalyzer {
     }
 
     return 'External Library';
+  }
+
+  private extractDocumentationFromPHPDoc(content: string, lineIndex: number): CASDocumentation | undefined {
+    const lines = content.split('\n');
+    const docs: CASDocumentation = {
+      id: `doc_${++this.commentCounter}`,
+      format: 'phpdoc',
+      raw: '',
+      location: {
+        start_line: lineIndex,
+        end_line: lineIndex
+      }
+    };
+    let hasContent = false;
+    let docBlockText = '';
+
+    for (let i = lineIndex - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (line === '/**') {
+        break;
+      }
+      if (line.startsWith('*') || line.startsWith('/**')) {
+        const cleanLine = line.replace(/^\/?\*+\s*/, '').replace(/\*\/$/, '');
+        if (cleanLine) {
+          docBlockText = cleanLine + '\n' + docBlockText;
+          hasContent = true;
+        }
+      } else if (!line.startsWith('//')) {
+        break;
+      }
+    }
+
+    if (hasContent) {
+      docs.raw = docBlockText;
+      const summaryMatch = docBlockText.match(/^([^@\n]*)/);
+      if (summaryMatch && summaryMatch[1].trim()) {
+        docs.summary = summaryMatch[1].trim();
+      }
+
+      const paramMatches = docBlockText.matchAll(/@param\s+([^\s]+)\s+\$([^\s]+)\s*(.*)/g);
+      for (const match of paramMatches) {
+        if (!docs.parameters) docs.parameters = [];
+        docs.parameters.push({
+          name: match[2],
+          type: match[1],
+          description: match[3]
+        });
+      }
+
+      const returnMatch = docBlockText.match(/@return\s+([^\s]+)\s*(.*)/);
+      if (returnMatch) {
+        docs.returns = {
+          type: returnMatch[1],
+          description: returnMatch[2]
+        };
+      }
+
+      const throwsMatches = docBlockText.matchAll(/@throws\s+([^\s]+)\s*(.*)/g);
+      for (const match of throwsMatches) {
+        if (!docs.exceptions) docs.exceptions = [];
+        docs.exceptions.push({
+          type: match[1],
+          description: match[2]
+        });
+      }
+
+      const sinceMatch = docBlockText.match(/@since\s+(.*)/);
+      if (sinceMatch) {
+        if (!docs.tags) docs.tags = [];
+        docs.tags.push({ tag: 'since', value: sinceMatch[1] });
+      }
+
+      const deprecatedMatch = docBlockText.match(/@deprecated\s*(.*)/);
+      if (deprecatedMatch) {
+        if (!docs.tags) docs.tags = [];
+        docs.tags.push({ tag: 'deprecated', value: deprecatedMatch[1] || 'true' });
+      }
+
+      return docs;
+    }
+
+    return undefined;
+  }
+
+  private extractCommentsFromFile(content: string, filePath: string): CASComment[] {
+    const comments: CASComment[] = [];
+    const lines = content.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      const singleLineMatch = line.match(/\/\/(.*)$/) || line.match(/#(.*)$/);
+      if (singleLineMatch) {
+        const text = singleLineMatch[1].trim();
+        const style = line.includes('//') ? '//' : '#';
+        const purpose = this.classifyCommentPurpose(text);
+        comments.push({
+          id: `comment_${++this.commentCounter}`,
+          type: 'single-line',
+          style,
+          text,
+          purpose,
+          location: {
+            file: filePath,
+            line: i + 1,
+            relative_to: 'inline'
+          },
+          markers: this.extractCommentMarkers(text)
+        });
+      }
+
+      if (line.includes('/*') && !line.includes('/**')) {
+        let multiLineText = '';
+        let endLine = i;
+        let foundEnd = false;
+
+        for (let j = i; j < lines.length; j++) {
+          const currentLine = lines[j];
+          if (j === i) {
+            const startMatch = currentLine.match(/\/\*(.*)/);
+            if (startMatch) {
+              multiLineText = startMatch[1];
+              if (currentLine.includes('*/')) {
+                multiLineText = multiLineText.replace(/\*\/.*$/, '').trim();
+                foundEnd = true;
+                endLine = j;
+              }
+            }
+          } else {
+            if (currentLine.includes('*/')) {
+              multiLineText += '\n' + currentLine.replace(/\*\/.*$/, '').replace(/^\s*\*/, '').trim();
+              foundEnd = true;
+              endLine = j;
+              break;
+            } else {
+              multiLineText += '\n' + currentLine.replace(/^\s*\*/, '').trim();
+            }
+          }
+        }
+
+        if (foundEnd) {
+          const purpose = this.classifyCommentPurpose(multiLineText);
+          comments.push({
+            id: `comment_${++this.commentCounter}`,
+            type: 'multi-line',
+            style: '/* */',
+            text: multiLineText.trim(),
+            purpose,
+            location: {
+              file: filePath,
+              line: i + 1,
+              end_line: endLine + 1,
+              relative_to: 'above'
+            },
+            markers: this.extractCommentMarkers(multiLineText)
+          });
+          i = endLine;
+        }
+      }
+    }
+
+    return comments;
+  }
+
+  private classifyCommentPurpose(text: string): CASComment['purpose'] {
+    const lowerText = text.toLowerCase();
+
+    if (/\b(todo|fixme|hack|warning|note|xxx|optimize|refactor)\b/.test(lowerText)) {
+      return 'todo';
+    }
+    if (/\b(warning|warn|caution|danger|important)\b/.test(lowerText)) {
+      return 'warning';
+    }
+    if (/\b(note|info|tip|hint)\b/.test(lowerText)) {
+      return 'note';
+    }
+    if (/\b(hack|temp|temporary|quick|dirty)\b/.test(lowerText)) {
+      return 'hack';
+    }
+
+    return 'explanation';
+  }
+
+  private extractCommentMarkers(text: string): CASComment['markers'] {
+    const markers: CASComment['markers'] = {};
+    const lowerText = text.toLowerCase();
+
+    markers.is_todo = /\btodo\b/.test(lowerText);
+    markers.is_fixme = /\bfixme\b/.test(lowerText);
+    markers.is_hack = /\bhack\b/.test(lowerText);
+    markers.is_warning = /\b(warning|warn)\b/.test(lowerText);
+    markers.is_note = /\b(note|info)\b/.test(lowerText);
+    markers.is_important = /\b(important|critical|urgent)\b/.test(lowerText);
+    markers.is_deprecated = /\b(deprecated|obsolete)\b/.test(lowerText);
+
+    return markers;
+  }
+
+  private extractTodosFromComments(comments: CASComment[], context: string): CASTodo[] {
+    const todos: CASTodo[] = [];
+
+    comments.forEach(comment => {
+      if (comment.markers?.is_todo || comment.markers?.is_fixme || comment.markers?.is_hack) {
+        const typeMatch = comment.text.match(/\b(TODO|FIXME|HACK|NOTE|WARNING|XXX|OPTIMIZE|REFACTOR)\b/i);
+        const type = typeMatch ? typeMatch[0].toUpperCase() as CASTodo['type'] : 'TODO';
+
+        const assigneeMatch = comment.text.match(/\b(?:TODO|FIXME|HACK)\s*\(([^)]+)\)/);
+        const assignee = assigneeMatch ? assigneeMatch[1] : undefined;
+
+        const priority = comment.markers?.is_important ? 'high' :
+                        comment.markers?.is_fixme ? 'medium' : 'low';
+
+        const category = this.categorizeTodo(comment.text);
+
+        todos.push({
+          id: `todo_${++this.todoCounter}`,
+          type,
+          text: comment.text,
+          priority,
+          assignee,
+          category,
+          location: {
+            file: comment.location.file,
+            line: comment.location.line,
+            context
+          },
+          metadata: {
+            source: 'comment',
+            comment_type: comment.type
+          }
+        });
+      }
+    });
+
+    return todos;
+  }
+
+  private categorizeTodo(text: string): CASTodo['category'] {
+    const lowerText = text.toLowerCase();
+
+    if (/\b(fix|bug|error|issue|broken)\b/.test(lowerText)) return 'bug';
+    if (/\b(feature|add|implement|new)\b/.test(lowerText)) return 'feature';
+    if (/\b(refactor|clean|improve|restructure)\b/.test(lowerText)) return 'refactor';
+    if (/\b(performance|optimize|speed|slow)\b/.test(lowerText)) return 'performance';
+    if (/\b(security|secure|auth|permission)\b/.test(lowerText)) return 'security';
+
+    return 'general';
+  }
+
+  private extractDocumentationFromPhpDoc(docComment?: string): CASDocumentation | undefined {
+    if (!docComment) return undefined;
+
+    const cleanDoc = docComment.replace(/\/\*\*|\*\/|\*/g, '').trim();
+    if (!cleanDoc) return undefined;
+
+    const lines = cleanDoc.split('\n').map(line => line.trim()).filter(line => line);
+    if (lines.length === 0) return undefined;
+
+    const docs: CASDocumentation = {
+      type: 'phpdoc',
+      raw: cleanDoc,
+      location: { start_line: 0, end_line: 0 }
+    };
+
+    docs.summary = lines[0];
+    docs.description = lines.join('\n');
+
+    // Extract parameters
+    const paramMatches = cleanDoc.match(/@param\s+([^\s]+)\s+\$([^\s]+)(?:\s+(.*))?/g);
+    if (paramMatches) {
+      docs.parameters = paramMatches.map(match => {
+        const parts = match.match(/@param\s+([^\s]+)\s+\$([^\s]+)(?:\s+(.*))?/);
+        return {
+          name: parts?.[2] || '',
+          type: parts?.[1] || '',
+          description: parts?.[3] || ''
+        };
+      });
+    }
+
+    // Extract return type
+    const returnMatch = cleanDoc.match(/@return\s+([^\s]+)(?:\s+(.*))?/);
+    if (returnMatch) {
+      docs.return_info = {
+        type: returnMatch[1],
+        description: returnMatch[2] || ''
+      };
+    }
+
+    // Extract examples
+    const exampleMatch = cleanDoc.match(/@example\s*(.*?)(?=@|$)/s);
+    if (exampleMatch) {
+      docs.examples = [{ code: exampleMatch[1].trim(), language: 'php' }];
+    }
+
+    return docs;
+  }
+
+  private detectImplementationStatus(methodInfo: PHPMethod, methodBody: string[]): CASImplementationStatus {
+    const bodyText = methodBody.join('\n').toLowerCase();
+
+    const indicators = {
+      has_not_implemented_exceptions: bodyText.includes('throw new exception') || bodyText.includes('throw new notimplementedexception'),
+      has_deprecated_markers: !!methodInfo.docComment?.includes('@deprecated'),
+      has_todo_markers: bodyText.includes('todo') || bodyText.includes('fixme'),
+      has_stub_returns: methodBody.length <= 2 && bodyText.includes('return'),
+      has_empty_body: methodBody.length <= 1 || bodyText.trim() === '{}' || bodyText.trim() === '{ }',
+      has_placeholder_code: bodyText.includes('echo "todo"') || bodyText.includes('var_dump("todo")'),
+      has_hardcoded_values: false,
+      has_commented_out_code: false
+    };
+
+    let status: CASImplementationStatus['status'] = 'complete';
+    if (indicators.has_not_implemented_exceptions) {
+      status = 'not-implemented';
+    } else if (indicators.has_deprecated_markers) {
+      status = 'deprecated';
+    } else if (indicators.has_stub_returns || indicators.has_empty_body) {
+      status = 'stub';
+    } else if (indicators.has_todo_markers || indicators.has_placeholder_code) {
+      status = 'partial';
+    }
+
+    return {
+      status,
+      indicators,
+      completeness: status === 'complete' ? { estimated_percentage: 100 } :
+                   status === 'partial' ? { estimated_percentage: 60 } :
+                   status === 'stub' ? { estimated_percentage: 10 } :
+                   { estimated_percentage: 0 }
+    };
   }
 
   protected sanitizeId(name: string): string {

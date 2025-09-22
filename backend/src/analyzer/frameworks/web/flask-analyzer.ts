@@ -1,4 +1,8 @@
 import { BaseAnalyzer, CASAnalysisResult, CASNode, CASEdge, CASExitPoint, AnalysisContext } from '../../core/base-analyzer';
+import {
+  CASContribution, CASEntryPoint,
+  CASDocumentation, CASComment, CASTodo, CASImplementationStatus
+} from '../../../types/cas.types';
 import { AnalyzerError } from '../../core/errors';
 import * as path from 'path';
 import * as fs from 'fs-extra';
@@ -86,6 +90,9 @@ interface FlaskForm {
 }
 
 export class FlaskAnalyzer extends BaseAnalyzer {
+  private todoCounter = 0;
+  private commentCounter = 0;
+
   constructor() {
     super(
       'flask-analyzer',
@@ -209,11 +216,20 @@ export class FlaskAnalyzer extends BaseAnalyzer {
           };
 
           const appId = `app_${this.sanitizeId(application.name)}`;
+          const documentation = this.extractDocumentation(content, fullPath);
+          const comments = this.extractComments(content, fullPath);
+          const todos = this.extractTodos(comments);
+          const implementationStatus = this.determineImplementationStatus(content, comments);
+
           const appNode = this.createNodeBuilder(appId, application.name, 'application')
             .withLevel(1, 'system')
             .withCategory('application', ['framework', 'flask'])
             .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
             .withDescription(`Flask application: ${application.name}`)
+            .withDocumentation(documentation)
+            .withComments(comments)
+            .withTodos(todos)
+            .withImplementationStatus(implementationStatus)
             .withMetadata({
               framework: 'flask',
               attributes: {
@@ -269,11 +285,20 @@ export class FlaskAnalyzer extends BaseAnalyzer {
           blueprints.push(blueprint);
 
           const blueprintId = `blueprint_${this.sanitizeId(blueprintName)}`;
+          const blueprintDocumentation = this.extractDocumentation(content, fullPath);
+          const blueprintComments = this.extractComments(content, fullPath);
+          const blueprintTodos = this.extractTodos(blueprintComments);
+          const blueprintImplementationStatus = this.determineImplementationStatus(content, blueprintComments);
+
           const blueprintNode = this.createNodeBuilder(blueprintId, blueprintName, 'module')
             .withLevel(2, 'component')
             .withCategory('module', ['blueprint'])
             .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
             .withDescription(`Flask blueprint: ${blueprintName}`)
+            .withDocumentation(blueprintDocumentation)
+            .withComments(blueprintComments)
+            .withTodos(blueprintTodos)
+            .withImplementationStatus(blueprintImplementationStatus)
             .withMetadata({
               attributes: {
                 urlPrefix: urlPrefix || '/',
@@ -358,11 +383,20 @@ export class FlaskAnalyzer extends BaseAnalyzer {
 
       [...functionViews, ...classViews].forEach(view => {
         const viewId = `view_${this.sanitizeId(view.name)}`;
+        const viewDocumentation = this.extractDocumentation(content, fullPath);
+        const viewComments = this.extractComments(content, fullPath);
+        const viewTodos = this.extractTodos(viewComments);
+        const viewImplementationStatus = this.determineImplementationStatus(content, viewComments);
+
         const viewNode = this.createNodeBuilder(viewId, view.name, 'controller')
           .withLevel(3, 'code')
           .withCategory('controller', ['api', 'rest'])
           .withSource({ file: fullPath, line: 1, end_line: 1 })
           .withDescription(`Flask ${view.type} view: ${view.name}`)
+          .withDocumentation(viewDocumentation)
+          .withComments(viewComments)
+          .withTodos(viewTodos)
+          .withImplementationStatus(viewImplementationStatus)
           .withMetadata({
             attributes: {
               viewType: view.type,
@@ -442,11 +476,20 @@ export class FlaskAnalyzer extends BaseAnalyzer {
 
         extractedModels.forEach(model => {
           const modelId = `model_${this.sanitizeId(model.name)}`;
+          const modelDocumentation = this.extractDocumentation(content, fullPath);
+          const modelComments = this.extractComments(content, fullPath);
+          const modelTodos = this.extractTodos(modelComments);
+          const modelImplementationStatus = this.determineImplementationStatus(content, modelComments);
+
           const modelNode = this.createNodeBuilder(modelId, model.name, 'model')
             .withLevel(3, 'code')
             .withCategory('model', ['data', 'entity'])
             .withSource({ file: fullPath, line: 1, end_line: 1 })
             .withDescription(`Flask SQLAlchemy model: ${model.name}`)
+            .withDocumentation(modelDocumentation)
+            .withComments(modelComments)
+            .withTodos(modelTodos)
+            .withImplementationStatus(modelImplementationStatus)
             .withMetadata({
               attributes: {
                 baseClass: model.baseClass,
@@ -1669,5 +1712,245 @@ export class FlaskAnalyzer extends BaseAnalyzer {
     }
 
     return forms;
+  }
+
+  // CAS v1.4.0 Documentation and Comment extraction methods
+  private extractDocumentation(content: string, filePath: string): CASDocumentation | undefined {
+    if (!content || content.trim().length === 0) return undefined;
+
+    const lines = content.split('\n');
+
+    // Look for Flask-specific documentation patterns
+
+    // 1. Route decorator documentation
+    const routeDocMatches = content.matchAll(/@app\.route\([^)]*\)\s*\n\s*def\s+\w+[^:]*:\s*['"""]([^'"]*?)['"""]/g);
+    const routeDocs = [];
+    for (const match of routeDocMatches) {
+      routeDocs.push(match[1].trim());
+    }
+
+    // 2. Blueprint configuration documentation
+    const blueprintDocMatches = content.matchAll(/Blueprint\([^)]*\)\s*#\s*(.+)/g);
+    const blueprintDocs = [];
+    for (const match of blueprintDocMatches) {
+      blueprintDocs.push(match[1].trim());
+    }
+
+    // 3. Template helper documentation
+    const templateHelperMatches = content.matchAll(/@app\.template_filter\([^)]*\)\s*\n\s*def\s+\w+[^:]*:\s*['"""]([^'"]*?)['"""]/g);
+    const templateHelpers = [];
+    for (const match of templateHelperMatches) {
+      templateHelpers.push(match[1].trim());
+    }
+
+    // 4. Function and class docstrings
+    const functionDocStrings = [];
+    const functionMatches = content.matchAll(/def\s+\w+[^:]*:\s*['"""]([^'"]*?)['"""]/g);
+    for (const match of functionMatches) {
+      functionDocStrings.push(match[1].trim());
+    }
+
+    if (routeDocs.length > 0 || blueprintDocs.length > 0 || templateHelpers.length > 0 || functionDocStrings.length > 0) {
+      const doc: CASDocumentation = {
+        type: 'flask_documentation',
+        raw: content,
+        location: { start_line: 1, end_line: lines.length }
+      };
+
+      if (functionDocStrings.length > 0) {
+        doc.summary = functionDocStrings[0].split('\n')[0].trim();
+        doc.description = functionDocStrings[0].trim();
+      }
+
+      doc.framework_docs = {
+        flask: {}
+      };
+
+      return doc;
+    }
+
+    return undefined;
+  }
+
+  private extractComments(content: string, filePath: string): CASComment[] {
+    if (!content || content.trim().length === 0) return [];
+
+    const comments: CASComment[] = [];
+    const lines = content.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmedLine = line.trim();
+
+      // Python single-line comments
+      if (trimmedLine.startsWith('#')) {
+        const commentText = trimmedLine.substring(1).trim();
+        if (commentText.length > 0) {
+          const comment: CASComment = {
+            id: `comment_${++this.commentCounter}`,
+            type: 'single-line',
+            style: '#',
+            text: commentText,
+            purpose: this.classifyCommentPurpose(commentText),
+            location: {
+              file: filePath,
+              line: i + 1
+            },
+            markers: {
+              is_todo: commentText.toUpperCase().includes('TODO'),
+              is_fixme: commentText.toUpperCase().includes('FIXME'),
+              is_hack: commentText.toUpperCase().includes('HACK'),
+              is_warning: commentText.toUpperCase().includes('WARNING'),
+              is_note: commentText.toUpperCase().includes('NOTE')
+            }
+          };
+          comments.push(comment);
+        }
+      }
+
+      // Multi-line string comments (docstrings used as comments)
+      const docstringMatch = line.match(/^\s*['"]{3}([^'"]*?)['"]{3}/);
+      if (docstringMatch && !line.includes('def ') && !line.includes('class ')) {
+        const commentText = docstringMatch[1].trim();
+        if (commentText.length > 0) {
+          const comment: CASComment = {
+            id: `comment_${++this.commentCounter}`,
+            type: 'docstring',
+            style: '"""',
+            text: commentText,
+            purpose: this.classifyCommentPurpose(commentText),
+            location: {
+              file: filePath,
+              line: i + 1
+            },
+            markers: {
+              is_todo: commentText.toUpperCase().includes('TODO'),
+              is_fixme: commentText.toUpperCase().includes('FIXME'),
+              is_hack: commentText.toUpperCase().includes('HACK'),
+              is_warning: commentText.toUpperCase().includes('WARNING'),
+              is_note: commentText.toUpperCase().includes('NOTE')
+            }
+          };
+          comments.push(comment);
+        }
+      }
+    }
+
+    return comments;
+  }
+
+  private extractTodos(comments: CASComment[]): CASTodo[] {
+    const todos: CASTodo[] = [];
+
+    for (const comment of comments) {
+      if (comment.markers?.is_todo || comment.markers?.is_fixme || comment.markers?.is_hack) {
+        const text = comment.text;
+        const typeMatch = text.match(/(TODO|FIXME|HACK|NOTE|WARNING|XXX)/i);
+        const type = typeMatch ? typeMatch[0].toUpperCase() as CASTodo['type'] : 'TODO';
+
+        // Extract assignee from patterns like "TODO(username):"
+        const assigneeMatch = text.match(/TODO\s*\(\s*([^)]+)\s*\)/i);
+        const assignee = assigneeMatch ? assigneeMatch[1].trim() : undefined;
+
+        // Extract priority from patterns like "TODO [HIGH]:" or "TODO: [CRITICAL]"
+        const priorityMatch = text.match(/\[(CRITICAL|HIGH|MEDIUM|LOW)\]/i);
+        let priority: CASTodo['priority'] = 'medium';
+        if (priorityMatch) {
+          priority = priorityMatch[1].toLowerCase() as CASTodo['priority'];
+        }
+
+        const todo: CASTodo = {
+          id: `todo_${++this.todoCounter}`,
+          type,
+          text: text.replace(/^(TODO|FIXME|HACK|NOTE|WARNING|XXX)\s*(\([^)]+\))?\s*:?\s*/i, '').trim(),
+          priority,
+          location: {
+            file: comment.location.file,
+            line: comment.location.line
+          },
+          assignee,
+          classification: {
+            category: this.classifyTodoCategory(text),
+            technical_debt: type === 'TODO' || type === 'FIXME' || type === 'HACK'
+          }
+        };
+
+        todos.push(todo);
+      }
+    }
+
+    return todos;
+  }
+
+  private determineImplementationStatus(content: string, comments: CASComment[]): CASImplementationStatus {
+    const indicators = {
+      has_todo_markers: comments.some(c => c.markers?.is_todo),
+      has_not_implemented_exceptions: content.includes('NotImplementedError') || content.includes('raise NotImplemented'),
+      has_stub_returns: content.includes('pass') && (content.includes('def ') || content.includes('class ')),
+      has_placeholder_code: content.includes('# TODO') || content.includes('# FIXME') || content.includes('# PLACEHOLDER'),
+      has_hardcoded_values: /['\"](localhost|127\.0\.0\.1|test|example|demo|placeholder)['\"]/.test(content),
+      has_commented_out_code: comments.some(c => c.text.includes('def ') || c.text.includes('class ') || c.text.includes('import '))
+    };
+
+    const indicatorCount = Object.values(indicators).filter(Boolean).length;
+    let status: CASImplementationStatus['status'];
+    let confidence = 0.8;
+
+    if (content.includes('NotImplementedError') || content.includes('raise NotImplemented')) {
+      status = 'not-implemented';
+      confidence = 0.95;
+    } else if (indicatorCount >= 3) {
+      status = 'stub';
+      confidence = 0.7;
+    } else if (indicatorCount >= 1) {
+      status = 'partial';
+      confidence = 0.6;
+    } else if (content.includes('@deprecated') || content.includes('# deprecated')) {
+      status = 'deprecated';
+      confidence = 0.9;
+    } else if (content.includes('experimental') || content.includes('beta')) {
+      status = 'experimental';
+      confidence = 0.8;
+    } else {
+      status = 'complete';
+      confidence = 0.7;
+    }
+
+    const missingFeatures = [];
+    if (indicators.has_not_implemented_exceptions) missingFeatures.push('Core implementation');
+    if (indicators.has_todo_markers) missingFeatures.push('TODO items');
+    if (indicators.has_stub_returns) missingFeatures.push('Method implementations');
+
+    return {
+      status,
+      indicators,
+      confidence,
+      completeness: {
+        estimated_percentage: status === 'complete' ? 90 : status === 'partial' ? 60 : status === 'stub' ? 30 : 10,
+        missing_features: missingFeatures,
+        implemented_features: status === 'complete' ? ['Core functionality'] : []
+      }
+    };
+  }
+
+  private classifyCommentPurpose(text: string): CASComment['purpose'] {
+    const upperText = text.toUpperCase();
+    if (upperText.includes('TODO') || upperText.includes('FIXME')) return 'todo';
+    if (upperText.includes('WARNING') || upperText.includes('WARN')) return 'warning';
+    if (upperText.includes('HACK') || upperText.includes('WORKAROUND')) return 'hack';
+    if (upperText.includes('NOTE') || upperText.includes('INFO')) return 'note';
+    if (upperText.includes('DISABLED') || upperText.includes('COMMENTED')) return 'disabled-code';
+    return 'explanation';
+  }
+
+  private classifyTodoCategory(text: string): 'bug' | 'feature' | 'refactor' | 'performance' | 'security' | 'documentation' | 'test' | undefined {
+    const lowerText = text.toLowerCase();
+    if (lowerText.includes('bug') || lowerText.includes('fix') || lowerText.includes('error')) return 'bug';
+    if (lowerText.includes('security') || lowerText.includes('auth') || lowerText.includes('permission')) return 'security';
+    if (lowerText.includes('performance') || lowerText.includes('optimize') || lowerText.includes('slow')) return 'performance';
+    if (lowerText.includes('test') || lowerText.includes('spec') || lowerText.includes('coverage')) return 'test';
+    if (lowerText.includes('refactor') || lowerText.includes('cleanup') || lowerText.includes('reorganize')) return 'refactor';
+    if (lowerText.includes('doc') || lowerText.includes('comment') || lowerText.includes('explain')) return 'documentation';
+    return 'feature';
   }
 }

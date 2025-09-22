@@ -6,7 +6,7 @@ import {
   Enum,
 } from '@mikro-orm/core';
 import { BaseEntity } from './base.entity';
-import { Project } from './project.entity';
+import { Codebase } from './codebase.entity';
 import { Component } from './component.entity';
 
 export enum TelemetryType {
@@ -28,13 +28,13 @@ export enum AggregationInterval {
 }
 
 @Entity({ tableName: 'telemetry_snapshots' })
-@Index({ properties: ['project', 'timestamp'] })
+@Index({ properties: ['codebase', 'timestamp'] })
 @Index({ properties: ['component', 'timestamp'] })
 @Index({ properties: ['type', 'timestamp'] })
 export class TelemetrySnapshot extends BaseEntity {
-  @ManyToOne(() => Project, { deleteRule: 'cascade' })
+  @ManyToOne(() => Codebase, { deleteRule: 'cascade' })
   @Index()
-  project!: Project;
+  codebase!: Codebase;
 
   @ManyToOne(() => Component, { nullable: true, deleteRule: 'set null' })
   component?: Component;

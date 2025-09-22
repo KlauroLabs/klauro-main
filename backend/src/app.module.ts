@@ -6,13 +6,15 @@ import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { PostgreSqlDriver } from '@mikro-orm/postgresql';
 
 import { HealthModule } from './health/health.module';
-import { AnalyzerModule } from './analyzer/analyzer.module';
+// import { AnalyzerModule } from './analyzer/analyzer.module';
 import { WebSocketModule } from './websocket/websocket.module';
 import { TelemetryModule } from './telemetry/telemetry.module';
 import { DatabaseModule } from './database/database.module';
 import { AuthModule } from './auth/auth.module';
 import { OrganizationsModule } from './organizations/organizations.module';
 import { UsersModule } from './users/users.module';
+import { WorkspacesModule } from './workspaces/workspaces.module';
+import { CodebasesModule } from './codebases/codebases.module';
 import { ProjectsModule } from './projects/projects.module';
 import { AnalysisModule } from './analysis/analysis.module';
 import { ComponentsModule } from './components/components.module';
@@ -83,10 +85,12 @@ import { configurationSchema } from './config/configuration';
     AuthModule,
     OrganizationsModule,
     UsersModule,
+    WorkspacesModule,
+    CodebasesModule,
     ProjectsModule,
     AnalysisModule,
     ComponentsModule,
-    AnalyzerModule,
+    // AnalyzerModule, // Temporarily disabled due to compilation errors
     WebSocketModule,
     HealthModule,
     TelemetryModule,

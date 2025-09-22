@@ -2,15 +2,12 @@ import {
   Entity,
   Property,
   ManyToOne,
-  OneToMany,
-  Collection,
   Index,
   Enum,
 } from '@mikro-orm/core';
 import { BaseEntity } from './base.entity';
 import { Organization } from './organization.entity';
 import { User } from './user.entity';
-import { AnalysisRun } from './analysis-run.entity';
 
 export enum ProjectStatus {
   ACTIVE = 'active',
@@ -70,9 +67,6 @@ export class Project extends BaseEntity {
   @Property({ type: 'timestamptz', nullable: true })
   lastAnalyzedAt?: Date;
 
-  @OneToMany(() => AnalysisRun, analysisRun => analysisRun.project)
-  analysisRuns = new Collection<AnalysisRun>(this);
-
   // Helper methods for settings
   getSetting<T = any>(key: string, defaultValue?: T): T {
     return this.settings?.[key] ?? defaultValue;
@@ -124,17 +118,6 @@ export class Project extends BaseEntity {
 
   get isArchived(): boolean {
     return this.status === ProjectStatus.ARCHIVED;
-  }
-
-  // Analysis tracking
-  get totalAnalysisRuns(): number {
-    return this.analysisRuns.length;
-  }
-
-  getLatestAnalysisRun(): AnalysisRun | undefined {
-    if (this.analysisRuns.length === 0) return undefined;
-    return this.analysisRuns.getItems()
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
   }
 
   // Repository helpers

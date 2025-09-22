@@ -1,11 +1,16 @@
 import { BaseAnalyzer, AnalysisContext } from '../core/base-analyzer';
-import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint, CASCategories, CASPerspective } from '../../types/cas.types';
+import {
+  CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint,
+  CASCategories, CASPerspective, CASDocumentation, CASComment,
+  CASTodo, CASImplementationStatus, CASCallGraph
+} from '../../types/cas.types';
 import { AnalyzerError } from '../core/errors';
 import { EnhancedCallGraphExtractor } from '../enhanced-call-graph-extractor';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { parse, TSESTree } from '@typescript-eslint/typescript-estree';
 import { glob } from 'glob';
+import * as crypto from 'crypto';
 
 interface ParsedAST {
   ast: TSESTree.Program;
@@ -16,12 +21,19 @@ interface ParsedAST {
 interface FunctionInfo {
   name: string;
   type: 'function' | 'method' | 'arrow' | 'async' | 'constructor';
-  parameters: Array<{ name: string; type?: string; optional: boolean }>;
+  parameters: Array<{ name: string; type?: string; optional: boolean; description?: string }>;
   returnType?: string;
   lineStart: number;
   lineEnd: number;
   isExported: boolean;
   isAsync: boolean;
+  isGenerator?: boolean;
+  documentation?: CASDocumentation;
+  comments?: CASComment[];
+  todos?: CASTodo[];
+  implementationStatus?: CASImplementationStatus;
+  callGraph?: CASCallGraph;
+  decorators?: Array<{ name: string; arguments?: any[] }>;
 }
 
 interface ClassInfo {
@@ -29,11 +41,20 @@ interface ClassInfo {
   extends?: string;
   implements: string[];
   methods: FunctionInfo[];
-  properties: Array<{ name: string; type?: string; isStatic: boolean; isPrivate: boolean }>;
+  properties: Array<{
+    name: string;
+    type?: string;
+    isStatic: boolean;
+    isPrivate: boolean;
+    documentation?: CASDocumentation;
+  }>;
   lineStart: number;
   lineEnd: number;
   isExported: boolean;
   isAbstract: boolean;
+  documentation?: CASDocumentation;
+  decorators?: Array<{ name: string; arguments?: any[] }>;
+  comments?: CASComment[];
 }
 
 interface ImportInfo {
@@ -55,6 +76,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private astCache = new Map<string, ParsedAST>();
   private isTypeScriptProject = false;
   private callGraphExtractor!: EnhancedCallGraphExtractor;
+  private todoCounter = 0;
+  private commentCounter = 0;
 
   constructor() {
     super(
@@ -148,6 +171,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         loc: true,
         range: true,
         jsx: true,
+        comment: true,
+        tokens: true,
         useJSXTextNode: true,
         ecmaFeatures: { jsx: true },
         sourceType: 'module'
@@ -156,6 +181,10 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       this.astCache.set(relativePath, { ast, content, filePath: fullPath });
 
       const fileId = `file_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
+      const lines = content.split('\n');
+      const fileComments = this.extractCommentsFromFile(content, fullPath);
+      const fileTodos = this.extractTodosFromComments(fileComments, fullPath);
+
       nodes.push(this.createNode(
         fileId,
         path.basename(relativePath),
@@ -163,18 +192,22 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         1,
         fullPath,
         1,
-        content.split('\n').length,
+        lines.length,
         {
           relativePath,
           extension: path.extname(relativePath),
-          isTypeScript: relativePath.endsWith('.ts') || relativePath.endsWith('.tsx')
+          isTypeScript: relativePath.endsWith('.ts') || relativePath.endsWith('.tsx'),
+          commentCount: fileComments.length,
+          todoCount: fileTodos.length,
+          comments: fileComments.length > 0 ? fileComments : undefined,
+          todos: fileTodos.length > 0 ? fileTodos : undefined
         }
       ));
 
       this.extractImports(ast, relativePath, nodes, edges, exitPoints);
-      this.extractFunctions(ast, relativePath, nodes, edges, entryPoints);
-      this.extractClasses(ast, relativePath, nodes, edges);
-      this.extractVariables(ast, relativePath, nodes);
+      this.extractFunctions(ast, relativePath, nodes, edges, entryPoints, content, lines);
+      this.extractClasses(ast, relativePath, nodes, edges, content, lines);
+      this.extractVariables(ast, relativePath, nodes, content);
       this.extractExports(ast, relativePath, entryPoints);
 
       // Use enhanced call graph extractor for comprehensive analysis
@@ -235,15 +268,17 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     filePath: string,
     nodes: CASNode[],
     edges: CASEdge[],
-    entryPoints: any[]
+    entryPoints: any[],
+    content: string,
+    lines: string[]
   ): void {
-    const functions = this.findFunctionsInAST(ast);
+    const functions = this.findFunctionsInAST(ast, content, lines);
     const fileId = `file_${filePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
 
     functions.forEach((func, index) => {
       const funcId = `function_${filePath}_${func.name}_${index}`;
 
-      nodes.push(this.createNodeBuilder(
+      const node = this.createNodeBuilder(
         funcId,
         func.name,
         'function'
@@ -254,15 +289,24 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         .withMetadata({
           is_exported: func.isExported,
           is_async: func.isAsync,
+          is_generated: func.isGenerator,
           attributes: {
-            functionType: func.type
+            functionType: func.type,
+            hasDocumentation: !!func.documentation,
+            todoCount: func.todos?.length || 0
           }
         })
         .withSignature({
           parameters: func.parameters,
           return_type: func.returnType
         })
-        .build());
+        .withDocumentation(func.documentation)
+        .withComments(func.comments)
+        .withTodos(func.todos)
+        .withImplementationStatus(func.implementationStatus)
+        .build();
+
+      nodes.push(node);
 
       edges.push(this.createEdge(
         `${fileId}_contains_${funcId}`,
@@ -287,15 +331,17 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     ast: TSESTree.Program,
     filePath: string,
     nodes: CASNode[],
-    edges: CASEdge[]
+    edges: CASEdge[],
+    content: string,
+    lines: string[]
   ): void {
-    const classes = this.findClassesInAST(ast);
+    const classes = this.findClassesInAST(ast, content, lines);
     const fileId = `file_${filePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
 
     classes.forEach((cls, index) => {
       const classId = `class_${filePath}_${cls.name}_${index}`;
 
-      nodes.push(this.createNodeBuilder(
+      const classNode = this.createNodeBuilder(
         classId,
         cls.name,
         'class'
@@ -310,10 +356,15 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
             extends: cls.extends,
             implements: cls.implements,
             methodCount: cls.methods.length,
-            propertyCount: cls.properties.length
+            propertyCount: cls.properties.length,
+            hasDocumentation: !!cls.documentation
           }
         })
-        .build());
+        .withDocumentation(cls.documentation)
+        .withComments(cls.comments)
+        .build();
+
+      nodes.push(classNode);
 
       edges.push(this.createEdge(
         `${fileId}_contains_${classId}`,
@@ -325,7 +376,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       cls.methods.forEach((method, methodIndex) => {
         const methodId = `method_${classId}_${method.name}_${methodIndex}`;
 
-        nodes.push(this.createNodeBuilder(
+        const methodNode = this.createNodeBuilder(
           methodId,
           method.name,
           'method'
@@ -335,8 +386,11 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           .withSource({ file: filePath, line: method.lineStart, end_line: method.lineEnd })
           .withMetadata({
             is_async: method.isAsync,
+            is_generated: method.isGenerator,
             attributes: {
-              methodType: method.type
+              methodType: method.type,
+              hasDocumentation: !!method.documentation,
+              todoCount: method.todos?.length || 0
             }
           })
           .withSignature({
@@ -344,7 +398,13 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
             return_type: method.returnType
           })
           .withParent(classId)
-          .build());
+          .withDocumentation(method.documentation)
+          .withComments(method.comments)
+          .withTodos(method.todos)
+          .withImplementationStatus(method.implementationStatus)
+          .build();
+
+        nodes.push(methodNode);
 
         edges.push(this.createEdge(
           `${classId}_contains_${methodId}`,
@@ -356,8 +416,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     });
   }
 
-  private extractVariables(ast: TSESTree.Program, filePath: string, nodes: CASNode[]): void {
-    const variables = this.findVariablesInAST(ast);
+  private extractVariables(ast: TSESTree.Program, filePath: string, nodes: CASNode[], content: string): void {
+    const variables = this.findVariablesInAST(ast, content);
     const fileId = `file_${filePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
 
     variables.forEach((variable, index) => {
@@ -419,96 +479,156 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     });
   }
 
-  private findFunctionsInAST(ast: TSESTree.Program): FunctionInfo[] {
+  private findFunctionsInAST(ast: TSESTree.Program, content: string, lines: string[]): FunctionInfo[] {
     const functions: FunctionInfo[] = [];
     const visited = new WeakSet();
 
-    const walk = (node: any) => {
+    const walk = (node: any, parent?: any) => {
       if (!node || typeof node !== 'object') return;
       if (visited.has(node)) return;
       visited.add(node);
 
       if (node.type === 'FunctionDeclaration' && node.id) {
+        const jsdoc = this.extractJSDoc(node, content, lines);
+        const comments = this.extractNodeComments(node, content, lines);
+        const todos = this.extractTodosFromComments(comments, node.loc?.start.line?.toString() || '');
+        const status = this.detectImplementationStatus(node, content);
+
         functions.push({
           name: node.id.name,
-          type: node.async ? 'async' : 'function',
-          parameters: node.params.map((p: any) => ({
-            name: p.name || 'param',
-            type: undefined,
-            optional: p.optional || false
-          })),
+          type: node.async ? 'async' : node.generator ? 'function' : 'function',
+          parameters: this.extractParameters(node.params, jsdoc),
+          returnType: this.extractReturnType(node.returnType, jsdoc),
           lineStart: node.loc?.start.line || 0,
           lineEnd: node.loc?.end.line || 0,
-          isExported: false,
-          isAsync: node.async || false
+          isExported: parent?.type === 'ExportNamedDeclaration' || parent?.type === 'ExportDefaultDeclaration',
+          isAsync: node.async || false,
+          isGenerator: node.generator || false,
+          documentation: jsdoc,
+          comments: comments.length > 0 ? comments : undefined,
+          todos: todos.length > 0 ? todos : undefined,
+          implementationStatus: status,
+          decorators: this.extractDecorators(node)
+        });
+      }
+
+      if (node.type === 'VariableDeclaration') {
+        node.declarations.forEach((decl: any) => {
+          if (decl.init?.type === 'ArrowFunctionExpression' && decl.id?.name) {
+            const jsdoc = this.extractJSDoc(node, content, lines);
+            const comments = this.extractNodeComments(decl.init, content, lines);
+            const todos = this.extractTodosFromComments(comments, decl.init.loc?.start.line?.toString() || '');
+            const status = this.detectImplementationStatus(decl.init, content);
+
+            functions.push({
+              name: decl.id.name,
+              type: 'arrow',
+              parameters: this.extractParameters(decl.init.params, jsdoc),
+              returnType: this.extractReturnType(decl.init.returnType, jsdoc),
+              lineStart: decl.init.loc?.start.line || 0,
+              lineEnd: decl.init.loc?.end.line || 0,
+              isExported: parent?.type === 'ExportNamedDeclaration',
+              isAsync: decl.init.async || false,
+              isGenerator: false,
+              documentation: jsdoc,
+              comments: comments.length > 0 ? comments : undefined,
+              todos: todos.length > 0 ? todos : undefined,
+              implementationStatus: status
+            });
+          }
         });
       }
 
       if (node.type === 'MethodDefinition') {
+        const jsdoc = this.extractJSDoc(node, content, lines);
+        const comments = this.extractNodeComments(node, content, lines);
+        const todos = this.extractTodosFromComments(comments, node.loc?.start.line?.toString() || '');
+        const status = this.detectImplementationStatus(node.value, content);
+
         functions.push({
           name: node.key.name || 'method',
           type: node.kind === 'constructor' ? 'constructor' : 'method',
-          parameters: node.value.params.map((p: any) => ({
-            name: p.name || 'param',
-            type: undefined,
-            optional: p.optional || false
-          })),
+          parameters: this.extractParameters(node.value.params, jsdoc),
+          returnType: this.extractReturnType(node.value.returnType, jsdoc),
           lineStart: node.loc?.start.line || 0,
           lineEnd: node.loc?.end.line || 0,
           isExported: false,
-          isAsync: node.value.async || false
+          isAsync: node.value.async || false,
+          isGenerator: node.value.generator || false,
+          documentation: jsdoc,
+          comments: comments.length > 0 ? comments : undefined,
+          todos: todos.length > 0 ? todos : undefined,
+          implementationStatus: status,
+          decorators: this.extractDecorators(node)
         });
       }
 
       for (const key in node) {
-        if (key === 'parent') continue; // Skip parent references to avoid circular recursion
+        if (key === 'parent') continue;
 
         if (Array.isArray(node[key])) {
-          node[key].forEach(walk);
+          node[key].forEach((child: any) => walk(child, node));
         } else if (typeof node[key] === 'object') {
-          walk(node[key]);
+          walk(node[key], node);
         }
       }
     };
 
-    walk(ast);
+    walk(ast, null);
     return functions;
   }
 
-  private findClassesInAST(ast: TSESTree.Program): ClassInfo[] {
+  private findClassesInAST(ast: TSESTree.Program, content: string, lines: string[]): ClassInfo[] {
     const classes: ClassInfo[] = [];
     const visited = new WeakSet();
 
-    const walk = (node: any) => {
+    const walk = (node: any, parent?: any) => {
       if (!node || typeof node !== 'object') return;
       if (visited.has(node)) return;
       visited.add(node);
 
       if (node.type === 'ClassDeclaration' && node.id) {
+        const classJsdoc = this.extractJSDoc(node, content, lines);
+        const classComments = this.extractNodeComments(node, content, lines);
+
         const methods = node.body.body
           .filter((member: any) => member.type === 'MethodDefinition')
-          .map((method: any) => ({
-            name: method.key.name || 'method',
-            type: method.kind === 'constructor' ? 'constructor' : 'method',
-            parameters: method.value.params.map((p: any) => ({
-              name: p.name || 'param',
-              type: undefined,
-              optional: p.optional || false
-            })),
-            lineStart: method.loc?.start.line || 0,
-            lineEnd: method.loc?.end.line || 0,
-            isExported: false,
-            isAsync: method.value.async || false
-          }));
+          .map((method: any) => {
+            const methodJsdoc = this.extractJSDoc(method, content, lines);
+            const methodComments = this.extractNodeComments(method, content, lines);
+            const methodTodos = this.extractTodosFromComments(methodComments, method.loc?.start.line?.toString() || '');
+            const methodStatus = this.detectImplementationStatus(method.value, content);
+
+            return {
+              name: method.key.name || 'method',
+              type: method.kind === 'constructor' ? 'constructor' as const : 'method' as const,
+              parameters: this.extractParameters(method.value.params, methodJsdoc),
+              returnType: this.extractReturnType(method.value.returnType, methodJsdoc),
+              lineStart: method.loc?.start.line || 0,
+              lineEnd: method.loc?.end.line || 0,
+              isExported: false,
+              isAsync: method.value.async || false,
+              isGenerator: method.value.generator || false,
+              documentation: methodJsdoc,
+              comments: methodComments.length > 0 ? methodComments : undefined,
+              todos: methodTodos.length > 0 ? methodTodos : undefined,
+              implementationStatus: methodStatus,
+              decorators: this.extractDecorators(method)
+            };
+          });
 
         const properties = node.body.body
           .filter((member: any) => member.type === 'PropertyDefinition')
-          .map((prop: any) => ({
-            name: prop.key.name || 'property',
-            type: undefined,
-            isStatic: prop.static || false,
-            isPrivate: prop.accessibility === 'private'
-          }));
+          .map((prop: any) => {
+            const propJsdoc = this.extractJSDoc(prop, content, lines);
+            return {
+              name: prop.key.name || 'property',
+              type: this.extractTypeFromAnnotation(prop.typeAnnotation),
+              isStatic: prop.static || false,
+              isPrivate: prop.accessibility === 'private',
+              documentation: propJsdoc
+            };
+          });
 
         classes.push({
           name: node.id.name,
@@ -518,62 +638,67 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           properties,
           lineStart: node.loc?.start.line || 0,
           lineEnd: node.loc?.end.line || 0,
-          isExported: false,
-          isAbstract: node.abstract || false
+          isExported: parent?.type === 'ExportNamedDeclaration' || parent?.type === 'ExportDefaultDeclaration',
+          isAbstract: node.abstract || false,
+          documentation: classJsdoc,
+          decorators: this.extractDecorators(node),
+          comments: classComments.length > 0 ? classComments : undefined
         });
       }
 
       for (const key in node) {
-        if (key === 'parent') continue; // Skip parent references to avoid circular recursion
+        if (key === 'parent') continue;
 
         if (Array.isArray(node[key])) {
-          node[key].forEach(walk);
+          node[key].forEach((child: any) => walk(child, node));
         } else if (typeof node[key] === 'object') {
-          walk(node[key]);
+          walk(node[key], node);
         }
       }
     };
 
-    walk(ast);
+    walk(ast, null);
     return classes;
   }
 
-  private findVariablesInAST(ast: TSESTree.Program): VariableInfo[] {
+  private findVariablesInAST(ast: TSESTree.Program, content: string): VariableInfo[] {
     const variables: VariableInfo[] = [];
     const visited = new WeakSet();
 
-    const walk = (node: any) => {
+    const walk = (node: any, parent?: any) => {
       if (!node || typeof node !== 'object') return;
       if (visited.has(node)) return;
       visited.add(node);
 
       if (node.type === 'VariableDeclaration') {
         node.declarations.forEach((declaration: any) => {
-          if (declaration.id && declaration.id.name) {
+          if (declaration.id && declaration.id.name &&
+              declaration.init?.type !== 'ArrowFunctionExpression' &&
+              declaration.init?.type !== 'FunctionExpression') {
             variables.push({
               name: declaration.id.name,
-              type: undefined,
-              value: undefined,
+              type: this.extractTypeFromAnnotation(declaration.id.typeAnnotation),
+              value: this.extractLiteralValue(declaration.init),
               kind: node.kind,
               line: node.loc?.start.line || 0,
-              isExported: false
+              isExported: parent?.type === 'ExportNamedDeclaration'
             });
           }
         });
       }
 
       for (const key in node) {
-        if (key === 'parent') continue; // Skip parent references to avoid circular recursion
+        if (key === 'parent') continue;
 
         if (Array.isArray(node[key])) {
-          node[key].forEach(walk);
+          node[key].forEach((child: any) => walk(child, node));
         } else if (typeof node[key] === 'object') {
-          walk(node[key]);
+          walk(node[key], node);
         }
       }
     };
 
-    walk(ast);
+    walk(ast, null);
     return variables;
   }
 
@@ -1391,6 +1516,391 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         show_members: false,
         focus: 'inheritance'
       }
+    });
+  }
+
+  private extractJSDoc(node: any, content: string, lines: string[]): CASDocumentation | undefined {
+    if (!node.loc) return undefined;
+
+    const startLine = node.loc.start.line;
+    if (startLine <= 1) return undefined;
+
+    const previousLine = lines[startLine - 2];
+    if (!previousLine) return undefined;
+
+    const trimmed = previousLine.trim();
+    if (!trimmed.endsWith('*/')) return undefined;
+
+    let jsdocStart = -1;
+    for (let i = startLine - 2; i >= 0; i--) {
+      if (lines[i].includes('/**')) {
+        jsdocStart = i;
+        break;
+      }
+    }
+
+    if (jsdocStart === -1) return undefined;
+
+    const jsdocLines = lines.slice(jsdocStart, startLine - 1);
+    const rawDoc = jsdocLines.join('\n');
+
+    return this.parseJSDoc(rawDoc, jsdocStart + 1, startLine - 1);
+  }
+
+  private parseJSDoc(raw: string, startLine: number, endLine: number): CASDocumentation {
+    const doc: CASDocumentation = {
+      type: 'jsdoc',
+      raw,
+      location: { start_line: startLine, end_line: endLine }
+    };
+
+    const cleanLines = raw
+      .split('\n')
+      .map(line => line.replace(/^\s*\*\s?/, '').trim())
+      .filter(line => line && !line.startsWith('/**') && !line.startsWith('*/'));
+
+    const descriptionLines: string[] = [];
+    const params: any[] = [];
+    const tags: any[] = [];
+    let returns: any = undefined;
+    const throws: any[] = [];
+    const examples: any[] = [];
+
+    let currentExample: string[] | null = null;
+
+    for (const line of cleanLines) {
+      if (line.startsWith('@')) {
+        const match = line.match(/^@(\w+)\s*(.*)/);
+        if (match) {
+          const [, tag, value] = match;
+
+          if (tag === 'param' || tag === 'parameter') {
+            const paramMatch = value.match(/^(?:\{([^}]+)\})?\s*(\S+)\s*(?:-\s*)?(.*)/);
+            if (paramMatch) {
+              const [, type, name, description] = paramMatch;
+              params.push({
+                name: name.replace(/[\[\]]/g, ''),
+                type: type || undefined,
+                description: description || undefined,
+                optional: name.includes('[') || name.includes('?')
+              });
+            }
+          } else if (tag === 'returns' || tag === 'return') {
+            const returnMatch = value.match(/^(?:\{([^}]+)\})?\s*(.*)/);
+            if (returnMatch) {
+              const [, type, description] = returnMatch;
+              returns = { type: type || undefined, description: description || undefined };
+            }
+          } else if (tag === 'throws' || tag === 'throw') {
+            const throwMatch = value.match(/^(?:\{([^}]+)\})?\s*(.*)/);
+            if (throwMatch) {
+              const [, type, description] = throwMatch;
+              throws.push({ type: type || undefined, description: description || undefined });
+            }
+          } else if (tag === 'example') {
+            if (currentExample) {
+              examples.push({ code: currentExample.join('\n'), language: 'javascript' });
+            }
+            currentExample = value ? [value] : [];
+          } else if (tag === 'deprecated' || tag === 'since' || tag === 'author' || tag === 'see' || tag === 'link') {
+            tags.push({ tag, value, metadata: {} });
+          }
+        }
+      } else if (currentExample) {
+        currentExample.push(line);
+      } else {
+        descriptionLines.push(line);
+      }
+    }
+
+    if (currentExample) {
+      examples.push({ code: currentExample.join('\n'), language: 'javascript' });
+    }
+
+    if (descriptionLines.length > 0) {
+      const fullDescription = descriptionLines.join(' ');
+      const summaryEnd = fullDescription.indexOf('. ');
+      if (summaryEnd > 0) {
+        doc.summary = fullDescription.substring(0, summaryEnd + 1);
+        doc.description = fullDescription;
+      } else {
+        doc.summary = fullDescription;
+        doc.description = fullDescription;
+      }
+    }
+
+    if (params.length > 0) doc.parameters = params;
+    if (returns) doc.returns = returns;
+    if (throws.length > 0) doc.throws = throws;
+    if (examples.length > 0) doc.examples = examples;
+    if (tags.length > 0) doc.tags = tags;
+
+    return doc;
+  }
+
+  private extractNodeComments(node: any, content: string, lines: string[]): CASComment[] {
+    const comments: CASComment[] = [];
+    if (!node.loc) return comments;
+
+    const startLine = node.loc.start.line;
+    const endLine = node.loc.end.line;
+
+    for (let i = startLine; i <= endLine && i <= lines.length; i++) {
+      const line = lines[i - 1];
+      if (!line) continue;
+
+      const singleLineMatch = line.match(/\/\/(.*)$/);
+      if (singleLineMatch) {
+        const text = singleLineMatch[1].trim();
+        const purpose = this.classifyCommentPurpose(text);
+        comments.push({
+          id: `comment_${++this.commentCounter}`,
+          type: 'single-line',
+          style: '//',
+          text,
+          purpose,
+          location: {
+            file: node.loc.source || '',
+            line: i,
+            relative_to: 'inline'
+          },
+          markers: this.extractCommentMarkers(text)
+        });
+      }
+
+      const blockMatch = line.match(/\/\*([^*]|\*(?!\/))*\*\//);
+      if (blockMatch) {
+        const text = blockMatch[0].replace(/^\/\*\s*/, '').replace(/\s*\*\/$/, '').trim();
+        if (!text.includes('/**')) {
+          const purpose = this.classifyCommentPurpose(text);
+          comments.push({
+            id: `comment_${++this.commentCounter}`,
+            type: 'block',
+            style: '/* */',
+            text,
+            purpose,
+            location: {
+              file: node.loc.source || '',
+              line: i,
+              relative_to: 'inline'
+            },
+            markers: this.extractCommentMarkers(text)
+          });
+        }
+      }
+    }
+
+    return comments;
+  }
+
+  private extractCommentsFromFile(content: string, filePath: string): CASComment[] {
+    const comments: CASComment[] = [];
+    const lines = content.split('\n');
+
+    lines.forEach((line, index) => {
+      const singleLineMatch = line.match(/\/\/(.*)$/);
+      if (singleLineMatch) {
+        const text = singleLineMatch[1].trim();
+        const purpose = this.classifyCommentPurpose(text);
+        comments.push({
+          id: `comment_${++this.commentCounter}`,
+          type: 'single-line',
+          style: '//',
+          text,
+          purpose,
+          location: {
+            file: filePath,
+            line: index + 1,
+            relative_to: 'above'
+          },
+          markers: this.extractCommentMarkers(text)
+        });
+      }
+    });
+
+    return comments;
+  }
+
+  private extractCommentMarkers(text: string): any {
+    return {
+      is_todo: /\b(TODO|TO DO)\b/i.test(text),
+      is_fixme: /\bFIXME\b/i.test(text),
+      is_hack: /\bHACK\b/i.test(text),
+      is_warning: /\b(WARNING|WARN)\b/i.test(text),
+      is_note: /\bNOTE\b/i.test(text),
+      is_question: /\?/.test(text) && text.length < 100,
+      is_important: /\b(IMPORTANT|CRITICAL)\b/i.test(text)
+    };
+  }
+
+  private classifyCommentPurpose(text: string): CASComment['purpose'] {
+    if (/\b(TODO|FIXME|HACK)\b/i.test(text)) return 'todo';
+    if (/\b(WARNING|WARN|DANGER)\b/i.test(text)) return 'warning';
+    if (/\bNOTE\b/i.test(text)) return 'note';
+    if (/\bHACK\b/i.test(text)) return 'hack';
+    if (/^\s*\/\/.+\s*$/.test(text) && text.includes('//')) return 'disabled-code';
+    if (text.length < 50 && /explains?|because|since|why/i.test(text)) return 'clarification';
+    return 'explanation';
+  }
+
+  private extractTodosFromComments(comments: CASComment[], context: string): CASTodo[] {
+    const todos: CASTodo[] = [];
+
+    comments.forEach(comment => {
+      if (comment.markers?.is_todo || comment.markers?.is_fixme || comment.markers?.is_hack) {
+        const typeMatch = comment.text.match(/\b(TODO|FIXME|HACK|NOTE|WARNING|XXX|OPTIMIZE|REFACTOR)\b/i);
+        const type = typeMatch ? typeMatch[0].toUpperCase() as CASTodo['type'] : 'TODO';
+
+        const assigneeMatch = comment.text.match(/\b(?:TODO|FIXME|HACK)\s*\(([^)]+)\)/);
+        const assignee = assigneeMatch ? assigneeMatch[1] : undefined;
+
+        const priority = comment.markers?.is_important ? 'high' :
+                        comment.markers?.is_fixme ? 'medium' : 'low';
+
+        todos.push({
+          id: `todo_${++this.todoCounter}`,
+          type,
+          text: comment.text,
+          priority,
+          assignee,
+          location: {
+            file: comment.location.file,
+            line: comment.location.line,
+            node_id: context
+          },
+          classification: {
+            category: type === 'FIXME' ? 'bug' :
+                     type === 'OPTIMIZE' ? 'performance' :
+                     type === 'REFACTOR' ? 'refactor' : 'feature',
+            technical_debt: true,
+            blocking: priority === 'high'
+          }
+        });
+      }
+    });
+
+    return todos;
+  }
+
+  private detectImplementationStatus(node: any, content: string): CASImplementationStatus | undefined {
+    if (!node || !node.body) return undefined;
+
+    const bodyStr = content.substring(node.body.range?.[0] || 0, node.body.range?.[1] || 0);
+
+    const indicators = {
+      has_todo_markers: /\b(TODO|FIXME|HACK)\b/i.test(bodyStr),
+      has_not_implemented_exceptions: /throw\s+.*(NotImplemented|Unsupported|TODO)/i.test(bodyStr),
+      has_stub_returns: /return\s+(null|undefined|false|0|''|""|\[\]|\{\})\s*;?\s*$/m.test(bodyStr),
+      has_placeholder_code: /console\.(log|warn|error)\s*\(['"].*TODO/i.test(bodyStr),
+      has_hardcoded_values: /const\s+\w+\s*=\s*['"]PLACEHOLDER|TEMP|TODO/i.test(bodyStr),
+      has_commented_out_code: /\/\/.*\w+\s*\(|^\/\*[\s\S]*?\*\//m.test(bodyStr)
+    };
+
+    const hasImplementation = bodyStr.trim().length > 10 &&
+                            !bodyStr.trim().match(/^\{\s*\}$/);
+
+    let status: CASImplementationStatus['status'] = 'complete';
+    if (!hasImplementation) {
+      status = 'stub';
+    } else if (indicators.has_not_implemented_exceptions) {
+      status = 'not-implemented';
+    } else if (indicators.has_todo_markers || indicators.has_stub_returns) {
+      status = 'partial';
+    }
+
+    const deprecatedMatch = bodyStr.match(/@deprecated/i);
+    if (deprecatedMatch) {
+      status = 'deprecated';
+    }
+
+    const experimentalMatch = bodyStr.match(/@experimental|@beta/i);
+    if (experimentalMatch) {
+      status = 'experimental';
+    }
+
+    return {
+      status,
+      indicators,
+      completeness: status === 'complete' ? { estimated_percentage: 100 } :
+                   status === 'partial' ? { estimated_percentage: 50 } :
+                   status === 'stub' ? { estimated_percentage: 10 } :
+                   { estimated_percentage: 0 }
+    };
+  }
+
+  private extractParameters(params: any[], jsdoc?: CASDocumentation): any[] {
+    return params.map((param: any) => {
+      const name = param.name || param.left?.name || 'param';
+      const jsdocParam = jsdoc?.parameters?.find(p => p.name === name);
+
+      return {
+        name,
+        type: this.extractTypeFromAnnotation(param.typeAnnotation) || jsdocParam?.type,
+        optional: param.optional || !!param.left,
+        description: jsdocParam?.description,
+        default_value: param.right ? this.extractLiteralValue(param.right) : undefined
+      };
+    });
+  }
+
+  private extractReturnType(returnTypeNode: any, jsdoc?: CASDocumentation): string | undefined {
+    const annotationType = this.extractTypeFromAnnotation(returnTypeNode);
+    return annotationType || jsdoc?.returns?.type;
+  }
+
+  private extractTypeFromAnnotation(typeNode: any): string | undefined {
+    if (!typeNode) return undefined;
+    if (typeNode.typeAnnotation) {
+      typeNode = typeNode.typeAnnotation;
+    }
+
+    switch (typeNode.type) {
+      case 'TSStringKeyword': return 'string';
+      case 'TSNumberKeyword': return 'number';
+      case 'TSBooleanKeyword': return 'boolean';
+      case 'TSAnyKeyword': return 'any';
+      case 'TSVoidKeyword': return 'void';
+      case 'TSNullKeyword': return 'null';
+      case 'TSUndefinedKeyword': return 'undefined';
+      case 'TSArrayType':
+        const elementType = this.extractTypeFromAnnotation(typeNode.elementType);
+        return elementType ? `${elementType}[]` : 'Array';
+      case 'TSTypeReference':
+        if (typeNode.typeName?.type === 'Identifier') {
+          return typeNode.typeName.name;
+        }
+        break;
+    }
+    return undefined;
+  }
+
+  private extractLiteralValue(node: any): any {
+    if (!node) return undefined;
+
+    switch (node.type) {
+      case 'Literal': return node.value;
+      case 'TemplateLiteral': return node.quasis.map((q: any) => q.value.raw).join('');
+      case 'Identifier': return node.name;
+      case 'ArrayExpression': return '[]';
+      case 'ObjectExpression': return '{}';
+      default: return undefined;
+    }
+  }
+
+  private extractDecorators(node: any): Array<{ name: string; arguments?: any[] }> | undefined {
+    if (!node.decorators || node.decorators.length === 0) return undefined;
+
+    return node.decorators.map((decorator: any) => {
+      if (decorator.expression?.type === 'CallExpression') {
+        const name = decorator.expression.callee?.name || 'unknown';
+        const args = decorator.expression.arguments?.map((arg: any) =>
+          this.extractLiteralValue(arg)
+        );
+        return { name, arguments: args };
+      } else if (decorator.expression?.type === 'Identifier') {
+        return { name: decorator.expression.name };
+      }
+      return { name: 'unknown' };
     });
   }
 

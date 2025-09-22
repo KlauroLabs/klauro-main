@@ -1,5 +1,8 @@
 import { BaseAnalyzer, AnalysisContext } from '../core/base-analyzer';
-import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint } from '../../types/cas.types';
+import {
+  CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint,
+  CASDocumentation, CASComment, CASTodo, CASImplementationStatus
+} from '../../types/cas.types';
 import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
@@ -191,6 +194,8 @@ export class RustAnalyzer extends BaseAnalyzer {
   private cargoProject = false;
   private astRunner: ASTRunner;
   private astCache = new Map<string, RustASTNode>();
+  private todoCounter = 0;
+  private commentCounter = 0;
 
   constructor() {
     super(
@@ -452,46 +457,59 @@ export class RustAnalyzer extends BaseAnalyzer {
       }
 
       const fileId = `file_${this.sanitizeId(relativePath)}`;
-      nodes.push(this.createNode(
+      const fileComments = this.extractCommentsFromFile(content, fullPath);
+      const fileTodos = this.extractTodosFromComments(fileComments, fullPath);
+
+      nodes.push(this.createNodeBuilder(
         fileId,
         relativePath.split('/').pop() || 'unknown.rs',
-        'file',
-        1,
-        fullPath,
-        1,
-        lines.length,
-        {
-          moduleName: moduleName || 'main',
-          uses: uses.map(u => u.path),
-          structCount: structs.length,
-          enumCount: enums.length,
-          traitCount: traits.length,
-          implCount: impls.length,
-          functionCount: functions.length,
-          constantCount: constants.length,
-          staticCount: statics.length,
-          typeCount: types.length,
-          modCount: mods.length
-        }
-      ));
+        'file'
+      )
+        .withLevel(1, 'File/Module')
+        .withCategory('modules', ['rust-files'])
+        .withSource({ file: fullPath, line: 1, end_line: lines.length })
+        .withMetadata({
+          attributes: {
+            moduleName: moduleName || 'main',
+            uses: uses.map(u => u.path),
+            structCount: structs.length,
+            enumCount: enums.length,
+            traitCount: traits.length,
+            implCount: impls.length,
+            functionCount: functions.length,
+            constantCount: constants.length,
+            staticCount: statics.length,
+            typeCount: types.length,
+            modCount: mods.length,
+            extension: '.rs',
+            commentCount: fileComments.length,
+            todoCount: fileTodos.length
+          }
+        })
+        .withComments(fileComments.length > 0 ? fileComments : undefined)
+        .withTodos(fileTodos.length > 0 ? fileTodos : undefined)
+        .build());
 
       for (const use of uses) {
         const useId = `use_${fileId}_${this.sanitizeId(use.path)}`;
-        nodes.push(this.createNode(
+        nodes.push(this.createNodeBuilder(
           useId,
           use.alias || use.path,
-          'use',
-          2,
-          fullPath,
-          use.lineNumber,
-          use.lineNumber,
-          {
-            path: use.path,
-            alias: use.alias,
-            isGlob: use.isGlob,
-            isExternal: use.isExternal
-          }
-        ));
+          'use'
+        )
+          .withLevel(2, 'Import/Dependency')
+          .withCategory('imports', ['rust-uses'])
+          .withSource({ file: fullPath, line: use.lineNumber })
+          .withMetadata({
+            attributes: {
+              path: use.path,
+              alias: use.alias,
+              isGlob: use.isGlob,
+              isExternal: use.isExternal,
+              importType: use.isExternal ? 'external' : 'internal'
+            }
+          })
+          .build());
 
         edges.push(this.createEdge(
           `${fileId}_uses_${useId}`,
@@ -533,23 +551,26 @@ export class RustAnalyzer extends BaseAnalyzer {
 
       for (const constant of constants) {
         const constantId = `constant_${fileId}_${this.sanitizeId(constant.name)}`;
-        nodes.push(this.createNode(
+        nodes.push(this.createNodeBuilder(
           constantId,
           constant.name,
-          'constant',
-          3,
-          fullPath,
-          constant.lineNumber,
-          constant.lineNumber,
-          {
-            type: constant.type,
-            value: constant.value,
-            moduleName: constant.moduleName,
-            attributes: constant.attributes,
-            visibility: constant.visibility,
-            isPublic: constant.isPublic
-          }
-        ));
+          'constant'
+        )
+          .withLevel(3, 'Constant/Property')
+          .withCategory('data', ['rust-constants'])
+          .withSource({ file: fullPath, line: constant.lineNumber })
+          .withMetadata({
+            is_exported: constant.isPublic,
+            attributes: {
+              type: constant.type,
+              value: constant.value,
+              moduleName: constant.moduleName,
+              visibility: constant.visibility,
+              rustAttributes: constant.attributes,
+              constantType: constant.type
+            }
+          })
+          .build());
 
         edges.push(this.createEdge(
           `${fileId}_contains_${constantId}`,
@@ -561,24 +582,27 @@ export class RustAnalyzer extends BaseAnalyzer {
 
       for (const staticVar of statics) {
         const staticId = `static_${fileId}_${this.sanitizeId(staticVar.name)}`;
-        nodes.push(this.createNode(
+        nodes.push(this.createNodeBuilder(
           staticId,
           staticVar.name,
-          'static',
-          3,
-          fullPath,
-          staticVar.lineNumber,
-          staticVar.lineNumber,
-          {
-            type: staticVar.type,
-            value: staticVar.value,
-            moduleName: staticVar.moduleName,
-            attributes: staticVar.attributes,
-            visibility: staticVar.visibility,
-            isPublic: staticVar.isPublic,
-            isMutable: staticVar.isMutable
-          }
-        ));
+          'static'
+        )
+          .withLevel(3, 'Static/Property')
+          .withCategory('data', ['rust-statics'])
+          .withSource({ file: fullPath, line: staticVar.lineNumber })
+          .withMetadata({
+            is_exported: staticVar.isPublic,
+            attributes: {
+              type: staticVar.type,
+              value: staticVar.value,
+              moduleName: staticVar.moduleName,
+              visibility: staticVar.visibility,
+              isMutable: staticVar.isMutable,
+              rustAttributes: staticVar.attributes,
+              staticType: staticVar.type
+            }
+          })
+          .build());
 
         edges.push(this.createEdge(
           `${fileId}_contains_${staticId}`,
@@ -590,23 +614,26 @@ export class RustAnalyzer extends BaseAnalyzer {
 
       for (const type of types) {
         const typeId = `type_${fileId}_${this.sanitizeId(type.name)}`;
-        nodes.push(this.createNode(
+        nodes.push(this.createNodeBuilder(
           typeId,
           type.name,
-          'type',
-          3,
-          fullPath,
-          type.lineNumber,
-          type.lineNumber,
-          {
-            underlying: type.underlying,
-            moduleName: type.moduleName,
-            generics: type.generics,
-            attributes: type.attributes,
-            visibility: type.visibility,
-            isPublic: type.isPublic
-          }
-        ));
+          'type'
+        )
+          .withLevel(3, 'Type/Alias')
+          .withCategory('structures', ['rust-types'])
+          .withSource({ file: fullPath, line: type.lineNumber })
+          .withMetadata({
+            is_exported: type.isPublic,
+            attributes: {
+              underlying: type.underlying,
+              moduleName: type.moduleName,
+              generics: type.generics,
+              visibility: type.visibility,
+              rustAttributes: type.attributes,
+              aliasType: type.underlying
+            }
+          })
+          .build());
 
         edges.push(this.createEdge(
           `${fileId}_contains_${typeId}`,
@@ -630,25 +657,40 @@ export class RustAnalyzer extends BaseAnalyzer {
     entryPoints: any[]
   ): Promise<void> {
     const structId = `struct_${this.sanitizeId(struct.moduleName)}_${this.sanitizeId(struct.name)}`;
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const structComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+      c.location.line >= struct.lineStart - 3 && c.location.line <= struct.lineStart
+    );
+    const structTodos = this.extractTodosFromComments(structComments, structId);
+    const structDocs = this.extractDocumentationFromRustDoc(
+      content.split('\n'),
+      struct.lineStart - 1
+    );
 
-    nodes.push(this.createNode(
+    nodes.push(this.createNodeBuilder(
       structId,
       struct.name,
-      'struct',
-      2,
-      fullPath,
-      struct.lineStart,
-      struct.lineEnd,
-      {
-        moduleName: struct.moduleName,
-        fieldCount: struct.fields.length,
-        generics: struct.generics,
-        attributes: struct.attributes,
-        visibility: struct.visibility,
-        isPublic: struct.isPublic,
-        isUnion: struct.isUnion
-      }
-    ));
+      'struct'
+    )
+      .withLevel(2, 'Class/Interface')
+      .withCategory('structures', ['rust-structs'])
+      .withSource({ file: fullPath, line: struct.lineStart, end_line: struct.lineEnd })
+      .withMetadata({
+        is_exported: struct.isPublic,
+        attributes: {
+          moduleName: struct.moduleName,
+          fieldCount: struct.fields.length,
+          generics: struct.generics,
+          visibility: struct.visibility,
+          isUnion: struct.isUnion,
+          rustAttributes: struct.attributes,
+          hasDocumentation: !!structDocs
+        }
+      })
+      .withDocumentation(structDocs)
+      .withComments(structComments.length > 0 ? structComments : undefined)
+      .withTodos(structTodos.length > 0 ? structTodos : undefined)
+      .build());
 
     edges.push(this.createEdge(
       `${fileId}_contains_${structId}`,
@@ -659,21 +701,25 @@ export class RustAnalyzer extends BaseAnalyzer {
 
     for (const field of struct.fields) {
       const fieldId = `field_${structId}_${this.sanitizeId(field.name)}`;
-      nodes.push(this.createNode(
+      nodes.push(this.createNodeBuilder(
         fieldId,
         field.name,
-        'field',
-        4,
-        fullPath,
-        field.lineNumber,
-        field.lineNumber,
-        {
-          type: field.type,
-          attributes: field.attributes,
-          visibility: field.visibility,
-          isPublic: field.isPublic
-        }
-      ));
+        'field'
+      )
+        .withLevel(4, 'Field/Property')
+        .withCategory('data', ['struct-fields'])
+        .withSource({ file: fullPath, line: field.lineNumber })
+        .withMetadata({
+          is_exported: field.isPublic,
+          attributes: {
+            type: field.type,
+            visibility: field.visibility,
+            rustAttributes: field.attributes,
+            fieldType: field.type
+          }
+        })
+        .withParent(structId)
+        .build());
 
       edges.push(this.createEdge(
         `${structId}_has_field_${fieldId}`,
@@ -708,24 +754,39 @@ export class RustAnalyzer extends BaseAnalyzer {
     entryPoints: any[]
   ): Promise<void> {
     const enumId = `enum_${this.sanitizeId(enm.moduleName)}_${this.sanitizeId(enm.name)}`;
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const enumComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+      c.location.line >= enm.lineStart - 3 && c.location.line <= enm.lineStart
+    );
+    const enumTodos = this.extractTodosFromComments(enumComments, enumId);
+    const enumDocs = this.extractDocumentationFromRustDoc(
+      content.split('\n'),
+      enm.lineStart - 1
+    );
 
-    nodes.push(this.createNode(
+    nodes.push(this.createNodeBuilder(
       enumId,
       enm.name,
-      'enum',
-      2,
-      fullPath,
-      enm.lineStart,
-      enm.lineEnd,
-      {
-        moduleName: enm.moduleName,
-        variantCount: enm.variants.length,
-        generics: enm.generics,
-        attributes: enm.attributes,
-        visibility: enm.visibility,
-        isPublic: enm.isPublic
-      }
-    ));
+      'enum'
+    )
+      .withLevel(2, 'Enum/Type')
+      .withCategory('structures', ['rust-enums'])
+      .withSource({ file: fullPath, line: enm.lineStart, end_line: enm.lineEnd })
+      .withMetadata({
+        is_exported: enm.isPublic,
+        attributes: {
+          moduleName: enm.moduleName,
+          variantCount: enm.variants.length,
+          generics: enm.generics,
+          visibility: enm.visibility,
+          rustAttributes: enm.attributes,
+          hasDocumentation: !!enumDocs
+        }
+      })
+      .withDocumentation(enumDocs)
+      .withComments(enumComments.length > 0 ? enumComments : undefined)
+      .withTodos(enumTodos.length > 0 ? enumTodos : undefined)
+      .build());
 
     edges.push(this.createEdge(
       `${fileId}_contains_${enumId}`,
@@ -736,20 +797,24 @@ export class RustAnalyzer extends BaseAnalyzer {
 
     for (const variant of enm.variants) {
       const variantId = `variant_${enumId}_${this.sanitizeId(variant.name)}`;
-      nodes.push(this.createNode(
+      nodes.push(this.createNodeBuilder(
         variantId,
         variant.name,
-        'enum_variant',
-        4,
-        fullPath,
-        variant.lineNumber,
-        variant.lineNumber,
-        {
-          discriminant: variant.discriminant,
-          attributes: variant.attributes,
-          fieldCount: variant.fields?.length || 0
-        }
-      ));
+        'enum_variant'
+      )
+        .withLevel(4, 'Variant/Case')
+        .withCategory('data', ['enum-variants'])
+        .withSource({ file: fullPath, line: variant.lineNumber })
+        .withMetadata({
+          attributes: {
+            discriminant: variant.discriminant,
+            rustAttributes: variant.attributes,
+            fieldCount: variant.fields?.length || 0,
+            hasFields: !!variant.fields
+          }
+        })
+        .withParent(enumId)
+        .build());
 
       edges.push(this.createEdge(
         `${enumId}_has_variant_${variantId}`,
@@ -761,21 +826,25 @@ export class RustAnalyzer extends BaseAnalyzer {
       if (variant.fields) {
         for (const field of variant.fields) {
           const fieldId = `field_${variantId}_${this.sanitizeId(field.name)}`;
-          nodes.push(this.createNode(
+          nodes.push(this.createNodeBuilder(
             fieldId,
             field.name,
-            'field',
-            5,
-            fullPath,
-            field.lineNumber,
-            field.lineNumber,
-            {
-              type: field.type,
-              attributes: field.attributes,
-              visibility: field.visibility,
-              isPublic: field.isPublic
-            }
-          ));
+            'field'
+          )
+            .withLevel(5, 'Field/Property')
+            .withCategory('data', ['variant-fields'])
+            .withSource({ file: fullPath, line: field.lineNumber })
+            .withMetadata({
+              is_exported: field.isPublic,
+              attributes: {
+                type: field.type,
+                visibility: field.visibility,
+                rustAttributes: field.attributes,
+                fieldType: field.type
+              }
+            })
+            .withParent(variantId)
+            .build());
 
           edges.push(this.createEdge(
             `${variantId}_has_field_${fieldId}`,
@@ -812,26 +881,41 @@ export class RustAnalyzer extends BaseAnalyzer {
     entryPoints: any[]
   ): Promise<void> {
     const traitId = `trait_${this.sanitizeId(trait.moduleName)}_${this.sanitizeId(trait.name)}`;
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const traitComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+      c.location.line >= trait.lineStart - 3 && c.location.line <= trait.lineStart
+    );
+    const traitTodos = this.extractTodosFromComments(traitComments, traitId);
+    const traitDocs = this.extractDocumentationFromRustDoc(
+      content.split('\n'),
+      trait.lineStart - 1
+    );
 
-    nodes.push(this.createNode(
+    nodes.push(this.createNodeBuilder(
       traitId,
       trait.name,
-      'trait',
-      2,
-      fullPath,
-      trait.lineStart,
-      trait.lineEnd,
-      {
-        moduleName: trait.moduleName,
-        methodCount: trait.methods.length,
-        associatedTypeCount: trait.associatedTypes.length,
-        supertraits: trait.supertraits,
-        generics: trait.generics,
-        attributes: trait.attributes,
-        visibility: trait.visibility,
-        isPublic: trait.isPublic
-      }
-    ));
+      'trait'
+    )
+      .withLevel(2, 'Trait/Interface')
+      .withCategory('structures', ['rust-traits'])
+      .withSource({ file: fullPath, line: trait.lineStart, end_line: trait.lineEnd })
+      .withMetadata({
+        is_exported: trait.isPublic,
+        attributes: {
+          moduleName: trait.moduleName,
+          methodCount: trait.methods.length,
+          associatedTypeCount: trait.associatedTypes.length,
+          supertraits: trait.supertraits,
+          generics: trait.generics,
+          visibility: trait.visibility,
+          rustAttributes: trait.attributes,
+          hasDocumentation: !!traitDocs
+        }
+      })
+      .withDocumentation(traitDocs)
+      .withComments(traitComments.length > 0 ? traitComments : undefined)
+      .withTodos(traitTodos.length > 0 ? traitTodos : undefined)
+      .build());
 
     edges.push(this.createEdge(
       `${fileId}_contains_${traitId}`,
@@ -842,29 +926,47 @@ export class RustAnalyzer extends BaseAnalyzer {
 
     for (const method of trait.methods) {
       const methodId = `method_${traitId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
-      nodes.push(this.createNode(
+      const methodDocs = this.extractDocumentationFromRustDoc(
+        content.split('\n'),
+        method.lineStart - 1
+      );
+      const methodComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+        c.location.line >= method.lineStart && c.location.line <= method.lineEnd
+      );
+      const methodTodos = this.extractTodosFromComments(methodComments, methodId);
+
+      nodes.push(this.createNodeBuilder(
         methodId,
         method.name,
-        'trait_method',
-        4,
-        fullPath,
-        method.lineStart,
-        method.lineEnd,
-        {
+        'trait_method'
+      )
+        .withLevel(4, 'Method/Function')
+        .withCategory('methods', ['trait-methods'])
+        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withMetadata({
+          is_exported: method.isPublic,
+          attributes: {
+            generics: method.generics,
+            visibility: method.visibility,
+            isSelf: method.isSelf,
+            isMutSelf: method.isMutSelf,
+            isStatic: method.isStatic,
+            isAsync: method.isAsync,
+            isUnsafe: method.isUnsafe,
+            isConst: method.isConst,
+            rustAttributes: method.attributes,
+            hasDocumentation: !!methodDocs
+          }
+        })
+        .withSignature({
           parameters: method.parameters,
-          returnType: method.returnType,
-          generics: method.generics,
-          attributes: method.attributes,
-          visibility: method.visibility,
-          isPublic: method.isPublic,
-          isSelf: method.isSelf,
-          isMutSelf: method.isMutSelf,
-          isStatic: method.isStatic,
-          isAsync: method.isAsync,
-          isUnsafe: method.isUnsafe,
-          isConst: method.isConst
-        }
-      ));
+          return_type: method.returnType
+        })
+        .withParent(traitId)
+        .withDocumentation(methodDocs)
+        .withComments(methodComments.length > 0 ? methodComments : undefined)
+        .withTodos(methodTodos.length > 0 ? methodTodos : undefined)
+        .build());
 
       edges.push(this.createEdge(
         `${traitId}_declares_${methodId}`,
@@ -876,19 +978,24 @@ export class RustAnalyzer extends BaseAnalyzer {
 
     for (const assocType of trait.associatedTypes) {
       const assocTypeId = `assoc_type_${traitId}_${this.sanitizeId(assocType.name)}`;
-      nodes.push(this.createNode(
+      nodes.push(this.createNodeBuilder(
         assocTypeId,
         assocType.name,
-        'associated_type',
-        4,
-        fullPath,
-        assocType.lineNumber,
-        assocType.lineNumber,
-        {
-          bounds: assocType.bounds,
-          defaultType: assocType.defaultType
-        }
-      ));
+        'associated_type'
+      )
+        .withLevel(4, 'Type/Association')
+        .withCategory('structures', ['associated-types'])
+        .withSource({ file: fullPath, line: assocType.lineNumber })
+        .withMetadata({
+          attributes: {
+            bounds: assocType.bounds,
+            defaultType: assocType.defaultType,
+            hasBounds: assocType.bounds.length > 0,
+            hasDefault: !!assocType.defaultType
+          }
+        })
+        .withParent(traitId)
+        .build());
 
       edges.push(this.createEdge(
         `${traitId}_declares_${assocTypeId}`,
@@ -924,24 +1031,40 @@ export class RustAnalyzer extends BaseAnalyzer {
     entryPoints: any[]
   ): Promise<void> {
     const implId = `impl_${this.sanitizeId(impl.moduleName)}_${this.sanitizeId(impl.typeName)}_${impl.lineStart}`;
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const implComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+      c.location.line >= impl.lineStart - 3 && c.location.line <= impl.lineStart
+    );
+    const implTodos = this.extractTodosFromComments(implComments, implId);
+    const implDocs = this.extractDocumentationFromRustDoc(
+      content.split('\n'),
+      impl.lineStart - 1
+    );
 
-    nodes.push(this.createNode(
+    nodes.push(this.createNodeBuilder(
       implId,
       `impl ${impl.traitName || ''} for ${impl.typeName}`.trim(),
-      'impl',
-      2,
-      fullPath,
-      impl.lineStart,
-      impl.lineEnd,
-      {
-        traitName: impl.traitName,
-        typeName: impl.typeName,
-        moduleName: impl.moduleName,
-        methodCount: impl.methods.length,
-        generics: impl.generics,
-        whereClause: impl.whereClause
-      }
-    ));
+      'impl'
+    )
+      .withLevel(2, 'Implementation')
+      .withCategory('structures', ['rust-impls'])
+      .withSource({ file: fullPath, line: impl.lineStart, end_line: impl.lineEnd })
+      .withMetadata({
+        attributes: {
+          traitName: impl.traitName,
+          typeName: impl.typeName,
+          moduleName: impl.moduleName,
+          methodCount: impl.methods.length,
+          generics: impl.generics,
+          whereClause: impl.whereClause,
+          implementsTrait: !!impl.traitName,
+          hasDocumentation: !!implDocs
+        }
+      })
+      .withDocumentation(implDocs)
+      .withComments(implComments.length > 0 ? implComments : undefined)
+      .withTodos(implTodos.length > 0 ? implTodos : undefined)
+      .build());
 
     edges.push(this.createEdge(
       `${fileId}_contains_${implId}`,
@@ -952,29 +1075,68 @@ export class RustAnalyzer extends BaseAnalyzer {
 
     for (const method of impl.methods) {
       const methodId = `method_${implId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
-      nodes.push(this.createNode(
+      const methodDocs = this.extractDocumentationFromRustDoc(
+        content.split('\n'),
+        method.lineStart - 1
+      );
+      const methodComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+        c.location.line >= method.lineStart && c.location.line <= method.lineEnd
+      );
+      const methodTodos = this.extractTodosFromComments(methodComments, methodId);
+      const lines = content.split('\n');
+      const methodBody = lines.slice(method.lineStart - 1, method.lineEnd);
+      const implementationStatus = this.detectImplementationStatus({
+        name: method.name,
+        attributes: method.attributes,
+        moduleName: impl.moduleName,
+        filePath: fullPath,
+        parameters: method.parameters,
+        returnType: method.returnType,
+        generics: method.generics,
+        visibility: method.visibility,
+        lineStart: method.lineStart,
+        lineEnd: method.lineEnd,
+        isPublic: method.isPublic,
+        isMain: false,
+        isTest: method.attributes.includes('test'),
+        isAsync: method.isAsync,
+        isUnsafe: method.isUnsafe,
+        isConst: method.isConst
+      }, methodBody);
+
+      nodes.push(this.createNodeBuilder(
         methodId,
         method.name,
-        'method',
-        4,
-        fullPath,
-        method.lineStart,
-        method.lineEnd,
-        {
+        'method'
+      )
+        .withLevel(4, 'Method/Function')
+        .withCategory('methods', ['impl-methods'])
+        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withMetadata({
+          is_exported: method.isPublic,
+          attributes: {
+            generics: method.generics,
+            visibility: method.visibility,
+            isSelf: method.isSelf,
+            isMutSelf: method.isMutSelf,
+            isStatic: method.isStatic,
+            isAsync: method.isAsync,
+            isUnsafe: method.isUnsafe,
+            isConst: method.isConst,
+            rustAttributes: method.attributes,
+            hasDocumentation: !!methodDocs
+          }
+        })
+        .withSignature({
           parameters: method.parameters,
-          returnType: method.returnType,
-          generics: method.generics,
-          attributes: method.attributes,
-          visibility: method.visibility,
-          isPublic: method.isPublic,
-          isSelf: method.isSelf,
-          isMutSelf: method.isMutSelf,
-          isStatic: method.isStatic,
-          isAsync: method.isAsync,
-          isUnsafe: method.isUnsafe,
-          isConst: method.isConst
-        }
-      ));
+          return_type: method.returnType
+        })
+        .withParent(implId)
+        .withDocumentation(methodDocs)
+        .withComments(methodComments.length > 0 ? methodComments : undefined)
+        .withTodos(methodTodos.length > 0 ? methodTodos : undefined)
+        .withImplementationStatus(implementationStatus)
+        .build());
 
       edges.push(this.createEdge(
         `${implId}_has_method_${methodId}`,
@@ -1010,30 +1172,48 @@ export class RustAnalyzer extends BaseAnalyzer {
     entryPoints: any[]
   ): Promise<void> {
     const functionId = `function_${this.sanitizeId(func.moduleName)}_${this.sanitizeId(func.name)}_${func.lineStart}`;
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const lines = content.split('\n');
+    const functionComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+      c.location.line >= func.lineStart - 3 && c.location.line <= func.lineStart
+    );
+    const functionTodos = this.extractTodosFromComments(functionComments, functionId);
+    const functionDocs = this.extractDocumentationFromRustDoc(lines, func.lineStart - 1);
+    const functionBody = lines.slice(func.lineStart - 1, func.lineEnd);
+    const implementationStatus = this.detectImplementationStatus(func, functionBody);
 
-    nodes.push(this.createNode(
+    nodes.push(this.createNodeBuilder(
       functionId,
       func.name,
-      'function',
-      3,
-      fullPath,
-      func.lineStart,
-      func.lineEnd,
-      {
-        moduleName: func.moduleName,
+      'function'
+    )
+      .withLevel(3, 'Function/Method')
+      .withCategory('functions', ['standalone-functions'])
+      .withSource({ file: fullPath, line: func.lineStart, end_line: func.lineEnd })
+      .withMetadata({
+        is_exported: func.isPublic,
+        attributes: {
+          moduleName: func.moduleName,
+          generics: func.generics,
+          visibility: func.visibility,
+          isMain: func.isMain,
+          isTest: func.isTest,
+          isAsync: func.isAsync,
+          isUnsafe: func.isUnsafe,
+          isConst: func.isConst,
+          rustAttributes: func.attributes,
+          hasDocumentation: !!functionDocs
+        }
+      })
+      .withSignature({
         parameters: func.parameters,
-        returnType: func.returnType,
-        generics: func.generics,
-        attributes: func.attributes,
-        visibility: func.visibility,
-        isPublic: func.isPublic,
-        isMain: func.isMain,
-        isTest: func.isTest,
-        isAsync: func.isAsync,
-        isUnsafe: func.isUnsafe,
-        isConst: func.isConst
-      }
-    ));
+        return_type: func.returnType
+      })
+      .withDocumentation(functionDocs)
+      .withComments(functionComments.length > 0 ? functionComments : undefined)
+      .withTodos(functionTodos.length > 0 ? functionTodos : undefined)
+      .withImplementationStatus(implementationStatus)
+      .build());
 
     edges.push(this.createEdge(
       `${fileId}_contains_${functionId}`,
@@ -1870,19 +2050,21 @@ export class RustAnalyzer extends BaseAnalyzer {
     for (const [moduleName, files] of modules.entries()) {
       const moduleId = `module_${this.sanitizeId(moduleName)}`;
 
-      nodes.push(this.createNode(
+      nodes.push(this.createNodeBuilder(
         moduleId,
         moduleName,
-        'module',
-        1,
-        undefined,
-        undefined,
-        undefined,
-        {
-          fileCount: files.length,
-          files: files
-        }
-      ));
+        'module'
+      )
+        .withLevel(1, 'Module/Package')
+        .withCategory('modules', ['rust-modules'])
+        .withMetadata({
+          attributes: {
+            fileCount: files.length,
+            files: files,
+            moduleType: moduleName === 'main' ? 'executable' : 'library'
+          }
+        })
+        .build());
 
       for (const file of files) {
         const fileId = `file_${this.sanitizeId(file)}`;
@@ -2333,6 +2515,259 @@ export class RustAnalyzer extends BaseAnalyzer {
     if (content.includes('axum::')) return 'Axum';
     if (content.includes('hyper::')) return 'Hyper';
     return 'Unknown';
+  }
+
+  private extractDocumentationFromRustDoc(lines: string[], lineIndex: number): CASDocumentation | undefined {
+    let hasContent = false;
+    let description = '';
+
+    for (let i = lineIndex - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+
+      if (line.startsWith('///')) {
+        const commentText = line.replace(/^\/\/\/\s*/, '');
+        if (commentText) {
+          description = commentText + (description ? '\n' + description : '');
+          hasContent = true;
+        }
+      } else if (line.startsWith('//!')) {
+        const commentText = line.replace(/^\/\/!\s*/, '');
+        if (commentText) {
+          description = commentText + (description ? '\n' + description : '');
+          hasContent = true;
+        }
+      } else if (!line.startsWith('//') && line !== '') {
+        break;
+      }
+    }
+
+    if (hasContent) {
+      const docs: CASDocumentation = {
+        type: 'rustdoc',
+        raw: description,
+        location: { start_line: lineIndex - description.split('\n').length, end_line: lineIndex }
+      };
+
+      docs.summary = description.split('.')[0] + (description.includes('.') ? '.' : '');
+      docs.description = description;
+
+      const exampleMatch = description.match(/# Examples?\s*(.*?)(?=\n#|$)/is);
+      if (exampleMatch) {
+        docs.examples = [{ code: exampleMatch[1].trim(), language: 'rust' }];
+      }
+
+      const panicMatch = description.match(/# Panics?\s*(.*?)(?=\n#|$)/is);
+      if (panicMatch) {
+        if (!docs.exceptions) docs.exceptions = [];
+        docs.exceptions.push({
+          type: 'panic',
+          description: panicMatch[1].trim()
+        });
+      }
+
+      return docs;
+    }
+
+    return undefined;
+  }
+
+  private extractCommentsFromFile(content: string, filePath: string): CASComment[] {
+    const comments: CASComment[] = [];
+    const lines = content.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      const singleLineMatch = line.match(/\/\/(.*)$/);
+      if (singleLineMatch && !line.trim().startsWith('///') && !line.trim().startsWith('//!')) {
+        const text = singleLineMatch[1].trim();
+        const purpose = this.classifyCommentPurpose(text);
+        comments.push({
+          id: `comment_${++this.commentCounter}`,
+          type: 'single-line',
+          style: '//',
+          text,
+          purpose,
+          location: {
+            file: filePath,
+            line: i + 1,
+            relative_to: 'inline'
+          },
+          markers: this.extractCommentMarkers(text)
+        });
+      }
+
+      if (line.includes('/*')) {
+        let multiLineText = '';
+        let endLine = i;
+        let foundEnd = false;
+
+        for (let j = i; j < lines.length; j++) {
+          const currentLine = lines[j];
+          if (j === i) {
+            const startMatch = currentLine.match(/\/\*(.*)/);
+            if (startMatch) {
+              multiLineText = startMatch[1];
+              if (currentLine.includes('*/')) {
+                multiLineText = multiLineText.replace(/\*\/.*$/, '').trim();
+                foundEnd = true;
+                endLine = j;
+              }
+            }
+          } else {
+            if (currentLine.includes('*/')) {
+              multiLineText += '\n' + currentLine.replace(/\*\/.*$/, '').replace(/^\s*\*/, '').trim();
+              foundEnd = true;
+              endLine = j;
+              break;
+            } else {
+              multiLineText += '\n' + currentLine.replace(/^\s*\*/, '').trim();
+            }
+          }
+        }
+
+        if (foundEnd) {
+          const purpose = this.classifyCommentPurpose(multiLineText);
+          comments.push({
+            id: `comment_${++this.commentCounter}`,
+            type: 'multi-line',
+            style: '/* */',
+            text: multiLineText.trim(),
+            purpose,
+            location: {
+              file: filePath,
+              line: i + 1,
+              end_line: endLine + 1,
+              relative_to: 'above'
+            },
+            markers: this.extractCommentMarkers(multiLineText)
+          });
+          i = endLine;
+        }
+      }
+    }
+
+    return comments;
+  }
+
+  private classifyCommentPurpose(text: string): CASComment['purpose'] {
+    const lowerText = text.toLowerCase();
+
+    if (/\b(todo|fixme|hack|warning|note|xxx|optimize|refactor)\b/.test(lowerText)) {
+      return 'todo';
+    }
+    if (/\b(warning|warn|caution|danger|important)\b/.test(lowerText)) {
+      return 'warning';
+    }
+    if (/\b(note|info|tip|hint)\b/.test(lowerText)) {
+      return 'note';
+    }
+    if (/\b(hack|temp|temporary|quick|dirty)\b/.test(lowerText)) {
+      return 'hack';
+    }
+
+    return 'explanation';
+  }
+
+  private extractCommentMarkers(text: string): CASComment['markers'] {
+    const markers: CASComment['markers'] = {};
+    const lowerText = text.toLowerCase();
+
+    markers.is_todo = /\btodo\b/.test(lowerText);
+    markers.is_fixme = /\bfixme\b/.test(lowerText);
+    markers.is_hack = /\bhack\b/.test(lowerText);
+    markers.is_warning = /\b(warning|warn)\b/.test(lowerText);
+    markers.is_note = /\b(note|info)\b/.test(lowerText);
+    markers.is_important = /\b(important|critical|urgent)\b/.test(lowerText);
+    markers.is_deprecated = /\b(deprecated|obsolete)\b/.test(lowerText);
+
+    return markers;
+  }
+
+  private extractTodosFromComments(comments: CASComment[], context: string): CASTodo[] {
+    const todos: CASTodo[] = [];
+
+    comments.forEach(comment => {
+      if (comment.markers?.is_todo || comment.markers?.is_fixme || comment.markers?.is_hack) {
+        const typeMatch = comment.text.match(/\b(TODO|FIXME|HACK|NOTE|WARNING|XXX|OPTIMIZE|REFACTOR)\b/i);
+        const type = typeMatch ? typeMatch[0].toUpperCase() as CASTodo['type'] : 'TODO';
+
+        const assigneeMatch = comment.text.match(/\b(?:TODO|FIXME|HACK)\s*\(([^)]+)\)/);
+        const assignee = assigneeMatch ? assigneeMatch[1] : undefined;
+
+        const priority = comment.markers?.is_important ? 'high' :
+                        comment.markers?.is_fixme ? 'medium' : 'low';
+
+        const category = this.categorizeTodo(comment.text);
+
+        todos.push({
+          id: `todo_${++this.todoCounter}`,
+          type,
+          text: comment.text,
+          priority,
+          assignee,
+          category,
+          location: {
+            file: comment.location.file,
+            line: comment.location.line,
+            context
+          },
+          metadata: {
+            source: 'comment',
+            comment_type: comment.type
+          }
+        });
+      }
+    });
+
+    return todos;
+  }
+
+  private categorizeTodo(text: string): CASTodo['category'] {
+    const lowerText = text.toLowerCase();
+
+    if (/\b(fix|bug|error|issue|broken)\b/.test(lowerText)) return 'bug';
+    if (/\b(feature|add|implement|new)\b/.test(lowerText)) return 'feature';
+    if (/\b(refactor|clean|improve|restructure)\b/.test(lowerText)) return 'refactor';
+    if (/\b(performance|optimize|speed|slow)\b/.test(lowerText)) return 'performance';
+    if (/\b(security|secure|auth|permission)\b/.test(lowerText)) return 'security';
+
+    return 'general';
+  }
+
+  private detectImplementationStatus(functionInfo: RustFunction, functionBody: string[]): CASImplementationStatus {
+    const bodyText = functionBody.join('\n').toLowerCase();
+
+    const indicators = {
+      has_not_implemented_exceptions: bodyText.includes('todo!()') || bodyText.includes('unimplemented!()') || bodyText.includes('unreachable!()'),
+      has_deprecated_markers: functionInfo.attributes.some(attr => attr.includes('deprecated')),
+      has_todo_markers: bodyText.includes('todo') || bodyText.includes('fixme'),
+      has_stub_returns: functionBody.length <= 2 && bodyText.includes('return'),
+      has_empty_body: functionBody.length <= 1 || bodyText.trim() === '{}',
+      has_placeholder_code: bodyText.includes('println!(\"todo'),
+      has_hardcoded_values: false,
+      has_commented_out_code: false
+    };
+
+    let status: CASImplementationStatus['status'] = 'complete';
+    if (indicators.has_not_implemented_exceptions) {
+      status = 'not-implemented';
+    } else if (indicators.has_deprecated_markers) {
+      status = 'deprecated';
+    } else if (indicators.has_stub_returns || indicators.has_empty_body) {
+      status = 'stub';
+    } else if (indicators.has_todo_markers || indicators.has_placeholder_code) {
+      status = 'partial';
+    }
+
+    return {
+      status,
+      indicators,
+      completeness: status === 'complete' ? { estimated_percentage: 100 } :
+                   status === 'partial' ? { estimated_percentage: 60 } :
+                   status === 'stub' ? { estimated_percentage: 10 } :
+                   { estimated_percentage: 0 }
+    };
   }
 
   protected sanitizeId(name: string): string {

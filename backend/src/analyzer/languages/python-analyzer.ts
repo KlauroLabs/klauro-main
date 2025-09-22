@@ -1,5 +1,8 @@
 import { BaseAnalyzer, AnalysisContext } from '../core/base-analyzer';
-import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint } from '../../types/cas.types';
+import {
+  CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint,
+  CASDocumentation, CASComment, CASTodo, CASImplementationStatus
+} from '../../types/cas.types';
 import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
@@ -16,6 +19,10 @@ interface PythonClass {
   lineStart: number;
   lineEnd: number;
   isAbstract: boolean;
+  documentation?: CASDocumentation;
+  comments?: CASComment[];
+  todos?: CASTodo[];
+  implementationStatus?: CASImplementationStatus;
 }
 
 interface PythonMethod {
@@ -32,6 +39,10 @@ interface PythonMethod {
   isPrivate: boolean;
   isAbstract: boolean;
   isAsync: boolean;
+  documentation?: CASDocumentation;
+  comments?: CASComment[];
+  todos?: CASTodo[];
+  implementationStatus?: CASImplementationStatus;
 }
 
 interface PythonFunction {
@@ -44,6 +55,10 @@ interface PythonFunction {
   lineEnd: number;
   isAsync: boolean;
   isPrivate: boolean;
+  documentation?: CASDocumentation;
+  comments?: CASComment[];
+  todos?: CASTodo[];
+  implementationStatus?: CASImplementationStatus;
 }
 
 interface PythonParameter {
@@ -107,6 +122,8 @@ export class PythonAnalyzer extends BaseAnalyzer {
   private pipenvProject = false;
   private methodCalls: PythonMethodCall[] = [];
   private libraryCalls: PythonLibraryCall[] = [];
+  private commentCounter = 0;
+  private todoCounter = 0;
 
   constructor() {
     super(
@@ -338,6 +355,8 @@ export class PythonAnalyzer extends BaseAnalyzer {
       const classes = this.extractClasses(content, relativePath);
       const functions = this.extractFunctions(content, relativePath);
       const variables = this.extractGlobalVariables(content);
+      const fileComments = this.extractCommentsFromFile(content, fullPath);
+      const fileTodos = this.extractTodosFromComments(fileComments, fullPath);
 
       if (!modules.has(moduleName)) {
         modules.set(moduleName, []);
@@ -345,22 +364,24 @@ export class PythonAnalyzer extends BaseAnalyzer {
       modules.get(moduleName)!.push(relativePath);
 
       const fileId = `file_${this.sanitizeId(relativePath)}`;
-      nodes.push(this.createNode(
-        fileId,
-        relativePath.split('/').pop() || 'unknown.py',
-        'file',
-        1,
-        fullPath,
-        1,
-        lines.length,
-        {
-          moduleName,
-          imports: imports.map(i => i.module),
-          classCount: classes.length,
-          functionCount: functions.length,
-          variableCount: variables.length
-        }
-      ));
+      const fileNode = this.createNodeBuilder(fileId, relativePath.split('/').pop() || 'unknown.py', 'file')
+        .withLevel(1, this.getLevelName(1))
+        .withSource({ file: fullPath, line: 1, end_line: lines.length })
+        .withMetadata({
+          framework: this.analyzerName.toLowerCase().replace(' analyzer', ''),
+          attributes: {
+            moduleName,
+            imports: imports.map(i => i.module),
+            classCount: classes.length,
+            functionCount: functions.length,
+            variableCount: variables.length
+          }
+        })
+        .withComments(fileComments)
+        .withTodos(fileTodos)
+        .withTags([`analyzer:${this.analyzerId}`])
+        .build();
+      nodes.push(fileNode);
 
       for (const imp of imports) {
         const importId = `import_${fileId}_${this.sanitizeId(imp.module)}`;
@@ -448,24 +469,28 @@ export class PythonAnalyzer extends BaseAnalyzer {
   ): Promise<void> {
     const classId = `class_${this.sanitizeId(cls.moduleName)}_${this.sanitizeId(cls.name)}`;
 
-    nodes.push(this.createNode(
-      classId,
-      cls.name,
-      'class',
-      2,
-      fullPath,
-      cls.lineStart,
-      cls.lineEnd,
-      {
-        moduleName: cls.moduleName,
-        baseClasses: cls.baseClasses,
-        decorators: cls.decorators,
-        docstring: cls.docstring,
-        methodCount: cls.methods.length,
-        attributeCount: cls.attributes.length,
-        isAbstract: cls.isAbstract
-      }
-    ));
+    const classNode = this.createNodeBuilder(classId, cls.name, 'class')
+      .withLevel(2, this.getLevelName(2))
+      .withSource({ file: fullPath, line: cls.lineStart, end_line: cls.lineEnd })
+      .withMetadata({
+        framework: this.analyzerName.toLowerCase().replace(' analyzer', ''),
+        attributes: {
+          moduleName: cls.moduleName,
+          baseClasses: cls.baseClasses,
+          decorators: cls.decorators,
+          docstring: cls.docstring,
+          methodCount: cls.methods.length,
+          attributeCount: cls.attributes.length,
+          isAbstract: cls.isAbstract
+        }
+      })
+      .withDocumentation(cls.documentation)
+      .withComments(cls.comments)
+      .withTodos(cls.todos)
+      .withImplementationStatus(cls.implementationStatus)
+      .withTags([`analyzer:${this.analyzerId}`])
+      .build();
+    nodes.push(classNode);
 
     edges.push(this.createEdge(
       `${fileId}_contains_${classId}`,
@@ -476,27 +501,31 @@ export class PythonAnalyzer extends BaseAnalyzer {
 
     for (const method of cls.methods) {
       const methodId = `method_${classId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
-      nodes.push(this.createNode(
-        methodId,
-        method.name,
-        'method',
-        4,
-        fullPath,
-        method.lineStart,
-        method.lineEnd,
-        {
-          parameters: method.parameters,
-          decorators: method.decorators,
-          docstring: method.docstring,
-          returnAnnotation: method.returnAnnotation,
-          isClassMethod: method.isClassMethod,
-          isStaticMethod: method.isStaticMethod,
-          isProperty: method.isProperty,
-          isPrivate: method.isPrivate,
-          isAbstract: method.isAbstract,
-          isAsync: method.isAsync
-        }
-      ));
+      const methodNode = this.createNodeBuilder(methodId, method.name, 'method')
+        .withLevel(4, this.getLevelName(4))
+        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withMetadata({
+          framework: this.analyzerName.toLowerCase().replace(' analyzer', ''),
+          attributes: {
+            parameters: method.parameters,
+            decorators: method.decorators,
+            docstring: method.docstring,
+            returnAnnotation: method.returnAnnotation,
+            isClassMethod: method.isClassMethod,
+            isStaticMethod: method.isStaticMethod,
+            isProperty: method.isProperty,
+            isPrivate: method.isPrivate,
+            isAbstract: method.isAbstract,
+            isAsync: method.isAsync
+          }
+        })
+        .withDocumentation(method.documentation)
+        .withComments(method.comments)
+        .withTodos(method.todos)
+        .withImplementationStatus(method.implementationStatus)
+        .withTags([`analyzer:${this.analyzerId}`])
+        .build();
+      nodes.push(methodNode);
 
       edges.push(this.createEdge(
         `${classId}_has_method_${methodId}`,
@@ -573,23 +602,27 @@ export class PythonAnalyzer extends BaseAnalyzer {
   ): Promise<void> {
     const functionId = `function_${fileId}_${this.sanitizeId(func.name)}_${func.lineStart}`;
 
-    nodes.push(this.createNode(
-      functionId,
-      func.name,
-      'function',
-      3,
-      fullPath,
-      func.lineStart,
-      func.lineEnd,
-      {
-        parameters: func.parameters,
-        decorators: func.decorators,
-        docstring: func.docstring,
-        returnAnnotation: func.returnAnnotation,
-        isAsync: func.isAsync,
-        isPrivate: func.isPrivate
-      }
-    ));
+    const functionNode = this.createNodeBuilder(functionId, func.name, 'function')
+      .withLevel(3, this.getLevelName(3))
+      .withSource({ file: fullPath, line: func.lineStart, end_line: func.lineEnd })
+      .withMetadata({
+        framework: this.analyzerName.toLowerCase().replace(' analyzer', ''),
+        attributes: {
+          parameters: func.parameters,
+          decorators: func.decorators,
+          docstring: func.docstring,
+          returnAnnotation: func.returnAnnotation,
+          isAsync: func.isAsync,
+          isPrivate: func.isPrivate
+        }
+      })
+      .withDocumentation(func.documentation)
+      .withComments(func.comments)
+      .withTodos(func.todos)
+      .withImplementationStatus(func.implementationStatus)
+      .withTags([`analyzer:${this.analyzerId}`])
+      .build();
+    nodes.push(functionNode);
 
     edges.push(this.createEdge(
       `${fileId}_contains_${functionId}`,
@@ -685,6 +718,16 @@ export class PythonAnalyzer extends BaseAnalyzer {
           const methods = this.extractMethods(lines, i, classEndLine);
           const attributes = this.extractClassAttributes(lines, i, classEndLine);
           const docstring = this.extractDocstring(lines, i + 1);
+          const documentation = this.extractDocumentationFromDocstring(docstring || '', 'class');
+          const classContent = lines.slice(i, classEndLine).join('\n');
+          const classComments = this.extractCommentsFromContent(classContent, filePath, classStartLine);
+          const classTodos = this.extractTodosFromComments(classComments, className);
+          const implementationStatus = this.detectImplementationStatus(
+            classContent,
+            lines.slice(i, classEndLine),
+            classStartLine,
+            classEndLine
+          );
 
           const isAbstract = decorators.some(d => d.includes('abc.abstractmethod')) ||
                            baseClasses.some(b => b.includes('ABC'));
@@ -700,7 +743,11 @@ export class PythonAnalyzer extends BaseAnalyzer {
             docstring,
             lineStart: classStartLine,
             lineEnd: classEndLine,
-            isAbstract
+            isAbstract,
+            documentation,
+            comments: classComments,
+            todos: classTodos,
+            implementationStatus
           });
         }
       }
@@ -731,6 +778,16 @@ export class PythonAnalyzer extends BaseAnalyzer {
 
             const parameters = this.extractParameters(paramString);
             const docstring = this.extractDocstring(lines, i + 1);
+            const documentation = this.extractDocumentationFromDocstring(docstring || '', 'function');
+            const functionContent = lines.slice(i, functionEndLine).join('\n');
+            const functionComments = this.extractCommentsFromContent(functionContent, filePath, functionStartLine);
+            const functionTodos = this.extractTodosFromComments(functionComments, functionName);
+            const implementationStatus = this.detectImplementationStatus(
+              functionContent,
+              lines.slice(i, functionEndLine),
+              functionStartLine,
+              functionEndLine
+            );
 
             functions.push({
               name: functionName,
@@ -741,7 +798,11 @@ export class PythonAnalyzer extends BaseAnalyzer {
               lineStart: functionStartLine,
               lineEnd: functionEndLine,
               isAsync,
-              isPrivate: functionName.startsWith('_')
+              isPrivate: functionName.startsWith('_'),
+              documentation,
+              comments: functionComments,
+              todos: functionTodos,
+              implementationStatus
             });
           }
         }
@@ -772,6 +833,16 @@ export class PythonAnalyzer extends BaseAnalyzer {
 
           const parameters = this.extractParameters(paramString);
           const docstring = this.extractDocstring(lines, i + 1);
+          const documentation = this.extractDocumentationFromDocstring(docstring || '', 'method');
+          const methodContent = lines.slice(i, methodEndLine).join('\n');
+          const methodComments = this.extractCommentsFromContent(methodContent, '', methodStartLine);
+          const methodTodos = this.extractTodosFromComments(methodComments, methodName);
+          const implementationStatus = this.detectImplementationStatus(
+            methodContent,
+            lines.slice(i, methodEndLine),
+            methodStartLine,
+            methodEndLine
+          );
 
           const isClassMethod = decorators.includes('classmethod');
           const isStaticMethod = decorators.includes('staticmethod');
@@ -792,7 +863,11 @@ export class PythonAnalyzer extends BaseAnalyzer {
             isProperty,
             isPrivate,
             isAbstract,
-            isAsync
+            isAsync,
+            documentation,
+            comments: methodComments,
+            todos: methodTodos,
+            implementationStatus
           });
         }
       }
@@ -1657,7 +1732,282 @@ export class PythonAnalyzer extends BaseAnalyzer {
       'inheritance-tracking',
       'decorator-parsing',
       'async-pattern-detection',
-      'framework-detection'
+      'framework-detection',
+      'documentation-extraction',
+      'comment-analysis',
+      'todo-detection',
+      'implementation-status'
     ];
+  }
+
+  private extractCommentsFromFile(content: string, filePath: string): CASComment[] {
+    const comments: CASComment[] = [];
+    const lines = content.split('\n');
+
+    lines.forEach((line, index) => {
+      const singleLineMatch = line.match(/#(.*)$/);
+      if (singleLineMatch) {
+        const text = singleLineMatch[1].trim();
+        const purpose = this.classifyCommentPurpose(text);
+        comments.push({
+          id: `comment_${++this.commentCounter}`,
+          type: 'single-line',
+          style: '#',
+          text,
+          purpose,
+          location: {
+            file: filePath,
+            line: index + 1,
+            relative_to: 'above'
+          },
+          markers: this.extractCommentMarkers(text)
+        });
+      }
+    });
+
+    return comments;
+  }
+
+  private extractCommentsFromContent(content: string, filePath: string, lineOffset: number = 0): CASComment[] {
+    const comments: CASComment[] = [];
+    const lines = content.split('\n');
+
+    lines.forEach((line, index) => {
+      const singleLineMatch = line.match(/#(.*)$/);
+      if (singleLineMatch) {
+        const text = singleLineMatch[1].trim();
+        const purpose = this.classifyCommentPurpose(text);
+        comments.push({
+          id: `comment_${++this.commentCounter}`,
+          type: 'single-line',
+          style: '#',
+          text,
+          purpose,
+          location: {
+            file: filePath,
+            line: lineOffset + index,
+            relative_to: 'above'
+          },
+          markers: this.extractCommentMarkers(text)
+        });
+      }
+    });
+
+    return comments;
+  }
+
+  private extractCommentMarkers(text: string): any {
+    return {
+      is_todo: /\b(TODO|TO DO)\b/i.test(text),
+      is_fixme: /\bFIXME\b/i.test(text),
+      is_hack: /\bHACK\b/i.test(text),
+      is_warning: /\b(WARNING|WARN)\b/i.test(text),
+      is_note: /\bNOTE\b/i.test(text),
+      is_question: /\?/.test(text) && text.length < 100,
+      is_important: /\b(IMPORTANT|CRITICAL)\b/i.test(text)
+    };
+  }
+
+  private classifyCommentPurpose(text: string): CASComment['purpose'] {
+    if (/\b(TODO|FIXME|HACK)\b/i.test(text)) return 'todo';
+    if (/\b(WARNING|WARN|DANGER)\b/i.test(text)) return 'warning';
+    if (/\bNOTE\b/i.test(text)) return 'note';
+    if (/\bHACK\b/i.test(text)) return 'hack';
+    if (/^\s*#.+\s*$/.test(text) && text.includes('#')) return 'disabled-code';
+    if (text.length < 50 && /explains?|because|since|why/i.test(text)) return 'clarification';
+    return 'explanation';
+  }
+
+  private extractTodosFromComments(comments: CASComment[], context: string): CASTodo[] {
+    const todos: CASTodo[] = [];
+
+    comments.forEach(comment => {
+      if (comment.markers?.is_todo || comment.markers?.is_fixme || comment.markers?.is_hack) {
+        const typeMatch = comment.text.match(/\b(TODO|FIXME|HACK|NOTE|WARNING|XXX|OPTIMIZE|REFACTOR)\b/i);
+        const type = typeMatch ? typeMatch[0].toUpperCase() as CASTodo['type'] : 'TODO';
+
+        const assigneeMatch = comment.text.match(/\b(?:TODO|FIXME|HACK)\s*\(([^)]+)\)/);
+        const assignee = assigneeMatch ? assigneeMatch[1] : undefined;
+
+        const priority = comment.markers?.is_important ? 'high' :
+                        comment.markers?.is_fixme ? 'medium' : 'low';
+
+        todos.push({
+          id: `todo_${++this.todoCounter}`,
+          type,
+          text: comment.text,
+          priority,
+          assignee,
+          location: {
+            file: comment.location.file,
+            line: comment.location.line,
+            node_id: context
+          },
+          classification: {
+            category: type === 'FIXME' ? 'bug' :
+                     type === 'OPTIMIZE' ? 'performance' :
+                     type === 'REFACTOR' ? 'refactor' : 'feature',
+            technical_debt: true,
+            blocking: priority === 'high'
+          }
+        });
+      }
+    });
+
+    return todos;
+  }
+
+  private extractDocumentationFromDocstring(docstring: string, type: 'function' | 'class' | 'method' = 'function'): CASDocumentation | undefined {
+    if (!docstring || !docstring.trim()) return undefined;
+
+    const lines = docstring.split('\n').map(line => line.trim());
+    const firstLine = lines[0];
+
+    // Detect docstring style
+    const isGoogleStyle = /Args:|Arguments:|Returns?:|Yields?:|Raises?:|Note:|Example:/i.test(docstring);
+    const isNumpyStyle = /Parameters\s*\n\s*-+|Returns\s*\n\s*-+|Raises\s*\n\s*-+/i.test(docstring);
+    const isSphinxStyle = /:param |:type |:returns?:|:rtype:|:raises?:/i.test(docstring);
+
+    let docType: CASDocumentation['type'] = 'docstring';
+    if (isSphinxStyle) docType = 'docstring';
+    else if (isGoogleStyle || isNumpyStyle) docType = 'docstring';
+
+    // Extract summary (first line or paragraph)
+    const summary = firstLine;
+
+    // Extract description (everything before first section)
+    let description = '';
+    let parameterSection = '';
+    let returnsSection = '';
+    let examplesSection = '';
+
+    let currentSection = 'description';
+    let sectionContent = '';
+
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i];
+
+      if (/^(Args?|Arguments?|Parameters?):/i.test(line)) {
+        if (currentSection === 'description') description = sectionContent.trim();
+        currentSection = 'parameters';
+        sectionContent = '';
+      } else if (/^Returns?:/i.test(line)) {
+        if (currentSection === 'parameters') parameterSection = sectionContent.trim();
+        currentSection = 'returns';
+        sectionContent = '';
+      } else if (/^Examples?:/i.test(line)) {
+        if (currentSection === 'returns') returnsSection = sectionContent.trim();
+        currentSection = 'examples';
+        sectionContent = '';
+      } else {
+        sectionContent += line + '\n';
+      }
+    }
+
+    // Handle last section
+    if (currentSection === 'description') description = sectionContent.trim();
+    else if (currentSection === 'parameters') parameterSection = sectionContent.trim();
+    else if (currentSection === 'returns') returnsSection = sectionContent.trim();
+    else if (currentSection === 'examples') examplesSection = sectionContent.trim();
+
+    // Parse parameters
+    const parameters: Array<{name: string; type?: string; description?: string; optional?: boolean}> = [];
+    if (parameterSection) {
+      const paramLines = parameterSection.split('\n');
+      for (const paramLine of paramLines) {
+        const paramMatch = paramLine.match(/^\s*(\w+)\s*(?:\(([^)]+)\))?\s*:?\s*(.*)$/);
+        if (paramMatch) {
+          parameters.push({
+            name: paramMatch[1],
+            type: paramMatch[2]?.trim(),
+            description: paramMatch[3]?.trim(),
+            optional: paramMatch[2]?.includes('optional') || false
+          });
+        }
+      }
+    }
+
+    // Parse returns
+    let returns: {type?: string; description?: string} | undefined;
+    if (returnsSection) {
+      const returnMatch = returnsSection.match(/^\s*(?:([^:]+):\s*)?(.*)$/);
+      if (returnMatch) {
+        returns = {
+          type: returnMatch[1]?.trim(),
+          description: returnMatch[2]?.trim()
+        };
+      }
+    }
+
+    // Parse examples
+    const examples: Array<{title?: string; code: string; language?: string}> = [];
+    if (examplesSection) {
+      examples.push({
+        code: examplesSection,
+        language: 'python'
+      });
+    }
+
+    return {
+      type: docType,
+      raw: docstring,
+      summary: summary || undefined,
+      description: description || undefined,
+      parameters: parameters.length > 0 ? parameters : undefined,
+      returns,
+      examples: examples.length > 0 ? examples : undefined,
+      location: {
+        start_line: 1,
+        end_line: lines.length
+      }
+    };
+  }
+
+  private detectImplementationStatus(content: string, functionLines: string[], startLine: number, endLine: number): CASImplementationStatus | undefined {
+    if (!functionLines || functionLines.length === 0) return undefined;
+
+    const bodyStr = functionLines.join('\n');
+    const fullBodyStr = content.split('\n').slice(startLine - 1, endLine).join('\n');
+
+    const indicators = {
+      has_todo_markers: /\b(TODO|FIXME|HACK)\b/i.test(fullBodyStr),
+      has_not_implemented_exceptions: /raise\s+(NotImplementedError|NotImplemented)/i.test(bodyStr),
+      has_stub_returns: /return\s+(None|False|0|''|""|\[\]|\{\})\s*$/m.test(bodyStr),
+      has_placeholder_code: /print\s*\(['"](TODO|PLACEHOLDER|TEMP)/i.test(bodyStr),
+      has_hardcoded_values: /(TODO|PLACEHOLDER|TEMP|FIXME)/i.test(bodyStr),
+      has_commented_out_code: /#.*\w+\s*\(/.test(bodyStr) || /^\s*'''[\s\S]*?'''/m.test(bodyStr)
+    };
+
+    const hasImplementation = bodyStr.trim().length > 10 &&
+                            !bodyStr.trim().match(/^\s*pass\s*$/) &&
+                            !bodyStr.trim().match(/^\s*\.\.\.$/);
+
+    let status: CASImplementationStatus['status'] = 'complete';
+    if (!hasImplementation || /^\s*pass\s*$/m.test(bodyStr) || /^\s*\.\.\.$/.test(bodyStr)) {
+      status = 'stub';
+    } else if (indicators.has_not_implemented_exceptions) {
+      status = 'not-implemented';
+    } else if (indicators.has_todo_markers || indicators.has_stub_returns) {
+      status = 'partial';
+    }
+
+    const deprecatedMatch = fullBodyStr.match(/@deprecated|# deprecated/i);
+    if (deprecatedMatch) {
+      status = 'deprecated';
+    }
+
+    const experimentalMatch = fullBodyStr.match(/@experimental|# experimental/i);
+    if (experimentalMatch) {
+      status = 'experimental';
+    }
+
+    return {
+      status,
+      indicators,
+      completeness: status === 'complete' ? { estimated_percentage: 100 } :
+                   status === 'partial' ? { estimated_percentage: 50 } :
+                   status === 'stub' ? { estimated_percentage: 10 } :
+                   { estimated_percentage: 0 }
+    };
   }
 }

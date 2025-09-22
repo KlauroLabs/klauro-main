@@ -1,5 +1,5 @@
 import { BaseAnalyzer, AnalysisContext } from '../../core/base-analyzer';
-import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint, CASPerspective } from '../../../types/cas.types';
+import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint, CASPerspective, CASDocumentation, CASComment, CASTodo, CASImplementationStatus } from '../../../types/cas.types';
 import { AnalyzerError } from '../../core/errors';
 import * as path from 'path';
 import * as fs from 'fs-extra';
@@ -89,6 +89,9 @@ interface ReactUtil {
 }
 
 export class ReactAnalyzer extends BaseAnalyzer {
+  private commentCounter = 0;
+  private todoCounter = 0;
+
   constructor() {
     super(
       'react-analyzer',
@@ -290,11 +293,20 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
           extractedComponents.forEach(component => {
             const componentId = this.generateId('component', component.filePath, component.name);
+            const documentation = this.extractComponentDocumentation(ast, component.name, content);
+            const comments = this.extractCommentsFromContent(content, fullPath);
+            const todos = this.extractTodosFromContent(content, fullPath, component.name);
+            const implementationStatus = this.detectReactImplementationStatus(ast, component.name, content);
+
             const componentNode = this.createNodeBuilder(componentId, component.name, component.type === 'functional' ? 'functional_component' : 'class_component')
               .withLevel(2, 'architectural')
               .withCategory('component', ['react', component.type])
               .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
               .withDescription(`React ${component.type} component: ${component.name}`)
+              .withDocumentation(documentation)
+              .withComments(comments)
+              .withTodos(todos)
+              .withImplementationStatus(implementationStatus)
               .withMetadata({
                 framework: 'react',
                 attributes: {
@@ -376,11 +388,20 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
           extractedHooks.forEach(hook => {
             const hookId = this.generateId('hook', hook.filePath, hook.name);
+            const documentation = this.extractHookDocumentation(ast, hook.name, content);
+            const comments = this.extractCommentsFromContent(content, fullPath);
+            const todos = this.extractTodosFromContent(content, fullPath, hook.name);
+            const implementationStatus = this.detectReactImplementationStatus(ast, hook.name, content);
+
             const hookNode = this.createNodeBuilder(hookId, hook.name, 'custom_hook')
               .withLevel(3, 'code')
               .withCategory('hook', ['react', 'custom'])
               .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
               .withDescription(`Custom React hook: ${hook.name}`)
+              .withDocumentation(documentation)
+              .withComments(comments)
+              .withTodos(todos)
+              .withImplementationStatus(implementationStatus)
               .withSignature({
                 parameters: hook.parameters.map(p => ({ name: p.name, type: p.type })),
                 return_type: hook.returnType
@@ -1059,7 +1080,55 @@ export class ReactAnalyzer extends BaseAnalyzer {
   }
 
   private extractProps(node: any, content: string): Array<{ name: string; type: string; required: boolean; defaultValue?: string }> {
-    return [];
+    const props: Array<{ name: string; type: string; required: boolean; defaultValue?: string }> = [];
+
+    if (node.type === 'FunctionDeclaration' && node.params && node.params.length > 0) {
+      const propsParam = node.params[0];
+      if (propsParam.type === 'ObjectPattern') {
+        propsParam.properties.forEach((prop: any) => {
+          if (prop.type === 'Property' && prop.key?.name) {
+            const propType = prop.value?.typeAnnotation?.typeAnnotation?.type || 'any';
+            const defaultValue = prop.value?.type === 'AssignmentPattern' ?
+              this.extractDefaultValue(prop.value.right) : undefined;
+
+            props.push({
+              name: prop.key.name,
+              type: this.mapTypeAnnotationToString(propType),
+              required: !defaultValue && !prop.value?.optional,
+              defaultValue
+            });
+          }
+        });
+      }
+    }
+
+    const propTypesMatch = content.match(new RegExp(`${node.id?.name || 'Component'}\\.propTypes\\s*=\\s*\\{([^}]+)\\}`, 's'));
+    if (propTypesMatch) {
+      const propTypesContent = propTypesMatch[1];
+      const propTypeLines = propTypesContent.split(',').map(line => line.trim()).filter(line => line);
+
+      propTypeLines.forEach(line => {
+        const propMatch = line.match(/(\w+):\s*PropTypes\.(\w+)\.?(\w+)?/);
+        if (propMatch) {
+          const [, name, type, required] = propMatch;
+          const isRequired = required === 'isRequired';
+
+          const existingProp = props.find(p => p.name === name);
+          if (existingProp) {
+            existingProp.type = type;
+            existingProp.required = isRequired;
+          } else {
+            props.push({
+              name,
+              type,
+              required: isRequired
+            });
+          }
+        }
+      });
+    }
+
+    return props;
   }
 
   private extractState(node: any, content: string): Array<{ name: string; type: string; initialValue?: string }> {
@@ -1499,6 +1568,499 @@ export class ReactAnalyzer extends BaseAnalyzer {
       case 'functional_component':
       case 'class_component': return 'consumer';
       default: return 'unknown';
+    }
+  }
+
+  private extractComponentDocumentation(ast: any, componentName: string, content: string): CASDocumentation | undefined {
+    const lines = content.split('\n');
+    let componentNode: any = null;
+
+    const findComponent = (node: any): any => {
+      if (node.type === 'FunctionDeclaration' && node.id?.name === componentName) {
+        return node;
+      }
+      if (node.type === 'VariableDeclarator' && node.id?.name === componentName) {
+        return node;
+      }
+      if (node.type === 'ClassDeclaration' && node.id?.name === componentName) {
+        return node;
+      }
+
+      for (const key in node) {
+        if (typeof node[key] === 'object' && node[key] !== null) {
+          if (Array.isArray(node[key])) {
+            for (const child of node[key]) {
+              const result = findComponent(child);
+              if (result) return result;
+            }
+          } else {
+            const result = findComponent(node[key]);
+            if (result) return result;
+          }
+        }
+      }
+      return null;
+    };
+
+    componentNode = findComponent(ast);
+    if (!componentNode || !componentNode.loc) return undefined;
+
+    return this.extractJSDocFromNode(componentNode, content, lines);
+  }
+
+  private extractHookDocumentation(ast: any, hookName: string, content: string): CASDocumentation | undefined {
+    const lines = content.split('\n');
+    let hookNode: any = null;
+
+    const findHook = (node: any): any => {
+      if (node.type === 'FunctionDeclaration' && node.id?.name === hookName) {
+        return node;
+      }
+      if (node.type === 'VariableDeclarator' && node.id?.name === hookName) {
+        return node;
+      }
+
+      for (const key in node) {
+        if (typeof node[key] === 'object' && node[key] !== null) {
+          if (Array.isArray(node[key])) {
+            for (const child of node[key]) {
+              const result = findHook(child);
+              if (result) return result;
+            }
+          } else {
+            const result = findHook(node[key]);
+            if (result) return result;
+          }
+        }
+      }
+      return null;
+    };
+
+    hookNode = findHook(ast);
+    if (!hookNode || !hookNode.loc) return undefined;
+
+    return this.extractJSDocFromNode(hookNode, content, lines);
+  }
+
+  private extractJSDocFromNode(node: any, content: string, lines: string[]): CASDocumentation | undefined {
+    if (!node.loc) return undefined;
+
+    const startLine = node.loc.start.line;
+    if (startLine <= 1) return undefined;
+
+    const previousLine = lines[startLine - 2];
+    if (!previousLine) return undefined;
+
+    const trimmed = previousLine.trim();
+    if (!trimmed.endsWith('*/')) return undefined;
+
+    let jsdocStart = -1;
+    for (let i = startLine - 2; i >= 0; i--) {
+      if (lines[i].includes('/**')) {
+        jsdocStart = i;
+        break;
+      }
+    }
+
+    if (jsdocStart === -1) return undefined;
+
+    const jsdocLines = lines.slice(jsdocStart, startLine - 1);
+    const raw = jsdocLines.join('\n');
+
+    return this.parseJSDoc(raw, jsdocStart + 1, startLine - 1);
+  }
+
+  private parseJSDoc(raw: string, startLine: number, endLine: number): CASDocumentation {
+    const doc: CASDocumentation = {
+      type: 'jsdoc',
+      raw,
+      location: { start_line: startLine, end_line: endLine }
+    };
+
+    const content = raw.replace(/\/\*\*|\*\/|\*\s?/g, '').trim();
+    const lines = content.split('\n').map(line => line.trim()).filter(line => line);
+
+    let currentSection = 'description';
+    let description = '';
+    const parameters: Array<{ name: string; type?: string; description?: string; optional?: boolean }> = [];
+    const tags: Array<{ tag: string; value: string }> = [];
+    let returns: { type?: string; description?: string } | undefined;
+
+    for (const line of lines) {
+      if (line.startsWith('@')) {
+        const tagMatch = line.match(/^@(\w+)\s*(.*)/);
+        if (tagMatch) {
+          const [, tag, value] = tagMatch;
+
+          if (tag === 'param') {
+            const paramMatch = value.match(/^\{([^}]+)\}\s*(\[?(\w+)\]?)\s*(.*)/);
+            if (paramMatch) {
+              const [, type, , name, desc] = paramMatch;
+              parameters.push({
+                name: name,
+                type: type,
+                description: desc,
+                optional: value.includes('[') && value.includes(']')
+              });
+            }
+          } else if (tag === 'returns' || tag === 'return') {
+            const returnMatch = value.match(/^\{([^}]+)\}\s*(.*)/);
+            if (returnMatch) {
+              const [, type, desc] = returnMatch;
+              returns = { type, description: desc };
+            }
+          } else {
+            tags.push({ tag, value });
+          }
+          currentSection = tag;
+        }
+      } else if (currentSection === 'description') {
+        description += (description ? ' ' : '') + line;
+      }
+    }
+
+    if (description) {
+      const sentences = description.split('.').filter(s => s.trim());
+      doc.summary = sentences[0]?.trim();
+      doc.description = description;
+    }
+
+    if (parameters.length > 0) {
+      doc.parameters = parameters;
+    }
+
+    if (returns) {
+      doc.returns = returns;
+    }
+
+    if (tags.length > 0) {
+      doc.tags = tags;
+    }
+
+    return doc;
+  }
+
+  private extractCommentsFromContent(content: string, filePath: string): CASComment[] {
+    const comments: CASComment[] = [];
+    const lines = content.split('\n');
+
+    lines.forEach((line, index) => {
+      const singleLineMatch = line.match(/\/\/(.*)$/);
+      if (singleLineMatch) {
+        const text = singleLineMatch[1].trim();
+        const purpose = this.classifyCommentPurpose(text);
+
+        comments.push({
+          id: `comment_${++this.commentCounter}`,
+          type: 'single-line',
+          style: '//',
+          text,
+          purpose,
+          location: {
+            file: filePath,
+            line: index + 1,
+            relative_to: 'above'
+          },
+          markers: this.extractCommentMarkers(text)
+        });
+      }
+
+      const jsxCommentMatch = line.match(/\{\s*\/\*\s*(.*?)\s*\*\/\s*\}/);
+      if (jsxCommentMatch) {
+        const text = jsxCommentMatch[1].trim();
+        const purpose = this.classifyCommentPurpose(text);
+
+        comments.push({
+          id: `comment_${++this.commentCounter}`,
+          type: 'inline',
+          style: '/* */',
+          text,
+          purpose,
+          location: {
+            file: filePath,
+            line: index + 1,
+            relative_to: 'inline'
+          },
+          markers: this.extractCommentMarkers(text)
+        });
+      }
+    });
+
+    const multiLineRegex = /\/\*\*([\s\S]*?)\*\//g;
+    let match;
+    while ((match = multiLineRegex.exec(content)) !== null) {
+      const text = match[1].replace(/^\s*\*\s?/gm, '').trim();
+      const startIndex = match.index;
+      const lineNumber = content.substring(0, startIndex).split('\n').length;
+
+      if (!text.startsWith('@')) {
+        comments.push({
+          id: `comment_${++this.commentCounter}`,
+          type: 'multi-line',
+          style: '/* */',
+          text,
+          purpose: this.classifyCommentPurpose(text),
+          location: {
+            file: filePath,
+            line: lineNumber,
+            relative_to: 'above'
+          },
+          markers: this.extractCommentMarkers(text)
+        });
+      }
+    }
+
+    return comments;
+  }
+
+  private extractTodosFromContent(content: string, filePath: string, context?: string): CASTodo[] {
+    const todos: CASTodo[] = [];
+    const lines = content.split('\n');
+
+    lines.forEach((line, index) => {
+      const todoMatch = line.match(/\b(TODO|FIXME|HACK|NOTE|WARNING|XXX|OPTIMIZE|REFACTOR)\b[:\s]*(.*)/i);
+      if (todoMatch) {
+        const [, type, text] = todoMatch;
+        const priority = this.determineTodoPriority(type.toUpperCase(), text);
+
+        todos.push({
+          id: `todo_${++this.todoCounter}`,
+          type: type.toUpperCase() as CASTodo['type'],
+          text: text.trim(),
+          priority,
+          location: {
+            file: filePath,
+            line: index + 1
+          },
+          context: context ? { function_name: context } : undefined,
+          classification: {
+            category: this.classifyTodoCategory(text),
+            technical_debt: type.toUpperCase() === 'FIXME' || type.toUpperCase() === 'HACK'
+          }
+        });
+      }
+
+      if (line.includes('return <div>TODO</div>') || line.includes('return <div>FIXME</div>')) {
+        todos.push({
+          id: `todo_${++this.todoCounter}`,
+          type: 'TODO',
+          text: 'Stub component implementation',
+          priority: 'high',
+          location: {
+            file: filePath,
+            line: index + 1
+          },
+          context: context ? { function_name: context } : undefined,
+          classification: {
+            category: 'feature',
+            technical_debt: true
+          }
+        });
+      }
+    });
+
+    return todos;
+  }
+
+  private detectReactImplementationStatus(ast: any, componentName: string, content: string): CASImplementationStatus | undefined {
+    let componentNode: any = null;
+
+    const findComponent = (node: any): any => {
+      if (node.type === 'FunctionDeclaration' && node.id?.name === componentName) {
+        return node;
+      }
+      if (node.type === 'VariableDeclarator' && node.id?.name === componentName) {
+        return node;
+      }
+      if (node.type === 'ClassDeclaration' && node.id?.name === componentName) {
+        return node;
+      }
+
+      for (const key in node) {
+        if (typeof node[key] === 'object' && node[key] !== null) {
+          if (Array.isArray(node[key])) {
+            for (const child of node[key]) {
+              const result = findComponent(child);
+              if (result) return result;
+            }
+          } else {
+            const result = findComponent(node[key]);
+            if (result) return result;
+          }
+        }
+      }
+      return null;
+    };
+
+    componentNode = findComponent(ast);
+    if (!componentNode) return undefined;
+
+    const nodeStart = componentNode.range?.[0] || 0;
+    const nodeEnd = componentNode.range?.[1] || content.length;
+    const bodyStr = content.substring(nodeStart, nodeEnd);
+
+    const indicators = {
+      has_todo_markers: /\b(TODO|FIXME|HACK)\b/i.test(bodyStr),
+      has_not_implemented_exceptions: /throw\s+.*(NotImplemented|Unsupported|TODO)/i.test(bodyStr),
+      has_stub_returns: /return\s*<div>TODO<\/div>|return\s*<div>FIXME<\/div>|return\s*null\s*;?\s*$/m.test(bodyStr),
+      has_placeholder_code: /console\.(log|warn|error)\s*\(['"].*TODO/i.test(bodyStr),
+      has_hardcoded_values: /const\s+\w+\s*=\s*['"]PLACEHOLDER|TEMP|TODO/i.test(bodyStr),
+      has_commented_out_code: /\/\/.*\w+\s*\(|^\/\*[\s\S]*?\*\//m.test(bodyStr)
+    };
+
+    const hasImplementation = bodyStr.trim().length > 50 &&
+                            !bodyStr.includes('return <div>TODO</div>') &&
+                            !bodyStr.includes('return null;');
+
+    let status: CASImplementationStatus['status'] = 'complete';
+
+    if (!hasImplementation || bodyStr.includes('return <div>TODO</div>')) {
+      status = 'stub';
+    } else if (indicators.has_not_implemented_exceptions) {
+      status = 'not-implemented';
+    } else if (indicators.has_todo_markers || indicators.has_placeholder_code) {
+      status = 'partial';
+    } else if (bodyStr.includes('@deprecated') || content.includes('@deprecated')) {
+      status = 'deprecated';
+    } else if (bodyStr.includes('@experimental') || content.includes('@experimental')) {
+      status = 'experimental';
+    }
+
+    return {
+      status,
+      indicators,
+      completeness: {
+        estimated_percentage: status === 'complete' ? 100 :
+                             status === 'partial' ? 60 :
+                             status === 'stub' ? 10 : 0,
+        missing_features: indicators.has_not_implemented_exceptions ? ['Not implemented'] : undefined
+      }
+    };
+  }
+
+  private classifyCommentPurpose(text: string): CASComment['purpose'] {
+    const lower = text.toLowerCase();
+
+    if (/\b(todo|fixme|hack|xxx)\b/i.test(text)) return 'todo';
+    if (/\b(warning|danger|caution|important)\b/i.test(text)) return 'warning';
+    if (/\b(note|info|tip)\b/i.test(text)) return 'note';
+    if (/eslint-disable|prettier-ignore|@ts-ignore/i.test(text)) return 'disabled-code';
+    if (text.includes('?') && text.length < 100) return 'clarification';
+    if (lower.includes('hack') || lower.includes('workaround')) return 'hack';
+
+    return 'explanation';
+  }
+
+  private extractCommentMarkers(text: string): CASComment['markers'] {
+    return {
+      is_todo: /\btodo\b/i.test(text),
+      is_fixme: /\bfixme\b/i.test(text),
+      is_hack: /\bhack\b/i.test(text),
+      is_warning: /\b(warning|danger|caution)\b/i.test(text),
+      is_note: /\b(note|info|tip)\b/i.test(text),
+      is_question: text.includes('?'),
+      is_important: /\b(important|critical)\b/i.test(text),
+      custom_markers: this.extractCustomMarkers(text)
+    };
+  }
+
+  private extractCustomMarkers(text: string): string[] {
+    const markers: string[] = [];
+    const customMarkerRegex = /@(\w+)/g;
+    let match;
+
+    while ((match = customMarkerRegex.exec(text)) !== null) {
+      markers.push(match[1]);
+    }
+
+    return markers;
+  }
+
+  private determineTodoPriority(type: string, text: string): CASTodo['priority'] {
+    if (type === 'FIXME' || type === 'HACK' || text.toLowerCase().includes('urgent')) {
+      return 'high';
+    }
+    if (type === 'WARNING' || text.toLowerCase().includes('important')) {
+      return 'medium';
+    }
+    return 'low';
+  }
+
+  private classifyTodoCategory(text: string): 'bug' | 'feature' | 'refactor' | 'performance' | 'security' | 'documentation' | 'test' {
+    const lower = text.toLowerCase();
+
+    if (lower.includes('bug') || lower.includes('fix') || lower.includes('error')) {
+      return 'bug';
+    }
+    if (lower.includes('feature') || lower.includes('implement') || lower.includes('add')) {
+      return 'feature';
+    }
+    if (lower.includes('refactor') || lower.includes('clean') || lower.includes('improve')) {
+      return 'refactor';
+    }
+    if (lower.includes('performance') || lower.includes('optimize') || lower.includes('speed')) {
+      return 'performance';
+    }
+    if (lower.includes('security') || lower.includes('auth') || lower.includes('permission')) {
+      return 'security';
+    }
+    if (lower.includes('doc') || lower.includes('comment') || lower.includes('explain')) {
+      return 'documentation';
+    }
+    if (lower.includes('test') || lower.includes('spec') || lower.includes('coverage')) {
+      return 'test';
+    }
+
+    return 'refactor';
+  }
+
+  private extractDefaultValue(node: any): string | undefined {
+    if (!node) return undefined;
+
+    switch (node.type) {
+      case 'Literal':
+        return String(node.value);
+      case 'StringLiteral':
+        return `"${node.value}"`;
+      case 'NumericLiteral':
+        return String(node.value);
+      case 'BooleanLiteral':
+        return String(node.value);
+      case 'NullLiteral':
+        return 'null';
+      case 'Identifier':
+        return node.name;
+      case 'ArrayExpression':
+        return '[]';
+      case 'ObjectExpression':
+        return '{}';
+      default:
+        return undefined;
+    }
+  }
+
+  private mapTypeAnnotationToString(typeNode: string | any): string {
+    if (typeof typeNode === 'string') {
+      return typeNode;
+    }
+
+    if (!typeNode) return 'any';
+
+    switch (typeNode) {
+      case 'TSStringKeyword':
+        return 'string';
+      case 'TSNumberKeyword':
+        return 'number';
+      case 'TSBooleanKeyword':
+        return 'boolean';
+      case 'TSArrayType':
+        return 'array';
+      case 'TSObjectKeyword':
+        return 'object';
+      case 'TSFunctionType':
+        return 'function';
+      default:
+        return 'any';
     }
   }
 }

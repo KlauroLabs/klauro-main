@@ -1,5 +1,8 @@
 import { BaseAnalyzer, AnalysisContext } from '../core/base-analyzer';
-import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint } from '../../types/cas.types';
+import {
+  CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint,
+  CASDocumentation, CASComment, CASTodo, CASImplementationStatus
+} from '../../types/cas.types';
 import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
@@ -138,6 +141,8 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   private dotNetFrameworkProject = false;
   private astRunner: ASTRunner;
   private astCache = new Map<string, CSharpASTNode>();
+  private todoCounter = 0;
+  private commentCounter = 0;
 
   constructor() {
     super(
@@ -426,30 +431,47 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     entryPoints: any[]
   ): Promise<void> {
     const classId = `class_${this.sanitizeId(cls.namespace)}_${this.sanitizeId(cls.name)}`;
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const lines = content.split('\n');
 
-    nodes.push(this.createNode(
+    const documentation = this.extractDocumentationFromXmlComment(lines, cls.lineStart - 1);
+    const fileComments = this.extractCommentsFromFile(content, fullPath);
+    const classComments = fileComments.filter(c =>
+      c.location.line >= cls.lineStart &&
+      (c.location.end_line ? c.location.end_line <= cls.lineEnd : c.location.line <= cls.lineEnd)
+    );
+    const todos = this.extractTodosFromComments(classComments, `class ${cls.name}`);
+
+    const classNode = this.createNodeBuilder(
       classId,
       cls.name,
-      'class',
-      2,
-      fullPath,
-      cls.lineStart,
-      cls.lineEnd,
-      {
-        namespace: cls.namespace,
-        modifiers: cls.modifiers,
-        baseClass: cls.baseClass,
-        implementedInterfaces: cls.implementedInterfaces,
-        attributes: cls.attributes,
-        fieldCount: cls.fields.length,
-        propertyCount: cls.properties.length,
-        methodCount: cls.methods.length,
-        isPublic: cls.modifiers.includes('public'),
-        isAbstract: cls.isAbstract,
-        isSealed: cls.isSealed,
-        isStatic: cls.isStatic
-      }
-    ));
+      'class'
+    )
+      .withLevel(2, 'Class/Interface')
+      .withCategory('structures', ['classes'])
+      .withSource({ file: fullPath, line: cls.lineStart, end_line: cls.lineEnd })
+      .withMetadata({
+        attributes: {
+          namespace: cls.namespace,
+          modifiers: cls.modifiers,
+          baseClass: cls.baseClass,
+          implementedInterfaces: cls.implementedInterfaces,
+          csharpAttributes: cls.attributes,
+          fieldCount: cls.fields.length,
+          propertyCount: cls.properties.length,
+          methodCount: cls.methods.length,
+          isPublic: cls.modifiers.includes('public'),
+          isAbstract: cls.isAbstract,
+          isSealed: cls.isSealed,
+          isStatic: cls.isStatic
+        }
+      })
+      .withDocumentation(documentation)
+      .withComments(classComments.length > 0 ? classComments : undefined)
+      .withTodos(todos.length > 0 ? todos : undefined)
+      .build();
+
+    nodes.push(classNode);
 
     edges.push(this.createEdge(
       `${fileId}_contains_${classId}`,
@@ -519,29 +541,49 @@ export class CSharpAnalyzer extends BaseAnalyzer {
 
     for (const method of cls.methods) {
       const methodId = `method_${classId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
-      nodes.push(this.createNode(
+
+      const methodDocumentation = this.extractDocumentationFromXmlComment(lines, method.lineStart - 1);
+      const methodComments = fileComments.filter(c =>
+        c.location.line >= method.lineStart &&
+        (c.location.end_line ? c.location.end_line <= method.lineEnd : c.location.line <= method.lineEnd)
+      );
+      const methodTodos = this.extractTodosFromComments(methodComments, `method ${cls.name}.${method.name}`);
+
+      const methodBodyLines = lines.slice(method.lineStart - 1, method.lineEnd);
+      const implementationStatus = this.detectImplementationStatus(method, methodBodyLines);
+
+      const methodNode = this.createNodeBuilder(
         methodId,
         method.name,
-        'method',
-        4,
-        fullPath,
-        method.lineStart,
-        method.lineEnd,
-        {
-          returnType: method.returnType,
-          parameters: method.parameters,
-          modifiers: method.modifiers,
-          attributes: method.attributes,
-          isConstructor: method.isConstructor,
-          isDestructor: method.isDestructor,
-          isStatic: method.isStatic,
-          isVirtual: method.isVirtual,
-          isOverride: method.isOverride,
-          isAbstract: method.isAbstract,
-          isAsync: method.isAsync,
-          isPublic: method.modifiers.includes('public')
-        }
-      ));
+        'method'
+      )
+        .withLevel(4, 'Method/Function')
+        .withCategory('methods', ['class-methods'])
+        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withMetadata({
+          attributes: {
+            returnType: method.returnType,
+            parameters: method.parameters,
+            modifiers: method.modifiers,
+            csharpAttributes: method.attributes,
+            isConstructor: method.isConstructor,
+            isDestructor: method.isDestructor,
+            isStatic: method.isStatic,
+            isVirtual: method.isVirtual,
+            isOverride: method.isOverride,
+            isAbstract: method.isAbstract,
+            isAsync: method.isAsync,
+            isPublic: method.modifiers.includes('public')
+          }
+        })
+        .withParent(classId)
+        .withDocumentation(methodDocumentation)
+        .withComments(methodComments.length > 0 ? methodComments : undefined)
+        .withTodos(methodTodos.length > 0 ? methodTodos : undefined)
+        .withImplementationStatus(implementationStatus)
+        .build();
+
+      nodes.push(methodNode);
 
       edges.push(this.createEdge(
         `${classId}_has_method_${methodId}`,
@@ -1826,6 +1868,284 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     };
 
     return standardTypes[className] || 'External Library';
+  }
+
+  private extractDocumentationFromXmlComment(lines: string[], lineIndex: number): CASDocumentation | undefined {
+    const docs: CASDocumentation = {
+      id: `doc_${++this.commentCounter}`,
+      format: 'xml_doc',
+      raw: '',
+      location: { start_line: lineIndex, end_line: lineIndex }
+    };
+    let hasContent = false;
+
+    for (let i = lineIndex - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line.startsWith('///')) break;
+
+      const xmlContent = line.replace(/^\/\/\/\s*/, '');
+
+      const summaryMatch = xmlContent.match(/<summary>\s*(.*?)\s*<\/summary>/);
+      if (summaryMatch) {
+        docs.summary = summaryMatch[1];
+        hasContent = true;
+      } else if (xmlContent.includes('<summary>')) {
+        docs.summary = xmlContent.replace('<summary>', '').trim();
+        hasContent = true;
+      } else if (docs.summary && xmlContent.includes('</summary>')) {
+        docs.summary = (docs.summary + ' ' + xmlContent.replace('</summary>', '')).trim();
+      } else if (docs.summary && !xmlContent.includes('<')) {
+        docs.summary = (docs.summary + ' ' + xmlContent).trim();
+      }
+
+      const paramMatch = xmlContent.match(/<param name=\"([^\"]+)\">\s*(.*?)\s*<\/param>/);
+      if (paramMatch) {
+        if (!docs.parameters) docs.parameters = [];
+        docs.parameters.push({
+          name: paramMatch[1],
+          description: paramMatch[2]
+        });
+        hasContent = true;
+      }
+
+      const returnsMatch = xmlContent.match(/<returns>\s*(.*?)\s*<\/returns>/);
+      if (returnsMatch) {
+        docs.returns = { description: returnsMatch[1] };
+        hasContent = true;
+      }
+
+      const exceptionMatch = xmlContent.match(/<exception cref=\"([^\"]+)\">\s*(.*?)\s*<\/exception>/);
+      if (exceptionMatch) {
+        if (!docs.exceptions) docs.exceptions = [];
+        docs.exceptions.push({
+          type: exceptionMatch[1],
+          description: exceptionMatch[2]
+        });
+        hasContent = true;
+      }
+
+      const remarksMatch = xmlContent.match(/<remarks>\s*(.*?)\s*<\/remarks>/);
+      if (remarksMatch) {
+        docs.remarks = remarksMatch[1];
+        hasContent = true;
+      }
+
+      const exampleMatch = xmlContent.match(/<example>\s*(.*?)\s*<\/example>/);
+      if (exampleMatch) {
+        if (!docs.examples) docs.examples = [];
+        docs.examples.push({ code: exampleMatch[1] });
+        hasContent = true;
+      }
+    }
+
+    return hasContent ? docs : undefined;
+  }
+
+  private extractCommentsFromFile(content: string, filePath: string): CASComment[] {
+    const comments: CASComment[] = [];
+    const lines = content.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      const singleLineMatch = line.match(/\/\/(.*)$/);
+      if (singleLineMatch && !line.trim().startsWith('///')) {
+        const text = singleLineMatch[1].trim();
+        const purpose = this.classifyCommentPurpose(text);
+        comments.push({
+          id: `comment_${++this.commentCounter}`,
+          type: 'single-line',
+          style: '//',
+          text,
+          purpose,
+          location: {
+            file: filePath,
+            line: i + 1,
+            relative_to: 'inline'
+          },
+          markers: this.extractCommentMarkers(text)
+        });
+      }
+
+      if (line.includes('/*')) {
+        let multiLineText = '';
+        let endLine = i;
+        let foundEnd = false;
+
+        for (let j = i; j < lines.length; j++) {
+          const currentLine = lines[j];
+          if (j === i) {
+            const startMatch = currentLine.match(/\/\*(.*)/);
+            if (startMatch) {
+              multiLineText = startMatch[1];
+              if (currentLine.includes('*/')) {
+                multiLineText = multiLineText.replace(/\*\/.*$/, '').trim();
+                foundEnd = true;
+                endLine = j;
+              }
+            }
+          } else {
+            if (currentLine.includes('*/')) {
+              multiLineText += '\n' + currentLine.replace(/\*\/.*$/, '').replace(/^\s*\*/, '').trim();
+              foundEnd = true;
+              endLine = j;
+              break;
+            } else {
+              multiLineText += '\n' + currentLine.replace(/^\s*\*/, '').trim();
+            }
+          }
+        }
+
+        if (foundEnd) {
+          const purpose = this.classifyCommentPurpose(multiLineText);
+          comments.push({
+            id: `comment_${++this.commentCounter}`,
+            type: 'multi-line',
+            style: '/* */',
+            text: multiLineText.trim(),
+            purpose,
+            location: {
+              file: filePath,
+              line: i + 1,
+              end_line: endLine + 1,
+              relative_to: 'above'
+            },
+            markers: this.extractCommentMarkers(multiLineText)
+          });
+          i = endLine;
+        }
+      }
+    }
+
+    return comments;
+  }
+
+  private classifyCommentPurpose(text: string): CASComment['purpose'] {
+    const lowerText = text.toLowerCase();
+
+    if (/\b(todo|fixme|hack|warning|note|xxx|optimize|refactor)\b/.test(lowerText)) {
+      return 'todo';
+    }
+    if (/\b(warning|warn|caution|danger|important)\b/.test(lowerText)) {
+      return 'warning';
+    }
+    if (/\b(note|info|tip|hint)\b/.test(lowerText)) {
+      return 'note';
+    }
+    if (/\b(hack|temp|temporary|quick|dirty)\b/.test(lowerText)) {
+      return 'hack';
+    }
+
+    return 'explanation';
+  }
+
+  private extractCommentMarkers(text: string): CASComment['markers'] {
+    const markers: CASComment['markers'] = {};
+    const lowerText = text.toLowerCase();
+
+    markers.is_todo = /\btodo\b/.test(lowerText);
+    markers.is_fixme = /\bfixme\b/.test(lowerText);
+    markers.is_hack = /\bhack\b/.test(lowerText);
+    markers.is_warning = /\b(warning|warn)\b/.test(lowerText);
+    markers.is_note = /\b(note|info)\b/.test(lowerText);
+    markers.is_important = /\b(important|critical|urgent)\b/.test(lowerText);
+    markers.is_deprecated = /\b(deprecated|obsolete)\b/.test(lowerText);
+
+    return markers;
+  }
+
+  private extractTodosFromComments(comments: CASComment[], context: string): CASTodo[] {
+    const todos: CASTodo[] = [];
+
+    comments.forEach(comment => {
+      if (comment.markers?.is_todo || comment.markers?.is_fixme || comment.markers?.is_hack) {
+        const typeMatch = comment.text.match(/\b(TODO|FIXME|HACK|NOTE|WARNING|XXX|OPTIMIZE|REFACTOR)\b/i);
+        const type = typeMatch ? typeMatch[0].toUpperCase() as CASTodo['type'] : 'TODO';
+
+        const assigneeMatch = comment.text.match(/\b(?:TODO|FIXME|HACK)\s*\(([^)]+)\)/);
+        const assignee = assigneeMatch ? assigneeMatch[1] : undefined;
+
+        const priority = comment.markers?.is_important ? 'high' :
+                        comment.markers?.is_fixme ? 'medium' : 'low';
+
+        const category = this.categorizeTodo(comment.text);
+
+        todos.push({
+          id: `todo_${++this.todoCounter}`,
+          type,
+          text: comment.text,
+          priority,
+          assignee,
+          category,
+          location: {
+            file: comment.location.file,
+            line: comment.location.line,
+            context
+          },
+          metadata: {
+            source: 'comment',
+            comment_type: comment.type
+          }
+        });
+      }
+    });
+
+    return todos;
+  }
+
+  private categorizeTodo(text: string): CASTodo['category'] {
+    const lowerText = text.toLowerCase();
+
+    if (/\b(fix|bug|error|issue|broken)\b/.test(lowerText)) return 'bug';
+    if (/\b(feature|add|implement|new)\b/.test(lowerText)) return 'feature';
+    if (/\b(refactor|clean|improve|restructure)\b/.test(lowerText)) return 'refactor';
+    if (/\b(performance|optimize|speed|slow)\b/.test(lowerText)) return 'performance';
+    if (/\b(security|secure|auth|permission)\b/.test(lowerText)) return 'security';
+
+    return 'general';
+  }
+
+  private detectImplementationStatus(methodInfo: CSharpMethod, methodBody: string[]): CASImplementationStatus {
+    const bodyText = methodBody.join('\n').toLowerCase();
+
+    if (bodyText.includes('throw new notimplementedexception') ||
+        bodyText.includes('notimplemented')) {
+      return {
+        status: 'not-implemented',
+        indicators: ['NotImplementedException thrown'],
+        confidence: 1.0
+      };
+    }
+
+    if (methodInfo.attributes.some(attr => attr.toLowerCase().includes('obsolete'))) {
+      return {
+        status: 'deprecated',
+        indicators: ['[Obsolete] attribute'],
+        confidence: 1.0
+      };
+    }
+
+    if (bodyText.includes('todo') || bodyText.includes('fixme')) {
+      return {
+        status: 'partial',
+        indicators: ['Contains TODO/FIXME markers'],
+        confidence: 0.7
+      };
+    }
+
+    if (methodBody.length <= 2 && (bodyText.includes('return') || bodyText.includes('throw'))) {
+      return {
+        status: 'stub',
+        indicators: ['Simple return or throw statement'],
+        confidence: 0.6
+      };
+    }
+
+    return {
+      status: 'complete',
+      indicators: ['Standard implementation'],
+      confidence: 0.8
+    };
   }
 
   protected sanitizeId(name: string): string {

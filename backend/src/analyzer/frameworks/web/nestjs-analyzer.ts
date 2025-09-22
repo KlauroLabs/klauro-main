@@ -1,5 +1,8 @@
 import { BaseAnalyzer, AnalysisContext } from '../../core/base-analyzer';
-import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint, CASPerspective } from '../../../types/cas.types';
+import {
+  CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint, CASPerspective,
+  CASDocumentation, CASComment, CASTodo, CASImplementationStatus, CASCallGraph
+} from '../../../types/cas.types';
 import { AnalyzerError } from '../../core/errors';
 import { EnhancedCallGraphExtractor } from '../../enhanced-call-graph-extractor';
 import * as path from 'path';
@@ -176,6 +179,14 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           modules.push(moduleInfo);
 
           const moduleId = this.generateId('module', moduleInfo.filePath, moduleInfo.name);
+
+          // Extract CAS v1.4.0 features for the module
+          const moduleClassNode = this.findModuleClassNode(ast);
+          const moduleDocumentation = moduleClassNode ? this.extractDocumentation(moduleClassNode, content) : undefined;
+          const moduleComments = moduleClassNode ? this.extractComments(moduleClassNode, content) : [];
+          const moduleTodos = this.extractTodos(moduleComments);
+          const moduleImplementationStatus = moduleClassNode ? this.detectImplementationStatus(moduleClassNode, content) : undefined;
+
           const moduleNode = this.createNodeBuilder(moduleId, moduleInfo.name, 'module')
             .withLevel(1, 'system')
             .withCategory('backend', ['framework'])
@@ -191,6 +202,10 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                 is_global: moduleInfo.isGlobal
               }
             })
+            .withDocumentation(moduleDocumentation)
+            .withComments(moduleComments.length > 0 ? moduleComments : undefined)
+            .withTodos(moduleTodos.length > 0 ? moduleTodos : undefined)
+            .withImplementationStatus(moduleImplementationStatus)
             .build();
           nodes.push(moduleNode);
           newNodes.push(moduleNode);
@@ -274,10 +289,18 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
           controllerInfo.routes.forEach((route, index) => {
             const routeId = this.generateId('route', controllerInfo.filePath, `${route.handlerName}_${route.method}_${route.path}`);
+
+            // Extract CAS v1.4.0 features for the route handler
+            const handlerNode = this.findControllerHandlerMethod(ast, route.handlerName);
+            const routeDocumentation = handlerNode ? this.extractDocumentation(handlerNode, content) : undefined;
+            const routeComments = handlerNode ? this.extractComments(handlerNode, content) : [];
+            const routeTodos = this.extractTodos(routeComments);
+            const routeImplementationStatus = handlerNode ? this.detectImplementationStatus(handlerNode, content) : undefined;
+
             const routeNode = this.createNodeBuilder(routeId, `${route.method.toUpperCase()} ${route.path}`, 'route')
               .withLevel(3, 'code')
               .withCategory('route', ['http', 'endpoint'])
-              .withSource({ file: fullPath, line: 1, end_line: 1 })
+              .withSource({ file: fullPath, line: handlerNode?.loc?.start?.line || 1, end_line: handlerNode?.loc?.end?.line || 1 })
               .withDescription(`HTTP ${route.method.toUpperCase()} endpoint: ${route.path}`)
               .withParent(controllerId)
               .withMetadata({
@@ -292,6 +315,10 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                   interceptors: route.interceptors
                 }
               })
+              .withDocumentation(routeDocumentation)
+              .withComments(routeComments.length > 0 ? routeComments : undefined)
+              .withTodos(routeTodos.length > 0 ? routeTodos : undefined)
+              .withImplementationStatus(routeImplementationStatus)
               .build();
             nodes.push(routeNode);
 
@@ -2669,5 +2696,326 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     }
 
     return targetNode;
+  }
+
+  // CAS v1.4.0 Documentation extraction methods
+  private extractDocumentation(node: any, content: string): CASDocumentation | undefined {
+    const lines = content.split('\n');
+
+    if (!node.loc?.start?.line) return undefined;
+
+    // Look for JSDoc comments above the node
+    let lineIndex = node.loc.start.line - 2; // 0-based, start above the node
+
+    while (lineIndex >= 0) {
+      const line = lines[lineIndex]?.trim();
+      if (!line) {
+        lineIndex--;
+        continue;
+      }
+
+      if (line.includes('*/')) {
+        // Found end of JSDoc block, extract it
+        let docStart = lineIndex;
+        while (docStart >= 0 && !lines[docStart]?.trim().includes('/**')) {
+          docStart--;
+        }
+
+        if (docStart >= 0) {
+          const docLines = lines.slice(docStart, lineIndex + 1);
+          const raw = docLines.join('\n');
+          return this.parseJSDoc(raw, docStart + 1, lineIndex + 1);
+        }
+      }
+
+      // If we hit non-whitespace that's not a comment, stop
+      if (line && !line.startsWith('//') && !line.startsWith('*') && !line.startsWith('/*')) {
+        break;
+      }
+
+      lineIndex--;
+    }
+
+    return undefined;
+  }
+
+  private parseJSDoc(raw: string, startLine: number, endLine: number): CASDocumentation {
+    const doc: CASDocumentation = {
+      type: 'jsdoc',
+      raw,
+      location: { start_line: startLine, end_line: endLine }
+    };
+
+    // Extract summary (first line after /** that's not a tag)
+    const lines = raw.split('\n');
+    for (const line of lines) {
+      const cleaned = line.replace(/^\s*\*\s?/, '').trim();
+      if (cleaned && !cleaned.startsWith('@') && !cleaned.includes('/**') && !cleaned.includes('*/')) {
+        doc.summary = cleaned;
+        break;
+      }
+    }
+
+    // Extract @ApiOperation for Swagger documentation
+    const apiOpMatch = raw.match(/@ApiOperation\s*\(\s*{[^}]*summary:\s*['"`]([^'"`]+)['"`]/);
+    if (apiOpMatch) {
+      doc.framework_docs = {
+        swagger: {
+          summary: apiOpMatch[1],
+          description: doc.summary
+        }
+      };
+    }
+
+    // Extract @ApiResponse annotations
+    const apiResponseMatches = raw.matchAll(/@ApiResponse\s*\(\s*{[^}]*description:\s*['"`]([^'"`]+)['"`]/g);
+    if (apiResponseMatches) {
+      doc.framework_docs = doc.framework_docs || { swagger: {} };
+    }
+
+    // Extract parameters from JSDoc
+    const paramMatches = raw.matchAll(/@param\s+(?:{([^}]+)}\s+)?(\w+)(?:\s+(.+))?/g);
+    if (paramMatches) {
+      doc.parameters = [];
+      for (const match of paramMatches) {
+        doc.parameters.push({
+          name: match[2],
+          type: match[1],
+          description: match[3]?.trim()
+        });
+      }
+    }
+
+    // Extract return information
+    const returnMatch = raw.match(/@returns?\s+(?:{([^}]+)}\s+)?(.+)/);
+    if (returnMatch) {
+      doc.returns = {
+        type: returnMatch[1],
+        description: returnMatch[2]?.trim()
+      };
+    }
+
+    // Extract deprecation info
+    const deprecatedMatch = raw.match(/@deprecated\s+(.+)/);
+    if (deprecatedMatch) {
+      doc.tags = doc.tags || [];
+      doc.tags.push({
+        tag: '@deprecated',
+        value: deprecatedMatch[1].trim()
+      });
+    }
+
+    return doc;
+  }
+
+  private extractComments(node: any, content: string): CASComment[] {
+    const comments: CASComment[] = [];
+    const lines = content.split('\n');
+
+    if (!node.loc?.start?.line || !node.loc?.end?.line) return comments;
+
+    // Extract comments within the node's scope
+    for (let i = node.loc.start.line - 1; i < node.loc.end.line; i++) {
+      const line = lines[i];
+      if (!line) continue;
+
+      // Single line comments
+      const singleLineMatch = line.match(/\/\/\s*(.+)/);
+      if (singleLineMatch) {
+        const text = singleLineMatch[1].trim();
+        const comment: CASComment = {
+          id: `comment_${++this.commentCounter}`,
+          type: 'single-line',
+          style: '//',
+          text,
+          purpose: this.classifyCommentPurpose(text),
+          location: {
+            file: node.loc?.filename || '',
+            line: i + 1
+          },
+          markers: {
+            is_todo: text.toUpperCase().includes('TODO'),
+            is_fixme: text.toUpperCase().includes('FIXME'),
+            is_hack: text.toUpperCase().includes('HACK'),
+            is_warning: text.toUpperCase().includes('WARNING'),
+            is_note: text.toUpperCase().includes('NOTE')
+          }
+        };
+        comments.push(comment);
+      }
+    }
+
+    return comments;
+  }
+
+  private classifyCommentPurpose(text: string): CASComment['purpose'] {
+    const upperText = text.toUpperCase();
+    if (upperText.includes('TODO') || upperText.includes('FIXME')) return 'todo';
+    if (upperText.includes('WARNING') || upperText.includes('WARN')) return 'warning';
+    if (upperText.includes('HACK') || upperText.includes('WORKAROUND')) return 'hack';
+    if (upperText.includes('NOTE') || upperText.includes('INFO')) return 'note';
+    if (upperText.includes('DISABLED') || upperText.includes('COMMENTED')) return 'disabled-code';
+    return 'explanation';
+  }
+
+  private extractTodos(comments: CASComment[]): CASTodo[] {
+    const todos: CASTodo[] = [];
+
+    for (const comment of comments) {
+      if (comment.markers?.is_todo || comment.markers?.is_fixme || comment.markers?.is_hack) {
+        const text = comment.text;
+        const typeMatch = text.match(/(TODO|FIXME|HACK|NOTE|WARNING|XXX)/i);
+        const type = typeMatch ? typeMatch[0].toUpperCase() as CASTodo['type'] : 'TODO';
+
+        // Extract assignee from patterns like "TODO(username):"
+        const assigneeMatch = text.match(/TODO\s*\(\s*([^)]+)\s*\)/i);
+        const assignee = assigneeMatch ? assigneeMatch[1].trim() : undefined;
+
+        // Extract priority from patterns like "TODO [HIGH]:" or "TODO: [CRITICAL]"
+        const priorityMatch = text.match(/\[(CRITICAL|HIGH|MEDIUM|LOW)\]/i);
+        let priority: CASTodo['priority'] = 'medium';
+        if (priorityMatch) {
+          priority = priorityMatch[1].toLowerCase() as CASTodo['priority'];
+        }
+
+        const todo: CASTodo = {
+          id: `todo_${++this.todoCounter}`,
+          type,
+          text: text.replace(/^(TODO|FIXME|HACK|NOTE|WARNING|XXX)\s*(\([^)]+\))?\s*:?\s*/i, '').trim(),
+          priority,
+          location: {
+            file: comment.location.file,
+            line: comment.location.line
+          },
+          assignee,
+          classification: {
+            category: this.classifyTodoCategory(text),
+            technical_debt: type === 'TODO' || type === 'FIXME' || type === 'HACK'
+          }
+        };
+
+        todos.push(todo);
+      }
+    }
+
+    return todos;
+  }
+
+  private classifyTodoCategory(text: string): 'bug' | 'feature' | 'refactor' | 'performance' | 'security' | 'documentation' | 'test' | undefined {
+    const lowerText = text.toLowerCase();
+    if (lowerText.includes('bug') || lowerText.includes('fix') || lowerText.includes('error')) return 'bug';
+    if (lowerText.includes('security') || lowerText.includes('auth') || lowerText.includes('permission')) return 'security';
+    if (lowerText.includes('performance') || lowerText.includes('optimize') || lowerText.includes('slow')) return 'performance';
+    if (lowerText.includes('test') || lowerText.includes('spec') || lowerText.includes('coverage')) return 'test';
+    if (lowerText.includes('refactor') || lowerText.includes('cleanup') || lowerText.includes('reorganize')) return 'refactor';
+    if (lowerText.includes('doc') || lowerText.includes('comment') || lowerText.includes('explain')) return 'documentation';
+    return 'feature';
+  }
+
+
+  private commentCounter = 0;
+  private todoCounter = 0;
+
+  private findModuleClassNode(ast: TSESTree.Program): any {
+    let moduleNode: any = null;
+
+    const walk = (node: any) => {
+      if (node.type === 'ClassDeclaration' && node.decorators) {
+        const hasModuleDecorator = node.decorators.some((dec: any) =>
+          dec.expression?.callee?.name === 'Module'
+        );
+        if (hasModuleDecorator) {
+          moduleNode = node;
+          return;
+        }
+      }
+
+      for (const key in node) {
+        if (key === 'parent') continue;
+        if (Array.isArray(node[key])) {
+          node[key].forEach(walk);
+        } else if (typeof node[key] === 'object' && node[key]) {
+          walk(node[key]);
+        }
+      }
+    };
+
+    walk(ast);
+    return moduleNode;
+  }
+
+  private findControllerHandlerMethod(ast: TSESTree.Program, handlerName: string): any {
+    let handlerNode: any = null;
+
+    const walk = (node: any) => {
+      if (node.type === 'MethodDefinition' && node.key?.name === handlerName) {
+        handlerNode = node;
+        return;
+      }
+
+      for (const key in node) {
+        if (key === 'parent') continue;
+        if (Array.isArray(node[key])) {
+          node[key].forEach(walk);
+        } else if (typeof node[key] === 'object' && node[key]) {
+          walk(node[key]);
+        }
+      }
+    };
+
+    walk(ast);
+    return handlerNode;
+  }
+
+  private detectImplementationStatus(node: any, content: string): CASImplementationStatus | undefined {
+    if (!node) return undefined;
+
+    const lines = content.split('\n');
+    const startLine = node.loc?.start?.line || 1;
+    const endLine = node.loc?.end?.line || lines.length;
+
+    // Extract the code content
+    const codeLines = lines.slice(startLine - 1, endLine);
+    const codeContent = codeLines.join('\n');
+
+    // Analyze implementation indicators
+    const indicators = {
+      has_todo_markers: /\b(TODO|FIXME|HACK)\b/i.test(codeContent),
+      has_not_implemented_exceptions: /throw\s+.*(NotImplemented|Unsupported|TODO)/i.test(codeContent),
+      has_stub_returns: /return\s+(null|undefined|false|0|''|""|\[\]|\{\})\s*;?\s*$/m.test(codeContent),
+      has_placeholder_code: /console\.(log|warn|error)\s*\(['"].*TODO/i.test(codeContent),
+      has_hardcoded_values: /const\s+\w+\s*=\s*['"]PLACEHOLDER|TEMP|TODO/i.test(codeContent),
+      has_commented_out_code: /\/\/.*\w+\s*\(|^\/\*[\s\S]*?\*\//m.test(codeContent)
+    };
+
+    // Determine status
+    let status: CASImplementationStatus['status'] = 'complete';
+
+    const isEmpty = codeContent.trim().length < 20 || /^\{\s*\}$/.test(codeContent.trim());
+    if (isEmpty) {
+      status = 'stub';
+    } else if (indicators.has_not_implemented_exceptions) {
+      status = 'not-implemented';
+    } else if (indicators.has_todo_markers || indicators.has_stub_returns) {
+      status = 'partial';
+    }
+
+    // Check for deprecated/experimental markers
+    if (/@deprecated/i.test(codeContent) || codeContent.includes('@Deprecated')) {
+      status = 'deprecated';
+    }
+    if (/@experimental|@beta/i.test(codeContent)) {
+      status = 'experimental';
+    }
+
+    return {
+      status,
+      indicators,
+      completeness: {
+        estimated_percentage: status === 'complete' ? 100 :
+                             status === 'partial' ? 50 :
+                             status === 'stub' ? 10 : 0
+      }
+    };
   }
 }

@@ -202,11 +202,7 @@ export const UnravlThemeProvider: React.FC<UnravlThemeProviderProps> = ({
             margin: 0;
             padding: 0;
             font-family: 'Inter', 'Roboto', 'Helvetica', 'Arial', sans-serif;
-            background: ${currentTimeOfDay === 'day' 
-              ? designTokens.ui.backgrounds.sky
-              : currentTimeOfDay === 'evening'
-              ? designTokens.ui.backgrounds.sunset
-              : designTokens.ui.backgrounds.night};
+            background: #0a0a0a;
             overflow: hidden;
           }
           

@@ -1,5 +1,8 @@
 import { BaseAnalyzer, AnalysisContext } from '../core/base-analyzer';
-import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint } from '../../types/cas.types';
+import {
+  CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint,
+  CASDocumentation, CASComment, CASTodo, CASImplementationStatus
+} from '../../types/cas.types';
 import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
@@ -122,6 +125,8 @@ export class GoAnalyzer extends BaseAnalyzer {
   private vendorProject = false;
   private astRunner: ASTRunner;
   private astCache = new Map<string, GoASTNode>();
+  private todoCounter = 0;
+  private commentCounter = 0;
 
   constructor() {
     super(
@@ -353,44 +358,59 @@ export class GoAnalyzer extends BaseAnalyzer {
       }
 
       const fileId = `file_${this.sanitizeId(relativePath)}`;
-      nodes.push(this.createNode(
+      const fileComments = this.extractCommentsFromFile(content, fullPath);
+      const fileTodos = this.extractTodosFromComments(fileComments, fullPath);
+
+      nodes.push(this.createNodeBuilder(
         fileId,
         relativePath.split('/').pop() || 'unknown.go',
-        'file',
-        1,
-        fullPath,
-        1,
-        lines.length,
-        {
-          packageName: packageName || 'main',
-          imports: imports.map(i => i.path),
-          structCount: structs.length,
-          interfaceCount: interfaces.length,
-          functionCount: functions.length,
-          typeCount: types.length,
-          variableCount: variables.length,
-          constantCount: constants.length
-        }
-      ));
+        'file'
+      )
+        .withLevel(1, 'File/Module')
+        .withCategory('modules', ['go-files'])
+        .withSource({ file: fullPath, line: 1, end_line: lines.length })
+        .withMetadata({
+          language: 'go',
+          attributes: {
+            packageName: packageName || 'main',
+            imports: imports.map(i => i.path),
+            structCount: structs.length,
+            interfaceCount: interfaces.length,
+            functionCount: functions.length,
+            typeCount: types.length,
+            variableCount: variables.length,
+            constantCount: constants.length,
+            extension: '.go',
+            commentCount: fileComments.length,
+            todoCount: fileTodos.length
+          }
+        })
+        .withComments(fileComments.length > 0 ? fileComments : undefined)
+        .withTodos(fileTodos.length > 0 ? fileTodos : undefined)
+        .build());
 
       for (const imp of imports) {
         const importId = `import_${fileId}_${this.sanitizeId(imp.path)}`;
-        nodes.push(this.createNode(
+        nodes.push(this.createNodeBuilder(
           importId,
           imp.alias || imp.path,
-          'import',
-          2,
-          fullPath,
-          imp.lineNumber,
-          imp.lineNumber,
-          {
-            path: imp.path,
-            alias: imp.alias,
-            isStandard: imp.isStandard,
-            isDotImport: imp.isDotImport,
-            isBlankImport: imp.isBlankImport
-          }
-        ));
+          'import'
+        )
+          .withLevel(2, 'Import/Dependency')
+          .withCategory('imports', ['go-imports'])
+          .withSource({ file: fullPath, line: imp.lineNumber })
+          .withMetadata({
+            language: 'go',
+            attributes: {
+              path: imp.path,
+              alias: imp.alias,
+              isStandard: imp.isStandard,
+              isDotImport: imp.isDotImport,
+              isBlankImport: imp.isBlankImport,
+              packageType: imp.isStandard ? 'standard' : 'external'
+            }
+          })
+          .build());
 
         edges.push(this.createEdge(
           `${fileId}_imports_${importId}`,
@@ -428,22 +448,26 @@ export class GoAnalyzer extends BaseAnalyzer {
 
       for (const variable of variables) {
         const variableId = `variable_${fileId}_${this.sanitizeId(variable.name)}`;
-        nodes.push(this.createNode(
+        nodes.push(this.createNodeBuilder(
           variableId,
           variable.name,
-          'variable',
-          3,
-          fullPath,
-          variable.lineNumber,
-          variable.lineNumber,
-          {
-            type: variable.type,
-            value: variable.value,
-            isExported: variable.isExported,
-            isConst: variable.isConst,
-            scope: variable.scope
-          }
-        ));
+          'variable'
+        )
+          .withLevel(3, 'Variable/Property')
+          .withCategory('data', ['go-variables'])
+          .withSource({ file: fullPath, line: variable.lineNumber })
+          .withMetadata({
+            language: 'go',
+            is_exported: variable.isExported,
+            attributes: {
+              type: variable.type,
+              value: variable.value,
+              isConst: variable.isConst,
+              scope: variable.scope,
+              variableType: variable.type
+            }
+          })
+          .build());
 
         edges.push(this.createEdge(
           `${fileId}_contains_${variableId}`,
@@ -455,21 +479,25 @@ export class GoAnalyzer extends BaseAnalyzer {
 
       for (const constant of constants) {
         const constantId = `constant_${fileId}_${this.sanitizeId(constant.name)}`;
-        nodes.push(this.createNode(
+        nodes.push(this.createNodeBuilder(
           constantId,
           constant.name,
-          'constant',
-          3,
-          fullPath,
-          constant.lineNumber,
-          constant.lineNumber,
-          {
-            type: constant.type,
-            value: constant.value,
-            isExported: constant.isExported,
-            iota: constant.iota
-          }
-        ));
+          'constant'
+        )
+          .withLevel(3, 'Constant/Property')
+          .withCategory('data', ['go-constants'])
+          .withSource({ file: fullPath, line: constant.lineNumber })
+          .withMetadata({
+            language: 'go',
+            is_exported: constant.isExported,
+            attributes: {
+              type: constant.type,
+              value: constant.value,
+              iota: constant.iota,
+              constantType: constant.type
+            }
+          })
+          .build());
 
         edges.push(this.createEdge(
           `${fileId}_contains_${constantId}`,
@@ -493,24 +521,40 @@ export class GoAnalyzer extends BaseAnalyzer {
     entryPoints: any[]
   ): Promise<void> {
     const structId = `struct_${this.sanitizeId(struct.packageName)}_${this.sanitizeId(struct.name)}`;
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const structComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+      c.location.line >= struct.lineStart - 3 && c.location.line <= struct.lineStart
+    );
+    const structTodos = this.extractTodosFromComments(structComments, structId);
+    const structDocs = this.extractDocumentationFromGoDoc(
+      content.split('\n'),
+      struct.lineStart - 1
+    );
 
-    nodes.push(this.createNode(
+    nodes.push(this.createNodeBuilder(
       structId,
       struct.name,
-      'struct',
-      2,
-      fullPath,
-      struct.lineStart,
-      struct.lineEnd,
-      {
-        packageName: struct.packageName,
-        fieldCount: struct.fields.length,
-        methodCount: struct.methods.length,
-        tags: struct.tags,
-        embedded: struct.embedded,
-        isExported: struct.isExported
-      }
-    ));
+      'struct'
+    )
+      .withLevel(2, 'Class/Interface')
+      .withCategory('structures', ['go-structs'])
+      .withSource({ file: fullPath, line: struct.lineStart, end_line: struct.lineEnd })
+      .withMetadata({
+        language: 'go',
+        is_exported: struct.isExported,
+        attributes: {
+          packageName: struct.packageName,
+          fieldCount: struct.fields.length,
+          methodCount: struct.methods.length,
+          tags: struct.tags,
+          embedded: struct.embedded,
+          hasDocumentation: !!structDocs
+        }
+      })
+      .withDocumentation(structDocs)
+      .withComments(structComments.length > 0 ? structComments : undefined)
+      .withTodos(structTodos.length > 0 ? structTodos : undefined)
+      .build());
 
     edges.push(this.createEdge(
       `${fileId}_contains_${structId}`,
@@ -521,21 +565,26 @@ export class GoAnalyzer extends BaseAnalyzer {
 
     for (const field of struct.fields) {
       const fieldId = `field_${structId}_${this.sanitizeId(field.name)}`;
-      nodes.push(this.createNode(
+      nodes.push(this.createNodeBuilder(
         fieldId,
         field.name,
-        'field',
-        4,
-        fullPath,
-        field.lineNumber,
-        field.lineNumber,
-        {
-          type: field.type,
-          tag: field.tag,
-          isExported: field.isExported,
-          isEmbedded: field.isEmbedded
-        }
-      ));
+        'field'
+      )
+        .withLevel(4, 'Field/Property')
+        .withCategory('data', ['struct-fields'])
+        .withSource({ file: fullPath, line: field.lineNumber })
+        .withMetadata({
+          language: 'go',
+          is_exported: field.isExported,
+          attributes: {
+            type: field.type,
+            tag: field.tag,
+            isEmbedded: field.isEmbedded,
+            fieldType: field.type
+          }
+        })
+        .withParent(structId)
+        .build());
 
       edges.push(this.createEdge(
         `${structId}_has_field_${fieldId}`,
@@ -547,21 +596,41 @@ export class GoAnalyzer extends BaseAnalyzer {
 
     for (const method of struct.methods) {
       const methodId = `method_${structId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
-      nodes.push(this.createNode(
+      const methodDocs = this.extractDocumentationFromGoDoc(
+        content.split('\n'),
+        method.lineStart - 1
+      );
+      const methodComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+        c.location.line >= method.lineStart && c.location.line <= method.lineEnd
+      );
+      const methodTodos = this.extractTodosFromComments(methodComments, methodId);
+
+      nodes.push(this.createNodeBuilder(
         methodId,
         method.name,
-        'method',
-        4,
-        fullPath,
-        method.lineStart,
-        method.lineEnd,
-        {
+        'method'
+      )
+        .withLevel(4, 'Method/Function')
+        .withCategory('methods', ['struct-methods'])
+        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withMetadata({
+          is_exported: method.isExported,
+          attributes: {
+            receiver: method.receiver,
+            parameterCount: method.parameters.length,
+            returnTypeCount: method.returnTypes.length,
+            hasDocumentation: !!methodDocs
+          }
+        })
+        .withSignature({
           parameters: method.parameters,
-          returnTypes: method.returnTypes,
-          receiver: method.receiver,
-          isExported: method.isExported
-        }
-      ));
+          return_type: method.returnTypes.join(', ')
+        })
+        .withParent(structId)
+        .withDocumentation(methodDocs)
+        .withComments(methodComments.length > 0 ? methodComments : undefined)
+        .withTodos(methodTodos.length > 0 ? methodTodos : undefined)
+        .build());
 
       edges.push(this.createEdge(
         `${structId}_has_method_${methodId}`,
@@ -595,22 +664,38 @@ export class GoAnalyzer extends BaseAnalyzer {
     entryPoints: any[]
   ): Promise<void> {
     const interfaceId = `interface_${this.sanitizeId(intf.packageName)}_${this.sanitizeId(intf.name)}`;
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const interfaceComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+      c.location.line >= intf.lineStart - 3 && c.location.line <= intf.lineStart
+    );
+    const interfaceTodos = this.extractTodosFromComments(interfaceComments, interfaceId);
+    const interfaceDocs = this.extractDocumentationFromGoDoc(
+      content.split('\n'),
+      intf.lineStart - 1
+    );
 
-    nodes.push(this.createNode(
+    nodes.push(this.createNodeBuilder(
       interfaceId,
       intf.name,
-      'interface',
-      2,
-      fullPath,
-      intf.lineStart,
-      intf.lineEnd,
-      {
-        packageName: intf.packageName,
-        methodCount: intf.methods.length,
-        embedded: intf.embedded,
-        isExported: intf.isExported
-      }
-    ));
+      'interface'
+    )
+      .withLevel(2, 'Class/Interface')
+      .withCategory('structures', ['go-interfaces'])
+      .withSource({ file: fullPath, line: intf.lineStart, end_line: intf.lineEnd })
+      .withMetadata({
+        language: 'go',
+        is_exported: intf.isExported,
+        attributes: {
+          packageName: intf.packageName,
+          methodCount: intf.methods.length,
+          embedded: intf.embedded,
+          hasDocumentation: !!interfaceDocs
+        }
+      })
+      .withDocumentation(interfaceDocs)
+      .withComments(interfaceComments.length > 0 ? interfaceComments : undefined)
+      .withTodos(interfaceTodos.length > 0 ? interfaceTodos : undefined)
+      .build());
 
     edges.push(this.createEdge(
       `${fileId}_contains_${interfaceId}`,
@@ -621,19 +706,28 @@ export class GoAnalyzer extends BaseAnalyzer {
 
     for (const method of intf.methods) {
       const methodId = `method_${interfaceId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
-      nodes.push(this.createNode(
+      nodes.push(this.createNodeBuilder(
         methodId,
         method.name,
-        'interface_method',
-        4,
-        fullPath,
-        method.lineStart,
-        method.lineEnd,
-        {
+        'interface_method'
+      )
+        .withLevel(4, 'Method/Function')
+        .withCategory('methods', ['interface-methods'])
+        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withMetadata({
+          is_exported: method.isExported,
+          attributes: {
+            parameterCount: method.parameters.length,
+            returnTypeCount: method.returnTypes.length,
+            isInterface: true
+          }
+        })
+        .withSignature({
           parameters: method.parameters,
-          returnTypes: method.returnTypes
-        }
-      ));
+          return_type: method.returnTypes.join(', ')
+        })
+        .withParent(interfaceId)
+        .build());
 
       edges.push(this.createEdge(
         `${interfaceId}_declares_${methodId}`,
@@ -667,25 +761,47 @@ export class GoAnalyzer extends BaseAnalyzer {
     entryPoints: any[]
   ): Promise<void> {
     const functionId = `function_${this.sanitizeId(func.packageName)}_${this.sanitizeId(func.name)}_${func.lineStart}`;
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const lines = content.split('\n');
+    const functionComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+      c.location.line >= func.lineStart - 3 && c.location.line <= func.lineStart
+    );
+    const functionTodos = this.extractTodosFromComments(functionComments, functionId);
+    const functionDocs = this.extractDocumentationFromGoDoc(lines, func.lineStart - 1);
+    const functionBody = lines.slice(func.lineStart - 1, func.lineEnd);
+    const implementationStatus = this.detectImplementationStatus(func, functionBody);
 
-    nodes.push(this.createNode(
+    nodes.push(this.createNodeBuilder(
       functionId,
       func.name,
-      'function',
-      3,
-      fullPath,
-      func.lineStart,
-      func.lineEnd,
-      {
-        packageName: func.packageName,
+      'function'
+    )
+      .withLevel(3, 'Function/Method')
+      .withCategory('functions', func.receiver ? ['method-functions'] : ['standalone-functions'])
+      .withSource({ file: fullPath, line: func.lineStart, end_line: func.lineEnd })
+      .withMetadata({
+        language: 'go',
+        is_exported: func.isExported,
+        attributes: {
+          packageName: func.packageName,
+          isMain: func.isMain,
+          isInit: func.isInit,
+          hasReceiver: !!func.receiver,
+          receiver: func.receiver,
+          parameterCount: func.parameters.length,
+          returnTypeCount: func.returnTypes.length,
+          hasDocumentation: !!functionDocs
+        }
+      })
+      .withSignature({
         parameters: func.parameters,
-        returnTypes: func.returnTypes,
-        receiver: func.receiver,
-        isExported: func.isExported,
-        isMain: func.isMain,
-        isInit: func.isInit
-      }
-    ));
+        return_type: func.returnTypes.join(', ')
+      })
+      .withDocumentation(functionDocs)
+      .withComments(functionComments.length > 0 ? functionComments : undefined)
+      .withTodos(functionTodos.length > 0 ? functionTodos : undefined)
+      .withImplementationStatus(implementationStatus)
+      .build());
 
     edges.push(this.createEdge(
       `${fileId}_contains_${functionId}`,
@@ -741,22 +857,38 @@ export class GoAnalyzer extends BaseAnalyzer {
     entryPoints: any[]
   ): Promise<void> {
     const typeId = `type_${this.sanitizeId(type.packageName)}_${this.sanitizeId(type.name)}`;
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const typeComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+      c.location.line >= type.lineNumber - 3 && c.location.line <= type.lineNumber
+    );
+    const typeTodos = this.extractTodosFromComments(typeComments, typeId);
+    const typeDocs = this.extractDocumentationFromGoDoc(
+      content.split('\n'),
+      type.lineNumber - 1
+    );
 
-    nodes.push(this.createNode(
+    nodes.push(this.createNodeBuilder(
       typeId,
       type.name,
-      'type',
-      2,
-      fullPath,
-      type.lineNumber,
-      type.lineNumber,
-      {
-        packageName: type.packageName,
-        underlying: type.underlying,
-        methodCount: type.methods.length,
-        isExported: type.isExported
-      }
-    ));
+      'type'
+    )
+      .withLevel(2, 'Type/Interface')
+      .withCategory('structures', ['go-types'])
+      .withSource({ file: fullPath, line: type.lineNumber })
+      .withMetadata({
+        language: 'go',
+        is_exported: type.isExported,
+        attributes: {
+          packageName: type.packageName,
+          underlying: type.underlying,
+          methodCount: type.methods.length,
+          hasDocumentation: !!typeDocs
+        }
+      })
+      .withDocumentation(typeDocs)
+      .withComments(typeComments.length > 0 ? typeComments : undefined)
+      .withTodos(typeTodos.length > 0 ? typeTodos : undefined)
+      .build());
 
     edges.push(this.createEdge(
       `${fileId}_contains_${typeId}`,
@@ -767,21 +899,41 @@ export class GoAnalyzer extends BaseAnalyzer {
 
     for (const method of type.methods) {
       const methodId = `method_${typeId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
-      nodes.push(this.createNode(
+      const methodDocs = this.extractDocumentationFromGoDoc(
+        content.split('\n'),
+        method.lineStart - 1
+      );
+      const methodComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+        c.location.line >= method.lineStart && c.location.line <= method.lineEnd
+      );
+      const methodTodos = this.extractTodosFromComments(methodComments, methodId);
+
+      nodes.push(this.createNodeBuilder(
         methodId,
         method.name,
-        'method',
-        4,
-        fullPath,
-        method.lineStart,
-        method.lineEnd,
-        {
+        'method'
+      )
+        .withLevel(4, 'Method/Function')
+        .withCategory('methods', ['type-methods'])
+        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withMetadata({
+          is_exported: method.isExported,
+          attributes: {
+            receiver: method.receiver,
+            parameterCount: method.parameters.length,
+            returnTypeCount: method.returnTypes.length,
+            hasDocumentation: !!methodDocs
+          }
+        })
+        .withSignature({
           parameters: method.parameters,
-          returnTypes: method.returnTypes,
-          receiver: method.receiver,
-          isExported: method.isExported
-        }
-      ));
+          return_type: method.returnTypes.join(', ')
+        })
+        .withParent(typeId)
+        .withDocumentation(methodDocs)
+        .withComments(methodComments.length > 0 ? methodComments : undefined)
+        .withTodos(methodTodos.length > 0 ? methodTodos : undefined)
+        .build());
 
       edges.push(this.createEdge(
         `${typeId}_has_method_${methodId}`,
@@ -1337,19 +1489,21 @@ export class GoAnalyzer extends BaseAnalyzer {
     for (const [packageName, files] of packages.entries()) {
       const packageId = `package_${this.sanitizeId(packageName)}`;
 
-      nodes.push(this.createNode(
+      nodes.push(this.createNodeBuilder(
         packageId,
         packageName,
-        'package',
-        1,
-        undefined,
-        undefined,
-        undefined,
-        {
-          fileCount: files.length,
-          files: files
-        }
-      ));
+        'package'
+      )
+        .withLevel(1, 'Package/Module')
+        .withCategory('modules', ['go-packages'])
+        .withMetadata({
+          attributes: {
+            fileCount: files.length,
+            files: files,
+            packageType: packageName === 'main' ? 'executable' : 'library'
+          }
+        })
+        .build());
 
       for (const file of files) {
         const fileId = `file_${this.sanitizeId(file)}`;
@@ -1839,6 +1993,241 @@ export class GoAnalyzer extends BaseAnalyzer {
     }
 
     return 'External Package';
+  }
+
+  private extractDocumentationFromGoDoc(lines: string[], lineIndex: number): CASDocumentation | undefined {
+    let hasContent = false;
+    let description = '';
+
+    for (let i = lineIndex - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line.startsWith('//')) break;
+
+      const commentText = line.replace(/^\/\/\s*/, '');
+      if (commentText) {
+        description = commentText + (description ? '\n' + description : '');
+        hasContent = true;
+      }
+    }
+
+    if (hasContent) {
+      const docs: CASDocumentation = {
+        type: 'godoc',
+        raw: description,
+        location: { start_line: lineIndex - description.split('\n').length, end_line: lineIndex }
+      };
+
+      docs.summary = description.split('.')[0] + (description.includes('.') ? '.' : '');
+      docs.description = description;
+
+      const exampleMatch = description.match(/Example[:\s]+(.*?)(?=\n|$)/i);
+      if (exampleMatch) {
+        docs.examples = [{ code: exampleMatch[1], language: 'go' }];
+      }
+
+      return docs;
+    }
+
+    return undefined;
+  }
+
+  private extractCommentsFromFile(content: string, filePath: string): CASComment[] {
+    const comments: CASComment[] = [];
+    const lines = content.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      const singleLineMatch = line.match(/\/\/(.*)$/);
+      if (singleLineMatch) {
+        const text = singleLineMatch[1].trim();
+        const purpose = this.classifyCommentPurpose(text);
+        comments.push({
+          id: `comment_${++this.commentCounter}`,
+          type: 'single-line',
+          style: '//',
+          text,
+          purpose,
+          location: {
+            file: filePath,
+            line: i + 1,
+            relative_to: 'inline'
+          },
+          markers: this.extractCommentMarkers(text)
+        });
+      }
+
+      if (line.includes('/*')) {
+        let multiLineText = '';
+        let endLine = i;
+        let foundEnd = false;
+
+        for (let j = i; j < lines.length; j++) {
+          const currentLine = lines[j];
+          if (j === i) {
+            const startMatch = currentLine.match(/\/\*(.*)/);
+            if (startMatch) {
+              multiLineText = startMatch[1];
+              if (currentLine.includes('*/')) {
+                multiLineText = multiLineText.replace(/\*\/.*$/, '').trim();
+                foundEnd = true;
+                endLine = j;
+              }
+            }
+          } else {
+            if (currentLine.includes('*/')) {
+              multiLineText += '\n' + currentLine.replace(/\*\/.*$/, '').replace(/^\s*\*/, '').trim();
+              foundEnd = true;
+              endLine = j;
+              break;
+            } else {
+              multiLineText += '\n' + currentLine.replace(/^\s*\*/, '').trim();
+            }
+          }
+        }
+
+        if (foundEnd) {
+          const purpose = this.classifyCommentPurpose(multiLineText);
+          comments.push({
+            id: `comment_${++this.commentCounter}`,
+            type: 'multi-line',
+            style: '/* */',
+            text: multiLineText.trim(),
+            purpose,
+            location: {
+              file: filePath,
+              line: i + 1,
+              end_line: endLine + 1,
+              relative_to: 'above'
+            },
+            markers: this.extractCommentMarkers(multiLineText)
+          });
+          i = endLine;
+        }
+      }
+    }
+
+    return comments;
+  }
+
+  private classifyCommentPurpose(text: string): CASComment['purpose'] {
+    const lowerText = text.toLowerCase();
+
+    if (/\b(todo|fixme|hack|warning|note|xxx|optimize|refactor)\b/.test(lowerText)) {
+      return 'todo';
+    }
+    if (/\b(warning|warn|caution|danger|important)\b/.test(lowerText)) {
+      return 'warning';
+    }
+    if (/\b(note|info|tip|hint)\b/.test(lowerText)) {
+      return 'note';
+    }
+    if (/\b(hack|temp|temporary|quick|dirty)\b/.test(lowerText)) {
+      return 'hack';
+    }
+
+    return 'explanation';
+  }
+
+  private extractCommentMarkers(text: string): CASComment['markers'] {
+    const markers: CASComment['markers'] = {};
+    const lowerText = text.toLowerCase();
+
+    markers.is_todo = /\btodo\b/.test(lowerText);
+    markers.is_fixme = /\bfixme\b/.test(lowerText);
+    markers.is_hack = /\bhack\b/.test(lowerText);
+    markers.is_warning = /\b(warning|warn)\b/.test(lowerText);
+    markers.is_note = /\b(note|info)\b/.test(lowerText);
+    markers.is_important = /\b(important|critical|urgent)\b/.test(lowerText);
+    markers.is_deprecated = /\b(deprecated|obsolete)\b/.test(lowerText);
+
+    return markers;
+  }
+
+  private extractTodosFromComments(comments: CASComment[], context: string): CASTodo[] {
+    const todos: CASTodo[] = [];
+
+    comments.forEach(comment => {
+      if (comment.markers?.is_todo || comment.markers?.is_fixme || comment.markers?.is_hack) {
+        const typeMatch = comment.text.match(/\b(TODO|FIXME|HACK|NOTE|WARNING|XXX|OPTIMIZE|REFACTOR)\b/i);
+        const type = typeMatch ? typeMatch[0].toUpperCase() as CASTodo['type'] : 'TODO';
+
+        const assigneeMatch = comment.text.match(/\b(?:TODO|FIXME|HACK)\s*\(([^)]+)\)/);
+        const assignee = assigneeMatch ? assigneeMatch[1] : undefined;
+
+        const priority = comment.markers?.is_important ? 'high' :
+                        comment.markers?.is_fixme ? 'medium' : 'low';
+
+        const category = this.categorizeTodo(comment.text);
+
+        todos.push({
+          id: `todo_${++this.todoCounter}`,
+          type,
+          text: comment.text,
+          priority,
+          assignee,
+          category,
+          location: {
+            file: comment.location.file,
+            line: comment.location.line,
+            context
+          },
+          metadata: {
+            source: 'comment',
+            comment_type: comment.type
+          }
+        });
+      }
+    });
+
+    return todos;
+  }
+
+  private categorizeTodo(text: string): CASTodo['category'] {
+    const lowerText = text.toLowerCase();
+
+    if (/\b(fix|bug|error|issue|broken)\b/.test(lowerText)) return 'bug';
+    if (/\b(feature|add|implement|new)\b/.test(lowerText)) return 'feature';
+    if (/\b(refactor|clean|improve|restructure)\b/.test(lowerText)) return 'refactor';
+    if (/\b(performance|optimize|speed|slow)\b/.test(lowerText)) return 'performance';
+    if (/\b(security|secure|auth|permission)\b/.test(lowerText)) return 'security';
+
+    return 'general';
+  }
+
+  private detectImplementationStatus(functionInfo: GoFunction, functionBody: string[]): CASImplementationStatus {
+    const bodyText = functionBody.join('\n').toLowerCase();
+
+    const indicators = {
+      has_todo_markers: bodyText.includes('todo') || bodyText.includes('fixme'),
+      has_not_implemented_exceptions: bodyText.includes('panic("not implemented")') ||
+                                      bodyText.includes('panic("todo")') ||
+                                      bodyText.includes('log.fatal("not implemented")'),
+      has_stub_returns: functionBody.length <= 2 && bodyText.includes('return'),
+      has_placeholder_code: bodyText.includes('fmt.println("todo")'),
+      has_hardcoded_values: false,
+      has_commented_out_code: false
+    };
+
+    let status: CASImplementationStatus['status'] = 'complete';
+    if (indicators.has_not_implemented_exceptions) {
+      status = 'not-implemented';
+    } else if (indicators.has_stub_returns) {
+      status = 'stub';
+    } else if (indicators.has_todo_markers || indicators.has_placeholder_code) {
+      status = 'partial';
+    } else if (bodyText.includes('// deprecated')) {
+      status = 'deprecated';
+    }
+
+    return {
+      status,
+      indicators,
+      completeness: status === 'complete' ? { estimated_percentage: 100 } :
+                   status === 'partial' ? { estimated_percentage: 60 } :
+                   status === 'stub' ? { estimated_percentage: 10 } :
+                   { estimated_percentage: 0 }
+    };
   }
 
   protected sanitizeId(name: string): string {

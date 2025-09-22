@@ -8,7 +8,7 @@ import {
   Enum,
 } from '@mikro-orm/core';
 import { BaseEntity } from './base.entity';
-import { Project } from './project.entity';
+import { Codebase } from './codebase.entity';
 import { User } from './user.entity';
 import { Component } from './component.entity';
 
@@ -29,9 +29,9 @@ export enum AnalysisType {
 
 @Entity({ tableName: 'analysis_runs' })
 export class AnalysisRun extends BaseEntity {
-  @ManyToOne(() => Project, { deleteRule: 'cascade' })
+  @ManyToOne(() => Codebase, { deleteRule: 'cascade' })
   @Index()
-  project!: Project;
+  codebase!: Codebase;
 
   @ManyToOne(() => User, { nullable: true })
   triggeredBy?: User;

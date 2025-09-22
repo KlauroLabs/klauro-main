@@ -1,5 +1,8 @@
 import { BaseAnalyzer, AnalysisContext } from '../../core/base-analyzer';
-import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint, CASPerspective } from '../../../types/cas.types';
+import {
+  CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint,
+  CASDocumentation, CASComment, CASTodo, CASImplementationStatus, CASPerspective
+} from "../../../types/cas.types";
 import { AnalyzerError } from '../../core/errors';
 import * as path from 'path';
 import * as fs from 'fs-extra';
@@ -98,6 +101,9 @@ interface DjangoMiddleware {
 }
 
 export class DjangoAnalyzer extends BaseAnalyzer {
+  private todoCounter = 0;
+  private commentCounter = 0;
+
   constructor() {
     super(
       'django-analyzer',
@@ -222,11 +228,20 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     };
 
     const projectId = `project_${this.sanitizeId(projectName)}`;
+    const documentation = this.extractDocumentation(settingsContent, fullSettingsPath);
+    const comments = this.extractComments(settingsContent, fullSettingsPath);
+    const todos = this.extractTodos(comments);
+    const implementationStatus = this.determineImplementationStatus(settingsContent, comments);
+
     const projectNode = this.createNodeBuilder(projectId, projectName, 'application')
       .withLevel(1, 'system')
       .withCategory('application', ['framework', 'django'])
       .withSource({ file: fullSettingsPath, line: 1, end_line: settingsContent.split('\n').length })
       .withDescription(`Django project: ${projectName}`)
+      .withDocumentation(documentation)
+      .withComments(comments)
+      .withTodos(todos)
+      .withImplementationStatus(implementationStatus)
       .withMetadata({
         framework: 'django',
         attributes: {
@@ -287,11 +302,18 @@ export class DjangoAnalyzer extends BaseAnalyzer {
       apps.push(app);
 
       const appId = `app_${this.sanitizeId(appName)}`;
+      const appComments = this.extractComments('', path.join(projectPath, appDir));
+      const appTodos = this.extractTodos(appComments);
+      const appImplementationStatus = this.determineImplementationStatus('', appComments);
+
       const appNode = this.createNodeBuilder(appId, appName, 'module')
         .withLevel(2, 'architectural')
         .withCategory('module', ['framework', 'django'])
         .withSource({ file: path.join(projectPath, appDir), line: 1, end_line: 1 })
         .withDescription(`Django app module: ${appName}`)
+        .withComments(appComments)
+        .withTodos(appTodos)
+        .withImplementationStatus(appImplementationStatus)
         .withMetadata({
           framework: 'django',
           attributes: {
@@ -306,13 +328,23 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         .build();
       nodes.push(appNode);
 
-      models.forEach((model, index) => {
+      for (const [index, model] of models.entries()) {
         const modelId = `model_${appId}_${this.sanitizeId(model.name)}`;
+        const modelContent = await this.readModelContent(projectPath, model.filePath);
+        const modelDocumentation = this.extractDocumentation(modelContent, path.join(projectPath, model.filePath));
+        const modelComments = this.extractComments(modelContent, path.join(projectPath, model.filePath));
+        const modelTodos = this.extractTodos(modelComments);
+        const modelImplementationStatus = this.determineImplementationStatus(modelContent, modelComments);
+
         const modelNode = this.createNodeBuilder(modelId, model.name, 'model')
           .withLevel(3, 'code')
           .withCategory('model', ['data', 'entity'])
           .withSource({ file: path.join(projectPath, model.filePath), line: 1, end_line: 1 })
           .withDescription(`Django model: ${model.name}`)
+          .withDocumentation(modelDocumentation)
+          .withComments(modelComments)
+          .withTodos(modelTodos)
+          .withImplementationStatus(modelImplementationStatus)
           .withMetadata({
             framework: 'django',
             attributes: {
@@ -330,15 +362,25 @@ export class DjangoAnalyzer extends BaseAnalyzer {
           modelId,
           'contains'
         ));
-      });
+      }
 
-      views.forEach((view, index) => {
+      for (const [index, view] of views.entries()) {
         const viewId = `view_${appId}_${this.sanitizeId(view.name)}`;
+        const viewContent = await this.readViewContent(projectPath, view.filePath);
+        const viewDocumentation = this.extractDocumentation(viewContent, path.join(projectPath, view.filePath));
+        const viewComments = this.extractComments(viewContent, path.join(projectPath, view.filePath));
+        const viewTodos = this.extractTodos(viewComments);
+        const viewImplementationStatus = this.determineImplementationStatus(viewContent, viewComments);
+
         const viewNode = this.createNodeBuilder(viewId, view.name, 'controller')
           .withLevel(3, 'code')
           .withCategory('controller', ['api', 'rest'])
           .withSource({ file: path.join(projectPath, view.filePath), line: 1, end_line: 1 })
           .withDescription(`Django view: ${view.name}`)
+          .withDocumentation(viewDocumentation)
+          .withComments(viewComments)
+          .withTodos(viewTodos)
+          .withImplementationStatus(viewImplementationStatus)
           .withMetadata({
             framework: 'django',
             attributes: {
@@ -359,7 +401,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
           viewId,
           'contains'
         ));
-      });
+      }
 
       urls.forEach((url, index) => {
         const urlId = `url_${appId}_${index}`;
@@ -502,11 +544,21 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
       extractedMiddleware.forEach(mw => {
         const middlewareId = `middleware_${this.sanitizeId(mw.name)}`;
+        const middlewareContent = content;
+        const middlewareDocumentation = this.extractDocumentation(middlewareContent, path.join(projectPath, mw.filePath));
+        const middlewareComments = this.extractComments(middlewareContent, path.join(projectPath, mw.filePath));
+        const middlewareTodos = this.extractTodos(middlewareComments);
+        const middlewareImplementationStatus = this.determineImplementationStatus(middlewareContent, middlewareComments);
+
         const middlewareNode = this.createNodeBuilder(middlewareId, mw.name, 'middleware')
           .withLevel(3, 'code')
           .withCategory('middleware', ['framework', 'django'])
           .withSource({ file: path.join(projectPath, mw.filePath), line: 1, end_line: 1 })
           .withDescription(`Django middleware: ${mw.name}`)
+          .withDocumentation(middlewareDocumentation)
+          .withComments(middlewareComments)
+          .withTodos(middlewareTodos)
+          .withImplementationStatus(middlewareImplementationStatus)
           .withMetadata({
             framework: 'django',
             attributes: {
@@ -1383,6 +1435,263 @@ export class DjangoAnalyzer extends BaseAnalyzer {
       case 'django_view': return 'logic';
       case 'django_template': return 'presentation';
       default: return 'routing';
+    }
+  }
+
+  // CAS v1.4.0 Documentation and Comment extraction methods
+  private extractDocumentation(content: string, filePath: string): CASDocumentation | undefined {
+    if (!content || content.trim().length === 0) return undefined;
+
+    const lines = content.split('\n');
+
+    // Look for Django-specific documentation patterns
+
+    // 1. Model field help_text attributes
+    const helpTextMatches = content.matchAll(/help_text\s*=\s*['"]([^'"]+)['"]/g);
+    const fieldDocs = [];
+    for (const match of helpTextMatches) {
+      fieldDocs.push(match[1]);
+    }
+
+    // 2. Class docstrings
+    const classDocStringMatch = content.match(/class\s+\w+[^:]*:\s*['""]([\s\S]*?)['""]/);
+
+    // 3. Function docstrings
+    const functionDocStrings = [];
+    const functionMatches = content.matchAll(/def\s+\w+[^:]*:\s*['""]([\s\S]*?)['""]/);
+    for (const match of functionMatches) {
+      functionDocStrings.push(match[1].trim());
+    }
+
+    // 4. Module-level docstring
+    const moduleDocMatch = content.match(/^\s*['""]([\s\S]*?)['""]/);
+
+    if (classDocStringMatch || functionDocStrings.length > 0 || moduleDocMatch || fieldDocs.length > 0) {
+      const doc: CASDocumentation = {
+        type: 'django_docstring',
+        raw: content,
+        location: { start_line: 1, end_line: lines.length }
+      };
+
+      if (moduleDocMatch) {
+        doc.summary = moduleDocMatch[1].split('\n')[0].trim();
+        doc.description = moduleDocMatch[1].trim();
+      } else if (classDocStringMatch) {
+        doc.summary = classDocStringMatch[1].split('\n')[0].trim();
+        doc.description = classDocStringMatch[1].trim();
+      } else if (functionDocStrings.length > 0) {
+        doc.summary = functionDocStrings[0].split('\n')[0].trim();
+      }
+
+      if (fieldDocs.length > 0) {
+        doc.framework_docs = {
+          django: {
+            field_help_texts: fieldDocs
+          }
+        };
+      }
+
+      return doc;
+    }
+
+    return undefined;
+  }
+
+  private extractComments(content: string, filePath: string): CASComment[] {
+    if (!content || content.trim().length === 0) return [];
+
+    const comments: CASComment[] = [];
+    const lines = content.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmedLine = line.trim();
+
+      // Python single-line comments
+      if (trimmedLine.startsWith('#')) {
+        const commentText = trimmedLine.substring(1).trim();
+        if (commentText.length > 0) {
+          const comment: CASComment = {
+            id: `comment_${++this.commentCounter}`,
+            type: 'single-line',
+            style: '#',
+            text: commentText,
+            purpose: this.classifyCommentPurpose(commentText),
+            location: {
+              file: filePath,
+              line: i + 1
+            },
+            markers: {
+              is_todo: commentText.toUpperCase().includes('TODO'),
+              is_fixme: commentText.toUpperCase().includes('FIXME'),
+              is_hack: commentText.toUpperCase().includes('HACK'),
+              is_warning: commentText.toUpperCase().includes('WARNING'),
+              is_note: commentText.toUpperCase().includes('NOTE')
+            }
+          };
+          comments.push(comment);
+        }
+      }
+
+      // Multi-line string comments (docstrings used as comments)
+      const docstringMatch = line.match(/^\s*['""]([\s\S]*?)['""]/);
+      if (docstringMatch && !line.includes('def ') && !line.includes('class ')) {
+        const commentText = docstringMatch[1].trim();
+        if (commentText.length > 0) {
+          const comment: CASComment = {
+            id: `comment_${++this.commentCounter}`,
+            type: 'docstring',
+            style: '"""',
+            text: commentText,
+            purpose: this.classifyCommentPurpose(commentText),
+            location: {
+              file: filePath,
+              line: i + 1
+            },
+            markers: {
+              is_todo: commentText.toUpperCase().includes('TODO'),
+              is_fixme: commentText.toUpperCase().includes('FIXME'),
+              is_hack: commentText.toUpperCase().includes('HACK'),
+              is_warning: commentText.toUpperCase().includes('WARNING'),
+              is_note: commentText.toUpperCase().includes('NOTE')
+            }
+          };
+          comments.push(comment);
+        }
+      }
+    }
+
+    return comments;
+  }
+
+  private extractTodos(comments: CASComment[]): CASTodo[] {
+    const todos: CASTodo[] = [];
+
+    for (const comment of comments) {
+      if (comment.markers?.is_todo || comment.markers?.is_fixme || comment.markers?.is_hack) {
+        const text = comment.text;
+        const typeMatch = text.match(/(TODO|FIXME|HACK|NOTE|WARNING|XXX)/i);
+        const type = typeMatch ? typeMatch[0].toUpperCase() as CASTodo['type'] : 'TODO';
+
+        // Extract assignee from patterns like "TODO(username):"
+        const assigneeMatch = text.match(/TODO\s*\(\s*([^)]+)\s*\)/i);
+        const assignee = assigneeMatch ? assigneeMatch[1].trim() : undefined;
+
+        // Extract priority from patterns like "TODO [HIGH]:" or "TODO: [CRITICAL]"
+        const priorityMatch = text.match(/\[(CRITICAL|HIGH|MEDIUM|LOW)\]/i);
+        let priority: CASTodo['priority'] = 'medium';
+        if (priorityMatch) {
+          priority = priorityMatch[1].toLowerCase() as CASTodo['priority'];
+        }
+
+        const todo: CASTodo = {
+          id: `todo_${++this.todoCounter}`,
+          type,
+          text: text.replace(/^(TODO|FIXME|HACK|NOTE|WARNING|XXX)\s*(\([^)]+\))?\s*:?\s*/i, '').trim(),
+          priority,
+          location: {
+            file: comment.location.file,
+            line: comment.location.line
+          },
+          assignee,
+          classification: {
+            category: this.classifyTodoCategory(text),
+            technical_debt: type === 'TODO' || type === 'FIXME' || type === 'HACK'
+          }
+        };
+
+        todos.push(todo);
+      }
+    }
+
+    return todos;
+  }
+
+  private determineImplementationStatus(content: string, comments: CASComment[]): CASImplementationStatus {
+    const indicators = {
+      has_todo_markers: comments.some(c => c.markers?.is_todo),
+      has_not_implemented_exceptions: content.includes('NotImplementedError') || content.includes('raise NotImplemented'),
+      has_stub_returns: content.includes('pass') && (content.includes('def ') || content.includes('class ')),
+      has_placeholder_code: content.includes('# TODO') || content.includes('# FIXME') || content.includes('# PLACEHOLDER'),
+      has_hardcoded_values: /['"](localhost|127\.0\.0\.1|test|example|demo|placeholder)['"]/.test(content),
+      has_commented_out_code: comments.some(c => c.text.includes('def ') || c.text.includes('class ') || c.text.includes('import '))
+    };
+
+    const indicatorCount = Object.values(indicators).filter(Boolean).length;
+    let status: CASImplementationStatus['status'];
+    let confidence = 0.8;
+
+    if (content.includes('NotImplementedError') || content.includes('raise NotImplemented')) {
+      status = 'not-implemented';
+      confidence = 0.95;
+    } else if (indicatorCount >= 3) {
+      status = 'stub';
+      confidence = 0.7;
+    } else if (indicatorCount >= 1) {
+      status = 'partial';
+      confidence = 0.6;
+    } else if (content.includes('@deprecated') || content.includes('# deprecated')) {
+      status = 'deprecated';
+      confidence = 0.9;
+    } else if (content.includes('experimental') || content.includes('beta')) {
+      status = 'experimental';
+      confidence = 0.8;
+    } else {
+      status = 'complete';
+      confidence = 0.7;
+    }
+
+    const missingFeatures = [];
+    if (indicators.has_not_implemented_exceptions) missingFeatures.push('Core implementation');
+    if (indicators.has_todo_markers) missingFeatures.push('TODO items');
+    if (indicators.has_stub_returns) missingFeatures.push('Method implementations');
+
+    return {
+      status,
+      indicators,
+      confidence,
+      completeness: {
+        estimated_percentage: status === 'complete' ? 90 : status === 'partial' ? 60 : status === 'stub' ? 30 : 10,
+        missing_features: missingFeatures,
+        implemented_features: status === 'complete' ? ['Core functionality'] : []
+      }
+    };
+  }
+
+  private classifyCommentPurpose(text: string): CASComment['purpose'] {
+    const upperText = text.toUpperCase();
+    if (upperText.includes('TODO') || upperText.includes('FIXME')) return 'todo';
+    if (upperText.includes('WARNING') || upperText.includes('WARN')) return 'warning';
+    if (upperText.includes('HACK') || upperText.includes('WORKAROUND')) return 'hack';
+    if (upperText.includes('NOTE') || upperText.includes('INFO')) return 'note';
+    if (upperText.includes('DISABLED') || upperText.includes('COMMENTED')) return 'disabled-code';
+    return 'explanation';
+  }
+
+  private classifyTodoCategory(text: string): 'bug' | 'feature' | 'refactor' | 'performance' | 'security' | 'documentation' | 'test' | undefined {
+    const lowerText = text.toLowerCase();
+    if (lowerText.includes('bug') || lowerText.includes('fix') || lowerText.includes('error')) return 'bug';
+    if (lowerText.includes('security') || lowerText.includes('auth') || lowerText.includes('permission')) return 'security';
+    if (lowerText.includes('performance') || lowerText.includes('optimize') || lowerText.includes('slow')) return 'performance';
+    if (lowerText.includes('test') || lowerText.includes('spec') || lowerText.includes('coverage')) return 'test';
+    if (lowerText.includes('refactor') || lowerText.includes('cleanup') || lowerText.includes('reorganize')) return 'refactor';
+    if (lowerText.includes('doc') || lowerText.includes('comment') || lowerText.includes('explain')) return 'documentation';
+    return 'feature';
+  }
+
+  private async readModelContent(projectPath: string, filePath: string): Promise<string> {
+    try {
+      return await fs.readFile(path.join(projectPath, filePath), 'utf-8');
+    } catch {
+      return '';
+    }
+  }
+
+  private async readViewContent(projectPath: string, filePath: string): Promise<string> {
+    try {
+      return await fs.readFile(path.join(projectPath, filePath), 'utf-8');
+    } catch {
+      return '';
     }
   }
 }

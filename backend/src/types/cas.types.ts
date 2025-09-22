@@ -111,6 +111,11 @@ export interface CASNode {
   level_name?: string;
   description?: string;
   tags?: string[];
+  documentation?: CASDocumentation; // New in v1.4.0
+  comments?: CASComment[]; // New in v1.4.0
+  implementation_status?: CASImplementationStatus; // New in v1.4.0
+  todos?: CASTodo[]; // New in v1.4.0
+  call_graph?: CASCallGraph; // New in v1.3.0
   source?: {
     file?: string;
     line?: number;
@@ -823,6 +828,26 @@ export class CASNodeBuilder {
     return this;
   }
 
+  withDocumentation(documentation?: CASDocumentation): this {
+    if (documentation) this.node.documentation = documentation;
+    return this;
+  }
+
+  withComments(comments?: CASComment[]): this {
+    if (comments) this.node.comments = comments;
+    return this;
+  }
+
+  withTodos(todos?: CASTodo[]): this {
+    if (todos) this.node.todos = todos;
+    return this;
+  }
+
+  withImplementationStatus(status?: CASImplementationStatus): this {
+    if (status) this.node.implementation_status = status;
+    return this;
+  }
+
   build(): CASNode {
     if (!this.node.id || !this.node.name || !this.node.type) {
       throw new Error('CAS node must have id, name, and type');
@@ -885,4 +910,251 @@ export function generateEdgeId(source: string, target: string, type: string): st
     .substring(0, 8);
 
   return `edge_${type}_${hash}`;
+}
+
+export interface CASDocumentation {
+  id?: string;
+  format?: 'jsdoc' | 'javadoc' | 'xml_doc' | 'docstring' | 'rustdoc' | 'godoc' | 'phpdoc' | 'typedoc' | 'other';
+  type?: 'jsdoc' | 'javadoc' | 'xmldoc' | 'docstring' | 'rustdoc' | 'godoc' | 'phpdoc' | 'typedoc' | 'other' | 'django_docstring' | 'express_documentation' | 'fastapi_documentation' | 'flask_documentation' | 'laravel_documentation' | 'spring_boot_documentation';
+  raw: string;
+  summary?: string;
+  description?: string;
+  parameters?: Array<{
+    name: string;
+    type?: string;
+    description?: string;
+    optional?: boolean;
+    default_value?: string;
+  }>;
+  returns?: {
+    type?: string;
+    description?: string;
+  };
+  return_info?: {
+    type?: string;
+    description?: string;
+  };
+  throws?: Array<{
+    type?: string;
+    description?: string;
+  }>;
+  exceptions?: Array<{
+    type?: string;
+    description?: string;
+  }>;
+  examples?: Array<{
+    title?: string;
+    code: string;
+    language?: string;
+  }>;
+  tags?: Array<{
+    tag: string;
+    value: string;
+    metadata?: Record<string, any>;
+  }>;
+  remarks?: string;
+  framework_docs?: {
+    swagger?: {
+      summary?: string;
+      description?: string;
+      tags?: string[];
+      operation_id?: string;
+    };
+    graphql?: {
+      description?: string;
+      deprecated?: boolean;
+      deprecation_reason?: string;
+    };
+    django?: {
+      view_type?: string;
+      template?: string;
+      form_class?: string;
+      model?: string;
+      field_help_texts?: Record<string, any>;
+    };
+    express?: {
+      middleware?: string[];
+      route_params?: string[];
+      query_params?: string[];
+      routes?: Record<string, any>;
+    };
+    fastapi?: {
+      path_operation_id?: string;
+      dependencies?: string[];
+      status_code?: number;
+      response_model?: string;
+      field_descriptions?: Record<string, any>;
+    };
+    flask?: {
+      route?: string;
+      methods?: string[];
+      endpoint?: string;
+      decorators?: string[];
+    };
+    laravel?: {
+      route_name?: string;
+      middleware?: string[];
+      controller?: string;
+      action?: string;
+    };
+    spring_boot?: {
+      mapping?: string;
+      method?: string;
+      params?: string[];
+      consumes?: string[];
+      produces?: string[];
+    };
+  };
+  location: {
+    start_line: number;
+    end_line: number;
+  };
+}
+
+export interface CASComment {
+  id: string;
+  type: 'single-line' | 'multi-line' | 'inline' | 'block' | 'docstring' | 'blade-comment';
+  style: '//' | '#' | '--' | '/* */' | '<!-- -->' | 'other' | '"""' | '{{-- --}}';
+  text: string;
+  purpose?: 'explanation' | 'todo' | 'warning' | 'note' | 'hack' | 'clarification' | 'disabled-code' | 'other';
+  location: {
+    file: string;
+    line: number;
+    end_line?: number;
+    column?: number;
+    relative_to?: 'above' | 'inline' | 'below';
+  };
+  context?: {
+    preceding_code?: string;
+    following_code?: string;
+    scope?: string;
+    scope_id?: string;
+  };
+  markers?: {
+    is_todo?: boolean;
+    is_fixme?: boolean;
+    is_hack?: boolean;
+    is_warning?: boolean;
+    is_note?: boolean;
+    is_question?: boolean;
+    is_important?: boolean;
+    is_deprecated?: boolean;
+    custom_markers?: string[];
+  };
+}
+
+export interface CASTodo {
+  id: string;
+  type: 'TODO' | 'FIXME' | 'HACK' | 'NOTE' | 'WARNING' | 'XXX' | 'OPTIMIZE' | 'REFACTOR';
+  text: string;
+  priority?: 'low' | 'medium' | 'high' | 'critical';
+  assignee?: string;
+  created_date?: string;
+  due_date?: string;
+  category?: 'bug' | 'feature' | 'refactor' | 'performance' | 'security' | 'documentation' | 'test' | 'general';
+  location: {
+    file: string;
+    line: number;
+    node_id?: string;
+    context?: string;
+  };
+  context?: {
+    function_name?: string;
+    class_name?: string;
+    estimated_effort?: string;
+    related_issue?: string;
+  };
+  classification?: {
+    category?: 'bug' | 'feature' | 'refactor' | 'performance' | 'security' | 'documentation' | 'test' | 'general';
+    technical_debt?: boolean;
+    blocking?: boolean;
+  };
+  metadata?: Record<string, any>;
+}
+
+export interface CASImplementationStatus {
+  status: 'complete' | 'partial' | 'stub' | 'not-implemented' | 'deprecated' | 'experimental';
+  indicators: {
+    has_todo_markers: boolean;
+    has_not_implemented_exceptions: boolean;
+    has_stub_returns: boolean;
+    has_placeholder_code: boolean;
+    has_hardcoded_values: boolean;
+    has_commented_out_code: boolean;
+    // Angular-specific indicators
+    has_placeholder_template?: boolean;
+    has_empty_methods?: boolean;
+    has_console_logs?: boolean;
+    has_mock_data?: boolean;
+    has_deprecated_markers?: boolean;
+  } | string[];
+  confidence?: number;
+  completeness?: {
+    estimated_percentage?: number;
+    missing_features?: string[];
+    implemented_features?: string[];
+  };
+  deprecation?: {
+    is_deprecated: boolean;
+    deprecated_since?: string;
+    removal_version?: string;
+    replacement?: string;
+    migration_guide?: string;
+  };
+  experimental?: {
+    is_experimental: boolean;
+    stability_level?: 'unstable' | 'experimental' | 'beta' | 'stable';
+    expected_stable_version?: string;
+  };
+}
+
+export interface CASCallGraph {
+  calls?: Array<{
+    target_id: string;
+    target_name: string;
+    target_type: 'function' | 'method' | 'constructor' | 'api' | 'external';
+    call_type: 'direct' | 'async' | 'callback' | 'event' | 'delegate';
+    location: {
+      line: number;
+      column?: number;
+    };
+    arguments?: Array<{
+      type?: string;
+      value?: any;
+      is_literal?: boolean;
+    }>;
+    is_recursive?: boolean;
+    in_loop?: boolean;
+    in_try_catch?: boolean;
+    condition?: string;
+  }>;
+  called_by?: Array<{
+    source_id: string;
+    source_name: string;
+    source_type: string;
+    location: {
+      file: string;
+      line: number;
+    };
+  }>;
+  call_chain_depth?: number;
+  is_entry_point?: boolean;
+  is_exit_point?: boolean;
+  is_hot_path?: boolean;
+  total_calls_made?: number;
+  total_calls_received?: number;
+  decorators?: Array<{
+    name: string;
+    type: string;
+    arguments?: Record<string, any>;
+    provides?: string[];
+  }>;
+  async_context?: {
+    is_async: boolean;
+    is_generator: boolean;
+    is_observable: boolean;
+    returns_promise: boolean;
+    await_count?: number;
+    parallel_operations?: boolean;
+  };
 }

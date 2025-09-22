@@ -1,5 +1,8 @@
 import { BaseAnalyzer, AnalysisContext } from '../../core/base-analyzer';
-import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint, CASPerspective } from '../../../types/cas.types';
+import {
+  CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint,
+  CASDocumentation, CASComment, CASTodo, CASImplementationStatus, CASPerspective
+} from "../../../types/cas.types";
 import { AnalyzerError } from '../../core/errors';
 import * as path from 'path';
 import * as fs from 'fs-extra';
@@ -97,6 +100,9 @@ interface AngularRoute {
 }
 
 export class AngularAnalyzer extends BaseAnalyzer {
+  private todoCounter = 0;
+  private commentCounter = 0;
+
   constructor() {
     super(
       'angular-analyzer',
@@ -1326,5 +1332,284 @@ export class AngularAnalyzer extends BaseAnalyzer {
         }
       };
     });
+  }
+
+  private extractCommentsFromFile(content: string, filePath: string): CASComment[] {
+    const comments: CASComment[] = [];
+    const lines = content.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      const singleLineMatch = line.match(/\/\/(.*)$/);
+      if (singleLineMatch) {
+        const text = singleLineMatch[1].trim();
+        const purpose = this.classifyCommentPurpose(text);
+        comments.push({
+          id: `comment_${++this.commentCounter}`,
+          type: 'single-line',
+          style: '//',
+          text,
+          purpose,
+          location: {
+            file: filePath,
+            line: i + 1,
+            relative_to: 'inline'
+          },
+          markers: this.extractCommentMarkers(text)
+        });
+      }
+
+      if (line.includes('/*')) {
+        let multiLineText = '';
+        let endLine = i;
+        let foundEnd = false;
+
+        for (let j = i; j < lines.length; j++) {
+          const currentLine = lines[j];
+          if (j === i) {
+            const startMatch = currentLine.match(/\/\*(.*)/);
+            if (startMatch) {
+              multiLineText = startMatch[1];
+              if (currentLine.includes('*/')) {
+                multiLineText = multiLineText.replace(/\*\/.*$/, '').trim();
+                foundEnd = true;
+                endLine = j;
+              }
+            }
+          } else {
+            if (currentLine.includes('*/')) {
+              multiLineText += '\n' + currentLine.replace(/\*\/.*$/, '').replace(/^\s*\*/, '').trim();
+              foundEnd = true;
+              endLine = j;
+              break;
+            } else {
+              multiLineText += '\n' + currentLine.replace(/^\s*\*/, '').trim();
+            }
+          }
+        }
+
+        if (foundEnd) {
+          const purpose = this.classifyCommentPurpose(multiLineText);
+          comments.push({
+            id: `comment_${++this.commentCounter}`,
+            type: 'multi-line',
+            style: '/* */',
+            text: multiLineText.trim(),
+            purpose,
+            location: {
+              file: filePath,
+              line: i + 1,
+              end_line: endLine + 1,
+              relative_to: 'above'
+            },
+            markers: this.extractCommentMarkers(multiLineText)
+          });
+          i = endLine;
+        }
+      }
+    }
+
+    return comments;
+  }
+
+  private classifyCommentPurpose(text: string): CASComment['purpose'] {
+    const lowerText = text.toLowerCase();
+
+    if (/\b(todo|fixme|hack|warning|note|xxx|optimize|refactor)\b/.test(lowerText)) {
+      return 'todo';
+    }
+    if (/\b(warning|warn|caution|danger|important)\b/.test(lowerText)) {
+      return 'warning';
+    }
+    if (/\b(note|info|tip|hint)\b/.test(lowerText)) {
+      return 'note';
+    }
+    if (/\b(hack|temp|temporary|quick|dirty)\b/.test(lowerText)) {
+      return 'hack';
+    }
+
+    return 'explanation';
+  }
+
+  private extractCommentMarkers(text: string): CASComment['markers'] {
+    const markers: CASComment['markers'] = {};
+    const lowerText = text.toLowerCase();
+
+    markers.is_todo = /\btodo\b/.test(lowerText);
+    markers.is_fixme = /\bfixme\b/.test(lowerText);
+    markers.is_hack = /\bhack\b/.test(lowerText);
+    markers.is_warning = /\b(warning|warn)\b/.test(lowerText);
+    markers.is_note = /\b(note|info)\b/.test(lowerText);
+    markers.is_important = /\b(important|critical|urgent)\b/.test(lowerText);
+    markers.is_deprecated = /\b(deprecated|obsolete)\b/.test(lowerText);
+
+    return markers;
+  }
+
+  private extractTodosFromComments(comments: CASComment[], context: string): CASTodo[] {
+    const todos: CASTodo[] = [];
+
+    comments.forEach(comment => {
+      if (comment.markers?.is_todo || comment.markers?.is_fixme || comment.markers?.is_hack) {
+        const typeMatch = comment.text.match(/\b(TODO|FIXME|HACK|NOTE|WARNING|XXX|OPTIMIZE|REFACTOR)\b/i);
+        const type = typeMatch ? typeMatch[0].toUpperCase() as CASTodo['type'] : 'TODO';
+
+        const assigneeMatch = comment.text.match(/\b(?:TODO|FIXME|HACK)\s*\(([^)]+)\)/);
+        const assignee = assigneeMatch ? assigneeMatch[1] : undefined;
+
+        const priority = comment.markers?.is_important ? 'high' :
+                        comment.markers?.is_fixme ? 'medium' : 'low';
+
+        const category = this.categorizeTodo(comment.text);
+
+        todos.push({
+          id: `todo_${++this.todoCounter}`,
+          type,
+          text: comment.text,
+          priority,
+          assignee,
+          category,
+          location: {
+            file: comment.location.file,
+            line: comment.location.line,
+            context
+          },
+          metadata: {
+            source: 'comment',
+            comment_type: comment.type
+          }
+        });
+      }
+    });
+
+    return todos;
+  }
+
+  private categorizeTodo(text: string): CASTodo['category'] {
+    const lowerText = text.toLowerCase();
+
+    if (/\b(fix|bug|error|issue|broken)\b/.test(lowerText)) return 'bug';
+    if (/\b(feature|add|implement|new)\b/.test(lowerText)) return 'feature';
+    if (/\b(refactor|clean|improve|restructure)\b/.test(lowerText)) return 'refactor';
+    if (/\b(performance|optimize|speed|slow)\b/.test(lowerText)) return 'performance';
+    if (/\b(security|secure|auth|permission)\b/.test(lowerText)) return 'security';
+
+    return 'general';
+  }
+
+  private extractDocumentationFromJSDoc(content: string, startLine: number): CASDocumentation | undefined {
+    const lines = content.split('\n');
+    let documentation = '';
+    let hasDoc = false;
+
+    for (let i = startLine - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (line.startsWith('/**') || line.includes('/**')) {
+        let docText = line.replace(/\/\*\*/, '').replace(/\*\/.*/, '').replace(/^\s*\*/, '').trim();
+        if (docText) {
+          documentation = docText + (documentation ? '\n' + documentation : '');
+          hasDoc = true;
+        }
+
+        if (line.includes('*/')) break;
+
+        for (let j = i + 1; j < lines.length; j++) {
+          const docLine = lines[j].trim();
+          if (docLine.includes('*/')) {
+            const finalDoc = docLine.replace(/\*\/.*/, '').replace(/^\s*\*/, '').trim();
+            if (finalDoc) {
+              documentation = documentation + '\n' + finalDoc;
+            }
+            break;
+          } else if (docLine.startsWith('*')) {
+            const lineDoc = docLine.replace(/^\s*\*/, '').trim();
+            if (lineDoc) {
+              documentation = documentation + '\n' + lineDoc;
+              hasDoc = true;
+            }
+          }
+        }
+        break;
+      } else if (!line.startsWith('//') && line !== '') {
+        break;
+      }
+    }
+
+    if (hasDoc) {
+      const docs: CASDocumentation = {
+        type: 'jsdoc',
+        raw: documentation,
+        location: { start_line: startLine - documentation.split('\n').length, end_line: startLine }
+      };
+
+      docs.summary = documentation.split('.')[0] + (documentation.includes('.') ? '.' : '');
+      docs.description = documentation;
+
+      const paramMatches = documentation.match(/@param\s+\{([^}]+)\}\s+(\w+)\s+(.*)/g);
+      if (paramMatches) {
+        docs.parameters = paramMatches.map(match => {
+          const parts = match.match(/@param\s+\{([^}]+)\}\s+(\w+)\s+(.*)/);
+          return {
+            name: parts?.[2] || '',
+            type: parts?.[1] || '',
+            description: parts?.[3] || ''
+          };
+        });
+      }
+
+      const returnMatch = documentation.match(/@returns?\s+\{([^}]+)\}\s+(.*)/);
+      if (returnMatch) {
+        docs.return_info = {
+          type: returnMatch[1],
+          description: returnMatch[2]
+        };
+      }
+
+      const exampleMatch = documentation.match(/@example\s*(.*?)(?=@|$)/s);
+      if (exampleMatch) {
+        docs.examples = [{ code: exampleMatch[1].trim(), language: 'typescript' }];
+      }
+
+      return docs;
+    }
+
+    return undefined;
+  }
+
+  private detectImplementationStatus(component: any, content: string): CASImplementationStatus {
+    const lowerContent = content.toLowerCase();
+
+    const indicators = {
+      has_todo_markers: lowerContent.includes('todo') || lowerContent.includes('fixme'),
+      has_not_implemented_exceptions: lowerContent.includes('notimplementederror') || lowerContent.includes('throw new error'),
+      has_stub_returns: lowerContent.includes('return null') || lowerContent.includes('return undefined'),
+      has_placeholder_code: lowerContent.includes('placeholder') || lowerContent.includes('// TODO'),
+      has_hardcoded_values: lowerContent.includes("'localhost'") || lowerContent.includes('"localhost"'),
+      has_commented_out_code: lowerContent.includes('//') && lowerContent.includes('function'),
+      has_placeholder_template: lowerContent.includes('<p>') && lowerContent.includes('works!'),
+      has_empty_methods: lowerContent.includes('{}') || lowerContent.includes('{ }'),
+      has_console_logs: lowerContent.includes('console.log'),
+      has_mock_data: lowerContent.includes('mock') || lowerContent.includes('dummy'),
+      has_deprecated_markers: lowerContent.includes('@deprecated')
+    };
+
+    let status: CASImplementationStatus['status'] = 'complete';
+    if (indicators.has_deprecated_markers) {
+      status = 'deprecated';
+    } else if (indicators.has_placeholder_template || indicators.has_empty_methods) {
+      status = 'stub';
+    } else if (indicators.has_todo_markers || indicators.has_mock_data || indicators.has_console_logs) {
+      status = 'partial';
+    }
+
+    return {
+      status,
+      indicators,
+      completeness: status === 'complete' ? { estimated_percentage: 100 } :
+                   status === 'partial' ? { estimated_percentage: 60 } :
+                   status === 'stub' ? { estimated_percentage: 10 } :
+                   { estimated_percentage: 0 }
+    };
   }
 }

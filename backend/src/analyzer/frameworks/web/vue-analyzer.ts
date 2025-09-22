@@ -1,5 +1,8 @@
 import { BaseAnalyzer, AnalysisContext } from '../../core/base-analyzer';
-import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint, CASPerspective } from '../../../types/cas.types';
+import {
+  CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint,
+  CASDocumentation, CASComment, CASTodo, CASImplementationStatus, CASPerspective
+} from "../../../types/cas.types";
 import { AnalyzerError } from '../../core/errors';
 import * as path from 'path';
 import * as fs from 'fs-extra';
@@ -87,6 +90,9 @@ interface VuePlugin {
 }
 
 export class VueAnalyzer extends BaseAnalyzer {
+  private todoCounter = 0;
+  private commentCounter = 0;
+
   constructor() {
     super(
       'vue-analyzer',
@@ -237,11 +243,20 @@ export class VueAnalyzer extends BaseAnalyzer {
       };
 
       const appId = this.generateId('app', path.join(projectPath, 'package.json'), application.name);
+      const documentation = this.extractDocumentation('', path.join(projectPath, 'package.json'));
+      const comments = this.extractComments('', path.join(projectPath, 'package.json'));
+      const todos = this.extractTodos(comments);
+      const implementationStatus = this.determineImplementationStatus('', comments);
+
       const appNode = this.createNodeBuilder(appId, application.name, 'vue_app')
         .withLevel(1, 'system')
         .withCategory('frontend', ['vue', 'application'])
         .withSource({ file: path.join(projectPath, 'package.json'), line: 1, end_line: 1 })
         .withDescription(`Vue.js application: ${application.name}`)
+        .withDocumentation(documentation)
+        .withComments(comments)
+        .withTodos(todos)
+        .withImplementationStatus(implementationStatus)
         .withMetadata({
           framework: 'vue',
           attributes: {
@@ -1276,5 +1291,286 @@ export class VueAnalyzer extends BaseAnalyzer {
       case 'vue_component': return 'consumer';
       default: return 'unknown';
     }
+  }
+
+  // CAS v1.4.0 Documentation and Comment extraction methods
+
+  private extractDocumentation(content: string, filePath: string): CASDocumentation | undefined {
+    if (!content || content.trim().length === 0) return undefined;
+
+    const lines = content.split('\n');
+
+    // Look for Vue-specific documentation patterns
+
+    // 1. Component prop documentation
+    const propDocMatches = content.matchAll(/\/\*\*\s*\n[^*]*\*\s*([^@\n][^\n]*)\n[^*]*\*\/[^{]*\n[^{]*props:\s*{/g);
+    const propDocs = [];
+    for (const match of propDocMatches) {
+      propDocs.push(match[1].trim());
+    }
+
+    // 2. Computed property docs
+    const computedDocMatches = content.matchAll(/\/\*\*\s*\n[^*]*\*\s*([^@\n][^\n]*)\n[^*]*\*\/[^{]*\n[^{]*computed:\s*{/g);
+    const computedDocs = [];
+    for (const match of computedDocMatches) {
+      computedDocs.push(match[1].trim());
+    }
+
+    // 3. Method documentation
+    const methodDocMatches = content.matchAll(/\/\*\*\s*\n[^*]*\*\s*([^@\n][^\n]*)\n[^*]*\*\/[^{]*\n[^{]*methods:\s*{/g);
+    const methodDocs = [];
+    for (const match of methodDocMatches) {
+      methodDocs.push(match[1].trim());
+    }
+
+    // 4. Lifecycle hook comments
+    const lifecycleDocMatches = content.matchAll(/\/\/\s*(mounted|created|beforeDestroy|destroyed|beforeMount|updated|beforeUpdate):\s*([^\n]*)/g);
+    const lifecycleDocs = [];
+    for (const match of lifecycleDocMatches) {
+      lifecycleDocs.push(`${match[1]}: ${match[2]}`);
+    }
+
+    if (propDocs.length > 0 || computedDocs.length > 0 || methodDocs.length > 0 || lifecycleDocs.length > 0) {
+      const doc: CASDocumentation = {
+        type: 'other',
+        raw: content,
+        location: { start_line: 1, end_line: lines.length }
+      };
+
+      if (propDocs.length > 0) {
+        doc.summary = propDocs[0].split('\n')[0].trim();
+        doc.description = propDocs[0].trim();
+      } else if (methodDocs.length > 0) {
+        doc.summary = methodDocs[0].split('\n')[0].trim();
+      }
+
+      doc.framework_docs = {};
+
+      return doc;
+    }
+
+    return undefined;
+  }
+
+  private extractComments(content: string, filePath: string): CASComment[] {
+    if (!content || content.trim().length === 0) return [];
+
+    const comments: CASComment[] = [];
+    const lines = content.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmedLine = line.trim();
+
+      // JavaScript/TypeScript single-line comments
+      if (trimmedLine.startsWith('//')) {
+        const commentText = trimmedLine.substring(2).trim();
+        if (commentText.length > 0) {
+          const comment: CASComment = {
+            id: `comment_${++this.commentCounter}`,
+            type: 'single-line',
+            style: '//',
+            text: commentText,
+            purpose: this.classifyCommentPurpose(commentText),
+            location: {
+              file: filePath,
+              line: i + 1
+            },
+            markers: {
+              is_todo: commentText.toUpperCase().includes('TODO'),
+              is_fixme: commentText.toUpperCase().includes('FIXME'),
+              is_hack: commentText.toUpperCase().includes('HACK'),
+              is_warning: commentText.toUpperCase().includes('WARNING'),
+              is_note: commentText.toUpperCase().includes('NOTE')
+            }
+          };
+          comments.push(comment);
+        }
+      }
+
+      // Multi-line comments /* */
+      if (trimmedLine.includes('/*') && !trimmedLine.includes('/**')) {
+        let commentText = '';
+        let j = i;
+        let foundEnd = false;
+
+        while (j < lines.length && !foundEnd) {
+          const currentLine = lines[j].trim();
+          if (currentLine.includes('*/')) {
+            commentText += currentLine.replace('*/', '').replace('/*', '').trim();
+            foundEnd = true;
+          } else {
+            commentText += currentLine.replace('/*', '').replace(/^\s*\*\s?/, '').trim() + ' ';
+          }
+          j++;
+        }
+
+        if (commentText.trim().length > 0) {
+          const comment: CASComment = {
+            id: `comment_${++this.commentCounter}`,
+            type: 'multi-line',
+            style: '/* */',
+            text: commentText.trim(),
+            purpose: this.classifyCommentPurpose(commentText.trim()),
+            location: {
+              file: filePath,
+              line: i + 1
+            },
+            markers: {
+              is_todo: commentText.toUpperCase().includes('TODO'),
+              is_fixme: commentText.toUpperCase().includes('FIXME'),
+              is_hack: commentText.toUpperCase().includes('HACK'),
+              is_warning: commentText.toUpperCase().includes('WARNING'),
+              is_note: commentText.toUpperCase().includes('NOTE')
+            }
+          };
+          comments.push(comment);
+        }
+
+        i = j - 1; // Skip processed lines
+      }
+
+      // Vue template comments <!-- -->
+      const templateCommentMatch = line.match(/<!--\s*([^-]*?)\s*-->/);
+      if (templateCommentMatch) {
+        const commentText = templateCommentMatch[1].trim();
+        if (commentText.length > 0) {
+          const comment: CASComment = {
+            id: `comment_${++this.commentCounter}`,
+            type: 'multi-line',
+            style: '<!-- -->',
+            text: commentText,
+            purpose: this.classifyCommentPurpose(commentText),
+            location: {
+              file: filePath,
+              line: i + 1
+            },
+            markers: {
+              is_todo: commentText.toUpperCase().includes('TODO'),
+              is_fixme: commentText.toUpperCase().includes('FIXME'),
+              is_hack: commentText.toUpperCase().includes('HACK'),
+              is_warning: commentText.toUpperCase().includes('WARNING'),
+              is_note: commentText.toUpperCase().includes('NOTE')
+            }
+          };
+          comments.push(comment);
+        }
+      }
+    }
+
+    return comments;
+  }
+
+  private extractTodos(comments: CASComment[]): CASTodo[] {
+    const todos: CASTodo[] = [];
+
+    for (const comment of comments) {
+      if (comment.markers?.is_todo || comment.markers?.is_fixme || comment.markers?.is_hack) {
+        const text = comment.text;
+        const typeMatch = text.match(/(TODO|FIXME|HACK|NOTE|WARNING|XXX)/i);
+        const type = typeMatch ? typeMatch[0].toUpperCase() as CASTodo['type'] : 'TODO';
+
+        const assigneeMatch = text.match(/TODO\s*\(\s*([^)]+)\s*\)/i);
+        const assignee = assigneeMatch ? assigneeMatch[1].trim() : undefined;
+
+        const priorityMatch = text.match(/\[(CRITICAL|HIGH|MEDIUM|LOW)\]/i);
+        let priority: CASTodo['priority'] = 'medium';
+        if (priorityMatch) {
+          priority = priorityMatch[1].toLowerCase() as CASTodo['priority'];
+        }
+
+        const todo: CASTodo = {
+          id: `todo_${++this.todoCounter}`,
+          type,
+          text: text.replace(/^(TODO|FIXME|HACK|NOTE|WARNING|XXX)\s*(\([^)]+\))?\s*:?\s*/i, '').trim(),
+          priority,
+          location: {
+            file: comment.location.file,
+            line: comment.location.line
+          },
+          assignee,
+          classification: {
+            category: this.classifyTodoCategory(text),
+            technical_debt: type === 'TODO' || type === 'FIXME' || type === 'HACK'
+          }
+        };
+
+        todos.push(todo);
+      }
+    }
+
+    return todos;
+  }
+
+  private determineImplementationStatus(content: string, comments: CASComment[]): CASImplementationStatus {
+    const indicators = {
+      has_todo_markers: comments.some(c => c.markers?.is_todo),
+      has_not_implemented_exceptions: content.includes('throw new Error("Not implemented")') || content.includes('// TODO: implement'),
+      has_stub_returns: content.includes('return null') || content.includes('return undefined') || content.includes('return {}'),
+      has_placeholder_code: content.includes('// TODO') || content.includes('// FIXME') || content.includes('// PLACEHOLDER'),
+      has_hardcoded_values: /['\"](localhost|127\.0\.0\.1|test|example|demo|placeholder)['\"]/. test(content),
+      has_commented_out_code: comments.some(c => c.text.includes('function ') || c.text.includes('const ') || c.text.includes('import '))
+    };
+
+    const indicatorCount = Object.values(indicators).filter(Boolean).length;
+    let status: CASImplementationStatus['status'];
+    let confidence = 0.8;
+
+    if (content.includes('throw new Error("Not implemented")')) {
+      status = 'not-implemented';
+      confidence = 0.95;
+    } else if (indicatorCount >= 3) {
+      status = 'stub';
+      confidence = 0.7;
+    } else if (indicatorCount >= 1) {
+      status = 'partial';
+      confidence = 0.6;
+    } else if (content.includes('@deprecated') || content.includes('// deprecated')) {
+      status = 'deprecated';
+      confidence = 0.9;
+    } else if (content.includes('experimental') || content.includes('beta')) {
+      status = 'experimental';
+      confidence = 0.8;
+    } else {
+      status = 'complete';
+      confidence = 0.7;
+    }
+
+    const missingFeatures = [];
+    if (indicators.has_not_implemented_exceptions) missingFeatures.push('Core implementation');
+    if (indicators.has_todo_markers) missingFeatures.push('TODO items');
+    if (indicators.has_stub_returns) missingFeatures.push('Method implementations');
+
+    return {
+      status,
+      indicators,
+      confidence,
+      completeness: {
+        estimated_percentage: status === 'complete' ? 90 : status === 'partial' ? 60 : status === 'stub' ? 30 : 10,
+        missing_features: missingFeatures,
+        implemented_features: status === 'complete' ? ['Core functionality'] : []
+      }
+    };
+  }
+
+  private classifyCommentPurpose(text: string): CASComment['purpose'] {
+    const upperText = text.toUpperCase();
+    if (upperText.includes('TODO') || upperText.includes('FIXME')) return 'todo';
+    if (upperText.includes('WARNING') || upperText.includes('WARN')) return 'warning';
+    if (upperText.includes('HACK') || upperText.includes('WORKAROUND')) return 'hack';
+    if (upperText.includes('NOTE') || upperText.includes('INFO')) return 'note';
+    if (upperText.includes('DISABLED') || upperText.includes('COMMENTED')) return 'disabled-code';
+    return 'explanation';
+  }
+
+  private classifyTodoCategory(text: string): 'bug' | 'feature' | 'refactor' | 'performance' | 'security' | 'documentation' | 'test' | undefined {
+    const lowerText = text.toLowerCase();
+    if (lowerText.includes('bug') || lowerText.includes('fix') || lowerText.includes('error')) return 'bug';
+    if (lowerText.includes('security') || lowerText.includes('auth') || lowerText.includes('permission')) return 'security';
+    if (lowerText.includes('performance') || lowerText.includes('optimize') || lowerText.includes('slow')) return 'performance';
+    if (lowerText.includes('test') || lowerText.includes('spec') || lowerText.includes('coverage')) return 'test';
+    if (lowerText.includes('refactor') || lowerText.includes('cleanup') || lowerText.includes('reorganize')) return 'refactor';
+    if (lowerText.includes('doc') || lowerText.includes('comment') || lowerText.includes('explain')) return 'documentation';
+    return 'feature';
   }
 }
