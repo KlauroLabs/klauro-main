@@ -83,6 +83,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private commentCounter = 0;
   private importSourceMap = new Map<string, string>();
   private classFieldTypes = new Map<string, { typeName: string; library?: string }>();
+  private repositoryPropertyTypes = new Map<string, string>();
 
   constructor() {
     super(
@@ -115,6 +116,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
     this.importSourceMap.clear();
     this.classFieldTypes.clear();
+    this.repositoryPropertyTypes.clear();
 
     try {
       this.callGraphExtractor = new EnhancedCallGraphExtractor(context.projectPath);
@@ -1020,6 +1022,25 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   }
 
   private findNodeIdByName(targetName: string, nodes: CASNode[]): string | undefined {
+    if (this.isRepositoryCall(targetName)) {
+      const parts = targetName.split('.');
+      if (parts.length >= 3 && parts[0] === 'this') {
+        const repositoryProperty = parts[1];
+        const methodName = parts.slice(2).join('.');
+
+        const repositoryClassName = this.getRepositoryClassNameFromProperty(repositoryProperty);
+        if (repositoryClassName) {
+          const targetNode = nodes.find(n =>
+            n.type === 'method' &&
+            n.name === methodName &&
+            n.parent && nodes.find(p => p.id === n.parent && p.name === repositoryClassName)
+          );
+          if (targetNode) return targetNode.id;
+        }
+      }
+      return undefined;
+    }
+
     let targetNode = nodes.find(n => n.name === targetName);
     if (targetNode) return targetNode.id;
 
@@ -1076,6 +1097,10 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
   private propertyNameToClassName(propertyName: string): string {
     return propertyName.charAt(0).toUpperCase() + propertyName.slice(1);
+  }
+
+  private getRepositoryClassNameFromProperty(propertyName: string): string | undefined {
+    return this.repositoryPropertyTypes.get(propertyName);
   }
 
   private resolveSourceNodeId(
@@ -1256,6 +1281,13 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
                   typeName: depType,
                   library
                 });
+
+                if (depType.includes('Repository')) {
+                  const paramNameStr = typeof paramName === 'string' ? paramName : paramName.name;
+                  if (paramNameStr) {
+                    this.repositoryPropertyTypes.set(paramNameStr, depType);
+                  }
+                }
               }
             }
 

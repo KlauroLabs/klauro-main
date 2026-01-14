@@ -101,6 +101,14 @@ const TestVisualizationPage: React.FC = () => {
     }
   }, [nodes, selectNode]);
 
+  const handleNodeClick = useCallback((nodeId: string) => {
+    const node = nodes.find(n => n.id === nodeId);
+    if (node) {
+      selectNode(nodeId);
+      setDetailPanelOpen(true);
+    }
+  }, [nodes, selectNode]);
+
   const handleBackToSystem = useCallback(() => {
     setNavigation({ level: 'system' });
   }, []);
@@ -323,8 +331,11 @@ const TestVisualizationPage: React.FC = () => {
               <FlowView
                 capability={navigation.capability}
                 nodes={nodes}
+                edges={edges}
+                exitPoints={exitPoints}
                 onBack={handleBackToDomain}
                 onStepClick={handleStepClick}
+                onNodeClick={handleNodeClick}
               />
             )}
           </Box>

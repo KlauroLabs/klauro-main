@@ -183,18 +183,27 @@ export interface ExitPoint {
   type: 'database' | 'api' | 'file' | 'cache' | 'queue' | 'email' | 'storage' | 'sdk' | 'other';
   name: string;
   description?: string;
+  source_node?: string;
 
   target: {
-    system?: string;
+    service_id?: string;
+    resource?: string;
+    sdk?: string;
     endpoint?: string;
+    system?: string;
     protocol?: string;
   };
 
-  source: {
+  source?: {
     node_id: string;
     method_name?: string;
     file: string;
     line: number;
+  };
+
+  operation?: {
+    action: string;
+    async: boolean;
   };
 
   operations?: string[];

@@ -24,14 +24,18 @@ import {
   PlayArrow,
   Stop,
 } from '@mui/icons-material';
-import { CASNode } from '../types';
+import { CASNode, CASEdge, ExitPoint } from '../types';
 import { Capability, FlowStep, buildFlowSteps } from '../utils/domainExtractor';
+import { CallTree } from '../components/CallTree';
 
 export interface FlowViewProps {
   capability: Capability;
   nodes: CASNode[];
+  edges: CASEdge[];
+  exitPoints?: ExitPoint[];
   onBack: () => void;
   onStepClick: (step: FlowStep) => void;
+  onNodeClick: (nodeId: string) => void;
 }
 
 const STEP_COLORS: Record<string, string> = {
@@ -47,8 +51,11 @@ const STEP_COLORS: Record<string, string> = {
 export const FlowView: React.FC<FlowViewProps> = ({
   capability,
   nodes,
+  edges,
+  exitPoints = [],
   onBack,
   onStepClick,
+  onNodeClick,
 }) => {
   const flow = capability.flow;
   const precomputedSteps = capability.flowSteps;
@@ -61,7 +68,18 @@ export const FlowView: React.FC<FlowViewProps> = ({
     return buildFlowSteps(flow, nodes);
   }, [flow, precomputedSteps, nodes]);
 
-  const hasFlow = steps.length > 0;
+  const entryNodeId = useMemo(() => {
+    if (flow && flow.entry_node_id) {
+      return flow.entry_node_id;
+    }
+    if (steps.length > 0) {
+      return steps[0].nodeId;
+    }
+    const entryNode = nodes.find(n => n.name === capability.handlerName);
+    return entryNode?.id;
+  }, [flow, steps, nodes, capability.handlerName]);
+
+  const hasFlow = !!entryNodeId || steps.length > 0;
 
   const flowStats = useMemo(() => {
     if (flow) {
@@ -198,28 +216,23 @@ export const FlowView: React.FC<FlowViewProps> = ({
               </Alert>
             )}
 
-            <Box sx={{ position: 'relative', pl: 4 }}>
-              <Box
-                sx={{
-                  position: 'absolute',
-                  left: 15,
-                  top: 24,
-                  bottom: 24,
-                  width: 2,
-                  bgcolor: 'divider',
-                }}
-              />
-
-              {steps.map((step, index) => (
-                <FlowStepCard
-                  key={step.id}
-                  step={step}
-                  index={index}
-                  totalSteps={steps.length}
-                  onClick={() => onStepClick(step)}
+            <Paper variant="outlined" sx={{ p: 2 }}>
+              {entryNodeId ? (
+                <CallTree
+                  rootNodeId={entryNodeId}
+                  nodes={nodes}
+                  edges={edges}
+                  exitPoints={exitPoints}
+                  onNodeClick={onNodeClick}
+                  maxDepth={15}
                 />
-              ))}
-            </Box>
+              ) : (
+                <Alert severity="info">
+                  <AlertTitle>No Entry Point Found</AlertTitle>
+                  Unable to determine the starting point for this flow.
+                </Alert>
+              )}
+            </Paper>
           </>
         )}
       </Box>

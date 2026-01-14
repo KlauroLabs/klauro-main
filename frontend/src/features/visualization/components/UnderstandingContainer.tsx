@@ -84,6 +84,14 @@ export const UnderstandingContainer: React.FC<UnderstandingContainerProps> = ({
     }
   }, [getNodeById, selectNode]);
 
+  const handleNodeClick = useCallback((nodeId: string) => {
+    const node = getNodeById(nodeId);
+    if (node) {
+      selectNode(nodeId);
+      setDetailPanelOpen(true);
+    }
+  }, [getNodeById, selectNode]);
+
   const handleBackToSystem = useCallback(() => {
     setNavigation({ level: 'system' });
   }, []);
@@ -171,8 +179,11 @@ export const UnderstandingContainer: React.FC<UnderstandingContainerProps> = ({
           <FlowView
             capability={navigation.capability}
             nodes={nodes}
+            edges={edges}
+            exitPoints={exitPoints}
             onBack={handleBackToDomain}
             onStepClick={handleStepClick}
+            onNodeClick={handleNodeClick}
           />
         );
 

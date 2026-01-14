@@ -94,6 +94,7 @@ export class EnhancedCallGraphExtractor {
   };
   private scopeStack: ScopeInfo[] = [];
   private contextStack: Partial<CallContext>[] = [];
+  private currentClassName: string | undefined = undefined;
 
   constructor(private projectPath: string) {}
 
@@ -154,6 +155,12 @@ export class EnhancedCallGraphExtractor {
   }
 
   private extractFunctions(node: any, parent?: any): void {
+    const previousClassName = this.currentClassName;
+
+    if (node.type === 'ClassDeclaration' && node.id) {
+      this.currentClassName = node.id.name;
+    }
+
     // First extract HTTP endpoints, library calls, dependency injection, and abstract calls
     const httpEndpoints = this.extractHTTPEndpoints(node);
     const libraryCalls = this.extractLibraryCalls(node, this.createDefaultContext(''));
@@ -193,14 +200,13 @@ export class EnhancedCallGraphExtractor {
     // Extract class methods
     if (node.type === 'MethodDefinition') {
       const methodName = node.key?.type === 'Identifier' ? node.key.name : 'method';
-      const className = this.findEnclosingClass(parent);
       let type: ExtractedFunction['type'] = 'method';
 
       if (node.kind === 'constructor') type = 'constructor';
       else if (node.kind === 'get') type = 'getter';
       else if (node.kind === 'set') type = 'setter';
 
-      this.extractFunctionNode(node.value, type, methodName, parent, className);
+      this.extractFunctionNode(node.value, type, methodName, parent, this.currentClassName);
     }
 
     // Extract class properties that are functions
@@ -208,8 +214,7 @@ export class EnhancedCallGraphExtractor {
         (node.value?.type === 'ArrowFunctionExpression' ||
          node.value?.type === 'FunctionExpression')) {
       const propertyName = node.key?.type === 'Identifier' ? node.key.name : 'property';
-      const className = this.findEnclosingClass(parent);
-      this.extractFunctionNode(node.value, 'arrow', propertyName, parent, className);
+      this.extractFunctionNode(node.value, 'arrow', propertyName, parent, this.currentClassName);
     }
 
     // Recursively traverse
@@ -226,6 +231,8 @@ export class EnhancedCallGraphExtractor {
         }
       }
     }
+
+    this.currentClassName = previousClassName;
   }
 
   private extractFunctionNode(

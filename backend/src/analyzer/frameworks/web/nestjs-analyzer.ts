@@ -334,9 +334,17 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
             const allGuards = [...new Set([...controllerInfo.guards, ...route.guards])];
 
+            const methodNodeId = nodes.find(n =>
+              n.name === route.handlerName &&
+              n.type === 'method' &&
+              n.parent === controllerId
+            )?.id;
+
+            const sourceNodeForEntry = methodNodeId || routeId;
+
             entryPoints.push(this.createEntryPoint(
               `entry_${routeId}`,
-              routeId,
+              sourceNodeForEntry,
               'http',
               `${route.method.toUpperCase()} ${fullPath}`,
               `HTTP endpoint for ${controllerInfo.name}.${route.handlerName}`,
@@ -2697,7 +2705,21 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
             // Regular method/function calls - create behavior edges
             if ((call.targetType === 'method' || call.targetType === 'function') && !call.injectionType) {
-              const sourceNode = nodes.find(n => n.name === func.name && (n.type === 'method' || n.type === 'function'));
+              let sourceNode: CASNode | undefined;
+
+              if (func.className) {
+                const classId = `class_${file}_${func.className}_0`;
+                sourceNode = nodes.find(n =>
+                  n.name === func.name &&
+                  n.type === 'method' &&
+                  n.parent === classId
+                );
+              }
+
+              if (!sourceNode) {
+                sourceNode = nodes.find(n => n.name === func.name && (n.type === 'method' || n.type === 'function'));
+              }
+
               const targetNode = this.findNodeByMethodName(call.target, nodes);
 
               if (sourceNode && targetNode && sourceNode.id !== targetNode.id) {
@@ -2729,6 +2751,10 @@ export class NestJSAnalyzer extends BaseAnalyzer {
   }
 
   private findNodeByMethodName(targetName: string, nodes: CASNode[]): CASNode | undefined {
+    if (this.isRepositoryCallPattern(targetName)) {
+      return undefined;
+    }
+
     // Try exact match first
     let targetNode = nodes.find(n => n.name === targetName && (n.type === 'method' || n.type === 'function'));
 
@@ -2782,6 +2808,19 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     }
 
     return targetNode;
+  }
+
+  private isRepositoryCallPattern(targetName: string): boolean {
+    if (!targetName.includes('.')) return false;
+
+    const repositoryPatterns = [
+      'Repository.', 'repository.', 'repo.',
+      '.find', '.findOne', '.findAll', '.findBy',
+      '.create', '.save', '.update', '.delete', '.remove',
+      '.count', '.exists', '.query', '.execute'
+    ];
+
+    return repositoryPatterns.some(pattern => targetName.includes(pattern));
   }
 
   // CAS v1.4.0 Documentation extraction methods
