@@ -660,6 +660,8 @@ export class JestAnalyzer extends BaseAnalyzer {
     };
 
     const walk = (node: any) => {
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'CallExpression') {
         const callee = node.callee;
 

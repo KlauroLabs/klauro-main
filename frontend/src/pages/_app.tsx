@@ -2,6 +2,7 @@ import React from 'react';
 import type { AppProps } from 'next/app';
 import Head from 'next/head';
 import { UnravlThemeProvider } from '@/theme/UnravlTheme';
+import { AuthProvider } from '@/contexts/AuthContext';
 import { WorkspaceProvider } from '@/contexts/WorkspaceContext';
 
 export default function MyApp({ Component, pageProps }: AppProps) {
@@ -16,9 +17,11 @@ export default function MyApp({ Component, pageProps }: AppProps) {
         <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
       </Head>
       <UnravlThemeProvider timeOfDay="day">
-        <WorkspaceProvider>
-          <Component {...pageProps} />
-        </WorkspaceProvider>
+        <AuthProvider>
+          <WorkspaceProvider>
+            <Component {...pageProps} />
+          </WorkspaceProvider>
+        </AuthProvider>
       </UnravlThemeProvider>
     </>
   );

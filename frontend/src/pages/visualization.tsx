@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/router';
+import { getApiUrl } from '../config/api';
 import {
   Box,
   Container,
@@ -222,8 +223,7 @@ const VisualizationPage: React.FC = () => {
       setLoading(true);
       setError(null);
 
-      // Run fresh analysis on backend directory
-      const response = await fetch('http://localhost:3002/api/analyze/cas', {
+      const response = await fetch(getApiUrl('/api/analyze/cas'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

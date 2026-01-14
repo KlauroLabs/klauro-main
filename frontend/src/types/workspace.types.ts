@@ -77,7 +77,7 @@ export interface Codebase {
   language?: string;
   framework?: string;
   status: CodebaseStatus;
-  tags: string[];
+  tags?: string[];
   lastAnalyzedAt?: string;
   settings?: Record<string, any>;
   createdAt: string;
@@ -183,9 +183,9 @@ export interface WorkspaceInvitation {
 
 export interface CreateWorkspaceRequest {
   name: string;
+  slug: string;
   description?: string;
   visibility?: WorkspaceVisibility;
-  tags?: string[];
   settings?: Record<string, any>;
 }
 
@@ -196,10 +196,14 @@ export interface UpdateWorkspaceRequest {
   settings?: Record<string, any>;
 }
 
+export type CodebaseSourceType = 'repository_url' | 'local_path' | 'upload';
+
 export interface CreateCodebaseRequest {
   name: string;
   description?: string;
+  sourceType?: CodebaseSourceType;
   repositoryUrl?: string;
+  localPath?: string;
   repositoryProvider?: string;
   repositoryId?: string;
   defaultBranch?: string;

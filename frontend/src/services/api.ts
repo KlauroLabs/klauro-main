@@ -104,7 +104,7 @@ class APIService {
     : '/api';
 
   private async fetchWithAuth<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-    const token = localStorage.getItem('auth_token');
+    const token = localStorage.getItem('accessToken');
     const headers = {
       'Content-Type': 'application/json',
       ...(token && { Authorization: `Bearer ${token}` }),
@@ -117,6 +117,14 @@ class APIService {
     });
 
     if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('accessToken');
+        localStorage.removeItem('refreshToken');
+        localStorage.removeItem('user');
+        window.location.href = '/login';
+        throw new Error('Session expired. Please login again.');
+      }
+
       const errorData = await response.json().catch(() => ({ message: response.statusText }));
       throw new Error(errorData.message || `Request failed: ${response.statusText}`);
     }
@@ -277,6 +285,12 @@ class APIService {
   async deleteCodebase(workspaceId: string, codebaseId: string): Promise<void> {
     await this.fetchWithAuth<void>(`/workspaces/${workspaceId}/codebases/${codebaseId}`, {
       method: 'DELETE',
+    });
+  }
+
+  async startCodebaseAnalysis(workspaceId: string, codebaseId: string): Promise<void> {
+    return this.fetchWithAuth<void>(`/workspaces/${workspaceId}/codebases/${codebaseId}/analyze`, {
+      method: 'POST',
     });
   }
 

@@ -1604,6 +1604,8 @@ export class JavaAnalyzer extends BaseAnalyzer {
     const springAnnotations = ['Controller', 'RestController', 'Service', 'Repository', 'Component'];
 
     for (const node of nodes) {
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'class' && node.metadata?.annotations) {
         const annotations = node.metadata.annotations as string[];
         const springAnnotation = annotations.find(a => springAnnotations.includes(a));

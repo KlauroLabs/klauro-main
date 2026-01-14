@@ -1,8 +1,8 @@
 # Code Analysis Specification (CAS)
 
-**Version:** 1.4.0
+**Version:** 1.5.0
 **Status:** Active
-**Last Updated:** 2025-09-20
+**Last Updated:** 2026-01-09
 
 ## Abstract
 
@@ -23,13 +23,14 @@ The Code Analysis Specification (CAS) defines a universal, language-agnostic for
 
 ## Version History
 
-This document specifies version 1.4.0 of the Code Analysis Specification. The evolution of CAS includes:
+This document specifies version 1.5.0 of the Code Analysis Specification. The evolution of CAS includes:
 
 - **[Version 1.0.0](./v1.0.0.md)** (2024-01-01) - Initial release with core nodes, edges, and basic metadata
 - **[Version 1.1.0](./v1.1.0.md)** (2024-06-01) - Added progressive levels, entry/exit points, and extended metadata
 - **[Version 1.2.0](./v1.2.0.md)** (2024-09-19) - Added multi-perspective support and enhanced patterns
 - **[Version 1.3.0](./v1.3.0-rfp.md)** (2025-01-01) - Added comprehensive call graph tracking and method invocation analysis
-- **[Version 1.4.0](./v1.4.0-rfp.md)** (2025-09-20) - Current version - Added documentation and comment extraction
+- **[Version 1.4.0](./v1.4.0-rfp.md)** (2025-09-20) - Added documentation and comment extraction
+- **[Version 1.5.0](./v1.5.0-rfp.md)** (2026-01-09) - Current version - Added class-level relationships, pattern variations, and enhanced entry points
 
 ## 1. Introduction
 
@@ -87,7 +88,7 @@ The root structure containing complete analysis results:
 
 ```typescript
 interface CASOutput {
-  cas_version: "1.4.0";
+  cas_version: "1.5.0";
   analysis_timestamp: string;  // ISO 8601
   analysis_id: string;          // Unique identifier
 
@@ -104,7 +105,7 @@ interface CASOutput {
   edges: CASEdge[];
   entry_points: EntryPoint[];      // Added in v1.1.0
   exit_points: ExitPoint[];        // Added in v1.1.0
-  external_services: ExternalService[]; // Added in v1.1.0
+  external_services: ExternalService[]; // Added in v1.1.0, filtered in v1.5.0
 
   repository_links?: RepositoryLink[];
   dependencies?: Dependencies;
@@ -121,6 +122,8 @@ interface CASOutput {
   todos_summary?: CASTodoSummary;                   // Added in v1.4.0
   implementation_health?: CASImplementationHealth;  // Added in v1.4.0
 
+  patterns?: CASPattern[];          // Enhanced in v1.5.0 with variations
+
   metadata?: SystemMetadata;
 }
 ```
@@ -135,6 +138,8 @@ interface CASNode {
   name: string;                  // Human-readable name
   type: string;                  // Node type (e.g., 'class', 'function', 'module')
   tags: string[];                // Classification tags (v1.1.0: accumulative from all analyzers)
+
+  parent?: string;               // v1.5.0: REQUIRED for class members (methods, properties)
 
   perspectives: {                // Added in v1.2.0
     [perspectiveId: string]: {
@@ -173,11 +178,19 @@ interface CASEdge {
   id: string;
   source: string;               // Source node ID
   target: string;               // Target node ID
-  type: string;                 // Relationship type (v1.3.0: extended with call graph types)
+  type: string;                 // Relationship type (v1.3.0+: extended types)
 
   analyzer?: string;            // Creating analyzer (v1.1.0)
   perspectives?: string[];      // Array of perspective IDs (v1.2.0)
   dataFlow?: EdgeDataFlow;
+
+  aggregated_from?: string[];   // v1.5.0: For class-level edges, list of method-level call IDs
+  relationship_metadata?: {     // v1.5.0: Additional context for class relationships
+    injection_type?: 'constructor' | 'property' | 'method';
+    instantiation_count?: number;
+    usage_locations?: Array<{ file: string; line: number }>;
+  };
+
   metadata?: Record<string, any>;
 }
 
@@ -189,6 +202,13 @@ type StandardEdgeTypes = 'imports' | 'exports' | 'extends' | 'implements' |
 type CallGraphEdgeTypes = 'calls' | 'invokes' | 'delegates-to' | 'instantiates' |
                           'decorates' | 'guards' | 'intercepts' | 'validates' |
                           'transforms' | 'overrides';
+
+// Class relationship edge types (v1.5.0)
+type ClassRelationshipEdgeTypes = 'uses' | 'depends_on' | 'injects';
+// - 'uses': ClassA has method that calls method in ClassB
+// - 'depends_on': ClassA receives ClassB via constructor injection
+// - 'injects': Module/container provides ClassB to ClassA
+// - 'instantiates': ClassA creates instance of ClassB (from v1.3.0)
 ```
 
 ### 4.4 Call Graph Structures (v1.3.0)
@@ -603,9 +623,10 @@ interface EntryPoint {
   name: string;
   description?: string;
 
-  protocol_details?: {
-    method?: string;      // GET, POST, etc.
-    path?: string;        // /api/users
+  trigger: {                    // v1.5.0: Enhanced trigger information
+    method: string;             // GET, POST, etc.
+    path: string;               // v1.5.0: MUST be full path (e.g., /workspaces/:id)
+    base_path?: string;         // v1.5.0: Controller/router base path
     parameters?: Array<{
       name: string;
       type: string;
@@ -621,9 +642,11 @@ interface EntryPoint {
     line: number;
   };
 
-  authentication?: {
-    required: boolean;
-    methods?: string[];
+  security: {                   // v1.5.0: Enhanced security information
+    authenticated: boolean;     // v1.5.0: MUST merge class-level and method-level guards
+    guards: string[];           // v1.5.0: ALL guards (class + method level)
+    roles?: string[];
+    permissions?: string[];
   };
 
   metadata?: Record<string, any>;
@@ -695,11 +718,56 @@ interface ExternalService {
 
   criticality?: 'critical' | 'important' | 'optional';
 
+  is_builtin?: boolean;          // v1.5.0: true for Object, Array, Promise, etc.
+  is_standard_library?: boolean; // v1.5.0: true for fs, path, crypto, etc.
+
   metadata?: Record<string, any>;
 }
 ```
 
-### 4.8 Summary and Health Structures (v1.4.0)
+### 4.8 Pattern Detection with Variations (v1.5.0)
+
+#### CASPattern
+Architectural and design patterns with variation tracking:
+
+```typescript
+interface CASPattern {
+  id: string;
+  name: string;
+  description?: string;
+  confidence: number;           // 0-1 confidence score
+  instances: string[];          // Node IDs implementing this pattern
+
+  variations?: CASPatternVariation[];  // v1.5.0: Different implementations
+  deviations?: CASPatternDeviation[];  // v1.5.0: Pattern issues/inconsistencies
+}
+
+interface CASPatternVariation {
+  id: string;
+  implementation: string;       // e.g., 'nestjs-di', 'manual-instantiation'
+  description: string;
+  instances: string[];          // Node IDs using this variation
+  percentage: number;           // Percentage of total pattern instances
+  characteristics?: Record<string, any>;
+}
+
+interface CASPatternDeviation {
+  type: 'inconsistent-adoption' | 'partial-implementation' |
+        'anti-pattern' | 'obsolete-usage' | 'mixed-styles';
+  severity: 'info' | 'warning' | 'error';
+  description: string;
+  affected_instances: string[];
+  recommendation?: string;
+}
+```
+
+**Semantic Rules:**
+
+1. When same pattern has multiple implementation approaches, create variations
+2. Calculate percentage as `(variation.instances.length / pattern.instances.length) * 100`
+3. Flag deviations when variations suggest inconsistency (e.g., <90% adoption of preferred approach)
+
+### 4.9 Summary and Health Structures (v1.4.0)
 
 #### CASDocumentationSummary
 System-wide documentation metrics:
@@ -915,6 +983,33 @@ interface SystemMetadata {
 - Timestamps MUST use ISO 8601 format
 - File paths MUST be relative to system root
 - Version fields MUST use semantic versioning
+
+### 5.9 Class Relationships (v1.5.0+)
+
+- Class members (methods, properties, constructors) MUST have `parent` set to containing class ID
+- When method in ClassA calls method in ClassB, a `uses` edge MUST exist from ClassA to ClassB
+- When ClassA receives ClassB via constructor injection, a `depends_on` edge MUST be created
+- When `new ClassName()` is encountered, an `instantiates` edge MUST be created
+- Class-level edges SHOULD include `aggregated_from` referencing method-level call IDs
+
+### 5.10 Entry Point Paths (v1.5.0+)
+
+- HTTP entry points MUST have full paths including controller/router base paths
+- `trigger.path` MUST be complete (e.g., `/workspaces/:id` NOT just `:id`)
+- `security.guards` MUST include ALL guards (class-level AND method-level)
+- `security.authenticated` MUST be true if ANY guard is an auth guard
+
+### 5.11 Pattern Variations (v1.5.0+)
+
+- When multiple implementations of same pattern exist, variations MUST be tracked
+- Variation percentages MUST sum to 100%
+- Deviations SHOULD be flagged when variation usage is inconsistent
+
+### 5.12 External Services Filtering (v1.5.0+)
+
+- JS built-ins (Object, Array, Promise, etc.) MUST be excluded from `external_services`
+- Standard library modules (fs, path, crypto) MUST be excluded from `external_services`
+- Services MAY include `is_builtin` and `is_standard_library` flags for filtering
 
 ## 6. Query Interface
 
@@ -1329,7 +1424,21 @@ This document has no IANA actions.
 - Add `implementation_status` for maturity assessment
 - Include summary structures (`documentation_summary`, `todos_summary`, `implementation_health`)
 
-### 11.5 Backward Compatibility
+### 11.5 Upgrading from v1.4.0 to v1.5.0
+
+**Required changes:**
+- Update `cas_version` to "1.5.0"
+- Set `parent` field for all class members (methods, properties, constructors)
+- Use full paths in entry points (e.g., `/workspaces/:id` not just `:id`)
+- Merge class-level and method-level guards in entry point security
+
+**Optional enhancements:**
+- Add `uses`, `depends_on`, `injects` edges for class-to-class relationships
+- Add `variations` and `deviations` to patterns
+- Include `aggregated_from` in class-level edges
+- Filter out JS builtins from external services
+
+### 11.6 Backward Compatibility
 
 All versions maintain backward compatibility:
 - New fields are optional
@@ -1369,6 +1478,14 @@ All versions maintain backward compatibility:
   - TODO/FIXME tracking
   - Implementation status assessment
   - System health metrics
+
+- **v1.5.0** (2026-01-09): Class Relationships & Pattern Analysis
+  - Class-to-class relationship edges (uses, depends_on, injects)
+  - Pattern variation and deviation tracking
+  - Enhanced entry points with full paths
+  - Merged class/method-level guards
+  - Required parent field for class members
+  - External services filtering (no builtins)
 
 ### Appendix B: Language Support
 

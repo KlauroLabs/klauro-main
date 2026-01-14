@@ -1454,10 +1454,14 @@ export class ExpressAnalyzer extends BaseAnalyzer {
     nodes.forEach(node => {
       node.perspectives = [];
 
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'express_app' || node.type === 'express_router' ||
           node.type === 'express_route' || node.type === 'express_middleware') {
         node.perspectives.push('express-routes');
       }
+
+      if (!node || typeof node !== 'object') return;
 
       if (node.type === 'express_middleware' || node.type === 'express_route' ||
           node.type === 'express_controller' || node.type === 'express_service') {

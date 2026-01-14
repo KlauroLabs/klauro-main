@@ -1444,6 +1444,8 @@ export class CSharpAnalyzer extends BaseAnalyzer {
           }
           node.metadata.attributes.aspNetComponent = aspNetAttribute;
 
+          if (!node || typeof node !== 'object') return;
+
           if (node.type === 'class' && attributes.some(a => a.includes('Controller'))) {
             entryPoints.push({
               id: `entry_aspnet_${node.id}`,
@@ -1456,6 +1458,8 @@ export class CSharpAnalyzer extends BaseAnalyzer {
               }
             });
           }
+
+          if (!node || typeof node !== 'object') return;
 
           if (node.type === 'method' && attributes.some(a => a.includes('Http'))) {
             entryPoints.push({

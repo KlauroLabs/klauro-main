@@ -856,6 +856,8 @@ export class AngularAnalyzer extends BaseAnalyzer {
     let className: string | null = null;
 
     const walk = (node: any) => {
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'ClassDeclaration' && node.id && node.decorators) {
         className = node.id.name;
         return;
@@ -1266,14 +1268,20 @@ export class AngularAnalyzer extends BaseAnalyzer {
     nodes.forEach(node => {
       node.perspectives = [];
 
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'angular_app' || node.type === 'angular_module' ||
           node.type === 'angular_component') {
         node.perspectives.push('angular-components');
       }
 
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'angular_module' || node.type === 'angular_service') {
         node.perspectives.push('angular-modules');
       }
+
+      if (!node || typeof node !== 'object') return;
 
       if (node.type === 'angular_service' || node.type === 'angular_component') {
         node.perspectives.push('angular-services');

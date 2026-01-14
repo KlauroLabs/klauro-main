@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import InteractiveCardSystem from './components/InteractiveCardSystem';
+import { getApiUrl } from './config/api';
 import './App.css';
 
 interface AppProps {}
@@ -19,13 +20,11 @@ const App: React.FC<AppProps> = () => {
   const loadArchitectureData = async () => {
     try {
       setLoading(true);
-      
-      // Fetch nodes
-      const nodesResponse = await fetch('http://localhost:3000/api/architecture/nodes');
+
+      const nodesResponse = await fetch(getApiUrl('/api/architecture/nodes'));
       const nodesData = await nodesResponse.json();
-      
-      // Fetch connections
-      const connectionsResponse = await fetch('http://localhost:3000/api/architecture/connections');
+
+      const connectionsResponse = await fetch(getApiUrl('/api/architecture/connections'));
       const connectionsData = await connectionsResponse.json();
       
       setNodes(nodesData.nodes || []);
@@ -43,8 +42,7 @@ const App: React.FC<AppProps> = () => {
   };
 
   const setupTelemetryStream = () => {
-    // Set up SSE connection for real-time telemetry
-    const eventSource = new EventSource('http://localhost:3000/api/architecture/telemetry/stream');
+    const eventSource = new EventSource(getApiUrl('/api/architecture/telemetry/stream'));
     
     eventSource.addEventListener('telemetry', (event) => {
       const data = JSON.parse(event.data);

@@ -78,7 +78,9 @@ export function CodebasesDashboard() {
   const allTags = useMemo(() => {
     const tags = new Set<string>();
     codebases.forEach(codebase => {
-      codebase.tags.forEach(tag => tags.add(tag));
+      if (codebase.tags && Array.isArray(codebase.tags)) {
+        codebase.tags.forEach(tag => tags.add(tag));
+      }
     });
     return Array.from(tags).sort();
   }, [codebases]);
@@ -112,7 +114,7 @@ export function CodebasesDashboard() {
         filter.status.includes('completed'); // TODO: Use actual analysis status
 
       const matchesTags = filter.tags.length === 0 ||
-        filter.tags.some(tag => codebase.tags.includes(tag));
+        (codebase.tags && codebase.tags.length > 0 && filter.tags.some(tag => codebase.tags!.includes(tag)));
 
       return matchesSearch && matchesStatus && matchesTags;
     });

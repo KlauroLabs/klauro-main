@@ -1,12 +1,11 @@
 import { NextApiRequest, NextApiResponse } from 'next';
-
-const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3002';
+import { API_CONFIG } from '../../config/api';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const slug = req.query.slug as string[];
   const path = slug ? slug.join('/') : '';
 
-  const url = `${BACKEND_URL}/api/${path}${req.url?.includes('?') ? req.url.substring(req.url.indexOf('?')) : ''}`;
+  const url = `${API_CONFIG.baseURL}/api/${path}${req.url?.includes('?') ? req.url.substring(req.url.indexOf('?')) : ''}`;
 
   try {
     const headers: Record<string, string> = {};

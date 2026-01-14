@@ -6,9 +6,8 @@ const HomePage: React.FC = () => {
   const router = useRouter();
 
   useEffect(() => {
-    // Redirect to workspaces page
     router.replace('/workspaces');
-  }, [router]);
+  }, []);
 
   return (
     <Box

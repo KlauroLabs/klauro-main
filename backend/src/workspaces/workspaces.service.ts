@@ -44,6 +44,7 @@ export class WorkspacesService {
     createWorkspaceDto: CreateWorkspaceDto,
   ): Promise<WorkspaceResponseDto> {
     const user = await this.userRepository.findOneOrFail(userId, {
+      populate: ['ownedWorkspaces'],
       failHandler: () => new NotFoundException('User not found'),
     });
 
@@ -60,9 +61,7 @@ export class WorkspacesService {
       slug: createWorkspaceDto.slug,
       description: createWorkspaceDto.description,
       settings: createWorkspaceDto.settings,
-      owner: user,
-      ownerType: 'User',
-      ownerId: user.id,
+      user: user,
       isActive: true,
       visibility: createWorkspaceDto.visibility || WorkspaceVisibility.PRIVATE,
     } as any);
@@ -78,7 +77,7 @@ export class WorkspacesService {
     createWorkspaceDto: CreateWorkspaceDto,
   ): Promise<WorkspaceResponseDto> {
     const organization = await this.organizationRepository.findOneOrFail(organizationId, {
-      populate: ['owner'],
+      populate: ['owner', 'workspaces'],
       failHandler: () => new NotFoundException('Organization not found'),
     });
 
@@ -111,9 +110,7 @@ export class WorkspacesService {
       slug: createWorkspaceDto.slug,
       description: createWorkspaceDto.description,
       settings: createWorkspaceDto.settings,
-      owner: organization,
-      ownerType: 'Organization',
-      ownerId: organization.id,
+      organization: organization,
       isActive: true,
       visibility: createWorkspaceDto.visibility || WorkspaceVisibility.PRIVATE,
     } as any);

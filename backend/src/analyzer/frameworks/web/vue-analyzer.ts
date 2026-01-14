@@ -1217,13 +1217,19 @@ export class VueAnalyzer extends BaseAnalyzer {
     nodes.forEach(node => {
       node.perspectives = [];
 
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'vue_app' || node.type === 'vue_component' || node.type === 'vue_sfc') {
         node.perspectives.push('vue-components');
       }
 
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'vue_composable' || node.type === 'vue_component' || node.type === 'vue_store') {
         node.perspectives.push('vue-composition');
       }
+
+      if (!node || typeof node !== 'object') return;
 
       if (node.type === 'vue_route' || node.type === 'vue_component' || node.type === 'vue_guard') {
         node.perspectives.push('vue-routing');

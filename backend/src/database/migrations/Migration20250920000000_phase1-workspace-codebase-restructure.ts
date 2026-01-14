@@ -226,7 +226,11 @@ export class Migration20250920000000PhaseWorkspaceCodebaseRestructure extends Mi
     this.addSql(`
       DO $$
       BEGIN
-        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'components' AND column_name = 'project_id') THEN
+        IF EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_name = 'components' AND column_name = 'project_id'
+        ) THEN
           ALTER TABLE components RENAME COLUMN project_id TO codebase_id;
         END IF;
       END $$;
@@ -284,7 +288,11 @@ export class Migration20250920000000PhaseWorkspaceCodebaseRestructure extends Mi
     this.addSql(`
       DO $$
       BEGIN
-        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'components' AND column_name = 'codebase_id') THEN
+        IF EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_name = 'components' AND column_name = 'codebase_id'
+        ) THEN
           ALTER TABLE components RENAME COLUMN codebase_id TO project_id;
         END IF;
       END $$;

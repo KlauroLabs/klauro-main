@@ -8,7 +8,14 @@ import {
   CASBehavior,
   CASTag,
   CASIndex,
-  CASPerspective
+  CASPerspective,
+  CASArchitectureSummary,
+  CASRouteTableEntry,
+  CASDatabaseSchema,
+  CASDatabaseEntity,
+  CASExternalService,
+  CASEntryPoint,
+  CASExitPoint
 } from '../../types/cas.types';
 
 export { CASOutput } from '../../types/cas.types';
@@ -134,8 +141,16 @@ export class AnalyzerOrchestrator {
     const progressiveLevels = this.buildProgressiveLevels(allNodes, categories);
     const index = this.buildIndex(allNodes, allEntryPoints, allExitPoints, allPerspectives);
 
+    const architectureSummary = this.buildArchitectureSummary(allNodes, allEntryPoints, allExitPoints, contributions);
+    const routeTable = this.buildRouteTable(allEntryPoints);
+    const databaseSchema = this.buildDatabaseSchema(allNodes, allLibraries);
+    const externalServices = this.buildExternalServices(allNodes, allExitPoints, allLibraries);
+
+    const detectedPatterns = this.detectPatterns(allNodes, allEdges);
+    allPatterns.push(...detectedPatterns);
+
     return {
-      cas_version: '1.2.0',
+      cas_version: '1.5.0',
       analysis_timestamp: new Date().toISOString(),
       analysis_id: analysisId,
       system: {
@@ -146,6 +161,9 @@ export class AnalyzerOrchestrator {
         technologies: this.extractTechnologies(contributions, allLibraries),
         quality: this.calculateQualityMetrics(allNodes)
       },
+      architecture_summary: architectureSummary,
+      route_table: routeTable.length > 0 ? routeTable : undefined,
+      database_schema: databaseSchema.entities.length > 0 ? databaseSchema : undefined,
       nodes: allNodes,
       edges: allEdges,
       entry_points: allEntryPoints,
@@ -156,6 +174,7 @@ export class AnalyzerOrchestrator {
       tags: allTags.length > 0 ? allTags : undefined,
       perspectives: allPerspectives.length > 0 ? allPerspectives : undefined,
       index,
+      external_services: externalServices.length > 0 ? externalServices : undefined,
       libraries: allLibraries.length > 0 ? allLibraries : undefined,
       analyzer_contributions: contributions,
       progressive_levels: progressiveLevels
@@ -548,5 +567,785 @@ export class AnalyzerOrchestrator {
       complexity_score: totalNodes > 0 ? complexitySum / totalNodes : 0,
       maintainability_index: 100
     };
+  }
+
+  private buildArchitectureSummary(
+    nodes: CASNode[],
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[],
+    contributions: any[]
+  ): CASArchitectureSummary {
+    const fileNodes = nodes.filter(n => n.type === 'file');
+    const httpEntryPoints = entryPoints.filter(ep => ep.type === 'http');
+
+    const frameworkContribution = contributions.find(c => c.analyzer_type === 'framework');
+    const systemType = frameworkContribution?.analyzer_name?.replace(' Analyzer', '') || 'Application';
+
+    const controllers = nodes.filter(n => n.type === 'controller' || n.subcategories?.includes('controller'));
+    const services = nodes.filter(n => n.type === 'service' || n.subcategories?.includes('service'));
+    const entities = nodes.filter(n => n.type === 'entity' || n.subcategories?.includes('entity'));
+    const repositories = nodes.filter(n => n.type === 'repository' || n.subcategories?.includes('repository'));
+    const guards = nodes.filter(n => n.type === 'guard' || n.subcategories?.includes('guard'));
+    const middleware = nodes.filter(n => n.type === 'middleware' || n.subcategories?.includes('middleware'));
+    const modules = nodes.filter(n => n.type === 'module');
+    const components = nodes.filter(n => n.type === 'component');
+    const pages = nodes.filter(n => n.type === 'page' || n.subcategories?.includes('page'));
+    const migrations = nodes.filter(n => n.type === 'migration' || n.source?.file?.includes('migration'));
+
+    const authenticatedEndpoints = httpEntryPoints.filter(ep => ep.security?.authenticated);
+    const publicEndpoints = httpEntryPoints.filter(ep => !ep.security?.authenticated);
+
+    const methodCounts: Record<string, number> = {};
+    httpEntryPoints.forEach(ep => {
+      const method = ep.trigger?.method?.toUpperCase() || 'UNKNOWN';
+      methodCounts[method] = (methodCounts[method] || 0) + 1;
+    });
+
+    const uniqueGuards = new Set<string>();
+    httpEntryPoints.forEach(ep => {
+      const epGuards = ep.metadata?.guards as string[] | undefined;
+      if (epGuards) {
+        epGuards.forEach(g => uniqueGuards.add(g));
+      }
+    });
+
+    let authStrategy: string | undefined;
+    if (uniqueGuards.has('JwtAuthGuard') || uniqueGuards.has('JwtGuard')) {
+      authStrategy = 'JWT';
+    } else if (uniqueGuards.has('SessionGuard')) {
+      authStrategy = 'Session';
+    } else if (uniqueGuards.has('AuthGuard')) {
+      authStrategy = 'Custom';
+    }
+
+    return {
+      system_type: systemType,
+      total_files: fileNodes.length,
+      layers: {
+        presentation: {
+          controllers: controllers.length > 0 ? controllers.length : undefined,
+          guards: guards.length > 0 ? guards.length : undefined,
+          middleware: middleware.length > 0 ? middleware.length : undefined,
+          endpoints: httpEntryPoints.length > 0 ? httpEntryPoints.length : undefined,
+          components: components.length > 0 ? components.length : undefined,
+          pages: pages.length > 0 ? pages.length : undefined
+        },
+        business: {
+          services: services.length > 0 ? services.length : undefined
+        },
+        data: {
+          repositories: repositories.length > 0 ? repositories.length : undefined,
+          entities: entities.length > 0 ? entities.length : undefined,
+          migrations: migrations.length > 0 ? migrations.length : undefined
+        },
+        infrastructure: {
+          modules: modules.length > 0 ? modules.length : undefined
+        }
+      },
+      api_surface: httpEntryPoints.length > 0 ? {
+        total_endpoints: httpEntryPoints.length,
+        by_auth: {
+          authenticated: authenticatedEndpoints.length,
+          public: publicEndpoints.length
+        },
+        by_method: methodCounts
+      } : undefined,
+      security: authenticatedEndpoints.length > 0 ? {
+        auth_strategy: authStrategy,
+        protected_endpoints: authenticatedEndpoints.length,
+        guards: Array.from(uniqueGuards)
+      } : undefined
+    };
+  }
+
+  private buildRouteTable(entryPoints: CASEntryPoint[]): CASRouteTableEntry[] {
+    const httpEntryPoints = entryPoints.filter(ep => ep.type === 'http');
+
+    return httpEntryPoints.map(ep => {
+      const metadata = ep.metadata || {};
+      const controllerName = metadata.controller as string || 'Unknown';
+      const handlerName = metadata.handler as string || metadata.method_name as string || ep.name;
+
+      return {
+        method: ep.trigger?.method?.toUpperCase() || 'GET',
+        path: ep.trigger?.path || '/',
+        controller: controllerName,
+        handler: handlerName,
+        auth: ep.security?.authenticated || false,
+        guards: metadata.guards as string[] | undefined,
+        source_node: ep.source_node,
+        description: ep.description
+      };
+    }).sort((a, b) => {
+      if (a.path !== b.path) return a.path.localeCompare(b.path);
+      return a.method.localeCompare(b.method);
+    });
+  }
+
+  private buildDatabaseSchema(nodes: CASNode[], libraries: any[]): CASDatabaseSchema {
+    const entities: CASDatabaseEntity[] = [];
+    const relationships: string[] = [];
+
+    let orm: string | undefined;
+    const mikroormLib = libraries.find(l => l.name?.includes('mikro-orm') || l.name?.includes('@mikro-orm'));
+    const typeormLib = libraries.find(l => l.name?.includes('typeorm'));
+    const prismaLib = libraries.find(l => l.name?.includes('prisma'));
+
+    if (mikroormLib) orm = 'MikroORM';
+    else if (typeormLib) orm = 'TypeORM';
+    else if (prismaLib) orm = 'Prisma';
+
+    if (!orm) {
+      const importNodes = nodes.filter(n => n.type === 'import');
+      if (importNodes.some(n => n.name?.includes('@mikro-orm') || n.metadata?.attributes?.source?.includes('@mikro-orm'))) {
+        orm = 'MikroORM';
+      } else if (importNodes.some(n => n.name?.includes('typeorm') || n.metadata?.attributes?.source?.includes('typeorm'))) {
+        orm = 'TypeORM';
+      } else if (importNodes.some(n => n.name?.includes('prisma') || n.metadata?.attributes?.source?.includes('prisma'))) {
+        orm = 'Prisma';
+      }
+    }
+
+    const entityNodes = nodes.filter(n =>
+      n.type === 'entity' ||
+      n.type === 'model' ||
+      n.subcategories?.includes('entity') ||
+      n.metadata?.annotations?.some(a => a.includes('Entity')) ||
+      (n.type === 'class' && n.source?.file?.includes('/entities/'))
+    );
+
+    entityNodes.forEach(entityNode => {
+      const fields: CASDatabaseEntity['fields'] = [];
+      const entityRelationships: CASDatabaseEntity['relationships'] = [];
+
+      const propertyNodes = nodes.filter(n =>
+        n.parent === entityNode.id &&
+        (n.type === 'property' || n.type === 'field' || n.type === 'attribute' || n.type === 'variable')
+      );
+
+      propertyNodes.forEach(prop => {
+        const annotations = prop.metadata?.annotations || [];
+        const isPrimary = annotations.some(a => a.includes('PrimaryKey') || a.includes('PrimaryGeneratedColumn'));
+        const isUnique = annotations.some(a => a.includes('Unique'));
+
+        let relationType: string | undefined;
+        let relTarget: string | undefined;
+
+        for (const ann of annotations) {
+          if (ann.includes('OneToMany')) relationType = 'OneToMany';
+          else if (ann.includes('ManyToOne')) relationType = 'ManyToOne';
+          else if (ann.includes('OneToOne')) relationType = 'OneToOne';
+          else if (ann.includes('ManyToMany')) relationType = 'ManyToMany';
+
+          const targetMatch = ann.match(/\(\)\s*=>\s*(\w+)/);
+          if (targetMatch) relTarget = targetMatch[1];
+        }
+
+        if (relationType && relTarget) {
+          entityRelationships.push({
+            type: relationType as any,
+            target: relTarget,
+            field: prop.name
+          });
+
+          const cardinality = relationType === 'OneToMany' ? '1:N' :
+            relationType === 'ManyToOne' ? 'N:1' :
+            relationType === 'ManyToMany' ? 'N:M' : '1:1';
+          relationships.push(`${entityNode.name} ${cardinality} ${relTarget} (via ${prop.name})`);
+        } else {
+          fields.push({
+            name: prop.name,
+            type: prop.signature?.return_type || 'unknown',
+            primary: isPrimary,
+            unique: isUnique
+          });
+        }
+      });
+
+      entities.push({
+        name: entityNode.name,
+        table: entityNode.metadata?.attributes?.tableName as string,
+        source_file: entityNode.source?.file,
+        fields,
+        relationships: entityRelationships
+      });
+    });
+
+    return {
+      orm,
+      entities,
+      relationships_summary: [...new Set(relationships)]
+    };
+  }
+
+  private buildExternalServices(
+    nodes: CASNode[],
+    exitPoints: CASExitPoint[],
+    libraries: any[]
+  ): CASExternalService[] {
+    const services: CASExternalService[] = [];
+    const serviceMap = new Map<string, CASExternalService>();
+
+    const jsBuiltins = new Set([
+      'console', 'path', 'fs', 'os', 'crypto', 'http', 'https', 'url', 'util',
+      'stream', 'buffer', 'events', 'child_process', 'cluster', 'dgram', 'dns',
+      'net', 'readline', 'repl', 'tls', 'tty', 'v8', 'vm', 'zlib', 'assert',
+      'Object', 'Array', 'String', 'Number', 'Boolean', 'Date', 'Math', 'JSON',
+      'Promise', 'Map', 'Set', 'WeakMap', 'WeakSet', 'Symbol', 'Proxy', 'Reflect',
+      'Error', 'TypeError', 'ReferenceError', 'SyntaxError', 'RangeError',
+      'RegExp', 'Function', 'Buffer', 'process', 'global', 'setTimeout',
+      'setInterval', 'setImmediate', 'clearTimeout', 'clearInterval', 'clearImmediate',
+      'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'encodeURI', 'decodeURI',
+      'encodeURIComponent', 'decodeURIComponent', 'escape', 'unescape', 'eval',
+      'Intl', 'Atomics', 'SharedArrayBuffer', 'ArrayBuffer', 'DataView',
+      'Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array',
+      'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array', 'BigInt64Array',
+      'BigUint64Array', 'BigInt', 'Infinity', 'NaN', 'undefined', 'null'
+    ]);
+
+    exitPoints.forEach(ep => {
+      if (ep.type === 'database') {
+        const dbKey = ep.target?.service_id || 'primary_database';
+        if (!serviceMap.has(dbKey)) {
+          serviceMap.set(dbKey, {
+            id: `ext_${dbKey}`,
+            name: ep.name || 'Database',
+            type: 'database',
+            purpose: 'bidirectional',
+            connected_nodes: [],
+            exit_points: []
+          });
+        }
+        const svc = serviceMap.get(dbKey)!;
+        if (ep.source_node && !svc.connected_nodes?.includes(ep.source_node)) {
+          svc.connected_nodes?.push(ep.source_node);
+        }
+        svc.exit_points?.push(ep.id);
+      } else if (ep.type === 'cache') {
+        const cacheKey = 'redis_cache';
+        if (!serviceMap.has(cacheKey)) {
+          serviceMap.set(cacheKey, {
+            id: `ext_${cacheKey}`,
+            name: 'Redis',
+            type: 'cache',
+            purpose: 'bidirectional',
+            usage_pattern: {
+              operations: []
+            },
+            connected_nodes: [],
+            exit_points: []
+          });
+        }
+        const svc = serviceMap.get(cacheKey)!;
+        if (ep.source_node && !svc.connected_nodes?.includes(ep.source_node)) {
+          svc.connected_nodes?.push(ep.source_node);
+        }
+        svc.exit_points?.push(ep.id);
+      } else if (ep.type === 'api' || ep.type === 'sdk') {
+        const sdkName = ep.target?.sdk || ep.name || 'External API';
+
+        if (jsBuiltins.has(sdkName)) {
+          return;
+        }
+
+        const key = sdkName.toLowerCase().replace(/\s+/g, '_');
+
+        if (!serviceMap.has(key)) {
+          serviceMap.set(key, {
+            id: `ext_${key}`,
+            name: sdkName,
+            type: ep.type === 'sdk' ? 'sdk' : 'api',
+            purpose: 'consumption',
+            connected_nodes: [],
+            exit_points: []
+          });
+        }
+        const svc = serviceMap.get(key)!;
+        if (ep.source_node && !svc.connected_nodes?.includes(ep.source_node)) {
+          svc.connected_nodes?.push(ep.source_node);
+        }
+        svc.exit_points?.push(ep.id);
+      }
+    });
+
+    const aiLibraries = libraries.filter(l =>
+      l.name?.includes('openai') ||
+      l.name?.includes('anthropic') ||
+      l.name?.includes('@anthropic-ai')
+    );
+
+    aiLibraries.forEach(lib => {
+      const key = lib.name?.includes('openai') ? 'openai' : 'anthropic';
+      if (!serviceMap.has(key)) {
+        serviceMap.set(key, {
+          id: `ext_${key}`,
+          name: key === 'openai' ? 'OpenAI' : 'Anthropic',
+          type: 'ai_provider',
+          purpose: 'consumption',
+          configuration: {
+            library: lib.name,
+            version: lib.version
+          }
+        });
+      }
+    });
+
+    serviceMap.forEach(svc => services.push(svc));
+
+    return services;
+  }
+
+  private detectPatterns(nodes: CASNode[], edges: CASEdge[]): CASPattern[] {
+    const patterns: CASPattern[] = [];
+
+    this.detectRepositoryPattern(nodes, edges, patterns);
+    this.detectServiceLayerPattern(nodes, edges, patterns);
+    this.detectControllerPattern(nodes, edges, patterns);
+    this.detectDependencyInjectionPattern(nodes, edges, patterns);
+    this.detectModulePattern(nodes, edges, patterns);
+    this.detectGuardPattern(nodes, edges, patterns);
+    this.detectGodObjectAntiPattern(nodes, patterns);
+    this.detectCircularDependencyAntiPattern(nodes, edges, patterns);
+
+    return patterns;
+  }
+
+  private detectRepositoryPattern(nodes: CASNode[], edges: CASEdge[], patterns: CASPattern[]): void {
+    const repositories = nodes.filter(n =>
+      n.type === 'repository' ||
+      n.subcategories?.includes('repository') ||
+      n.name.toLowerCase().endsWith('repository') ||
+      n.name.toLowerCase().endsWith('repo')
+    );
+
+    if (repositories.length === 0) return;
+
+    const diRepositories = repositories.filter(n =>
+      n.metadata?.annotations?.some(a => a.includes('Injectable')) ||
+      n.subcategories?.includes('injectable')
+    );
+
+    const manualRepositories = repositories.filter(n =>
+      !n.metadata?.annotations?.some(a => a.includes('Injectable')) &&
+      !n.subcategories?.includes('injectable')
+    );
+
+    const variations: CASPattern['variations'] = [];
+    const deviations: CASPattern['deviations'] = [];
+
+    if (diRepositories.length > 0) {
+      variations.push({
+        id: 'var-repository-di',
+        implementation: 'dependency-injection',
+        description: 'Repository managed by DI container with @Injectable decorator',
+        instances: diRepositories.map(n => n.id),
+        percentage: Math.round((diRepositories.length / repositories.length) * 100)
+      });
+    }
+
+    if (manualRepositories.length > 0) {
+      variations.push({
+        id: 'var-repository-manual',
+        implementation: 'manual-instantiation',
+        description: 'Repository instantiated manually without DI',
+        instances: manualRepositories.map(n => n.id),
+        percentage: Math.round((manualRepositories.length / repositories.length) * 100)
+      });
+    }
+
+    if (variations.length > 1) {
+      const dominant = variations.reduce((a, b) => a.percentage > b.percentage ? a : b);
+      const minority = variations.filter(v => v.id !== dominant.id);
+
+      if (dominant.percentage < 90) {
+        deviations.push({
+          type: 'mixed-styles',
+          severity: 'warning',
+          description: `Mixed repository implementation styles: ${variations.map(v => `${v.percentage}% ${v.implementation}`).join(', ')}`,
+          affected_instances: minority.flatMap(v => v.instances),
+          recommendation: `Consider standardizing on ${dominant.implementation} for consistency`
+        });
+      }
+    }
+
+    patterns.push({
+      id: 'repository-pattern',
+      name: 'Repository Pattern',
+      description: 'Data access abstraction through repository pattern',
+      confidence: 0.9,
+      instances: repositories.map(n => n.id),
+      variations: variations.length > 0 ? variations : undefined,
+      deviations: deviations.length > 0 ? deviations : undefined
+    });
+  }
+
+  private detectServiceLayerPattern(nodes: CASNode[], edges: CASEdge[], patterns: CASPattern[]): void {
+    const services = nodes.filter(n =>
+      n.type === 'service' ||
+      n.subcategories?.includes('service') ||
+      (n.name.toLowerCase().endsWith('service') && n.type === 'class')
+    );
+
+    if (services.length === 0) return;
+
+    const diServices = services.filter(n =>
+      n.metadata?.annotations?.some(a => a.includes('Injectable'))
+    );
+
+    const nonDiServices = services.filter(n =>
+      !n.metadata?.annotations?.some(a => a.includes('Injectable'))
+    );
+
+    const variations: CASPattern['variations'] = [];
+    const deviations: CASPattern['deviations'] = [];
+
+    if (diServices.length > 0) {
+      variations.push({
+        id: 'var-service-di',
+        implementation: 'dependency-injection',
+        description: 'Service managed by DI container',
+        instances: diServices.map(n => n.id),
+        percentage: Math.round((diServices.length / services.length) * 100)
+      });
+    }
+
+    if (nonDiServices.length > 0) {
+      variations.push({
+        id: 'var-service-standalone',
+        implementation: 'standalone',
+        description: 'Service without DI management',
+        instances: nonDiServices.map(n => n.id),
+        percentage: Math.round((nonDiServices.length / services.length) * 100)
+      });
+    }
+
+    if (nonDiServices.length > 0 && diServices.length > 0) {
+      deviations.push({
+        type: 'inconsistent-adoption',
+        severity: 'info',
+        description: `${nonDiServices.length} services are not using dependency injection`,
+        affected_instances: nonDiServices.map(n => n.id),
+        recommendation: 'Consider using @Injectable for all services for consistent dependency management'
+      });
+    }
+
+    patterns.push({
+      id: 'service-layer-pattern',
+      name: 'Service Layer Pattern',
+      description: 'Business logic encapsulated in service layer',
+      confidence: 0.85,
+      instances: services.map(n => n.id),
+      variations: variations.length > 0 ? variations : undefined,
+      deviations: deviations.length > 0 ? deviations : undefined
+    });
+  }
+
+  private detectControllerPattern(nodes: CASNode[], edges: CASEdge[], patterns: CASPattern[]): void {
+    const controllers = nodes.filter(n =>
+      n.type === 'controller' ||
+      n.subcategories?.includes('controller') ||
+      n.metadata?.annotations?.some(a => a.includes('Controller'))
+    );
+
+    if (controllers.length === 0) return;
+
+    const restControllers = controllers.filter(n =>
+      n.metadata?.annotations?.some(a =>
+        a.includes('Get') || a.includes('Post') || a.includes('Put') ||
+        a.includes('Delete') || a.includes('Patch')
+      )
+    );
+
+    const graphqlResolvers = controllers.filter(n =>
+      n.metadata?.annotations?.some(a =>
+        a.includes('Resolver') || a.includes('Query') || a.includes('Mutation')
+      )
+    );
+
+    const variations: CASPattern['variations'] = [];
+
+    if (restControllers.length > 0) {
+      variations.push({
+        id: 'var-controller-rest',
+        implementation: 'rest-api',
+        description: 'REST API controllers with HTTP method decorators',
+        instances: restControllers.map(n => n.id),
+        percentage: Math.round((restControllers.length / controllers.length) * 100)
+      });
+    }
+
+    if (graphqlResolvers.length > 0) {
+      variations.push({
+        id: 'var-controller-graphql',
+        implementation: 'graphql-resolver',
+        description: 'GraphQL resolvers',
+        instances: graphqlResolvers.map(n => n.id),
+        percentage: Math.round((graphqlResolvers.length / controllers.length) * 100)
+      });
+    }
+
+    patterns.push({
+      id: 'controller-pattern',
+      name: 'Controller Pattern',
+      description: 'Request handling through controller pattern',
+      confidence: 0.9,
+      instances: controllers.map(n => n.id),
+      variations: variations.length > 0 ? variations : undefined
+    });
+  }
+
+  private detectDependencyInjectionPattern(nodes: CASNode[], edges: CASEdge[], patterns: CASPattern[]): void {
+    const dependsOnEdges = edges.filter(e => e.type === 'depends_on');
+    const injectableNodes = nodes.filter(n =>
+      n.metadata?.annotations?.some(a => a.includes('Injectable')) ||
+      n.subcategories?.includes('injectable')
+    );
+
+    if (dependsOnEdges.length === 0 && injectableNodes.length === 0) return;
+
+    const constructorInjected = nodes.filter(n => {
+      const incomingDeps = dependsOnEdges.filter(e => e.target === n.id);
+      return incomingDeps.length > 0;
+    });
+
+    const providedByModules = nodes.filter(n =>
+      edges.some(e => e.type === 'provides' && e.target === n.id)
+    );
+
+    const variations: CASPattern['variations'] = [];
+
+    if (constructorInjected.length > 0) {
+      variations.push({
+        id: 'var-di-constructor',
+        implementation: 'constructor-injection',
+        description: 'Dependencies injected via constructor',
+        instances: constructorInjected.map(n => n.id),
+        percentage: injectableNodes.length > 0
+          ? Math.round((constructorInjected.length / injectableNodes.length) * 100)
+          : 100
+      });
+    }
+
+    patterns.push({
+      id: 'dependency-injection-pattern',
+      name: 'Dependency Injection Pattern',
+      description: 'Dependencies managed through injection container',
+      confidence: 0.9,
+      instances: injectableNodes.map(n => n.id),
+      variations: variations.length > 0 ? variations : undefined
+    });
+  }
+
+  private detectModulePattern(nodes: CASNode[], edges: CASEdge[], patterns: CASPattern[]): void {
+    const modules = nodes.filter(n =>
+      n.type === 'module' ||
+      n.metadata?.annotations?.some(a => a.includes('Module'))
+    );
+
+    if (modules.length === 0) return;
+
+    const featureModules = modules.filter(n =>
+      !n.name.toLowerCase().includes('app') &&
+      !n.name.toLowerCase().includes('root') &&
+      !n.name.toLowerCase().includes('core')
+    );
+
+    const coreModules = modules.filter(n =>
+      n.name.toLowerCase().includes('app') ||
+      n.name.toLowerCase().includes('root') ||
+      n.name.toLowerCase().includes('core')
+    );
+
+    const variations: CASPattern['variations'] = [];
+
+    if (featureModules.length > 0) {
+      variations.push({
+        id: 'var-module-feature',
+        implementation: 'feature-module',
+        description: 'Feature-specific modules for domain separation',
+        instances: featureModules.map(n => n.id),
+        percentage: Math.round((featureModules.length / modules.length) * 100)
+      });
+    }
+
+    if (coreModules.length > 0) {
+      variations.push({
+        id: 'var-module-core',
+        implementation: 'core-module',
+        description: 'Core/root application modules',
+        instances: coreModules.map(n => n.id),
+        percentage: Math.round((coreModules.length / modules.length) * 100)
+      });
+    }
+
+    patterns.push({
+      id: 'module-pattern',
+      name: 'Module Pattern',
+      description: 'Application organized into modules for encapsulation',
+      confidence: 0.85,
+      instances: modules.map(n => n.id),
+      variations: variations.length > 0 ? variations : undefined
+    });
+  }
+
+  private detectGuardPattern(nodes: CASNode[], edges: CASEdge[], patterns: CASPattern[]): void {
+    const guards = nodes.filter(n =>
+      n.type === 'guard' ||
+      n.subcategories?.includes('guard') ||
+      n.name.toLowerCase().includes('guard')
+    );
+
+    if (guards.length === 0) return;
+
+    const authGuards = guards.filter(n =>
+      n.name.toLowerCase().includes('auth') ||
+      n.name.toLowerCase().includes('jwt')
+    );
+
+    const roleGuards = guards.filter(n =>
+      n.name.toLowerCase().includes('role') ||
+      n.name.toLowerCase().includes('permission')
+    );
+
+    const otherGuards = guards.filter(n =>
+      !authGuards.includes(n) && !roleGuards.includes(n)
+    );
+
+    const variations: CASPattern['variations'] = [];
+
+    if (authGuards.length > 0) {
+      variations.push({
+        id: 'var-guard-auth',
+        implementation: 'authentication-guard',
+        description: 'Guards for authentication verification',
+        instances: authGuards.map(n => n.id),
+        percentage: Math.round((authGuards.length / guards.length) * 100)
+      });
+    }
+
+    if (roleGuards.length > 0) {
+      variations.push({
+        id: 'var-guard-role',
+        implementation: 'role-based-guard',
+        description: 'Guards for role/permission verification',
+        instances: roleGuards.map(n => n.id),
+        percentage: Math.round((roleGuards.length / guards.length) * 100)
+      });
+    }
+
+    if (otherGuards.length > 0) {
+      variations.push({
+        id: 'var-guard-custom',
+        implementation: 'custom-guard',
+        description: 'Custom guards for specific validation',
+        instances: otherGuards.map(n => n.id),
+        percentage: Math.round((otherGuards.length / guards.length) * 100)
+      });
+    }
+
+    patterns.push({
+      id: 'guard-pattern',
+      name: 'Guard Pattern',
+      description: 'Authorization and validation through guards',
+      confidence: 0.85,
+      instances: guards.map(n => n.id),
+      variations: variations.length > 0 ? variations : undefined
+    });
+  }
+
+  private detectGodObjectAntiPattern(nodes: CASNode[], patterns: CASPattern[]): void {
+    const godObjects = nodes.filter(n => {
+      const lineCount = n.metadata?.metrics?.lines_of_code || 0;
+      const complexity = n.metadata?.complexity?.cyclomatic || 0;
+      const methodCount = nodes.filter(m => m.parent === n.id && m.type === 'method').length;
+
+      return lineCount > 1000 || complexity > 50 || methodCount > 30;
+    });
+
+    if (godObjects.length === 0) return;
+
+    patterns.push({
+      id: 'god-object-anti-pattern',
+      name: 'God Object Anti-Pattern',
+      description: 'Components with excessive complexity or size',
+      confidence: 0.7,
+      instances: godObjects.map(n => n.id),
+      deviations: [{
+        type: 'anti-pattern',
+        severity: 'warning',
+        description: `${godObjects.length} component(s) have excessive complexity or size`,
+        affected_instances: godObjects.map(n => n.id),
+        recommendation: 'Consider breaking down large components into smaller, focused units'
+      }]
+    });
+  }
+
+  private detectCircularDependencyAntiPattern(nodes: CASNode[], edges: CASEdge[], patterns: CASPattern[]): void {
+    const dependencyEdges = edges.filter(e =>
+      e.type === 'depends_on' || e.type === 'imports' || e.type === 'uses'
+    );
+
+    const adjacency = new Map<string, string[]>();
+    dependencyEdges.forEach(edge => {
+      if (!adjacency.has(edge.source)) {
+        adjacency.set(edge.source, []);
+      }
+      adjacency.get(edge.source)!.push(edge.target);
+    });
+
+    const visited = new Set<string>();
+    const visiting = new Set<string>();
+    const cycles: string[][] = [];
+
+    const detectCycle = (nodeId: string, path: string[]): boolean => {
+      if (visiting.has(nodeId)) {
+        const cycleStart = path.indexOf(nodeId);
+        if (cycleStart !== -1) {
+          cycles.push(path.slice(cycleStart));
+        }
+        return true;
+      }
+
+      if (visited.has(nodeId)) return false;
+
+      visiting.add(nodeId);
+      path.push(nodeId);
+
+      const deps = adjacency.get(nodeId) || [];
+      for (const dep of deps) {
+        detectCycle(dep, [...path]);
+      }
+
+      visiting.delete(nodeId);
+      visited.add(nodeId);
+      return false;
+    };
+
+    adjacency.forEach((_, nodeId) => {
+      if (!visited.has(nodeId)) {
+        detectCycle(nodeId, []);
+      }
+    });
+
+    if (cycles.length === 0) return;
+
+    const uniqueCycles = cycles.filter((cycle, i) =>
+      cycles.findIndex(c => c.join('->') === cycle.join('->')) === i
+    );
+
+    patterns.push({
+      id: 'circular-dependency-anti-pattern',
+      name: 'Circular Dependency Anti-Pattern',
+      description: 'Circular dependencies detected in component graph',
+      confidence: 0.9,
+      instances: [...new Set(uniqueCycles.flat())],
+      deviations: uniqueCycles.map((cycle, i) => ({
+        type: 'anti-pattern' as const,
+        severity: 'error' as const,
+        description: `Circular dependency: ${cycle.join(' -> ')} -> ${cycle[0]}`,
+        affected_instances: cycle,
+        recommendation: 'Break the cycle by introducing an interface or restructuring dependencies'
+      }))
+    });
   }
 }

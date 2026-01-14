@@ -20,14 +20,23 @@ import {
   Select,
   MenuItem,
   FormHelperText,
+  ToggleButtonGroup,
+  ToggleButton,
 } from '@mui/material';
 import {
   GitHub as GitHubIcon,
   Link as LinkIcon,
   Folder as FolderIcon,
+  CloudUpload as CloudUploadIcon,
 } from '@mui/icons-material';
 import { useCodebases, useCodebaseValidation } from '../../hooks/useCodebases';
 import { CreateCodebaseRequest } from '../../types/workspace.types';
+
+export enum CodebaseSourceType {
+  REPOSITORY_URL = 'repository_url',
+  LOCAL_PATH = 'local_path',
+  UPLOAD = 'upload',
+}
 
 interface CodebaseCreateProps {
   open: boolean;
@@ -52,11 +61,14 @@ export function CodebaseCreate({
 
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sourceType, setSourceType] = useState<CodebaseSourceType>(CodebaseSourceType.REPOSITORY_URL);
 
   const [formData, setFormData] = useState<CreateCodebaseRequest>({
     name: '',
     description: '',
     repositoryUrl: '',
+    localPath: '',
+    sourceType: CodebaseSourceType.REPOSITORY_URL,
     defaultBranch: 'main',
     settings: {
       autoAnalyze: true,
@@ -108,6 +120,21 @@ export function CodebaseCreate({
         // Invalid URL, ignore
       }
     }
+
+    // Auto-generate name from local path if name is empty
+    if (field === 'localPath' && !formData.name && value) {
+      const pathParts = value.split('/').filter(Boolean);
+      if (pathParts.length > 0) {
+        const dirName = pathParts[pathParts.length - 1];
+        setFormData(prev => ({ ...prev, name: dirName }));
+      }
+    }
+  };
+
+  const handleSourceTypeChange = (newType: CodebaseSourceType) => {
+    setSourceType(newType);
+    setFormData(prev => ({ ...prev, sourceType: newType }));
+    setFormErrors({});
   };
 
   const handleSettingsChange = (setting: string, value: any) => {
@@ -149,8 +176,14 @@ export function CodebaseCreate({
     const nameError = validateCodebaseName(formData.name);
     if (nameError) errors.name = nameError;
 
-    const urlError = validateRepositoryUrl(formData.repositoryUrl || '');
-    if (urlError) errors.repositoryUrl = urlError;
+    if (sourceType === CodebaseSourceType.REPOSITORY_URL) {
+      const urlError = validateRepositoryUrl(formData.repositoryUrl || '');
+      if (urlError) errors.repositoryUrl = urlError;
+    } else if (sourceType === CodebaseSourceType.LOCAL_PATH) {
+      if (!formData.localPath || formData.localPath.trim().length === 0) {
+        errors.localPath = 'Local path is required';
+      }
+    }
 
     const descriptionError = validateDescription(formData.description || '');
     if (descriptionError) errors.description = descriptionError;
@@ -174,6 +207,8 @@ export function CodebaseCreate({
         name: '',
         description: '',
         repositoryUrl: '',
+        localPath: '',
+        sourceType: CodebaseSourceType.REPOSITORY_URL,
         defaultBranch: 'main',
         settings: {
           autoAnalyze: true,
@@ -212,13 +247,19 @@ export function CodebaseCreate({
   };
 
   const getRepositoryIcon = () => {
+    if (sourceType === CodebaseSourceType.LOCAL_PATH) {
+      return <FolderIcon fontSize="small" />;
+    }
+    if (sourceType === CodebaseSourceType.UPLOAD) {
+      return <CloudUploadIcon fontSize="small" />;
+    }
     if (formData.repositoryUrl?.includes('github.com')) {
       return <GitHubIcon fontSize="small" />;
     }
     if (formData.repositoryUrl) {
       return <LinkIcon fontSize="small" />;
     }
-    return <FolderIcon fontSize="small" />;
+    return <LinkIcon fontSize="small" />;
   };
 
   return (
@@ -237,6 +278,32 @@ export function CodebaseCreate({
             <Alert severity="error">{error}</Alert>
           )}
 
+          <Box>
+            <Typography variant="subtitle2" gutterBottom>
+              Source Type
+            </Typography>
+            <ToggleButtonGroup
+              value={sourceType}
+              exclusive
+              onChange={(_, value) => value && handleSourceTypeChange(value)}
+              fullWidth
+              size="small"
+            >
+              <ToggleButton value={CodebaseSourceType.REPOSITORY_URL}>
+                <LinkIcon sx={{ mr: 1 }} fontSize="small" />
+                Repository URL
+              </ToggleButton>
+              <ToggleButton value={CodebaseSourceType.LOCAL_PATH}>
+                <FolderIcon sx={{ mr: 1 }} fontSize="small" />
+                Local Path
+              </ToggleButton>
+              <ToggleButton value={CodebaseSourceType.UPLOAD} disabled>
+                <CloudUploadIcon sx={{ mr: 1 }} fontSize="small" />
+                Upload (Coming Soon)
+              </ToggleButton>
+            </ToggleButtonGroup>
+          </Box>
+
           <Box display="flex" gap={2}>
             <TextField
               label="Codebase Name"
@@ -254,25 +321,44 @@ export function CodebaseCreate({
             </Box>
           </Box>
 
-          <TextField
-            label="Repository URL (Optional)"
-            value={formData.repositoryUrl}
-            onChange={(e) => handleInputChange('repositoryUrl', e.target.value)}
-            error={!!formErrors.repositoryUrl}
-            helperText={formErrors.repositoryUrl || 'Link to your Git repository for automatic updates'}
-            fullWidth
-            disabled={isLoading}
-            placeholder="https://github.com/username/repository"
-          />
+          {sourceType === CodebaseSourceType.REPOSITORY_URL && (
+            <>
+              <TextField
+                label="Repository URL"
+                value={formData.repositoryUrl}
+                onChange={(e) => handleInputChange('repositoryUrl', e.target.value)}
+                error={!!formErrors.repositoryUrl}
+                helperText={formErrors.repositoryUrl || 'Link to your Git repository for automatic updates'}
+                fullWidth
+                required
+                disabled={isLoading}
+                placeholder="https://github.com/username/repository"
+              />
 
-          {formData.repositoryUrl && (
+              {formData.repositoryUrl && (
+                <TextField
+                  label="Branch"
+                  value={formData.defaultBranch}
+                  onChange={(e) => handleInputChange('defaultBranch', e.target.value)}
+                  fullWidth
+                  disabled={isLoading}
+                  placeholder="main"
+                />
+              )}
+            </>
+          )}
+
+          {sourceType === CodebaseSourceType.LOCAL_PATH && (
             <TextField
-              label="Branch"
-              value={formData.defaultBranch}
-              onChange={(e) => handleInputChange('defaultBranch', e.target.value)}
+              label="Local Filesystem Path"
+              value={formData.localPath}
+              onChange={(e) => handleInputChange('localPath', e.target.value)}
+              error={!!formErrors.localPath}
+              helperText={formErrors.localPath || 'Absolute path to the codebase directory on your local machine (for testing)'}
               fullWidth
+              required
               disabled={isLoading}
-              placeholder="main"
+              placeholder="/Users/username/projects/my-app"
             />
           )}
 

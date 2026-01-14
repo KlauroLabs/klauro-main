@@ -1526,6 +1526,8 @@ export class GoAnalyzer extends BaseAnalyzer {
     };
 
     for (const node of nodes) {
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'function' && node.metadata?.attributes?.parameters) {
         const parameters = node.metadata.attributes.parameters as GoParameter[];
 

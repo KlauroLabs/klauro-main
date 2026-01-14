@@ -1,7 +1,7 @@
-// CAS v1.4.0 TypeScript interfaces
+// CAS v1.5.0 TypeScript interfaces
 
 export interface CASOutput {
-  cas_version: "1.4.0";
+  cas_version: "1.5.0" | "1.4.0";
   analysis_timestamp: string;
   analysis_id: string;
 
@@ -34,6 +34,8 @@ export interface CASOutput {
   todos_summary?: CASTodoSummary;
   implementation_health?: CASImplementationHealth;
 
+  patterns?: CASPattern[];
+
   metadata?: SystemMetadata;
 }
 
@@ -42,6 +44,7 @@ export interface CASNode {
   name: string;
   tags: string[];
   type: string;
+  parent?: string;
 
   perspectives?: {
     [perspectiveId: string]: {
@@ -60,6 +63,18 @@ export interface CASNode {
   level_name?: string;
   relationships?: Relationships;
 
+  signature?: {
+    parameters?: Array<{
+      name: string;
+      type?: string;
+      optional?: boolean;
+      default_value?: string;
+    }>;
+    return_type?: string;
+    async?: boolean;
+    visibility?: string;
+  };
+
   documentation?: CASDocumentation;
   comments?: CASComment[];
   implementation_status?: CASImplementationStatus;
@@ -71,6 +86,14 @@ export interface CASNode {
   dataFlow?: DataFlow;
   metadata?: {
     perspective_data?: Record<string, any>;
+    attributes?: {
+      methodCount?: number;
+      implements?: string[];
+      extends?: string;
+      decorators?: string[];
+      isAbstract?: boolean;
+      isExported?: boolean;
+    };
     [key: string]: any;
   };
 }
@@ -157,7 +180,7 @@ export interface EntryPoint {
 
 export interface ExitPoint {
   id: string;
-  type: 'database' | 'api' | 'file' | 'cache' | 'queue' | 'email' | 'storage' | 'other';
+  type: 'database' | 'api' | 'file' | 'cache' | 'queue' | 'email' | 'storage' | 'sdk' | 'other';
   name: string;
   description?: string;
 
@@ -639,4 +662,31 @@ export interface ViewState {
   selectedComponent?: string;
   zoom: number;
   position: { x: number; y: number };
+}
+
+export interface CASPatternVariation {
+  id: string;
+  implementation: string;
+  description: string;
+  instances: string[];
+  percentage: number;
+  characteristics?: Record<string, any>;
+}
+
+export interface CASPatternDeviation {
+  type: 'inconsistent-adoption' | 'partial-implementation' | 'anti-pattern' | 'obsolete-usage' | 'mixed-styles';
+  severity: 'info' | 'warning' | 'error';
+  description: string;
+  affected_instances: string[];
+  recommendation?: string;
+}
+
+export interface CASPattern {
+  id: string;
+  name: string;
+  description?: string;
+  confidence: number;
+  instances: string[];
+  variations?: CASPatternVariation[];
+  deviations?: CASPatternDeviation[];
 }

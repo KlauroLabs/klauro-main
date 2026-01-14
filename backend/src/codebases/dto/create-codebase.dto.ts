@@ -1,7 +1,13 @@
-import { IsString, IsOptional, IsEnum, IsObject, IsNotEmpty, Length, IsUrl, Matches } from 'class-validator';
+import { IsString, IsOptional, IsEnum, IsObject, IsNotEmpty, Length, IsUrl, Matches, ValidateIf } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { RepositoryProvider } from '../../database/entities/codebase.entity';
+
+export enum CodebaseSourceType {
+  REPOSITORY_URL = 'repository_url',
+  LOCAL_PATH = 'local_path',
+  UPLOAD = 'upload',
+}
 
 export class CreateCodebaseDto {
   @ApiProperty({
@@ -28,15 +34,36 @@ export class CreateCodebaseDto {
   description?: string;
 
   @ApiPropertyOptional({
-    description: 'Repository URL',
+    description: 'Source type for the codebase',
+    enum: CodebaseSourceType,
+    example: CodebaseSourceType.REPOSITORY_URL,
+    default: CodebaseSourceType.REPOSITORY_URL,
+  })
+  @IsOptional()
+  @IsEnum(CodebaseSourceType)
+  sourceType?: CodebaseSourceType;
+
+  @ApiPropertyOptional({
+    description: 'Repository URL (required if sourceType is repository_url)',
     example: 'https://github.com/user/repo.git',
     maxLength: 500,
   })
-  @IsOptional()
+  @ValidateIf(o => o.sourceType === CodebaseSourceType.REPOSITORY_URL || (!o.sourceType && !o.localPath))
   @IsString()
   @IsUrl()
   @Length(0, 500)
   repositoryUrl?: string;
+
+  @ApiPropertyOptional({
+    description: 'Local filesystem path (required if sourceType is local_path, for testing only)',
+    example: '/Users/username/projects/my-app',
+    maxLength: 500,
+  })
+  @ValidateIf(o => o.sourceType === CodebaseSourceType.LOCAL_PATH)
+  @IsString()
+  @Length(0, 500)
+  @Transform(({ value }) => value?.trim())
+  localPath?: string;
 
   @ApiPropertyOptional({
     description: 'Repository provider',

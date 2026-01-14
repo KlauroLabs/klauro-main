@@ -1809,6 +1809,8 @@ export class PHPAnalyzer extends BaseAnalyzer {
     };
 
     for (const node of nodes) {
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'class' || node.type === 'function') {
         const nodeName = node.name;
         const namespace = node.metadata?.attributes?.namespace as string;

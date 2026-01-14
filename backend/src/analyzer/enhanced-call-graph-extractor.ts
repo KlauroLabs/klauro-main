@@ -404,14 +404,14 @@ export class EnhancedCallGraphExtractor {
     // Method call
     else if (node.callee?.type === 'MemberExpression') {
       if (node.callee.property?.type === 'Identifier') {
-        target = node.callee.property.name;
+        const methodName = node.callee.property.name;
         targetType = 'method';
 
-        // Try to get the object name for better context
-        if (node.callee.object?.type === 'Identifier') {
-          target = `${node.callee.object.name}.${target}`;
-        } else if (node.callee.object?.type === 'ThisExpression') {
-          target = `this.${target}`;
+        const objectName = this.getObjectName(node.callee.object);
+        if (objectName) {
+          target = `${objectName}.${methodName}`;
+        } else {
+          target = methodName;
         }
       }
     }

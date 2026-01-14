@@ -1151,6 +1151,8 @@ export class PythonAnalyzer extends BaseAnalyzer {
     };
 
     for (const node of nodes) {
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'function' && node.metadata?.attributes?.decorators) {
         const decorators = node.metadata.attributes?.decorators as string[];
 
@@ -1448,6 +1450,8 @@ export class PythonAnalyzer extends BaseAnalyzer {
     ];
 
     for (const node of nodes) {
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'function' || node.type === 'method') {
         const decorators = node.metadata?.attributes?.decorators as string[] || [];
 

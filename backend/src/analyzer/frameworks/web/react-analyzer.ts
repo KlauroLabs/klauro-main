@@ -813,6 +813,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
     const components: ReactComponent[] = [];
 
     const walk = (node: any) => {
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'FunctionDeclaration' || node.type === 'ArrowFunctionExpression') {
         const name = this.getComponentName(node, content);
         if (name && this.looksLikeComponent(node, content)) {
@@ -848,6 +850,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
     const hooks: ReactHook[] = [];
 
     const walk = (node: any) => {
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'FunctionDeclaration' || node.type === 'ArrowFunctionExpression') {
         const name = this.getHookName(node, content);
         if (name && name.startsWith('use') && name.length > 3 && name[3].toUpperCase() === name[3]) {
@@ -875,6 +879,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
     const contexts: ReactContext[] = [];
 
     const walk = (node: any) => {
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'VariableDeclarator' &&
           node.init?.type === 'CallExpression' &&
           node.init?.callee?.name === 'createContext') {
@@ -957,6 +963,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
     const utils: ReactUtil[] = [];
 
     const walk = (node: any) => {
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'FunctionDeclaration') {
         const name = node.id?.name;
         if (name) {
@@ -997,6 +1005,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
   }
 
   private getComponentName(node: any, content: string): string | null {
+    if (!node || typeof node !== 'object') return null;
+
     if (node.type === 'FunctionDeclaration') {
       return node.id?.name || null;
     }
@@ -1008,6 +1018,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
   }
 
   private getHookName(node: any, content: string): string | null {
+    if (!node || typeof node !== 'object') return null;
+
     if (node.type === 'FunctionDeclaration') {
       return node.id?.name || null;
     }
@@ -1081,6 +1093,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
   private extractProps(node: any, content: string): Array<{ name: string; type: string; required: boolean; defaultValue?: string }> {
     const props: Array<{ name: string; type: string; required: boolean; defaultValue?: string }> = [];
+
+    if (!node || typeof node !== 'object') return props;
 
     if (node.type === 'FunctionDeclaration' && node.params && node.params.length > 0) {
       const propsParam = node.params[0];
@@ -1478,16 +1492,22 @@ export class ReactAnalyzer extends BaseAnalyzer {
     nodes.forEach(node => {
       node.perspectives = [];
 
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'react_app' || node.type === 'react_page' ||
           node.type === 'functional_component' || node.type === 'class_component') {
         node.perspectives.push('react-components');
       }
+
+      if (!node || typeof node !== 'object') return;
 
       if (node.type === 'redux_store' || node.type === 'zustand_store' ||
           node.type === 'react_context' || node.type === 'custom_hook' ||
           node.type === 'functional_component' || node.type === 'class_component') {
         node.perspectives.push('react-data');
       }
+
+      if (!node || typeof node !== 'object') return;
 
       if (node.type === 'react_route' || node.type === 'react_page' ||
           node.type === 'functional_component') {
@@ -1576,6 +1596,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
     let componentNode: any = null;
 
     const findComponent = (node: any): any => {
+      if (!node || typeof node !== 'object') return null;
+
       if (node.type === 'FunctionDeclaration' && node.id?.name === componentName) {
         return node;
       }
@@ -1613,6 +1635,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
     let hookNode: any = null;
 
     const findHook = (node: any): any => {
+      if (!node || typeof node !== 'object') return null;
+
       if (node.type === 'FunctionDeclaration' && node.id?.name === hookName) {
         return node;
       }
@@ -1866,6 +1890,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
     let componentNode: any = null;
 
     const findComponent = (node: any): any => {
+      if (!node || typeof node !== 'object') return null;
+
       if (node.type === 'FunctionDeclaration' && node.id?.name === componentName) {
         return node;
       }

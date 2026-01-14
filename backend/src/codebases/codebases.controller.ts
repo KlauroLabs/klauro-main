@@ -379,8 +379,8 @@ export class CodebasesController {
   @Post(':id/analyze')
   @HttpCode(HttpStatus.ACCEPTED)
   @ApiOperation({
-    summary: 'Mark codebase as analyzing',
-    description: 'Marks the codebase status as analyzing (used by analysis pipeline)',
+    summary: 'Start codebase analysis',
+    description: 'Triggers CAS analysis for the codebase. Requires a local path in settings or repository URL.',
   })
   @ApiParam({
     name: 'workspaceId',
@@ -394,7 +394,11 @@ export class CodebasesController {
   })
   @ApiResponse({
     status: 202,
-    description: 'Codebase marked as analyzing',
+    description: 'Analysis started successfully',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad request - no repository URL or local path configured',
   })
   @ApiResponse({
     status: 403,
@@ -404,13 +408,13 @@ export class CodebasesController {
     status: 404,
     description: 'Codebase or workspace not found',
   })
-  async markAsAnalyzing(
+  async startAnalysis(
     @Request() req: any,
     @Param('workspaceId') workspaceId: string,
     @Param('id') id: string,
-  ): Promise<void> {
+  ): Promise<{analysisId: string}> {
     const userId = req.user.id;
-    return this.codebasesService.markAsAnalyzing(userId, workspaceId, id);
+    return this.codebasesService.startAnalysis(userId, workspaceId, id);
   }
 
   @Post(':id/analyzed')
@@ -485,5 +489,113 @@ export class CodebasesController {
   ): Promise<void> {
     const userId = req.user.id;
     return this.codebasesService.markAsError(userId, workspaceId, id);
+  }
+
+  @Get(':id/blueprint')
+  @ApiOperation({
+    summary: 'Get codebase blueprint',
+    description: 'Retrieves the complete CAS blueprint from the latest completed analysis',
+  })
+  @ApiParam({
+    name: 'workspaceId',
+    description: 'Workspace ID',
+    type: 'string',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Codebase ID',
+    type: 'string',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Blueprint retrieved successfully',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - no access to workspace',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Codebase, workspace, or blueprint not found',
+  })
+  async getBlueprint(
+    @Request() req: any,
+    @Param('workspaceId') workspaceId: string,
+    @Param('id') id: string,
+  ): Promise<any> {
+    const userId = req.user.id;
+    return this.codebasesService.getBlueprint(userId, workspaceId, id);
+  }
+
+  @Get(':id/components')
+  @ApiOperation({
+    summary: 'Get codebase components',
+    description: 'Retrieves all components from the latest completed analysis of the codebase',
+  })
+  @ApiParam({
+    name: 'workspaceId',
+    description: 'Workspace ID',
+    type: 'string',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Codebase ID',
+    type: 'string',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Components retrieved successfully',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - no access to workspace',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Codebase or workspace not found, or no completed analysis',
+  })
+  async getComponents(
+    @Request() req: any,
+    @Param('workspaceId') workspaceId: string,
+    @Param('id') id: string,
+  ): Promise<any> {
+    const userId = req.user.id;
+    return this.codebasesService.getComponents(userId, workspaceId, id);
+  }
+
+  @Get(':id/connections')
+  @ApiOperation({
+    summary: 'Get codebase connections',
+    description: 'Retrieves all component connections from the latest completed analysis of the codebase',
+  })
+  @ApiParam({
+    name: 'workspaceId',
+    description: 'Workspace ID',
+    type: 'string',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Codebase ID',
+    type: 'string',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Connections retrieved successfully',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - no access to workspace',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Codebase or workspace not found, or no completed analysis',
+  })
+  async getConnections(
+    @Request() req: any,
+    @Param('workspaceId') workspaceId: string,
+    @Param('id') id: string,
+  ): Promise<any> {
+    const userId = req.user.id;
+    return this.codebasesService.getConnections(userId, workspaceId, id);
   }
 }

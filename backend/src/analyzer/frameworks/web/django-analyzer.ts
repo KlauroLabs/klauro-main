@@ -1352,14 +1352,20 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     nodes.forEach(node => {
       node.perspectives = [];
 
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'django_model' || node.type === 'django_view' ||
           node.type === 'django_template' || node.type === 'django_url') {
         node.perspectives.push('django-mvt');
       }
 
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'django_url' || node.type === 'django_view' || node.type === 'django_app') {
         node.perspectives.push('django-urls');
       }
+
+      if (!node || typeof node !== 'object') return;
 
       if (node.type === 'django_project' || node.type === 'django_app' || node.type === 'django_model') {
         node.perspectives.push('django-apps');

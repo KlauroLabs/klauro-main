@@ -2087,6 +2087,8 @@ export class RustAnalyzer extends BaseAnalyzer {
     };
 
     for (const node of nodes) {
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'function' && node.metadata?.attributes) {
         const attributes = node.metadata.attributes as string[];
 

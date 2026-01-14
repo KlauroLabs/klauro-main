@@ -12,13 +12,9 @@ import {
   RadioGroup,
   FormControlLabel,
   Radio,
-  Chip,
   Typography,
   Alert,
   Autocomplete,
-  Switch,
-  FormGroup,
-  Divider,
 } from '@mui/material';
 import {
   Business as BusinessIcon,
@@ -46,25 +42,40 @@ export function WorkspaceCreate({
   organizations = [],
 }: WorkspaceCreateProps) {
   const { createWorkspace, isLoading, error } = useWorkspace();
-  const { validateWorkspaceName, validateWorkspaceDescription, validateTags } = useWorkspaceValidation();
+  const { validateWorkspaceName, validateWorkspaceDescription } = useWorkspaceValidation();
 
   const [formData, setFormData] = useState<CreateWorkspaceRequest>({
     name: '',
+    slug: '',
     description: '',
     visibility: 'private',
-    tags: [],
     settings: {},
   });
 
   const [workspaceType, setWorkspaceType] = useState<WorkspaceOwnerType>('user');
   const [selectedOrganization, setSelectedOrganization] = useState<Organization | null>(null);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
-  const [tagInput, setTagInput] = useState<string>('');
+
+  const generateSlug = (name: string): string => {
+    return name
+      .toLowerCase()
+      .trim()
+      .replace(/[^\w\s-]/g, '')
+      .replace(/[\s_]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  };
 
   const handleInputChange = (field: keyof CreateWorkspaceRequest, value: any) => {
-    setFormData(prev => ({ ...prev, [field]: value }));
+    setFormData(prev => {
+      const updated = { ...prev, [field]: value };
 
-    // Clear related errors
+      if (field === 'name' && typeof value === 'string') {
+        updated.slug = generateSlug(value);
+      }
+
+      return updated;
+    });
+
     if (formErrors[field]) {
       setFormErrors(prev => {
         const newErrors = { ...prev };
@@ -74,41 +85,7 @@ export function WorkspaceCreate({
     }
   };
 
-  const handleSettingsChange = (setting: string, value: any) => {
-    setFormData(prev => ({
-      ...prev,
-      settings: {
-        ...prev.settings!,
-        [setting]: value,
-      },
-    }));
-  };
 
-  const handleNotificationChange = (notification: string, value: boolean) => {
-    setFormData(prev => ({
-      ...prev,
-      settings: {
-        ...prev.settings!,
-        notifications: {
-          ...prev.settings!.notifications,
-          [notification]: value,
-        },
-      },
-    }));
-  };
-
-  const handleAddTag = (newTag: string) => {
-    if (newTag && !formData.tags?.includes(newTag)) {
-      const updatedTags = [...(formData.tags || []), newTag];
-      handleInputChange('tags', updatedTags);
-    }
-    setTagInput('');
-  };
-
-  const handleRemoveTag = (tagToRemove: string) => {
-    const updatedTags = formData.tags?.filter(tag => tag !== tagToRemove) || [];
-    handleInputChange('tags', updatedTags);
-  };
 
   const validateForm = (): boolean => {
     const errors: Record<string, string> = {};
@@ -119,8 +96,11 @@ export function WorkspaceCreate({
     const descriptionError = validateWorkspaceDescription(formData.description || '');
     if (descriptionError) errors.description = descriptionError;
 
-    const tagsError = validateTags(formData.tags || []);
-    if (tagsError) errors.tags = tagsError;
+    if (!formData.slug || formData.slug.length < 3) {
+      errors.slug = 'Slug must be at least 3 characters';
+    } else if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(formData.slug)) {
+      errors.slug = 'Slug must be lowercase alphanumeric with hyphens';
+    }
 
     if (workspaceType === 'organization' && !selectedOrganization) {
       errors.organization = 'Organization is required for organization workspaces';
@@ -134,29 +114,27 @@ export function WorkspaceCreate({
     if (!validateForm()) return;
 
     try {
-      await createWorkspace(formData);
+      const payload = {
+        name: formData.name,
+        slug: formData.slug,
+        description: formData.description,
+        visibility: formData.visibility,
+        settings: formData.settings,
+      };
+
+      await createWorkspace(payload);
       onSuccess?.();
       onClose();
 
-      // Reset form
       setFormData({
         name: '',
+        slug: '',
         description: '',
         visibility: 'private',
-        tags: [],
-        settings: {
-          auto_analyze: true,
-          retention_days: 365,
-          notifications: {
-            analysis_complete: true,
-            analysis_failed: true,
-            weekly_summary: false,
-          },
-        },
+        settings: {},
       });
       setFormErrors({});
     } catch (err) {
-      // Error handling is done by the context
     }
   };
 
@@ -187,10 +165,22 @@ export function WorkspaceCreate({
             value={formData.name}
             onChange={(e) => handleInputChange('name', e.target.value)}
             error={!!formErrors.name}
-            helperText={formErrors.name}
+            helperText={formErrors.name || 'A descriptive name for your workspace'}
             fullWidth
             required
             disabled={isLoading}
+          />
+
+          <TextField
+            label="Slug"
+            value={formData.slug}
+            onChange={(e) => handleInputChange('slug', e.target.value)}
+            error={!!formErrors.slug}
+            helperText={formErrors.slug || 'URL-friendly identifier (auto-generated from name)'}
+            fullWidth
+            required
+            disabled={isLoading}
+            placeholder="my-workspace-slug"
           />
 
           <TextField
@@ -265,49 +255,11 @@ export function WorkspaceCreate({
             />
           )}
 
-          <Box>
-            <Typography variant="subtitle2" gutterBottom>
-              Tags
-            </Typography>
-            <Autocomplete
-              multiple
-              freeSolo
-              options={[]}
-              value={formData.tags || []}
-              onChange={(_, value) => handleInputChange('tags', value)}
-              inputValue={tagInput}
-              onInputChange={(_, value) => setTagInput(value)}
-              renderTags={(value, getTagProps) =>
-                value.map((option, index) => (
-                  <Chip
-                    variant="outlined"
-                    label={option}
-                    {...getTagProps({ index })}
-                    key={option}
-                  />
-                ))
-              }
-              renderInput={(params) => (
-                <TextField
-                  {...params}
-                  placeholder="Add tags..."
-                  error={!!formErrors.tags}
-                  helperText={formErrors.tags}
-                />
-              )}
-              disabled={isLoading}
-            />
-          </Box>
-
-          <Divider />
-
-          <Typography variant="h6">Settings</Typography>
-
           <FormControl component="fieldset">
             <FormLabel component="legend">Visibility</FormLabel>
             <RadioGroup
-              value={formData.settings?.visibility || 'private'}
-              onChange={(e) => handleSettingsChange('visibility', e.target.value)}
+              value={formData.visibility || 'private'}
+              onChange={(e) => handleInputChange('visibility', e.target.value)}
             >
               <FormControlLabel
                 value="private"
@@ -336,56 +288,6 @@ export function WorkspaceCreate({
               />
             </RadioGroup>
           </FormControl>
-
-          <FormGroup>
-            <FormControlLabel
-              control={
-                <Switch
-                  checked={formData.settings?.auto_analyze || false}
-                  onChange={(e) => handleSettingsChange('auto_analyze', e.target.checked)}
-                />
-              }
-              label={
-                <Box>
-                  <Typography variant="body2">Auto-analyze new codebases</Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    Automatically run analysis when codebases are added
-                  </Typography>
-                </Box>
-              }
-            />
-          </FormGroup>
-
-          <Typography variant="subtitle2">Notifications</Typography>
-          <FormGroup>
-            <FormControlLabel
-              control={
-                <Switch
-                  checked={formData.settings?.notifications?.analysis_complete || false}
-                  onChange={(e) => handleNotificationChange('analysis_complete', e.target.checked)}
-                />
-              }
-              label="Analysis completion"
-            />
-            <FormControlLabel
-              control={
-                <Switch
-                  checked={formData.settings?.notifications?.analysis_failed || false}
-                  onChange={(e) => handleNotificationChange('analysis_failed', e.target.checked)}
-                />
-              }
-              label="Analysis failures"
-            />
-            <FormControlLabel
-              control={
-                <Switch
-                  checked={formData.settings?.notifications?.weekly_summary || false}
-                  onChange={(e) => handleNotificationChange('weekly_summary', e.target.checked)}
-                />
-              }
-              label="Weekly summary"
-            />
-          </FormGroup>
         </Box>
       </DialogContent>
 

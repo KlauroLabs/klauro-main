@@ -46,8 +46,7 @@ export class Codebase extends BaseEntity {
   @Property({ type: 'varchar', length: 500, nullable: true })
   repositoryUrl?: string;
 
-  @Enum(() => RepositoryProvider)
-  @Property({ nullable: true })
+  @Enum({ items: () => RepositoryProvider, nullable: true })
   repositoryProvider?: RepositoryProvider;
 
   @Property({ type: 'varchar', length: 255, nullable: true })

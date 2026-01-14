@@ -201,9 +201,14 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     }
   }, [state.currentWorkspace?.id]);
 
-  // Load workspaces on mount
+  // Load workspaces on mount only if authenticated
   useEffect(() => {
-    refreshWorkspaces();
+    if (typeof window !== 'undefined') {
+      const token = localStorage.getItem('accessToken');
+      if (token) {
+        refreshWorkspaces();
+      }
+    }
   }, [refreshWorkspaces]);
 
   const contextValue: WorkspaceContextValue = {

@@ -23,6 +23,7 @@ interface NestModule {
 interface NestController {
   name: string;
   filePath: string;
+  basePath: string;
   routes: NestRoute[];
   guards: string[];
   interceptors: string[];
@@ -125,7 +126,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       // Enhanced call graph analysis for NestJS patterns
       await this.performEnhancedCallGraphAnalysis(nestFiles, context.projectPath, allNodes, edges, entryPoints, exitPoints);
 
-      this.buildNestJSRelationships(modules, controllers, providers, guards, middleware, allNodes, edges);
+      this.buildNestJSRelationships(modules, controllers, providers, guards, middleware, allNodes, edges, exitPoints);
       this.identifyDatabaseConnections(providers, exitPoints);
       this.createPerspectives(perspectives, modules, controllers, providers, allNodes, edges);
 
@@ -288,6 +289,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           }
 
           controllerInfo.routes.forEach((route, index) => {
+            const fullPath = this.combinePaths(controllerInfo.basePath, route.path);
             const routeId = this.generateId('route', controllerInfo.filePath, `${route.handlerName}_${route.method}_${route.path}`);
 
             // Extract CAS v1.4.0 features for the route handler
@@ -297,17 +299,17 @@ export class NestJSAnalyzer extends BaseAnalyzer {
             const routeTodos = this.extractTodos(routeComments);
             const routeImplementationStatus = handlerNode ? this.detectImplementationStatus(handlerNode, content) : undefined;
 
-            const routeNode = this.createNodeBuilder(routeId, `${route.method.toUpperCase()} ${route.path}`, 'route')
+            const routeNode = this.createNodeBuilder(routeId, `${route.method.toUpperCase()} ${fullPath}`, 'route')
               .withLevel(3, 'code')
               .withCategory('route', ['http', 'endpoint'])
-              .withSource({ file: fullPath, line: handlerNode?.loc?.start?.line || 1, end_line: handlerNode?.loc?.end?.line || 1 })
-              .withDescription(`HTTP ${route.method.toUpperCase()} endpoint: ${route.path}`)
+              .withSource({ file: controllerInfo.filePath, line: handlerNode?.loc?.start?.line || 1, end_line: handlerNode?.loc?.end?.line || 1 })
+              .withDescription(`HTTP ${route.method.toUpperCase()} endpoint: ${fullPath}`)
               .withParent(controllerId)
               .withMetadata({
                 framework: 'nestjs',
                 attributes: {
                   http_method: route.method.toUpperCase(),
-                  path: route.path,
+                  path: fullPath,
                   handler_name: route.handlerName,
                   parameters: route.parameters,
                   guards: route.guards,
@@ -330,25 +332,27 @@ export class NestJSAnalyzer extends BaseAnalyzer {
               'structural'
             ));
 
+            const allGuards = [...new Set([...controllerInfo.guards, ...route.guards])];
+
             entryPoints.push(this.createEntryPoint(
               `entry_${routeId}`,
               routeId,
               'http',
-              `${route.method.toUpperCase()} ${route.path}`,
+              `${route.method.toUpperCase()} ${fullPath}`,
               `HTTP endpoint for ${controllerInfo.name}.${route.handlerName}`,
               {
                 method: route.method.toUpperCase(),
-                path: route.path
+                path: fullPath
               },
               {
-                authenticated: route.guards.length > 0,
-                authorized_roles: this.extractRolesFromGuards(route.guards)
+                authenticated: allGuards.some(g => this.isAuthGuard(g)),
+                authorized_roles: this.extractRolesFromGuards(allGuards)
               },
               {
                 controller: controllerInfo.name,
                 handler: route.handlerName,
                 parameters: route.parameters,
-                guards: route.guards,
+                guards: allGuards,
                 pipes: route.pipes,
                 interceptors: route.interceptors
               }
@@ -375,7 +379,15 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     const serviceFiles = files.filter(f =>
       f.includes('.service.') ||
       f.includes('.repository.') ||
-      f.includes('.provider.')
+      f.includes('.provider.') ||
+      f.includes('-repository.') ||
+      f.includes('-repo.') ||
+      f.includes('.repo.') ||
+      f.includes('/repositories/') ||
+      f.includes('/repos/') ||
+      f.includes('-dao.') ||
+      f.includes('.dao.') ||
+      f.includes('/daos/')
     );
 
     for (const file of serviceFiles) {
@@ -686,6 +698,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     newNodes: CASNode[]
   ): void {
     const walk = (node: any) => {
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'ClassDeclaration' && node.decorators) {
         const gatewayDecorator = node.decorators.find((dec: any) =>
           dec.expression?.callee?.name === 'WebSocketGateway'
@@ -840,6 +854,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     entryPoints: CASEntryPoint[]
   ): void {
     const walk = (node: any) => {
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'MethodDefinition' && node.decorators) {
         const onEventDecorator = node.decorators.find((dec: any) =>
           dec.expression?.callee?.name === 'OnEvent'
@@ -904,6 +920,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     entryPoints: CASEntryPoint[]
   ): void {
     const walk = (node: any) => {
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'MethodDefinition' && node.decorators) {
         const schedulerDecorators = ['Cron', 'Interval', 'Timeout'];
 
@@ -986,6 +1004,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
   ): void {
     const walk = (node: any) => {
       // Check for @Processor decorator on classes
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'ClassDeclaration' && node.decorators) {
         const processorDecorator = node.decorators.find((dec: any) =>
           dec.expression?.callee?.name === 'Processor'
@@ -1053,6 +1073,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     entryPoints: CASEntryPoint[]
   ): void {
     const walk = (node: any) => {
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'MethodDefinition' && node.decorators) {
         const messagePatternDecorator = node.decorators.find((dec: any) =>
           dec.expression?.callee?.name === 'MessagePattern'
@@ -1119,6 +1141,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
   ): void {
     const walk = (node: any) => {
       // Look for bootstrap function or NestFactory.create
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'CallExpression') {
         if (node.callee?.type === 'MemberExpression' &&
             node.callee.object?.name === 'NestFactory' &&
@@ -1227,6 +1251,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
   ): void {
     const walk = (node: any) => {
       // Check for @Command decorator (nest-commander)
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'ClassDeclaration' && node.decorators) {
         const commandDecorator = node.decorators.find((dec: any) =>
           dec.expression?.callee?.name === 'Command'
@@ -1254,6 +1280,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       }
 
       // Check for method-level command handlers
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'MethodDefinition' && node.decorators) {
         const subCommandDecorator = node.decorators.find((dec: any) =>
           dec.expression?.callee?.name === 'SubCommand'
@@ -1375,6 +1403,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     let moduleInfo: NestModule | null = null;
 
     const walk = (node: any) => {
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'ClassDeclaration' && node.decorators) {
         const moduleDecorator = node.decorators.find((dec: any) =>
           dec.expression?.callee?.name === 'Module'
@@ -1413,12 +1443,15 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     let controllerInfo: NestController | null = null;
 
     const walk = (node: any) => {
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'ClassDeclaration' && node.decorators) {
         const controllerDecorator = node.decorators.find((dec: any) =>
           dec.expression?.callee?.name === 'Controller'
         );
 
         if (controllerDecorator && node.id) {
+          const basePath = this.extractDecoratorArgument(controllerDecorator) || '';
           const routes = this.extractRoutes(node);
           const guards = this.extractClassDecorators(node, 'UseGuards');
           const interceptors = this.extractClassDecorators(node, 'UseInterceptors');
@@ -1427,6 +1460,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           controllerInfo = {
             name: node.id.name,
             filePath,
+            basePath,
             routes,
             guards,
             interceptors,
@@ -1454,22 +1488,46 @@ export class NestJSAnalyzer extends BaseAnalyzer {
   private extractProviderInfo(ast: TSESTree.Program, filePath: string): NestProvider | null {
     let providerInfo: NestProvider | null = null;
 
+    const isDataAccessLayerFile = (path: string): boolean => {
+      return path.includes('.repository.') ||
+        path.includes('-repository.') ||
+        path.includes('.repo.') ||
+        path.includes('-repo.') ||
+        path.includes('/repositories/') ||
+        path.includes('/repos/') ||
+        path.includes('.dao.') ||
+        path.includes('-dao.') ||
+        path.includes('/daos/');
+    };
+
+    const isDataAccessLayerClass = (className: string): boolean => {
+      return className.endsWith('Repository') ||
+        className.endsWith('Repo') ||
+        className.endsWith('DAO');
+    };
+
     const walk = (node: any) => {
-      if (node.type === 'ClassDeclaration' && node.decorators) {
-        const injectableDecorator = node.decorators.find((dec: any) =>
+      if (!node || typeof node !== 'object') return;
+
+      if (node.type === 'ClassDeclaration' && node.id) {
+        const hasDecorators = node.decorators && node.decorators.length > 0;
+        const injectableDecorator = hasDecorators && node.decorators.find((dec: any) =>
           dec.expression?.callee?.name === 'Injectable'
         );
 
-        if (injectableDecorator && node.id) {
+        const className = node.id.name;
+        const isDataAccessLayer = isDataAccessLayerFile(filePath) || isDataAccessLayerClass(className);
+
+        if (injectableDecorator || isDataAccessLayer) {
           const methods = this.extractMethods(node);
           const dependencies = this.extractConstructorDependencies(node);
 
           let type: 'service' | 'repository' | 'factory' | 'value' | 'custom' = 'service';
-          if (filePath.includes('.repository.')) type = 'repository';
+          if (isDataAccessLayer) type = 'repository';
           else if (filePath.includes('.factory.')) type = 'factory';
 
           providerInfo = {
-            name: node.id.name,
+            name: className,
             filePath,
             type,
             scope: 'singleton',
@@ -1498,6 +1556,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     let guardInfo: NestGuard | null = null;
 
     const walk = (node: any) => {
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'ClassDeclaration' && node.decorators) {
         const injectableDecorator = node.decorators.find((dec: any) =>
           dec.expression?.callee?.name === 'Injectable'
@@ -1537,6 +1597,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     let middlewareInfo: NestMiddleware | null = null;
 
     const walk = (node: any) => {
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'ClassDeclaration' && node.decorators) {
         const injectableDecorator = node.decorators.find((dec: any) =>
           dec.expression?.callee?.name === 'Injectable'
@@ -1756,6 +1818,14 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     return args;
   }
 
+  private combinePaths(basePath: string, routePath: string): string {
+    const cleanBase = basePath.replace(/^\/|\/$/g, '');
+    const cleanRoute = routePath.replace(/^\/|\/$/g, '');
+    if (!cleanBase) return '/' + cleanRoute;
+    if (!cleanRoute || cleanRoute === '/') return '/' + cleanBase;
+    return '/' + cleanBase + '/' + cleanRoute;
+  }
+
   private findMethodInClass(classNode: any, methodName: string): any {
     if (classNode.body && classNode.body.body) {
       return classNode.body.body.find((member: any) =>
@@ -1768,7 +1838,14 @@ export class NestJSAnalyzer extends BaseAnalyzer {
   private extractTypeName(typeNode: any): string | null {
     if (!typeNode) return null;
     if (typeNode.type === 'TSTypeReference' && typeNode.typeName) {
-      return typeNode.typeName.name;
+      const baseName = typeNode.typeName.name;
+      if (typeNode.typeParameters?.params?.length > 0) {
+        const genericParam = this.extractTypeName(typeNode.typeParameters.params[0]);
+        if (genericParam && (baseName === 'EntityRepository' || baseName === 'Repository')) {
+          return `EntityRepository<${genericParam}>`;
+        }
+      }
+      return baseName;
     }
     if (typeNode.type === 'Identifier') {
       return typeNode.name;
@@ -1783,7 +1860,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     guards: NestGuard[],
     middleware: NestMiddleware[],
     nodes: CASNode[],
-    edges: CASEdge[]
+    edges: CASEdge[],
+    exitPoints: CASExitPoint[]
   ): void {
     modules.forEach(module => {
       const moduleId = this.generateId('module', module.filePath, module.name);
@@ -1885,28 +1963,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           }
         });
 
-        // Create calls edges for route handlers to controller methods
-        controller.routes.forEach(route => {
-          const routeId = this.generateId('route', controller.filePath, `${route.handlerName}_${route.method}_${route.path}`);
-          const handlerMethodId = `method_class_${controller.filePath}_${controller.name}_0_${route.handlerName}_0`;
-          const handlerMethod = nodes.find(n => n.id === handlerMethodId ||
-            (n.name === route.handlerName && n.type === 'method' && n.parent === controllerNode.id));
-
-          if (handlerMethod) {
-            edges.push(this.createEdge(
-              this.generateEdgeId(routeId, handlerMethod.id, 'calls'),
-              routeId,
-              handlerMethod.id,
-              'calls',
-              'behavior',
-              {
-                call_type: 'route_handler',
-                http_method: route.method.toUpperCase(),
-                path: route.path
-              }
-            ));
-          }
-        });
 
         controller.guards.forEach(guardName => {
           const guardNode = nodes.find(n =>
@@ -1961,19 +2017,39 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
           // Special handling for EntityRepository or generic repository pattern
           if (!depProviderNode && depName.includes('Repository')) {
-            // Look for a repository class that might be using generics
             depProviderNode = nodes.find(n => {
-              // Check if the node is a repository and its name matches the pattern
               const isRepo = n.type === 'repository' || n.type === 'class';
               const nameMatches = n.name.includes(depName.replace('Repository', '')) ||
                                  n.name === depName;
               return isRepo && nameMatches;
             });
 
-            // If still not found and it's EntityRepository<Something>, create an exit point
             if (!depProviderNode && depName.includes('EntityRepository')) {
-              // This is an external library dependency, not a local class
-              console.log(`NestJS: ${depName} appears to be an external library (MikroORM EntityRepository)`);
+              const entityMatch = depName.match(/EntityRepository<(\w+)>/);
+              const entityName = entityMatch ? entityMatch[1] : depName.replace('EntityRepository', '').replace(/[<>]/g, '');
+
+              exitPoints.push(this.createExitPoint(
+                `exit_mikroorm_${this.sanitizeId(provider.name)}_${this.sanitizeId(entityName)}`,
+                providerNode.id,
+                'database',
+                `${entityName} Repository (MikroORM)`,
+                `MikroORM EntityRepository for ${entityName} entity`,
+                {
+                  service_id: 'database',
+                  resource: entityName
+                },
+                {
+                  action: 'crud',
+                  async: true
+                },
+                {
+                  orm: 'mikroorm',
+                  entity: entityName,
+                  repository_type: 'EntityRepository',
+                  injected_into: provider.name,
+                  operations: ['find', 'findOne', 'findOneOrFail', 'findAndCount', 'create', 'persist', 'flush', 'remove']
+                }
+              ));
             }
           }
 
@@ -2267,6 +2343,16 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
   private extractRolesFromGuards(guards: string[]): string[] {
     return guards.filter(guard => guard.toLowerCase().includes('role')).map(guard => guard.toLowerCase());
+  }
+
+  private isAuthGuard(guard: string): boolean {
+    const authGuardPatterns = [
+      'AuthGuard', 'JwtAuthGuard', 'JwtGuard',
+      'Auth', 'Authenticated', 'Session'
+    ];
+    return authGuardPatterns.some(pattern =>
+      guard.toLowerCase().includes(pattern.toLowerCase())
+    );
   }
 
   private createPerspectives(
@@ -2920,6 +3006,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     let moduleNode: any = null;
 
     const walk = (node: any) => {
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'ClassDeclaration' && node.decorators) {
         const hasModuleDecorator = node.decorators.some((dec: any) =>
           dec.expression?.callee?.name === 'Module'
@@ -2948,6 +3036,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     let handlerNode: any = null;
 
     const walk = (node: any) => {
+      if (!node || typeof node !== 'object') return;
+
       if (node.type === 'MethodDefinition' && node.key?.name === handlerName) {
         handlerNode = node;
         return;

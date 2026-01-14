@@ -37,6 +37,28 @@ export interface CASAnalysisOptions {
   nameFilter?: string;
 }
 
+export interface CASSummaryOutput {
+  cas_version: string;
+  analysis_timestamp: string;
+  analysis_id: string;
+  system: {
+    name: string;
+    type: string;
+  };
+  architecture_summary: CASOutput['architecture_summary'];
+  route_table?: CASOutput['route_table'];
+  database_schema?: CASOutput['database_schema'];
+  external_services_count?: number;
+  node_counts: {
+    total: number;
+    by_type: Record<string, number>;
+  };
+  edge_counts: {
+    total: number;
+    by_type: Record<string, number>;
+  };
+}
+
 export interface CASAnalysisRequest {
   projectPath: string;
   options?: CASAnalysisOptions;
@@ -83,6 +105,40 @@ export class CASAnalyzerService {
       nameFilter: options.nameFilter,
       includeEdges: true
     });
+  }
+
+  extractSummary(casOutput: CASOutput): CASSummaryOutput {
+    const nodesByType: Record<string, number> = {};
+    casOutput.nodes.forEach(n => {
+      nodesByType[n.type] = (nodesByType[n.type] || 0) + 1;
+    });
+
+    const edgesByType: Record<string, number> = {};
+    casOutput.edges.forEach(e => {
+      edgesByType[e.type] = (edgesByType[e.type] || 0) + 1;
+    });
+
+    return {
+      cas_version: casOutput.cas_version,
+      analysis_timestamp: casOutput.analysis_timestamp,
+      analysis_id: casOutput.analysis_id,
+      system: {
+        name: casOutput.system.name,
+        type: casOutput.system.type
+      },
+      architecture_summary: casOutput.architecture_summary,
+      route_table: casOutput.route_table,
+      database_schema: casOutput.database_schema,
+      external_services_count: casOutput.external_services?.length,
+      node_counts: {
+        total: casOutput.nodes.length,
+        by_type: nodesByType
+      },
+      edge_counts: {
+        total: casOutput.edges.length,
+        by_type: edgesByType
+      }
+    };
   }
 
   async getDetectedAnalyzers(projectPath: string): Promise<AnalyzerRegistration[]> {

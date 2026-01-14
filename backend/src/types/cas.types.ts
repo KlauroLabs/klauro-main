@@ -3,7 +3,10 @@ export interface CASOutput {
   analysis_timestamp: string;
   analysis_id: string;
   system: CASSystem;
-  perspectives?: CASPerspective[]; // New in v1.2
+  architecture_summary?: CASArchitectureSummary;
+  route_table?: CASRouteTableEntry[];
+  database_schema?: CASDatabaseSchema;
+  perspectives?: CASPerspective[];
   nodes: CASNode[];
   edges: CASEdge[];
   behaviors?: CASBehavior[];
@@ -313,20 +316,35 @@ export interface CASBehavior {
   metadata?: Record<string, any>;
 }
 
+export interface CASPatternVariation {
+  id: string;
+  implementation: string;
+  description: string;
+  instances: string[];
+  percentage: number;
+  characteristics?: Record<string, any>;
+}
+
+export interface CASPatternDeviation {
+  type: 'inconsistent-adoption' | 'partial-implementation' | 'anti-pattern' | 'obsolete-usage' | 'mixed-styles';
+  severity: 'info' | 'warning' | 'error';
+  description: string;
+  affected_instances: string[];
+  recommendation?: string;
+}
+
 export interface CASPattern {
   id: string;
-  type: 'design-pattern' | 'architectural-pattern' | 'anti-pattern';
+  type?: 'design-pattern' | 'architectural-pattern' | 'anti-pattern';
   name: string;
-  confidence?: number;
-  instances?: Array<{
-    nodes?: string[];
-    edges?: string[];
-    location?: string;
-  }>;
+  description?: string;
+  confidence: number;
+  instances: string[];
+  variations?: CASPatternVariation[];
+  deviations?: CASPatternDeviation[];
   metadata?: {
     framework_specific?: boolean;
     language_specific?: boolean;
-    description?: string;
     benefits?: string[];
     drawbacks?: string[];
   };
@@ -1157,4 +1175,114 @@ export interface CASCallGraph {
     await_count?: number;
     parallel_operations?: boolean;
   };
+}
+
+export interface CASArchitectureSummary {
+  system_type: string;
+  total_files: number;
+  total_lines?: number;
+  layers: {
+    presentation?: {
+      controllers?: number;
+      guards?: number;
+      middleware?: number;
+      endpoints?: number;
+      components?: number;
+      pages?: number;
+    };
+    business?: {
+      services?: number;
+      providers?: number;
+      use_cases?: number;
+      handlers?: number;
+    };
+    data?: {
+      repositories?: number;
+      entities?: number;
+      migrations?: number;
+      models?: number;
+    };
+    infrastructure?: {
+      modules?: number;
+      configs?: number;
+      utilities?: number;
+    };
+  };
+  api_surface?: {
+    total_endpoints: number;
+    by_auth: {
+      authenticated: number;
+      public: number;
+    };
+    by_method: Record<string, number>;
+  };
+  external_dependencies?: {
+    databases?: Array<{
+      type: string;
+      via?: string;
+      entities?: number;
+    }>;
+    caches?: Array<{
+      type: string;
+      used_for?: string[];
+    }>;
+    ai_services?: Array<{
+      name: string;
+      models?: string[];
+    }>;
+    external_apis?: Array<{
+      name: string;
+      purpose?: string;
+    }>;
+  };
+  security?: {
+    auth_strategy?: string;
+    protected_endpoints?: number;
+    oauth_providers?: string[];
+    guards?: string[];
+  };
+}
+
+export interface CASRouteTableEntry {
+  method: string;
+  path: string;
+  controller: string;
+  handler: string;
+  auth: boolean;
+  guards?: string[];
+  middleware?: string[];
+  source_node?: string;
+  description?: string;
+}
+
+export interface CASDatabaseSchema {
+  orm?: string;
+  entities: CASDatabaseEntity[];
+  relationships_summary: string[];
+}
+
+export interface CASDatabaseEntity {
+  name: string;
+  table?: string;
+  source_file?: string;
+  fields: CASDatabaseField[];
+  relationships: CASDatabaseRelationship[];
+}
+
+export interface CASDatabaseField {
+  name: string;
+  type: string;
+  primary?: boolean;
+  unique?: boolean;
+  nullable?: boolean;
+  default?: string;
+  column?: string;
+}
+
+export interface CASDatabaseRelationship {
+  type: 'OneToOne' | 'OneToMany' | 'ManyToOne' | 'ManyToMany';
+  target: string;
+  field: string;
+  inverse_field?: string;
+  join_table?: string;
 }

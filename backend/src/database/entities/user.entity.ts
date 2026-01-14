@@ -34,6 +34,9 @@ export class User extends BaseEntity {
   @Property({ type: 'varchar', length: 255, nullable: true, hidden: true })
   passwordHash?: string;
 
+  @Property({ type: 'varchar', length: 200 })
+  name!: string;
+
   @Property({ type: 'varchar', length: 100, nullable: true })
   firstName?: string;
 

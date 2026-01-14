@@ -11,6 +11,7 @@ import { AnalysisRun } from '../database/entities/analysis-run.entity';
 import { Component } from '../database/entities/component.entity';
 import { CodebaseConnection } from '../database/entities/codebase-connection.entity';
 import { Tag } from '../database/entities/tag.entity';
+import { AnalyzerModule } from '../analyzer/analyzer.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { Tag } from '../database/entities/tag.entity';
       CodebaseConnection,
       Tag,
     ]),
+    AnalyzerModule,
   ],
   controllers: [CodebasesController],
   providers: [CodebasesService],

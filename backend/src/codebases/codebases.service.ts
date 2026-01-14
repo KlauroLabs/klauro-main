@@ -1,11 +1,11 @@
-import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@mikro-orm/nestjs';
 import { EntityRepository, EntityManager, FilterQuery, QueryOrder, wrap } from '@mikro-orm/core';
 
 import { Codebase, CodebaseStatus } from '../database/entities/codebase.entity';
 import { Workspace } from '../database/entities/workspace.entity';
 import { User } from '../database/entities/user.entity';
-import { AnalysisRun } from '../database/entities/analysis-run.entity';
+import { AnalysisRun, AnalysisStatus, AnalysisType } from '../database/entities/analysis-run.entity';
 import { Component } from '../database/entities/component.entity';
 import { CodebaseConnection } from '../database/entities/codebase-connection.entity';
 import { Tag, TagType } from '../database/entities/tag.entity';
@@ -16,9 +16,12 @@ import { UpdateCodebaseDto } from './dto/update-codebase.dto';
 import { CodebaseQueryDto } from './dto/codebase-query.dto';
 import { CodebaseResponseDto, CodebaseWithStatsResponseDto, CodebaseListResponseDto, CodebaseDashboardDto, CodebaseStatsDto } from './dto/codebase-response.dto';
 
+import { CASAnalyzerService } from '../analyzer/services/cas-analyzer.service';
 
 @Injectable()
 export class CodebasesService {
+  private readonly logger = new Logger(CodebasesService.name);
+
   constructor(
     @InjectRepository(Codebase)
     private readonly codebaseRepository: EntityRepository<Codebase>,
@@ -37,6 +40,7 @@ export class CodebasesService {
     @InjectRepository(WorkspaceAccess)
     private readonly workspaceAccessRepository: EntityRepository<WorkspaceAccess>,
     private readonly em: EntityManager,
+    private readonly casAnalyzerService: CASAnalyzerService,
   ) {}
 
   async create(
@@ -47,6 +51,7 @@ export class CodebasesService {
     // Verify workspace exists and user has access
     const workspace = await this.findAccessibleWorkspace(userId, workspaceId, WorkspaceRole.EDITOR);
     const user = await this.userRepository.findOneOrFail(userId, {
+      populate: ['ownedCodebases'],
       failHandler: () => new NotFoundException('User not found'),
     });
 
@@ -66,14 +71,28 @@ export class CodebasesService {
       throw new BadRequestException('Codebase name already exists in this workspace');
     }
 
-    // Create codebase
-    const codebase = this.em.create(Codebase, {
-      ...createCodebaseDto,
+    // Prepare codebase data, cleaning up empty values
+    const codebaseData: any = {
+      name: createCodebaseDto.name,
+      description: createCodebaseDto.description,
       workspace,
       owner: user,
       status: CodebaseStatus.ACTIVE,
       defaultBranch: createCodebaseDto.defaultBranch || 'main',
-    } as any);
+      language: createCodebaseDto.language,
+      framework: createCodebaseDto.framework,
+      settings: createCodebaseDto.settings,
+    };
+
+    // Only set repository fields if repositoryUrl is provided and not empty
+    if (createCodebaseDto.repositoryUrl && createCodebaseDto.repositoryUrl.trim()) {
+      codebaseData.repositoryUrl = createCodebaseDto.repositoryUrl;
+      codebaseData.repositoryProvider = createCodebaseDto.repositoryProvider;
+      codebaseData.repositoryId = createCodebaseDto.repositoryId;
+    }
+
+    // Create codebase
+    const codebase = this.em.create(Codebase, codebaseData);
 
     await this.em.persistAndFlush(codebase);
 
@@ -89,6 +108,7 @@ export class CodebasesService {
     // Verify workspace and permissions
     const workspace = await this.findAccessibleWorkspace(userId, workspaceId, WorkspaceRole.EDITOR);
     const user = await this.userRepository.findOneOrFail(userId, {
+      populate: ['ownedCodebases'],
       failHandler: () => new NotFoundException('User not found'),
     });
 
@@ -103,15 +123,29 @@ export class CodebasesService {
       throw new BadRequestException('Codebase name already exists in this workspace');
     }
 
-    // Create codebase with specific ID
-    const codebase = this.em.create(Codebase, {
+    // Prepare codebase data, cleaning up empty values
+    const codebaseData: any = {
       id: codebaseId,
-      ...createCodebaseDto,
+      name: createCodebaseDto.name,
+      description: createCodebaseDto.description,
       workspace,
       owner: user,
       status: CodebaseStatus.ACTIVE,
       defaultBranch: createCodebaseDto.defaultBranch || 'main',
-    } as any);
+      language: createCodebaseDto.language,
+      framework: createCodebaseDto.framework,
+      settings: createCodebaseDto.settings,
+    };
+
+    // Only set repository fields if repositoryUrl is provided and not empty
+    if (createCodebaseDto.repositoryUrl && createCodebaseDto.repositoryUrl.trim()) {
+      codebaseData.repositoryUrl = createCodebaseDto.repositoryUrl;
+      codebaseData.repositoryProvider = createCodebaseDto.repositoryProvider;
+      codebaseData.repositoryId = createCodebaseDto.repositoryId;
+    }
+
+    // Create codebase with specific ID
+    const codebase = this.em.create(Codebase, codebaseData);
 
     await this.em.persistAndFlush(codebase);
 
@@ -308,6 +342,220 @@ export class CodebasesService {
     };
   }
 
+  async startAnalysis(userId: string, workspaceId: string, id: string): Promise<{analysisId: string}> {
+    const codebase = await this.findCodebaseByIdAndWorkspace(userId, workspaceId, id, WorkspaceRole.EDITOR);
+    const user = await this.userRepository.findOneOrFail(userId);
+
+    const localPath = codebase.settings?.localPath as string | undefined;
+
+    if (!codebase.repositoryUrl && !localPath) {
+      throw new BadRequestException('Codebase must have either a repository URL or local path configured for analysis');
+    }
+
+    const analysisRun = this.em.create(AnalysisRun, {
+      codebase,
+      triggeredBy: user,
+      status: AnalysisStatus.PENDING,
+      type: AnalysisType.MANUAL,
+      branch: codebase.defaultBranch,
+      configuration: {},
+      metadata: {},
+    } as any);
+
+    await this.em.persistAndFlush(analysisRun);
+
+    codebase.markAsAnalyzing();
+    await this.em.flush();
+
+    this.performAnalysis(analysisRun, codebase, localPath || codebase.repositoryUrl!)
+      .catch(error => {
+        this.logger.error(`Analysis failed for codebase ${codebase.id}:`, error);
+      });
+
+    return { analysisId: analysisRun.id };
+  }
+
+  private async performAnalysis(
+    analysisRun: AnalysisRun,
+    codebase: Codebase,
+    repositoryPath: string,
+  ): Promise<void> {
+    try {
+      analysisRun.start();
+      await this.em.flush();
+
+      this.logger.log(`Starting CAS analysis for codebase ${codebase.name} (${codebase.id})`);
+
+      const progressCallback = async (progress: number, operation: string) => {
+        analysisRun.updateProgress(progress, operation);
+        await this.em.flush();
+        this.logger.debug(`Analysis progress for ${codebase.id}: ${progress}% - ${operation}`);
+      };
+
+      await progressCallback(10, 'Initializing CAS analysis...');
+
+      const casResult = await this.casAnalyzerService.analyzeProject({
+        projectPath: repositoryPath,
+        options: {
+          includeTests: true,
+        }
+      });
+
+      await progressCallback(80, 'Processing CAS results...');
+
+      const blueprint = this.convertCASToBlueprint(casResult);
+
+      await this.storeAnalysisResults(analysisRun, blueprint);
+
+      await progressCallback(90, 'Storing analysis data...');
+
+      const enhancedBlueprint = {
+        ...blueprint,
+        id: analysisRun.id,
+        codebaseId: codebase.id,
+        codebaseName: codebase.name,
+        metadata: {
+          ...blueprint.metadata,
+          analysisDate: new Date(),
+          repositoryPath,
+          cas_version: casResult.cas_version,
+          version: '2.0.0',
+          analyzersRun: casResult.analyzer_contributions.map((c: any) => c.analyzer_name),
+        },
+      };
+
+      analysisRun.complete(enhancedBlueprint, undefined);
+      await this.em.flush();
+
+      codebase.markAsAnalyzed();
+      await this.em.flush();
+
+      this.logger.log(`Analysis completed for codebase ${codebase.name} (${codebase.id})`);
+
+    } catch (error: any) {
+      this.logger.error(`Analysis failed for codebase ${codebase.name} (${codebase.id}):`, error);
+
+      analysisRun.fail(error.message || 'Unknown analysis error');
+      await this.em.flush();
+
+      codebase.markAsError();
+      await this.em.flush();
+    }
+  }
+
+  private async storeAnalysisResults(analysisRun: AnalysisRun, blueprint: any): Promise<void> {
+    if (!blueprint.components) return;
+
+    await this.em.nativeDelete(Component, { analysisRun: analysisRun.id });
+
+    const componentMap = new Map<string, Component>();
+
+    for (const comp of blueprint.components) {
+      const component = this.em.create(Component, {
+        analysisRun,
+        name: comp.name,
+        type: comp.type,
+        path: comp.path,
+        language: comp.language,
+        framework: comp.framework,
+        layer: comp.metadata?.layer || 'infrastructure',
+        lineCount: comp.metadata?.lineCount || 0,
+        complexity: comp.metadata?.complexity || 0,
+        exports: comp.metadata?.exports,
+        imports: comp.metadata?.imports,
+        httpMethods: comp.metadata?.httpMethods,
+        dbQueries: comp.metadata?.dbQueries,
+        externalCalls: comp.metadata?.externalCalls,
+        isEntry: comp.metadata?.isEntry || false,
+        isOrphaned: comp.metadata?.isOrphaned || false,
+        responsibilities: comp.metadata?.responsibilities,
+        aiDescription: comp.metadata?.aiDescription,
+        functions: comp.metadata?.functions,
+        testCoverage: comp.metadata?.testCoverage,
+        performanceMetrics: comp.metadata?.performanceMetrics,
+        metadata: comp.metadata,
+        positionX: comp.position?.x,
+        positionY: comp.position?.y,
+      } as any);
+
+      componentMap.set(comp.id, component);
+    }
+
+    await this.em.persistAndFlush([...componentMap.values()]);
+  }
+
+  private mapCASTypeToComponentType(casType: string): string {
+    const typeMap: Record<string, string> = {
+      'file': 'module',
+      'class': 'component',
+      'function': 'utility',
+      'method': 'utility',
+      'interface': 'model',
+      'type': 'model',
+      'enum': 'model',
+      'controller': 'controller',
+      'service': 'service',
+      'repository': 'repository',
+      'module': 'module',
+      'middleware': 'middleware',
+      'guard': 'guard',
+      'interceptor': 'interceptor',
+      'pipe': 'pipe',
+      'filter': 'filter',
+      'provider': 'provider',
+      'component': 'component',
+      'hook': 'hook',
+      'hoc': 'hoc',
+      'route': 'route',
+      'endpoint': 'route',
+      'api': 'route',
+      'model': 'model',
+      'entity': 'model',
+      'schema': 'model',
+      'config': 'config',
+      'constant': 'config',
+      'variable': 'utility',
+    };
+
+    return typeMap[casType.toLowerCase()] || 'utility';
+  }
+
+  private convertCASToBlueprint(casResult: any): any {
+    return {
+      components: casResult.nodes.map((node: any) => ({
+        id: node.id,
+        name: node.name,
+        type: this.mapCASTypeToComponentType(node.type),
+        path: node.file_path || node.source?.file || '',
+        language: node.metadata?.language || 'unknown',
+        framework: node.metadata?.framework,
+        metadata: {
+          ...node.metadata,
+          originalType: node.type,
+          lineCount: node.line_end ? (node.line_end - (node.line_start || 1)) : undefined,
+          level: node.level
+        }
+      })),
+      connections: casResult.edges.map((edge: any) => ({
+        id: edge.id,
+        from: edge.source,
+        to: edge.target,
+        type: edge.type,
+        weight: edge.metadata?.weight || 1,
+        protocol: edge.metadata?.protocol,
+        metadata: edge.metadata
+      })),
+      entryPoints: casResult.entry_points,
+      exitPoints: casResult.exit_points,
+      dependencies: casResult.libraries,
+      metadata: {
+        cas_version: casResult.cas_version,
+        analyzer_contributions: casResult.analyzer_contributions,
+        system: casResult.system
+      }
+    };
+  }
+
   async markAsAnalyzing(userId: string, workspaceId: string, id: string): Promise<void> {
     const codebase = await this.findCodebaseByIdAndWorkspace(userId, workspaceId, id, WorkspaceRole.EDITOR);
     codebase.markAsAnalyzing();
@@ -460,6 +708,103 @@ export class CodebasesService {
       lastAnalyzedAt: codebase.lastAnalyzedAt?.toISOString(),
       createdAt: codebase.createdAt.toISOString(),
       updatedAt: codebase.updatedAt.toISOString(),
+    };
+  }
+
+  async getBlueprint(userId: string, workspaceId: string, codebaseId: string): Promise<any> {
+    await this.findAccessibleWorkspace(userId, workspaceId, WorkspaceRole.VIEWER);
+
+    const latestAnalysis = await this.analysisRunRepository.findOne(
+      {
+        codebase: codebaseId,
+        status: AnalysisStatus.COMPLETED
+      },
+      {
+        orderBy: { completedAt: 'DESC' }
+      }
+    );
+
+    if (!latestAnalysis) {
+      throw new NotFoundException('No completed analysis found for this codebase');
+    }
+
+    if (!latestAnalysis.blueprint) {
+      throw new NotFoundException('No blueprint data found for this analysis');
+    }
+
+    return {
+      analysisId: latestAnalysis.id,
+      blueprint: latestAnalysis.blueprint,
+    };
+  }
+
+  async getComponents(userId: string, workspaceId: string, codebaseId: string): Promise<any> {
+    await this.findAccessibleWorkspace(userId, workspaceId, WorkspaceRole.VIEWER);
+
+    const latestAnalysis = await this.analysisRunRepository.findOne(
+      {
+        codebase: codebaseId,
+        status: AnalysisStatus.COMPLETED
+      },
+      {
+        orderBy: { completedAt: 'DESC' }
+      }
+    );
+
+    if (!latestAnalysis) {
+      throw new NotFoundException('No completed analysis found for this codebase');
+    }
+
+    if (!latestAnalysis.blueprint?.components) {
+      return {
+        analysisId: latestAnalysis.id,
+        components: [],
+      };
+    }
+
+    return {
+      analysisId: latestAnalysis.id,
+      components: latestAnalysis.blueprint.components,
+    };
+  }
+
+  async getConnections(userId: string, workspaceId: string, codebaseId: string): Promise<any> {
+    await this.findAccessibleWorkspace(userId, workspaceId, WorkspaceRole.VIEWER);
+
+    const latestAnalysis = await this.analysisRunRepository.findOne(
+      {
+        codebase: codebaseId,
+        status: AnalysisStatus.COMPLETED
+      },
+      {
+        orderBy: { completedAt: 'DESC' }
+      }
+    );
+
+    if (!latestAnalysis) {
+      throw new NotFoundException('No completed analysis found for this codebase');
+    }
+
+    if (latestAnalysis.blueprint?.connections) {
+      const connections = latestAnalysis.blueprint.connections.map((conn: any) => ({
+        id: conn.id,
+        from: conn.from,
+        to: conn.to,
+        type: conn.type,
+        weight: conn.weight || 1,
+        protocol: conn.protocol,
+        metadata: conn.metadata,
+      }));
+
+      return {
+        analysisId: latestAnalysis.id,
+        connections,
+      };
+    }
+
+    return {
+      analysisId: latestAnalysis.id,
+      connections: [],
     };
   }
 }

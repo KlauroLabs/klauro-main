@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import io, { Socket } from 'socket.io-client';
+import { API_CONFIG } from '../config/api';
 
 export interface TelemetryData {
   nodeActivity: Record<string, number>;
@@ -52,7 +53,7 @@ export function useWebSocket(
   const connect = useCallback(() => {
     if (socket?.connected) return;
 
-    const newSocket = io(process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:3001', {
+    const newSocket = io(API_CONFIG.wsURL, {
       transports: ['websocket'],
       auth: {
         token: localStorage.getItem('authToken')
