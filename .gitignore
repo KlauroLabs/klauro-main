@@ -10,3 +10,17 @@ node_modules/
 dist/
 .next/
 .unravl-cache/
+CURRENT_STATE.md
+MOAR_CONTEXT.md
+PROJECT_PLAN.md
+WORKSPACE_FRONTEND_IMPLEMENTATION.md
+backend/cas-output.json
+backend/cas-summary.json
+backend/fix-all-node-type-checks.js
+backend/fix-null-checks.js
+backend/remove-duplicate-null-checks.js
+backend/temp/
+backend/test-analysis.js
+backend/test-cas-analysis.ts
+docs/VISUALIZATION_AUDIT.md
+docs/VISUALIZATION_IMPLEMENTATION_PLAN.md
