@@ -91,24 +91,7 @@ export const CallTree: React.FC<CallTreeProps> = ({
 
       if (!node) return null;
 
-      const outgoingEdges = edges
-        .filter(e => e.source === nodeId && e.type === 'calls')
-        .sort((a, b) => {
-          const lineA = a.metadata?.attributes?.line || 0;
-          const lineB = b.metadata?.attributes?.line || 0;
-          return lineA - lineB;
-        });
-
-      const children: CallTreeNode[] = [];
-      const childNodeIds = new Set<string>();
-
-      outgoingEdges.forEach(edge => {
-        const child = buildTree(edge.target, depth + 1);
-        if (child) {
-          children.push(child);
-          childNodeIds.add(edge.target);
-        }
-      });
+      const outgoingEdges = edges.filter(e => e.source === nodeId && e.type === 'calls');
 
       const directChildren = nodeChildrenMap.get(nodeId) || [];
       const allDescendants = new Set<string>(directChildren);
@@ -123,6 +106,16 @@ export const CallTree: React.FC<CallTreeProps> = ({
       };
       directChildren.forEach(findAllDescendants);
 
+      type ChildItem = { type: 'edge', edge: typeof outgoingEdges[0], line: number } |
+                       { type: 'exit', exitPoint: ExitPoint, idx: number, line: number };
+
+      const childItems: ChildItem[] = [];
+
+      outgoingEdges.forEach(edge => {
+        const line = edge.metadata?.attributes?.line || 0;
+        childItems.push({ type: 'edge', edge, line });
+      });
+
       const nodeExitPoints = exitPointsBySourceNode.get(nodeId) || [];
       nodeExitPoints.forEach((ep, idx) => {
         const epSourceNodeId = ep.source_node || ep.source?.node_id;
@@ -134,22 +127,41 @@ export const CallTree: React.FC<CallTreeProps> = ({
           return;
         }
 
-        const sourceLine = ep.metadata?.line || ep.source?.line;
-        const sourceFile = ep.metadata?.file || ep.source?.file || '';
+        const line = ep.metadata?.line || ep.source?.line || 0;
+        childItems.push({ type: 'exit', exitPoint: ep, idx, line });
+      });
 
-        children.push({
-          id: `${nodeId}_exit_${idx}`,
-          nodeId: nodeId,
-          name: ep.name,
-          type: ep.type,
-          depth: depth + 1,
-          source: sourceLine ? { file: sourceFile, line: sourceLine } : undefined,
-          children: [],
-          isDatabase: ep.type === 'database',
-          isExternal: ep.type === 'api',
-          isExitPoint: true,
-          exitPointData: ep,
-        });
+      childItems.sort((a, b) => a.line - b.line);
+
+      const children: CallTreeNode[] = [];
+      const childNodeIds = new Set<string>();
+
+      childItems.forEach(item => {
+        if (item.type === 'edge') {
+          const child = buildTree(item.edge.target, depth + 1);
+          if (child) {
+            children.push(child);
+            childNodeIds.add(item.edge.target);
+          }
+        } else {
+          const ep = item.exitPoint;
+          const sourceLine = ep.metadata?.line || ep.source?.line;
+          const sourceFile = ep.metadata?.file || ep.source?.file || '';
+
+          children.push({
+            id: `${nodeId}_exit_${item.idx}`,
+            nodeId: nodeId,
+            name: ep.name,
+            type: ep.type,
+            depth: depth + 1,
+            source: sourceLine ? { file: sourceFile, line: sourceLine } : undefined,
+            children: [],
+            isDatabase: ep.type === 'database',
+            isExternal: ep.type === 'api',
+            isExitPoint: true,
+            exitPointData: ep,
+          });
+        }
       });
 
       return {
