@@ -40,6 +40,7 @@ interface CallTreeProps {
   edges: CASEdge[];
   exitPoints?: ExitPoint[];
   onNodeClick: (nodeId: string) => void;
+  onExitPointClick?: (exitPoint: ExitPoint, sourceNodeId: string) => void;
   maxDepth?: number;
 }
 
@@ -49,6 +50,7 @@ export const CallTree: React.FC<CallTreeProps> = ({
   edges,
   exitPoints = [],
   onNodeClick,
+  onExitPointClick,
   maxDepth = 10,
 }) => {
   const nodeMap = useMemo(
@@ -195,6 +197,7 @@ export const CallTree: React.FC<CallTreeProps> = ({
       <CallTreeNodeComponent
         node={tree}
         onNodeClick={onNodeClick}
+        onExitPointClick={onExitPointClick}
         isRoot
       />
     </Box>
@@ -204,17 +207,27 @@ export const CallTree: React.FC<CallTreeProps> = ({
 interface CallTreeNodeComponentProps {
   node: CallTreeNode;
   onNodeClick: (nodeId: string) => void;
+  onExitPointClick?: (exitPoint: ExitPoint, sourceNodeId: string) => void;
   isRoot?: boolean;
 }
 
 const CallTreeNodeComponent: React.FC<CallTreeNodeComponentProps> = ({
   node,
   onNodeClick,
+  onExitPointClick,
   isRoot = false,
 }) => {
   const [expanded, setExpanded] = useState(isRoot || node.depth < 2);
   const hasChildren = node.children.length > 0;
-  const isClickable = !node.isExitPoint;
+  const isClickable = true;
+
+  const handleClick = () => {
+    if (node.isExitPoint && node.exitPointData && onExitPointClick) {
+      onExitPointClick(node.exitPointData, node.nodeId);
+    } else {
+      onNodeClick(node.nodeId);
+    }
+  };
 
   const nodeColor = getNodeColor(node.type);
   const indent = node.depth * 32;
@@ -293,7 +306,7 @@ const CallTreeNodeComponent: React.FC<CallTreeNodeComponentProps> = ({
               onClick={(e) => {
                 e.stopPropagation();
                 if (isClickable) {
-                  onNodeClick(node.nodeId);
+                  handleClick();
                 }
               }}
             >
@@ -315,7 +328,7 @@ const CallTreeNodeComponent: React.FC<CallTreeNodeComponentProps> = ({
               }}
               onClick={() => {
                 if (isClickable) {
-                  onNodeClick(node.nodeId);
+                  handleClick();
                 }
               }}
             >
@@ -377,6 +390,7 @@ const CallTreeNodeComponent: React.FC<CallTreeNodeComponentProps> = ({
                 key={child.id}
                 node={child}
                 onNodeClick={onNodeClick}
+                onExitPointClick={onExitPointClick}
               />
             ))}
           </Box>

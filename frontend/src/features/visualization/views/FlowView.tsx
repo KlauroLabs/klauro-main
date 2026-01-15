@@ -36,6 +36,7 @@ export interface FlowViewProps {
   onBack: () => void;
   onStepClick: (step: FlowStep) => void;
   onNodeClick: (nodeId: string) => void;
+  onExitPointClick?: (exitPoint: ExitPoint, sourceNodeId: string) => void;
 }
 
 const STEP_COLORS: Record<string, string> = {
@@ -56,6 +57,7 @@ export const FlowView: React.FC<FlowViewProps> = ({
   onBack,
   onStepClick,
   onNodeClick,
+  onExitPointClick,
 }) => {
   const flow = capability.flow;
   const precomputedSteps = capability.flowSteps;
@@ -224,6 +226,7 @@ export const FlowView: React.FC<FlowViewProps> = ({
                   edges={edges}
                   exitPoints={exitPoints}
                   onNodeClick={onNodeClick}
+                  onExitPointClick={onExitPointClick}
                   maxDepth={15}
                 />
               ) : (

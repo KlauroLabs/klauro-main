@@ -18,7 +18,9 @@ import { SystemOverview } from '../views/SystemOverview';
 import { DomainView } from '../views/DomainView';
 import { FlowView } from '../views/FlowView';
 import { NodeDetailPanel } from './NodeDetailPanel';
+import { ExitPointDetailPanel } from './ExitPointDetailPanel';
 import { useNodeSelection } from '../hooks/useNodeSelection';
+import { ExitPoint } from '../types';
 
 type ViewLevel = 'system' | 'domain' | 'flow' | 'component';
 
@@ -40,6 +42,7 @@ export const UnderstandingContainer: React.FC<UnderstandingContainerProps> = ({
 }) => {
   const [navigation, setNavigation] = useState<NavigationState>({ level: 'system' });
   const [detailPanelOpen, setDetailPanelOpen] = useState(false);
+  const [selectedExitPoint, setSelectedExitPoint] = useState<{ exitPoint: ExitPoint; sourceNodeId: string } | null>(null);
 
   const {
     cas,
@@ -88,9 +91,16 @@ export const UnderstandingContainer: React.FC<UnderstandingContainerProps> = ({
     const node = getNodeById(nodeId);
     if (node) {
       selectNode(nodeId);
+      setSelectedExitPoint(null);
       setDetailPanelOpen(true);
     }
   }, [getNodeById, selectNode]);
+
+  const handleExitPointClick = useCallback((exitPoint: ExitPoint, sourceNodeId: string) => {
+    setSelectedExitPoint({ exitPoint, sourceNodeId });
+    selectNode(null);
+    setDetailPanelOpen(true);
+  }, [selectNode]);
 
   const handleBackToSystem = useCallback(() => {
     setNavigation({ level: 'system' });
@@ -106,6 +116,7 @@ export const UnderstandingContainer: React.FC<UnderstandingContainerProps> = ({
   const handleCloseDetailPanel = useCallback(() => {
     setDetailPanelOpen(false);
     selectNode(null);
+    setSelectedExitPoint(null);
   }, [selectNode]);
 
   const renderBreadcrumbs = () => {
@@ -184,6 +195,7 @@ export const UnderstandingContainer: React.FC<UnderstandingContainerProps> = ({
             onBack={handleBackToDomain}
             onStepClick={handleStepClick}
             onNodeClick={handleNodeClick}
+            onExitPointClick={handleExitPointClick}
           />
         );
 
@@ -229,7 +241,7 @@ export const UnderstandingContainer: React.FC<UnderstandingContainerProps> = ({
         </Box>
       </Box>
 
-      {detailPanelOpen && selectedNode && (
+      {detailPanelOpen && (selectedNode || selectedExitPoint) && (
         <Box
           sx={{
             width: 400,
@@ -238,24 +250,32 @@ export const UnderstandingContainer: React.FC<UnderstandingContainerProps> = ({
             overflow: 'auto',
           }}
         >
-          <NodeDetailPanel
-            node={selectedNode}
-            allNodes={nodes}
-            allEdges={edges}
-            decorators={cas?.decorators}
-            entryPoints={entryPoints}
-            exitPoints={exitPoints}
-            incomingConnections={incomingConnections}
-            outgoingConnections={outgoingConnections}
-            outgoingExitPoints={outgoingExitPoints}
-            callChains={getCallChainsForNode(selectedNode.id)}
-            onClose={handleCloseDetailPanel}
-            onNodeClick={(nodeId) => {
-              selectNode(nodeId);
-            }}
-            canGoBack={canGoBack}
-            onGoBack={goBack}
-          />
+          {selectedNode ? (
+            <NodeDetailPanel
+              node={selectedNode}
+              allNodes={nodes}
+              allEdges={edges}
+              decorators={cas?.decorators}
+              entryPoints={entryPoints}
+              exitPoints={exitPoints}
+              incomingConnections={incomingConnections}
+              outgoingConnections={outgoingConnections}
+              outgoingExitPoints={outgoingExitPoints}
+              callChains={getCallChainsForNode(selectedNode.id)}
+              onClose={handleCloseDetailPanel}
+              onNodeClick={(nodeId) => {
+                selectNode(nodeId);
+              }}
+              canGoBack={canGoBack}
+              onGoBack={goBack}
+            />
+          ) : selectedExitPoint ? (
+            <ExitPointDetailPanel
+              exitPoint={selectedExitPoint.exitPoint}
+              sourceNodeName={getNodeById(selectedExitPoint.sourceNodeId)?.name}
+              onClose={handleCloseDetailPanel}
+            />
+          ) : null}
         </Box>
       )}
     </Box>

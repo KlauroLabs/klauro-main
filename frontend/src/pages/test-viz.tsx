@@ -19,8 +19,10 @@ import { ArchitectureItemsView } from '../features/visualization/views/Architect
 import { PatternsView } from '../features/visualization/views/PatternsView';
 import { PatternDetailView } from '../features/visualization/views/PatternDetailView';
 import { NodeDetailPanel } from '../features/visualization/components/NodeDetailPanel';
+import { ExitPointDetailPanel } from '../features/visualization/components/ExitPointDetailPanel';
 import { useNodeSelection } from '../features/visualization/hooks/useNodeSelection';
 import { Domain, Capability, FlowStep, extractDomains } from '../features/visualization/utils/domainExtractor';
+import { ExitPoint } from '../features/visualization/types';
 
 type ViewLevel = 'system' | 'domain' | 'flow' | 'health' | 'architecture' | 'patterns' | 'pattern-detail';
 
@@ -38,6 +40,7 @@ const TestVisualizationPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [navigation, setNavigation] = useState<NavigationState>({ level: 'system' });
   const [detailPanelOpen, setDetailPanelOpen] = useState(false);
+  const [selectedExitPoint, setSelectedExitPoint] = useState<{ exitPoint: ExitPoint; sourceNodeId: string } | null>(null);
 
   const nodes = cas?.nodes || [];
   const edges = cas?.edges || [];
@@ -105,9 +108,16 @@ const TestVisualizationPage: React.FC = () => {
     const node = nodes.find(n => n.id === nodeId);
     if (node) {
       selectNode(nodeId);
+      setSelectedExitPoint(null);
       setDetailPanelOpen(true);
     }
   }, [nodes, selectNode]);
+
+  const handleExitPointClick = useCallback((exitPoint: ExitPoint, sourceNodeId: string) => {
+    setSelectedExitPoint({ exitPoint, sourceNodeId });
+    selectNode(null);
+    setDetailPanelOpen(true);
+  }, [selectNode]);
 
   const handleBackToSystem = useCallback(() => {
     setNavigation({ level: 'system' });
@@ -143,6 +153,7 @@ const TestVisualizationPage: React.FC = () => {
   const handleCloseDetailPanel = useCallback(() => {
     setDetailPanelOpen(false);
     selectNode(null);
+    setSelectedExitPoint(null);
   }, [selectNode]);
 
   const getCallChainsForNode = useCallback((nodeId: string) => {
@@ -336,12 +347,13 @@ const TestVisualizationPage: React.FC = () => {
                 onBack={handleBackToDomain}
                 onStepClick={handleStepClick}
                 onNodeClick={handleNodeClick}
+                onExitPointClick={handleExitPointClick}
               />
             )}
           </Box>
         </Box>
 
-        {detailPanelOpen && selectedNode && (
+        {detailPanelOpen && (selectedNode || selectedExitPoint) && (
           <Box
             sx={{
               width: 400,
@@ -350,22 +362,30 @@ const TestVisualizationPage: React.FC = () => {
               overflow: 'auto',
             }}
           >
-            <NodeDetailPanel
-              node={selectedNode}
-              allNodes={nodes}
-              allEdges={edges}
-              decorators={cas?.decorators}
-              entryPoints={cas?.entry_points}
-              exitPoints={cas?.exit_points}
-              incomingConnections={incomingConnections}
-              outgoingConnections={outgoingConnections}
-              outgoingExitPoints={outgoingExitPoints}
-              callChains={getCallChainsForNode(selectedNode.id)}
-              onClose={handleCloseDetailPanel}
-              onNodeClick={(nodeId) => selectNode(nodeId)}
-              canGoBack={canGoBack}
-              onGoBack={goBack}
-            />
+            {selectedNode ? (
+              <NodeDetailPanel
+                node={selectedNode}
+                allNodes={nodes}
+                allEdges={edges}
+                decorators={cas?.decorators}
+                entryPoints={cas?.entry_points}
+                exitPoints={cas?.exit_points}
+                incomingConnections={incomingConnections}
+                outgoingConnections={outgoingConnections}
+                outgoingExitPoints={outgoingExitPoints}
+                callChains={getCallChainsForNode(selectedNode.id)}
+                onClose={handleCloseDetailPanel}
+                onNodeClick={(nodeId) => selectNode(nodeId)}
+                canGoBack={canGoBack}
+                onGoBack={goBack}
+              />
+            ) : selectedExitPoint ? (
+              <ExitPointDetailPanel
+                exitPoint={selectedExitPoint.exitPoint}
+                sourceNodeName={nodes.find(n => n.id === selectedExitPoint.sourceNodeId)?.name}
+                onClose={handleCloseDetailPanel}
+              />
+            ) : null}
           </Box>
         )}
       </Box>
