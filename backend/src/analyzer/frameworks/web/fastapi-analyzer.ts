@@ -32,6 +32,10 @@ interface FastAPIRouter {
 interface FastAPIRoute {
   method: string;
   path: string;
+  handlerName: string;
+  handlerLine: number;
+  handlerEndLine: number;
+  isAsync: boolean;
   operationId?: string;
   summary?: string;
   description?: string;
@@ -41,6 +45,14 @@ interface FastAPIRoute {
   requestBody?: { type: string; required: boolean; description?: string };
   responses: Array<{ status: number; type: string; description?: string }>;
   security?: string[];
+}
+
+interface HandlerCall {
+  callee: string;
+  callType: 'function' | 'method' | 'await' | 'dependency';
+  line: number;
+  isAsync: boolean;
+  objectName?: string;
 }
 
 interface PydanticModel {
@@ -258,9 +270,12 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
       const fullPath = path.join(projectPath, file);
       const content = await fs.readFile(fullPath, 'utf-8');
 
-      if (content.includes('APIRouter(') || content.includes('router = ')) {
-        const routerName = this.extractRouterName(content, file);
-        const prefix = this.extractRouterPrefix(content);
+      const hasRouter = content.includes('APIRouter(') || content.includes('router = ');
+      const hasAppRoutes = content.includes('FastAPI(') && /@\w+\.(get|post|put|delete|patch)\s*\(/i.test(content);
+
+      if (hasRouter || hasAppRoutes) {
+        const routerName = hasRouter ? this.extractRouterName(content, file) : this.extractAppName(content, file);
+        const prefix = hasRouter ? this.extractRouterPrefix(content) : '';
         const tags = this.extractRouterTags(content);
         const dependencies = this.extractRouterDependencies(content);
         const routes = this.extractRoutes(content);
@@ -305,13 +320,14 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
 
         routes.forEach((route, index) => {
           const routeId = `route_${routerId}_${index}`;
-          const fullPath = `${prefix || ''}${route.path}`.replace('//', '/');
+          const handlerId = `handler_${routerId}_${this.sanitizeId(route.handlerName)}_${route.handlerLine}`;
+          const fullRoutePath = `${prefix || ''}${route.path}`.replace('//', '/');
 
-          const routeNode = this.createNodeBuilder(routeId, `${route.method.toUpperCase()} ${fullPath}`, 'route')
+          const routeNode = this.createNodeBuilder(routeId, `${route.method.toUpperCase()} ${fullRoutePath}`, 'route')
             .withLevel(3, 'code')
             .withCategory('route', ['http', 'endpoint'])
-            .withSource({ file: fullPath, line: 1, end_line: 1 })
-            .withDescription(`FastAPI HTTP endpoint: ${route.method.toUpperCase()} ${fullPath}`)
+            .withSource({ file: file, line: route.handlerLine - 1, end_line: route.handlerLine })
+            .withDescription(`FastAPI HTTP endpoint: ${route.method.toUpperCase()} ${fullRoutePath}`)
             .withMetadata({
               framework: 'fastapi',
               attributes: {
@@ -324,11 +340,68 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
                 parameters: route.parameters.length,
                 requestBody: route.requestBody,
                 responses: route.responses.length,
-                security: route.security
+                security: route.security,
+                handlerName: route.handlerName
               }
             })
             .build();
           nodes.push(routeNode);
+
+          const handlerNode = this.createNodeBuilder(handlerId, route.handlerName, 'function')
+            .withLevel(3, 'code')
+            .withCategory('function', ['handler', 'endpoint'])
+            .withSource({ file: fullPath, line: route.handlerLine, end_line: route.handlerEndLine })
+            .withDescription(`FastAPI route handler: ${route.handlerName}`)
+            .withMetadata({
+              framework: 'fastapi',
+              attributes: {
+                is_async: route.isAsync,
+                route_method: route.method,
+                route_path: fullRoutePath,
+                parameters: route.parameters
+              }
+            })
+            .build();
+          nodes.push(handlerNode);
+
+          const lines = content.split('\n');
+          const handlerCalls = this.extractHandlerCalls(lines, route.handlerLine - 1, route.handlerEndLine);
+
+          const createdCalleeNodes = new Set<string>();
+          for (const call of handlerCalls) {
+            const calleeId = call.objectName
+              ? `callee_${this.sanitizeId(call.objectName)}_${this.sanitizeId(call.callee)}`
+              : `callee_${this.sanitizeId(call.callee)}`;
+
+            if (!createdCalleeNodes.has(calleeId)) {
+              createdCalleeNodes.add(calleeId);
+
+              const calleeName = call.objectName ? `${call.objectName}.${call.callee}` : call.callee;
+              const calleeNode = this.createNodeBuilder(calleeId, calleeName, 'function')
+                .withLevel(4, 'member')
+                .withCategory('function', call.callType === 'dependency' ? ['dependency'] : ['callee'])
+                .withSource({ file: fullPath, line: call.line })
+                .withDescription(`Called by handler: ${route.handlerName}`)
+                .withMetadata({
+                  framework: 'fastapi',
+                  attributes: {
+                    is_async: call.isAsync,
+                    call_type: call.callType,
+                    object_name: call.objectName
+                  }
+                })
+                .build();
+              nodes.push(calleeNode);
+            }
+
+            const edgeType = call.callType === 'dependency' ? 'depends_on' : 'calls';
+            edges.push(this.createEdge(
+              `${handlerId}_${edgeType}_${calleeId}_${call.line}`,
+              handlerId,
+              calleeId,
+              edgeType
+            ));
+          }
 
           edges.push(this.createEdge(
             `${routerId}_exposes_${routeId}`,
@@ -337,20 +410,46 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
             'exposes'
           ));
 
+          edges.push(this.createEdge(
+            `${routeId}_calls_${handlerId}`,
+            routeId,
+            handlerId,
+            'calls'
+          ));
+
           entryPoints.push({
             id: `entry_${routeId}`,
-            name: `${route.method.toUpperCase()} ${fullPath}`,
+            name: `${route.method.toUpperCase()} ${fullRoutePath}`,
             type: 'http',
             source_node: routeId,
-            metadata: {
+            trigger: {
               method: route.method.toUpperCase(),
-              path: fullPath,
+              path: fullRoutePath,
+              parameters: route.parameters.map(p => ({
+                name: p.name,
+                type: p.location,
+                required: p.required,
+                location: p.location
+              }))
+            },
+            handler: {
+              node_id: handlerId,
+              method_name: route.handlerName,
+              file: file,
+              line: route.handlerLine
+            },
+            security: {
+              authenticated: route.security && route.security.length > 0,
+              guards: route.security || [],
+              roles: [],
+              permissions: []
+            },
+            metadata: {
+              framework: 'fastapi',
               router: routerName,
               operationId: route.operationId,
               summary: route.summary,
-              tags: route.tags,
-              parameters: route.parameters,
-              security: route.security
+              tags: route.tags
             }
           });
         });
@@ -587,8 +686,25 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
             name: `WebSocket ${ws.path}`,
             type: 'websocket',
             source_node: wsId,
-            metadata: {
+            trigger: {
+              protocol: 'websocket',
               path: ws.path,
+              parameters: []
+            },
+            handler: {
+              node_id: wsId,
+              method_name: ws.endpoint,
+              file: fullPath,
+              line: 0
+            },
+            security: {
+              authenticated: false,
+              guards: [],
+              roles: [],
+              permissions: []
+            },
+            metadata: {
+              framework: 'fastapi',
               endpoint: ws.endpoint,
               dependencies: ws.dependencies
             }
@@ -664,6 +780,12 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
     return match ? match[1] : path.basename(filePath, '.py');
   }
 
+  private extractAppName(content: string, filePath: string): string {
+    const appPattern = /(\w+)\s*=\s*FastAPI\s*\(/;
+    const match = appPattern.exec(content);
+    return match ? match[1] : path.basename(filePath, '.py');
+  }
+
   private extractRouterPrefix(content: string): string | undefined {
     const prefixPattern = /prefix\s*=\s*['"]([^'"]+)['"]/;
     const match = prefixPattern.exec(content);
@@ -698,25 +820,63 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
 
   private extractRoutes(content: string): FastAPIRoute[] {
     const routes: FastAPIRoute[] = [];
-    const routePattern = /@(?:\w+\.)?(\w+)\s*\(\s*['"]([^'"]+)['"](?:[^)]*)\)[\s\S]*?(?:async\s+)?def\s+(\w+)\s*\([^)]*\)/g;
+    const lines = content.split('\n');
 
-    let match;
-    while ((match = routePattern.exec(content)) !== null) {
-      const method = match[1].toLowerCase();
-      const path = match[2];
-      const functionName = match[3];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmedLine = line.trim();
 
-      const routeInfo = this.extractRouteInfo(content, match.index, functionName);
+      const decoratorMatch = trimmedLine.match(/^@(\w+)\.(get|post|put|delete|patch|head|options|websocket)\s*\(/i);
+      if (!decoratorMatch) continue;
+
+      const method = decoratorMatch[2].toLowerCase();
+
+      let pathMatch = trimmedLine.match(/@\w+\.\w+\s*\(\s*["']([^"']+)["']/);
+      if (!pathMatch) {
+        pathMatch = trimmedLine.match(/@\w+\.\w+\s*\(\s*["']([^"']*)/);
+      }
+      const routePath = pathMatch ? pathMatch[1] : '/';
+
+      let functionName = '';
+      let handlerLine = 0;
+      let handlerEndLine = 0;
+      let isAsync = false;
+      let functionIndent = 0;
+
+      for (let j = i + 1; j < Math.min(i + 10, lines.length); j++) {
+        const nextLine = lines[j].trim();
+        const funcMatch = nextLine.match(/^(async\s+)?def\s+(\w+)\s*\(/);
+        if (funcMatch) {
+          isAsync = !!funcMatch[1];
+          functionName = funcMatch[2];
+          handlerLine = j + 1;
+          functionIndent = lines[j].length - lines[j].trimStart().length;
+
+          handlerEndLine = this.findHandlerEndLine(lines, j, functionIndent);
+          break;
+        }
+        if (nextLine.startsWith('@')) continue;
+        if (nextLine.length > 0 && !nextLine.startsWith('#')) break;
+      }
+
+      if (!functionName) continue;
+
+      const routeInfo = this.extractRouteInfo(content, 0, functionName);
+      const routeParams = this.extractPathParameters(routePath);
 
       routes.push({
         method,
-        path,
+        path: routePath,
+        handlerName: functionName,
+        handlerLine,
+        handlerEndLine,
+        isAsync,
         operationId: routeInfo.operationId || functionName,
         summary: routeInfo.summary,
         description: routeInfo.description,
         tags: routeInfo.tags,
         dependencies: routeInfo.dependencies,
-        parameters: routeInfo.parameters,
+        parameters: [...routeParams, ...routeInfo.parameters],
         requestBody: routeInfo.requestBody,
         responses: routeInfo.responses,
         security: routeInfo.security
@@ -724,6 +884,108 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
     }
 
     return routes;
+  }
+
+  private findHandlerEndLine(lines: string[], startLine: number, functionIndent: number): number {
+    for (let k = startLine + 1; k < lines.length; k++) {
+      const bodyLine = lines[k];
+      if (bodyLine.trim().length === 0) continue;
+
+      const currentIndent = bodyLine.length - bodyLine.trimStart().length;
+      if (currentIndent <= functionIndent && bodyLine.trim().length > 0) {
+        return k;
+      }
+    }
+    return lines.length;
+  }
+
+  private extractHandlerCalls(lines: string[], startLine: number, endLine: number): HandlerCall[] {
+    const calls: HandlerCall[] = [];
+    const builtins = new Set([
+      'print', 'len', 'str', 'int', 'float', 'bool', 'list', 'dict', 'set', 'tuple',
+      'range', 'enumerate', 'zip', 'map', 'filter', 'sorted', 'reversed', 'min', 'max',
+      'sum', 'abs', 'round', 'type', 'isinstance', 'hasattr', 'getattr', 'setattr',
+      'open', 'format', 'repr', 'id', 'hash', 'input', 'any', 'all', 'next', 'iter'
+    ]);
+
+    for (let i = startLine; i < Math.min(endLine, lines.length); i++) {
+      const line = lines[i];
+      const trimmed = line.trim();
+
+      if (trimmed.startsWith('#')) continue;
+      if (trimmed.length === 0) continue;
+
+      const isAwaitCall = trimmed.includes('await ');
+
+      const methodCallPattern = /(\w+)\.(\w+)\s*\(/g;
+      let match;
+      while ((match = methodCallPattern.exec(line)) !== null) {
+        const objectName = match[1];
+        const methodName = match[2];
+
+        if (objectName === 'self') continue;
+        if (['str', 'int', 'list', 'dict', 'set'].includes(objectName)) continue;
+        if (methodName.startsWith('_')) continue;
+
+        calls.push({
+          callee: methodName,
+          callType: 'method',
+          line: i + 1,
+          isAsync: isAwaitCall && line.indexOf('await') < match.index,
+          objectName
+        });
+      }
+
+      const funcCallPattern = /(?<![\w.])(\w+)\s*\(/g;
+      while ((match = funcCallPattern.exec(line)) !== null) {
+        const funcName = match[1];
+
+        if (builtins.has(funcName)) continue;
+        if (funcName.startsWith('_')) continue;
+        if (['if', 'while', 'for', 'with', 'except', 'assert', 'return', 'yield', 'raise', 'lambda', 'class', 'def', 'async'].includes(funcName)) continue;
+
+        const alreadyMethod = calls.some(c =>
+          c.line === i + 1 &&
+          c.callType === 'method' &&
+          c.callee === funcName
+        );
+        if (alreadyMethod) continue;
+
+        calls.push({
+          callee: funcName,
+          callType: isAwaitCall && line.indexOf('await') < match.index ? 'await' : 'function',
+          line: i + 1,
+          isAsync: isAwaitCall && line.indexOf('await') < match.index
+        });
+      }
+
+      const dependsPattern = /Depends\s*\(\s*(\w+)\s*\)/g;
+      while ((match = dependsPattern.exec(line)) !== null) {
+        calls.push({
+          callee: match[1],
+          callType: 'dependency',
+          line: i + 1,
+          isAsync: false
+        });
+      }
+    }
+
+    return calls;
+  }
+
+  private extractPathParameters(routePath: string): Array<{ name: string; type: string; location: string; required: boolean; description?: string }> {
+    const params: Array<{ name: string; type: string; location: string; required: boolean }> = [];
+    const paramPattern = /\{(\w+)(?::([^}]+))?\}/g;
+    let match;
+    while ((match = paramPattern.exec(routePath)) !== null) {
+      params.push({
+        name: match[1],
+        type: match[2] || 'str',
+        location: 'path',
+        required: true
+      });
+    }
+    return params;
   }
 
   private extractRouteInfo(content: string, routeStart: number, functionName: string): any {

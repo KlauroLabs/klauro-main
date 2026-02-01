@@ -12,6 +12,18 @@ import { parse, TSESTree } from '@typescript-eslint/typescript-estree';
 import { glob } from 'glob';
 import * as crypto from 'crypto';
 
+const BUILTIN_NOT_EXIT_POINTS = new Set([
+  'Math', 'JSON', 'Array', 'Object', 'String', 'Number', 'Boolean',
+  'Date', 'RegExp', 'Promise', 'Buffer', 'console', 'process',
+  'Error', 'TypeError', 'RangeError', 'SyntaxError', 'Map', 'Set',
+  'WeakMap', 'WeakSet', 'Symbol', 'Proxy', 'Reflect', 'Intl',
+  'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'encodeURI',
+  'decodeURI', 'encodeURIComponent', 'decodeURIComponent', 'setTimeout',
+  'setInterval', 'clearTimeout', 'clearInterval', 'setImmediate',
+  'clearImmediate', 'queueMicrotask', 'atob', 'btoa', 'fetch',
+  'require', 'module', 'exports', '__dirname', '__filename'
+]);
+
 interface ParsedAST {
   ast: TSESTree.Program;
   content: string;
@@ -267,15 +279,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           'imports'
         ));
 
-        if (!importSource.startsWith('.')) {
-          exitPoints.push({
-            id: `exit_${importId}`,
-            name: `External dependency: ${importSource}`,
-            type: 'library_import',
-            source_node: importId,
-            metadata: { library: importSource }
-          });
-        }
       }
     });
   }
@@ -332,15 +335,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         'contains'
       ));
 
-      if (func.isExported) {
-        entryPoints.push({
-          id: `entry_${funcId}`,
-          name: `Exported function: ${func.name}`,
-          type: 'function_export',
-          source_node: funcId,
-          metadata: { functionType: func.type }
-        });
-      }
     });
   }
 
@@ -358,13 +352,16 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     classes.forEach((cls, index) => {
       const classId = `class_${filePath}_${cls.name}_${index}`;
 
+      const classType = this.determineClassType(cls, filePath);
+      const subcategories = this.determineClassSubcategories(cls, filePath);
+
       const classNode = this.createNodeBuilder(
         classId,
         cls.name,
-        'class'
+        classType
       )
         .withLevel(2, 'Class/Interface')
-        .withCategory('structures', ['classes'])
+        .withCategory('structures', subcategories)
         .withSource({ file: filePath, line: cls.lineStart, end_line: cls.lineEnd })
         .withMetadata({
           is_exported: cls.isExported,
@@ -374,7 +371,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
             implements: cls.implements,
             methodCount: cls.methods.length,
             propertyCount: cls.properties.length,
-            hasDocumentation: !!cls.documentation
+            hasDocumentation: !!cls.documentation,
+            decorators: cls.decorators?.map(d => d.name)
           }
         })
         .withDocumentation(cls.documentation)
@@ -479,6 +477,82 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     });
   }
 
+  private determineClassType(cls: ClassInfo, filePath: string): string {
+    const decoratorNames = cls.decorators?.map(d => d.name.toLowerCase()) || [];
+    const className = cls.name.toLowerCase();
+    const filePathLower = filePath.toLowerCase();
+
+    if (decoratorNames.includes('entity')) return 'entity';
+    if (decoratorNames.includes('controller')) return 'controller';
+    if (decoratorNames.includes('injectable')) {
+      if (className.includes('service')) return 'service';
+      if (className.includes('repository')) return 'repository';
+      if (className.includes('guard')) return 'guard';
+      if (className.includes('middleware')) return 'middleware';
+      if (className.includes('interceptor')) return 'interceptor';
+      if (className.includes('filter')) return 'filter';
+      if (className.includes('pipe')) return 'pipe';
+      return 'provider';
+    }
+    if (decoratorNames.includes('module')) return 'module';
+
+    if (filePathLower.includes('/entities/') || filePathLower.includes('/entity/')) return 'entity';
+    if (filePathLower.includes('/guards/') || filePathLower.includes('/guard/')) return 'guard';
+    if (filePathLower.includes('/services/') || filePathLower.includes('/service/')) return 'service';
+    if (filePathLower.includes('/repositories/') || filePathLower.includes('/repository/')) return 'repository';
+    if (filePathLower.includes('/controllers/') || filePathLower.includes('/controller/')) return 'controller';
+    if (filePathLower.includes('/middleware/')) return 'middleware';
+
+    if (cls.implements?.some(i => i.toLowerCase().includes('canactivate'))) return 'guard';
+    if (cls.extends?.toLowerCase().includes('repository')) return 'repository';
+
+    if (className.endsWith('service')) return 'service';
+    if (className.endsWith('repository')) return 'repository';
+    if (className.endsWith('controller')) return 'controller';
+    if (className.endsWith('guard')) return 'guard';
+    if (className.endsWith('entity')) return 'entity';
+    if (className.endsWith('middleware')) return 'middleware';
+    if (className.endsWith('dto')) return 'dto';
+    if (className.endsWith('model')) return 'model';
+
+    return 'class';
+  }
+
+  private determineClassSubcategories(cls: ClassInfo, filePath: string): string[] {
+    const subcategories: string[] = ['classes'];
+    const classType = this.determineClassType(cls, filePath);
+    const decoratorNames = cls.decorators?.map(d => d.name.toLowerCase()) || [];
+    const className = cls.name.toLowerCase();
+
+    if (classType !== 'class') {
+      subcategories.push(classType);
+    }
+
+    if (decoratorNames.includes('entity') || classType === 'entity') {
+      subcategories.push('entity');
+    }
+    if (decoratorNames.includes('injectable') || classType === 'service' || classType === 'provider') {
+      subcategories.push('injectable');
+    }
+    if (classType === 'guard' || cls.implements?.some(i => i.toLowerCase().includes('canactivate'))) {
+      subcategories.push('guard');
+      subcategories.push('security');
+    }
+    if (classType === 'controller') {
+      subcategories.push('entry-point');
+    }
+    if (classType === 'repository') {
+      subcategories.push('data-access');
+    }
+
+    const sensitivePatterns = ['auth', 'password', 'token', 'credential', 'secret', 'security'];
+    if (sensitivePatterns.some(p => className.includes(p))) {
+      subcategories.push('security-sensitive');
+    }
+
+    return [...new Set(subcategories)];
+  }
+
   private extractVariables(ast: TSESTree.Program, filePath: string, nodes: CASNode[], content: string): void {
     const variables = this.findVariablesInAST(ast, content);
     const fileId = `file_${filePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
@@ -506,25 +580,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     });
   }
 
-  private extractExports(ast: TSESTree.Program, filePath: string, entryPoints: any[]): void {
-    ast.body.forEach((node, index) => {
-      if (!node || typeof node !== 'object') return;
-
-      if (node.type === 'ExportDefaultDeclaration' || node.type === 'ExportNamedDeclaration') {
-        const exportId = `export_${filePath}_${index}`;
-
-        entryPoints.push({
-          id: exportId,
-          name: `Export from ${path.basename(filePath)}`,
-          type: node.type === 'ExportDefaultDeclaration' ? 'default_export' : 'named_export',
-          source_node: `file_${filePath.replace(/[^a-zA-Z0-9]/g, '_')}`,
-          metadata: {
-            line: node.loc?.start.line,
-            exportType: node.type
-          }
-        });
-      }
-    });
+  private extractExports(_ast: TSESTree.Program, _filePath: string, _entryPoints: any[]): void {
   }
 
   private extractLibraries(packageJson: any, libraries: any[]): void {
@@ -831,30 +887,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           }
         }
 
-        // Library calls as exit points
-        if (call.targetType === 'library' && call.library) {
-          const exitSourceNodeId = this.resolveSourceNodeId(filePath, func, nodes);
-          if (exitSourceNodeId) {
-            exitPoints.push({
-              id: `exit_${func.name}_${call.target}`,
-              source_node: exitSourceNodeId,
-              type: 'sdk',
-              name: `${call.library}.${call.target.split('.').pop()}`,
-              target: {
-                sdk: call.library,
-                endpoint: call.target.split('.').pop() || call.target
-              },
-              operation: {
-                action: call.target.split('.').pop() || call.target,
-                async: call.isAsync
-              },
-              metadata: {
-                line: call.line,
-                call_expression: call.callExpression
-              }
-            });
-          }
-        }
 
         // Abstract method calls
         if (call.targetType === 'abstract') {
@@ -1558,8 +1590,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         const callInfo = extractCallInfo(node, currentContext.containingClass);
         const callerNode = currentContext.containingNode;
 
-        if (callerNode && callInfo.method) {
-          if (callInfo.isLibrary) {
+        if (callerNode && callInfo.method && callInfo.target) {
+          if (callInfo.isLibrary && !BUILTIN_NOT_EXIT_POINTS.has(callInfo.target)) {
             const exitPointId = `exit_${callerNode.id}_to_${callInfo.target}_${callInfo.method}`;
             exitPoints.push({
               id: exitPointId,
@@ -1597,7 +1629,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
                 }
               ));
             }
-          } else {
+          } else if (!callInfo.isLibrary) {
             let targetNode: CASNode | undefined;
 
             if (callInfo.callType === 'internal' && callInfo.method) {

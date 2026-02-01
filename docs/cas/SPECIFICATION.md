@@ -1,8 +1,8 @@
 # Code Analysis Specification (CAS)
 
-**Version:** 1.5.0
+**Version:** 1.7.0
 **Status:** Active
-**Last Updated:** 2026-01-09
+**Last Updated:** 2026-01-25
 
 ## Abstract
 
@@ -23,14 +23,16 @@ The Code Analysis Specification (CAS) defines a universal, language-agnostic for
 
 ## Version History
 
-This document specifies version 1.5.0 of the Code Analysis Specification. The evolution of CAS includes:
+This document specifies version 1.7.0 of the Code Analysis Specification. The evolution of CAS includes:
 
 - **[Version 1.0.0](./v1.0.0.md)** (2024-01-01) - Initial release with core nodes, edges, and basic metadata
 - **[Version 1.1.0](./v1.1.0.md)** (2024-06-01) - Added progressive levels, entry/exit points, and extended metadata
 - **[Version 1.2.0](./v1.2.0.md)** (2024-09-19) - Added multi-perspective support and enhanced patterns
 - **[Version 1.3.0](./v1.3.0-rfp.md)** (2025-01-01) - Added comprehensive call graph tracking and method invocation analysis
 - **[Version 1.4.0](./v1.4.0-rfp.md)** (2025-09-20) - Added documentation and comment extraction
-- **[Version 1.5.0](./v1.5.0-rfp.md)** (2026-01-09) - Current version - Added class-level relationships, pattern variations, and enhanced entry points
+- **[Version 1.5.0](./v1.5.0-rfp.md)** (2026-01-09) - Added class-level relationships, pattern variations, and enhanced entry points
+- **[Version 1.6.0](./v1.6.0-rfp.md)** (2026-01-23) - Added test architecture, test categorization, BDD support, and test-to-code relationships
+- **[Version 1.7.0](./v1.7.0-rfp.md)** (2026-01-25) - Current version - Added inference-based intelligence: intent, critical flows, change risk, data lifecycle, security boundaries, flow coverage, temporal stability
 
 ## 1. Introduction
 
@@ -88,7 +90,7 @@ The root structure containing complete analysis results:
 
 ```typescript
 interface CASOutput {
-  cas_version: "1.5.0";
+  cas_version: "1.7.0";
   analysis_timestamp: string;  // ISO 8601
   analysis_id: string;          // Unique identifier
 
@@ -115,7 +117,7 @@ interface CASOutput {
   perspectives?: CASPerspective[];  // Added in v1.2.0
 
   method_calls?: CASMethodCall[];   // Added in v1.3.0
-  call_chains?: CASCallChain[];     // Added in v1.3.0
+  call_chains?: CASCallChain[];     // Added in v1.3.0, enhanced in v1.7.0
   decorators?: CASDecorator[];      // Added in v1.3.0
 
   documentation_summary?: CASDocumentationSummary;  // Added in v1.4.0
@@ -123,6 +125,26 @@ interface CASOutput {
   implementation_health?: CASImplementationHealth;  // Added in v1.4.0
 
   patterns?: CASPattern[];          // Enhanced in v1.5.0 with variations
+
+  test_suites?: CASTestSuite[];     // Added in v1.6.0
+  mocks?: CASMock[];                // Added in v1.6.0
+  fixtures?: CASFixture[];          // Added in v1.6.0
+  test_summary?: CASTestSummary;    // Added in v1.6.0
+
+  // v1.7.0 Inference-Based Intelligence
+  intents?: CASIntent[];                        // Added in v1.7.0
+  flow_summary?: CASFlowSummary;                // Added in v1.7.0
+  change_risks?: CASChangeRisk[];               // Added in v1.7.0
+  change_risk_summary?: CASChangeRiskSummary;   // Added in v1.7.0
+  data_entities?: CASDataEntity[];              // Added in v1.7.0
+  data_summary?: CASDataSummary;                // Added in v1.7.0
+  security_boundaries?: CASSecurityBoundary[];  // Added in v1.7.0
+  security_contexts?: CASSecurityContext[];     // Added in v1.7.0
+  security_summary?: CASSecuritySummary;        // Added in v1.7.0
+  flow_coverage?: CASFlowCoverage[];            // Added in v1.7.0
+  test_gaps?: CASTestGap[];                     // Added in v1.7.0
+  temporal_stability?: CASTemporalStability[];  // Added in v1.7.0
+  stability_summary?: CASStabilitySummary;      // Added in v1.7.0
 
   metadata?: SystemMetadata;
 }
@@ -165,6 +187,9 @@ interface CASNode {
   security?: SecurityContext;
   telemetry?: TelemetryHooks;
   dataFlow?: DataFlow;
+
+  test_coverage?: CASTestCoverage;  // Added in v1.6.0
+
   metadata?: Record<string, any>;
 }
 ```
@@ -209,6 +234,14 @@ type ClassRelationshipEdgeTypes = 'uses' | 'depends_on' | 'injects';
 // - 'depends_on': ClassA receives ClassB via constructor injection
 // - 'injects': Module/container provides ClassB to ClassA
 // - 'instantiates': ClassA creates instance of ClassB (from v1.3.0)
+
+// Test edge types (v1.6.0)
+type TestEdgeTypes = 'tests' | 'mocks' | 'stubs' | 'covers' | 'validates';
+// - 'tests': Test -> Code being tested
+// - 'mocks': Test -> Mock node
+// - 'stubs': Test -> Stub node
+// - 'covers': Test -> Covered node (from coverage data)
+// - 'validates': Assertion -> Validated behavior
 ```
 
 ### 4.4 Call Graph Structures (v1.3.0)
@@ -341,6 +374,24 @@ interface CASCallChain {
       reason: string;
       impact: 'low' | 'medium' | 'high';
     }>;
+  };
+
+  // v1.7.0 Enhancements
+  criticality?: 'critical' | 'high' | 'medium' | 'low';  // Added in v1.7.0
+  criticality_factors?: string[];                         // Added in v1.7.0
+
+  runtime_stats?: {                                       // Added in v1.7.0
+    traffic_volume: 'very-high' | 'high' | 'medium' | 'low';
+    avg_latency_ms?: number;
+    error_rate_percent?: number;
+    last_observed?: string;  // ISO 8601
+  };
+
+  test_coverage?: {                                       // Added in v1.7.0
+    covered: boolean;
+    coverage_percentage?: number;
+    test_ids?: string[];      // Test entry point IDs
+    gaps?: string[];          // Uncovered node IDs
   };
 
   metadata?: Record<string, any>;
@@ -615,11 +666,16 @@ interface CASPerspective {
 #### EntryPoint
 System entry points (API endpoints, CLI commands, etc.):
 
+**Important Note on Entry Point Semantics by System Type:**
+- **Web APIs/Services**: Entry points (HTTP, gRPC, GraphQL) typically map 1:1 with business capabilities. Each endpoint represents a distinct operation that can be grouped into capability domains.
+- **CLI Tools**: Entry points are subcommands/invocation modes (e.g., `scan quick`, `scan deep`), NOT business capabilities. The actual capabilities (e.g., "port scanning", "web enumeration") are internal function clusters that get invoked by multiple subcommands. Capability detection for CLI tools must analyze call graphs and function clusters rather than entry points.
+- **Frontend SPAs**: Entry points are routes/pages which represent user-facing views. Capabilities emerge from the services and state management the routes consume.
+
 ```typescript
 interface EntryPoint {
   id: string;
   type: 'http' | 'grpc' | 'graphql' | 'websocket' | 'cli' |
-        'event' | 'scheduled' | 'startup' | 'other';
+        'event' | 'scheduled' | 'startup' | 'test' | 'other';  // v1.6.0: Added 'test'
   name: string;
   description?: string;
 
@@ -767,7 +823,491 @@ interface CASPatternDeviation {
 2. Calculate percentage as `(variation.instances.length / pattern.instances.length) * 100`
 3. Flag deviations when variations suggest inconsistency (e.g., <90% adoption of preferred approach)
 
-### 4.9 Summary and Health Structures (v1.4.0)
+### 4.9 Test Structures (v1.6.0)
+
+#### TestMetadata
+Test-specific metadata for categorization and analysis:
+
+```typescript
+interface TestMetadata {
+  test_type: 'unit' | 'integration' | 'e2e' | 'acceptance' |
+             'performance' | 'visual' | 'smoke' | 'bdd';
+  test_style: 'procedural' | 'bdd' | 'property-based' |
+              'snapshot' | 'parameterized';
+  priority: 'critical' | 'high' | 'medium' | 'low';
+  tags: string[];
+  uses_mocks: boolean;
+  is_async: boolean;
+  timeout_ms?: number;
+  framework: string;  // 'jest', 'pytest', 'rust-test', 'mocha', 'cypress', etc.
+
+  bdd_context?: {
+    feature?: string;
+    scenario?: string;
+    given?: string[];
+    when?: string[];
+    then?: string[];
+  };
+
+  parameterization?: {
+    data_source: 'inline' | 'fixture' | 'external';
+    parameter_count: number;
+    cases: number;
+  };
+}
+```
+
+#### CASTestSuite
+Groups of related tests:
+
+```typescript
+interface CASTestSuite {
+  id: string;
+  name: string;
+  file_path: string;
+  test_type: 'unit' | 'integration' | 'e2e' | 'acceptance';
+  framework: string;
+
+  tests: CASTestCase[];
+  hooks: CASTestHook[];
+  fixtures: string[];  // Node IDs of fixture/factory nodes
+  mocks: string[];     // Node IDs of mock nodes
+
+  coverage?: {
+    nodes_tested: string[];  // Node IDs this suite tests
+    coverage_percentage?: number;
+  };
+
+  metadata?: {
+    parallel: boolean;
+    timeout_ms?: number;
+    retries?: number;
+    skip_reason?: string;
+  };
+}
+
+interface CASTestCase {
+  id: string;
+  name: string;
+  description?: string;
+  test_type: 'unit' | 'integration' | 'e2e' | 'acceptance' | 'bdd';
+
+  assertions: CASAssertion[];
+  mocks_used: string[];  // Node IDs
+  targets: string[];     // Node IDs of code being tested
+
+  bdd_steps?: Array<{
+    type: 'given' | 'when' | 'then' | 'and' | 'but';
+    text: string;
+    implementation_id?: string;
+  }>;
+
+  parameterized?: {
+    parameters: Array<{ name: string; values: any[] }>;
+    case_count: number;
+  };
+
+  status: {
+    skipped: boolean;
+    focused: boolean;
+    flaky: boolean;
+  };
+}
+
+interface CASTestHook {
+  id: string;
+  type: 'before_all' | 'before_each' | 'after_each' | 'after_all';
+  name?: string;
+  node_id: string;
+}
+
+interface CASAssertion {
+  id: string;
+  type: 'equality' | 'truthiness' | 'exception' | 'mock_call' |
+        'snapshot' | 'property' | 'custom';
+  expression: string;
+  target_node?: string;
+  location: {
+    line: number;
+    column?: number;
+  };
+}
+```
+
+#### CASMock
+Mock/stub/spy tracking:
+
+```typescript
+interface CASMock {
+  id: string;
+  name: string;
+  type: 'mock' | 'stub' | 'spy' | 'fake';
+  target_node?: string;  // Node ID of what this replaces
+  framework: string;     // 'jest.fn', 'sinon', 'mockall', etc.
+
+  implementation?: {
+    return_value?: string;
+    implementation_fn?: string;
+    call_tracking: boolean;
+  };
+
+  used_by: string[];  // Test node IDs
+}
+```
+
+#### CASFixture
+Test fixtures and factories:
+
+```typescript
+interface CASFixture {
+  id: string;
+  name: string;
+  type: 'factory' | 'fixture' | 'builder' | 'seed-data';
+  file_path: string;
+
+  generates?: string;  // Type/entity it creates
+  dependencies: string[];
+  used_by: string[];  // Test node IDs
+}
+```
+
+#### CASTestCoverage
+Per-node coverage information:
+
+```typescript
+interface CASTestCoverage {
+  covered: boolean;
+  coverage_percentage: number;
+  tested_by: string[];  // Test node IDs
+  untested_branches?: Array<{
+    line: number;
+    condition: string;
+  }>;
+}
+```
+
+#### CASTestSummary
+Aggregated test statistics:
+
+```typescript
+interface CASTestSummary {
+  total_tests: number;
+  by_type: {
+    unit: number;
+    integration: number;
+    e2e: number;
+    acceptance: number;
+    bdd: number;
+    other: number;
+  };
+  by_status: {
+    passing: number;
+    failing: number;
+    skipped: number;
+    flaky: number;
+  };
+  coverage: {
+    overall_percentage: number;
+    by_layer: Record<string, number>;
+  };
+  mocks: {
+    total: number;
+    by_target_type: Record<string, number>;
+  };
+  fixtures: {
+    total: number;
+    factories: number;
+    seed_data: number;
+  };
+}
+```
+
+**Semantic Rules:**
+
+1. Tests MUST use `type: 'test'` for entry points, NOT `type: 'event'`
+2. Test type SHOULD be inferred from file path when not explicit:
+   - `/tests/` or `/integration/` -> `'integration'`
+   - `/e2e/` or `/cypress/` -> `'e2e'`
+   - Same directory as source with `.spec.` or `.test.` -> `'unit'`
+3. BDD steps MUST be extracted from tests using Given/When/Then patterns
+4. Mock nodes MUST have `target_node` pointing to what they replace
+5. Test-to-code edges (`tests`, `covers`) MUST link tests to tested code
+
+### 4.10 Inference-Based Intelligence Structures (v1.7.0)
+
+#### CASIntent
+Inferred purpose and architectural intent:
+
+```typescript
+interface CASIntent {
+  node_id: string;
+  inferred_purpose?: string;
+  inferred_constraints?: string[];
+  architectural_decision?: {
+    decision: string;
+    rationale?: string;
+    evidence: IntentEvidence[];
+  };
+  workaround_indicator?: {
+    is_workaround: boolean;
+    workaround_for?: string;
+    expected_resolution?: string;
+  };
+  confidence: 'high' | 'medium' | 'low';
+}
+
+interface IntentEvidence {
+  type: 'commit_message' | 'pr_description' | 'code_comment' |
+        'pattern_deviation' | 'naming_convention';
+  source: string;
+  excerpt: string;
+  confidence_contribution: number;
+}
+```
+
+#### CASFlowSummary
+Summary of critical flows:
+
+```typescript
+interface CASFlowSummary {
+  total_critical_flows: number;
+  by_criticality: Record<string, number>;
+  untested_critical_flows: string[];
+  high_error_rate_flows: string[];
+}
+```
+
+#### CASChangeRisk
+Per-node change impact assessment:
+
+```typescript
+interface CASChangeRisk {
+  node_id: string;
+  risk_level: 'critical' | 'high' | 'medium' | 'low';
+  risk_factors: ChangeRiskFactor[];
+
+  downstream_impact: {
+    direct_callers: string[];
+    transitive_callers: string[];
+    affected_call_chains: string[];
+    affected_entry_points: string[];
+  };
+
+  test_protection: {
+    has_direct_tests: boolean;
+    has_integration_tests: boolean;
+    test_ids?: string[];
+    untested_callers?: string[];
+  };
+
+  stability_context: {
+    recent_churn: boolean;
+    commit_count_30d: number;
+    bug_fix_density: number;
+    last_refactor?: string;
+  };
+
+  recommendations?: string[];
+}
+
+interface ChangeRiskFactor {
+  factor: 'many-callers' | 'critical-path' | 'high-traffic' |
+          'no-tests' | 'recent-bugs' | 'complex-logic' |
+          'external-dependency' | 'security-sensitive';
+  severity: 'high' | 'medium' | 'low';
+  details: string;
+}
+
+interface CASChangeRiskSummary {
+  high_risk_nodes: string[];
+  untested_critical_paths: string[];
+  recent_hotspots: string[];
+}
+```
+
+#### CASDataEntity
+Entity-centric data lifecycle:
+
+```typescript
+interface CASDataEntity {
+  id: string;
+  name: string;
+  schema_source?: string;
+
+  fields?: Array<{
+    name: string;
+    type: string;
+    is_sensitive: boolean;
+    validation?: string[];
+  }>;
+
+  lifecycle: {
+    created_by: string[];
+    read_by: string[];
+    updated_by: string[];
+    deleted_by: string[];
+  };
+
+  transformations?: Array<{
+    from_node: string;
+    to_node: string;
+    transformation_type: 'map' | 'filter' | 'aggregate' |
+                         'enrich' | 'validate' | 'sanitize';
+  }>;
+
+  invariants?: Array<{
+    description: string;
+    enforced_by: string[];
+    source: 'validation' | 'constraint' | 'test' | 'assertion';
+  }>;
+}
+
+interface CASDataSummary {
+  entities: CASDataEntity[];
+  sensitive_data_nodes: string[];
+  validation_gaps: Array<{
+    entity_id: string;
+    missing_validation: string;
+  }>;
+}
+```
+
+#### CASSecurityBoundary
+Trust boundaries and security enforcement:
+
+```typescript
+interface CASSecurityBoundary {
+  id: string;
+  name: string;
+  boundary_type: 'authentication' | 'authorization' | 'input-validation' |
+                 'output-encoding' | 'rate-limiting' | 'encryption';
+
+  enforcement_points: Array<{
+    node_id: string;
+    mechanism: string;
+    confidence: 'enforced' | 'assumed' | 'missing';
+  }>;
+
+  trust_transition: {
+    from_trust_level: 'untrusted' | 'partially-trusted' | 'trusted';
+    to_trust_level: 'untrusted' | 'partially-trusted' | 'trusted';
+  };
+
+  sensitive_operations: string[];
+  bypass_risks?: string[];
+}
+
+interface CASSecurityContext {
+  node_id: string;
+  trust_level: 'untrusted' | 'partially-trusted' | 'trusted';
+  security_relevant: boolean;
+  security_relevance_reason?: string;
+  required_protections: string[];
+  actual_protections: string[];
+  protection_gaps?: string[];
+}
+
+interface CASSecuritySummary {
+  boundaries: CASSecurityBoundary[];
+  unprotected_sensitive_ops: string[];
+  assumed_vs_enforced: {
+    enforced: number;
+    assumed: number;
+    missing: number;
+  };
+}
+```
+
+#### CASFlowCoverage
+Flow-level test coverage:
+
+```typescript
+interface CASFlowCoverage {
+  call_chain_id: string;
+  call_chain_name?: string;
+
+  coverage_status: 'fully-covered' | 'partially-covered' | 'not-covered';
+  coverage_percentage?: number;
+
+  tested_segments: Array<{
+    node_id: string;
+    test_ids: string[];
+    assertion_count: number;
+  }>;
+
+  untested_segments: Array<{
+    node_id: string;
+    importance: 'critical' | 'high' | 'medium' | 'low';
+    reason: string;
+  }>;
+
+  test_quality: {
+    has_unit_tests: boolean;
+    has_integration_tests: boolean;
+    has_e2e_tests: boolean;
+    uses_mocks: boolean;
+    mock_targets?: string[];
+  };
+}
+
+interface CASTestGap {
+  gap_type: 'untested-flow' | 'untested-branch' | 'mock-only' | 'no-assertions';
+  location: {
+    node_id?: string;
+    call_chain_id?: string;
+    line?: number;
+  };
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  recommendation: string;
+}
+```
+
+#### CASTemporalStability
+Git-based code stability metrics:
+
+```typescript
+interface CASTemporalStability {
+  node_id: string;
+
+  stability_score: number;
+  stability_class: 'stable' | 'evolving' | 'volatile' | 'fragile';
+
+  churn_metrics: {
+    commits_30d: number;
+    commits_90d: number;
+    unique_authors_30d: number;
+    lines_changed_30d: number;
+  };
+
+  quality_signals: {
+    bug_fix_rate: number;
+    refactor_frequency: 'frequent' | 'occasional' | 'rare';
+    has_recent_regression: boolean;
+  };
+
+  age_context: {
+    file_age_days: number;
+    last_major_change?: string;
+    is_legacy: boolean;
+  };
+
+  risk_correlation?: {
+    high_churn_high_bugs: boolean;
+    recent_refactor_unstable: boolean;
+  };
+}
+
+interface CASStabilitySummary {
+  by_stability_class: Record<string, number>;
+  hotspots: Array<{
+    node_id: string;
+    reason: string;
+  }>;
+  legacy_areas: string[];
+}
+```
+
+### 4.11 Summary and Health Structures (v1.4.0)
 
 #### CASDocumentationSummary
 System-wide documentation metrics:
@@ -1010,6 +1550,119 @@ interface SystemMetadata {
 - JS built-ins (Object, Array, Promise, etc.) MUST be excluded from `external_services`
 - Standard library modules (fs, path, crypto) MUST be excluded from `external_services`
 - Services MAY include `is_builtin` and `is_standard_library` flags for filtering
+
+### 5.13 Test Entry Points (v1.6.0+)
+
+- Tests MUST use `type: 'test'` entry points, NOT `type: 'event'`
+- Test type categorization SHOULD be inferred from file paths:
+  - `/tests/` or `/integration/` directory -> `test_type: 'integration'`
+  - `/e2e/` or `/cypress/` directory -> `test_type: 'e2e'`
+  - Same directory as source code -> `test_type: 'unit'`
+  - Rust `#[cfg(test)]` module -> `test_type: 'unit'`
+  - Rust `/tests/` directory -> `test_type: 'integration'`
+- BDD tests SHOULD have `bdd_context` with Given/When/Then steps extracted
+- Mock usage MUST be tracked via `uses_mocks: true` in test metadata
+
+### 5.14 Test-to-Code Relationships (v1.6.0+)
+
+- When a test calls production code, a `tests` edge MUST be created from test to called node
+- When a test uses a mock, a `mocks` edge MUST be created from test to mock node
+- Mock nodes MUST have `target_node` pointing to the node they replace
+- Coverage data SHOULD be integrated into nodes via `test_coverage` field
+- Test suites SHOULD track which nodes they test via `coverage.nodes_tested`
+
+### 5.15 Intent Inference (v1.7.0+)
+
+- Intent SHOULD be inferred from commit history, comments, and pattern deviations
+- Workaround indicators MUST include `confidence` level
+- Evidence MUST include `source` references (file path, commit SHA, or PR number)
+- When multiple evidence sources agree, confidence SHOULD be `'high'`
+- When evidence is from comments only, confidence SHOULD be `'medium'`
+- When inferred from naming alone, confidence SHOULD be `'low'`
+
+### 5.16 Flow Criticality (v1.7.0+)
+
+- Call chains SHOULD have `criticality` set based on traffic, error rate, and business impact
+- `criticality: 'critical'` MUST be assigned when ANY of:
+  - `runtime_stats.traffic_volume` is `'very-high'`
+  - `runtime_stats.error_rate_percent` > 5 AND traffic is high
+  - `business_context.business_process` contains "payment", "auth", or "checkout"
+- `runtime_stats` SHOULD be populated when SDK telemetry is available
+- `test_coverage.test_ids` MUST reference existing test entry point IDs
+- `test_coverage.gaps` SHOULD list node IDs of untested segments
+
+### 5.17 Change Risk (v1.7.0+)
+
+- Risk level MUST consider: caller count, critical path membership, test coverage, stability
+- `risk_level: 'critical'` MUST be assigned when 2+ high-severity factors present
+- `downstream_impact.affected_call_chains` MUST reference existing `CASCallChain` IDs
+- `stability_context.bug_fix_density` SHOULD be calculated as: (bug fix commits / total commits)
+- Bug fix commits SHOULD be identified by commit message patterns: "fix", "bug", "issue", "patch"
+
+### 5.18 Data Entity (v1.7.0+)
+
+- Entities SHOULD be inferred from schema files, ORM models, and type definitions
+- Sensitive fields MUST be flagged based on naming conventions (password, token, email, etc.)
+- `lifecycle` operations MUST map to node IDs that perform CRUD
+- `validation_gaps` SHOULD flag entities with `created_by` but no `validation` rules
+
+### 5.19 Security Boundary (v1.7.0+)
+
+- Boundaries SHOULD be inferred from guards, middleware, and decorators
+- Trust levels MUST propagate through the call graph based on boundary crossings
+- `confidence: 'enforced'` SHOULD be set when guard/middleware explicitly present
+- `confidence: 'assumed'` SHOULD be set when trust is implied but not enforced
+- `confidence: 'missing'` MUST be set when sensitive operation lacks protection
+- `protection_gaps` MUST be flagged when `required_protections` differs from `actual_protections`
+
+### 5.20 Flow Coverage (v1.7.0+)
+
+- Flow coverage MUST extend existing per-node coverage to `CASCallChain` level
+- `coverage_percentage` SHOULD be calculated as: (tested_nodes / total_nodes_in_chain) * 100
+- Test gaps MUST be categorized by severity based on `CASCallChain.criticality`
+- `gap_type: 'mock-only'` SHOULD be flagged when all tests use mocks for critical dependencies
+- `untested_segments[].importance` SHOULD align with the flow's criticality
+
+### 5.21 Temporal Stability (v1.7.0+)
+
+- Stability MUST be calculated from git history (commits, blame)
+- `stability_score` SHOULD be 0-100, where 100 is most stable
+- Bug fix rate SHOULD be inferred from commit messages containing: "fix", "bug", "patch", "issue"
+- `is_legacy` SHOULD be detected from comments containing "legacy", "deprecated", "old"
+- `hotspots` MUST be flagged when `stability_class` is `'volatile'` or `'fragile'`
+- `risk_correlation.high_churn_high_bugs` MUST be true when commits_30d > 5 AND bug_fix_rate > 0.3
+
+### 5.22 Capability Detection by System Type (v1.7.0+)
+
+Capability detection strategies MUST vary based on the detected system type:
+
+**Web APIs/Backend Services:**
+- Entry points (HTTP endpoints) map directly to capabilities
+- Group entry points by resource domain (e.g., `/users/*` -> "User Management")
+- Each endpoint's HTTP method indicates the operation type (GET=read, POST=create, etc.)
+- Capabilities are discoverable from entry point paths and methods
+
+**CLI Tools:**
+- Entry points are subcommands (e.g., `scan`, `analyze`, `export`)
+- Subcommands represent **invocation modes**, NOT business capabilities
+- The same capability may be invoked by multiple subcommands with different parameters
+- Capabilities MUST be detected by analyzing:
+  - Function clusters that perform related operations
+  - Call graph patterns from entry points
+  - Semantic analysis of function names and purposes
+  - Shared dependencies between functions
+- Example: A security scanner with `quick`, `standard`, `deep` subcommands has capabilities like "port scanning", "web enumeration", "vulnerability detection" that are internal function clusters called by all modes
+
+**Frontend Applications:**
+- Entry points are routes/pages
+- Capabilities emerge from services, hooks, and state management consumed by routes
+- Multiple routes may share the same underlying capabilities
+- Analyze component dependencies and service calls to determine capabilities
+
+**Libraries:**
+- Entry points are exported functions/classes
+- Capabilities are the functionality domains the exports provide
+- Group related exports into capability domains
 
 ## 6. Query Interface
 
@@ -1438,7 +2091,58 @@ This document has no IANA actions.
 - Include `aggregated_from` in class-level edges
 - Filter out JS builtins from external services
 
-### 11.6 Backward Compatibility
+### 11.6 Upgrading from v1.5.0 to v1.6.0
+
+**Required changes:**
+- Update `cas_version` to "1.6.0"
+- Migrate test entry points from `type: 'event'` to `type: 'test'`
+- Tests previously marked as `type: 'event'` with `metadata.event === 'test'` MUST use `type: 'test'`
+
+**Optional enhancements:**
+- Add `test_suites` array with `CASTestSuite` objects
+- Add `mocks` array with `CASMock` objects tracking mock/stub/spy usage
+- Add `fixtures` array with `CASFixture` objects
+- Add `test_summary` with aggregated test statistics
+- Add `test_coverage` to nodes to show which tests cover each function/class
+- Add `tests`, `mocks`, `covers` edges for test-to-code relationships
+- Extract BDD steps (Given/When/Then) into `bdd_steps` arrays
+- Categorize tests by type (unit, integration, e2e, acceptance)
+
+**Breaking changes:**
+- Tests previously discoverable via `entry_points.filter(e => e.type === 'event' && e.metadata.event === 'test')` must now use `entry_points.filter(e => e.type === 'test')`
+
+### 11.7 Upgrading from v1.6.0 to v1.7.0
+
+**Required changes:**
+- Update `cas_version` to "1.7.0"
+
+**Optional enhancements:**
+- Add `criticality`, `criticality_factors` to `CASCallChain` for flow importance
+- Add `runtime_stats` to `CASCallChain` for SDK telemetry data
+- Add `test_coverage` to `CASCallChain` for flow-level coverage
+- Add `intents` array with `CASIntent` objects for inferred purpose
+- Add `flow_summary` with critical flow statistics
+- Add `change_risks` array with `CASChangeRisk` per-node risk assessment
+- Add `change_risk_summary` with high-risk node aggregation
+- Add `data_entities` array with `CASDataEntity` for entity lifecycle tracking
+- Add `data_summary` with sensitive data and validation gap analysis
+- Add `security_boundaries` array with `CASSecurityBoundary` trust model
+- Add `security_contexts` array with per-node trust levels
+- Add `security_summary` with protection gap analysis
+- Add `flow_coverage` array with `CASFlowCoverage` flow-level test coverage
+- Add `test_gaps` array with `CASTestGap` coverage gaps
+- Add `temporal_stability` array with `CASTemporalStability` churn metrics
+- Add `stability_summary` with hotspot and legacy area analysis
+
+**Implementation requirements:**
+- Git integration required for intent inference and temporal stability
+- SDK telemetry integration required for runtime_stats
+- Call graph traversal required for downstream impact analysis
+
+**Breaking changes:**
+- None. All new fields are optional.
+
+### 11.8 Backward Compatibility
 
 All versions maintain backward compatibility:
 - New fields are optional
@@ -1486,6 +2190,26 @@ All versions maintain backward compatibility:
   - Merged class/method-level guards
   - Required parent field for class members
   - External services filtering (no builtins)
+
+- **v1.6.0** (2026-01-23): Test Architecture & Visualization
+  - New `'test'` entry point type (replaces event-based test detection)
+  - Test categorization (unit, integration, e2e, acceptance, bdd)
+  - Test suite and test case structures
+  - BDD step extraction (Given/When/Then)
+  - Mock and fixture node tracking
+  - Test-to-code edge types (tests, mocks, covers, validates)
+  - Per-node test coverage integration
+  - Aggregated test summary statistics
+
+- **v1.7.0** (2026-01-25): Inference-Based Intelligence
+  - Intent inference from commits, comments, and pattern deviations
+  - Critical flow enhancement to CASCallChain (criticality, runtime_stats, test_coverage)
+  - Flow summary for critical path statistics
+  - Per-node change risk assessment with downstream impact analysis
+  - Entity-centric data lifecycle tracking
+  - Security boundary and trust level modeling
+  - Flow-level test coverage with gap analysis
+  - Git-based temporal stability metrics (churn, bug fix rate, legacy detection)
 
 ### Appendix B: Language Support
 

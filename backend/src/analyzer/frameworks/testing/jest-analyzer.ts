@@ -129,7 +129,7 @@ export class JestAnalyzer extends BaseAnalyzer {
 
       const testFiles = await glob(['**/*.{test,spec}.{js,ts,jsx,tsx}'], {
         cwd: projectPath,
-        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/coverage/**', '**/.nyc_output/**']
+        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/coverage/**', '**/.nyc_output/**', '**/src/analyzer/**', '**/analyzer/**', '**/analyzers/**', '**/compliance/**']
       });
 
       if (testFiles.length > 0) {
@@ -154,19 +154,29 @@ export class JestAnalyzer extends BaseAnalyzer {
     const exitPoints: any[] = [];
 
     try {
+      const baseIgnorePatterns = ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/coverage/**', '**/.nyc_output/**'];
+
+      // Add context filters if they exist
+      const ignorePatterns = [...baseIgnorePatterns];
+      if (context.filters && Array.isArray(context.filters)) {
+        ignorePatterns.push(...context.filters);
+      }
+      // Skip compliance test files that contain non-JS/TS code
+      ignorePatterns.push('**/compliance/**');
+
       const testFiles = await glob(['**/*.{test,spec}.{js,ts,jsx,tsx}'], {
         cwd: context.projectPath,
-        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/coverage/**', '**/.nyc_output/**']
+        ignore: ignorePatterns
       });
 
       const setupFiles = await glob(['**/setupTests.{js,ts}', '**/jest.setup.{js,ts}', '**/test-setup.{js,ts}'], {
         cwd: context.projectPath,
-        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**']
+        ignore: ignorePatterns
       });
 
       const utilityFiles = await glob(['**/__tests__/helpers/**/*.{js,ts}', '**/test-utils/**/*.{js,ts}', '**/__mocks__/**/*.{js,ts}'], {
         cwd: context.projectPath,
-        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**']
+        ignore: ignorePatterns
       });
 
       const configuration = await this.analyzeConfiguration(context.projectPath, nodes);
@@ -176,6 +186,7 @@ export class JestAnalyzer extends BaseAnalyzer {
       const coverage = await this.analyzeCoverage(context.projectPath, nodes);
 
       this.buildJestRelationships(configuration, testSuites, utilities, nodes, edges);
+      this.createTestToCodeEdges(testSuites, nodes, edges);
       this.identifyTestTargets(testSuites, exitPoints);
 
       return this.createAnalysisResult(nodes, edges, entryPoints, exitPoints, {
@@ -326,8 +337,13 @@ export class JestAnalyzer extends BaseAnalyzer {
           source_node: suiteId,
           metadata: {
             file,
-            type: suite.type,
-            testCount: suite.tests.length
+            test_type: suite.type,
+            test_style: this.detectTestStyle(content),
+            uses_mocks: suite.mocks.length > 0,
+            is_async: suite.tests.some(t => t.async),
+            framework: suite.framework,
+            testCount: suite.tests.length,
+            mockCount: suite.mocks.length
           }
         });
 
@@ -369,10 +385,14 @@ export class JestAnalyzer extends BaseAnalyzer {
             source_node: testId,
             metadata: {
               suite: suite.name,
-              type: test.type,
-              async: test.async,
+              test_type: suite.type,
+              test_style: test.assertions.length > 0 ? 'procedural' : 'procedural',
+              uses_mocks: test.mocks.length > 0 || test.spies.length > 0,
+              is_async: test.async,
+              framework: suite.framework,
               skipped: test.skipped,
-              focused: test.focused
+              focused: test.focused,
+              assertionCount: test.assertions.length
             }
           });
         });
@@ -889,6 +909,23 @@ export class JestAnalyzer extends BaseAnalyzer {
     return 'unit';
   }
 
+  private detectTestStyle(content: string): 'procedural' | 'bdd' | 'property-based' | 'snapshot' | 'parameterized' {
+    if (content.includes('given(') || content.includes('when(') || content.includes('then(') ||
+        content.includes('Given ') || content.includes('When ') || content.includes('Then ')) {
+      return 'bdd';
+    }
+    if (content.includes('fc.') || content.includes('fast-check') || content.includes('jsverify')) {
+      return 'property-based';
+    }
+    if (content.includes('toMatchSnapshot') || content.includes('toMatchInlineSnapshot')) {
+      return 'snapshot';
+    }
+    if (content.includes('.each(') || content.includes('.each`') || content.includes('test.each')) {
+      return 'parameterized';
+    }
+    return 'procedural';
+  }
+
   private detectTestingFramework(content: string): string {
     if (content.includes('@testing-library')) return 'testing-library';
     if (content.includes('enzyme')) return 'enzyme';
@@ -1014,6 +1051,53 @@ export class JestAnalyzer extends BaseAnalyzer {
         }
       });
     }
+  }
+
+  private createTestToCodeEdges(
+    testSuites: JestTestSuite[],
+    nodes: CASNode[],
+    edges: CASEdge[]
+  ): void {
+    testSuites.forEach(suite => {
+      const suiteId = `test_suite_${this.sanitizeId(suite.name)}`;
+
+      suite.imports.forEach(importPath => {
+        if (importPath.startsWith('./') || importPath.startsWith('../')) {
+          const targetId = this.resolveImportToNodeId(importPath, suite.filePath);
+          if (targetId) {
+            edges.push(this.createEdge(
+              this.generateEdgeId(suiteId, targetId, 'tests'),
+              suiteId,
+              targetId,
+              'tests',
+              'test-relationship'
+            ));
+          }
+        }
+      });
+
+      suite.mocks.forEach((mock, index) => {
+        if (mock.module) {
+          const mockId = `mock_${suiteId}_${index}`;
+          const targetId = this.resolveImportToNodeId(mock.module, suite.filePath);
+          if (targetId) {
+            edges.push(this.createEdge(
+              this.generateEdgeId(mockId, targetId, 'mocks'),
+              mockId,
+              targetId,
+              'mocks',
+              'test-relationship'
+            ));
+          }
+        }
+      });
+    });
+  }
+
+  private resolveImportToNodeId(importPath: string, testFilePath: string): string | null {
+    const cleanPath = importPath.replace(/^\.\/|^\.\.\//, '');
+    const baseName = path.basename(cleanPath, path.extname(cleanPath));
+    return `module_${this.sanitizeId(baseName)}`;
   }
 
   protected sanitizeId(name: string): string {

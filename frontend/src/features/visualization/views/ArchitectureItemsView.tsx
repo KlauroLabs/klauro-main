@@ -25,18 +25,28 @@ import {
   Code,
   Warning,
   CheckCircle,
+  Functions,
+  Class,
+  IntegrationInstructions,
+  Category,
+  Extension,
+  Construction,
+  Terminal,
+  Tune,
+  FilterAlt,
 } from '@mui/icons-material';
 import { CASNode } from '../types';
-import { ArchitectureItemType } from './SystemOverview';
+import { NodeStyle, getStyleForNodeType } from '../utils/dynamicStyling';
 
 export interface ArchitectureItemsViewProps {
-  itemType: ArchitectureItemType;
+  itemType: string;
   nodes: CASNode[];
+  nodeStyles?: Map<string, NodeStyle>;
   onBack: () => void;
   onNodeSelect?: (nodeId: string) => void;
 }
 
-const ITEM_CONFIG: Record<ArchitectureItemType, {
+const FALLBACK_CONFIG: Record<string, {
   title: string;
   icon: React.ReactNode;
   description: string;
@@ -66,17 +76,100 @@ const ITEM_CONFIG: Record<ArchitectureItemType, {
     icon: <Hub />,
     description: 'WebSocket and real-time communication handlers',
   },
+  function: {
+    title: 'Functions',
+    icon: <Functions />,
+    description: 'Standalone functions and utility methods',
+  },
+  class: {
+    title: 'Classes',
+    icon: <Class />,
+    description: 'Class definitions and object blueprints',
+  },
+  struct: {
+    title: 'Structs',
+    icon: <Category />,
+    description: 'Data structures and record types',
+  },
+  enum: {
+    title: 'Enums',
+    icon: <Category />,
+    description: 'Enumeration types and variants',
+  },
+  trait: {
+    title: 'Traits',
+    icon: <Extension />,
+    description: 'Trait definitions and interfaces',
+  },
+  impl: {
+    title: 'Implementations',
+    icon: <Construction />,
+    description: 'Trait implementations and method definitions',
+  },
+  module: {
+    title: 'Modules',
+    icon: <AccountTree />,
+    description: 'Module definitions and namespaces',
+  },
+  interface: {
+    title: 'Interfaces',
+    icon: <IntegrationInstructions />,
+    description: 'Interface definitions and contracts',
+  },
+  command: {
+    title: 'Commands',
+    icon: <Terminal />,
+    description: 'CLI commands and subcommands',
+  },
+  handler: {
+    title: 'Handlers',
+    icon: <Hub />,
+    description: 'Event and request handlers',
+  },
+  middleware: {
+    title: 'Middleware',
+    icon: <FilterAlt />,
+    description: 'Request/response middleware',
+  },
+  config: {
+    title: 'Configuration',
+    icon: <Tune />,
+    description: 'Configuration and settings',
+  },
 };
+
+function getConfigForType(itemType: string, nodeStyles?: Map<string, NodeStyle>): {
+  title: string;
+  icon: React.ReactNode;
+  description: string;
+  color?: string;
+} {
+  if (FALLBACK_CONFIG[itemType]) {
+    const config = FALLBACK_CONFIG[itemType];
+    const style = nodeStyles?.get(itemType) || getStyleForNodeType(itemType);
+    return { ...config, color: style.color };
+  }
+
+  const style = nodeStyles?.get(itemType) || getStyleForNodeType(itemType);
+  const title = style.label + 's';
+  return {
+    title,
+    icon: <Code />,
+    description: `${style.label} definitions`,
+    color: style.color,
+  };
+}
 
 export const ArchitectureItemsView: React.FC<ArchitectureItemsViewProps> = ({
   itemType,
   nodes,
+  nodeStyles,
   onBack,
   onNodeSelect,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
 
-  const config = ITEM_CONFIG[itemType];
+  const config = useMemo(() => getConfigForType(itemType, nodeStyles), [itemType, nodeStyles]);
 
   const filteredNodes = useMemo(() => {
     const typeNodes = nodes.filter(n => n.type === itemType);
@@ -168,8 +261,8 @@ export const ArchitectureItemsView: React.FC<ArchitectureItemsViewProps> = ({
                   }}
                   onClick={() => onNodeSelect?.(node.id)}
                 >
-                  <ListItemIcon sx={{ minWidth: 40 }}>
-                    <Code fontSize="small" color="action" />
+                  <ListItemIcon sx={{ minWidth: 40, color: config.color }}>
+                    <Code fontSize="small" />
                   </ListItemIcon>
                   <ListItemText
                     primary={

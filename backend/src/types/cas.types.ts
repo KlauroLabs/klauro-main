@@ -9,20 +9,65 @@ export interface CASOutput {
   perspectives?: CASPerspective[];
   nodes: CASNode[];
   edges: CASEdge[];
+  entry_points?: CASEntryPoint[];
+  exit_points?: CASExitPoint[];
+  external_services?: CASExternalService[];
+  repository_links?: CASCrossRepositoryLink[];
+  dependencies?: Dependencies;
+  disclosure?: DisclosureHints;
+  analyzer_contributions: CASAnalyzerContribution[];
+
+  // v1.3.0+ Call graph structures
+  method_calls?: CASMethodCall[];
+  call_chains?: CASCallChain[];
+  decorators?: CASDecorator[];
+
+  // v1.4.0+ Documentation and health structures
+  documentation_summary?: CASDocumentationSummary;
+  todos_summary?: CASTodoSummary;
+  implementation_health?: CASImplementationHealth;
+
+  // Legacy structures for backward compatibility
   behaviors?: CASBehavior[];
   patterns?: CASPattern[];
   categories?: CASCategories;
   tags?: CASTag[];
   index?: CASIndex;
-  external_services?: CASExternalService[];
   cross_repository_links?: CASCrossRepositoryLink[];
   security_contexts?: CASSecurityContext[];
   test_coverage?: CASTestCoverage;
+
+  // v1.6.0+ Test structures
+  test_suites?: CASTestSuite[];
+  mocks?: CASMock[];
+  fixtures?: CASFixture[];
+  test_summary?: CASTestSummary;
+
+  // v1.7.0+ Inference-Based Intelligence
+  intents?: CASIntent[];
+  flow_summary?: CASFlowSummary;
+  change_risks?: CASChangeRisk[];
+  change_risk_summary?: CASChangeRiskSummary;
+  data_entities?: CASDataEntity[];
+  data_summary?: CASDataSummary;
+  security_boundaries?: CASSecurityBoundary[];
+  security_summary?: CASSecuritySummary;
+  flow_coverage?: CASFlowCoverage[];
+  test_gaps?: CASTestGap[];
+  temporal_stability?: CASTemporalStability[];
+  stability_summary?: CASStabilitySummary;
+  system_capabilities?: SystemCapability[];
+  system_purpose?: SystemPurpose;
+
+  workflows?: CASWorkflow[];
+  workflow_graph?: CASWorkflowGraph;
+  domain_concepts?: CASDomainConcept[];
+  enhanced_system_purpose?: EnhancedSystemPurpose;
+
+  flow_graph?: CASFlowGraph;
+
   libraries?: CASLibrary[];
-  analyzer_contributions: CASAnalyzerContribution[];
   progressive_levels: CASProgressiveLevels;
-  entry_points?: CASEntryPoint[];
-  exit_points?: CASExitPoint[];
   configuration?: CASConfiguration;
   runtime?: CASRuntime;
   analysis_errors?: CASAnalysisError[];
@@ -240,7 +285,7 @@ export interface CASEntryPoint {
   id: string;
   source_node: string;
   source_analyzer?: string;
-  type: 'http' | 'websocket' | 'cli' | 'event' | 'schedule' | 'page' | 'route' | 'message' | 'file';
+  type: 'http' | 'websocket' | 'cli' | 'event' | 'schedule' | 'page' | 'route' | 'message' | 'file' | 'test';
   name: string;
   description?: string;
   trigger?: {
@@ -249,6 +294,18 @@ export interface CASEntryPoint {
     pattern?: string;
     event?: string;
     schedule?: string;
+    parameters?: Array<{
+      name: string;
+      type: string;
+      required: boolean;
+      location?: string;
+    }>;
+  };
+  handler?: {
+    node_id: string;
+    method_name: string;
+    file?: string;
+    line?: number;
   };
   input?: {
     type?: string;
@@ -264,6 +321,9 @@ export interface CASEntryPoint {
   security?: {
     authenticated?: boolean;
     authorized_roles?: string[];
+    guards?: string[];
+    roles?: string[];
+    permissions?: string[];
     rate_limit?: string;
     redirect_if_unauthorized?: string;
   };
@@ -478,6 +538,15 @@ export interface CASSecurityContext {
     owasp_top_10?: string[];
     mitigations?: string[];
   };
+
+  // v1.7.0 Per-Node Security Context additions
+  node_id?: string;
+  trust_level?: 'untrusted' | 'partially-trusted' | 'trusted';
+  security_relevant?: boolean;
+  security_relevance_reason?: string;
+  required_protections?: string[];
+  actual_protections?: string[];
+  protection_gaps?: string[];
 }
 
 export interface CASTestCoverage {
@@ -591,6 +660,11 @@ export interface CASAnalyzerContribution {
   warnings?: string[];
   framework_specific?: Record<string, any>;
   library_specific?: Record<string, any>;
+  application_type?: string;
+  project_name?: string;
+  project_version?: string;
+  frameworks_detected?: Record<string, boolean>;
+  crates?: Record<string, Record<string, boolean>>;
 }
 
 export interface CASProgressiveLevels {
@@ -1126,6 +1200,132 @@ export interface CASImplementationStatus {
   };
 }
 
+// v1.5.0 Method Call Structure
+export interface CASMethodCall {
+  id: string;
+  caller_node: string;
+  target_node?: string;
+  call_details: {
+    method_name: string;
+    signature?: string;
+    location: {
+      file: string;
+      line: number;
+      column: number;
+    };
+    call_type: 'direct' | 'method' | 'constructor' | 'abstract' | 'interface' | 'callback' | 'hook' | 'dynamic';
+    resolution_type: 'static' | 'dynamic' | 'polymorphic' | 'external' | 'unresolved';
+  };
+  execution_context: {
+    is_async: boolean;
+    is_conditional: boolean;
+    is_in_loop: boolean;
+    is_recursive: boolean;
+    call_depth: number;
+    conditional_depth: number;
+    loop_depth: number;
+    enclosing_function?: string;
+    enclosing_class?: string;
+  };
+  arguments?: Array<{
+    position: number;
+    type?: string;
+    value?: string;
+    is_literal: boolean;
+    is_variable: boolean;
+  }>;
+  external_details?: {
+    library: string;
+    module?: string;
+    is_builtin: boolean;
+    is_sdk: boolean;
+    exit_point_id?: string;
+  };
+  framework_semantics?: {
+    framework: string;
+    decorator_type?: string;
+    semantic_meaning?: string;
+    route_info?: {
+      method: string;
+      path: string;
+      parameters?: string[];
+    };
+  };
+  performance_hints: {
+    is_hot_path: boolean;
+    is_potential_bottleneck: boolean;
+    estimated_frequency?: number;
+    is_critical_path?: boolean;
+  };
+  metadata?: Record<string, any>;
+}
+
+export interface CASCallChain {
+  id: string;
+  chain_type: 'entry-to-exit' | 'circular' | 'recursive' | 'dead-end' | 'hot-path' | 'critical-path';
+  entry_point: {
+    node_id: string;
+    method_name: string;
+    entry_point_id?: string;
+  };
+  exit_point?: {
+    node_id?: string;
+    method_name: string;
+    exit_point_id?: string;
+  };
+  call_path: Array<{
+    call_id: string;
+    node_id: string;
+    method_name: string;
+    depth: number;
+    execution_branch?: string;
+  }>;
+  characteristics: {
+    total_calls: number;
+    max_depth: number;
+    has_external_calls: boolean;
+    has_database_calls: boolean;
+    has_async_calls: boolean;
+    is_circular: boolean;
+    is_recursive: boolean;
+    complexity_score: number;
+  };
+  business_context?: {
+    user_action?: string;
+    business_process?: string;
+    feature_area?: string;
+  };
+  risk_analysis: {
+    risk_level: 'low' | 'medium' | 'high' | 'critical';
+    risk_factors: string[];
+    bottlenecks?: Array<{
+      node_id: string;
+      method_name: string;
+      reason: string;
+      impact: 'low' | 'medium' | 'high';
+    }>;
+  };
+
+  // v1.7.0 Enhancements
+  criticality?: 'critical' | 'high' | 'medium' | 'low';
+  criticality_factors?: string[];
+  runtime_stats?: {
+    traffic_volume: 'very-high' | 'high' | 'medium' | 'low';
+    avg_latency_ms?: number;
+    error_rate_percent?: number;
+    last_observed?: string;
+  };
+  test_coverage?: {
+    covered: boolean;
+    coverage_percentage?: number;
+    test_ids?: string[];
+    gaps?: string[];
+  };
+
+  metadata?: Record<string, any>;
+}
+
+// Legacy support - keep for backward compatibility
 export interface CASCallGraph {
   calls?: Array<{
     target_id: string;
@@ -1285,4 +1485,784 @@ export interface CASDatabaseRelationship {
   field: string;
   inverse_field?: string;
   join_table?: string;
+}
+
+export interface CASDecorator {
+  id: string;
+  target_node: string;
+
+  decorator_info: {
+    name: string;
+    type: 'method' | 'class' | 'property' | 'parameter';
+    framework: string;
+    source_location: {
+      file: string;
+      line: number;
+      column: number;
+    };
+  };
+
+  semantic_meaning: {
+    category: 'routing' | 'validation' | 'security' | 'lifecycle' | 'injection' | 'configuration' | 'other';
+    behavior: string;
+    affects_runtime: boolean;
+  };
+
+  parameters?: Array<{
+    name: string;
+    value: any;
+    type: string;
+  }>;
+
+  routing_info?: {
+    method: string;
+    path: string;
+    parameters: string[];
+    guards?: string[];
+    middleware?: string[];
+  };
+
+  security_info?: {
+    authentication_required: boolean;
+    roles?: string[];
+    permissions?: string[];
+  };
+
+  metadata?: Record<string, any>;
+}
+
+export interface Dependencies {
+  manager: string;
+  lock_file?: string;
+  packages: Array<{
+    name: string;
+    version: string;
+    direct: boolean;
+    license?: string;
+    repository?: string;
+    vulnerabilities?: string[];
+  }>;
+}
+
+export interface DisclosureHints {
+  default_perspective?: string;
+  important_nodes?: string[];
+  suggested_paths?: Array<{
+    name: string;
+    description?: string;
+    nodes: string[];
+  }>;
+  summaries?: Array<{
+    level: number;
+    node_count: number;
+    perspective: string;
+    description?: string;
+  }>;
+}
+
+export interface CASDocumentationSummary {
+  total_documented_nodes: number;
+  documentation_coverage: number;
+
+  by_type: {
+    functions: { documented: number; total: number; coverage: number };
+    classes: { documented: number; total: number; coverage: number };
+    interfaces: { documented: number; total: number; coverage: number };
+    modules: { documented: number; total: number; coverage: number };
+  };
+
+  by_documentation_type: Record<string, number>;
+
+  quality_metrics: {
+    average_description_length: number;
+    parameters_documented: number;
+    returns_documented: number;
+    examples_provided: number;
+    deprecated_items: number;
+  };
+
+  missing_documentation: Array<{
+    node_id: string;
+    node_name: string;
+    node_type: string;
+    importance: 'low' | 'medium' | 'high';
+    reason: string;
+  }>;
+}
+
+export interface CASTodoSummary {
+  total_todos: number;
+  total_fixmes: number;
+  total_hacks: number;
+  total_warnings: number;
+
+  by_priority: {
+    critical: number;
+    high: number;
+    medium: number;
+    low: number;
+  };
+
+  by_category: Record<string, number>;
+
+  technical_debt_items: number;
+  blocking_items: number;
+
+  hotspots: Array<{
+    file: string;
+    todo_count: number;
+    types: string[];
+  }>;
+
+  age_analysis?: {
+    old_todos: Array<{
+      id: string;
+      age_days?: number;
+      text: string;
+    }>;
+  };
+}
+
+export interface CASImplementationHealth {
+  complete_implementations: number;
+  partial_implementations: number;
+  stubs: number;
+  not_implemented: number;
+  deprecated: number;
+  experimental: number;
+
+  health_score: number;
+
+  risk_areas: Array<{
+    node_id: string;
+    node_name: string;
+    risk_type: 'incomplete' | 'deprecated' | 'unstable' | 'high-todo-density';
+    risk_level: 'low' | 'medium' | 'high';
+    recommendation: string;
+  }>;
+
+  deprecation_timeline?: Array<{
+    node_id: string;
+    node_name: string;
+    deprecated_since: string;
+    removal_version?: string;
+  }>;
+}
+
+// v1.6.0 Test Structures
+
+export interface TestMetadata {
+  test_type: 'unit' | 'integration' | 'e2e' | 'acceptance' | 'performance' | 'visual' | 'smoke' | 'bdd';
+  test_style: 'procedural' | 'bdd' | 'property-based' | 'snapshot' | 'parameterized';
+  priority?: 'critical' | 'high' | 'medium' | 'low';
+  tags?: string[];
+  uses_mocks: boolean;
+  is_async: boolean;
+  timeout_ms?: number;
+  framework: string;
+
+  bdd_context?: {
+    feature?: string;
+    scenario?: string;
+    given?: string[];
+    when?: string[];
+    then?: string[];
+  };
+
+  parameterization?: {
+    data_source: 'inline' | 'fixture' | 'external';
+    parameter_count: number;
+    cases: number;
+  };
+}
+
+export interface CASTestSuite {
+  id: string;
+  name: string;
+  file_path: string;
+  test_type: 'unit' | 'integration' | 'e2e' | 'acceptance';
+  framework: string;
+
+  tests: CASTestCase[];
+  hooks?: CASTestHook[];
+  fixtures?: string[];
+  mocks?: string[];
+
+  coverage?: {
+    nodes_tested: string[];
+    coverage_percentage?: number;
+  };
+
+  metadata?: {
+    parallel?: boolean;
+    timeout_ms?: number;
+    retries?: number;
+    skip_reason?: string;
+  };
+}
+
+export interface CASTestCase {
+  id: string;
+  name: string;
+  description?: string;
+  test_type: 'unit' | 'integration' | 'e2e' | 'acceptance' | 'bdd';
+
+  assertions?: CASAssertion[];
+  mocks_used?: string[];
+  targets?: string[];
+
+  bdd_steps?: Array<{
+    type: 'given' | 'when' | 'then' | 'and' | 'but';
+    text: string;
+    implementation_id?: string;
+  }>;
+
+  parameterized?: {
+    parameters: Array<{ name: string; values: any[] }>;
+    case_count: number;
+  };
+
+  status: {
+    skipped: boolean;
+    focused: boolean;
+    flaky: boolean;
+  };
+
+  source?: {
+    file: string;
+    line: number;
+    end_line?: number;
+  };
+}
+
+export interface CASTestHook {
+  id: string;
+  type: 'beforeAll' | 'afterAll' | 'beforeEach' | 'afterEach' | 'setup' | 'teardown';
+  name?: string;
+  source?: {
+    file: string;
+    line: number;
+  };
+}
+
+export interface CASAssertion {
+  id: string;
+  type: 'equality' | 'truthiness' | 'exception' | 'mock-call' | 'snapshot' | 'type-check' | 'custom';
+  description?: string;
+  target?: string;
+  expected_value?: string;
+  source?: {
+    file: string;
+    line: number;
+  };
+}
+
+export interface CASMock {
+  id: string;
+  name: string;
+  type: 'mock' | 'stub' | 'spy' | 'fake';
+  target_node?: string;
+  framework: string;
+
+  implementation?: {
+    return_value?: string;
+    implementation_fn?: string;
+    call_tracking: boolean;
+  };
+
+  used_by?: string[];
+}
+
+export interface CASFixture {
+  id: string;
+  name: string;
+  type: 'factory' | 'fixture' | 'builder' | 'seed-data';
+  file_path: string;
+
+  generates?: string;
+  dependencies?: string[];
+  used_by?: string[];
+}
+
+export interface CASNodeTestCoverage {
+  covered: boolean;
+  coverage_percentage?: number;
+  tested_by?: string[];
+  untested_branches?: Array<{
+    line: number;
+    condition: string;
+  }>;
+}
+
+export interface CASTestSummary {
+  total_tests: number;
+  by_type: {
+    unit: number;
+    integration: number;
+    e2e: number;
+    acceptance: number;
+    bdd: number;
+    other: number;
+  };
+  by_status: {
+    passing: number;
+    failing: number;
+    skipped: number;
+    flaky: number;
+  };
+  coverage: {
+    overall_percentage?: number;
+    by_layer?: Record<string, number>;
+  };
+  mocks: {
+    total: number;
+    by_target_type?: Record<string, number>;
+  };
+  fixtures: {
+    total: number;
+    factories?: number;
+    seed_data?: number;
+  };
+}
+
+// v1.7.0 Intent Inference
+
+export interface CASIntent {
+  node_id: string;
+  inferred_purpose?: string;
+  inferred_constraints?: string[];
+  architectural_decision?: {
+    decision: string;
+    rationale?: string;
+    evidence: IntentEvidence[];
+  };
+  workaround_indicator?: {
+    is_workaround: boolean;
+    workaround_for?: string;
+    expected_resolution?: string;
+  };
+  confidence: 'high' | 'medium' | 'low';
+}
+
+export interface IntentEvidence {
+  type: 'commit_message' | 'pr_description' | 'code_comment' |
+        'pattern_deviation' | 'naming_convention';
+  source: string;
+  excerpt: string;
+  confidence_contribution: number;
+}
+
+// v1.7.0 Flow Summary
+
+export interface CASFlowSummary {
+  total_critical_flows: number;
+  by_criticality: Record<string, number>;
+  untested_critical_flows: string[];
+  high_error_rate_flows: string[];
+}
+
+// v1.7.0 Change Risk
+
+export interface CASChangeRisk {
+  node_id: string;
+  risk_level: 'critical' | 'high' | 'medium' | 'low';
+  risk_factors: ChangeRiskFactor[];
+
+  downstream_impact: {
+    direct_callers: string[];
+    transitive_callers: string[];
+    affected_call_chains: string[];
+    affected_entry_points: string[];
+  };
+
+  test_protection: {
+    has_direct_tests: boolean;
+    has_integration_tests: boolean;
+    test_ids?: string[];
+    untested_callers?: string[];
+  };
+
+  stability_context: {
+    recent_churn: boolean;
+    commit_count_30d: number;
+    bug_fix_density: number;
+    last_refactor?: string;
+  };
+
+  recommendations?: string[];
+}
+
+export interface ChangeRiskFactor {
+  factor: 'many-callers' | 'critical-path' | 'high-traffic' |
+          'no-tests' | 'recent-bugs' | 'complex-logic' |
+          'external-dependency' | 'security-sensitive';
+  severity: 'high' | 'medium' | 'low';
+  details: string;
+}
+
+export interface CASChangeRiskSummary {
+  high_risk_nodes: string[];
+  untested_critical_paths: string[];
+  recent_hotspots: string[];
+}
+
+// v1.7.0 Data Lifecycle
+
+export interface CASDataEntity {
+  id: string;
+  name: string;
+  schema_source?: string;
+
+  fields?: Array<{
+    name: string;
+    type: string;
+    is_sensitive: boolean;
+    validation?: string[];
+  }>;
+
+  lifecycle: {
+    created_by: string[];
+    read_by: string[];
+    updated_by: string[];
+    deleted_by: string[];
+  };
+
+  transformations?: Array<{
+    from_node: string;
+    to_node: string;
+    transformation_type: 'map' | 'filter' | 'aggregate' |
+                         'enrich' | 'validate' | 'sanitize';
+  }>;
+
+  invariants?: Array<{
+    description: string;
+    enforced_by: string[];
+    source: 'validation' | 'constraint' | 'test' | 'assertion';
+  }>;
+}
+
+export interface CASDataSummary {
+  entities: CASDataEntity[];
+  sensitive_data_nodes: string[];
+  validation_gaps: Array<{
+    entity_id: string;
+    missing_validation: string;
+  }>;
+}
+
+// v1.7.0 Security Boundaries
+
+export interface CASSecurityBoundary {
+  id: string;
+  name: string;
+  boundary_type: 'authentication' | 'authorization' | 'input-validation' |
+                 'output-encoding' | 'rate-limiting' | 'encryption';
+
+  enforcement_points: Array<{
+    node_id: string;
+    mechanism: string;
+    confidence: 'enforced' | 'assumed' | 'missing';
+  }>;
+
+  trust_transition: {
+    from_trust_level: 'untrusted' | 'partially-trusted' | 'trusted';
+    to_trust_level: 'untrusted' | 'partially-trusted' | 'trusted';
+  };
+
+  sensitive_operations: string[];
+  bypass_risks?: string[];
+}
+
+export interface CASSecuritySummary {
+  boundaries: CASSecurityBoundary[];
+  unprotected_sensitive_ops: string[];
+  assumed_vs_enforced: {
+    enforced: number;
+    assumed: number;
+    missing: number;
+  };
+}
+
+// v1.7.0 Flow-Test Coverage
+
+export interface CASFlowCoverage {
+  call_chain_id: string;
+  call_chain_name?: string;
+
+  coverage_status: 'fully-covered' | 'partially-covered' | 'not-covered';
+  coverage_percentage?: number;
+
+  tested_segments: Array<{
+    node_id: string;
+    test_ids: string[];
+    assertion_count: number;
+  }>;
+
+  untested_segments: Array<{
+    node_id: string;
+    importance: 'critical' | 'high' | 'medium' | 'low';
+    reason: string;
+  }>;
+
+  test_quality: {
+    has_unit_tests: boolean;
+    has_integration_tests: boolean;
+    has_e2e_tests: boolean;
+    uses_mocks: boolean;
+    mock_targets?: string[];
+  };
+}
+
+export interface CASTestGap {
+  gap_type: 'untested-flow' | 'untested-branch' | 'mock-only' | 'no-assertions';
+  location: {
+    node_id?: string;
+    call_chain_id?: string;
+    line?: number;
+  };
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  recommendation: string;
+}
+
+// v1.7.0 Temporal Stability
+
+export interface CASTemporalStability {
+  node_id: string;
+
+  stability_score: number;
+  stability_class: 'stable' | 'evolving' | 'volatile' | 'fragile';
+
+  churn_metrics: {
+    commits_30d: number;
+    commits_90d: number;
+    unique_authors_30d: number;
+    lines_changed_30d: number;
+  };
+
+  quality_signals: {
+    bug_fix_rate: number;
+    refactor_frequency: 'frequent' | 'occasional' | 'rare';
+    has_recent_regression: boolean;
+  };
+
+  age_context: {
+    file_age_days: number;
+    last_major_change?: string;
+    is_legacy: boolean;
+  };
+
+  risk_correlation?: {
+    high_churn_high_bugs: boolean;
+    recent_refactor_unstable: boolean;
+  };
+}
+
+export interface CASStabilitySummary {
+  by_stability_class: Record<string, number>;
+  hotspots: Array<{
+    node_id: string;
+    reason: string;
+  }>;
+  legacy_areas: string[];
+}
+
+// v1.7.0 System Capabilities
+
+export interface SystemCapability {
+  id: string;
+  name: string;
+  description: string;
+  category: 'core' | 'supporting' | 'admin' | 'internal';
+
+  operations: Array<{
+    entry_point_id: string;
+    entry_point_type: string;
+    action: string;
+    path_or_command?: string;
+  }>;
+
+  related_entities: string[];
+  related_domains: string[];
+  criticality: 'critical' | 'high' | 'medium' | 'low';
+  criticality_factors: string[];
+}
+
+export interface SystemPurpose {
+  primary_type: string;
+  confidence: number;
+  evidence: string[];
+  secondary_types?: string[];
+}
+
+export interface CASWorkflow {
+  id: string;
+  name: string;
+  description: string;
+  workflow_type: 'crud' | 'process' | 'query' | 'command' | 'composite';
+
+  entry_points: string[];
+  call_chains: string[];
+  exit_points: string[];
+
+  entities_touched: string[];
+  services_used: string[];
+
+  classification: 'primary' | 'supporting' | 'internal';
+  criticality: 'critical' | 'high' | 'medium' | 'low';
+
+  dependencies: string[];
+  dependents: string[];
+}
+
+export interface CASWorkflowDependency {
+  from_workflow: string;
+  to_workflow: string;
+  dependency_type: 'calls' | 'reads-from' | 'requires-auth' | 'requires-entity' | 'temporal';
+  strength: 'required' | 'optional';
+  evidence: string[];
+}
+
+export interface CASWorkflowGraph {
+  workflows: CASWorkflow[];
+  dependencies: CASWorkflowDependency[];
+  primary_workflow_id?: string;
+  entry_workflow_id?: string;
+  critical_shared_nodes: Array<{
+    node_id: string;
+    used_by_workflows: string[];
+    criticality: 'critical' | 'high' | 'medium' | 'low';
+  }>;
+}
+
+export interface CASDomainConcept {
+  id: string;
+  name: string;
+  frequency: number;
+  appears_in: {
+    entry_points: string[];
+    entities: string[];
+    nodes: string[];
+  };
+  classification: 'core' | 'supporting' | 'infrastructure';
+}
+
+export interface EnhancedSystemPurpose extends SystemPurpose {
+  primary_domain: string;
+  core_concepts: string[];
+  inferred_description: string;
+  primary_workflow_id?: string;
+  supporting_workflow_ids: string[];
+}
+
+export interface CASCapability {
+  id: string;
+  name: string;
+  description: string;
+
+  entry_points: string[];
+  entry_point_summary: {
+    types: string[];
+    count: number;
+    primary_type: string;
+  };
+
+  operations: CASOperation[];
+  operation_patterns: ('crud' | 'transform' | 'query' | 'command' | 'event' | 'pipeline')[];
+
+  entities_touched?: string[];
+  services_used: string[];
+  exit_points: string[];
+
+  call_chain_ids: string[];
+  complexity_profile: {
+    avg_depth: number;
+    max_depth: number;
+    has_external_calls: boolean;
+    has_database_calls: boolean;
+    has_async_calls: boolean;
+    branching_factor: number;
+  };
+
+  classification: 'primary' | 'supporting' | 'infrastructure';
+  criticality: 'critical' | 'high' | 'medium' | 'low';
+
+  signals: {
+    domain_concept_score: number;
+    centrality_score: number;
+    coverage_score: number;
+    complexity_score: number;
+    total_score: number;
+  };
+
+  depends_on: CASCapabilityDependency[];
+  depended_by: string[];
+}
+
+export interface CASOperation {
+  id: string;
+  name: string;
+  pattern: 'create' | 'read' | 'update' | 'delete' | 'action' | 'query' | 'transform';
+
+  entry_point_id?: string;
+  call_chain_ids: string[];
+  implementing_nodes: string[];
+
+  trigger?: {
+    type: string;
+    method?: string;
+    path?: string;
+    command?: string;
+    event_name?: string;
+  };
+}
+
+export interface CASCapabilityDependency {
+  from_capability: string;
+  to_capability: string;
+
+  dependency_type: 'requires' | 'uses' | 'shares-data' | 'triggers' | 'cascade';
+  strength: 'required' | 'common' | 'optional';
+
+  evidence: {
+    shared_services: string[];
+    shared_entities?: string[];
+    shared_nodes: string[];
+    call_count?: number;
+  };
+
+  description: string;
+}
+
+export interface CASFlowGraph {
+  capabilities: CASCapability[];
+  dependencies: CASCapabilityDependency[];
+
+  topology: {
+    root_capabilities: string[];
+    leaf_capabilities: string[];
+    critical_path: string[];
+    max_depth: number;
+  };
+
+  primary_flow: {
+    core_capability_id: string;
+    value_chain: string[];
+    supporting_capabilities: string[];
+    infrastructure_capabilities: string[];
+  };
+
+  layers: CASFlowLayer[];
+
+  system_insights: {
+    detected_patterns: string[];
+    primary_entry_type: string;
+    data_flow_type: string;
+  };
+}
+
+export interface CASFlowLayer {
+  layer_number: number;
+  layer_name: string;
+  capabilities: string[];
+  layer_type: 'entry' | 'business' | 'data' | 'infrastructure';
 }

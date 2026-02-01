@@ -21,3 +21,30 @@ export type { FlowViewProps } from './FlowView';
 
 export { PatternsView } from './PatternsView';
 export type { PatternsViewProps } from './PatternsView';
+
+export { GraphView } from './GraphView';
+export type { GraphViewProps, GroupByMode } from './GraphView';
+
+export { TestOverviewView } from './TestOverviewView';
+export type { TestOverviewViewProps } from './TestOverviewView';
+
+export { TestAreaView } from './TestAreaView';
+export type { TestAreaViewProps } from './TestAreaView';
+
+export { CriticalFlowsView } from './CriticalFlowsView';
+export type { CriticalFlowsViewProps } from './CriticalFlowsView';
+
+export { ChangeRiskView } from './ChangeRiskView';
+export type { ChangeRiskViewProps } from './ChangeRiskView';
+
+export { SecurityBoundariesView } from './SecurityBoundariesView';
+export type { SecurityBoundariesViewProps } from './SecurityBoundariesView';
+
+export { CodeStabilityView } from './CodeStabilityView';
+export type { CodeStabilityViewProps } from './CodeStabilityView';
+
+export { DataEntitiesView } from './DataEntitiesView';
+export type { DataEntitiesViewProps } from './DataEntitiesView';
+
+export { SystemCapabilitiesView } from './SystemCapabilitiesView';
+export type { SystemCapabilitiesViewProps } from './SystemCapabilitiesView';

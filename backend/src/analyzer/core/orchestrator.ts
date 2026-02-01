@@ -15,11 +15,45 @@ import {
   CASDatabaseEntity,
   CASExternalService,
   CASEntryPoint,
-  CASExitPoint
+  CASExitPoint,
+  CASIntent,
+  CASFlowSummary,
+  CASChangeRisk,
+  CASChangeRiskSummary,
+  CASDataEntity,
+  CASDataSummary,
+  CASSecurityBoundary,
+  CASSecuritySummary,
+  CASFlowCoverage,
+  CASTestGap,
+  CASTemporalStability,
+  CASStabilitySummary,
+  CASCallChain,
+  SystemCapability,
+  SystemPurpose,
+  CASWorkflow,
+  CASWorkflowGraph,
+  CASDomainConcept,
+  EnhancedSystemPurpose,
+  CASFlowGraph,
+  CASTestSuite,
+  CASMock,
+  CASFixture,
+  CASTestSummary
 } from '../../types/cas.types';
+import { CallGraphBuilder, TracedPath } from './call-graph-builder';
+import { DomainExtractor } from './domain-extractor';
+import { WorkflowDetector } from './workflow-detector';
+import { CapabilityDetector } from './capability-detector';
+import { CallChainAnalyzer } from './call-chain-analyzer';
+import { CapabilityDependencyBuilder } from './capability-dependency-builder';
+import { FlowScorer } from './flow-scorer';
+import { FlowGraphBuilder } from './flow-graph-builder';
+import { GitAnalyzer } from './git-analyzer';
 
 export { CASOutput } from '../../types/cas.types';
-import * as fs from 'fs';
+import * as fs from 'fs-extra';
+import { glob } from 'glob';
 import * as path from 'path';
 
 export interface AnalyzerRegistration {
@@ -115,6 +149,7 @@ export class AnalyzerOrchestrator {
         if (result.tags) allTags.push(...result.tags);
         if (result.perspectives) allPerspectives.push(...result.perspectives);
 
+        const analyzerMeta = result.analyzer_metadata || {};
         contributions.push({
           analyzer_id: registration.id,
           analyzer_name: registration.name,
@@ -125,7 +160,11 @@ export class AnalyzerOrchestrator {
           edges_created: result.edges?.length || 0,
           confidence: 1.0,
           contributed_categories: result.categories ? Object.keys(result.categories).length : 0,
-          provided_perspectives: result.provided_perspectives || []
+          provided_perspectives: result.provided_perspectives || [],
+          framework_specific: analyzerMeta.frameworks_detected || analyzerMeta.crates || undefined,
+          application_type: analyzerMeta.application_type,
+          project_name: analyzerMeta.project_name,
+          project_version: analyzerMeta.project_version
         });
 
         if (result.libraries) {
@@ -136,6 +175,10 @@ export class AnalyzerOrchestrator {
         console.error(`Error running analyzer ${registration.id}:`, error);
       }
     }
+
+    this.linkRouteHandlers(allNodes, allEdges, allEntryPoints);
+
+    const gitAnalyzer = new GitAnalyzer(projectPath);
 
     const systemName = path.basename(projectPath);
     const progressiveLevels = this.buildProgressiveLevels(allNodes, categories);
@@ -149,8 +192,58 @@ export class AnalyzerOrchestrator {
     const detectedPatterns = this.detectPatterns(allNodes, allEdges);
     allPatterns.push(...detectedPatterns);
 
+    const intents = this.buildIntents(allNodes);
+    const flowSummary = this.buildFlowSummary(allNodes, allEntryPoints);
+    const changeRisks = this.buildChangeRisks(allNodes, allEdges, allEntryPoints, gitAnalyzer);
+    const changeRiskSummary = this.buildChangeRiskSummary(changeRisks);
+    const dataEntities = this.buildDataEntities(allNodes, allEdges);
+    const dataSummary = this.buildDataSummary(dataEntities, allNodes);
+    const securityBoundaries = this.buildSecurityBoundaries(allNodes, allEntryPoints);
+    const securitySummary = this.buildSecuritySummary(securityBoundaries, allNodes);
+    const flowCoverage = this.buildFlowCoverage(allNodes, allEntryPoints);
+    const testGaps = this.buildTestGaps(flowCoverage, allNodes);
+    const temporalStability = this.buildTemporalStability(allNodes, gitAnalyzer);
+    const stabilitySummary = this.buildStabilitySummary(temporalStability);
+
+    const systemCapabilities = this.buildSystemCapabilities(allEntryPoints, dataEntities, allNodes, allEdges);
+    const systemPurpose = this.inferSystemPurpose(allEntryPoints, dataEntities, systemCapabilities, allNodes);
+
+    const callGraphBuilder = new CallGraphBuilder(allNodes, allEdges, allExitPoints);
+    const callChains = this.buildCallChains(allNodes, allEdges, allEntryPoints, allExitPoints, callGraphBuilder);
+
+    const domainExtractor = new DomainExtractor();
+    const domainConcepts = domainExtractor.extract(allNodes, allEntryPoints, dataEntities);
+
+    const workflowDetector = new WorkflowDetector();
+    const workflows = workflowDetector.detectWorkflows(allEntryPoints, callChains, allNodes, allEdges, allExitPoints);
+    workflowDetector.classifyWorkflows(workflows, domainConcepts);
+    const workflowGraph = workflowDetector.buildDependencyGraph(workflows, callChains, allNodes);
+
+    const flowGraph = this.buildFlowGraph(
+      allEntryPoints,
+      callChains,
+      allNodes,
+      allEdges,
+      domainConcepts,
+      dataEntities,
+      databaseSchema,
+      systemPurpose
+    );
+
+    const enhancedChangeRisks = this.enhanceChangeRisks(changeRisks, callGraphBuilder, callChains, allEntryPoints);
+
+    const enhancedFlowSummary = this.buildEnhancedFlowSummary(callChains, allEntryPoints);
+
+    const enhancedSystemPurpose = this.buildEnhancedSystemPurpose(
+      systemPurpose,
+      domainConcepts,
+      workflows,
+      workflowGraph,
+      domainExtractor
+    );
+
     return {
-      cas_version: '1.5.0',
+      cas_version: '1.7.0',
       analysis_timestamp: new Date().toISOString(),
       analysis_id: analysisId,
       system: {
@@ -177,7 +270,31 @@ export class AnalyzerOrchestrator {
       external_services: externalServices.length > 0 ? externalServices : undefined,
       libraries: allLibraries.length > 0 ? allLibraries : undefined,
       analyzer_contributions: contributions,
-      progressive_levels: progressiveLevels
+      progressive_levels: progressiveLevels,
+      intents: intents.length > 0 ? intents : undefined,
+      change_risk_summary: changeRiskSummary,
+      data_entities: dataEntities.length > 0 ? dataEntities : undefined,
+      data_summary: dataSummary,
+      security_boundaries: securityBoundaries.length > 0 ? securityBoundaries : undefined,
+      security_summary: securitySummary,
+      flow_coverage: flowCoverage,
+      test_gaps: testGaps,
+      temporal_stability: temporalStability.length > 0 ? temporalStability : undefined,
+      stability_summary: stabilitySummary,
+      system_capabilities: systemCapabilities.length > 0 ? systemCapabilities : undefined,
+      system_purpose: systemPurpose,
+      call_chains: callChains.length > 0 ? callChains : undefined,
+      workflows: workflows.length > 0 ? workflows : undefined,
+      workflow_graph: workflowGraph,
+      domain_concepts: domainConcepts.length > 0 ? domainConcepts : undefined,
+      enhanced_system_purpose: enhancedSystemPurpose,
+      flow_graph: flowGraph,
+      flow_summary: enhancedFlowSummary,
+      change_risks: enhancedChangeRisks.length > 0 ? enhancedChangeRisks : undefined,
+      test_suites: this.buildTestSuites(allNodes, allEntryPoints),
+      mocks: this.buildMocks(allNodes),
+      fixtures: this.buildFixtures(allNodes),
+      test_summary: this.buildTestSummary(allNodes, allEntryPoints)
     } as CASOutput;
   }
 
@@ -221,10 +338,92 @@ export class AnalyzerOrchestrator {
     registration: AnalyzerRegistration
   ): Promise<boolean> {
     try {
+      // Pre-filter analyzers based on project type to avoid running irrelevant ones
+      const projectType = await this.detectPrimaryProjectType(projectPath);
+
+      // Skip analyzers that don't match the primary project type
+      if (!this.isAnalyzerRelevantForProject(registration, projectType)) {
+        return false;
+      }
+
       return await registration.analyzer.canAnalyze(projectPath);
     } catch (error) {
       return false;
     }
+  }
+
+  private async detectPrimaryProjectType(projectPath: string): Promise<string> {
+    try {
+      // Check for primary project indicators
+      const indicators = [
+        { type: 'typescript', files: ['package.json'], content: ['"typescript"', '"@types/'] },
+        { type: 'javascript', files: ['package.json'], content: ['"react"', '"express"', '"vue"'] },
+        { type: 'python', files: ['requirements.txt', 'setup.py', 'pyproject.toml'] },
+        { type: 'java', files: ['pom.xml', 'build.gradle'] },
+        { type: 'csharp', files: ['*.csproj', '*.sln'] },
+        { type: 'go', files: ['go.mod'] },
+        { type: 'rust', files: ['Cargo.toml'] },
+        { type: 'php', files: ['composer.json'] }
+      ];
+
+      for (const indicator of indicators) {
+        for (const file of indicator.files) {
+          try {
+            const files = await glob(file, { cwd: projectPath });
+            if (files.length > 0) {
+              // Check content if specified
+              if (indicator.content && indicator.content.length > 0) {
+                for (const f of files) {
+                  try {
+                    const content = await fs.readFile(path.join(projectPath, f), 'utf-8');
+                    if (indicator.content.some(c => content.includes(c))) {
+                      return indicator.type;
+                    }
+                  } catch {
+                    // Continue checking other files
+                  }
+                }
+              } else {
+                return indicator.type;
+              }
+            }
+          } catch {
+            // Continue checking
+          }
+        }
+      }
+
+      return 'unknown';
+    } catch {
+      return 'unknown';
+    }
+  }
+
+  private isAnalyzerRelevantForProject(registration: AnalyzerRegistration, projectType: string): boolean {
+    // Language analyzers should only run for their specific language
+    if (registration.type === 'language') {
+      const languageMap: { [key: string]: string[] } = {
+        'typescript-javascript': ['typescript', 'javascript'],
+        'python': ['python'],
+        'java': ['java', 'kotlin', 'scala'],
+        'csharp': ['csharp', 'fsharp', 'vb'],
+        'go': ['go'],
+        'rust': ['rust'],
+        'php': ['php']
+      };
+
+      return languageMap[registration.id]?.includes(projectType) || false;
+    }
+
+    // Framework analyzers can run if they're relevant to the detected frameworks
+    if (registration.type === 'framework') {
+      // For now, let framework analyzers run their canAnalyze method
+      // This could be enhanced with framework detection
+      return true;
+    }
+
+    // Library and pattern analyzers always run
+    return true;
   }
 
   private orderAnalyzers(analyzers: AnalyzerRegistration[]): AnalyzerRegistration[] {
@@ -291,8 +490,30 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    if (source.entry_points) target.allEntryPoints.push(...source.entry_points);
-    if (source.exit_points) target.allExitPoints.push(...source.exit_points);
+    if (source.entry_points) {
+      const validEntryPoints = source.entry_points.filter(ep => this.isValidEntryPoint(ep));
+      target.allEntryPoints.push(...validEntryPoints);
+    }
+    if (source.exit_points) {
+      const validExitPoints = source.exit_points.filter(ep => this.isValidExitPoint(ep));
+      target.allExitPoints.push(...validExitPoints);
+    }
+  }
+
+  private isValidEntryPoint(ep: CASEntryPoint): boolean {
+    const validTypes = new Set([
+      'http', 'cli', 'websocket', 'ws_handler', 'message',
+      'event', 'scheduled', 'schedule', 'cron', 'queue', 'grpc', 'graphql'
+    ]);
+    return validTypes.has(ep.type);
+  }
+
+  private isValidExitPoint(ep: CASExitPoint): boolean {
+    const validTypes = new Set([
+      'database', 'http', 'grpc', 'graphql', 'queue', 'cache',
+      'file', 'email', 'sms', 'external_api', 'sdk'
+    ]);
+    return validTypes.has(ep.type);
   }
 
   private determineSystemType(nodes: CASNode[]): string {
@@ -526,6 +747,10 @@ export class AnalyzerOrchestrator {
           count: contrib.nodes_created,
           percentage: 0
         });
+
+        if (contrib.framework_specific) {
+          this.extractFrameworksFromSpec(contrib.framework_specific, frameworks);
+        }
       } else if (contrib.analyzer_type === 'framework') {
         const frameworkName = contrib.analyzer_name.replace(' Analyzer', '');
         frameworks.set(frameworkName, {
@@ -550,6 +775,23 @@ export class AnalyzerOrchestrator {
         confidence: data.confidence
       }))
     };
+  }
+
+  private extractFrameworksFromSpec(
+    spec: Record<string, any>,
+    frameworks: Map<string, { version?: string; confidence: number }>
+  ): void {
+    const processObject = (obj: Record<string, any>, prefix = ''): void => {
+      for (const [key, value] of Object.entries(obj)) {
+        if (typeof value === 'boolean' && value === true) {
+          const frameworkName = prefix ? `${prefix}/${key}` : key;
+          frameworks.set(frameworkName, { confidence: 1.0 });
+        } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+          processObject(value, key);
+        }
+      }
+    };
+    processObject(spec);
   }
 
   private calculateQualityMetrics(nodes: CASNode[]): any {
@@ -579,7 +821,10 @@ export class AnalyzerOrchestrator {
     const httpEntryPoints = entryPoints.filter(ep => ep.type === 'http');
 
     const frameworkContribution = contributions.find(c => c.analyzer_type === 'framework');
-    const systemType = frameworkContribution?.analyzer_name?.replace(' Analyzer', '') || 'Application';
+    const languageContribution = contributions.find(c => c.analyzer_type === 'language' && c.application_type);
+    const systemType = frameworkContribution?.analyzer_name?.replace(' Analyzer', '') ||
+      languageContribution?.application_type ||
+      'Application';
 
     const controllers = nodes.filter(n => n.type === 'controller' || n.subcategories?.includes('controller'));
     const services = nodes.filter(n => n.type === 'service' || n.subcategories?.includes('service'));
@@ -786,7 +1031,8 @@ export class AnalyzerOrchestrator {
     const services: CASExternalService[] = [];
     const serviceMap = new Map<string, CASExternalService>();
 
-    const jsBuiltins = new Set([
+    const stdBuiltins = new Set([
+      // JavaScript/Node built-ins
       'console', 'path', 'fs', 'os', 'crypto', 'http', 'https', 'url', 'util',
       'stream', 'buffer', 'events', 'child_process', 'cluster', 'dgram', 'dns',
       'net', 'readline', 'repl', 'tls', 'tty', 'v8', 'vm', 'zlib', 'assert',
@@ -800,7 +1046,25 @@ export class AnalyzerOrchestrator {
       'Intl', 'Atomics', 'SharedArrayBuffer', 'ArrayBuffer', 'DataView',
       'Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array',
       'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array', 'BigInt64Array',
-      'BigUint64Array', 'BigInt', 'Infinity', 'NaN', 'undefined', 'null'
+      'BigUint64Array', 'BigInt', 'Infinity', 'NaN', 'undefined', 'null',
+      // Rust standard library
+      'std', 'core', 'alloc', 'Vec', 'HashMap', 'HashSet', 'BTreeMap', 'BTreeSet',
+      'Option', 'Result', 'Box', 'Rc', 'Arc', 'Cell', 'RefCell', 'Mutex', 'RwLock',
+      'Duration', 'Instant', 'SystemTime', 'Path', 'PathBuf', 'OsStr', 'OsString',
+      'File', 'Read', 'Write', 'BufRead', 'BufReader', 'BufWriter',
+      'TcpStream', 'TcpListener', 'UdpSocket', 'Command', 'Child', 'Stdio',
+      'thread', 'sync', 'collections', 'io', 'env', 'fmt', 'str', 'slice', 'iter',
+      'ops', 'cmp', 'convert', 'default', 'mem', 'ptr', 'num', 'time', 'ffi',
+      'Cow', 'Deref', 'DerefMut', 'Drop', 'Clone', 'Copy', 'Debug', 'Display',
+      'Default', 'PartialEq', 'Eq', 'PartialOrd', 'Ord', 'Hash', 'Iterator',
+      'IntoIterator', 'FromIterator', 'Extend', 'From', 'Into', 'TryFrom', 'TryInto',
+      'AsRef', 'AsMut', 'Send', 'Sync', 'Sized', 'Unpin', 'VecDeque', 'LinkedList',
+      'BinaryHeap', 'Range', 'PhantomData', 'ManuallyDrop', 'MaybeUninit', 'NonNull',
+      'Ordering', 'Reverse', 'format', 'println', 'print', 'eprintln', 'eprint',
+      'dbg', 'todo', 'unimplemented', 'unreachable', 'assert', 'assert_eq', 'assert_ne',
+      'vec', 'format_args', 'write', 'writeln', 'DefaultHasher', 'RandomState',
+      'ErrorKind', 'Formatter', 'Arguments', 'Pin', 'Waker', 'Context', 'Poll',
+      'Future', 'CStr', 'CString', 'ipaddr', 'RateLimiter'
     ]);
 
     exitPoints.forEach(ep => {
@@ -844,7 +1108,7 @@ export class AnalyzerOrchestrator {
       } else if (ep.type === 'api' || ep.type === 'sdk') {
         const sdkName = ep.target?.sdk || ep.name || 'External API';
 
-        if (jsBuiltins.has(sdkName)) {
+        if (stdBuiltins.has(sdkName)) {
           return;
         }
 
@@ -1347,5 +1611,2071 @@ export class AnalyzerOrchestrator {
         recommendation: 'Break the cycle by introducing an interface or restructuring dependencies'
       }))
     });
+  }
+
+  private buildIntents(nodes: CASNode[]): CASIntent[] {
+    const intents: CASIntent[] = [];
+
+    for (const node of nodes) {
+      const evidence: Array<{
+        type: 'commit_message' | 'pr_description' | 'code_comment' | 'pattern_deviation' | 'naming_convention';
+        source: string;
+        excerpt: string;
+        confidence_contribution: number;
+      }> = [];
+
+      if (node.comments && node.comments.length > 0) {
+        for (const comment of node.comments) {
+          if (comment.purpose === 'explanation' || comment.markers?.is_hack || comment.markers?.is_warning) {
+            evidence.push({
+              type: 'code_comment',
+              source: comment.location?.file || node.source?.file || 'unknown',
+              excerpt: comment.text.substring(0, 200),
+              confidence_contribution: 0.4
+            });
+          }
+        }
+      }
+
+      if (node.todos && node.todos.length > 0) {
+        for (const todo of node.todos) {
+          evidence.push({
+            type: 'code_comment',
+            source: todo.location?.file || node.source?.file || 'unknown',
+            excerpt: `${todo.type}: ${todo.text.substring(0, 150)}`,
+            confidence_contribution: 0.3
+          });
+        }
+      }
+
+      const workaroundPatterns = ['hack', 'workaround', 'temporary', 'legacy', 'deprecated', 'temp', 'fixme'];
+      const nameLower = node.name.toLowerCase();
+      const isWorkaround = workaroundPatterns.some(p => nameLower.includes(p));
+
+      if (isWorkaround) {
+        evidence.push({
+          type: 'naming_convention',
+          source: node.source?.file || 'unknown',
+          excerpt: `Name contains workaround indicator: ${node.name}`,
+          confidence_contribution: 0.2
+        });
+      }
+
+      if (evidence.length > 0) {
+        const totalConfidence = evidence.reduce((sum, e) => sum + e.confidence_contribution, 0);
+        const confidence: 'high' | 'medium' | 'low' =
+          totalConfidence >= 0.7 ? 'high' :
+          totalConfidence >= 0.4 ? 'medium' : 'low';
+
+        const intent: CASIntent = {
+          node_id: node.id,
+          inferred_purpose: node.description || node.documentation?.summary,
+          confidence,
+          workaround_indicator: isWorkaround ? {
+            is_workaround: true,
+            workaround_for: 'Detected from naming pattern'
+          } : undefined
+        };
+
+        if (evidence.length > 0) {
+          intent.architectural_decision = {
+            decision: 'Implementation approach',
+            evidence: evidence as any
+          };
+        }
+
+        intents.push(intent);
+      }
+    }
+
+    return intents;
+  }
+
+  private buildFlowSummary(nodes: CASNode[], entryPoints: CASEntryPoint[]): CASFlowSummary {
+    const criticalPatterns = ['auth', 'login', 'password', 'payment', 'checkout', 'billing', 'charge', 'refund', 'token', 'session', 'oauth', 'credential'];
+    const highPatterns = ['user', 'account', 'order', 'profile', 'subscription', 'permission', 'role', 'admin', 'delete', 'remove'];
+    const mediumPatterns = ['create', 'update', 'modify', 'change', 'setting', 'preference'];
+
+    const classified = {
+      critical: [] as string[],
+      high: [] as string[],
+      medium: [] as string[],
+      low: [] as string[]
+    };
+
+    for (const ep of entryPoints) {
+      if (ep.type === 'test') continue;
+
+      const path = (ep.trigger?.path || ep.name || '').toLowerCase();
+      const method = ep.trigger?.method?.toUpperCase() || '';
+      const hasAuth = ep.security?.authenticated || (ep as any).security?.authenticated;
+
+      let score = 0;
+
+      if (criticalPatterns.some(p => path.includes(p))) {
+        score += 40;
+      }
+      if (highPatterns.some(p => path.includes(p))) {
+        score += 20;
+      }
+      if (mediumPatterns.some(p => path.includes(p))) {
+        score += 10;
+      }
+
+      if (method === 'POST' || method === 'PUT' || method === 'DELETE' || method === 'PATCH') {
+        score += 15;
+      }
+
+      if (hasAuth) {
+        score += 10;
+      }
+
+      if (ep.type === 'cli') {
+        score += 5;
+      }
+
+      let criticality: 'critical' | 'high' | 'medium' | 'low';
+      if (score >= 50) {
+        criticality = 'critical';
+      } else if (score >= 30) {
+        criticality = 'high';
+      } else if (score >= 15) {
+        criticality = 'medium';
+      } else {
+        criticality = 'low';
+      }
+
+      classified[criticality].push(ep.id);
+    }
+
+    const totalCritical = classified.critical.length + classified.high.length;
+
+    return {
+      total_critical_flows: totalCritical,
+      by_criticality: {
+        critical: classified.critical.length,
+        high: classified.high.length,
+        medium: classified.medium.length,
+        low: classified.low.length
+      },
+      untested_critical_flows: [],
+      high_error_rate_flows: []
+    };
+  }
+
+  private isApplicationEntryPoint(ep: CASEntryPoint): boolean {
+    const applicationTypes = new Set([
+      'http', 'cli', 'websocket', 'ws_handler', 'message',
+      'event', 'scheduled', 'cron', 'queue', 'grpc', 'graphql'
+    ]);
+
+    return applicationTypes.has(ep.type);
+  }
+
+  private buildCallChains(
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[],
+    callGraph: CallGraphBuilder
+  ): CASCallChain[] {
+    const chains: CASCallChain[] = [];
+
+    for (const ep of entryPoints) {
+      if (ep.type === 'test') continue;
+      if (!this.isApplicationEntryPoint(ep)) continue;
+      if (!ep.source_node) continue;
+
+      const tracedPaths = callGraph.tracePathsFromEntry(ep.source_node, ep.id);
+
+      for (let i = 0; i < tracedPaths.length; i++) {
+        const path = tracedPaths[i];
+
+        const testCoverage = this.computeChainTestCoverage(path, nodes);
+
+        const chain: CASCallChain = {
+          id: `chain_${ep.id}_${i}`,
+          chain_type: this.determineChainType(path),
+          entry_point: {
+            node_id: ep.source_node,
+            method_name: ep.name,
+            entry_point_id: ep.id
+          },
+          exit_point: path.exitPoint ? {
+            node_id: path.exitNodeId,
+            method_name: path.exitPoint.name,
+            exit_point_id: path.exitPoint.id
+          } : undefined,
+          call_path: path.steps.map((step, idx) => ({
+            call_id: `call_${idx}`,
+            node_id: step.nodeId,
+            method_name: step.methodName,
+            depth: step.depth
+          })),
+          characteristics: {
+            total_calls: path.steps.length,
+            max_depth: path.maxDepth,
+            has_external_calls: path.hasExternalCalls,
+            has_database_calls: path.hasDatabaseCalls,
+            has_async_calls: path.hasAsyncCalls,
+            is_circular: path.isCircular,
+            is_recursive: path.isRecursive,
+            complexity_score: path.complexity
+          },
+          criticality: this.computeChainCriticality(ep, path),
+          criticality_factors: this.getChainCriticalityFactors(ep, path),
+          risk_analysis: {
+            risk_level: this.computeChainRiskLevel(path),
+            risk_factors: this.getChainRiskFactors(path)
+          },
+          business_context: {
+            user_action: this.inferUserAction(ep),
+            business_process: this.inferBusinessProcess(ep),
+            feature_area: this.inferFeatureArea(ep)
+          },
+          test_coverage: testCoverage
+        };
+
+        chains.push(chain);
+      }
+    }
+
+    return chains;
+  }
+
+  private determineChainType(path: TracedPath): 'entry-to-exit' | 'circular' | 'recursive' | 'dead-end' | 'hot-path' | 'critical-path' {
+    if (path.isCircular) return 'circular';
+    if (path.isRecursive) return 'recursive';
+    if (path.exitPoint) return 'entry-to-exit';
+    return 'dead-end';
+  }
+
+  private computeChainCriticality(ep: CASEntryPoint, path: TracedPath): 'critical' | 'high' | 'medium' | 'low' {
+    const criticalPatterns = ['auth', 'login', 'password', 'payment', 'checkout', 'billing', 'security'];
+    const highPatterns = ['user', 'account', 'analyze', 'analysis', 'admin', 'delete'];
+
+    const epPath = (ep.trigger?.path || ep.name || '').toLowerCase();
+
+    if (criticalPatterns.some(p => epPath.includes(p))) return 'critical';
+    if (highPatterns.some(p => epPath.includes(p))) return 'high';
+    if (path.hasExternalCalls || path.hasDatabaseCalls) return 'medium';
+    return 'low';
+  }
+
+  private getChainCriticalityFactors(ep: CASEntryPoint, path: TracedPath): string[] {
+    const factors: string[] = [];
+
+    if (ep.security?.authenticated) factors.push('requires-authentication');
+    if (path.hasExternalCalls) factors.push('external-calls');
+    if (path.hasDatabaseCalls) factors.push('database-operations');
+    if (path.isRecursive) factors.push('recursive-calls');
+    if (path.complexity > 20) factors.push('high-complexity');
+
+    return factors;
+  }
+
+  private computeChainRiskLevel(path: TracedPath): 'critical' | 'high' | 'medium' | 'low' {
+    if (path.isCircular) return 'critical';
+    if (path.complexity > 30) return 'high';
+    if (path.hasExternalCalls && path.hasDatabaseCalls) return 'high';
+    if (path.hasExternalCalls || path.hasDatabaseCalls) return 'medium';
+    return 'low';
+  }
+
+  private getChainRiskFactors(path: TracedPath): string[] {
+    const factors: string[] = [];
+
+    if (path.isCircular) factors.push('circular-dependency');
+    if (path.isRecursive) factors.push('recursive-pattern');
+    if (path.hasExternalCalls) factors.push('external-dependency');
+    if (path.hasDatabaseCalls) factors.push('data-mutation');
+    if (path.complexity > 20) factors.push('complex-flow');
+
+    return factors;
+  }
+
+  private computeChainTestCoverage(
+    path: TracedPath,
+    nodes: CASNode[]
+  ): CASCallChain['test_coverage'] {
+    const nodeIndex = new Map<string, CASNode>();
+    for (const node of nodes) {
+      nodeIndex.set(node.id, node);
+    }
+
+    const chainNodeIds = path.steps.map(s => s.nodeId);
+    const testedNodeIds: string[] = [];
+    const allTestIds: string[] = [];
+    const gaps: string[] = [];
+
+    for (const nodeId of chainNodeIds) {
+      const node = nodeIndex.get(nodeId);
+      if (!node) continue;
+
+      const testIds = node.testing?.tested_by || [];
+      if (testIds.length > 0) {
+        testedNodeIds.push(nodeId);
+        allTestIds.push(...testIds);
+      } else {
+        gaps.push(nodeId);
+      }
+    }
+
+    const coveragePercentage = chainNodeIds.length > 0
+      ? Math.round((testedNodeIds.length / chainNodeIds.length) * 100)
+      : 0;
+
+    const covered = coveragePercentage > 0;
+
+    return {
+      covered,
+      coverage_percentage: coveragePercentage,
+      test_ids: [...new Set(allTestIds)],
+      gaps: gaps.length > 0 ? gaps : undefined
+    };
+  }
+
+  private inferUserAction(ep: CASEntryPoint): string | undefined {
+    const method = ep.trigger?.method?.toUpperCase();
+    const path = ep.trigger?.path || ep.name || '';
+
+    if (method === 'GET') return `View ${this.extractResourceName(path)}`;
+    if (method === 'POST') return `Create ${this.extractResourceName(path)}`;
+    if (method === 'PUT' || method === 'PATCH') return `Update ${this.extractResourceName(path)}`;
+    if (method === 'DELETE') return `Delete ${this.extractResourceName(path)}`;
+
+    return undefined;
+  }
+
+  private inferBusinessProcess(ep: CASEntryPoint): string | undefined {
+    const path = (ep.trigger?.path || ep.name || '').toLowerCase();
+
+    if (path.includes('auth') || path.includes('login')) return 'authentication';
+    if (path.includes('checkout') || path.includes('payment')) return 'payment';
+    if (path.includes('analyze') || path.includes('analysis')) return 'analysis';
+    if (path.includes('user') || path.includes('profile')) return 'user-management';
+    if (path.includes('workspace') || path.includes('org')) return 'workspace-management';
+
+    return undefined;
+  }
+
+  private inferFeatureArea(ep: CASEntryPoint): string | undefined {
+    const path = (ep.trigger?.path || '').split('/').filter(s => s && !s.startsWith(':'))[1];
+    return path ? path.charAt(0).toUpperCase() + path.slice(1) : undefined;
+  }
+
+  private extractResourceName(path: string): string {
+    const segments = path.split('/').filter(s => s && !s.startsWith(':') && !s.startsWith('{'));
+    const resource = segments[segments.length - 1] || segments[0] || 'resource';
+    return resource.charAt(0).toUpperCase() + resource.slice(1);
+  }
+
+  private buildEnhancedFlowSummary(
+    callChains: CASCallChain[],
+    entryPoints: CASEntryPoint[]
+  ): CASFlowSummary {
+    const byCriticality = {
+      critical: 0,
+      high: 0,
+      medium: 0,
+      low: 0
+    };
+
+    const untestedCritical: string[] = [];
+    const highErrorRate: string[] = [];
+
+    for (const chain of callChains) {
+      const crit = chain.criticality || 'low';
+      byCriticality[crit]++;
+
+      if ((crit === 'critical' || crit === 'high') && !chain.test_coverage?.covered) {
+        untestedCritical.push(chain.id);
+      }
+
+      if (chain.runtime_stats?.error_rate_percent && chain.runtime_stats.error_rate_percent > 5) {
+        highErrorRate.push(chain.id);
+      }
+    }
+
+    return {
+      total_critical_flows: byCriticality.critical + byCriticality.high,
+      by_criticality: byCriticality,
+      untested_critical_flows: untestedCritical,
+      high_error_rate_flows: highErrorRate
+    };
+  }
+
+  private enhanceChangeRisks(
+    changeRisks: CASChangeRisk[],
+    callGraph: CallGraphBuilder,
+    callChains: CASCallChain[],
+    entryPoints: CASEntryPoint[]
+  ): CASChangeRisk[] {
+    return changeRisks.map(risk => {
+      const transitiveCallers = callGraph.getTransitiveCallers(risk.node_id);
+      const affectedChains = callGraph.getAffectedCallChains(risk.node_id, callChains);
+      const affectedEntries = callGraph.getEntryPointsReachingNode(risk.node_id, entryPoints);
+
+      return {
+        ...risk,
+        downstream_impact: {
+          ...risk.downstream_impact,
+          transitive_callers: transitiveCallers,
+          affected_call_chains: affectedChains,
+          affected_entry_points: affectedEntries.map(e => e.id)
+        }
+      };
+    });
+  }
+
+  private buildEnhancedSystemPurpose(
+    basePurpose: SystemPurpose,
+    domainConcepts: CASDomainConcept[],
+    workflows: CASWorkflow[],
+    workflowGraph: CASWorkflowGraph,
+    domainExtractor: DomainExtractor
+  ): EnhancedSystemPurpose {
+    const coreConcepts = domainExtractor.getCoreConcepts(domainConcepts);
+    const primaryDomain = domainExtractor.inferPrimaryDomain(domainConcepts);
+    const description = domainExtractor.inferSystemDescription(domainConcepts, basePurpose.primary_type);
+
+    const primaryWorkflows = workflows.filter(w => w.classification === 'primary');
+    const supportingWorkflows = workflows.filter(w => w.classification === 'supporting');
+
+    return {
+      ...basePurpose,
+      primary_domain: primaryDomain,
+      core_concepts: coreConcepts.slice(0, 10).map(c => c.name),
+      inferred_description: description,
+      primary_workflow_id: workflowGraph.primary_workflow_id,
+      supporting_workflow_ids: supportingWorkflows.map(w => w.id)
+    };
+  }
+
+  private buildFlowGraph(
+    entryPoints: CASEntryPoint[],
+    callChains: CASCallChain[],
+    nodes: CASNode[],
+    edges: CASEdge[],
+    domainConcepts: CASDomainConcept[],
+    dataEntities: CASDataEntity[],
+    databaseSchema: CASDatabaseSchema,
+    systemPurpose: SystemPurpose
+  ): CASFlowGraph {
+    const capabilityDetector = new CapabilityDetector();
+    const capabilities = capabilityDetector.detectCapabilities(
+      entryPoints,
+      callChains,
+      nodes,
+      edges,
+      domainConcepts,
+      dataEntities
+    );
+
+    const chainAnalyzer = new CallChainAnalyzer();
+    for (const cap of capabilities) {
+      cap.complexity_profile = chainAnalyzer.analyzeCapabilityChains(cap, callChains, nodes);
+    }
+
+    const dependencyBuilder = new CapabilityDependencyBuilder();
+    const dependencies = dependencyBuilder.buildDependencies(
+      capabilities,
+      nodes,
+      edges,
+      dataEntities,
+      databaseSchema
+    );
+
+    for (const dep of dependencies) {
+      const fromCap = capabilities.find(c => c.id === dep.from_capability);
+      if (fromCap) {
+        fromCap.depends_on.push(dep);
+      }
+
+      const toCap = capabilities.find(c => c.id === dep.to_capability);
+      if (toCap) {
+        toCap.depended_by.push(dep.from_capability);
+      }
+    }
+
+    const scorer = new FlowScorer();
+    scorer.scoreCapabilities(capabilities, domainConcepts, systemPurpose);
+
+    const graphBuilder = new FlowGraphBuilder();
+    return graphBuilder.buildFlowGraph(capabilities, dependencies, systemPurpose);
+  }
+
+  private buildChangeRisks(nodes: CASNode[], edges: CASEdge[], entryPoints: CASEntryPoint[], gitAnalyzer: GitAnalyzer): CASChangeRisk[] {
+    const changeRisks: CASChangeRisk[] = [];
+    const callerCounts = new Map<string, string[]>();
+    const gitAvailable = gitAnalyzer.isAvailable();
+
+    for (const edge of edges) {
+      if (edge.type === 'calls' || edge.type === 'uses' || edge.type === 'depends_on') {
+        if (!callerCounts.has(edge.target)) {
+          callerCounts.set(edge.target, []);
+        }
+        callerCounts.get(edge.target)!.push(edge.source);
+      }
+    }
+
+    const riskableNodeTypes = [
+      'function', 'method', 'service', 'controller', 'serializer',
+      'entity', 'model', 'route', 'handler', 'resolver', 'mutation'
+    ];
+
+    for (const node of nodes) {
+      if (!riskableNodeTypes.includes(node.type)) {
+        continue;
+      }
+
+      const directCallers = callerCounts.get(node.id) || [];
+      const isEntryRelated = node.type === 'controller' || node.type === 'route' || node.type === 'handler';
+      const isDataRelated = node.type === 'entity' || node.type === 'model' || node.type === 'serializer';
+
+      if (directCallers.length < 2 && !node.metadata?.is_exported && !isEntryRelated && !isDataRelated) {
+        continue;
+      }
+
+      const filePath = node.source?.file;
+      const gitMetrics = filePath && gitAvailable ? gitAnalyzer.getFileMetrics(filePath) : null;
+
+      const riskFactors: Array<{
+        factor: 'many-callers' | 'critical-path' | 'high-traffic' | 'no-tests' | 'recent-bugs' | 'complex-logic' | 'external-dependency' | 'security-sensitive';
+        severity: 'high' | 'medium' | 'low';
+        details: string;
+      }> = [];
+
+      if (directCallers.length > 10) {
+        riskFactors.push({
+          factor: 'many-callers',
+          severity: 'high',
+          details: `Called by ${directCallers.length} functions`
+        });
+      } else if (directCallers.length > 5) {
+        riskFactors.push({
+          factor: 'many-callers',
+          severity: 'medium',
+          details: `Called by ${directCallers.length} functions`
+        });
+      }
+
+      const complexity = node.metadata?.complexity?.cyclomatic || 0;
+      if (complexity > 20) {
+        riskFactors.push({
+          factor: 'complex-logic',
+          severity: 'high',
+          details: `Cyclomatic complexity: ${complexity}`
+        });
+      } else if (complexity > 10) {
+        riskFactors.push({
+          factor: 'complex-logic',
+          severity: 'medium',
+          details: `Cyclomatic complexity: ${complexity}`
+        });
+      }
+
+      const hasExternalDep = edges.some(e =>
+        e.source === node.id && (e.type === 'external_call' || e.category === 'external')
+      );
+      if (hasExternalDep) {
+        riskFactors.push({
+          factor: 'external-dependency',
+          severity: 'medium',
+          details: 'Has external service dependencies'
+        });
+      }
+
+      if (node.security?.authentication_required || node.security?.authorization_roles) {
+        riskFactors.push({
+          factor: 'security-sensitive',
+          severity: 'high',
+          details: 'Handles security-sensitive operations'
+        });
+      }
+
+      if (gitMetrics && gitMetrics.bugFixRate > 0.3) {
+        riskFactors.push({
+          factor: 'recent-bugs',
+          severity: 'high',
+          details: `Bug fix density: ${Math.round(gitMetrics.bugFixRate * 100)}% of commits are bug fixes`
+        });
+      }
+
+      if (!node.testing?.tested_by?.length) {
+        riskFactors.push({
+          factor: 'no-tests',
+          severity: 'high',
+          details: 'No direct test coverage detected'
+        });
+      }
+
+      if (riskFactors.length === 0) continue;
+
+      const highSeverityCount = riskFactors.filter(f => f.severity === 'high').length;
+      const riskLevel: 'critical' | 'high' | 'medium' | 'low' =
+        highSeverityCount >= 2 ? 'critical' :
+        highSeverityCount === 1 ? 'high' :
+        riskFactors.length >= 2 ? 'medium' : 'low';
+
+      changeRisks.push({
+        node_id: node.id,
+        risk_level: riskLevel,
+        risk_factors: riskFactors as any,
+        downstream_impact: {
+          direct_callers: directCallers,
+          transitive_callers: [],
+          affected_call_chains: [],
+          affected_entry_points: []
+        },
+        test_protection: {
+          has_direct_tests: node.testing?.tested_by?.length ? node.testing.tested_by.length > 0 : false,
+          has_integration_tests: false,
+          test_ids: node.testing?.tested_by
+        },
+        stability_context: {
+          recent_churn: gitMetrics ? gitMetrics.isHighChurn : false,
+          commit_count_30d: gitMetrics?.commits30d || 0,
+          bug_fix_density: gitMetrics?.bugFixRate || 0,
+          last_refactor: gitMetrics?.lastMajorChange || undefined
+        }
+      });
+    }
+
+    return changeRisks;
+  }
+
+  private buildChangeRiskSummary(changeRisks: CASChangeRisk[]): CASChangeRiskSummary {
+    return {
+      high_risk_nodes: changeRisks
+        .filter(r => r.risk_level === 'critical' || r.risk_level === 'high')
+        .map(r => r.node_id),
+      untested_critical_paths: changeRisks
+        .filter(r => r.risk_level === 'critical' && !r.test_protection.has_direct_tests)
+        .map(r => r.node_id),
+      recent_hotspots: changeRisks
+        .filter(r => r.stability_context.recent_churn)
+        .map(r => r.node_id)
+    };
+  }
+
+  private buildDataEntities(nodes: CASNode[], edges: CASEdge[]): CASDataEntity[] {
+    const entities: CASDataEntity[] = [];
+
+    const entityNodes = nodes.filter(n =>
+      n.type === 'entity' ||
+      n.type === 'model' ||
+      n.subcategories?.includes('entity') ||
+      (n.type === 'class' && n.source?.file?.includes('/entities/'))
+    );
+
+    for (const entityNode of entityNodes) {
+      const fields: Array<{
+        name: string;
+        type: string;
+        is_sensitive: boolean;
+        validation?: string[];
+      }> = [];
+
+      const propertyNodes = nodes.filter(n =>
+        n.parent === entityNode.id &&
+        (n.type === 'property' || n.type === 'field' || n.type === 'attribute')
+      );
+
+      const sensitivePatterns = [
+        'password', 'secret', 'token', 'key', 'credential',
+        'ssn', 'social_security', 'tax_id',
+        'email', 'phone', 'address',
+        'card', 'cvv', 'account_number'
+      ];
+
+      for (const prop of propertyNodes) {
+        const nameLower = prop.name.toLowerCase();
+        const isSensitive = sensitivePatterns.some(p => nameLower.includes(p));
+
+        fields.push({
+          name: prop.name,
+          type: prop.signature?.return_type || 'unknown',
+          is_sensitive: isSensitive
+        });
+      }
+
+      const createdBy: string[] = [];
+      const readBy: string[] = [];
+      const updatedBy: string[] = [];
+      const deletedBy: string[] = [];
+
+      for (const edge of edges) {
+        if (edge.target === entityNode.id || edge.source === entityNode.id) {
+          const relatedNode = nodes.find(n =>
+            n.id === (edge.target === entityNode.id ? edge.source : edge.target)
+          );
+          if (relatedNode) {
+            const methodLower = relatedNode.name.toLowerCase();
+            if (methodLower.includes('create') || methodLower.includes('add') || methodLower.includes('insert')) {
+              createdBy.push(relatedNode.id);
+            } else if (methodLower.includes('get') || methodLower.includes('find') || methodLower.includes('read') || methodLower.includes('fetch')) {
+              readBy.push(relatedNode.id);
+            } else if (methodLower.includes('update') || methodLower.includes('set') || methodLower.includes('modify')) {
+              updatedBy.push(relatedNode.id);
+            } else if (methodLower.includes('delete') || methodLower.includes('remove')) {
+              deletedBy.push(relatedNode.id);
+            }
+          }
+        }
+      }
+
+      entities.push({
+        id: `entity_${entityNode.name.toLowerCase()}`,
+        name: entityNode.name,
+        schema_source: entityNode.source?.file,
+        fields: fields.length > 0 ? fields : undefined,
+        lifecycle: {
+          created_by: [...new Set(createdBy)],
+          read_by: [...new Set(readBy)],
+          updated_by: [...new Set(updatedBy)],
+          deleted_by: [...new Set(deletedBy)]
+        }
+      });
+    }
+
+    return entities;
+  }
+
+  private buildDataSummary(entities: CASDataEntity[], nodes: CASNode[]): CASDataSummary {
+    const sensitiveDataNodes: string[] = [];
+
+    for (const entity of entities) {
+      if (entity.fields?.some(f => f.is_sensitive)) {
+        sensitiveDataNodes.push(
+          ...entity.lifecycle.created_by,
+          ...entity.lifecycle.read_by,
+          ...entity.lifecycle.updated_by
+        );
+      }
+    }
+
+    return {
+      entities,
+      sensitive_data_nodes: [...new Set(sensitiveDataNodes)],
+      validation_gaps: []
+    };
+  }
+
+  private buildSecurityBoundaries(nodes: CASNode[], entryPoints: CASEntryPoint[]): CASSecurityBoundary[] {
+    const boundaries: CASSecurityBoundary[] = [];
+
+    const securityNodes = nodes.filter(n => {
+      const nameLower = n.name.toLowerCase();
+      const qualifiedLower = (n.qualified_name || '').toLowerCase();
+      return n.type === 'guard' ||
+             n.subcategories?.includes('guard') ||
+             n.subcategories?.includes('middleware') ||
+             n.subcategories?.includes('permission') ||
+             nameLower.includes('guard') ||
+             nameLower.includes('permission') ||
+             nameLower.includes('authenticat') ||
+             nameLower.includes('authoriz') ||
+             qualifiedLower.includes('permission') ||
+             qualifiedLower.includes('middleware');
+    });
+
+    const authNodes = securityNodes.filter(n => {
+      const nameLower = n.name.toLowerCase();
+      return nameLower.includes('auth') ||
+             nameLower.includes('jwt') ||
+             nameLower.includes('login') ||
+             nameLower.includes('session') ||
+             nameLower.includes('token') ||
+             nameLower.includes('isauthenticated');
+    });
+
+    const authenticatedEntryPoints = entryPoints.filter(ep => ep.security?.authenticated);
+
+    if (authNodes.length > 0 || authenticatedEntryPoints.length > 0) {
+      const enforcementPoints: Array<{
+        node_id: string;
+        mechanism: string;
+        confidence: 'enforced' | 'assumed' | 'missing';
+      }> = authNodes.map(g => ({
+        node_id: g.id,
+        mechanism: this.inferAuthMechanism(g),
+        confidence: 'enforced' as const
+      }));
+
+      if (enforcementPoints.length === 0 && authenticatedEntryPoints.length > 0) {
+        enforcementPoints.push({
+          node_id: 'entry_point_security',
+          mechanism: 'Entry point authentication markers',
+          confidence: 'assumed'
+        });
+      }
+
+      boundaries.push({
+        id: 'boundary_auth',
+        name: 'Authentication Boundary',
+        boundary_type: 'authentication',
+        enforcement_points: enforcementPoints,
+        trust_transition: {
+          from_trust_level: 'untrusted',
+          to_trust_level: 'partially-trusted'
+        },
+        sensitive_operations: authenticatedEntryPoints.map(ep => ep.source_node)
+      });
+    }
+
+    const permissionNodes = securityNodes.filter(n => {
+      const nameLower = n.name.toLowerCase();
+      return nameLower.includes('role') ||
+             nameLower.includes('permission') ||
+             nameLower.includes('crud') ||
+             nameLower.includes('access') ||
+             nameLower.includes('policy');
+    });
+
+    if (permissionNodes.length > 0) {
+      boundaries.push({
+        id: 'boundary_authz',
+        name: 'Authorization Boundary',
+        boundary_type: 'authorization',
+        enforcement_points: permissionNodes.map(g => ({
+          node_id: g.id,
+          mechanism: this.inferAuthzMechanism(g),
+          confidence: 'enforced' as const
+        })),
+        trust_transition: {
+          from_trust_level: 'partially-trusted',
+          to_trust_level: 'trusted'
+        },
+        sensitive_operations: []
+      });
+    }
+
+    const middlewareNodes = nodes.filter(n =>
+      n.type === 'middleware' ||
+      n.subcategories?.includes('middleware') ||
+      n.name.toLowerCase().includes('middleware')
+    );
+
+    if (middlewareNodes.length > 0) {
+      const securityMiddleware = middlewareNodes.filter(m => {
+        const nameLower = m.name.toLowerCase();
+        return nameLower.includes('security') ||
+               nameLower.includes('cors') ||
+               nameLower.includes('csrf') ||
+               nameLower.includes('xss') ||
+               nameLower.includes('helmet');
+      });
+
+      if (securityMiddleware.length > 0) {
+        boundaries.push({
+          id: 'boundary_security_middleware',
+          name: 'Security Middleware Boundary',
+          boundary_type: 'input-validation',
+          enforcement_points: securityMiddleware.map(m => ({
+            node_id: m.id,
+            mechanism: `Security middleware: ${m.name}`,
+            confidence: 'enforced' as const
+          })),
+          trust_transition: {
+            from_trust_level: 'untrusted',
+            to_trust_level: 'partially-trusted'
+          },
+          sensitive_operations: []
+        });
+      }
+    }
+
+    return boundaries;
+  }
+
+  private inferAuthMechanism(node: CASNode): string {
+    const nameLower = node.name.toLowerCase();
+    if (nameLower.includes('jwt')) return 'JWT validation';
+    if (nameLower.includes('session')) return 'Session-based authentication';
+    if (nameLower.includes('token')) return 'Token-based authentication';
+    if (nameLower.includes('oauth')) return 'OAuth authentication';
+    if (nameLower.includes('login')) return 'Login authentication';
+    return 'Authentication check';
+  }
+
+  private inferAuthzMechanism(node: CASNode): string {
+    const nameLower = node.name.toLowerCase();
+    if (nameLower.includes('role')) return 'Role-based access control';
+    if (nameLower.includes('permission')) return 'Permission-based access control';
+    if (nameLower.includes('crud')) return 'CRUD permission enforcement';
+    if (nameLower.includes('policy')) return 'Policy-based access control';
+    return 'Authorization check';
+  }
+
+  private buildSecuritySummary(boundaries: CASSecurityBoundary[], nodes: CASNode[]): CASSecuritySummary {
+    let enforced = 0;
+    let assumed = 0;
+    let missing = 0;
+
+    for (const boundary of boundaries) {
+      for (const point of boundary.enforcement_points) {
+        if (point.confidence === 'enforced') enforced++;
+        else if (point.confidence === 'assumed') assumed++;
+        else missing++;
+      }
+    }
+
+    return {
+      boundaries,
+      unprotected_sensitive_ops: [],
+      assumed_vs_enforced: { enforced, assumed, missing }
+    };
+  }
+
+  private buildFlowCoverage(nodes: CASNode[], entryPoints: CASEntryPoint[]): CASFlowCoverage[] {
+    const flowCoverage: CASFlowCoverage[] = [];
+
+    const testEntryPoints = entryPoints.filter(ep => ep.type === 'test');
+    const testedNodes = new Set<string>();
+
+    for (const test of testEntryPoints) {
+      if (test.connected_nodes) {
+        test.connected_nodes.forEach(n => testedNodes.add(n));
+      }
+    }
+
+    return flowCoverage;
+  }
+
+  private buildTestGaps(flowCoverage: CASFlowCoverage[], nodes: CASNode[]): CASTestGap[] {
+    const gaps: CASTestGap[] = [];
+
+    const untestedFunctions = nodes.filter(n =>
+      (n.type === 'function' || n.type === 'method') &&
+      n.metadata?.is_exported &&
+      !n.testing?.tested_by?.length
+    );
+
+    for (const fn of untestedFunctions) {
+      const isSecurityRelated = fn.name.toLowerCase().includes('auth') ||
+        fn.name.toLowerCase().includes('password') ||
+        fn.name.toLowerCase().includes('permission');
+
+      gaps.push({
+        gap_type: 'untested-flow',
+        location: {
+          node_id: fn.id
+        },
+        severity: isSecurityRelated ? 'critical' : 'medium',
+        recommendation: `Add tests for ${fn.name}`
+      });
+    }
+
+    return gaps;
+  }
+
+  private buildTemporalStability(nodes: CASNode[], gitAnalyzer: GitAnalyzer): CASTemporalStability[] {
+    const stability: CASTemporalStability[] = [];
+    const gitAvailable = gitAnalyzer.isAvailable();
+
+    for (const node of nodes) {
+      if (node.type !== 'file' && node.type !== 'class' && node.type !== 'module') {
+        continue;
+      }
+
+      const filePath = node.source?.file;
+      const gitMetrics = filePath && gitAvailable ? gitAnalyzer.getFileMetrics(filePath) : null;
+
+      const isLegacy = node.name.toLowerCase().includes('legacy') ||
+        node.description?.toLowerCase().includes('deprecated') ||
+        node.implementation_status?.deprecation?.is_deprecated === true ||
+        (gitMetrics && gitMetrics.fileAgeDays > 730 && gitMetrics.commits30d === 0);
+
+      const stabilityClass = this.calculateStabilityClass(gitMetrics, !!isLegacy);
+      const stabilityScore = this.calculateStabilityScore(gitMetrics, !!isLegacy);
+
+      const refactorFrequency: 'frequent' | 'occasional' | 'rare' =
+        gitMetrics && gitMetrics.commits90d > 15 ? 'frequent' :
+        gitMetrics && gitMetrics.commits90d > 5 ? 'occasional' : 'rare';
+
+      stability.push({
+        node_id: node.id,
+        stability_score: stabilityScore,
+        stability_class: stabilityClass,
+        churn_metrics: {
+          commits_30d: gitMetrics?.commits30d || 0,
+          commits_90d: gitMetrics?.commits90d || 0,
+          unique_authors_30d: gitMetrics?.uniqueAuthors30d || 0,
+          lines_changed_30d: gitMetrics?.linesChanged30d || 0
+        },
+        quality_signals: {
+          bug_fix_rate: gitMetrics?.bugFixRate || 0,
+          refactor_frequency: refactorFrequency,
+          has_recent_regression: gitMetrics?.hasRecentRegression || false
+        },
+        age_context: {
+          file_age_days: gitMetrics?.fileAgeDays || 0,
+          last_major_change: gitMetrics?.lastMajorChange || undefined,
+          is_legacy: isLegacy || false
+        },
+        risk_correlation: gitMetrics ? {
+          high_churn_high_bugs: gitMetrics.commits30d > 5 && gitMetrics.bugFixRate > 0.3,
+          recent_refactor_unstable: gitMetrics.lastMajorChange !== null && gitMetrics.bugFixRate > 0.2
+        } : undefined
+      });
+    }
+
+    return stability;
+  }
+
+  private calculateStabilityClass(
+    gitMetrics: { commits30d: number; bugFixRate: number; fileAgeDays: number; isHighChurn: boolean } | null,
+    isLegacy: boolean
+  ): 'stable' | 'evolving' | 'volatile' | 'fragile' {
+    if (!gitMetrics) {
+      return isLegacy ? 'stable' : 'evolving';
+    }
+
+    if (gitMetrics.bugFixRate > 0.3 || (gitMetrics.isHighChurn && gitMetrics.bugFixRate > 0.2)) {
+      return 'fragile';
+    }
+
+    if (gitMetrics.commits30d > 10) {
+      return 'volatile';
+    }
+
+    if (gitMetrics.commits30d <= 2 && gitMetrics.bugFixRate < 0.1 && gitMetrics.fileAgeDays > 180) {
+      return 'stable';
+    }
+
+    return 'evolving';
+  }
+
+  private calculateStabilityScore(
+    gitMetrics: { commits30d: number; bugFixRate: number; fileAgeDays: number; hasRecentRegression: boolean } | null,
+    isLegacy: boolean
+  ): number {
+    if (!gitMetrics) {
+      return isLegacy ? 90 : 70;
+    }
+
+    let score = 100;
+
+    score -= Math.min(gitMetrics.commits30d * 3, 30);
+
+    score -= Math.min(gitMetrics.bugFixRate * 50, 25);
+
+    if (gitMetrics.hasRecentRegression) {
+      score -= 15;
+    }
+
+    if (gitMetrics.fileAgeDays > 365 && gitMetrics.commits30d <= 2) {
+      score += 10;
+    }
+
+    return Math.max(0, Math.min(100, Math.round(score)));
+  }
+
+  private buildStabilitySummary(stability: CASTemporalStability[]): CASStabilitySummary {
+    const byClass: Record<string, number> = {
+      stable: 0,
+      evolving: 0,
+      volatile: 0,
+      fragile: 0
+    };
+
+    for (const s of stability) {
+      byClass[s.stability_class]++;
+    }
+
+    return {
+      by_stability_class: byClass,
+      hotspots: stability
+        .filter(s => s.stability_class === 'volatile' || s.stability_class === 'fragile')
+        .map(s => ({
+          node_id: s.node_id,
+          reason: s.stability_class === 'fragile' ? 'High churn with bug fixes' : 'High change frequency'
+        })),
+      legacy_areas: stability
+        .filter(s => s.age_context.is_legacy)
+        .map(s => s.node_id)
+    };
+  }
+
+  private buildSystemCapabilities(
+    entryPoints: CASEntryPoint[],
+    dataEntities: CASDataEntity[],
+    nodes: CASNode[],
+    edges: CASEdge[]
+  ): SystemCapability[] {
+    const capabilities: SystemCapability[] = [];
+
+    const resourceGroups = new Map<string, {
+      entryPoints: CASEntryPoint[];
+      name: string;
+    }>();
+
+    for (const ep of entryPoints) {
+      if (ep.type === 'test') continue;
+
+      const resourceKey = this.inferResourceKey(ep);
+      const resourceName = this.inferResourceName(ep, resourceKey);
+
+      if (!resourceGroups.has(resourceKey)) {
+        resourceGroups.set(resourceKey, { entryPoints: [], name: resourceName });
+      }
+      resourceGroups.get(resourceKey)!.entryPoints.push(ep);
+    }
+
+    let capIndex = 0;
+    resourceGroups.forEach((group, resourceKey) => {
+      const operations = group.entryPoints.map(ep => ({
+        entry_point_id: ep.id,
+        entry_point_type: ep.type,
+        action: this.inferActionFromEntryPoint(ep),
+        path_or_command: this.extractPathOrCommand(ep)
+      }));
+
+      const relatedNodeIds = new Set<string>();
+      group.entryPoints.forEach(ep => {
+        if (ep.source_node) relatedNodeIds.add(ep.source_node);
+        const epAny = ep as any;
+        if (epAny.handler?.node_id) relatedNodeIds.add(epAny.handler.node_id);
+      });
+
+      const relatedEntities = dataEntities.filter(de => {
+        const entityNodeIds = [
+          ...de.lifecycle.created_by,
+          ...de.lifecycle.read_by,
+          ...de.lifecycle.updated_by,
+          ...de.lifecycle.deleted_by
+        ];
+        return entityNodeIds.some(id => relatedNodeIds.has(id));
+      });
+
+      const { criticality, factors } = this.calculateCriticalityFromSignals(
+        group.entryPoints,
+        relatedEntities,
+        nodes,
+        edges
+      );
+
+      const category = this.inferCapabilityCategory(group.entryPoints, resourceKey);
+
+      capabilities.push({
+        id: `cap_${capIndex++}`,
+        name: group.name,
+        description: this.generateCapabilityDescription(group.name, operations),
+        category,
+        operations,
+        related_entities: relatedEntities.map(e => e.id),
+        related_domains: [resourceKey],
+        criticality,
+        criticality_factors: factors
+      });
+    });
+
+    return capabilities.sort((a, b) => {
+      const critOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+      return critOrder[a.criticality] - critOrder[b.criticality];
+    });
+  }
+
+  private inferResourceKey(ep: CASEntryPoint): string {
+    if (ep.type === 'http') {
+      const path = ep.trigger?.path || '';
+      const cleanPath = path.replace(/^\/api\//, '').replace(/^\//, '');
+      const firstSegment = cleanPath.split('/')[0];
+      if (firstSegment && !firstSegment.startsWith(':')) {
+        return firstSegment.toLowerCase();
+      }
+      return 'general';
+    }
+
+    if (ep.type === 'cli') {
+      const parts = ep.name.split(/[\s:]+/);
+      return parts[0]?.toLowerCase() || 'commands';
+    }
+
+    if (ep.type === 'event' || ep.type === 'message') {
+      return 'events';
+    }
+
+    if (ep.type === 'schedule') {
+      return 'scheduled';
+    }
+
+    if (ep.type === 'page' || ep.type === 'route') {
+      return 'pages';
+    }
+
+    return ep.type;
+  }
+
+  private inferResourceName(ep: CASEntryPoint, resourceKey: string): string {
+    const name = resourceKey
+      .replace(/-/g, ' ')
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .split(' ')
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ');
+
+    if (ep.type === 'cli') {
+      return `${name} Commands`;
+    }
+
+    if (ep.type === 'event' || ep.type === 'message') {
+      return `${name} Handlers`;
+    }
+
+    if (ep.type === 'schedule') {
+      return 'Scheduled Tasks';
+    }
+
+    return `${name} Management`;
+  }
+
+  private inferActionFromEntryPoint(ep: CASEntryPoint): string {
+    if (ep.type === 'http') {
+      const method = ep.trigger?.method?.toLowerCase() || '';
+      const path = ep.trigger?.path || '';
+      const pathParts = path.split('/').filter(Boolean);
+      const lastPart = pathParts[pathParts.length - 1];
+
+      if (lastPart?.startsWith(':')) {
+        switch (method) {
+          case 'get': return 'View';
+          case 'put':
+          case 'patch': return 'Update';
+          case 'delete': return 'Delete';
+          default: return 'Manage';
+        }
+      }
+
+      switch (method) {
+        case 'get': return 'List';
+        case 'post': return 'Create';
+        case 'put':
+        case 'patch': return 'Update';
+        case 'delete': return 'Delete';
+        default: return 'Access';
+      }
+    }
+
+    if (ep.type === 'cli') {
+      return 'Execute';
+    }
+
+    if (ep.type === 'event' || ep.type === 'message') {
+      return 'Handle';
+    }
+
+    if (ep.type === 'schedule') {
+      return 'Run';
+    }
+
+    return 'Process';
+  }
+
+  private extractPathOrCommand(ep: CASEntryPoint): string | undefined {
+    if (ep.type === 'http') {
+      return ep.trigger?.path;
+    }
+    if (ep.type === 'cli') {
+      return ep.name;
+    }
+    return undefined;
+  }
+
+  private calculateCriticalityFromSignals(
+    entryPoints: CASEntryPoint[],
+    relatedEntities: CASDataEntity[],
+    nodes: CASNode[],
+    edges: CASEdge[]
+  ): { criticality: 'critical' | 'high' | 'medium' | 'low'; factors: string[] } {
+    let score = 0;
+    const factors: string[] = [];
+
+    const touchesSensitiveData = relatedEntities.some(e =>
+      e.fields?.some(f => f.is_sensitive)
+    );
+    if (touchesSensitiveData) {
+      score += 25;
+      factors.push('Handles sensitive data (PII, credentials)');
+    }
+
+    const authPatterns = ['auth', 'login', 'logout', 'password', 'token', 'session', 'oauth'];
+    const hasAuthPath = entryPoints.some(ep => {
+      const path = ep.trigger?.path?.toLowerCase() || ep.name.toLowerCase();
+      return authPatterns.some(p => path.includes(p));
+    });
+    if (hasAuthPath) {
+      score += 20;
+      factors.push('Authentication-related endpoint');
+    }
+
+    const paymentPatterns = ['payment', 'checkout', 'billing', 'invoice', 'subscription', 'charge', 'refund'];
+    const hasPaymentPath = entryPoints.some(ep => {
+      const path = ep.trigger?.path?.toLowerCase() || ep.name.toLowerCase();
+      return paymentPatterns.some(p => path.includes(p));
+    });
+    if (hasPaymentPath) {
+      score += 30;
+      factors.push('Payment/financial operations');
+    }
+
+    const hasAuthRequired = entryPoints.some(ep =>
+      ep.security?.authenticated ||
+      (ep as any).security?.authenticated
+    );
+    if (hasAuthRequired) {
+      score += 5;
+      factors.push('Requires authentication');
+    }
+
+    const hasMutations = entryPoints.some(ep => {
+      const method = ep.trigger?.method?.toUpperCase();
+      return method === 'POST' || method === 'PUT' || method === 'DELETE' || method === 'PATCH';
+    });
+    if (hasMutations) {
+      score += 10;
+      factors.push('Performs data mutations');
+    }
+
+    const nodeIds = new Set<string>();
+    entryPoints.forEach(ep => {
+      if (ep.source_node) nodeIds.add(ep.source_node);
+      const epAny = ep as any;
+      if (epAny.handler?.node_id) nodeIds.add(epAny.handler.node_id);
+    });
+
+    let callerCount = 0;
+    for (const edge of edges) {
+      if ((edge.type === 'calls' || edge.type === 'uses') && nodeIds.has(edge.target)) {
+        callerCount++;
+      }
+    }
+    if (callerCount > 5) {
+      score += Math.min(callerCount, 10);
+      factors.push(`Called by ${callerCount} other components`);
+    }
+
+    const adminPatterns = ['admin', 'manage', 'delete', 'remove', 'destroy'];
+    const hasAdminOps = entryPoints.some(ep => {
+      const path = ep.trigger?.path?.toLowerCase() || ep.name.toLowerCase();
+      return adminPatterns.some(p => path.includes(p));
+    });
+    if (hasAdminOps) {
+      score += 15;
+      factors.push('Administrative operations');
+    }
+
+    let criticality: 'critical' | 'high' | 'medium' | 'low';
+    if (score >= 70) {
+      criticality = 'critical';
+    } else if (score >= 50) {
+      criticality = 'high';
+    } else if (score >= 25) {
+      criticality = 'medium';
+    } else {
+      criticality = 'low';
+    }
+
+    return { criticality, factors };
+  }
+
+  private inferCapabilityCategory(
+    entryPoints: CASEntryPoint[],
+    resourceKey: string
+  ): 'core' | 'supporting' | 'admin' | 'internal' {
+    const adminPatterns = ['admin', 'manage', 'system', 'config', 'setting'];
+    if (adminPatterns.some(p => resourceKey.includes(p))) {
+      return 'admin';
+    }
+
+    const internalPatterns = ['health', 'status', 'metrics', 'internal', 'debug'];
+    if (internalPatterns.some(p => resourceKey.includes(p))) {
+      return 'internal';
+    }
+
+    const hasMutations = entryPoints.some(ep => {
+      const method = ep.trigger?.method?.toUpperCase();
+      return method === 'POST' || method === 'PUT' || method === 'DELETE';
+    });
+
+    if (hasMutations) {
+      return 'core';
+    }
+
+    return 'supporting';
+  }
+
+  private generateCapabilityDescription(name: string, operations: Array<{ action: string }>): string {
+    const uniqueActions = [...new Set(operations.map(o => o.action.toLowerCase()))];
+    if (uniqueActions.length === 0) {
+      return `Manages ${name.toLowerCase()} functionality`;
+    }
+    return `${uniqueActions.join(', ')} operations for ${name.toLowerCase()}`;
+  }
+
+  private inferSystemPurpose(
+    entryPoints: CASEntryPoint[],
+    dataEntities: CASDataEntity[],
+    capabilities: SystemCapability[],
+    nodes: CASNode[]
+  ): SystemPurpose {
+    interface SystemSignature {
+      type: string;
+      description: string;
+      indicators: {
+        pathPatterns?: string[];
+        verbPatterns?: string[];
+        entityPatterns?: string[];
+        nodeTypePatterns?: string[];
+        capabilityPatterns?: string[];
+      };
+      distinctiveness: number;
+      weight: number;
+    }
+
+    const signatures: SystemSignature[] = [
+      {
+        type: 'verification-service',
+        description: 'Data verification and validation system',
+        indicators: {
+          pathPatterns: ['verify', 'validate', 'check', 'barcode', 'scan', 'lookup'],
+          verbPatterns: ['verify', 'validate', 'check', 'scan'],
+          entityPatterns: ['verification', 'validator', 'barcode', 'serial', 'gtin', 'lot'],
+          capabilityPatterns: ['verify', 'validate', 'check', 'scan'],
+        },
+        distinctiveness: 3,
+        weight: 0
+      },
+      {
+        type: 'sync-service',
+        description: 'Data synchronization and replication system',
+        indicators: {
+          pathPatterns: ['sync', 'push', 'pull', 'replicate', 'mirror', 'synchronization'],
+          verbPatterns: ['sync', 'push', 'pull', 'replicate'],
+          entityPatterns: ['sync', 'replication', 'source', 'target', 'connection'],
+          capabilityPatterns: ['sync', 'push', 'pull', 'synchronization'],
+        },
+        distinctiveness: 3,
+        weight: 0
+      },
+      {
+        type: 'e-commerce',
+        description: 'Online shopping and commerce platform',
+        indicators: {
+          pathPatterns: ['cart', 'checkout', 'shop', 'store', 'catalog', 'wishlist'],
+          verbPatterns: ['purchase', 'buy', 'add-to-cart'],
+          entityPatterns: ['product', 'order', 'cart', 'payment', 'customer', 'sku', 'inventory', 'price'],
+          capabilityPatterns: ['checkout', 'cart', 'purchase', 'catalog'],
+        },
+        distinctiveness: 2.5,
+        weight: 0
+      },
+      {
+        type: 'messaging-service',
+        description: 'Message queue and event processing system',
+        indicators: {
+          pathPatterns: ['message', 'queue', 'publish', 'subscribe', 'topic', 'channel'],
+          verbPatterns: ['publish', 'subscribe', 'send', 'receive', 'broadcast'],
+          entityPatterns: ['message', 'queue', 'topic', 'subscriber', 'publisher', 'event'],
+          capabilityPatterns: ['publish', 'subscribe', 'message', 'notify'],
+        },
+        distinctiveness: 3,
+        weight: 0
+      },
+      {
+        type: 'workflow-engine',
+        description: 'Business process and workflow automation',
+        indicators: {
+          pathPatterns: ['workflow', 'process', 'task', 'step', 'approval', 'stage'],
+          verbPatterns: ['approve', 'reject', 'submit', 'escalate'],
+          entityPatterns: ['workflow', 'process', 'task', 'stage', 'approval', 'assignee'],
+          capabilityPatterns: ['workflow', 'process', 'task', 'approve'],
+        },
+        distinctiveness: 3,
+        weight: 0
+      },
+      {
+        type: 'scheduling-service',
+        description: 'Appointment and scheduling management',
+        indicators: {
+          pathPatterns: ['schedule', 'appointment', 'booking', 'calendar', 'slot', 'availability'],
+          verbPatterns: ['schedule', 'book', 'reserve', 'cancel'],
+          entityPatterns: ['schedule', 'appointment', 'booking', 'slot', 'calendar', 'availability'],
+          capabilityPatterns: ['schedule', 'book', 'availability'],
+        },
+        distinctiveness: 3,
+        weight: 0
+      },
+      {
+        type: 'notification-service',
+        description: 'Notification and alerting system',
+        indicators: {
+          pathPatterns: ['notification', 'alert', 'email', 'sms', 'push', 'webhook'],
+          verbPatterns: ['notify', 'alert', 'send', 'trigger'],
+          entityPatterns: ['notification', 'alert', 'template', 'recipient', 'channel'],
+          capabilityPatterns: ['notify', 'alert', 'send'],
+        },
+        distinctiveness: 2.5,
+        weight: 0
+      },
+      {
+        type: 'document-management',
+        description: 'Document storage and management system',
+        indicators: {
+          pathPatterns: ['document', 'file', 'upload', 'download', 'attachment', 'storage'],
+          verbPatterns: ['upload', 'download', 'attach', 'store'],
+          entityPatterns: ['document', 'file', 'attachment', 'folder', 'version'],
+          capabilityPatterns: ['upload', 'download', 'document', 'file'],
+        },
+        distinctiveness: 2.5,
+        weight: 0
+      },
+      {
+        type: 'search-service',
+        description: 'Search and discovery system',
+        indicators: {
+          pathPatterns: ['search', 'query', 'find', 'filter', 'index', 'suggest'],
+          verbPatterns: ['search', 'query', 'find', 'filter'],
+          entityPatterns: ['index', 'query', 'result', 'facet', 'suggestion'],
+          capabilityPatterns: ['search', 'query', 'find'],
+        },
+        distinctiveness: 2,
+        weight: 0
+      },
+      {
+        type: 'inventory-management',
+        description: 'Inventory and stock management system',
+        indicators: {
+          pathPatterns: ['inventory', 'stock', 'warehouse', 'shipment', 'transfer'],
+          verbPatterns: ['transfer', 'receive', 'ship', 'adjust'],
+          entityPatterns: ['inventory', 'stock', 'warehouse', 'location', 'shipment', 'transfer'],
+          capabilityPatterns: ['inventory', 'stock', 'warehouse', 'shipment'],
+        },
+        distinctiveness: 3,
+        weight: 0
+      },
+      {
+        type: 'crm-system',
+        description: 'Customer relationship management',
+        indicators: {
+          pathPatterns: ['customer', 'contact', 'lead', 'opportunity', 'account', 'deal'],
+          verbPatterns: ['convert', 'qualify', 'assign'],
+          entityPatterns: ['customer', 'contact', 'lead', 'opportunity', 'account', 'deal', 'campaign'],
+          capabilityPatterns: ['customer', 'lead', 'contact', 'opportunity'],
+        },
+        distinctiveness: 2.5,
+        weight: 0
+      },
+      {
+        type: 'saas-platform',
+        description: 'Multi-tenant SaaS application',
+        indicators: {
+          pathPatterns: ['workspace', 'organization', 'team', 'subscription', 'tenant', 'plan'],
+          entityPatterns: ['workspace', 'organization', 'subscription', 'tenant', 'plan', 'billing'],
+          capabilityPatterns: ['workspace', 'organization', 'subscription'],
+        },
+        distinctiveness: 2.5,
+        weight: 0
+      },
+      {
+        type: 'content-management',
+        description: 'Content management system',
+        indicators: {
+          pathPatterns: ['post', 'article', 'page', 'blog', 'media', 'category', 'tag'],
+          verbPatterns: ['publish', 'draft', 'archive'],
+          entityPatterns: ['post', 'article', 'page', 'content', 'media', 'category', 'author'],
+          capabilityPatterns: ['publish', 'content', 'article', 'media'],
+        },
+        distinctiveness: 2,
+        weight: 0
+      },
+      {
+        type: 'data-processing',
+        description: 'Data processing and ETL pipeline',
+        indicators: {
+          pathPatterns: ['process', 'transform', 'import', 'export', 'batch', 'pipeline', 'etl'],
+          verbPatterns: ['process', 'transform', 'import', 'export', 'extract'],
+          entityPatterns: ['job', 'task', 'queue', 'pipeline', 'batch', 'transformation'],
+          capabilityPatterns: ['process', 'transform', 'import', 'export', 'batch'],
+        },
+        distinctiveness: 2,
+        weight: 0
+      },
+      {
+        type: 'authentication-service',
+        description: 'Authentication and identity management',
+        indicators: {
+          pathPatterns: ['auth', 'login', 'oauth', 'sso', 'identity', 'token', 'session'],
+          verbPatterns: ['login', 'logout', 'authenticate', 'authorize'],
+          entityPatterns: ['user', 'session', 'token', 'credential', 'role', 'permission'],
+          capabilityPatterns: ['login', 'auth', 'session', 'token'],
+        },
+        distinctiveness: 2,
+        weight: 0
+      },
+      {
+        type: 'analytics-platform',
+        description: 'Analytics and reporting platform',
+        indicators: {
+          pathPatterns: ['analytics', 'report', 'dashboard', 'metric', 'insight', 'chart'],
+          verbPatterns: ['aggregate', 'analyze', 'track'],
+          entityPatterns: ['metric', 'report', 'event', 'aggregation', 'dimension', 'measure'],
+          capabilityPatterns: ['analytics', 'report', 'dashboard', 'metric'],
+        },
+        distinctiveness: 2.5,
+        weight: 0
+      },
+      {
+        type: 'payment-service',
+        description: 'Payment processing system',
+        indicators: {
+          pathPatterns: ['payment', 'charge', 'refund', 'invoice', 'transaction', 'payout'],
+          verbPatterns: ['charge', 'refund', 'pay', 'settle'],
+          entityPatterns: ['payment', 'transaction', 'invoice', 'refund', 'payout', 'account'],
+          capabilityPatterns: ['payment', 'charge', 'refund', 'invoice'],
+        },
+        distinctiveness: 3,
+        weight: 0
+      },
+      {
+        type: 'iot-platform',
+        description: 'IoT device management platform',
+        indicators: {
+          pathPatterns: ['device', 'sensor', 'telemetry', 'firmware', 'provision', 'command'],
+          verbPatterns: ['provision', 'register', 'configure'],
+          entityPatterns: ['device', 'sensor', 'telemetry', 'firmware', 'reading', 'gateway'],
+          capabilityPatterns: ['device', 'sensor', 'telemetry', 'provision'],
+        },
+        distinctiveness: 3,
+        weight: 0
+      },
+      {
+        type: 'api-gateway',
+        description: 'API gateway and routing service',
+        indicators: {
+          pathPatterns: ['gateway', 'proxy', 'route', 'upstream', 'rate-limit'],
+          entityPatterns: ['route', 'upstream', 'service', 'consumer', 'plugin'],
+          capabilityPatterns: ['route', 'proxy', 'gateway'],
+        },
+        distinctiveness: 3,
+        weight: 0
+      },
+      {
+        type: 'api-service',
+        description: 'REST/GraphQL API backend',
+        indicators: {
+          pathPatterns: ['api', 'graphql', 'rest', 'resource'],
+          nodeTypePatterns: ['controller', 'service', 'repository', 'resolver'],
+          capabilityPatterns: ['crud', 'resource'],
+        },
+        distinctiveness: 1,
+        weight: 0
+      },
+      {
+        type: 'cli-tool',
+        description: 'Command-line interface tool',
+        indicators: {
+          capabilityPatterns: ['command', 'execute', 'run'],
+          nodeTypePatterns: ['command', 'cli'],
+        },
+        distinctiveness: 3,
+        weight: 0
+      }
+    ];
+
+    const evidence: string[] = [];
+    const signatureEvidence = new Map<string, string[]>();
+
+    const paths = entryPoints.map(ep => (ep.trigger?.path || ep.name).toLowerCase());
+    const entityNames = dataEntities.map(de => de.name.toLowerCase());
+    const capabilityNames = capabilities.map(c => c.name.toLowerCase());
+    const nodeTypeList = nodes.map(n => n.type.toLowerCase());
+
+    const countMatches = (items: string[], patterns: string[]): { count: number; matched: string[] } => {
+      const matched: string[] = [];
+      let count = 0;
+      for (const item of items) {
+        for (const pattern of patterns) {
+          if (item.includes(pattern)) {
+            if (!matched.includes(pattern)) {
+              matched.push(pattern);
+            }
+            count++;
+          }
+        }
+      }
+      return { count, matched };
+    };
+
+    for (const sig of signatures) {
+      let score = 0;
+      const typeEvidence: string[] = [];
+
+      if (sig.indicators.pathPatterns) {
+        const result = countMatches(paths, sig.indicators.pathPatterns);
+        if (result.count > 0) {
+          score += result.count * 2 * sig.distinctiveness;
+          typeEvidence.push(`Endpoints: ${result.matched.join(', ')}`);
+        }
+      }
+
+      if (sig.indicators.verbPatterns) {
+        const result = countMatches(paths, sig.indicators.verbPatterns);
+        if (result.count > 0) {
+          score += result.count * 3 * sig.distinctiveness;
+          if (!typeEvidence.some(e => e.startsWith('Endpoints:'))) {
+            typeEvidence.push(`Actions: ${result.matched.join(', ')}`);
+          }
+        }
+      }
+
+      if (sig.indicators.entityPatterns) {
+        const result = countMatches(entityNames, sig.indicators.entityPatterns);
+        if (result.count > 0) {
+          score += result.count * 4 * sig.distinctiveness;
+          typeEvidence.push(`Entities: ${result.matched.join(', ')}`);
+        }
+      }
+
+      if (sig.indicators.nodeTypePatterns) {
+        const result = countMatches(nodeTypeList, sig.indicators.nodeTypePatterns);
+        if (result.count > 0) {
+          score += result.matched.length * 2;
+        }
+      }
+
+      if (sig.indicators.capabilityPatterns) {
+        const result = countMatches(capabilityNames, sig.indicators.capabilityPatterns);
+        if (result.count > 0) {
+          score += result.count * 3 * sig.distinctiveness;
+          typeEvidence.push(`Capabilities: ${result.matched.join(', ')}`);
+        }
+      }
+
+      sig.weight = score;
+      if (typeEvidence.length > 0) {
+        signatureEvidence.set(sig.type, typeEvidence);
+      }
+    }
+
+    signatures.sort((a, b) => b.weight - a.weight);
+
+    const topMatch = signatures[0];
+    const secondBest = signatures[1];
+
+    const maxPossibleScore = Math.max(
+      paths.length * 5 * 3,
+      entityNames.length * 4 * 3,
+      50
+    );
+    let confidence = topMatch.weight / maxPossibleScore;
+
+    if (topMatch.weight > 0 && secondBest.weight > 0) {
+      const separation = (topMatch.weight - secondBest.weight) / topMatch.weight;
+      confidence = Math.min(confidence + (separation * 0.3), 1.0);
+    }
+
+    confidence = Math.max(0.1, Math.min(0.95, confidence));
+
+    const topEvidence = signatureEvidence.get(topMatch.type) || [];
+    evidence.push(...topEvidence);
+
+    const secondaryTypes = signatures
+      .slice(1, 4)
+      .filter(s => s.weight > topMatch.weight * 0.3)
+      .map(s => s.type);
+
+    const cliEntryPoints = entryPoints.filter(ep => ep.type === 'cli');
+    const httpEntryPoints = entryPoints.filter(ep => ep.type === 'http');
+
+    if (cliEntryPoints.length > httpEntryPoints.length && cliEntryPoints.length > 0) {
+      return {
+        primary_type: 'cli-tool',
+        confidence: 0.9,
+        evidence: ['Primary interface is CLI commands'],
+        secondary_types: topMatch.type !== 'cli-tool' ? [topMatch.type] : secondaryTypes
+      };
+    }
+
+    if (topMatch.weight === 0) {
+      const hasHttpEndpoints = httpEntryPoints.length > 0;
+      const hasEntities = dataEntities.length > 0;
+
+      if (hasHttpEndpoints && hasEntities) {
+        return {
+          primary_type: 'api-service',
+          confidence: 0.4,
+          evidence: [`${httpEntryPoints.length} HTTP endpoints`, `${dataEntities.length} data entities`],
+          secondary_types: undefined
+        };
+      }
+
+      return {
+        primary_type: 'general-application',
+        confidence: 0.2,
+        evidence: ['No distinctive patterns detected'],
+        secondary_types: undefined
+      };
+    }
+
+    return {
+      primary_type: topMatch.type,
+      confidence: Math.round(confidence * 100) / 100,
+      evidence: evidence.slice(0, 5),
+      secondary_types: secondaryTypes.length > 0 ? secondaryTypes : undefined
+    };
+  }
+
+  private linkRouteHandlers(
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[]
+  ): void {
+    const functionNodesByFile = new Map<string, CASNode[]>();
+    for (const node of nodes) {
+      if (node.type === 'function' || node.type === 'method') {
+        const file = node.source?.file || '';
+        if (!functionNodesByFile.has(file)) {
+          functionNodesByFile.set(file, []);
+        }
+        functionNodesByFile.get(file)!.push(node);
+      }
+    }
+
+    const existingEdgeIds = new Set(edges.map(e => e.id));
+
+    for (const ep of entryPoints) {
+      const supportedTypes = ['http', 'websocket', 'message', 'event'];
+      if (!supportedTypes.includes(ep.type)) continue;
+      if (!ep.handler?.method_name) continue;
+
+      const handlerName = ep.handler.method_name;
+      const handlerFile = ep.handler.file || '';
+      const routeNodeId = ep.source_node;
+
+      if (!handlerName || handlerName.length === 0) continue;
+
+      const filesToSearch: string[] = [];
+      if (handlerFile) {
+        for (const file of functionNodesByFile.keys()) {
+          if (file.includes(handlerFile) || handlerFile.includes(file.replace(/^.*?\//, ''))) {
+            filesToSearch.push(file);
+          }
+        }
+      }
+
+      if (filesToSearch.length === 0) {
+        filesToSearch.push(...functionNodesByFile.keys());
+      }
+
+      let matchedFunctionNode: CASNode | null = null;
+
+      for (const file of filesToSearch) {
+        const functionsInFile = functionNodesByFile.get(file) || [];
+        const exactMatch = functionsInFile.find(n => n.name === handlerName);
+        if (exactMatch) {
+          matchedFunctionNode = exactMatch;
+          break;
+        }
+      }
+
+      if (!matchedFunctionNode) {
+        for (const file of filesToSearch) {
+          const functionsInFile = functionNodesByFile.get(file) || [];
+          const partialMatch = functionsInFile.find(n =>
+            n.name.toLowerCase() === handlerName.toLowerCase() ||
+            n.name.includes(handlerName) ||
+            handlerName.includes(n.name)
+          );
+          if (partialMatch) {
+            matchedFunctionNode = partialMatch;
+            break;
+          }
+        }
+      }
+
+      if (matchedFunctionNode) {
+        if (ep.handler) {
+          ep.handler.node_id = matchedFunctionNode.id;
+        }
+
+        const edgeId = `route_calls_${routeNodeId}_${matchedFunctionNode.id}`;
+        if (!existingEdgeIds.has(edgeId)) {
+          const framework = ep.metadata?.graphql_operation_type ? 'graphene' :
+                           ep.metadata?.task_type === 'celery' ? 'celery' :
+                           ep.source_analyzer || 'web';
+          const relationship = ep.metadata?.graphql_operation_type ? 'graphql_resolver' :
+                              ep.metadata?.task_type === 'celery' ? 'task_handler' :
+                              'route_handler';
+
+          edges.push({
+            id: edgeId,
+            source: routeNodeId,
+            target: matchedFunctionNode.id,
+            type: 'calls',
+            metadata: {
+              attributes: {
+                framework,
+                relationship,
+                entry_point_type: ep.type
+              }
+            }
+          });
+          existingEdgeIds.add(edgeId);
+        }
+      }
+    }
+  }
+
+  private buildTestSuites(nodes: CASNode[], entryPoints: CASEntryPoint[]): CASTestSuite[] {
+    const testSuites: CASTestSuite[] = [];
+
+    const testEntryPoints = entryPoints.filter(ep => ep.type === 'test');
+    const testClasses = nodes.filter(n =>
+      n.type === 'class' &&
+      (n.name.toLowerCase().includes('test') ||
+       n.name.startsWith('Test') ||
+       n.subcategories?.includes('test'))
+    );
+
+    for (const testClass of testClasses) {
+      const testMethods = nodes.filter(n =>
+        n.type === 'method' &&
+        n.parent === testClass.id &&
+        (n.name.startsWith('test_') || n.name.startsWith('test'))
+      );
+
+      if (testMethods.length > 0) {
+        testSuites.push({
+          id: `suite_${testClass.id}`,
+          name: testClass.name,
+          file_path: testClass.source?.file || '',
+          test_type: this.inferTestType(testClass),
+          framework: this.inferTestFramework(testClass),
+          tests: testMethods.map(m => ({
+            id: `test_${m.id}`,
+            name: m.name,
+            description: m.description,
+            test_type: this.inferTestType(testClass),
+            status: {
+              skipped: false,
+              focused: false,
+              flaky: false
+            },
+            source: m.source?.file && m.source?.line ? {
+              file: m.source.file,
+              line: m.source.line,
+              end_line: m.source.end_line
+            } : undefined
+          }))
+        });
+      }
+    }
+
+    return testSuites;
+  }
+
+  private inferTestType(node: CASNode): 'unit' | 'integration' | 'e2e' | 'acceptance' {
+    const name = (node.name || '').toLowerCase();
+    const file = (node.source?.file || '').toLowerCase();
+
+    if (name.includes('e2e') || file.includes('e2e')) return 'e2e';
+    if (name.includes('integration') || file.includes('integration')) return 'integration';
+    if (name.includes('acceptance') || file.includes('acceptance')) return 'acceptance';
+    return 'unit';
+  }
+
+  private inferTestFramework(node: CASNode): string {
+    const file = (node.source?.file || '').toLowerCase();
+    const name = (node.name || '').toLowerCase();
+
+    if (name.includes('testcase') || file.includes('unittest')) return 'unittest';
+    if (file.includes('pytest') || file.includes('conftest')) return 'pytest';
+    if (file.includes('django')) return 'django.test';
+    return 'pytest';
+  }
+
+  private buildMocks(nodes: CASNode[]): CASMock[] {
+    const mocks: CASMock[] = [];
+
+    const mockNodes = nodes.filter(n =>
+      n.name.toLowerCase().includes('mock') ||
+      n.name.includes('Mock') ||
+      n.subcategories?.includes('mock')
+    );
+
+    for (const mock of mockNodes) {
+      mocks.push({
+        id: `mock_${mock.id}`,
+        name: mock.name,
+        type: this.inferMockType(mock),
+        framework: 'unittest.mock'
+      });
+    }
+
+    return mocks;
+  }
+
+  private inferMockType(node: CASNode): 'mock' | 'stub' | 'spy' | 'fake' {
+    const name = node.name.toLowerCase();
+    if (name.includes('stub')) return 'stub';
+    if (name.includes('spy')) return 'spy';
+    if (name.includes('fake')) return 'fake';
+    return 'mock';
+  }
+
+  private buildFixtures(nodes: CASNode[]): CASFixture[] {
+    const fixtures: CASFixture[] = [];
+
+    const fixtureNodes = nodes.filter(n =>
+      n.name.includes('fixture') ||
+      n.subcategories?.includes('fixture')
+    );
+
+    for (const fixture of fixtureNodes) {
+      fixtures.push({
+        id: `fixture_${fixture.id}`,
+        name: fixture.name,
+        type: 'fixture',
+        file_path: fixture.source?.file || ''
+      });
+    }
+
+    return fixtures;
+  }
+
+  private buildTestSummary(nodes: CASNode[], entryPoints: CASEntryPoint[]): CASTestSummary {
+    const testNodes = nodes.filter(n =>
+      n.type === 'method' &&
+      (n.name.startsWith('test_') || n.name.startsWith('test'))
+    );
+
+    return {
+      total_tests: testNodes.length,
+      by_type: {
+        unit: testNodes.length,
+        integration: 0,
+        e2e: 0,
+        acceptance: 0,
+        bdd: 0,
+        other: 0
+      },
+      by_status: {
+        passing: testNodes.length,
+        failing: 0,
+        skipped: 0,
+        flaky: 0
+      },
+      coverage: {
+        overall_percentage: undefined
+      },
+      mocks: {
+        total: nodes.filter(n => n.name.toLowerCase().includes('mock')).length
+      },
+      fixtures: {
+        total: nodes.filter(n => n.name.includes('fixture')).length
+      }
+    };
   }
 }

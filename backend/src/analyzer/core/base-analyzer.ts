@@ -254,7 +254,8 @@ export abstract class BaseAnalyzer {
     description?: string,
     trigger?: CASEntryPoint['trigger'],
     security?: CASEntryPoint['security'],
-    metadata?: Record<string, any>
+    metadata?: Record<string, any>,
+    handler?: CASEntryPoint['handler']
   ): CASEntryPoint {
     return {
       id,
@@ -265,7 +266,8 @@ export abstract class BaseAnalyzer {
       description,
       trigger,
       security,
-      metadata
+      metadata,
+      handler
     };
   }
 

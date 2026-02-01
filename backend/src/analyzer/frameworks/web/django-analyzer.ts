@@ -36,6 +36,10 @@ interface DjangoApp {
   admin: DjangoAdmin[];
   forms: DjangoForm[];
   serializers: DjangoSerializer[];
+  graphqlMutations: GraphQLMutation[];
+  graphqlQueries: GraphQLQuery[];
+  graphqlTypes: GraphQLType[];
+  celeryTasks: CeleryTask[];
 }
 
 interface DjangoModel {
@@ -57,6 +61,10 @@ interface DjangoView {
   permissions: string[];
   templateName?: string;
   contextObject?: string;
+  serializerClass?: string;
+  serializerReferences: string[];
+  modelReferences: string[];
+  querysetModel?: string;
 }
 
 interface DjangoUrl {
@@ -98,6 +106,46 @@ interface DjangoMiddleware {
   name: string;
   filePath: string;
   methods: Array<{ name: string; parameters: string[] }>;
+}
+
+interface GraphQLMutation {
+  name: string;
+  filePath: string;
+  className: string;
+  baseClass: string;
+  mutationType: 'custom' | 'crud-create' | 'crud-update' | 'crud-delete';
+  arguments: Array<{ name: string; type: string; required: boolean }>;
+  returnType?: string;
+  resolverMethod?: string;
+}
+
+interface GraphQLQuery {
+  name: string;
+  filePath: string;
+  className: string;
+  queryType: 'single' | 'batch' | 'custom';
+  returnType?: string;
+  arguments: Array<{ name: string; type: string; required: boolean }>;
+}
+
+interface GraphQLType {
+  name: string;
+  filePath: string;
+  baseClass: string;
+  model?: string;
+  fields: Array<{ name: string; type: string }>;
+  resolvers: string[];
+  excludeFields: string[];
+}
+
+interface CeleryTask {
+  name: string;
+  filePath: string;
+  decorators: string[];
+  isBound: boolean;
+  arguments: Array<{ name: string; type?: string; default?: string }>;
+  description?: string;
+  retryPolicy?: { maxRetries?: number; countdown?: number };
 }
 
 export class DjangoAnalyzer extends BaseAnalyzer {
@@ -188,7 +236,11 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         appsFound: apps.length,
         modelsFound: apps.reduce((sum, app) => sum + app.models.length, 0),
         viewsFound: apps.reduce((sum, app) => sum + app.views.length, 0),
-        urlsFound: apps.reduce((sum, app) => sum + app.urls.length, 0)
+        urlsFound: apps.reduce((sum, app) => sum + app.urls.length, 0),
+        graphqlMutationsFound: apps.reduce((sum, app) => sum + app.graphqlMutations.length, 0),
+        graphqlQueriesFound: apps.reduce((sum, app) => sum + app.graphqlQueries.length, 0),
+        graphqlTypesFound: apps.reduce((sum, app) => sum + app.graphqlTypes.length, 0),
+        celeryTasksFound: apps.reduce((sum, app) => sum + app.celeryTasks.length, 0)
       });
 
       contribution.perspectives = perspectives;
@@ -287,6 +339,10 @@ export class DjangoAnalyzer extends BaseAnalyzer {
       const admin = await this.analyzeAdmin(appFiles, projectPath, appDir);
       const forms = await this.analyzeForms(appFiles, projectPath, appDir);
       const serializers = await this.analyzeSerializers(appFiles, projectPath, appDir);
+      const graphqlMutations = await this.analyzeGraphQLMutations(appFiles, projectPath, appDir);
+      const graphqlQueries = await this.analyzeGraphQLQueries(appFiles, projectPath, appDir);
+      const graphqlTypes = await this.analyzeGraphQLTypes(appFiles, projectPath, appDir);
+      const celeryTasks = await this.analyzeCeleryTasks(appFiles, projectPath, appDir);
 
       const app: DjangoApp = {
         name: appName,
@@ -296,7 +352,11 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         urls,
         admin,
         forms,
-        serializers
+        serializers,
+        graphqlMutations,
+        graphqlQueries,
+        graphqlTypes,
+        celeryTasks
       };
 
       apps.push(app);
@@ -322,13 +382,269 @@ export class DjangoAnalyzer extends BaseAnalyzer {
             urls: urls.length,
             admin: admin.length,
             forms: forms.length,
-            serializers: serializers.length
+            serializers: serializers.length,
+            graphqlMutations: graphqlMutations.length,
+            graphqlQueries: graphqlQueries.length,
+            graphqlTypes: graphqlTypes.length,
+            celeryTasks: celeryTasks.length
           }
         })
         .build();
       nodes.push(appNode);
 
+      for (const mutation of graphqlMutations) {
+        if (!mutation.name) continue;
+
+        const mutationId = `graphql_mutation_${appId}_${this.sanitizeId(mutation.name)}`;
+        const mutationNode = this.createNodeBuilder(mutationId, mutation.name, 'mutation')
+          .withLevel(3, 'code')
+          .withCategory('mutation', ['graphql', 'api'])
+          .withSource({ file: path.join(projectPath, mutation.filePath), line: 1, end_line: 1 })
+          .withDescription(`GraphQL mutation: ${mutation.name}`)
+          .withMetadata({
+            framework: 'graphene',
+            attributes: {
+              className: mutation.className,
+              baseClass: mutation.baseClass,
+              mutationType: mutation.mutationType,
+              arguments: mutation.arguments,
+              returnType: mutation.returnType
+            }
+          })
+          .build();
+        nodes.push(mutationNode);
+
+        edges.push(this.createEdge(
+          `${appId}_contains_${mutationId}`,
+          appId,
+          mutationId,
+          'contains'
+        ));
+
+        const entryPointId = `entry_graphql_mutation_${this.sanitizeId(mutation.name)}`;
+        const resolverMethodName = mutation.resolverMethod || 'mutate';
+        entryPoints.push(this.createEntryPoint(
+          entryPointId,
+          mutationId,
+          'http',
+          `mutation ${mutation.name}`,
+          `GraphQL mutation: ${mutation.name} (${mutation.mutationType})`,
+          {
+            method: 'POST',
+            path: '/graphql/',
+            pattern: `mutation { ${mutation.name} }`,
+            parameters: mutation.arguments.map(arg => ({
+              name: arg.name,
+              type: arg.type,
+              required: arg.required,
+              location: 'body'
+            }))
+          },
+          {
+            authenticated: true,
+            guards: [],
+            roles: [],
+            permissions: []
+          },
+          {
+            controller: mutation.className,
+            handler: resolverMethodName,
+            app: appName,
+            base_class: mutation.baseClass,
+            mutation_type: mutation.mutationType,
+            graphql_operation: mutation.name,
+            graphql_operation_type: 'mutation'
+          },
+          {
+            node_id: mutationId,
+            method_name: resolverMethodName,
+            file: mutation.filePath
+          }
+        ));
+      }
+
+      for (const query of graphqlQueries) {
+        if (!query.name) continue;
+
+        const queryId = `graphql_query_${appId}_${this.sanitizeId(query.name)}`;
+        const queryNode = this.createNodeBuilder(queryId, query.name, 'query')
+          .withLevel(3, 'code')
+          .withCategory('query', ['graphql', 'api'])
+          .withSource({ file: path.join(projectPath, query.filePath), line: 1, end_line: 1 })
+          .withDescription(`GraphQL query: ${query.name}`)
+          .withMetadata({
+            framework: 'graphene',
+            attributes: {
+              className: query.className,
+              queryType: query.queryType,
+              returnType: query.returnType,
+              arguments: query.arguments
+            }
+          })
+          .build();
+        nodes.push(queryNode);
+
+        edges.push(this.createEdge(
+          `${appId}_contains_${queryId}`,
+          appId,
+          queryId,
+          'contains'
+        ));
+
+        const entryPointId = `entry_graphql_query_${this.sanitizeId(query.name)}`;
+        const resolverMethodName = 'resolve';
+        entryPoints.push(this.createEntryPoint(
+          entryPointId,
+          queryId,
+          'http',
+          `query ${query.name}`,
+          `GraphQL query: ${query.name} (${query.queryType})`,
+          {
+            method: 'POST',
+            path: '/graphql/',
+            pattern: `query { ${query.name} }`,
+            parameters: query.arguments.map(arg => ({
+              name: arg.name,
+              type: arg.type,
+              required: arg.required,
+              location: 'body'
+            }))
+          },
+          {
+            authenticated: true,
+            guards: [],
+            roles: [],
+            permissions: []
+          },
+          {
+            controller: query.className,
+            handler: resolverMethodName,
+            app: appName,
+            query_type: query.queryType,
+            graphql_operation: query.name,
+            graphql_operation_type: 'query'
+          },
+          {
+            node_id: queryId,
+            method_name: resolverMethodName,
+            file: query.filePath
+          }
+        ));
+      }
+
+      for (const gqlType of graphqlTypes) {
+        if (!gqlType.name) continue;
+
+        const typeId = `graphql_type_${appId}_${this.sanitizeId(gqlType.name)}`;
+        const typeNode = this.createNodeBuilder(typeId, gqlType.name, 'type')
+          .withLevel(3, 'code')
+          .withCategory('type', ['graphql', 'schema'])
+          .withSource({ file: path.join(projectPath, gqlType.filePath), line: 1, end_line: 1 })
+          .withDescription(`GraphQL type: ${gqlType.name}`)
+          .withMetadata({
+            framework: 'graphene',
+            attributes: {
+              baseClass: gqlType.baseClass,
+              model: gqlType.model,
+              fields: gqlType.fields.length,
+              resolvers: gqlType.resolvers,
+              excludeFields: gqlType.excludeFields
+            }
+          })
+          .build();
+        nodes.push(typeNode);
+
+        edges.push(this.createEdge(
+          `${appId}_contains_${typeId}`,
+          appId,
+          typeId,
+          'contains'
+        ));
+
+        if (gqlType.model) {
+          const modelId = `model_${appId}_${this.sanitizeId(gqlType.model)}`;
+          edges.push(this.createEdge(
+            `${typeId}_maps_to_${modelId}`,
+            typeId,
+            modelId,
+            'maps_to'
+          ));
+        }
+      }
+
+      for (const task of celeryTasks) {
+        if (!task.name) continue;
+
+        const taskId = `celery_task_${appId}_${this.sanitizeId(task.name)}`;
+        const taskNode = this.createNodeBuilder(taskId, task.name, 'task')
+          .withLevel(3, 'code')
+          .withCategory('task', ['async', 'celery'])
+          .withSource({ file: path.join(projectPath, task.filePath), line: 1, end_line: 1 })
+          .withDescription(`Celery task: ${task.name}`)
+          .withMetadata({
+            framework: 'celery',
+            attributes: {
+              decorators: task.decorators,
+              isBound: task.isBound,
+              arguments: task.arguments,
+              description: task.description,
+              retryPolicy: task.retryPolicy
+            }
+          })
+          .build();
+        nodes.push(taskNode);
+
+        edges.push(this.createEdge(
+          `${appId}_contains_${taskId}`,
+          appId,
+          taskId,
+          'contains'
+        ));
+
+        const entryPointId = `entry_celery_task_${this.sanitizeId(task.name)}`;
+        entryPoints.push(this.createEntryPoint(
+          entryPointId,
+          taskId,
+          'message',
+          `task ${task.name}`,
+          `Celery task: ${task.name}`,
+          {
+            event: `celery.task.${task.name}`,
+            path: `celery://${task.name}`,
+            pattern: `@shared_task ${task.name}`,
+            parameters: task.arguments.map(arg => ({
+              name: arg.name,
+              type: arg.type || 'any',
+              required: !arg.default,
+              location: 'argument'
+            }))
+          },
+          {
+            authenticated: false,
+            guards: [],
+            roles: [],
+            permissions: []
+          },
+          {
+            controller: task.name,
+            handler: task.name,
+            app: appName,
+            is_bound: task.isBound,
+            decorators: task.decorators,
+            task_operation: task.name,
+            task_type: 'celery'
+          },
+          {
+            node_id: taskId,
+            method_name: task.name,
+            file: task.filePath
+          }
+        ));
+      }
+
       for (const [index, model] of models.entries()) {
+        if (!model.name) continue;
+
         const modelId = `model_${appId}_${this.sanitizeId(model.name)}`;
         const modelContent = await this.readModelContent(projectPath, model.filePath);
         const modelDocumentation = this.extractDocumentation(modelContent, path.join(projectPath, model.filePath));
@@ -365,6 +681,8 @@ export class DjangoAnalyzer extends BaseAnalyzer {
       }
 
       for (const [index, view] of views.entries()) {
+        if (!view.name) continue;
+
         const viewId = `view_${appId}_${this.sanitizeId(view.name)}`;
         const viewContent = await this.readViewContent(projectPath, view.filePath);
         const viewDocumentation = this.extractDocumentation(viewContent, path.join(projectPath, view.filePath));
@@ -403,9 +721,38 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         ));
       }
 
+      for (const serializer of serializers) {
+        const serializerId = `serializer_${appId}_${this.sanitizeId(serializer.name)}`;
+        const serializerNode = this.createNodeBuilder(serializerId, serializer.name, 'serializer')
+          .withLevel(3, 'code')
+          .withCategory('serializer', ['api', 'rest', 'dto'])
+          .withSource({ file: path.join(projectPath, serializer.filePath), line: 1, end_line: 1 })
+          .withDescription(`Django REST Framework serializer: ${serializer.name}`)
+          .withMetadata({
+            framework: 'django-rest-framework',
+            attributes: {
+              baseClass: serializer.baseClass,
+              model: serializer.meta?.model,
+              fields: serializer.fields.map(f => f.name)
+            }
+          })
+          .build();
+        nodes.push(serializerNode);
+
+        edges.push(this.createEdge(
+          `${appId}_contains_${serializerId}`,
+          appId,
+          serializerId,
+          'contains'
+        ));
+      }
+
       urls.forEach((url, index) => {
+        if (!url.pattern || !url.view) return;
+
         const urlId = `url_${appId}_${index}`;
-        const urlNode = this.createNodeBuilder(urlId, url.pattern, 'route')
+        const urlName = url.pattern || `route_${index}`;
+        const urlNode = this.createNodeBuilder(urlId, urlName, 'route')
           .withLevel(4, 'member')
           .withCategory('route', ['http', 'endpoint'])
           .withSource({
@@ -432,18 +779,59 @@ export class DjangoAnalyzer extends BaseAnalyzer {
           'exposes'
         ));
 
-        entryPoints.push({
-          id: `entry_${urlId}`,
-          name: `${url.pattern} -> ${url.view}`,
-          type: 'http',
-          source_node: urlId,
-          metadata: {
-            pattern: url.pattern,
-            view: url.view,
-            app: appName,
-            name: url.name
-          }
+        const matchingView = views.find(v => {
+          const viewClassName = url.view.replace('.as_view()', '').split('.').pop() || '';
+          return v.name === viewClassName || url.view.includes(v.name);
         });
+
+        const viewId = matchingView ? `view_${appId}_${this.sanitizeId(matchingView.name)}` : undefined;
+
+        const httpMethods = matchingView?.type === 'class'
+          ? (matchingView.methods.length > 0 ? matchingView.methods : ['GET'])
+          : ['GET', 'POST'];
+
+        for (const method of httpMethods) {
+          const entryPointId = `entry_${urlId}_${method.toLowerCase()}`;
+          const fullPath = url.pattern.startsWith('/') ? url.pattern : `/${url.pattern}`;
+
+          entryPoints.push(this.createEntryPoint(
+            entryPointId,
+            viewId || urlId,
+            'http',
+            `${method.toUpperCase()} ${fullPath}`,
+            `Django ${matchingView?.type === 'class' ? 'class-based' : 'function'} view: ${url.view}`,
+            {
+              method: method.toUpperCase(),
+              path: fullPath,
+              parameters: this.extractUrlParameters(url.pattern)
+            },
+            {
+              authenticated: this.hasAuthDecorator(matchingView?.decorators || []),
+              guards: this.extractGuardsFromDecorators(matchingView?.decorators || []),
+              roles: matchingView?.permissions || [],
+              permissions: matchingView?.permissions || []
+            },
+            {
+              controller: matchingView?.name || url.view,
+              handler: method.toLowerCase(),
+              app: appName,
+              base_path: `/${appName}`,
+              url_name: url.name,
+              view_type: matchingView?.type || 'unknown',
+              base_class: matchingView?.baseClass,
+              decorators: matchingView?.decorators || []
+            }
+          ));
+        }
+
+        if (viewId) {
+          edges.push(this.createEdge(
+            `${urlId}_maps_to_${viewId}`,
+            urlId,
+            viewId,
+            'maps_to'
+          ));
+        }
       });
     }
 
@@ -465,9 +853,12 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
   private async analyzeViews(files: string[], projectPath: string, appDir: string): Promise<DjangoView[]> {
     const views: DjangoView[] = [];
-    const viewsFile = files.find(f => f === path.join(appDir, 'views.py'));
+    const viewsFiles = files.filter(f =>
+      f.startsWith(appDir + '/') &&
+      (f.endsWith('/views.py') || f === path.join(appDir, 'views.py'))
+    );
 
-    if (viewsFile) {
+    for (const viewsFile of viewsFiles) {
       const content = await fs.readFile(path.join(projectPath, viewsFile), 'utf-8');
       const extractedViews = this.extractViews(content, viewsFile);
       views.push(...extractedViews);
@@ -478,9 +869,12 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
   private async analyzeUrls(files: string[], projectPath: string, appDir: string): Promise<DjangoUrl[]> {
     const urls: DjangoUrl[] = [];
-    const urlsFile = files.find(f => f === path.join(appDir, 'urls.py'));
+    const urlsFiles = files.filter(f =>
+      f.startsWith(appDir + '/') &&
+      (f.endsWith('/urls.py') || f === path.join(appDir, 'urls.py'))
+    );
 
-    if (urlsFile) {
+    for (const urlsFile of urlsFiles) {
       const content = await fs.readFile(path.join(projectPath, urlsFile), 'utf-8');
       const extractedUrls = this.extractUrls(content);
       urls.push(...extractedUrls);
@@ -517,15 +911,510 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
   private async analyzeSerializers(files: string[], projectPath: string, appDir: string): Promise<DjangoSerializer[]> {
     const serializers: DjangoSerializer[] = [];
-    const serializersFile = files.find(f => f === path.join(appDir, 'serializers.py'));
+    const serializersFiles = files.filter(f =>
+      f.startsWith(appDir + '/') &&
+      (f.endsWith('/serializers.py') || f === path.join(appDir, 'serializers.py'))
+    );
 
-    if (serializersFile) {
+    for (const serializersFile of serializersFiles) {
       const content = await fs.readFile(path.join(projectPath, serializersFile), 'utf-8');
       const extractedSerializers = this.extractSerializers(content, serializersFile);
       serializers.push(...extractedSerializers);
     }
 
     return serializers;
+  }
+
+  private async analyzeGraphQLMutations(files: string[], projectPath: string, appDir: string): Promise<GraphQLMutation[]> {
+    const mutations: GraphQLMutation[] = [];
+
+    const mutationsFiles = files.filter(f =>
+      f.includes('schemas/mutations.py') ||
+      f.includes('graphql/mutations.py') ||
+      (f.includes('mutations.py') && f.startsWith(appDir))
+    );
+
+    for (const file of mutationsFiles) {
+      const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
+      const extracted = this.extractGraphQLMutations(content, file);
+      mutations.push(...extracted);
+    }
+
+    return mutations;
+  }
+
+  private async analyzeGraphQLQueries(files: string[], projectPath: string, appDir: string): Promise<GraphQLQuery[]> {
+    const queries: GraphQLQuery[] = [];
+
+    const queryFiles = files.filter(f =>
+      f.includes('schemas/queries.py') ||
+      f.includes('graphql/queries.py') ||
+      (f.includes('queries.py') && f.startsWith(appDir))
+    );
+
+    for (const file of queryFiles) {
+      const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
+      const extracted = this.extractGraphQLQueries(content, file);
+      queries.push(...extracted);
+    }
+
+    return queries;
+  }
+
+  private async analyzeGraphQLTypes(files: string[], projectPath: string, appDir: string): Promise<GraphQLType[]> {
+    const types: GraphQLType[] = [];
+
+    const typeFiles = files.filter(f =>
+      f.includes('schemas/types.py') ||
+      f.includes('graphql/types.py') ||
+      (f.includes('types.py') && f.startsWith(appDir) && !f.includes('__pycache__'))
+    );
+
+    for (const file of typeFiles) {
+      const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
+      const extracted = this.extractGraphQLTypes(content, file);
+      types.push(...extracted);
+    }
+
+    return types;
+  }
+
+  private async analyzeCeleryTasks(files: string[], projectPath: string, appDir: string): Promise<CeleryTask[]> {
+    const tasks: CeleryTask[] = [];
+
+    const taskFiles = files.filter(f =>
+      f === path.join(appDir, 'tasks.py') ||
+      (f.includes('tasks.py') && f.startsWith(appDir))
+    );
+
+    for (const file of taskFiles) {
+      const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
+      const extracted = this.extractCeleryTasks(content, file);
+      tasks.push(...extracted);
+    }
+
+    return tasks;
+  }
+
+  private extractGraphQLMutations(content: string, filePath: string): GraphQLMutation[] {
+    const mutations: GraphQLMutation[] = [];
+
+    const customMutationPattern = /class\s+(\w+)\s*\(\s*(graphene\.Mutation|CustomMutation|Mutation)\s*\):/g;
+    let match;
+    while ((match = customMutationPattern.exec(content)) !== null) {
+      const className = match[1];
+      const baseClass = match[2];
+      const classStart = match.index;
+      const classEnd = this.findClassEnd(content, classStart);
+      const classContent = content.substring(classStart, classEnd);
+
+      const args = this.extractGraphQLArguments(classContent);
+      const returnType = this.extractGraphQLReturnType(classContent);
+      const resolverMethod = classContent.includes('resolve_mutation') ? 'resolve_mutation' : 'mutate';
+
+      mutations.push({
+        name: this.camelToSnakeCase(className),
+        filePath,
+        className,
+        baseClass,
+        mutationType: 'custom',
+        arguments: args,
+        returnType,
+        resolverMethod
+      });
+    }
+
+    const objectTypePattern = /class\s+(\w+)\s*\(\s*graphene\.ObjectType\s*\):/g;
+    while ((match = objectTypePattern.exec(content)) !== null) {
+      const containerClassName = match[1];
+      const classStart = match.index;
+      const classEnd = this.findClassEnd(content, classStart);
+      const classContent = content.substring(classStart, classEnd);
+
+      const createFieldPattern = /(\w+)\s*=\s*(\w+)\.CreateField\(\)/g;
+      let fieldMatch;
+      while ((fieldMatch = createFieldPattern.exec(classContent)) !== null) {
+        const fieldName = fieldMatch[1];
+        const typeName = fieldMatch[2];
+        mutations.push({
+          name: fieldName,
+          filePath,
+          className: containerClassName,
+          baseClass: typeName,
+          mutationType: 'crud-create',
+          arguments: [{ name: 'input', type: `${typeName}Input`, required: true }],
+          returnType: typeName,
+          resolverMethod: 'create'
+        });
+      }
+
+      const updateFieldPattern = /(\w+)\s*=\s*(\w+)\.UpdateField\(\)/g;
+      while ((fieldMatch = updateFieldPattern.exec(classContent)) !== null) {
+        const fieldName = fieldMatch[1];
+        const typeName = fieldMatch[2];
+        mutations.push({
+          name: fieldName,
+          filePath,
+          className: containerClassName,
+          baseClass: typeName,
+          mutationType: 'crud-update',
+          arguments: [
+            { name: 'id', type: 'ID', required: true },
+            { name: 'input', type: `${typeName}Input`, required: true }
+          ],
+          returnType: typeName,
+          resolverMethod: 'update'
+        });
+      }
+
+      const deleteFieldPattern = /(\w+)\s*=\s*(\w+)\.DeleteField\(\)/g;
+      while ((fieldMatch = deleteFieldPattern.exec(classContent)) !== null) {
+        const fieldName = fieldMatch[1];
+        const typeName = fieldMatch[2];
+        mutations.push({
+          name: fieldName,
+          filePath,
+          className: containerClassName,
+          baseClass: typeName,
+          mutationType: 'crud-delete',
+          arguments: [{ name: 'id', type: 'ID', required: true }],
+          returnType: 'Boolean',
+          resolverMethod: 'delete'
+        });
+      }
+
+      const customFieldPattern = /(\w+)\s*=\s*(\w+)\.Field\(\)/g;
+      while ((fieldMatch = customFieldPattern.exec(classContent)) !== null) {
+        const fieldName = fieldMatch[1];
+        const typeName = fieldMatch[2];
+        if (!mutations.find(m => m.name === fieldName)) {
+          mutations.push({
+            name: fieldName,
+            filePath,
+            className: containerClassName,
+            baseClass: typeName,
+            mutationType: 'custom',
+            arguments: [],
+            returnType: typeName,
+            resolverMethod: 'mutate'
+          });
+        }
+      }
+    }
+
+    return mutations;
+  }
+
+  private extractGraphQLQueries(content: string, filePath: string): GraphQLQuery[] {
+    const queries: GraphQLQuery[] = [];
+
+    const objectTypePattern = /class\s+(\w+)\s*\(\s*graphene\.ObjectType\s*\):/g;
+    let match;
+    while ((match = objectTypePattern.exec(content)) !== null) {
+      const containerClassName = match[1];
+      const classStart = match.index;
+      const classEnd = this.findClassEnd(content, classStart);
+      const classContent = content.substring(classStart, classEnd);
+
+      const readFieldPattern = /(\w+)\s*=\s*(\w+)\.ReadField\(\)/g;
+      let fieldMatch;
+      while ((fieldMatch = readFieldPattern.exec(classContent)) !== null) {
+        const fieldName = fieldMatch[1];
+        const typeName = fieldMatch[2];
+        queries.push({
+          name: fieldName,
+          filePath,
+          className: containerClassName,
+          queryType: 'single',
+          returnType: typeName,
+          arguments: [{ name: 'id', type: 'ID', required: true }]
+        });
+      }
+
+      const batchReadPattern = /(\w+)\s*=\s*(\w+)\.BatchReadField\(\)/g;
+      while ((fieldMatch = batchReadPattern.exec(classContent)) !== null) {
+        const fieldName = fieldMatch[1];
+        const typeName = fieldMatch[2];
+        queries.push({
+          name: fieldName,
+          filePath,
+          className: containerClassName,
+          queryType: 'batch',
+          returnType: `[${typeName}]`,
+          arguments: [
+            { name: 'first', type: 'Int', required: false },
+            { name: 'after', type: 'String', required: false },
+            { name: 'filters', type: 'JSON', required: false }
+          ]
+        });
+      }
+
+      const customFieldPattern = /(\w+)\s*=\s*graphene\.Field\s*\(\s*(\w+)/g;
+      while ((fieldMatch = customFieldPattern.exec(classContent)) !== null) {
+        const fieldName = fieldMatch[1];
+        const typeName = fieldMatch[2];
+        if (!queries.find(q => q.name === fieldName)) {
+          queries.push({
+            name: fieldName,
+            filePath,
+            className: containerClassName,
+            queryType: 'custom',
+            returnType: typeName,
+            arguments: []
+          });
+        }
+      }
+
+      const listFieldPattern = /(\w+)\s*=\s*graphene\.List\s*\(\s*(\w+)/g;
+      while ((fieldMatch = listFieldPattern.exec(classContent)) !== null) {
+        const fieldName = fieldMatch[1];
+        const typeName = fieldMatch[2];
+        if (!queries.find(q => q.name === fieldName)) {
+          queries.push({
+            name: fieldName,
+            filePath,
+            className: containerClassName,
+            queryType: 'batch',
+            returnType: `[${typeName}]`,
+            arguments: []
+          });
+        }
+      }
+    }
+
+    return queries;
+  }
+
+  private extractGraphQLTypes(content: string, filePath: string): GraphQLType[] {
+    const types: GraphQLType[] = [];
+
+    const typeBaseClasses = [
+      'DjangoObjectType',
+      'DjangoCRUDObjectType',
+      'DjangoCRUDObjectTypeWithRoles',
+      'graphene.ObjectType',
+      'ObjectType'
+    ];
+
+    const typePattern = /class\s+(\w+)\s*\(\s*([^)]+)\s*\):/g;
+    let match;
+    while ((match = typePattern.exec(content)) !== null) {
+      const typeName = match[1];
+      const baseClass = match[2].trim();
+
+      const isGraphQLType = typeBaseClasses.some(base => baseClass.includes(base));
+      if (!isGraphQLType) continue;
+
+      const classStart = match.index;
+      const classEnd = this.findClassEnd(content, classStart);
+      const classContent = content.substring(classStart, classEnd);
+
+      const model = this.extractMetaModel(classContent);
+      const fields = this.extractGraphQLTypeFields(classContent);
+      const resolvers = this.extractGraphQLResolvers(classContent);
+      const excludeFields = this.extractMetaExcludeFields(classContent);
+
+      types.push({
+        name: typeName,
+        filePath,
+        baseClass,
+        model,
+        fields,
+        resolvers,
+        excludeFields
+      });
+    }
+
+    return types;
+  }
+
+  private extractCeleryTasks(content: string, filePath: string): CeleryTask[] {
+    const tasks: CeleryTask[] = [];
+
+    const taskPattern = /@shared_task\s*(?:\([^)]*\))?\s*\n\s*def\s+(\w+)\s*\(([^)]*)\)/g;
+    let match;
+    while ((match = taskPattern.exec(content)) !== null) {
+      const taskName = match[1];
+      const argsStr = match[2];
+      const decoratorStart = content.lastIndexOf('@shared_task', match.index);
+      const decoratorLine = content.substring(decoratorStart, match.index + match[0].length);
+
+      const isBound = decoratorLine.includes('bind=True');
+      const args = this.parseTaskArguments(argsStr, isBound);
+
+      const funcStart = match.index;
+      const funcEnd = this.findFunctionEnd(content, funcStart);
+      const funcContent = content.substring(funcStart, funcEnd);
+
+      const docstringMatch = funcContent.match(/"""([\s\S]*?)"""/);
+      const description = docstringMatch ? docstringMatch[1].trim().split('\n')[0] : undefined;
+
+      const retryMatch = funcContent.match(/retry\s*\([^)]*countdown\s*=\s*(\d+)/);
+      const maxRetriesMatch = funcContent.match(/max_retries\s*=\s*(\d+)/);
+
+      tasks.push({
+        name: taskName,
+        filePath,
+        decorators: ['shared_task'],
+        isBound,
+        arguments: args,
+        description,
+        retryPolicy: (retryMatch || maxRetriesMatch) ? {
+          countdown: retryMatch ? parseInt(retryMatch[1]) : undefined,
+          maxRetries: maxRetriesMatch ? parseInt(maxRetriesMatch[1]) : undefined
+        } : undefined
+      });
+    }
+
+    const appTaskPattern = /@app\.task\s*(?:\([^)]*\))?\s*\n\s*def\s+(\w+)\s*\(([^)]*)\)/g;
+    while ((match = appTaskPattern.exec(content)) !== null) {
+      const taskName = match[1];
+      const argsStr = match[2];
+      const decoratorStart = content.lastIndexOf('@app.task', match.index);
+      const decoratorLine = content.substring(decoratorStart, match.index + match[0].length);
+
+      const isBound = decoratorLine.includes('bind=True');
+      const args = this.parseTaskArguments(argsStr, isBound);
+
+      tasks.push({
+        name: taskName,
+        filePath,
+        decorators: ['app.task'],
+        isBound,
+        arguments: args
+      });
+    }
+
+    const celeryTaskPattern = /@celery_app\.task\s*(?:\([^)]*\))?\s*\n\s*def\s+(\w+)\s*\(([^)]*)\)/g;
+    while ((match = celeryTaskPattern.exec(content)) !== null) {
+      const taskName = match[1];
+      const argsStr = match[2];
+      const decoratorStart = content.lastIndexOf('@celery_app.task', match.index);
+      const decoratorLine = content.substring(decoratorStart, match.index + match[0].length);
+
+      const isBound = decoratorLine.includes('bind=True');
+      const args = this.parseTaskArguments(argsStr, isBound);
+
+      tasks.push({
+        name: taskName,
+        filePath,
+        decorators: ['celery_app.task'],
+        isBound,
+        arguments: args
+      });
+    }
+
+    return tasks;
+  }
+
+  private extractGraphQLArguments(content: string): Array<{ name: string; type: string; required: boolean }> {
+    const args: Array<{ name: string; type: string; required: boolean }> = [];
+
+    const argsClassPattern = /class\s+Arguments\s*:([^}]*?)(?=\n\s*\n|\n\s*def|\n\s*@|\n\s*class|\Z)/s;
+    const argsMatch = argsClassPattern.exec(content);
+
+    if (argsMatch) {
+      const argsContent = argsMatch[1];
+      const argPattern = /(\w+)\s*=\s*graphene\.(\w+)\s*\(([^)]*)\)/g;
+      let argMatch;
+      while ((argMatch = argPattern.exec(argsContent)) !== null) {
+        const argName = argMatch[1];
+        const argType = argMatch[2];
+        const argOptions = argMatch[3];
+        const required = argOptions.includes('required=True');
+        args.push({ name: argName, type: argType, required });
+      }
+    }
+
+    return args;
+  }
+
+  private extractGraphQLReturnType(content: string): string | undefined {
+    const responseTypePattern = /def\s+response_type\s*\([^)]*\):\s*return\s+(\w+)/;
+    const match = responseTypePattern.exec(content);
+    if (match) return match[1];
+
+    const fieldPattern = /(\w+)\s*=\s*graphene\.Field\s*\(\s*(\w+)/;
+    const fieldMatch = fieldPattern.exec(content);
+    if (fieldMatch) return fieldMatch[2];
+
+    return undefined;
+  }
+
+  private extractMetaModel(content: string): string | undefined {
+    const modelPattern = /class\s+Meta\s*:[\s\S]*?model\s*=\s*(\w+)/;
+    const match = modelPattern.exec(content);
+    return match ? match[1] : undefined;
+  }
+
+  private extractMetaExcludeFields(content: string): string[] {
+    const excludePattern = /exclude_fields\s*=\s*\(([^)]+)\)/;
+    const match = excludePattern.exec(content);
+    if (match) {
+      return match[1].split(',').map(f => f.trim().replace(/['"]/g, '')).filter(f => f.length > 0);
+    }
+    return [];
+  }
+
+  private extractGraphQLTypeFields(content: string): Array<{ name: string; type: string }> {
+    const fields: Array<{ name: string; type: string }> = [];
+
+    const fieldPattern = /(\w+)\s*=\s*graphene\.(\w+)\s*\(/g;
+    let match;
+    while ((match = fieldPattern.exec(content)) !== null) {
+      if (!match[1].startsWith('_') && match[1] !== 'Meta') {
+        fields.push({ name: match[1], type: match[2] });
+      }
+    }
+
+    return fields;
+  }
+
+  private extractGraphQLResolvers(content: string): string[] {
+    const resolvers: string[] = [];
+    const resolverPattern = /def\s+(resolve_\w+)\s*\(/g;
+    let match;
+    while ((match = resolverPattern.exec(content)) !== null) {
+      resolvers.push(match[1]);
+    }
+    return resolvers;
+  }
+
+  private parseTaskArguments(argsStr: string, isBound: boolean): Array<{ name: string; type?: string; default?: string }> {
+    const args: Array<{ name: string; type?: string; default?: string }> = [];
+
+    const parts = argsStr.split(',').map(p => p.trim()).filter(p => p.length > 0);
+
+    for (const part of parts) {
+      if (isBound && part === 'self') continue;
+
+      const [nameAndType, defaultVal] = part.split('=').map(s => s.trim());
+      const colonIndex = nameAndType.indexOf(':');
+
+      let name: string;
+      let type: string | undefined;
+
+      if (colonIndex !== -1) {
+        name = nameAndType.substring(0, colonIndex).trim();
+        type = nameAndType.substring(colonIndex + 1).trim();
+      } else {
+        name = nameAndType;
+      }
+
+      if (name && name !== 'self') {
+        args.push({
+          name,
+          type,
+          default: defaultVal
+        });
+      }
+    }
+
+    return args;
+  }
+
+  private camelToSnakeCase(str: string): string {
+    return str.replace(/([A-Z])/g, '_$1').toLowerCase().replace(/^_/, '');
   }
 
   private async analyzeMiddleware(
@@ -893,6 +1782,8 @@ export class DjangoAnalyzer extends BaseAnalyzer {
       const functionContent = content.substring(functionStart, functionEnd);
 
       const decorators = this.extractDecorators(content, functionStart);
+      const serializerReferences = this.extractSerializerInstantiations(functionContent, content);
+      const modelReferences = this.extractModelReferences(functionContent, content);
 
       views.push({
         name: viewName,
@@ -900,7 +1791,9 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         type: 'function',
         methods: [],
         decorators,
-        permissions: this.extractPermissions(decorators)
+        permissions: this.extractPermissions(decorators),
+        serializerReferences,
+        modelReferences
       });
     }
 
@@ -911,32 +1804,239 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     const views: DjangoView[] = [];
     const classPattern = /class\s+(\w+)\s*\(\s*([^)]+)\s*\):/g;
 
+    const viewBaseClasses = [
+      'View', 'APIView', 'GenericAPIView', 'ViewSet', 'ModelViewSet',
+      'GenericViewSet', 'ReadOnlyModelViewSet', 'CreateAPIView',
+      'ListAPIView', 'RetrieveAPIView', 'DestroyAPIView', 'UpdateAPIView',
+      'ListCreateAPIView', 'RetrieveUpdateAPIView', 'RetrieveDestroyAPIView',
+      'RetrieveUpdateDestroyAPIView', 'TemplateView', 'ListView', 'DetailView',
+      'CreateView', 'UpdateView', 'DeleteView', 'FormView', 'RedirectView'
+    ];
+
     let match;
     while ((match = classPattern.exec(content)) !== null) {
       const viewName = match[1];
-      const baseClass = match[2];
+      const baseClass = match[2].trim();
 
-      if (baseClass.includes('View') || baseClass.includes('APIView')) {
+      const isView = viewBaseClasses.some(base =>
+        baseClass.includes(base) ||
+        baseClass.split(',').some(b => b.trim().endsWith(base))
+      );
+
+      if (isView) {
         const classStart = match.index;
         const classEnd = this.findClassEnd(content, classStart);
         const classContent = content.substring(classStart, classEnd);
 
         const methods = this.extractViewMethods(classContent);
         const decorators = this.extractDecorators(content, classStart);
+        const classDecorators = this.extractClassDecorators(content, classStart);
+        const allDecorators = [...new Set([...decorators, ...classDecorators])];
+
+        const permissionClasses = this.extractPermissionClasses(classContent);
+        const authenticationClasses = this.extractAuthenticationClasses(classContent);
+
+        const serializerClass = this.extractSerializerClassAttribute(classContent);
+        const serializerReferences = this.extractSerializerInstantiations(classContent, content);
+        const modelReferences = this.extractModelReferences(classContent, content);
+        const querysetModel = this.extractQuerysetModel(classContent);
 
         views.push({
           name: viewName,
           filePath,
           type: 'class',
           baseClass,
-          methods,
-          decorators,
-          permissions: this.extractPermissions(decorators)
+          methods: methods.length > 0 ? methods : this.inferMethodsFromBaseClass(baseClass),
+          decorators: allDecorators,
+          permissions: [...this.extractPermissions(allDecorators), ...permissionClasses, ...authenticationClasses],
+          serializerClass,
+          serializerReferences,
+          modelReferences,
+          querysetModel
         });
       }
     }
 
     return views;
+  }
+
+  private extractClassDecorators(content: string, classStart: number): string[] {
+    const decorators: string[] = [];
+    const lines = content.substring(0, classStart).split('\n');
+
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (line.startsWith('@')) {
+        const decoratorMatch = line.match(/@(\w+)(?:\([^)]*\))?/);
+        if (decoratorMatch) {
+          decorators.unshift(decoratorMatch[1]);
+        }
+      } else if (line && !line.startsWith('#') && !line.startsWith('@')) {
+        break;
+      }
+    }
+
+    return decorators;
+  }
+
+  private extractPermissionClasses(content: string): string[] {
+    const permissions: string[] = [];
+    const permissionPattern = /permission_classes\s*=\s*\[([^\]]+)\]/;
+    const match = permissionPattern.exec(content);
+
+    if (match) {
+      const classList = match[1];
+      const classNames = classList.split(',').map(c => c.trim()).filter(c => c.length > 0);
+      permissions.push(...classNames);
+    }
+
+    return permissions;
+  }
+
+  private extractAuthenticationClasses(content: string): string[] {
+    const authClasses: string[] = [];
+    const authPattern = /authentication_classes\s*=\s*\[([^\]]+)\]/;
+    const match = authPattern.exec(content);
+
+    if (match) {
+      const classList = match[1];
+      const classNames = classList.split(',').map(c => c.trim()).filter(c => c.length > 0);
+      authClasses.push(...classNames);
+    }
+
+    return authClasses;
+  }
+
+  private extractSerializerClassAttribute(classContent: string): string | undefined {
+    const pattern = /serializer_class\s*=\s*(\w+)/;
+    const match = pattern.exec(classContent);
+    return match ? match[1] : undefined;
+  }
+
+  private extractSerializerInstantiations(scopeContent: string, fullContent: string): string[] {
+    const serializers: string[] = [];
+    const importedSerializers = this.extractImportedSerializers(fullContent);
+    const instantiationPattern = /(\w+Serializer)\s*\(/g;
+
+    let match;
+    while ((match = instantiationPattern.exec(scopeContent)) !== null) {
+      const serializerName = match[1];
+      if (importedSerializers.includes(serializerName) || serializerName.endsWith('Serializer')) {
+        if (!serializers.includes(serializerName)) {
+          serializers.push(serializerName);
+        }
+      }
+    }
+
+    return serializers;
+  }
+
+  private extractImportedSerializers(content: string): string[] {
+    const serializers: string[] = [];
+    const importPattern = /from\s+[\w.]+serializers?\s+import\s+\(?\s*([^)]+)\)?/g;
+    const singleImportPattern = /from\s+[\w.]+\s+import\s+.*?(\w+Serializer)/g;
+
+    let match;
+    while ((match = importPattern.exec(content)) !== null) {
+      const imports = match[1].split(',').map(s => s.trim()).filter(s => s.length > 0);
+      for (const imp of imports) {
+        const cleanName = imp.split(/\s+as\s+/)[0].trim();
+        if (cleanName.endsWith('Serializer') || cleanName.includes('Serializer')) {
+          serializers.push(cleanName);
+        }
+      }
+    }
+
+    while ((match = singleImportPattern.exec(content)) !== null) {
+      if (!serializers.includes(match[1])) {
+        serializers.push(match[1]);
+      }
+    }
+
+    return serializers;
+  }
+
+  private extractModelReferences(scopeContent: string, fullContent: string): string[] {
+    const models: string[] = [];
+    const importedModels = this.extractImportedModels(fullContent);
+    const objectsPattern = /(\w+)\.objects\./g;
+
+    let match;
+    while ((match = objectsPattern.exec(scopeContent)) !== null) {
+      const modelName = match[1];
+      if (importedModels.includes(modelName) && !models.includes(modelName)) {
+        models.push(modelName);
+      }
+    }
+
+    return models;
+  }
+
+  private extractImportedModels(content: string): string[] {
+    const models: string[] = [];
+    const importPattern = /from\s+[\w.]+models?\s+import\s+\(?\s*([^)]+)\)?/g;
+
+    let match;
+    while ((match = importPattern.exec(content)) !== null) {
+      const imports = match[1].split(',').map(s => s.trim()).filter(s => s.length > 0);
+      for (const imp of imports) {
+        const cleanName = imp.split(/\s+as\s+/)[0].trim();
+        if (cleanName && !cleanName.startsWith('#') && cleanName !== 'models') {
+          models.push(cleanName);
+        }
+      }
+    }
+
+    return models;
+  }
+
+  private extractQuerysetModel(classContent: string): string | undefined {
+    const patterns = [
+      /queryset\s*=\s*(\w+)\.objects/,
+      /model\s*=\s*(\w+)/
+    ];
+
+    for (const pattern of patterns) {
+      const match = pattern.exec(classContent);
+      if (match) {
+        return match[1];
+      }
+    }
+
+    return undefined;
+  }
+
+  private inferMethodsFromBaseClass(baseClass: string): string[] {
+    const baseClassMethods: Record<string, string[]> = {
+      'CreateAPIView': ['POST'],
+      'ListAPIView': ['GET'],
+      'RetrieveAPIView': ['GET'],
+      'DestroyAPIView': ['DELETE'],
+      'UpdateAPIView': ['PUT', 'PATCH'],
+      'ListCreateAPIView': ['GET', 'POST'],
+      'RetrieveUpdateAPIView': ['GET', 'PUT', 'PATCH'],
+      'RetrieveDestroyAPIView': ['GET', 'DELETE'],
+      'RetrieveUpdateDestroyAPIView': ['GET', 'PUT', 'PATCH', 'DELETE'],
+      'ModelViewSet': ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+      'ReadOnlyModelViewSet': ['GET'],
+      'View': ['GET', 'POST'],
+      'APIView': ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+      'TemplateView': ['GET'],
+      'ListView': ['GET'],
+      'DetailView': ['GET'],
+      'CreateView': ['GET', 'POST'],
+      'UpdateView': ['GET', 'POST'],
+      'DeleteView': ['GET', 'POST'],
+      'FormView': ['GET', 'POST']
+    };
+
+    for (const [base, methods] of Object.entries(baseClassMethods)) {
+      if (baseClass.includes(base)) {
+        return methods;
+      }
+    }
+
+    return ['GET', 'POST'];
   }
 
   private extractFormFields(content: string): Array<{ name: string; type: string; required: boolean; widget?: string }> {
@@ -1022,14 +2122,37 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
   private extractViewMethods(content: string): string[] {
     const methods: string[] = [];
-    const methodPattern = /def\s+(get|post|put|patch|delete|head|options)\s*\(/g;
+    const methodPattern = /def\s+(get|post|put|patch|delete|head|options|list|create|retrieve|update|partial_update|destroy)\s*\(/gi;
 
     let match;
     while ((match = methodPattern.exec(content)) !== null) {
-      methods.push(match[1]);
+      const methodName = match[1].toLowerCase();
+      const mappedMethod = this.mapDRFMethodToHTTP(methodName);
+      if (!methods.includes(mappedMethod)) {
+        methods.push(mappedMethod);
+      }
     }
 
     return methods;
+  }
+
+  private mapDRFMethodToHTTP(method: string): string {
+    const drfMapping: Record<string, string> = {
+      'list': 'GET',
+      'create': 'POST',
+      'retrieve': 'GET',
+      'update': 'PUT',
+      'partial_update': 'PATCH',
+      'destroy': 'DELETE',
+      'get': 'GET',
+      'post': 'POST',
+      'put': 'PUT',
+      'patch': 'PATCH',
+      'delete': 'DELETE',
+      'head': 'HEAD',
+      'options': 'OPTIONS'
+    };
+    return drfMapping[method] || method.toUpperCase();
   }
 
   private extractDecorators(content: string, position: number): string[] {
@@ -1142,6 +2265,8 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     if (!project) return;
 
     const projectId = `project_${this.sanitizeId(project.name)}`;
+    const allModels = apps.flatMap(app => app.models.map(m => ({ ...m, appId: `app_${this.sanitizeId(app.name)}` })));
+    const allSerializers = apps.flatMap(app => app.serializers.map(s => ({ ...s, appId: `app_${this.sanitizeId(app.name)}` })));
 
     apps.forEach(app => {
       const appId = `app_${this.sanitizeId(app.name)}`;
@@ -1157,7 +2282,11 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         const modelId = `model_${appId}_${this.sanitizeId(model.name)}`;
 
         model.relationships.forEach(relationship => {
-          const targetModelId = `model_${appId}_${this.sanitizeId(relationship.target)}`;
+          const targetModel = allModels.find(m => m.name === relationship.target);
+          const targetModelId = targetModel
+            ? `model_${targetModel.appId}_${this.sanitizeId(relationship.target)}`
+            : `model_${appId}_${this.sanitizeId(relationship.target)}`;
+
           edges.push(this.createEdge(
             `${modelId}_${relationship.type}_${targetModelId}`,
             modelId,
@@ -1167,8 +2296,85 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         });
       });
 
+      app.serializers.forEach(serializer => {
+        const serializerId = `serializer_${appId}_${this.sanitizeId(serializer.name)}`;
+
+        if (serializer.meta?.model) {
+          const targetModel = allModels.find(m => m.name === serializer.meta?.model);
+          const modelId = targetModel
+            ? `model_${targetModel.appId}_${this.sanitizeId(serializer.meta.model)}`
+            : `model_${appId}_${this.sanitizeId(serializer.meta.model)}`;
+
+          edges.push(this.createEdge(
+            `${serializerId}_wraps_${modelId}`,
+            serializerId,
+            modelId,
+            'wraps'
+          ));
+        }
+      });
+
       app.views.forEach(view => {
         const viewId = `view_${appId}_${this.sanitizeId(view.name)}`;
+
+        if (view.serializerClass) {
+          const serializer = allSerializers.find(s => s.name === view.serializerClass);
+          const serializerId = serializer
+            ? `serializer_${serializer.appId}_${this.sanitizeId(view.serializerClass)}`
+            : `serializer_${appId}_${this.sanitizeId(view.serializerClass)}`;
+
+          edges.push(this.createEdge(
+            `${viewId}_uses_serializer_${this.sanitizeId(view.serializerClass)}`,
+            viewId,
+            serializerId,
+            'uses'
+          ));
+        }
+
+        for (const serializerName of view.serializerReferences || []) {
+          if (serializerName === view.serializerClass) continue;
+          const serializer = allSerializers.find(s => s.name === serializerName);
+          const serializerId = serializer
+            ? `serializer_${serializer.appId}_${this.sanitizeId(serializerName)}`
+            : `serializer_${appId}_${this.sanitizeId(serializerName)}`;
+
+          edges.push(this.createEdge(
+            `${viewId}_uses_serializer_${this.sanitizeId(serializerName)}`,
+            viewId,
+            serializerId,
+            'uses'
+          ));
+        }
+
+        for (const modelName of view.modelReferences || []) {
+          const targetModel = allModels.find(m => m.name === modelName);
+          const modelId = targetModel
+            ? `model_${targetModel.appId}_${this.sanitizeId(modelName)}`
+            : `model_${appId}_${this.sanitizeId(modelName)}`;
+
+          edges.push(this.createEdge(
+            `${viewId}_queries_${modelId}`,
+            viewId,
+            modelId,
+            'queries'
+          ));
+        }
+
+        if (view.querysetModel) {
+          const targetModel = allModels.find(m => m.name === view.querysetModel);
+          const modelId = targetModel
+            ? `model_${targetModel.appId}_${this.sanitizeId(view.querysetModel)}`
+            : `model_${appId}_${this.sanitizeId(view.querysetModel)}`;
+
+          if (!view.modelReferences?.includes(view.querysetModel)) {
+            edges.push(this.createEdge(
+              `${viewId}_queries_${modelId}`,
+              viewId,
+              modelId,
+              'queries'
+            ));
+          }
+        }
 
         if (view.templateName) {
           app.models.forEach(model => {
@@ -1229,7 +2435,12 @@ export class DjangoAnalyzer extends BaseAnalyzer {
       'template-discovery',
       'admin-detection',
       'middleware-analysis',
-      'forms-detection'
+      'forms-detection',
+      'graphql-mutation-detection',
+      'graphql-query-detection',
+      'graphql-type-detection',
+      'graphene-support',
+      'celery-task-detection'
     ];
   }
 
@@ -1453,20 +2664,22 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     // Look for Django-specific documentation patterns
 
     // 1. Model field help_text attributes
-    const helpTextMatches = content.matchAll(/help_text\s*=\s*['"]([^'"]+)['"]/g);
-    const fieldDocs = [];
-    for (const match of helpTextMatches) {
-      fieldDocs.push(match[1]);
+    const helpTextPattern = /help_text\s*=\s*['"]([^'"]+)['"]/g;
+    const fieldDocs: string[] = [];
+    let helpMatch;
+    while ((helpMatch = helpTextPattern.exec(content)) !== null) {
+      fieldDocs.push(helpMatch[1]);
     }
 
     // 2. Class docstrings
     const classDocStringMatch = content.match(/class\s+\w+[^:]*:\s*['""]([\s\S]*?)['""]/);
 
     // 3. Function docstrings
-    const functionDocStrings = [];
-    const functionMatches = content.matchAll(/def\s+\w+[^:]*:\s*['""]([\s\S]*?)['""]/);
-    for (const match of functionMatches) {
-      functionDocStrings.push(match[1].trim());
+    const functionDocStrings: string[] = [];
+    const funcDocPattern = /def\s+\w+[^:]*:\s*['""]([\s\S]*?)['""]/g;
+    let funcMatch;
+    while ((funcMatch = funcDocPattern.exec(content)) !== null) {
+      functionDocStrings.push(funcMatch[1].trim());
     }
 
     // 4. Module-level docstring
@@ -1699,5 +2912,102 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     } catch {
       return '';
     }
+  }
+
+  private extractUrlParameters(pattern: string): Array<{ name: string; type: string; required: boolean; location: string }> {
+    const params: Array<{ name: string; type: string; required: boolean; location: string }> = [];
+
+    const djangoParamPattern = /<(\w+):(\w+)>/g;
+    let paramMatch: RegExpExecArray | null;
+    while ((paramMatch = djangoParamPattern.exec(pattern)) !== null) {
+      params.push({
+        name: paramMatch[2],
+        type: this.djangoTypeToGenericType(paramMatch[1]),
+        required: true,
+        location: 'path'
+      });
+    }
+
+    const simpleParamPattern = /<(\w+)>/g;
+    let simpleMatch: RegExpExecArray | null;
+    while ((simpleMatch = simpleParamPattern.exec(pattern)) !== null) {
+      if (!params.find(p => p.name === simpleMatch![1])) {
+        params.push({
+          name: simpleMatch[1],
+          type: 'string',
+          required: true,
+          location: 'path'
+        });
+      }
+    }
+
+    const regexParamPattern = /\?P<(\w+)>/g;
+    let regexMatch: RegExpExecArray | null;
+    while ((regexMatch = regexParamPattern.exec(pattern)) !== null) {
+      if (!params.find(p => p.name === regexMatch![1])) {
+        params.push({
+          name: regexMatch[1],
+          type: 'string',
+          required: true,
+          location: 'path'
+        });
+      }
+    }
+
+    return params;
+  }
+
+  private djangoTypeToGenericType(djangoType: string): string {
+    const typeMap: Record<string, string> = {
+      'int': 'integer',
+      'str': 'string',
+      'slug': 'string',
+      'uuid': 'string',
+      'path': 'string'
+    };
+    return typeMap[djangoType] || 'string';
+  }
+
+  private hasAuthDecorator(decorators: string[]): boolean {
+    const authDecorators = [
+      'login_required',
+      'permission_required',
+      'user_passes_test',
+      'staff_member_required',
+      'superuser_required',
+      'credentials_required',
+      'authenticated',
+      'IsAuthenticated',
+      'IsAdminUser',
+      'AllowAny'
+    ];
+    return decorators.some(d => authDecorators.some(auth => d.includes(auth)));
+  }
+
+  private extractGuardsFromDecorators(decorators: string[]): string[] {
+    const guards: string[] = [];
+
+    for (const decorator of decorators) {
+      if (decorator.includes('login_required')) {
+        guards.push('LoginRequired');
+      }
+      if (decorator.includes('permission_required')) {
+        guards.push('PermissionRequired');
+      }
+      if (decorator.includes('staff_member_required')) {
+        guards.push('StaffMemberRequired');
+      }
+      if (decorator.includes('superuser_required')) {
+        guards.push('SuperuserRequired');
+      }
+      if (decorator.includes('credentials_required')) {
+        guards.push('CredentialsRequired');
+      }
+      if (decorator.includes('user_passes_test')) {
+        guards.push('UserPassesTest');
+      }
+    }
+
+    return guards;
   }
 }

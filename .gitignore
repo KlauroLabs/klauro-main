@@ -24,3 +24,5 @@ backend/test-analysis.js
 backend/test-cas-analysis.ts
 docs/VISUALIZATION_AUDIT.md
 docs/VISUALIZATION_IMPLEMENTATION_PLAN.md
+docs/context
+backend/cas-tests

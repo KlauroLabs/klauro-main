@@ -548,3 +548,261 @@ export function buildFlowSteps(
     };
   });
 }
+
+import {
+  Section,
+  SectionCapability,
+  SectionType,
+  SECTION_TYPE_CONFIG,
+  getSectionTypeFromEntryPointType
+} from '../types/sections';
+import { UICapabilities } from './uiCapabilities';
+
+const SECTION_COLORS: string[] = [
+  '#4caf50', '#2196f3', '#9c27b0', '#ff9800', '#e91e63',
+  '#00bcd4', '#795548', '#3f51b5', '#009688', '#607d8b',
+  '#f44336', '#8bc34a', '#03a9f4', '#673ab7', '#ffc107',
+];
+
+function getColorForSection(index: number): string {
+  return SECTION_COLORS[index % SECTION_COLORS.length];
+}
+
+function inferSectionNameFromPath(path: string, type: SectionType): string {
+  if (type === 'api-domain') {
+    const cleanPath = path.replace(/^\/api\//, '').replace(/^\//, '');
+    const firstSegment = cleanPath.split('/')[0];
+    if (firstSegment && !firstSegment.startsWith(':')) {
+      return firstSegment
+        .replace(/-/g, ' ')
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .split(' ')
+        .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(' ');
+    }
+  }
+  return 'General';
+}
+
+function inferSectionNameFromCli(name: string): string {
+  const parts = name.split(/[\s:]+/);
+  if (parts.length > 1) {
+    return parts[0]
+      .replace(/-/g, ' ')
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .split(' ')
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ');
+  }
+  return 'Commands';
+}
+
+function inferSectionNameFromEvent(entryPoint: EntryPoint): string {
+  const metadata = entryPoint.metadata as any;
+  if (metadata?.event === 'test') {
+    const file = entryPoint.handler?.file || '';
+    const fileName = file.split('/').pop()?.replace(/\.(test|spec)\.(ts|js|rs)$/, '') || 'Tests';
+    return fileName
+      .replace(/-/g, ' ')
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .split(' ')
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ');
+  }
+  return metadata?.event || 'Events';
+}
+
+function generateCapabilityFromEntryPoint(
+  ep: EntryPoint,
+  nodes: CASNode[],
+  edges: CASEdge[],
+  exitPoints: ExitPoint[],
+  callChains: CASCallChain[]
+): SectionCapability {
+  const epAny = ep as any;
+  let method = ep.protocol_details?.method || epAny.trigger?.method;
+  let path = ep.protocol_details?.path || epAny.trigger?.path;
+
+  if (!method || !path) {
+    const parsed = parseHttpEntryPointName(ep.name);
+    if (parsed) {
+      method = parsed.method;
+      path = parsed.path;
+    }
+  }
+
+  const relatedChain = callChains.find(c =>
+    c.entry_point.entry_point_id === ep.id ||
+    c.entry_point.node_id === ep.handler?.node_id
+  );
+
+  let flowSteps: FlowStep[] | undefined;
+  const handlerNodeId = ep.handler?.node_id || epAny.source_node;
+
+  if (!relatedChain && handlerNodeId) {
+    const nodeExists = nodes.some(n => n.id === handlerNodeId);
+    if (nodeExists) {
+      flowSteps = buildFlowFromEdges(handlerNodeId, nodes, edges, exitPoints);
+      if (flowSteps.length === 0) {
+        flowSteps = undefined;
+      }
+    }
+  }
+
+  let capabilityName = ep.name;
+  if (ep.type === 'http' && method && path) {
+    capabilityName = generateCapabilityName(method, path);
+  }
+
+  return {
+    id: ep.id,
+    name: capabilityName,
+    description: ep.description,
+    method,
+    path,
+    requiresAuth: ep.authentication?.required || epAny.security?.authenticated || false,
+    entryPoint: {
+      id: ep.id,
+      type: ep.type,
+      handler: ep.handler ? {
+        node_id: ep.handler.node_id,
+        method_name: ep.handler.method_name,
+      } : undefined,
+    },
+    flow: relatedChain,
+    flowSteps,
+    metadata: ep.metadata,
+  };
+}
+
+export function extractSections(cas: CASOutput, capabilities: UICapabilities): Section[] {
+  const entryPoints = cas.entry_points || [];
+  const exitPoints = cas.exit_points || [];
+  const callChains = cas.call_chains || [];
+  const nodes = cas.nodes || [];
+  const edges = cas.edges || [];
+
+  const sectionMap = new Map<string, {
+    type: SectionType;
+    name: string;
+    capabilities: SectionCapability[];
+    entryPoints: EntryPoint[];
+  }>();
+
+  entryPoints.forEach(ep => {
+    const sectionType = getSectionTypeFromEntryPointType(ep.type);
+    let sectionKey: string;
+    let sectionName: string;
+
+    const epAny = ep as any;
+    const path = ep.protocol_details?.path || epAny.trigger?.path;
+
+    switch (sectionType) {
+      case 'api-domain':
+        sectionName = inferSectionNameFromPath(path || '', sectionType);
+        sectionKey = `api-${sectionName.toLowerCase().replace(/\s+/g, '-')}`;
+        break;
+      case 'cli-command':
+        sectionName = inferSectionNameFromCli(ep.name);
+        sectionKey = `cli-${sectionName.toLowerCase().replace(/\s+/g, '-')}`;
+        break;
+      case 'event-handler':
+        const metadata = ep.metadata as any;
+        if (metadata?.event === 'test') {
+          sectionName = inferSectionNameFromEvent(ep);
+          sectionKey = `test-${sectionName.toLowerCase().replace(/\s+/g, '-')}`;
+        } else {
+          sectionName = inferSectionNameFromEvent(ep);
+          sectionKey = `event-${sectionName.toLowerCase().replace(/\s+/g, '-')}`;
+        }
+        break;
+      case 'scheduled-task':
+        sectionName = 'Scheduled Tasks';
+        sectionKey = 'scheduled-tasks';
+        break;
+      case 'page':
+      case 'route':
+        sectionName = inferSectionNameFromPath(path || ep.name, sectionType);
+        sectionKey = `page-${sectionName.toLowerCase().replace(/\s+/g, '-')}`;
+        break;
+      case 'websocket':
+        sectionName = 'WebSocket Handlers';
+        sectionKey = 'websocket-handlers';
+        break;
+      default:
+        sectionName = 'Other';
+        sectionKey = 'other';
+    }
+
+    if (!sectionMap.has(sectionKey)) {
+      sectionMap.set(sectionKey, {
+        type: sectionType,
+        name: sectionName,
+        capabilities: [],
+        entryPoints: [],
+      });
+    }
+
+    const section = sectionMap.get(sectionKey)!;
+    section.entryPoints.push(ep);
+
+    const capability = generateCapabilityFromEntryPoint(
+      ep, nodes, edges, exitPoints, callChains
+    );
+    section.capabilities.push(capability);
+  });
+
+  const sections: Section[] = [];
+  let colorIndex = 0;
+
+  sectionMap.forEach((data, sectionKey) => {
+    const hasDatabase = data.capabilities.some(c =>
+      c.flow?.characteristics.has_database_calls ||
+      c.flowSteps?.some(s => s.nodeType === 'repository')
+    );
+    const hasExternalCalls = data.capabilities.some(c =>
+      c.flow?.characteristics.has_external_calls ||
+      c.flowSteps?.some(s => s.isExit && s.nodeType !== 'repository')
+    );
+    const hasAuth = data.capabilities.some(c => c.requiresAuth);
+
+    const typeConfig = SECTION_TYPE_CONFIG[data.type];
+
+    sections.push({
+      id: sectionKey,
+      type: data.type,
+      name: data.name,
+      color: getColorForSection(colorIndex++),
+      icon: typeConfig.icon,
+      capabilities: data.capabilities.sort((a, b) => {
+        if (a.method && b.method) {
+          const methodOrder = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
+          const aOrder = methodOrder.indexOf(a.method.toUpperCase());
+          const bOrder = methodOrder.indexOf(b.method.toUpperCase());
+          return aOrder - bOrder;
+        }
+        return a.name.localeCompare(b.name);
+      }),
+      stats: {
+        entryPoints: data.entryPoints.length,
+        hasAuth,
+        hasDatabase,
+        hasExternalCalls,
+      },
+    });
+  });
+
+  return sections.sort((a, b) => b.stats.entryPoints - a.stats.entryPoints);
+}
+
+export function groupSectionsByType(sections: Section[]): Map<SectionType, Section[]> {
+  const grouped = new Map<SectionType, Section[]>();
+
+  sections.forEach(section => {
+    const existing = grouped.get(section.type) || [];
+    existing.push(section);
+    grouped.set(section.type, existing);
+  });
+
+  return grouped;
+}

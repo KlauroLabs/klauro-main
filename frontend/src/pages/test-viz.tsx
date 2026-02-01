@@ -11,27 +11,44 @@ import {
 } from '@mui/material';
 import { Upload, Folder } from '@mui/icons-material';
 import { CASOutput, CASPattern } from '../features/visualization/types';
-import { SystemOverview, ArchitectureItemType } from '../features/visualization/views/SystemOverview';
+import { SystemOverview } from '../features/visualization/views/SystemOverview';
 import { DomainView } from '../features/visualization/views/DomainView';
 import { FlowView } from '../features/visualization/views/FlowView';
 import { ImplementationHealthView } from '../features/visualization/views/ImplementationHealthView';
 import { ArchitectureItemsView } from '../features/visualization/views/ArchitectureItemsView';
 import { PatternsView } from '../features/visualization/views/PatternsView';
 import { PatternDetailView } from '../features/visualization/views/PatternDetailView';
+import { GraphView } from '../features/visualization/views/GraphView';
+import { TestOverviewView } from '../features/visualization/views/TestOverviewView';
+import { TestAreaView } from '../features/visualization/views/TestAreaView';
+import { CriticalFlowsView } from '../features/visualization/views/CriticalFlowsView';
+import { ChangeRiskView } from '../features/visualization/views/ChangeRiskView';
+import { SecurityBoundariesView } from '../features/visualization/views/SecurityBoundariesView';
+import { CodeStabilityView } from '../features/visualization/views/CodeStabilityView';
+import { DataEntitiesView } from '../features/visualization/views/DataEntitiesView';
+import { SystemCapabilitiesView } from '../features/visualization/views/SystemCapabilitiesView';
+import { EntryPointsView } from '../features/visualization/views/EntryPointsView';
+import { TestArea } from '../features/visualization/utils/testExtractor';
 import { NodeDetailPanel } from '../features/visualization/components/NodeDetailPanel';
 import { ExitPointDetailPanel } from '../features/visualization/components/ExitPointDetailPanel';
 import { useNodeSelection } from '../features/visualization/hooks/useNodeSelection';
-import { Domain, Capability, FlowStep, extractDomains } from '../features/visualization/utils/domainExtractor';
+import { Domain, Capability, FlowStep, extractDomains, extractSections } from '../features/visualization/utils/domainExtractor';
 import { ExitPoint } from '../features/visualization/types';
+import { Section, SectionCapability } from '../features/visualization/types/sections';
+import { UICapabilities, detectCapabilities } from '../features/visualization/utils/uiCapabilities';
+import { getStylesForTypes, NodeStyle } from '../features/visualization/utils/dynamicStyling';
 
-type ViewLevel = 'system' | 'domain' | 'flow' | 'health' | 'architecture' | 'patterns' | 'pattern-detail';
+type ViewLevel = 'system' | 'domain' | 'section' | 'flow' | 'section-flow' | 'health' | 'architecture' | 'patterns' | 'pattern-detail' | 'graph' | 'tests' | 'test-area' | 'critical-flows' | 'change-risk' | 'security-boundaries' | 'code-stability' | 'data-entities' | 'system-capabilities' | 'entry-points';
 
 interface NavigationState {
   level: ViewLevel;
   domain?: Domain;
   capability?: Capability;
-  architectureItemType?: ArchitectureItemType;
+  section?: Section;
+  sectionCapability?: SectionCapability;
+  architectureItemType?: string;
   selectedPattern?: CASPattern;
+  testArea?: TestArea;
 }
 
 const TestVisualizationPage: React.FC = () => {
@@ -46,7 +63,17 @@ const TestVisualizationPage: React.FC = () => {
   const edges = cas?.edges || [];
   const exitPoints = cas?.exit_points || [];
   const patterns = cas?.patterns || [];
+
+  const capabilities = useMemo(() => cas ? detectCapabilities(cas) : null, [cas]);
+  const sections = useMemo(() => {
+    if (!cas || !capabilities) return [];
+    return extractSections(cas, capabilities);
+  }, [cas, capabilities]);
   const domains = useMemo(() => cas ? extractDomains(cas) : [], [cas]);
+  const nodeStyles = useMemo(() => {
+    if (!capabilities) return new Map<string, NodeStyle>();
+    return getStylesForTypes(capabilities.detectedNodeTypes);
+  }, [capabilities]);
 
   const {
     selectedNode,
@@ -130,6 +157,25 @@ const TestVisualizationPage: React.FC = () => {
     }));
   }, []);
 
+  const handleSectionSelect = useCallback((section: Section) => {
+    setNavigation({ level: 'section', section });
+  }, []);
+
+  const handleSectionCapabilitySelect = useCallback((cap: SectionCapability) => {
+    setNavigation(prev => ({
+      level: 'section-flow',
+      section: prev.section,
+      sectionCapability: cap,
+    }));
+  }, []);
+
+  const handleBackToSection = useCallback(() => {
+    setNavigation(prev => ({
+      level: 'section',
+      section: prev.section,
+    }));
+  }, []);
+
   const handleBackToPatterns = useCallback(() => {
     setNavigation({ level: 'patterns' });
   }, []);
@@ -138,7 +184,7 @@ const TestVisualizationPage: React.FC = () => {
     setNavigation({ level: 'health' });
   }, []);
 
-  const handleViewArchitectureItems = useCallback((itemType: ArchitectureItemType) => {
+  const handleViewArchitectureItems = useCallback((itemType: string) => {
     setNavigation({ level: 'architecture', architectureItemType: itemType });
   }, []);
 
@@ -146,8 +192,52 @@ const TestVisualizationPage: React.FC = () => {
     setNavigation({ level: 'patterns' });
   }, []);
 
+  const handleViewGraph = useCallback(() => {
+    setNavigation({ level: 'graph' });
+  }, []);
+
   const handlePatternSelect = useCallback((pattern: CASPattern) => {
     setNavigation({ level: 'pattern-detail', selectedPattern: pattern });
+  }, []);
+
+  const handleViewTests = useCallback(() => {
+    setNavigation({ level: 'tests' });
+  }, []);
+
+  const handleTestAreaSelect = useCallback((area: TestArea) => {
+    setNavigation({ level: 'test-area', testArea: area });
+  }, []);
+
+  const handleViewCriticalFlows = useCallback(() => {
+    setNavigation({ level: 'critical-flows' });
+  }, []);
+
+  const handleViewChangeRisk = useCallback(() => {
+    setNavigation({ level: 'change-risk' });
+  }, []);
+
+  const handleViewSecurityBoundaries = useCallback(() => {
+    setNavigation({ level: 'security-boundaries' });
+  }, []);
+
+  const handleViewCodeStability = useCallback(() => {
+    setNavigation({ level: 'code-stability' });
+  }, []);
+
+  const handleViewDataEntities = useCallback(() => {
+    setNavigation({ level: 'data-entities' });
+  }, []);
+
+  const handleViewSystemCapabilities = useCallback(() => {
+    setNavigation({ level: 'system-capabilities' });
+  }, []);
+
+  const handleViewEntryPoints = useCallback(() => {
+    setNavigation({ level: 'entry-points' });
+  }, []);
+
+  const handleBackToTests = useCallback(() => {
+    setNavigation({ level: 'tests' });
   }, []);
 
   const handleCloseDetailPanel = useCallback(() => {
@@ -247,6 +337,72 @@ const TestVisualizationPage: React.FC = () => {
                     )}
                   </>
                 )}
+                {navigation.level === 'graph' && (
+                  <>
+                    <Typography color="text.secondary">/</Typography>
+                    <Typography variant="body2">Graph</Typography>
+                  </>
+                )}
+                {(navigation.level === 'tests' || navigation.level === 'test-area') && (
+                  <>
+                    <Typography color="text.secondary">/</Typography>
+                    {navigation.level === 'tests' ? (
+                      <Typography variant="body2">Tests</Typography>
+                    ) : (
+                      <Button size="small" onClick={handleBackToTests}>
+                        Tests
+                      </Button>
+                    )}
+                  </>
+                )}
+                {navigation.level === 'test-area' && navigation.testArea && (
+                  <>
+                    <Typography color="text.secondary">/</Typography>
+                    <Typography variant="body2">{navigation.testArea.name}</Typography>
+                  </>
+                )}
+                {navigation.level === 'critical-flows' && (
+                  <>
+                    <Typography color="text.secondary">/</Typography>
+                    <Typography variant="body2">Critical Flows</Typography>
+                  </>
+                )}
+                {navigation.level === 'change-risk' && (
+                  <>
+                    <Typography color="text.secondary">/</Typography>
+                    <Typography variant="body2">Change Risk</Typography>
+                  </>
+                )}
+                {navigation.level === 'security-boundaries' && (
+                  <>
+                    <Typography color="text.secondary">/</Typography>
+                    <Typography variant="body2">Security Boundaries</Typography>
+                  </>
+                )}
+                {navigation.level === 'code-stability' && (
+                  <>
+                    <Typography color="text.secondary">/</Typography>
+                    <Typography variant="body2">Code Stability</Typography>
+                  </>
+                )}
+                {navigation.level === 'data-entities' && (
+                  <>
+                    <Typography color="text.secondary">/</Typography>
+                    <Typography variant="body2">Data Entities</Typography>
+                  </>
+                )}
+                {navigation.level === 'system-capabilities' && (
+                  <>
+                    <Typography color="text.secondary">/</Typography>
+                    <Typography variant="body2">System Capabilities</Typography>
+                  </>
+                )}
+                {navigation.level === 'entry-points' && (
+                  <>
+                    <Typography color="text.secondary">/</Typography>
+                    <Typography variant="body2">Entry Points</Typography>
+                  </>
+                )}
                 {navigation.level === 'pattern-detail' && navigation.selectedPattern && (
                   <>
                     <Typography color="text.secondary">/</Typography>
@@ -269,10 +425,24 @@ const TestVisualizationPage: React.FC = () => {
                     </Button>
                   </>
                 )}
+                {navigation.section && (
+                  <>
+                    <Typography color="text.secondary">/</Typography>
+                    <Button size="small" onClick={handleBackToSection}>
+                      {navigation.section.name}
+                    </Button>
+                  </>
+                )}
                 {navigation.capability && (
                   <>
                     <Typography color="text.secondary">/</Typography>
                     <Typography variant="body2">{navigation.capability.name}</Typography>
+                  </>
+                )}
+                {navigation.sectionCapability && (
+                  <>
+                    <Typography color="text.secondary">/</Typography>
+                    <Typography variant="body2">{navigation.sectionCapability.name}</Typography>
                   </>
                 )}
               </Stack>
@@ -280,14 +450,39 @@ const TestVisualizationPage: React.FC = () => {
           )}
 
           <Box sx={{ flex: 1, overflow: 'hidden' }}>
-            {navigation.level === 'system' && (
+            {navigation.level === 'system' && capabilities && (
               <SystemOverview
                 cas={cas}
                 patterns={patterns}
+                capabilities={capabilities}
+                sections={sections}
+                nodeStyles={nodeStyles}
                 onDomainSelect={handleDomainSelect}
+                onSectionSelect={handleSectionSelect}
                 onViewImplementationHealth={handleViewImplementationHealth}
                 onViewArchitectureItems={handleViewArchitectureItems}
                 onViewPatterns={handleViewPatterns}
+                onViewArchitecture={handleViewGraph}
+                onViewTests={handleViewTests}
+                onTestAreaSelect={handleTestAreaSelect}
+                onViewCriticalFlows={handleViewCriticalFlows}
+                onViewChangeRisk={handleViewChangeRisk}
+                onViewSecurityBoundaries={handleViewSecurityBoundaries}
+                onViewCodeStability={handleViewCodeStability}
+                onViewDataEntities={handleViewDataEntities}
+                onViewSystemCapabilities={handleViewSystemCapabilities}
+                onViewEntryPoints={handleViewEntryPoints}
+              />
+            )}
+            {navigation.level === 'graph' && (
+              <GraphView
+                cas={cas}
+                nodes={nodes}
+                edges={edges}
+                exitPoints={exitPoints}
+                selectedNodeId={selectedNode?.id}
+                onNodeSelect={handleNodeClick}
+                onExitPointClick={handleExitPointClick}
               />
             )}
             {navigation.level === 'patterns' && (
@@ -323,8 +518,93 @@ const TestVisualizationPage: React.FC = () => {
               <ArchitectureItemsView
                 itemType={navigation.architectureItemType}
                 nodes={nodes}
+                nodeStyles={nodeStyles}
                 onBack={handleBackToSystem}
                 onNodeSelect={(nodeId) => {
+                  selectNode(nodeId);
+                  setDetailPanelOpen(true);
+                }}
+              />
+            )}
+            {navigation.level === 'tests' && (
+              <TestOverviewView
+                cas={cas}
+                onBack={handleBackToSystem}
+                onAreaSelect={handleTestAreaSelect}
+              />
+            )}
+            {navigation.level === 'test-area' && navigation.testArea && (
+              <TestAreaView
+                area={navigation.testArea}
+                onBack={handleBackToTests}
+                onTargetClick={(targetId) => {
+                  selectNode(targetId);
+                  setDetailPanelOpen(true);
+                }}
+              />
+            )}
+            {navigation.level === 'critical-flows' && cas && (
+              <CriticalFlowsView
+                cas={cas}
+                onBack={handleBackToSystem}
+                onNodeSelect={(nodeId) => {
+                  selectNode(nodeId);
+                  setDetailPanelOpen(true);
+                }}
+              />
+            )}
+            {navigation.level === 'change-risk' && cas && (
+              <ChangeRiskView
+                cas={cas}
+                onBack={handleBackToSystem}
+                onNodeSelect={(nodeId) => {
+                  selectNode(nodeId);
+                  setDetailPanelOpen(true);
+                }}
+              />
+            )}
+            {navigation.level === 'security-boundaries' && cas && (
+              <SecurityBoundariesView
+                data={cas}
+                onNodeSelect={(nodeId) => {
+                  selectNode(nodeId);
+                  setDetailPanelOpen(true);
+                }}
+              />
+            )}
+            {navigation.level === 'code-stability' && cas && (
+              <CodeStabilityView
+                data={cas}
+                onNodeSelect={(nodeId) => {
+                  selectNode(nodeId);
+                  setDetailPanelOpen(true);
+                }}
+              />
+            )}
+            {navigation.level === 'data-entities' && cas && (
+              <DataEntitiesView
+                data={cas}
+                onNodeSelect={(nodeId) => {
+                  selectNode(nodeId);
+                  setDetailPanelOpen(true);
+                }}
+              />
+            )}
+            {navigation.level === 'system-capabilities' && cas && (
+              <SystemCapabilitiesView
+                data={cas}
+                onNodeSelect={(nodeId) => {
+                  selectNode(nodeId);
+                  setDetailPanelOpen(true);
+                }}
+                onViewCriticalFlows={handleViewCriticalFlows}
+              />
+            )}
+            {navigation.level === 'entry-points' && cas && (
+              <EntryPointsView
+                entryPoints={cas.entry_points || []}
+                nodes={cas.nodes || []}
+                onNodeClick={(nodeId) => {
                   selectNode(nodeId);
                   setDetailPanelOpen(true);
                 }}
@@ -338,13 +618,77 @@ const TestVisualizationPage: React.FC = () => {
                 onCapabilitySelect={handleCapabilitySelect}
               />
             )}
+            {navigation.level === 'section' && navigation.section && (
+              <DomainView
+                domain={{
+                  id: navigation.section.id,
+                  name: navigation.section.name,
+                  description: navigation.section.description || '',
+                  icon: navigation.section.icon,
+                  color: navigation.section.color,
+                  capabilities: navigation.section.capabilities.map(cap => ({
+                    id: cap.id,
+                    name: cap.name,
+                    description: cap.description || '',
+                    action: '',
+                    entryPoint: cap.entryPoint as any,
+                    flow: cap.flow,
+                    flowSteps: cap.flowSteps,
+                    method: cap.method,
+                    path: cap.path,
+                    requiresAuth: cap.requiresAuth,
+                  })),
+                  stats: {
+                    entryPoints: navigation.section.stats.entryPoints,
+                    exitPoints: 0,
+                    components: 0,
+                    hasDatabase: navigation.section.stats.hasDatabase,
+                    hasExternalApi: navigation.section.stats.hasExternalCalls,
+                    hasAuth: navigation.section.stats.hasAuth,
+                  },
+                }}
+                nodes={nodes}
+                onBack={handleBackToSystem}
+                onCapabilitySelect={(cap) => {
+                  const sectionCap = navigation.section?.capabilities.find(c => c.id === cap.id);
+                  if (sectionCap) {
+                    handleSectionCapabilitySelect(sectionCap);
+                  }
+                }}
+              />
+            )}
             {navigation.level === 'flow' && navigation.capability && (
               <FlowView
                 capability={navigation.capability}
                 nodes={nodes}
                 edges={edges}
                 exitPoints={exitPoints}
+                nodeStyles={nodeStyles}
                 onBack={handleBackToDomain}
+                onStepClick={handleStepClick}
+                onNodeClick={handleNodeClick}
+                onExitPointClick={handleExitPointClick}
+              />
+            )}
+            {navigation.level === 'section-flow' && navigation.sectionCapability && (
+              <FlowView
+                capability={{
+                  id: navigation.sectionCapability.id,
+                  name: navigation.sectionCapability.name,
+                  description: navigation.sectionCapability.description || '',
+                  action: '',
+                  entryPoint: navigation.sectionCapability.entryPoint as any,
+                  flow: navigation.sectionCapability.flow,
+                  flowSteps: navigation.sectionCapability.flowSteps,
+                  method: navigation.sectionCapability.method,
+                  path: navigation.sectionCapability.path,
+                  requiresAuth: navigation.sectionCapability.requiresAuth,
+                }}
+                nodes={nodes}
+                edges={edges}
+                exitPoints={exitPoints}
+                nodeStyles={nodeStyles}
+                onBack={handleBackToSection}
                 onStepClick={handleStepClick}
                 onNodeClick={handleNodeClick}
                 onExitPointClick={handleExitPointClick}

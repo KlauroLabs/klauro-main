@@ -138,11 +138,12 @@ export class PythonAnalyzer extends BaseAnalyzer {
     try {
       const pythonFiles = await glob(['**/*.py'], {
         cwd: projectPath,
-        ignore: ['**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**', '**/.git/**', '**/src/analyzer/**', '**/analyzer/**', '**/analyzers/**']
+        ignore: ['**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**', '**/.git/**', '**/src/analyzer/**', '**/analyzer/**', '**/analyzers/**', '**/node_modules/**']
       });
 
       const configFiles = await glob(['requirements.txt', 'setup.py', 'pyproject.toml', 'Pipfile'], {
-        cwd: projectPath
+        cwd: projectPath,
+        ignore: ['**/src/analyzer/**', '**/analyzer/**', '**/analyzers/**', '**/node_modules/**']
       });
 
       return pythonFiles.length > 0 || configFiles.length > 0;
@@ -533,21 +534,6 @@ export class PythonAnalyzer extends BaseAnalyzer {
         methodId,
         'has_method'
       ));
-
-      if (!method.isPrivate && method.name !== '__init__') {
-        entryPoints.push({
-          id: `entry_${methodId}`,
-          name: `Public method: ${cls.name}.${method.name}`,
-          type: 'public_method',
-          source_node: methodId,
-          metadata: {
-            className: cls.name,
-            methodName: method.name,
-            returnAnnotation: method.returnAnnotation,
-            parameters: method.parameters.map(p => p.annotation || 'Any')
-          }
-        });
-      }
     }
 
     for (const attr of cls.attributes) {
@@ -574,21 +560,6 @@ export class PythonAnalyzer extends BaseAnalyzer {
         attrId,
         'has_attribute'
       ));
-    }
-
-    if (!cls.name.startsWith('_')) {
-      entryPoints.push({
-        id: `entry_${classId}`,
-        name: `Public class: ${cls.name}`,
-        type: 'public_class',
-        source_node: classId,
-        metadata: {
-          moduleName: cls.moduleName,
-          className: cls.name,
-          decorators: cls.decorators,
-          baseClasses: cls.baseClasses
-        }
-      });
     }
   }
 
@@ -630,21 +601,6 @@ export class PythonAnalyzer extends BaseAnalyzer {
       functionId,
       'contains'
     ));
-
-    if (!func.isPrivate) {
-      entryPoints.push({
-        id: `entry_${functionId}`,
-        name: `Public function: ${func.name}`,
-        type: 'public_function',
-        source_node: functionId,
-        metadata: {
-          functionName: func.name,
-          returnAnnotation: func.returnAnnotation,
-          parameters: func.parameters.map(p => p.annotation || 'Any'),
-          isAsync: func.isAsync
-        }
-      });
-    }
   }
 
   private extractImports(content: string): PythonImport[] {
@@ -1360,9 +1316,14 @@ export class PythonAnalyzer extends BaseAnalyzer {
                 (n.type === 'method' || n.type === 'function')
               );
 
-              if (possibleTargets.length === 1) {
-                const targetNode = possibleTargets[0];
-                if (targetNode.id !== callerNode.id) {
+              if (possibleTargets.length > 0) {
+                const callerFile = callerNode.source?.file || '';
+                let targetNode = possibleTargets.find(n => n.source?.file === callerFile);
+                if (!targetNode) {
+                  targetNode = possibleTargets[0];
+                }
+
+                if (targetNode && targetNode.id !== callerNode.id) {
                   const edgeId = `${callerNode.id}_calls_${targetNode.id}_line_${lineNumber}`;
                   if (!edges.find(e => e.id === edgeId)) {
                     edges.push(this.createEdge(
@@ -1375,7 +1336,8 @@ export class PythonAnalyzer extends BaseAnalyzer {
                         call_type: 'method_call',
                         target_object: targetObject,
                         is_async: isAsync,
-                        line: lineNumber
+                        line: lineNumber,
+                        ambiguous: possibleTargets.length > 1
                       }
                     ));
                   }
@@ -1386,47 +1348,37 @@ export class PythonAnalyzer extends BaseAnalyzer {
             targetMethod = match[1];
 
             if (builtinFunctions.includes(targetMethod)) {
-              const exitPointId = `exit_${callerNode.id}_to_builtin_${targetMethod}`;
-              if (!exitPoints.find(e => e.id === exitPointId)) {
-                exitPoints.push({
-                  id: exitPointId,
-                  source_node: callerNode.id,
-                  type: 'sdk',
-                  name: `Call to builtin ${targetMethod}`,
-                  target: {
-                    sdk: 'python_builtin',
-                    endpoint: targetMethod
-                  },
-                  operation: {
-                    action: targetMethod,
-                    async: isAsync
-                  },
-                  metadata: {
-                    line: lineNumber
-                  }
-                } as CASExitPoint);
-              }
+              continue;
             } else {
-              const targetNode = nodes.find(n =>
+              const possibleTargets = nodes.filter(n =>
                 n.name === targetMethod &&
-                n.type === 'function'
+                (n.type === 'function' || n.type === 'method')
               );
 
-              if (targetNode && targetNode.id !== callerNode.id) {
-                const edgeId = `${callerNode.id}_calls_${targetNode.id}_line_${lineNumber}`;
-                if (!edges.find(e => e.id === edgeId)) {
-                  edges.push(this.createEdge(
-                    edgeId,
-                    callerNode.id,
-                    targetNode.id,
-                    'calls',
-                    'behavior',
-                    {
-                      call_type: 'function_call',
-                      is_async: isAsync,
-                      line: lineNumber
-                    }
-                  ));
+              if (possibleTargets.length > 0) {
+                const callerFile = callerNode.source?.file || '';
+                let targetNode = possibleTargets.find(n => n.source?.file === callerFile);
+                if (!targetNode) {
+                  targetNode = possibleTargets[0];
+                }
+
+                if (targetNode && targetNode.id !== callerNode.id) {
+                  const edgeId = `${callerNode.id}_calls_${targetNode.id}_line_${lineNumber}`;
+                  if (!edges.find(e => e.id === edgeId)) {
+                    edges.push(this.createEdge(
+                      edgeId,
+                      callerNode.id,
+                      targetNode.id,
+                      'calls',
+                      'behavior',
+                      {
+                        call_type: 'function_call',
+                        is_async: isAsync,
+                        line: lineNumber,
+                        ambiguous: possibleTargets.length > 1
+                      }
+                    ));
+                  }
                 }
               }
             }
@@ -1443,10 +1395,19 @@ export class PythonAnalyzer extends BaseAnalyzer {
       { pattern: /@app\.post\(['"]([^'"]+)['"]/, framework: 'flask', method: 'POST' },
       { pattern: /@app\.put\(['"]([^'"]+)['"]/, framework: 'flask', method: 'PUT' },
       { pattern: /@app\.delete\(['"]([^'"]+)['"]/, framework: 'flask', method: 'DELETE' },
+      { pattern: /@app\.patch\(['"]([^'"]+)['"]/, framework: 'flask', method: 'PATCH' },
       { pattern: /@router\.get\(['"]([^'"]+)['"]/, framework: 'fastapi', method: 'GET' },
       { pattern: /@router\.post\(['"]([^'"]+)['"]/, framework: 'fastapi', method: 'POST' },
       { pattern: /@router\.put\(['"]([^'"]+)['"]/, framework: 'fastapi', method: 'PUT' },
       { pattern: /@router\.delete\(['"]([^'"]+)['"]/, framework: 'fastapi', method: 'DELETE' },
+      { pattern: /@router\.patch\(['"]([^'"]+)['"]/, framework: 'fastapi', method: 'PATCH' },
+      { pattern: /@router\.websocket\(['"]([^'"]+)['"]/, framework: 'fastapi', method: 'WEBSOCKET' },
+      { pattern: /@\w+\.get\(['"]([^'"]+)['"]/, framework: 'fastapi', method: 'GET' },
+      { pattern: /@\w+\.post\(['"]([^'"]+)['"]/, framework: 'fastapi', method: 'POST' },
+      { pattern: /@\w+\.put\(['"]([^'"]+)['"]/, framework: 'fastapi', method: 'PUT' },
+      { pattern: /@\w+\.delete\(['"]([^'"]+)['"]/, framework: 'fastapi', method: 'DELETE' },
+      { pattern: /@\w+\.patch\(['"]([^'"]+)['"]/, framework: 'fastapi', method: 'PATCH' },
+      { pattern: /@\w+\.websocket\(['"]([^'"]+)['"]/, framework: 'fastapi', method: 'WEBSOCKET' },
     ];
 
     for (const node of nodes) {

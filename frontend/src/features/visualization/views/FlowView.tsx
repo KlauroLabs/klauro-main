@@ -27,33 +27,33 @@ import {
 import { CASNode, CASEdge, ExitPoint } from '../types';
 import { Capability, FlowStep, buildFlowSteps } from '../utils/domainExtractor';
 import { CallTree } from '../components/CallTree';
+import { NodeStyle, getStyleForNodeType } from '../utils/dynamicStyling';
 
 export interface FlowViewProps {
   capability: Capability;
   nodes: CASNode[];
   edges: CASEdge[];
   exitPoints?: ExitPoint[];
+  nodeStyles?: Map<string, NodeStyle>;
   onBack: () => void;
   onStepClick: (step: FlowStep) => void;
   onNodeClick: (nodeId: string) => void;
   onExitPointClick?: (exitPoint: ExitPoint, sourceNodeId: string) => void;
 }
 
-const STEP_COLORS: Record<string, string> = {
-  controller: '#4caf50',
-  service: '#2196f3',
-  repository: '#9c27b0',
-  guard: '#ff9800',
-  pipe: '#00bcd4',
-  interceptor: '#ffeb3b',
-  default: '#757575',
-};
+function getStepColor(nodeType: string, nodeStyles?: Map<string, NodeStyle>): string {
+  if (nodeStyles?.has(nodeType)) {
+    return nodeStyles.get(nodeType)!.color;
+  }
+  return getStyleForNodeType(nodeType).color;
+}
 
 export const FlowView: React.FC<FlowViewProps> = ({
   capability,
   nodes,
   edges,
   exitPoints = [],
+  nodeStyles,
   onBack,
   onStepClick,
   onNodeClick,
@@ -71,15 +71,16 @@ export const FlowView: React.FC<FlowViewProps> = ({
   }, [flow, precomputedSteps, nodes]);
 
   const entryNodeId = useMemo(() => {
-    if (flow && flow.entry_node_id) {
-      return flow.entry_node_id;
+    if (flow && flow.entry_point?.node_id) {
+      return flow.entry_point.node_id;
     }
     if (steps.length > 0) {
       return steps[0].nodeId;
     }
-    const entryNode = nodes.find(n => n.name === capability.handlerName);
+    const handlerMethod = capability.entryPoint?.handler?.method_name;
+    const entryNode = nodes.find(n => n.name === handlerMethod);
     return entryNode?.id;
-  }, [flow, steps, nodes, capability.handlerName]);
+  }, [flow, steps, nodes, capability.entryPoint?.handler?.method_name]);
 
   const hasFlow = !!entryNodeId || steps.length > 0;
 
@@ -247,6 +248,7 @@ interface FlowStepCardProps {
   step: FlowStep;
   index: number;
   totalSteps: number;
+  nodeStyles?: Map<string, NodeStyle>;
   onClick: () => void;
 }
 
@@ -254,9 +256,10 @@ const FlowStepCard: React.FC<FlowStepCardProps> = ({
   step,
   index,
   totalSteps,
+  nodeStyles,
   onClick,
 }) => {
-  const stepColor = STEP_COLORS[step.nodeType] || STEP_COLORS.default;
+  const stepColor = getStepColor(step.nodeType, nodeStyles);
   const isFirst = index === 0;
   const isLast = index === totalSteps - 1;
 

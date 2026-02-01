@@ -10,6 +10,45 @@ import * as fs from 'fs-extra';
 import { parse, TSESTree } from '@typescript-eslint/typescript-estree';
 import { glob } from 'glob';
 
+const BUILTIN_NOT_EXIT_POINTS = new Set([
+  'Math', 'JSON', 'Array', 'Object', 'String', 'Number', 'Boolean',
+  'Date', 'RegExp', 'Promise', 'Buffer', 'console', 'process',
+  'Error', 'TypeError', 'RangeError', 'SyntaxError', 'Map', 'Set',
+  'WeakMap', 'WeakSet', 'Symbol', 'Proxy', 'Reflect', 'Intl',
+  'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'encodeURI',
+  'decodeURI', 'encodeURIComponent', 'decodeURIComponent', 'setTimeout',
+  'setInterval', 'clearTimeout', 'clearInterval', 'setImmediate',
+  'clearImmediate', 'queueMicrotask', 'atob', 'btoa', 'fetch',
+  'require', 'module', 'exports', '__dirname', '__filename'
+]);
+
+const HTTP_DECORATOR_PATTERNS = [
+  /^(Get|Post|Put|Delete|Patch|Options|Head)$/,
+  /^Api(Get|Post|Put|Delete|Patch|Options|Head)$/i,
+  /^Service(Get|Post|Put|Delete|Patch|Options|Head)$/i,
+  /^M2M(Get|Post|Put|Delete|Patch|Options|Head)$/i,
+  /^(Get|Post|Put|Delete|Patch)Route$/i,
+  /^(Get|Post|Put|Delete|Patch)Endpoint$/i,
+  /^Http(Get|Post|Put|Delete|Patch)$/i
+];
+
+const CONTROLLER_PATTERNS = [
+  /^Controller$/,
+  /^ApiController$/i,
+  /^RestController$/i,
+  /^HttpController$/i,
+  /^BaseController$/i
+];
+
+const HTTP_METHOD_MAP: Record<string, string> = {
+  'get': 'get', 'apiget': 'get', 'serviceget': 'get', 'm2mget': 'get',
+  'post': 'post', 'apipost': 'post', 'servicepost': 'post', 'm2mpost': 'post',
+  'put': 'put', 'apiput': 'put', 'serviceput': 'put', 'm2mput': 'put',
+  'delete': 'delete', 'apidelete': 'delete', 'servicedelete': 'delete', 'm2mdelete': 'delete',
+  'patch': 'patch', 'apipatch': 'patch', 'servicepatch': 'patch', 'm2mpatch': 'patch',
+  'options': 'options', 'head': 'head'
+};
+
 interface NestModule {
   name: string;
   filePath: string;
@@ -109,9 +148,16 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     try {
       this.callGraphExtractor = new EnhancedCallGraphExtractor(context.projectPath);
 
+      const ignorePatterns = ['node_modules/**', 'dist/**', 'build/**', '.git/**', 'test/**', '**/*.spec.ts', '**/*.test.ts'];
+
+      // Add context filters if they exist
+      if (context.filters && Array.isArray(context.filters)) {
+        ignorePatterns.push(...context.filters);
+      }
+
       const nestFiles = await glob(['**/*.{ts,js}'], {
         cwd: context.projectPath,
-        ignore: ['node_modules/**', 'dist/**', 'build/**', '.git/**', 'test/**', '**/*.spec.ts', '**/*.test.ts']
+        ignore: ignorePatterns
       });
 
       const modules = await this.analyzeModules(nestFiles, context.projectPath, allNodes, edges, newNodes);
@@ -170,9 +216,12 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
     for (const file of moduleFiles) {
       const fullPath = path.join(projectPath, file);
-      const content = await fs.readFile(fullPath, 'utf-8');
 
       try {
+        const stat = await fs.stat(fullPath);
+        if (!stat.isFile()) continue;
+
+        const content = await fs.readFile(fullPath, 'utf-8');
         const ast = parse(content, { loc: true, jsx: false });
         const moduleInfo = this.extractModuleInfo(ast, file);
 
@@ -233,9 +282,12 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
     for (const file of controllerFiles) {
       const fullPath = path.join(projectPath, file);
-      const content = await fs.readFile(fullPath, 'utf-8');
 
       try {
+        const stat = await fs.stat(fullPath);
+        if (!stat.isFile()) continue;
+
+        const content = await fs.readFile(fullPath, 'utf-8');
         const ast = parse(content, { loc: true, jsx: false });
         const controllerInfo = this.extractControllerInfo(ast, file);
 
@@ -400,9 +452,12 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
     for (const file of serviceFiles) {
       const fullPath = path.join(projectPath, file);
-      const content = await fs.readFile(fullPath, 'utf-8');
 
       try {
+        const stat = await fs.stat(fullPath);
+        if (!stat.isFile()) continue;
+
+        const content = await fs.readFile(fullPath, 'utf-8');
         const ast = parse(content, { loc: true, jsx: false });
         const providerInfo = this.extractProviderInfo(ast, file);
 
@@ -523,9 +578,12 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
     for (const file of guardFiles) {
       const fullPath = path.join(projectPath, file);
-      const content = await fs.readFile(fullPath, 'utf-8');
 
       try {
+        const stat = await fs.stat(fullPath);
+        if (!stat.isFile()) continue;
+
+        const content = await fs.readFile(fullPath, 'utf-8');
         const ast = parse(content, { loc: true, jsx: false });
         const guardInfo = this.extractGuardInfo(ast, file);
 
@@ -593,9 +651,12 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
     for (const file of middlewareFiles) {
       const fullPath = path.join(projectPath, file);
-      const content = await fs.readFile(fullPath, 'utf-8');
 
       try {
+        const stat = await fs.stat(fullPath);
+        if (!stat.isFile()) continue;
+
+        const content = await fs.readFile(fullPath, 'utf-8');
         const ast = parse(content, { loc: true, jsx: false });
         const middlewareInfo = this.extractMiddlewareInfo(ast, file);
 
@@ -662,9 +723,12 @@ export class NestJSAnalyzer extends BaseAnalyzer {
   ): Promise<void> {
     for (const file of files) {
       const fullPath = path.join(projectPath, file);
-      const content = await fs.readFile(fullPath, 'utf-8');
 
       try {
+        const stat = await fs.stat(fullPath);
+        if (!stat.isFile()) continue;
+
+        const content = await fs.readFile(fullPath, 'utf-8');
         const ast = parse(content, { loc: true, jsx: false });
 
         // 1. Analyze WebSocket Gateways
@@ -1449,17 +1513,23 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
   private extractControllerInfo(ast: TSESTree.Program, filePath: string): NestController | null {
     let controllerInfo: NestController | null = null;
+    const isControllerFile = this.isControllerFile(filePath);
 
     const walk = (node: any) => {
       if (!node || typeof node !== 'object') return;
 
       if (node.type === 'ClassDeclaration' && node.decorators) {
-        const controllerDecorator = node.decorators.find((dec: any) =>
-          dec.expression?.callee?.name === 'Controller'
-        );
+        const controllerDecorator = node.decorators.find((dec: any) => {
+          const name = dec.expression?.callee?.name;
+          return name && CONTROLLER_PATTERNS.some(pattern => pattern.test(name));
+        });
 
-        if (controllerDecorator && node.id) {
-          const basePath = this.extractDecoratorArgument(controllerDecorator) || '';
+        const hasAnyDecorator = node.decorators.length > 0;
+
+        if ((controllerDecorator || (isControllerFile && hasAnyDecorator)) && node.id) {
+          const basePath = controllerDecorator
+            ? (this.extractDecoratorArgument(controllerDecorator) || '')
+            : '';
           const routes = this.extractRoutes(node);
           const guards = this.extractClassDecorators(node, 'UseGuards');
           const interceptors = this.extractClassDecorators(node, 'UseInterceptors');
@@ -1491,6 +1561,13 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
     walk(ast);
     return controllerInfo;
+  }
+
+  private isControllerFile(filePath: string): boolean {
+    const normalized = filePath.toLowerCase();
+    return normalized.includes('.controller.') ||
+           normalized.includes('-controller.') ||
+           normalized.includes('/controllers/');
   }
 
   private extractProviderInfo(ast: TSESTree.Program, filePath: string): NestProvider | null {
@@ -1648,12 +1725,14 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     if (classNode.body && classNode.body.body) {
       classNode.body.body.forEach((member: any) => {
         if (member.type === 'MethodDefinition' && member.decorators) {
-          const httpDecorator = member.decorators.find((dec: any) =>
-            ['Get', 'Post', 'Put', 'Delete', 'Patch', 'Options', 'Head'].includes(dec.expression?.callee?.name)
-          );
+          const httpDecorator = member.decorators.find((dec: any) => {
+            const name = dec.expression?.callee?.name;
+            return name && HTTP_DECORATOR_PATTERNS.some(pattern => pattern.test(name));
+          });
 
           if (httpDecorator) {
-            const method = httpDecorator.expression.callee.name.toLowerCase();
+            const decoratorName = httpDecorator.expression.callee.name.toLowerCase();
+            const method = HTTP_METHOD_MAP[decoratorName] || this.extractMethodFromName(decoratorName);
             const path = this.extractDecoratorArgument(httpDecorator) || '/';
             const handlerName = member.key.name;
             const parameters = this.extractMethodParameters(member);
@@ -1676,6 +1755,18 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     }
 
     return routes;
+  }
+
+  private extractMethodFromName(decoratorName: string): string {
+    const lower = decoratorName.toLowerCase();
+    if (lower.includes('get')) return 'get';
+    if (lower.includes('post')) return 'post';
+    if (lower.includes('put')) return 'put';
+    if (lower.includes('delete')) return 'delete';
+    if (lower.includes('patch')) return 'patch';
+    if (lower.includes('options')) return 'options';
+    if (lower.includes('head')) return 'head';
+    return 'get';
   }
 
   private extractMethods(classNode: any): Array<{ name: string; parameters: any[]; returnType?: string }> {
@@ -2600,9 +2691,12 @@ export class NestJSAnalyzer extends BaseAnalyzer {
   ): Promise<void> {
     for (const file of files) {
       const fullPath = path.join(projectPath, file);
-      const content = await fs.readFile(fullPath, 'utf-8');
 
       try {
+        const stat = await fs.stat(fullPath);
+        if (!stat.isFile()) continue;
+
+        const content = await fs.readFile(fullPath, 'utf-8');
         const ast = parse(content, { loc: true, jsx: false });
         const { functions: extractedFunctions } = this.callGraphExtractor!.extractFromAST(ast, fullPath);
 
@@ -2630,8 +2724,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
               }
             }
 
-            // Library calls - create exit points
-            if (call.targetType === 'library' && call.library) {
+            // Library calls - create exit points (excluding built-ins)
+            if (call.targetType === 'library' && call.library && !BUILTIN_NOT_EXIT_POINTS.has(call.library)) {
               const funcNode = nodes.find(n => n.name === func.name && (n.type === 'method' || n.type === 'function'));
               if (funcNode) {
                 exitPoints.push({
