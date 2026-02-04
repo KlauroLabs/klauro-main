@@ -43,7 +43,7 @@ The first tool to call when orienting on a codebase. Returns a condensed intelli
 - `analysis_timestamp`, `analysis_id`
 - `system_purpose` - Primary type, confidence, evidence, secondary types
 - `enhanced_system_purpose` - Primary domain, core concepts, inferred description
-- `flow_graph` summary - Capabilities count, dependencies count, primary flow (core capability, value chain), system insights (detected patterns, entry type, data flow type), top 15 capabilities sorted by score with operations
+- `flow_graph` summary - Capabilities count, dependencies count, primary flow (core capability, value chain), system insights (detected patterns, entry type, data flow type), layers (name, type, count per layer), topology (root/leaf counts, critical path, max depth), top 15 capabilities sorted by score with operations
 - `architecture_summary` - System type, total files, layers breakdown, API surface, external dependencies, security
 - `database_entities` - Entity names from schema
 - `entry_point_count` and breakdown by type
@@ -88,7 +88,7 @@ Multi-view analysis perspectives with connection rules and layout hints.
 
 ### `search_nodes`
 
-Find code elements by name, qualified name, or description. Supports filtering by type, category, and hierarchy level. Multi-word queries use camelCase-aware matching -- searching "react analyzer" will match `ReactAnalyzer`, `react-analyzer`, etc.
+Find code elements by name, qualified name, or description. Supports filtering by type, category, and hierarchy level. Multi-word queries use camelCase-aware matching -- searching "react analyzer" will match `ReactAnalyzer`, `react-analyzer`, etc. Results are ranked by type relevance: classes, services, and controllers appear first; imports are deprioritized.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -110,7 +110,7 @@ Full details for a single code element including all connected data.
 | `path` | string | yes | Project path |
 | `node_id` | string | yes | Node ID (from search results or other tools) |
 
-**Returns:** Full node with `signature`, `metadata`, `documentation`, `call_graph`, `implementation_status`, `todos`, `children`, plus enrichments: `incoming_edges`, `outgoing_edges`, `entry_points`, `exit_points`, `decorators`, `intent`, `change_risk`, `stability`, `resolved_children`.
+**Returns:** Full node with `signature`, `metadata`, `documentation`, `call_graph`, `implementation_status`, `todos`, `children`, plus enrichments: `incoming_edges`, `outgoing_edges` (trimmed -- id, source, target, type, key metadata only), `entry_points`, `exit_points`, `decorators`, `intent`, `change_risk`, `stability`, `resolved_children`.
 
 ### `get_file_nodes`
 
@@ -121,7 +121,7 @@ All code elements defined in a specific file with their internal relationships.
 | `path` | string | yes | Project path |
 | `file_path` | string | yes | Relative file path within the project |
 
-**Returns:** `nodes` (array with id, name, type, category, level, line, end_line, description, parent, children) and `edges` (internal edges between nodes in the file).
+**Returns:** `nodes` (array with id, name, type, category, level, line, end_line, description, parent, children) and `edges` (trimmed internal edges between nodes in the file -- id, source, target, type, key metadata only).
 
 ### `get_level`
 
@@ -138,8 +138,8 @@ Progressive disclosure. Get everything at a specific hierarchy level -- the leve
 - `total_levels` - Total number of levels in the analysis
 - `available_levels` - All levels with name and node count (for navigation)
 - `nodes` - All nodes at this level (id, name, type, qualified_name, category, file, line, description, parent, children, tags)
-- `internal_edges` - Edges between nodes at this level
-- `cross_level_edges` - Edges connecting to nodes at other levels, with the external node's id, name, type, and level
+- `internal_edges` - Trimmed edges between nodes at this level (id, source, target, type, key metadata)
+- `cross_level_edges` - Trimmed edges connecting to nodes at other levels, with the external node's id, name, type, and level
 - `entry_points` - Entry points associated with nodes at this level
 - `exit_points` - Exit points associated with nodes at this level
 

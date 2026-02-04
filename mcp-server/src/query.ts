@@ -37,8 +37,18 @@ export function buildSummary(cas: CASOutput) {
       dependencies_count: cas.flow_graph.dependencies.length,
       primary_flow: cas.flow_graph.primary_flow,
       system_insights: cas.flow_graph.system_insights,
-      layers: cas.flow_graph.layers,
-      topology: cas.flow_graph.topology,
+      layers: cas.flow_graph.layers?.map(l => ({
+        layer_number: l.layer_number,
+        layer_name: l.layer_name,
+        layer_type: l.layer_type,
+        capabilities_count: l.capabilities?.length || 0,
+      })) || [],
+      topology: {
+        root_count: cas.flow_graph.topology?.root_capabilities?.length || 0,
+        leaf_count: cas.flow_graph.topology?.leaf_capabilities?.length || 0,
+        critical_path: cas.flow_graph.topology?.critical_path || [],
+        max_depth: cas.flow_graph.topology?.max_depth || 0,
+      },
       top_capabilities: [...cas.flow_graph.capabilities]
         .sort((a, b) => b.signals.total_score - a.signals.total_score)
         .slice(0, 15)
@@ -89,6 +99,22 @@ export function getSystemOverview(cas: CASOutput) {
   };
 }
 
+function trimEdge(e: CASEdge) {
+  return {
+    id: e.id,
+    source: e.source,
+    target: e.target,
+    type: e.type,
+    metadata: e.metadata ? {
+      weight: e.metadata.weight,
+      confidence: e.metadata.confidence,
+      async: e.metadata.async,
+      conditional: e.metadata.conditional,
+      attributes: e.metadata.attributes,
+    } : undefined,
+  };
+}
+
 function splitCamelCase(str: string): string[] {
   return str
     .replace(/([a-z])([A-Z])/g, '$1 $2')
@@ -129,6 +155,15 @@ export function searchNodes(
     return true;
   });
 
+  const TYPE_PRIORITY: Record<string, number> = {
+    class: 0, service: 0, controller: 0, module: 0, gateway: 0,
+    function: 1, method: 1, custom_hook: 1, functional_component: 1, react_page: 1,
+    entity: 2, repository: 2, guard: 2, middleware: 2, interceptor: 2, dto: 2,
+    variable: 3, constant_util: 3, property: 3, function_util: 3,
+    import: 4,
+  };
+  results.sort((a, b) => (TYPE_PRIORITY[a.type] ?? 3) - (TYPE_PRIORITY[b.type] ?? 3));
+
   return results.slice(0, limit).map(n => ({
     id: n.id,
     name: n.name,
@@ -148,8 +183,8 @@ export function getNode(cas: CASOutput, nodeId: string) {
   const node = cas.nodes.find(n => n.id === nodeId);
   if (!node) return null;
 
-  const incomingEdges = cas.edges.filter(e => e.target === nodeId);
-  const outgoingEdges = cas.edges.filter(e => e.source === nodeId);
+  const incomingEdges = cas.edges.filter(e => e.target === nodeId).map(trimEdge);
+  const outgoingEdges = cas.edges.filter(e => e.source === nodeId).map(trimEdge);
   const relatedEntryPoints = (cas.entry_points || []).filter(ep =>
     ep.source_node === nodeId || ep.handler?.node_id === nodeId || ep.connected_nodes?.includes(nodeId)
   );
@@ -190,7 +225,7 @@ export function getFileNodes(cas: CASOutput, filePath: string) {
   const nodeIds = new Set(fileNodes.map(n => n.id));
   const internalEdges = cas.edges.filter(e =>
     nodeIds.has(e.source) && nodeIds.has(e.target)
-  );
+  ).map(trimEdge);
 
   return {
     nodes: fileNodes.map(n => ({
@@ -491,7 +526,7 @@ export function getLevel(cas: CASOutput, level: number) {
     const externalId = nodeIds.has(e.source) ? e.target : e.source;
     const externalNode = cas.nodes.find(n => n.id === externalId);
     return {
-      ...e,
+      ...trimEdge(e),
       external_node: externalNode ? {
         id: externalNode.id,
         name: externalNode.name,
@@ -504,7 +539,7 @@ export function getLevel(cas: CASOutput, level: number) {
 
   const internalEdges = edges.filter(
     e => nodeIds.has(e.source) && nodeIds.has(e.target)
-  );
+  ).map(trimEdge);
 
   const entryPoints = (cas.entry_points || []).filter(ep =>
     ep.source_node && nodeIds.has(ep.source_node) ||
