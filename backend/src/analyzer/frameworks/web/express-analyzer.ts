@@ -91,7 +91,7 @@ export class ExpressAnalyzer extends BaseAnalyzer {
 
   constructor() {
     super(
-      'express-analyzer',
+      'express',
       'Express.js Framework Analyzer',
       '1.0.0',
       'framework'
@@ -358,8 +358,12 @@ export class ExpressAnalyzer extends BaseAnalyzer {
             entryPoints.push({
               id: `entry_${routeId}`,
               name: `${route.method.toUpperCase()} ${fullPath}`,
-              type: 'express_endpoint',
+              type: 'http',
               source_node: routeId,
+              trigger: {
+                method: route.method.toUpperCase(),
+                path: fullPath
+              },
               metadata: {
                 method: route.method.toUpperCase(),
                 path: fullPath,
@@ -1452,20 +1456,28 @@ export class ExpressAnalyzer extends BaseAnalyzer {
 
   private tagNodesWithPerspectives(nodes: CASNode[], edges: CASEdge[]): void {
     nodes.forEach(node => {
-      node.perspectives = [];
-
       if (!node || typeof node !== 'object') return;
+
+      if (!node.perspectives) {
+        node.perspectives = {};
+      }
 
       if (node.type === 'express_app' || node.type === 'express_router' ||
           node.type === 'express_route' || node.type === 'express_middleware') {
-        node.perspectives.push('express-routes');
+        node.perspectives['express-routes'] = {
+          hierarchy: ['express', 'routes'],
+          level: node.level || 1,
+          priority: 1
+        };
       }
-
-      if (!node || typeof node !== 'object') return;
 
       if (node.type === 'express_middleware' || node.type === 'express_route' ||
           node.type === 'express_controller' || node.type === 'express_service') {
-        node.perspectives.push('express-layers');
+        node.perspectives['express-layers'] = {
+          hierarchy: ['express', 'layers'],
+          level: node.level || 1,
+          priority: 2
+        };
       }
 
       if (!node.metadata) {

@@ -39,7 +39,19 @@ import {
   CASTestSuite,
   CASMock,
   CASFixture,
-  CASTestSummary
+  CASTestSummary,
+  CASAnalysisError,
+  CASValidation,
+  CASConfiguration,
+  CASMethodCall,
+  CASDecorator,
+  CASDocumentationSummary,
+  CASTodoSummary,
+  CASImplementationHealth,
+  CASSecurityContext,
+  CASCallGraph,
+  CASNodePerspective,
+  CASLibrary
 } from '../../types/cas.types';
 import { CallGraphBuilder, TracedPath } from './call-graph-builder';
 import { DomainExtractor } from './domain-extractor';
@@ -75,12 +87,55 @@ export interface AnalyzerRegistration {
 
 export class AnalyzerOrchestrator {
   private analyzers: Map<string, AnalyzerRegistration> = new Map();
+  private projectRoots: string[] = [];
+  private analyzerRootMap: Map<string, string> = new Map();
 
   registerAnalyzer(registration: AnalyzerRegistration): void {
     this.analyzers.set(registration.id, registration);
   }
 
+  private async discoverProjectRoots(projectPath: string): Promise<string[]> {
+    const manifestPatterns = [
+      '**/package.json',
+      '**/requirements.txt',
+      '**/pom.xml',
+      '**/Cargo.toml',
+      '**/composer.json',
+      '**/*.csproj',
+      '**/*.sln',
+      '**/go.mod'
+    ];
+
+    const ignorePatterns = [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/build/**',
+      '**/.git/**'
+    ];
+
+    const rootSet = new Set<string>();
+
+    for (const pattern of manifestPatterns) {
+      try {
+        const matches = await glob(pattern, {
+          cwd: projectPath,
+          ignore: ignorePatterns
+        });
+        for (const match of matches) {
+          const absolutePath = path.join(projectPath, path.dirname(match));
+          rootSet.add(absolutePath);
+        }
+      } catch {
+      }
+    }
+
+    return Array.from(rootSet);
+  }
+
   async detectAnalyzers(projectPath: string): Promise<AnalyzerRegistration[]> {
+    this.projectRoots = await this.discoverProjectRoots(projectPath);
+    this.analyzerRootMap.clear();
+
     const detected: AnalyzerRegistration[] = [];
 
     for (const registration of this.analyzers.values()) {
@@ -113,31 +168,97 @@ export class AnalyzerOrchestrator {
     const allPerspectives: CASPerspective[] = [];
     const categories: CASCategories = {};
     const contributions: any[] = [];
+    const analysisErrors: CASAnalysisError[] = [];
 
-    for (const registration of detectedAnalyzers) {
+    const accumulators = {
+      allNodes, allEdges, allEntryPoints, allExitPoints,
+      allBehaviors, allPatterns, allTags, allPerspectives,
+      allLibraries, categories, contributions, analysisErrors
+    };
+
+    const languageAnalyzers = detectedAnalyzers.filter(r => r.type === 'language');
+    const parallelAnalyzers = detectedAnalyzers.filter(r => r.type === 'framework' || r.type === 'library');
+    const patternAnalyzers = detectedAnalyzers.filter(r => r.type === 'pattern');
+
+    for (const registration of languageAnalyzers) {
       try {
-        const analyzerStartTime = Date.now();
+        await this.runAnalyzer(registration, context, projectPath, accumulators);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`Error running analyzer ${registration.id}:`, error);
+        analysisErrors.push({
+          severity: 'error',
+          code: 'ANALYZER_FAILURE',
+          message: `${registration.name} failed: ${message}`,
+          analyzer: registration.id,
+          recoverable: true
+        });
+      }
+    }
 
-        context.existingAnalysis = [{
-          nodes: allNodes,
-          edges: allEdges,
-          entry_points: allEntryPoints,
-          exit_points: allExitPoints,
-          analyzer_metadata: {
-            analyzer_id: 'merged',
-            analyzer_name: 'Merged Analysis',
-            version: '1.0.0',
-            contribution_type: 'pattern',
-            nodes_contributed: allNodes.length,
-            edges_contributed: allEdges.length,
-            contributed_entry_points: allEntryPoints.length,
-            contributed_exit_points: allExitPoints.length
+    if (parallelAnalyzers.length > 0) {
+      const languageSnapshot: CASContribution = {
+        nodes: [...allNodes],
+        edges: [...allEdges],
+        entry_points: [...allEntryPoints],
+        exit_points: [...allExitPoints],
+        analyzer_metadata: {
+          analyzer_id: 'merged',
+          analyzer_name: 'Merged Analysis',
+          version: '1.0.0',
+          contribution_type: 'pattern' as const,
+          nodes_contributed: allNodes.length,
+          edges_contributed: allEdges.length,
+          contributed_entry_points: allEntryPoints.length,
+          contributed_exit_points: allExitPoints.length
+        }
+      };
+
+      const parallelResults = await Promise.allSettled(
+        parallelAnalyzers.map(async (registration) => {
+          const analyzerStartTime = Date.now();
+          const matchedRoot = this.analyzerRootMap.get(registration.id) || projectPath;
+
+          const analyzerContext: AnalysisContext = {
+            ...context,
+            projectPath: matchedRoot,
+            existingAnalysis: [languageSnapshot]
+          };
+
+          const result = await registration.analyzer.analyze(analyzerContext);
+          const executionTime = Date.now() - analyzerStartTime;
+
+          if (matchedRoot !== projectPath) {
+            const relPrefix = path.relative(projectPath, matchedRoot);
+            this.normalizeFilePaths(result, relPrefix);
           }
-        }];
 
-        const result = await registration.analyzer.analyze(context);
-        const executionTime = Date.now() - analyzerStartTime;
+          return { registration, result, executionTime };
+        })
+      );
 
+      const successfulResults = parallelResults
+        .filter((r): r is PromiseFulfilledResult<{ registration: AnalyzerRegistration; result: CASContribution; executionTime: number }> =>
+          r.status === 'fulfilled'
+        )
+        .map(r => r.value)
+        .sort((a, b) => a.registration.id.localeCompare(b.registration.id));
+
+      parallelResults.forEach((r, i) => {
+        if (r.status === 'rejected') {
+          const message = r.reason instanceof Error ? r.reason.message : String(r.reason);
+          console.error(`Error running analyzer ${parallelAnalyzers[i].id}:`, r.reason);
+          analysisErrors.push({
+            severity: 'error',
+            code: 'ANALYZER_FAILURE',
+            message: `${parallelAnalyzers[i].name} failed: ${message}`,
+            analyzer: parallelAnalyzers[i].id,
+            recoverable: true
+          });
+        }
+      });
+
+      for (const { registration, result, executionTime } of successfulResults) {
         this.mergeAnalysisResult(
           { allNodes, allEdges, allEntryPoints, allExitPoints },
           result
@@ -155,6 +276,7 @@ export class AnalyzerOrchestrator {
           analyzer_name: registration.name,
           analyzer_version: registration.version,
           analyzer_type: registration.type,
+          contribution_type: registration.type,
           execution_time_ms: executionTime,
           nodes_created: result.nodes?.length || 0,
           edges_created: result.edges?.length || 0,
@@ -170,19 +292,41 @@ export class AnalyzerOrchestrator {
         if (result.libraries) {
           allLibraries.push(...result.libraries);
         }
+      }
+    }
 
+    for (const registration of patternAnalyzers) {
+      try {
+        await this.runAnalyzer(registration, context, projectPath, accumulators);
       } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
         console.error(`Error running analyzer ${registration.id}:`, error);
+        analysisErrors.push({
+          severity: 'error',
+          code: 'ANALYZER_FAILURE',
+          message: `${registration.name} failed: ${message}`,
+          analyzer: registration.id,
+          recoverable: true
+        });
       }
     }
 
     this.linkRouteHandlers(allNodes, allEdges, allEntryPoints);
 
     const gitAnalyzer = new GitAnalyzer(projectPath);
+    const filePathsForGit = allNodes
+      .filter((n): n is CASNode & { source: { file: string } } => !!n.source?.file)
+      .map(n => n.source.file);
+    gitAnalyzer.preloadAllFileMetrics(filePathsForGit);
 
     const systemName = path.basename(projectPath);
     const progressiveLevels = this.buildProgressiveLevels(allNodes, categories);
     const index = this.buildIndex(allNodes, allEntryPoints, allExitPoints, allPerspectives);
+
+    if (allLibraries.length === 0) {
+      const detectedLibraries = this.detectLibrariesFromManifests(projectPath);
+      allLibraries.push(...detectedLibraries);
+    }
 
     const architectureSummary = this.buildArchitectureSummary(allNodes, allEntryPoints, allExitPoints, contributions);
     const routeTable = this.buildRouteTable(allEntryPoints);
@@ -200,8 +344,6 @@ export class AnalyzerOrchestrator {
     const dataSummary = this.buildDataSummary(dataEntities, allNodes);
     const securityBoundaries = this.buildSecurityBoundaries(allNodes, allEntryPoints);
     const securitySummary = this.buildSecuritySummary(securityBoundaries, allNodes);
-    const flowCoverage = this.buildFlowCoverage(allNodes, allEntryPoints);
-    const testGaps = this.buildTestGaps(flowCoverage, allNodes);
     const temporalStability = this.buildTemporalStability(allNodes, gitAnalyzer);
     const stabilitySummary = this.buildStabilitySummary(temporalStability);
 
@@ -210,6 +352,13 @@ export class AnalyzerOrchestrator {
 
     const callGraphBuilder = new CallGraphBuilder(allNodes, allEdges, allExitPoints);
     const callChains = this.buildCallChains(allNodes, allEdges, allEntryPoints, allExitPoints, callGraphBuilder);
+
+    this.enrichNodeCallGraphs(allNodes, callGraphBuilder, allEntryPoints, allExitPoints);
+    this.deriveParentFromContainsEdges(allNodes, allEdges);
+    this.enrichNodePerspectives(allNodes, allPerspectives);
+
+    const flowCoverage = this.buildFlowCoverage(allNodes, allEntryPoints, callChains);
+    const testGaps = this.buildTestGaps(flowCoverage, allNodes);
 
     const domainExtractor = new DomainExtractor();
     const domainConcepts = domainExtractor.extract(allNodes, allEntryPoints, dataEntities);
@@ -231,7 +380,6 @@ export class AnalyzerOrchestrator {
     );
 
     const enhancedChangeRisks = this.enhanceChangeRisks(changeRisks, callGraphBuilder, callChains, allEntryPoints);
-
     const enhancedFlowSummary = this.buildEnhancedFlowSummary(callChains, allEntryPoints);
 
     const enhancedSystemPurpose = this.buildEnhancedSystemPurpose(
@@ -241,6 +389,15 @@ export class AnalyzerOrchestrator {
       workflowGraph,
       domainExtractor
     );
+
+    const methodCalls = this.buildMethodCalls(allNodes, allEdges);
+    const allDecorators = this.buildAllDecorators(allNodes);
+    const documentationSummary = this.buildDocumentationSummary(allNodes);
+    const todosSummary = this.buildTodosSummary(allNodes);
+    const implementationHealth = this.buildImplementationHealth(allNodes);
+    const securityContexts = this.buildSecurityContexts(allNodes, allEntryPoints, allEdges);
+    const configuration = this.buildAllConfiguration(allNodes, allExitPoints, externalServices, projectPath);
+    const validation = this.buildValidation(allNodes, allEdges);
 
     return {
       cas_version: '1.7.0',
@@ -277,8 +434,8 @@ export class AnalyzerOrchestrator {
       data_summary: dataSummary,
       security_boundaries: securityBoundaries.length > 0 ? securityBoundaries : undefined,
       security_summary: securitySummary,
-      flow_coverage: flowCoverage,
-      test_gaps: testGaps,
+      flow_coverage: flowCoverage.length > 0 ? flowCoverage : undefined,
+      test_gaps: testGaps.length > 0 ? testGaps : undefined,
       temporal_stability: temporalStability.length > 0 ? temporalStability : undefined,
       stability_summary: stabilitySummary,
       system_capabilities: systemCapabilities.length > 0 ? systemCapabilities : undefined,
@@ -291,6 +448,15 @@ export class AnalyzerOrchestrator {
       flow_graph: flowGraph,
       flow_summary: enhancedFlowSummary,
       change_risks: enhancedChangeRisks.length > 0 ? enhancedChangeRisks : undefined,
+      method_calls: methodCalls.length > 0 ? methodCalls : undefined,
+      decorators: allDecorators.length > 0 ? allDecorators : undefined,
+      documentation_summary: documentationSummary,
+      todos_summary: todosSummary,
+      implementation_health: implementationHealth,
+      security_contexts: securityContexts.length > 0 ? securityContexts : undefined,
+      configuration,
+      analysis_errors: analysisErrors,
+      validation,
       test_suites: this.buildTestSuites(allNodes, allEntryPoints),
       mocks: this.buildMocks(allNodes),
       fixtures: this.buildFixtures(allNodes),
@@ -338,15 +504,29 @@ export class AnalyzerOrchestrator {
     registration: AnalyzerRegistration
   ): Promise<boolean> {
     try {
-      // Pre-filter analyzers based on project type to avoid running irrelevant ones
       const projectType = await this.detectPrimaryProjectType(projectPath);
 
-      // Skip analyzers that don't match the primary project type
       if (!this.isAnalyzerRelevantForProject(registration, projectType)) {
         return false;
       }
 
-      return await registration.analyzer.canAnalyze(projectPath);
+      if (await registration.analyzer.canAnalyze(projectPath)) {
+        this.analyzerRootMap.set(registration.id, projectPath);
+        return true;
+      }
+
+      for (const root of this.projectRoots) {
+        if (root === projectPath) continue;
+        try {
+          if (await registration.analyzer.canAnalyze(root)) {
+            this.analyzerRootMap.set(registration.id, root);
+            return true;
+          }
+        } catch {
+        }
+      }
+
+      return false;
     } catch (error) {
       return false;
     }
@@ -354,24 +534,24 @@ export class AnalyzerOrchestrator {
 
   private async detectPrimaryProjectType(projectPath: string): Promise<string> {
     try {
-      // Check for primary project indicators
       const indicators = [
-        { type: 'typescript', files: ['package.json'], content: ['"typescript"', '"@types/'] },
-        { type: 'javascript', files: ['package.json'], content: ['"react"', '"express"', '"vue"'] },
-        { type: 'python', files: ['requirements.txt', 'setup.py', 'pyproject.toml'] },
-        { type: 'java', files: ['pom.xml', 'build.gradle'] },
-        { type: 'csharp', files: ['*.csproj', '*.sln'] },
-        { type: 'go', files: ['go.mod'] },
-        { type: 'rust', files: ['Cargo.toml'] },
-        { type: 'php', files: ['composer.json'] }
+        { type: 'typescript', files: ['**/package.json'], content: ['"typescript"', '"@types/', '"next"', '"ts-node"'] },
+        { type: 'javascript', files: ['**/package.json'], content: ['"react"', '"express"', '"vue"', '"next"', '"socket.io"'] },
+        { type: 'python', files: ['**/requirements.txt', '**/setup.py', '**/pyproject.toml', '**/Pipfile'] },
+        { type: 'java', files: ['**/pom.xml', '**/build.gradle', '**/build.gradle.kts'] },
+        { type: 'csharp', files: ['**/*.csproj', '**/*.sln'] },
+        { type: 'go', files: ['**/go.mod'] },
+        { type: 'rust', files: ['**/Cargo.toml'] },
+        { type: 'php', files: ['**/composer.json'] }
       ];
 
+      const ignorePatterns = ['**/node_modules/**', '**/vendor/**', '**/.git/**', '**/dist/**', '**/build/**'];
+
       for (const indicator of indicators) {
-        for (const file of indicator.files) {
+        for (const filePattern of indicator.files) {
           try {
-            const files = await glob(file, { cwd: projectPath });
+            const files = await glob(filePattern, { cwd: projectPath, ignore: ignorePatterns });
             if (files.length > 0) {
-              // Check content if specified
               if (indicator.content && indicator.content.length > 0) {
                 for (const f of files) {
                   try {
@@ -380,7 +560,6 @@ export class AnalyzerOrchestrator {
                       return indicator.type;
                     }
                   } catch {
-                    // Continue checking other files
                   }
                 }
               } else {
@@ -388,7 +567,6 @@ export class AnalyzerOrchestrator {
               }
             }
           } catch {
-            // Continue checking
           }
         }
       }
@@ -400,7 +578,10 @@ export class AnalyzerOrchestrator {
   }
 
   private isAnalyzerRelevantForProject(registration: AnalyzerRegistration, projectType: string): boolean {
-    // Language analyzers should only run for their specific language
+    if (projectType === 'unknown') {
+      return true;
+    }
+
     if (registration.type === 'language') {
       const languageMap: { [key: string]: string[] } = {
         'typescript-javascript': ['typescript', 'javascript'],
@@ -415,14 +596,6 @@ export class AnalyzerOrchestrator {
       return languageMap[registration.id]?.includes(projectType) || false;
     }
 
-    // Framework analyzers can run if they're relevant to the detected frameworks
-    if (registration.type === 'framework') {
-      // For now, let framework analyzers run their canAnalyze method
-      // This could be enhanced with framework detection
-      return true;
-    }
-
-    // Library and pattern analyzers always run
     return true;
   }
 
@@ -434,6 +607,112 @@ export class AnalyzerOrchestrator {
       const bOrder = typeOrder[b.type] ?? 999;
       return aOrder - bOrder;
     });
+  }
+
+  private async runAnalyzer(
+    registration: AnalyzerRegistration,
+    context: AnalysisContext,
+    projectPath: string,
+    accumulators: {
+      allNodes: CASNode[];
+      allEdges: CASEdge[];
+      allEntryPoints: any[];
+      allExitPoints: any[];
+      allBehaviors: CASBehavior[];
+      allPatterns: CASPattern[];
+      allTags: CASTag[];
+      allPerspectives: CASPerspective[];
+      allLibraries: any[];
+      categories: CASCategories;
+      contributions: any[];
+    }
+  ): Promise<void> {
+    const analyzerStartTime = Date.now();
+
+    const matchedRoot = this.analyzerRootMap.get(registration.id) || projectPath;
+    context.projectPath = matchedRoot;
+
+    context.existingAnalysis = [{
+      nodes: accumulators.allNodes,
+      edges: accumulators.allEdges,
+      entry_points: accumulators.allEntryPoints,
+      exit_points: accumulators.allExitPoints,
+      analyzer_metadata: {
+        analyzer_id: 'merged',
+        analyzer_name: 'Merged Analysis',
+        version: '1.0.0',
+        contribution_type: 'pattern' as const,
+        nodes_contributed: accumulators.allNodes.length,
+        edges_contributed: accumulators.allEdges.length,
+        contributed_entry_points: accumulators.allEntryPoints.length,
+        contributed_exit_points: accumulators.allExitPoints.length
+      }
+    }];
+
+    const result = await registration.analyzer.analyze(context);
+    const executionTime = Date.now() - analyzerStartTime;
+
+    if (matchedRoot !== projectPath) {
+      const relPrefix = path.relative(projectPath, matchedRoot);
+      this.normalizeFilePaths(result, relPrefix);
+    }
+
+    this.mergeAnalysisResult(
+      { allNodes: accumulators.allNodes, allEdges: accumulators.allEdges, allEntryPoints: accumulators.allEntryPoints, allExitPoints: accumulators.allExitPoints },
+      result
+    );
+
+    if (result.behaviors) accumulators.allBehaviors.push(...result.behaviors);
+    if (result.patterns) accumulators.allPatterns.push(...result.patterns);
+    if (result.categories) this.mergeCategories(accumulators.categories, result.categories);
+    if (result.tags) accumulators.allTags.push(...result.tags);
+    if (result.perspectives) accumulators.allPerspectives.push(...result.perspectives);
+
+    const analyzerMeta = result.analyzer_metadata || {};
+    accumulators.contributions.push({
+      analyzer_id: registration.id,
+      analyzer_name: registration.name,
+      analyzer_version: registration.version,
+      analyzer_type: registration.type,
+      contribution_type: registration.type,
+      execution_time_ms: executionTime,
+      nodes_created: result.nodes?.length || 0,
+      edges_created: result.edges?.length || 0,
+      confidence: 1.0,
+      contributed_categories: result.categories ? Object.keys(result.categories).length : 0,
+      provided_perspectives: result.provided_perspectives || [],
+      framework_specific: analyzerMeta.frameworks_detected || analyzerMeta.crates || undefined,
+      application_type: analyzerMeta.application_type,
+      project_name: analyzerMeta.project_name,
+      project_version: analyzerMeta.project_version
+    });
+
+    if (result.libraries) {
+      accumulators.allLibraries.push(...result.libraries);
+    }
+  }
+
+  private normalizeFilePaths(result: any, relPrefix: string): void {
+    for (const node of result.nodes || []) {
+      if (node.source?.file && !path.isAbsolute(node.source.file)) {
+        node.source.file = path.join(relPrefix, node.source.file);
+      }
+    }
+    for (const edge of result.edges || []) {
+      if (edge.source_location?.file && !path.isAbsolute(edge.source_location.file)) {
+        edge.source_location.file = path.join(relPrefix, edge.source_location.file);
+      }
+    }
+    for (const ep of result.entry_points || []) {
+      if (ep.source?.file && !path.isAbsolute(ep.source.file)) {
+        ep.source.file = path.join(relPrefix, ep.source.file);
+      }
+    }
+    for (const ep of result.exit_points || []) {
+      if (ep.source?.file && !path.isAbsolute(ep.source.file)) {
+        ep.source.file = path.join(relPrefix, ep.source.file);
+      }
+    }
   }
 
   private mergeAnalysisResult(
@@ -473,8 +752,10 @@ export class AnalyzerOrchestrator {
             existingNode.tags = [...new Set([...(existingNode.tags || []), ...node.tags])];
           }
           if (node.type && node.type !== existingNode.type) {
-            // Framework analyzers can specialize the type (e.g., 'class' -> 'controller')
             existingNode.type = node.type;
+          }
+          if (node.analyzers && node.analyzers.length > 0) {
+            existingNode.analyzers = [...new Set([...(existingNode.analyzers || []), ...node.analyzers])];
           }
         }
       } else {
@@ -697,7 +978,7 @@ export class AnalyzerOrchestrator {
       index.by_name![nameKey].push(node.id);
 
       if (node.perspectives) {
-        node.perspectives.forEach(perspectiveId => {
+        Object.keys(node.perspectives).forEach(perspectiveId => {
           if (!index.by_perspective![perspectiveId]) {
             index.by_perspective![perspectiveId] = [];
           }
@@ -2528,16 +2809,85 @@ export class AnalyzerOrchestrator {
     };
   }
 
-  private buildFlowCoverage(nodes: CASNode[], entryPoints: CASEntryPoint[]): CASFlowCoverage[] {
+  private buildFlowCoverage(
+    nodes: CASNode[],
+    entryPoints: CASEntryPoint[],
+    callChains: CASCallChain[]
+  ): CASFlowCoverage[] {
     const flowCoverage: CASFlowCoverage[] = [];
 
-    const testEntryPoints = entryPoints.filter(ep => ep.type === 'test');
     const testedNodes = new Set<string>();
+    const testNodeIds = new Set<string>();
 
-    for (const test of testEntryPoints) {
-      if (test.connected_nodes) {
-        test.connected_nodes.forEach(n => testedNodes.add(n));
+    for (const ep of entryPoints) {
+      if (ep.type === 'test') {
+        if (ep.connected_nodes) {
+          ep.connected_nodes.forEach(n => testedNodes.add(n));
+        }
+        testNodeIds.add(ep.source_node);
       }
+    }
+
+    for (const node of nodes) {
+      if (node.testing?.tested_by && node.testing.tested_by.length > 0) {
+        testedNodes.add(node.id);
+        for (const testId of node.testing.tested_by) {
+          testNodeIds.add(testId);
+        }
+      }
+    }
+
+    for (const chain of callChains) {
+      if (!chain.call_path || chain.call_path.length === 0) continue;
+
+      const chainNodeIds = chain.call_path.map(s => s.node_id);
+      const testedSegments: CASFlowCoverage['tested_segments'] = [];
+      const untestedSegments: CASFlowCoverage['untested_segments'] = [];
+
+      for (const nodeId of chainNodeIds) {
+        if (testedNodes.has(nodeId)) {
+          testedSegments.push({
+            node_id: nodeId,
+            test_ids: [],
+            assertion_count: 0
+          });
+        } else {
+          const node = nodes.find(n => n.id === nodeId);
+          const isSecurityRelated = node?.name?.toLowerCase().includes('auth') ||
+            node?.name?.toLowerCase().includes('password');
+
+          untestedSegments.push({
+            node_id: nodeId,
+            importance: isSecurityRelated ? 'critical' : 'medium',
+            reason: `Node ${node?.name || nodeId} lacks test coverage`
+          });
+        }
+      }
+
+      const coveragePct = chainNodeIds.length > 0
+        ? testedSegments.length / chainNodeIds.length
+        : 0;
+
+      const coverageStatus: CASFlowCoverage['coverage_status'] =
+        coveragePct >= 1.0 ? 'fully-covered' :
+        coveragePct > 0 ? 'partially-covered' : 'not-covered';
+
+      const hasTestNodes = chainNodeIds.some(id => testNodeIds.has(id));
+
+      flowCoverage.push({
+        call_chain_id: chain.id,
+        call_chain_name: chain.entry_point?.method_name,
+        coverage_status: coverageStatus,
+        coverage_percentage: Math.round(coveragePct * 100) / 100,
+        tested_segments: testedSegments,
+        untested_segments: untestedSegments,
+        test_quality: {
+          has_unit_tests: hasTestNodes,
+          has_integration_tests: false,
+          has_e2e_tests: false,
+          uses_mocks: false
+        }
+      });
     }
 
     return flowCoverage;
@@ -2545,24 +2895,68 @@ export class AnalyzerOrchestrator {
 
   private buildTestGaps(flowCoverage: CASFlowCoverage[], nodes: CASNode[]): CASTestGap[] {
     const gaps: CASTestGap[] = [];
+    const testedNodeIds = new Set<string>();
 
-    const untestedFunctions = nodes.filter(n =>
-      (n.type === 'function' || n.type === 'method') &&
-      n.metadata?.is_exported &&
-      !n.testing?.tested_by?.length
+    for (const node of nodes) {
+      if (node.testing?.tested_by?.length) {
+        testedNodeIds.add(node.id);
+      }
+    }
+
+    const testableTypes = new Set([
+      'function', 'method', 'class', 'controller', 'service',
+      'middleware', 'route', 'endpoint', 'viewmodel', 'model'
+    ]);
+
+    const untestedNodes = nodes.filter(n =>
+      testableTypes.has(n.type) &&
+      !testedNodeIds.has(n.id) &&
+      !n.name.startsWith('_') &&
+      n.type !== 'method' || (n.type === 'method' && !n.name.startsWith('__'))
+    ).filter(n =>
+      testableTypes.has(n.type) &&
+      !testedNodeIds.has(n.id) &&
+      (n.metadata?.is_exported ||
+       n.type === 'controller' ||
+       n.type === 'service' ||
+       n.type === 'middleware' ||
+       n.type === 'endpoint' ||
+       n.category === 'api' ||
+       n.category === 'controller' ||
+       n.category === 'service' ||
+       n.subcategories?.includes('public') ||
+       n.metadata?.access_modifier === 'public' ||
+       (n.type === 'function' && n.level && n.level <= 2) ||
+       (n.type === 'class' && !n.name.includes('Abstract') && !n.name.includes('Base')))
     );
 
-    for (const fn of untestedFunctions) {
-      const isSecurityRelated = fn.name.toLowerCase().includes('auth') ||
-        fn.name.toLowerCase().includes('password') ||
-        fn.name.toLowerCase().includes('permission');
+    for (const fn of untestedNodes) {
+      const nameLower = fn.name.toLowerCase();
+      const isSecurityRelated = nameLower.includes('auth') ||
+        nameLower.includes('password') ||
+        nameLower.includes('permission') ||
+        nameLower.includes('token') ||
+        nameLower.includes('encrypt') ||
+        nameLower.includes('decrypt');
+
+      const isDataMutation = nameLower.includes('create') ||
+        nameLower.includes('update') ||
+        nameLower.includes('delete') ||
+        nameLower.includes('remove') ||
+        nameLower.includes('save');
+
+      const severity: CASTestGap['severity'] =
+        isSecurityRelated ? 'critical' :
+        isDataMutation ? 'high' :
+        fn.type === 'controller' || fn.type === 'endpoint' ? 'high' :
+        'medium';
 
       gaps.push({
         gap_type: 'untested-flow',
         location: {
           node_id: fn.id
         },
-        severity: isSecurityRelated ? 'critical' : 'medium',
+        severity,
         recommendation: `Add tests for ${fn.name}`
       });
     }
@@ -3251,6 +3645,63 @@ export class AnalyzerOrchestrator {
         weight: 0
       },
       {
+        type: 'desktop-application',
+        description: 'Desktop GUI application',
+        indicators: {
+          nodeTypePatterns: ['window', 'viewmodel', 'ui_component', 'command', 'converter', 'view'],
+          entityPatterns: ['settings', 'preferences', 'configuration'],
+          capabilityPatterns: ['window', 'dialog', 'form', 'display'],
+        },
+        distinctiveness: 2,
+        weight: 0
+      },
+      {
+        type: 'medical-device-software',
+        description: 'Medical device and clinical measurement software',
+        indicators: {
+          pathPatterns: ['patient', 'test', 'device', 'muscle', 'force', 'measurement', 'evaluator', 'protocol'],
+          entityPatterns: ['patient', 'test', 'evaluator', 'protocol', 'muscle', 'device', 'measurement', 'normvalues', 'sequence'],
+          nodeTypePatterns: ['window', 'viewmodel', 'service', 'database_context'],
+          capabilityPatterns: ['patient', 'test', 'device', 'measurement', 'protocol', 'evaluator', 'report'],
+        },
+        distinctiveness: 4,
+        weight: 0
+      },
+      {
+        type: 'clinical-testing-platform',
+        description: 'Clinical testing, assessment, and rehabilitation platform',
+        indicators: {
+          pathPatterns: ['inclinometry', 'grip', 'pinch', 'muscle', 'rom', 'strength', 'rehabilitation'],
+          entityPatterns: ['muscletest', 'testinfo', 'coverletter', 'standardmuscles', 'custommuscles', 'normvalues'],
+          capabilityPatterns: ['muscle', 'grip', 'pinch', 'inclinometry', 'test', 'assessment'],
+        },
+        distinctiveness: 5,
+        weight: 0
+      },
+      {
+        type: 'hardware-device-software',
+        description: 'Hardware device communication and control software',
+        indicators: {
+          pathPatterns: ['device', 'connection', 'sensor', 'serial', 'usb', 'bluetooth', 'port', 'calibrate'],
+          entityPatterns: ['device', 'connection', 'sensor', 'reading', 'calibration', 'firmware'],
+          nodeTypePatterns: ['service'],
+          capabilityPatterns: ['device', 'connect', 'calibrate', 'sensor', 'reading'],
+        },
+        distinctiveness: 3.5,
+        weight: 0
+      },
+      {
+        type: 'patient-management',
+        description: 'Patient data management and records system',
+        indicators: {
+          pathPatterns: ['patient', 'record', 'history', 'demographic', 'visit', 'chart'],
+          entityPatterns: ['patient', 'record', 'evaluator', 'visit', 'chart', 'history', 'coverletter'],
+          capabilityPatterns: ['patient', 'record', 'history', 'demographic'],
+        },
+        distinctiveness: 3.5,
+        weight: 0
+      },
+      {
         type: 'api-gateway',
         description: 'API gateway and routing service',
         indicators: {
@@ -3281,6 +3732,54 @@ export class AnalyzerOrchestrator {
         },
         distinctiveness: 3,
         weight: 0
+      },
+      {
+        type: 'gaming-platform',
+        description: 'Gaming, card game, or interactive entertainment platform',
+        indicators: {
+          pathPatterns: ['game', 'player', 'deck', 'card', 'match', 'lobby', 'turn', 'score', 'commander', 'board'],
+          verbPatterns: ['play', 'draw', 'shuffle', 'deal', 'attack', 'defend', 'cast', 'mulligan'],
+          entityPatterns: ['game', 'player', 'deck', 'card', 'match', 'lobby', 'turn', 'score', 'hand', 'board', 'commander', 'mana'],
+          capabilityPatterns: ['game', 'match', 'lobby', 'player', 'deck'],
+        },
+        distinctiveness: 4,
+        weight: 0
+      },
+      {
+        type: 'multiplayer-application',
+        description: 'Real-time multiplayer application with websocket communication',
+        indicators: {
+          pathPatterns: ['socket', 'lobby', 'room', 'player', 'matchmaking', 'realtime', 'session'],
+          verbPatterns: ['join', 'leave', 'broadcast', 'emit', 'connect'],
+          entityPatterns: ['socket', 'room', 'lobby', 'player', 'session', 'connection', 'event'],
+          capabilityPatterns: ['socket', 'lobby', 'room', 'matchmaking'],
+        },
+        distinctiveness: 3.5,
+        weight: 0
+      },
+      {
+        type: 'web-application',
+        description: 'Full-stack web application with frontend and backend',
+        indicators: {
+          pathPatterns: ['page', 'component', 'layout', 'api', 'route', 'middleware', 'hook', 'context', 'provider'],
+          entityPatterns: ['user', 'session', 'page', 'component', 'layout', 'route'],
+          nodeTypePatterns: ['controller', 'service', 'middleware'],
+          capabilityPatterns: ['page', 'route', 'api', 'component'],
+        },
+        distinctiveness: 1,
+        weight: 0
+      },
+      {
+        type: 'education-platform',
+        description: 'Learning management system or educational platform',
+        indicators: {
+          pathPatterns: ['course', 'lesson', 'quiz', 'lab', 'certificate', 'learning', 'curriculum', 'enrollment', 'tutorial', 'module', 'assignment', 'grade', 'student', 'instructor'],
+          verbPatterns: ['enroll', 'complete', 'submit', 'grade', 'certify', 'learn', 'study', 'teach'],
+          entityPatterns: ['course', 'lesson', 'quiz', 'student', 'instructor', 'enrollment', 'certificate', 'curriculum', 'assignment', 'grade', 'progress', 'achievement', 'lab', 'leaderboard'],
+          capabilityPatterns: ['course', 'lesson', 'quiz', 'lab', 'certificate', 'learning', 'enrollment'],
+        },
+        distinctiveness: 4.5,
+        weight: 0
       }
     ];
 
@@ -3288,6 +3787,8 @@ export class AnalyzerOrchestrator {
     const signatureEvidence = new Map<string, string[]>();
 
     const paths = entryPoints.map(ep => (ep.trigger?.path || ep.name).toLowerCase());
+    const nodeNames = nodes.map(n => n.name.toLowerCase());
+    const namespaceNames = nodes.filter(n => n.type === 'namespace').map(n => n.name.toLowerCase());
     const entityNames = dataEntities.map(de => de.name.toLowerCase());
     const capabilityNames = capabilities.map(c => c.name.toLowerCase());
     const nodeTypeList = nodes.map(n => n.type.toLowerCase());
@@ -3313,19 +3814,28 @@ export class AnalyzerOrchestrator {
       const typeEvidence: string[] = [];
 
       if (sig.indicators.pathPatterns) {
-        const result = countMatches(paths, sig.indicators.pathPatterns);
-        if (result.count > 0) {
-          score += result.count * 2 * sig.distinctiveness;
-          typeEvidence.push(`Endpoints: ${result.matched.join(', ')}`);
+        const pathResult = countMatches(paths, sig.indicators.pathPatterns);
+        const nodeNameResult = countMatches(nodeNames, sig.indicators.pathPatterns);
+        const nsResult = countMatches(namespaceNames, sig.indicators.pathPatterns);
+        const allMatched = [...new Set([...pathResult.matched, ...nodeNameResult.matched, ...nsResult.matched])];
+        const totalCount = pathResult.count + nodeNameResult.count + nsResult.count;
+        const cappedCount = Math.min(totalCount, allMatched.length * 5);
+        if (allMatched.length > 0) {
+          score += cappedCount * 2 * sig.distinctiveness;
+          typeEvidence.push(`Endpoints: ${allMatched.join(', ')}`);
         }
       }
 
       if (sig.indicators.verbPatterns) {
-        const result = countMatches(paths, sig.indicators.verbPatterns);
-        if (result.count > 0) {
-          score += result.count * 3 * sig.distinctiveness;
+        const pathResult = countMatches(paths, sig.indicators.verbPatterns);
+        const nodeNameResult = countMatches(nodeNames, sig.indicators.verbPatterns);
+        const allMatched = [...new Set([...pathResult.matched, ...nodeNameResult.matched])];
+        const totalCount = pathResult.count + nodeNameResult.count;
+        const cappedCount = Math.min(totalCount, allMatched.length * 5);
+        if (allMatched.length > 0) {
+          score += cappedCount * 3 * sig.distinctiveness;
           if (!typeEvidence.some(e => e.startsWith('Endpoints:'))) {
-            typeEvidence.push(`Actions: ${result.matched.join(', ')}`);
+            typeEvidence.push(`Actions: ${allMatched.join(', ')}`);
           }
         }
       }
@@ -3347,8 +3857,9 @@ export class AnalyzerOrchestrator {
 
       if (sig.indicators.capabilityPatterns) {
         const result = countMatches(capabilityNames, sig.indicators.capabilityPatterns);
+        const cappedCount = Math.min(result.count, result.matched.length * 5);
         if (result.count > 0) {
-          score += result.count * 3 * sig.distinctiveness;
+          score += cappedCount * 3 * sig.distinctiveness;
           typeEvidence.push(`Capabilities: ${result.matched.join(', ')}`);
         }
       }
@@ -3530,13 +4041,110 @@ export class AnalyzerOrchestrator {
 
   private buildTestSuites(nodes: CASNode[], entryPoints: CASEntryPoint[]): CASTestSuite[] {
     const testSuites: CASTestSuite[] = [];
+    const addedSuiteIds = new Set<string>();
 
-    const testEntryPoints = entryPoints.filter(ep => ep.type === 'test');
+    const suiteNodes = nodes.filter(n =>
+      n.type === 'test' && n.subcategories?.includes('suite')
+    );
+
+    if (suiteNodes.length > 0) {
+      const fileToSuites = new Map<string, CASNode[]>();
+      for (const suite of suiteNodes) {
+        const file = suite.source?.file || '';
+        if (!fileToSuites.has(file)) fileToSuites.set(file, []);
+        fileToSuites.get(file)!.push(suite);
+      }
+
+      const individualTests = nodes.filter(n =>
+        n.type === 'test' && !n.subcategories?.includes('suite')
+      );
+
+      for (const suite of suiteNodes) {
+        const suiteFile = suite.source?.file || '';
+        const testsInSuite = individualTests.filter(t =>
+          t.source?.file === suiteFile &&
+          (t.parent === suite.id || (!t.parent && suiteFile))
+        );
+
+        if (testsInSuite.length > 0) {
+          const suiteId = `suite_${suite.id}`;
+          addedSuiteIds.add(suiteId);
+          testSuites.push({
+            id: suiteId,
+            name: suite.name,
+            file_path: suiteFile,
+            test_type: this.inferTestType(suite),
+            framework: this.inferTestFramework(suite),
+            tests: testsInSuite.map(t => ({
+              id: `test_${t.id}`,
+              name: t.name,
+              description: t.description,
+              test_type: this.inferTestType(t),
+              status: {
+                skipped: false,
+                focused: false,
+                flaky: false
+              },
+              source: t.source?.file && t.source?.line ? {
+                file: t.source.file,
+                line: t.source.line,
+                end_line: t.source.end_line
+              } : undefined
+            }))
+          });
+        }
+      }
+    }
+
+    const testModules = nodes.filter(n =>
+      n.type === 'module' &&
+      (n.name === 'tests' || n.name === 'test' || n.name.endsWith('_tests') || n.name.endsWith('_test')) &&
+      !addedSuiteIds.has(`suite_${n.id}`)
+    );
+
+    for (const testModule of testModules) {
+      const moduleFile = testModule.source?.file || '';
+      const childFunctions = nodes.filter(n =>
+        (n.type === 'function' || n.type === 'method') &&
+        (n.parent === testModule.id || (moduleFile && n.source?.file === moduleFile && !n.parent)) &&
+        (n.name.startsWith('test_') || n.name.startsWith('test') || n.metadata?.is_test)
+      );
+
+      if (childFunctions.length > 0) {
+        const suiteId = `suite_${testModule.id}`;
+        addedSuiteIds.add(suiteId);
+        testSuites.push({
+          id: suiteId,
+          name: testModule.name,
+          file_path: moduleFile,
+          test_type: this.inferTestType(testModule),
+          framework: this.inferTestFramework(testModule),
+          tests: childFunctions.map(m => ({
+            id: `test_${m.id}`,
+            name: m.name,
+            description: m.description,
+            test_type: this.inferTestType(testModule),
+            status: {
+              skipped: false,
+              focused: false,
+              flaky: false
+            },
+            source: m.source?.file && m.source?.line ? {
+              file: m.source.file,
+              line: m.source.line,
+              end_line: m.source.end_line
+            } : undefined
+          }))
+        });
+      }
+    }
+
     const testClasses = nodes.filter(n =>
       n.type === 'class' &&
       (n.name.toLowerCase().includes('test') ||
        n.name.startsWith('Test') ||
-       n.subcategories?.includes('test'))
+       n.subcategories?.includes('test')) &&
+      !addedSuiteIds.has(`suite_${n.id}`)
     );
 
     for (const testClass of testClasses) {
@@ -3547,8 +4155,10 @@ export class AnalyzerOrchestrator {
       );
 
       if (testMethods.length > 0) {
+        const suiteId = `suite_${testClass.id}`;
+        addedSuiteIds.add(suiteId);
         testSuites.push({
-          id: `suite_${testClass.id}`,
+          id: suiteId,
           name: testClass.name,
           file_path: testClass.source?.file || '',
           test_type: this.inferTestType(testClass),
@@ -3573,6 +4183,99 @@ export class AnalyzerOrchestrator {
       }
     }
 
+    const describeBlocks = nodes.filter(n =>
+      (n.type === 'function' || n.type === 'block' || n.type === 'call_expression') &&
+      (n.name.startsWith('describe') || n.name.startsWith('context') || n.name.startsWith('suite')) &&
+      !addedSuiteIds.has(`suite_${n.id}`)
+    );
+
+    for (const describe of describeBlocks) {
+      const itBlocks = nodes.filter(n =>
+        n.parent === describe.id &&
+        (n.name.startsWith('it') || n.name.startsWith('test') || n.name.startsWith('specify'))
+      );
+
+      if (itBlocks.length > 0) {
+        const suiteId = `suite_${describe.id}`;
+        addedSuiteIds.add(suiteId);
+        testSuites.push({
+          id: suiteId,
+          name: describe.name,
+          file_path: describe.source?.file || '',
+          test_type: this.inferTestType(describe),
+          framework: this.inferTestFramework(describe),
+          tests: itBlocks.map(m => ({
+            id: `test_${m.id}`,
+            name: m.name,
+            description: m.description,
+            test_type: this.inferTestType(describe),
+            status: {
+              skipped: m.name.startsWith('xit') || m.name.startsWith('xtest'),
+              focused: m.name.startsWith('fit') || m.name.startsWith('ftest'),
+              flaky: false
+            },
+            source: m.source?.file && m.source?.line ? {
+              file: m.source.file,
+              line: m.source.line,
+              end_line: m.source.end_line
+            } : undefined
+          }))
+        });
+      }
+    }
+
+    const testFiles = nodes.filter(n =>
+      n.type === 'file' &&
+      (n.name.endsWith('.spec.ts') || n.name.endsWith('.spec.js') ||
+       n.name.endsWith('.test.ts') || n.name.endsWith('.test.js') ||
+       n.name.endsWith('.test.tsx') || n.name.endsWith('.spec.tsx') ||
+       n.name.startsWith('test_') || n.name.endsWith('_test.py') ||
+       n.name.endsWith('_test.go') || n.name.endsWith('Test.java') ||
+       n.name.endsWith('Tests.cs') || n.name.endsWith('Test.cs'))
+    );
+
+    const suiteFiles = new Set(testSuites.map(s => s.file_path));
+
+    for (const testFile of testFiles) {
+      if (suiteFiles.has(testFile.source?.file || '')) continue;
+      const fileId = `suite_file_${testFile.id}`;
+      if (addedSuiteIds.has(fileId)) continue;
+
+      const childTests = nodes.filter(n =>
+        (n.parent === testFile.id || n.source?.file === testFile.source?.file) &&
+        (n.type === 'function' || n.type === 'method') &&
+        (n.name.startsWith('test') || n.name.startsWith('it') ||
+         n.name.startsWith('should') || n.name.startsWith('Test'))
+      );
+
+      if (childTests.length > 0) {
+        addedSuiteIds.add(fileId);
+        testSuites.push({
+          id: fileId,
+          name: testFile.name,
+          file_path: testFile.source?.file || testFile.name,
+          test_type: this.inferTestType(testFile),
+          framework: this.inferTestFramework(testFile),
+          tests: childTests.map(m => ({
+            id: `test_${m.id}`,
+            name: m.name,
+            description: m.description,
+            test_type: this.inferTestType(testFile),
+            status: {
+              skipped: false,
+              focused: false,
+              flaky: false
+            },
+            source: m.source?.file && m.source?.line ? {
+              file: m.source.file,
+              line: m.source.line,
+              end_line: m.source.end_line
+            } : undefined
+          }))
+        });
+      }
+    }
+
     return testSuites;
   }
 
@@ -3580,7 +4283,7 @@ export class AnalyzerOrchestrator {
     const name = (node.name || '').toLowerCase();
     const file = (node.source?.file || '').toLowerCase();
 
-    if (name.includes('e2e') || file.includes('e2e')) return 'e2e';
+    if (name.includes('e2e') || file.includes('e2e') || file.includes('cypress')) return 'e2e';
     if (name.includes('integration') || file.includes('integration')) return 'integration';
     if (name.includes('acceptance') || file.includes('acceptance')) return 'acceptance';
     return 'unit';
@@ -3589,11 +4292,24 @@ export class AnalyzerOrchestrator {
   private inferTestFramework(node: CASNode): string {
     const file = (node.source?.file || '').toLowerCase();
     const name = (node.name || '').toLowerCase();
+    const lang = node.metadata?.language;
 
+    if (file.endsWith('.spec.ts') || file.endsWith('.test.ts') || file.endsWith('.spec.js') || file.endsWith('.test.js')) {
+      if (file.includes('cypress')) return 'cypress';
+      if (file.includes('vitest')) return 'vitest';
+      return 'jest';
+    }
+    if (file.endsWith('.test.tsx') || file.endsWith('.spec.tsx')) return 'jest';
     if (name.includes('testcase') || file.includes('unittest')) return 'unittest';
     if (file.includes('pytest') || file.includes('conftest')) return 'pytest';
     if (file.includes('django')) return 'django.test';
-    return 'pytest';
+    if (file.endsWith('_test.go')) return 'go-test';
+    if (file.endsWith('test.java') || file.endsWith('test.kt')) return 'junit';
+    if (file.endsWith('tests.cs') || file.endsWith('test.cs')) return 'xunit';
+    if (file.endsWith('_test.rs')) return 'rust-test';
+    if (lang === 'python') return 'pytest';
+    if (lang === 'typescript' || lang === 'javascript') return 'jest';
+    return 'unknown';
   }
 
   private buildMocks(nodes: CASNode[]): CASMock[] {
@@ -3627,6 +4343,7 @@ export class AnalyzerOrchestrator {
 
   private buildFixtures(nodes: CASNode[]): CASFixture[] {
     const fixtures: CASFixture[] = [];
+    const addedIds = new Set<string>();
 
     const fixtureNodes = nodes.filter(n =>
       n.name.includes('fixture') ||
@@ -3634,11 +4351,99 @@ export class AnalyzerOrchestrator {
     );
 
     for (const fixture of fixtureNodes) {
+      const id = `fixture_${fixture.id}`;
+      if (addedIds.has(id)) continue;
+      addedIds.add(id);
       fixtures.push({
-        id: `fixture_${fixture.id}`,
+        id,
         name: fixture.name,
         type: 'fixture',
         file_path: fixture.source?.file || ''
+      });
+    }
+
+    const confTestFiles = nodes.filter(n =>
+      n.type === 'file' &&
+      (n.name === 'conftest.py' || n.source?.file?.endsWith('conftest.py'))
+    );
+
+    for (const conftest of confTestFiles) {
+      const fixtureFunctions = nodes.filter(n =>
+        n.parent === conftest.id &&
+        n.type === 'function'
+      );
+
+      for (const fn of fixtureFunctions) {
+        const id = `fixture_${fn.id}`;
+        if (addedIds.has(id)) continue;
+        addedIds.add(id);
+        fixtures.push({
+          id,
+          name: fn.name,
+          type: 'fixture',
+          file_path: fn.source?.file || conftest.source?.file || ''
+        });
+      }
+    }
+
+    const setupMethods = nodes.filter(n =>
+      (n.type === 'method' || n.type === 'function' || n.type === 'hook') &&
+      (n.name === 'setUp' || n.name === 'tearDown' ||
+       n.name === 'setUpClass' || n.name === 'tearDownClass' ||
+       n.name === 'beforeEach' || n.name === 'afterEach' ||
+       n.name === 'beforeAll' || n.name === 'afterAll' ||
+       n.name === 'before' || n.name === 'after' ||
+       n.name === 'setupForTest')
+    );
+
+    for (const setup of setupMethods) {
+      const id = `fixture_${setup.id}`;
+      if (addedIds.has(id)) continue;
+      addedIds.add(id);
+      fixtures.push({
+        id,
+        name: setup.name,
+        type: 'fixture',
+        file_path: setup.source?.file || ''
+      });
+    }
+
+    const setupFiles = nodes.filter(n =>
+      n.type === 'file' &&
+      (n.name.startsWith('jest.setup') || n.name.startsWith('vitest.setup') ||
+       n.name === 'setup.ts' || n.name === 'setup.js' ||
+       n.name === 'test-setup.ts' || n.name === 'test-setup.js' ||
+       n.name === 'globalSetup.ts' || n.name === 'globalSetup.js')
+    );
+
+    for (const setupFile of setupFiles) {
+      const id = `fixture_${setupFile.id}`;
+      if (addedIds.has(id)) continue;
+      addedIds.add(id);
+      fixtures.push({
+        id,
+        name: setupFile.name,
+        type: 'fixture',
+        file_path: setupFile.source?.file || setupFile.name
+      });
+    }
+
+    const factoryNodes = nodes.filter(n =>
+      (n.type === 'function' || n.type === 'class') &&
+      (n.name.toLowerCase().includes('factory') ||
+       n.name.toLowerCase().includes('builder') ||
+       n.name.toLowerCase().includes('seed'))
+    );
+
+    for (const factory of factoryNodes) {
+      const id = `fixture_${factory.id}`;
+      if (addedIds.has(id)) continue;
+      addedIds.add(id);
+      fixtures.push({
+        id,
+        name: factory.name,
+        type: 'factory',
+        file_path: factory.source?.file || ''
       });
     }
 
@@ -3647,17 +4452,34 @@ export class AnalyzerOrchestrator {
 
   private buildTestSummary(nodes: CASNode[], entryPoints: CASEntryPoint[]): CASTestSummary {
     const testNodes = nodes.filter(n =>
-      n.type === 'method' &&
-      (n.name.startsWith('test_') || n.name.startsWith('test'))
+      (n.type === 'method' || n.type === 'function') &&
+      (n.name.startsWith('test_') || n.name.startsWith('test') ||
+       n.name.startsWith('it') || n.name.startsWith('should') ||
+       n.name.startsWith('specify') || n.subcategories?.includes('test'))
     );
+
+    let unit = 0;
+    let integration = 0;
+    let e2e = 0;
+    let acceptance = 0;
+
+    for (const node of testNodes) {
+      const type = this.inferTestType(node);
+      switch (type) {
+        case 'unit': unit++; break;
+        case 'integration': integration++; break;
+        case 'e2e': e2e++; break;
+        case 'acceptance': acceptance++; break;
+      }
+    }
 
     return {
       total_tests: testNodes.length,
       by_type: {
-        unit: testNodes.length,
-        integration: 0,
-        e2e: 0,
-        acceptance: 0,
+        unit,
+        integration,
+        e2e,
+        acceptance,
         bdd: 0,
         other: 0
       },
@@ -3674,8 +4496,1177 @@ export class AnalyzerOrchestrator {
         total: nodes.filter(n => n.name.toLowerCase().includes('mock')).length
       },
       fixtures: {
-        total: nodes.filter(n => n.name.includes('fixture')).length
+        total: nodes.filter(n =>
+          n.name.includes('fixture') ||
+          n.name === 'beforeEach' || n.name === 'afterEach' ||
+          n.name === 'beforeAll' || n.name === 'afterAll' ||
+          n.name === 'setUp' || n.name === 'tearDown'
+        ).length
       }
     };
+  }
+
+  private buildValidation(nodes: CASNode[], edges: CASEdge[]): CASValidation {
+    const nodeIds = new Set(nodes.map(n => n.id));
+    const warnings: Array<{ path?: string; message?: string }> = [];
+
+    for (const edge of edges) {
+      if (!nodeIds.has(edge.source)) {
+        warnings.push({
+          path: `edges[${edge.id}].source`,
+          message: `Edge source "${edge.source}" references nonexistent node`
+        });
+      }
+      if (!nodeIds.has(edge.target)) {
+        warnings.push({
+          path: `edges[${edge.id}].target`,
+          message: `Edge target "${edge.target}" references nonexistent node`
+        });
+      }
+    }
+
+    const nodesWithLocation = nodes.filter(n => n.source?.file && n.source?.line).length;
+    const edgesWithMetadata = edges.filter(e => e.metadata && Object.keys(e.metadata).length > 0).length;
+    const documentedNodes = nodes.filter(n => n.documentation).length;
+
+    return {
+      schema_version: '1.7.0',
+      validation_warnings: warnings.length > 0 ? warnings : undefined,
+      completeness: {
+        nodes_with_location: nodesWithLocation,
+        edges_with_metadata: edgesWithMetadata,
+        documented_nodes: documentedNodes
+      }
+    };
+  }
+
+  private buildDocumentationSummary(nodes: CASNode[]): CASDocumentationSummary {
+    const functionTypes = new Set(['function', 'method', 'constructor']);
+    const classTypes = new Set(['class']);
+    const interfaceTypes = new Set(['interface', 'type_alias']);
+    const moduleTypes = new Set(['module', 'namespace', 'package']);
+
+    const byType = {
+      functions: { documented: 0, total: 0, coverage: 0 },
+      classes: { documented: 0, total: 0, coverage: 0 },
+      interfaces: { documented: 0, total: 0, coverage: 0 },
+      modules: { documented: 0, total: 0, coverage: 0 }
+    };
+
+    let totalDocumented = 0;
+    let totalDescriptionLength = 0;
+    let paramsDocumented = 0;
+    let returnsDocumented = 0;
+    let examplesProvided = 0;
+    let deprecatedItems = 0;
+    const byDocType: Record<string, number> = {};
+    const missingDocs: CASDocumentationSummary['missing_documentation'] = [];
+
+    for (const node of nodes) {
+      const hasDoc = !!node.documentation;
+      const type = node.type;
+
+      if (functionTypes.has(type)) {
+        byType.functions.total++;
+        if (hasDoc) byType.functions.documented++;
+      } else if (classTypes.has(type)) {
+        byType.classes.total++;
+        if (hasDoc) byType.classes.documented++;
+      } else if (interfaceTypes.has(type)) {
+        byType.interfaces.total++;
+        if (hasDoc) byType.interfaces.documented++;
+      } else if (moduleTypes.has(type)) {
+        byType.modules.total++;
+        if (hasDoc) byType.modules.documented++;
+      }
+
+      if (hasDoc) {
+        totalDocumented++;
+        const doc = node.documentation!;
+        const desc = doc.description || doc.summary || doc.raw || '';
+        totalDescriptionLength += desc.length;
+
+        if (doc.parameters && doc.parameters.length > 0) paramsDocumented++;
+        if (doc.returns || doc.return_info) returnsDocumented++;
+        if (doc.examples && doc.examples.length > 0) examplesProvided++;
+        if (doc.tags?.some(t => t.tag === 'deprecated')) deprecatedItems++;
+
+        const format = doc.format || doc.type || 'other';
+        byDocType[format] = (byDocType[format] || 0) + 1;
+      } else if (node.metadata?.is_exported || node.metadata?.access_modifier === 'public') {
+        const importance: 'low' | 'medium' | 'high' =
+          classTypes.has(type) || interfaceTypes.has(type) ? 'high' :
+          functionTypes.has(type) ? 'medium' : 'low';
+
+        missingDocs.push({
+          node_id: node.id,
+          node_name: node.name,
+          node_type: type,
+          importance,
+          reason: `Exported ${type} lacks documentation`
+        });
+      }
+    }
+
+    for (const key of Object.keys(byType) as Array<keyof typeof byType>) {
+      const entry = byType[key];
+      entry.coverage = entry.total > 0 ? entry.documented / entry.total : 0;
+    }
+
+    const totalApplicable = byType.functions.total + byType.classes.total +
+      byType.interfaces.total + byType.modules.total;
+
+    return {
+      total_documented_nodes: totalDocumented,
+      documentation_coverage: totalApplicable > 0 ? totalDocumented / totalApplicable : 0,
+      by_type: byType,
+      by_documentation_type: byDocType,
+      quality_metrics: {
+        average_description_length: totalDocumented > 0 ? Math.round(totalDescriptionLength / totalDocumented) : 0,
+        parameters_documented: paramsDocumented,
+        returns_documented: returnsDocumented,
+        examples_provided: examplesProvided,
+        deprecated_items: deprecatedItems
+      },
+      missing_documentation: missingDocs.slice(0, 100)
+    };
+  }
+
+  private buildTodosSummary(nodes: CASNode[]): CASTodoSummary {
+    let totalTodos = 0;
+    let totalFixmes = 0;
+    let totalHacks = 0;
+    let totalWarnings = 0;
+    const byPriority = { critical: 0, high: 0, medium: 0, low: 0 };
+    const byCategory: Record<string, number> = {};
+    let technicalDebtItems = 0;
+    let blockingItems = 0;
+    const fileMap = new Map<string, { count: number; types: Set<string> }>();
+
+    for (const node of nodes) {
+      if (!node.todos || node.todos.length === 0) continue;
+
+      for (const todo of node.todos) {
+        switch (todo.type) {
+          case 'TODO': totalTodos++; break;
+          case 'FIXME': totalFixmes++; break;
+          case 'HACK': totalHacks++; break;
+          case 'WARNING': totalWarnings++; break;
+        }
+
+        const priority = todo.priority || 'medium';
+        byPriority[priority]++;
+
+        const category = todo.category || todo.classification?.category || 'general';
+        byCategory[category] = (byCategory[category] || 0) + 1;
+
+        if (todo.classification?.technical_debt || todo.type === 'HACK' || todo.type === 'REFACTOR' as any) {
+          technicalDebtItems++;
+        }
+        if (todo.classification?.blocking) {
+          blockingItems++;
+        }
+
+        const file = todo.location?.file || node.source?.file || 'unknown';
+        if (!fileMap.has(file)) {
+          fileMap.set(file, { count: 0, types: new Set() });
+        }
+        const entry = fileMap.get(file)!;
+        entry.count++;
+        entry.types.add(todo.type);
+      }
+    }
+
+    const hotspots = Array.from(fileMap.entries())
+      .map(([file, data]) => ({
+        file,
+        todo_count: data.count,
+        types: Array.from(data.types)
+      }))
+      .sort((a, b) => b.todo_count - a.todo_count)
+      .slice(0, 20);
+
+    return {
+      total_todos: totalTodos,
+      total_fixmes: totalFixmes,
+      total_hacks: totalHacks,
+      total_warnings: totalWarnings,
+      by_priority: byPriority,
+      by_category: byCategory,
+      technical_debt_items: technicalDebtItems,
+      blocking_items: blockingItems,
+      hotspots
+    };
+  }
+
+  private buildImplementationHealth(nodes: CASNode[]): CASImplementationHealth {
+    let complete = 0;
+    let partial = 0;
+    let stubs = 0;
+    let notImplemented = 0;
+    let deprecated = 0;
+    let experimental = 0;
+    const riskAreas: CASImplementationHealth['risk_areas'] = [];
+    const deprecationTimeline: CASImplementationHealth['deprecation_timeline'] = [];
+
+    for (const node of nodes) {
+      if (!node.implementation_status) continue;
+
+      switch (node.implementation_status.status) {
+        case 'complete': complete++; break;
+        case 'partial': partial++; break;
+        case 'stub': stubs++; break;
+        case 'not-implemented': notImplemented++; break;
+        case 'deprecated': deprecated++; break;
+        case 'experimental': experimental++; break;
+      }
+
+      if (node.implementation_status.status === 'stub' || node.implementation_status.status === 'not-implemented') {
+        riskAreas.push({
+          node_id: node.id,
+          node_name: node.name,
+          risk_type: 'incomplete',
+          risk_level: node.implementation_status.status === 'not-implemented' ? 'high' : 'medium',
+          recommendation: `Complete implementation of ${node.name}`
+        });
+      }
+
+      if (node.implementation_status.status === 'deprecated') {
+        riskAreas.push({
+          node_id: node.id,
+          node_name: node.name,
+          risk_type: 'deprecated',
+          risk_level: 'medium',
+          recommendation: `Migrate away from deprecated ${node.name}`
+        });
+
+        if (node.implementation_status.deprecation) {
+          deprecationTimeline.push({
+            node_id: node.id,
+            node_name: node.name,
+            deprecated_since: node.implementation_status.deprecation.deprecated_since || 'unknown',
+            removal_version: node.implementation_status.deprecation.removal_version
+          });
+        }
+      }
+
+      if (node.implementation_status.status === 'experimental') {
+        riskAreas.push({
+          node_id: node.id,
+          node_name: node.name,
+          risk_type: 'unstable',
+          risk_level: 'low',
+          recommendation: `Monitor stability of experimental ${node.name}`
+        });
+      }
+    }
+
+    const total = complete + partial + stubs + notImplemented + deprecated + experimental;
+    const healthScore = total > 0 ? (complete + partial * 0.5) / total : 1.0;
+
+    return {
+      complete_implementations: complete,
+      partial_implementations: partial,
+      stubs,
+      not_implemented: notImplemented,
+      deprecated,
+      experimental,
+      health_score: Math.round(healthScore * 100) / 100,
+      risk_areas: riskAreas.slice(0, 50),
+      deprecation_timeline: deprecationTimeline.length > 0 ? deprecationTimeline : undefined
+    };
+  }
+
+  private buildMethodCalls(nodes: CASNode[], edges: CASEdge[]): CASMethodCall[] {
+    const methodCalls: CASMethodCall[] = [];
+    const nodeMap = new Map(nodes.map(n => [n.id, n]));
+    const callEdgeTypes = new Set(['calls', 'invokes', 'method_call', 'delegates_to']);
+
+    for (const edge of edges) {
+      if (!callEdgeTypes.has(edge.type)) continue;
+
+      const sourceNode = nodeMap.get(edge.source);
+      const targetNode = nodeMap.get(edge.target);
+
+      if (!sourceNode) continue;
+
+      const attrs = edge.metadata?.attributes || {};
+      const locations = edge.metadata?.locations || [];
+      const firstLocation = locations[0];
+
+      const methodName = targetNode?.name || attrs.method_name || 'unknown';
+      const file = firstLocation?.file || sourceNode.source?.file || '';
+      const line = firstLocation?.line || sourceNode.source?.line || 0;
+
+      const callType: CASMethodCall['call_details']['call_type'] =
+        attrs.call_type || (targetNode?.type === 'constructor' ? 'constructor' : 'direct');
+
+      const resolutionType: CASMethodCall['call_details']['resolution_type'] =
+        targetNode ? 'static' : (attrs.resolution_type || 'unresolved');
+
+      methodCalls.push({
+        id: `mc_${edge.id}_${edge.target}`,
+        caller_node: edge.source,
+        target_node: targetNode ? edge.target : undefined,
+        call_details: {
+          method_name: methodName,
+          signature: targetNode?.signature ? this.formatSignature(targetNode) : undefined,
+          location: { file, line, column: 0 },
+          call_type: callType,
+          resolution_type: resolutionType
+        },
+        execution_context: {
+          is_async: !!sourceNode.metadata?.is_async || !!edge.metadata?.async,
+          is_conditional: !!edge.metadata?.conditional,
+          is_in_loop: false,
+          is_recursive: edge.source === edge.target,
+          call_depth: 0,
+          conditional_depth: 0,
+          loop_depth: 0,
+          enclosing_function: sourceNode.type === 'function' || sourceNode.type === 'method' ? sourceNode.name : undefined,
+          enclosing_class: sourceNode.parent ? nodeMap.get(sourceNode.parent)?.name : undefined
+        },
+        performance_hints: {
+          is_hot_path: false,
+          is_potential_bottleneck: false
+        }
+      });
+    }
+
+    return methodCalls;
+  }
+
+  private formatSignature(node: CASNode): string {
+    if (!node.signature?.parameters) return node.name;
+    const params = node.signature.parameters
+      .map(p => `${p.name}${p.type ? ': ' + p.type : ''}`)
+      .join(', ');
+    const returnType = node.signature?.return_type ? `: ${node.signature.return_type}` : '';
+    return `${node.name}(${params})${returnType}`;
+  }
+
+  private buildAllDecorators(nodes: CASNode[]): CASDecorator[] {
+    const decorators: CASDecorator[] = [];
+
+    for (const node of nodes) {
+      const callGraphDecs = node.call_graph?.decorators || [];
+      const attrDecs = (node.metadata?.attributes as any)?.decorators || [];
+
+      for (const dec of callGraphDecs) {
+        const name = dec.name;
+        const category = this.classifyDecoratorCategory(name);
+
+        decorators.push({
+          id: `dec_${node.id}_${name}`,
+          target_node: node.id,
+          decorator_info: {
+            name,
+            type: this.inferDecoratorTargetType(node),
+            framework: this.inferDecoratorFramework(name),
+            source_location: {
+              file: node.source?.file || '',
+              line: node.source?.line || 0,
+              column: node.source?.column || 0
+            }
+          },
+          semantic_meaning: {
+            category,
+            behavior: this.describeDecoratorBehavior(name, category),
+            affects_runtime: category !== 'other'
+          },
+          parameters: dec.arguments ? Object.entries(dec.arguments).map(([pName, value]) => ({
+            name: pName,
+            value,
+            type: typeof value
+          })) : undefined,
+          routing_info: category === 'routing' ? this.extractRoutingInfo(dec) : undefined,
+          security_info: category === 'security' ? this.extractSecurityInfo(dec) : undefined
+        });
+      }
+
+      for (const dec of attrDecs) {
+        const name = typeof dec === 'string' ? dec : dec.name;
+        if (!name) continue;
+
+        const alreadyAdded = decorators.some(d => d.id === `dec_${node.id}_${name}`);
+        if (alreadyAdded) continue;
+
+        const category = this.classifyDecoratorCategory(name);
+
+        decorators.push({
+          id: `dec_${node.id}_${name}`,
+          target_node: node.id,
+          decorator_info: {
+            name,
+            type: this.inferDecoratorTargetType(node),
+            framework: this.inferDecoratorFramework(name),
+            source_location: {
+              file: node.source?.file || '',
+              line: node.source?.line || 0,
+              column: node.source?.column || 0
+            }
+          },
+          semantic_meaning: {
+            category,
+            behavior: this.describeDecoratorBehavior(name, category),
+            affects_runtime: category !== 'other'
+          }
+        });
+      }
+    }
+
+    return decorators;
+  }
+
+  private classifyDecoratorCategory(name: string): CASDecorator['semantic_meaning']['category'] {
+    const lower = name.toLowerCase();
+    const routingDecorators = ['get', 'post', 'put', 'delete', 'patch', 'head', 'options', 'controller', 'route', 'requestmapping', 'getmapping', 'postmapping', 'httpget', 'httppost', 'httpput', 'httpdelete'];
+    const validationDecorators = ['validate', 'validationpipe', 'isstring', 'isnumber', 'isnotempty', 'body', 'param', 'query'];
+    const securityDecorators = ['guard', 'useguards', 'authorize', 'roles', 'authenticated', 'auth', 'allowedtypes'];
+    const lifecycleDecorators = ['oninit', 'ondestroy', 'onmoduleinit', 'beforeeach', 'aftereach', 'setup', 'teardown'];
+    const injectionDecorators = ['inject', 'injectable', 'service', 'component', 'module', 'autowired'];
+    const configDecorators = ['configurable', 'configuration', 'value', 'property'];
+
+    if (routingDecorators.some(d => lower.includes(d))) return 'routing';
+    if (validationDecorators.some(d => lower.includes(d))) return 'validation';
+    if (securityDecorators.some(d => lower.includes(d))) return 'security';
+    if (lifecycleDecorators.some(d => lower.includes(d))) return 'lifecycle';
+    if (injectionDecorators.some(d => lower.includes(d))) return 'injection';
+    if (configDecorators.some(d => lower.includes(d))) return 'configuration';
+    return 'other';
+  }
+
+  private inferDecoratorTargetType(node: CASNode): CASDecorator['decorator_info']['type'] {
+    if (node.type === 'class') return 'class';
+    if (node.type === 'property' || node.type === 'field') return 'property';
+    if (node.type === 'parameter') return 'parameter';
+    return 'method';
+  }
+
+  private inferDecoratorFramework(name: string): string {
+    const lower = name.toLowerCase();
+    if (['controller', 'injectable', 'module', 'guard', 'pipe', 'interceptor', 'useguards'].some(d => lower.includes(d))) return 'nestjs';
+    if (['component', 'directive', 'ngmodule', 'input', 'output'].some(d => lower.includes(d))) return 'angular';
+    if (['requestmapping', 'getmapping', 'postmapping', 'autowired', 'service', 'repository'].some(d => lower.includes(d))) return 'spring';
+    if (['httpget', 'httppost', 'httpput', 'httpdelete', 'authorize', 'apicontroller'].some(d => lower.includes(d))) return 'aspnet';
+    if (['pytest', 'fixture'].some(d => lower.includes(d))) return 'pytest';
+    return 'generic';
+  }
+
+  private describeDecoratorBehavior(name: string, category: CASDecorator['semantic_meaning']['category']): string {
+    switch (category) {
+      case 'routing': return `Defines HTTP route handler via @${name}`;
+      case 'validation': return `Validates input data via @${name}`;
+      case 'security': return `Enforces security policy via @${name}`;
+      case 'lifecycle': return `Hooks into lifecycle event via @${name}`;
+      case 'injection': return `Manages dependency injection via @${name}`;
+      case 'configuration': return `Configures behavior via @${name}`;
+      default: return `Applies @${name} decorator`;
+    }
+  }
+
+  private extractRoutingInfo(dec: { name: string; arguments?: Record<string, any>; provides?: string[] }): CASDecorator['routing_info'] {
+    return {
+      method: dec.name.toUpperCase(),
+      path: dec.arguments?.path || dec.arguments?.value || '/',
+      parameters: dec.arguments?.params || []
+    };
+  }
+
+  private extractSecurityInfo(dec: { name: string; arguments?: Record<string, any>; provides?: string[] }): CASDecorator['security_info'] {
+    return {
+      authentication_required: true,
+      roles: dec.arguments?.roles || dec.provides || [],
+      permissions: dec.arguments?.permissions || []
+    };
+  }
+
+  private enrichNodeCallGraphs(
+    nodes: CASNode[],
+    callGraphBuilder: CallGraphBuilder,
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[]
+  ): void {
+    const entryNodeIds = new Set(entryPoints.map(ep => ep.source_node));
+    const exitNodeIds = new Set(exitPoints.map(ep => ep.source_node));
+    const nodeMap = new Map(nodes.map(n => [n.id, n]));
+
+    for (const node of nodes) {
+      if (node.type === 'file' || node.type === 'directory') continue;
+
+      const callees = callGraphBuilder.getDirectCallees(node.id);
+      const callers = callGraphBuilder.getDirectCallers(node.id);
+
+      if (callees.length === 0 && callers.length === 0 && !node.call_graph) continue;
+
+      const existingCallGraph = node.call_graph || {} as CASCallGraph;
+
+      const calls: CASCallGraph['calls'] = callees.map(targetId => {
+        const target = nodeMap.get(targetId);
+        const targetType: 'function' | 'method' | 'constructor' | 'api' | 'external' =
+          exitNodeIds.has(targetId) ? 'external' :
+          target?.type === 'constructor' ? 'constructor' :
+          target?.type === 'method' ? 'method' : 'function';
+
+        return {
+          target_id: targetId,
+          target_name: target?.name || targetId,
+          target_type: targetType,
+          call_type: 'direct' as const,
+          location: {
+            line: node.source?.line || 0
+          }
+        };
+      });
+
+      const calledBy: CASCallGraph['called_by'] = callers.map(sourceId => {
+        const source = nodeMap.get(sourceId);
+        return {
+          source_id: sourceId,
+          source_name: source?.name || sourceId,
+          source_type: source?.type || 'unknown',
+          location: {
+            file: source?.source?.file || '',
+            line: source?.source?.line || 0
+          }
+        };
+      });
+
+      node.call_graph = {
+        ...existingCallGraph,
+        calls: calls.length > 0 ? calls : existingCallGraph.calls,
+        called_by: calledBy.length > 0 ? calledBy : existingCallGraph.called_by,
+        call_chain_depth: callees.length > 0 ? 1 : 0,
+        is_entry_point: entryNodeIds.has(node.id),
+        is_exit_point: exitNodeIds.has(node.id),
+        total_calls_made: callees.length,
+        total_calls_received: callers.length
+      };
+    }
+  }
+
+  private buildSecurityContexts(
+    nodes: CASNode[],
+    entryPoints: CASEntryPoint[],
+    edges: CASEdge[]
+  ): CASSecurityContext[] {
+    const contexts: CASSecurityContext[] = [];
+    const securityKeywords = ['auth', 'guard', 'middleware', 'permission', 'role', 'token', 'jwt', 'session', 'encrypt', 'decrypt', 'hash', 'password', 'credential', 'security', 'validate', 'sanitize'];
+
+    const securityNodes = nodes.filter(n => {
+      const nameLower = n.name.toLowerCase();
+      return securityKeywords.some(kw => nameLower.includes(kw));
+    });
+
+    const authNodes = securityNodes.filter(n => {
+      const name = n.name.toLowerCase();
+      return name.includes('auth') || name.includes('login') || name.includes('session') || name.includes('token');
+    });
+
+    if (authNodes.length > 0) {
+      const methods = new Set<string>();
+      for (const node of authNodes) {
+        const name = node.name.toLowerCase();
+        if (name.includes('jwt') || name.includes('token')) methods.add('jwt');
+        if (name.includes('session')) methods.add('session');
+        if (name.includes('oauth')) methods.add('oauth');
+        if (name.includes('basic')) methods.add('basic');
+        if (name.includes('api') && name.includes('key')) methods.add('api_key');
+      }
+      if (methods.size === 0) methods.add('custom');
+
+      contexts.push({
+        id: 'security_ctx_authentication',
+        name: 'Authentication',
+        type: 'authentication',
+        scope: {
+          node_ids: authNodes.map(n => n.id),
+          entry_points: entryPoints
+            .filter(ep => ep.metadata?.requires_auth || ep.metadata?.guards?.length)
+            .map(ep => ep.id)
+        },
+        requirements: {
+          authentication: {
+            required: true,
+            methods: Array.from(methods)
+          }
+        }
+      });
+    }
+
+    const authzNodes = securityNodes.filter(n => {
+      const name = n.name.toLowerCase();
+      return name.includes('role') || name.includes('permission') || name.includes('guard') || name.includes('authorize') || name.includes('policy');
+    });
+
+    if (authzNodes.length > 0) {
+      const roles = new Set<string>();
+      const permissions = new Set<string>();
+      for (const node of authzNodes) {
+        const attrs = node.metadata?.attributes as Record<string, any> | undefined;
+        if (attrs?.roles && Array.isArray(attrs.roles)) {
+          (attrs.roles as string[]).forEach(r => roles.add(r));
+        }
+        if (attrs?.permissions && Array.isArray(attrs.permissions)) {
+          (attrs.permissions as string[]).forEach(p => permissions.add(p));
+        }
+      }
+
+      contexts.push({
+        id: 'security_ctx_authorization',
+        name: 'Authorization',
+        type: 'authorization',
+        scope: {
+          node_ids: authzNodes.map(n => n.id)
+        },
+        requirements: {
+          authorization: {
+            roles: Array.from(roles),
+            permissions: Array.from(permissions)
+          }
+        }
+      });
+    }
+
+    const encryptionNodes = securityNodes.filter(n => {
+      const name = n.name.toLowerCase();
+      return name.includes('encrypt') || name.includes('decrypt') || name.includes('hash') || name.includes('cipher');
+    });
+
+    if (encryptionNodes.length > 0) {
+      contexts.push({
+        id: 'security_ctx_encryption',
+        name: 'Encryption',
+        type: 'encryption',
+        scope: {
+          node_ids: encryptionNodes.map(n => n.id)
+        },
+        requirements: {
+          data_protection: {
+            encryption_at_rest: encryptionNodes.some(n => n.name.toLowerCase().includes('storage') || n.name.toLowerCase().includes('persist')),
+            encryption_in_transit: encryptionNodes.some(n => n.name.toLowerCase().includes('transport') || n.name.toLowerCase().includes('tls'))
+          }
+        }
+      });
+    }
+
+    return contexts;
+  }
+
+  private buildAllConfiguration(
+    nodes: CASNode[],
+    exitPoints: CASExitPoint[],
+    externalServices: CASExternalService[],
+    projectPath?: string
+  ): CASConfiguration {
+    const configFilePatterns = ['.env', 'config', 'tsconfig', 'package.json', 'settings', 'appsettings', 'application.properties', 'application.yml', 'docker-compose', 'dockerfile', 'cargo.toml', 'go.mod', 'composer.json', 'pom.xml', 'build.gradle'];
+    const envVars: CASConfiguration['environment_variables'] = [];
+    const configFiles: CASConfiguration['config_files'] = [];
+    const requiredServices: CASConfiguration['required_services'] = [];
+
+    for (const node of nodes) {
+      if (node.type !== 'file' && node.type !== 'config') continue;
+
+      const fileName = (node.source?.file || node.name || '').toLowerCase();
+      const baseName = path.basename(fileName);
+
+      if (configFilePatterns.some(p => baseName.includes(p))) {
+        const format = this.inferConfigFormat(baseName);
+        configFiles.push({
+          path: node.source?.file || node.name,
+          format,
+          environment_specific: baseName.includes('dev') || baseName.includes('prod') || baseName.includes('staging') || baseName.includes('test')
+        });
+      }
+
+      if (baseName.startsWith('.env') || baseName === 'environment.ts' || baseName === 'settings.py') {
+        const attrs = node.metadata?.attributes as Record<string, any> | undefined;
+        const envMetadata = attrs?.environment_variables;
+        if (Array.isArray(envMetadata)) {
+          for (const ev of envMetadata) {
+            envVars.push({
+              name: ev.name || ev,
+              required: ev.required,
+              description: ev.description,
+              sensitive: ev.sensitive || this.isSensitiveEnvVar(ev.name || ev)
+            });
+          }
+        }
+      }
+    }
+
+    for (const ep of exitPoints) {
+      const serviceName = ep.target?.service_id || ep.target?.endpoint || ep.name;
+      if (ep.type === 'database') {
+        requiredServices.push({
+          service: serviceName || 'database',
+          optional: false
+        });
+      } else if (ep.type === 'api' || ep.type === 'sdk' || ep.type === 'webhook') {
+        requiredServices.push({
+          service: serviceName || ep.name,
+          optional: ep.metadata?.optional === true
+        });
+      } else if (ep.type === 'message') {
+        requiredServices.push({
+          service: serviceName || 'message_queue',
+          optional: false
+        });
+      }
+    }
+
+    for (const svc of externalServices) {
+      const existing = requiredServices.find(r => r.service === svc.name);
+      if (!existing) {
+        requiredServices.push({
+          service: svc.name,
+          optional: false
+        });
+      }
+    }
+
+    if (projectPath && configFiles.length === 0) {
+      const fsConfigPatterns = [
+        'package.json', 'tsconfig.json', 'tsconfig.*.json',
+        '.env', '.env.example', '.env.local',
+        'docker-compose.yml', 'docker-compose.yaml', 'Dockerfile',
+        'jest.config.*', 'vitest.config.*', '.eslintrc.*', '.prettierrc*',
+        'webpack.config.*', 'vite.config.*', 'next.config.*',
+        'settings.py', 'manage.py', 'requirements.txt', 'setup.py', 'pyproject.toml',
+        'Cargo.toml', 'go.mod', 'composer.json', 'pom.xml', 'build.gradle',
+        'appsettings.json', 'appsettings.*.json', 'launchSettings.json',
+        '*.csproj', '*.sln'
+      ];
+
+      for (const pattern of fsConfigPatterns) {
+        try {
+          const matches = require('glob').globSync(pattern, {
+            cwd: projectPath,
+            ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**']
+          });
+          for (const match of matches) {
+            const baseName = path.basename(match).toLowerCase();
+            const alreadyAdded = configFiles.some(cf => cf.path === match);
+            if (!alreadyAdded) {
+              configFiles.push({
+                path: match,
+                format: this.inferConfigFormat(baseName),
+                environment_specific: baseName.includes('dev') || baseName.includes('prod') || baseName.includes('staging') || baseName.includes('test') || baseName.includes('local')
+              });
+            }
+          }
+        } catch {}
+      }
+    }
+
+    return {
+      environment_variables: envVars.length > 0 ? envVars : undefined,
+      config_files: configFiles.length > 0 ? configFiles : undefined,
+      required_services: requiredServices.length > 0 ? requiredServices : undefined
+    };
+  }
+
+  private inferConfigFormat(fileName: string): string {
+    if (fileName.endsWith('.json')) return 'json';
+    if (fileName.endsWith('.yml') || fileName.endsWith('.yaml')) return 'yaml';
+    if (fileName.endsWith('.toml')) return 'toml';
+    if (fileName.endsWith('.xml')) return 'xml';
+    if (fileName.endsWith('.properties')) return 'properties';
+    if (fileName.endsWith('.ini')) return 'ini';
+    if (fileName.startsWith('.env')) return 'dotenv';
+    if (fileName.endsWith('.ts') || fileName.endsWith('.js')) return 'typescript';
+    if (fileName.endsWith('.py')) return 'python';
+    return 'other';
+  }
+
+  private isSensitiveEnvVar(name: string): boolean {
+    const sensitive = ['secret', 'password', 'key', 'token', 'credential', 'auth', 'private'];
+    const lower = (name || '').toLowerCase();
+    return sensitive.some(s => lower.includes(s));
+  }
+
+  private deriveParentFromContainsEdges(nodes: CASNode[], edges: CASEdge[]): void {
+    const nodeMap = new Map<string, CASNode>();
+    for (const node of nodes) {
+      nodeMap.set(node.id, node);
+    }
+
+    const containsEdges = edges.filter(e => e.type === 'contains');
+    for (const edge of containsEdges) {
+      const child = nodeMap.get(edge.target);
+      if (child && !child.parent) {
+        const parent = nodeMap.get(edge.source);
+        if (parent) {
+          child.parent = edge.source;
+        }
+      }
+    }
+  }
+
+  private enrichNodePerspectives(nodes: CASNode[], perspectives: CASPerspective[]): void {
+    const trivialTypes = new Set(['import', 'using']);
+
+    if (perspectives.length > 0) {
+      for (const perspective of perspectives) {
+        const visibleTypes = perspective.connection_rules?.visible_node_types;
+
+        let matchedCount = 0;
+        if (visibleTypes && visibleTypes.length > 0) {
+          matchedCount = nodes.filter(n => visibleTypes.includes(n.type)).length;
+        }
+
+        const useStrictFilter = visibleTypes && visibleTypes.length > 0 && matchedCount > 0;
+
+        for (const node of nodes) {
+          if (trivialTypes.has(node.type)) continue;
+
+          if (useStrictFilter && !this.nodeMatchesPerspective(node, visibleTypes!)) {
+            continue;
+          }
+
+          if (!node.perspectives) {
+            node.perspectives = {};
+          }
+
+          const hierarchy = this.buildPerspectiveHierarchy(node, perspective);
+
+          node.perspectives[perspective.id] = {
+            hierarchy,
+            level: node.level || 1,
+            priority: this.calculatePerspectivePriority(node, perspective)
+          };
+        }
+      }
+    }
+
+    const uncoveredNodes = nodes.filter(n => !trivialTypes.has(n.type) && (!n.perspectives || Object.keys(n.perspectives).length === 0));
+    if (uncoveredNodes.length > 0) {
+      const fallbackPerspective: CASPerspective = {
+        id: 'code-structure',
+        name: 'Code Structure',
+        type: 'structure',
+        description: 'Structural organization of the codebase',
+        analyzer_id: 'orchestrator',
+        connection_rules: {
+          visible_node_types: []
+        }
+      };
+
+      for (const node of uncoveredNodes) {
+        if (!node.perspectives) {
+          node.perspectives = {};
+        }
+        node.perspectives[fallbackPerspective.id] = {
+          hierarchy: ['structure', node.category || node.type, node.name],
+          level: node.level || 1,
+          priority: this.calculatePerspectivePriority(node, fallbackPerspective)
+        };
+      }
+    }
+  }
+
+  private nodeMatchesPerspective(node: CASNode, visibleTypes: string[]): boolean {
+    if (visibleTypes.includes(node.type)) return true;
+
+    for (const vt of visibleTypes) {
+      const suffix = vt.replace(/^[a-z]+_/, '');
+      if (suffix === node.type) return true;
+      if (node.category === suffix) return true;
+      if (node.subcategories?.includes(suffix)) return true;
+      if (node.subcategories?.includes(vt)) return true;
+    }
+
+    return false;
+  }
+
+  private buildPerspectiveHierarchy(node: CASNode, perspective: CASPerspective): string[] {
+    const hierarchy: string[] = [];
+
+    if (perspective.type === 'flow') {
+      hierarchy.push('flow');
+      if (node.category) hierarchy.push(node.category);
+      hierarchy.push(node.type);
+    } else if (perspective.type === 'structure') {
+      hierarchy.push('structure');
+      if (node.category) hierarchy.push(node.category);
+      if (node.subcategories?.[0]) hierarchy.push(node.subcategories[0]);
+    } else if (perspective.type === 'security') {
+      hierarchy.push('security');
+      hierarchy.push(node.type);
+    } else {
+      hierarchy.push(perspective.type);
+      if (node.category) hierarchy.push(node.category);
+    }
+
+    hierarchy.push(node.name);
+    return hierarchy;
+  }
+
+  private calculatePerspectivePriority(node: CASNode, perspective: CASPerspective): number {
+    let priority = 50;
+
+    if (node.metadata?.is_exported) priority += 20;
+    if (node.type === 'class' || node.type === 'module') priority += 10;
+    if (node.type === 'function' || node.type === 'method') priority += 5;
+
+    if (perspective.type === 'flow' && (node.type === 'controller' || node.type === 'route' || node.type === 'endpoint')) {
+      priority += 30;
+    }
+    if (perspective.type === 'data' && (node.type === 'entity' || node.type === 'model' || node.type === 'schema')) {
+      priority += 30;
+    }
+
+    return Math.min(100, priority);
+  }
+
+  private detectLibrariesFromManifests(projectPath: string): CASLibrary[] {
+    const libraries: CASLibrary[] = [];
+    const seen = new Set<string>();
+
+    const packageJsonPath = path.join(projectPath, 'package.json');
+    if (fs.existsSync(packageJsonPath)) {
+      try {
+        const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+        const addDeps = (deps: Record<string, string> | undefined, type: CASLibrary['type']) => {
+          if (!deps) return;
+          for (const [name, version] of Object.entries(deps)) {
+            const key = `${name}@${type}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            libraries.push({
+              id: `lib_${name.replace(/[^a-zA-Z0-9]/g, '_')}`,
+              name,
+              version: version.replace(/^[\^~>=<]/, ''),
+              type,
+              package_manager: 'npm'
+            });
+          }
+        };
+        addDeps(pkg.dependencies, 'production');
+        addDeps(pkg.devDependencies, 'development');
+        addDeps(pkg.peerDependencies, 'peer');
+        addDeps(pkg.optionalDependencies, 'optional');
+      } catch { }
+    }
+
+    const requirementsFiles = ['requirements.txt', 'requirements/base.txt', 'requirements/production.txt'];
+    for (const reqFile of requirementsFiles) {
+      const reqPath = path.join(projectPath, reqFile);
+      if (fs.existsSync(reqPath)) {
+        try {
+          const rawContent = fs.readFileSync(reqPath);
+          const content = rawContent.toString('utf8').replace(/\0/g, '').replace(/\uFEFF/g, '');
+          for (const line of content.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('-')) continue;
+            const match = trimmed.match(/^([a-zA-Z0-9_.-]+)\s*(?:[><=!~]+\s*(.+))?/);
+            if (match) {
+              const name = match[1];
+              const version = match[2]?.split(',')[0]?.trim();
+              const key = `py_${name}`;
+              if (seen.has(key)) continue;
+              seen.add(key);
+              libraries.push({
+                id: `lib_${name.replace(/[^a-zA-Z0-9]/g, '_')}`,
+                name,
+                version,
+                type: 'production',
+                package_manager: 'pip'
+              });
+            }
+          }
+        } catch { }
+      }
+    }
+
+    const pipfilePath = path.join(projectPath, 'Pipfile');
+    if (fs.existsSync(pipfilePath) && libraries.filter(l => l.package_manager === 'pip').length === 0) {
+      try {
+        const content = fs.readFileSync(pipfilePath, 'utf8');
+        let section = '';
+        for (const line of content.split('\n')) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith('[')) {
+            section = trimmed.replace(/[\[\]]/g, '').toLowerCase();
+            continue;
+          }
+          if (section === 'packages' || section === 'dev-packages') {
+            const match = trimmed.match(/^([a-zA-Z0-9_.-]+)\s*=/);
+            if (match) {
+              const name = match[1];
+              const key = `py_${name}`;
+              if (seen.has(key)) continue;
+              seen.add(key);
+              libraries.push({
+                id: `lib_${name.replace(/[^a-zA-Z0-9]/g, '_')}`,
+                name,
+                type: section === 'dev-packages' ? 'development' : 'production',
+                package_manager: 'pipenv'
+              });
+            }
+          }
+        }
+      } catch { }
+    }
+
+    const cargoPath = path.join(projectPath, 'Cargo.toml');
+    if (fs.existsSync(cargoPath)) {
+      try {
+        const content = fs.readFileSync(cargoPath, 'utf8');
+        let section = '';
+        for (const line of content.split('\n')) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith('[')) {
+            section = trimmed.replace(/[\[\]]/g, '').toLowerCase();
+            continue;
+          }
+          if (section === 'dependencies' || section === 'dev-dependencies') {
+            const match = trimmed.match(/^([a-zA-Z0-9_-]+)\s*=/);
+            if (match) {
+              const name = match[1];
+              const key = `cargo_${name}`;
+              if (seen.has(key)) continue;
+              seen.add(key);
+              const versionMatch = trimmed.match(/"([^"]+)"/);
+              libraries.push({
+                id: `lib_${name.replace(/[^a-zA-Z0-9]/g, '_')}`,
+                name,
+                version: versionMatch?.[1],
+                type: section === 'dev-dependencies' ? 'development' : 'production',
+                package_manager: 'cargo'
+              });
+            }
+          }
+        }
+      } catch { }
+    }
+
+    const pyprojectPath = path.join(projectPath, 'pyproject.toml');
+    if (fs.existsSync(pyprojectPath) && libraries.filter(l => l.package_manager === 'pip' || l.package_manager === 'pipenv').length === 0) {
+      try {
+        const content = fs.readFileSync(pyprojectPath, 'utf8');
+        let inDeps = false;
+        for (const line of content.split('\n')) {
+          const trimmed = line.trim();
+          if (trimmed.match(/^\[.*dependencies.*\]/i)) {
+            inDeps = true;
+            continue;
+          }
+          if (trimmed.startsWith('[') && inDeps) {
+            inDeps = false;
+            continue;
+          }
+          if (inDeps) {
+            const match = trimmed.match(/^"?([a-zA-Z0-9_.-]+)"?\s*(?:[><=!~]+\s*"?([^",\]]+))?/);
+            if (match && !match[1].startsWith('#')) {
+              const name = match[1];
+              const key = `py_${name}`;
+              if (seen.has(key)) continue;
+              seen.add(key);
+              libraries.push({
+                id: `lib_${name.replace(/[^a-zA-Z0-9]/g, '_')}`,
+                name,
+                version: match[2]?.replace(/"/g, ''),
+                type: 'production',
+                package_manager: 'pip'
+              });
+            }
+          }
+        }
+      } catch { }
+    }
+
+    if (libraries.length === 0) {
+      const manifestNames = ['package.json', 'requirements.txt', 'Cargo.toml', 'Pipfile', 'pyproject.toml', 'go.mod', 'Gemfile'];
+      try {
+        const entries = fs.readdirSync(projectPath, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'dist' || entry.name === 'build' || entry.name === '__pycache__') continue;
+          const subPath = path.join(projectPath, entry.name);
+          for (const manifest of manifestNames) {
+            const manifestPath = path.join(subPath, manifest);
+            if (!fs.existsSync(manifestPath)) continue;
+            if (manifest === 'package.json') {
+              try {
+                const pkg = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+                const addDeps = (deps: Record<string, string> | undefined, type: CASLibrary['type']) => {
+                  if (!deps) return;
+                  for (const [name, version] of Object.entries(deps)) {
+                    const key = `${name}@${type}`;
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+                    libraries.push({
+                      id: `lib_${name.replace(/[^a-zA-Z0-9]/g, '_')}`,
+                      name,
+                      version: version.replace(/^[\^~>=<]/, ''),
+                      type,
+                      package_manager: 'npm'
+                    });
+                  }
+                };
+                addDeps(pkg.dependencies, 'production');
+                addDeps(pkg.devDependencies, 'development');
+              } catch { }
+            } else if (manifest === 'requirements.txt') {
+              try {
+                const content = fs.readFileSync(manifestPath, 'utf8');
+                for (const line of content.split('\n')) {
+                  const trimmed = line.trim();
+                  if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('-')) continue;
+                  const match = trimmed.match(/^([a-zA-Z0-9_.-]+)\s*(?:[><=!~]+\s*(.+))?/);
+                  if (match) {
+                    const name = match[1];
+                    const key = `py_${name}`;
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+                    libraries.push({
+                      id: `lib_${name.replace(/[^a-zA-Z0-9]/g, '_')}`,
+                      name,
+                      version: match[2]?.split(',')[0]?.trim(),
+                      type: 'production',
+                      package_manager: 'pip'
+                    });
+                  }
+                }
+              } catch { }
+            } else if (manifest === 'Cargo.toml') {
+              try {
+                const content = fs.readFileSync(manifestPath, 'utf8');
+                let section = '';
+                for (const line of content.split('\n')) {
+                  const trimmed = line.trim();
+                  if (trimmed.startsWith('[')) {
+                    section = trimmed.replace(/[\[\]]/g, '').toLowerCase();
+                    continue;
+                  }
+                  if (section === 'dependencies' || section === 'dev-dependencies') {
+                    const match = trimmed.match(/^([a-zA-Z0-9_-]+)\s*=/);
+                    if (match) {
+                      const name = match[1];
+                      const key = `cargo_${name}`;
+                      if (seen.has(key)) continue;
+                      seen.add(key);
+                      const versionMatch = trimmed.match(/"([^"]+)"/);
+                      libraries.push({
+                        id: `lib_${name.replace(/[^a-zA-Z0-9]/g, '_')}`,
+                        name,
+                        version: versionMatch?.[1],
+                        type: section === 'dev-dependencies' ? 'development' : 'production',
+                        package_manager: 'cargo'
+                      });
+                    }
+                  }
+                }
+              } catch { }
+            }
+            if (libraries.length > 0) break;
+          }
+          if (libraries.length > 0) break;
+        }
+      } catch { }
+    }
+
+    return libraries;
   }
 }

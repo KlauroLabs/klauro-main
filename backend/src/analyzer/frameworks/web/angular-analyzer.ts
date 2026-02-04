@@ -105,7 +105,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
 
   constructor() {
     super(
-      'angular-analyzer',
+      'angular',
       'Angular Framework Analyzer',
       '1.0.0',
       'framework'
@@ -1266,25 +1266,35 @@ export class AngularAnalyzer extends BaseAnalyzer {
 
   private tagNodesWithPerspectives(nodes: CASNode[], edges: CASEdge[]): void {
     nodes.forEach(node => {
-      node.perspectives = [];
-
       if (!node || typeof node !== 'object') return;
+
+      if (!node.perspectives) {
+        node.perspectives = {};
+      }
 
       if (node.type === 'angular_app' || node.type === 'angular_module' ||
           node.type === 'angular_component') {
-        node.perspectives.push('angular-components');
+        node.perspectives['angular-components'] = {
+          hierarchy: ['angular', 'components'],
+          level: node.level || 1,
+          priority: 1
+        };
       }
-
-      if (!node || typeof node !== 'object') return;
 
       if (node.type === 'angular_module' || node.type === 'angular_service') {
-        node.perspectives.push('angular-modules');
+        node.perspectives['angular-modules'] = {
+          hierarchy: ['angular', 'modules'],
+          level: node.level || 1,
+          priority: 2
+        };
       }
 
-      if (!node || typeof node !== 'object') return;
-
       if (node.type === 'angular_service' || node.type === 'angular_component') {
-        node.perspectives.push('angular-services');
+        node.perspectives['angular-services'] = {
+          hierarchy: ['angular', 'services'],
+          level: node.level || 1,
+          priority: 3
+        };
       }
 
       if (!node.metadata) {

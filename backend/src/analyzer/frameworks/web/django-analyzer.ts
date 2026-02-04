@@ -154,7 +154,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
   constructor() {
     super(
-      'django-analyzer',
+      'django',
       'Django Framework Analyzer',
       '1.0.0',
       'framework'
@@ -303,6 +303,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
           allowedHosts: settings.allowedHosts
         }
       })
+      .withAnalyzers([this.analyzerId], this.analyzerId)
       .build();
     nodes.push(projectNode);
 
@@ -389,6 +390,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
             celeryTasks: celeryTasks.length
           }
         })
+        .withAnalyzers([this.analyzerId], this.analyzerId)
         .build();
       nodes.push(appNode);
 
@@ -411,6 +413,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
               returnType: mutation.returnType
             }
           })
+          .withAnalyzers([this.analyzerId], this.analyzerId)
           .build();
         nodes.push(mutationNode);
 
@@ -481,6 +484,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
               arguments: query.arguments
             }
           })
+          .withAnalyzers([this.analyzerId], this.analyzerId)
           .build();
         nodes.push(queryNode);
 
@@ -551,6 +555,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
               excludeFields: gqlType.excludeFields
             }
           })
+          .withAnalyzers([this.analyzerId], this.analyzerId)
           .build();
         nodes.push(typeNode);
 
@@ -591,6 +596,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
               retryPolicy: task.retryPolicy
             }
           })
+          .withAnalyzers([this.analyzerId], this.analyzerId)
           .build();
         nodes.push(taskNode);
 
@@ -669,6 +675,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
               dbTable: model.meta.dbTable || model.name.toLowerCase()
             }
           })
+          .withAnalyzers([this.analyzerId], this.analyzerId)
           .build();
         nodes.push(modelNode);
 
@@ -710,6 +717,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
               templateName: view.templateName
             }
           })
+          .withAnalyzers([this.analyzerId], this.analyzerId)
           .build();
         nodes.push(viewNode);
 
@@ -736,6 +744,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
               fields: serializer.fields.map(f => f.name)
             }
           })
+          .withAnalyzers([this.analyzerId], this.analyzerId)
           .build();
         nodes.push(serializerNode);
 
@@ -769,6 +778,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
               namespace: url.namespace
             }
           })
+          .withAnalyzers([this.analyzerId], this.analyzerId)
           .build();
         nodes.push(urlNode);
 
@@ -1454,6 +1464,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
               methods: mw.methods.map(m => m.name)
             }
           })
+          .withAnalyzers([this.analyzerId], this.analyzerId)
           .build();
         nodes.push(middlewareNode);
       });
@@ -2409,6 +2420,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
             orm: 'Django ORM'
           }
         })
+        .withAnalyzers([this.analyzerId], this.analyzerId)
         .build();
       nodes.push(dbNode);
 
@@ -2561,25 +2573,35 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
   private tagNodesWithPerspectives(nodes: CASNode[], edges: CASEdge[]): void {
     nodes.forEach(node => {
-      node.perspectives = [];
-
       if (!node || typeof node !== 'object') return;
+
+      if (!node.perspectives) {
+        node.perspectives = {};
+      }
 
       if (node.type === 'django_model' || node.type === 'django_view' ||
           node.type === 'django_template' || node.type === 'django_url') {
-        node.perspectives.push('django-mvt');
+        node.perspectives['django-mvt'] = {
+          hierarchy: ['django', 'mvt'],
+          level: node.level || 1,
+          priority: 1
+        };
       }
-
-      if (!node || typeof node !== 'object') return;
 
       if (node.type === 'django_url' || node.type === 'django_view' || node.type === 'django_app') {
-        node.perspectives.push('django-urls');
+        node.perspectives['django-urls'] = {
+          hierarchy: ['django', 'urls'],
+          level: node.level || 1,
+          priority: 2
+        };
       }
 
-      if (!node || typeof node !== 'object') return;
-
       if (node.type === 'django_project' || node.type === 'django_app' || node.type === 'django_model') {
-        node.perspectives.push('django-apps');
+        node.perspectives['django-apps'] = {
+          hierarchy: ['django', 'apps'],
+          level: node.level || 1,
+          priority: 3
+        };
       }
 
       if (!node.metadata) {

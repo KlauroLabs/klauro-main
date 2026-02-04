@@ -331,7 +331,7 @@ export class AnalyzerController {
         options: {
           includeTests: options?.includeTests || false,
           maxDepth: 5,
-          filters: options?.excludePatterns || ['node_modules/**', 'dist/**', 'build/**', '.git/**']
+          filters: options?.excludePatterns || ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**']
         }
       });
 

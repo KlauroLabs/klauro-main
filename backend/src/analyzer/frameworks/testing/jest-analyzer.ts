@@ -95,7 +95,7 @@ interface JestUtility {
 export class JestAnalyzer extends BaseAnalyzer {
   constructor() {
     super(
-      'jest-analyzer',
+      'jest',
       'Jest Testing Framework Analyzer',
       '1.0.0',
       'framework'
@@ -491,7 +491,7 @@ export class JestAnalyzer extends BaseAnalyzer {
 
     const snapshotFiles = await glob(['**/__snapshots__/**/*.snap'], {
       cwd: projectPath,
-      ignore: ['node_modules/**']
+      ignore: ['**/node_modules/**']
     });
 
     for (const file of snapshotFiles) {

@@ -95,7 +95,7 @@ export class VueAnalyzer extends BaseAnalyzer {
 
   constructor() {
     super(
-      'vue-analyzer',
+      'vue',
       'Vue.js Framework Analyzer',
       '1.0.0',
       'framework'
@@ -1215,24 +1215,34 @@ export class VueAnalyzer extends BaseAnalyzer {
 
   private tagNodesWithPerspectives(nodes: CASNode[], edges: CASEdge[]): void {
     nodes.forEach(node => {
-      node.perspectives = [];
-
       if (!node || typeof node !== 'object') return;
+
+      if (!node.perspectives) {
+        node.perspectives = {};
+      }
 
       if (node.type === 'vue_app' || node.type === 'vue_component' || node.type === 'vue_sfc') {
-        node.perspectives.push('vue-components');
+        node.perspectives['vue-components'] = {
+          hierarchy: ['vue', 'components'],
+          level: node.level || 1,
+          priority: 1
+        };
       }
-
-      if (!node || typeof node !== 'object') return;
 
       if (node.type === 'vue_composable' || node.type === 'vue_component' || node.type === 'vue_store') {
-        node.perspectives.push('vue-composition');
+        node.perspectives['vue-composition'] = {
+          hierarchy: ['vue', 'composition'],
+          level: node.level || 1,
+          priority: 2
+        };
       }
 
-      if (!node || typeof node !== 'object') return;
-
       if (node.type === 'vue_route' || node.type === 'vue_component' || node.type === 'vue_guard') {
-        node.perspectives.push('vue-routing');
+        node.perspectives['vue-routing'] = {
+          hierarchy: ['vue', 'routing'],
+          level: node.level || 1,
+          priority: 3
+        };
       }
 
       if (!node.metadata) {

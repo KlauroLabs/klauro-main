@@ -1,0 +1,158 @@
+export interface ASTParserResult {
+  success: boolean;
+  ast?: any;
+  error?: string;
+}
+
+export interface GoASTNode {
+  type: string;
+  name?: string;
+  package?: string;
+  receiver?: {
+    name: string;
+    type: string;
+    pointer: boolean;
+  };
+  params?: Array<{ name: string; type: string }>;
+  returns?: string[];
+  calls?: Array<{
+    package?: string;
+    function: string;
+    line: number;
+    column: number;
+  }>;
+  imports?: Array<{
+    path: string;
+    alias?: string;
+  }>;
+  fields?: Array<{
+    name: string;
+    type: string;
+    tag?: string;
+  }>;
+  methods?: Array<{
+    name: string;
+    receiver?: string;
+  }>;
+  position?: {
+    file: string;
+    line: number;
+    column: number;
+    endLine?: number;
+    endColumn?: number;
+  };
+  children?: GoASTNode[];
+}
+
+export interface RustASTNode {
+  kind: string;
+  name?: string;
+  visibility?: string;
+  attributes?: string[];
+  generics?: string[];
+  parameters?: Array<{ name: string; type: string }>;
+  returnType?: string;
+  calls?: Array<{
+    module?: string;
+    function: string;
+    line: number;
+  }>;
+  uses?: Array<{
+    path: string;
+    alias?: string;
+  }>;
+  fields?: Array<{
+    name: string;
+    type: string;
+    visibility: string;
+  }>;
+  methods?: Array<{
+    name: string;
+    selfParam?: string;
+  }>;
+  span?: {
+    start: { line: number; column: number };
+    end: { line: number; column: number };
+  };
+  children?: RustASTNode[];
+}
+
+export interface CSharpASTNode {
+  kind: string;
+  name?: string;
+  namespace?: string;
+  modifiers?: string[];
+  baseTypes?: string[];
+  parameters?: Array<{ name: string; type: string; modifiers?: string[] }>;
+  returnType?: string;
+  invocations?: Array<{
+    target?: string;
+    method: string;
+    line: number;
+  }>;
+  usings?: Array<{
+    namespace: string;
+    alias?: string;
+  }>;
+  members?: Array<{
+    kind: string;
+    name: string;
+    type?: string;
+    modifiers?: string[];
+  }>;
+  location?: {
+    file: string;
+    line: number;
+    column: number;
+    endLine: number;
+    endColumn: number;
+  };
+  children?: CSharpASTNode[];
+}
+
+export interface PHPASTNode {
+  nodeType: string;
+  name?: string;
+  namespace?: string;
+  visibility?: string;
+  modifiers?: string[];
+  extends?: string;
+  implements?: string[];
+  parameters?: Array<{
+    name: string;
+    type?: string;
+    default?: string;
+    byRef?: boolean;
+    variadic?: boolean;
+  }>;
+  returnType?: string;
+  calls?: Array<{
+    class?: string;
+    method?: string;
+    function?: string;
+    line: number;
+  }>;
+  uses?: Array<{
+    name: string;
+    alias?: string;
+  }>;
+  properties?: Array<{
+    name: string;
+    type?: string;
+    visibility?: string;
+    static?: boolean;
+  }>;
+  methods?: Array<{
+    name: string;
+    visibility?: string;
+    static?: boolean;
+    abstract?: boolean;
+  }>;
+  attributes?: {
+    startLine: number;
+    endLine: number;
+    startFilePos?: number;
+    endFilePos?: number;
+  };
+  children?: PHPASTNode[];
+}

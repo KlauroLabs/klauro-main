@@ -94,7 +94,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
   constructor() {
     super(
-      'react-analyzer',
+      'react',
       'React Framework Analyzer',
       '1.0.0',
       'framework'
@@ -1490,28 +1490,38 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
   private tagNodesWithPerspectives(nodes: CASNode[], edges: CASEdge[]): void {
     nodes.forEach(node => {
-      node.perspectives = [];
-
       if (!node || typeof node !== 'object') return;
+
+      if (!node.perspectives) {
+        node.perspectives = {};
+      }
 
       if (node.type === 'react_app' || node.type === 'react_page' ||
           node.type === 'functional_component' || node.type === 'class_component') {
-        node.perspectives.push('react-components');
+        node.perspectives['react-components'] = {
+          hierarchy: ['react', 'components'],
+          level: node.level || 1,
+          priority: 1
+        };
       }
-
-      if (!node || typeof node !== 'object') return;
 
       if (node.type === 'redux_store' || node.type === 'zustand_store' ||
           node.type === 'react_context' || node.type === 'custom_hook' ||
           node.type === 'functional_component' || node.type === 'class_component') {
-        node.perspectives.push('react-data');
+        node.perspectives['react-data'] = {
+          hierarchy: ['react', 'data'],
+          level: node.level || 1,
+          priority: 2
+        };
       }
-
-      if (!node || typeof node !== 'object') return;
 
       if (node.type === 'react_route' || node.type === 'react_page' ||
           node.type === 'functional_component') {
-        node.perspectives.push('react-routing');
+        node.perspectives['react-routing'] = {
+          hierarchy: ['react', 'routing'],
+          level: node.level || 1,
+          priority: 3
+        };
       }
 
       if (!node.metadata) {

@@ -83,7 +83,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
 
   constructor() {
     super(
-      'spring-boot-analyzer',
+      'spring-boot',
       'Spring Boot Framework Analyzer',
       '1.0.0',
       'framework'

@@ -116,7 +116,7 @@ export class LaravelAnalyzer extends BaseAnalyzer {
 
   constructor() {
     super(
-      'laravel-analyzer',
+      'laravel',
       'Laravel Framework Analyzer',
       '1.0.0',
       'framework'

@@ -7,7 +7,8 @@ import { BaseAnalyzer, AnalysisContext } from '../core/base-analyzer';
 import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
-import { ASTRunner, RustASTNode } from '../core/ast-runner';
+import { TreeSitterParser } from '../core/tree-sitter-parser';
+import type { RustASTNode } from '../core/ast-types';
 import * as path from 'path';
 import { EnhancedRustCallGraphExtractor } from '../enhanced-rust-call-graph-extractor';
 
@@ -289,7 +290,7 @@ export class RustAnalyzer extends BaseAnalyzer {
   private cargoProject = false;
   private projectName = '';
   private projectVersion = '';
-  private astRunner: ASTRunner;
+  private astRunner: TreeSitterParser;
   private astCache = new Map<string, RustASTNode>();
   private todoCounter = 0;
   private commentCounter = 0;
@@ -297,12 +298,12 @@ export class RustAnalyzer extends BaseAnalyzer {
 
   constructor() {
     super(
-      'rust-analyzer',
+      'rust',
       'Enhanced Rust Analyzer',
       '1.5.0',
       'language'
     );
-    this.astRunner = new ASTRunner();
+    this.astRunner = new TreeSitterParser();
     this.callGraphExtractor = undefined; // Will be initialized in analyze method
   }
 
@@ -410,6 +411,7 @@ export class RustAnalyzer extends BaseAnalyzer {
           is_mod: fileName === 'mod.rs'
         }
       })
+      .withAnalyzers([this.analyzerId], this.analyzerId)
       .build();
 
     nodes.push(fileNode);

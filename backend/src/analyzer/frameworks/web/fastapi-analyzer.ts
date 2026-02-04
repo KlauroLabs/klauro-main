@@ -1,7 +1,8 @@
 import { BaseAnalyzer, CASAnalysisResult, CASNode, CASEdge, AnalysisContext } from '../../core/base-analyzer';
 import {
   CASContribution, CASEntryPoint, CASExitPoint,
-  CASDocumentation, CASComment, CASTodo, CASImplementationStatus
+  CASDocumentation, CASComment, CASTodo, CASImplementationStatus,
+  CASPerspective
 } from '../../../types/cas.types';
 import { AnalyzerError } from '../../core/errors';
 import * as path from 'path';
@@ -101,7 +102,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
 
   constructor() {
     super(
-      'fastapi-analyzer',
+      'fastapi',
       'FastAPI Framework Analyzer',
       '1.0.0',
       'framework'
@@ -170,7 +171,11 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
       this.buildFastAPIRelationships(application, routers, models, dependencies, middleware, nodes, edges);
       this.identifyDatabaseConnections(models, exitPoints);
 
-      return this.createContribution(nodes, edges, entryPoints, exitPoints, {
+      const perspectives: CASPerspective[] = [];
+      this.createPerspectives(perspectives);
+      this.tagNodesWithPerspectives(nodes, edges);
+
+      const contribution = this.createContribution(nodes, edges, entryPoints, exitPoints, {
         framework: 'fastapi',
         version: await this.detectFastAPIVersion(context.projectPath),
         applicationFound: application !== null,
@@ -182,6 +187,11 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
         websocketsFound: websockets.length,
         totalRoutes: routers.reduce((sum, router) => sum + router.routes.length, 0)
       });
+
+      contribution.perspectives = perspectives;
+      contribution.provided_perspectives = perspectives.map(p => p.id);
+
+      return contribution;
 
     } catch (error) {
       throw new AnalyzerError(
@@ -247,6 +257,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
                 dependencies: dependencies.length
               }
             })
+            .withAnalyzers([this.analyzerId], this.analyzerId)
             .build();
           nodes.push(appNode);
 
@@ -315,6 +326,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
               dependencies: dependencies.length
             }
           })
+          .withAnalyzers([this.analyzerId], this.analyzerId)
           .build();
         nodes.push(routerNode);
 
@@ -344,6 +356,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
                 handlerName: route.handlerName
               }
             })
+            .withAnalyzers([this.analyzerId], this.analyzerId)
             .build();
           nodes.push(routeNode);
 
@@ -361,6 +374,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
                 parameters: route.parameters
               }
             })
+            .withAnalyzers([this.analyzerId], this.analyzerId)
             .build();
           nodes.push(handlerNode);
 
@@ -390,6 +404,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
                     object_name: call.objectName
                   }
                 })
+                .withAnalyzers([this.analyzerId], this.analyzerId)
                 .build();
               nodes.push(calleeNode);
             }
@@ -500,6 +515,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
                 config: Object.keys(model.config).length
               }
             })
+            .withAnalyzers([this.analyzerId], this.analyzerId)
             .build();
           nodes.push(modelNode);
         });
@@ -550,6 +566,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
                 returnType: dep.returnType
               }
             })
+            .withAnalyzers([this.analyzerId], this.analyzerId)
             .build();
           nodes.push(dependencyNode);
         });
@@ -599,6 +616,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
                 methods: mw.methods.map(m => m.name)
               }
             })
+            .withAnalyzers([this.analyzerId], this.analyzerId)
             .build();
           nodes.push(middlewareNode);
         });
@@ -637,6 +655,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
                 description: task.description
               }
             })
+            .withAnalyzers([this.analyzerId], this.analyzerId)
             .build();
           nodes.push(taskNode);
         });
@@ -678,6 +697,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
                 description: ws.description
               }
             })
+            .withAnalyzers([this.analyzerId], this.analyzerId)
             .build();
           nodes.push(websocketNode);
 
@@ -1636,5 +1656,127 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
     if (lowerText.includes('refactor') || lowerText.includes('cleanup') || lowerText.includes('reorganize')) return 'refactor';
     if (lowerText.includes('doc') || lowerText.includes('comment') || lowerText.includes('explain')) return 'documentation';
     return 'feature';
+  }
+
+  private createPerspectives(perspectives: CASPerspective[]): void {
+    perspectives.push({
+      id: 'fastapi-routes',
+      name: 'FastAPI API Endpoints',
+      description: 'API routes and dependency injection showing request processing flow',
+      analyzer_id: this.analyzerId,
+      type: 'flow',
+      connection_rules: {
+        visible_node_types: ['application', 'route', 'endpoint', 'function', 'class', 'method', 'middleware', 'model'],
+        relevant_edge_types: ['calls', 'uses', 'exposes', 'includes'],
+        node_connections: [
+          {
+            from_type: 'application',
+            to_types: ['route', 'middleware'],
+            edge_type: 'includes'
+          },
+          {
+            from_type: 'route',
+            to_types: ['function', 'method'],
+            edge_type: 'calls'
+          }
+        ]
+      },
+      layout_hints: {
+        style: 'hierarchical',
+        direction: 'TB',
+        group_by: 'http_method'
+      }
+    });
+
+    perspectives.push({
+      id: 'fastapi-layers',
+      name: 'FastAPI Application Layers',
+      description: 'Application layers: Routes -> Dependencies -> Services -> Models',
+      analyzer_id: this.analyzerId,
+      type: 'structure',
+      connection_rules: {
+        visible_node_types: ['application', 'route', 'endpoint', 'function', 'class', 'method', 'middleware', 'model', 'module', 'file'],
+        relevant_edge_types: ['calls', 'uses', 'imports', 'contains'],
+        node_connections: [
+          {
+            from_type: 'route',
+            to_types: ['function', 'class'],
+            edge_type: 'calls'
+          },
+          {
+            from_type: 'function',
+            to_types: ['model'],
+            edge_type: 'uses'
+          }
+        ]
+      },
+      layout_hints: {
+        style: 'hierarchical',
+        direction: 'LR'
+      }
+    });
+
+    perspectives.push({
+      id: 'fastapi-data',
+      name: 'FastAPI Data Flow',
+      description: 'Data models, schemas, and database access patterns',
+      analyzer_id: this.analyzerId,
+      type: 'data',
+      connection_rules: {
+        visible_node_types: ['model', 'class', 'function', 'method', 'attribute'],
+        relevant_edge_types: ['uses', 'has_attribute', 'has_method', 'calls']
+      },
+      layout_hints: {
+        style: 'hierarchical',
+        direction: 'TB'
+      }
+    });
+  }
+
+  private tagNodesWithPerspectives(nodes: CASNode[], edges: CASEdge[]): void {
+    for (const node of nodes) {
+      if (!node || typeof node !== 'object') continue;
+      if (!node.perspectives) node.perspectives = {};
+
+      const isRoute = node.type === 'route' || node.type === 'endpoint' ||
+        node.subcategories?.includes('route') || node.subcategories?.includes('endpoint');
+      const isMiddleware = node.type === 'middleware' || node.subcategories?.includes('middleware');
+      const isModel = node.type === 'model' || node.subcategories?.includes('model') ||
+        node.subcategories?.includes('pydantic');
+
+      if (isRoute || isMiddleware || node.type === 'application') {
+        node.perspectives['fastapi-routes'] = {
+          hierarchy: ['api', node.category || node.type, node.name],
+          level: node.level || 2,
+          priority: isRoute ? 90 : 70
+        };
+      }
+
+      if (node.type !== 'import' && node.type !== 'variable') {
+        node.perspectives['fastapi-layers'] = {
+          hierarchy: ['layers', node.category || node.type, node.name],
+          level: node.level || 2,
+          priority: isRoute ? 80 : isModel ? 70 : 50
+        };
+      }
+
+      if (isModel || node.type === 'attribute' || node.type === 'class') {
+        node.perspectives['fastapi-data'] = {
+          hierarchy: ['data', node.category || node.type, node.name],
+          level: node.level || 2,
+          priority: isModel ? 90 : 50
+        };
+      }
+    }
+
+    for (const edge of edges) {
+      edge.perspectives = [];
+      if (edge.type === 'calls' || edge.type === 'uses' || edge.type === 'exposes') {
+        edge.perspectives.push('fastapi-routes');
+      }
+      if (edge.type === 'contains' || edge.type === 'imports' || edge.type === 'calls') {
+        edge.perspectives.push('fastapi-layers');
+      }
+    }
   }
 }

@@ -78,7 +78,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
 
   constructor() {
     super(
-      'java-analyzer',
+      'java',
       'Java Language Analyzer',
       '1.0.0',
       'language'

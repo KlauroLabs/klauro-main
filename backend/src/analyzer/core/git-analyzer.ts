@@ -61,6 +61,7 @@ export class GitAnalyzer {
   private isGitRepo: boolean;
   private commitCache: Map<string, GitCommitInfo[]> = new Map();
   private fileMetricsCache: Map<string, GitFileMetrics> = new Map();
+  private fileAgeCache: Map<string, number> = new Map();
 
   constructor(projectPath: string) {
     this.projectPath = projectPath;
@@ -81,6 +82,142 @@ export class GitAnalyzer {
 
   isAvailable(): boolean {
     return this.isGitRepo;
+  }
+
+  preloadAllFileMetrics(filePaths: string[]): void {
+    if (!this.isGitRepo || filePaths.length === 0) {
+      return;
+    }
+
+    try {
+      const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+      const since = ninetyDaysAgo.toISOString().split('T')[0];
+
+      const output = execFileSync(
+        'git',
+        ['log', `--since=${since}`, '--format=%H|%an|%aI|%s', '--numstat'],
+        {
+          cwd: this.projectPath,
+          stdio: 'pipe',
+          maxBuffer: 100 * 1024 * 1024
+        }
+      ).toString();
+
+      const commits = this.parseGitLog(output);
+
+      const commitsByFile = new Map<string, GitCommitInfo[]>();
+
+      for (const commit of commits) {
+        for (const changedFile of commit.filesChanged) {
+          if (!commitsByFile.has(changedFile)) {
+            commitsByFile.set(changedFile, []);
+          }
+          const fileCommit: GitCommitInfo = {
+            hash: commit.hash,
+            author: commit.author,
+            date: commit.date,
+            message: commit.message,
+            filesChanged: [changedFile],
+            linesAdded: 0,
+            linesDeleted: 0
+          };
+          commitsByFile.get(changedFile)!.push(fileCommit);
+        }
+      }
+
+      this.parseNumstatPerFile(output, commitsByFile);
+
+      for (const [relativePath, fileCommits] of commitsByFile) {
+        if (!this.commitCache.has(relativePath)) {
+          this.commitCache.set(relativePath, fileCommits);
+        }
+      }
+
+      this.preloadFileAges(filePaths);
+
+    } catch {
+    }
+  }
+
+  private parseNumstatPerFile(output: string, commitsByFile: Map<string, GitCommitInfo[]>): void {
+    const lines = output.split('\n');
+    let currentHash: string | null = null;
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+
+      if (line.includes('|')) {
+        const parts = line.split('|');
+        if (parts.length >= 4 && parts[0].length === 40) {
+          currentHash = parts[0];
+        }
+        continue;
+      }
+
+      if (currentHash) {
+        const statMatch = line.match(/^(\d+|-)\t(\d+|-)\t(.+)$/);
+        if (statMatch) {
+          const added = statMatch[1] === '-' ? 0 : parseInt(statMatch[1], 10);
+          const deleted = statMatch[2] === '-' ? 0 : parseInt(statMatch[2], 10);
+          const filePath = statMatch[3];
+
+          const fileCommits = commitsByFile.get(filePath);
+          if (fileCommits) {
+            const commitEntry = fileCommits.find(c => c.hash === currentHash);
+            if (commitEntry) {
+              commitEntry.linesAdded += added;
+              commitEntry.linesDeleted += deleted;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private preloadFileAges(filePaths: string[]): void {
+    try {
+      const output = execFileSync(
+        'git',
+        ['log', '--diff-filter=A', '--format=%H|%aI', '--name-only'],
+        {
+          cwd: this.projectPath,
+          stdio: 'pipe',
+          maxBuffer: 100 * 1024 * 1024
+        }
+      ).toString();
+
+      const lines = output.split('\n');
+      let currentDate: string | null = null;
+      const fileCreationDates = new Map<string, string>();
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+
+        if (line.includes('|')) {
+          const parts = line.split('|');
+          if (parts.length >= 2 && parts[0].length === 40) {
+            currentDate = parts[1];
+          }
+          continue;
+        }
+
+        if (currentDate && line.trim()) {
+          fileCreationDates.set(line.trim(), currentDate);
+        }
+      }
+
+      const now = new Date();
+      for (const filePath of filePaths) {
+        const relativePath = this.getRelativePath(filePath);
+        const creationDateStr = fileCreationDates.get(relativePath);
+        if (creationDateStr) {
+          const creationDate = new Date(creationDateStr);
+          const ageDays = Math.floor((now.getTime() - creationDate.getTime()) / (24 * 60 * 60 * 1000));
+          this.fileAgeCache.set(relativePath, ageDays);
+        }
+      }
+    } catch {
+    }
   }
 
   getFileMetrics(filePath: string): GitFileMetrics | null {
@@ -223,6 +360,10 @@ export class GitAnalyzer {
   }
 
   private getFileAge(relativePath: string): number {
+    if (this.fileAgeCache.has(relativePath)) {
+      return this.fileAgeCache.get(relativePath)!;
+    }
+
     try {
       const output = execFileSync(
         'git',
@@ -242,7 +383,9 @@ export class GitAnalyzer {
 
       const creationDate = new Date(creationDateStr);
       const now = new Date();
-      return Math.floor((now.getTime() - creationDate.getTime()) / (24 * 60 * 60 * 1000));
+      const ageDays = Math.floor((now.getTime() - creationDate.getTime()) / (24 * 60 * 60 * 1000));
+      this.fileAgeCache.set(relativePath, ageDays);
+      return ageDays;
     } catch {
       return 0;
     }
@@ -324,5 +467,6 @@ export class GitAnalyzer {
   clearCache(): void {
     this.commitCache.clear();
     this.fileMetricsCache.clear();
+    this.fileAgeCache.clear();
   }
 }

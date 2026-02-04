@@ -95,7 +95,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
 
   constructor() {
     super(
-      'flask-analyzer',
+      'flask',
       'Flask Framework Analyzer',
       '1.0.0',
       'framework'

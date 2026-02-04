@@ -107,7 +107,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
   constructor() {
     super(
-      'nestjs-analyzer',
+      'nestjs',
       'NestJS Framework Analyzer',
       '1.0.0',
       'framework'
@@ -148,7 +148,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     try {
       this.callGraphExtractor = new EnhancedCallGraphExtractor(context.projectPath);
 
-      const ignorePatterns = ['node_modules/**', 'dist/**', 'build/**', '.git/**', 'test/**', '**/*.spec.ts', '**/*.test.ts'];
+      const ignorePatterns = ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/test/**', '**/*.spec.ts', '**/*.test.ts'];
 
       // Add context filters if they exist
       if (context.filters && Array.isArray(context.filters)) {
@@ -256,6 +256,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
             .withComments(moduleComments.length > 0 ? moduleComments : undefined)
             .withTodos(moduleTodos.length > 0 ? moduleTodos : undefined)
             .withImplementationStatus(moduleImplementationStatus)
+            .withAnalyzers([this.analyzerId], this.analyzerId)
             .build();
           nodes.push(moduleNode);
           newNodes.push(moduleNode);
@@ -373,6 +374,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
               .withComments(routeComments.length > 0 ? routeComments : undefined)
               .withTodos(routeTodos.length > 0 ? routeTodos : undefined)
               .withImplementationStatus(routeImplementationStatus)
+              .withAnalyzers([this.analyzerId], this.analyzerId)
               .build();
             nodes.push(routeNode);
 
@@ -508,6 +510,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                   methods: providerInfo.methods.map(m => m.name)
                 }
               })
+              .withAnalyzers([this.analyzerId], this.analyzerId)
               .build();
             nodes.push(providerNode);
           }
@@ -546,6 +549,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                     parameter_count: method.parameters.length
                   }
                 })
+                .withAnalyzers([this.analyzerId], this.analyzerId)
                 .build();
               nodes.push(methodNode);
 
@@ -628,6 +632,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                   can_activate_method: guardInfo.canActivateMethod
                 }
               })
+              .withAnalyzers([this.analyzerId], this.analyzerId)
               .build();
             nodes.push(guardNode);
           }
@@ -701,6 +706,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                   use_method: middlewareInfo.useMethod
                 }
               })
+              .withAnalyzers([this.analyzerId], this.analyzerId)
               .build();
             nodes.push(middlewareNode);
           }
@@ -800,6 +806,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                   cors: gatewayOptions.cors
                 }
               })
+              .withAnalyzers([this.analyzerId], this.analyzerId)
               .build();
             nodes.push(gatewayNode);
             newNodes.push(gatewayNode);
@@ -867,6 +874,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                         gateway: className
                       }
                     })
+                    .withAnalyzers([this.analyzerId], this.analyzerId)
                     .build();
                   nodes.push(handlerNode);
                   newNodes.push(handlerNode);
@@ -1234,6 +1242,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                 file: filePath
               }
             })
+            .withAnalyzers([this.analyzerId], this.analyzerId)
             .build();
 
           if (!nodes.find(n => n.id === bootstrapId)) {
@@ -2598,10 +2607,14 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       nodes.forEach(node => {
         if (visibleTypes.includes(node.type)) {
           if (!node.perspectives) {
-            node.perspectives = [];
+            node.perspectives = {};
           }
-          if (!node.perspectives.includes(perspective.id)) {
-            node.perspectives.push(perspective.id);
+          if (!node.perspectives[perspective.id]) {
+            node.perspectives[perspective.id] = {
+              hierarchy: [perspective.id],
+              level: node.level || 1,
+              priority: 1
+            };
           }
 
           if (!node.metadata) {

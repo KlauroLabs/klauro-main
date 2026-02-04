@@ -8,3 +8,4 @@ export { ReactAnalyzer } from './react-analyzer';
 export { VueAnalyzer } from './vue-analyzer';
 export { AngularAnalyzer } from './angular-analyzer';
 export { LaravelAnalyzer } from './laravel-analyzer';
+export { NextJSAnalyzer } from './nextjs-analyzer';

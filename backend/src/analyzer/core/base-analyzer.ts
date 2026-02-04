@@ -151,7 +151,7 @@ export abstract class BaseAnalyzer {
   }
 
   protected createNodeBuilder(id: string, name: string, type: string): CASNodeBuilder {
-    return new CASNodeBuilder(id, name, type);
+    return new CASNodeBuilder(id, name, type).withAnalyzers([this.analyzerId]);
   }
 
   protected createNode(

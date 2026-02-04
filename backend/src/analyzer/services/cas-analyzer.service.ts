@@ -20,10 +20,13 @@ import {
   ReactAnalyzer,
   VueAnalyzer,
   AngularAnalyzer,
-  LaravelAnalyzer
+  LaravelAnalyzer,
+  NextJSAnalyzer
 } from '../frameworks/web';
 
 import { JestAnalyzer, CypressAnalyzer } from '../frameworks/testing';
+import { WPFAnalyzer, AspNetCoreAnalyzer } from '../frameworks/dotnet';
+import { PrismaAnalyzer, SocketIOAnalyzer } from '../libraries';
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
@@ -154,6 +157,7 @@ export class CASAnalyzerService {
 
     this.registerLanguageAnalyzers();
     this.registerFrameworkAnalyzers();
+    this.registerLibraryAnalyzers();
 
     this.logger.log('CAS analyzers registered successfully');
   }
@@ -394,12 +398,81 @@ export class CASAnalyzerService {
         },
         requires: ['typescript-javascript'],
         analyzer: new CypressAnalyzer()
+      },
+      {
+        id: 'wpf',
+        name: 'WPF Analyzer',
+        type: 'framework',
+        version: '1.0.0',
+        detectPatterns: {
+          files: ['**/*.xaml', '**/*.csproj'],
+          content: [/PresentationFramework/, /System\.Windows/, /<UseWPF>true<\/UseWPF>/]
+        },
+        requires: ['csharp'],
+        analyzer: new WPFAnalyzer()
+      },
+      {
+        id: 'aspnet-core',
+        name: 'ASP.NET Core Analyzer',
+        type: 'framework',
+        version: '1.0.0',
+        detectPatterns: {
+          files: ['**/*.csproj'],
+          content: [/Microsoft\.AspNetCore/, /Microsoft\.NET\.Sdk\.Web/]
+        },
+        requires: ['csharp'],
+        analyzer: new AspNetCoreAnalyzer()
+      },
+      {
+        id: 'nextjs',
+        name: 'Next.js Analyzer',
+        type: 'framework',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['next'],
+          files: ['next.config.js', 'next.config.mjs', 'next.config.ts']
+        },
+        requires: ['typescript-javascript'],
+        analyzer: new NextJSAnalyzer()
       }
     ];
 
     registrations.forEach(registration => {
       this.orchestrator.registerAnalyzer(registration);
       this.logger.log(`  ✓ Registered framework analyzer: ${registration.name}`);
+    });
+  }
+
+  private registerLibraryAnalyzers(): void {
+    const registrations: AnalyzerRegistration[] = [
+      {
+        id: 'prisma',
+        name: 'Prisma ORM Analyzer',
+        type: 'library',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['prisma', '@prisma/client'],
+          files: ['prisma/schema.prisma']
+        },
+        requires: ['typescript-javascript'],
+        analyzer: new PrismaAnalyzer()
+      },
+      {
+        id: 'socketio',
+        name: 'Socket.io Analyzer',
+        type: 'library',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['socket.io', 'socket.io-client']
+        },
+        requires: ['typescript-javascript'],
+        analyzer: new SocketIOAnalyzer()
+      }
+    ];
+
+    registrations.forEach(registration => {
+      this.orchestrator.registerAnalyzer(registration);
+      this.logger.log(`  ✓ Registered library analyzer: ${registration.name}`);
     });
   }
 }

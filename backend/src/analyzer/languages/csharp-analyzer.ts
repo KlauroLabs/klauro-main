@@ -6,7 +6,8 @@ import {
 import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
-import { ASTRunner, CSharpASTNode } from '../core/ast-runner';
+import { TreeSitterParser } from '../core/tree-sitter-parser';
+import type { CSharpASTNode } from '../core/ast-types';
 import * as path from 'path';
 
 interface CSharpClass {
@@ -139,30 +140,31 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   private entityFrameworkDetected = false;
   private dotNetCoreProject = false;
   private dotNetFrameworkProject = false;
-  private astRunner: ASTRunner;
+  private astRunner: TreeSitterParser;
   private astCache = new Map<string, CSharpASTNode>();
   private todoCounter = 0;
   private commentCounter = 0;
 
   constructor() {
     super(
-      'csharp-analyzer',
+      'csharp',
       'C# Language Analyzer',
       '1.0.0',
       'language'
     );
-    this.astRunner = new ASTRunner();
+    this.astRunner = new TreeSitterParser();
   }
 
   async canAnalyze(projectPath: string): Promise<boolean> {
     try {
       const csharpFiles = await glob(['**/*.cs'], {
         cwd: projectPath,
-        ignore: ['**/bin/**', '**/obj/**', '**/.git/**']
+        ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**']
       });
 
-      const projectFiles = await glob(['*.csproj', '*.sln', '*.vbproj'], {
-        cwd: projectPath
+      const projectFiles = await glob(['**/*.csproj', '**/*.sln', '**/*.vbproj'], {
+        cwd: projectPath,
+        ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**']
       });
 
       return csharpFiles.length > 0 || projectFiles.length > 0;
@@ -184,7 +186,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
 
       const csharpFiles = await glob(['**/*.cs'], {
         cwd: context.projectPath,
-        ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/Tests/**', '**/*Test.cs', '**/*Tests.cs']
+        ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**', '**/Tests/**', '**/*Test.cs', '**/*Tests.cs']
       });
 
       const namespaces = new Map<string, string[]>();
@@ -197,20 +199,34 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       this.buildNamespaceHierarchy(namespaces, nodes, edges);
       this.detectAspNetPatterns(nodes, edges, entryPoints);
       this.buildInheritanceRelationships(nodes, edges);
+      await this.buildProjectReferenceEdges(context.projectPath, nodes, edges);
+      this.buildInterfaceImplementationEdges(nodes, edges);
+      this.linkEnumUsages(nodes, edges);
 
       await this.analyzeCallGraph(context.projectPath, nodes, edges, exitPoints);
 
-      return this.createContribution(nodes, edges, entryPoints, exitPoints, {
+      const casLibraries = libraries.map((lib: any) => ({
+        id: `lib_${this.sanitizeId(lib.name)}`,
+        name: lib.name,
+        version: lib.version,
+        type: lib.type === 'nuget_package' ? 'production' as const : 'production' as const,
+        category: lib.type === 'project_reference' ? 'local' : 'nuget',
+        package_manager: 'nuget',
+        metadata: lib.metadata
+      }));
+
+      const contribution = this.createContribution(nodes, edges, entryPoints, exitPoints, {
         framework_specific: {
           language: 'csharp',
           aspNetCore: this.aspNetCoreDetected,
           entityFramework: this.entityFrameworkDetected,
           dotNetVersion: this.dotNetCoreProject ? 'core' : this.dotNetFrameworkProject ? 'framework' : 'unknown',
-          libraries,
           filesAnalyzed: csharpFiles.length,
           namespacesFound: namespaces.size
         }
       });
+      contribution.libraries = casLibraries;
+      return contribution;
 
     } catch (error) {
       throw new AnalyzerError(
@@ -221,23 +237,30 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   }
 
   private async detectProjectType(projectPath: string): Promise<void> {
-    const csprojFiles = await glob(['*.csproj'], { cwd: projectPath });
+    const csprojFiles = await glob(['**/*.csproj'], {
+      cwd: projectPath,
+      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**']
+    });
 
     for (const csprojFile of csprojFiles) {
       const csprojPath = `${projectPath}/${csprojFile}`;
       try {
         const csprojContent = await fs.readFile(csprojPath, 'utf-8');
 
-        this.dotNetCoreProject = csprojContent.includes('<TargetFramework>net') ||
+        this.dotNetCoreProject = this.dotNetCoreProject ||
+                                csprojContent.includes('<TargetFramework>net') ||
                                 csprojContent.includes('<TargetFrameworks>net');
 
-        this.dotNetFrameworkProject = csprojContent.includes('<TargetFrameworkVersion>') ||
+        this.dotNetFrameworkProject = this.dotNetFrameworkProject ||
+                                     csprojContent.includes('<TargetFrameworkVersion>') ||
                                      csprojContent.includes('Microsoft.NETFramework');
 
-        this.aspNetCoreDetected = csprojContent.includes('Microsoft.AspNetCore') ||
+        this.aspNetCoreDetected = this.aspNetCoreDetected ||
+                                 csprojContent.includes('Microsoft.AspNetCore') ||
                                  csprojContent.includes('AspNetCore.Mvc');
 
-        this.entityFrameworkDetected = csprojContent.includes('Microsoft.EntityFrameworkCore') ||
+        this.entityFrameworkDetected = this.entityFrameworkDetected ||
+                                      csprojContent.includes('Microsoft.EntityFrameworkCore') ||
                                       csprojContent.includes('EntityFramework');
       } catch (error) {
         console.warn(`Failed to read project file ${csprojFile}:`, error);
@@ -246,15 +269,22 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   }
 
   private async extractDependencies(projectPath: string, libraries: any[]): Promise<void> {
-    const csprojFiles = await glob(['*.csproj'], { cwd: projectPath });
+    const csprojFiles = await glob(['**/*.csproj'], {
+      cwd: projectPath,
+      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**']
+    });
 
     for (const csprojFile of csprojFiles) {
       await this.extractCsprojDependencies(`${projectPath}/${csprojFile}`, libraries);
     }
 
-    const packagesConfigPath = `${projectPath}/packages.config`;
-    if (await fs.pathExists(packagesConfigPath)) {
-      await this.extractPackagesConfigDependencies(packagesConfigPath, libraries);
+    const packagesConfigFiles = await glob(['**/packages.config'], {
+      cwd: projectPath,
+      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**']
+    });
+
+    for (const packagesFile of packagesConfigFiles) {
+      await this.extractPackagesConfigDependencies(`${projectPath}/${packagesFile}`, libraries);
     }
   }
 
@@ -347,23 +377,28 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       }
 
       const fileId = `file_${this.sanitizeId(relativePath)}`;
-      nodes.push(this.createNode(
-        fileId,
-        relativePath.split('/').pop() || 'unknown.cs',
-        'file',
-        1,
-        fullPath,
-        1,
-        lines.length,
-        {
-          namespace: namespace || 'global',
-          usings: usings.map(u => u.namespace),
-          classCount: classes.length,
-          interfaceCount: interfaces.length,
-          enumCount: enums.length,
-          structCount: structs.length
-        }
-      ));
+      const fileComments = this.extractCommentsFromFile(content, fullPath);
+      const fileTodos = this.extractTodosFromComments(fileComments, fullPath);
+
+      const fileNode = this.createNodeBuilder(fileId, relativePath.split('/').pop() || 'unknown.cs', 'file')
+        .withLevel(1, this.getLevelName(1))
+        .withSource({ file: fullPath, line: 1, end_line: lines.length })
+        .withMetadata({
+          language: 'csharp',
+          attributes: {
+            namespace: namespace || 'global',
+            usings: usings.map(u => u.namespace),
+            classCount: classes.length,
+            interfaceCount: interfaces.length,
+            enumCount: enums.length,
+            structCount: structs.length
+          }
+        })
+        .withComments(fileComments.length > 0 ? fileComments : undefined)
+        .withTodos(fileTodos.length > 0 ? fileTodos : undefined)
+        .withAnalyzers([this.analyzerId], this.analyzerId)
+        .build();
+      nodes.push(fileNode);
 
       for (const using of usings) {
         const usingId = `using_${fileId}_${this.sanitizeId(using.namespace)}`;
@@ -469,6 +504,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       .withDocumentation(documentation)
       .withComments(classComments.length > 0 ? classComments : undefined)
       .withTodos(todos.length > 0 ? todos : undefined)
+      .withAnalyzers([this.analyzerId], this.analyzerId)
       .build();
 
     nodes.push(classNode);
@@ -581,6 +617,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
         .withComments(methodComments.length > 0 ? methodComments : undefined)
         .withTodos(methodTodos.length > 0 ? methodTodos : undefined)
         .withImplementationStatus(implementationStatus)
+        .withAnalyzers([this.analyzerId], this.analyzerId)
         .build();
 
       nodes.push(methodNode);
@@ -632,23 +669,28 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     entryPoints: any[]
   ): Promise<void> {
     const interfaceId = `interface_${this.sanitizeId(intf.namespace)}_${this.sanitizeId(intf.name)}`;
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const lines = content.split('\n');
+    const documentation = this.extractDocumentationFromXmlComment(lines, intf.lineStart - 1);
 
-    nodes.push(this.createNode(
-      interfaceId,
-      intf.name,
-      'interface',
-      2,
-      fullPath,
-      intf.lineStart,
-      intf.lineEnd,
-      {
-        namespace: intf.namespace,
-        baseInterfaces: intf.baseInterfaces,
-        attributes: intf.attributes,
-        methodCount: intf.methods.length,
-        propertyCount: intf.properties.length
-      }
-    ));
+    const interfaceNode = this.createNodeBuilder(interfaceId, intf.name, 'interface')
+      .withLevel(2, this.getLevelName(2))
+      .withCategory('structures', ['interfaces'])
+      .withSource({ file: fullPath, line: intf.lineStart, end_line: intf.lineEnd })
+      .withMetadata({
+        language: 'csharp',
+        attributes: {
+          namespace: intf.namespace,
+          baseInterfaces: intf.baseInterfaces,
+          csharpAttributes: intf.attributes,
+          methodCount: intf.methods.length,
+          propertyCount: intf.properties.length
+        }
+      })
+      .withDocumentation(documentation)
+      .withAnalyzers([this.analyzerId], this.analyzerId)
+      .build();
+    nodes.push(interfaceNode);
 
     edges.push(this.createEdge(
       `${fileId}_contains_${interfaceId}`,
@@ -659,20 +701,22 @@ export class CSharpAnalyzer extends BaseAnalyzer {
 
     for (const method of intf.methods) {
       const methodId = `method_${interfaceId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
-      nodes.push(this.createNode(
-        methodId,
-        method.name,
-        'interface_method',
-        4,
-        fullPath,
-        method.lineStart,
-        method.lineEnd,
-        {
-          returnType: method.returnType,
-          parameters: method.parameters,
-          attributes: method.attributes
-        }
-      ));
+      const methodNode = this.createNodeBuilder(methodId, method.name, 'interface_method')
+        .withLevel(4, this.getLevelName(4))
+        .withCategory('methods', ['interface-methods'])
+        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withParent(interfaceId)
+        .withMetadata({
+          language: 'csharp',
+          attributes: {
+            returnType: method.returnType,
+            parameters: method.parameters,
+            csharpAttributes: method.attributes
+          }
+        })
+        .withAnalyzers([this.analyzerId], this.analyzerId)
+        .build();
+      nodes.push(methodNode);
 
       edges.push(this.createEdge(
         `${interfaceId}_declares_${methodId}`,
@@ -684,20 +728,22 @@ export class CSharpAnalyzer extends BaseAnalyzer {
 
     for (const property of intf.properties) {
       const propertyId = `property_${interfaceId}_${this.sanitizeId(property.name)}`;
-      nodes.push(this.createNode(
-        propertyId,
-        property.name,
-        'interface_property',
-        4,
-        fullPath,
-        property.lineNumber,
-        property.lineNumber,
-        {
-          type: property.type,
-          hasGetter: property.hasGetter,
-          hasSetter: property.hasSetter
-        }
-      ));
+      const propertyNode = this.createNodeBuilder(propertyId, property.name, 'interface_property')
+        .withLevel(4, this.getLevelName(4))
+        .withCategory('properties', ['interface-properties'])
+        .withSource({ file: fullPath, line: property.lineNumber, end_line: property.lineNumber })
+        .withParent(interfaceId)
+        .withMetadata({
+          language: 'csharp',
+          attributes: {
+            type: property.type,
+            hasGetter: property.hasGetter,
+            hasSetter: property.hasSetter
+          }
+        })
+        .withAnalyzers([this.analyzerId], this.analyzerId)
+        .build();
+      nodes.push(propertyNode);
 
       edges.push(this.createEdge(
         `${interfaceId}_declares_${propertyId}`,
@@ -730,22 +776,23 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   ): Promise<void> {
     const enumId = `enum_${this.sanitizeId(enm.namespace)}_${this.sanitizeId(enm.name)}`;
 
-    nodes.push(this.createNode(
-      enumId,
-      enm.name,
-      'enum',
-      2,
-      fullPath,
-      enm.lineStart,
-      enm.lineEnd,
-      {
-        namespace: enm.namespace,
-        modifiers: enm.modifiers,
-        baseType: enm.baseType,
-        attributes: enm.attributes,
-        valueCount: enm.values.length
-      }
-    ));
+    const enumNode = this.createNodeBuilder(enumId, enm.name, 'enum')
+      .withLevel(2, this.getLevelName(2))
+      .withCategory('structures', ['enums'])
+      .withSource({ file: fullPath, line: enm.lineStart, end_line: enm.lineEnd })
+      .withMetadata({
+        language: 'csharp',
+        attributes: {
+          namespace: enm.namespace,
+          modifiers: enm.modifiers,
+          baseType: enm.baseType,
+          csharpAttributes: enm.attributes,
+          valueCount: enm.values.length
+        }
+      })
+      .withAnalyzers([this.analyzerId], this.analyzerId)
+      .build();
+    nodes.push(enumNode);
 
     edges.push(this.createEdge(
       `${fileId}_contains_${enumId}`,
@@ -803,25 +850,26 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   ): Promise<void> {
     const structId = `struct_${this.sanitizeId(struct.namespace)}_${this.sanitizeId(struct.name)}`;
 
-    nodes.push(this.createNode(
-      structId,
-      struct.name,
-      'struct',
-      2,
-      fullPath,
-      struct.lineStart,
-      struct.lineEnd,
-      {
-        namespace: struct.namespace,
-        modifiers: struct.modifiers,
-        implementedInterfaces: struct.implementedInterfaces,
-        attributes: struct.attributes,
-        fieldCount: struct.fields.length,
-        propertyCount: struct.properties.length,
-        methodCount: struct.methods.length,
-        isReadonly: struct.isReadonly
-      }
-    ));
+    const structNode = this.createNodeBuilder(structId, struct.name, 'struct')
+      .withLevel(2, this.getLevelName(2))
+      .withCategory('structures', ['structs'])
+      .withSource({ file: fullPath, line: struct.lineStart, end_line: struct.lineEnd })
+      .withMetadata({
+        language: 'csharp',
+        attributes: {
+          namespace: struct.namespace,
+          modifiers: struct.modifiers,
+          implementedInterfaces: struct.implementedInterfaces,
+          csharpAttributes: struct.attributes,
+          fieldCount: struct.fields.length,
+          propertyCount: struct.properties.length,
+          methodCount: struct.methods.length,
+          isReadonly: struct.isReadonly
+        }
+      })
+      .withAnalyzers([this.analyzerId], this.analyzerId)
+      .build();
+    nodes.push(structNode);
 
     edges.push(this.createEdge(
       `${fileId}_contains_${structId}`,
@@ -1462,11 +1510,16 @@ export class CSharpAnalyzer extends BaseAnalyzer {
           if (!node || typeof node !== 'object') return;
 
           if (node.type === 'method' && attributes.some(a => a.includes('Http'))) {
+            const httpMethod = aspNetAttribute.replace('Http', '').toUpperCase() || 'GET';
             entryPoints.push({
               id: `entry_aspnet_${node.id}`,
               name: `ASP.NET Endpoint: ${node.name}`,
-              type: 'aspnet_endpoint',
+              type: 'http',
               source_node: node.id,
+              trigger: {
+                method: httpMethod,
+                path: `/${node.name}`
+              },
               metadata: {
                 attribute: aspNetAttribute,
                 methodName: node.name
@@ -1514,6 +1567,100 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     }
   }
 
+  private async buildProjectReferenceEdges(projectPath: string, nodes: CASNode[], edges: CASEdge[]): Promise<void> {
+    const csprojFiles = await glob(['**/*.csproj'], {
+      cwd: projectPath,
+      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**']
+    });
+
+    for (const csprojFile of csprojFiles) {
+      const fullPath = `${projectPath}/${csprojFile}`;
+      try {
+        const content = await fs.readFile(fullPath, 'utf-8');
+        const projectRefPattern = /<ProjectReference\s+Include="([^"]+)"/g;
+        let match;
+
+        const sourceProjectName = path.basename(csprojFile, '.csproj');
+        const sourceNs = nodes.find(n => n.type === 'namespace' && n.name.toLowerCase().includes(sourceProjectName.toLowerCase()));
+
+        while ((match = projectRefPattern.exec(content)) !== null) {
+          const refPath = match[1].replace(/\\/g, '/');
+          const targetProjectName = path.basename(refPath, '.csproj');
+          const targetNs = nodes.find(n => n.type === 'namespace' && n.name.toLowerCase().includes(targetProjectName.toLowerCase()));
+
+          if (sourceNs && targetNs) {
+            const edgeId = `project_ref_${this.sanitizeId(sourceProjectName)}_to_${this.sanitizeId(targetProjectName)}`;
+            if (!edges.some(e => e.id === edgeId)) {
+              edges.push(this.createEdge(edgeId, sourceNs.id, targetNs.id, 'project-reference', 'structure', {
+                source_project: sourceProjectName,
+                target_project: targetProjectName,
+                reference_path: refPath
+              }));
+            }
+          }
+        }
+      } catch {}
+    }
+  }
+
+  private buildInterfaceImplementationEdges(nodes: CASNode[], edges: CASEdge[]): void {
+    const classNodes = nodes.filter(n => n.type === 'class' || n.type === 'service' || n.type === 'viewmodel' || n.type === 'window' || n.type === 'ui_component');
+    const interfaceNodes = nodes.filter(n => n.type === 'interface');
+
+    for (const classNode of classNodes) {
+      const implementedInterfaces = classNode.metadata?.attributes?.implementedInterfaces as string[] || [];
+      for (const ifaceName of implementedInterfaces) {
+        const cleanName = ifaceName.replace(/<.*>/, '').trim();
+        const interfaceNode = interfaceNodes.find(n => n.name === cleanName);
+        if (interfaceNode) {
+          const edgeId = `implements_${classNode.id}_${interfaceNode.id}`;
+          if (!edges.some(e => e.id === edgeId)) {
+            edges.push(this.createEdge(edgeId, classNode.id, interfaceNode.id, 'implements', 'structure', {
+              interface_name: cleanName,
+              class_name: classNode.name
+            }));
+          }
+        }
+      }
+    }
+  }
+
+  private linkEnumUsages(nodes: CASNode[], edges: CASEdge[]): void {
+    const enumNodes = nodes.filter(n => n.type === 'enum');
+    const memberNodes = nodes.filter(n =>
+      n.type === 'field' || n.type === 'property' || n.type === 'method'
+    );
+
+    for (const enumNode of enumNodes) {
+      for (const member of memberNodes) {
+        const memberType = member.metadata?.attributes?.type as string ||
+                          member.metadata?.attributes?.returnType as string || '';
+        if (memberType === enumNode.name || memberType.includes(`<${enumNode.name}>`) || memberType.includes(`${enumNode.name}?`)) {
+          const edgeId = `uses_enum_${member.id}_${enumNode.id}`;
+          if (!edges.some(e => e.id === edgeId)) {
+            edges.push(this.createEdge(edgeId, member.id, enumNode.id, 'uses-type', 'structure', {
+              enum_name: enumNode.name,
+              usage_context: member.type
+            }));
+          }
+        }
+      }
+
+      for (const method of memberNodes.filter(n => n.type === 'method')) {
+        const params = method.metadata?.attributes?.parameters as Array<{type: string}> || [];
+        if (params.some(p => p.type === enumNode.name)) {
+          const edgeId = `param_uses_enum_${method.id}_${enumNode.id}`;
+          if (!edges.some(e => e.id === edgeId)) {
+            edges.push(this.createEdge(edgeId, method.id, enumNode.id, 'uses-type', 'structure', {
+              enum_name: enumNode.name,
+              usage_context: 'parameter'
+            }));
+          }
+        }
+      }
+    }
+  }
+
   private isSystemNamespace(namespace: string): boolean {
     const systemNamespaces = [
       'System', 'Microsoft', 'Windows', 'Collections', 'Linq',
@@ -1527,7 +1674,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   private async analyzeCallGraph(projectPath: string, nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[]): Promise<void> {
     const csharpFiles = await glob(['**/*.cs'], {
       cwd: projectPath,
-      ignore: ['**/bin/**', '**/obj/**', '**/.git/**']
+      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**']
     });
 
     const methodNodes = nodes.filter(n => n.type === 'method');

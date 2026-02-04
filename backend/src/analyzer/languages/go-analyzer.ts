@@ -6,7 +6,8 @@ import {
 import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
-import { ASTRunner, GoASTNode } from '../core/ast-runner';
+import { TreeSitterParser } from '../core/tree-sitter-parser';
+import type { GoASTNode } from '../core/ast-types';
 import * as path from 'path';
 
 interface GoStruct {
@@ -123,19 +124,19 @@ export class GoAnalyzer extends BaseAnalyzer {
   private fiberFrameworkDetected = false;
   private goModulesProject = false;
   private vendorProject = false;
-  private astRunner: ASTRunner;
+  private astRunner: TreeSitterParser;
   private astCache = new Map<string, GoASTNode>();
   private todoCounter = 0;
   private commentCounter = 0;
 
   constructor() {
     super(
-      'go-analyzer',
+      'go',
       'Go Language Analyzer',
       '1.0.0',
       'language'
     );
-    this.astRunner = new ASTRunner();
+    this.astRunner = new TreeSitterParser();
   }
 
   async canAnalyze(projectPath: string): Promise<boolean> {

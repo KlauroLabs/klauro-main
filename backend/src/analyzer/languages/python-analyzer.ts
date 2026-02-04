@@ -127,7 +127,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
 
   constructor() {
     super(
-      'python-analyzer',
+      'python',
       'Python Language Analyzer',
       '1.0.0',
       'language'
@@ -380,6 +380,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
         })
         .withComments(fileComments)
         .withTodos(fileTodos)
+        .withAnalyzers([this.analyzerId], this.analyzerId)
         .withTags([`analyzer:${this.analyzerId}`])
         .build();
       nodes.push(fileNode);
@@ -489,6 +490,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
       .withComments(cls.comments)
       .withTodos(cls.todos)
       .withImplementationStatus(cls.implementationStatus)
+      .withAnalyzers([this.analyzerId], this.analyzerId)
       .withTags([`analyzer:${this.analyzerId}`])
       .build();
     nodes.push(classNode);
@@ -504,6 +506,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
       const methodId = `method_${classId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
       const methodNode = this.createNodeBuilder(methodId, method.name, 'method')
         .withLevel(4, this.getLevelName(4))
+        .withParent(classId)
         .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
         .withMetadata({
           framework: this.analyzerName.toLowerCase().replace(' analyzer', ''),
@@ -524,6 +527,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
         .withComments(method.comments)
         .withTodos(method.todos)
         .withImplementationStatus(method.implementationStatus)
+        .withAnalyzers([this.analyzerId], this.analyzerId)
         .withTags([`analyzer:${this.analyzerId}`])
         .build();
       nodes.push(methodNode);
@@ -591,6 +595,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
       .withComments(func.comments)
       .withTodos(func.todos)
       .withImplementationStatus(func.implementationStatus)
+      .withAnalyzers([this.analyzerId], this.analyzerId)
       .withTags([`analyzer:${this.analyzerId}`])
       .build();
     nodes.push(functionNode);

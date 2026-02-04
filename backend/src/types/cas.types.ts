@@ -147,6 +147,13 @@ export interface CASSystem {
   metadata?: Record<string, any>;
 }
 
+export interface CASNodePerspective {
+  hierarchy: string[];
+  level: number;
+  priority: number;
+  metadata?: Record<string, any>;
+}
+
 export interface CASNode {
   id: string;
   name: string;
@@ -154,7 +161,9 @@ export interface CASNode {
   qualified_name?: string;
   category?: string;
   subcategories?: string[];
-  perspectives?: string[]; // New in v1.2: perspectives this node appears in
+  perspectives?: Record<string, CASNodePerspective>;
+  analyzers?: string[];
+  primaryAnalyzer?: string;
   level?: number;
   level_name?: string;
   description?: string;
@@ -937,6 +946,24 @@ export class CASNodeBuilder {
 
   withImplementationStatus(status?: CASImplementationStatus): this {
     if (status) this.node.implementation_status = status;
+    return this;
+  }
+
+  withAnalyzers(analyzers: string[], primaryAnalyzer?: string): this {
+    this.node.analyzers = analyzers;
+    if (primaryAnalyzer) {
+      this.node.primaryAnalyzer = primaryAnalyzer;
+    } else if (analyzers.length > 0) {
+      this.node.primaryAnalyzer = analyzers[0];
+    }
+    return this;
+  }
+
+  withPerspective(perspectiveId: string, perspective: CASNodePerspective): this {
+    if (!this.node.perspectives) {
+      this.node.perspectives = {};
+    }
+    this.node.perspectives[perspectiveId] = perspective;
     return this;
   }
 

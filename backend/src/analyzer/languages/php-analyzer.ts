@@ -6,7 +6,8 @@ import {
 import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
-import { ASTRunner, PHPASTNode } from '../core/ast-runner';
+import { TreeSitterParser } from '../core/tree-sitter-parser';
+import type { PHPASTNode } from '../core/ast-types';
 import * as path from 'path';
 
 interface PHPClass {
@@ -154,19 +155,19 @@ export class PHPAnalyzer extends BaseAnalyzer {
   private drupalFrameworkDetected = false;
   private wordPressFrameworkDetected = false;
   private composerProject = false;
-  private astRunner: ASTRunner;
+  private astRunner: TreeSitterParser;
   private astCache = new Map<string, PHPASTNode>();
   private todoCounter = 0;
   private commentCounter = 0;
 
   constructor() {
     super(
-      'php-analyzer',
+      'php',
       'PHP Language Analyzer',
       '1.0.0',
       'language'
     );
-    this.astRunner = new ASTRunner();
+    this.astRunner = new TreeSitterParser();
   }
 
   async canAnalyze(projectPath: string): Promise<boolean> {

@@ -99,7 +99,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
   constructor() {
     super(
-      'typescript-javascript-analyzer',
+      'typescript-javascript',
       'TypeScript/JavaScript AST Analyzer',
       '1.0.0',
       'language'
@@ -110,7 +110,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     try {
       const files = await glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
         cwd: projectPath,
-        ignore: ['node_modules/**', 'dist/**', 'build/**', '.git/**']
+        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**']
       });
       return files.length > 0;
     } catch {
@@ -135,7 +135,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
       const sourceFiles = await glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
         cwd: context.projectPath,
-        ignore: ['node_modules/**', 'dist/**', 'build/**', '.git/**']
+        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**']
       });
 
       this.isTypeScriptProject = sourceFiles.filter(f => f.endsWith('.ts') || f.endsWith('.tsx')).length >
@@ -151,6 +151,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         const fullPath = path.join(context.projectPath, file);
         await this.analyzeFile(fullPath, file, nodes, edges, entryPoints, exitPoints, context);
       }
+
+      this.detectServerEntryPoints(sourceFiles, nodes, entryPoints, context.projectPath);
 
       this.buildEnhancedCallGraph(nodes, edges, entryPoints, exitPoints);
 
@@ -850,10 +852,48 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   }
 
   private buildEnhancedCallGraph(nodes: CASNode[], edges: CASEdge[], entryPoints: CASEntryPoint[], exitPoints: CASExitPoint[]): void {
-    // Legacy method calls are now handled by integrateEnhancedCallGraphData
-    // This method now focuses on final integration and validation
     this.validateCallGraph(nodes, edges);
     this.enrichNodesWithCallData(nodes, edges);
+  }
+
+  private detectServerEntryPoints(sourceFiles: string[], nodes: CASNode[], entryPoints: CASEntryPoint[], projectPath: string): void {
+    const existingEntryPointIds = new Set(entryPoints.map(ep => ep.id));
+    const serverFilePattern = /^(src\/)?((server|index)\.(ts|js))$/;
+
+    for (const file of sourceFiles) {
+      if (!serverFilePattern.test(file)) continue;
+
+      const cached = this.astCache.get(file);
+      if (!cached) continue;
+
+      if (!(/\.listen\s*\(/.test(cached.content) || /createServer\s*\(/.test(cached.content))) continue;
+
+      const nodeId = this.findFileNodeId(file, nodes);
+      if (!nodeId) continue;
+
+      const entryId = `entry_server_${file.replace(/[^a-zA-Z0-9]/g, '_')}`;
+      if (existingEntryPointIds.has(entryId)) continue;
+
+      entryPoints.push({
+        id: entryId,
+        source_node: nodeId,
+        type: 'http',
+        name: `SERVER ${path.basename(file)}`,
+        trigger: {
+          path: '/'
+        },
+        metadata: {
+          serverFile: file
+        }
+      });
+      existingEntryPointIds.add(entryId);
+    }
+  }
+
+  private findFileNodeId(relativePath: string, nodes: CASNode[]): string | undefined {
+    const fileId = `file_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    const found = nodes.find(n => n.id === fileId);
+    return found?.id;
   }
 
   private integrateEnhancedCallGraphData(
@@ -2340,28 +2380,38 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
   private tagNodesWithPerspectives(nodes: CASNode[], edges: CASEdge[]): void {
     nodes.forEach(node => {
-      node.perspectives = [];
-
       if (!node || typeof node !== 'object') return;
+
+      if (!node.perspectives) {
+        node.perspectives = {};
+      }
 
       if (node.type === 'file' || node.type === 'module' ||
           node.type === 'class' || node.type === 'interface' ||
           node.type === 'type' || node.type === 'enum') {
-        node.perspectives.push('typescript-structure');
+        node.perspectives['typescript-structure'] = {
+          hierarchy: ['typescript', 'structure'],
+          level: node.level || 1,
+          priority: 1
+        };
       }
-
-      if (!node || typeof node !== 'object') return;
 
       if (node.type === 'file' || node.type === 'module' ||
           node.type === 'import' || node.type === 'export') {
-        node.perspectives.push('typescript-dependencies');
+        node.perspectives['typescript-dependencies'] = {
+          hierarchy: ['typescript', 'dependencies'],
+          level: node.level || 1,
+          priority: 2
+        };
       }
-
-      if (!node || typeof node !== 'object') return;
 
       if (node.type === 'class' || node.type === 'interface' ||
           node.type === 'abstract-class') {
-        node.perspectives.push('typescript-inheritance');
+        node.perspectives['typescript-inheritance'] = {
+          hierarchy: ['typescript', 'inheritance'],
+          level: node.level || 1,
+          priority: 3
+        };
       }
 
       if (!node.metadata) {

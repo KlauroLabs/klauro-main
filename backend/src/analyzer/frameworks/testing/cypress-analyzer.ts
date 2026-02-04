@@ -83,7 +83,7 @@ interface CypressFixture {
 export class CypressAnalyzer extends BaseAnalyzer {
   constructor() {
     super(
-      'cypress-analyzer',
+      'cypress',
       'Cypress E2E Testing Framework Analyzer',
       '1.0.0',
       'framework'
@@ -152,7 +152,7 @@ export class CypressAnalyzer extends BaseAnalyzer {
     try {
       const cypressFiles = await glob(['cypress/**/*.{js,ts}', '**/*cy.{js,ts}', '**/*.cy.{js,ts}'], {
         cwd: context.projectPath,
-        ignore: ['node_modules/**', 'dist/**', 'build/**', '.git/**']
+        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**']
       });
 
       const configuration = await this.analyzeCypressConfiguration(context.projectPath, nodes);
