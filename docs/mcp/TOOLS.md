@@ -49,7 +49,7 @@ The first tool to call when orienting on a codebase. Returns a condensed intelli
 - `entry_point_count` and breakdown by type
 - `node_counts` - Total + by type
 - `edge_counts` - Total + by type
-- `analyzer_contributions` - Which analyzers ran, nodes/edges contributed, execution time
+- `analyzer_contributions` - Which analyzers ran: `analyzer_id`, `analyzer_name`, `analyzer_type`, nodes/edges contributed, execution time, `analysis_scope` (files analyzed, files skipped, patterns detected)
 - `analysis_errors` - Count and severity breakdown
 
 ### `get_system_overview`
@@ -88,12 +88,12 @@ Multi-view analysis perspectives with connection rules and layout hints.
 
 ### `search_nodes`
 
-Find code elements by name, qualified name, or description. Supports filtering by type, category, and hierarchy level.
+Find code elements by name, qualified name, or description. Supports filtering by type, category, and hierarchy level. Multi-word queries use camelCase-aware matching -- searching "react analyzer" will match `ReactAnalyzer`, `react-analyzer`, etc.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
-| `query` | string | yes | Search text (matches name, qualified_name, description) |
+| `query` | string | yes | Search text (matches name, qualified_name, description). Multi-word queries also match across camelCase/kebab-case/snake_case boundaries |
 | `type` | string | no | Filter by node type (class, function, module, service, controller, etc.) |
 | `category` | string | no | Filter by category |
 | `level` | number | no | Filter by hierarchy level |

@@ -17,7 +17,7 @@ When you need codebase context, call `get_summary` with this project's root path
 - `get_system_overview` -- full system metadata when you need more than the summary
 
 ### Before modifying code
-- `search_nodes` to locate the code element by name
+- `search_nodes` to locate the code element by name (supports multi-word camelCase-aware search, e.g. "react analyzer" finds `ReactAnalyzer`)
 - `get_node` for full context: connections, decorators, intent, stability
 - `assess_change_risk` to understand blast radius and downstream impact
 - `get_callers` to see what depends on it

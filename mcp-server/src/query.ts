@@ -56,11 +56,13 @@ export function buildSummary(cas: CASOutput) {
     node_counts: { total: cas.nodes.length, by_type: nodesByType },
     edge_counts: { total: cas.edges.length, by_type: edgesByType },
     analyzer_contributions: cas.analyzer_contributions.map(c => ({
+      analyzer_id: c.analyzer_id,
       analyzer_name: c.analyzer_name,
       analyzer_type: c.analyzer_type || c.contribution_type,
       nodes_contributed: c.nodes_contributed || c.nodes_created || 0,
       edges_contributed: c.edges_contributed || c.edges_created || 0,
       execution_time_ms: c.execution_time_ms,
+      analysis_scope: c.analysis_scope || null,
     })),
     analysis_errors: {
       total: cas.analysis_errors?.length || 0,
@@ -87,6 +89,21 @@ export function getSystemOverview(cas: CASOutput) {
   };
 }
 
+function splitCamelCase(str: string): string[] {
+  return str
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/[-_./]/g, ' ')
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function matchesWordBoundary(name: string, queryWords: string[]): boolean {
+  const nameWords = splitCamelCase(name);
+  return queryWords.every(qw => nameWords.some(nw => nw.includes(qw)));
+}
+
 export function searchNodes(
   cas: CASOutput,
   query: string,
@@ -94,12 +111,18 @@ export function searchNodes(
 ) {
   const limit = opts.limit || 25;
   const queryLower = query.toLowerCase();
+  const queryWords = queryLower.split(/\s+/).filter(Boolean);
+  const isMultiWord = queryWords.length > 1;
 
   let results = cas.nodes.filter(n => {
-    const nameMatch = n.name.toLowerCase().includes(queryLower) ||
+    const directMatch = n.name.toLowerCase().includes(queryLower) ||
       (n.qualified_name && n.qualified_name.toLowerCase().includes(queryLower)) ||
       (n.description && n.description.toLowerCase().includes(queryLower));
-    if (!nameMatch) return false;
+    const camelMatch = isMultiWord && (
+      matchesWordBoundary(n.name, queryWords) ||
+      (n.qualified_name && matchesWordBoundary(n.qualified_name, queryWords))
+    );
+    if (!directMatch && !camelMatch) return false;
     if (opts.type && n.type !== opts.type) return false;
     if (opts.category && n.category !== opts.category) return false;
     if (opts.level !== undefined && n.level !== opts.level) return false;
