@@ -21,6 +21,7 @@ import {
   VueAnalyzer,
   AngularAnalyzer,
   LaravelAnalyzer,
+  SymfonyAnalyzer,
   NextJSAnalyzer
 } from '../frameworks/web';
 
@@ -321,6 +322,18 @@ export class CASAnalyzerService {
         },
         requires: ['php'],
         analyzer: new LaravelAnalyzer()
+      },
+      {
+        id: 'symfony',
+        name: 'Symfony Analyzer',
+        type: 'framework',
+        version: '1.0.0',
+        detectPatterns: {
+          files: ['bin/console', 'composer.json'],
+          dependencies: ['symfony/framework-bundle']
+        },
+        requires: ['php'],
+        analyzer: new SymfonyAnalyzer()
       },
       {
         id: 'express',

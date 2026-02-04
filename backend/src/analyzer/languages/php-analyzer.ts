@@ -577,7 +577,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
     fullPath: string,
     nodes: CASNode[],
     edges: CASEdge[],
-    entryPoints: any[]
+    _entryPoints: any[]
   ): Promise<void> {
     const classId = `class_${this.sanitizeId(cls.namespace)}_${this.sanitizeId(cls.name)}`;
     const content = await fs.readFile(fullPath, 'utf-8');
@@ -710,20 +710,6 @@ export class PHPAnalyzer extends BaseAnalyzer {
         'has_method'
       ));
 
-      if (method.visibility === 'public' && !method.isConstructor && !method.isDestructor) {
-        entryPoints.push({
-          id: `entry_${methodId}`,
-          name: `Public method: ${cls.name}.${method.name}`,
-          type: 'public_method',
-          source_node: methodId,
-          metadata: {
-            className: cls.name,
-            methodName: method.name,
-            returnType: method.returnType,
-            parameters: method.parameters.map(p => p.type)
-          }
-        });
-      }
     }
 
     for (const constant of cls.constants) {
@@ -758,17 +744,6 @@ export class PHPAnalyzer extends BaseAnalyzer {
       ));
     }
 
-    entryPoints.push({
-      id: `entry_${classId}`,
-      name: `Class: ${cls.name}`,
-      type: 'class',
-      source_node: classId,
-      metadata: {
-        namespace: cls.namespace,
-        className: cls.name,
-        modifiers: cls.modifiers
-      }
-    });
   }
 
   private async processPHPInterface(
@@ -777,7 +752,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
     fullPath: string,
     nodes: CASNode[],
     edges: CASEdge[],
-    entryPoints: any[]
+    _entryPoints: any[]
   ): Promise<void> {
     const interfaceId = `interface_${this.sanitizeId(intf.namespace)}_${this.sanitizeId(intf.name)}`;
     const content = await fs.readFile(fullPath, 'utf-8');
@@ -819,21 +794,30 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
     for (const method of intf.methods) {
       const methodId = `method_${interfaceId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
-      nodes.push(this.createNode(
+      const methodDocs = this.extractDocumentationFromPhpDoc(method.docComment);
+
+      nodes.push(this.createNodeBuilder(
         methodId,
         method.name,
-        'interface_method',
-        4,
-        fullPath,
-        method.lineStart,
-        method.lineEnd,
-        {
-          visibility: method.visibility,
+        'interface_method'
+      )
+        .withLevel(4, 'Method/Function')
+        .withCategory('methods', ['interface-methods'])
+        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withMetadata({
+          is_exported: true,
+          attributes: {
+            visibility: method.visibility,
+            hasDocumentation: !!methodDocs
+          }
+        })
+        .withSignature({
           parameters: method.parameters,
-          returnType: method.returnType,
-          docComment: method.docComment
-        }
-      ));
+          return_type: method.returnType
+        })
+        .withParent(interfaceId)
+        .withDocumentation(methodDocs)
+        .build());
 
       edges.push(this.createEdge(
         `${interfaceId}_declares_${methodId}`,
@@ -845,19 +829,26 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
     for (const constant of intf.constants) {
       const constantId = `constant_${interfaceId}_${this.sanitizeId(constant.name)}`;
-      nodes.push(this.createNode(
+      const constantDocs = this.extractDocumentationFromPhpDoc(constant.docComment);
+
+      nodes.push(this.createNodeBuilder(
         constantId,
         constant.name,
-        'interface_constant',
-        4,
-        fullPath,
-        constant.lineNumber,
-        constant.lineNumber,
-        {
-          value: constant.value,
-          docComment: constant.docComment
-        }
-      ));
+        'interface_constant'
+      )
+        .withLevel(4, 'Constant/Property')
+        .withCategory('data', ['interface-constants'])
+        .withSource({ file: fullPath, line: constant.lineNumber })
+        .withMetadata({
+          is_exported: true,
+          attributes: {
+            value: constant.value,
+            hasDocumentation: !!constantDocs
+          }
+        })
+        .withParent(interfaceId)
+        .withDocumentation(constantDocs)
+        .build());
 
       edges.push(this.createEdge(
         `${interfaceId}_has_constant_${constantId}`,
@@ -866,17 +857,6 @@ export class PHPAnalyzer extends BaseAnalyzer {
         'has_constant'
       ));
     }
-
-    entryPoints.push({
-      id: `entry_${interfaceId}`,
-      name: `Interface: ${intf.name}`,
-      type: 'interface',
-      source_node: interfaceId,
-      metadata: {
-        namespace: intf.namespace,
-        interfaceName: intf.name
-      }
-    });
   }
 
   private async processPHPTrait(
@@ -885,26 +865,38 @@ export class PHPAnalyzer extends BaseAnalyzer {
     fullPath: string,
     nodes: CASNode[],
     edges: CASEdge[],
-    entryPoints: any[]
+    _entryPoints: any[]
   ): Promise<void> {
     const traitId = `trait_${this.sanitizeId(trait.namespace)}_${this.sanitizeId(trait.name)}`;
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const traitComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+      c.location.line >= trait.lineStart - 3 && c.location.line <= trait.lineStart
+    );
+    const traitTodos = this.extractTodosFromComments(traitComments, traitId);
+    const traitDocs = this.extractDocumentationFromPhpDoc(trait.docComment);
 
-    nodes.push(this.createNode(
+    nodes.push(this.createNodeBuilder(
       traitId,
       trait.name,
-      'trait',
-      2,
-      fullPath,
-      trait.lineStart,
-      trait.lineEnd,
-      {
-        namespace: trait.namespace,
-        usedTraits: trait.usedTraits,
-        docComment: trait.docComment,
-        propertyCount: trait.properties.length,
-        methodCount: trait.methods.length
-      }
-    ));
+      'trait'
+    )
+      .withLevel(2, 'Class/Trait')
+      .withCategory('structures', ['php-traits'])
+      .withSource({ file: fullPath, line: trait.lineStart, end_line: trait.lineEnd })
+      .withMetadata({
+        is_exported: true,
+        attributes: {
+          namespace: trait.namespace,
+          usedTraits: trait.usedTraits,
+          propertyCount: trait.properties.length,
+          methodCount: trait.methods.length,
+          hasDocumentation: !!traitDocs
+        }
+      })
+      .withDocumentation(traitDocs)
+      .withComments(traitComments.length > 0 ? traitComments : undefined)
+      .withTodos(traitTodos.length > 0 ? traitTodos : undefined)
+      .build());
 
     edges.push(this.createEdge(
       `${fileId}_contains_${traitId}`,
@@ -915,24 +907,32 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
     for (const property of trait.properties) {
       const propertyId = `property_${traitId}_${this.sanitizeId(property.name)}`;
-      nodes.push(this.createNode(
+      const propertyDocs = this.extractDocumentationFromPhpDoc(property.docComment);
+
+      nodes.push(this.createNodeBuilder(
         propertyId,
         property.name,
-        'property',
-        4,
-        fullPath,
-        property.lineNumber,
-        property.lineNumber,
-        {
-          visibility: property.visibility,
-          modifiers: property.modifiers,
-          type: property.type,
-          defaultValue: property.defaultValue,
-          docComment: property.docComment,
-          isStatic: property.isStatic,
-          isReadonly: property.isReadonly
-        }
-      ));
+        'property'
+      )
+        .withLevel(4, 'Property/Field')
+        .withCategory('data', ['trait-properties'])
+        .withSource({ file: fullPath, line: property.lineNumber })
+        .withMetadata({
+          is_exported: property.visibility === 'public',
+          attributes: {
+            type: property.type,
+            defaultValue: property.defaultValue,
+            visibility: property.visibility,
+            modifiers: property.modifiers,
+            isStatic: property.isStatic,
+            isReadonly: property.isReadonly,
+            propertyType: property.type || 'mixed',
+            hasDocumentation: !!propertyDocs
+          }
+        })
+        .withParent(traitId)
+        .withDocumentation(propertyDocs)
+        .build());
 
       edges.push(this.createEdge(
         `${traitId}_has_property_${propertyId}`,
@@ -942,27 +942,46 @@ export class PHPAnalyzer extends BaseAnalyzer {
       ));
     }
 
+    const lines = content.split('\n');
     for (const method of trait.methods) {
       const methodId = `method_${traitId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
-      nodes.push(this.createNode(
+      const methodDocs = this.extractDocumentationFromPhpDoc(method.docComment);
+      const methodComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+        c.location.line >= method.lineStart && c.location.line <= method.lineEnd
+      );
+      const methodTodos = this.extractTodosFromComments(methodComments, methodId);
+      const methodBody = lines.slice(method.lineStart - 1, method.lineEnd);
+      const implementationStatus = this.detectImplementationStatus(method, methodBody);
+
+      nodes.push(this.createNodeBuilder(
         methodId,
         method.name,
-        'trait_method',
-        4,
-        fullPath,
-        method.lineStart,
-        method.lineEnd,
-        {
-          visibility: method.visibility,
-          modifiers: method.modifiers,
+        'method'
+      )
+        .withLevel(4, 'Method/Function')
+        .withCategory('methods', ['trait-methods'])
+        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withMetadata({
+          is_exported: method.visibility === 'public',
+          attributes: {
+            visibility: method.visibility,
+            modifiers: method.modifiers,
+            isAbstract: method.isAbstract,
+            isFinal: method.isFinal,
+            isStatic: method.isStatic,
+            hasDocumentation: !!methodDocs
+          }
+        })
+        .withSignature({
           parameters: method.parameters,
-          returnType: method.returnType,
-          docComment: method.docComment,
-          isAbstract: method.isAbstract,
-          isFinal: method.isFinal,
-          isStatic: method.isStatic
-        }
-      ));
+          return_type: method.returnType
+        })
+        .withParent(traitId)
+        .withDocumentation(methodDocs)
+        .withComments(methodComments.length > 0 ? methodComments : undefined)
+        .withTodos(methodTodos.length > 0 ? methodTodos : undefined)
+        .withImplementationStatus(implementationStatus)
+        .build());
 
       edges.push(this.createEdge(
         `${traitId}_has_method_${methodId}`,
@@ -971,17 +990,6 @@ export class PHPAnalyzer extends BaseAnalyzer {
         'has_method'
       ));
     }
-
-    entryPoints.push({
-      id: `entry_${traitId}`,
-      name: `Trait: ${trait.name}`,
-      type: 'trait',
-      source_node: traitId,
-      metadata: {
-        namespace: trait.namespace,
-        traitName: trait.name
-      }
-    });
   }
 
   private async processPHPEnum(
@@ -990,29 +998,40 @@ export class PHPAnalyzer extends BaseAnalyzer {
     fullPath: string,
     nodes: CASNode[],
     edges: CASEdge[],
-    entryPoints: any[]
+    _entryPoints: any[]
   ): Promise<void> {
     const enumId = `enum_${this.sanitizeId(enm.namespace)}_${this.sanitizeId(enm.name)}`;
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const enumComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+      c.location.line >= enm.lineStart - 3 && c.location.line <= enm.lineStart
+    );
+    const enumTodos = this.extractTodosFromComments(enumComments, enumId);
+    const enumDocs = this.extractDocumentationFromPhpDoc(enm.docComment);
 
-    nodes.push(this.createNode(
+    nodes.push(this.createNodeBuilder(
       enumId,
       enm.name,
-      'enum',
-      2,
-      fullPath,
-      enm.lineStart,
-      enm.lineEnd,
-      {
-        namespace: enm.namespace,
-        backingType: enm.backingType,
-        implementsInterfaces: enm.implementsInterfaces,
-        traits: enm.traits,
-        docComment: enm.docComment,
-        caseCount: enm.cases.length,
-        methodCount: enm.methods.length,
-        constantCount: enm.constants.length
-      }
-    ));
+      'enum'
+    )
+      .withLevel(2, 'Class/Enum')
+      .withCategory('structures', ['php-enums'])
+      .withSource({ file: fullPath, line: enm.lineStart, end_line: enm.lineEnd })
+      .withMetadata({
+        attributes: {
+          namespace: enm.namespace,
+          backingType: enm.backingType,
+          implementsInterfaces: enm.implementsInterfaces,
+          traits: enm.traits,
+          caseCount: enm.cases.length,
+          methodCount: enm.methods.length,
+          constantCount: enm.constants.length,
+          hasDocumentation: !!enumDocs
+        }
+      })
+      .withDocumentation(enumDocs)
+      .withComments(enumComments.length > 0 ? enumComments : undefined)
+      .withTodos(enumTodos.length > 0 ? enumTodos : undefined)
+      .build());
 
     edges.push(this.createEdge(
       `${fileId}_contains_${enumId}`,
@@ -1023,19 +1042,25 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
     for (const enumCase of enm.cases) {
       const caseId = `case_${enumId}_${this.sanitizeId(enumCase.name)}`;
-      nodes.push(this.createNode(
+      const caseDocs = this.extractDocumentationFromPhpDoc(enumCase.docComment);
+
+      nodes.push(this.createNodeBuilder(
         caseId,
         enumCase.name,
-        'enum_case',
-        4,
-        fullPath,
-        enumCase.lineNumber,
-        enumCase.lineNumber,
-        {
-          value: enumCase.value,
-          docComment: enumCase.docComment
-        }
-      ));
+        'enum_case'
+      )
+        .withLevel(4, 'Constant/Property')
+        .withCategory('data', ['enum-cases'])
+        .withSource({ file: fullPath, line: enumCase.lineNumber })
+        .withMetadata({
+          attributes: {
+            value: enumCase.value,
+            hasDocumentation: !!caseDocs
+          }
+        })
+        .withParent(enumId)
+        .withDocumentation(caseDocs)
+        .build());
 
       edges.push(this.createEdge(
         `${enumId}_has_case_${caseId}`,
@@ -1045,25 +1070,44 @@ export class PHPAnalyzer extends BaseAnalyzer {
       ));
     }
 
+    const lines = content.split('\n');
     for (const method of enm.methods) {
       const methodId = `method_${enumId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
-      nodes.push(this.createNode(
+      const methodDocs = this.extractDocumentationFromPhpDoc(method.docComment);
+      const methodComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+        c.location.line >= method.lineStart && c.location.line <= method.lineEnd
+      );
+      const methodTodos = this.extractTodosFromComments(methodComments, methodId);
+      const methodBody = lines.slice(method.lineStart - 1, method.lineEnd);
+      const implementationStatus = this.detectImplementationStatus(method, methodBody);
+
+      nodes.push(this.createNodeBuilder(
         methodId,
         method.name,
-        'method',
-        4,
-        fullPath,
-        method.lineStart,
-        method.lineEnd,
-        {
-          visibility: method.visibility,
-          modifiers: method.modifiers,
+        'method'
+      )
+        .withLevel(4, 'Method/Function')
+        .withCategory('methods', ['enum-methods'])
+        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withMetadata({
+          is_exported: method.visibility === 'public',
+          attributes: {
+            visibility: method.visibility,
+            modifiers: method.modifiers,
+            isStatic: method.isStatic,
+            hasDocumentation: !!methodDocs
+          }
+        })
+        .withSignature({
           parameters: method.parameters,
-          returnType: method.returnType,
-          docComment: method.docComment,
-          isStatic: method.isStatic
-        }
-      ));
+          return_type: method.returnType
+        })
+        .withParent(enumId)
+        .withDocumentation(methodDocs)
+        .withComments(methodComments.length > 0 ? methodComments : undefined)
+        .withTodos(methodTodos.length > 0 ? methodTodos : undefined)
+        .withImplementationStatus(implementationStatus)
+        .build());
 
       edges.push(this.createEdge(
         `${enumId}_has_method_${methodId}`,
@@ -1072,18 +1116,6 @@ export class PHPAnalyzer extends BaseAnalyzer {
         'has_method'
       ));
     }
-
-    entryPoints.push({
-      id: `entry_${enumId}`,
-      name: `Enum: ${enm.name}`,
-      type: 'enum',
-      source_node: enumId,
-      metadata: {
-        namespace: enm.namespace,
-        enumName: enm.name,
-        backingType: enm.backingType
-      }
-    });
   }
 
   private async processPHPFunction(
@@ -1095,22 +1127,39 @@ export class PHPAnalyzer extends BaseAnalyzer {
     entryPoints: any[]
   ): Promise<void> {
     const functionId = `function_${this.sanitizeId(func.namespace)}_${this.sanitizeId(func.name)}_${func.lineStart}`;
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const funcDocs = this.extractDocumentationFromPhpDoc(func.docComment);
+    const funcComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+      c.location.line >= func.lineStart && c.location.line <= func.lineEnd
+    );
+    const funcTodos = this.extractTodosFromComments(funcComments, functionId);
+    const lines = content.split('\n');
+    const funcBody = lines.slice(func.lineStart - 1, func.lineEnd);
+    const implementationStatus = this.detectImplementationStatus({ name: func.name, isAbstract: false } as any, funcBody);
 
-    nodes.push(this.createNode(
+    nodes.push(this.createNodeBuilder(
       functionId,
       func.name,
-      'function',
-      3,
-      fullPath,
-      func.lineStart,
-      func.lineEnd,
-      {
-        namespace: func.namespace,
+      'function'
+    )
+      .withLevel(3, 'Function')
+      .withCategory('functions', ['php-functions'])
+      .withSource({ file: fullPath, line: func.lineStart, end_line: func.lineEnd })
+      .withMetadata({
+        attributes: {
+          namespace: func.namespace,
+          hasDocumentation: !!funcDocs
+        }
+      })
+      .withSignature({
         parameters: func.parameters,
-        returnType: func.returnType,
-        docComment: func.docComment
-      }
-    ));
+        return_type: func.returnType
+      })
+      .withDocumentation(funcDocs)
+      .withComments(funcComments.length > 0 ? funcComments : undefined)
+      .withTodos(funcTodos.length > 0 ? funcTodos : undefined)
+      .withImplementationStatus(implementationStatus)
+      .build());
 
     edges.push(this.createEdge(
       `${fileId}_contains_${functionId}`,
@@ -1773,19 +1822,20 @@ export class PHPAnalyzer extends BaseAnalyzer {
     for (const [namespaceName, files] of namespaces.entries()) {
       const namespaceId = `namespace_${this.sanitizeId(namespaceName)}`;
 
-      nodes.push(this.createNode(
+      nodes.push(this.createNodeBuilder(
         namespaceId,
         namespaceName,
-        'namespace',
-        1,
-        undefined,
-        undefined,
-        undefined,
-        {
-          fileCount: files.length,
-          files: files
-        }
-      ));
+        'namespace'
+      )
+        .withLevel(1, 'Namespace')
+        .withCategory('structure', ['php-namespaces'])
+        .withMetadata({
+          attributes: {
+            fileCount: files.length,
+            files: files
+          }
+        })
+        .build());
 
       for (const file of files) {
         const fileId = `file_${this.sanitizeId(file)}`;

@@ -24,7 +24,7 @@ interface LaravelController {
   name: string;
   filePath: string;
   namespace: string;
-  methods: Array<{ name: string; visibility: string; parameters: any[]; returnType?: string }>;
+  methods: Array<{ name: string; visibility: string; parameters: any[]; returnType?: string; line: number }>;
   middleware: string[];
   resourceController: boolean;
   apiController: boolean;
@@ -41,7 +41,7 @@ interface LaravelModel {
   guarded: string[];
   hidden: string[];
   casts: Record<string, string>;
-  relations: Array<{ name: string; type: string; model: string; foreignKey?: string }>;
+  relations: Array<{ name: string; type: string; model: string; foreignKey?: string; line: number }>;
   scopes: string[];
   mutators: string[];
   accessors: string[];
@@ -85,7 +85,7 @@ interface LaravelService {
   filePath: string;
   bindings: Array<{ abstract: string; concrete: string; singleton: boolean }>;
   dependencies: string[];
-  methods: Array<{ name: string; visibility: string; parameters: any[] }>;
+  methods: Array<{ name: string; visibility: string; parameters: any[]; line: number }>;
 }
 
 interface LaravelCommand {
@@ -181,6 +181,11 @@ export class LaravelAnalyzer extends BaseAnalyzer {
       const services = await this.analyzeServices(phpFiles, context.projectPath, nodes, edges);
       const commands = await this.analyzeCommands(phpFiles, context.projectPath, nodes, edges);
       const jobs = await this.analyzeJobs(phpFiles, context.projectPath, nodes, edges);
+      const bladeTemplates = await this.analyzeBladeTemplates(context.projectPath, nodes, edges);
+      const events = await this.analyzeEvents(phpFiles, context.projectPath, nodes, edges);
+      const listeners = await this.analyzeListeners(phpFiles, context.projectPath, nodes, edges);
+      const formRequests = await this.analyzeFormRequests(phpFiles, context.projectPath, nodes, edges);
+      const resources = await this.analyzeResources(phpFiles, context.projectPath, nodes, edges);
 
       this.buildLaravelRelationships(controllers, models, migrations, routes, middleware, services, commands, jobs, nodes, edges);
       this.identifyDatabaseConnections(models, migrations, exitPoints);
@@ -200,7 +205,12 @@ export class LaravelAnalyzer extends BaseAnalyzer {
           middleware_detected: middleware.length,
           services_detected: services.length,
           commands_detected: commands.length,
-          jobs_detected: jobs.length
+          jobs_detected: jobs.length,
+          blade_templates_detected: bladeTemplates.length,
+          events_detected: events.length,
+          listeners_detected: listeners.length,
+          form_requests_detected: formRequests.length,
+          resources_detected: resources.length
         }
       });
 
@@ -233,7 +243,11 @@ export class LaravelAnalyzer extends BaseAnalyzer {
       'artisan-command-detection',
       'job-queue-analysis',
       'service-provider-detection',
-      'dependency-injection-mapping'
+      'dependency-injection-mapping',
+      'blade-template-analysis',
+      'event-listener-analysis',
+      'form-request-analysis',
+      'api-resource-analysis'
     ];
   }
 
@@ -354,10 +368,11 @@ export class LaravelAnalyzer extends BaseAnalyzer {
 
             controller.methods.forEach((method, index) => {
               const methodId = this.generateId('method', controller.filePath, `${controller.name}_${method.name}`);
+              const nextMethodLine = index < controller.methods.length - 1 ? controller.methods[index + 1].line - 1 : content.split('\n').length;
               const methodNode = this.createNodeBuilder(methodId, method.name, 'controller_method')
                 .withLevel(4, 'member')
                 .withCategory('method', ['laravel', 'action'])
-                .withSource({ file: fullPath, line: 1, end_line: 1 })
+                .withSource({ file: fullPath, line: method.line, end_line: nextMethodLine })
                 .withDescription(`Controller method in ${controller.name}: ${method.name}`)
                 .withParent(controllerId)
                 .withSignature({
@@ -449,10 +464,11 @@ export class LaravelAnalyzer extends BaseAnalyzer {
 
             model.relations.forEach((relation, index) => {
               const relationId = this.generateId('relation', model.filePath, `${model.name}_${relation.name}`);
+              const nextRelationLine = index < model.relations.length - 1 ? model.relations[index + 1].line - 1 : content.split('\n').length;
               const relationNode = this.createNodeBuilder(relationId, relation.name, 'eloquent_relation')
                 .withLevel(4, 'member')
                 .withCategory('relation', ['laravel', 'eloquent'])
-                .withSource({ file: fullPath, line: 1, end_line: 1 })
+                .withSource({ file: fullPath, line: relation.line, end_line: nextRelationLine })
                 .withDescription(`Eloquent relationship in ${model.name}: ${relation.name}`)
                 .withParent(modelId)
                 .withMetadata({
@@ -819,6 +835,344 @@ export class LaravelAnalyzer extends BaseAnalyzer {
     return jobs;
   }
 
+  private async analyzeBladeTemplates(
+    projectPath: string,
+    nodes: CASNode[],
+    edges: CASEdge[]
+  ): Promise<string[]> {
+    const bladeFiles = await glob(['resources/views/**/*.blade.php'], {
+      cwd: projectPath,
+      ignore: ['**/vendor/**', '**/node_modules/**']
+    });
+
+    for (const file of bladeFiles) {
+      const fullPath = path.join(projectPath, file);
+      const content = await fs.readFile(fullPath, 'utf-8');
+      const templateName = file
+        .replace('resources/views/', '')
+        .replace('.blade.php', '')
+        .replace(/\//g, '.');
+
+      const templateId = this.generateId('blade', file, templateName);
+
+      const sections: string[] = [];
+      const sectionPattern = /@section\(\s*['"`]([^'"`]+)['"`]/g;
+      let match;
+      while ((match = sectionPattern.exec(content)) !== null) {
+        sections.push(match[1]);
+      }
+
+      const yields: string[] = [];
+      const yieldPattern = /@yield\(\s*['"`]([^'"`]+)['"`]/g;
+      while ((match = yieldPattern.exec(content)) !== null) {
+        yields.push(match[1]);
+      }
+
+      const templateNode = this.createNodeBuilder(templateId, templateName, 'laravel_blade_template')
+        .withLevel(3, 'code')
+        .withCategory('view', ['laravel', 'blade', 'template'])
+        .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+        .withDescription(`Blade template: ${templateName}`)
+        .withMetadata({
+          framework: 'laravel',
+          attributes: {
+            sections,
+            yields,
+            template_name: templateName
+          }
+        })
+        .build();
+      nodes.push(templateNode);
+
+      const extendsPattern = /@extends\(\s*['"`]([^'"`]+)['"`]\s*\)/g;
+      while ((match = extendsPattern.exec(content)) !== null) {
+        const parentTemplate = match[1];
+        const parentId = this.generateId('blade', '', parentTemplate);
+        edges.push(this.createEdge(
+          this.generateEdgeId(templateId, parentId, 'extends'),
+          templateId,
+          parentId,
+          'extends',
+          'structural',
+          { parent_template: parentTemplate }
+        ));
+      }
+
+      const includePattern = /@include\(\s*['"`]([^'"`]+)['"`]/g;
+      while ((match = includePattern.exec(content)) !== null) {
+        const includedTemplate = match[1];
+        const includedId = this.generateId('blade', '', includedTemplate);
+        edges.push(this.createEdge(
+          this.generateEdgeId(templateId, includedId, 'includes'),
+          templateId,
+          includedId,
+          'includes',
+          'structural',
+          { included_template: includedTemplate }
+        ));
+      }
+    }
+
+    return bladeFiles;
+  }
+
+  private async analyzeEvents(
+    files: string[],
+    projectPath: string,
+    nodes: CASNode[],
+    edges: CASEdge[]
+  ): Promise<string[]> {
+    const eventFiles = files.filter(f => f.includes('/Events/'));
+    const events: string[] = [];
+
+    for (const file of eventFiles) {
+      const fullPath = path.join(projectPath, file);
+      const content = await fs.readFile(fullPath, 'utf-8');
+
+      if (content.includes('class ') && (content.includes('extends Event') || content.includes('Dispatchable'))) {
+        const classMatch = content.match(/class\s+(\w+)/);
+        if (!classMatch) continue;
+
+        const className = classMatch[1];
+        events.push(className);
+
+        const eventId = this.generateId('event', file, className);
+        const eventNode = this.createNodeBuilder(eventId, className, 'laravel_event')
+          .withLevel(3, 'code')
+          .withCategory('event', ['laravel', 'event', 'async'])
+          .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+          .withDescription(`Laravel event: ${className}`)
+          .withMetadata({
+            framework: 'laravel',
+            attributes: {
+              has_broadcast: content.includes('ShouldBroadcast'),
+              traits: this.extractTraits(content)
+            }
+          })
+          .build();
+        nodes.push(eventNode);
+      }
+    }
+
+    return events;
+  }
+
+  private async analyzeListeners(
+    files: string[],
+    projectPath: string,
+    nodes: CASNode[],
+    edges: CASEdge[]
+  ): Promise<string[]> {
+    const listenerFiles = files.filter(f => f.includes('/Listeners/'));
+    const listeners: string[] = [];
+
+    for (const file of listenerFiles) {
+      const fullPath = path.join(projectPath, file);
+      const content = await fs.readFile(fullPath, 'utf-8');
+
+      if (content.includes('class ') && content.includes('handle')) {
+        const classMatch = content.match(/class\s+(\w+)/);
+        if (!classMatch) continue;
+
+        const className = classMatch[1];
+        listeners.push(className);
+
+        const listenerId = this.generateId('listener', file, className);
+        const listenerNode = this.createNodeBuilder(listenerId, className, 'laravel_listener')
+          .withLevel(3, 'code')
+          .withCategory('listener', ['laravel', 'event', 'handler'])
+          .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+          .withDescription(`Laravel listener: ${className}`)
+          .withMetadata({
+            framework: 'laravel',
+            attributes: {
+              should_queue: content.includes('ShouldQueue')
+            }
+          })
+          .build();
+        nodes.push(listenerNode);
+
+        const handlePattern = /function\s+handle\(\s*(\w+)\s+/;
+        const handleMatch = content.match(handlePattern);
+        if (handleMatch) {
+          const eventClass = handleMatch[1];
+          const eventId = this.generateId('event', '', eventClass);
+          edges.push(this.createEdge(
+            this.generateEdgeId(listenerId, eventId, 'handles'),
+            listenerId,
+            eventId,
+            'handles',
+            'behavioral',
+            { event: eventClass }
+          ));
+        }
+      }
+    }
+
+    const eventServiceProviderFiles = files.filter(f => f.includes('EventServiceProvider'));
+    for (const file of eventServiceProviderFiles) {
+      const fullPath = path.join(projectPath, file);
+      const content = await fs.readFile(fullPath, 'utf-8');
+
+      const listenPropertyPattern = /\$listen\s*=\s*\[([\s\S]*?)\];/;
+      const listenMatch = content.match(listenPropertyPattern);
+      if (listenMatch) {
+        const listenBody = listenMatch[1];
+        const mappingPattern = /(\w+)::class\s*=>\s*\[([\s\S]*?)\]/g;
+        let mappingMatch;
+        while ((mappingMatch = mappingPattern.exec(listenBody)) !== null) {
+          const eventClass = mappingMatch[1];
+          const listenersBlock = mappingMatch[2];
+          const listenerClassPattern = /(\w+)::class/g;
+          let listenerMatch;
+          while ((listenerMatch = listenerClassPattern.exec(listenersBlock)) !== null) {
+            const listenerClass = listenerMatch[1];
+            const listenerId = this.generateId('listener', '', listenerClass);
+            const eventId = this.generateId('event', '', eventClass);
+            edges.push(this.createEdge(
+              this.generateEdgeId(listenerId, eventId, 'handles'),
+              listenerId,
+              eventId,
+              'handles',
+              'behavioral',
+              { event: eventClass, listener: listenerClass }
+            ));
+          }
+        }
+      }
+    }
+
+    return listeners;
+  }
+
+  private async analyzeFormRequests(
+    files: string[],
+    projectPath: string,
+    nodes: CASNode[],
+    edges: CASEdge[]
+  ): Promise<string[]> {
+    const formRequests: string[] = [];
+    const requestFiles = files.filter(f =>
+      f.includes('/Requests/') || f.includes('Request.php')
+    );
+
+    for (const file of requestFiles) {
+      const fullPath = path.join(projectPath, file);
+      const content = await fs.readFile(fullPath, 'utf-8');
+
+      if (content.includes('class ') && (content.includes('extends FormRequest') || content.includes('FormRequest'))) {
+        const classMatch = content.match(/class\s+(\w+)/);
+        if (!classMatch) continue;
+
+        const className = classMatch[1];
+        if (className === 'FormRequest') continue;
+
+        formRequests.push(className);
+
+        const rules: Record<string, string> = {};
+        const rulesBlockPattern = /function\s+rules\s*\(\s*\)[^{]*\{([\s\S]*?)\}/;
+        const rulesMatch = content.match(rulesBlockPattern);
+        if (rulesMatch) {
+          const rulesBody = rulesMatch[1];
+          const rulePattern = /['"`]([^'"`]+)['"`]\s*=>\s*['"`]([^'"`]+)['"`]/g;
+          let ruleMatch;
+          while ((ruleMatch = rulePattern.exec(rulesBody)) !== null) {
+            rules[ruleMatch[1]] = ruleMatch[2];
+          }
+
+          const ruleArrayPattern = /['"`]([^'"`]+)['"`]\s*=>\s*\[([^\]]+)\]/g;
+          while ((ruleMatch = ruleArrayPattern.exec(rulesBody)) !== null) {
+            const ruleValues = ruleMatch[2].match(/['"`]([^'"`]+)['"`]/g);
+            if (ruleValues) {
+              rules[ruleMatch[1]] = ruleValues.map(v => v.slice(1, -1)).join('|');
+            }
+          }
+        }
+
+        const authorizePattern = /function\s+authorize\s*\(\s*\)[^{]*\{([\s\S]*?)\}/;
+        const authorizeMatch = content.match(authorizePattern);
+        const hasAuthorize = !!authorizeMatch;
+        let authorizesAlways = false;
+        if (authorizeMatch) {
+          authorizesAlways = authorizeMatch[1].includes('return true');
+        }
+
+        const requestId = this.generateId('form_request', file, className);
+        const requestNode = this.createNodeBuilder(requestId, className, 'laravel_form_request')
+          .withLevel(3, 'code')
+          .withCategory('validation', ['laravel', 'request', 'form'])
+          .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+          .withDescription(`Laravel form request: ${className}`)
+          .withMetadata({
+            framework: 'laravel',
+            attributes: {
+              rules,
+              rules_count: Object.keys(rules).length,
+              has_authorize: hasAuthorize,
+              authorizes_always: authorizesAlways
+            }
+          })
+          .build();
+        nodes.push(requestNode);
+      }
+    }
+
+    return formRequests;
+  }
+
+  private async analyzeResources(
+    files: string[],
+    projectPath: string,
+    nodes: CASNode[],
+    edges: CASEdge[]
+  ): Promise<string[]> {
+    const resources: string[] = [];
+    const resourceFiles = files.filter(f =>
+      f.includes('/Resources/') || f.includes('Resource.php')
+    );
+
+    for (const file of resourceFiles) {
+      const fullPath = path.join(projectPath, file);
+      const content = await fs.readFile(fullPath, 'utf-8');
+
+      if (content.includes('class ') && (
+        content.includes('extends JsonResource') ||
+        content.includes('extends ResourceCollection') ||
+        content.includes('JsonResource') ||
+        content.includes('ResourceCollection')
+      )) {
+        const classMatch = content.match(/class\s+(\w+)/);
+        if (!classMatch) continue;
+
+        const className = classMatch[1];
+        if (className === 'JsonResource' || className === 'ResourceCollection') continue;
+
+        resources.push(className);
+
+        const isCollection = content.includes('ResourceCollection') || content.includes('AnonymousResourceCollection');
+
+        const resourceId = this.generateId('resource', file, className);
+        const resourceNode = this.createNodeBuilder(resourceId, className, 'laravel_resource')
+          .withLevel(3, 'code')
+          .withCategory('transformer', ['laravel', 'api', 'resource'])
+          .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+          .withDescription(`Laravel API resource: ${className}`)
+          .withMetadata({
+            framework: 'laravel',
+            attributes: {
+              is_collection: isCollection,
+              has_additional: content.includes('additional'),
+              has_conditional: content.includes('when(') || content.includes('mergeWhen(')
+            }
+          })
+          .build();
+        nodes.push(resourceNode);
+      }
+    }
+
+    return resources;
+  }
+
   private detectDatabaseDrivers(deps: Record<string, any>): string[] {
     const drivers: string[] = [];
     if (deps['doctrine/dbal']) drivers.push('mysql', 'postgresql', 'sqlite');
@@ -1003,19 +1357,21 @@ export class LaravelAnalyzer extends BaseAnalyzer {
     };
   }
 
-  private extractMethods(content: string): Array<{ name: string; visibility: string; parameters: any[]; returnType?: string }> {
-    const methods: Array<{ name: string; visibility: string; parameters: any[]; returnType?: string }> = [];
+  private extractMethods(content: string): Array<{ name: string; visibility: string; parameters: any[]; returnType?: string; line: number }> {
+    const methods: Array<{ name: string; visibility: string; parameters: any[]; returnType?: string; line: number }> = [];
     const methodPattern = /(public|private|protected)?\s*function\s+(\w+)\s*\(/g;
 
     let match;
     while ((match = methodPattern.exec(content)) !== null) {
       const visibility = match[1] || 'public';
       const name = match[2];
+      const line = content.substring(0, match.index).split('\n').length;
 
       methods.push({
         name,
         visibility,
-        parameters: []
+        parameters: [],
+        line
       });
     }
 
@@ -1082,19 +1438,36 @@ export class LaravelAnalyzer extends BaseAnalyzer {
   }
 
   private extractGuarded(content: string): string[] {
-    return [];
+    const guardedMatch = content.match(/\$guarded\s*=\s*\[([^\]]*)\]/);
+    if (!guardedMatch) return [];
+
+    const fields = guardedMatch[1].match(/['"`]([^'"`]+)['"`]/g);
+    return fields ? fields.map(field => field.slice(1, -1)) : [];
   }
 
   private extractHidden(content: string): string[] {
-    return [];
+    const hiddenMatch = content.match(/\$hidden\s*=\s*\[([^\]]*)\]/);
+    if (!hiddenMatch) return [];
+
+    const fields = hiddenMatch[1].match(/['"`]([^'"`]+)['"`]/g);
+    return fields ? fields.map(field => field.slice(1, -1)) : [];
   }
 
   private extractCasts(content: string): Record<string, string> {
-    return {};
+    const castsMatch = content.match(/\$casts\s*=\s*\[([^\]]*)\]/s);
+    if (!castsMatch) return {};
+
+    const casts: Record<string, string> = {};
+    const pairPattern = /['"`]([^'"`]+)['"`]\s*=>\s*['"`]([^'"`]+)['"`]/g;
+    let pairMatch;
+    while ((pairMatch = pairPattern.exec(castsMatch[1])) !== null) {
+      casts[pairMatch[1]] = pairMatch[2];
+    }
+    return casts;
   }
 
-  private extractRelations(content: string): Array<{ name: string; type: string; model: string; foreignKey?: string }> {
-    const relations: Array<{ name: string; type: string; model: string; foreignKey?: string }> = [];
+  private extractRelations(content: string): Array<{ name: string; type: string; model: string; foreignKey?: string; line: number }> {
+    const relations: Array<{ name: string; type: string; model: string; foreignKey?: string; line: number }> = [];
     const relationPattern = /function\s+(\w+)\(\)[^{]*{\s*return\s+\$this->(\w+)\(([^)]+)\)/g;
 
     let match;
@@ -1102,11 +1475,13 @@ export class LaravelAnalyzer extends BaseAnalyzer {
       const name = match[1];
       const type = match[2];
       const model = match[3];
+      const line = content.substring(0, match.index).split('\n').length;
 
       relations.push({
         name,
         type,
-        model: model.replace(/['"]/g, '').split(',')[0].trim()
+        model: model.replace(/['"]/g, '').split(',')[0].trim(),
+        line
       });
     }
 
@@ -1114,15 +1489,57 @@ export class LaravelAnalyzer extends BaseAnalyzer {
   }
 
   private extractScopes(content: string): string[] {
-    return [];
+    const scopes: string[] = [];
+    const scopePattern = /function\s+(scope[A-Z]\w*)\s*\(/g;
+    let match;
+    while ((match = scopePattern.exec(content)) !== null) {
+      scopes.push(match[1].replace(/^scope/, ''));
+    }
+    return scopes;
   }
 
   private extractMutators(content: string): string[] {
-    return [];
+    const mutators: string[] = [];
+
+    const oldStylePattern = /function\s+set([A-Z]\w*)Attribute\s*\(/g;
+    let match;
+    while ((match = oldStylePattern.exec(content)) !== null) {
+      mutators.push(match[1]);
+    }
+
+    const newStylePattern = /function\s+(\w+)\s*\(\s*\)[^{]*{\s*return\s+Attribute::make\s*\([^)]*set\s*:/gs;
+    while ((match = newStylePattern.exec(content)) !== null) {
+      mutators.push(match[1]);
+    }
+
+    const setOnlyPattern = /function\s+(\w+)\s*\(\s*\)[^{]*{\s*return\s+Attribute::set\s*\(/gs;
+    while ((match = setOnlyPattern.exec(content)) !== null) {
+      mutators.push(match[1]);
+    }
+
+    return mutators;
   }
 
   private extractAccessors(content: string): string[] {
-    return [];
+    const accessors: string[] = [];
+
+    const oldStylePattern = /function\s+get([A-Z]\w*)Attribute\s*\(/g;
+    let match;
+    while ((match = oldStylePattern.exec(content)) !== null) {
+      accessors.push(match[1]);
+    }
+
+    const newStylePattern = /function\s+(\w+)\s*\(\s*\)[^{]*{\s*return\s+Attribute::make\s*\([^)]*get\s*:/gs;
+    while ((match = newStylePattern.exec(content)) !== null) {
+      accessors.push(match[1]);
+    }
+
+    const getOnlyPattern = /function\s+(\w+)\s*\(\s*\)[^{]*{\s*return\s+Attribute::get\s*\(/gs;
+    while ((match = getOnlyPattern.exec(content)) !== null) {
+      accessors.push(match[1]);
+    }
+
+    return accessors;
   }
 
   private extractMigrationTable(content: string, fileName: string): string {
@@ -1140,23 +1557,168 @@ export class LaravelAnalyzer extends BaseAnalyzer {
   }
 
   private extractMigrationColumns(content: string): Array<{ name: string; type: string; modifiers: string[] }> {
-    return [];
+    const columns: Array<{ name: string; type: string; modifiers: string[] }> = [];
+    const columnPattern = /\$table->(\w+)\(\s*['"`]([^'"`]+)['"`]([^;]*)\)/g;
+
+    const columnTypes = new Set([
+      'bigIncrements', 'bigInteger', 'binary', 'boolean', 'char', 'date', 'dateTime',
+      'dateTimeTz', 'decimal', 'double', 'enum', 'float', 'foreignId', 'foreignUuid',
+      'id', 'increments', 'integer', 'ipAddress', 'json', 'jsonb', 'longText',
+      'macAddress', 'mediumIncrements', 'mediumInteger', 'mediumText', 'morphs',
+      'nullableMorphs', 'nullableTimestamps', 'rememberToken', 'set', 'smallIncrements',
+      'smallInteger', 'softDeletes', 'softDeletesTz', 'string', 'text', 'time',
+      'timeTz', 'timestamp', 'timestampTz', 'timestamps', 'timestampsTz',
+      'tinyIncrements', 'tinyInteger', 'tinyText', 'unsignedBigInteger',
+      'unsignedDecimal', 'unsignedInteger', 'unsignedMediumInteger',
+      'unsignedSmallInteger', 'unsignedTinyInteger', 'uuid', 'year'
+    ]);
+
+    let match;
+    while ((match = columnPattern.exec(content)) !== null) {
+      const type = match[1];
+      if (!columnTypes.has(type)) continue;
+
+      const name = match[2];
+      const modifierChain = match[3];
+      const modifiers: string[] = [];
+
+      const modifierPattern = /->(\w+)\(/g;
+      let modMatch;
+      while ((modMatch = modifierPattern.exec(modifierChain)) !== null) {
+        modifiers.push(modMatch[1]);
+      }
+
+      columns.push({ name, type, modifiers });
+    }
+
+    const noArgPattern = /\$table->(timestamps|softDeletes|softDeletesTz|rememberToken|nullableTimestamps|id)\(\s*\)/g;
+    while ((match = noArgPattern.exec(content)) !== null) {
+      columns.push({ name: match[1], type: match[1], modifiers: [] });
+    }
+
+    return columns;
   }
 
   private extractMigrationIndexes(content: string): Array<{ type: string; columns: string[] }> {
-    return [];
+    const indexes: Array<{ type: string; columns: string[] }> = [];
+    const indexPattern = /\$table->(index|unique|primary)\(\s*\[([^\]]*)\]\s*\)/g;
+
+    let match;
+    while ((match = indexPattern.exec(content)) !== null) {
+      const type = match[1];
+      const columnsRaw = match[2];
+      const cols = columnsRaw.match(/['"`]([^'"`]+)['"`]/g);
+      if (cols) {
+        indexes.push({ type, columns: cols.map(c => c.slice(1, -1)) });
+      }
+    }
+
+    const singleIndexPattern = /\$table->(index|unique|primary)\(\s*['"`]([^'"`]+)['"`]\s*\)/g;
+    while ((match = singleIndexPattern.exec(content)) !== null) {
+      indexes.push({ type: match[1], columns: [match[2]] });
+    }
+
+    return indexes;
   }
 
   private extractMigrationForeignKeys(content: string): Array<{ column: string; references: string; on: string }> {
-    return [];
+    const foreignKeys: Array<{ column: string; references: string; on: string }> = [];
+    const fkPattern = /\$table->foreign\(\s*['"`]([^'"`]+)['"`]\s*\)\s*->references\(\s*['"`]([^'"`]+)['"`]\s*\)\s*->on\(\s*['"`]([^'"`]+)['"`]\s*\)/g;
+
+    let match;
+    while ((match = fkPattern.exec(content)) !== null) {
+      foreignKeys.push({
+        column: match[1],
+        references: match[2],
+        on: match[3]
+      });
+    }
+
+    const foreignIdPattern = /\$table->foreignId\(\s*['"`]([^'"`]+)['"`]\s*\)\s*->constrained\(\s*['"`]([^'"`]+)['"`]\s*\)/g;
+    while ((match = foreignIdPattern.exec(content)) !== null) {
+      foreignKeys.push({
+        column: match[1],
+        references: 'id',
+        on: match[2]
+      });
+    }
+
+    const foreignIdDefaultPattern = /\$table->foreignId\(\s*['"`]([^'"`]+)['"`]\s*\)\s*->constrained\(\s*\)/g;
+    while ((match = foreignIdDefaultPattern.exec(content)) !== null) {
+      const column = match[1];
+      const table = column.replace(/_id$/, '') + 's';
+      foreignKeys.push({
+        column,
+        references: 'id',
+        on: table
+      });
+    }
+
+    return foreignKeys;
   }
 
   private extractRouteMiddleware(content: string, uri: string): string[] {
-    return [];
+    const middleware: string[] = [];
+    const escapedUri = uri.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    const routeBlockPattern = new RegExp(
+      `Route::\\w+\\(\\s*['"\`]${escapedUri}['"\`][^;]*->middleware\\(([^)]+)\\)`,
+      'g'
+    );
+
+    let match;
+    while ((match = routeBlockPattern.exec(content)) !== null) {
+      const middlewareArg = match[1];
+      const arrayItems = middlewareArg.match(/['"`]([^'"`]+)['"`]/g);
+      if (arrayItems) {
+        middleware.push(...arrayItems.map(item => item.slice(1, -1)));
+      }
+    }
+
+    const groupPattern = /Route::(?:middleware|group)\(\s*\[([^\]]*)\][^{]*\{([^}]*)\}/gs;
+    let groupMatch;
+    while ((groupMatch = groupPattern.exec(content)) !== null) {
+      const groupMiddleware = groupMatch[1];
+      const groupBody = groupMatch[2];
+      if (groupBody.includes(uri)) {
+        const items = groupMiddleware.match(/['"`]([^'"`]+)['"`]/g);
+        if (items) {
+          middleware.push(...items.map(item => item.slice(1, -1)));
+        }
+      }
+    }
+
+    return [...new Set(middleware)];
   }
 
   private extractRouteWhere(content: string, uri: string): Record<string, string> {
-    return {};
+    const constraints: Record<string, string> = {};
+    const escapedUri = uri.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    const wherePattern = new RegExp(
+      `Route::\\w+\\(\\s*['"\`]${escapedUri}['"\`][^;]*->where\\(\\s*['"\`](\\w+)['"\`]\\s*,\\s*['"\`]([^'"\`]+)['"\`]\\s*\\)`,
+      'g'
+    );
+
+    let match;
+    while ((match = wherePattern.exec(content)) !== null) {
+      constraints[match[1]] = match[2];
+    }
+
+    const whereArrayPattern = new RegExp(
+      `Route::\\w+\\(\\s*['"\`]${escapedUri}['"\`][^;]*->where\\(\\s*\\[([^\\]]+)\\]\\s*\\)`,
+      'g'
+    );
+
+    while ((match = whereArrayPattern.exec(content)) !== null) {
+      const pairPattern = /['"`](\w+)['"`]\s*=>\s*['"`]([^'"`]+)['"`]/g;
+      let pairMatch;
+      while ((pairMatch = pairPattern.exec(match[1])) !== null) {
+        constraints[pairMatch[1]] = pairMatch[2];
+      }
+    }
+
+    return constraints;
   }
 
   private extractRouteParameters(uri: string): string[] {
@@ -1172,11 +1734,40 @@ export class LaravelAnalyzer extends BaseAnalyzer {
   }
 
   private extractRouteName(content: string, uri: string): string | undefined {
-    return undefined;
+    const escapedUri = uri.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    const namePattern = new RegExp(
+      `Route::\\w+\\(\\s*['"\`]${escapedUri}['"\`][^;]*->name\\(\\s*['"\`]([^'"\`]+)['"\`]\\s*\\)`,
+      'g'
+    );
+
+    const match = namePattern.exec(content);
+    return match ? match[1] : undefined;
   }
 
   private extractServiceBindings(content: string): Array<{ abstract: string; concrete: string; singleton: boolean }> {
-    return [];
+    const bindings: Array<{ abstract: string; concrete: string; singleton: boolean }> = [];
+
+    const bindPattern = /\$this->app->bind\(\s*([^,]+),\s*([^)]+)\)/g;
+    let match;
+    while ((match = bindPattern.exec(content)) !== null) {
+      bindings.push({
+        abstract: match[1].replace(/['"`\s]/g, '').replace(/::class/, ''),
+        concrete: match[2].replace(/['"`\s]/g, '').replace(/::class/, ''),
+        singleton: false
+      });
+    }
+
+    const singletonPattern = /\$this->app->singleton\(\s*([^,]+),\s*([^)]+)\)/g;
+    while ((match = singletonPattern.exec(content)) !== null) {
+      bindings.push({
+        abstract: match[1].replace(/['"`\s]/g, '').replace(/::class/, ''),
+        concrete: match[2].replace(/['"`\s]/g, '').replace(/::class/, ''),
+        singleton: true
+      });
+    }
+
+    return bindings;
   }
 
   private extractCommandSignature(content: string): string {
@@ -1190,11 +1781,60 @@ export class LaravelAnalyzer extends BaseAnalyzer {
   }
 
   private extractCommandArguments(content: string): Array<{ name: string; required: boolean; description?: string }> {
-    return [];
+    const args: Array<{ name: string; required: boolean; description?: string }> = [];
+    const signatureMatch = content.match(/\$signature\s*=\s*['"`]([^'"`]+)['"`]/);
+    if (!signatureMatch) return args;
+
+    const signature = signatureMatch[1];
+    const argPattern = /\{(\w+)(\?)?\s*(?::([^}]*))?\}/g;
+
+    let match;
+    while ((match = argPattern.exec(signature)) !== null) {
+      if (match[1].startsWith('--')) continue;
+      args.push({
+        name: match[1],
+        required: !match[2],
+        description: match[3]?.trim() || undefined
+      });
+    }
+
+    return args;
   }
 
   private extractCommandOptions(content: string): Array<{ name: string; shortcut?: string; mode: string; description?: string }> {
-    return [];
+    const options: Array<{ name: string; shortcut?: string; mode: string; description?: string }> = [];
+    const signatureMatch = content.match(/\$signature\s*=\s*['"`]([^'"`]+)['"`]/);
+    if (!signatureMatch) return options;
+
+    const signature = signatureMatch[1];
+    const optionPattern = /\{--([A-Za-z|]+)(=\*?|=?)?\s*(?::([^}]*))?\}/g;
+
+    let match;
+    while ((match = optionPattern.exec(signature)) !== null) {
+      const nameAndShortcut = match[1];
+      const valueModifier = match[2] || '';
+      const description = match[3]?.trim() || undefined;
+
+      let name = nameAndShortcut;
+      let shortcut: string | undefined;
+
+      if (nameAndShortcut.includes('|')) {
+        const parts = nameAndShortcut.split('|');
+        shortcut = parts[0];
+        name = parts[1];
+      }
+
+      let mode = 'none';
+      if (valueModifier === '=*') {
+        mode = 'array';
+      } else if (valueModifier === '=') {
+        mode = 'required';
+      }
+
+      options.push({ name, shortcut, mode, description });
+    }
+
+    return options;
   }
 
   private extractJobQueue(content: string): string | undefined {
