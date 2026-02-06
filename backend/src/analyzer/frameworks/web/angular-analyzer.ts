@@ -898,23 +898,127 @@ export class AngularAnalyzer extends BaseAnalyzer {
   }
 
   private extractInputs(content: string): Array<{ name: string; type: string; alias?: string }> {
-    return [];
+    const inputs: Array<{ name: string; type: string; alias?: string }> = [];
+
+    const decoratorPattern = /@Input\(\s*(?:['"`]([^'"`]+)['"`])?\s*\)\s*(?:set\s+)?(\w+)\s*(?:[?!]?\s*:\s*([^;=\n]+?))?(?:\s*[;=\n])/g;
+    let match: RegExpExecArray | null;
+    while ((match = decoratorPattern.exec(content)) !== null) {
+      inputs.push({
+        name: match[2],
+        type: (match[3] || 'any').trim(),
+        ...(match[1] ? { alias: match[1] } : {})
+      });
+    }
+
+    const inputObjPattern = /@Input\(\s*\{[^}]*alias\s*:\s*['"`]([^'"`]+)['"`][^}]*\}\s*\)\s*(?:set\s+)?(\w+)\s*(?:[?!]?\s*:\s*([^;=\n]+?))?(?:\s*[;=\n])/g;
+    while ((match = inputObjPattern.exec(content)) !== null) {
+      const name = match[2];
+      const existing = inputs.find(i => i.name === name);
+      if (!existing) {
+        inputs.push({
+          name,
+          type: (match[3] || 'any').trim(),
+          alias: match[1]
+        });
+      }
+    }
+
+    const signalPattern = /(\w+)\s*=\s*input(?:<([^>]+)>)?\s*\(/g;
+    while ((match = signalPattern.exec(content)) !== null) {
+      const name = match[1];
+      const existing = inputs.find(i => i.name === name);
+      if (!existing) {
+        inputs.push({
+          name,
+          type: (match[2] || 'any').trim()
+        });
+      }
+    }
+
+    const requiredSignalPattern = /(\w+)\s*=\s*input\.required(?:<([^>]+)>)?\s*\(/g;
+    while ((match = requiredSignalPattern.exec(content)) !== null) {
+      const name = match[1];
+      const existing = inputs.find(i => i.name === name);
+      if (!existing) {
+        inputs.push({
+          name,
+          type: (match[2] || 'any').trim()
+        });
+      }
+    }
+
+    return inputs;
   }
 
   private extractOutputs(content: string): Array<{ name: string; type: string; alias?: string }> {
-    return [];
+    const outputs: Array<{ name: string; type: string; alias?: string }> = [];
+
+    const decoratorPattern = /@Output\(\s*(?:['"`]([^'"`]+)['"`])?\s*\)\s*(\w+)\s*(?:[?!]?\s*(?::\s*([^;=\n]+?))?\s*=\s*new\s+EventEmitter(?:<([^>]+)>)?\s*\()?/g;
+    let match: RegExpExecArray | null;
+    while ((match = decoratorPattern.exec(content)) !== null) {
+      outputs.push({
+        name: match[2],
+        type: match[4] || match[3] || 'void',
+        ...(match[1] ? { alias: match[1] } : {})
+      });
+    }
+
+    const signalPattern = /(\w+)\s*=\s*output(?:<([^>]+)>)?\s*\(/g;
+    while ((match = signalPattern.exec(content)) !== null) {
+      const name = match[1];
+      const existing = outputs.find(o => o.name === name);
+      if (!existing) {
+        outputs.push({
+          name,
+          type: (match[2] || 'void').trim()
+        });
+      }
+    }
+
+    return outputs;
   }
 
   private extractProviders(content: string): string[] {
-    return [];
+    const providersMatch = content.match(/providers\s*:\s*\[([^\]]*)\]/s);
+    if (!providersMatch) return [];
+
+    const providersContent = providersMatch[1];
+    const providers: string[] = [];
+
+    const tokenPattern = /\b([A-Z]\w+)\b/g;
+    let match: RegExpExecArray | null;
+    while ((match = tokenPattern.exec(providersContent)) !== null) {
+      const token = match[1];
+      if (!['provide', 'useClass', 'useValue', 'useFactory', 'useExisting', 'deps', 'multi'].includes(token)) {
+        providers.push(token);
+      }
+    }
+
+    return [...new Set(providers)];
   }
 
   private extractViewChild(content: string): string[] {
-    return [];
+    const selectors: string[] = [];
+
+    const viewChildPattern = /@ViewChild(?:ren)?\(\s*(?:['"`]([^'"`]+)['"`]|(\w+))/g;
+    let match: RegExpExecArray | null;
+    while ((match = viewChildPattern.exec(content)) !== null) {
+      selectors.push(match[1] || match[2]);
+    }
+
+    return selectors;
   }
 
   private extractContentChild(content: string): string[] {
-    return [];
+    const selectors: string[] = [];
+
+    const contentChildPattern = /@ContentChild(?:ren)?\(\s*(?:['"`]([^'"`]+)['"`]|(\w+))/g;
+    let match: RegExpExecArray | null;
+    while ((match = contentChildPattern.exec(content)) !== null) {
+      selectors.push(match[1] || match[2]);
+    }
+
+    return selectors;
   }
 
   private extractLifecycle(content: string): string[] {
@@ -964,39 +1068,154 @@ export class AngularAnalyzer extends BaseAnalyzer {
   }
 
   private extractDependencies(content: string): string[] {
-    return [];
+    const deps: string[] = [];
+
+    const constructorMatch = content.match(/constructor\s*\(([^)]*)\)/s);
+    if (!constructorMatch) return deps;
+
+    const params = constructorMatch[1];
+
+    const paramPattern = /(?:@Inject\(\s*(\w+)\s*\)\s*)?(?:(?:private|protected|public|readonly)\s+)*\w+\s*[?]?\s*:\s*(\w+)/g;
+    let match: RegExpExecArray | null;
+    while ((match = paramPattern.exec(params)) !== null) {
+      const token = match[1] || match[2];
+      if (token && !['string', 'number', 'boolean', 'any', 'void', 'undefined', 'null', 'object', 'never', 'unknown'].includes(token.toLowerCase())) {
+        deps.push(token);
+      }
+    }
+
+    return deps;
   }
 
   private extractMethods(content: string): Array<{ name: string; parameters: any[]; returnType?: string }> {
-    return [];
+    const methods: Array<{ name: string; parameters: any[]; returnType?: string }> = [];
+
+    const methodPattern = /(?:(?:private|protected|public)\s+)?(?:static\s+)?(?:async\s+)?(\w+)\s*\(([^)]*)\)\s*(?::\s*([^{]+?))?\s*\{/g;
+    let match: RegExpExecArray | null;
+    while ((match = methodPattern.exec(content)) !== null) {
+      const name = match[1];
+      if (name === 'constructor' || name === 'class' || name === 'if' || name === 'for' || name === 'while' || name === 'switch' || name === 'catch') continue;
+
+      const params = match[2].trim();
+      const parameters: Array<{ name: string; type: string }> = [];
+      if (params) {
+        const paramParts = params.split(',');
+        for (const part of paramParts) {
+          const paramMatch = part.trim().match(/(?:(?:private|protected|public|readonly)\s+)*(\w+)\s*[?]?\s*(?::\s*(.+))?/);
+          if (paramMatch) {
+            parameters.push({
+              name: paramMatch[1],
+              type: (paramMatch[2] || 'any').trim()
+            });
+          }
+        }
+      }
+
+      const returnType = match[3] ? match[3].trim() : undefined;
+
+      methods.push({ name, parameters, returnType });
+    }
+
+    return methods;
   }
 
   private extractProperties(content: string): Array<{ name: string; type: string; access: string }> {
-    return [];
+    const properties: Array<{ name: string; type: string; access: string }> = [];
+
+    const propertyPattern = /(?:@\w+\([^)]*\)\s*)*\b(private|protected|public)\s+(?:(?:static|readonly|override)\s+)*(\w+)\s*[?!]?\s*(?::\s*([^;=\n]+?))?(?:\s*[;=])/g;
+    let match: RegExpExecArray | null;
+    while ((match = propertyPattern.exec(content)) !== null) {
+      const name = match[2];
+      if (name === 'constructor') continue;
+      properties.push({
+        name,
+        type: (match[3] || 'any').trim(),
+        access: match[1]
+      });
+    }
+
+    const implicitPublicPattern = /^\s+(?:readonly\s+)?(\w+)\s*[?!]?\s*:\s*([^;=\n]+?)\s*[;=]/gm;
+    while ((match = implicitPublicPattern.exec(content)) !== null) {
+      const name = match[1];
+      if (['private', 'protected', 'public', 'static', 'readonly', 'constructor', 'return', 'const', 'let', 'var', 'class', 'import', 'export', 'if', 'for', 'while'].includes(name)) continue;
+      const alreadyFound = properties.find(p => p.name === name);
+      if (!alreadyFound) {
+        properties.push({
+          name,
+          type: (match[2] || 'any').trim(),
+          access: 'public'
+        });
+      }
+    }
+
+    return properties;
+  }
+
+  private extractNgModuleArrayProperty(content: string, property: string): string[] {
+    const pattern = new RegExp(`${property}\\s*:\\s*\\[([^\\]]*)]`, 's');
+    const match = content.match(pattern);
+    if (!match) return [];
+
+    const items: string[] = [];
+    const identifierPattern = /\b([A-Z]\w+)\b/g;
+    let identifierMatch;
+    while ((identifierMatch = identifierPattern.exec(match[1])) !== null) {
+      items.push(identifierMatch[1]);
+    }
+
+    return items;
   }
 
   private extractDeclarations(content: string): string[] {
-    return [];
+    return this.extractNgModuleArrayProperty(content, 'declarations');
   }
 
   private extractModuleImports(content: string): string[] {
-    return [];
+    const ngModuleMatch = content.match(/@NgModule\s*\(\s*\{([\s\S]*?)\}\s*\)/);
+    if (!ngModuleMatch) return [];
+
+    const metadataBlock = ngModuleMatch[1];
+    const importsMatch = metadataBlock.match(/imports\s*:\s*\[([^\]]*)\]/s);
+    if (!importsMatch) return [];
+
+    const items: string[] = [];
+    const identifierPattern = /\b([A-Z]\w+)\b/g;
+    let match: RegExpExecArray | null;
+    while ((match = identifierPattern.exec(importsMatch[1])) !== null) {
+      items.push(match[1]);
+    }
+
+    return items;
   }
 
   private extractModuleExports(content: string): string[] {
-    return [];
+    const ngModuleMatch = content.match(/@NgModule\s*\(\s*\{([\s\S]*?)\}\s*\)/);
+    if (!ngModuleMatch) return [];
+
+    const metadataBlock = ngModuleMatch[1];
+    const exportsMatch = metadataBlock.match(/exports\s*:\s*\[([^\]]*)\]/s);
+    if (!exportsMatch) return [];
+
+    const items: string[] = [];
+    const identifierPattern = /\b([A-Z]\w+)\b/g;
+    let match: RegExpExecArray | null;
+    while ((match = identifierPattern.exec(exportsMatch[1])) !== null) {
+      items.push(match[1]);
+    }
+
+    return items;
   }
 
   private extractBootstrap(content: string): string[] {
-    return [];
+    return this.extractNgModuleArrayProperty(content, 'bootstrap');
   }
 
   private extractEntryComponents(content: string): string[] {
-    return [];
+    return this.extractNgModuleArrayProperty(content, 'entryComponents');
   }
 
   private extractSchemas(content: string): string[] {
-    return [];
+    return this.extractNgModuleArrayProperty(content, 'schemas');
   }
 
   private extractExportAs(content: string): string | undefined {
@@ -1005,7 +1224,17 @@ export class AngularAnalyzer extends BaseAnalyzer {
   }
 
   private extractHost(content: string): Record<string, string> {
-    return {};
+    const hostMatch = content.match(/host\s*:\s*\{([^}]*)\}/s);
+    if (!hostMatch) return {};
+
+    const host: Record<string, string> = {};
+    const entryPattern = /['"`]([^'"`]+)['"`]\s*:\s*['"`]([^'"`]+)['"`]/g;
+    let match: RegExpExecArray | null;
+    while ((match = entryPattern.exec(hostMatch[1])) !== null) {
+      host[match[1]] = match[2];
+    }
+
+    return host;
   }
 
   private extractPipeName(content: string): string {
@@ -1019,7 +1248,28 @@ export class AngularAnalyzer extends BaseAnalyzer {
   }
 
   private extractTransform(content: string): { parameters: any[]; returnType?: string } {
-    return { parameters: [] };
+    const transformMatch = content.match(/transform\s*\(([^)]*)\)\s*(?::\s*([^{]+?))?\s*\{/);
+    if (!transformMatch) return { parameters: [] };
+
+    const params = transformMatch[1].trim();
+    const parameters: Array<{ name: string; type: string }> = [];
+
+    if (params) {
+      const paramParts = params.split(',');
+      for (const part of paramParts) {
+        const paramMatch = part.trim().match(/(\w+)\s*[?]?\s*(?::\s*(.+))?/);
+        if (paramMatch) {
+          parameters.push({
+            name: paramMatch[1],
+            type: (paramMatch[2] || 'any').trim()
+          });
+        }
+      }
+    }
+
+    const returnType = transformMatch[2] ? transformMatch[2].trim() : undefined;
+
+    return { parameters, returnType };
   }
 
   private extractGuardName(content: string, filePath: string): string | null {
@@ -1036,35 +1286,136 @@ export class AngularAnalyzer extends BaseAnalyzer {
   }
 
   private extractGuardMethods(content: string): string[] {
-    return [];
+    const guardMethodNames = ['canActivate', 'canDeactivate', 'canLoad', 'canMatch', 'resolve'];
+    const found: string[] = [];
+
+    for (const methodName of guardMethodNames) {
+      const pattern = new RegExp(`\\b${methodName}\\s*\\(`);
+      if (pattern.test(content)) {
+        found.push(methodName);
+      }
+    }
+
+    return found;
+  }
+
+  private extractRouteBlock(content: string, routePath: string): string | null {
+    const escapedPath = routePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`\\{[^{}]*path\\s*:\\s*['"\`]${escapedPath}['"\`][^}]*\\}`, 's');
+    const match = content.match(pattern);
+    return match ? match[0] : null;
   }
 
   private extractRouteComponent(content: string, path: string): string | undefined {
-    return undefined;
+    const block = this.extractRouteBlock(content, path);
+    if (!block) return undefined;
+
+    const componentMatch = block.match(/component\s*:\s*(\w+)/);
+    return componentMatch ? componentMatch[1] : undefined;
   }
 
   private extractLoadChildren(content: string, path: string): string | undefined {
+    const block = this.extractRouteBlock(content, path);
+    if (!block) return undefined;
+
+    const stringMatch = block.match(/loadChildren\s*:\s*['"`]([^'"`]+)['"`]/);
+    if (stringMatch) return stringMatch[1];
+
+    const arrowMatch = block.match(/loadChildren\s*:\s*\(\)\s*=>\s*import\(\s*['"`]([^'"`]+)['"`]\s*\)/);
+    if (arrowMatch) return arrowMatch[1];
+
+    const generalArrowMatch = block.match(/loadChildren\s*:\s*\(\)\s*=>\s*(.+?)(?:,|\})/s);
+    if (generalArrowMatch) return generalArrowMatch[1].trim();
+
     return undefined;
   }
 
   private extractRedirectTo(content: string, path: string): string | undefined {
-    return undefined;
+    const block = this.extractRouteBlock(content, path);
+    if (!block) return undefined;
+
+    const redirectMatch = block.match(/redirectTo\s*:\s*['"`]([^'"`]+)['"`]/);
+    return redirectMatch ? redirectMatch[1] : undefined;
   }
 
   private extractCanActivate(content: string, path: string): string[] | undefined {
-    return undefined;
+    const block = this.extractRouteBlock(content, path);
+    if (!block) return undefined;
+
+    const guardMatch = block.match(/canActivate\s*:\s*\[([^\]]*)\]/);
+    if (!guardMatch) return undefined;
+
+    const guards: string[] = [];
+    const identifierPattern = /\b([A-Z]\w+)\b/g;
+    let match: RegExpExecArray | null;
+    while ((match = identifierPattern.exec(guardMatch[1])) !== null) {
+      guards.push(match[1]);
+    }
+
+    return guards.length > 0 ? guards : undefined;
   }
 
   private extractCanDeactivate(content: string, path: string): string[] | undefined {
-    return undefined;
+    const block = this.extractRouteBlock(content, path);
+    if (!block) return undefined;
+
+    const deactivateMatch = block.match(/canDeactivate\s*:\s*\[([^\]]*)\]/);
+    if (!deactivateMatch) return undefined;
+
+    const guards: string[] = [];
+    const identifierPattern = /\b([A-Z]\w+)\b/g;
+    let match: RegExpExecArray | null;
+    while ((match = identifierPattern.exec(deactivateMatch[1])) !== null) {
+      guards.push(match[1]);
+    }
+
+    return guards.length > 0 ? guards : undefined;
   }
 
   private extractResolve(content: string, path: string): Record<string, string> | undefined {
-    return undefined;
+    const block = this.extractRouteBlock(content, path);
+    if (!block) return undefined;
+
+    const resolveMatch = block.match(/resolve\s*:\s*\{([^}]*)\}/);
+    if (!resolveMatch) return undefined;
+
+    const resolvers: Record<string, string> = {};
+    const entryPattern = /(\w+)\s*:\s*(\w+)/g;
+    let match: RegExpExecArray | null;
+    while ((match = entryPattern.exec(resolveMatch[1])) !== null) {
+      resolvers[match[1]] = match[2];
+    }
+
+    return Object.keys(resolvers).length > 0 ? resolvers : undefined;
   }
 
   private extractRouteData(content: string, path: string): Record<string, any> | undefined {
-    return undefined;
+    const block = this.extractRouteBlock(content, path);
+    if (!block) return undefined;
+
+    const dataMatch = block.match(/data\s*:\s*\{([^}]*)\}/);
+    if (!dataMatch) return undefined;
+
+    const data: Record<string, any> = {};
+    const stringEntryPattern = /(\w+)\s*:\s*['"`]([^'"`]+)['"`]/g;
+    let match: RegExpExecArray | null;
+    while ((match = stringEntryPattern.exec(dataMatch[1])) !== null) {
+      data[match[1]] = match[2];
+    }
+
+    const boolEntryPattern = /(\w+)\s*:\s*(true|false)/g;
+    while ((match = boolEntryPattern.exec(dataMatch[1])) !== null) {
+      data[match[1]] = match[2] === 'true';
+    }
+
+    const numEntryPattern = /(\w+)\s*:\s*(\d+(?:\.\d+)?)\b/g;
+    while ((match = numEntryPattern.exec(dataMatch[1])) !== null) {
+      if (!(match[1] in data)) {
+        data[match[1]] = parseFloat(match[2]);
+      }
+    }
+
+    return Object.keys(data).length > 0 ? data : undefined;
   }
 
   private async detectAngularVersion(projectPath: string): Promise<string> {

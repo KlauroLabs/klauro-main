@@ -31,10 +31,13 @@
     "src/ai/integration-test.ts.disabled",
     "src/**/*.test.ts",
     "src/**/*.spec.ts",
+    "src/__tests__/**/*",
     "src/database/repositories/telemetry-repository.ts",
     "src/database/repositories/analysis-repository.ts",
     "src/issues/**/*",
     "src/sdk/**/*",
-    "src/telemetry/**/*"
+    "src/telemetry/**/*",
+    "src/analyzer/enhanced-rust-call-graph-extractor.ts",
+    "src/analyzer/frameworks/rust/**/*"
   ]
 }

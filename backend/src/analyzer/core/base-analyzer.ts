@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import {
   CASNode,
   CASEdge,
@@ -8,7 +9,8 @@ import {
   CASNodeBuilder,
   CASEdgeBuilder,
   generateNodeId,
-  generateEdgeId
+  generateEdgeId,
+  FileAnalysisResult,
 } from '../../types/cas.types';
 
 export {
@@ -21,7 +23,8 @@ export {
   CASNodeBuilder,
   CASEdgeBuilder,
   generateNodeId,
-  generateEdgeId
+  generateEdgeId,
+  FileAnalysisResult,
 } from '../../types/cas.types';
 
 export type CASAnalysisResult = CASContribution;
@@ -33,6 +36,12 @@ export interface AnalysisContext {
   filters?: string[];
   existingAnalysis?: CASContribution[];
   targetLevel?: number;
+}
+
+export interface FileAnalysisContext extends AnalysisContext {
+  filePath: string;
+  relativePath: string;
+  contentHash?: string;
 }
 
 import * as path from 'path';
@@ -75,6 +84,14 @@ export abstract class BaseAnalyzer {
   abstract canAnalyze(projectPath: string): Promise<boolean>;
 
   abstract analyze(context: AnalysisContext): Promise<CASContribution>;
+
+  supportsIncrementalAnalysis(): boolean {
+    return false;
+  }
+
+  async analyzeFileSingle?(context: FileAnalysisContext): Promise<FileAnalysisResult>;
+
+  async getRelevantFiles?(projectPath: string): Promise<string[]>;
 
   protected getFrameworkVersion(projectPath: string, frameworkName: string): Promise<string | undefined> {
     return this.getPackageVersion(projectPath, frameworkName);
@@ -299,5 +316,34 @@ export abstract class BaseAnalyzer {
 
   protected sanitizeId(name: string): string {
     return name.replace(/[^a-zA-Z0-9]/g, '_');
+  }
+
+  protected computeContentHash(content: string): string {
+    return crypto.createHash('sha256').update(content).digest('hex').substring(0, 16);
+  }
+
+  protected createFileAnalysisResult(
+    filePath: string,
+    relativePath: string,
+    contentHash: string,
+    mtimeMs: number,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[],
+    imports: string[],
+    exports: string[]
+  ): FileAnalysisResult {
+    return {
+      filePath: relativePath,
+      contentHash,
+      mtimeMs,
+      nodes,
+      edges,
+      entryPoints,
+      exitPoints,
+      imports,
+      exports,
+    };
   }
 }

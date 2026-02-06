@@ -10,12 +10,12 @@
     "outDir": "./dist",
     "rootDir": ".",
     "baseUrl": ".",
-    "paths": {
-      "@backend/*": ["../backend/src/*"]
-    },
     "resolveJsonModule": true,
     "experimentalDecorators": true,
-    "emitDecoratorMetadata": true
+    "emitDecoratorMetadata": true,
+    "downlevelIteration": true,
+    "noErrorTruncation": false,
+    "isolatedModules": true
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]

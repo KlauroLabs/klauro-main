@@ -37,13 +37,15 @@ Each call returns the available levels with node counts, so you always know what
 
 From there, drill into targeted areas:
 
-- **Understand the API surface**: `get_entry_points`, `get_route_table`
-- **Explore data model**: `get_database_schema`, `get_data_entities`
+- **Understand the API surface**: `get_entry_points`, `get_route_table` (paginated, use `limit`/`offset`)
+- **Explore data model**: `get_database_schema`, `get_data_entities` (paginated)
 - **Find specific code**: `search_nodes` with query text
-- **Trace execution**: `get_callers` / `get_callees` / `get_call_chain`
+- **Trace execution**: `get_callers` / `get_callees` / `get_call_chain` (use `chain_id` for full detail)
 - **Assess safety**: `assess_change_risk` before modifying code
-- **Check test coverage**: `find_tests`, `get_test_summary`, `get_flow_coverage`
+- **Check test coverage**: `find_tests`, `get_test_summary`, `get_flow_coverage` (use `chain_id` for per-flow detail)
 - **Review security**: `get_security_overview`
+- **Discover patterns**: `get_patterns` (summaries), `get_pattern_instances` (drill into specific pattern)
+- **Explore concepts**: `get_domain_concepts` (filterable, paginated)
 
 ---
 

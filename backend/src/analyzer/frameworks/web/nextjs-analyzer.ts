@@ -60,6 +60,7 @@ export class NextJSAnalyzer extends BaseAnalyzer {
     await this.detectPagesRouterApiRoutes(sourceFiles, context, nodes, edges, entryPoints, seenEntryPointIds);
     await this.detectPageRoutes(sourceFiles, context, nodes, edges, entryPoints, seenEntryPointIds);
     await this.detectMiddleware(context, nodes, edges, entryPoints, seenEntryPointIds);
+    await this.detectNavigationCalls(sourceFiles, context, exitPoints);
     await this.detectLayouts(sourceFiles, context, nodes, edges);
     await this.detectComponentTypes(sourceFiles, context, nodes);
 
@@ -231,7 +232,7 @@ export class NextJSAnalyzer extends BaseAnalyzer {
           id: entryId,
           source_node: nodeId,
           source_analyzer: this.analyzerId,
-          type: 'http',
+          type: 'page',
           name: `PAGE ${routePath}`,
           trigger: { method: 'GET', path: routePath },
           metadata: { framework: 'nextjs', pageFile: file }
@@ -267,7 +268,7 @@ export class NextJSAnalyzer extends BaseAnalyzer {
           id: entryId,
           source_node: nodeId,
           source_analyzer: this.analyzerId,
-          type: 'http',
+          type: 'page',
           name: `PAGE ${routePath}`,
           trigger: { method: 'GET', path: routePath },
           metadata: { framework: 'nextjs', pageFile: file }
@@ -385,6 +386,93 @@ export class NextJSAnalyzer extends BaseAnalyzer {
         }
       } catch {
         continue;
+      }
+    }
+  }
+
+  private async detectNavigationCalls(
+    sourceFiles: string[],
+    context: AnalysisContext,
+    exitPoints: CASExitPoint[]
+  ): Promise<void> {
+    const seenExitIds = new Set<string>();
+    const routerPushPattern = /router\.push\(\s*['"`]([^'"`]+)['"`]/g;
+    const routerReplacePattern = /router\.replace\(\s*['"`]([^'"`]+)['"`]/g;
+    const redirectPattern = /redirect\(\s*['"`]([^'"`]+)['"`]/g;
+
+    for (const file of sourceFiles) {
+      const fullPath = path.join(context.projectPath, file);
+      let content: string;
+      try {
+        content = await fs.readFile(fullPath, 'utf-8');
+      } catch {
+        continue;
+      }
+
+      const hasRouterUsage = content.includes('useRouter') || content.includes('router.push') || content.includes('router.replace');
+      const hasRedirect = content.includes('next/navigation') && content.includes('redirect(');
+
+      if (!hasRouterUsage && !hasRedirect) continue;
+
+      const sourceNode = this.findFileNodeId(file, context.existingAnalysis)
+        || `nextjs_nav_${file.replace(/[^a-zA-Z0-9]/g, '_')}`;
+
+      let match: RegExpExecArray | null;
+
+      routerPushPattern.lastIndex = 0;
+      while ((match = routerPushPattern.exec(content)) !== null) {
+        const targetPath = match[1];
+        const exitId = `exit_nav_push_${file.replace(/[^a-zA-Z0-9]/g, '_')}_${targetPath.replace(/[^a-zA-Z0-9]/g, '_')}`;
+        if (seenExitIds.has(exitId)) continue;
+        seenExitIds.add(exitId);
+        exitPoints.push(this.createExitPoint(
+          exitId,
+          sourceNode,
+          'navigation',
+          `NAVIGATE ${targetPath}`,
+          undefined,
+          { endpoint: targetPath },
+          undefined,
+          { framework: 'nextjs', sourceFile: file }
+        ));
+      }
+
+      routerReplacePattern.lastIndex = 0;
+      while ((match = routerReplacePattern.exec(content)) !== null) {
+        const targetPath = match[1];
+        const exitId = `exit_nav_replace_${file.replace(/[^a-zA-Z0-9]/g, '_')}_${targetPath.replace(/[^a-zA-Z0-9]/g, '_')}`;
+        if (seenExitIds.has(exitId)) continue;
+        seenExitIds.add(exitId);
+        exitPoints.push(this.createExitPoint(
+          exitId,
+          sourceNode,
+          'navigation',
+          `NAVIGATE ${targetPath}`,
+          undefined,
+          { endpoint: targetPath },
+          undefined,
+          { framework: 'nextjs', sourceFile: file }
+        ));
+      }
+
+      if (hasRedirect) {
+        redirectPattern.lastIndex = 0;
+        while ((match = redirectPattern.exec(content)) !== null) {
+          const targetPath = match[1];
+          const exitId = `exit_nav_redirect_${file.replace(/[^a-zA-Z0-9]/g, '_')}_${targetPath.replace(/[^a-zA-Z0-9]/g, '_')}`;
+          if (seenExitIds.has(exitId)) continue;
+          seenExitIds.add(exitId);
+          exitPoints.push(this.createExitPoint(
+            exitId,
+            sourceNode,
+            'navigation',
+            `REDIRECT ${targetPath}`,
+            undefined,
+            { endpoint: targetPath },
+            undefined,
+            { framework: 'nextjs', sourceFile: file }
+          ));
+        }
       }
     }
   }

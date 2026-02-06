@@ -1,8 +1,8 @@
 # Code Analysis Specification (CAS)
 
-**Version:** 1.7.0
+**Version:** 1.8.0
 **Status:** Active
-**Last Updated:** 2026-01-25
+**Last Updated:** 2026-02-05
 
 ## Abstract
 
@@ -23,7 +23,7 @@ The Code Analysis Specification (CAS) defines a universal, language-agnostic for
 
 ## Version History
 
-This document specifies version 1.7.0 of the Code Analysis Specification. The evolution of CAS includes:
+This document specifies version 1.8.0 of the Code Analysis Specification. The evolution of CAS includes:
 
 - **[Version 1.0.0](./v1.0.0.md)** (2024-01-01) - Initial release with core nodes, edges, and basic metadata
 - **[Version 1.1.0](./v1.1.0.md)** (2024-06-01) - Added progressive levels, entry/exit points, and extended metadata
@@ -32,7 +32,8 @@ This document specifies version 1.7.0 of the Code Analysis Specification. The ev
 - **[Version 1.4.0](./v1.4.0-rfp.md)** (2025-09-20) - Added documentation and comment extraction
 - **[Version 1.5.0](./v1.5.0-rfp.md)** (2026-01-09) - Added class-level relationships, pattern variations, and enhanced entry points
 - **[Version 1.6.0](./v1.6.0-rfp.md)** (2026-01-23) - Added test architecture, test categorization, BDD support, and test-to-code relationships
-- **[Version 1.7.0](./v1.7.0-rfp.md)** (2026-01-25) - Current version - Added inference-based intelligence: intent, critical flows, change risk, data lifecycle, security boundaries, flow coverage, temporal stability
+- **[Version 1.7.0](./v1.7.0-rfp.md)** (2026-01-25) - Added inference-based intelligence: intent, critical flows, change risk, data lifecycle, security boundaries, flow coverage, temporal stability
+- **[Version 1.8.0](./v1.8.0-rfp.md)** (2026-02-05) - Current version - Added incremental analysis: change detection, change reporting, change history, impact analysis
 
 ## 1. Introduction
 
@@ -90,7 +91,7 @@ The root structure containing complete analysis results:
 
 ```typescript
 interface CASOutput {
-  cas_version: "1.7.0";
+  cas_version: "1.8.0";
   analysis_timestamp: string;  // ISO 8601
   analysis_id: string;          // Unique identifier
 
@@ -2142,7 +2143,34 @@ This document has no IANA actions.
 **Breaking changes:**
 - None. All new fields are optional.
 
-### 11.8 Backward Compatibility
+### 11.8 Upgrading from v1.7.0 to v1.8.0
+
+**Required changes:**
+- Update `cas_version` to "1.8.0"
+
+**Optional enhancements:**
+- Implement `analyzeFileSingle()` in language analyzers for incremental analysis
+- Track `IncrementalState` between analysis runs
+- Generate `ChangeReport` for each incremental analysis
+- Store `ChangeHistoryEntry` records for change queries
+- Implement change detection using mtime, git, or content hash
+
+**New analyzer interface:**
+```typescript
+interface BaseAnalyzer {
+  // Existing methods...
+
+  // New in v1.8.0
+  supportsIncrementalAnalysis(): boolean;
+  analyzeFileSingle?(context: FileAnalysisContext): Promise<FileAnalysisResult>;
+  getRelevantFiles?(projectPath: string): Promise<string[]>;
+}
+```
+
+**Breaking changes:**
+- None. All new fields and features are optional.
+
+### 11.9 Backward Compatibility
 
 All versions maintain backward compatibility:
 - New fields are optional
@@ -2210,6 +2238,16 @@ All versions maintain backward compatibility:
   - Security boundary and trust level modeling
   - Flow-level test coverage with gap analysis
   - Git-based temporal stability metrics (churn, bug fix rate, legacy detection)
+
+- **v1.8.0** (2026-02-05): Incremental Analysis
+  - Multi-tier change detection (mtime, git, content hash)
+  - File-level analysis with import/export tracking
+  - Incremental state management between analysis runs
+  - Change set detection with dependency propagation
+  - Rich change reporting with node/edge diffs
+  - Change history storage and querying
+  - Impact analysis for changes
+  - Full rebuild triggers for major changes
 
 ### Appendix B: Language Support
 

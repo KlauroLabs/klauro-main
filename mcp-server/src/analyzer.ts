@@ -1,5 +1,5 @@
 import { AnalyzerOrchestrator } from '../../backend/src/analyzer/core/orchestrator';
-import type { CASOutput } from '../../backend/src/types/cas.types';
+import type { CASOutput, IncrementalState, ChangeReport } from '../../backend/src/types/cas.types';
 import { TypeScriptJavaScriptAnalyzer } from '../../backend/src/analyzer/languages/typescript-javascript-analyzer';
 import { PythonAnalyzer } from '../../backend/src/analyzer/languages/python-analyzer';
 import { JavaAnalyzer } from '../../backend/src/analyzer/languages/java-analyzer';
@@ -26,7 +26,14 @@ import { WPFAnalyzer, AspNetCoreAnalyzer } from '../../backend/src/analyzer/fram
 import { PrismaAnalyzer, SocketIOAnalyzer } from '../../backend/src/analyzer/libraries';
 import type { AnalyzerRegistration } from '../../backend/src/analyzer/core/orchestrator';
 import * as fs from 'fs-extra';
-import { saveAnalysis, loadAnalysis } from './storage';
+import {
+  saveAnalysis,
+  loadAnalysis,
+  saveIncrementalState,
+  loadIncrementalState,
+  saveChangeHistoryEntry,
+  saveAnalysisSnapshot
+} from './storage';
 
 let orchestrator: AnalyzerOrchestrator | null = null;
 
@@ -163,4 +170,94 @@ export async function getAnalysis(projectPath: string): Promise<CASOutput> {
   const cached = await loadAnalysis(projectPath);
   if (cached) return cached;
   throw new Error(`No analysis found for: ${projectPath}. Run analyze_codebase first.`);
+}
+
+export interface IncrementalAnalysisResult {
+  output: CASOutput;
+  state: IncrementalState;
+  changeReport: ChangeReport;
+  wasFullRebuild: boolean;
+}
+
+export async function analyzeProjectIncremental(projectPath: string): Promise<IncrementalAnalysisResult> {
+  if (!(await fs.pathExists(projectPath))) {
+    throw new Error(`Project path does not exist: ${projectPath}`);
+  }
+
+  const orch = getOrchestrator();
+
+  const previousOutput = await loadAnalysis(projectPath);
+  const previousState = await loadIncrementalState(projectPath);
+
+  if (!previousOutput) {
+    const result = await orch.orchestrateAnalysis(projectPath);
+    await saveAnalysis(projectPath, result);
+
+    const freshResult = await orch.orchestrateIncrementalAnalysis(
+      projectPath,
+      result,
+      null
+    );
+
+    await saveIncrementalState(projectPath, freshResult.state);
+    await saveAnalysisSnapshot(projectPath, freshResult.output);
+
+    return freshResult;
+  }
+
+  const result = await orch.orchestrateIncrementalAnalysis(
+    projectPath,
+    previousOutput,
+    previousState
+  );
+
+  await saveAnalysis(projectPath, result.output);
+  await saveIncrementalState(projectPath, result.state);
+
+  if (result.changeReport.summary.nodesAdded > 0 ||
+      result.changeReport.summary.nodesModified > 0 ||
+      result.changeReport.summary.nodesDeleted > 0) {
+    await saveChangeHistoryEntry(projectPath, {
+      id: `change_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      timestamp: result.changeReport.timestamp,
+      gitCommitHash: result.state.gitCommitHash,
+      source: 'unknown',
+      changes: {
+        files: result.changeReport.summary.filesAdded +
+               result.changeReport.summary.filesModified +
+               result.changeReport.summary.filesDeleted > 0
+          ? [{
+              path: 'multiple',
+              type: 'modified' as const,
+              linesAdded: 0,
+              linesRemoved: 0
+            }]
+          : [],
+        nodes: [],
+        edges: [],
+        entryPoints: [],
+        exitPoints: []
+      },
+      semanticSummary: result.wasFullRebuild
+        ? 'Full rebuild triggered'
+        : `${result.changeReport.summary.nodesAdded} nodes added, ${result.changeReport.summary.nodesModified} modified, ${result.changeReport.summary.nodesDeleted} deleted`,
+      intent: {
+        type: 'unknown' as const,
+        confidence: 0,
+        evidence: []
+      },
+      impact: result.changeReport.impact,
+      suggestedActions: [],
+      breakingChanges: [],
+      minimumTestSet: []
+    });
+
+    await saveAnalysisSnapshot(projectPath, result.output);
+  }
+
+  return result;
+}
+
+export async function getIncrementalState(projectPath: string): Promise<IncrementalState | null> {
+  return loadIncrementalState(projectPath);
 }

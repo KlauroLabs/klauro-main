@@ -1,8 +1,8 @@
-import { BaseAnalyzer, AnalysisContext } from '../core/base-analyzer';
+import { BaseAnalyzer, AnalysisContext, FileAnalysisContext } from '../core/base-analyzer';
 import {
   CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint,
   CASCategories, CASPerspective, CASDocumentation, CASComment,
-  CASTodo, CASImplementationStatus, CASCallGraph
+  CASTodo, CASImplementationStatus, CASCallGraph, FileAnalysisResult
 } from '../../types/cas.types';
 import { AnalyzerError } from '../core/errors';
 import { EnhancedCallGraphExtractor, ExtractedFunction } from '../enhanced-call-graph-extractor';
@@ -116,6 +116,231 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     } catch {
       return false;
     }
+  }
+
+  supportsIncrementalAnalysis(): boolean {
+    return true;
+  }
+
+  async getRelevantFiles(projectPath: string): Promise<string[]> {
+    return glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
+      cwd: projectPath,
+      ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**']
+    });
+  }
+
+  async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
+    const { filePath, relativePath, projectPath } = context;
+    const content = await fs.readFile(filePath, 'utf-8');
+    const contentHash = context.contentHash || this.computeContentHash(content);
+    const stat = await fs.stat(filePath);
+
+    const nodes: CASNode[] = [];
+    const edges: CASEdge[] = [];
+    const entryPoints: CASEntryPoint[] = [];
+    const exitPoints: CASExitPoint[] = [];
+    const imports: string[] = [];
+    const exports: string[] = [];
+
+    try {
+      const ast = parse(content, {
+        loc: true,
+        range: true,
+        jsx: true,
+        comment: true,
+        tokens: true,
+        useJSXTextNode: true,
+        ecmaFeatures: { jsx: true },
+        sourceType: 'module'
+      });
+
+      this.astCache.set(relativePath, { ast, content, filePath });
+
+      const fileId = `file_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
+      const lines = content.split('\n');
+      const fileComments = this.extractCommentsFromFile(content, filePath);
+      const fileTodos = this.extractTodosFromComments(fileComments, filePath);
+
+      nodes.push(this.createNode(
+        fileId,
+        path.basename(relativePath),
+        'file',
+        1,
+        filePath,
+        1,
+        lines.length,
+        {
+          relativePath,
+          extension: path.extname(relativePath),
+          isTypeScript: relativePath.endsWith('.ts') || relativePath.endsWith('.tsx'),
+          commentCount: fileComments.length,
+          todoCount: fileTodos.length,
+          comments: fileComments.length > 0 ? fileComments : undefined,
+          todos: fileTodos.length > 0 ? fileTodos : undefined
+        }
+      ));
+
+      this.extractImportsForSingleFile(ast, relativePath, nodes, edges, exitPoints, imports, projectPath);
+      this.extractFunctions(ast, relativePath, nodes, edges, entryPoints, content, lines);
+      this.extractClasses(ast, relativePath, nodes, edges, content, lines);
+      this.extractVariables(ast, relativePath, nodes, content);
+      this.extractExportsForSingleFile(ast, relativePath, exports);
+
+      if (!this.callGraphExtractor) {
+        this.callGraphExtractor = new EnhancedCallGraphExtractor(projectPath);
+      }
+      const { functions: extractedFunctions } = this.callGraphExtractor.extractFromAST(ast, filePath);
+      this.integrateEnhancedCallGraphData(extractedFunctions, nodes, edges, entryPoints, exitPoints, relativePath);
+
+    } catch (error) {
+      console.warn(`Failed to analyze ${relativePath} incrementally:`, error);
+    }
+
+    return this.createFileAnalysisResult(
+      filePath,
+      relativePath,
+      contentHash,
+      stat.mtimeMs,
+      nodes,
+      edges,
+      entryPoints,
+      exitPoints,
+      imports,
+      exports
+    );
+  }
+
+  private extractImportsForSingleFile(
+    ast: TSESTree.Program,
+    filePath: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    exitPoints: CASExitPoint[],
+    imports: string[],
+    projectPath: string
+  ): void {
+    ast.body.forEach((node, index) => {
+      if (!node || typeof node !== 'object') return;
+
+      if (node.type === 'ImportDeclaration' && node.source.type === 'Literal') {
+        const importSource = node.source.value as string;
+        const importId = `import_${filePath}_${index}`;
+
+        const specifiers = this.getImportSpecifiers(node);
+        specifiers.forEach((spec: { name: string; imported: string }) => {
+          this.importSourceMap.set(spec.name, importSource);
+        });
+
+        nodes.push(this.createNode(
+          importId,
+          `import ${importSource}`,
+          'import',
+          3,
+          filePath,
+          node.loc?.start.line,
+          node.loc?.end.line,
+          { source: importSource, specifiers }
+        ));
+
+        const fileId = `file_${filePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
+        edges.push(this.createEdge(
+          `${fileId}_to_${importId}`,
+          fileId,
+          importId,
+          'imports'
+        ));
+
+        if (importSource.startsWith('.') || importSource.startsWith('/')) {
+          const resolvedPath = this.resolveImportPath(importSource, filePath, projectPath);
+          if (resolvedPath) {
+            imports.push(resolvedPath);
+          }
+        }
+      }
+    });
+  }
+
+  private resolveImportPath(importSource: string, currentFile: string, projectPath: string): string | null {
+    const currentDir = path.dirname(currentFile);
+    let resolvedPath = path.resolve(currentDir, importSource);
+
+    if (!path.isAbsolute(resolvedPath)) {
+      resolvedPath = path.join(projectPath, resolvedPath);
+    }
+
+    const relativePath = path.relative(projectPath, resolvedPath);
+
+    const extensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
+
+    if (extensions.some(ext => relativePath.endsWith(ext))) {
+      return relativePath;
+    }
+
+    for (const ext of extensions) {
+      const withExt = relativePath + ext;
+      const indexPath = path.join(relativePath, `index${ext}`);
+      if (fs.pathExistsSync(path.join(projectPath, withExt))) {
+        return withExt;
+      }
+      if (fs.pathExistsSync(path.join(projectPath, indexPath))) {
+        return indexPath;
+      }
+    }
+
+    return relativePath;
+  }
+
+  private extractExportsForSingleFile(
+    ast: TSESTree.Program,
+    filePath: string,
+    exports: string[]
+  ): void {
+    ast.body.forEach((node) => {
+      if (!node || typeof node !== 'object') return;
+
+      if (node.type === 'ExportNamedDeclaration') {
+        if (node.declaration) {
+          if (node.declaration.type === 'FunctionDeclaration' && node.declaration.id) {
+            exports.push(node.declaration.id.name);
+          } else if (node.declaration.type === 'ClassDeclaration' && node.declaration.id) {
+            exports.push(node.declaration.id.name);
+          } else if (node.declaration.type === 'VariableDeclaration') {
+            node.declaration.declarations.forEach((decl: any) => {
+              if (decl.id?.type === 'Identifier') {
+                exports.push(decl.id.name);
+              }
+            });
+          } else if (node.declaration.type === 'TSInterfaceDeclaration' && (node.declaration as any).id) {
+            exports.push((node.declaration as any).id.name);
+          } else if (node.declaration.type === 'TSTypeAliasDeclaration' && (node.declaration as any).id) {
+            exports.push((node.declaration as any).id.name);
+          } else if (node.declaration.type === 'TSEnumDeclaration' && (node.declaration as any).id) {
+            exports.push((node.declaration as any).id.name);
+          }
+        }
+        if (node.specifiers) {
+          node.specifiers.forEach((spec: any) => {
+            if (spec.exported?.name) {
+              exports.push(spec.exported.name);
+            } else if (spec.local?.name) {
+              exports.push(spec.local.name);
+            }
+          });
+        }
+      } else if (node.type === 'ExportDefaultDeclaration') {
+        if (node.declaration?.type === 'Identifier') {
+          exports.push(node.declaration.name);
+        } else if (node.declaration?.type === 'FunctionDeclaration' && node.declaration.id) {
+          exports.push(node.declaration.id.name);
+        } else if (node.declaration?.type === 'ClassDeclaration' && node.declaration.id) {
+          exports.push(node.declaration.id.name);
+        } else {
+          exports.push('default');
+        }
+      } else if (node.type === 'ExportAllDeclaration') {
+        exports.push('*');
+      }
+    });
   }
 
   async analyze(context: AnalysisContext): Promise<CASContribution> {
@@ -1023,6 +1248,30 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
                 }
               });
             }
+          } else if (sourceNodeId && !targetNodeId && this.isApiCall(call.target, call.callExpression)) {
+            const apiInfo = this.parseApiCall(call.target, call.callExpression);
+            if (apiInfo) {
+              exitPoints.push({
+                id: `exit_api_${func.name}_${apiInfo.method}_${call.line}`,
+                source_node: sourceNodeId,
+                type: 'api',
+                name: `${apiInfo.method.toUpperCase()} ${apiInfo.endpoint || 'external'}`,
+                target: {
+                  service_id: 'external_api',
+                  endpoint: apiInfo.endpoint
+                },
+                operation: {
+                  method: apiInfo.method.toUpperCase(),
+                  action: apiInfo.method,
+                  async: call.isAsync
+                },
+                metadata: {
+                  line: call.line,
+                  call_expression: call.callExpression,
+                  endpoint: apiInfo.endpoint
+                }
+              });
+            }
           }
         }
       });
@@ -1031,21 +1280,93 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
   private isRepositoryCall(target: string): boolean {
     if (!target.includes('.')) return false;
-    const lowerTarget = target.toLowerCase();
-    return lowerTarget.includes('repository') ||
-           lowerTarget.includes('repo') ||
-           this.isCommonRepoMethod(target.split('.').pop() || '');
+    const parts = target.split('.');
+    const methodName = (parts.pop() || '').toLowerCase();
+    const callerName = parts.join('.').toLowerCase().replace('this.', '');
+
+    const ormSpecificMethods = [
+      'findoneorfail', 'findall', 'findandcount',
+      'persistandflush', 'removeandflush', 'nativeupdate', 'nativedelete',
+      'getreference', 'populate', 'assign', 'flush', 'upsert', 'persist'
+    ];
+
+    if (ormSpecificMethods.includes(methodName)) return true;
+
+    const ambiguousMethods = [
+      'find', 'findone', 'create', 'save', 'insert',
+      'update', 'delete', 'remove', 'count'
+    ];
+
+    if (ambiguousMethods.includes(methodName)) {
+      return this.isRepositoryLikeCaller(callerName);
+    }
+
+    return false;
   }
 
-  private isCommonRepoMethod(methodName: string): boolean {
-    const repoMethods = [
-      'find', 'findone', 'findoneorfail', 'findall', 'findandcount',
-      'create', 'save', 'insert', 'persist', 'persistandflush',
-      'update', 'upsert', 'nativeupdate',
-      'delete', 'remove', 'removeandflush', 'nativedelete',
-      'flush', 'count', 'getreference', 'populate', 'assign'
+  private isRepositoryLikeCaller(callerName: string): boolean {
+    const parts = callerName.split('.');
+    const exactMatchPatterns = new Set([
+      'em', 'db', 'orm', 'repo', 'model', 'knex', 'table', 'schema', 'query'
+    ]);
+    const substringPatterns = [
+      'repository', 'entity', 'collection', 'prisma', 'manager',
+      'connection', 'sequelize', 'drizzle', 'database'
     ];
-    return repoMethods.includes(methodName.toLowerCase());
+    for (const part of parts) {
+      if (exactMatchPatterns.has(part)) return true;
+      if (substringPatterns.some(pattern => part.includes(pattern))) return true;
+    }
+    return false;
+  }
+
+  private isApiCall(target: string, callExpression: string): boolean {
+    const lowerTarget = target.toLowerCase();
+    const lowerExpression = callExpression.toLowerCase();
+
+    if (lowerTarget === 'fetch' || lowerExpression.startsWith('fetch(')) return true;
+
+    const httpClientPatterns = ['axios', 'api', 'http', 'apiclient', 'httpclient', 'request'];
+    const httpMethods = ['get', 'post', 'put', 'delete', 'patch', 'head', 'options', 'request'];
+
+    if (target.includes('.')) {
+      const parts = target.split('.');
+      const method = (parts.pop() || '').toLowerCase();
+      const caller = parts.pop()?.toLowerCase().replace('this.', '') || '';
+      if (httpMethods.includes(method) && httpClientPatterns.some(p => caller.includes(p))) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private parseApiCall(target: string, callExpression: string): { method: string; endpoint?: string } | null {
+    const lowerTarget = target.toLowerCase();
+
+    if (lowerTarget === 'fetch' || callExpression.toLowerCase().startsWith('fetch(')) {
+      const endpoint = this.extractEndpointFromExpression(callExpression);
+      return { method: 'fetch', endpoint };
+    }
+
+    if (target.includes('.')) {
+      const parts = target.split('.');
+      const method = parts.pop() || '';
+      const endpoint = this.extractEndpointFromExpression(callExpression);
+      return { method, endpoint };
+    }
+
+    return null;
+  }
+
+  private extractEndpointFromExpression(callExpression: string): string | undefined {
+    const stringMatch = callExpression.match(/['"`]([^'"`]+)['"`]/);
+    if (stringMatch) return stringMatch[1];
+
+    const templateMatch = callExpression.match(/`([^`]+)`/);
+    if (templateMatch) return templateMatch[1];
+
+    return undefined;
   }
 
   private parseRepositoryCall(target: string): { repository: string; method: string } | null {

@@ -2,6 +2,8 @@
 
 All tools that query analysis data require a `path` parameter - the absolute filesystem path of a previously analyzed project. Run `analyze_codebase` first to generate the analysis, then query it with any other tool.
 
+Many tools support **pagination** via `limit` and `offset` parameters. When a tool returns paginated data, the response includes `total`, `offset`, and `limit` fields so you know how many items exist and can request more.
+
 ---
 
 ## Analysis Management
@@ -64,13 +66,27 @@ Full system metadata without condensation.
 
 ### `get_patterns`
 
-Design patterns and anti-patterns detected in the codebase.
+Design patterns and anti-patterns detected in the codebase. Returns **summaries only** -- instance counts and variation breakdowns without listing every instance ID. Use `get_pattern_instances` to drill into specific patterns.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
 
-**Returns:** `patterns` (with variations, deviations, instances), `categories`, `behaviors`.
+**Returns:** `patterns` (each with `id`, `name`, `description`, `type`, `confidence`, `instance_count`, and `variations` with `id`, `implementation`, `description`, `instance_count`, `percentage`), `categories`, `behaviors`.
+
+### `get_pattern_instances`
+
+Get the node IDs that are instances of a specific pattern. Paginated.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `pattern_id` | string | yes | Pattern ID from `get_patterns` results |
+| `variation_id` | string | no | Filter to a specific variation |
+| `limit` | number | no | Max results (default 50) |
+| `offset` | number | no | Skip first N results (default 0) |
+
+**Returns:** `pattern_id`, `pattern_name`, `total_instances`, `offset`, `limit`, `instances` (array of node IDs). When `variation_id` is specified, also includes `variation_id` and `variation_description`.
 
 ### `get_perspectives`
 
@@ -125,23 +141,208 @@ All code elements defined in a specific file with their internal relationships.
 
 ### `get_level`
 
-Progressive disclosure. Get everything at a specific hierarchy level -- the level definition, all nodes at that level, internal edges between them, cross-level edges connecting to other levels, and entry/exit points. Use this to navigate the codebase top-down: start at level 0 (system), drill to level 1 (subsystems), then deeper for more detail.
+Progressive disclosure. Get nodes, edges, entry points, and exit points at a specific hierarchy level. Optimized for token efficiency with configurable limits. Cross-level edges use `node_refs` deduplication instead of embedding full objects.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
 | `level` | number | yes | Hierarchy level (0 = system, 1 = subsystems, deeper = more detail) |
+| `limit` | number | no | Max nodes to return (default 50) |
+| `offset` | number | no | Skip first N nodes (default 0) |
+| `edge_limit` | number | no | Max edges to return (default 200) |
+| `include_edges` | boolean | no | Include edges in response (default true) |
+| `include_entry_exit` | boolean | no | Include entry/exit points (default true) |
 
 **Returns:**
 - `level` - The requested level number
-- `definition` - Level metadata (name, description, node_count, recommended_for, example_nodes, contains)
-- `total_levels` - Total number of levels in the analysis
+- `definition` - Level metadata (name, description)
+- `pagination` - `{ total_nodes, offset, limit, has_more }` for navigating results
+- `edges_summary` - `{ internal_count, cross_level_count, internal_returned, cross_level_returned }` showing truncation
+- `entry_exit_summary` - `{ entry_count, exit_count, entry_returned, exit_returned }` showing truncation
 - `available_levels` - All levels with name and node count (for navigation)
-- `nodes` - All nodes at this level (id, name, type, qualified_name, category, file, line, description, parent, children, tags)
-- `internal_edges` - Trimmed edges between nodes at this level (id, source, target, type, key metadata)
-- `cross_level_edges` - Trimmed edges connecting to nodes at other levels, with the external node's id, name, type, and level
-- `entry_points` - Entry points associated with nodes at this level
-- `exit_points` - Exit points associated with nodes at this level
+- `nodes` - Paginated nodes (id, name, type, qualified_name, category, file, line, parent, children_count)
+- `internal_edges` - Trimmed edges between nodes at this level (id, source, target, type)
+- `cross_level_edges` - Edges to other levels with `external_id` reference (not embedded objects)
+- `node_refs` - Map of external node IDs to `{ name, type, level }` for deduplication
+- `entry_points` - Limited entry points (id, type, name, source_node)
+- `exit_points` - Limited exit points (id, type, name, source_node)
+
+---
+
+## Agentic Coding Tools
+
+Tools designed specifically for AI coding assistants to understand, navigate, and safely modify code.
+
+### `get_coding_context`
+
+**THE essential tool for AI coding.** Returns everything needed to start coding in a specific area with a single call. Replaces 5-10 separate tool calls.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `target` | string | yes | Node ID, file path, or search query to find the target |
+| `task_type` | string | no | Type of change: `add`, `modify`, `delete`, `refactor` (default: modify) |
+| `include` | string[] | no | Sections to include: `conventions`, `patterns`, `constraints`, `tests` (default: all) |
+
+**Returns:**
+- `target_node` - Node details with layer (entry/business/data/infrastructure) and framework_role (e.g., "NestJS Controller", "React Hook")
+- `conventions` - Naming patterns, import style, error handling, async patterns
+- `related_patterns` - Patterns that apply to this code with relevance level
+- `layer_boundaries` - What this code can/should not call
+- `modification_checklist` - Verification steps, tests to run, tests to add
+- `connected_code` - Callers, callees, shared types with risk assessment
+
+### `get_conventions`
+
+Codebase coding standards extracted from actual code patterns. Use to ensure new code matches existing style.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `scope` | string | no | Scope: `global`, `layer`, `module` (default: global) |
+| `layer` | string | no | Layer name if scope=layer |
+| `module_id` | string | no | Module node ID if scope=module |
+
+**Returns:**
+- `naming` - Patterns for functions, classes, files, variables, constants with examples
+- `file_organization` - Structure pattern (feature-based/layer-based), index files, barrel exports
+- `imports` - Style (named/default/mixed), order
+- `error_handling` - Pattern type, custom error classes, example node ID
+- `async_patterns` - Preferred style (async-await/promises), error handling
+
+### `get_modification_guide`
+
+Complete safety checklist before modifying specific code.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `node_id` | string | yes | Node ID to modify |
+| `change_type` | string | yes | Type: `signature`, `behavior`, `delete`, `add_parameter`, `rename` |
+
+**Returns:**
+- `risk_level` - low/medium/high/critical
+- `change_summary` - What changes, blast radius, critical path affected
+- `must_update` - Files/nodes that must be updated with suggested changes
+- `should_verify` - Verification checks with how to verify and automation status
+- `tests` - Existing tests, tests to add, run command
+- `rollback_considerations` - How to undo if needed
+
+### `get_pattern_examples`
+
+Get actual working code examples for detected patterns. Use to learn how patterns are implemented before writing similar code.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `pattern_id` | string | yes | Pattern ID from `get_patterns` |
+| `variation_id` | string | no | Specific variation ID |
+| `limit` | number | no | Max examples (default 3) |
+
+**Returns:**
+- `pattern` - Pattern id, name, description
+- `examples` - Array of `{ node_id, name, file, line, code_snippet, annotations, why_exemplary }`
+
+### `find_similar_code`
+
+Find code similar to a given node for consistency and potential reuse.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `node_id` | string | no | Node ID to find similar code for |
+| `code_snippet` | string | no | Code snippet to find similar code for |
+| `similarity_type` | string | no | Type: `structural`, `semantic`, `both` (default: both) |
+| `limit` | number | no | Max results (default 10) |
+
+**Returns:**
+- `query` - Query details (node_id or snippet_hash)
+- `similar` - Array of `{ node_id, name, file, line, similarity_score, similarity_reasons, differences, reuse_recommendation }` where `reuse_recommendation` is `extract_shared`, `copy_pattern`, or `reference_only`
+
+### `get_comments`
+
+Surface TODO/FIXME/HACK/NOTE/WARNING comments affecting a code area.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `scope` | string | yes | Scope: `node`, `file`, `module`, `all` |
+| `node_id` | string | no | Node ID (required if scope=node or scope=module) |
+| `file_path` | string | no | File path (required if scope=file) |
+| `types` | string[] | no | Comment types: `todo`, `fixme`, `hack`, `note`, `warning` (default: all) |
+| `limit` | number | no | Max results (default 50) |
+
+**Returns:**
+- `total` - Total comments found
+- `by_type` - Count by comment type
+- `by_purpose` - Count by purpose
+- `comments` - Array of `{ type, text, purpose, file, line, node_id, node_name }`
+
+### `get_error_contracts`
+
+What errors can a function throw/return and how callers handle them.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `node_id` | string | yes | Node ID to analyze |
+| `direction` | string | no | Direction: `throws`, `catches`, `both` (default: both) |
+
+**Returns:**
+- `node` - Node id and name
+- `throws` - Array of `{ error_type, conditions, documented }`
+- `caught_by` - Array of `{ caller_id, caller_name, handling }` where handling is `caught`, `propagated`, or `ignored`
+- `uncaught_paths` - Array of `{ entry_point_id, entry_point_name, path_description }`
+
+### `get_framework_guidance`
+
+Framework-specific best practices for the detected stack.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `framework` | string | no | Framework name (auto-detect if not specified) |
+| `topic` | string | no | Topic: `routing`, `state`, `data-fetching`, `testing`, `security` |
+
+**Returns:**
+- `framework` - Framework name and version
+- `detected_patterns` - Array of `{ pattern, usage_count, is_recommended }`
+- `recommendations` - Array of `{ topic, current_approach, recommended_approach, example_node_id, migration_effort }`
+- `anti_patterns_found` - Array of `{ pattern, locations, suggested_fix }`
+
+### `get_usage_examples`
+
+How is this function/class/type actually used throughout the codebase?
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `node_id` | string | yes | Node ID to find usages for |
+| `limit` | number | no | Max results (default 10) |
+| `include_tests` | boolean | no | Include test file usages (default: false) |
+
+**Returns:**
+- `node` - Node id, name, type
+- `usage_count` - Total usage count
+- `usage_patterns` - Array of `{ pattern_description, frequency, example_locations }`
+- `common_mistakes` - Array of common usage mistakes
+
+### `get_configuration`
+
+Surface configuration that affects code behavior.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `scope` | string | no | Scope: `all`, `runtime`, `build`, `test` (default: all) |
+| `affecting_node_id` | string | no | Find config affecting this specific node |
+
+**Returns:**
+- `scope` - Applied scope
+- `config_files` - List of config file paths
+- `config_nodes` - Array of `{ id, name, type, file, line }`
+- `environment_variables` - List of environment variables
+- `feature_flags` - List of feature flags
 
 ---
 
@@ -149,35 +350,42 @@ Progressive disclosure. Get everything at a specific hierarchy level -- the leve
 
 ### `get_entry_points`
 
-All system entry points. Entry points are where external requests or events enter the system.
+All system entry points. Entry points are where external requests or events enter the system. Paginated (default 50).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
 | `type` | string | no | Filter: http, websocket, cli, event, schedule, page, route, message, file, test |
+| `limit` | number | no | Max results (default 50) |
+| `offset` | number | no | Skip first N results (default 0) |
 
-**Returns:** Array of entry points with handler, security, trigger, input/output schemas, connected nodes.
+**Returns:** `{ total, offset, limit, entry_points }` -- entry points with handler, security, trigger, input/output schemas, connected nodes.
 
 ### `get_exit_points`
 
-All external interactions where the system reaches out to external services or resources.
+All external interactions where the system reaches out to external services or resources. Paginated (default 50).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
 | `type` | string | no | Filter: database, api, file, message, cache, sdk, webhook |
+| `limit` | number | no | Max results (default 50) |
+| `offset` | number | no | Skip first N results (default 0) |
 
-**Returns:** Array of exit points with target, operation, reliability config, connected nodes.
+**Returns:** `{ total, offset, limit, exit_points }` -- exit points with target, operation, reliability config, connected nodes.
 
 ### `get_route_table`
 
-HTTP route table extracted from framework analysis.
+HTTP route table extracted from framework analysis. Paginated (default 50).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
+| `method` | string | no | Filter by HTTP method (GET, POST, PUT, DELETE, etc.) |
+| `limit` | number | no | Max results (default 50) |
+| `offset` | number | no | Skip first N results (default 0) |
 
-**Returns:** Array of `{ method, path, controller, handler, auth, guards, middleware }`.
+**Returns:** `{ total, offset, limit, routes }` -- each route with `method`, `path`, `controller`, `handler`, `auth`, `guards`, `middleware`.
 
 ### `get_external_services`
 
@@ -195,41 +403,45 @@ All external service integrations detected in the codebase.
 
 ### `get_callers`
 
-Find all code elements that call or reference a given node. Traverses both edges and method calls.
+Find code elements that call or reference a given node. Traverses edges and method calls. Limited to prevent token explosion.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
 | `node_id` | string | yes | Node ID to find callers for |
 | `depth` | number | no | Max traversal depth (default 2) |
+| `limit` | number | no | Max results to return (default 50) |
 
-**Returns:** Array of `{ node_id, name, type, depth, via }`. The `via` field indicates the relationship type (e.g., `edge:calls`, `method_call:findAll`).
+**Returns:** `{ total, limit, truncated, callers }` where `callers` is an array of `{ node_id, name, type, depth, via }`. The `via` field indicates the relationship type (e.g., `edge:calls`, `method_call:findAll`). `truncated` is true if more callers exist.
 
 ### `get_callees`
 
-Find all code elements that a given node calls or references.
+Find code elements that a given node calls or references. Limited to prevent token explosion.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
 | `node_id` | string | yes | Node ID to find callees for |
 | `depth` | number | no | Max traversal depth (default 2) |
+| `limit` | number | no | Max results to return (default 50) |
 
-**Returns:** Same format as `get_callers`.
+**Returns:** `{ total, limit, truncated, callees }` - same format as `get_callers` but with `callees` array.
 
 ### `get_call_chain`
 
-Complete call chains from entry to exit. A call chain represents a full request path through the system.
+Complete call chains from entry to exit. Behavior depends on parameters:
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
-| `chain_id` | string | no | Specific call chain ID |
+| `chain_id` | string | no | Specific call chain ID for full detail |
 | `entry_point_id` | string | no | Entry point ID to find chains for |
+| `limit` | number | no | Max results when listing all chains (default 25) |
+| `offset` | number | no | Skip first N results (default 0) |
 
-If neither optional param is given, returns all chains.
-
-**Returns:** Call chain(s) with all steps, characteristics, risk analysis, business context, criticality, runtime stats, test coverage.
+- **With `chain_id`:** Returns the full chain with all steps, characteristics, risk analysis, business context, criticality, runtime stats, test coverage.
+- **With `entry_point_id`:** Returns all chains for that entry point (full detail).
+- **Without filters:** Returns paginated **chain summaries** (`id`, `chain_type`, `entry_point`, `exit_point`, `call_path_length`, `characteristics`, `criticality`, `risk_level`) -- not full chain data.
 
 ### `get_method_calls`
 
@@ -259,14 +471,16 @@ Why code exists - inferred purpose and architectural reasoning.
 
 ### `get_data_entities`
 
-Data entity lifecycle analysis - how data flows through the system.
+Data entity lifecycle analysis - how data flows through the system. Paginated (default 25).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
 | `entity_name` | string | no | Filter by entity name |
+| `limit` | number | no | Max results (default 25) |
+| `offset` | number | no | Skip first N results (default 0) |
 
-**Returns:** `entities` (fields, CRUD lifecycle with created_by/read_by/updated_by/deleted_by, transformations, invariants) and `data_summary` (sensitive data nodes, validation gaps).
+**Returns:** `{ total, offset, limit, entities, data_summary }` -- entities with fields, CRUD lifecycle (created_by/read_by/updated_by/deleted_by), transformations, invariants. `data_summary` includes sensitive data nodes and validation gaps.
 
 ### `get_security_overview`
 
@@ -280,16 +494,15 @@ Security posture of the analyzed system.
 
 ### `get_stability`
 
-Code stability and churn analysis.
+Code stability and churn analysis. Behavior depends on parameters:
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
-| `node_id` | string | no | Specific node (omit for full summary) |
+| `node_id` | string | no | Specific node (omit for summary) |
 
-**Per-node returns:** Stability score, stability class, commit metrics (30d/90d), bug fix rate, refactor frequency.
-
-**Summary returns:** `stability_summary` (hotspots, legacy areas, by-class breakdown) and `temporal_stability` (all nodes).
+- **With `node_id`:** Returns detailed stability for that node -- stability score, stability class, commit metrics (30d/90d), bug fix rate, refactor frequency.
+- **Without `node_id`:** Returns `stability_summary` (hotspots, legacy areas), `total_nodes_tracked`, and `by_class` (count of nodes per stability class) -- not individual node data.
 
 ### `assess_change_risk`
 
@@ -304,16 +517,15 @@ Risk assessment for modifying a specific code element.
 
 ### `get_flow_coverage`
 
-Per-flow test coverage analysis.
+Per-flow test coverage analysis. Behavior depends on parameters:
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
-| `chain_id` | string | no | Specific call chain ID (omit for all flows) |
+| `chain_id` | string | no | Specific call chain ID |
 
-**Per-chain returns:** `coverage` (coverage_status, tested/untested segments with importance, test quality) and related `test_gaps`.
-
-**Summary returns:** `flow_summary`, all `coverage` entries, all `test_gaps` with severity and recommendations.
+- **With `chain_id`:** Returns full `coverage` (coverage_status, tested/untested segments with importance, test quality) and related `test_gaps`.
+- **Without `chain_id`:** Returns `flow_summary`, `total_flows`, `by_coverage_status` (counts per status), `total_test_gaps`, `test_gaps_by_severity` (counts per severity) -- not individual flow data.
 
 ---
 
@@ -321,14 +533,15 @@ Per-flow test coverage analysis.
 
 ### `get_workflows`
 
-Business workflows detected from analyzing entry-to-exit paths.
+Business workflows detected from analyzing entry-to-exit paths. Behavior depends on parameters:
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
-| `workflow_id` | string | no | Specific workflow ID (omit for all) |
+| `workflow_id` | string | no | Specific workflow ID |
 
-**Returns:** Workflows (CRUD/process/query/command/composite) with entry points, call chains, entities touched, services used, classification, criticality, dependencies. Plus `workflow_graph` with dependency links and critical shared nodes.
+- **With `workflow_id`:** Returns full workflow detail (entry points, call chains, entities touched, services used, classification, criticality, dependencies).
+- **Without `workflow_id`:** Returns `total`, workflow **summaries** (`id`, `name`, `workflow_type`, `classification`, `criticality`, `entry_point_count`, `chain_count`, `entity_count`, `service_count`), and `workflow_graph`.
 
 ### `get_flow_graph`
 
@@ -342,13 +555,58 @@ Capability-level architecture view.
 
 ### `get_domain_concepts`
 
-Core domain terminology extracted from the codebase.
+Core domain terminology extracted from the codebase. Sorted by frequency. Paginated (default 25).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
+| `classification` | string | no | Filter: core, supporting, infrastructure |
+| `limit` | number | no | Max results (default 25) |
+| `offset` | number | no | Skip first N results (default 0) |
 
-**Returns:** Domain concepts with frequency, where they appear (entry points, entities, nodes), classification (core/supporting/infrastructure).
+**Returns:** `{ total, offset, limit, concepts }` -- domain concepts with frequency, where they appear (entry points, entities, nodes), classification.
+
+---
+
+## Behaviors and Lifecycle
+
+### `get_behaviors`
+
+System behaviors - what the system does, not just what it is. Behaviors include participating nodes and execution flows showing how nodes interact to implement a capability.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `behavior_id` | string | no | Specific behavior ID for full detail |
+| `limit` | number | no | Max results (default 50) |
+| `offset` | number | no | Skip first N results (default 0) |
+
+**Returns:**
+- **Without `behavior_id`:** `{ total, offset, limit, behaviors }` with summaries including id, name, description, node_count, flow_steps, nodes (resolved with name and type), and flow.
+- **With `behavior_id`:** Full behavior with resolved_nodes (including file and line info) and complete flow details.
+
+### `get_lifecycle_hooks`
+
+Framework lifecycle hooks - initialization, mounting, updates, destruction. Detects hooks from decorators and entry points.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `phase` | string | no | Filter: init, mount, update, destroy |
+| `framework` | string | no | Filter by framework |
+| `limit` | number | no | Max results (default 50) |
+| `offset` | number | no | Skip first N results (default 0) |
+
+**Returns:** `{ total, by_phase, offset, limit, hooks }` where each hook has:
+- `id` - Unique identifier
+- `name` - Hook name (e.g., ngOnInit, useEffect, mounted)
+- `phase` - Lifecycle phase: init, mount, update, destroy, or other
+- `framework` - Detected framework
+- `node_id`, `node_name` - Associated code element
+- `file`, `line` - Source location
+- `source` - Where detected: decorator or entry_point
+
+Detected hooks include Angular (ngOnInit, ngAfterViewInit, ngOnDestroy), React (useEffect mount/cleanup), Vue (mounted, beforeDestroy), NestJS (OnModuleInit, OnModuleDestroy), and more.
 
 ---
 
@@ -356,17 +614,18 @@ Core domain terminology extracted from the codebase.
 
 ### `find_tests`
 
-Find test suites and test cases covering a specific node or file.
+Find test suites and test cases covering a specific node or file. Behavior depends on parameters:
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
 | `node_id` | string | no | Node ID to find tests for |
 | `file_path` | string | no | File path to find tests for |
+| `limit` | number | no | Max results when listing all (default 25) |
+| `offset` | number | no | Skip first N results (default 0) |
 
-If neither optional param is given, returns all tests.
-
-**Returns:** `suites` (test suites with test cases, assertions, coverage info), `mocks`, `fixtures`.
+- **With `node_id` or `file_path`:** Returns matching `suites` (with test cases, assertions, coverage info), `mocks`, `fixtures`.
+- **Without filters:** Returns paginated lists with `total_suites`, `total_mocks`, `total_fixtures`, `offset`, `limit`.
 
 ### `get_test_summary`
 
@@ -442,10 +701,13 @@ Package-level dependencies.
 
 ### `get_libraries`
 
-Library usage analysis with optimization insights.
+Library usage analysis with optimization insights. Paginated (default 25).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
+| `query` | string | no | Filter by library name or category |
+| `limit` | number | no | Max results (default 25) |
+| `offset` | number | no | Skip first N results (default 0) |
 
-**Returns:** Libraries with usage patterns, bundle size, security info, usage stats, optimization opportunities, replacement feasibility, alternatives.
+**Returns:** `{ total, offset, limit, libraries }` -- libraries with usage patterns, bundle size, security info, usage stats, optimization opportunities, replacement feasibility, alternatives.

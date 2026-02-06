@@ -811,22 +811,47 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
   private extractComponents(ast: any, content: string, filePath: string): ReactComponent[] {
     const components: ReactComponent[] = [];
+    const seenNames = new Set<string>();
 
     const walk = (node: any) => {
       if (!node || typeof node !== 'object') return;
 
-      if (node.type === 'FunctionDeclaration' || node.type === 'ArrowFunctionExpression') {
-        const name = this.getComponentName(node, content);
-        if (name && this.looksLikeComponent(node, content)) {
-          const component = this.buildComponentInfo(node, content, filePath, name, 'functional');
-          components.push(component);
+      if (node.type === 'FunctionDeclaration') {
+        const name = node.id?.name;
+        if (name && !seenNames.has(name) && this.looksLikeComponent(node, content, name)) {
+          seenNames.add(name);
+          components.push(this.buildComponentInfo(node, content, filePath, name, 'functional'));
+        }
+      } else if (node.type === 'VariableDeclarator' && node.id?.name) {
+        const name = node.id.name;
+        if (!seenNames.has(name)) {
+          const init = node.init;
+          if (init?.type === 'ArrowFunctionExpression' && this.looksLikeComponent(init, content, name)) {
+            seenNames.add(name);
+            components.push(this.buildComponentInfo(init, content, filePath, name, 'functional'));
+          } else if (init?.type === 'CallExpression') {
+            const callee = init.callee;
+            const isWrapper =
+              callee?.name === 'memo' || callee?.name === 'forwardRef' ||
+              (callee?.type === 'MemberExpression' &&
+               callee?.object?.name === 'React' &&
+               (callee?.property?.name === 'memo' || callee?.property?.name === 'forwardRef'));
+            if (isWrapper && init.arguments?.length > 0) {
+              const innerFn = init.arguments[0];
+              if ((innerFn?.type === 'ArrowFunctionExpression' || innerFn?.type === 'FunctionExpression') &&
+                  this.looksLikeComponent(innerFn, content, name)) {
+                seenNames.add(name);
+                components.push(this.buildComponentInfo(innerFn, content, filePath, name, 'functional'));
+              }
+            }
+          }
         }
       } else if (node.type === 'ClassDeclaration') {
         if (this.extendsReactComponent(node)) {
           const name = node.id?.name;
-          if (name) {
-            const component = this.buildComponentInfo(node, content, filePath, name, 'class');
-            components.push(component);
+          if (name && !seenNames.has(name)) {
+            seenNames.add(name);
+            components.push(this.buildComponentInfo(node, content, filePath, name, 'class'));
           }
         }
       }
@@ -909,19 +934,77 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
   private extractRoutes(content: string, filePath: string): ReactRoute[] {
     const routes: ReactRoute[] = [];
+    const seen = new Set<string>();
 
-    const routePattern = /<Route[^>]*path=["']([^"']+)["'][^>]*component=\{?([^}\s>]+)\}?[^>]*\/?>/g;
+    const v5Pattern = /<Route[^>]*path=["']([^"']+)["'][^>]*component=\{?([^}\s>]+)\}?[^>]*\/?>/g;
     let match;
+    while ((match = v5Pattern.exec(content)) !== null) {
+      const routePath = match[1];
+      if (!seen.has(routePath)) {
+        seen.add(routePath);
+        routes.push({
+          path: routePath,
+          component: match[2],
+          exact: content.includes('exact')
+        });
+      }
+    }
 
-    while ((match = routePattern.exec(content)) !== null) {
-      const path = match[1];
-      const component = match[2];
+    const v6ElementPattern = /<Route[^>]*path=["']([^"']+)["'][^>]*element=\{[^}]*<(\w+)/g;
+    while ((match = v6ElementPattern.exec(content)) !== null) {
+      const routePath = match[1];
+      if (!seen.has(routePath)) {
+        seen.add(routePath);
+        routes.push({
+          path: routePath,
+          component: match[2]
+        });
+      }
+    }
 
-      routes.push({
-        path,
-        component,
-        exact: content.includes('exact')
-      });
+    const v6ReversePattern = /<Route[^>]*element=\{[^}]*<(\w+)[^}]*\}[^>]*path=["']([^"']+)["']/g;
+    while ((match = v6ReversePattern.exec(content)) !== null) {
+      const routePath = match[2];
+      if (!seen.has(routePath)) {
+        seen.add(routePath);
+        routes.push({
+          path: routePath,
+          component: match[1]
+        });
+      }
+    }
+
+    const objectRoutePattern = /\{\s*path:\s*['"]([^'"]+)['"]\s*,\s*(?:element|component)\s*:\s*(?:<(\w+)|(\w+))/g;
+    while ((match = objectRoutePattern.exec(content)) !== null) {
+      const routePath = match[1];
+      const component = match[2] || match[3];
+      if (!seen.has(routePath)) {
+        seen.add(routePath);
+        const isLazy = content.includes(`lazy`) && content.includes(routePath);
+        routes.push({
+          path: routePath,
+          component,
+          lazy: isLazy || undefined
+        });
+      }
+    }
+
+    if (content.includes('createBrowserRouter') || content.includes('createHashRouter') ||
+        content.includes('createMemoryRouter')) {
+      const routerConfigPattern = /path:\s*['"]([^'"]+)['"]/g;
+      while ((match = routerConfigPattern.exec(content)) !== null) {
+        const routePath = match[1];
+        if (!seen.has(routePath)) {
+          seen.add(routePath);
+          const componentMatch = content.substring(match.index, match.index + 200)
+            .match(/(?:element|Component)\s*:\s*(?:<(\w+)|(\w+))/);
+          routes.push({
+            path: routePath,
+            component: componentMatch?.[1] || componentMatch?.[2] || 'Unknown',
+            lazy: content.substring(match.index, match.index + 200).includes('lazy') || undefined
+          });
+        }
+      }
     }
 
     return routes;
@@ -930,7 +1013,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
   private extractStores(content: string, filePath: string): ReactStore[] {
     const stores: ReactStore[] = [];
 
-    if (content.includes('createStore') || content.includes('configureStore')) {
+    if (content.includes('configureStore') || content.includes('createStore')) {
       const storeName = this.extractStoreName(content, filePath);
       stores.push({
         name: storeName,
@@ -941,22 +1024,47 @@ export class ReactAnalyzer extends BaseAnalyzer {
         selectors: this.extractSelectors(content),
         initialState: {}
       });
+    } else if (content.includes('createSlice')) {
+      const slicePattern = /createSlice\s*\(\s*\{[\s\S]*?name:\s*['"](\w+)['"]/g;
+      let sliceMatch;
+      while ((sliceMatch = slicePattern.exec(content)) !== null) {
+        stores.push({
+          name: sliceMatch[1],
+          filePath,
+          type: 'redux',
+          actions: this.extractActions(content),
+          reducers: this.extractReducers(content),
+          selectors: this.extractSelectors(content),
+          initialState: {}
+        });
+      }
     }
 
-    if (content.includes('create(') && content.includes('zustand')) {
+    const hasZustandImport = /import\s+.*\bfrom\s+['"]zustand['"]/g.test(content) ||
+      /import\s+.*\bfrom\s+['"][^'"]*zustand[^'"]*['"]/g.test(content);
+    const hasCreateCall = /(?:const|export)\s+\w+\s*=\s*create\s*[<(]/g.test(content);
+
+    if (hasZustandImport || (hasCreateCall && this.looksLikeZustandStore(content))) {
       const storeName = this.extractStoreName(content, filePath);
-      stores.push({
-        name: storeName,
-        filePath,
-        type: 'zustand',
-        actions: this.extractActions(content),
-        reducers: [],
-        selectors: [],
-        initialState: {}
-      });
+      const isDuplicate = stores.some(s => s.name === storeName);
+      if (!isDuplicate) {
+        stores.push({
+          name: storeName,
+          filePath,
+          type: 'zustand',
+          actions: this.extractActions(content),
+          reducers: [],
+          selectors: [],
+          initialState: {}
+        });
+      }
     }
 
     return stores;
+  }
+
+  private looksLikeZustandStore(content: string): boolean {
+    return /create\s*[<(]\s*\(\s*(?:set|get)\s*[,)]/g.test(content);
   }
 
   private extractUtils(ast: any, content: string, filePath: string): ReactUtil[] {
@@ -1030,7 +1138,10 @@ export class ReactAnalyzer extends BaseAnalyzer {
     return null;
   }
 
-  private looksLikeComponent(node: any, content: string): boolean {
+  private looksLikeComponent(node: any, content: string, name?: string): boolean {
+    if (name && !/^[A-Z]/.test(name)) {
+      return false;
+    }
     const nodeContent = content.substring(node.range?.[0] || 0, node.range?.[1] || content.length);
     return nodeContent.includes('return') &&
            (nodeContent.includes('<') || nodeContent.includes('createElement'));
@@ -1084,7 +1195,51 @@ export class ReactAnalyzer extends BaseAnalyzer {
   }
 
   private findVariableDeclarator(node: any): any {
+    if (!node || typeof node !== 'object') return null;
+    if (node._parentDeclarator) return node._parentDeclarator;
+
+    const search = (current: any, target: any): any => {
+      if (!current || typeof current !== 'object') return null;
+
+      if (current.type === 'VariableDeclarator') {
+        if (current.init === target) return current;
+        if (current.init?.type === 'CallExpression' &&
+            current.init.arguments?.some((arg: any) => arg === target || this.containsNode(arg, target))) {
+          return current;
+        }
+        if (this.containsNode(current.init, target)) return current;
+      }
+
+      for (const key in current) {
+        if (key === 'type' || key === 'loc' || key === 'range') continue;
+        if (typeof current[key] === 'object' && current[key] !== null) {
+          if (Array.isArray(current[key])) {
+            for (const child of current[key]) {
+              const result = search(child, target);
+              if (result) return result;
+            }
+          } else {
+            const result = search(current[key], target);
+            if (result) return result;
+          }
+        }
+      }
+      return null;
+    };
+
     return null;
+  }
+
+  private containsNode(parent: any, target: any): boolean {
+    if (parent === target) return true;
+    if (!parent || typeof parent !== 'object') return false;
+    for (const key in parent) {
+      if (key === 'type' || key === 'loc' || key === 'range') continue;
+      if (typeof parent[key] === 'object' && parent[key] !== null) {
+        if (this.containsNode(parent[key], target)) return true;
+      }
+    }
+    return false;
   }
 
   private isDefaultExport(node: any, content: string): boolean {
@@ -1146,7 +1301,48 @@ export class ReactAnalyzer extends BaseAnalyzer {
   }
 
   private extractState(node: any, content: string): Array<{ name: string; type: string; initialValue?: string }> {
-    return [];
+    const state: Array<{ name: string; type: string; initialValue?: string }> = [];
+    const useStatePattern = /const\s*\[\s*(\w+)\s*,\s*(\w+)\s*\]\s*=\s*useState(?:<([^>]+)>)?\s*\(([^)]*)\)/g;
+    const useReducerPattern = /const\s*\[\s*(\w+)\s*,\s*(\w+)\s*\]\s*=\s*useReducer\s*\(/g;
+
+    let match;
+    while ((match = useStatePattern.exec(content)) !== null) {
+      const stateName = match[1];
+      const typeAnnotation = match[3] || 'unknown';
+      const initialValue = match[4]?.trim() || undefined;
+
+      state.push({
+        name: stateName,
+        type: typeAnnotation,
+        initialValue: initialValue || undefined
+      });
+    }
+
+    while ((match = useReducerPattern.exec(content)) !== null) {
+      state.push({
+        name: match[1],
+        type: 'reducer_state',
+        initialValue: undefined
+      });
+    }
+
+    if (node?.type === 'ClassDeclaration' || node?.type === 'ClassExpression') {
+      const classStatePattern = /state\s*[:=]\s*\{([^}]+)\}/;
+      const classMatch = classStatePattern.exec(content);
+      if (classMatch) {
+        const stateBody = classMatch[1];
+        const fieldPattern = /(\w+)\s*:/g;
+        let fieldMatch;
+        while ((fieldMatch = fieldPattern.exec(stateBody)) !== null) {
+          state.push({
+            name: fieldMatch[1],
+            type: 'unknown'
+          });
+        }
+      }
+    }
+
+    return state;
   }
 
   private extractComponentHooks(node: any, content: string): Array<{ name: string; type: string; dependencies?: string[] }> {
@@ -1205,7 +1401,41 @@ export class ReactAnalyzer extends BaseAnalyzer {
   }
 
   private extractHookParameters(node: any): Array<{ name: string; type: string; defaultValue?: string }> {
-    return [];
+    const params: Array<{ name: string; type: string; defaultValue?: string }> = [];
+    if (!node?.params) return params;
+
+    for (const param of node.params) {
+      if (param.type === 'Identifier') {
+        const type = param.typeAnnotation?.typeAnnotation?.type
+          ? this.mapTypeAnnotationToString(param.typeAnnotation.typeAnnotation.type)
+          : 'any';
+        params.push({ name: param.name, type });
+      } else if (param.type === 'AssignmentPattern' && param.left?.type === 'Identifier') {
+        const type = param.left.typeAnnotation?.typeAnnotation?.type
+          ? this.mapTypeAnnotationToString(param.left.typeAnnotation.typeAnnotation.type)
+          : 'any';
+        params.push({
+          name: param.left.name,
+          type,
+          defaultValue: this.extractDefaultValue(param.right)
+        });
+      } else if (param.type === 'ObjectPattern') {
+        for (const prop of (param.properties || [])) {
+          if (prop.type === 'Property' && prop.key?.name) {
+            const defaultValue = prop.value?.type === 'AssignmentPattern'
+              ? this.extractDefaultValue(prop.value.right) : undefined;
+            const type = prop.value?.typeAnnotation?.typeAnnotation?.type
+              ? this.mapTypeAnnotationToString(prop.value.typeAnnotation.typeAnnotation.type)
+              : 'any';
+            params.push({ name: prop.key.name, type, defaultValue });
+          }
+        }
+      } else if (param.type === 'RestElement' && param.argument?.type === 'Identifier') {
+        params.push({ name: `...${param.argument.name}`, type: 'any[]' });
+      }
+    }
+
+    return params;
   }
 
   private extractPageName(filePath: string): string {
@@ -1257,11 +1487,79 @@ export class ReactAnalyzer extends BaseAnalyzer {
   }
 
   private extractReducers(content: string): Array<{ name: string; cases: string[] }> {
-    return [];
+    const reducers: Array<{ name: string; cases: string[] }> = [];
+
+    const slicePattern = /createSlice\s*\(\s*\{[\s\S]*?name:\s*['"](\w+)['"][\s\S]*?reducers:\s*\{([\s\S]*?)\}\s*[,}]/g;
+    let sliceMatch;
+    while ((sliceMatch = slicePattern.exec(content)) !== null) {
+      const sliceName = sliceMatch[1];
+      const reducersBody = sliceMatch[2];
+      const cases: string[] = [];
+      const casePattern = /(\w+)\s*(?::\s*\(|:\s*\{)/g;
+      let caseMatch;
+      while ((caseMatch = casePattern.exec(reducersBody)) !== null) {
+        cases.push(caseMatch[1]);
+      }
+      reducers.push({ name: sliceName, cases });
+    }
+
+    const switchPattern = /(?:function\s+(\w+)|const\s+(\w+)\s*=)[^{]*\{[\s\S]*?switch\s*\([^)]*\)\s*\{([\s\S]*?)\}/g;
+    let switchMatch;
+    while ((switchMatch = switchPattern.exec(content)) !== null) {
+      const name = switchMatch[1] || switchMatch[2];
+      const switchBody = switchMatch[3];
+      const cases: string[] = [];
+      const actionPattern = /case\s+['"]([^'"]+)['"]/g;
+      let actionMatch;
+      while ((actionMatch = actionPattern.exec(switchBody)) !== null) {
+        cases.push(actionMatch[1]);
+      }
+      const constPattern = /case\s+(\w+)(?:\s*:)/g;
+      let constMatch;
+      while ((constMatch = constPattern.exec(switchBody)) !== null) {
+        if (constMatch[1] !== 'default') {
+          cases.push(constMatch[1]);
+        }
+      }
+      if (cases.length > 0) {
+        reducers.push({ name, cases });
+      }
+    }
+
+    return reducers;
   }
 
   private extractSelectors(content: string): Array<{ name: string; returnType: string }> {
-    return [];
+    const selectors: Array<{ name: string; returnType: string }> = [];
+    const seen = new Set<string>();
+
+    const createSelectorPattern = /(?:export\s+)?(?:const|let)\s+(\w+)\s*=\s*createSelector\s*\(/g;
+    let match;
+    while ((match = createSelectorPattern.exec(content)) !== null) {
+      if (!seen.has(match[1])) {
+        seen.add(match[1]);
+        selectors.push({ name: match[1], returnType: 'unknown' });
+      }
+    }
+
+    const selectFnPattern = /(?:export\s+)?(?:const|function)\s+(select\w+)/g;
+    while ((match = selectFnPattern.exec(content)) !== null) {
+      if (!seen.has(match[1])) {
+        seen.add(match[1]);
+        selectors.push({ name: match[1], returnType: 'unknown' });
+      }
+    }
+
+    const useSelectorPattern = /useSelector\s*\(\s*(?:\(\s*(\w+)\s*\)\s*=>|(\w+)(?:\s*,|\s*\)))/g;
+    while ((match = useSelectorPattern.exec(content)) !== null) {
+      const selectorRef = match[2];
+      if (selectorRef && !seen.has(selectorRef)) {
+        seen.add(selectorRef);
+        selectors.push({ name: selectorRef, returnType: 'unknown' });
+      }
+    }
+
+    return selectors;
   }
 
   private async detectReactVersion(projectPath: string): Promise<string> {

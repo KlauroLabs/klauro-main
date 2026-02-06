@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { AnalyzerOrchestrator, CASOutput, AnalyzerRegistration } from '../core/orchestrator';
 import { BaseAnalyzer, AnalysisContext } from '../core/base-analyzer';
+import { IncrementalState, ChangeReport } from '../../types/cas.types';
 
 import { TypeScriptJavaScriptAnalyzer } from '../languages/typescript-javascript-analyzer';
 import { PythonAnalyzer } from '../languages/python-analyzer';
@@ -27,7 +28,14 @@ import {
 
 import { JestAnalyzer, CypressAnalyzer } from '../frameworks/testing';
 import { WPFAnalyzer, AspNetCoreAnalyzer } from '../frameworks/dotnet';
-import { PrismaAnalyzer, SocketIOAnalyzer } from '../libraries';
+import {
+  PrismaAnalyzer,
+  SocketIOAnalyzer,
+  ReactRouterAnalyzer,
+  ReduxAnalyzer,
+  ZustandAnalyzer,
+  TanStackQueryAnalyzer
+} from '../libraries';
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
@@ -97,6 +105,60 @@ export class CASAnalyzerService {
     } catch (error) {
       this.logger.error(`CAS analysis failed: ${(error as Error).message}`, (error as Error).stack);
       throw error;
+    }
+  }
+
+  async analyzeProjectIncremental(
+    request: CASAnalysisRequest,
+    previousOutput: CASOutput,
+    previousState: IncrementalState | null
+  ): Promise<{
+    output: CASOutput;
+    state: IncrementalState;
+    changeReport: ChangeReport;
+    wasFullRebuild: boolean;
+  }> {
+    const { projectPath } = request;
+
+    this.logger.log(`Starting incremental CAS analysis for project: ${projectPath}`);
+
+    if (!await fs.pathExists(projectPath)) {
+      throw new Error(`Project path does not exist: ${projectPath}`);
+    }
+
+    try {
+      const result = await this.orchestrator.orchestrateIncrementalAnalysis(
+        projectPath,
+        previousOutput,
+        previousState
+      );
+
+      if (result.wasFullRebuild) {
+        this.logger.log(`Full rebuild triggered: ${result.changeReport.summary.filesModified + result.changeReport.summary.filesAdded + result.changeReport.summary.filesDeleted} files changed`);
+      } else {
+        this.logger.log(
+          `Incremental analysis completed: ` +
+          `${result.changeReport.summary.nodesAdded} added, ` +
+          `${result.changeReport.summary.nodesModified} modified, ` +
+          `${result.changeReport.summary.nodesDeleted} deleted`
+        );
+      }
+
+      this.logger.log(`Total nodes: ${result.output.nodes.length}, edges: ${result.output.edges.length}`);
+
+      return result;
+    } catch (error) {
+      this.logger.error(`Incremental CAS analysis failed: ${(error as Error).message}`, (error as Error).stack);
+      this.logger.log('Falling back to full analysis...');
+
+      const fullResult = await this.analyzeProject(request);
+      const state = await this.orchestrator.orchestrateIncrementalAnalysis(
+        projectPath,
+        fullResult,
+        null
+      );
+
+      return state;
     }
   }
 
@@ -480,6 +542,50 @@ export class CASAnalyzerService {
         },
         requires: ['typescript-javascript'],
         analyzer: new SocketIOAnalyzer()
+      },
+      {
+        id: 'react-router',
+        name: 'React Router Analyzer',
+        type: 'library',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['react-router-dom', 'react-router']
+        },
+        requires: ['typescript-javascript'],
+        analyzer: new ReactRouterAnalyzer()
+      },
+      {
+        id: 'redux',
+        name: 'Redux/RTK Analyzer',
+        type: 'library',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['@reduxjs/toolkit', 'redux']
+        },
+        requires: ['typescript-javascript'],
+        analyzer: new ReduxAnalyzer()
+      },
+      {
+        id: 'zustand',
+        name: 'Zustand Analyzer',
+        type: 'library',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['zustand']
+        },
+        requires: ['typescript-javascript'],
+        analyzer: new ZustandAnalyzer()
+      },
+      {
+        id: 'tanstack-query',
+        name: 'TanStack Query Analyzer',
+        type: 'library',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['@tanstack/react-query', 'react-query', '@tanstack/vue-query', '@tanstack/svelte-query']
+        },
+        requires: ['typescript-javascript'],
+        analyzer: new TanStackQueryAnalyzer()
       }
     ];
 

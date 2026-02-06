@@ -4,10 +4,12 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
 
-const LIFECYCLE_EVENTS = new Set(['connection', 'disconnect']);
+const LIFECYCLE_EVENTS = new Set(['connection', 'disconnect', 'connect', 'error', 'connect_error', 'reconnect']);
 
-const HANDLER_PATTERN = /(?:io|socket)\.on\s*\(\s*['"`]([^'"`]+)['"`]/g;
-const EMITTER_PATTERN = /(?:io|socket)\.emit\s*\(\s*['"`]([^'"`]+)['"`]/g;
+const SOCKET_IO_IMPORT = /(?:import|require)\s*(?:\(?\s*['"]socket\.io(?:-client)?['"]\s*\)?|.*from\s*['"]socket\.io(?:-client)?['"])/;
+
+const HANDLER_PATTERN = /\b(\w+)\.on\s*\(\s*['"`]([^'"`]+)['"`]/g;
+const EMITTER_PATTERN = /\b(\w+)\.emit\s*\(\s*['"`]([^'"`]+)['"`]/g;
 
 export class SocketIOAnalyzer extends BaseAnalyzer {
   constructor() {
@@ -50,13 +52,10 @@ export class SocketIOAnalyzer extends BaseAnalyzer {
       const absolutePath = path.join(projectPath, relativePath);
       const content = await fs.readFile(absolutePath, 'utf-8');
 
-      if (!content.includes('io.on(') && !content.includes('socket.on(') &&
-          !content.includes('io.emit(') && !content.includes('socket.emit(')) {
-        continue;
-      }
+      if (!this.hasSocketUsage(content)) continue;
 
-      const nodeId = this.findFileNodeId(relativePath, context.existingAnalysis);
-      if (!nodeId) continue;
+      const fileNodeId = this.findFileNodeId(relativePath, context.existingAnalysis);
+      const nodeId = fileNodeId || `file_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
 
       const sanitizedPath = relativePath.replace(/[^a-zA-Z0-9]/g, '_');
 
@@ -64,8 +63,10 @@ export class SocketIOAnalyzer extends BaseAnalyzer {
 
       HANDLER_PATTERN.lastIndex = 0;
       while ((match = HANDLER_PATTERN.exec(content)) !== null) {
-        const eventName = match[1];
+        const callerName = match[1];
+        const eventName = match[2];
         if (LIFECYCLE_EVENTS.has(eventName)) continue;
+        if (!this.looksLikeSocketVariable(callerName, content)) continue;
 
         const sanitizedEvent = eventName.replace(/[^a-zA-Z0-9]/g, '_');
         const entryId = `entry_socket_${sanitizedPath}_${sanitizedEvent}`;
@@ -89,7 +90,9 @@ export class SocketIOAnalyzer extends BaseAnalyzer {
 
       EMITTER_PATTERN.lastIndex = 0;
       while ((match = EMITTER_PATTERN.exec(content)) !== null) {
-        const eventName = match[1];
+        const callerName = match[1];
+        const eventName = match[2];
+        if (!this.looksLikeSocketVariable(callerName, content)) continue;
 
         const sanitizedEvent = eventName.replace(/[^a-zA-Z0-9]/g, '_');
         const exitId = `exit_socket_${sanitizedPath}_${sanitizedEvent}`;
@@ -113,6 +116,34 @@ export class SocketIOAnalyzer extends BaseAnalyzer {
     }
 
     return this.createContribution([], [], entryPoints, exitPoints);
+  }
+
+  private hasSocketUsage(content: string): boolean {
+    if (!SOCKET_IO_IMPORT.test(content)) return false;
+    return content.includes('.on(') || content.includes('.emit(');
+  }
+
+  private looksLikeSocketVariable(name: string, content: string): boolean {
+    const lower = name.toLowerCase();
+    if (lower === 'io' || lower === 'socket' || lower === 'ws') return true;
+    if (lower.includes('socket') || lower.includes('io') || lower.includes('ws')) return true;
+
+    const assignmentPattern = new RegExp(
+      `(?:const|let|var)\\s+${name}\\s*=\\s*(?:io\\s*\\(|.*\\.connect\\s*\\(|new\\s+(?:Socket|WebSocket))`,
+    );
+    if (assignmentPattern.test(content)) return true;
+
+    const typePattern = new RegExp(
+      `${name}\\s*(?::|as)\\s*(?:Socket|Server)`,
+    );
+    if (typePattern.test(content)) return true;
+
+    const refPattern = new RegExp(
+      `(?:useRef|createRef).*Socket`,
+    );
+    if (refPattern.test(content) && content.includes(`${name}.current`)) return true;
+
+    return false;
   }
 
   private findFileNodeId(relativePath: string, existingAnalysis?: CASContribution[]): string | undefined {

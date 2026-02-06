@@ -872,7 +872,57 @@ export class VueAnalyzer extends BaseAnalyzer {
   }
 
   private extractData(content: string): Array<{ name: string; type: string; initialValue?: string }> {
-    return [];
+    const data: Array<{ name: string; type: string; initialValue?: string }> = [];
+
+    const dataFunctionPattern = /data\s*\(\s*\)\s*\{?\s*return\s*\{([\s\S]*?)\}\s*;?\s*\}/;
+    const dataArrowPattern = /data\s*:\s*\(\s*\)\s*=>\s*\(\s*\{([\s\S]*?)\}\s*\)/;
+    const dataObjectPattern = /data\s*:\s*\{([\s\S]*?)\}/;
+
+    let dataContent: string | null = null;
+    const fnMatch = dataFunctionPattern.exec(content);
+    if (fnMatch) {
+      dataContent = fnMatch[1];
+    } else {
+      const arrowMatch = dataArrowPattern.exec(content);
+      if (arrowMatch) {
+        dataContent = arrowMatch[1];
+      } else {
+        const objMatch = dataObjectPattern.exec(content);
+        if (objMatch) {
+          dataContent = objMatch[1];
+        }
+      }
+    }
+
+    if (dataContent) {
+      const propertyPattern = /(\w+)\s*:\s*([^,\n]+)/g;
+      let propMatch;
+      while ((propMatch = propertyPattern.exec(dataContent)) !== null) {
+        const name = propMatch[1].trim();
+        const rawValue = propMatch[2].trim();
+
+        if (['return', 'function', 'if', 'else', 'for', 'while'].includes(name)) continue;
+
+        const type = this.inferTypeFromValue(rawValue);
+        data.push({ name, type, initialValue: rawValue });
+      }
+    }
+
+    return data;
+  }
+
+  private inferTypeFromValue(value: string): string {
+    const trimmed = value.replace(/,\s*$/, '').trim();
+    if (trimmed === 'null' || trimmed === 'undefined') return 'any';
+    if (trimmed === 'true' || trimmed === 'false') return 'boolean';
+    if (/^['"`]/.test(trimmed)) return 'string';
+    if (/^-?\d+(\.\d+)?$/.test(trimmed)) return 'number';
+    if (trimmed.startsWith('[')) return 'array';
+    if (trimmed.startsWith('{')) return 'object';
+    if (trimmed === 'new Date()' || trimmed.startsWith('new Date(')) return 'Date';
+    if (trimmed === 'new Map()' || trimmed.startsWith('new Map(')) return 'Map';
+    if (trimmed === 'new Set()' || trimmed.startsWith('new Set(')) return 'Set';
+    return 'any';
   }
 
   private extractComputed(content: string): Array<{ name: string; dependencies: string[] }> {
@@ -918,7 +968,47 @@ export class VueAnalyzer extends BaseAnalyzer {
   }
 
   private extractWatchers(content: string): Array<{ name: string; watched: string; deep?: boolean }> {
-    return [];
+    const watchers: Array<{ name: string; watched: string; deep?: boolean }> = [];
+
+    const watchBlockPattern = /watch\s*:\s*\{([\s\S]*?)\n\s*\}/;
+    const watchBlockMatch = watchBlockPattern.exec(content);
+    if (watchBlockMatch) {
+      const watchContent = watchBlockMatch[1];
+
+      const stringWatcherPattern = /['"`]([^'"`]+)['"`]\s*(?::\s*\{|[\(:])/g;
+      let strMatch;
+      while ((strMatch = stringWatcherPattern.exec(watchContent)) !== null) {
+        const watched = strMatch[1];
+        const surroundingBlock = watchContent.substring(strMatch.index, strMatch.index + 200);
+        const deep = /deep\s*:\s*true/.test(surroundingBlock);
+        watchers.push({ name: watched.replace(/\./g, '_'), watched, deep });
+      }
+
+      const identifierWatcherPattern = /(\w+)\s*(?:\(|:\s*\{|:\s*function)/g;
+      let idMatch;
+      while ((idMatch = identifierWatcherPattern.exec(watchContent)) !== null) {
+        const watched = idMatch[1];
+        if (['handler', 'deep', 'immediate', 'flush'].includes(watched)) continue;
+        if (watchers.some(w => w.watched === watched)) continue;
+        const surroundingBlock = watchContent.substring(idMatch.index, idMatch.index + 200);
+        const deep = /deep\s*:\s*true/.test(surroundingBlock);
+        watchers.push({ name: watched, watched, deep });
+      }
+    }
+
+    const compositionWatchPattern = /watch\s*\(\s*(?:(?:\(\s*\)\s*=>)?\s*)?(\w+)/g;
+    let compMatch;
+    while ((compMatch = compositionWatchPattern.exec(content)) !== null) {
+      const watched = compMatch[1];
+      if (['function', 'const', 'let', 'var', 'async'].includes(watched)) continue;
+      const surroundingBlock = content.substring(compMatch.index, compMatch.index + 300);
+      const deep = /deep\s*:\s*true/.test(surroundingBlock);
+      if (!watchers.some(w => w.watched === watched)) {
+        watchers.push({ name: watched, watched, deep });
+      }
+    }
+
+    return watchers;
   }
 
   private extractLifecycle(content: string): string[] {
@@ -939,7 +1029,20 @@ export class VueAnalyzer extends BaseAnalyzer {
   }
 
   private extractMixins(content: string): string[] {
-    return [];
+    const mixins: string[] = [];
+
+    const mixinsArrayPattern = /mixins\s*:\s*\[([^\]]+)\]/;
+    const match = mixinsArrayPattern.exec(content);
+    if (match) {
+      const mixinsContent = match[1];
+      const mixinPattern = /(\w+)/g;
+      let mixinMatch;
+      while ((mixinMatch = mixinPattern.exec(mixinsContent)) !== null) {
+        mixins.push(mixinMatch[1]);
+      }
+    }
+
+    return mixins;
   }
 
   private extractImports(content: string): string[] {
@@ -967,11 +1070,126 @@ export class VueAnalyzer extends BaseAnalyzer {
   }
 
   private extractSlots(content: string): string[] {
-    return [];
+    const slots: string[] = [];
+    const seen = new Set<string>();
+
+    const namedSlotPattern = /<slot\s+[^>]*name\s*=\s*['"`]([^'"`]+)['"`]/g;
+    let slotMatch;
+    while ((slotMatch = namedSlotPattern.exec(content)) !== null) {
+      const name = slotMatch[1];
+      if (!seen.has(name)) {
+        seen.add(name);
+        slots.push(name);
+      }
+    }
+
+    const defaultSlotPattern = /<slot\s*(?:\s[^>]*)?\/?>/g;
+    while ((slotMatch = defaultSlotPattern.exec(content)) !== null) {
+      const fullTag = slotMatch[0];
+      if (!fullTag.includes('name=') && !seen.has('default')) {
+        seen.add('default');
+        slots.push('default');
+      }
+    }
+
+    const defineSlotsPattern = /defineSlots\s*<\s*\{([^}]*)\}/;
+    const defineSlotsMatch = defineSlotsPattern.exec(content);
+    if (defineSlotsMatch) {
+      const slotsContent = defineSlotsMatch[1];
+      const slotNamePattern = /(\w+)\s*[\?]?\s*:/g;
+      let nameMatch;
+      while ((nameMatch = slotNamePattern.exec(slotsContent)) !== null) {
+        const name = nameMatch[1];
+        if (!seen.has(name)) {
+          seen.add(name);
+          slots.push(name);
+        }
+      }
+    }
+
+    const slotsOptionPattern = /slots\s*:\s*\[([^\]]+)\]/;
+    const slotsOptionMatch = slotsOptionPattern.exec(content);
+    if (slotsOptionMatch) {
+      const slotsContent = slotsOptionMatch[1];
+      const slotStringPattern = /['"`]([^'"`]+)['"`]/g;
+      let strMatch;
+      while ((strMatch = slotStringPattern.exec(slotsContent)) !== null) {
+        const name = strMatch[1];
+        if (!seen.has(name)) {
+          seen.add(name);
+          slots.push(name);
+        }
+      }
+    }
+
+    return slots;
   }
 
   private extractEmits(content: string): string[] {
-    return [];
+    const emits: string[] = [];
+    const seen = new Set<string>();
+
+    const emitsArrayPattern = /emits\s*:\s*\[([^\]]+)\]/;
+    const emitsArrayMatch = emitsArrayPattern.exec(content);
+    if (emitsArrayMatch) {
+      const emitsContent = emitsArrayMatch[1];
+      const emitStringPattern = /['"`]([^'"`]+)['"`]/g;
+      let strMatch;
+      while ((strMatch = emitStringPattern.exec(emitsContent)) !== null) {
+        const name = strMatch[1];
+        if (!seen.has(name)) {
+          seen.add(name);
+          emits.push(name);
+        }
+      }
+    }
+
+    const emitsObjectPattern = /emits\s*:\s*\{([^}]+)\}/;
+    const emitsObjectMatch = emitsObjectPattern.exec(content);
+    if (emitsObjectMatch) {
+      const emitsContent = emitsObjectMatch[1];
+      const emitNamePattern = /(\w+)\s*:/g;
+      let nameMatch;
+      while ((nameMatch = emitNamePattern.exec(emitsContent)) !== null) {
+        const name = nameMatch[1];
+        if (!seen.has(name)) {
+          seen.add(name);
+          emits.push(name);
+        }
+      }
+    }
+
+    const defineEmitsArrayPattern = /defineEmits\s*\(\s*\[([^\]]+)\]/;
+    const defineEmitsArrayMatch = defineEmitsArrayPattern.exec(content);
+    if (defineEmitsArrayMatch) {
+      const emitsContent = defineEmitsArrayMatch[1];
+      const emitStringPattern = /['"`]([^'"`]+)['"`]/g;
+      let strMatch;
+      while ((strMatch = emitStringPattern.exec(emitsContent)) !== null) {
+        const name = strMatch[1];
+        if (!seen.has(name)) {
+          seen.add(name);
+          emits.push(name);
+        }
+      }
+    }
+
+    const defineEmitsTypePattern = /defineEmits\s*<\s*\{([^}]*)\}/;
+    const defineEmitsTypeMatch = defineEmitsTypePattern.exec(content);
+    if (defineEmitsTypeMatch) {
+      const emitsContent = defineEmitsTypeMatch[1];
+      const eventPattern = /\(\s*e\s*:\s*['"`]([^'"`]+)['"`]/g;
+      let eventMatch;
+      while ((eventMatch = eventPattern.exec(emitsContent)) !== null) {
+        const name = eventMatch[1];
+        if (!seen.has(name)) {
+          seen.add(name);
+          emits.push(name);
+        }
+      }
+    }
+
+    return emits;
   }
 
   private extractReactive(content: string): string[] {
@@ -995,31 +1213,214 @@ export class VueAnalyzer extends BaseAnalyzer {
   }
 
   private extractStoreState(content: string): Array<{ name: string; type: string; initialValue?: any }> {
-    return [];
+    const state: Array<{ name: string; type: string; initialValue?: any }> = [];
+
+    const stateFunctionPattern = /state\s*:\s*\(\s*\)\s*(?:=>)?\s*\(\s*\{([\s\S]*?)\}\s*\)/;
+    const stateReturnPattern = /state\s*\(\s*\)\s*\{[\s\S]*?return\s*\{([\s\S]*?)\}\s*;?\s*\}/;
+    const stateObjectPattern = /state\s*:\s*\{([\s\S]*?)\}/;
+
+    let stateContent: string | null = null;
+    const fnMatch = stateFunctionPattern.exec(content);
+    if (fnMatch) {
+      stateContent = fnMatch[1];
+    } else {
+      const returnMatch = stateReturnPattern.exec(content);
+      if (returnMatch) {
+        stateContent = returnMatch[1];
+      } else {
+        const objMatch = stateObjectPattern.exec(content);
+        if (objMatch) {
+          stateContent = objMatch[1];
+        }
+      }
+    }
+
+    if (stateContent) {
+      const propertyPattern = /(\w+)\s*:\s*([^,\n]+)/g;
+      let propMatch;
+      while ((propMatch = propertyPattern.exec(stateContent)) !== null) {
+        const name = propMatch[1].trim();
+        const rawValue = propMatch[2].trim();
+        if (['return', 'function', 'if', 'else', 'for', 'while'].includes(name)) continue;
+        const type = this.inferTypeFromValue(rawValue);
+        state.push({ name, type, initialValue: rawValue.replace(/,\s*$/, '') });
+      }
+    }
+
+    return state;
   }
 
   private extractStoreGetters(content: string): Array<{ name: string; returnType: string }> {
-    return [];
+    const getters: Array<{ name: string; returnType: string }> = [];
+
+    const gettersBlockPattern = /getters\s*:\s*\{([\s\S]*?)\n\s*\}/;
+    const match = gettersBlockPattern.exec(content);
+    if (match) {
+      const gettersContent = match[1];
+      const getterPattern = /(\w+)\s*\(/g;
+      let getterMatch;
+      while ((getterMatch = getterPattern.exec(gettersContent)) !== null) {
+        const name = getterMatch[1];
+        if (['function', 'return', 'if', 'else'].includes(name)) continue;
+        getters.push({ name, returnType: 'unknown' });
+      }
+
+      const getterPropPattern = /(\w+)\s*:/g;
+      let propMatch;
+      while ((propMatch = getterPropPattern.exec(gettersContent)) !== null) {
+        const name = propMatch[1];
+        if (['function', 'return', 'if', 'else'].includes(name)) continue;
+        if (getters.some(g => g.name === name)) continue;
+        getters.push({ name, returnType: 'unknown' });
+      }
+    }
+
+    return getters;
   }
 
   private extractStoreMutations(content: string): Array<{ name: string; payload?: string }> {
-    return [];
+    const mutations: Array<{ name: string; payload?: string }> = [];
+
+    const mutationsBlockPattern = /mutations\s*:\s*\{([\s\S]*?)\n\s*\}/;
+    const match = mutationsBlockPattern.exec(content);
+    if (match) {
+      const mutationsContent = match[1];
+      const mutationPattern = /(\w+)\s*\(\s*state\s*(?:,\s*(\w+))?\s*\)/g;
+      let mutationMatch;
+      while ((mutationMatch = mutationPattern.exec(mutationsContent)) !== null) {
+        const name = mutationMatch[1];
+        const payload = mutationMatch[2] || undefined;
+        if (['function', 'return', 'if', 'else'].includes(name)) continue;
+        mutations.push({ name, payload });
+      }
+
+      const mutationPropPattern = /(\w+)\s*:/g;
+      let propMatch;
+      while ((propMatch = mutationPropPattern.exec(mutationsContent)) !== null) {
+        const name = propMatch[1];
+        if (['function', 'return', 'if', 'else'].includes(name)) continue;
+        if (mutations.some(m => m.name === name)) continue;
+        mutations.push({ name });
+      }
+    }
+
+    return mutations;
   }
 
   private extractStoreActions(content: string): Array<{ name: string; payload?: string; async: boolean }> {
-    return [];
+    const actions: Array<{ name: string; payload?: string; async: boolean }> = [];
+
+    const actionsBlockPattern = /actions\s*:\s*\{([\s\S]*?)\n\s*\}/;
+    const match = actionsBlockPattern.exec(content);
+    if (match) {
+      const actionsContent = match[1];
+
+      const asyncActionPattern = /async\s+(\w+)\s*\(\s*(?:\{[^}]*\}|\w+)\s*(?:,\s*(\w+))?\s*\)/g;
+      let asyncMatch;
+      while ((asyncMatch = asyncActionPattern.exec(actionsContent)) !== null) {
+        const name = asyncMatch[1];
+        const payload = asyncMatch[2] || undefined;
+        if (['function', 'return', 'if', 'else'].includes(name)) continue;
+        actions.push({ name, payload, async: true });
+      }
+
+      const syncActionPattern = /(\w+)\s*\(\s*(?:\{[^}]*\}|\w+)\s*(?:,\s*(\w+))?\s*\)/g;
+      let syncMatch;
+      while ((syncMatch = syncActionPattern.exec(actionsContent)) !== null) {
+        const name = syncMatch[1];
+        const payload = syncMatch[2] || undefined;
+        if (['function', 'return', 'if', 'else', 'async'].includes(name)) continue;
+        if (actions.some(a => a.name === name)) continue;
+        actions.push({ name, payload, async: false });
+      }
+
+      const actionPropPattern = /(\w+)\s*:/g;
+      let propMatch;
+      while ((propMatch = actionPropPattern.exec(actionsContent)) !== null) {
+        const name = propMatch[1];
+        if (['function', 'return', 'if', 'else', 'async'].includes(name)) continue;
+        if (actions.some(a => a.name === name)) continue;
+        const followingText = actionsContent.substring(propMatch.index);
+        const isAsync = /:\s*async/.test(followingText.substring(0, 30));
+        actions.push({ name, async: isAsync });
+      }
+    }
+
+    return actions;
   }
 
   private extractStoreModules(content: string): string[] {
-    return [];
+    const modules: string[] = [];
+
+    const modulesBlockPattern = /modules\s*:\s*\{([\s\S]*?)\}/;
+    const match = modulesBlockPattern.exec(content);
+    if (match) {
+      const modulesContent = match[1];
+      const modulePattern = /(\w+)\s*(?::|,)/g;
+      let moduleMatch;
+      while ((moduleMatch = modulePattern.exec(modulesContent)) !== null) {
+        const name = moduleMatch[1];
+        if (['namespaced', 'state', 'getters', 'mutations', 'actions'].includes(name)) continue;
+        modules.push(name);
+      }
+    }
+
+    return modules;
   }
 
-  private extractRouteName(content: string, path: string): string | undefined {
+  private extractRouteName(content: string, routePath: string): string | undefined {
+    const escapedPath = routePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const routeBlockPattern = new RegExp(
+      `\\{[^}]*path\\s*:\\s*['"\`]${escapedPath}['"\`][^}]*\\}`,
+      's'
+    );
+    const routeBlock = routeBlockPattern.exec(content);
+    if (routeBlock) {
+      const namePattern = /name\s*:\s*['"`]([^'"`]+)['"`]/;
+      const nameMatch = namePattern.exec(routeBlock[0]);
+      if (nameMatch) return nameMatch[1];
+    }
+
     return undefined;
   }
 
-  private extractRouteMeta(content: string, path: string): Record<string, any> | undefined {
-    return undefined;
+  private extractRouteMeta(content: string, routePath: string): Record<string, any> | undefined {
+    const escapedPath = routePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const routeBlockPattern = new RegExp(
+      `\\{[^}]*path\\s*:\\s*['"\`]${escapedPath}['"\`][\\s\\S]*?meta\\s*:\\s*\\{([^}]*)\\}`,
+      ''
+    );
+    const routeBlock = routeBlockPattern.exec(content);
+    if (!routeBlock) return undefined;
+
+    const metaContent = routeBlock[1];
+    const meta: Record<string, any> = {};
+    const metaPropPattern = /(\w+)\s*:\s*([^,\n]+)/g;
+    let propMatch;
+    while ((propMatch = metaPropPattern.exec(metaContent)) !== null) {
+      const key = propMatch[1].trim();
+      const rawValue = propMatch[2].trim().replace(/,\s*$/, '');
+
+      if (rawValue === 'true') meta[key] = true;
+      else if (rawValue === 'false') meta[key] = false;
+      else if (/^-?\d+(\.\d+)?$/.test(rawValue)) meta[key] = Number(rawValue);
+      else if (/^['"`]([^'"`]*)['"`]$/.test(rawValue)) {
+        const strMatch = /^['"`]([^'"`]*)['"`]$/.exec(rawValue);
+        meta[key] = strMatch ? strMatch[1] : rawValue;
+      } else if (rawValue.startsWith('[')) {
+        const arrayItemsPattern = /['"`]([^'"`]+)['"`]/g;
+        const items: string[] = [];
+        let itemMatch;
+        while ((itemMatch = arrayItemsPattern.exec(rawValue)) !== null) {
+          items.push(itemMatch[1]);
+        }
+        meta[key] = items;
+      } else {
+        meta[key] = rawValue;
+      }
+    }
+
+    return Object.keys(meta).length > 0 ? meta : undefined;
   }
 
   private extractPluginName(content: string, filePath: string): string | null {

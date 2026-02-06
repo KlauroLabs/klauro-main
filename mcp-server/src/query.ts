@@ -2,7 +2,14 @@ import type {
   CASOutput, CASNode, CASEdge, CASEntryPoint, CASExitPoint,
   CASCallChain, CASMethodCall, CASDecorator, CASIntent,
   CASChangeRisk, CASTemporalStability, CASFlowCoverage,
+  ChangeHistoryEntry, ChangeAggregate, HeatMapData, ImpactAnalysis,
 } from '../../backend/src/types/cas.types';
+import {
+  loadChangeHistory,
+  getChangeHistoryEntry,
+  listAnalysisSnapshots,
+  getAnalysisAt as getStorageAnalysisAt,
+} from './storage';
 
 export function buildSummary(cas: CASOutput) {
   const nodesByType: Record<string, number> = {};
@@ -10,92 +17,77 @@ export function buildSummary(cas: CASOutput) {
     nodesByType[n.type] = (nodesByType[n.type] || 0) + 1;
   }
 
-  const edgesByType: Record<string, number> = {};
-  for (const e of cas.edges) {
-    edgesByType[e.type] = (edgesByType[e.type] || 0) + 1;
-  }
-
   const entryPointsByType: Record<string, number> = {};
   for (const ep of cas.entry_points || []) {
     entryPointsByType[ep.type] = (entryPointsByType[ep.type] || 0) + 1;
   }
 
-  const errorsBySeverity: Record<string, number> = {};
-  for (const err of cas.analysis_errors || []) {
-    errorsBySeverity[err.severity] = (errorsBySeverity[err.severity] || 0) + 1;
-  }
+  const techs = cas.system?.technologies;
 
   return {
-    cas_version: cas.cas_version,
-    analysis_timestamp: cas.analysis_timestamp,
-    analysis_id: cas.analysis_id,
-    system_purpose: cas.system_purpose || null,
-    enhanced_system_purpose: cas.enhanced_system_purpose || null,
-    architecture_summary: cas.architecture_summary || null,
-    flow_graph: cas.flow_graph ? {
-      capabilities_count: cas.flow_graph.capabilities.length,
-      dependencies_count: cas.flow_graph.dependencies.length,
-      primary_flow: cas.flow_graph.primary_flow,
-      system_insights: cas.flow_graph.system_insights,
-      layers: cas.flow_graph.layers?.map(l => ({
-        layer_number: l.layer_number,
-        layer_name: l.layer_name,
-        layer_type: l.layer_type,
-        capabilities_count: l.capabilities?.length || 0,
-      })) || [],
-      topology: {
-        root_count: cas.flow_graph.topology?.root_capabilities?.length || 0,
-        leaf_count: cas.flow_graph.topology?.leaf_capabilities?.length || 0,
-        critical_path: cas.flow_graph.topology?.critical_path || [],
-        max_depth: cas.flow_graph.topology?.max_depth || 0,
-      },
-      top_capabilities: [...cas.flow_graph.capabilities]
-        .sort((a, b) => b.signals.total_score - a.signals.total_score)
-        .slice(0, 15)
-        .map(c => ({
-          name: c.name,
-          classification: c.classification,
-          criticality: c.criticality,
-          score: c.signals.total_score,
-          operations: c.operations.map(o => o.name),
-        })),
-    } : null,
-    database_entities: cas.database_schema?.entities.map(e => e.name) || [],
-    entry_point_count: cas.entry_points?.length || 0,
+    name: cas.system?.name,
+    type: cas.system?.type,
+    languages: techs?.languages?.map(l => l.name) || [],
+    frameworks: techs?.frameworks?.map(f => f.name) || [],
+    primary_domain: cas.enhanced_system_purpose?.primary_domain || null,
+    description: cas.enhanced_system_purpose?.inferred_description || null,
+    architecture_type: cas.architecture_summary?.system_type || null,
+    nodes: cas.nodes.length,
+    nodes_by_type: nodesByType,
+    edges: cas.edges.length,
+    entry_points: cas.entry_points?.length || 0,
     entry_points_by_type: entryPointsByType,
-    node_counts: { total: cas.nodes.length, by_type: nodesByType },
-    edge_counts: { total: cas.edges.length, by_type: edgesByType },
-    analyzer_contributions: cas.analyzer_contributions.map(c => ({
-      analyzer_id: c.analyzer_id,
-      analyzer_name: c.analyzer_name,
-      analyzer_type: c.analyzer_type || c.contribution_type,
-      nodes_contributed: c.nodes_contributed || c.nodes_created || 0,
-      edges_contributed: c.edges_contributed || c.edges_created || 0,
-      execution_time_ms: c.execution_time_ms,
-      analysis_scope: c.analysis_scope || null,
-    })),
-    analysis_errors: {
-      total: cas.analysis_errors?.length || 0,
-      by_severity: errorsBySeverity,
-    },
+    database_entities: cas.database_schema?.entities.map(e => e.name) || [],
+    capabilities: cas.flow_graph?.capabilities.length || 0,
+    top_capabilities: cas.flow_graph ? [...cas.flow_graph.capabilities]
+      .sort((a, b) => b.signals.total_score - a.signals.total_score)
+      .slice(0, 10)
+      .map(c => c.name) : [],
+    analyzers: cas.analyzer_contributions.map(c => c.analyzer_name),
+    errors: cas.analysis_errors?.length || 0,
   };
 }
 
 export function getSystemOverview(cas: CASOutput) {
+  const techs = cas.system?.technologies;
   return {
-    system: cas.system,
-    architecture_summary: cas.architecture_summary,
-    system_purpose: cas.system_purpose,
-    enhanced_system_purpose: cas.enhanced_system_purpose,
-    system_capabilities: cas.system_capabilities,
-    progressive_levels: cas.progressive_levels,
-    analyzer_contributions: cas.analyzer_contributions,
-    analysis_errors: cas.analysis_errors,
-    configuration: cas.configuration,
-    runtime: cas.runtime,
-    repository_links: cas.repository_links,
-    disclosure: cas.disclosure,
-    validation: cas.validation,
+    name: cas.system?.name,
+    type: cas.system?.type,
+    description: cas.system?.description,
+    languages: techs?.languages?.map(l => ({ name: l.name, percentage: l.percentage })) || [],
+    frameworks: techs?.frameworks?.map(f => ({ name: f.name, version: f.version })) || [],
+    databases: techs?.databases || [],
+    system_purpose: cas.system_purpose ? {
+      primary_type: cas.system_purpose.primary_type,
+      confidence: cas.system_purpose.confidence,
+      evidence: cas.system_purpose.evidence?.slice(0, 5),
+    } : null,
+    enhanced_system_purpose: cas.enhanced_system_purpose ? {
+      primary_domain: cas.enhanced_system_purpose.primary_domain,
+      inferred_description: cas.enhanced_system_purpose.inferred_description,
+      core_concepts: cas.enhanced_system_purpose.core_concepts?.slice(0, 10),
+    } : null,
+    architecture_summary: cas.architecture_summary ? {
+      system_type: cas.architecture_summary.system_type,
+      total_files: cas.architecture_summary.total_files,
+      layers: cas.architecture_summary.layers,
+    } : null,
+    capabilities_count: cas.system_capabilities?.length || 0,
+    levels: cas.progressive_levels?.level_definitions?.map(l => ({
+      level: l.level,
+      name: l.name,
+      node_count: l.node_count,
+    })) || [],
+    analyzers: cas.analyzer_contributions?.map(c => ({
+      name: c.analyzer_name,
+      nodes: c.nodes_contributed || c.nodes_created || 0,
+      edges: c.edges_contributed || c.edges_created || 0,
+    })) || [],
+    errors: cas.analysis_errors?.length || 0,
+    error_summary: cas.analysis_errors?.slice(0, 5).map(e => ({
+      severity: e.severity,
+      message: e.message,
+    })) || [],
   };
 }
 
@@ -237,35 +229,47 @@ export function getFileNodes(cas: CASOutput, filePath: string) {
   };
 }
 
-export function getEntryPoints(cas: CASOutput, type?: string) {
+export function getEntryPoints(cas: CASOutput, opts: { type?: string; limit?: number; offset?: number } = {}) {
   let points = cas.entry_points || [];
-  if (type) points = points.filter(ep => ep.type === type);
-  return points;
+  if (opts.type) points = points.filter(ep => ep.type === opts.type);
+  const total = points.length;
+  const limit = opts.limit || 50;
+  const offset = opts.offset || 0;
+  return { total, offset, limit, entry_points: points.slice(offset, offset + limit) };
 }
 
-export function getExitPoints(cas: CASOutput, type?: string) {
+export function getExitPoints(cas: CASOutput, opts: { type?: string; limit?: number; offset?: number } = {}) {
   let points = cas.exit_points || [];
-  if (type) points = points.filter(ep => ep.type === type);
-  return points;
+  if (opts.type) points = points.filter(ep => ep.type === opts.type);
+  const total = points.length;
+  const limit = opts.limit || 50;
+  const offset = opts.offset || 0;
+  return { total, offset, limit, exit_points: points.slice(offset, offset + limit) };
 }
 
-export function getRouteTable(cas: CASOutput) {
-  return cas.route_table || [];
+export function getRouteTable(cas: CASOutput, opts: { limit?: number; offset?: number; method?: string } = {}) {
+  let routes = cas.route_table || [];
+  if (opts.method) routes = routes.filter((r: any) => r.method?.toUpperCase() === opts.method!.toUpperCase());
+  const total = routes.length;
+  const limit = opts.limit || 50;
+  const offset = opts.offset || 0;
+  return { total, offset, limit, routes: routes.slice(offset, offset + limit) };
 }
 
 export function getExternalServices(cas: CASOutput) {
   return cas.external_services || [];
 }
 
-export function getCallers(cas: CASOutput, nodeId: string, maxDepth: number = 2) {
+export function getCallers(cas: CASOutput, nodeId: string, maxDepth: number = 2, limit: number = 50) {
   const visited = new Set<string>();
   const callers: Array<{ node_id: string; name: string; type: string; depth: number; via: string }> = [];
 
   function traverse(currentId: string, depth: number) {
-    if (depth > maxDepth || visited.has(currentId)) return;
+    if (depth > maxDepth || visited.has(currentId) || callers.length >= limit) return;
     visited.add(currentId);
 
     for (const edge of cas.edges) {
+      if (callers.length >= limit) break;
       if (edge.target === currentId && !visited.has(edge.source)) {
         const sourceNode = cas.nodes.find(n => n.id === edge.source);
         if (sourceNode) {
@@ -282,6 +286,7 @@ export function getCallers(cas: CASOutput, nodeId: string, maxDepth: number = 2)
     }
 
     for (const mc of cas.method_calls || []) {
+      if (callers.length >= limit) break;
       if (mc.target_node === currentId && mc.caller_node && !visited.has(mc.caller_node)) {
         const callerNode = cas.nodes.find(n => n.id === mc.caller_node);
         if (callerNode) {
@@ -299,18 +304,19 @@ export function getCallers(cas: CASOutput, nodeId: string, maxDepth: number = 2)
   }
 
   traverse(nodeId, 1);
-  return callers;
+  return { total: callers.length, limit, truncated: callers.length >= limit, callers };
 }
 
-export function getCallees(cas: CASOutput, nodeId: string, maxDepth: number = 2) {
+export function getCallees(cas: CASOutput, nodeId: string, maxDepth: number = 2, limit: number = 50) {
   const visited = new Set<string>();
   const callees: Array<{ node_id: string; name: string; type: string; depth: number; via: string }> = [];
 
   function traverse(currentId: string, depth: number) {
-    if (depth > maxDepth || visited.has(currentId)) return;
+    if (depth > maxDepth || visited.has(currentId) || callees.length >= limit) return;
     visited.add(currentId);
 
     for (const edge of cas.edges) {
+      if (callees.length >= limit) break;
       if (edge.source === currentId && !visited.has(edge.target)) {
         const targetNode = cas.nodes.find(n => n.id === edge.target);
         if (targetNode) {
@@ -327,6 +333,7 @@ export function getCallees(cas: CASOutput, nodeId: string, maxDepth: number = 2)
     }
 
     for (const mc of cas.method_calls || []) {
+      if (callees.length >= limit) break;
       if (mc.caller_node === currentId && mc.target_node && !visited.has(mc.target_node)) {
         const targetNode = cas.nodes.find(n => n.id === mc.target_node);
         if (targetNode) {
@@ -344,14 +351,30 @@ export function getCallees(cas: CASOutput, nodeId: string, maxDepth: number = 2)
   }
 
   traverse(nodeId, 1);
-  return callees;
+  return { total: callees.length, limit, truncated: callees.length >= limit, callees };
 }
 
-export function getCallChain(cas: CASOutput, opts: { chainId?: string; entryPointId?: string }) {
+export function getCallChain(cas: CASOutput, opts: { chainId?: string; entryPointId?: string; limit?: number; offset?: number }) {
   const chains = cas.call_chains || [];
   if (opts.chainId) return chains.find(c => c.id === opts.chainId) || null;
-  if (opts.entryPointId) return chains.filter(c => c.entry_point.entry_point_id === opts.entryPointId);
-  return chains;
+  if (opts.entryPointId) {
+    const filtered = chains.filter(c => c.entry_point.entry_point_id === opts.entryPointId);
+    return { total: filtered.length, chains: filtered };
+  }
+
+  const limit = opts.limit || 25;
+  const offset = opts.offset || 0;
+  const summaries = chains.map(c => ({
+    id: c.id,
+    chain_type: c.chain_type,
+    entry_point: c.entry_point,
+    exit_point: c.exit_point,
+    call_path_length: c.call_path?.length || 0,
+    characteristics: c.characteristics,
+    criticality: c.criticality,
+    risk_level: c.risk_analysis?.risk_level,
+  }));
+  return { total: summaries.length, offset, limit, chains: summaries.slice(offset, offset + limit) };
 }
 
 export function getMethodCalls(cas: CASOutput, nodeId: string) {
@@ -366,15 +389,17 @@ export function getIntent(cas: CASOutput, nodeId: string) {
   return (cas.intents || []).find(i => i.node_id === nodeId) || null;
 }
 
-export function getDataEntities(cas: CASOutput, entityName?: string) {
-  const entities = cas.data_entities || [];
-  if (entityName) {
-    const filtered = entities.filter(e =>
-      e.name.toLowerCase().includes(entityName.toLowerCase())
+export function getDataEntities(cas: CASOutput, opts: { entityName?: string; limit?: number; offset?: number } = {}) {
+  let entities = cas.data_entities || [];
+  if (opts.entityName) {
+    entities = entities.filter(e =>
+      e.name.toLowerCase().includes(opts.entityName!.toLowerCase())
     );
-    return { entities: filtered, data_summary: cas.data_summary };
   }
-  return { entities, data_summary: cas.data_summary };
+  const total = entities.length;
+  const limit = opts.limit || 25;
+  const offset = opts.offset || 0;
+  return { total, offset, limit, entities: entities.slice(offset, offset + limit), data_summary: cas.data_summary };
 }
 
 export function getSecurityOverview(cas: CASOutput) {
@@ -389,9 +414,15 @@ export function getStability(cas: CASOutput, nodeId?: string) {
   if (nodeId) {
     return (cas.temporal_stability || []).find(s => s.node_id === nodeId) || null;
   }
+  const stability = cas.temporal_stability || [];
+  const byClass: Record<string, number> = {};
+  for (const s of stability) {
+    byClass[s.stability_class] = (byClass[s.stability_class] || 0) + 1;
+  }
   return {
     stability_summary: cas.stability_summary || null,
-    temporal_stability: cas.temporal_stability || [],
+    total_nodes_tracked: stability.length,
+    by_class: byClass,
   };
 }
 
@@ -411,10 +442,21 @@ export function getFlowCoverage(cas: CASOutput, chainId?: string) {
       test_gaps: (cas.test_gaps || []).filter(g => g.location.call_chain_id === chainId),
     };
   }
+  const byStatus: Record<string, number> = {};
+  for (const fc of coverage) {
+    byStatus[fc.coverage_status] = (byStatus[fc.coverage_status] || 0) + 1;
+  }
+  const gaps = cas.test_gaps || [];
+  const gapsBySeverity: Record<string, number> = {};
+  for (const g of gaps) {
+    gapsBySeverity[g.severity] = (gapsBySeverity[g.severity] || 0) + 1;
+  }
   return {
     flow_summary: cas.flow_summary || null,
-    coverage,
-    test_gaps: cas.test_gaps || [],
+    total_flows: coverage.length,
+    by_coverage_status: byStatus,
+    total_test_gaps: gaps.length,
+    test_gaps_by_severity: gapsBySeverity,
   };
 }
 
@@ -423,8 +465,20 @@ export function getWorkflows(cas: CASOutput, workflowId?: string) {
     const workflow = (cas.workflows || []).find(w => w.id === workflowId);
     return { workflow: workflow || null };
   }
+  const workflows = cas.workflows || [];
   return {
-    workflows: cas.workflows || [],
+    total: workflows.length,
+    workflows: workflows.map(w => ({
+      id: w.id,
+      name: w.name,
+      workflow_type: w.workflow_type,
+      classification: w.classification,
+      criticality: w.criticality,
+      entry_point_count: w.entry_points?.length || 0,
+      chain_count: w.call_chains?.length || 0,
+      entity_count: w.entities_touched?.length || 0,
+      service_count: w.services_used?.length || 0,
+    })),
     workflow_graph: cas.workflow_graph || null,
   };
 }
@@ -433,15 +487,209 @@ export function getFlowGraph(cas: CASOutput) {
   return cas.flow_graph || null;
 }
 
-export function getDomainConcepts(cas: CASOutput) {
-  return cas.domain_concepts || [];
+export function getDomainConcepts(cas: CASOutput, opts: { classification?: string; limit?: number; offset?: number } = {}) {
+  let concepts = cas.domain_concepts || [];
+  if (opts.classification) {
+    concepts = concepts.filter(c => c.classification === opts.classification);
+  }
+  concepts = [...concepts].sort((a, b) => b.frequency - a.frequency);
+  const total = concepts.length;
+  const limit = opts.limit || 25;
+  const offset = opts.offset || 0;
+  return { total, offset, limit, concepts: concepts.slice(offset, offset + limit) };
 }
 
 export function getPatterns(cas: CASOutput) {
+  const patterns = (cas.patterns || []).map(p => ({
+    id: p.id,
+    name: p.name,
+    description: p.description,
+    type: p.type,
+    confidence: p.confidence,
+    instance_count: p.instances?.length || 0,
+    variations: (p.variations || []).map(v => ({
+      id: v.id,
+      implementation: v.implementation,
+      description: v.description,
+      instance_count: v.instances?.length || 0,
+      percentage: v.percentage,
+    })),
+  }));
+
   return {
-    patterns: cas.patterns || [],
+    patterns,
     categories: cas.categories || {},
     behaviors: cas.behaviors || [],
+  };
+}
+
+export function getBehaviors(
+  cas: CASOutput,
+  opts: { limit?: number; offset?: number } = {}
+) {
+  const behaviors = cas.behaviors || [];
+  const limit = opts.limit || 50;
+  const offset = opts.offset || 0;
+
+  const enriched = behaviors.map(b => ({
+    id: b.id,
+    name: b.name,
+    description: b.description,
+    node_count: b.nodes?.length || 0,
+    flow_steps: b.flow?.length || 0,
+    nodes: b.nodes?.map(nodeId => {
+      const node = cas.nodes.find(n => n.id === nodeId);
+      return node ? { id: nodeId, name: node.name, type: node.type } : { id: nodeId };
+    }),
+    flow: b.flow,
+  }));
+
+  return {
+    total: enriched.length,
+    offset,
+    limit,
+    behaviors: enriched.slice(offset, offset + limit),
+  };
+}
+
+export function getBehaviorDetail(cas: CASOutput, behaviorId: string) {
+  const behavior = (cas.behaviors || []).find(b => b.id === behaviorId);
+  if (!behavior) return null;
+
+  const resolvedNodes = (behavior.nodes || []).map(nodeId => {
+    const node = cas.nodes.find(n => n.id === nodeId);
+    return node ? {
+      id: nodeId,
+      name: node.name,
+      type: node.type,
+      file: node.source?.file,
+      line: node.source?.line,
+    } : { id: nodeId };
+  });
+
+  return {
+    ...behavior,
+    resolved_nodes: resolvedNodes,
+  };
+}
+
+function inferLifecyclePhase(name: string, behavior?: string): string {
+  const lower = (name + ' ' + (behavior || '')).toLowerCase();
+  if (lower.includes('init') || lower.includes('constructor') || lower.includes('create') || lower.includes('oninit')) return 'init';
+  if (lower.includes('mount') || lower.includes('afterview') || lower.includes('ready') || lower.includes('connected') || lower.includes('onmoduleinit')) return 'mount';
+  if (lower.includes('update') || lower.includes('change') || lower.includes('render') || lower.includes('docheck')) return 'update';
+  if (lower.includes('destroy') || lower.includes('unmount') || lower.includes('cleanup') || lower.includes('disconnect') || lower.includes('onmoduledestroy')) return 'destroy';
+  return 'other';
+}
+
+export function getLifecycleHooks(
+  cas: CASOutput,
+  opts: { phase?: string; framework?: string; limit?: number; offset?: number } = {}
+) {
+  const limit = opts.limit || 50;
+  const offset = opts.offset || 0;
+  const hooks: Array<{
+    id: string;
+    name: string;
+    phase: string;
+    framework: string;
+    node_id: string;
+    node_name: string;
+    file?: string;
+    line?: number;
+    source: 'decorator' | 'entry_point' | 'method_call';
+  }> = [];
+
+  for (const dec of cas.decorators || []) {
+    if (dec.semantic_meaning.category !== 'lifecycle') continue;
+    if (opts.framework && dec.decorator_info.framework.toLowerCase() !== opts.framework.toLowerCase()) continue;
+
+    const node = cas.nodes.find(n => n.id === dec.target_node);
+    const phase = inferLifecyclePhase(dec.decorator_info.name, dec.semantic_meaning.behavior);
+
+    if (opts.phase && phase !== opts.phase) continue;
+
+    hooks.push({
+      id: dec.id,
+      name: dec.decorator_info.name,
+      phase,
+      framework: dec.decorator_info.framework,
+      node_id: dec.target_node,
+      node_name: node?.name || dec.target_node,
+      file: dec.decorator_info.source_location?.file,
+      line: dec.decorator_info.source_location?.line,
+      source: 'decorator',
+    });
+  }
+
+  for (const ep of cas.entry_points || []) {
+    if (ep.type !== 'lifecycle') continue;
+    const node = cas.nodes.find(n => n.id === ep.handler?.node_id);
+    const framework = (ep.metadata?.framework as string) || 'unknown';
+    if (opts.framework && framework.toLowerCase() !== opts.framework.toLowerCase()) continue;
+
+    const phase = inferLifecyclePhase(ep.name, ep.description);
+
+    if (opts.phase && phase !== opts.phase) continue;
+
+    hooks.push({
+      id: ep.id,
+      name: ep.name,
+      phase,
+      framework,
+      node_id: ep.handler?.node_id || '',
+      node_name: node?.name || ep.name,
+      file: ep.handler?.file,
+      line: ep.handler?.line,
+      source: 'entry_point',
+    });
+  }
+
+  const byPhase: Record<string, number> = {};
+  for (const h of hooks) {
+    byPhase[h.phase] = (byPhase[h.phase] || 0) + 1;
+  }
+
+  return {
+    total: hooks.length,
+    by_phase: byPhase,
+    offset,
+    limit,
+    hooks: hooks.slice(offset, offset + limit),
+  };
+}
+
+export function getPatternInstances(cas: CASOutput, patternId: string, opts: { variation_id?: string; limit?: number; offset?: number } = {}) {
+  const pattern = (cas.patterns || []).find(p => p.id === patternId);
+  if (!pattern) return null;
+
+  const limit = opts.limit || 50;
+  const offset = opts.offset || 0;
+
+  if (opts.variation_id) {
+    const variation = (pattern.variations || []).find(v => v.id === opts.variation_id);
+    if (!variation) return { error: `Variation not found: ${opts.variation_id}` };
+    const instances = variation.instances || [];
+    return {
+      pattern_id: patternId,
+      pattern_name: pattern.name,
+      variation_id: variation.id,
+      variation_description: variation.description,
+      total_instances: instances.length,
+      offset,
+      limit,
+      instances: instances.slice(offset, offset + limit),
+    };
+  }
+
+  const instances = pattern.instances || [];
+  return {
+    pattern_id: patternId,
+    pattern_name: pattern.name,
+    total_instances: instances.length,
+    offset,
+    limit,
+    instances: instances.slice(offset, offset + limit),
   };
 }
 
@@ -449,7 +697,7 @@ export function getPerspectives(cas: CASOutput) {
   return cas.perspectives || [];
 }
 
-export function findTests(cas: CASOutput, opts: { nodeId?: string; filePath?: string }) {
+export function findTests(cas: CASOutput, opts: { nodeId?: string; filePath?: string; limit?: number; offset?: number }) {
   const suites = cas.test_suites || [];
   const mocks = cas.mocks || [];
   const fixtures = cas.fixtures || [];
@@ -462,7 +710,7 @@ export function findTests(cas: CASOutput, opts: { nodeId?: string; filePath?: st
     const relevantMocks = mocks.filter(m =>
       m.target_node === opts.nodeId || m.used_by?.includes(opts.nodeId!)
     );
-    return { suites: relevantSuites, mocks: relevantMocks, fixtures };
+    return { total_suites: relevantSuites.length, suites: relevantSuites, mocks: relevantMocks, fixtures };
   }
 
   if (opts.filePath) {
@@ -470,10 +718,21 @@ export function findTests(cas: CASOutput, opts: { nodeId?: string; filePath?: st
     const relevantSuites = suites.filter(s =>
       s.file_path.replace(/\\/g, '/').includes(normalized)
     );
-    return { suites: relevantSuites, mocks, fixtures };
+    return { total_suites: relevantSuites.length, suites: relevantSuites, mocks, fixtures };
   }
 
-  return { suites, mocks, fixtures };
+  const limit = opts.limit || 25;
+  const offset = opts.offset || 0;
+  return {
+    total_suites: suites.length,
+    total_mocks: mocks.length,
+    total_fixtures: fixtures.length,
+    offset,
+    limit,
+    suites: suites.slice(offset, offset + limit),
+    mocks: mocks.slice(offset, offset + limit),
+    fixtures: fixtures.slice(offset, offset + limit),
+  };
 }
 
 export function getTestSummary(cas: CASOutput) {
@@ -504,79 +763,1628 @@ export function getDependencies(cas: CASOutput) {
   return cas.dependencies || null;
 }
 
-export function getLibraries(cas: CASOutput) {
-  return cas.libraries || [];
+export function getLibraries(cas: CASOutput, opts: { query?: string; limit?: number; offset?: number } = {}) {
+  let libraries = cas.libraries || [];
+  if (opts.query) {
+    const q = opts.query.toLowerCase();
+    libraries = libraries.filter(l =>
+      l.name.toLowerCase().includes(q) ||
+      (l.category && l.category.toLowerCase().includes(q))
+    );
+  }
+  const total = libraries.length;
+  const limit = opts.limit || 25;
+  const offset = opts.offset || 0;
+  return { total, offset, limit, libraries: libraries.slice(offset, offset + limit) };
 }
 
-export function getLevel(cas: CASOutput, level: number) {
+export function getCodingContext(
+  cas: CASOutput,
+  target: string,
+  opts: {
+    task_type?: 'add' | 'modify' | 'delete' | 'refactor';
+    include?: string[];
+  } = {}
+) {
+  const taskType = opts.task_type || 'modify';
+  const includeAll = !opts.include || opts.include.length === 0;
+  const shouldInclude = (section: string) => includeAll || opts.include?.includes(section);
+
+  let targetNode: CASNode | undefined;
+  if (target.includes('/') || target.includes('.')) {
+    const fileNodes = cas.nodes.filter(n =>
+      n.source?.file?.endsWith(target) || n.id === target
+    );
+    targetNode = fileNodes.find(n => n.type === 'class' || n.type === 'module' || n.type === 'function') || fileNodes[0];
+  } else {
+    targetNode = cas.nodes.find(n => n.id === target);
+    if (!targetNode) {
+      const searchResults = searchNodes(cas, target, { limit: 1 });
+      if (searchResults.length > 0) {
+        targetNode = cas.nodes.find(n => n.id === searchResults[0].id);
+      }
+    }
+  }
+
+  if (!targetNode) {
+    return { error: `Target not found: ${target}` };
+  }
+
+  const determineLayer = (node: CASNode): 'entry' | 'business' | 'data' | 'infrastructure' => {
+    const entryTypes = ['controller', 'gateway', 'resolver', 'handler', 'page', 'route', 'api_route'];
+    const dataTypes = ['entity', 'repository', 'model', 'schema', 'migration'];
+    const infraTypes = ['config', 'middleware', 'guard', 'interceptor', 'filter', 'pipe', 'decorator'];
+
+    if (entryTypes.includes(node.type)) return 'entry';
+    if (dataTypes.includes(node.type)) return 'data';
+    if (infraTypes.includes(node.type)) return 'infrastructure';
+
+    const isEntryPoint = (cas.entry_points || []).some(ep =>
+      ep.source_node === node.id || ep.handler?.node_id === node.id
+    );
+    if (isEntryPoint) return 'entry';
+
+    return 'business';
+  };
+
+  const determineFrameworkRole = (node: CASNode): string | undefined => {
+    const decorators = (cas.decorators || []).filter(d => d.target_node === node.id);
+    const decoratorNames = decorators.map(d => d.decorator_info.name);
+
+    if (decoratorNames.includes('Controller')) return 'NestJS Controller';
+    if (decoratorNames.includes('Injectable')) return 'NestJS Service';
+    if (decoratorNames.includes('Entity')) return 'MikroORM/TypeORM Entity';
+    if (decoratorNames.includes('Module')) return 'NestJS Module';
+    if (decoratorNames.includes('Guard')) return 'NestJS Guard';
+    if (decoratorNames.includes('Component')) return 'Vue Component';
+
+    if (node.type === 'functional_component' || node.type === 'class_component') return 'React Component';
+    if (node.type === 'custom_hook') return 'React Hook';
+    if (node.type === 'api_route') return 'Next.js API Route';
+    if (node.type === 'react_page') return 'Next.js Page';
+    if (node.type === 'server_component') return 'React Server Component';
+
+    return undefined;
+  };
+
+  const layer = determineLayer(targetNode);
+  const frameworkRole = determineFrameworkRole(targetNode);
+
+  const result: Record<string, unknown> = {
+    target_node: {
+      id: targetNode.id,
+      name: targetNode.name,
+      type: targetNode.type,
+      file: targetNode.source?.file,
+      line: targetNode.source?.line,
+      signature: targetNode.signature,
+      docstring: targetNode.description,
+      layer,
+      framework_role: frameworkRole,
+    },
+  };
+
+  if (shouldInclude('conventions')) {
+    const allNodes = cas.nodes;
+    const functions = allNodes.filter(n => n.type === 'function' || n.type === 'method');
+    const classes = allNodes.filter(n => n.type === 'class' || n.type === 'service' || n.type === 'controller');
+
+    const functionNames = functions.slice(0, 20).map(n => n.name);
+    const classNames = classes.slice(0, 20).map(n => n.name);
+
+    const detectNamingPattern = (names: string[]): string => {
+      if (names.length === 0) return 'unknown';
+      const camelCase = names.filter(n => /^[a-z][a-zA-Z0-9]*$/.test(n)).length;
+      const pascalCase = names.filter(n => /^[A-Z][a-zA-Z0-9]*$/.test(n)).length;
+      const snakeCase = names.filter(n => /^[a-z][a-z0-9_]*$/.test(n)).length;
+
+      if (pascalCase > camelCase && pascalCase > snakeCase) return 'PascalCase';
+      if (snakeCase > camelCase) return 'snake_case';
+      return 'camelCase';
+    };
+
+    const hasAsyncAwait = functions.some(f => f.signature?.return_type?.includes('Promise'));
+    const hasPromises = cas.edges.some(e => e.metadata?.async);
+
+    const errorPatterns = (cas.patterns || []).filter(p =>
+      p.name.toLowerCase().includes('error') || p.name.toLowerCase().includes('exception')
+    );
+
+    result.conventions = {
+      naming: {
+        functions: { pattern: detectNamingPattern(functionNames), examples: functionNames.slice(0, 5) },
+        classes: { pattern: detectNamingPattern(classNames), examples: classNames.slice(0, 5) },
+      },
+      async_style: hasAsyncAwait ? 'async-await' : (hasPromises ? 'promises' : 'callbacks'),
+      error_handling: errorPatterns.length > 0 ? {
+        pattern: 'exceptions',
+        example_node_id: errorPatterns[0].instances?.[0],
+      } : { pattern: 'try-catch' },
+    };
+  }
+
+  if (shouldInclude('patterns')) {
+    const nodePatterns = (cas.patterns || []).filter(p =>
+      p.instances?.includes(targetNode!.id) ||
+      p.variations?.some(v => v.instances?.includes(targetNode!.id))
+    );
+
+    const relevantPatterns = nodePatterns.map(p => ({
+      pattern_id: p.id,
+      name: p.name,
+      relevance: p.type === 'anti-pattern' ? 'must_follow' as const : 'recommended' as const,
+      example_node_id: p.instances?.[0],
+    }));
+
+    const layerPatterns = (cas.patterns || [])
+      .filter(p => !nodePatterns.includes(p))
+      .slice(0, 5)
+      .map(p => ({
+        pattern_id: p.id,
+        name: p.name,
+        relevance: 'optional' as const,
+        example_node_id: p.instances?.[0],
+      }));
+
+    result.related_patterns = [...relevantPatterns, ...layerPatterns].slice(0, 10);
+  }
+
+  if (shouldInclude('constraints')) {
+    const canCall: Array<{ layer: string; types: string[] }> = [];
+    const shouldNotCall: Array<{ layer: string; reason: string }> = [];
+
+    if (layer === 'entry') {
+      canCall.push({ layer: 'business', types: ['service', 'use_case'] });
+      shouldNotCall.push({ layer: 'data', reason: 'Controllers should not directly access repositories' });
+    } else if (layer === 'business') {
+      canCall.push({ layer: 'data', types: ['repository', 'entity'] });
+      canCall.push({ layer: 'infrastructure', types: ['external_service', 'cache'] });
+      shouldNotCall.push({ layer: 'entry', reason: 'Services should not depend on controllers' });
+    } else if (layer === 'data') {
+      canCall.push({ layer: 'infrastructure', types: ['database', 'orm'] });
+      shouldNotCall.push({ layer: 'entry', reason: 'Repositories should not depend on controllers' });
+      shouldNotCall.push({ layer: 'business', reason: 'Repositories should not depend on services' });
+    }
+
+    result.layer_boundaries = { can_call: canCall, should_not_call: shouldNotCall };
+  }
+
+  if (shouldInclude('tests')) {
+    const changeRisk = (cas.change_risks || []).find(r => r.node_id === targetNode!.id);
+    const callersResult = getCallers(cas, targetNode.id, 2, 20);
+    const tests = findTests(cas, { nodeId: targetNode.id });
+
+    const mustVerify: Array<{ check: string; how_to_verify: string }> = [];
+    const shouldVerify: Array<{ check: string; how_to_verify: string }> = [];
+
+    if (changeRisk?.risk_level === 'high' || changeRisk?.risk_level === 'critical') {
+      mustVerify.push({
+        check: 'All existing tests pass',
+        how_to_verify: 'Run test suite'
+      });
+    }
+
+    if (callersResult.total > 0) {
+      mustVerify.push({
+        check: `${callersResult.total} callers still work correctly`,
+        how_to_verify: 'Review caller implementations'
+      });
+    }
+
+    if (taskType === 'modify' || taskType === 'refactor') {
+      shouldVerify.push({
+        check: 'Type signature unchanged or callers updated',
+        how_to_verify: 'Check function signature and all call sites'
+      });
+    }
+
+    const testsToRun = tests.suites.slice(0, 5).map(s => ({
+      test_id: s.file_path,
+      name: s.name,
+      command: `npm test -- ${s.file_path}`,
+    }));
+
+    const testsToAdd: Array<{ type: 'unit' | 'integration'; reason: string; similar_test_id?: string }> = [];
+    if (tests.suites.length === 0) {
+      testsToAdd.push({
+        type: 'unit',
+        reason: 'No existing tests cover this code',
+      });
+    }
+
+    result.modification_checklist = {
+      must_verify: mustVerify,
+      should_verify: shouldVerify,
+      tests_to_run: testsToRun,
+      tests_to_add: testsToAdd,
+    };
+  }
+
+  const callersResult = getCallers(cas, targetNode.id, 1, 10);
+  const calleesResult = getCallees(cas, targetNode.id, 1, 10);
+
+  const sharedTypes: Array<{ id: string; name: string; usage_count: number }> = [];
+  const outgoingEdges = cas.edges.filter(e => e.source === targetNode!.id && e.type === 'uses_type');
+  for (const edge of outgoingEdges.slice(0, 5)) {
+    const typeNode = cas.nodes.find(n => n.id === edge.target);
+    if (typeNode) {
+      const usageCount = cas.edges.filter(e => e.target === typeNode.id && e.type === 'uses_type').length;
+      sharedTypes.push({ id: typeNode.id, name: typeNode.name, usage_count: usageCount });
+    }
+  }
+
+  result.connected_code = {
+    callers: callersResult.callers.map(c => ({
+      id: c.node_id,
+      name: c.name,
+      type: c.type,
+      risk_if_changed: callersResult.total > 5 ? 'high' : (callersResult.total > 2 ? 'medium' : 'low'),
+    })),
+    callees: calleesResult.callees.map(c => ({
+      id: c.node_id,
+      name: c.name,
+      type: c.type,
+    })),
+    shared_types: sharedTypes,
+  };
+
+  return result;
+}
+
+export function getConventions(
+  cas: CASOutput,
+  opts: {
+    scope?: 'global' | 'layer' | 'module';
+    layer?: string;
+    module_id?: string;
+  } = {}
+) {
+  const scope = opts.scope || 'global';
+
+  let nodes = cas.nodes;
+  if (scope === 'module' && opts.module_id) {
+    const moduleNode = cas.nodes.find(n => n.id === opts.module_id);
+    if (moduleNode?.children) {
+      const childIds = new Set(moduleNode.children);
+      nodes = cas.nodes.filter(n => childIds.has(n.id) || n.id === opts.module_id);
+    }
+  }
+
+  const functions = nodes.filter(n => n.type === 'function' || n.type === 'method');
+  const classes = nodes.filter(n => n.type === 'class' || n.type === 'service' || n.type === 'controller');
+  const files = [...new Set(nodes.map(n => n.source?.file).filter(Boolean))];
+
+  const detectPattern = (names: string[]): { pattern: string; examples: string[] } => {
+    if (names.length === 0) return { pattern: 'unknown', examples: [] };
+
+    const camelCase = names.filter(n => /^[a-z][a-zA-Z0-9]*$/.test(n)).length;
+    const pascalCase = names.filter(n => /^[A-Z][a-zA-Z0-9]*$/.test(n)).length;
+    const snakeCase = names.filter(n => /^[a-z][a-z0-9_]*$/.test(n)).length;
+    const kebabCase = names.filter(n => /^[a-z][a-z0-9-]*$/.test(n)).length;
+
+    let pattern = 'camelCase';
+    if (pascalCase > camelCase && pascalCase > snakeCase) pattern = 'PascalCase';
+    else if (snakeCase > camelCase && snakeCase > kebabCase) pattern = 'snake_case';
+    else if (kebabCase > snakeCase) pattern = 'kebab-case';
+
+    return { pattern, examples: names.slice(0, 5) };
+  };
+
+  const functionNames = functions.map(n => n.name);
+  const classNames = classes.map(n => n.name);
+  const fileNames = files.map(f => f!.split('/').pop()!.replace(/\.[^.]+$/, ''));
+
+  const hasIndexFiles = files.some(f => f!.includes('index.'));
+  const hasBarrelExports = nodes.some(n => n.source?.file?.includes('index.') && n.type === 'export');
+
+  const imports = nodes.filter(n => n.type === 'import');
+  const hasNamedImports = imports.length > 0;
+  const hasDefaultImports = imports.length > 0;
+
+  const hasAsyncAwait = functions.some(f => f.signature?.return_type?.includes('Promise'));
+
+  const errorHandlingPatterns = (cas.patterns || []).filter(p =>
+    p.name.toLowerCase().includes('error') || p.name.toLowerCase().includes('exception')
+  );
+
+  const customErrors = classes.filter(c =>
+    c.name.toLowerCase().includes('error') || c.name.toLowerCase().includes('exception')
+  );
+
+  return {
+    naming: {
+      functions: detectPattern(functionNames),
+      classes: detectPattern(classNames),
+      files: detectPattern(fileNames),
+      variables: detectPattern(functions.flatMap(f => f.children || []).slice(0, 20).map(id => {
+        const node = cas.nodes.find(n => n.id === id);
+        return node?.name || '';
+      }).filter(Boolean)),
+      constants: detectPattern(nodes.filter(n => n.type === 'constant' || n.type === 'constant_util').map(n => n.name)),
+    },
+    file_organization: {
+      structure_pattern: hasIndexFiles ? 'feature-based' : 'layer-based',
+      index_files: hasIndexFiles,
+      barrel_exports: hasBarrelExports,
+    },
+    imports: {
+      style: hasNamedImports && hasDefaultImports ? 'mixed' : (hasNamedImports ? 'named' : 'default'),
+      order: ['builtin', 'external', 'internal', 'relative'],
+    },
+    error_handling: {
+      pattern: customErrors.length > 0 ? 'exceptions' : 'try-catch',
+      custom_error_classes: customErrors.slice(0, 5).map(e => ({ name: e.name, usage: 'custom exception' })),
+      example_node_id: errorHandlingPatterns[0]?.instances?.[0],
+    },
+    async_patterns: {
+      preferred: hasAsyncAwait ? 'async-await' : 'promises',
+      error_handling: 'try-catch',
+    },
+  };
+}
+
+export function getModificationGuide(
+  cas: CASOutput,
+  nodeId: string,
+  changeType: 'signature' | 'behavior' | 'delete' | 'add_parameter' | 'rename'
+) {
+  const node = cas.nodes.find(n => n.id === nodeId);
+  if (!node) return { error: `Node not found: ${nodeId}` };
+
+  const changeRisk = (cas.change_risks || []).find(r => r.node_id === nodeId);
+  const callersResult = getCallers(cas, nodeId, 3, 100);
+  const tests = findTests(cas, { nodeId });
+
+  const riskLevel = changeRisk?.risk_level ||
+    (callersResult.total > 20 ? 'high' : (callersResult.total > 5 ? 'medium' : 'low'));
+
+  const criticalPathAffected = (cas.call_chains || []).some(chain =>
+    chain.criticality === 'critical' && chain.call_path?.some(step => step.node_id === nodeId)
+  );
+
+  const mustUpdate: Array<{ node_id: string; name: string; file: string; line?: number; reason: string; suggested_change: string }> = [];
+  const shouldVerify: Array<{ check: string; how: string; automated: boolean }> = [];
+
+  if (changeType === 'signature' || changeType === 'add_parameter' || changeType === 'rename') {
+    for (const caller of callersResult.callers.slice(0, 20)) {
+      const callerNode = cas.nodes.find(n => n.id === caller.node_id);
+      if (callerNode) {
+        mustUpdate.push({
+          node_id: caller.node_id,
+          name: caller.name,
+          file: callerNode.source?.file || 'unknown',
+          line: callerNode.source?.line,
+          reason: changeType === 'rename' ? 'Update reference to new name' : 'Update call to match new signature',
+          suggested_change: changeType === 'rename' ? `Rename reference from ${node.name}` : 'Add/update parameters',
+        });
+      }
+    }
+  }
+
+  if (changeType === 'delete') {
+    for (const caller of callersResult.callers) {
+      const callerNode = cas.nodes.find(n => n.id === caller.node_id);
+      if (callerNode) {
+        mustUpdate.push({
+          node_id: caller.node_id,
+          name: caller.name,
+          file: callerNode.source?.file || 'unknown',
+          line: callerNode.source?.line,
+          reason: 'Remove reference to deleted code',
+          suggested_change: 'Find alternative or remove call',
+        });
+      }
+    }
+  }
+
+  shouldVerify.push({ check: 'No type errors', how: 'Run TypeScript compiler', automated: true });
+  shouldVerify.push({ check: 'All tests pass', how: 'Run test suite', automated: true });
+
+  if (changeType === 'behavior') {
+    shouldVerify.push({ check: 'Behavior change documented', how: 'Update comments/docs', automated: false });
+  }
+
+  const existingTests = tests.suites.map(s => ({
+    test_id: s.file_path,
+    name: s.name,
+    file: s.file_path,
+    covers_this_change: true,
+  }));
+
+  const testsToAdd: Array<{ type: 'unit' | 'integration'; reason: string; similar_test_id?: string }> = [];
+  if (existingTests.length === 0) {
+    testsToAdd.push({ type: 'unit', reason: 'No existing tests for this code' });
+  }
+  if (changeType === 'behavior' && existingTests.length > 0) {
+    testsToAdd.push({ type: 'unit', reason: 'Add test for new behavior', similar_test_id: existingTests[0]?.test_id });
+  }
+
+  const runCommand = tests.suites.length > 0
+    ? `npm test -- ${tests.suites.map(s => s.file_path).join(' ')}`
+    : 'npm test';
+
+  return {
+    risk_level: riskLevel,
+    change_summary: {
+      what_changes: `${changeType} of ${node.type} "${node.name}"`,
+      blast_radius: callersResult.total,
+      critical_path_affected: criticalPathAffected,
+    },
+    must_update: mustUpdate,
+    should_verify: shouldVerify,
+    tests: {
+      existing: existingTests,
+      to_add: testsToAdd,
+      run_command: runCommand,
+    },
+    rollback_considerations: [
+      changeType === 'delete' ? 'Restore from version control if needed' : 'Revert signature changes',
+      'Check for cached/compiled artifacts',
+    ],
+  };
+}
+
+export function getPatternExamples(
+  cas: CASOutput,
+  patternId: string,
+  opts: { variation_id?: string; limit?: number } = {}
+) {
+  const pattern = (cas.patterns || []).find(p => p.id === patternId);
+  if (!pattern) return { error: `Pattern not found: ${patternId}` };
+
+  const limit = opts.limit || 3;
+  let instanceIds: string[] = [];
+
+  if (opts.variation_id) {
+    const variation = pattern.variations?.find(v => v.id === opts.variation_id);
+    if (variation) {
+      instanceIds = variation.instances || [];
+    }
+  } else {
+    instanceIds = pattern.instances || [];
+  }
+
+  const examples = instanceIds.slice(0, limit).map(nodeId => {
+    const node = cas.nodes.find(n => n.id === nodeId);
+    if (!node) return null;
+
+    return {
+      node_id: node.id,
+      name: node.name,
+      file: node.source?.file,
+      line: node.source?.line,
+      code_snippet: node.signature || `${node.type} ${node.name}`,
+      annotations: [] as Array<{ line: number; explanation: string }>,
+      why_exemplary: `Example of ${pattern.name} pattern with ${pattern.confidence} confidence`,
+    };
+  }).filter(Boolean);
+
+  return {
+    pattern: {
+      id: pattern.id,
+      name: pattern.name,
+      description: pattern.description,
+    },
+    examples,
+  };
+}
+
+export function findSimilarCode(
+  cas: CASOutput,
+  opts: {
+    node_id?: string;
+    code_snippet?: string;
+    similarity_type?: 'structural' | 'semantic' | 'both';
+    limit?: number;
+  }
+) {
+  const limit = opts.limit || 10;
+  const similarityType = opts.similarity_type || 'both';
+
+  let targetNode: CASNode | undefined;
+  if (opts.node_id) {
+    targetNode = cas.nodes.find(n => n.id === opts.node_id);
+    if (!targetNode) return { error: `Node not found: ${opts.node_id}` };
+  }
+
+  if (!targetNode && !opts.code_snippet) {
+    return { error: 'Either node_id or code_snippet required' };
+  }
+
+  const targetType = targetNode?.type;
+
+  const candidates = cas.nodes.filter(n => {
+    if (targetNode && n.id === targetNode.id) return false;
+    if (similarityType === 'structural' || similarityType === 'both') {
+      if (targetType && n.type !== targetType) return false;
+    }
+    return true;
+  });
+
+  const scored = candidates.map(n => {
+    let score = 0;
+    const reasons: string[] = [];
+    const differences: string[] = [];
+
+    if (n.type === targetType) {
+      score += 0.3;
+      reasons.push('Same type');
+    } else {
+      differences.push(`Different type: ${n.type} vs ${targetType}`);
+    }
+
+    if (targetNode?.parent && n.parent === targetNode.parent) {
+      score += 0.2;
+      reasons.push('Same parent');
+    }
+
+    const targetPatterns = (cas.patterns || []).filter(p => p.instances?.includes(targetNode?.id || ''));
+    const nodePatterns = (cas.patterns || []).filter(p => p.instances?.includes(n.id));
+    const sharedPatterns = targetPatterns.filter(tp => nodePatterns.some(np => np.id === tp.id));
+    if (sharedPatterns.length > 0) {
+      score += 0.2 * sharedPatterns.length;
+      reasons.push(`Shares patterns: ${sharedPatterns.map(p => p.name).join(', ')}`);
+    }
+
+    const targetDecorators = (cas.decorators || []).filter(d => d.target_node === targetNode?.id).map(d => d.decorator_info.name);
+    const nodeDecorators = (cas.decorators || []).filter(d => d.target_node === n.id).map(d => d.decorator_info.name);
+    const sharedDecorators = targetDecorators.filter(d => nodeDecorators.includes(d));
+    if (sharedDecorators.length > 0) {
+      score += 0.15 * sharedDecorators.length;
+      reasons.push(`Same decorators: ${sharedDecorators.join(', ')}`);
+    }
+
+    if (similarityType === 'semantic' || similarityType === 'both') {
+      const targetWords = splitCamelCase(targetNode?.name || '');
+      const nodeWords = splitCamelCase(n.name);
+      const sharedWords = targetWords.filter(w => nodeWords.includes(w));
+      if (sharedWords.length > 0) {
+        score += 0.1 * sharedWords.length;
+        reasons.push(`Similar naming: ${sharedWords.join(', ')}`);
+      }
+    }
+
+    return { node: n, score, reasons, differences };
+  });
+
+  scored.sort((a, b) => b.score - a.score);
+
+  const similar = scored.slice(0, limit).filter(s => s.score > 0.2).map(s => ({
+    node_id: s.node.id,
+    name: s.node.name,
+    file: s.node.source?.file,
+    line: s.node.source?.line,
+    similarity_score: Math.min(s.score, 1),
+    similarity_reasons: s.reasons,
+    differences: s.differences,
+    reuse_recommendation: s.score > 0.7 ? 'extract_shared' as const :
+      (s.score > 0.4 ? 'copy_pattern' as const : 'reference_only' as const),
+  }));
+
+  return {
+    query: { node_id: opts.node_id, snippet_hash: opts.code_snippet ? hashCode(opts.code_snippet) : undefined },
+    similar,
+  };
+}
+
+function hashCode(str: string): string {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return Math.abs(hash).toString(16);
+}
+
+interface CollectedComment {
+  type: string;
+  text: string;
+  purpose?: string;
+  file: string;
+  line: number;
+  node_id: string;
+  node_name: string;
+}
+
+export function getComments(
+  cas: CASOutput,
+  opts: {
+    scope: 'node' | 'file' | 'module' | 'all';
+    node_id?: string;
+    file_path?: string;
+    types?: Array<'todo' | 'fixme' | 'hack' | 'note' | 'warning'>;
+    limit?: number;
+  }
+) {
+  const maxResults = opts.limit || 50;
+  const types = opts.types || ['todo', 'fixme', 'hack', 'note', 'warning'];
+
+  const allComments: CollectedComment[] = [];
+
+  for (const node of cas.nodes) {
+    if (node.comments) {
+      for (const comment of node.comments) {
+        allComments.push({
+          type: comment.type,
+          text: comment.text,
+          purpose: comment.purpose,
+          file: comment.location.file,
+          line: comment.location.line,
+          node_id: node.id,
+          node_name: node.name,
+        });
+      }
+    }
+
+    if (node.todos) {
+      for (const todo of node.todos) {
+        allComments.push({
+          type: todo.type,
+          text: todo.text,
+          purpose: todo.type,
+          file: todo.location?.file || node.source?.file || 'unknown',
+          line: todo.location?.line || node.source?.line || 0,
+          node_id: node.id,
+          node_name: node.name,
+        });
+      }
+    }
+  }
+
+  let comments = allComments;
+
+  if (opts.scope === 'node' && opts.node_id) {
+    comments = comments.filter(c => c.node_id === opts.node_id);
+  } else if (opts.scope === 'file' && opts.file_path) {
+    const normalizedPath = opts.file_path.replace(/\\/g, '/');
+    comments = comments.filter(c =>
+      c.file.replace(/\\/g, '/').endsWith(normalizedPath)
+    );
+  } else if (opts.scope === 'module' && opts.node_id) {
+    const moduleNode = cas.nodes.find(n => n.id === opts.node_id);
+    if (!moduleNode) return { error: `Module not found: ${opts.node_id}` };
+
+    const childIds = new Set(moduleNode.children || []);
+    childIds.add(opts.node_id);
+    comments = comments.filter(c => childIds.has(c.node_id));
+  }
+
+  comments = comments.filter(c => {
+    const commentPurpose = (c.purpose || c.type).toLowerCase();
+    const commentText = c.text.toLowerCase();
+    return types.some(t =>
+      commentPurpose.includes(t) ||
+      commentText.includes(t.toUpperCase()) ||
+      commentText.startsWith(t.toUpperCase() + ':')
+    );
+  });
+
+  const byType: Record<string, number> = {};
+  const byPurpose: Record<string, number> = {};
+
+  for (const c of comments) {
+    byType[c.type] = (byType[c.type] || 0) + 1;
+    if (c.purpose) {
+      byPurpose[c.purpose] = (byPurpose[c.purpose] || 0) + 1;
+    }
+  }
+
+  return {
+    total: comments.length,
+    by_type: byType,
+    by_purpose: byPurpose,
+    comments: comments.slice(0, maxResults).map(c => ({
+      type: c.type,
+      text: c.text,
+      purpose: c.purpose,
+      file: c.file,
+      line: c.line,
+      node_id: c.node_id,
+      node_name: c.node_name,
+    })),
+  };
+}
+
+export function getErrorContracts(
+  cas: CASOutput,
+  nodeId: string,
+  direction: 'throws' | 'catches' | 'both' = 'both'
+) {
+  const node = cas.nodes.find(n => n.id === nodeId);
+  if (!node) return { error: `Node not found: ${nodeId}` };
+
+  const throws: Array<{ error_type: string; conditions?: string; documented: boolean }> = [];
+  const caughtBy: Array<{ caller_id: string; caller_name: string; handling: 'caught' | 'propagated' | 'ignored' }> = [];
+
+  if (direction === 'throws' || direction === 'both') {
+    if (node.signature?.throws) {
+      for (const errorType of node.signature.throws) {
+        throws.push({
+          error_type: errorType,
+          documented: true,
+        });
+      }
+    }
+
+    const methodCalls = (cas.method_calls || []).filter(mc =>
+      mc.caller_node === nodeId &&
+      (mc.call_details.method_name.toLowerCase().includes('throw') ||
+       mc.call_details.method_name.toLowerCase() === 'error')
+    );
+    for (const mc of methodCalls) {
+      if (!throws.some(t => t.error_type === mc.call_details.method_name)) {
+        throws.push({
+          error_type: mc.call_details.method_name,
+          documented: false,
+        });
+      }
+    }
+
+    const constructorCalls = (cas.method_calls || []).filter(mc =>
+      mc.caller_node === nodeId && mc.call_details.call_type === 'constructor'
+    );
+    for (const mc of constructorCalls) {
+      if (mc.call_details.method_name.toLowerCase().includes('error') ||
+          mc.call_details.method_name.toLowerCase().includes('exception')) {
+        if (!throws.some(t => t.error_type === mc.call_details.method_name)) {
+          throws.push({
+            error_type: mc.call_details.method_name,
+            documented: false,
+          });
+        }
+      }
+    }
+  }
+
+  if (direction === 'catches' || direction === 'both') {
+    const callers = getCallers(cas, nodeId, 2, 50);
+
+    for (const caller of callers.callers) {
+      const callerNode = cas.nodes.find(n => n.id === caller.node_id);
+      if (!callerNode) continue;
+
+      const hasTryCatch = (cas.patterns || []).some(p =>
+        p.name.toLowerCase().includes('try-catch') &&
+        p.instances?.includes(caller.node_id)
+      );
+
+      caughtBy.push({
+        caller_id: caller.node_id,
+        caller_name: caller.name,
+        handling: hasTryCatch ? 'caught' : 'propagated',
+      });
+    }
+  }
+
+  const uncaughtPaths: Array<{ entry_point_id: string; entry_point_name: string; path_description: string }> = [];
+
+  if (throws.length > 0) {
+    const chains = (cas.call_chains || []).filter(chain =>
+      chain.call_path?.some(step => step.node_id === nodeId)
+    );
+
+    for (const chain of chains.slice(0, 5)) {
+      const allHandled = caughtBy.some(c => c.handling === 'caught');
+      if (!allHandled) {
+        const entryPointId = chain.entry_point.entry_point_id || chain.entry_point.node_id;
+        const entryPointData = (cas.entry_points || []).find(ep => ep.id === entryPointId);
+        uncaughtPaths.push({
+          entry_point_id: entryPointId,
+          entry_point_name: entryPointData?.name || chain.entry_point.method_name || 'unknown',
+          path_description: `Error may propagate to ${entryPointData?.type || 'unknown'} entry point`,
+        });
+      }
+    }
+  }
+
+  return {
+    node: { id: node.id, name: node.name },
+    throws,
+    caught_by: caughtBy,
+    uncaught_paths: uncaughtPaths,
+  };
+}
+
+export function getFrameworkGuidance(
+  cas: CASOutput,
+  opts: {
+    framework?: string;
+    topic?: 'routing' | 'state' | 'data-fetching' | 'testing' | 'security';
+  } = {}
+) {
+  const frameworks = cas.system?.technologies?.frameworks || [];
+  const targetFramework = opts.framework
+    ? frameworks.find(f => f.name.toLowerCase().includes(opts.framework!.toLowerCase()))
+    : frameworks[0];
+
+  if (!targetFramework) {
+    return { error: opts.framework ? `Framework not found: ${opts.framework}` : 'No frameworks detected' };
+  }
+
+  const frameworkPatterns = (cas.patterns || []).filter(p =>
+    p.name.toLowerCase().includes(targetFramework.name.toLowerCase()) ||
+    p.variations?.some(v => v.implementation?.toLowerCase().includes(targetFramework.name.toLowerCase()))
+  );
+
+  const detectedPatterns = frameworkPatterns.map(p => ({
+    pattern: p.name,
+    usage_count: p.instances?.length || 0,
+    is_recommended: p.type !== 'anti-pattern',
+  }));
+
+  const recommendations: Array<{
+    topic: string;
+    current_approach: string;
+    recommended_approach: string;
+    example_node_id?: string;
+    migration_effort: 'trivial' | 'moderate' | 'significant';
+  }> = [];
+
+  const antiPatterns = (cas.patterns || []).filter(p =>
+    p.type === 'anti-pattern' &&
+    (p.name.toLowerCase().includes(targetFramework.name.toLowerCase()) ||
+     p.instances?.some(id => {
+       const node = cas.nodes.find(n => n.id === id);
+       return node?.tags?.includes(targetFramework.name.toLowerCase());
+     }))
+  );
+
+  const antiPatternsFound = antiPatterns.map(p => ({
+    pattern: p.name,
+    locations: (p.instances || []).slice(0, 5),
+    suggested_fix: p.description || 'Refactor to follow framework best practices',
+  }));
+
+  if (opts.topic === 'routing' || !opts.topic) {
+    const routeCount = cas.route_table?.length || 0;
+    if (routeCount > 0) {
+      const routes = cas.route_table || [];
+      const hasAuth = routes.some((r: any) => r.auth || r.guards?.length > 0);
+      if (!hasAuth && routeCount > 5) {
+        recommendations.push({
+          topic: 'routing',
+          current_approach: 'Routes without authentication guards',
+          recommended_approach: 'Add authentication middleware or guards to protected routes',
+          migration_effort: 'moderate',
+        });
+      }
+    }
+  }
+
+  if (opts.topic === 'testing' || !opts.topic) {
+    const testSummary = cas.test_summary;
+    if (testSummary) {
+      const coverage = testSummary.coverage?.overall_percentage || 0;
+      if (coverage < 50) {
+        recommendations.push({
+          topic: 'testing',
+          current_approach: `${coverage}% test coverage`,
+          recommended_approach: 'Increase test coverage to at least 70%',
+          migration_effort: 'significant',
+        });
+      }
+    }
+  }
+
+  return {
+    framework: {
+      name: targetFramework.name,
+      version: targetFramework.version,
+    },
+    detected_patterns: detectedPatterns,
+    recommendations,
+    anti_patterns_found: antiPatternsFound,
+  };
+}
+
+export function getUsageExamples(
+  cas: CASOutput,
+  nodeId: string,
+  opts: { limit?: number; include_tests?: boolean } = {}
+) {
+  const node = cas.nodes.find(n => n.id === nodeId);
+  if (!node) return { error: `Node not found: ${nodeId}` };
+
+  const limit = opts.limit || 10;
+  const includeTests = opts.include_tests || false;
+
+  const callers = getCallers(cas, nodeId, 1, 100);
+
+  let usageNodes = callers.callers.map(c => cas.nodes.find(n => n.id === c.node_id)).filter(Boolean) as CASNode[];
+
+  if (!includeTests) {
+    usageNodes = usageNodes.filter(n =>
+      !n.source?.file?.includes('.test.') &&
+      !n.source?.file?.includes('.spec.') &&
+      !n.source?.file?.includes('__tests__')
+    );
+  }
+
+  const usagePatterns: Record<string, { count: number; locations: Array<{ file: string; line: number; snippet: string }> }> = {};
+
+  for (const usageNode of usageNodes.slice(0, 50)) {
+    const patternKey = usageNode.type;
+    if (!usagePatterns[patternKey]) {
+      usagePatterns[patternKey] = { count: 0, locations: [] };
+    }
+    usagePatterns[patternKey].count++;
+    if (usagePatterns[patternKey].locations.length < 3) {
+      usagePatterns[patternKey].locations.push({
+        file: usageNode.source?.file || 'unknown',
+        line: usageNode.source?.line || 0,
+        snippet: `${usageNode.name} calls ${node.name}`,
+      });
+    }
+  }
+
+  const patterns = Object.entries(usagePatterns)
+    .map(([pattern, data]) => ({
+      pattern_description: `Used by ${pattern}`,
+      frequency: data.count,
+      example_locations: data.locations,
+    }))
+    .sort((a, b) => b.frequency - a.frequency)
+    .slice(0, 5);
+
+  return {
+    node: { id: node.id, name: node.name, type: node.type },
+    usage_count: callers.total,
+    usage_patterns: patterns,
+    common_mistakes: [],
+  };
+}
+
+export function getConfiguration(
+  cas: CASOutput,
+  opts: {
+    scope?: 'all' | 'runtime' | 'build' | 'test';
+    affecting_node_id?: string;
+  } = {}
+) {
+  const scope = opts.scope || 'all';
+  const config = cas.configuration || {};
+
+  const configNodes = cas.nodes.filter(n =>
+    n.type === 'config' ||
+    n.type === 'configuration' ||
+    n.name.toLowerCase().includes('config') ||
+    n.source?.file?.includes('config')
+  );
+
+  let filteredNodes = configNodes;
+
+  if (scope === 'runtime') {
+    filteredNodes = configNodes.filter(n =>
+      !n.source?.file?.includes('test') &&
+      !n.source?.file?.includes('jest') &&
+      !n.source?.file?.includes('webpack') &&
+      !n.source?.file?.includes('vite') &&
+      !n.source?.file?.includes('rollup')
+    );
+  } else if (scope === 'build') {
+    filteredNodes = configNodes.filter(n =>
+      n.source?.file?.includes('webpack') ||
+      n.source?.file?.includes('vite') ||
+      n.source?.file?.includes('rollup') ||
+      n.source?.file?.includes('tsconfig') ||
+      n.source?.file?.includes('babel')
+    );
+  } else if (scope === 'test') {
+    filteredNodes = configNodes.filter(n =>
+      n.source?.file?.includes('test') ||
+      n.source?.file?.includes('jest') ||
+      n.source?.file?.includes('vitest')
+    );
+  }
+
+  if (opts.affecting_node_id) {
+    const targetNode = cas.nodes.find(n => n.id === opts.affecting_node_id);
+    if (!targetNode) return { error: `Node not found: ${opts.affecting_node_id}` };
+
+    const targetFile = targetNode.source?.file;
+    const relatedConfigs = filteredNodes.filter(cn => {
+      const configEdges = cas.edges.filter(e =>
+        (e.source === cn.id && e.target === opts.affecting_node_id) ||
+        (e.target === cn.id && e.source === opts.affecting_node_id)
+      );
+      return configEdges.length > 0;
+    });
+
+    if (relatedConfigs.length > 0) {
+      filteredNodes = relatedConfigs;
+    }
+  }
+
+  return {
+    scope,
+    config_files: [...new Set(filteredNodes.map(n => n.source?.file).filter(Boolean))],
+    config_nodes: filteredNodes.slice(0, 20).map(n => ({
+      id: n.id,
+      name: n.name,
+      type: n.type,
+      file: n.source?.file,
+      line: n.source?.line,
+    })),
+    environment_variables: config.environment_variables || [],
+    feature_flags: config.feature_flags || [],
+  };
+}
+
+export function getLevel(
+  cas: CASOutput,
+  level: number,
+  opts: {
+    limit?: number;
+    offset?: number;
+    edge_limit?: number;
+    include_edges?: boolean;
+    include_entry_exit?: boolean;
+  } = {}
+) {
   const levelDef = cas.progressive_levels?.level_definitions?.find(
     d => d.level === level
   ) || null;
 
-  const nodes = cas.nodes.filter(n => n.level === level);
+  const allNodes = cas.nodes.filter(n => n.level === level);
+  const totalNodes = allNodes.length;
+  const limit = opts.limit ?? 50;
+  const offset = opts.offset ?? 0;
+  const nodes = allNodes.slice(offset, offset + limit);
   const nodeIds = new Set(nodes.map(n => n.id));
 
-  const edges = cas.edges.filter(
-    e => nodeIds.has(e.source) || nodeIds.has(e.target)
-  );
+  const nodeResponse = nodes.map(n => ({
+    id: n.id,
+    name: n.name,
+    type: n.type,
+    qualified_name: n.qualified_name,
+    category: n.category,
+    file: n.source?.file,
+    line: n.source?.line,
+    parent: n.parent,
+    children_count: n.children?.length ?? 0,
+  }));
 
-  const crossLevelEdges = edges.filter(
-    e => !nodeIds.has(e.source) || !nodeIds.has(e.target)
-  ).map(e => {
-    const externalId = nodeIds.has(e.source) ? e.target : e.source;
-    const externalNode = cas.nodes.find(n => n.id === externalId);
-    return {
-      ...trimEdge(e),
-      external_node: externalNode ? {
-        id: externalNode.id,
-        name: externalNode.name,
-        type: externalNode.type,
-        level: externalNode.level,
-        level_name: externalNode.level_name,
-      } : null,
-    };
-  });
+  let internalEdges: ReturnType<typeof trimEdge>[] = [];
+  let crossLevelEdges: Array<ReturnType<typeof trimEdge> & { external_id: string }> = [];
+  let nodeRefs: Record<string, { name: string; type: string; level: number }> = {};
+  let totalInternalEdges = 0;
+  let totalCrossLevelEdges = 0;
 
-  const internalEdges = edges.filter(
-    e => nodeIds.has(e.source) && nodeIds.has(e.target)
-  ).map(trimEdge);
+  if (opts.include_edges !== false) {
+    const edgeLimit = opts.edge_limit ?? 200;
 
-  const entryPoints = (cas.entry_points || []).filter(ep =>
-    ep.source_node && nodeIds.has(ep.source_node) ||
-    ep.handler?.node_id && nodeIds.has(ep.handler.node_id)
-  );
+    const relevantEdges = cas.edges.filter(
+      e => nodeIds.has(e.source) || nodeIds.has(e.target)
+    );
 
-  const exitPoints = (cas.exit_points || []).filter(ep =>
-    ep.source_node && nodeIds.has(ep.source_node)
-  );
+    const internal = relevantEdges.filter(
+      e => nodeIds.has(e.source) && nodeIds.has(e.target)
+    );
+    const crossLevel = relevantEdges.filter(
+      e => !nodeIds.has(e.source) || !nodeIds.has(e.target)
+    );
+
+    totalInternalEdges = internal.length;
+    totalCrossLevelEdges = crossLevel.length;
+
+    internalEdges = internal.slice(0, edgeLimit).map(trimEdge);
+
+    const remainingLimit = Math.max(0, edgeLimit - internalEdges.length);
+    crossLevelEdges = crossLevel.slice(0, remainingLimit).map(e => {
+      const externalId = nodeIds.has(e.source) ? e.target : e.source;
+      const externalNode = cas.nodes.find(n => n.id === externalId);
+
+      if (externalNode && !nodeRefs[externalId]) {
+        nodeRefs[externalId] = {
+          name: externalNode.name,
+          type: externalNode.type,
+          level: externalNode.level ?? -1,
+        };
+      }
+
+      return {
+        ...trimEdge(e),
+        external_id: externalId,
+      };
+    });
+  }
+
+  let entryPoints: Array<{ id: string; type: string; name: string; source_node?: string }> = [];
+  let exitPoints: Array<{ id: string; type: string; name: string; source_node?: string }> = [];
+  let totalEntryPoints = 0;
+  let totalExitPoints = 0;
+
+  if (opts.include_entry_exit !== false) {
+    const epLimit = 25;
+
+    const filteredEntry = (cas.entry_points || []).filter(ep =>
+      (ep.source_node && nodeIds.has(ep.source_node)) ||
+      (ep.handler?.node_id && nodeIds.has(ep.handler.node_id))
+    );
+    totalEntryPoints = filteredEntry.length;
+    entryPoints = filteredEntry.slice(0, epLimit).map(ep => ({
+      id: ep.id,
+      type: ep.type,
+      name: ep.name,
+      source_node: ep.source_node,
+    }));
+
+    const filteredExit = (cas.exit_points || []).filter(ep =>
+      ep.source_node && nodeIds.has(ep.source_node)
+    );
+    totalExitPoints = filteredExit.length;
+    exitPoints = filteredExit.slice(0, epLimit).map(ep => ({
+      id: ep.id,
+      type: ep.type,
+      name: typeof ep.name === 'string' ? ep.name : (ep.target || 'unknown'),
+      source_node: ep.source_node,
+    }));
+  }
 
   return {
     level,
-    definition: levelDef,
-    total_levels: cas.progressive_levels?.total_levels || 0,
+    definition: levelDef ? {
+      name: levelDef.name,
+      description: levelDef.description,
+    } : null,
+    pagination: {
+      total_nodes: totalNodes,
+      offset,
+      limit,
+      has_more: offset + limit < totalNodes,
+    },
+    edges_summary: opts.include_edges !== false ? {
+      internal_count: totalInternalEdges,
+      cross_level_count: totalCrossLevelEdges,
+      internal_returned: internalEdges.length,
+      cross_level_returned: crossLevelEdges.length,
+    } : null,
+    entry_exit_summary: opts.include_entry_exit !== false ? {
+      entry_count: totalEntryPoints,
+      exit_count: totalExitPoints,
+      entry_returned: entryPoints.length,
+      exit_returned: exitPoints.length,
+    } : null,
     available_levels: cas.progressive_levels?.level_definitions?.map(d => ({
       level: d.level,
       name: d.name,
       node_count: d.node_count,
     })) || [],
-    nodes: nodes.map(n => ({
-      id: n.id,
-      name: n.name,
-      type: n.type,
-      qualified_name: n.qualified_name,
-      category: n.category,
-      level: n.level,
-      level_name: n.level_name,
-      file: n.source?.file,
-      line: n.source?.line,
-      description: n.description,
-      parent: n.parent,
-      children: n.children,
-      tags: n.tags,
-    })),
-    internal_edges: internalEdges,
-    cross_level_edges: crossLevelEdges,
-    entry_points: entryPoints,
-    exit_points: exitPoints,
+    nodes: nodeResponse,
+    internal_edges: internalEdges.length > 0 ? internalEdges : undefined,
+    cross_level_edges: crossLevelEdges.length > 0 ? crossLevelEdges : undefined,
+    node_refs: Object.keys(nodeRefs).length > 0 ? nodeRefs : undefined,
+    entry_points: entryPoints.length > 0 ? entryPoints : undefined,
+    exit_points: exitPoints.length > 0 ? exitPoints : undefined,
   };
+}
+
+export async function getChangesSince(
+  projectPath: string,
+  since: string,
+  opts: { limit?: number } = {}
+): Promise<ChangeHistoryEntry[]> {
+  return loadChangeHistory(projectPath, {
+    since,
+    limit: opts.limit || 50,
+  });
+}
+
+export async function getChangesBetween(
+  projectPath: string,
+  from: string,
+  to: string,
+  opts: { limit?: number } = {}
+): Promise<ChangeHistoryEntry[]> {
+  return loadChangeHistory(projectPath, {
+    since: from,
+    until: to,
+    limit: opts.limit || 50,
+  });
+}
+
+export async function getChangesForNode(
+  cas: CASOutput,
+  projectPath: string,
+  nodeId: string,
+  opts: {
+    since?: string;
+    includeCallers?: boolean;
+    includeCallees?: boolean;
+    depth?: number;
+    limit?: number;
+  } = {}
+): Promise<ChangeHistoryEntry[]> {
+  const allHistory = await loadChangeHistory(projectPath, {
+    since: opts.since,
+    limit: 500,
+  });
+
+  const relevantNodeIds = new Set<string>([nodeId]);
+
+  if (opts.includeCallers || opts.includeCallees) {
+    const maxDepth = opts.depth || 1;
+    const nodeMap = new Map(cas.nodes.map(n => [n.id, n]));
+
+    for (let d = 0; d < maxDepth; d++) {
+      const currentIds = Array.from(relevantNodeIds);
+      for (const id of currentIds) {
+        for (const edge of cas.edges) {
+          if (opts.includeCallers && edge.target === id && edge.type === 'calls') {
+            relevantNodeIds.add(edge.source);
+          }
+          if (opts.includeCallees && edge.source === id && edge.type === 'calls') {
+            relevantNodeIds.add(edge.target);
+          }
+        }
+      }
+    }
+  }
+
+  const filteredHistory = allHistory.filter(entry => {
+    for (const nodeChange of entry.changes.nodes) {
+      if (relevantNodeIds.has(nodeChange.nodeId)) {
+        return true;
+      }
+    }
+    return false;
+  });
+
+  return filteredHistory.slice(0, opts.limit || 25);
+}
+
+export async function getChangesForFile(
+  cas: CASOutput,
+  projectPath: string,
+  filePath: string,
+  opts: {
+    since?: string;
+    includeImporters?: boolean;
+    includeImported?: boolean;
+    limit?: number;
+  } = {}
+): Promise<ChangeHistoryEntry[]> {
+  const allHistory = await loadChangeHistory(projectPath, {
+    since: opts.since,
+    limit: 500,
+  });
+
+  const relevantFiles = new Set<string>([filePath]);
+
+  if (opts.includeImporters || opts.includeImported) {
+    for (const node of cas.nodes) {
+      const nodeFile = node.source?.file;
+      if (!nodeFile) continue;
+
+      if (opts.includeImported && nodeFile === filePath) {
+        const imports = (node.metadata as Record<string, unknown>)?.imports;
+        if (Array.isArray(imports)) {
+          for (const imp of imports) {
+            if (typeof imp === 'string') relevantFiles.add(imp);
+          }
+        }
+      }
+
+      if (opts.includeImporters) {
+        const imports = (node.metadata as Record<string, unknown>)?.imports;
+        if (Array.isArray(imports) && imports.includes(filePath)) {
+          relevantFiles.add(nodeFile);
+        }
+      }
+    }
+  }
+
+  const filteredHistory = allHistory.filter(entry => {
+    for (const fileChange of entry.changes.files) {
+      if (relevantFiles.has(fileChange.path)) {
+        return true;
+      }
+    }
+    return false;
+  });
+
+  return filteredHistory.slice(0, opts.limit || 25);
+}
+
+export async function getChangesForEntryPoint(
+  cas: CASOutput,
+  projectPath: string,
+  entryPointId: string,
+  opts: {
+    since?: string;
+    includeFullChain?: boolean;
+    limit?: number;
+  } = {}
+): Promise<ChangeHistoryEntry[]> {
+  const ep = (cas.entry_points || []).find(e => e.id === entryPointId);
+  if (!ep) return [];
+
+  const relevantNodeIds = new Set<string>();
+
+  if (ep.handler?.node_id) {
+    relevantNodeIds.add(ep.handler.node_id);
+  }
+
+  if (opts.includeFullChain && cas.call_chains) {
+    for (const chain of cas.call_chains) {
+      if (chain.entry_point?.entry_point_id === entryPointId ||
+          chain.entry_point?.node_id === ep.handler?.node_id) {
+        for (const step of chain.call_path) {
+          relevantNodeIds.add(step.node_id);
+        }
+      }
+    }
+  }
+
+  const allHistory = await loadChangeHistory(projectPath, {
+    since: opts.since,
+    limit: 500,
+  });
+
+  const filteredHistory = allHistory.filter(entry => {
+    for (const nodeChange of entry.changes.nodes) {
+      if (relevantNodeIds.has(nodeChange.nodeId)) {
+        return true;
+      }
+    }
+    return false;
+  });
+
+  return filteredHistory.slice(0, opts.limit || 25);
+}
+
+export async function getChangeSummary(
+  projectPath: string,
+  opts: {
+    since?: string;
+    until?: string;
+    groupBy: 'file' | 'module' | 'author' | 'intent' | 'day' | 'week';
+  }
+): Promise<ChangeAggregate[]> {
+  const history = await loadChangeHistory(projectPath, {
+    since: opts.since,
+    until: opts.until,
+    limit: 1000,
+  });
+
+  const groups = new Map<string, {
+    changes: number;
+    filesChanged: Set<string>;
+    nodesAdded: number;
+    nodesModified: number;
+    nodesDeleted: number;
+    linesAdded: number;
+    linesRemoved: number;
+    risks: string[];
+  }>();
+
+  for (const entry of history) {
+    let key: string;
+    let label: string;
+
+    switch (opts.groupBy) {
+      case 'file': {
+        for (const fc of entry.changes.files) {
+          key = fc.path;
+          label = fc.path;
+          const group = groups.get(key) || createEmptyGroup();
+          group.changes++;
+          group.filesChanged.add(fc.path);
+          group.linesAdded += fc.linesAdded;
+          group.linesRemoved += fc.linesRemoved;
+          group.risks.push(entry.impact.riskLevel);
+          groups.set(key, group);
+        }
+        continue;
+      }
+      case 'author':
+        key = entry.author || 'unknown';
+        label = entry.author || 'Unknown Author';
+        break;
+      case 'intent':
+        key = entry.intent.type;
+        label = entry.intent.type.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        break;
+      case 'day': {
+        const date = new Date(entry.timestamp);
+        key = date.toISOString().split('T')[0];
+        label = key;
+        break;
+      }
+      case 'week': {
+        const date = new Date(entry.timestamp);
+        const weekStart = new Date(date);
+        weekStart.setDate(date.getDate() - date.getDay());
+        key = weekStart.toISOString().split('T')[0];
+        label = `Week of ${key}`;
+        break;
+      }
+      case 'module':
+      default: {
+        const firstFile = entry.changes.files[0]?.path || 'unknown';
+        const parts = firstFile.split('/');
+        key = parts.length > 1 ? parts.slice(0, 2).join('/') : parts[0];
+        label = key;
+        break;
+      }
+    }
+
+    if (opts.groupBy !== 'file') {
+      const group = groups.get(key) || createEmptyGroup();
+      group.changes++;
+      for (const fc of entry.changes.files) {
+        group.filesChanged.add(fc.path);
+        group.linesAdded += fc.linesAdded;
+        group.linesRemoved += fc.linesRemoved;
+      }
+      for (const nc of entry.changes.nodes) {
+        if (nc.changeType === 'added') group.nodesAdded++;
+        else if (nc.changeType === 'modified') group.nodesModified++;
+        else if (nc.changeType === 'deleted') group.nodesDeleted++;
+      }
+      group.risks.push(entry.impact.riskLevel);
+      groups.set(key, { ...group, label } as any);
+    }
+  }
+
+  const results: ChangeAggregate[] = [];
+  for (const [key, group] of groups) {
+    const avgRisk = calculateAvgRisk(group.risks);
+    const maxRisk = calculateMaxRisk(group.risks);
+    const criticalChanges = group.risks.filter(r => r === 'critical').length;
+
+    results.push({
+      key,
+      label: (group as any).label || key,
+      counts: {
+        changes: group.changes,
+        filesChanged: group.filesChanged.size,
+        nodesAdded: group.nodesAdded,
+        nodesModified: group.nodesModified,
+        nodesDeleted: group.nodesDeleted,
+        linesAdded: group.linesAdded,
+        linesRemoved: group.linesRemoved,
+      },
+      impact: {
+        avgRisk,
+        maxRisk,
+        criticalChanges,
+      },
+      trend: 'stable',
+      velocity: group.changes,
+    });
+  }
+
+  return results.sort((a, b) => b.counts.changes - a.counts.changes);
+}
+
+function createEmptyGroup() {
+  return {
+    changes: 0,
+    filesChanged: new Set<string>(),
+    nodesAdded: 0,
+    nodesModified: 0,
+    nodesDeleted: 0,
+    linesAdded: 0,
+    linesRemoved: 0,
+    risks: [] as string[],
+  };
+}
+
+function calculateAvgRisk(risks: string[]): number {
+  if (risks.length === 0) return 0;
+  const riskValues: Record<string, number> = { low: 1, medium: 2, high: 3, critical: 4 };
+  const sum = risks.reduce((acc, r) => acc + (riskValues[r] || 0), 0);
+  return sum / risks.length;
+}
+
+function calculateMaxRisk(risks: string[]): 'low' | 'medium' | 'high' | 'critical' {
+  if (risks.includes('critical')) return 'critical';
+  if (risks.includes('high')) return 'high';
+  if (risks.includes('medium')) return 'medium';
+  return 'low';
+}
+
+export async function getHotSpots(
+  cas: CASOutput,
+  projectPath: string,
+  opts: {
+    since?: string;
+    limit?: number;
+    metric: 'change-count' | 'churn-lines' | 'bug-fix-rate';
+  }
+): Promise<HeatMapData> {
+  const history = await loadChangeHistory(projectPath, {
+    since: opts.since,
+    limit: 1000,
+  });
+
+  const fileStats = new Map<string, {
+    changeCount: number;
+    linesChurned: number;
+    bugFixes: number;
+    totalChanges: number;
+  }>();
+
+  for (const entry of history) {
+    const isBugFix = entry.intent.type === 'bug-fix';
+    for (const fc of entry.changes.files) {
+      const stats = fileStats.get(fc.path) || {
+        changeCount: 0,
+        linesChurned: 0,
+        bugFixes: 0,
+        totalChanges: 0,
+      };
+      stats.changeCount++;
+      stats.linesChurned += fc.linesAdded + fc.linesRemoved;
+      stats.totalChanges++;
+      if (isBugFix) stats.bugFixes++;
+      fileStats.set(fc.path, stats);
+    }
+  }
+
+  const data: Array<{ id: string; value: number; raw: number; label: string }> = [];
+
+  for (const [filePath, stats] of fileStats) {
+    let raw: number;
+    switch (opts.metric) {
+      case 'change-count':
+        raw = stats.changeCount;
+        break;
+      case 'churn-lines':
+        raw = stats.linesChurned;
+        break;
+      case 'bug-fix-rate':
+        raw = stats.totalChanges > 0 ? stats.bugFixes / stats.totalChanges : 0;
+        break;
+    }
+    data.push({ id: filePath, value: 0, raw, label: filePath.split('/').pop() || filePath });
+  }
+
+  data.sort((a, b) => b.raw - a.raw);
+
+  const maxRaw = data.length > 0 ? Math.max(...data.map(d => d.raw)) : 1;
+  const minRaw = data.length > 0 ? Math.min(...data.map(d => d.raw)) : 0;
+  const range = maxRaw - minRaw || 1;
+
+  for (const d of data) {
+    d.value = (d.raw - minRaw) / range;
+  }
+
+  const limit = opts.limit || 20;
+  const topData = data.slice(0, limit);
+
+  return {
+    type: opts.metric === 'change-count' ? 'churn'
+        : opts.metric === 'churn-lines' ? 'churn'
+        : 'bugs',
+    resolution: 'file',
+    data: topData,
+    scale: {
+      min: minRaw,
+      max: maxRaw,
+      median: data.length > 0 ? data[Math.floor(data.length / 2)].raw : 0,
+    },
+    hotSpots: topData.slice(0, 5).map(d => ({
+      id: d.id,
+      value: d.raw,
+      reason: opts.metric === 'change-count' ? `${d.raw} changes`
+            : opts.metric === 'churn-lines' ? `${d.raw} lines churned`
+            : `${(d.raw * 100).toFixed(1)}% bug fix rate`,
+    })),
+  };
+}
+
+export async function getAnalysisAt(
+  projectPath: string,
+  timestamp: string
+): Promise<CASOutput | null> {
+  return getStorageAnalysisAt(projectPath, timestamp);
+}
+
+export async function getAnalysisSnapshots(
+  projectPath: string
+): Promise<Array<{ id: string; timestamp: string }>> {
+  return listAnalysisSnapshots(projectPath);
 }

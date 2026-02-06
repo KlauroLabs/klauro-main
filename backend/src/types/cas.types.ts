@@ -294,7 +294,7 @@ export interface CASEntryPoint {
   id: string;
   source_node: string;
   source_analyzer?: string;
-  type: 'http' | 'websocket' | 'cli' | 'event' | 'schedule' | 'page' | 'route' | 'message' | 'file' | 'test';
+  type: 'http' | 'websocket' | 'cli' | 'event' | 'schedule' | 'page' | 'route' | 'message' | 'file' | 'test' | 'lifecycle';
   name: string;
   description?: string;
   trigger?: {
@@ -344,7 +344,7 @@ export interface CASExitPoint {
   id: string;
   source_node: string;
   source_analyzer?: string;
-  type: 'database' | 'api' | 'file' | 'message' | 'cache' | 'sdk' | 'webhook';
+  type: 'database' | 'api' | 'file' | 'message' | 'cache' | 'sdk' | 'webhook' | 'navigation' | 'client_storage' | 'analytics';
   name: string;
   description?: string;
   target?: {
@@ -2292,4 +2292,481 @@ export interface CASFlowLayer {
   layer_name: string;
   capabilities: string[];
   layer_type: 'entry' | 'business' | 'data' | 'infrastructure';
+}
+
+// =============================================================================
+// INCREMENTAL ANALYSIS TYPES (v1.8.0)
+// =============================================================================
+
+export const INCREMENTAL_STATE_VERSION = '1.0.0';
+export const FULL_REBUILD_THRESHOLD = 0.50;
+
+export interface IncrementalState {
+  version: string;
+  projectPath: string;
+  lastFullAnalysis: string;
+  lastAnalysisTimestamp: number;
+  gitCommitHash?: string;
+  files: Record<string, FileAnalysisRecord>;
+  analyzerVersions: Record<string, string>;
+  config?: {
+    rebuildThreshold?: number;
+    watchDebounceMs?: number;
+    maxPropagationDepth?: number;
+  };
+}
+
+export interface FileAnalysisRecord {
+  filePath: string;
+  contentHash: string;
+  mtimeMs: number;
+  lastAnalyzed: string;
+  analyzerId: string;
+  nodeIds: string[];
+  edgeIds: string[];
+  entryPointIds: string[];
+  exitPointIds: string[];
+  importedFiles: string[];
+  exportedSymbols: string[];
+}
+
+export interface FileAnalysisResult {
+  filePath: string;
+  contentHash: string;
+  mtimeMs: number;
+  nodes: CASNode[];
+  edges: CASEdge[];
+  entryPoints: CASEntryPoint[];
+  exitPoints: CASExitPoint[];
+  imports: string[];
+  exports: string[];
+}
+
+export interface ChangeSet {
+  added: string[];
+  modified: string[];
+  deleted: string[];
+  affectedFiles: string[];
+  affectedNodeIds: Set<string>;
+  requiresFullRebuild: boolean;
+  reason?: string;
+  detectionMethod: 'mtime' | 'git' | 'hash';
+}
+
+export interface ChangeHistoryEntry {
+  id: string;
+  timestamp: string;
+  gitCommitHash?: string;
+  gitCommitMessage?: string;
+  author?: string;
+  source: 'human' | 'ai' | 'automated' | 'unknown';
+  aiSessionId?: string;
+  aiProvider?: string;
+
+  changes: {
+    files: FileChange[];
+    nodes: NodeChange[];
+    edges: EdgeChange[];
+    entryPoints: EntryPointChange[];
+    exitPoints: ExitPointChange[];
+  };
+
+  semanticSummary?: string;
+  intent: ChangeIntent;
+
+  impact: ImpactAnalysis;
+  suggestedActions: SuggestedAction[];
+  breakingChanges: BreakingChange[];
+  minimumTestSet: string[];
+}
+
+export interface FileChange {
+  path: string;
+  type: 'added' | 'modified' | 'deleted' | 'renamed' | 'moved';
+  oldPath?: string;
+  linesAdded: number;
+  linesRemoved: number;
+  hunks?: DiffHunk[];
+}
+
+export interface DiffHunk {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  content: string;
+}
+
+export interface NodeChange {
+  nodeId: string;
+  nodeName: string;
+  nodeType: string;
+  file: string;
+  changeType: 'added' | 'modified' | 'deleted' | 'moved' | 'renamed';
+  oldNodeId?: string;
+  semanticChange?: string;
+  diff?: {
+    before: string;
+    after: string;
+  };
+}
+
+export interface EdgeChange {
+  edgeId: string;
+  source: string;
+  target: string;
+  edgeType: string;
+  changeType: 'added' | 'deleted' | 'modified';
+}
+
+export interface EntryPointChange {
+  entryPointId: string;
+  name: string;
+  changeType: 'added' | 'deleted' | 'modified';
+  details?: string;
+}
+
+export interface ExitPointChange {
+  exitPointId: string;
+  name: string;
+  changeType: 'added' | 'deleted' | 'modified';
+  details?: string;
+}
+
+export interface ChangeIntent {
+  type: 'bug-fix' | 'feature' | 'refactor' | 'performance' | 'security' | 'docs' | 'test' | 'chore' | 'unknown';
+  confidence: number;
+  evidence: string[];
+}
+
+export interface SuggestedAction {
+  type: 'run-test' | 'update-docs' | 'review-security' | 'update-api-version' | 'notify-consumers';
+  priority: 'low' | 'medium' | 'high' | 'critical';
+  description: string;
+  targets: string[];
+}
+
+export interface BreakingChange {
+  type: 'signature-change' | 'removed-export' | 'type-change' | 'behavior-change';
+  nodeId: string;
+  description: string;
+  affectedConsumers: string[];
+  suggestedMigration?: string;
+}
+
+export interface ImpactAnalysis {
+  riskLevel: 'low' | 'medium' | 'high' | 'critical';
+  confidence: number;
+
+  affectedEntryPoints: Array<{
+    id: string;
+    name: string;
+    path?: string;
+    impactType: 'direct' | 'transitive';
+    distance: number;
+  }>;
+
+  affectedCallChains: Array<{
+    id: string;
+    name?: string;
+    criticality?: string;
+    affectedNodes: string[];
+  }>;
+
+  affectedConsumers: Array<{
+    nodeId: string;
+    file: string;
+    usageType: 'import' | 'call' | 'extend' | 'implement';
+  }>;
+
+  criticalPathsAffected: boolean;
+  securitySensitive: boolean;
+  dataFlowAffected: boolean;
+
+  testCoverage: {
+    directTests: string[];
+    integrationTests: string[];
+    uncoveredChanges: string[];
+    suggestedTests: string[];
+  };
+
+  documentation: {
+    affectedDocs: string[];
+    outdatedComments: string[];
+  };
+}
+
+export interface ChangeReport {
+  timestamp: string;
+  previousAnalysis: string;
+  currentAnalysis: string;
+
+  summary: {
+    filesAdded: number;
+    filesModified: number;
+    filesDeleted: number;
+    nodesAdded: number;
+    nodesModified: number;
+    nodesDeleted: number;
+    edgesAdded: number;
+    edgesModified: number;
+    edgesDeleted: number;
+  };
+
+  impact: ImpactAnalysis;
+
+  details: {
+    addedNodes: Array<{ id: string; name: string; type: string; file: string }>;
+    modifiedNodes: Array<{ id: string; name: string; changes: string[] }>;
+    deletedNodes: Array<{ id: string; name: string; type: string }>;
+    addedEdges: Array<{ source: string; target: string; type: string }>;
+    deletedEdges: Array<{ source: string; target: string; type: string }>;
+  };
+
+  changeHistory?: ChangeHistoryEntry[];
+}
+
+export interface AnalysisConfidence {
+  overall: number;
+  staleness: 'fresh' | 'recent' | 'stale' | 'very-stale';
+  lastAnalysis: string;
+  timeSinceAnalysis: number;
+
+  perFile: Record<string, {
+    confidence: number;
+    reason: string;
+  }>;
+
+  perNode: Record<string, {
+    confidence: number;
+    factors: string[];
+  }>;
+
+  recommendations: Array<{
+    action: 'reanalyze' | 'reanalyze-file' | 'reanalyze-module';
+    target?: string;
+    reason: string;
+    priority: 'low' | 'medium' | 'high';
+  }>;
+}
+
+export interface ContextBundle {
+  tokenCount: number;
+  priority: 'essential' | 'important' | 'supplementary';
+
+  core: {
+    targetNode: CASNode;
+    signature?: string;
+    documentation?: string;
+    immediateContext?: string;
+  };
+
+  related?: {
+    callers: CASNode[];
+    callees: CASNode[];
+    siblings: CASNode[];
+  };
+
+  patterns?: {
+    appliedPatterns: string[];
+    conventions: string[];
+    antiPatterns: string[];
+  };
+
+  history?: {
+    recentChanges: ChangeHistoryEntry[];
+    changeVelocity: 'stable' | 'active' | 'volatile';
+  };
+
+  similar?: Array<{
+    node: CASNode;
+    similarity: number;
+    reason: string;
+  }>;
+
+  truncated: boolean;
+  omitted: string[];
+}
+
+export interface PreFlightAssessment {
+  feasibility: 'safe' | 'caution' | 'risky' | 'dangerous';
+  impact: ImpactAnalysis;
+
+  conflicts: Array<{
+    type: 'recent-change' | 'in-progress' | 'pattern-violation' | 'convention-violation';
+    description: string;
+    changeId?: string;
+    severity: 'info' | 'warning' | 'error';
+  }>;
+
+  suggestions: Array<{
+    type: 'use-existing' | 'follow-pattern' | 'consider-alternative' | 'update-related';
+    description: string;
+    reference?: string;
+    code?: string;
+  }>;
+
+  requiredUpdates: Array<{
+    file: string;
+    nodeId?: string;
+    reason: string;
+    automated: boolean;
+  }>;
+
+  testStrategy: {
+    existingTests: string[];
+    newTestsNeeded: string[];
+    suggestedTestPattern?: string;
+  };
+
+  estimatedEffort: 'trivial' | 'small' | 'medium' | 'large';
+}
+
+export interface MinimumTestSet {
+  required: Array<{
+    testId: string;
+    testName: string;
+    file: string;
+    reason: string;
+    coversNodes: string[];
+  }>;
+
+  recommended: Array<{
+    testId: string;
+    testName: string;
+    reason: string;
+    priority: number;
+  }>;
+
+  optional: Array<{
+    testId: string;
+    testName: string;
+    reason: string;
+  }>;
+
+  coverage: {
+    coveredNodes: string[];
+    uncoveredNodes: string[];
+    coveragePercent: number;
+  };
+
+  estimatedRunTime: number;
+  fullSuiteRunTime: number;
+  savingsPercent: number;
+}
+
+export interface AnalysisTimeline {
+  entries: TimelineEntry[];
+  span: { start: string; end: string };
+  resolution: 'minute' | 'hour' | 'day' | 'week';
+}
+
+export interface TimelineEntry {
+  timestamp: string;
+  type: 'analysis' | 'change' | 'milestone';
+
+  analysisId?: string;
+  nodeCount?: number;
+  duration?: number;
+
+  changeId?: string;
+  summary?: string;
+  impactLevel?: 'low' | 'medium' | 'high';
+
+  milestone?: 'release' | 'branch' | 'merge' | 'tag';
+  label?: string;
+}
+
+export interface HeatMapData {
+  type: 'churn' | 'bugs' | 'complexity' | 'coverage' | 'staleness';
+  resolution: 'file' | 'module' | 'node';
+
+  data: Array<{
+    id: string;
+    value: number;
+    raw: number;
+    label: string;
+  }>;
+
+  scale: {
+    min: number;
+    max: number;
+    median: number;
+  };
+
+  hotSpots: Array<{
+    id: string;
+    value: number;
+    reason: string;
+  }>;
+}
+
+export interface ChangeAggregate {
+  key: string;
+  label: string;
+
+  counts: {
+    changes: number;
+    filesChanged: number;
+    nodesAdded: number;
+    nodesModified: number;
+    nodesDeleted: number;
+    linesAdded: number;
+    linesRemoved: number;
+  };
+
+  impact: {
+    avgRisk: number;
+    maxRisk: 'low' | 'medium' | 'high' | 'critical';
+    criticalChanges: number;
+  };
+
+  trend: 'increasing' | 'stable' | 'decreasing';
+  velocity: number;
+}
+
+export interface WatchStatus {
+  watchId: string;
+  projectPath: string;
+  active: boolean;
+  startedAt: string;
+  lastEvent?: string;
+  pendingChanges: number;
+  analysisInProgress: boolean;
+  error?: string;
+}
+
+export interface CrossRepoLink {
+  id: string;
+  sourceRepo: string;
+  targetRepo: string;
+  linkType: 'api-call' | 'shared-db' | 'message-queue' | 'import' | 'submodule';
+
+  apiEndpoint?: string;
+  apiConsumers?: string[];
+
+  sharedTables?: string[];
+
+  publishedMessages?: string[];
+  consumedMessages?: string[];
+}
+
+export interface CrossRepoImpact {
+  changeId: string;
+  affectedRepos: Array<{
+    repo: string;
+    linkType: string;
+    affectedNodes: string[];
+    severity: 'info' | 'warning' | 'breaking';
+  }>;
+}
+
+export interface AnalysisLockStatus {
+  locked: boolean;
+  holder?: {
+    pid: number;
+    startedAt: string;
+    operation: string;
+  };
+  queuedOperations: number;
 }

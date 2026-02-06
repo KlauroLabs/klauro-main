@@ -1,4 +1,4 @@
-import { BaseAnalyzer, CASAnalysisResult, CASNode, CASEdge, AnalysisContext } from './base-analyzer';
+import { BaseAnalyzer, CASAnalysisResult, CASNode, CASEdge, AnalysisContext, FileAnalysisContext } from './base-analyzer';
 import {
   CASOutput,
   CASContribution,
@@ -51,8 +51,15 @@ import {
   CASSecurityContext,
   CASCallGraph,
   CASNodePerspective,
-  CASLibrary
+  CASLibrary,
+  IncrementalState,
+  ChangeSet,
+  FileAnalysisRecord,
+  ChangeReport,
+  FileAnalysisResult,
+  INCREMENTAL_STATE_VERSION
 } from '../../types/cas.types';
+import { ChangeDetector } from './change-detector';
 import { CallGraphBuilder, TracedPath } from './call-graph-builder';
 import { DomainExtractor } from './domain-extractor';
 import { WorkflowDetector } from './workflow-detector';
@@ -67,6 +74,7 @@ export { CASOutput } from '../../types/cas.types';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
 import * as path from 'path';
+import { spawnSync } from 'child_process';
 
 export interface AnalyzerRegistration {
   id: string;
@@ -382,12 +390,24 @@ export class AnalyzerOrchestrator {
     const enhancedChangeRisks = this.enhanceChangeRisks(changeRisks, callGraphBuilder, callChains, allEntryPoints);
     const enhancedFlowSummary = this.buildEnhancedFlowSummary(callChains, allEntryPoints);
 
+    const entryPointSummary = this.summarizeEntryPoints(allEntryPoints);
+    const frameworkNames = contributions
+      .filter(c => c.analyzer_type === 'framework')
+      .map(c => c.analyzer_name.replace(' Analyzer', ''));
+    const dbEntityNames = databaseSchema.entities.map(e => e.name);
+    const externalServiceNames = externalServices.map(svc => svc.name);
+
     const enhancedSystemPurpose = this.buildEnhancedSystemPurpose(
       systemPurpose,
       domainConcepts,
       workflows,
       workflowGraph,
-      domainExtractor
+      domainExtractor,
+      dbEntityNames,
+      entryPointSummary,
+      frameworkNames,
+      externalServiceNames,
+      flowGraph
     );
 
     const methodCalls = this.buildMethodCalls(allNodes, allEdges);
@@ -462,6 +482,608 @@ export class AnalyzerOrchestrator {
       fixtures: this.buildFixtures(allNodes),
       test_summary: this.buildTestSummary(allNodes, allEntryPoints)
     } as CASOutput;
+  }
+
+  async orchestrateIncrementalAnalysis(
+    projectPath: string,
+    previousOutput: CASOutput,
+    previousState: IncrementalState | null
+  ): Promise<{
+    output: CASOutput;
+    state: IncrementalState;
+    changeReport: ChangeReport;
+    wasFullRebuild: boolean;
+  }> {
+    const changeDetector = new ChangeDetector(projectPath);
+    const changeSet = await changeDetector.detectChanges(previousState);
+
+    if (changeSet.requiresFullRebuild || !previousState) {
+      const output = await this.orchestrateAnalysis(projectPath);
+      const state = this.buildIncrementalState(projectPath, output, changeDetector);
+      const changeReport = this.buildChangeReport(previousOutput, output, changeSet);
+      return { output, state, changeReport, wasFullRebuild: true };
+    }
+
+    const totalChanges = changeSet.added.length + changeSet.modified.length + changeSet.deleted.length;
+    if (totalChanges === 0) {
+      const state: IncrementalState = {
+        ...previousState,
+        lastAnalysisTimestamp: Date.now(),
+        gitCommitHash: changeDetector.getCurrentGitCommit()
+      };
+      const changeReport = this.buildChangeReport(previousOutput, previousOutput, changeSet);
+      return { output: previousOutput, state, changeReport, wasFullRebuild: false };
+    }
+
+    const incrementalResult = await this.runIncrementalAnalysis(
+      projectPath,
+      previousOutput,
+      previousState,
+      changeSet
+    );
+
+    const updatedState = this.updateIncrementalState(
+      previousState,
+      incrementalResult,
+      changeSet,
+      changeDetector
+    );
+
+    const changeReport = this.buildChangeReport(
+      previousOutput,
+      incrementalResult.output,
+      changeSet
+    );
+
+    return {
+      output: incrementalResult.output,
+      state: updatedState,
+      changeReport,
+      wasFullRebuild: false
+    };
+  }
+
+  private async runIncrementalAnalysis(
+    projectPath: string,
+    previousOutput: CASOutput,
+    previousState: IncrementalState,
+    changeSet: ChangeSet
+  ): Promise<{ output: CASOutput; fileResults: Map<string, FileAnalysisResult> }> {
+    const detectedAnalyzers = await this.detectAnalyzers(projectPath);
+    const incrementalAnalyzers = detectedAnalyzers.filter(
+      r => r.analyzer.supportsIncrementalAnalysis?.() && r.analyzer.analyzeFileSingle
+    );
+
+    if (incrementalAnalyzers.length === 0) {
+      const output = await this.orchestrateAnalysis(projectPath);
+      return { output, fileResults: new Map() };
+    }
+
+    const allNodes = [...previousOutput.nodes];
+    const allEdges = [...previousOutput.edges];
+    const allEntryPoints = [...(previousOutput.entry_points || [])];
+    const allExitPoints = [...(previousOutput.exit_points || [])];
+
+    const deletedNodeIds = new Set<string>();
+    const deletedEdgeIds = new Set<string>();
+    const deletedEntryPointIds = new Set<string>();
+    const deletedExitPointIds = new Set<string>();
+
+    for (const deletedFile of changeSet.deleted) {
+      const record = previousState.files[deletedFile];
+      if (record) {
+        record.nodeIds.forEach(id => deletedNodeIds.add(id));
+        record.edgeIds.forEach(id => deletedEdgeIds.add(id));
+        record.entryPointIds.forEach(id => deletedEntryPointIds.add(id));
+        record.exitPointIds.forEach(id => deletedExitPointIds.add(id));
+      }
+    }
+
+    for (const modifiedFile of changeSet.modified) {
+      const record = previousState.files[modifiedFile];
+      if (record) {
+        record.nodeIds.forEach(id => deletedNodeIds.add(id));
+        record.edgeIds.forEach(id => deletedEdgeIds.add(id));
+        record.entryPointIds.forEach(id => deletedEntryPointIds.add(id));
+        record.exitPointIds.forEach(id => deletedExitPointIds.add(id));
+      }
+    }
+
+    const filteredNodes = allNodes.filter(n => !deletedNodeIds.has(n.id));
+    const filteredEdges = allEdges.filter(e => !deletedEdgeIds.has(e.id));
+    const filteredEntryPoints = allEntryPoints.filter(ep => !deletedEntryPointIds.has(ep.id));
+    const filteredExitPoints = allExitPoints.filter(ex => !deletedExitPointIds.has(ex.id));
+
+    const filesToAnalyze = [...changeSet.added, ...changeSet.modified];
+    const fileResults = new Map<string, FileAnalysisResult>();
+    const BATCH_SIZE = 8;
+
+    for (let i = 0; i < filesToAnalyze.length; i += BATCH_SIZE) {
+      const batch = filesToAnalyze.slice(i, i + BATCH_SIZE);
+      const batchResults = await Promise.all(
+        batch.map(async (relativePath) => {
+          const fullPath = path.join(projectPath, relativePath);
+          try {
+            const stat = await fs.stat(fullPath);
+            const content = await fs.readFile(fullPath, 'utf-8');
+            const contentHash = this.computeContentHash(content);
+
+            for (const registration of incrementalAnalyzers) {
+              if (registration.analyzer.analyzeFileSingle) {
+                const relevantFiles = await registration.analyzer.getRelevantFiles?.(projectPath) || [];
+                if (relevantFiles.includes(relativePath)) {
+                  const context: FileAnalysisContext = {
+                    filePath: fullPath,
+                    relativePath,
+                    projectPath,
+                    contentHash
+                  };
+                  const result = await registration.analyzer.analyzeFileSingle(context);
+                  return { relativePath, result, success: true };
+                }
+              }
+            }
+            return { relativePath, result: null, success: false };
+          } catch (error) {
+            console.warn(`Failed to analyze file ${relativePath}:`, error);
+            return { relativePath, result: null, success: false };
+          }
+        })
+      );
+
+      for (const { relativePath, result, success } of batchResults) {
+        if (success && result) {
+          fileResults.set(relativePath, result);
+          filteredNodes.push(...result.nodes);
+          filteredEdges.push(...result.edges);
+          filteredEntryPoints.push(...result.entryPoints);
+          filteredExitPoints.push(...result.exitPoints);
+        }
+      }
+    }
+
+    const rebuiltOutput = this.rebuildDerivedData(
+      projectPath,
+      filteredNodes,
+      filteredEdges,
+      filteredEntryPoints,
+      filteredExitPoints,
+      previousOutput
+    );
+
+    return { output: rebuiltOutput, fileResults };
+  }
+
+  private rebuildDerivedData(
+    projectPath: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[],
+    previousOutput: CASOutput
+  ): CASOutput {
+    const gitAnalyzer = new GitAnalyzer(projectPath);
+    const filePathsForGit = nodes
+      .filter((n): n is CASNode & { source: { file: string } } => !!n.source?.file)
+      .map(n => n.source.file);
+    gitAnalyzer.preloadAllFileMetrics(filePathsForGit);
+
+    const categories = previousOutput.categories || {};
+    const progressiveLevels = this.buildProgressiveLevels(nodes, categories);
+    const index = this.buildIndex(nodes, entryPoints, exitPoints, previousOutput.perspectives || []);
+
+    const libraries = previousOutput.libraries || [];
+    const architectureSummary = this.buildArchitectureSummary(
+      nodes, entryPoints, exitPoints, previousOutput.analyzer_contributions
+    );
+    const routeTable = this.buildRouteTable(entryPoints);
+    const databaseSchema = this.buildDatabaseSchema(nodes, libraries);
+    const externalServices = this.buildExternalServices(nodes, exitPoints, libraries);
+
+    const detectedPatterns = this.detectPatterns(nodes, edges);
+    const intents = this.buildIntents(nodes);
+    const flowSummary = this.buildFlowSummary(nodes, entryPoints);
+    const changeRisks = this.buildChangeRisks(nodes, edges, entryPoints, gitAnalyzer);
+    const changeRiskSummary = this.buildChangeRiskSummary(changeRisks);
+    const dataEntities = this.buildDataEntities(nodes, edges);
+    const dataSummary = this.buildDataSummary(dataEntities, nodes);
+    const securityBoundaries = this.buildSecurityBoundaries(nodes, entryPoints);
+    const securitySummary = this.buildSecuritySummary(securityBoundaries, nodes);
+    const temporalStability = this.buildTemporalStability(nodes, gitAnalyzer);
+    const stabilitySummary = this.buildStabilitySummary(temporalStability);
+
+    const systemCapabilities = this.buildSystemCapabilities(entryPoints, dataEntities, nodes, edges);
+    const systemPurpose = this.inferSystemPurpose(entryPoints, dataEntities, systemCapabilities, nodes);
+
+    const callGraphBuilder = new CallGraphBuilder(nodes, edges, exitPoints);
+    const callChains = this.buildCallChains(nodes, edges, entryPoints, exitPoints, callGraphBuilder);
+
+    this.enrichNodeCallGraphs(nodes, callGraphBuilder, entryPoints, exitPoints);
+    this.deriveParentFromContainsEdges(nodes, edges);
+    this.enrichNodePerspectives(nodes, previousOutput.perspectives || []);
+
+    const flowCoverage = this.buildFlowCoverage(nodes, entryPoints, callChains);
+    const testGaps = this.buildTestGaps(flowCoverage, nodes);
+
+    const domainExtractor = new DomainExtractor();
+    const domainConcepts = domainExtractor.extract(nodes, entryPoints, dataEntities);
+
+    const workflowDetector = new WorkflowDetector();
+    const workflows = workflowDetector.detectWorkflows(entryPoints, callChains, nodes, edges, exitPoints);
+    workflowDetector.classifyWorkflows(workflows, domainConcepts);
+    const workflowGraph = workflowDetector.buildDependencyGraph(workflows, callChains, nodes);
+
+    const flowGraph = this.buildFlowGraph(
+      entryPoints,
+      callChains,
+      nodes,
+      edges,
+      domainConcepts,
+      dataEntities,
+      databaseSchema,
+      systemPurpose
+    );
+
+    const enhancedChangeRisks = this.enhanceChangeRisks(changeRisks, callGraphBuilder, callChains, entryPoints);
+    const enhancedFlowSummary = this.buildEnhancedFlowSummary(callChains, entryPoints);
+
+    const systemName = path.basename(projectPath);
+    const analysisId = `analysis_incr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    return {
+      ...previousOutput,
+      analysis_timestamp: new Date().toISOString(),
+      analysis_id: analysisId,
+      nodes,
+      edges,
+      entry_points: entryPoints,
+      exit_points: exitPoints,
+      progressive_levels: progressiveLevels,
+      index,
+      architecture_summary: architectureSummary,
+      route_table: routeTable.length > 0 ? routeTable : undefined,
+      database_schema: databaseSchema.entities.length > 0 ? databaseSchema : undefined,
+      external_services: externalServices.length > 0 ? externalServices : undefined,
+      patterns: detectedPatterns.length > 0 ? detectedPatterns : undefined,
+      intents: intents.length > 0 ? intents : undefined,
+      flow_summary: enhancedFlowSummary,
+      change_risks: enhancedChangeRisks.length > 0 ? enhancedChangeRisks : undefined,
+      change_risk_summary: changeRiskSummary,
+      data_entities: dataEntities.length > 0 ? dataEntities : undefined,
+      data_summary: dataSummary,
+      security_boundaries: securityBoundaries.length > 0 ? securityBoundaries : undefined,
+      security_summary: securitySummary,
+      temporal_stability: temporalStability.length > 0 ? temporalStability : undefined,
+      stability_summary: stabilitySummary,
+      system_capabilities: systemCapabilities.length > 0 ? systemCapabilities : undefined,
+      system_purpose: systemPurpose,
+      call_chains: callChains.length > 0 ? callChains : undefined,
+      flow_coverage: flowCoverage.length > 0 ? flowCoverage : undefined,
+      test_gaps: testGaps.length > 0 ? testGaps : undefined,
+      workflows: workflows.length > 0 ? workflows : undefined,
+      workflow_graph: workflowGraph,
+      domain_concepts: domainConcepts.length > 0 ? domainConcepts : undefined,
+      flow_graph: flowGraph
+    };
+  }
+
+  private buildIncrementalState(
+    projectPath: string,
+    output: CASOutput,
+    changeDetector: ChangeDetector
+  ): IncrementalState {
+    const files: Record<string, FileAnalysisRecord> = {};
+
+    const nodesByFile = new Map<string, CASNode[]>();
+    const edgesByFile = new Map<string, CASEdge[]>();
+    const entryPointsByFile = new Map<string, CASEntryPoint[]>();
+    const exitPointsByFile = new Map<string, CASExitPoint[]>();
+
+    for (const node of output.nodes) {
+      if (node.source?.file) {
+        const relativePath = path.isAbsolute(node.source.file)
+          ? path.relative(projectPath, node.source.file)
+          : node.source.file;
+        if (!nodesByFile.has(relativePath)) {
+          nodesByFile.set(relativePath, []);
+        }
+        nodesByFile.get(relativePath)!.push(node);
+      }
+    }
+
+    for (const edge of output.edges) {
+      const sourceNode = output.nodes.find(n => n.id === edge.source);
+      if (sourceNode?.source?.file) {
+        const relativePath = path.isAbsolute(sourceNode.source.file)
+          ? path.relative(projectPath, sourceNode.source.file)
+          : sourceNode.source.file;
+        if (!edgesByFile.has(relativePath)) {
+          edgesByFile.set(relativePath, []);
+        }
+        edgesByFile.get(relativePath)!.push(edge);
+      }
+    }
+
+    for (const ep of output.entry_points || []) {
+      const sourceNode = output.nodes.find(n => n.id === ep.source_node);
+      if (sourceNode?.source?.file) {
+        const relativePath = path.isAbsolute(sourceNode.source.file)
+          ? path.relative(projectPath, sourceNode.source.file)
+          : sourceNode.source.file;
+        if (!entryPointsByFile.has(relativePath)) {
+          entryPointsByFile.set(relativePath, []);
+        }
+        entryPointsByFile.get(relativePath)!.push(ep);
+      }
+    }
+
+    for (const ex of output.exit_points || []) {
+      const sourceNode = output.nodes.find(n => n.id === ex.source_node);
+      if (sourceNode?.source?.file) {
+        const relativePath = path.isAbsolute(sourceNode.source.file)
+          ? path.relative(projectPath, sourceNode.source.file)
+          : sourceNode.source.file;
+        if (!exitPointsByFile.has(relativePath)) {
+          exitPointsByFile.set(relativePath, []);
+        }
+        exitPointsByFile.get(relativePath)!.push(ex);
+      }
+    }
+
+    for (const [filePath, fileNodes] of nodesByFile) {
+      const fullPath = path.join(projectPath, filePath);
+      try {
+        const stat = fs.statSync(fullPath);
+        const content = fs.readFileSync(fullPath, 'utf-8');
+        const contentHash = this.computeContentHash(content);
+
+        files[filePath] = {
+          filePath,
+          contentHash,
+          mtimeMs: stat.mtimeMs,
+          lastAnalyzed: new Date().toISOString(),
+          analyzerId: 'typescript-javascript',
+          nodeIds: fileNodes.map(n => n.id),
+          edgeIds: (edgesByFile.get(filePath) || []).map(e => e.id),
+          entryPointIds: (entryPointsByFile.get(filePath) || []).map(ep => ep.id),
+          exitPointIds: (exitPointsByFile.get(filePath) || []).map(ex => ex.id),
+          importedFiles: this.extractImportedFiles(fileNodes),
+          exportedSymbols: this.extractExportedSymbols(fileNodes)
+        };
+      } catch {
+      }
+    }
+
+    const analyzerVersions: Record<string, string> = {};
+    for (const contribution of output.analyzer_contributions || []) {
+      analyzerVersions[contribution.analyzer_id] = contribution.analyzer_version || '1.0.0';
+    }
+
+    return {
+      version: INCREMENTAL_STATE_VERSION,
+      projectPath,
+      lastFullAnalysis: output.analysis_timestamp,
+      lastAnalysisTimestamp: Date.now(),
+      gitCommitHash: changeDetector.getCurrentGitCommit(),
+      files,
+      analyzerVersions
+    };
+  }
+
+  private updateIncrementalState(
+    previousState: IncrementalState,
+    result: { output: CASOutput; fileResults: Map<string, FileAnalysisResult> },
+    changeSet: ChangeSet,
+    changeDetector: ChangeDetector
+  ): IncrementalState {
+    const files = { ...previousState.files };
+
+    for (const deletedFile of changeSet.deleted) {
+      delete files[deletedFile];
+    }
+
+    for (const [filePath, fileResult] of result.fileResults) {
+      files[filePath] = {
+        filePath: fileResult.filePath,
+        contentHash: fileResult.contentHash,
+        mtimeMs: fileResult.mtimeMs,
+        lastAnalyzed: new Date().toISOString(),
+        analyzerId: 'typescript-javascript',
+        nodeIds: fileResult.nodes.map(n => n.id),
+        edgeIds: fileResult.edges.map(e => e.id),
+        entryPointIds: fileResult.entryPoints.map(ep => ep.id),
+        exitPointIds: fileResult.exitPoints.map(ex => ex.id),
+        importedFiles: fileResult.imports,
+        exportedSymbols: fileResult.exports
+      };
+    }
+
+    return {
+      ...previousState,
+      lastAnalysisTimestamp: Date.now(),
+      gitCommitHash: changeDetector.getCurrentGitCommit(),
+      files
+    };
+  }
+
+  private buildChangeReport(
+    previousOutput: CASOutput,
+    currentOutput: CASOutput,
+    changeSet: ChangeSet
+  ): ChangeReport {
+    const previousNodeIds = new Set(previousOutput.nodes.map(n => n.id));
+    const currentNodeIds = new Set(currentOutput.nodes.map(n => n.id));
+
+    const addedNodes = currentOutput.nodes.filter(n => !previousNodeIds.has(n.id));
+    const deletedNodes = previousOutput.nodes.filter(n => !currentNodeIds.has(n.id));
+
+    const modifiedNodes: Array<{ id: string; name: string; changes: string[] }> = [];
+    for (const currentNode of currentOutput.nodes) {
+      if (previousNodeIds.has(currentNode.id)) {
+        const previousNode = previousOutput.nodes.find(n => n.id === currentNode.id);
+        if (previousNode) {
+          const changes: string[] = [];
+          if (JSON.stringify(previousNode.metadata) !== JSON.stringify(currentNode.metadata)) {
+            changes.push('metadata');
+          }
+          if (JSON.stringify(previousNode.signature) !== JSON.stringify(currentNode.signature)) {
+            changes.push('signature');
+          }
+          if (previousNode.source?.line !== currentNode.source?.line) {
+            changes.push('location');
+          }
+          if (changes.length > 0) {
+            modifiedNodes.push({ id: currentNode.id, name: currentNode.name, changes });
+          }
+        }
+      }
+    }
+
+    const previousEdgeIds = new Set(previousOutput.edges.map(e => e.id));
+    const currentEdgeIds = new Set(currentOutput.edges.map(e => e.id));
+
+    const addedEdges = currentOutput.edges.filter(e => !previousEdgeIds.has(e.id));
+    const deletedEdges = previousOutput.edges.filter(e => !currentEdgeIds.has(e.id));
+
+    const changedFiles = new Set([...changeSet.added, ...changeSet.modified]);
+    const affectedEntryPoints = (currentOutput.entry_points || [])
+      .filter(ep => {
+        const sourceNode = currentOutput.nodes.find(n => n.id === ep.source_node);
+        if (sourceNode?.source?.file) {
+          const relativePath = path.isAbsolute(sourceNode.source.file)
+            ? path.relative(currentOutput.system.root_path, sourceNode.source.file)
+            : sourceNode.source.file;
+          return changedFiles.has(relativePath);
+        }
+        return false;
+      })
+      .map(ep => {
+        const sourceNode = currentOutput.nodes.find(n => n.id === ep.source_node);
+        return {
+          id: ep.id,
+          name: ep.name,
+          path: (ep.trigger as any)?.path,
+          impactType: 'direct' as const,
+          distance: 0
+        };
+      });
+
+    const riskLevel = this.calculateChangeRiskLevel(
+      addedNodes.length,
+      modifiedNodes.length,
+      deletedNodes.length,
+      affectedEntryPoints.length
+    );
+
+    return {
+      timestamp: new Date().toISOString(),
+      previousAnalysis: previousOutput.analysis_timestamp,
+      currentAnalysis: currentOutput.analysis_timestamp,
+      summary: {
+        filesAdded: changeSet.added.length,
+        filesModified: changeSet.modified.length,
+        filesDeleted: changeSet.deleted.length,
+        nodesAdded: addedNodes.length,
+        nodesModified: modifiedNodes.length,
+        nodesDeleted: deletedNodes.length,
+        edgesAdded: addedEdges.length,
+        edgesModified: 0,
+        edgesDeleted: deletedEdges.length
+      },
+      impact: {
+        riskLevel,
+        confidence: 0.8,
+        affectedEntryPoints,
+        affectedCallChains: [],
+        affectedConsumers: [],
+        criticalPathsAffected: affectedEntryPoints.length > 0,
+        securitySensitive: false,
+        dataFlowAffected: false,
+        testCoverage: {
+          directTests: [],
+          integrationTests: [],
+          uncoveredChanges: [],
+          suggestedTests: []
+        },
+        documentation: {
+          affectedDocs: [],
+          outdatedComments: []
+        }
+      },
+      details: {
+        addedNodes: addedNodes.map(n => ({
+          id: n.id,
+          name: n.name,
+          type: n.type,
+          file: n.source?.file || ''
+        })),
+        modifiedNodes,
+        deletedNodes: deletedNodes.map(n => ({
+          id: n.id,
+          name: n.name,
+          type: n.type
+        })),
+        addedEdges: addedEdges.map(e => ({
+          source: e.source,
+          target: e.target,
+          type: e.type
+        })),
+        deletedEdges: deletedEdges.map(e => ({
+          source: e.source,
+          target: e.target,
+          type: e.type
+        }))
+      }
+    };
+  }
+
+  private calculateChangeRiskLevel(
+    nodesAdded: number,
+    nodesModified: number,
+    nodesDeleted: number,
+    affectedEntryPoints: number
+  ): 'low' | 'medium' | 'high' | 'critical' {
+    const totalNodeChanges = nodesAdded + nodesModified + nodesDeleted;
+
+    if (affectedEntryPoints > 5 || totalNodeChanges > 50) {
+      return 'critical';
+    }
+    if (affectedEntryPoints > 2 || totalNodeChanges > 20) {
+      return 'high';
+    }
+    if (affectedEntryPoints > 0 || totalNodeChanges > 5) {
+      return 'medium';
+    }
+    return 'low';
+  }
+
+  private extractImportedFiles(nodes: CASNode[]): string[] {
+    const imports: string[] = [];
+    for (const node of nodes) {
+      if (node.type === 'import' && node.metadata) {
+        const metadata = node.metadata as Record<string, any>;
+        const source = metadata.source;
+        if (typeof source === 'string' && (source.startsWith('.') || source.startsWith('/'))) {
+          imports.push(source);
+        }
+      }
+    }
+    return imports;
+  }
+
+  private extractExportedSymbols(nodes: CASNode[]): string[] {
+    const exports: string[] = [];
+    for (const node of nodes) {
+      if (node.metadata?.is_exported) {
+        exports.push(node.name);
+      }
+    }
+    return exports;
+  }
+
+  private computeContentHash(content: string): string {
+    const crypto = require('crypto');
+    return crypto.createHash('sha256').update(content).digest('hex').substring(0, 16);
   }
 
   queryAnalysis(casOutput: CASOutput, options: {
@@ -784,7 +1406,8 @@ export class AnalyzerOrchestrator {
   private isValidEntryPoint(ep: CASEntryPoint): boolean {
     const validTypes = new Set([
       'http', 'cli', 'websocket', 'ws_handler', 'message',
-      'event', 'scheduled', 'schedule', 'cron', 'queue', 'grpc', 'graphql'
+      'event', 'scheduled', 'schedule', 'cron', 'queue', 'grpc', 'graphql',
+      'page', 'route', 'lifecycle', 'test'
     ]);
     return validTypes.has(ep.type);
   }
@@ -792,7 +1415,8 @@ export class AnalyzerOrchestrator {
   private isValidExitPoint(ep: CASExitPoint): boolean {
     const validTypes = new Set([
       'database', 'http', 'grpc', 'graphql', 'queue', 'cache',
-      'file', 'email', 'sms', 'external_api', 'sdk'
+      'file', 'email', 'sms', 'external_api', 'sdk',
+      'api', 'navigation', 'client_storage', 'analytics', 'message', 'webhook'
     ]);
     return validTypes.has(ep.type);
   }
@@ -2314,13 +2938,25 @@ export class AnalyzerOrchestrator {
     domainConcepts: CASDomainConcept[],
     workflows: CASWorkflow[],
     workflowGraph: CASWorkflowGraph,
-    domainExtractor: DomainExtractor
+    domainExtractor: DomainExtractor,
+    databaseEntities: string[],
+    entryPointSummary: { type: string; count: number }[],
+    frameworks: string[],
+    externalServices: string[],
+    flowGraph: CASFlowGraph
   ): EnhancedSystemPurpose {
     const coreConcepts = domainExtractor.getCoreConcepts(domainConcepts);
     const primaryDomain = domainExtractor.inferPrimaryDomain(domainConcepts);
-    const description = domainExtractor.inferSystemDescription(domainConcepts, basePurpose.primary_type);
 
-    const primaryWorkflows = workflows.filter(w => w.classification === 'primary');
+    const description = this.inferDescriptionWithClaude(
+      databaseEntities,
+      entryPointSummary,
+      frameworks,
+      externalServices,
+      basePurpose,
+      flowGraph
+    );
+
     const supportingWorkflows = workflows.filter(w => w.classification === 'supporting');
 
     return {
@@ -2331,6 +2967,110 @@ export class AnalyzerOrchestrator {
       primary_workflow_id: workflowGraph.primary_workflow_id,
       supporting_workflow_ids: supportingWorkflows.map(w => w.id)
     };
+  }
+
+  private inferDescriptionWithClaude(
+    databaseEntities: string[],
+    entryPoints: { type: string; count: number }[],
+    frameworks: string[],
+    externalServices: string[],
+    systemPurpose: SystemPurpose,
+    flowGraph: CASFlowGraph
+  ): string {
+    const topCapabilities = [...flowGraph.capabilities]
+      .sort((a, b) => b.signals.total_score - a.signals.total_score)
+      .slice(0, 15)
+      .map(cap => ({
+        name: cap.name,
+        classification: cap.classification,
+        score: cap.signals.total_score,
+        operations: cap.operations.map(op => op.name)
+      }));
+
+    const summary = {
+      system_purpose: {
+        primary_type: systemPurpose.primary_type,
+        confidence: systemPurpose.confidence,
+        evidence: systemPurpose.evidence?.slice(0, 5),
+        secondary_types: systemPurpose.secondary_types
+      },
+      flow_graph: {
+        capabilities_count: flowGraph.capabilities.length,
+        dependencies_count: flowGraph.dependencies.length,
+        primary_flow: flowGraph.primary_flow,
+        system_insights: flowGraph.system_insights,
+        top_capabilities: topCapabilities
+      },
+      database_entities: databaseEntities,
+      entry_points: entryPoints,
+      frameworks: frameworks,
+      external_services: externalServices
+    };
+
+    const prompt = `You are a senior software architect analyzing a codebase. Based on the static analysis summary below, write a THOROUGH and DETAILED description of what this system does.
+
+Your description MUST include:
+1. A clear opening statement about the system's primary purpose and domain
+2. Key capabilities organized as bullet points
+3. Technical architecture highlights (frameworks, integrations, data model)
+4. What makes this system sophisticated or unique
+
+Be SPECIFIC. Use domain-specific terminology. If you see trading, DCA, exchanges, portfolios - this is likely a fintech/investment platform, NOT a "devtools" system. Look at the actual operations like "execute-dca", "balance", "portfolio", "connections/exchanges" to understand what the system truly does.
+
+ANALYSIS SUMMARY:
+${JSON.stringify(summary, null, 2)}
+
+Write a comprehensive description (3-5 paragraphs with bullet points). Do NOT be generic. Do NOT say "devtools" unless it truly is. Respond with ONLY the description.`;
+
+    const cliCommands = [
+      { cmd: '/Users/michaelshattuck/.opencode/bin/opencode', args: ['run', '--format', 'json', prompt], parseJson: true },
+      { cmd: '/Users/michaelshattuck/.local/bin/claude', args: ['--print', prompt], parseJson: false }
+    ];
+
+    for (const { cmd, args, parseJson } of cliCommands) {
+      try {
+        const result = spawnSync(cmd, args, {
+          encoding: 'utf-8',
+          timeout: 90000
+        });
+        if (result.status === 0 && result.stdout) {
+          let output = result.stdout.trim();
+
+          if (parseJson) {
+            const lines = output.split('\n');
+            const textParts: string[] = [];
+            for (const line of lines) {
+              try {
+                const event = JSON.parse(line);
+                if (event.type === 'text' && event.part?.text) {
+                  textParts.push(event.part.text);
+                }
+              } catch {
+                continue;
+              }
+            }
+            output = textParts.join('').trim();
+          }
+
+          if (output) {
+            return output;
+          }
+        }
+      } catch {
+        continue;
+      }
+    }
+    return `A ${systemPurpose.primary_type} system with ${flowGraph.capabilities.length} capabilities and ${databaseEntities.length} database entities`;
+  }
+
+  private summarizeEntryPoints(entryPoints: CASEntryPoint[]): { type: string; count: number }[] {
+    const counts = new Map<string, number>();
+    for (const ep of entryPoints) {
+      counts.set(ep.type, (counts.get(ep.type) || 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .map(([type, count]) => ({ type, count }))
+      .sort((a, b) => b.count - a.count);
   }
 
   private buildFlowGraph(
@@ -3770,13 +4510,25 @@ export class AnalyzerOrchestrator {
         weight: 0
       },
       {
+        type: 'devtools-platform',
+        description: 'Developer tools, code analysis, or visualization platform',
+        indicators: {
+          pathPatterns: ['analyzer', 'parser', 'ast', 'visualiz', 'blueprint', 'diagram', 'graph', 'node', 'edge', 'render', 'canvas', 'viewport', 'zoom', 'pan', 'layout', 'telemetry', 'instrument', 'sdk', 'plugin'],
+          verbPatterns: ['analyze', 'parse', 'render', 'visualize', 'instrument', 'inspect', 'transform', 'compile', 'lint', 'format', 'detect', 'trace', 'profile'],
+          entityPatterns: ['node', 'edge', 'graph', 'ast', 'token', 'analyzer', 'parser', 'blueprint', 'diagram', 'canvas', 'viewport', 'layer', 'component', 'manifest', 'telemetry'],
+          capabilityPatterns: ['analysis', 'parsing', 'visualization', 'rendering', 'instrumentation', 'detection', 'inspection'],
+        },
+        distinctiveness: 5,
+        weight: 0
+      },
+      {
         type: 'education-platform',
         description: 'Learning management system or educational platform',
         indicators: {
-          pathPatterns: ['course', 'lesson', 'quiz', 'lab', 'certificate', 'learning', 'curriculum', 'enrollment', 'tutorial', 'module', 'assignment', 'grade', 'student', 'instructor'],
+          pathPatterns: ['course', 'lesson', 'quiz', 'certificate', 'learning', 'curriculum', 'enrollment', 'tutorial', 'assignment', 'student', 'instructor'],
           verbPatterns: ['enroll', 'complete', 'submit', 'grade', 'certify', 'learn', 'study', 'teach'],
-          entityPatterns: ['course', 'lesson', 'quiz', 'student', 'instructor', 'enrollment', 'certificate', 'curriculum', 'assignment', 'grade', 'progress', 'achievement', 'lab', 'leaderboard'],
-          capabilityPatterns: ['course', 'lesson', 'quiz', 'lab', 'certificate', 'learning', 'enrollment'],
+          entityPatterns: ['course', 'lesson', 'quiz', 'student', 'instructor', 'enrollment', 'certificate', 'curriculum', 'assignment', 'grade', 'progress', 'achievement', 'leaderboard'],
+          capabilityPatterns: ['course', 'lesson', 'quiz', 'certificate', 'learning', 'enrollment'],
         },
         distinctiveness: 4.5,
         weight: 0
