@@ -60,7 +60,7 @@ import {
   INCREMENTAL_STATE_VERSION
 } from '../../types/cas.types';
 import { ChangeDetector } from './change-detector';
-import { CallGraphBuilder, TracedPath } from './call-graph-builder';
+import { CallGraphBuilder } from './call-graph-builder';
 import { DomainExtractor } from './domain-extractor';
 import { WorkflowDetector } from './workflow-detector';
 import { CapabilityDetector } from './capability-detector';
@@ -118,7 +118,12 @@ export class AnalyzerOrchestrator {
       '**/node_modules/**',
       '**/dist/**',
       '**/build/**',
-      '**/.git/**'
+      '**/.git/**',
+      '**/target/**',
+      '**/vendor/**',
+      '**/__pycache__/**',
+      '**/.venv/**',
+      '**/venv/**'
     ];
 
     const rootSet = new Set<string>();
@@ -1167,7 +1172,7 @@ export class AnalyzerOrchestrator {
         { type: 'php', files: ['**/composer.json'] }
       ];
 
-      const ignorePatterns = ['**/node_modules/**', '**/vendor/**', '**/.git/**', '**/dist/**', '**/build/**'];
+      const ignorePatterns = ['**/node_modules/**', '**/vendor/**', '**/.git/**', '**/dist/**', '**/build/**', '**/target/**', '**/__pycache__/**', '**/.venv/**', '**/venv/**'];
 
       for (const indicator of indicators) {
         for (const filePattern of indicator.files) {
@@ -2668,211 +2673,14 @@ export class AnalyzerOrchestrator {
     };
   }
 
-  private isApplicationEntryPoint(ep: CASEntryPoint): boolean {
-    const applicationTypes = new Set([
-      'http', 'cli', 'websocket', 'ws_handler', 'message',
-      'event', 'scheduled', 'cron', 'queue', 'grpc', 'graphql'
-    ]);
-
-    return applicationTypes.has(ep.type);
-  }
-
   private buildCallChains(
-    nodes: CASNode[],
-    edges: CASEdge[],
-    entryPoints: CASEntryPoint[],
-    exitPoints: CASExitPoint[],
-    callGraph: CallGraphBuilder
+    _nodes: CASNode[],
+    _edges: CASEdge[],
+    _entryPoints: CASEntryPoint[],
+    _exitPoints: CASExitPoint[],
+    _callGraph: CallGraphBuilder
   ): CASCallChain[] {
-    const chains: CASCallChain[] = [];
-
-    for (const ep of entryPoints) {
-      if (ep.type === 'test') continue;
-      if (!this.isApplicationEntryPoint(ep)) continue;
-      if (!ep.source_node) continue;
-
-      const tracedPaths = callGraph.tracePathsFromEntry(ep.source_node, ep.id);
-
-      for (let i = 0; i < tracedPaths.length; i++) {
-        const path = tracedPaths[i];
-
-        const testCoverage = this.computeChainTestCoverage(path, nodes);
-
-        const chain: CASCallChain = {
-          id: `chain_${ep.id}_${i}`,
-          chain_type: this.determineChainType(path),
-          entry_point: {
-            node_id: ep.source_node,
-            method_name: ep.name,
-            entry_point_id: ep.id
-          },
-          exit_point: path.exitPoint ? {
-            node_id: path.exitNodeId,
-            method_name: path.exitPoint.name,
-            exit_point_id: path.exitPoint.id
-          } : undefined,
-          call_path: path.steps.map((step, idx) => ({
-            call_id: `call_${idx}`,
-            node_id: step.nodeId,
-            method_name: step.methodName,
-            depth: step.depth
-          })),
-          characteristics: {
-            total_calls: path.steps.length,
-            max_depth: path.maxDepth,
-            has_external_calls: path.hasExternalCalls,
-            has_database_calls: path.hasDatabaseCalls,
-            has_async_calls: path.hasAsyncCalls,
-            is_circular: path.isCircular,
-            is_recursive: path.isRecursive,
-            complexity_score: path.complexity
-          },
-          criticality: this.computeChainCriticality(ep, path),
-          criticality_factors: this.getChainCriticalityFactors(ep, path),
-          risk_analysis: {
-            risk_level: this.computeChainRiskLevel(path),
-            risk_factors: this.getChainRiskFactors(path)
-          },
-          business_context: {
-            user_action: this.inferUserAction(ep),
-            business_process: this.inferBusinessProcess(ep),
-            feature_area: this.inferFeatureArea(ep)
-          },
-          test_coverage: testCoverage
-        };
-
-        chains.push(chain);
-      }
-    }
-
-    return chains;
-  }
-
-  private determineChainType(path: TracedPath): 'entry-to-exit' | 'circular' | 'recursive' | 'dead-end' | 'hot-path' | 'critical-path' {
-    if (path.isCircular) return 'circular';
-    if (path.isRecursive) return 'recursive';
-    if (path.exitPoint) return 'entry-to-exit';
-    return 'dead-end';
-  }
-
-  private computeChainCriticality(ep: CASEntryPoint, path: TracedPath): 'critical' | 'high' | 'medium' | 'low' {
-    const criticalPatterns = ['auth', 'login', 'password', 'payment', 'checkout', 'billing', 'security'];
-    const highPatterns = ['user', 'account', 'analyze', 'analysis', 'admin', 'delete'];
-
-    const epPath = (ep.trigger?.path || ep.name || '').toLowerCase();
-
-    if (criticalPatterns.some(p => epPath.includes(p))) return 'critical';
-    if (highPatterns.some(p => epPath.includes(p))) return 'high';
-    if (path.hasExternalCalls || path.hasDatabaseCalls) return 'medium';
-    return 'low';
-  }
-
-  private getChainCriticalityFactors(ep: CASEntryPoint, path: TracedPath): string[] {
-    const factors: string[] = [];
-
-    if (ep.security?.authenticated) factors.push('requires-authentication');
-    if (path.hasExternalCalls) factors.push('external-calls');
-    if (path.hasDatabaseCalls) factors.push('database-operations');
-    if (path.isRecursive) factors.push('recursive-calls');
-    if (path.complexity > 20) factors.push('high-complexity');
-
-    return factors;
-  }
-
-  private computeChainRiskLevel(path: TracedPath): 'critical' | 'high' | 'medium' | 'low' {
-    if (path.isCircular) return 'critical';
-    if (path.complexity > 30) return 'high';
-    if (path.hasExternalCalls && path.hasDatabaseCalls) return 'high';
-    if (path.hasExternalCalls || path.hasDatabaseCalls) return 'medium';
-    return 'low';
-  }
-
-  private getChainRiskFactors(path: TracedPath): string[] {
-    const factors: string[] = [];
-
-    if (path.isCircular) factors.push('circular-dependency');
-    if (path.isRecursive) factors.push('recursive-pattern');
-    if (path.hasExternalCalls) factors.push('external-dependency');
-    if (path.hasDatabaseCalls) factors.push('data-mutation');
-    if (path.complexity > 20) factors.push('complex-flow');
-
-    return factors;
-  }
-
-  private computeChainTestCoverage(
-    path: TracedPath,
-    nodes: CASNode[]
-  ): CASCallChain['test_coverage'] {
-    const nodeIndex = new Map<string, CASNode>();
-    for (const node of nodes) {
-      nodeIndex.set(node.id, node);
-    }
-
-    const chainNodeIds = path.steps.map(s => s.nodeId);
-    const testedNodeIds: string[] = [];
-    const allTestIds: string[] = [];
-    const gaps: string[] = [];
-
-    for (const nodeId of chainNodeIds) {
-      const node = nodeIndex.get(nodeId);
-      if (!node) continue;
-
-      const testIds = node.testing?.tested_by || [];
-      if (testIds.length > 0) {
-        testedNodeIds.push(nodeId);
-        allTestIds.push(...testIds);
-      } else {
-        gaps.push(nodeId);
-      }
-    }
-
-    const coveragePercentage = chainNodeIds.length > 0
-      ? Math.round((testedNodeIds.length / chainNodeIds.length) * 100)
-      : 0;
-
-    const covered = coveragePercentage > 0;
-
-    return {
-      covered,
-      coverage_percentage: coveragePercentage,
-      test_ids: [...new Set(allTestIds)],
-      gaps: gaps.length > 0 ? gaps : undefined
-    };
-  }
-
-  private inferUserAction(ep: CASEntryPoint): string | undefined {
-    const method = ep.trigger?.method?.toUpperCase();
-    const path = ep.trigger?.path || ep.name || '';
-
-    if (method === 'GET') return `View ${this.extractResourceName(path)}`;
-    if (method === 'POST') return `Create ${this.extractResourceName(path)}`;
-    if (method === 'PUT' || method === 'PATCH') return `Update ${this.extractResourceName(path)}`;
-    if (method === 'DELETE') return `Delete ${this.extractResourceName(path)}`;
-
-    return undefined;
-  }
-
-  private inferBusinessProcess(ep: CASEntryPoint): string | undefined {
-    const path = (ep.trigger?.path || ep.name || '').toLowerCase();
-
-    if (path.includes('auth') || path.includes('login')) return 'authentication';
-    if (path.includes('checkout') || path.includes('payment')) return 'payment';
-    if (path.includes('analyze') || path.includes('analysis')) return 'analysis';
-    if (path.includes('user') || path.includes('profile')) return 'user-management';
-    if (path.includes('workspace') || path.includes('org')) return 'workspace-management';
-
-    return undefined;
-  }
-
-  private inferFeatureArea(ep: CASEntryPoint): string | undefined {
-    const path = (ep.trigger?.path || '').split('/').filter(s => s && !s.startsWith(':'))[1];
-    return path ? path.charAt(0).toUpperCase() + path.slice(1) : undefined;
-  }
-
-  private extractResourceName(path: string): string {
-    const segments = path.split('/').filter(s => s && !s.startsWith(':') && !s.startsWith('{'));
-    const resource = segments[segments.length - 1] || segments[0] || 'resource';
-    return resource.charAt(0).toUpperCase() + resource.slice(1);
+    return [];
   }
 
   private buildEnhancedFlowSummary(
@@ -5994,7 +5802,7 @@ Write a comprehensive description (3-5 paragraphs with bullet points). Do NOT be
         try {
           const matches = require('glob').globSync(pattern, {
             cwd: projectPath,
-            ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**']
+            ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/target/**', '**/vendor/**', '**/__pycache__/**']
           });
           for (const match of matches) {
             const baseName = path.basename(match).toLowerCase();

@@ -150,7 +150,8 @@ export class CallGraphBuilder {
   tracePathsFromEntry(
     entryNodeId: string,
     entryPointId: string,
-    maxDepth: number = 50
+    maxDepth: number = 50,
+    maxPaths: number = 100
   ): TracedPath[] {
     const paths: TracedPath[] = [];
     const visited = new Set<string>();
@@ -163,6 +164,7 @@ export class CallGraphBuilder {
       currentPath: PathStep[]
     ): void => {
       if (depth > maxDepth) return;
+      if (paths.length >= maxPaths) return;
 
       const node = this.nodeIndex.get(nodeId);
       if (!node) return;

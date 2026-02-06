@@ -159,12 +159,12 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     try {
       const csharpFiles = await glob(['**/*.cs'], {
         cwd: projectPath,
-        ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**']
+        ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**', '**/vendor/**']
       });
 
       const projectFiles = await glob(['**/*.csproj', '**/*.sln', '**/*.vbproj'], {
         cwd: projectPath,
-        ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**']
+        ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**', '**/vendor/**']
       });
 
       return csharpFiles.length > 0 || projectFiles.length > 0;
@@ -239,7 +239,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   private async detectProjectType(projectPath: string): Promise<void> {
     const csprojFiles = await glob(['**/*.csproj'], {
       cwd: projectPath,
-      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**']
+      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**', '**/vendor/**']
     });
 
     for (const csprojFile of csprojFiles) {
@@ -271,7 +271,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   private async extractDependencies(projectPath: string, libraries: any[]): Promise<void> {
     const csprojFiles = await glob(['**/*.csproj'], {
       cwd: projectPath,
-      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**']
+      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**', '**/vendor/**']
     });
 
     for (const csprojFile of csprojFiles) {
@@ -280,7 +280,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
 
     const packagesConfigFiles = await glob(['**/packages.config'], {
       cwd: projectPath,
-      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**']
+      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**', '**/vendor/**']
     });
 
     for (const packagesFile of packagesConfigFiles) {
@@ -1570,7 +1570,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   private async buildProjectReferenceEdges(projectPath: string, nodes: CASNode[], edges: CASEdge[]): Promise<void> {
     const csprojFiles = await glob(['**/*.csproj'], {
       cwd: projectPath,
-      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**']
+      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**', '**/vendor/**']
     });
 
     for (const csprojFile of csprojFiles) {
@@ -1674,7 +1674,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   private async analyzeCallGraph(projectPath: string, nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[]): Promise<void> {
     const csharpFiles = await glob(['**/*.cs'], {
       cwd: projectPath,
-      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**']
+      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**', '**/vendor/**']
     });
 
     const methodNodes = nodes.filter(n => n.type === 'method');

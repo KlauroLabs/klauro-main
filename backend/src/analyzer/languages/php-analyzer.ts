@@ -174,7 +174,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
     try {
       const phpFiles = await glob(['**/*.php'], {
         cwd: projectPath,
-        ignore: ['**/vendor/**', '**/.git/**', '**/node_modules/**']
+        ignore: ['**/vendor/**', '**/.git/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**']
       });
 
       const composerFiles = await glob(['composer.json', 'composer.lock'], {
@@ -200,7 +200,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
       const phpFiles = await glob(['**/*.php'], {
         cwd: context.projectPath,
-        ignore: ['**/vendor/**', '**/.git/**', '**/node_modules/**']
+        ignore: ['**/vendor/**', '**/.git/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**']
       });
 
       const namespaces = new Map<string, string[]>();
@@ -1976,7 +1976,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
   private async analyzeCallGraph(projectPath: string, nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[]): Promise<void> {
     const phpFiles = await glob(['**/*.php'], {
       cwd: projectPath,
-      ignore: ['**/vendor/**', '**/.git/**', '**/node_modules/**']
+      ignore: ['**/vendor/**', '**/.git/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**']
     });
 
     const methodNodes = nodes.filter(n => n.type === 'method' || n.type === 'function');

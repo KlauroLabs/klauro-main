@@ -110,7 +110,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     try {
       const files = await glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
         cwd: projectPath,
-        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**']
+        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/target/**', '**/vendor/**', '**/__pycache__/**']
       });
       return files.length > 0;
     } catch {
@@ -125,7 +125,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   async getRelevantFiles(projectPath: string): Promise<string[]> {
     return glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
       cwd: projectPath,
-      ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**']
+      ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/target/**', '**/vendor/**', '**/__pycache__/**']
     });
   }
 
@@ -360,7 +360,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
       const sourceFiles = await glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
         cwd: context.projectPath,
-        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**']
+        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/target/**', '**/vendor/**', '**/__pycache__/**']
       });
 
       this.isTypeScriptProject = sourceFiles.filter(f => f.endsWith('.ts') || f.endsWith('.tsx')).length >

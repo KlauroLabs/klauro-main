@@ -143,7 +143,7 @@ export class GoAnalyzer extends BaseAnalyzer {
     try {
       const goFiles = await glob(['**/*.go'], {
         cwd: projectPath,
-        ignore: ['**/vendor/**', '**/.git/**']
+        ignore: ['**/vendor/**', '**/.git/**', '**/target/**', '**/node_modules/**', '**/dist/**', '**/build/**']
       });
 
       const projectFiles = await glob(['go.mod', 'go.sum', 'Gopkg.toml'], {
@@ -1604,7 +1604,7 @@ export class GoAnalyzer extends BaseAnalyzer {
   private async analyzeCallGraph(projectPath: string, nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[]): Promise<void> {
     const goFiles = await glob(['**/*.go'], {
       cwd: projectPath,
-      ignore: ['**/vendor/**', '**/.git/**']
+      ignore: ['**/vendor/**', '**/.git/**', '**/target/**', '**/node_modules/**', '**/dist/**', '**/build/**']
     });
 
     const functionNodes = nodes.filter(n => n.type === 'function' || n.type === 'method');

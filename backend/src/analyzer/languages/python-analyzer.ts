@@ -138,7 +138,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
     try {
       const pythonFiles = await glob(['**/*.py'], {
         cwd: projectPath,
-        ignore: ['**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**', '**/.git/**', '**/src/analyzer/**', '**/analyzer/**', '**/analyzers/**', '**/node_modules/**']
+        ignore: ['**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**', '**/.git/**', '**/src/analyzer/**', '**/analyzer/**', '**/analyzers/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**']
       });
 
       const configFiles = await glob(['requirements.txt', 'setup.py', 'pyproject.toml', 'Pipfile'], {
