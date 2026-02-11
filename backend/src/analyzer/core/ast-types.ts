@@ -156,3 +156,50 @@ export interface PHPASTNode {
   };
   children?: PHPASTNode[];
 }
+
+export interface TypeScriptASTNode {
+  kind: string;
+  name?: string;
+  className?: string;
+  isAsync?: boolean;
+  isExported?: boolean;
+  decorators?: string[];
+  parameters?: Array<{
+    name: string;
+    type?: string;
+    optional?: boolean;
+  }>;
+  returnType?: string;
+  calls?: Array<{
+    target?: string;
+    method: string;
+    line: number;
+    isAsync?: boolean;
+  }>;
+  imports?: Array<{
+    source: string;
+    specifiers: Array<{ name: string; alias?: string }>;
+    isDefault?: boolean;
+    isNamespace?: boolean;
+  }>;
+  properties?: Array<{
+    name: string;
+    type?: string;
+    visibility?: string;
+    isStatic?: boolean;
+    isReadonly?: boolean;
+  }>;
+  methods?: Array<{
+    name: string;
+    isAsync?: boolean;
+    visibility?: string;
+    isStatic?: boolean;
+  }>;
+  location?: {
+    startLine: number;
+    endLine: number;
+    startColumn: number;
+    endColumn: number;
+  };
+  children?: TypeScriptASTNode[];
+}

@@ -13,7 +13,7 @@ import {
   FileAnalysisResult,
 } from '../../types/cas.types';
 
-export {
+export type {
   CASNode,
   CASEdge,
   CASContribution,
@@ -22,9 +22,12 @@ export {
   CASAnalyzerContribution,
   CASNodeBuilder,
   CASEdgeBuilder,
+  FileAnalysisResult,
+} from '../../types/cas.types';
+
+export {
   generateNodeId,
   generateEdgeId,
-  FileAnalysisResult,
 } from '../../types/cas.types';
 
 export type CASAnalysisResult = CASContribution;

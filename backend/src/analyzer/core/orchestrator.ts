@@ -70,11 +70,10 @@ import { FlowScorer } from './flow-scorer';
 import { FlowGraphBuilder } from './flow-graph-builder';
 import { GitAnalyzer } from './git-analyzer';
 
-export { CASOutput } from '../../types/cas.types';
+export type { CASOutput } from '../../types/cas.types';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
 import * as path from 'path';
-import { spawnSync } from 'child_process';
 
 export interface AnalyzerRegistration {
   id: string;
@@ -92,6 +91,10 @@ export interface AnalyzerRegistration {
   analyzer: BaseAnalyzer;
 }
 
+export interface IncrementalAnalysisOptions {
+  loadCache?: (contentHash: string) => Promise<FileAnalysisResult | null>;
+  saveCache?: (contentHash: string, result: FileAnalysisResult) => Promise<void>;
+}
 
 export class AnalyzerOrchestrator {
   private analyzers: Map<string, AnalyzerRegistration> = new Map();
@@ -163,8 +166,14 @@ export class AnalyzerOrchestrator {
   async orchestrateAnalysis(projectPath: string): Promise<CASOutput> {
     const startTime = Date.now();
     const analysisId = `analysis_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const timings: Record<string, number> = {};
+    const logTiming = (phase: string, start: number) => {
+      timings[phase] = Date.now() - start;
+    };
 
+    let phaseStart = Date.now();
     const detectedAnalyzers = await this.detectAnalyzers(projectPath);
+    logTiming('detectAnalyzers', phaseStart);
     const context: AnalysisContext = {
       projectPath,
       filters: ['**/src/analyzer/**', '**/analyzer/**', '**/analyzers/**']
@@ -193,9 +202,12 @@ export class AnalyzerOrchestrator {
     const parallelAnalyzers = detectedAnalyzers.filter(r => r.type === 'framework' || r.type === 'library');
     const patternAnalyzers = detectedAnalyzers.filter(r => r.type === 'pattern');
 
+    phaseStart = Date.now();
     for (const registration of languageAnalyzers) {
       try {
+        const langStart = Date.now();
         await this.runAnalyzer(registration, context, projectPath, accumulators);
+        logTiming(`language_${registration.id}`, langStart);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error(`Error running analyzer ${registration.id}:`, error);
@@ -208,7 +220,9 @@ export class AnalyzerOrchestrator {
         });
       }
     }
+    logTiming('languageAnalyzers', phaseStart);
 
+    phaseStart = Date.now();
     if (parallelAnalyzers.length > 0) {
       const languageSnapshot: CASContribution = {
         nodes: [...allNodes],
@@ -254,8 +268,9 @@ export class AnalyzerOrchestrator {
         .filter((r): r is PromiseFulfilledResult<{ registration: AnalyzerRegistration; result: CASContribution; executionTime: number }> =>
           r.status === 'fulfilled'
         )
-        .map(r => r.value)
-        .sort((a, b) => a.registration.id.localeCompare(b.registration.id));
+        .map(r => r.value);
+
+      successfulResults.sort((a, b) => a.registration.id.localeCompare(b.registration.id));
 
       parallelResults.forEach((r, i) => {
         if (r.status === 'rejected') {
@@ -323,64 +338,101 @@ export class AnalyzerOrchestrator {
         });
       }
     }
+    logTiming('frameworkAnalyzers', phaseStart);
 
+    phaseStart = Date.now();
     this.linkRouteHandlers(allNodes, allEdges, allEntryPoints);
+    logTiming('pp_linkRouteHandlers', phaseStart);
 
-    const gitAnalyzer = new GitAnalyzer(projectPath);
-    const filePathsForGit = allNodes
-      .filter((n): n is CASNode & { source: { file: string } } => !!n.source?.file)
-      .map(n => n.source.file);
-    gitAnalyzer.preloadAllFileMetrics(filePathsForGit);
-
+    phaseStart = Date.now();
     const systemName = path.basename(projectPath);
     const progressiveLevels = this.buildProgressiveLevels(allNodes, categories);
+    logTiming('pp_progressiveLevels', phaseStart);
+
+    phaseStart = Date.now();
     const index = this.buildIndex(allNodes, allEntryPoints, allExitPoints, allPerspectives);
+    logTiming('pp_buildIndex', phaseStart);
 
     if (allLibraries.length === 0) {
       const detectedLibraries = this.detectLibrariesFromManifests(projectPath);
       allLibraries.push(...detectedLibraries);
     }
 
+    phaseStart = Date.now();
     const architectureSummary = this.buildArchitectureSummary(allNodes, allEntryPoints, allExitPoints, contributions);
     const routeTable = this.buildRouteTable(allEntryPoints);
     const databaseSchema = this.buildDatabaseSchema(allNodes, allLibraries);
     const externalServices = this.buildExternalServices(allNodes, allExitPoints, allLibraries);
+    logTiming('pp_architecture', phaseStart);
 
-    const detectedPatterns = this.detectPatterns(allNodes, allEdges);
-    allPatterns.push(...detectedPatterns);
+    logTiming('pp_detectPatterns', Date.now());
 
+    phaseStart = Date.now();
     const intents = this.buildIntents(allNodes);
+    logTiming('pp_buildIntents', phaseStart);
+
+    phaseStart = Date.now();
     const flowSummary = this.buildFlowSummary(allNodes, allEntryPoints);
-    const changeRisks = this.buildChangeRisks(allNodes, allEdges, allEntryPoints, gitAnalyzer);
-    const changeRiskSummary = this.buildChangeRiskSummary(changeRisks);
     const dataEntities = this.buildDataEntities(allNodes, allEdges);
     const dataSummary = this.buildDataSummary(dataEntities, allNodes);
     const securityBoundaries = this.buildSecurityBoundaries(allNodes, allEntryPoints);
     const securitySummary = this.buildSecuritySummary(securityBoundaries, allNodes);
-    const temporalStability = this.buildTemporalStability(allNodes, gitAnalyzer);
-    const stabilitySummary = this.buildStabilitySummary(temporalStability);
+    logTiming('pp_dataAndSecurity', phaseStart);
 
+    phaseStart = Date.now();
+    const gitAnalyzer = new GitAnalyzer(projectPath);
+    let changeRisks: CASChangeRisk[] = [];
+    let temporalStability: CASTemporalStability[] = [];
+
+    if (gitAnalyzer.isAvailable()) {
+      const filePathsForGit = allNodes
+        .filter((n): n is CASNode & { source: { file: string } } => !!n.source?.file)
+        .map(n => n.source.file);
+
+      if (filePathsForGit.length <= 500) {
+        gitAnalyzer.preloadAllFileMetrics(filePathsForGit);
+        changeRisks = this.buildChangeRisks(allNodes, allEdges, allEntryPoints, gitAnalyzer);
+        temporalStability = this.buildTemporalStability(allNodes, gitAnalyzer);
+      }
+    }
+    logTiming('pp_gitAnalysis', phaseStart);
+
+    phaseStart = Date.now();
+    const changeRiskSummary = this.buildChangeRiskSummary(changeRisks);
+    const stabilitySummary = this.buildStabilitySummary(temporalStability);
     const systemCapabilities = this.buildSystemCapabilities(allEntryPoints, dataEntities, allNodes, allEdges);
     const systemPurpose = this.inferSystemPurpose(allEntryPoints, dataEntities, systemCapabilities, allNodes);
+    logTiming('pp_capabilities', phaseStart);
 
+    phaseStart = Date.now();
     const callGraphBuilder = new CallGraphBuilder(allNodes, allEdges, allExitPoints);
     const callChains = this.buildCallChains(allNodes, allEdges, allEntryPoints, allExitPoints, callGraphBuilder);
+    logTiming('pp_callGraph', phaseStart);
 
+    phaseStart = Date.now();
     this.enrichNodeCallGraphs(allNodes, callGraphBuilder, allEntryPoints, allExitPoints);
     this.deriveParentFromContainsEdges(allNodes, allEdges);
     this.enrichNodePerspectives(allNodes, allPerspectives);
+    logTiming('pp_enrichNodes', phaseStart);
 
+    phaseStart = Date.now();
     const flowCoverage = this.buildFlowCoverage(allNodes, allEntryPoints, callChains);
     const testGaps = this.buildTestGaps(flowCoverage, allNodes);
+    logTiming('pp_flowCoverage', phaseStart);
 
+    phaseStart = Date.now();
     const domainExtractor = new DomainExtractor();
     const domainConcepts = domainExtractor.extract(allNodes, allEntryPoints, dataEntities);
+    logTiming('pp_domainConcepts', phaseStart);
 
+    phaseStart = Date.now();
     const workflowDetector = new WorkflowDetector();
     const workflows = workflowDetector.detectWorkflows(allEntryPoints, callChains, allNodes, allEdges, allExitPoints);
     workflowDetector.classifyWorkflows(workflows, domainConcepts);
     const workflowGraph = workflowDetector.buildDependencyGraph(workflows, callChains, allNodes);
+    logTiming('pp_workflows', phaseStart);
 
+    phaseStart = Date.now();
     const flowGraph = this.buildFlowGraph(
       allEntryPoints,
       callChains,
@@ -391,10 +443,14 @@ export class AnalyzerOrchestrator {
       databaseSchema,
       systemPurpose
     );
+    logTiming('pp_flowGraph', phaseStart);
 
+    phaseStart = Date.now();
     const enhancedChangeRisks = this.enhanceChangeRisks(changeRisks, callGraphBuilder, callChains, allEntryPoints);
     const enhancedFlowSummary = this.buildEnhancedFlowSummary(callChains, allEntryPoints);
+    logTiming('pp_enhanceRisks', phaseStart);
 
+    phaseStart = Date.now();
     const entryPointSummary = this.summarizeEntryPoints(allEntryPoints);
     const frameworkNames = contributions
       .filter(c => c.analyzer_type === 'framework')
@@ -414,8 +470,13 @@ export class AnalyzerOrchestrator {
       externalServiceNames,
       flowGraph
     );
+    logTiming('pp_enhancedPurpose', phaseStart);
 
+    phaseStart = Date.now();
     const methodCalls = this.buildMethodCalls(allNodes, allEdges);
+    logTiming('pp_methodCalls', phaseStart);
+
+    phaseStart = Date.now();
     const allDecorators = this.buildAllDecorators(allNodes);
     const documentationSummary = this.buildDocumentationSummary(allNodes);
     const todosSummary = this.buildTodosSummary(allNodes);
@@ -423,6 +484,17 @@ export class AnalyzerOrchestrator {
     const securityContexts = this.buildSecurityContexts(allNodes, allEntryPoints, allEdges);
     const configuration = this.buildAllConfiguration(allNodes, allExitPoints, externalServices, projectPath);
     const validation = this.buildValidation(allNodes, allEdges);
+    logTiming('pp_finalMetadata', phaseStart);
+
+    phaseStart = Date.now();
+    const testSuites = this.buildTestSuites(allNodes, allEntryPoints);
+    const mocks = this.buildMocks(allNodes);
+    const fixtures = this.buildFixtures(allNodes);
+    const testSummary = this.buildTestSummary(allNodes, allEntryPoints);
+    logTiming('pp_testData', phaseStart);
+
+    const totalTime = Date.now() - startTime;
+    console.log(`[Unravl] Analysis completed in ${totalTime}ms. Breakdown:`, JSON.stringify(timings, null, 2));
 
     return {
       cas_version: '1.7.0',
@@ -482,17 +554,18 @@ export class AnalyzerOrchestrator {
       configuration,
       analysis_errors: analysisErrors,
       validation,
-      test_suites: this.buildTestSuites(allNodes, allEntryPoints),
-      mocks: this.buildMocks(allNodes),
-      fixtures: this.buildFixtures(allNodes),
-      test_summary: this.buildTestSummary(allNodes, allEntryPoints)
+      test_suites: testSuites,
+      mocks: mocks,
+      fixtures: fixtures,
+      test_summary: testSummary
     } as CASOutput;
   }
 
   async orchestrateIncrementalAnalysis(
     projectPath: string,
     previousOutput: CASOutput,
-    previousState: IncrementalState | null
+    previousState: IncrementalState | null,
+    options?: IncrementalAnalysisOptions
   ): Promise<{
     output: CASOutput;
     state: IncrementalState;
@@ -524,7 +597,8 @@ export class AnalyzerOrchestrator {
       projectPath,
       previousOutput,
       previousState,
-      changeSet
+      changeSet,
+      options
     );
 
     const updatedState = this.updateIncrementalState(
@@ -552,7 +626,8 @@ export class AnalyzerOrchestrator {
     projectPath: string,
     previousOutput: CASOutput,
     previousState: IncrementalState,
-    changeSet: ChangeSet
+    changeSet: ChangeSet,
+    options?: IncrementalAnalysisOptions
   ): Promise<{ output: CASOutput; fileResults: Map<string, FileAnalysisResult> }> {
     const detectedAnalyzers = await this.detectAnalyzers(projectPath);
     const incrementalAnalyzers = detectedAnalyzers.filter(
@@ -613,6 +688,13 @@ export class AnalyzerOrchestrator {
             const content = await fs.readFile(fullPath, 'utf-8');
             const contentHash = this.computeContentHash(content);
 
+            if (options?.loadCache) {
+              const cached = await options.loadCache(contentHash);
+              if (cached) {
+                return { relativePath, result: cached, success: true };
+              }
+            }
+
             for (const registration of incrementalAnalyzers) {
               if (registration.analyzer.analyzeFileSingle) {
                 const relevantFiles = await registration.analyzer.getRelevantFiles?.(projectPath) || [];
@@ -624,6 +706,11 @@ export class AnalyzerOrchestrator {
                     contentHash
                   };
                   const result = await registration.analyzer.analyzeFileSingle(context);
+
+                  if (options?.saveCache && result) {
+                    await options.saveCache(contentHash, result);
+                  }
+
                   return { relativePath, result, success: true };
                 }
               }
@@ -2756,13 +2843,13 @@ export class AnalyzerOrchestrator {
     const coreConcepts = domainExtractor.getCoreConcepts(domainConcepts);
     const primaryDomain = domainExtractor.inferPrimaryDomain(domainConcepts);
 
-    const description = this.inferDescriptionWithClaude(
+    const description = this.buildQuickDescription(
+      basePurpose,
+      flowGraph,
       databaseEntities,
       entryPointSummary,
       frameworks,
-      externalServices,
-      basePurpose,
-      flowGraph
+      externalServices
     );
 
     const supportingWorkflows = workflows.filter(w => w.classification === 'supporting');
@@ -2777,99 +2864,49 @@ export class AnalyzerOrchestrator {
     };
   }
 
-  private inferDescriptionWithClaude(
+  private buildQuickDescription(
+    systemPurpose: SystemPurpose,
+    flowGraph: CASFlowGraph,
     databaseEntities: string[],
     entryPoints: { type: string; count: number }[],
     frameworks: string[],
-    externalServices: string[],
-    systemPurpose: SystemPurpose,
-    flowGraph: CASFlowGraph
+    externalServices: string[]
   ): string {
-    const topCapabilities = [...flowGraph.capabilities]
-      .sort((a, b) => b.signals.total_score - a.signals.total_score)
-      .slice(0, 15)
-      .map(cap => ({
-        name: cap.name,
-        classification: cap.classification,
-        score: cap.signals.total_score,
-        operations: cap.operations.map(op => op.name)
-      }));
+    const parts: string[] = [];
 
-    const summary = {
-      system_purpose: {
-        primary_type: systemPurpose.primary_type,
-        confidence: systemPurpose.confidence,
-        evidence: systemPurpose.evidence?.slice(0, 5),
-        secondary_types: systemPurpose.secondary_types
-      },
-      flow_graph: {
-        capabilities_count: flowGraph.capabilities.length,
-        dependencies_count: flowGraph.dependencies.length,
-        primary_flow: flowGraph.primary_flow,
-        system_insights: flowGraph.system_insights,
-        top_capabilities: topCapabilities
-      },
-      database_entities: databaseEntities,
-      entry_points: entryPoints,
-      frameworks: frameworks,
-      external_services: externalServices
-    };
+    const typeLabel = systemPurpose.primary_type.replace(/-/g, ' ');
+    parts.push(`A ${typeLabel} system`);
 
-    const prompt = `You are a senior software architect analyzing a codebase. Based on the static analysis summary below, write a THOROUGH and DETAILED description of what this system does.
-
-Your description MUST include:
-1. A clear opening statement about the system's primary purpose and domain
-2. Key capabilities organized as bullet points
-3. Technical architecture highlights (frameworks, integrations, data model)
-4. What makes this system sophisticated or unique
-
-Be SPECIFIC. Use domain-specific terminology. If you see trading, DCA, exchanges, portfolios - this is likely a fintech/investment platform, NOT a "devtools" system. Look at the actual operations like "execute-dca", "balance", "portfolio", "connections/exchanges" to understand what the system truly does.
-
-ANALYSIS SUMMARY:
-${JSON.stringify(summary, null, 2)}
-
-Write a comprehensive description (3-5 paragraphs with bullet points). Do NOT be generic. Do NOT say "devtools" unless it truly is. Respond with ONLY the description.`;
-
-    const cliCommands = [
-      { cmd: '/Users/michaelshattuck/.opencode/bin/opencode', args: ['run', '--format', 'json', prompt], parseJson: true },
-      { cmd: '/Users/michaelshattuck/.local/bin/claude', args: ['--print', prompt], parseJson: false }
-    ];
-
-    for (const { cmd, args, parseJson } of cliCommands) {
-      try {
-        const result = spawnSync(cmd, args, {
-          encoding: 'utf-8',
-          timeout: 90000
-        });
-        if (result.status === 0 && result.stdout) {
-          let output = result.stdout.trim();
-
-          if (parseJson) {
-            const lines = output.split('\n');
-            const textParts: string[] = [];
-            for (const line of lines) {
-              try {
-                const event = JSON.parse(line);
-                if (event.type === 'text' && event.part?.text) {
-                  textParts.push(event.part.text);
-                }
-              } catch {
-                continue;
-              }
-            }
-            output = textParts.join('').trim();
-          }
-
-          if (output) {
-            return output;
-          }
-        }
-      } catch {
-        continue;
-      }
+    if (frameworks.length > 0) {
+      parts.push(`built with ${frameworks.slice(0, 3).join(', ')}`);
     }
-    return `A ${systemPurpose.primary_type} system with ${flowGraph.capabilities.length} capabilities and ${databaseEntities.length} database entities`;
+
+    const details: string[] = [];
+
+    if (flowGraph.capabilities.length > 0) {
+      const topCaps = [...flowGraph.capabilities]
+        .sort((a, b) => b.signals.total_score - a.signals.total_score)
+        .slice(0, 5)
+        .map(c => c.name.toLowerCase().replace(/_/g, ' '));
+      details.push(`Key capabilities: ${topCaps.join(', ')}`);
+    }
+
+    if (databaseEntities.length > 0) {
+      details.push(`Data model: ${databaseEntities.slice(0, 5).join(', ')}${databaseEntities.length > 5 ? ` (+${databaseEntities.length - 5} more)` : ''}`);
+    }
+
+    if (entryPoints.length > 0) {
+      const epSummary = entryPoints.map(ep => `${ep.count} ${ep.type}`).join(', ');
+      details.push(`Entry points: ${epSummary}`);
+    }
+
+    if (externalServices.length > 0) {
+      details.push(`Integrations: ${externalServices.slice(0, 3).join(', ')}`);
+    }
+
+    return parts.join(' ') + '. ' + details.join('. ') + '.';
   }
+
 
   private summarizeEntryPoints(entryPoints: CASEntryPoint[]): { type: string; count: number }[] {
     const counts = new Map<string, number>();

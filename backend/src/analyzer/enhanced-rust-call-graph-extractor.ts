@@ -1,7 +1,8 @@
-import { RustAST } from '../services/ast-runner';
+import type { RustASTNode } from './core/ast-types';
 import { RustAnalyzer } from './languages/rust-analyzer';
-import { CASNode, CASEdge, CASMethodCall, CASCallChain } from '../types/cas.types';
-import { generateNodeId } from '../utils/id-generator';
+import { CASNode, CASEdge, CASMethodCall, CASCallChain, generateNodeId } from '../types/cas.types';
+
+type RustAST = RustASTNode;
 
 /**
  * Enhanced call graph extractor for Rust code
@@ -233,7 +234,7 @@ export class EnhancedRustCallGraphExtractor {
     objectContext?: string
   ): CASMethodCall | null {
     const targetNodeId = this.resolveMethodTarget(methodName, objectContext);
-    const arguments = this.parseArguments(argsStr);
+    const parsedArgs = this.parseArguments(argsStr);
     
     const call: CASMethodCall = {
       id: `call_${callerNode.id}_to_${targetNodeId || 'external'}_${lineNumber}`,
@@ -241,7 +242,7 @@ export class EnhancedRustCallGraphExtractor {
       target_node: targetNodeId,
       call_details: {
         method_name: methodName,
-        signature: this.buildSignature(methodName, arguments),
+        signature: this.buildSignature(methodName, parsedArgs),
         location: {
           file: callerNode.source?.file || '',
           line: lineNumber,
@@ -261,10 +262,10 @@ export class EnhancedRustCallGraphExtractor {
         enclosing_function: callerNode.name,
         enclosing_class: this.findEnclosingClass(callerNode)
       },
-      arguments,
+      arguments: parsedArgs,
       performance_hints: {
         is_hot_path: this.isHotPath(methodName),
-        is_potential_bottleneck: this.isPotentialBottleneck(methodName, arguments),
+        is_potential_bottleneck: this.isPotentialBottleneck(methodName, parsedArgs),
         is_critical_path: this.isCriticalPath(methodName)
       }
     };
@@ -295,7 +296,7 @@ export class EnhancedRustCallGraphExtractor {
     crateName: string,
     moduleName: string
   ): CASMethodCall | null {
-    const arguments = this.parseArguments(argsStr);
+    const parsedArgs = this.parseArguments(argsStr);
     
     const call: CASMethodCall = {
       id: `call_${callerNode.id}_to_${crateName}_${moduleName}_${functionName}_${lineNumber}`,
@@ -303,7 +304,7 @@ export class EnhancedRustCallGraphExtractor {
       target_node: undefined, // External call
       call_details: {
         method_name: functionName,
-        signature: this.buildSignature(functionName, arguments),
+        signature: this.buildSignature(functionName, parsedArgs),
         location: {
           file: callerNode.source?.file || '',
           line: lineNumber,
@@ -323,7 +324,7 @@ export class EnhancedRustCallGraphExtractor {
         enclosing_function: callerNode.name,
         enclosing_class: this.findEnclosingClass(callerNode)
       },
-      arguments,
+      arguments: parsedArgs,
       external_details: {
         library: crateName,
         module: moduleName,
@@ -410,9 +411,9 @@ export class EnhancedRustCallGraphExtractor {
   /**
    * Build method signature
    */
-  private buildSignature(methodName: string, arguments: any[]): string {
-    const args = arguments.map(arg => arg.type || arg.value || 'unknown').join(', ');
-    return `${methodName}(${args})`;
+  private buildSignature(methodName: string, args: any[]): string {
+    const argsStr = args.map(arg => arg.type || arg.value || 'unknown').join(', ');
+    return `${methodName}(${argsStr})`;
   }
 
   /**
@@ -471,7 +472,7 @@ export class EnhancedRustCallGraphExtractor {
     return hotPathMethods.some(hot => methodName.toLowerCase().includes(hot));
   }
 
-  private isPotentialBottleneck(methodName: string, arguments: any[]): boolean {
+  private isPotentialBottleneck(methodName: string, _args: any[]): boolean {
     const bottleneckKeywords = ['load', 'save', 'query', 'fetch', 'calculate'];
     return bottleneckKeywords.some(keyword => methodName.toLowerCase().includes(keyword));
   }
@@ -529,8 +530,8 @@ export class EnhancedRustCallGraphExtractor {
    */
   private buildCallChains(): CASCallChain[] {
     const chains: CASCallChain[] = [];
-    const entryPoints = this.nodes.filter(n => 
-      n.metadata?.is_entry_point || 
+    const entryPoints = this.nodes.filter(n =>
+      (n.metadata as any)?.is_entry_point ||
       n.tags?.includes('entry-point') ||
       n.name === 'main'
     );
@@ -561,7 +562,7 @@ export class EnhancedRustCallGraphExtractor {
       entry_point: {
         node_id: entryPoint.id,
         method_name: entryPoint.name,
-        entry_point_id: entryPoint.metadata?.entry_point_id
+        entry_point_id: (entryPoint.metadata as any)?.entry_point_id
       },
       call_path: callPath,
       characteristics: {
@@ -573,7 +574,7 @@ export class EnhancedRustCallGraphExtractor {
         }),
         has_database_calls: callPath.some(p => {
           const call = this.methodCalls.find(c => c.id === p.call_id);
-          return call?.external_details?.library?.includes('sqlx') || 
+          return call?.external_details?.library?.includes('sqlx') ||
                  call?.external_details?.library?.includes('diesel');
         }),
         has_async_calls: callPath.some(p => {
@@ -583,6 +584,10 @@ export class EnhancedRustCallGraphExtractor {
         is_circular: this.hasCircularCall(callPath),
         is_recursive: this.hasRecursiveCall(callPath),
         complexity_score: this.calculateComplexityScore(callPath)
+      },
+      risk_analysis: {
+        risk_level: 'low',
+        risk_factors: []
       }
     };
   }
@@ -638,11 +643,13 @@ export class EnhancedRustCallGraphExtractor {
           source: call.caller_node,
           target: call.target_node,
           type: 'calls',
-          analyzer: 'rust-call-graph-extractor',
           metadata: {
-            call_type: call.call_details.call_type,
-            is_async: call.execution_context.is_async,
-            external: call.external_details !== undefined
+            async: call.execution_context.is_async,
+            attributes: {
+              analyzer: 'rust-call-graph-extractor',
+              call_type: call.call_details.call_type,
+              external: call.external_details !== undefined
+            }
           }
         });
       }

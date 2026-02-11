@@ -7,15 +7,14 @@
     "allowSyntheticDefaultImports": true,
     "strict": true,
     "skipLibCheck": true,
-    "outDir": "./dist",
-    "rootDir": ".",
+    "noEmit": true,
     "baseUrl": ".",
     "resolveJsonModule": true,
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
     "downlevelIteration": true,
     "noErrorTruncation": false,
-    "isolatedModules": true
+    "isolatedModules": false
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]

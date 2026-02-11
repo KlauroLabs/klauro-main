@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import type { CSharpASTNode, GoASTNode, PHPASTNode, RustASTNode } from './ast-types';
+import type { CSharpASTNode, GoASTNode, PHPASTNode, RustASTNode, TypeScriptASTNode } from './ast-types';
 
 let ParserClass: any = null;
 let grammars: Record<string, any> = {};
@@ -27,6 +27,19 @@ function loadGrammar(language: string): any {
       }
       case 'rust':
         grammars[language] = require('tree-sitter-rust');
+        break;
+      case 'typescript': {
+        const tsModule = require('tree-sitter-typescript');
+        grammars[language] = tsModule.typescript;
+        break;
+      }
+      case 'tsx': {
+        const tsModule = require('tree-sitter-typescript');
+        grammars[language] = tsModule.tsx;
+        break;
+      }
+      case 'javascript':
+        grammars[language] = require('tree-sitter-javascript');
         break;
       default:
         throw new Error(`Unsupported language: ${language}`);
@@ -403,6 +416,217 @@ export class TreeSitterParser {
         kind: 'SourceFile',
         children: children.length > 0 ? children : undefined
       };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  parseTypeScriptFromSource(source: string, isTsx: boolean = false): TypeScriptASTNode | null {
+    try {
+      const language = isTsx ? 'tsx' : 'typescript';
+      const parser = this.getParser(language);
+      const tree = parser.parse(source);
+      const root = tree.rootNode;
+
+      const imports: TypeScriptASTNode['imports'] = [];
+      const importNodes = collectByType(root, 'import_statement');
+      for (const imp of importNodes) {
+        const sourceNode = imp.childForFieldName('source') || findFirst(imp, 'string');
+        if (!sourceNode) continue;
+        const sourcePath = sourceNode.text.replace(/['"]/g, '');
+
+        const specifiers: Array<{ name: string; alias?: string }> = [];
+        let isDefault = false;
+        let isNamespace = false;
+
+        const clause = findFirst(imp, 'import_clause');
+        if (clause) {
+          for (let i = 0; i < clause.namedChildCount; i++) {
+            const child = clause.namedChild(i);
+            if (child.type === 'identifier') {
+              isDefault = true;
+              specifiers.push({ name: child.text });
+            } else if (child.type === 'namespace_import') {
+              isNamespace = true;
+              const name = child.namedChild(0);
+              if (name) specifiers.push({ name: name.text });
+            } else if (child.type === 'named_imports') {
+              const specs = collectByType(child, 'import_specifier');
+              for (const spec of specs) {
+                const name = spec.childForFieldName('name');
+                const alias = spec.childForFieldName('alias');
+                if (name) {
+                  specifiers.push({
+                    name: name.text,
+                    alias: alias?.text
+                  });
+                }
+              }
+            }
+          }
+        }
+
+        imports.push({ source: sourcePath, specifiers, isDefault, isNamespace });
+      }
+
+      const children: TypeScriptASTNode[] = [];
+
+      const funcTypes = new Set([
+        'function_declaration',
+        'method_definition',
+        'arrow_function',
+        'function_expression'
+      ]);
+      const functions = collectByTypes(root, funcTypes);
+
+      for (const func of functions) {
+        const nameNode = func.childForFieldName('name');
+        let funcName = nameNode?.text;
+
+        if (!funcName && func.parent?.type === 'variable_declarator') {
+          const varName = func.parent.childForFieldName('name');
+          funcName = varName?.text;
+        }
+
+        if (!funcName && func.parent?.type === 'pair') {
+          const key = func.parent.childForFieldName('key');
+          funcName = key?.text;
+        }
+
+        if (!funcName) continue;
+
+        const isAsync = func.text.startsWith('async') ||
+                       func.children?.some((c: any) => c.type === 'async');
+
+        let className: string | undefined;
+        let parent = func.parent;
+        while (parent) {
+          if (parent.type === 'class_declaration' || parent.type === 'class') {
+            const classNameNode = parent.childForFieldName('name');
+            className = classNameNode?.text;
+            break;
+          }
+          parent = parent.parent;
+        }
+
+        const calls: Array<{ target?: string; method: string; line: number; isAsync?: boolean }> = [];
+        const body = func.childForFieldName('body');
+        if (body) {
+          const callNodes = collectByType(body, 'call_expression');
+          for (const call of callNodes) {
+            const callee = call.childForFieldName('function') || call.namedChild(0);
+            if (!callee) continue;
+
+            const isAwait = call.parent?.type === 'await_expression';
+
+            if (callee.type === 'member_expression') {
+              const obj = callee.childForFieldName('object');
+              const prop = callee.childForFieldName('property');
+              if (prop) {
+                calls.push({
+                  target: obj?.text,
+                  method: prop.text,
+                  line: call.startPosition.row + 1,
+                  isAsync: isAwait
+                });
+              }
+            } else if (callee.type === 'identifier') {
+              calls.push({
+                method: callee.text,
+                line: call.startPosition.row + 1,
+                isAsync: isAwait
+              });
+            }
+          }
+        }
+
+        const decorators: string[] = [];
+        if (func.previousNamedSibling?.type === 'decorator') {
+          let dec = func.previousNamedSibling;
+          while (dec && dec.type === 'decorator') {
+            const name = findFirst(dec, 'identifier') || findFirst(dec, 'call_expression');
+            if (name) decorators.unshift(name.text.split('(')[0]);
+            dec = dec.previousNamedSibling;
+          }
+        }
+
+        children.push({
+          kind: func.type === 'method_definition' ? 'Method' : 'Function',
+          name: funcName,
+          className,
+          isAsync,
+          decorators: decorators.length > 0 ? decorators : undefined,
+          calls: calls.length > 0 ? calls : undefined,
+          location: {
+            startLine: func.startPosition.row + 1,
+            endLine: func.endPosition.row + 1,
+            startColumn: func.startPosition.column,
+            endColumn: func.endPosition.column
+          }
+        });
+      }
+
+      const classNodes = collectByType(root, 'class_declaration');
+      for (const cls of classNodes) {
+        const nameNode = cls.childForFieldName('name');
+        const className = nameNode?.text;
+        if (!className) continue;
+
+        const decorators: string[] = [];
+        if (cls.previousNamedSibling?.type === 'decorator') {
+          let dec = cls.previousNamedSibling;
+          while (dec && dec.type === 'decorator') {
+            const name = findFirst(dec, 'identifier') || findFirst(dec, 'call_expression');
+            if (name) decorators.unshift(name.text.split('(')[0]);
+            dec = dec.previousNamedSibling;
+          }
+        }
+
+        const properties: TypeScriptASTNode['properties'] = [];
+        const body = cls.childForFieldName('body');
+        if (body) {
+          const propDefs = collectByTypes(body, new Set(['public_field_definition', 'field_definition']));
+          for (const prop of propDefs) {
+            const name = prop.childForFieldName('name');
+            const type = prop.childForFieldName('type');
+            if (name) {
+              properties.push({
+                name: name.text,
+                type: type?.text
+              });
+            }
+          }
+        }
+
+        children.push({
+          kind: 'Class',
+          name: className,
+          decorators: decorators.length > 0 ? decorators : undefined,
+          properties: properties.length > 0 ? properties : undefined,
+          location: {
+            startLine: cls.startPosition.row + 1,
+            endLine: cls.endPosition.row + 1,
+            startColumn: cls.startPosition.column,
+            endColumn: cls.endPosition.column
+          }
+        });
+      }
+
+      return {
+        kind: 'SourceFile',
+        imports: imports.length > 0 ? imports : undefined,
+        children: children.length > 0 ? children : undefined
+      };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  parseTypeScriptFile(filePath: string): TypeScriptASTNode | null {
+    try {
+      const source = fs.readFileSync(filePath, 'utf-8');
+      const isTsx = filePath.endsWith('.tsx') || filePath.endsWith('.jsx');
+      return this.parseTypeScriptFromSource(source, isTsx);
     } catch (error) {
       return null;
     }

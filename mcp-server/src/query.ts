@@ -399,14 +399,59 @@ export function getDataEntities(cas: CASOutput, opts: { entityName?: string; lim
   const total = entities.length;
   const limit = opts.limit || 25;
   const offset = opts.offset || 0;
-  return { total, offset, limit, entities: entities.slice(offset, offset + limit), data_summary: cas.data_summary };
+
+  const summarized = entities.slice(offset, offset + limit).map(e => ({
+    id: e.id,
+    name: e.name,
+    schema_source: e.schema_source,
+    field_count: e.fields?.length || 0,
+    fields: (e.fields || []).slice(0, 10),
+    lifecycle_summary: {
+      created_by_count: e.lifecycle?.created_by?.length || 0,
+      read_by_count: e.lifecycle?.read_by?.length || 0,
+      updated_by_count: e.lifecycle?.updated_by?.length || 0,
+      deleted_by_count: e.lifecycle?.deleted_by?.length || 0,
+      created_by_sample: (e.lifecycle?.created_by || []).slice(0, 3),
+      read_by_sample: (e.lifecycle?.read_by || []).slice(0, 3),
+      updated_by_sample: (e.lifecycle?.updated_by || []).slice(0, 3),
+      deleted_by_sample: (e.lifecycle?.deleted_by || []).slice(0, 3),
+    },
+    transformation_count: e.transformations?.length || 0,
+    invariant_count: e.invariants?.length || 0,
+  }));
+
+  return { total, offset, limit, entities: summarized, data_summary: cas.data_summary };
 }
 
 export function getSecurityOverview(cas: CASOutput) {
+  const boundaries = (cas.security_boundaries || []).map(b => ({
+    id: b.id,
+    name: b.name,
+    boundary_type: b.boundary_type,
+    trust_transition: b.trust_transition,
+    enforcement_point_count: b.enforcement_points?.length || 0,
+    enforcement_points_sample: (b.enforcement_points || []).slice(0, 5),
+    sensitive_operation_count: b.sensitive_operations?.length || 0,
+    bypass_risk_count: b.bypass_risks?.length || 0,
+  }));
+
+  const contexts = (cas.security_contexts || []).map(c => ({
+    id: c.id,
+    name: c.name,
+    type: c.type,
+    trust_level: c.trust_level,
+    authentication: c.requirements?.authentication,
+    authorization: c.requirements?.authorization,
+    node_count: c.scope?.node_ids?.length || 0,
+    node_sample: (c.scope?.node_ids || []).slice(0, 5),
+  }));
+
   return {
-    security_boundaries: cas.security_boundaries || [],
+    boundary_count: boundaries.length,
+    security_boundaries: boundaries,
     security_summary: cas.security_summary || null,
-    security_contexts: cas.security_contexts || [],
+    context_count: contexts.length,
+    security_contexts: contexts,
   };
 }
 
@@ -484,7 +529,53 @@ export function getWorkflows(cas: CASOutput, workflowId?: string) {
 }
 
 export function getFlowGraph(cas: CASOutput) {
-  return cas.flow_graph || null;
+  const flowGraph = cas.flow_graph;
+  if (!flowGraph) return null;
+
+  const capabilities = (flowGraph.capabilities || []).map(c => ({
+    id: c.id,
+    name: c.name,
+    description: c.description,
+    classification: c.classification,
+    criticality: c.criticality,
+    signals: c.signals,
+    complexity_profile: c.complexity_profile,
+    operation_patterns: c.operation_patterns,
+    entry_point_count: c.entry_points?.length || 0,
+    entry_point_summary: c.entry_point_summary,
+    operation_count: c.operations?.length || 0,
+    entity_count: c.entities_touched?.length || 0,
+    service_count: c.services_used?.length || 0,
+    exit_point_count: c.exit_points?.length || 0,
+    call_chain_count: c.call_chain_ids?.length || 0,
+    depends_on_count: c.depends_on?.length || 0,
+    depended_by_count: c.depended_by?.length || 0,
+  }));
+
+  const dependencies = (flowGraph.dependencies || []).map(d => ({
+    from_capability: d.from_capability,
+    to_capability: d.to_capability,
+    dependency_type: d.dependency_type,
+    strength: d.strength,
+    description: d.description,
+    evidence_summary: {
+      shared_service_count: d.evidence?.shared_services?.length || 0,
+      shared_entity_count: d.evidence?.shared_entities?.length || 0,
+      shared_node_count: d.evidence?.shared_nodes?.length || 0,
+      call_count: d.evidence?.call_count,
+    },
+  }));
+
+  return {
+    capability_count: capabilities.length,
+    capabilities,
+    dependency_count: dependencies.length,
+    dependencies,
+    topology: flowGraph.topology,
+    primary_flow: flowGraph.primary_flow,
+    layers: flowGraph.layers,
+    system_insights: flowGraph.system_insights,
+  };
 }
 
 export function getDomainConcepts(cas: CASOutput, opts: { classification?: string; limit?: number; offset?: number } = {}) {
@@ -496,7 +587,23 @@ export function getDomainConcepts(cas: CASOutput, opts: { classification?: strin
   const total = concepts.length;
   const limit = opts.limit || 25;
   const offset = opts.offset || 0;
-  return { total, offset, limit, concepts: concepts.slice(offset, offset + limit) };
+
+  const summarized = concepts.slice(offset, offset + limit).map(c => ({
+    id: c.id,
+    name: c.name,
+    frequency: c.frequency,
+    classification: c.classification,
+    appears_in: {
+      entry_points_count: c.appears_in?.entry_points?.length || 0,
+      entities_count: c.appears_in?.entities?.length || 0,
+      nodes_count: c.appears_in?.nodes?.length || 0,
+      entry_points_sample: (c.appears_in?.entry_points || []).slice(0, 5),
+      entities_sample: (c.appears_in?.entities || []).slice(0, 5),
+      nodes_sample: (c.appears_in?.nodes || []).slice(0, 5),
+    },
+  }));
+
+  return { total, offset, limit, concepts: summarized };
 }
 
 export function getPatterns(cas: CASOutput) {
@@ -517,9 +624,10 @@ export function getPatterns(cas: CASOutput) {
   }));
 
   return {
+    total: patterns.length,
     patterns,
     categories: cas.categories || {},
-    behaviors: cas.behaviors || [],
+    behaviors_count: (cas.behaviors || []).length,
   };
 }
 
@@ -528,27 +636,26 @@ export function getBehaviors(
   opts: { limit?: number; offset?: number } = {}
 ) {
   const behaviors = cas.behaviors || [];
+  const total = behaviors.length;
   const limit = opts.limit || 50;
   const offset = opts.offset || 0;
 
-  const enriched = behaviors.map(b => ({
+  const paginated = behaviors.slice(offset, offset + limit);
+
+  const summaries = paginated.map(b => ({
     id: b.id,
     name: b.name,
     description: b.description,
     node_count: b.nodes?.length || 0,
     flow_steps: b.flow?.length || 0,
-    nodes: b.nodes?.map(nodeId => {
-      const node = cas.nodes.find(n => n.id === nodeId);
-      return node ? { id: nodeId, name: node.name, type: node.type } : { id: nodeId };
-    }),
-    flow: b.flow,
   }));
 
   return {
-    total: enriched.length,
+    total,
     offset,
     limit,
-    behaviors: enriched.slice(offset, offset + limit),
+    behaviors: summaries,
+    hint: 'Use get_behaviors with behavior_id for full detail including nodes and flow',
   };
 }
 
@@ -775,7 +882,34 @@ export function getLibraries(cas: CASOutput, opts: { query?: string; limit?: num
   const total = libraries.length;
   const limit = opts.limit || 25;
   const offset = opts.offset || 0;
-  return { total, offset, limit, libraries: libraries.slice(offset, offset + limit) };
+
+  const summarized = libraries.slice(offset, offset + limit).map(l => ({
+    id: l.id,
+    name: l.name,
+    version: l.version,
+    type: l.type,
+    category: l.category,
+    package_manager: l.package_manager,
+    description: l.description,
+    size: l.size,
+    security: l.security,
+    usage_statistics: l.usage_statistics,
+    migration_complexity: l.migration_complexity,
+    replacement_feasibility: l.replacement_feasibility,
+    usage_pattern_count: l.usage_patterns?.length || 0,
+    usage_patterns_summary: (l.usage_patterns || []).slice(0, 3).map(p => ({
+      pattern: p.pattern,
+      occurrences: p.occurrences,
+      function_count: p.functions_used?.length || 0,
+    })),
+    related_library_count: l.related_libraries?.length || 0,
+    alternative_library_count: l.alternative_libraries?.length || 0,
+    connected_node_count: l.connected_nodes?.length || 0,
+    optimization_count: l.optimization_opportunities?.length || 0,
+    optimization_opportunities: l.optimization_opportunities,
+  }));
+
+  return { total, offset, limit, libraries: summarized };
 }
 
 export function getCodingContext(
@@ -1917,7 +2051,9 @@ export function getLevel(
     exitPoints = filteredExit.slice(0, epLimit).map(ep => ({
       id: ep.id,
       type: ep.type,
-      name: typeof ep.name === 'string' ? ep.name : (ep.target || 'unknown'),
+      name: typeof ep.name === 'string'
+        ? ep.name
+        : (ep.target?.endpoint || ep.target?.resource || ep.target?.service_id || 'unknown'),
       source_node: ep.source_node,
     }));
   }
@@ -2210,22 +2346,20 @@ export async function getChangeSummary(
       }
     }
 
-    if (opts.groupBy !== 'file') {
-      const group = groups.get(key) || createEmptyGroup();
-      group.changes++;
-      for (const fc of entry.changes.files) {
-        group.filesChanged.add(fc.path);
-        group.linesAdded += fc.linesAdded;
-        group.linesRemoved += fc.linesRemoved;
-      }
-      for (const nc of entry.changes.nodes) {
-        if (nc.changeType === 'added') group.nodesAdded++;
-        else if (nc.changeType === 'modified') group.nodesModified++;
-        else if (nc.changeType === 'deleted') group.nodesDeleted++;
-      }
-      group.risks.push(entry.impact.riskLevel);
-      groups.set(key, { ...group, label } as any);
+    const group = groups.get(key) || createEmptyGroup();
+    group.changes++;
+    for (const fc of entry.changes.files) {
+      group.filesChanged.add(fc.path);
+      group.linesAdded += fc.linesAdded;
+      group.linesRemoved += fc.linesRemoved;
     }
+    for (const nc of entry.changes.nodes) {
+      if (nc.changeType === 'added') group.nodesAdded++;
+      else if (nc.changeType === 'modified') group.nodesModified++;
+      else if (nc.changeType === 'deleted') group.nodesDeleted++;
+    }
+    group.risks.push(entry.impact.riskLevel);
+    groups.set(key, { ...group, label } as any);
   }
 
   const results: ChangeAggregate[] = [];
@@ -2387,4 +2521,208 @@ export async function getAnalysisSnapshots(
   projectPath: string
 ): Promise<Array<{ id: string; timestamp: string }>> {
   return listAnalysisSnapshots(projectPath);
+}
+
+export function getComponentParents(
+  cas: CASOutput,
+  nodeId: string,
+  limit: number = 50
+): {
+  total: number;
+  limit: number;
+  truncated: boolean;
+  parents: Array<{
+    node_id: string;
+    name: string;
+    type: string;
+    file: string;
+    props_passed: string[];
+    jsx_line?: number;
+  }>;
+} {
+  const parents: Array<{
+    node_id: string;
+    name: string;
+    type: string;
+    file: string;
+    props_passed: string[];
+    jsx_line?: number;
+  }> = [];
+
+  for (const edge of cas.edges) {
+    if (edge.target === nodeId && edge.type === 'renders') {
+      const parentNode = cas.nodes.find(n => n.id === edge.source);
+      if (parentNode && (parentNode.type === 'functional_component' || parentNode.type === 'class_component')) {
+        parents.push({
+          node_id: parentNode.id,
+          name: parentNode.name,
+          type: parentNode.type,
+          file: parentNode.source?.file || 'unknown',
+          props_passed: (edge.metadata as any)?.props_passed || [],
+          jsx_line: (edge.metadata as any)?.jsx_line,
+        });
+      }
+    }
+  }
+
+  const total = parents.length;
+  const truncated = total > limit;
+
+  return {
+    total,
+    limit,
+    truncated,
+    parents: parents.slice(0, limit),
+  };
+}
+
+export function getComponentChildren(
+  cas: CASOutput,
+  nodeId: string,
+  limit: number = 50
+): {
+  total: number;
+  limit: number;
+  truncated: boolean;
+  children: Array<{
+    node_id: string;
+    name: string;
+    type: string;
+    file: string;
+    props_passed: string[];
+    jsx_line?: number;
+  }>;
+} {
+  const children: Array<{
+    node_id: string;
+    name: string;
+    type: string;
+    file: string;
+    props_passed: string[];
+    jsx_line?: number;
+  }> = [];
+
+  for (const edge of cas.edges) {
+    if (edge.source === nodeId && edge.type === 'renders') {
+      const childNode = cas.nodes.find(n => n.id === edge.target);
+      if (childNode && (childNode.type === 'functional_component' || childNode.type === 'class_component')) {
+        children.push({
+          node_id: childNode.id,
+          name: childNode.name,
+          type: childNode.type,
+          file: childNode.source?.file || 'unknown',
+          props_passed: (edge.metadata as any)?.props_passed || [],
+          jsx_line: (edge.metadata as any)?.jsx_line,
+        });
+      }
+    }
+  }
+
+  const total = children.length;
+  const truncated = total > limit;
+
+  return {
+    total,
+    limit,
+    truncated,
+    children: children.slice(0, limit),
+  };
+}
+
+export function getComponentMetrics(
+  cas: CASOutput,
+  nodeId: string
+): {
+  node_id: string;
+  name: string;
+  type: string;
+  file: string;
+  metrics: {
+    usage_count: number;
+    usage_locations: string[];
+    rendered_components_count: number;
+    is_leaf: boolean;
+    is_shared: boolean;
+    is_highly_shared: boolean;
+    props: Array<{ name: string; type: string; required: boolean }>;
+    state_count: number;
+    hooks_count: number;
+  };
+  parents: Array<{ node_id: string; name: string }>;
+  children: Array<{ node_id: string; name: string }>;
+} | null {
+  const node = cas.nodes.find(n => n.id === nodeId);
+  if (!node || (node.type !== 'functional_component' && node.type !== 'class_component')) {
+    return null;
+  }
+
+  const attributes = (node.metadata as any)?.attributes || {};
+
+  const parentsResult = getComponentParents(cas, nodeId, 100);
+  const childrenResult = getComponentChildren(cas, nodeId, 100);
+
+  return {
+    node_id: node.id,
+    name: node.name,
+    type: node.type,
+    file: node.source?.file || 'unknown',
+    metrics: {
+      usage_count: attributes.usage_count || parentsResult.total,
+      usage_locations: attributes.usage_locations || parentsResult.parents.map(p => p.name),
+      rendered_components_count: attributes.rendered_components_count || childrenResult.total,
+      is_leaf: attributes.is_leaf ?? (childrenResult.total === 0),
+      is_shared: attributes.is_shared ?? (parentsResult.total >= 2),
+      is_highly_shared: attributes.is_highly_shared ?? (parentsResult.total >= 5),
+      props: attributes.props || [],
+      state_count: attributes.state_count || 0,
+      hooks_count: attributes.hooks_count || 0,
+    },
+    parents: parentsResult.parents.map(p => ({ node_id: p.node_id, name: p.name })),
+    children: childrenResult.children.map(c => ({ node_id: c.node_id, name: c.name })),
+  };
+}
+
+export function getSharedComponents(
+  cas: CASOutput,
+  opts: { min_usage?: number; limit?: number } = {}
+): Array<{
+  node_id: string;
+  name: string;
+  file: string;
+  usage_count: number;
+  usage_locations: string[];
+}> {
+  const minUsage = opts.min_usage || 2;
+  const limit = opts.limit || 50;
+
+  const components: Array<{
+    node_id: string;
+    name: string;
+    file: string;
+    usage_count: number;
+    usage_locations: string[];
+  }> = [];
+
+  for (const node of cas.nodes) {
+    if (node.type !== 'functional_component' && node.type !== 'class_component') {
+      continue;
+    }
+
+    const attributes = (node.metadata as any)?.attributes || {};
+    const usageCount = attributes.usage_count || 0;
+
+    if (usageCount >= minUsage) {
+      components.push({
+        node_id: node.id,
+        name: node.name,
+        file: node.source?.file || 'unknown',
+        usage_count: usageCount,
+        usage_locations: attributes.usage_locations || [],
+      });
+    }
+  }
+
+  components.sort((a, b) => b.usage_count - a.usage_count);
+
+  return components.slice(0, limit);
 }

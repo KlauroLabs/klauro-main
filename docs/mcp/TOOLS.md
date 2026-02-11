@@ -711,3 +711,68 @@ Library usage analysis with optimization insights. Paginated (default 25).
 | `offset` | number | no | Skip first N results (default 0) |
 
 **Returns:** `{ total, offset, limit, libraries }` -- libraries with usage patterns, bundle size, security info, usage stats, optimization opportunities, replacement feasibility, alternatives.
+
+---
+
+## Component Hierarchy (React/Frontend)
+
+Tools for understanding React component composition - which components render which, usage metrics, and shared component identification.
+
+### `get_component_parents`
+
+Find components that render a given component via JSX. Shows which parent components use this component in their render output.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `node_id` | string | yes | Component node ID to find parents for |
+| `limit` | number | no | Max results (default 50) |
+
+**Returns:** `{ total, limit, truncated, parents }` where `parents` is an array of `{ node_id, name, type, file, props_passed, jsx_line }`. `props_passed` shows which props the parent passes to this component.
+
+### `get_component_children`
+
+Find components that a given component renders via JSX. Shows which child components are used in this component's render output.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `node_id` | string | yes | Component node ID to find children for |
+| `limit` | number | no | Max results (default 50) |
+
+**Returns:** `{ total, limit, truncated, children }` where `children` is an array of `{ node_id, name, type, file, props_passed, jsx_line }`.
+
+### `get_component_metrics`
+
+Full metrics for a React component including usage statistics, composition data, and prop/state/hook counts.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `node_id` | string | yes | Component node ID |
+
+**Returns:**
+- `node_id`, `name`, `type`, `file` - Component identification
+- `metrics`:
+  - `usage_count` - How many components render this one
+  - `usage_locations` - Names of parent components
+  - `rendered_components_count` - How many child components
+  - `is_leaf` - True if no child components
+  - `is_shared` - True if usage_count >= 2
+  - `is_highly_shared` - True if usage_count >= 5
+  - `props` - Array of `{ name, type, required }`
+  - `state_count`, `hooks_count` - State and hook usage
+- `parents` - Array of `{ node_id, name }` for parent components
+- `children` - Array of `{ node_id, name }` for child components
+
+### `get_shared_components`
+
+Find components that are used in multiple places. Useful for identifying high-impact components where changes need careful consideration.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `min_usage` | number | no | Minimum usage count to include (default 2) |
+| `limit` | number | no | Max results (default 50) |
+
+**Returns:** Array of `{ node_id, name, file, usage_count, usage_locations }` sorted by usage_count descending.

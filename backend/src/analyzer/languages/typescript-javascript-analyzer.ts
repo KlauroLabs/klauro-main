@@ -6,6 +6,7 @@ import {
 } from '../../types/cas.types';
 import { AnalyzerError } from '../core/errors';
 import { EnhancedCallGraphExtractor, ExtractedFunction } from '../enhanced-call-graph-extractor';
+import { TreeSitterTSExtractor, TSFileExtraction, TSExtractedFunction, TSExtractedClass } from '../core/tree-sitter-ts-extractor';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { parse, TSESTree } from '@typescript-eslint/typescript-estree';
@@ -87,15 +88,21 @@ interface VariableInfo {
   isExported: boolean;
 }
 
+const PARALLEL_BATCH_SIZE = 100;
+
 export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private astCache = new Map<string, ParsedAST>();
   private isTypeScriptProject = false;
   private callGraphExtractor!: EnhancedCallGraphExtractor;
+  private tsExtractor = new TreeSitterTSExtractor();
   private todoCounter = 0;
   private commentCounter = 0;
   private importSourceMap = new Map<string, string>();
   private classFieldTypes = new Map<string, { typeName: string; library?: string }>();
   private repositoryPropertyTypes = new Map<string, string>();
+  private nodeById = new Map<string, CASNode>();
+  private nodesByName = new Map<string, CASNode[]>();
+  private methodsByParent = new Map<string, CASNode[]>();
 
   constructor() {
     super(
@@ -143,54 +150,22 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     const exports: string[] = [];
 
     try {
-      const ast = parse(content, {
-        loc: true,
-        range: true,
-        jsx: true,
-        comment: true,
-        tokens: true,
-        useJSXTextNode: true,
-        ecmaFeatures: { jsx: true },
-        sourceType: 'module'
-      });
+      const extraction = this.tsExtractor.extractFromSource(content, filePath);
 
-      this.astCache.set(relativePath, { ast, content, filePath });
-
-      const fileId = `file_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
-      const lines = content.split('\n');
-      const fileComments = this.extractCommentsFromFile(content, filePath);
-      const fileTodos = this.extractTodosFromComments(fileComments, filePath);
-
-      nodes.push(this.createNode(
-        fileId,
-        path.basename(relativePath),
-        'file',
-        1,
+      const extractedFunctions = this.processTreeSitterExtractionForSingleFile(
+        relativePath,
         filePath,
-        1,
-        lines.length,
-        {
-          relativePath,
-          extension: path.extname(relativePath),
-          isTypeScript: relativePath.endsWith('.ts') || relativePath.endsWith('.tsx'),
-          commentCount: fileComments.length,
-          todoCount: fileTodos.length,
-          comments: fileComments.length > 0 ? fileComments : undefined,
-          todos: fileTodos.length > 0 ? fileTodos : undefined
-        }
-      ));
+        content,
+        extraction,
+        nodes,
+        edges,
+        entryPoints,
+        exitPoints,
+        imports,
+        exports
+      );
 
-      this.extractImportsForSingleFile(ast, relativePath, nodes, edges, exitPoints, imports, projectPath);
-      this.extractFunctions(ast, relativePath, nodes, edges, entryPoints, content, lines);
-      this.extractClasses(ast, relativePath, nodes, edges, content, lines);
-      this.extractVariables(ast, relativePath, nodes, content);
-      this.extractExportsForSingleFile(ast, relativePath, exports);
-
-      if (!this.callGraphExtractor) {
-        this.callGraphExtractor = new EnhancedCallGraphExtractor(projectPath);
-      }
-      const { functions: extractedFunctions } = this.callGraphExtractor.extractFromAST(ast, filePath);
-      this.integrateEnhancedCallGraphData(extractedFunctions, nodes, edges, entryPoints, exitPoints, relativePath);
+      this.integrateEnhancedCallGraphDataForSingleFile(extractedFunctions, nodes, edges, entryPoints, exitPoints, relativePath);
 
     } catch (error) {
       console.warn(`Failed to analyze ${relativePath} incrementally:`, error);
@@ -356,13 +331,18 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     this.repositoryPropertyTypes.clear();
 
     try {
+      const tsTimings: Record<string, number> = {};
+      let tsStart = Date.now();
+
       this.callGraphExtractor = new EnhancedCallGraphExtractor(context.projectPath);
 
       const sourceFiles = await glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
         cwd: context.projectPath,
         ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/target/**', '**/vendor/**', '**/__pycache__/**']
       });
+      tsTimings['glob'] = Date.now() - tsStart;
 
+      tsStart = Date.now();
       this.isTypeScriptProject = sourceFiles.filter(f => f.endsWith('.ts') || f.endsWith('.tsx')).length >
                                  sourceFiles.filter(f => f.endsWith('.js') || f.endsWith('.jsx')).length;
 
@@ -371,20 +351,48 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         const packageJson = await fs.readJson(packageJsonPath);
         this.extractLibraries(packageJson, libraries);
       }
+      tsTimings['setup'] = Date.now() - tsStart;
 
-      for (const file of sourceFiles) {
-        const fullPath = path.join(context.projectPath, file);
-        await this.analyzeFile(fullPath, file, nodes, edges, entryPoints, exitPoints, context);
+      tsStart = Date.now();
+      const preloadedFiles = await this.preloadFilesWithTreeSitter(sourceFiles, context.projectPath);
+      tsTimings['preload'] = Date.now() - tsStart;
+
+      tsStart = Date.now();
+      this.resetProcessTimings();
+      const deferredCallGraphData: Array<{ extractedFunctions: any[]; relativePath: string }> = [];
+      for (const { relativePath, fullPath, content, extraction } of preloadedFiles) {
+        const extractedFunctions = this.processTreeSitterExtraction(relativePath, fullPath, content, extraction, nodes, edges, entryPoints, exitPoints);
+        if (extractedFunctions.length > 0) {
+          deferredCallGraphData.push({ extractedFunctions, relativePath });
+        }
       }
+      tsTimings['processFiles_phase1'] = Date.now() - tsStart;
 
+      tsStart = Date.now();
+      this.buildNodeIndexes(nodes);
+      tsTimings['buildIndexes'] = Date.now() - tsStart;
+
+      tsStart = Date.now();
+      for (const { extractedFunctions, relativePath } of deferredCallGraphData) {
+        this.integrateEnhancedCallGraphDataIndexed(extractedFunctions, nodes, edges, entryPoints, exitPoints, relativePath);
+      }
+      tsTimings['processFiles_phase2'] = Date.now() - tsStart;
+
+      tsStart = Date.now();
       this.detectServerEntryPoints(sourceFiles, nodes, entryPoints, context.projectPath);
+      tsTimings['detectEntryPoints'] = Date.now() - tsStart;
 
+      tsStart = Date.now();
       this.buildEnhancedCallGraph(nodes, edges, entryPoints, exitPoints);
+      tsTimings['buildCallGraph'] = Date.now() - tsStart;
 
+      tsStart = Date.now();
       const categories = this.buildCategories();
 
       this.tagNodesWithPerspectives(nodes, edges);
       this.createPerspectives(perspectives);
+      tsTimings['categorize'] = Date.now() - tsStart;
+
 
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
         framework_specific: {
@@ -403,6 +411,1012 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         'TYPESCRIPT_ANALYSIS_ERROR'
       );
     }
+  }
+
+  private async preloadFilesWithTreeSitter(
+    sourceFiles: string[],
+    projectPath: string
+  ): Promise<Array<{ relativePath: string; fullPath: string; content: string; extraction: TSFileExtraction }>> {
+    const results: Array<{ relativePath: string; fullPath: string; content: string; extraction: TSFileExtraction }> = [];
+
+    for (let i = 0; i < sourceFiles.length; i += PARALLEL_BATCH_SIZE) {
+      const batch = sourceFiles.slice(i, i + PARALLEL_BATCH_SIZE);
+
+      const batchResults = await Promise.all(
+        batch.map(async (file) => {
+          const fullPath = path.join(projectPath, file);
+          try {
+            const content = await fs.readFile(fullPath, 'utf-8');
+            const extraction = this.tsExtractor.extractFromSource(content, fullPath);
+            return { relativePath: file, fullPath, content, extraction };
+          } catch (error) {
+            console.warn(`Failed to parse ${file}:`, error);
+            return null;
+          }
+        })
+      );
+
+      results.push(...batchResults.filter((r): r is NonNullable<typeof r> => r !== null));
+    }
+
+    return results;
+  }
+
+  private async preloadFilesInParallel(
+    sourceFiles: string[],
+    projectPath: string
+  ): Promise<Array<{ relativePath: string; fullPath: string; content: string; ast: TSESTree.Program }>> {
+    const results: Array<{ relativePath: string; fullPath: string; content: string; ast: TSESTree.Program }> = [];
+
+    for (let i = 0; i < sourceFiles.length; i += PARALLEL_BATCH_SIZE) {
+      const batch = sourceFiles.slice(i, i + PARALLEL_BATCH_SIZE);
+
+      const batchResults = await Promise.all(
+        batch.map(async (file) => {
+          const fullPath = path.join(projectPath, file);
+          try {
+            const content = await fs.readFile(fullPath, 'utf-8');
+            const ast = parse(content, {
+              loc: true,
+              range: false,
+              jsx: true,
+              comment: true,
+              tokens: false,
+              useJSXTextNode: true,
+              ecmaFeatures: { jsx: true },
+              sourceType: 'module'
+            });
+            return { relativePath: file, fullPath, content, ast };
+          } catch (error) {
+            console.warn(`Failed to parse ${file}:`, error);
+            return null;
+          }
+        })
+      );
+
+      results.push(...batchResults.filter((r): r is NonNullable<typeof r> => r !== null));
+    }
+
+    return results;
+  }
+
+  private processTimings: Record<string, number> = {};
+
+  private processPreloadedFilePhase1(
+    relativePath: string,
+    fullPath: string,
+    content: string,
+    ast: TSESTree.Program,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[]
+  ): any[] {
+    try {
+      this.astCache.set(relativePath, { ast, content, filePath: fullPath });
+
+      const fileId = `file_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
+      const lines = content.split('\n');
+      const fileComments = this.extractCommentsFromFile(content, fullPath);
+      const fileTodos = this.extractTodosFromComments(fileComments, fullPath);
+
+      nodes.push(this.createNode(
+        fileId,
+        path.basename(relativePath),
+        'file',
+        1,
+        fullPath,
+        1,
+        lines.length,
+        {
+          relativePath,
+          extension: path.extname(relativePath),
+          isTypeScript: relativePath.endsWith('.ts') || relativePath.endsWith('.tsx'),
+          commentCount: fileComments.length,
+          todoCount: fileTodos.length,
+          comments: fileComments.length > 0 ? fileComments : undefined,
+          todos: fileTodos.length > 0 ? fileTodos : undefined
+        }
+      ));
+
+      let t = Date.now();
+      this.extractImports(ast, relativePath, nodes, edges, exitPoints);
+      this.processTimings['extractImports'] = (this.processTimings['extractImports'] || 0) + (Date.now() - t);
+
+      t = Date.now();
+      this.extractFunctions(ast, relativePath, nodes, edges, entryPoints, content, lines);
+      this.processTimings['extractFunctions'] = (this.processTimings['extractFunctions'] || 0) + (Date.now() - t);
+
+      t = Date.now();
+      this.extractClasses(ast, relativePath, nodes, edges, content, lines);
+      this.processTimings['extractClasses'] = (this.processTimings['extractClasses'] || 0) + (Date.now() - t);
+
+      t = Date.now();
+      this.extractVariables(ast, relativePath, nodes, content);
+      this.processTimings['extractVariables'] = (this.processTimings['extractVariables'] || 0) + (Date.now() - t);
+
+      t = Date.now();
+      this.extractExports(ast, relativePath, entryPoints);
+      this.processTimings['extractExports'] = (this.processTimings['extractExports'] || 0) + (Date.now() - t);
+
+      t = Date.now();
+      const { functions: extractedFunctions } = this.callGraphExtractor.extractFromAST(ast, fullPath);
+      this.processTimings['extractFromAST'] = (this.processTimings['extractFromAST'] || 0) + (Date.now() - t);
+
+      return extractedFunctions;
+    } catch (error) {
+      console.warn(`Failed to process ${relativePath}:`, error);
+      return [];
+    }
+  }
+
+  private processTreeSitterExtraction(
+    relativePath: string,
+    fullPath: string,
+    content: string,
+    extraction: TSFileExtraction,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[]
+  ): TSExtractedFunction[] {
+    try {
+      const fileId = `file_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
+      const lines = content.split('\n');
+
+      const todoComments = extraction.comments.filter(c =>
+        /\b(TODO|FIXME|HACK|XXX|NOTE|WARNING)\b/i.test(c.text)
+      );
+      const fileTodos = todoComments.map(c => this.commentToTodo(c, fullPath));
+
+      nodes.push(this.createNode(
+        fileId,
+        path.basename(relativePath),
+        'file',
+        1,
+        fullPath,
+        1,
+        lines.length,
+        {
+          relativePath,
+          extension: path.extname(relativePath),
+          isTypeScript: relativePath.endsWith('.ts') || relativePath.endsWith('.tsx'),
+          commentCount: extraction.comments.length,
+          todoCount: fileTodos.length,
+          comments: extraction.comments.length > 0 ? extraction.comments.map(c => ({
+            id: `comment_${this.commentCounter++}`,
+            type: c.type as 'line' | 'block' | 'jsdoc',
+            content: c.text,
+            line: c.line,
+            file: fullPath
+          })) : undefined,
+          todos: fileTodos.length > 0 ? fileTodos : undefined
+        }
+      ));
+
+      this.processTreeSitterImports(extraction, relativePath, fileId, nodes, edges, exitPoints);
+      const extractedFunctions = this.processTreeSitterFunctions(extraction, relativePath, fileId, nodes, edges, entryPoints);
+      this.processTreeSitterClasses(extraction, relativePath, fileId, nodes, edges);
+      this.processTreeSitterVariables(extraction, relativePath, fileId, nodes);
+      this.processTreeSitterExports(extraction, relativePath, entryPoints);
+
+      return extractedFunctions;
+    } catch (error) {
+      console.warn(`Failed to process ${relativePath}:`, error);
+      return [];
+    }
+  }
+
+  private processTreeSitterExtractionForSingleFile(
+    relativePath: string,
+    fullPath: string,
+    content: string,
+    extraction: TSFileExtraction,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[],
+    imports: string[],
+    exports: string[]
+  ): TSExtractedFunction[] {
+    try {
+      const fileId = `file_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
+      const lines = content.split('\n');
+
+      const todoComments = extraction.comments.filter(c =>
+        /\b(TODO|FIXME|HACK|XXX|NOTE|WARNING)\b/i.test(c.text)
+      );
+      const fileTodos = todoComments.map(c => this.commentToTodo(c, fullPath));
+
+      nodes.push(this.createNode(
+        fileId,
+        path.basename(relativePath),
+        'file',
+        1,
+        fullPath,
+        1,
+        lines.length,
+        {
+          relativePath,
+          extension: path.extname(relativePath),
+          isTypeScript: relativePath.endsWith('.ts') || relativePath.endsWith('.tsx'),
+          commentCount: extraction.comments.length,
+          todoCount: fileTodos.length,
+          comments: extraction.comments.length > 0 ? extraction.comments.map(c => ({
+            id: `comment_${this.commentCounter++}`,
+            type: c.type as 'line' | 'block' | 'jsdoc',
+            content: c.text,
+            line: c.line,
+            file: fullPath
+          })) : undefined,
+          todos: fileTodos.length > 0 ? fileTodos : undefined
+        }
+      ));
+
+      this.processTreeSitterImportsForSingleFile(extraction, relativePath, fileId, nodes, edges, exitPoints, imports);
+      const extractedFunctions = this.processTreeSitterFunctions(extraction, relativePath, fileId, nodes, edges, entryPoints);
+      this.processTreeSitterClasses(extraction, relativePath, fileId, nodes, edges);
+      this.processTreeSitterVariables(extraction, relativePath, fileId, nodes);
+      this.processTreeSitterExportsForSingleFile(extraction, relativePath, entryPoints, exports);
+
+      return extractedFunctions;
+    } catch (error) {
+      console.warn(`Failed to process ${relativePath}:`, error);
+      return [];
+    }
+  }
+
+  private processTreeSitterImportsForSingleFile(
+    extraction: TSFileExtraction,
+    filePath: string,
+    fileId: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    _exitPoints: CASExitPoint[],
+    imports: string[]
+  ): void {
+    extraction.imports.forEach((imp, index) => {
+      const importId = `import_${filePath}_${index}`;
+
+      const specifiers = imp.specifiers.map(s => ({
+        name: s.name,
+        imported: s.imported || s.name
+      }));
+
+      specifiers.forEach(spec => {
+        this.importSourceMap.set(spec.name, imp.source);
+      });
+
+      nodes.push(this.createNode(
+        importId,
+        `import ${imp.source}`,
+        'import',
+        3,
+        filePath,
+        imp.line,
+        imp.line,
+        { source: imp.source, specifiers, isTypeOnly: imp.isTypeOnly }
+      ));
+
+      edges.push(this.createEdge(
+        `${fileId}_to_${importId}`,
+        fileId,
+        importId,
+        'imports'
+      ));
+
+      if (imp.source.startsWith('.') || imp.source.startsWith('/')) {
+        imports.push(imp.source);
+      }
+    });
+  }
+
+  private processTreeSitterExportsForSingleFile(
+    extraction: TSFileExtraction,
+    _filePath: string,
+    _entryPoints: CASEntryPoint[],
+    exports: string[]
+  ): void {
+    for (const exp of extraction.exports) {
+      exports.push(exp.exportedName || exp.name);
+      if (exp.isDefault) {
+        this.importSourceMap.set('default', exp.name);
+      }
+    }
+  }
+
+  private integrateEnhancedCallGraphDataForSingleFile(
+    extractedFunctions: TSExtractedFunction[],
+    nodes: CASNode[],
+    edges: CASEdge[],
+    _entryPoints: CASEntryPoint[],
+    _exitPoints: CASExitPoint[],
+    filePath: string
+  ): void {
+    for (const func of extractedFunctions) {
+      for (const call of func.calls) {
+        if (call.targetType === 'method' || call.targetType === 'function') {
+          const sourceNodeId = this.findFunctionNodeId(nodes, func.name, func.className, filePath);
+          const targetNodeId = this.findTargetNodeId(nodes, call.target);
+
+          if (sourceNodeId && targetNodeId && sourceNodeId !== targetNodeId) {
+            edges.push({
+              id: `call_${sourceNodeId}_${targetNodeId}_${call.line}`,
+              source: sourceNodeId,
+              target: targetNodeId,
+              type: 'calls',
+              metadata: {
+                attributes: {
+                  call_type: call.targetType,
+                  is_async: call.isAsync,
+                  is_conditional: call.isConditional,
+                  is_in_loop: call.isInLoop,
+                  line: call.line
+                }
+              }
+            });
+          }
+        }
+      }
+    }
+  }
+
+  private findFunctionNodeId(nodes: CASNode[], funcName: string, className: string | undefined, filePath: string): string | undefined {
+    for (const node of nodes) {
+      if (className) {
+        if (node.type === 'method' && node.name === funcName && node.parent?.includes(className)) {
+          return node.id;
+        }
+      } else {
+        if (node.type === 'function' && node.name === funcName && node.source?.file === filePath) {
+          return node.id;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private findTargetNodeId(nodes: CASNode[], target: string): string | undefined {
+    const parts = target.split('.');
+    const methodName = parts.pop();
+    if (!methodName) return undefined;
+
+    for (const node of nodes) {
+      if (node.name === methodName && (node.type === 'function' || node.type === 'method')) {
+        return node.id;
+      }
+    }
+    return undefined;
+  }
+
+  private commentToTodo(comment: { type: string; text: string; line: number }, filePath: string): CASTodo {
+    const match = comment.text.match(/\b(TODO|FIXME|HACK|XXX|NOTE|WARNING|OPTIMIZE|REFACTOR)\b:?\s*(.*)/i);
+    const todoType = (match?.[1]?.toUpperCase() || 'TODO') as CASTodo['type'];
+    const text = match?.[2] || comment.text;
+
+    return {
+      id: `todo_${this.todoCounter++}`,
+      type: todoType,
+      text: text.trim(),
+      priority: todoType === 'FIXME' || todoType === 'HACK' ? 'high' : todoType === 'WARNING' ? 'medium' : 'low',
+      location: {
+        file: filePath,
+        line: comment.line
+      }
+    };
+  }
+
+  private processTreeSitterImports(
+    extraction: TSFileExtraction,
+    filePath: string,
+    fileId: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    _exitPoints: CASExitPoint[]
+  ): void {
+    extraction.imports.forEach((imp, index) => {
+      const importId = `import_${filePath}_${index}`;
+
+      const specifiers = imp.specifiers.map(s => ({
+        name: s.name,
+        imported: s.imported || s.name
+      }));
+
+      specifiers.forEach(spec => {
+        this.importSourceMap.set(spec.name, imp.source);
+      });
+
+      nodes.push(this.createNode(
+        importId,
+        `import ${imp.source}`,
+        'import',
+        3,
+        filePath,
+        imp.line,
+        imp.line,
+        { source: imp.source, specifiers, isTypeOnly: imp.isTypeOnly }
+      ));
+
+      edges.push(this.createEdge(
+        `${fileId}_to_${importId}`,
+        fileId,
+        importId,
+        'imports'
+      ));
+    });
+  }
+
+  private processTreeSitterFunctions(
+    extraction: TSFileExtraction,
+    filePath: string,
+    fileId: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    _entryPoints: CASEntryPoint[]
+  ): TSExtractedFunction[] {
+    const allFunctions: TSExtractedFunction[] = [...extraction.functions];
+
+    extraction.functions.forEach((func, index) => {
+      const funcId = `function_${filePath}_${func.name}_${index}`;
+
+      const documentation = func.documentation ? this.parseJSDoc(func.documentation, func.lineStart - 1, func.lineStart) : undefined;
+
+      const node = this.createNodeBuilder(
+        funcId,
+        func.name,
+        'function'
+      )
+        .withLevel(2, 'Class/Interface')
+        .withCategory('functions', ['standalone'])
+        .withSource({ file: filePath, line: func.lineStart, end_line: func.lineEnd })
+        .withMetadata({
+          is_exported: func.isExported,
+          is_async: func.isAsync,
+          is_generated: func.isGenerator,
+          attributes: {
+            functionType: func.type,
+            hasDocumentation: !!documentation,
+            complexity: func.complexity,
+            decorators: func.decorators.length > 0 ? func.decorators : undefined
+          }
+        })
+        .withSignature({
+          parameters: func.parameters.map(p => ({
+            name: p.name,
+            type: p.type,
+            optional: p.optional,
+            description: undefined
+          })),
+          return_type: func.returnType
+        })
+        .withDocumentation(documentation)
+        .build();
+
+      nodes.push(node);
+
+      edges.push(this.createEdge(
+        `${fileId}_contains_${funcId}`,
+        fileId,
+        funcId,
+        'contains'
+      ));
+    });
+
+    return allFunctions;
+  }
+
+  private processTreeSitterClasses(
+    extraction: TSFileExtraction,
+    filePath: string,
+    fileId: string,
+    nodes: CASNode[],
+    edges: CASEdge[]
+  ): void {
+    extraction.classes.forEach((cls, index) => {
+      const classId = `class_${filePath}_${cls.name}_${index}`;
+      const classType = this.determineClassTypeFromExtraction(cls, filePath);
+      const subcategories = this.determineClassSubcategoriesFromExtraction(cls, filePath);
+      const documentation = cls.documentation ? this.parseJSDoc(cls.documentation, cls.lineStart - 1, cls.lineStart) : undefined;
+
+      const classNode = this.createNodeBuilder(
+        classId,
+        cls.name,
+        classType
+      )
+        .withLevel(2, 'Class/Interface')
+        .withCategory('structures', subcategories)
+        .withSource({ file: filePath, line: cls.lineStart, end_line: cls.lineEnd })
+        .withMetadata({
+          is_exported: cls.isExported,
+          is_abstract: cls.isAbstract,
+          attributes: {
+            extends: cls.extends,
+            implements: cls.implements,
+            methodCount: cls.methods.length,
+            propertyCount: cls.properties.length,
+            hasDocumentation: !!documentation,
+            decorators: cls.decorators.length > 0 ? cls.decorators : undefined
+          }
+        })
+        .withDocumentation(documentation)
+        .build();
+
+      nodes.push(classNode);
+
+      edges.push(this.createEdge(
+        `${fileId}_contains_${classId}`,
+        fileId,
+        classId,
+        'contains'
+      ));
+
+      cls.methods.forEach((method, methodIndex) => {
+        const methodId = `method_${classId}_${method.name}_${methodIndex}`;
+        const methodDoc = method.documentation ? this.parseJSDoc(method.documentation, method.lineStart - 1, method.lineStart) : undefined;
+
+        const methodNode = this.createNodeBuilder(
+          methodId,
+          method.name,
+          'method'
+        )
+          .withLevel(3, 'Method/Function')
+          .withCategory('methods', ['class-methods'])
+          .withSource({ file: filePath, line: method.lineStart, end_line: method.lineEnd })
+          .withMetadata({
+            is_async: method.isAsync,
+            is_generated: method.isGenerator,
+            is_static: method.isStatic,
+            attributes: {
+              methodType: method.type,
+              hasDocumentation: !!methodDoc,
+              complexity: method.complexity,
+              decorators: method.decorators.length > 0 ? method.decorators : undefined
+            }
+          })
+          .withSignature({
+            parameters: method.parameters.map(p => ({
+              name: p.name,
+              type: p.type,
+              optional: p.optional,
+              description: undefined
+            })),
+            return_type: method.returnType
+          })
+          .withParent(classId)
+          .withDocumentation(methodDoc)
+          .build();
+
+        nodes.push(methodNode);
+
+        edges.push(this.createEdge(
+          `${classId}_contains_${methodId}`,
+          classId,
+          methodId,
+          'contains'
+        ));
+      });
+
+      cls.properties.forEach((prop, propIndex) => {
+        const propId = `property_${classId}_${prop.name}_${propIndex}`;
+
+        nodes.push(this.createNode(
+          propId,
+          prop.name,
+          'property',
+          3,
+          filePath,
+          prop.lineStart,
+          prop.lineEnd,
+          {
+            type: prop.type,
+            isStatic: prop.isStatic,
+            isPrivate: prop.isPrivate,
+            isReadonly: prop.isReadonly,
+            isOptional: prop.isOptional,
+            defaultValue: prop.defaultValue,
+            decorators: prop.decorators.length > 0 ? prop.decorators : undefined
+          }
+        ));
+      });
+    });
+  }
+
+  private processTreeSitterVariables(
+    extraction: TSFileExtraction,
+    filePath: string,
+    _fileId: string,
+    nodes: CASNode[]
+  ): void {
+    extraction.variables.forEach((variable, index) => {
+      const varId = `variable_${filePath}_${variable.name}_${index}`;
+
+      nodes.push(this.createNode(
+        varId,
+        variable.name,
+        'variable',
+        3,
+        filePath,
+        variable.line,
+        variable.line,
+        {
+          type: variable.type,
+          kind: variable.kind,
+          isExported: variable.isExported,
+          value: variable.value?.substring(0, 100)
+        }
+      ));
+    });
+  }
+
+  private processTreeSitterExports(
+    extraction: TSFileExtraction,
+    _filePath: string,
+    _entryPoints: CASEntryPoint[]
+  ): void {
+    for (const exp of extraction.exports) {
+      if (exp.isDefault) {
+        this.importSourceMap.set('default', exp.name);
+      }
+    }
+  }
+
+  private determineClassTypeFromExtraction(cls: TSExtractedClass, filePath: string): string {
+    const decorators = cls.decorators || [];
+
+    if (decorators.includes('Controller') || decorators.includes('Resolver')) return 'controller';
+    if (decorators.includes('Injectable') || decorators.includes('Service')) return 'service';
+    if (decorators.includes('Entity') || decorators.includes('Schema')) return 'entity';
+    if (decorators.includes('Module')) return 'module';
+
+    if (filePath.includes('/controllers/') || filePath.includes('.controller.')) return 'controller';
+    if (filePath.includes('/services/') || filePath.includes('.service.')) return 'service';
+    if (filePath.includes('/entities/') || filePath.includes('.entity.')) return 'entity';
+    if (filePath.includes('/repositories/') || filePath.includes('.repository.')) return 'repository';
+
+    return 'class';
+  }
+
+  private determineClassSubcategoriesFromExtraction(cls: TSExtractedClass, _filePath: string): string[] {
+    const subcategories: string[] = [];
+    const decorators = cls.decorators || [];
+
+    if (decorators.includes('Controller')) subcategories.push('nestjs-controller');
+    if (decorators.includes('Injectable')) subcategories.push('nestjs-injectable');
+    if (decorators.includes('Entity')) subcategories.push('orm-entity');
+    if (decorators.includes('Module')) subcategories.push('nestjs-module');
+
+    if (cls.isAbstract) subcategories.push('abstract');
+    if (cls.extends) subcategories.push('derived');
+    if (cls.implements.length > 0) subcategories.push('implements-interface');
+
+    if (subcategories.length === 0) subcategories.push('general');
+
+    return subcategories;
+  }
+
+  private buildNodeIndexes(nodes: CASNode[]): void {
+    this.nodeById.clear();
+    this.nodesByName.clear();
+    this.methodsByParent.clear();
+
+    for (const node of nodes) {
+      this.nodeById.set(node.id, node);
+
+      if (!this.nodesByName.has(node.name)) {
+        this.nodesByName.set(node.name, []);
+      }
+      this.nodesByName.get(node.name)!.push(node);
+
+      if (node.parent && (node.type === 'method' || node.type === 'function')) {
+        if (!this.methodsByParent.has(node.parent)) {
+          this.methodsByParent.set(node.parent, []);
+        }
+        this.methodsByParent.get(node.parent)!.push(node);
+      }
+    }
+  }
+
+  private findNodeIdByNameIndexed(targetName: string): string | undefined {
+    if (this.isRepositoryCall(targetName)) {
+      const parts = targetName.split('.');
+      if (parts.length >= 3 && parts[0] === 'this') {
+        const repositoryProperty = parts[1];
+        const methodName = parts.slice(2).join('.');
+
+        const repositoryClassName = this.getRepositoryClassNameFromProperty(repositoryProperty);
+        if (repositoryClassName) {
+          const classNodes = this.nodesByName.get(repositoryClassName);
+          if (classNodes) {
+            for (const classNode of classNodes) {
+              if (classNode.type === 'class') {
+                const methods = this.methodsByParent.get(classNode.id);
+                if (methods) {
+                  const methodNode = methods.find(m => m.name === methodName);
+                  if (methodNode) return methodNode.id;
+                }
+              }
+            }
+          }
+        }
+      }
+      return undefined;
+    }
+
+    const directMatch = this.nodesByName.get(targetName);
+    if (directMatch && directMatch.length > 0) {
+      return directMatch[0].id;
+    }
+
+    if (!targetName.includes('.')) {
+      if (directMatch) {
+        const funcOrMethod = directMatch.find(n => n.type === 'function' || n.type === 'method');
+        return funcOrMethod?.id;
+      }
+      return undefined;
+    }
+
+    const parts = targetName.split('.');
+    const methodName = parts.pop();
+    if (!methodName) return undefined;
+
+    if (parts[0] === 'this' && parts.length >= 2) {
+      const propertyName = parts[1];
+      const expectedClassName = this.propertyNameToClassName(propertyName);
+
+      const methodNodes = this.nodesByName.get(methodName);
+      if (methodNodes) {
+        for (const methodNode of methodNodes) {
+          if (methodNode.type !== 'method' || !methodNode.parent) continue;
+          const parentClass = this.nodeById.get(methodNode.parent);
+          if (!parentClass || parentClass.type !== 'class') continue;
+          if (parentClass.name.toLowerCase() === expectedClassName.toLowerCase() ||
+              parentClass.name.toLowerCase().includes(propertyName.toLowerCase())) {
+            return methodNode.id;
+          }
+        }
+      }
+
+      const classNodes = this.nodesByName.get(expectedClassName);
+      if (!classNodes) {
+        for (const [name, nodes] of this.nodesByName) {
+          if (name.toLowerCase().includes(propertyName.toLowerCase())) {
+            for (const node of nodes) {
+              if (node.type === 'class') {
+                const methods = this.methodsByParent.get(node.id);
+                if (methods) {
+                  const methodNode = methods.find(m => m.name === methodName);
+                  if (methodNode) return methodNode.id;
+                }
+              }
+            }
+          }
+        }
+      } else {
+        for (const classNode of classNodes) {
+          if (classNode.type === 'class') {
+            const methods = this.methodsByParent.get(classNode.id);
+            if (methods) {
+              const methodNode = methods.find(m => m.name === methodName);
+              if (methodNode) return methodNode.id;
+            }
+          }
+        }
+      }
+    }
+
+    const objectName = parts.join('.').toLowerCase().replace('this.', '');
+    const methodNodes = this.nodesByName.get(methodName);
+    if (methodNodes) {
+      for (const methodNode of methodNodes) {
+        if (methodNode.type !== 'method' || !methodNode.parent) continue;
+        const parentClass = this.nodeById.get(methodNode.parent);
+        if (parentClass && parentClass.type === 'class' &&
+            parentClass.name.toLowerCase().includes(objectName)) {
+          return methodNode.id;
+        }
+      }
+    }
+
+    return undefined;
+  }
+
+  private resolveSourceNodeIdIndexed(
+    filePath: string,
+    func: ExtractedFunction
+  ): string | undefined {
+    if (func.className) {
+      const classId = `class_${filePath}_${func.className}_0`;
+      const methods = this.methodsByParent.get(classId);
+      if (methods) {
+        const methodNode = methods.find(n => n.name === func.name);
+        if (methodNode) return methodNode.id;
+      }
+
+      const classNode = this.nodeById.get(classId);
+      if (classNode) {
+        if (methods && methods.length > 0) {
+          return methods[0].id;
+        }
+      }
+    }
+
+    const funcId = `function_${filePath}_${func.name}_${func.lineStart}`;
+    if (this.nodeById.has(funcId)) {
+      return funcId;
+    }
+
+    const funcs = this.nodesByName.get(func.name);
+    if (funcs) {
+      const match = funcs.find(n =>
+        (n.type === 'function' || n.type === 'method') &&
+        n.source?.file === filePath
+      );
+      if (match) return match.id;
+    }
+
+    return undefined;
+  }
+
+  private integrateEnhancedCallGraphDataIndexed(
+    extractedFunctions: any[],
+    _nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[],
+    filePath: string
+  ): void {
+    let t = Date.now();
+    extractedFunctions.forEach(func => {
+      func.calls.forEach((call: any) => {
+        if (call.httpMethod && call.httpPath) {
+          const sourceNodeId = this.resolveSourceNodeIdIndexed(filePath, func);
+          if (sourceNodeId) {
+            entryPoints.push({
+              id: `http_${func.name}_${call.httpMethod}`,
+              source_node: sourceNodeId,
+              type: 'http',
+              name: `${call.httpMethod} ${call.httpPath}`,
+              trigger: {
+                method: call.httpMethod,
+                path: call.httpPath
+              },
+              metadata: {
+                decorators: call.decorators,
+                framework: 'nestjs'
+              }
+            });
+          }
+        }
+
+        if (call.targetType === 'abstract') {
+          const sourceNodeId = this.resolveSourceNodeIdIndexed(filePath, func);
+          const targetNodeId = this.findNodeIdByNameIndexed(call.target);
+
+          if (sourceNodeId && targetNodeId) {
+            edges.push({
+              id: `abstract_call_${sourceNodeId}_${targetNodeId}`,
+              source: sourceNodeId,
+              target: targetNodeId,
+              type: 'calls',
+              metadata: {
+                attributes: {
+                  call_type: 'abstract',
+                  is_async: call.isAsync,
+                  line: call.line,
+                  method_name: call.target.split('.').pop()
+                }
+              }
+            });
+          }
+        }
+
+        if (call.injectionType) {
+          const sourceNodeId = this.resolveSourceNodeIdIndexed(filePath, func);
+          const targetNodeId = this.findNodeIdByNameIndexed(call.target);
+
+          if (sourceNodeId && targetNodeId) {
+            edges.push({
+              id: `injection_${sourceNodeId}_${targetNodeId}`,
+              source: sourceNodeId,
+              target: targetNodeId,
+              type: 'calls',
+              metadata: {
+                attributes: {
+                  call_type: 'injection',
+                  injection_type: call.injectionType,
+                  line: call.line
+                }
+              }
+            });
+          }
+        }
+
+        if (call.targetType === 'method' || call.targetType === 'function') {
+          const sourceNodeId = this.resolveSourceNodeIdIndexed(filePath, func);
+          const targetNodeId = this.findNodeIdByNameIndexed(call.target);
+
+          if (sourceNodeId && targetNodeId && sourceNodeId !== targetNodeId) {
+            edges.push({
+              id: `call_${sourceNodeId}_${targetNodeId}`,
+              source: sourceNodeId,
+              target: targetNodeId,
+              type: 'calls',
+              metadata: {
+                attributes: {
+                  call_type: call.targetType,
+                  is_async: call.isAsync,
+                  is_conditional: call.isConditional,
+                  is_in_loop: call.isInLoop,
+                  line: call.line
+                }
+              }
+            });
+          } else if (sourceNodeId && !targetNodeId && this.isRepositoryCall(call.target)) {
+            const repoInfo = this.parseRepositoryCall(call.target);
+            if (repoInfo) {
+              const library = this.getLibraryForType('EntityRepository')
+                || this.getLibraryForType('Repository')
+                || this.getLibraryForType('PrismaClient')
+                || this.getLibraryForType('Model');
+              exitPoints.push({
+                id: `exit_db_${func.name}_${repoInfo.method}_${call.line}`,
+                source_node: sourceNodeId,
+                type: 'database',
+                name: `${repoInfo.repository}.${repoInfo.method}`,
+                target: {
+                  service_id: 'database',
+                  resource: repoInfo.repository
+                },
+                operation: {
+                  action: repoInfo.method,
+                  async: call.isAsync
+                },
+                metadata: {
+                  repository: repoInfo.repository,
+                  method: repoInfo.method,
+                  line: call.line,
+                  call_expression: call.callExpression,
+                  library
+                }
+              });
+            }
+          } else if (sourceNodeId && !targetNodeId && this.isApiCall(call.target, call.callExpression)) {
+            const apiInfo = this.parseApiCall(call.target, call.callExpression);
+            if (apiInfo) {
+              exitPoints.push({
+                id: `exit_api_${func.name}_${apiInfo.method}_${call.line}`,
+                source_node: sourceNodeId,
+                type: 'api',
+                name: `${apiInfo.method.toUpperCase()} ${apiInfo.endpoint || 'external'}`,
+                target: {
+                  service_id: 'external_api',
+                  endpoint: apiInfo.endpoint
+                },
+                operation: {
+                  method: apiInfo.method.toUpperCase(),
+                  action: apiInfo.method,
+                  async: call.isAsync
+                },
+                metadata: {
+                  line: call.line,
+                  call_expression: call.callExpression,
+                  endpoint: apiInfo.endpoint
+                }
+              });
+            }
+          }
+        }
+      });
+    });
+    this.processTimings['integrateCallGraph'] = (this.processTimings['integrateCallGraph'] || 0) + (Date.now() - t);
+  }
+
+  public getProcessTimings(): Record<string, number> {
+    return this.processTimings;
+  }
+
+  public resetProcessTimings(): void {
+    this.processTimings = {};
   }
 
   private async analyzeFile(

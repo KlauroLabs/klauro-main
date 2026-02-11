@@ -30,6 +30,7 @@ interface ReactComponent {
   imports: string[];
   exports: string[];
   jsx: boolean;
+  renderedComponents: Array<{ name: string; line: number; props: string[] }>;
 }
 
 interface ReactHook {
@@ -137,6 +138,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
     const entryPoints: CASEntryPoint[] = [];
     const exitPoints: CASExitPoint[] = [];
     const perspectives: CASPerspective[] = [];
+    const timings: Record<string, number> = {};
+    let t = Date.now();
 
     try {
       const ignorePatterns = this.getIgnorePatterns(context);
@@ -144,18 +147,38 @@ export class ReactAnalyzer extends BaseAnalyzer {
         cwd: context.projectPath,
         ignore: [...ignorePatterns, '**/*.test.*', '**/*.spec.*']
       });
+      timings['glob'] = Date.now() - t;
 
+      t = Date.now();
       const application = await this.analyzeApplication(context.projectPath, nodes);
-      const components = await this.analyzeComponents(reactFiles, context.projectPath, nodes, edges);
-      const hooks = await this.analyzeHooks(reactFiles, context.projectPath, nodes, edges);
-      const contexts = await this.analyzeContexts(reactFiles, context.projectPath, nodes, edges);
-      const routes = await this.analyzeRoutes(reactFiles, context.projectPath, nodes, edges, entryPoints);
-      const stores = await this.analyzeStores(reactFiles, context.projectPath, nodes, edges);
-      const pages = await this.analyzePages(reactFiles, context.projectPath, nodes, edges, entryPoints);
-      const utils = await this.analyzeUtils(reactFiles, context.projectPath, nodes, edges);
+      timings['application'] = Date.now() - t;
 
+      t = Date.now();
+      const localNodes: CASNode[][] = [[], [], [], [], [], [], []];
+      const localEdges: CASEdge[][] = [[], [], [], [], [], [], []];
+      const localEntryPoints: CASEntryPoint[][] = [[], []];
+
+      const [components, hooks, contexts, routes, stores, pages, utils] = await Promise.all([
+        this.analyzeComponents(reactFiles, context.projectPath, localNodes[0], localEdges[0]),
+        this.analyzeHooks(reactFiles, context.projectPath, localNodes[1], localEdges[1]),
+        this.analyzeContexts(reactFiles, context.projectPath, localNodes[2], localEdges[2]),
+        this.analyzeRoutes(reactFiles, context.projectPath, localNodes[3], localEdges[3], localEntryPoints[0]),
+        this.analyzeStores(reactFiles, context.projectPath, localNodes[4], localEdges[4]),
+        this.analyzePages(reactFiles, context.projectPath, localNodes[5], localEdges[5], localEntryPoints[1]),
+        this.analyzeUtils(reactFiles, context.projectPath, localNodes[6], localEdges[6])
+      ]);
+
+      for (const n of localNodes) nodes.push(...n);
+      for (const e of localEdges) edges.push(...e);
+      for (const ep of localEntryPoints) entryPoints.push(...ep);
+      timings['parallelAnalysis'] = Date.now() - t;
+
+      t = Date.now();
       this.buildReactRelationships(components, hooks, contexts, routes, stores, pages, nodes, edges);
+      this.computeComponentMetrics(components, nodes, edges);
       this.identifyAPIConnections(components, hooks, exitPoints);
+      timings['relationships'] = Date.now() - t;
+
 
       this.tagNodesWithPerspectives(nodes, edges);
       this.createPerspectives(perspectives);
@@ -1167,8 +1190,74 @@ export class ReactAnalyzer extends BaseAnalyzer {
       children: [],
       imports: this.extractImports(content),
       exports: this.extractExports(content),
-      jsx: content.includes('jsx') || content.includes('<')
+      jsx: content.includes('jsx') || content.includes('<'),
+      renderedComponents: this.extractRenderedComponents(node, content)
     };
+  }
+
+  private extractRenderedComponents(node: any, content: string): Array<{ name: string; line: number; props: string[] }> {
+    const renderedComponents: Array<{ name: string; line: number; props: string[] }> = [];
+    const seen = new Set<string>();
+
+    const nodeStart = node?.range?.[0] || 0;
+    const nodeEnd = node?.range?.[1] || content.length;
+    const componentContent = content.substring(nodeStart, nodeEnd);
+
+    const jsxPattern = /<([A-Z][A-Za-z0-9_.]*)(\s+[^>]*)?(?:\/>|>)/g;
+    let match;
+
+    while ((match = jsxPattern.exec(componentContent)) !== null) {
+      const componentName = match[1];
+
+      if (componentName.includes('.')) {
+        const parts = componentName.split('.');
+        if (parts[0] === 'React' || parts[1]?.toLowerCase() === parts[1]) {
+          continue;
+        }
+      }
+
+      const htmlElements = new Set([
+        'A', 'Abbr', 'Address', 'Area', 'Article', 'Aside', 'Audio',
+        'B', 'Base', 'Bdi', 'Bdo', 'Blockquote', 'Body', 'Br', 'Button',
+        'Canvas', 'Caption', 'Cite', 'Code', 'Col', 'Colgroup',
+        'Data', 'Datalist', 'Dd', 'Del', 'Details', 'Dfn', 'Dialog', 'Div', 'Dl', 'Dt',
+        'Em', 'Embed', 'Fieldset', 'Figcaption', 'Figure', 'Footer', 'Form',
+        'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'Head', 'Header', 'Hr', 'Html',
+        'I', 'Iframe', 'Img', 'Input', 'Ins', 'Kbd', 'Label', 'Legend', 'Li', 'Link',
+        'Main', 'Map', 'Mark', 'Meta', 'Meter', 'Nav', 'Noscript',
+        'Object', 'Ol', 'Optgroup', 'Option', 'Output', 'P', 'Param', 'Picture', 'Pre', 'Progress',
+        'Q', 'Rp', 'Rt', 'Ruby', 'S', 'Samp', 'Script', 'Section', 'Select', 'Small', 'Source',
+        'Span', 'Strong', 'Style', 'Sub', 'Summary', 'Sup', 'Svg',
+        'Table', 'Tbody', 'Td', 'Template', 'Textarea', 'Tfoot', 'Th', 'Thead', 'Time', 'Title', 'Tr', 'Track',
+        'U', 'Ul', 'Var', 'Video', 'Wbr'
+      ]);
+
+      if (htmlElements.has(componentName)) {
+        continue;
+      }
+
+      const propsStr = match[2] || '';
+      const props: string[] = [];
+      const propPattern = /(\w+)(?:=|(?=\s|>|\/))/g;
+      let propMatch;
+      while ((propMatch = propPattern.exec(propsStr)) !== null) {
+        props.push(propMatch[1]);
+      }
+
+      const lineNumber = content.substring(0, nodeStart + match.index).split('\n').length;
+
+      const key = `${componentName}:${lineNumber}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        renderedComponents.push({
+          name: componentName,
+          line: lineNumber,
+          props
+        });
+      }
+    }
+
+    return renderedComponents;
   }
 
   private buildHookInfo(node: any, content: string, filePath: string, name: string): ReactHook {
@@ -1251,6 +1340,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
     if (!node || typeof node !== 'object') return props;
 
+    const componentName = node.id?.name || '';
+
     if (node.type === 'FunctionDeclaration' && node.params && node.params.length > 0) {
       const propsParam = node.params[0];
       if (propsParam.type === 'ObjectPattern') {
@@ -1268,10 +1359,32 @@ export class ReactAnalyzer extends BaseAnalyzer {
             });
           }
         });
+      } else if (propsParam.typeAnnotation?.typeAnnotation) {
+        const typeAnnotation = propsParam.typeAnnotation.typeAnnotation;
+        if (typeAnnotation.type === 'TSTypeReference' && typeAnnotation.typeName?.name) {
+          const propsTypeName = typeAnnotation.typeName.name;
+          this.extractPropsFromInterface(content, propsTypeName, props);
+        } else if (typeAnnotation.type === 'TSTypeLiteral') {
+          this.extractPropsFromTypeLiteral(typeAnnotation, props);
+        }
       }
     }
 
-    const propTypesMatch = content.match(new RegExp(`${node.id?.name || 'Component'}\\.propTypes\\s*=\\s*\\{([^}]+)\\}`, 's'));
+    if (props.length === 0 && componentName) {
+      const propsInterfacePatterns = [
+        `${componentName}Props`,
+        `I${componentName}Props`,
+        `${componentName}Properties`
+      ];
+
+      for (const typeName of propsInterfacePatterns) {
+        if (this.extractPropsFromInterface(content, typeName, props)) {
+          break;
+        }
+      }
+    }
+
+    const propTypesMatch = content.match(new RegExp(`${componentName || 'Component'}\\.propTypes\\s*=\\s*\\{([^}]+)\\}`, 's'));
     if (propTypesMatch) {
       const propTypesContent = propTypesMatch[1];
       const propTypeLines = propTypesContent.split(',').map(line => line.trim()).filter(line => line);
@@ -1298,6 +1411,100 @@ export class ReactAnalyzer extends BaseAnalyzer {
     }
 
     return props;
+  }
+
+  private extractPropsFromInterface(content: string, typeName: string, props: Array<{ name: string; type: string; required: boolean; defaultValue?: string }>): boolean {
+    const interfacePattern = new RegExp(`(?:interface|type)\\s+${typeName}\\s*(?:=\\s*)?\\{([^}]+)\\}`, 's');
+    const interfaceMatch = content.match(interfacePattern);
+
+    if (interfaceMatch) {
+      const interfaceBody = interfaceMatch[1];
+      const propLines = interfaceBody.split(/[;\n]/).map(line => line.trim()).filter(line => line && !line.startsWith('//'));
+
+      propLines.forEach(line => {
+        const propMatch = line.match(/^(\w+)(\?)?:\s*(.+)$/);
+        if (propMatch) {
+          const [, name, optional, type] = propMatch;
+          const existingProp = props.find(p => p.name === name);
+          if (!existingProp) {
+            props.push({
+              name,
+              type: type.trim(),
+              required: !optional
+            });
+          }
+        }
+      });
+      return true;
+    }
+    return false;
+  }
+
+  private extractPropsFromTypeLiteral(typeNode: any, props: Array<{ name: string; type: string; required: boolean; defaultValue?: string }>): void {
+    if (!typeNode.members) return;
+
+    typeNode.members.forEach((member: any) => {
+      if (member.type === 'TSPropertySignature' && member.key?.name) {
+        const propName = member.key.name;
+        const propType = this.extractTypeFromAnnotation(member.typeAnnotation?.typeAnnotation);
+        const isOptional = member.optional || false;
+
+        props.push({
+          name: propName,
+          type: propType,
+          required: !isOptional
+        });
+      }
+    });
+  }
+
+  private extractTypeFromAnnotation(typeNode: any): string {
+    if (!typeNode) return 'any';
+
+    switch (typeNode.type) {
+      case 'TSStringKeyword':
+        return 'string';
+      case 'TSNumberKeyword':
+        return 'number';
+      case 'TSBooleanKeyword':
+        return 'boolean';
+      case 'TSVoidKeyword':
+        return 'void';
+      case 'TSAnyKeyword':
+        return 'any';
+      case 'TSNullKeyword':
+        return 'null';
+      case 'TSUndefinedKeyword':
+        return 'undefined';
+      case 'TSArrayType':
+        return `${this.extractTypeFromAnnotation(typeNode.elementType)}[]`;
+      case 'TSTypeReference':
+        if (typeNode.typeName?.name) {
+          if (typeNode.typeParameters?.params?.length > 0) {
+            const params = typeNode.typeParameters.params.map((p: any) => this.extractTypeFromAnnotation(p)).join(', ');
+            return `${typeNode.typeName.name}<${params}>`;
+          }
+          return typeNode.typeName.name;
+        }
+        return 'unknown';
+      case 'TSUnionType':
+        return typeNode.types?.map((t: any) => this.extractTypeFromAnnotation(t)).join(' | ') || 'unknown';
+      case 'TSIntersectionType':
+        return typeNode.types?.map((t: any) => this.extractTypeFromAnnotation(t)).join(' & ') || 'unknown';
+      case 'TSFunctionType':
+        return '(...args: any[]) => any';
+      case 'TSTypeLiteral':
+        return 'object';
+      case 'TSLiteralType':
+        if (typeNode.literal?.value !== undefined) {
+          return typeof typeNode.literal.value === 'string'
+            ? `"${typeNode.literal.value}"`
+            : String(typeNode.literal.value);
+        }
+        return 'literal';
+      default:
+        return 'any';
+    }
   }
 
   private extractState(node: any, content: string): Array<{ name: string; type: string; initialValue?: string }> {
@@ -1582,6 +1789,12 @@ export class ReactAnalyzer extends BaseAnalyzer {
     nodes: CASNode[],
     edges: CASEdge[]
   ): void {
+    const componentNameToId = new Map<string, string>();
+    components.forEach(component => {
+      const componentId = this.generateId('component', component.filePath, component.name);
+      componentNameToId.set(component.name, componentId);
+    });
+
     components.forEach(component => {
       const componentId = this.generateId('component', component.filePath, component.name);
 
@@ -1609,6 +1822,24 @@ export class ReactAnalyzer extends BaseAnalyzer {
             'uses',
             'behavioral',
             { hook_name: hook.name }
+          ));
+        }
+      });
+
+      component.renderedComponents.forEach(rendered => {
+        const childComponentId = componentNameToId.get(rendered.name);
+        if (childComponentId) {
+          edges.push(this.createEdge(
+            this.generateEdgeId(componentId, childComponentId, 'renders'),
+            componentId,
+            childComponentId,
+            'renders',
+            'structural',
+            {
+              jsx_line: rendered.line,
+              props_passed: rendered.props,
+              composition_type: 'jsx'
+            }
           ));
         }
       });
@@ -1640,6 +1871,63 @@ export class ReactAnalyzer extends BaseAnalyzer {
         'structural',
         { page_route: page.route }
       ));
+    });
+  }
+
+  private computeComponentMetrics(
+    components: ReactComponent[],
+    nodes: CASNode[],
+    _edges: CASEdge[]
+  ): void {
+    const componentNameToId = new Map<string, string>();
+    const componentIdToName = new Map<string, string>();
+    components.forEach(component => {
+      const componentId = this.generateId('component', component.filePath, component.name);
+      componentNameToId.set(component.name, componentId);
+      componentIdToName.set(componentId, component.name);
+    });
+
+    const usageCount = new Map<string, number>();
+    const usageLocations = new Map<string, string[]>();
+    const childCount = new Map<string, number>();
+
+    components.forEach(component => {
+      const parentId = componentNameToId.get(component.name);
+      if (!parentId) return;
+
+      childCount.set(parentId, component.renderedComponents.length);
+
+      component.renderedComponents.forEach(rendered => {
+        const childId = componentNameToId.get(rendered.name);
+        if (childId) {
+          usageCount.set(childId, (usageCount.get(childId) || 0) + 1);
+          const locations = usageLocations.get(childId) || [];
+          locations.push(component.name);
+          usageLocations.set(childId, locations);
+        }
+      });
+    });
+
+    nodes.forEach(node => {
+      if (node.type === 'functional_component' || node.type === 'class_component') {
+        const count = usageCount.get(node.id) || 0;
+        const locations = usageLocations.get(node.id) || [];
+        const children = childCount.get(node.id) || 0;
+
+        if (!node.metadata) {
+          node.metadata = {};
+        }
+        if (!node.metadata.attributes) {
+          node.metadata.attributes = {};
+        }
+
+        node.metadata.attributes.usage_count = count;
+        node.metadata.attributes.usage_locations = locations;
+        node.metadata.attributes.rendered_components_count = children;
+        node.metadata.attributes.is_leaf = children === 0;
+        node.metadata.attributes.is_shared = count >= 2;
+        node.metadata.attributes.is_highly_shared = count >= 5;
+      }
     });
   }
 

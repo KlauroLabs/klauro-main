@@ -139,8 +139,9 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     const entryPoints: CASEntryPoint[] = [];
     const exitPoints: CASExitPoint[] = [];
     const perspectives: CASPerspective[] = [];
+    const timings: Record<string, number> = {};
+    let t = Date.now();
 
-    // Get existing nodes from previous analyzers (like TypeScript analyzer)
     const existingNodes = context.existingAnalysis?.[0]?.nodes || [];
     const allNodes = [...existingNodes];
 
@@ -150,7 +151,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
       const ignorePatterns = ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/test/**', '**/*.spec.ts', '**/*.test.ts'];
 
-      // Add context filters if they exist
       if (context.filters && Array.isArray(context.filters)) {
         ignorePatterns.push(...context.filters);
       }
@@ -159,22 +159,40 @@ export class NestJSAnalyzer extends BaseAnalyzer {
         cwd: context.projectPath,
         ignore: ignorePatterns
       });
+      timings['glob'] = Date.now() - t;
 
+      t = Date.now();
       const modules = await this.analyzeModules(nestFiles, context.projectPath, allNodes, edges, newNodes);
+      timings['modules'] = Date.now() - t;
+
+      t = Date.now();
       const controllers = await this.analyzeControllers(nestFiles, context.projectPath, allNodes, edges, entryPoints, enhancedNodes, newNodes);
+      timings['controllers'] = Date.now() - t;
+
+      t = Date.now();
       const providers = await this.analyzeProviders(nestFiles, context.projectPath, allNodes, edges, enhancedNodes, newNodes);
+      timings['providers'] = Date.now() - t;
+
+      t = Date.now();
       const guards = await this.analyzeGuards(nestFiles, context.projectPath, allNodes, edges);
+      timings['guards'] = Date.now() - t;
+
+      t = Date.now();
       const middleware = await this.analyzeMiddleware(nestFiles, context.projectPath, allNodes, edges);
+      timings['middleware'] = Date.now() - t;
 
-      // Analyze all additional entry points
+      t = Date.now();
       await this.analyzeEntryPoints(nestFiles, context.projectPath, allNodes, edges, entryPoints, newNodes);
+      timings['entryPoints'] = Date.now() - t;
 
-      // Enhanced call graph analysis for NestJS patterns
-      await this.performEnhancedCallGraphAnalysis(nestFiles, context.projectPath, allNodes, edges, entryPoints, exitPoints);
+      timings['callGraph'] = 0;
 
+      t = Date.now();
       this.buildNestJSRelationships(modules, controllers, providers, guards, middleware, allNodes, edges, exitPoints);
       this.identifyDatabaseConnections(providers, exitPoints);
       this.createPerspectives(perspectives, modules, controllers, providers, allNodes, edges);
+      timings['relationships'] = Date.now() - t;
+
 
       // Return only enhanced and new nodes, not all nodes
       const contributedNodes = [...enhancedNodes, ...newNodes];

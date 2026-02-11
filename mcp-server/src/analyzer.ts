@@ -32,7 +32,9 @@ import {
   saveIncrementalState,
   loadIncrementalState,
   saveChangeHistoryEntry,
-  saveAnalysisSnapshot
+  saveAnalysisSnapshot,
+  saveFileCache,
+  loadFileCache
 } from './storage';
 
 let orchestrator: AnalyzerOrchestrator | null = null;
@@ -196,7 +198,11 @@ export async function analyzeProjectIncremental(projectPath: string): Promise<In
     const freshResult = await orch.orchestrateIncrementalAnalysis(
       projectPath,
       result,
-      null
+      null,
+      {
+        loadCache: (hash) => loadFileCache(projectPath, hash),
+        saveCache: (hash, fileResult) => saveFileCache(projectPath, hash, fileResult)
+      }
     );
 
     await saveIncrementalState(projectPath, freshResult.state);
@@ -208,7 +214,11 @@ export async function analyzeProjectIncremental(projectPath: string): Promise<In
   const result = await orch.orchestrateIncrementalAnalysis(
     projectPath,
     previousOutput,
-    previousState
+    previousState,
+    {
+      loadCache: (hash) => loadFileCache(projectPath, hash),
+      saveCache: (hash, fileResult) => saveFileCache(projectPath, hash, fileResult)
+    }
   );
 
   await saveAnalysis(projectPath, result.output);

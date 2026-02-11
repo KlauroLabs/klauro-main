@@ -33,7 +33,7 @@ function errorResponse(error: unknown): { content: Array<{ type: 'text'; text: s
   return { content: [{ type: 'text', text: JSON.stringify({ error: message }) }], isError: true };
 }
 
-async function withErrorHandling<T>(fn: () => Promise<T>): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+async function withErrorHandling(fn: () => Promise<{ content: Array<{ type: 'text'; text: string }> }>): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   try {
     return await fn();
   } catch (error) {
@@ -55,7 +55,7 @@ function registerTools(server: McpServer) {
         force_full: z.boolean().optional().describe('Force full rebuild even if incremental is possible'),
       } as any,
     } as any,
-    async ({ path, force_full }) => {
+    async ({ path, force_full }: any) => {
       if (force_full) {
         const result = await analyzeProject(path);
         return json({
@@ -117,7 +117,7 @@ function registerTools(server: McpServer) {
       description: 'Get condensed intelligence summary of an analyzed codebase. Includes system purpose, flow graph highlights (top 15 capabilities by score), architecture summary, database entities, entry point breakdown, node/edge counts, and analyzer contributions. This is the first tool to call to orient on a codebase.',
       inputSchema: { path: z.string().describe('Project path (must be previously analyzed)') } as any,
     } as any,
-    async ({ path }) => withErrorHandling(async () => {
+    async ({ path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.buildSummary(cas));
     })
@@ -130,7 +130,7 @@ function registerTools(server: McpServer) {
       description: 'Full system metadata: system info, architecture summary, system purpose, capabilities, progressive levels, analyzer contributions, configuration, runtime, errors, validation.',
       inputSchema: { path: z.string().describe('Project path') } as any,
     } as any,
-    async ({ path }) => withErrorHandling(async () => {
+    async ({ path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getSystemOverview(cas));
     })
@@ -143,7 +143,7 @@ function registerTools(server: McpServer) {
       description: 'Design patterns and anti-patterns detected in the codebase. Returns pattern summaries with instance counts and variation breakdowns. Use get_pattern_instances to drill into specific pattern instances.',
       inputSchema: { path: z.string().describe('Project path') } as any,
     } as any,
-    async ({ path }) => withErrorHandling(async () => {
+    async ({ path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getPatterns(cas));
     })
@@ -162,7 +162,7 @@ function registerTools(server: McpServer) {
         offset: z.number().optional().describe('Skip first N results (default 0)'),
       } as any,
     } as any,
-    async ({ path, pattern_id, variation_id, limit, offset }) => withErrorHandling(async () => {
+    async ({ path, pattern_id, variation_id, limit, offset }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       const result = query.getPatternInstances(cas, pattern_id, { variation_id, limit, offset });
       if (!result) return json({ error: `Pattern not found: ${pattern_id}` });
@@ -177,7 +177,7 @@ function registerTools(server: McpServer) {
       description: 'Multi-view analysis perspectives with connection rules and layout hints.',
       inputSchema: { path: z.string().describe('Project path') } as any,
     } as any,
-    async ({ path }) => withErrorHandling(async () => {
+    async ({ path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getPerspectives(cas));
     })
@@ -199,7 +199,7 @@ function registerTools(server: McpServer) {
         limit: z.number().optional().describe('Max results (default 25)'),
       } as any,
     } as any,
-    async ({ path, query: q, type, category, level, limit }) => withErrorHandling(async () => {
+    async ({ path, query: q, type, category, level, limit }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.searchNodes(cas, q, { type, category, level, limit }));
     })
@@ -215,7 +215,7 @@ function registerTools(server: McpServer) {
         node_id: z.string().describe('Node ID from search results or other tools'),
       } as any,
     } as any,
-    async ({ path, node_id }) => withErrorHandling(async () => {
+    async ({ path, node_id }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       const result = query.getNode(cas, node_id);
       if (!result) return json({ error: `Node not found: ${node_id}` });
@@ -233,7 +233,7 @@ function registerTools(server: McpServer) {
         file_path: z.string().describe('Relative file path within the project'),
       } as any,
     } as any,
-    async ({ path, file_path }) => withErrorHandling(async () => {
+    async ({ path, file_path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getFileNodes(cas, file_path));
     })
@@ -254,7 +254,7 @@ function registerTools(server: McpServer) {
         include_entry_exit: z.boolean().optional().describe('Include entry/exit points (default true)'),
       } as any,
     } as any,
-    async ({ path, level, limit, offset, edge_limit, include_edges, include_entry_exit }) => withErrorHandling(async () => {
+    async ({ path, level, limit, offset, edge_limit, include_edges, include_entry_exit }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getLevel(cas, level, { limit, offset, edge_limit, include_edges, include_entry_exit }));
     })
@@ -274,7 +274,7 @@ function registerTools(server: McpServer) {
         offset: z.number().optional().describe('Skip first N results (default 0)'),
       } as any,
     } as any,
-    async ({ path, type, limit, offset }) => withErrorHandling(async () => {
+    async ({ path, type, limit, offset }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getEntryPoints(cas, { type, limit, offset }));
     })
@@ -292,7 +292,7 @@ function registerTools(server: McpServer) {
         offset: z.number().optional().describe('Skip first N results (default 0)'),
       } as any,
     } as any,
-    async ({ path, type, limit, offset }) => withErrorHandling(async () => {
+    async ({ path, type, limit, offset }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getExitPoints(cas, { type, limit, offset }));
     })
@@ -310,7 +310,7 @@ function registerTools(server: McpServer) {
         offset: z.number().optional().describe('Skip first N results (default 0)'),
       } as any,
     } as any,
-    async ({ path, method, limit, offset }) => withErrorHandling(async () => {
+    async ({ path, method, limit, offset }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getRouteTable(cas, { method, limit, offset }));
     })
@@ -323,7 +323,7 @@ function registerTools(server: McpServer) {
       description: 'All external service integrations with purpose, endpoint, usage pattern, monitoring, and cost info.',
       inputSchema: { path: z.string().describe('Project path') } as any,
     } as any,
-    async ({ path }) => withErrorHandling(async () => {
+    async ({ path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getExternalServices(cas));
     })
@@ -343,7 +343,7 @@ function registerTools(server: McpServer) {
         limit: z.number().optional().describe('Max results to return (default 50)'),
       } as any,
     } as any,
-    async ({ path, node_id, depth, limit }) => withErrorHandling(async () => {
+    async ({ path, node_id, depth, limit }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getCallers(cas, node_id, depth, limit));
     })
@@ -361,9 +361,82 @@ function registerTools(server: McpServer) {
         limit: z.number().optional().describe('Max results to return (default 50)'),
       } as any,
     } as any,
-    async ({ path, node_id, depth, limit }) => withErrorHandling(async () => {
+    async ({ path, node_id, depth, limit }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getCallees(cas, node_id, depth, limit));
+    })
+  );
+
+  // -- Component Hierarchy (React/Frontend) --
+
+  server.registerTool(
+    'get_component_parents',
+    {
+      title: 'Get Component Parents',
+      description: 'Find components that render a given component (via JSX). Shows which parent components use this component in their render output.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        node_id: z.string().describe('Component node ID to find parents for'),
+        limit: z.number().optional().describe('Max results (default 50)'),
+      } as any,
+    } as any,
+    async ({ path, node_id, limit }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(query.getComponentParents(cas, node_id, limit));
+    })
+  );
+
+  server.registerTool(
+    'get_component_children',
+    {
+      title: 'Get Component Children',
+      description: 'Find components that a given component renders (via JSX). Shows which child components are used in this component\'s render output.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        node_id: z.string().describe('Component node ID to find children for'),
+        limit: z.number().optional().describe('Max results (default 50)'),
+      } as any,
+    } as any,
+    async ({ path, node_id, limit }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(query.getComponentChildren(cas, node_id, limit));
+    })
+  );
+
+  server.registerTool(
+    'get_component_metrics',
+    {
+      title: 'Get Component Metrics',
+      description: 'Full metrics for a React component: usage count, usage locations, rendered components, props, state, hooks. Includes parent and child component lists.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        node_id: z.string().describe('Component node ID'),
+      } as any,
+    } as any,
+    async ({ path, node_id }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      const result = query.getComponentMetrics(cas, node_id);
+      if (!result) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: 'Node not found or not a component' }) }], isError: true };
+      }
+      return json(result);
+    })
+  );
+
+  server.registerTool(
+    'get_shared_components',
+    {
+      title: 'Get Shared Components',
+      description: 'Find components that are used in multiple places. Useful for identifying high-impact components where changes need careful consideration.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        min_usage: z.number().optional().describe('Minimum usage count to include (default 2)'),
+        limit: z.number().optional().describe('Max results (default 50)'),
+      } as any,
+    } as any,
+    async ({ path, min_usage, limit }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(query.getSharedComponents(cas, { min_usage, limit }));
     })
   );
 
@@ -380,7 +453,7 @@ function registerTools(server: McpServer) {
         offset: z.number().optional().describe('Skip first N results (default 0)'),
       } as any,
     } as any,
-    async ({ path, chain_id, entry_point_id, limit, offset }) => withErrorHandling(async () => {
+    async ({ path, chain_id, entry_point_id, limit, offset }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getCallChain(cas, { chainId: chain_id, entryPointId: entry_point_id, limit, offset }));
     })
@@ -396,7 +469,7 @@ function registerTools(server: McpServer) {
         node_id: z.string().describe('Node ID'),
       } as any,
     } as any,
-    async ({ path, node_id }) => withErrorHandling(async () => {
+    async ({ path, node_id }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getMethodCalls(cas, node_id));
     })
@@ -416,7 +489,7 @@ function registerTools(server: McpServer) {
         include: z.array(z.string()).optional().describe('Sections to include: conventions, patterns, constraints, tests (default: all)'),
       } as any,
     } as any,
-    async ({ path, target, task_type, include }) => withErrorHandling(async () => {
+    async ({ path, target, task_type, include }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getCodingContext(cas, target, { task_type, include }));
     })
@@ -434,7 +507,7 @@ function registerTools(server: McpServer) {
         module_id: z.string().optional().describe('Module node ID if scope=module'),
       } as any,
     } as any,
-    async ({ path, scope, layer, module_id }) => withErrorHandling(async () => {
+    async ({ path, scope, layer, module_id }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getConventions(cas, { scope, layer, module_id }));
     })
@@ -451,7 +524,7 @@ function registerTools(server: McpServer) {
         change_type: z.enum(['signature', 'behavior', 'delete', 'add_parameter', 'rename']).describe('Type of change'),
       } as any,
     } as any,
-    async ({ path, node_id, change_type }) => withErrorHandling(async () => {
+    async ({ path, node_id, change_type }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getModificationGuide(cas, node_id, change_type));
     })
@@ -469,7 +542,7 @@ function registerTools(server: McpServer) {
         limit: z.number().optional().describe('Max examples (default 3)'),
       } as any,
     } as any,
-    async ({ path, pattern_id, variation_id, limit }) => withErrorHandling(async () => {
+    async ({ path, pattern_id, variation_id, limit }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getPatternExamples(cas, pattern_id, { variation_id, limit }));
     })
@@ -488,7 +561,7 @@ function registerTools(server: McpServer) {
         limit: z.number().optional().describe('Max results (default 10)'),
       } as any,
     } as any,
-    async ({ path, node_id, code_snippet, similarity_type, limit }) => withErrorHandling(async () => {
+    async ({ path, node_id, code_snippet, similarity_type, limit }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.findSimilarCode(cas, { node_id, code_snippet, similarity_type, limit }));
     })
@@ -510,7 +583,7 @@ function registerTools(server: McpServer) {
         limit: z.number().optional().describe('Max results (default 50)'),
       } as any,
     } as any,
-    async ({ path, scope, node_id, file_path, types, limit }) => withErrorHandling(async () => {
+    async ({ path, scope, node_id, file_path, types, limit }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getComments(cas, { scope, node_id, file_path, types, limit }));
     })
@@ -527,7 +600,7 @@ function registerTools(server: McpServer) {
         direction: z.enum(['throws', 'catches', 'both']).optional().describe('Analysis direction (default: both)'),
       } as any,
     } as any,
-    async ({ path, node_id, direction }) => withErrorHandling(async () => {
+    async ({ path, node_id, direction }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getErrorContracts(cas, node_id, direction));
     })
@@ -544,7 +617,7 @@ function registerTools(server: McpServer) {
         topic: z.enum(['routing', 'state', 'data-fetching', 'testing', 'security']).optional().describe('Specific topic to focus on'),
       } as any,
     } as any,
-    async ({ path, framework, topic }) => withErrorHandling(async () => {
+    async ({ path, framework, topic }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getFrameworkGuidance(cas, { framework, topic }));
     })
@@ -562,7 +635,7 @@ function registerTools(server: McpServer) {
         include_tests: z.boolean().optional().describe('Include test file usages (default: false)'),
       } as any,
     } as any,
-    async ({ path, node_id, limit, include_tests }) => withErrorHandling(async () => {
+    async ({ path, node_id, limit, include_tests }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getUsageExamples(cas, node_id, { limit, include_tests }));
     })
@@ -579,7 +652,7 @@ function registerTools(server: McpServer) {
         affecting_node_id: z.string().optional().describe('Find config affecting this specific node'),
       } as any,
     } as any,
-    async ({ path, scope, affecting_node_id }) => withErrorHandling(async () => {
+    async ({ path, scope, affecting_node_id }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getConfiguration(cas, { scope, affecting_node_id }));
     })
@@ -597,7 +670,7 @@ function registerTools(server: McpServer) {
         node_id: z.string().describe('Node ID'),
       } as any,
     } as any,
-    async ({ path, node_id }) => withErrorHandling(async () => {
+    async ({ path, node_id }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       const result = query.getIntent(cas, node_id);
       if (!result) return json({ error: `No intent data for node: ${node_id}` });
@@ -617,7 +690,7 @@ function registerTools(server: McpServer) {
         offset: z.number().optional().describe('Skip first N results (default 0)'),
       } as any,
     } as any,
-    async ({ path, entity_name, limit, offset }) => withErrorHandling(async () => {
+    async ({ path, entity_name, limit, offset }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getDataEntities(cas, { entityName: entity_name, limit, offset }));
     })
@@ -630,7 +703,7 @@ function registerTools(server: McpServer) {
       description: 'Security posture: trust boundaries, enforcement points (enforced/assumed/missing), bypass risks, unprotected operations, per-node trust levels and protection gaps.',
       inputSchema: { path: z.string().describe('Project path') } as any,
     } as any,
-    async ({ path }) => withErrorHandling(async () => {
+    async ({ path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getSecurityOverview(cas));
     })
@@ -646,7 +719,7 @@ function registerTools(server: McpServer) {
         node_id: z.string().optional().describe('Specific node ID (omit for full summary)'),
       } as any,
     } as any,
-    async ({ path, node_id }) => withErrorHandling(async () => {
+    async ({ path, node_id }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getStability(cas, node_id));
     })
@@ -662,7 +735,7 @@ function registerTools(server: McpServer) {
         node_id: z.string().describe('Node ID to assess'),
       } as any,
     } as any,
-    async ({ path, node_id }) => withErrorHandling(async () => {
+    async ({ path, node_id }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.assessChangeRisk(cas, node_id));
     })
@@ -678,7 +751,7 @@ function registerTools(server: McpServer) {
         chain_id: z.string().optional().describe('Specific call chain ID (omit for all flows)'),
       } as any,
     } as any,
-    async ({ path, chain_id }) => withErrorHandling(async () => {
+    async ({ path, chain_id }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getFlowCoverage(cas, chain_id));
     })
@@ -696,7 +769,7 @@ function registerTools(server: McpServer) {
         workflow_id: z.string().optional().describe('Specific workflow ID (omit for all)'),
       } as any,
     } as any,
-    async ({ path, workflow_id }) => withErrorHandling(async () => {
+    async ({ path, workflow_id }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getWorkflows(cas, workflow_id));
     })
@@ -709,7 +782,7 @@ function registerTools(server: McpServer) {
       description: 'Capability-level architecture: capabilities with scores, dependencies, topology (root/leaf/critical path), primary flow (value chain), layers (entry/business/data/infrastructure), system insights.',
       inputSchema: { path: z.string().describe('Project path') } as any,
     } as any,
-    async ({ path }) => withErrorHandling(async () => {
+    async ({ path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getFlowGraph(cas));
     })
@@ -727,7 +800,7 @@ function registerTools(server: McpServer) {
         offset: z.number().optional().describe('Skip first N results (default 0)'),
       } as any,
     } as any,
-    async ({ path, classification, limit, offset }) => withErrorHandling(async () => {
+    async ({ path, classification, limit, offset }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getDomainConcepts(cas, { classification, limit, offset }));
     })
@@ -747,7 +820,7 @@ function registerTools(server: McpServer) {
         offset: z.number().optional().describe('Skip first N results (default 0)'),
       } as any,
     } as any,
-    async ({ path, behavior_id, limit, offset }) => withErrorHandling(async () => {
+    async ({ path, behavior_id, limit, offset }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       if (behavior_id) {
         const result = query.getBehaviorDetail(cas, behavior_id);
@@ -771,7 +844,7 @@ function registerTools(server: McpServer) {
         offset: z.number().optional().describe('Skip first N results (default 0)'),
       } as any,
     } as any,
-    async ({ path, phase, framework, limit, offset }) => withErrorHandling(async () => {
+    async ({ path, phase, framework, limit, offset }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getLifecycleHooks(cas, { phase, framework, limit, offset }));
     })
@@ -792,7 +865,7 @@ function registerTools(server: McpServer) {
         offset: z.number().optional().describe('Skip first N results (default 0)'),
       } as any,
     } as any,
-    async ({ path, node_id, file_path, limit, offset }) => withErrorHandling(async () => {
+    async ({ path, node_id, file_path, limit, offset }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.findTests(cas, { nodeId: node_id, filePath: file_path, limit, offset }));
     })
@@ -805,7 +878,7 @@ function registerTools(server: McpServer) {
       description: 'Full test overview: counts by type/status, coverage, mocks, fixtures. Plus test gaps (untested flows, branches, mock-only coverage, no-assertion tests).',
       inputSchema: { path: z.string().describe('Project path') } as any,
     } as any,
-    async ({ path }) => withErrorHandling(async () => {
+    async ({ path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getTestSummary(cas));
     })
@@ -820,7 +893,7 @@ function registerTools(server: McpServer) {
       description: 'Database schema from ORM analysis: entities, fields (types, constraints), relationships (1:1, 1:N, M:N).',
       inputSchema: { path: z.string().describe('Project path') } as any,
     } as any,
-    async ({ path }) => withErrorHandling(async () => {
+    async ({ path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getDatabaseSchema(cas));
     })
@@ -835,7 +908,7 @@ function registerTools(server: McpServer) {
       description: 'Implementation completeness: complete/partial/stub/deprecated/experimental counts, health score, risk areas, deprecation timeline.',
       inputSchema: { path: z.string().describe('Project path') } as any,
     } as any,
-    async ({ path }) => withErrorHandling(async () => {
+    async ({ path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getImplementationHealth(cas));
     })
@@ -848,7 +921,7 @@ function registerTools(server: McpServer) {
       description: 'Documentation quality: coverage by type (functions, classes, interfaces, modules), quality metrics, missing documentation ranked by importance.',
       inputSchema: { path: z.string().describe('Project path') } as any,
     } as any,
-    async ({ path }) => withErrorHandling(async () => {
+    async ({ path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getDocumentationCoverage(cas));
     })
@@ -861,7 +934,7 @@ function registerTools(server: McpServer) {
       description: 'TODO/FIXME tracking: counts by type/priority/category, tech debt items, blocking items, hotspot files.',
       inputSchema: { path: z.string().describe('Project path') } as any,
     } as any,
-    async ({ path }) => withErrorHandling(async () => {
+    async ({ path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getTodos(cas));
     })
@@ -876,7 +949,7 @@ function registerTools(server: McpServer) {
       description: 'Package dependencies: packages with versions, licenses, vulnerabilities.',
       inputSchema: { path: z.string().describe('Project path') } as any,
     } as any,
-    async ({ path }) => withErrorHandling(async () => {
+    async ({ path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getDependencies(cas));
     })
@@ -894,7 +967,7 @@ function registerTools(server: McpServer) {
         offset: z.number().optional().describe('Skip first N results (default 0)'),
       } as any,
     } as any,
-    async ({ path, query: q, limit, offset }) => withErrorHandling(async () => {
+    async ({ path, query: q, limit, offset }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getLibraries(cas, { query: q, limit, offset }));
     })
@@ -913,7 +986,7 @@ function registerTools(server: McpServer) {
         limit: z.number().optional().describe('Max results (default 50)'),
       } as any,
     } as any,
-    async ({ path, since, limit }) => withErrorHandling(async () => {
+    async ({ path, since, limit }: any) => withErrorHandling(async () => {
       return json(await query.getChangesSince(path, since, { limit }));
     })
   );
@@ -930,7 +1003,7 @@ function registerTools(server: McpServer) {
         limit: z.number().optional().describe('Max results (default 50)'),
       } as any,
     } as any,
-    async ({ path, from, to, limit }) => withErrorHandling(async () => {
+    async ({ path, from, to, limit }: any) => withErrorHandling(async () => {
       return json(await query.getChangesBetween(path, from, to, { limit }));
     })
   );
@@ -950,7 +1023,7 @@ function registerTools(server: McpServer) {
         limit: z.number().optional().describe('Max results (default 25)'),
       } as any,
     } as any,
-    async ({ path, node_id, since, include_callers, include_callees, depth, limit }) => withErrorHandling(async () => {
+    async ({ path, node_id, since, include_callers, include_callees, depth, limit }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(await query.getChangesForNode(cas, path, node_id, {
         since,
@@ -976,7 +1049,7 @@ function registerTools(server: McpServer) {
         limit: z.number().optional().describe('Max results (default 25)'),
       } as any,
     } as any,
-    async ({ path, file_path, since, include_importers, include_imported, limit }) => withErrorHandling(async () => {
+    async ({ path, file_path, since, include_importers, include_imported, limit }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(await query.getChangesForFile(cas, path, file_path, {
         since,
@@ -1000,7 +1073,7 @@ function registerTools(server: McpServer) {
         limit: z.number().optional().describe('Max results (default 25)'),
       } as any,
     } as any,
-    async ({ path, entry_point_id, since, include_full_chain, limit }) => withErrorHandling(async () => {
+    async ({ path, entry_point_id, since, include_full_chain, limit }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(await query.getChangesForEntryPoint(cas, path, entry_point_id, {
         since,
@@ -1022,7 +1095,7 @@ function registerTools(server: McpServer) {
         until: z.string().optional().describe('ISO timestamp to query changes until'),
       } as any,
     } as any,
-    async ({ path, group_by, since, until }) => withErrorHandling(async () => {
+    async ({ path, group_by, since, until }: any) => withErrorHandling(async () => {
       return json(await query.getChangeSummary(path, {
         groupBy: group_by,
         since,
@@ -1043,7 +1116,7 @@ function registerTools(server: McpServer) {
         limit: z.number().optional().describe('Max results (default 20)'),
       } as any,
     } as any,
-    async ({ path, metric, since, limit }) => withErrorHandling(async () => {
+    async ({ path, metric, since, limit }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(await query.getHotSpots(cas, path, { metric, since, limit }));
     })
@@ -1059,7 +1132,7 @@ function registerTools(server: McpServer) {
         timestamp: z.string().describe('ISO timestamp to retrieve analysis for'),
       } as any,
     } as any,
-    async ({ path, timestamp }) => withErrorHandling(async () => {
+    async ({ path, timestamp }: any) => withErrorHandling(async () => {
       const result = await query.getAnalysisAt(path, timestamp);
       if (!result) return json({ error: `No analysis snapshot found at or before: ${timestamp}` });
       return json(query.buildSummary(result));
@@ -1075,7 +1148,7 @@ function registerTools(server: McpServer) {
         path: z.string().describe('Project path'),
       } as any,
     } as any,
-    async ({ path }) => withErrorHandling(async () => {
+    async ({ path }: any) => withErrorHandling(async () => {
       return json(await query.getAnalysisSnapshots(path));
     })
   );
@@ -1091,7 +1164,7 @@ function registerTools(server: McpServer) {
         path: z.string().describe('Project path to watch'),
       } as any,
     } as any,
-    async ({ path }) => withErrorHandling(async () => {
+    async ({ path }: any) => withErrorHandling(async () => {
       return json(watcher.startWatch(path));
     })
   );
@@ -1105,7 +1178,7 @@ function registerTools(server: McpServer) {
         watch_id: z.string().describe('Watch session ID from start_watch'),
       } as any,
     } as any,
-    async ({ watch_id }) => withErrorHandling(async () => {
+    async ({ watch_id }: any) => withErrorHandling(async () => {
       return json(watcher.stopWatch(watch_id));
     })
   );
@@ -1119,7 +1192,7 @@ function registerTools(server: McpServer) {
         watch_id: z.string().describe('Watch session ID from start_watch'),
       } as any,
     } as any,
-    async ({ watch_id }) => withErrorHandling(async () => {
+    async ({ watch_id }: any) => withErrorHandling(async () => {
       const status = watcher.getWatchStatus(watch_id);
       if (!status) return json({ error: `Watch session not found: ${watch_id}` });
       return json(status);
@@ -1148,7 +1221,7 @@ function registerTools(server: McpServer) {
         since: z.string().optional().describe('ISO timestamp to filter changes newer than this'),
       } as any,
     } as any,
-    async ({ watch_id, since }) => withErrorHandling(async () => {
+    async ({ watch_id, since }: any) => withErrorHandling(async () => {
       const changes = watcher.pollWatchChanges(watch_id, since);
       if (!changes) return json({ error: `Watch session not found: ${watch_id}` });
       return json(changes);
@@ -1295,7 +1368,7 @@ function registerPrompts(server: McpServer) {
       description: 'Generates comprehensive architectural context for a codebase. Inject at the start of a coding session for full awareness.',
       argsSchema: { path: z.string().describe('Project path') } as any,
     } as any,
-    async ({ path }) => {
+    async ({ path }: any) => {
       const cas = await getAnalysis(path);
       const summary = query.buildSummary(cas);
       const overview = query.getSystemOverview(cas);
@@ -1307,11 +1380,11 @@ function registerPrompts(server: McpServer) {
       const sections: string[] = [];
 
       sections.push(`# Architectural Context: ${cas.system.name}`);
-      sections.push(`System type: ${summary.system_purpose?.primary_type || cas.system.type}`);
-      if (summary.enhanced_system_purpose) {
-        sections.push(`Domain: ${summary.enhanced_system_purpose.primary_domain}`);
-        sections.push(`Description: ${summary.enhanced_system_purpose.inferred_description}`);
-        sections.push(`Core concepts: ${summary.enhanced_system_purpose.core_concepts.join(', ')}`);
+      sections.push(`System type: ${overview.system_purpose?.primary_type || cas.system.type}`);
+      if (overview.enhanced_system_purpose) {
+        sections.push(`Domain: ${overview.enhanced_system_purpose.primary_domain}`);
+        sections.push(`Description: ${overview.enhanced_system_purpose.inferred_description}`);
+        sections.push(`Core concepts: ${overview.enhanced_system_purpose.core_concepts?.join(', ') || ''}`);
       }
 
       sections.push(`\n## Tech Stack`);
@@ -1320,26 +1393,26 @@ function registerPrompts(server: McpServer) {
       if (techs?.frameworks) sections.push(`Frameworks: ${techs.frameworks.map(f => f.name).join(', ')}`);
       if (techs?.databases) sections.push(`Databases: ${techs.databases.join(', ')}`);
 
-      if (summary.architecture_summary) {
+      if (overview.architecture_summary) {
         sections.push(`\n## Architecture Layers`);
-        const layers = summary.architecture_summary.layers;
-        if (layers.presentation) sections.push(`Presentation: ${JSON.stringify(layers.presentation)}`);
-        if (layers.business) sections.push(`Business: ${JSON.stringify(layers.business)}`);
-        if (layers.data) sections.push(`Data: ${JSON.stringify(layers.data)}`);
-        if (layers.infrastructure) sections.push(`Infrastructure: ${JSON.stringify(layers.infrastructure)}`);
+        const layers = overview.architecture_summary.layers;
+        if (layers?.presentation) sections.push(`Presentation: ${JSON.stringify(layers.presentation)}`);
+        if (layers?.business) sections.push(`Business: ${JSON.stringify(layers.business)}`);
+        if (layers?.data) sections.push(`Data: ${JSON.stringify(layers.data)}`);
+        if (layers?.infrastructure) sections.push(`Infrastructure: ${JSON.stringify(layers.infrastructure)}`);
       }
 
       sections.push(`\n## Scale`);
-      sections.push(`Nodes: ${summary.node_counts.total} (${Object.entries(summary.node_counts.by_type).map(([k, v]) => `${k}:${v}`).join(', ')})`);
-      sections.push(`Edges: ${summary.edge_counts.total}`);
-      sections.push(`Entry points: ${summary.entry_point_count} (${Object.entries(summary.entry_points_by_type).map(([k, v]) => `${k}:${v}`).join(', ')})`);
+      sections.push(`Nodes: ${summary.nodes} (${Object.entries(summary.nodes_by_type).map(([k, v]) => `${k}:${v}`).join(', ')})`);
+      sections.push(`Edges: ${summary.edges}`);
+      sections.push(`Entry points: ${summary.entry_points} (${Object.entries(summary.entry_points_by_type).map(([k, v]) => `${k}:${v}`).join(', ')})`);
 
-      if (routes.length > 0) {
-        sections.push(`\n## API Routes (${routes.length} total)`);
-        for (const r of routes.slice(0, 30)) {
+      if (routes.total > 0) {
+        sections.push(`\n## API Routes (${routes.total} total)`);
+        for (const r of routes.routes.slice(0, 30)) {
           sections.push(`  ${r.method.padEnd(7)} ${r.path} -> ${r.controller}.${r.handler}${r.auth ? ' [AUTH]' : ''}`);
         }
-        if (routes.length > 30) sections.push(`  ... and ${routes.length - 30} more`);
+        if (routes.total > 30) sections.push(`  ... and ${routes.total - 30} more`);
       }
 
       if (schema) {
@@ -1347,14 +1420,16 @@ function registerPrompts(server: McpServer) {
         sections.push(`Entities: ${schema.entities.map(e => e.name).join(', ')}`);
       }
 
-      if (summary.flow_graph) {
-        sections.push(`\n## Capabilities (${summary.flow_graph.capabilities_count} total)`);
-        sections.push(`Patterns: ${summary.flow_graph.system_insights.detected_patterns.join(', ')}`);
-        sections.push(`Primary entry: ${summary.flow_graph.system_insights.primary_entry_type}`);
-        sections.push(`Data flow: ${summary.flow_graph.system_insights.data_flow_type}`);
-        sections.push(`\nTop capabilities:`);
-        for (const cap of summary.flow_graph.top_capabilities.slice(0, 10)) {
-          sections.push(`  ${cap.name} [${cap.classification}] score=${cap.score}`);
+      if (summary.capabilities > 0) {
+        const flowGraph = query.getFlowGraph(cas);
+        sections.push(`\n## Capabilities (${summary.capabilities} total)`);
+        if (flowGraph?.system_insights) {
+          sections.push(`Patterns: ${flowGraph.system_insights.detected_patterns?.join(', ') || 'none'}`);
+          sections.push(`Primary entry: ${flowGraph.system_insights.primary_entry_type || 'unknown'}`);
+          sections.push(`Data flow: ${flowGraph.system_insights.data_flow_type || 'unknown'}`);
+        }
+        if (summary.top_capabilities.length > 0) {
+          sections.push(`\nTop capabilities: ${summary.top_capabilities.join(', ')}`);
         }
       }
 
@@ -1392,7 +1467,7 @@ function registerPrompts(server: McpServer) {
         node_id: z.string().describe('Node ID to modify'),
       } as any,
     } as any,
-    async ({ path, node_id }) => {
+    async ({ path, node_id }: any) => {
       const cas = await getAnalysis(path);
       const node = query.getNode(cas, node_id);
       if (!node) {
@@ -1463,7 +1538,7 @@ function registerPrompts(server: McpServer) {
       description: 'Generates a test coverage report highlighting gaps, untested critical paths, and recommendations.',
       argsSchema: { path: z.string().describe('Project path') } as any,
     } as any,
-    async ({ path }) => {
+    async ({ path }: any) => {
       const cas = await getAnalysis(path);
       const testSummary = query.getTestSummary(cas);
       const flowCoverage = query.getFlowCoverage(cas);
@@ -1495,14 +1570,15 @@ function registerPrompts(server: McpServer) {
         }
       }
 
-      if ('total_flows' in flowCoverage && flowCoverage.total_flows > 0) {
-        sections.push(`\n## Flow Coverage (${flowCoverage.total_flows} flows)`);
-        for (const [status, count] of Object.entries(flowCoverage.by_coverage_status)) {
+      const fc = flowCoverage as { total_flows?: number; by_coverage_status?: Record<string, number>; total_test_gaps?: number; test_gaps_by_severity?: Record<string, number> };
+      if (fc.total_flows && fc.total_flows > 0) {
+        sections.push(`\n## Flow Coverage (${fc.total_flows} flows)`);
+        for (const [status, count] of Object.entries(fc.by_coverage_status || {})) {
           sections.push(`  ${status}: ${count}`);
         }
-        if (flowCoverage.total_test_gaps > 0) {
-          sections.push(`Test gaps: ${flowCoverage.total_test_gaps}`);
-          for (const [sev, count] of Object.entries(flowCoverage.test_gaps_by_severity)) {
+        if (fc.total_test_gaps && fc.total_test_gaps > 0) {
+          sections.push(`Test gaps: ${fc.total_test_gaps}`);
+          for (const [sev, count] of Object.entries(fc.test_gaps_by_severity || {})) {
             sections.push(`  ${sev}: ${count}`);
           }
         }
