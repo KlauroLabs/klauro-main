@@ -9,6 +9,8 @@ node_modules/
 dist/
 .next/
 .unravl-cache/
+.unravl-gauntlet/
+.unravl-answer-gauntlet/
 /CURRENT_STATE.md
 /MOAR_CONTEXT.md
 /PROJECT_PLAN.md

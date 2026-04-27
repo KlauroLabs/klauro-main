@@ -186,7 +186,7 @@ export class JestAnalyzer extends BaseAnalyzer {
       const coverage = await this.analyzeCoverage(context.projectPath, nodes);
 
       this.buildJestRelationships(configuration, testSuites, utilities, nodes, edges);
-      this.createTestToCodeEdges(testSuites, nodes, edges);
+      this.createTestToCodeEdges(testSuites, nodes, edges, context.existingAnalysis);
       this.identifyTestTargets(testSuites, exitPoints);
 
       return this.createAnalysisResult(nodes, edges, entryPoints, exitPoints, {
@@ -299,13 +299,14 @@ export class JestAnalyzer extends BaseAnalyzer {
       const fullPath = path.join(projectPath, file);
       const content = await fs.readFile(fullPath, 'utf-8');
 
-      try {
-        const ast = parse(content, {
-          loc: true,
-          jsx: true,
-          ecmaVersion: 2020,
-          sourceType: 'module'
-        });
+        try {
+          const jsx = this.shouldParseJsx(file);
+          const ast = parse(content, {
+            loc: true,
+            jsx,
+            ecmaVersion: 2020,
+            sourceType: 'module'
+          });
 
         const suite = this.extractTestSuite(ast, content, file);
         testSuites.push(suite);
@@ -1056,14 +1057,15 @@ export class JestAnalyzer extends BaseAnalyzer {
   private createTestToCodeEdges(
     testSuites: JestTestSuite[],
     nodes: CASNode[],
-    edges: CASEdge[]
+    edges: CASEdge[],
+    existingAnalysis?: CASAnalysisResult[]
   ): void {
     testSuites.forEach(suite => {
       const suiteId = `test_suite_${this.sanitizeId(suite.name)}`;
 
       suite.imports.forEach(importPath => {
         if (importPath.startsWith('./') || importPath.startsWith('../')) {
-          const targetId = this.resolveImportToNodeId(importPath, suite.filePath);
+          const targetId = this.resolveImportToNodeId(importPath, suite.filePath, nodes, existingAnalysis);
           if (targetId) {
             edges.push(this.createEdge(
               this.generateEdgeId(suiteId, targetId, 'tests'),
@@ -1079,7 +1081,7 @@ export class JestAnalyzer extends BaseAnalyzer {
       suite.mocks.forEach((mock, index) => {
         if (mock.module) {
           const mockId = `mock_${suiteId}_${index}`;
-          const targetId = this.resolveImportToNodeId(mock.module, suite.filePath);
+          const targetId = this.resolveImportToNodeId(mock.module, suite.filePath, nodes, existingAnalysis);
           if (targetId) {
             edges.push(this.createEdge(
               this.generateEdgeId(mockId, targetId, 'mocks'),
@@ -1094,14 +1096,60 @@ export class JestAnalyzer extends BaseAnalyzer {
     });
   }
 
-  private resolveImportToNodeId(importPath: string, testFilePath: string): string | null {
-    const cleanPath = importPath.replace(/^\.\/|^\.\.\//, '');
-    const baseName = path.basename(cleanPath, path.extname(cleanPath));
-    return `module_${this.sanitizeId(baseName)}`;
+  private resolveImportToNodeId(
+    importPath: string,
+    testFilePath: string,
+    nodes: CASNode[],
+    existingAnalysis?: CASAnalysisResult[]
+  ): string | null {
+    const allNodes = [...nodes, ...(existingAnalysis?.flatMap(contribution => contribution.nodes || []) || [])];
+    const candidates = this.resolveImportCandidates(importPath, testFilePath);
+
+    for (const candidate of candidates) {
+      const match = allNodes.find(node =>
+        node.source?.file &&
+        (node.source.file === candidate || node.source.file.endsWith(candidate)) &&
+        node.type === 'file'
+      );
+      if (match) return match.id;
+    }
+
+    for (const candidate of candidates) {
+      const match = allNodes.find(node =>
+        node.source?.file &&
+        (node.source.file === candidate || node.source.file.endsWith(candidate)) &&
+        node.type !== 'test'
+      );
+      if (match) return match.id;
+    }
+
+    return null;
+  }
+
+  private resolveImportCandidates(importPath: string, testFilePath: string): string[] {
+    const basePath = path.normalize(path.join(path.dirname(testFilePath), importPath));
+    const extension = path.extname(basePath);
+    if (extension) return [basePath];
+
+    return [
+      basePath,
+      `${basePath}.ts`,
+      `${basePath}.tsx`,
+      `${basePath}.js`,
+      `${basePath}.jsx`,
+      path.join(basePath, 'index.ts'),
+      path.join(basePath, 'index.tsx'),
+      path.join(basePath, 'index.js'),
+      path.join(basePath, 'index.jsx')
+    ];
   }
 
   protected sanitizeId(name: string): string {
     return name.replace(/[^a-zA-Z0-9]/g, '_');
+  }
+
+  private shouldParseJsx(filePath: string): boolean {
+    return /\.(jsx|tsx)$/i.test(filePath);
   }
 
 

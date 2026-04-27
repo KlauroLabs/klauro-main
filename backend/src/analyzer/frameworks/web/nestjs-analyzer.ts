@@ -174,11 +174,11 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       timings['providers'] = Date.now() - t;
 
       t = Date.now();
-      const guards = await this.analyzeGuards(nestFiles, context.projectPath, allNodes, edges);
+      const guards = await this.analyzeGuards(nestFiles, context.projectPath, allNodes, edges, enhancedNodes, newNodes);
       timings['guards'] = Date.now() - t;
 
       t = Date.now();
-      const middleware = await this.analyzeMiddleware(nestFiles, context.projectPath, allNodes, edges);
+      const middleware = await this.analyzeMiddleware(nestFiles, context.projectPath, allNodes, edges, enhancedNodes, newNodes);
       timings['middleware'] = Date.now() - t;
 
       t = Date.now();
@@ -188,8 +188,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       timings['callGraph'] = 0;
 
       t = Date.now();
-      this.buildNestJSRelationships(modules, controllers, providers, guards, middleware, allNodes, edges, exitPoints);
-      this.identifyDatabaseConnections(providers, exitPoints);
+      this.buildNestJSRelationships(modules, controllers, providers, guards, middleware, allNodes, newNodes, edges, exitPoints);
+      this.identifyDatabaseConnections(providers, allNodes, exitPoints);
       this.createPerspectives(perspectives, modules, controllers, providers, allNodes, edges);
       timings['relationships'] = Date.now() - t;
 
@@ -313,20 +313,9 @@ export class NestJSAnalyzer extends BaseAnalyzer {
         if (controllerInfo) {
           controllers.push(controllerInfo);
 
-          // Use TypeScript analyzer's ID format to enable merging
           const controllerId = `class_${file}_${controllerInfo.name}_0`;
-
-          // Check if TypeScript analyzer already created this class node
-          let existingNode = nodes.find(n => n.id === controllerId);
-
-          // If exact ID match fails, try to find by name and type
-          if (!existingNode) {
-            existingNode = nodes.find(n =>
-              n.name === controllerInfo.name &&
-              (n.type === 'class' || n.type === 'controller') &&
-              n.source?.file?.includes(file)
-            );
-          }
+          let controllerNodeId = controllerId;
+          let existingNode = this.findNestClassNode(nodes, controllerInfo.name, file, ['class', 'controller']);
 
           if (existingNode) {
             // Enhance existing TypeScript class node with NestJS controller metadata
@@ -353,10 +342,28 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
             // Track this as an enhanced node
             enhancedNodes.push(existingNode);
+            controllerNodeId = existingNode.id;
           } else {
-            // Skip creating new nodes if TypeScript analyzer didn't create them
-            // This forces collaboration instead of duplication
-            console.warn(`NestJS: Could not find existing TypeScript node for controller ${controllerInfo.name}, skipping`);
+            const controllerNode = this.createNodeBuilder(controllerId, controllerInfo.name, 'controller')
+              .withLevel(2, 'architectural')
+              .withCategory('controller', ['api', 'rest', 'nestjs'])
+              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withDescription(`NestJS controller handling HTTP requests: ${controllerInfo.name}`)
+              .withMetadata({
+                framework: 'nestjs',
+                attributes: {
+                  nestjs_type: 'controller',
+                  route_count: controllerInfo.routes.length,
+                  guards: controllerInfo.guards,
+                  interceptors: controllerInfo.interceptors,
+                  pipes: controllerInfo.pipes,
+                  dependencies: controllerInfo.dependencies
+                }
+              })
+              .withAnalyzers([this.analyzerId], this.analyzerId)
+              .build();
+            nodes.push(controllerNode);
+            newNodes.push(controllerNode);
           }
 
           controllerInfo.routes.forEach((route, index) => {
@@ -375,7 +382,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
               .withCategory('route', ['http', 'endpoint'])
               .withSource({ file: controllerInfo.filePath, line: handlerNode?.loc?.start?.line || 1, end_line: handlerNode?.loc?.end?.line || 1 })
               .withDescription(`HTTP ${route.method.toUpperCase()} endpoint: ${fullPath}`)
-              .withParent(controllerId)
+              .withParent(controllerNodeId)
               .withMetadata({
                 framework: 'nestjs',
                 attributes: {
@@ -395,10 +402,11 @@ export class NestJSAnalyzer extends BaseAnalyzer {
               .withAnalyzers([this.analyzerId], this.analyzerId)
               .build();
             nodes.push(routeNode);
+            newNodes.push(routeNode);
 
             edges.push(this.createEdge(
-              this.generateEdgeId(controllerId, routeId, 'contains'),
-              controllerId,
+              this.generateEdgeId(controllerNodeId, routeId, 'contains'),
+              controllerNodeId,
               routeId,
               'contains',
               'structural'
@@ -409,14 +417,12 @@ export class NestJSAnalyzer extends BaseAnalyzer {
             const methodNodeId = nodes.find(n =>
               n.name === route.handlerName &&
               n.type === 'method' &&
-              n.parent === controllerId
+              n.parent === controllerNodeId
             )?.id;
-
-            const sourceNodeForEntry = methodNodeId || routeId;
 
             entryPoints.push(this.createEntryPoint(
               `entry_${routeId}`,
-              sourceNodeForEntry,
+              routeId,
               'http',
               `${route.method.toUpperCase()} ${fullPath}`,
               `HTTP endpoint for ${controllerInfo.name}.${route.handlerName}`,
@@ -435,6 +441,12 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                 guards: allGuards,
                 pipes: route.pipes,
                 interceptors: route.interceptors
+              },
+              {
+                node_id: methodNodeId || routeId,
+                method_name: route.handlerName,
+                file: controllerInfo.filePath,
+                line: handlerNode?.loc?.start?.line
               }
             ));
           });
@@ -484,11 +496,9 @@ export class NestJSAnalyzer extends BaseAnalyzer {
         if (providerInfo) {
           providers.push(providerInfo);
 
-          // Use TypeScript analyzer's ID format to enable merging
           const providerId = `class_${file}_${providerInfo.name}_0`;
-
-          // Check if TypeScript analyzer already created this class node
-          const existingNode = nodes.find(n => n.id === providerId);
+          let providerNodeId = providerId;
+          const existingNode = this.findNestClassNode(nodes, providerInfo.name, file, ['class', 'service', 'repository', 'provider']);
 
           if (existingNode) {
             // Enhance existing TypeScript class node with NestJS provider metadata
@@ -511,6 +521,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                 methods: providerInfo.methods.map(m => m.name)
               }
             };
+            enhancedNodes.push(existingNode);
+            providerNodeId = existingNode.id;
           } else {
             // If TypeScript analyzer didn't create the node, create it ourselves
             const providerNode = this.createNodeBuilder(providerId, providerInfo.name, providerInfo.type)
@@ -527,18 +539,19 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                   method_count: providerInfo.methods.length,
                   methods: providerInfo.methods.map(m => m.name)
                 }
-              })
+                })
               .withAnalyzers([this.analyzerId], this.analyzerId)
               .build();
             nodes.push(providerNode);
+            newNodes.push(providerNode);
           }
 
           // For methods, we'll enhance existing method nodes from TypeScript analyzer if they exist
           providerInfo.methods.forEach((method, index) => {
             // Try to find existing method node from TypeScript analyzer
-            const methodId = `method_${file}_${providerInfo.name}_${method.name}_${index}`;
+            const methodId = `method_${providerNodeId}_${method.name}_${index}`;
             const existingMethodNode = nodes.find(n => n.id === methodId ||
-              (n.parent === providerId && n.name === method.name && n.type === 'method'));
+              (n.parent === providerNodeId && n.name === method.name && n.type === 'method'));
 
             if (existingMethodNode) {
               // Enhance existing method node
@@ -556,7 +569,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                 .withCategory('method', ['function'])
                 .withSource({ file: fullPath, line: 1, end_line: 1 })
                 .withDescription(`Method in ${providerInfo.name}: ${method.name}`)
-                .withParent(providerId)
+                .withParent(providerNodeId)
                 .withSignature({
                   parameters: method.parameters.map(p => ({ name: p.name || 'param', type: p.type })),
                   return_type: method.returnType
@@ -570,10 +583,11 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                 .withAnalyzers([this.analyzerId], this.analyzerId)
                 .build();
               nodes.push(methodNode);
+              newNodes.push(methodNode);
 
               edges.push(this.createEdge(
-                this.generateEdgeId(providerId, methodId, 'contains'),
-                providerId,
+                this.generateEdgeId(providerNodeId, methodId, 'contains'),
+                providerNodeId,
                 methodId,
                 'contains',
                 'structural'
@@ -593,7 +607,9 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     files: string[],
     projectPath: string,
     nodes: CASNode[],
-    edges: CASEdge[]
+    edges: CASEdge[],
+    enhancedNodes: CASNode[],
+    newNodes: CASNode[]
   ): Promise<NestGuard[]> {
     const guards: NestGuard[] = [];
     const guardFiles = files.filter(f => f.includes('.guard.'));
@@ -612,11 +628,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
         if (guardInfo) {
           guards.push(guardInfo);
 
-          // Use TypeScript analyzer's ID format to enable merging
           const guardId = `class_${file}_${guardInfo.name}_0`;
-
-          // Check if TypeScript analyzer already created this class node
-          const existingNode = nodes.find(n => n.id === guardId);
+          const existingNode = this.findNestClassNode(nodes, guardInfo.name, file, ['class', 'guard']);
 
           if (existingNode) {
             // Enhance existing TypeScript class node with NestJS guard metadata
@@ -636,6 +649,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                 can_activate_method: guardInfo.canActivateMethod
               }
             };
+            enhancedNodes.push(existingNode);
           } else {
             // If TypeScript analyzer didn't create the node, create it ourselves
             const guardNode = this.createNodeBuilder(guardId, guardInfo.name, 'guard')
@@ -649,10 +663,11 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                   guard_type: 'guard',
                   can_activate_method: guardInfo.canActivateMethod
                 }
-              })
+                })
               .withAnalyzers([this.analyzerId], this.analyzerId)
               .build();
             nodes.push(guardNode);
+            newNodes.push(guardNode);
           }
         }
       } catch (error) {
@@ -667,7 +682,9 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     files: string[],
     projectPath: string,
     nodes: CASNode[],
-    edges: CASEdge[]
+    edges: CASEdge[],
+    enhancedNodes: CASNode[],
+    newNodes: CASNode[]
   ): Promise<NestMiddleware[]> {
     const middleware: NestMiddleware[] = [];
     const middlewareFiles = files.filter(f => f.includes('.middleware.'));
@@ -686,11 +703,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
         if (middlewareInfo) {
           middleware.push(middlewareInfo);
 
-          // Use TypeScript analyzer's ID format to enable merging
           const middlewareId = `class_${file}_${middlewareInfo.name}_0`;
-
-          // Check if TypeScript analyzer already created this class node
-          const existingNode = nodes.find(n => n.id === middlewareId);
+          const existingNode = this.findNestClassNode(nodes, middlewareInfo.name, file, ['class', 'middleware']);
 
           if (existingNode) {
             // Enhance existing TypeScript class node with NestJS middleware metadata
@@ -710,6 +724,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                 use_method: middlewareInfo.useMethod
               }
             };
+            enhancedNodes.push(existingNode);
           } else {
             // If TypeScript analyzer didn't create the node, create it ourselves
             const middlewareNode = this.createNodeBuilder(middlewareId, middlewareInfo.name, 'middleware')
@@ -723,10 +738,11 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                   middleware_type: 'middleware',
                   use_method: middlewareInfo.useMethod
                 }
-              })
+                })
               .withAnalyzers([this.analyzerId], this.analyzerId)
               .build();
             nodes.push(middlewareNode);
+            newNodes.push(middlewareNode);
           }
         }
       } catch (error) {
@@ -1979,6 +1995,239 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     return null;
   }
 
+  private resolveNestDependencyNode(depName: string, nodes: CASNode[], newNodes: CASNode[]): CASNode {
+    const dependencyTypes = new Set([
+      'service',
+      'repository',
+      'provider',
+      'factory',
+      'value',
+      'custom',
+      'class',
+      'controller',
+      'guard',
+      'middleware',
+      'gateway',
+      'injection_token',
+      'database_client',
+      'cache_client',
+      'event_bus',
+      'framework_service'
+    ]);
+
+    const exactNode = nodes.find(n => n.name === depName && dependencyTypes.has(n.type));
+    if (exactNode) return exactNode;
+
+    const baseName = depName
+      .replace(/Service$/, '')
+      .replace(/Repository$/, '')
+      .replace(/^EntityRepository<(.+)>$/, '$1');
+
+    const baseNode = nodes.find(n => n.name === baseName && dependencyTypes.has(n.type));
+    if (baseNode) return baseNode;
+
+    if (depName.includes('Repository')) {
+      const repositoryBase = depName
+        .replace(/^EntityRepository<(.+)>$/, '$1')
+        .replace(/Repository$/, '');
+
+      const repositoryNode = nodes.find(n => {
+        const isRepositoryNode = n.type === 'repository' || n.type === 'class';
+        return isRepositoryNode && (
+          n.name === depName ||
+          n.name === repositoryBase ||
+          n.name.includes(repositoryBase)
+        );
+      });
+
+      if (repositoryNode) return repositoryNode;
+    }
+
+    return this.ensureNestInjectionNode(depName, nodes, newNodes);
+  }
+
+  private ensureNestInjectionNode(depName: string, nodes: CASNode[], newNodes: CASNode[]): CASNode {
+    const classification = this.classifyNestDependency(depName);
+    const nodeId = `nestjs_dependency_${this.sanitizeId(depName)}`;
+    const existingNode = nodes.find(n => n.id === nodeId);
+    if (existingNode) return existingNode;
+
+    const node = this.createNodeBuilder(nodeId, depName, classification.nodeType)
+      .withLevel(2, 'architectural')
+      .withCategory(classification.category, classification.subcategories)
+      .withDescription(`${classification.label}: ${depName}`)
+      .withMetadata({
+        framework: 'nestjs',
+        attributes: {
+          dependency_name: depName,
+          dependency_origin: classification.origin,
+          resolved_from: 'constructor_injection',
+          external: classification.external
+        }
+      })
+      .withAnalyzers([this.analyzerId], this.analyzerId)
+      .build();
+
+    nodes.push(node);
+    newNodes.push(node);
+    return node;
+  }
+
+  private addDependencyExitPoint(
+    depName: string,
+    sourceNodeId: string,
+    exitPoints: CASExitPoint[],
+    ownerName: string
+  ): void {
+    const classification = this.classifyNestDependency(depName);
+    if (!classification.exitType) return;
+
+    const exitId = `exit_nest_dependency_${this.sanitizeId(sourceNodeId)}_${this.sanitizeId(depName)}`;
+    if (exitPoints.some(exitPoint => exitPoint.id === exitId)) return;
+
+    exitPoints.push(this.createExitPoint(
+      exitId,
+      sourceNodeId,
+      classification.exitType,
+      classification.exitName,
+      `${depName} injected into ${ownerName}`,
+      classification.target,
+      {
+        action: classification.action,
+        async: classification.async
+      },
+      {
+        framework: 'nestjs',
+        dependency: depName,
+        injected_into: ownerName,
+        origin: classification.origin
+      }
+    ));
+  }
+
+  private classifyNestDependency(depName: string): {
+    nodeType: string;
+    category: string;
+    subcategories: string[];
+    label: string;
+    origin: string;
+    external: boolean;
+    exitType?: CASExitPoint['type'];
+    exitName: string;
+    target?: CASExitPoint['target'];
+    action?: string;
+    async?: boolean;
+  } {
+    const entityMatch = depName.match(/^(?:EntityRepository|Repository)<([^>]+)>$/);
+    const entityName = entityMatch?.[1];
+
+    if (entityName || depName === 'EntityRepository' || depName === 'Repository') {
+      const resource = entityName || 'Entity';
+      return {
+        nodeType: 'database_client',
+        category: 'database',
+        subcategories: ['nestjs', 'mikroorm', 'repository'],
+        label: 'NestJS database repository dependency',
+        origin: 'mikroorm',
+        external: true,
+        exitType: 'database',
+        exitName: `${resource} Repository (MikroORM)`,
+        target: {
+          service_id: 'database',
+          resource
+        },
+        action: 'crud',
+        async: true
+      };
+    }
+
+    if (['EntityManager', 'PostgresEntityManager', 'MikroORM', 'Pool'].includes(depName)) {
+      return {
+        nodeType: 'database_client',
+        category: 'database',
+        subcategories: ['nestjs', 'orm', 'database-client'],
+        label: 'NestJS database client dependency',
+        origin: 'database',
+        external: true,
+        exitType: 'database',
+        exitName: `${depName} Database Access`,
+        target: {
+          service_id: 'database',
+          resource: depName
+        },
+        action: 'query',
+        async: true
+      };
+    }
+
+    if (['Redis', 'Cache', 'CacheManager'].includes(depName)) {
+      return {
+        nodeType: 'cache_client',
+        category: 'cache',
+        subcategories: ['nestjs', 'cache'],
+        label: 'NestJS cache dependency',
+        origin: 'cache',
+        external: true,
+        exitType: 'cache',
+        exitName: `${depName} Cache Access`,
+        target: {
+          service_id: 'cache',
+          resource: depName
+        },
+        action: 'read_write',
+        async: true
+      };
+    }
+
+    if (depName === 'EventEmitter2') {
+      return {
+        nodeType: 'event_bus',
+        category: 'events',
+        subcategories: ['nestjs', 'event-emitter'],
+        label: 'NestJS event bus dependency',
+        origin: 'event-emitter',
+        external: true,
+        exitType: 'event',
+        exitName: 'EventEmitter2 Event Bus',
+        target: {
+          service_id: 'event-bus',
+          resource: depName
+        },
+        action: 'publish',
+        async: true
+      };
+    }
+
+    if (['JwtService', 'ConfigService', 'ModuleRef'].includes(depName)) {
+      return {
+        nodeType: 'framework_service',
+        category: 'framework',
+        subcategories: ['nestjs', 'sdk'],
+        label: 'NestJS framework service dependency',
+        origin: 'nestjs',
+        external: true,
+        exitType: 'sdk',
+        exitName: `${depName} SDK Access`,
+        target: {
+          service_id: 'nestjs',
+          sdk: depName
+        },
+        action: depName === 'ConfigService' ? 'read_config' : 'invoke',
+        async: false
+      };
+    }
+
+    return {
+      nodeType: 'injection_token',
+      category: 'dependency',
+      subcategories: ['nestjs', 'injection-token'],
+      label: 'NestJS injection token',
+      origin: 'application',
+      external: false,
+      exitName: `${depName} Dependency`
+    };
+  }
+
   private buildNestJSRelationships(
     modules: NestModule[],
     controllers: NestController[],
@@ -1986,6 +2235,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     guards: NestGuard[],
     middleware: NestMiddleware[],
     nodes: CASNode[],
+    newNodes: CASNode[],
     edges: CASEdge[],
     exitPoints: CASExitPoint[]
   ): void {
@@ -2037,26 +2287,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
       if (controllerNode) {
         controller.dependencies.forEach(depName => {
-          // Try multiple ways to find the provider node
-          let providerNode = nodes.find(n =>
-            n.name === depName &&
-            (n.type === 'service' || n.type === 'repository' || n.type === 'class')
-          );
-
-          // If not found, try without "Service" suffix (in case the type is FooService but the class is Foo)
-          if (!providerNode && depName.endsWith('Service')) {
-            providerNode = nodes.find(n =>
-              n.name === depName.replace('Service', '') &&
-              (n.type === 'service' || n.type === 'class')
-            );
-          }
-
-          // Also try looking for any class that could be this service
-          if (!providerNode) {
-            providerNode = nodes.find(n =>
-              n.name === depName && n.type === 'class'
-            );
-          }
+          const providerNode = this.resolveNestDependencyNode(depName, nodes, newNodes);
 
           if (providerNode) {
             // Create "calls" edge for controller -> service dependency injection
@@ -2086,6 +2317,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
               'dependency',
               { dependency_type: 'injection' }
             ));
+
+            this.addDependencyExitPoint(depName, controllerNode.id, exitPoints, controller.name);
           }
         });
 
@@ -2117,67 +2350,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
       if (providerNode) {
         provider.dependencies.forEach(depName => {
-          // Try multiple ways to find the dependency provider node
-          let depProviderNode = nodes.find(n =>
-            n.name === depName &&
-            (n.type === 'service' || n.type === 'repository' || n.type === 'class')
-          );
-
-          // If not found, try without "Service" or "Repository" suffix
-          if (!depProviderNode) {
-            const baseName = depName
-              .replace('Service', '')
-              .replace('Repository', '');
-            depProviderNode = nodes.find(n =>
-              n.name === baseName &&
-              (n.type === 'service' || n.type === 'repository' || n.type === 'class')
-            );
-          }
-
-          // Also try looking for any class that could be this service
-          if (!depProviderNode) {
-            depProviderNode = nodes.find(n =>
-              n.name === depName && n.type === 'class'
-            );
-          }
-
-          // Special handling for EntityRepository or generic repository pattern
-          if (!depProviderNode && depName.includes('Repository')) {
-            depProviderNode = nodes.find(n => {
-              const isRepo = n.type === 'repository' || n.type === 'class';
-              const nameMatches = n.name.includes(depName.replace('Repository', '')) ||
-                                 n.name === depName;
-              return isRepo && nameMatches;
-            });
-
-            if (!depProviderNode && depName.includes('EntityRepository')) {
-              const entityMatch = depName.match(/EntityRepository<(\w+)>/);
-              const entityName = entityMatch ? entityMatch[1] : depName.replace('EntityRepository', '').replace(/[<>]/g, '');
-
-              exitPoints.push(this.createExitPoint(
-                `exit_mikroorm_${this.sanitizeId(provider.name)}_${this.sanitizeId(entityName)}`,
-                providerNode.id,
-                'database',
-                `${entityName} Repository (MikroORM)`,
-                `MikroORM EntityRepository for ${entityName} entity`,
-                {
-                  service_id: 'database',
-                  resource: entityName
-                },
-                {
-                  action: 'crud',
-                  async: true
-                },
-                {
-                  orm: 'mikroorm',
-                  entity: entityName,
-                  repository_type: 'EntityRepository',
-                  injected_into: provider.name,
-                  operations: ['find', 'findOne', 'findOneOrFail', 'findAndCount', 'create', 'persist', 'flush', 'remove']
-                }
-              ));
-            }
-          }
+          const depProviderNode = this.resolveNestDependencyNode(depName, nodes, newNodes);
 
           if (depProviderNode) {
             // Create "calls" edge for service -> service dependency injection
@@ -2242,8 +2415,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                 }
               });
             }
-          } else {
-            console.warn(`NestJS: Could not find dependency node for ${depName} injected into ${provider.name}`);
+
+            this.addDependencyExitPoint(depName, providerNode.id, exitPoints, provider.name);
           }
         });
 
@@ -2350,10 +2523,10 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     });
   }
 
-  private identifyDatabaseConnections(providers: NestProvider[], exitPoints: CASExitPoint[]): void {
+  private identifyDatabaseConnections(providers: NestProvider[], nodes: CASNode[], exitPoints: CASExitPoint[]): void {
     providers.forEach(provider => {
-      // Use the TypeScript analyzer's ID format
-      const providerId = `class_${provider.filePath}_${provider.name}_0`;
+      const providerNode = this.findNestClassNode(nodes, provider.name, provider.filePath, ['class', 'service', 'repository', 'provider']);
+      const providerId = providerNode?.id || `class_${provider.filePath}_${provider.name}_0`;
 
       // Check for repository pattern
       if (provider.type === 'repository' || provider.name.toLowerCase().includes('repository')) {
@@ -3194,6 +3367,24 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
     walk(ast);
     return moduleNode;
+  }
+
+  private findNestClassNode(nodes: CASNode[], className: string, filePath: string, allowedTypes: string[]): CASNode | undefined {
+    const expectedId = `class_${filePath}_${className}_0`;
+    const exact = nodes.find(n => n.id === expectedId);
+    if (exact) return exact;
+
+    return nodes.find(n =>
+      n.name === className &&
+      allowedTypes.includes(n.type) &&
+      this.sourceMatches(n.source?.file, filePath)
+    );
+  }
+
+  private sourceMatches(sourceFile: string | undefined, expectedFile: string): boolean {
+    if (!sourceFile) return false;
+    if (sourceFile === expectedFile) return true;
+    return sourceFile.endsWith(expectedFile) || expectedFile.endsWith(sourceFile);
   }
 
   private findControllerHandlerMethod(ast: TSESTree.Program, handlerName: string): any {

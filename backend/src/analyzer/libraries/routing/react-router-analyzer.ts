@@ -57,8 +57,8 @@ export class ReactRouterAnalyzer extends BaseAnalyzer {
       const sanitizedPath = relativePath.replace(/[^a-zA-Z0-9]/g, '_');
 
       this.extractRouteDefinitions(content, relativePath, sanitizedPath, fileNodeId, context, nodes, edges, entryPoints, seenRoutes);
-      this.extractNavigationCalls(content, relativePath, sanitizedPath, fileNodeId, exitPoints, seenExitIds);
-      this.extractLinkUsages(content, relativePath, sanitizedPath, fileNodeId, exitPoints, seenExitIds);
+      this.extractNavigationCalls(content, relativePath, sanitizedPath, fileNodeId, nodes, exitPoints, seenExitIds);
+      this.extractLinkUsages(content, relativePath, sanitizedPath, fileNodeId, nodes, exitPoints, seenExitIds);
       this.extractLoaderActions(content, relativePath, sanitizedPath, fileNodeId, nodes, edges);
     }
 
@@ -160,9 +160,11 @@ export class ReactRouterAnalyzer extends BaseAnalyzer {
     relativePath: string,
     sanitizedPath: string,
     fileNodeId: string | undefined,
+    nodes: CASNode[],
     exitPoints: CASExitPoint[],
     seenExitIds: Set<string>
   ): void {
+    const sourceNodeId = fileNodeId || this.ensureFileSourceNode(relativePath, sanitizedPath, nodes);
     NAVIGATE_CALL.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = NAVIGATE_CALL.exec(content)) !== null) {
@@ -175,7 +177,7 @@ export class ReactRouterAnalyzer extends BaseAnalyzer {
 
       exitPoints.push(this.createExitPoint(
         exitId,
-        fileNodeId || `file_${sanitizedPath}`,
+        sourceNodeId,
         'navigation',
         `Navigate to ${target}`,
         undefined,
@@ -191,9 +193,11 @@ export class ReactRouterAnalyzer extends BaseAnalyzer {
     relativePath: string,
     sanitizedPath: string,
     fileNodeId: string | undefined,
+    nodes: CASNode[],
     exitPoints: CASExitPoint[],
     seenExitIds: Set<string>
   ): void {
+    const sourceNodeId = fileNodeId || this.ensureFileSourceNode(relativePath, sanitizedPath, nodes);
     LINK_TO.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = LINK_TO.exec(content)) !== null) {
@@ -206,7 +210,7 @@ export class ReactRouterAnalyzer extends BaseAnalyzer {
 
       exitPoints.push(this.createExitPoint(
         exitId,
-        fileNodeId || `file_${sanitizedPath}`,
+        sourceNodeId,
         'navigation',
         `Link to ${target}`,
         undefined,
@@ -283,8 +287,25 @@ export class ReactRouterAnalyzer extends BaseAnalyzer {
     for (const contribution of existingAnalysis) {
       const found = contribution.nodes?.find(n => n.id === fileId);
       if (found) return found.id;
+      const bySource = contribution.nodes?.find(n =>
+        n.type === 'file' &&
+        (n.source?.file === relativePath || n.source?.file?.endsWith(relativePath))
+      );
+      if (bySource) return bySource.id;
     }
     return undefined;
+  }
+
+  private ensureFileSourceNode(relativePath: string, sanitizedPath: string, nodes: CASNode[]): string {
+    const nodeId = `file_${sanitizedPath}`;
+    if (nodes.some(node => node.id === nodeId)) return nodeId;
+
+    nodes.push(this.createNode(nodeId, relativePath, 'file', 3, relativePath, undefined, undefined, {
+      library: 'react-router',
+      sourceFile: relativePath
+    }));
+
+    return nodeId;
   }
 
   private findComponentNode(componentName: string, context: AnalysisContext): string | undefined {

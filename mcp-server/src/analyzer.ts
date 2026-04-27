@@ -46,7 +46,7 @@ import {
 
 let orchestrator: AnalyzerOrchestrator | null = null;
 
-function getOrchestrator(): AnalyzerOrchestrator {
+export function getOrchestrator(): AnalyzerOrchestrator {
   if (orchestrator) return orchestrator;
 
   orchestrator = new AnalyzerOrchestrator();

@@ -55,6 +55,7 @@ interface ReactContext {
 interface ReactRoute {
   path: string;
   component: string;
+  nodeId?: string;
   exact?: boolean;
   guards?: string[];
   children?: ReactRoute[];
@@ -174,9 +175,9 @@ export class ReactAnalyzer extends BaseAnalyzer {
       timings['parallelAnalysis'] = Date.now() - t;
 
       t = Date.now();
-      this.buildReactRelationships(components, hooks, contexts, routes, stores, pages, nodes, edges);
+      this.buildReactRelationships(components, hooks, contexts, routes, stores, pages, utils, nodes, edges);
       this.computeComponentMetrics(components, nodes, edges);
-      this.identifyAPIConnections(components, hooks, exitPoints);
+      this.identifyAPIConnections(components, hooks, nodes, exitPoints);
       timings['relationships'] = Date.now() - t;
 
 
@@ -304,9 +305,10 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
       if (this.isReactComponent(content)) {
         try {
+          const jsx = this.shouldParseJsx(file);
           const ast = parse(content, {
             loc: true,
-            jsx: true,
+            jsx,
             ecmaVersion: 2020,
             sourceType: 'module'
           });
@@ -399,9 +401,10 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
       if (this.isCustomHook(content)) {
         try {
+          const jsx = this.shouldParseJsx(file);
           const ast = parse(content, {
             loc: true,
-            jsx: true,
+            jsx,
             ecmaVersion: 2020,
             sourceType: 'module'
           });
@@ -464,9 +467,10 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
       if (content.includes('createContext') || content.includes('Context')) {
         try {
+          const jsx = this.shouldParseJsx(file);
           const ast = parse(content, {
             loc: true,
-            jsx: true,
+            jsx,
             ecmaVersion: 2020,
             sourceType: 'module'
           });
@@ -522,6 +526,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
           extractedRoutes.forEach((route, index) => {
             const routeId = this.generateId('route', file, `${route.path}_${index}`);
+            route.nodeId = routeId;
             const routeNode = this.createNodeBuilder(routeId, route.path, 'react_route')
               .withLevel(3, 'code')
               .withCategory('route', ['react', 'navigation'])
@@ -715,9 +720,10 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
       if (!this.isReactComponent(content)) {
         try {
+          const jsx = this.shouldParseJsx(file);
           const ast = parse(content, {
             loc: true,
-            jsx: false,
+            jsx,
             ecmaVersion: 2020,
             sourceType: 'module'
           });
@@ -1786,6 +1792,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
     routes: ReactRoute[],
     stores: ReactStore[],
     pages: ReactPage[],
+    utils: ReactUtil[],
     nodes: CASNode[],
     edges: CASEdge[]
   ): void {
@@ -1794,35 +1801,59 @@ export class ReactAnalyzer extends BaseAnalyzer {
       const componentId = this.generateId('component', component.filePath, component.name);
       componentNameToId.set(component.name, componentId);
     });
+    const hookNameToId = new Map<string, string>();
+    hooks.forEach(hook => {
+      hookNameToId.set(hook.name, this.generateId('hook', hook.filePath, hook.name));
+    });
+    const namedTargetIds = new Map<string, string>(componentNameToId);
+    hooks.forEach(hook => namedTargetIds.set(hook.name, this.generateId('hook', hook.filePath, hook.name)));
+    contexts.forEach(context => {
+      const contextId = this.generateId('context', context.filePath, context.name);
+      namedTargetIds.set(context.name, contextId);
+      namedTargetIds.set(context.provider, contextId);
+      namedTargetIds.set(context.consumer, contextId);
+    });
+    stores.forEach(store => namedTargetIds.set(store.name, this.generateId('store', store.filePath, store.name)));
+    pages.forEach(page => namedTargetIds.set(page.name, this.generateId('page', page.filePath, page.name)));
+    utils.forEach(util => {
+      const utilId = this.generateId('util', util.filePath, util.name);
+      namedTargetIds.set(util.name, utilId);
+      util.exports.forEach(exportName => namedTargetIds.set(exportName, utilId));
+    });
 
     components.forEach(component => {
       const componentId = this.generateId('component', component.filePath, component.name);
 
       component.imports.forEach(importPath => {
         if (importPath.startsWith('./') || importPath.startsWith('../')) {
-          const importedComponentId = this.generateId('component', '', path.basename(importPath));
-          edges.push(this.createEdge(
-            this.generateEdgeId(componentId, importedComponentId, 'imports'),
-            componentId,
-            importedComponentId,
-            'imports',
-            'dependency',
-            { import_path: importPath }
-          ));
+          const importName = path.basename(importPath, path.extname(importPath));
+          const importedNodeId = namedTargetIds.get(importName);
+          if (importedNodeId) {
+            edges.push(this.createEdge(
+              this.generateEdgeId(componentId, importedNodeId, 'imports'),
+              componentId,
+              importedNodeId,
+              'imports',
+              'dependency',
+              { import_path: importPath }
+            ));
+          }
         }
       });
 
       component.hooks.forEach(hook => {
         if (hook.type === 'custom') {
-          const hookId = this.generateId('hook', '', hook.name);
-          edges.push(this.createEdge(
-            this.generateEdgeId(componentId, hookId, 'uses'),
-            componentId,
-            hookId,
-            'uses',
-            'behavioral',
-            { hook_name: hook.name }
-          ));
+          const hookId = hookNameToId.get(hook.name);
+          if (hookId) {
+            edges.push(this.createEdge(
+              this.generateEdgeId(componentId, hookId, 'uses'),
+              componentId,
+              hookId,
+              'uses',
+              'behavioral',
+              { hook_name: hook.name }
+            ));
+          }
         }
       });
 
@@ -1845,9 +1876,10 @@ export class ReactAnalyzer extends BaseAnalyzer {
       });
     });
 
-    routes.forEach((route, index) => {
-      const routeId = this.generateId('route', '', `${route.path}_${index}`);
-      const componentId = this.generateId('component', '', route.component);
+    routes.forEach(route => {
+      const routeId = route.nodeId;
+      const componentId = componentNameToId.get(route.component);
+      if (!routeId || !componentId) return;
 
       edges.push(this.createEdge(
         this.generateEdgeId(routeId, componentId, 'renders'),
@@ -1861,7 +1893,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
     pages.forEach(page => {
       const pageId = this.generateId('page', page.filePath, page.name);
-      const componentId = this.generateId('component', '', page.component);
+      const componentId = componentNameToId.get(page.component);
+      if (!componentId) return;
 
       edges.push(this.createEdge(
         this.generateEdgeId(pageId, componentId, 'implements'),
@@ -1931,7 +1964,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
     });
   }
 
-  private identifyAPIConnections(components: ReactComponent[], hooks: ReactHook[], exitPoints: CASExitPoint[]): void {
+  private identifyAPIConnections(components: ReactComponent[], hooks: ReactHook[], nodes: CASNode[], exitPoints: CASExitPoint[]): void {
     const hasAPIConnection = components.some(c =>
       c.imports.some(imp => imp.includes('axios') || imp.includes('fetch')) ||
       c.hooks.some(h => h.name.includes('fetch') || h.name.includes('api'))
@@ -1940,9 +1973,13 @@ export class ReactAnalyzer extends BaseAnalyzer {
     );
 
     if (hasAPIConnection) {
+      const sourceNode = nodes.find(node => node.type === 'react_app')?.id ||
+        nodes.find(node => node.type === 'functional_component' || node.type === 'class_component')?.id;
+      if (!sourceNode) return;
+
       exitPoints.push(this.createExitPoint(
         'exit_react_api',
-        'react_app',
+        sourceNode,
         'api',
         'API Connection',
         'External API connections from React components',
@@ -2684,5 +2721,9 @@ export class ReactAnalyzer extends BaseAnalyzer {
       default:
         return 'any';
     }
+  }
+
+  private shouldParseJsx(filePath: string): boolean {
+    return /\.(jsx|tsx)$/i.test(filePath);
   }
 }

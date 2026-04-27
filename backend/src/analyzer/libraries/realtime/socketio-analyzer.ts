@@ -36,6 +36,7 @@ export class SocketIOAnalyzer extends BaseAnalyzer {
   async analyze(context: AnalysisContext): Promise<CASContribution> {
     const { projectPath } = context;
     const ignorePatterns = this.getIgnorePatterns(context);
+    const nodes: CASNode[] = [];
 
     const sourceFiles = await glob('**/*.{ts,js,tsx,jsx}', {
       cwd: projectPath,
@@ -55,7 +56,7 @@ export class SocketIOAnalyzer extends BaseAnalyzer {
       if (!this.hasSocketUsage(content)) continue;
 
       const fileNodeId = this.findFileNodeId(relativePath, context.existingAnalysis);
-      const nodeId = fileNodeId || `file_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
+      const nodeId = fileNodeId || this.ensureRealtimeSourceNode(relativePath, nodes);
 
       const sanitizedPath = relativePath.replace(/[^a-zA-Z0-9]/g, '_');
 
@@ -115,7 +116,7 @@ export class SocketIOAnalyzer extends BaseAnalyzer {
       }
     }
 
-    return this.createContribution([], [], entryPoints, exitPoints);
+    return this.createContribution(nodes, [], entryPoints, exitPoints);
   }
 
   private hasSocketUsage(content: string): boolean {
@@ -152,8 +153,25 @@ export class SocketIOAnalyzer extends BaseAnalyzer {
     for (const contribution of existingAnalysis) {
       const found = contribution.nodes?.find(n => n.id === fileId);
       if (found) return found.id;
+      const bySource = contribution.nodes?.find(n =>
+        n.type === 'file' &&
+        (n.source?.file === relativePath || n.source?.file?.endsWith(relativePath))
+      );
+      if (bySource) return bySource.id;
     }
     return undefined;
+  }
+
+  private ensureRealtimeSourceNode(relativePath: string, nodes: CASNode[]): string {
+    const nodeId = `file_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    if (nodes.some(n => n.id === nodeId)) return nodeId;
+
+    nodes.push(this.createNode(nodeId, relativePath, 'file', 3, relativePath, undefined, undefined, {
+      framework: 'socket.io',
+      attributes: { sourceFile: relativePath }
+    }));
+
+    return nodeId;
   }
 
   protected getCapabilities(): string[] {

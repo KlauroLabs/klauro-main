@@ -60,7 +60,7 @@ export class NextJSAnalyzer extends BaseAnalyzer {
     await this.detectPagesRouterApiRoutes(sourceFiles, context, nodes, edges, entryPoints, seenEntryPointIds);
     await this.detectPageRoutes(sourceFiles, context, nodes, edges, entryPoints, seenEntryPointIds);
     await this.detectMiddleware(context, nodes, edges, entryPoints, seenEntryPointIds);
-    await this.detectNavigationCalls(sourceFiles, context, exitPoints);
+    await this.detectNavigationCalls(sourceFiles, context, nodes, exitPoints);
     await this.detectLayouts(sourceFiles, context, nodes, edges);
     await this.detectComponentTypes(sourceFiles, context, nodes);
 
@@ -393,6 +393,7 @@ export class NextJSAnalyzer extends BaseAnalyzer {
   private async detectNavigationCalls(
     sourceFiles: string[],
     context: AnalysisContext,
+    nodes: CASNode[],
     exitPoints: CASExitPoint[]
   ): Promise<void> {
     const seenExitIds = new Set<string>();
@@ -415,7 +416,7 @@ export class NextJSAnalyzer extends BaseAnalyzer {
       if (!hasRouterUsage && !hasRedirect) continue;
 
       const sourceNode = this.findFileNodeId(file, context.existingAnalysis)
-        || `nextjs_nav_${file.replace(/[^a-zA-Z0-9]/g, '_')}`;
+        || this.ensureNavigationSourceNode(file, nodes);
 
       let match: RegExpExecArray | null;
 
@@ -563,8 +564,25 @@ export class NextJSAnalyzer extends BaseAnalyzer {
     for (const contribution of existingAnalysis) {
       const found = contribution.nodes?.find(n => n.id === fileId);
       if (found) return found.id;
+      const bySource = contribution.nodes?.find(n =>
+        n.type === 'file' &&
+        (n.source?.file === relativePath || n.source?.file?.endsWith(relativePath))
+      );
+      if (bySource) return bySource.id;
     }
     return undefined;
+  }
+
+  private ensureNavigationSourceNode(relativePath: string, nodes: CASNode[]): string {
+    const nodeId = `nextjs_nav_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    if (nodes.some(n => n.id === nodeId)) return nodeId;
+
+    nodes.push(this.createNode(nodeId, `Navigation ${relativePath}`, 'navigation-source', 3, relativePath, undefined, undefined, {
+      framework: 'nextjs',
+      attributes: { sourceFile: relativePath }
+    }));
+
+    return nodeId;
   }
 
   private findExistingNode(nodeId: string, existingAnalysis?: CASContribution[]): CASNode | undefined {

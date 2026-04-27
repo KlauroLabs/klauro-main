@@ -426,6 +426,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         batch.map(async (file) => {
           const fullPath = path.join(projectPath, file);
           try {
+            const stat = await fs.stat(fullPath);
+            if (!stat.isFile()) return null;
             const content = await fs.readFile(fullPath, 'utf-8');
             const extraction = this.tsExtractor.extractFromSource(content, fullPath);
             return { relativePath: file, fullPath, content, extraction };
@@ -455,15 +457,18 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         batch.map(async (file) => {
           const fullPath = path.join(projectPath, file);
           try {
+            const stat = await fs.stat(fullPath);
+            if (!stat.isFile()) return null;
             const content = await fs.readFile(fullPath, 'utf-8');
+            const jsx = this.shouldParseJsx(file);
             const ast = parse(content, {
               loc: true,
               range: false,
-              jsx: true,
+              jsx,
               comment: true,
               tokens: false,
-              useJSXTextNode: true,
-              ecmaFeatures: { jsx: true },
+              useJSXTextNode: jsx,
+              ecmaFeatures: { jsx },
               sourceType: 'module'
             });
             return { relativePath: file, fullPath, content, ast };
@@ -3800,5 +3805,9 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         }
       };
     });
+  }
+
+  private shouldParseJsx(filePath: string): boolean {
+    return /\.(jsx|tsx)$/i.test(filePath);
   }
 }

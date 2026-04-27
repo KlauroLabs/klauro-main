@@ -166,6 +166,7 @@ interface RustFunction {
   name: string;
   moduleName: string;
   filePath: string;
+  implType?: string;
   parameters: RustParameter[];
   returnType: string;
   isAsync: boolean;
@@ -1229,23 +1230,35 @@ export class RustAnalyzer extends BaseAnalyzer {
             }
           }));
 
-          // Create edges to target type
-          const targetNodeId = `struct:${relativePath}:${targetType}`; // Assuming it's a struct, could be enum/trait too
-          edges.push(this.createEdge(
-            `impl_edge:${nodeId}:${targetNodeId}`,
-            nodeId,
-            targetNodeId,
-            'implements'
-          ));
+	          const targetNode = nodes.find(node =>
+	            node.name === targetType &&
+	            ['struct', 'enum', 'trait', 'type_alias'].includes(node.type) &&
+	            (node.source?.file === relativePath || node.source?.file?.endsWith(relativePath))
+	          );
+	          if (targetNode) {
+	            edges.push(this.createEdge(
+	              `impl_edge:${nodeId}:${targetNode.id}`,
+	              nodeId,
+	              targetNode.id,
+	              'implements'
+	            ));
+	          }
 
-          if (traitName) {
-            edges.push(this.createEdge(
-              `impl_trait:${nodeId}:trait:${relativePath}:${traitName}`,
-              nodeId,
-              `trait:${relativePath}:${traitName}`,
-              'implements_for'
-            ));
-          }
+	          if (traitName) {
+	            const traitNode = nodes.find(node =>
+	              node.name === traitName &&
+	              node.type === 'trait' &&
+	              (node.source?.file === relativePath || node.source?.file?.endsWith(relativePath))
+	            );
+	            if (traitNode) {
+	              edges.push(this.createEdge(
+	                `impl_trait:${nodeId}:${traitNode.id}`,
+	                nodeId,
+	                traitNode.id,
+	                'implements_for'
+	              ));
+	            }
+	          }
 
           i = implEnd; // Skip to end of impl
         }
@@ -1294,14 +1307,16 @@ export class RustAnalyzer extends BaseAnalyzer {
             }
           }
 
-          const bodyLines = lines.slice(bodyStartLine, fnEnd + 1);
-          const body = bodyLines.join('\n');
-          const calls = this.extractCallsFromBody(body, fnName, relativePath, bodyStartLine + 1);
+	          const bodyLines = lines.slice(bodyStartLine, fnEnd + 1);
+	          const body = bodyLines.join('\n');
+	          const calls = this.extractCallsFromBody(body, fnName, relativePath, bodyStartLine + 1);
+	          const implType = implContext.get(i + 1);
 
-          const func: RustFunction = {
+	          const func: RustFunction = {
             name: fnName,
             moduleName: relativePath,
             filePath: relativePath,
+            implType,
             parameters: signature.parameters,
             returnType: signature.returnType,
             isAsync,
@@ -1323,8 +1338,7 @@ export class RustAnalyzer extends BaseAnalyzer {
           const internalCallCount = calls.filter(c => !c.isExternal).length;
           const externalCallCount = calls.filter(c => c.isExternal).length;
 
-          const implType = implContext.get(i + 1);
-          const isMethod = !!implType;
+	          const isMethod = !!implType;
           const nodeType = isMethod ? 'method' : 'function';
           const nodeId = isMethod
             ? `method:${relativePath}:${implType}:${fnName}`
@@ -1703,11 +1717,16 @@ export class RustAnalyzer extends BaseAnalyzer {
 
       if (hasSubcommandDerive || hasSubcommandAttr) {
         const structMatch = line.match(/(?:pub\s+)?(?:enum|struct)\s+(\w+)/);
-        if (structMatch) {
-          const name = structMatch[1];
-          const nodeId = `cli_command:${relativePath}:${name}`;
+	        if (structMatch) {
+	          const name = structMatch[1];
+	          const nodeId = `cli_command:${relativePath}:${name}`;
+	          if (!nodes.some(node => node.id === nodeId)) {
+	            nodes.push(this.createNode(nodeId, name, 'cli_command', 3, relativePath, i + 1, i + 1, {
+	              commandType: line.includes('enum') ? 'subcommand_enum' : 'command_struct'
+	            }));
+	          }
 
-          entryPoints.push(this.createEntryPoint(
+	          entryPoints.push(this.createEntryPoint(
             `entry:cli:${relativePath}:${name}`,
             nodeId,
             'cli',
@@ -1738,10 +1757,16 @@ export class RustAnalyzer extends BaseAnalyzer {
           const variantMatch = variantLine.match(/^(\w+)(?:\s*\{|\s*\(|\s*,|\s*$)/);
           if (variantMatch && !variantLine.startsWith('enum') && !variantLine.startsWith('pub enum')) {
             const variantName = variantMatch[1];
-            if (variantName && variantName !== '{' && variantName !== '}') {
-              entryPoints.push(this.createEntryPoint(
-                `entry:cli:${relativePath}:subcommand:${variantName}`,
-                `enum_variant:${relativePath}:${variantName}`,
+	          if (variantName && variantName !== '{' && variantName !== '}') {
+	            const variantNodeId = `enum_variant:${relativePath}:${variantName}`;
+	            if (!nodes.some(node => node.id === variantNodeId)) {
+	              nodes.push(this.createNode(variantNodeId, variantName, 'enum_variant', 4, relativePath, j + 1, j + 1, {
+	                commandType: 'subcommand_variant'
+	              }));
+	            }
+	            entryPoints.push(this.createEntryPoint(
+	              `entry:cli:${relativePath}:subcommand:${variantName}`,
+	              variantNodeId,
                 'cli',
                 variantName,
                 `CLI subcommand: ${variantName}`
@@ -1917,16 +1942,19 @@ export class RustAnalyzer extends BaseAnalyzer {
         const structNode = nodes.find(n => n.id === `struct:${struct.filePath}:${struct.name}`);
         if (structNode) {
           // Add relationships to implementing functions
-          for (const func of functions) {
-            if (func.isPublic) {
-              edges.push(this.createEdge(
-                `struct_func:${structNode.id}:${func.filePath}:${func.name}`,
-                structNode.id,
-                `function:${func.filePath}:${func.name}`,
-                'uses'
-              ));
-            }
-          }
+	          for (const func of functions) {
+	            if (func.isPublic) {
+	              const targetNodeId = this.findRustFunctionNodeId(nodes, func);
+	              if (targetNodeId) {
+	                edges.push(this.createEdge(
+	                  `struct_func:${structNode.id}:${targetNodeId}`,
+	                  structNode.id,
+	                  targetNodeId,
+	                  'uses'
+	                ));
+	              }
+	            }
+	          }
         }
       }
     }
@@ -2179,28 +2207,14 @@ export class RustAnalyzer extends BaseAnalyzer {
   }
 
   private createExitPointsForLibraries(libraries: any[], exitPoints: CASExitPoint[], nodes: CASNode[]): void {
-    for (const lib of libraries) {
-      if (lib.name) {
-        const exitPointId = `lib_exit:${lib.name}`;
-        const exitPoint = this.createExitPoint(
-          exitPointId,
-          '', // Will be set when we find the calling node
-          'api',
-          lib.name,
-          `External library: ${lib.name}`,
-          undefined,
-          { action: 'library_call' }
-        );
-        exitPoints.push(exitPoint);
-      }
-    }
   }
 
   private createExitPointsFromFunctions(functions: RustFunction[], filePath: string, exitPoints: CASExitPoint[], nodes: CASNode[]): void {
     const seenCalls = new Set<string>();
 
     for (const func of functions) {
-      const sourceNodeId = `function:${func.filePath}:${func.name}`;
+      const sourceNodeId = this.findRustFunctionNodeId(nodes, func);
+      if (!sourceNodeId) continue;
 
       for (const call of func.calls) {
         if (!call.isExternal) continue;
@@ -2238,6 +2252,20 @@ export class RustAnalyzer extends BaseAnalyzer {
         ));
       }
     }
+  }
+
+  private findRustFunctionNodeId(nodes: CASNode[], func: RustFunction): string | undefined {
+    const expectedId = func.implType
+      ? `method:${func.filePath}:${func.implType}:${func.name}`
+      : `function:${func.filePath}:${func.name}`;
+    const exact = nodes.find(node => node.id === expectedId);
+    if (exact) return exact.id;
+
+    return nodes.find(node =>
+      node.name === func.name &&
+      (node.type === 'function' || node.type === 'method') &&
+      (node.source?.file === func.filePath || node.source?.file?.endsWith(func.filePath))
+    )?.id;
   }
 
   private isStandardLibraryCall(moduleName: string, functionName: string): boolean {

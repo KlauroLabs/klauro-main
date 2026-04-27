@@ -1453,12 +1453,6 @@ export class AnalyzerOrchestrator {
     registration: AnalyzerRegistration
   ): Promise<boolean> {
     try {
-      const projectType = await this.detectPrimaryProjectType(projectPath);
-
-      if (!this.isAnalyzerRelevantForProject(registration, projectType)) {
-        return false;
-      }
-
       if (await registration.analyzer.canAnalyze(projectPath)) {
         this.analyzerRootMap.set(registration.id, projectPath);
         return true;
@@ -1642,24 +1636,30 @@ export class AnalyzerOrchestrator {
   }
 
   private normalizeFilePaths(result: any, relPrefix: string): void {
+    const normalizePath = (filePath: string): string => {
+      if (path.isAbsolute(filePath)) return filePath;
+      if (filePath === relPrefix || filePath.startsWith(`${relPrefix}${path.sep}`)) return filePath;
+      return path.join(relPrefix, filePath);
+    };
+
     for (const node of result.nodes || []) {
       if (node.source?.file && !path.isAbsolute(node.source.file)) {
-        node.source.file = path.join(relPrefix, node.source.file);
+        node.source.file = normalizePath(node.source.file);
       }
     }
     for (const edge of result.edges || []) {
       if (edge.source_location?.file && !path.isAbsolute(edge.source_location.file)) {
-        edge.source_location.file = path.join(relPrefix, edge.source_location.file);
+        edge.source_location.file = normalizePath(edge.source_location.file);
       }
     }
     for (const ep of result.entry_points || []) {
       if (ep.source?.file && !path.isAbsolute(ep.source.file)) {
-        ep.source.file = path.join(relPrefix, ep.source.file);
+        ep.source.file = normalizePath(ep.source.file);
       }
     }
     for (const ep of result.exit_points || []) {
       if (ep.source?.file && !path.isAbsolute(ep.source.file)) {
-        ep.source.file = path.join(relPrefix, ep.source.file);
+        ep.source.file = normalizePath(ep.source.file);
       }
     }
   }
@@ -2996,13 +2996,152 @@ export class AnalyzerOrchestrator {
   }
 
   private buildCallChains(
-    _nodes: CASNode[],
-    _edges: CASEdge[],
-    _entryPoints: CASEntryPoint[],
-    _exitPoints: CASExitPoint[],
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[],
     _callGraph: CallGraphBuilder
   ): CASCallChain[] {
-    return [];
+    const nodeById = new Map(nodes.map(node => [node.id, node]));
+    const exitBySource = new Map<string, CASExitPoint[]>();
+    for (const exitPoint of exitPoints) {
+      if (!exitBySource.has(exitPoint.source_node)) {
+        exitBySource.set(exitPoint.source_node, []);
+      }
+      exitBySource.get(exitPoint.source_node)!.push(exitPoint);
+    }
+
+    const relationshipTypes = new Set([
+      'calls',
+      'uses',
+      'depends_on',
+      'queries',
+      'reads',
+      'writes',
+      'publishes',
+      'subscribes',
+      'emits',
+      'handles',
+      'routes_to',
+      'implements',
+      'implemented_by'
+    ]);
+    const adjacency = new Map<string, CASEdge[]>();
+    for (const edge of edges) {
+      if (!relationshipTypes.has(edge.type)) continue;
+      if (!nodeById.has(edge.source) || !nodeById.has(edge.target)) continue;
+      if (!adjacency.has(edge.source)) adjacency.set(edge.source, []);
+      adjacency.get(edge.source)!.push(edge);
+    }
+
+    const chains: CASCallChain[] = [];
+    const maxDepth = 8;
+
+    for (const entryPoint of entryPoints) {
+      const startNodeId = entryPoint.handler?.node_id || entryPoint.source_node;
+      const startNode = nodeById.get(startNodeId);
+      if (!startNode) continue;
+
+      const selectedPath: Array<{ nodeId: string; edge?: CASEdge }> = [{ nodeId: startNode.id }];
+      const visited = new Set<string>([startNode.id]);
+      let currentNodeId = startNode.id;
+      let matchedExitPoint: CASExitPoint | undefined;
+
+      for (let depth = 0; depth < maxDepth; depth++) {
+        const exits = exitBySource.get(currentNodeId);
+        if (exits?.length) {
+          matchedExitPoint = exits[0];
+          break;
+        }
+
+        const nextEdge = (adjacency.get(currentNodeId) || [])
+          .filter(edge => !visited.has(edge.target))
+          .sort((a, b) => this.rankChainEdge(a) - this.rankChainEdge(b))[0];
+
+        if (!nextEdge) break;
+
+        selectedPath.push({ nodeId: nextEdge.target, edge: nextEdge });
+        visited.add(nextEdge.target);
+        currentNodeId = nextEdge.target;
+      }
+
+      matchedExitPoint = matchedExitPoint || exitBySource.get(currentNodeId)?.[0];
+
+      const pathNodes = selectedPath
+        .map(step => nodeById.get(step.nodeId))
+        .filter((node): node is CASNode => Boolean(node));
+      const hasDatabaseCalls = Boolean(matchedExitPoint && matchedExitPoint.type === 'database') ||
+        pathNodes.some(node => ['repository', 'entity', 'database', 'model'].includes(node.type));
+      const hasExternalCalls = Boolean(matchedExitPoint);
+      const hasAsyncCalls = pathNodes.some(node => Boolean(node.metadata?.is_async || node.metadata?.attributes?.isAsync));
+      const maxPathDepth = Math.max(1, selectedPath.length - 1);
+      const riskLevel = hasDatabaseCalls || hasExternalCalls || entryPoint.type === 'http' ? 'medium' : 'low';
+
+      chains.push({
+        id: `chain:${entryPoint.id}`,
+        chain_type: matchedExitPoint ? 'entry-to-exit' : selectedPath.length > 1 ? 'dead-end' : 'dead-end',
+        entry_point: {
+          node_id: startNode.id,
+          method_name: entryPoint.handler?.method_name || startNode.name,
+          entry_point_id: entryPoint.id
+        },
+        exit_point: matchedExitPoint ? {
+          node_id: matchedExitPoint.source_node,
+          method_name: matchedExitPoint.operation?.action || matchedExitPoint.name,
+          exit_point_id: matchedExitPoint.id
+        } : undefined,
+        call_path: selectedPath.map((step, index) => {
+          const node = nodeById.get(step.nodeId);
+          return {
+            call_id: step.edge?.id || `entry:${entryPoint.id}`,
+            node_id: step.nodeId,
+            method_name: node?.name || step.nodeId,
+            depth: index
+          };
+        }),
+        characteristics: {
+          total_calls: Math.max(0, selectedPath.length - 1),
+          max_depth: maxPathDepth,
+          has_external_calls: hasExternalCalls,
+          has_database_calls: hasDatabaseCalls,
+          has_async_calls: hasAsyncCalls,
+          is_circular: false,
+          is_recursive: false,
+          complexity_score: maxPathDepth + (hasDatabaseCalls ? 2 : 0) + (hasExternalCalls ? 2 : 0)
+        },
+        risk_analysis: {
+          risk_level: riskLevel,
+          risk_factors: [
+            ...(hasDatabaseCalls ? ['data-access'] : []),
+            ...(hasExternalCalls ? ['external-boundary'] : []),
+            ...(selectedPath.length === 1 ? ['unexpanded-entry-point'] : [])
+          ]
+        },
+        criticality: entryPoint.type === 'http' ? 'medium' : 'low',
+        criticality_factors: [entryPoint.type]
+      });
+    }
+
+    return chains;
+  }
+
+  private rankChainEdge(edge: CASEdge): number {
+    const ranks: Record<string, number> = {
+      calls: 0,
+      routes_to: 1,
+      handles: 2,
+      queries: 3,
+      writes: 4,
+      reads: 5,
+      publishes: 6,
+      emits: 7,
+      depends_on: 8,
+      uses: 9,
+      implements: 10,
+      implemented_by: 11,
+      subscribes: 12
+    };
+    return ranks[edge.type] ?? 99;
   }
 
   private buildEnhancedFlowSummary(
@@ -5383,9 +5522,10 @@ export class AnalyzerOrchestrator {
       !exitPointNodeIds.has(node.id) &&
       node.type !== 'system'
     ).length;
-    const entryPointsWithHandlers = entryPoints.filter(entryPoint =>
-      !!entryPoint.handler?.node_id && nodeIds.has(entryPoint.handler.node_id)
-    ).length;
+    const entryPointsWithHandlers = entryPoints.filter(entryPoint => {
+      const handlerNodeId = entryPoint.handler?.node_id || entryPoint.source_node;
+      return !!handlerNodeId && nodeIds.has(handlerNodeId);
+    }).length;
     const exitPointsWithSources = exitPoints.filter(exitPoint => nodeIds.has(exitPoint.source_node)).length;
     const runtimeLinksWithInstrumentation = runtimeLinks.filter(link => link.instrumentation_points.length > 0).length;
     const factsWithEvidence = analysisFacts.filter(fact => fact.evidence.length > 0).length;

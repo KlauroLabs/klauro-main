@@ -168,7 +168,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
       const extensions = await this.analyzeExtensionsImpl(pythonFiles, context.projectPath, nodes);
 
       this.buildFlaskRelationshipsImpl(application, blueprints, views, models, templates, nodes, edges);
-      this.identifyDatabaseConnectionsImpl(models, extensions, exitPoints);
+      this.identifyDatabaseConnectionsImpl(application, models, extensions, exitPoints);
 
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
         framework: 'flask',
@@ -1432,11 +1432,12 @@ export class FlaskAnalyzer extends BaseAnalyzer {
     });
   }
 
-  private identifyDatabaseConnectionsImpl(models: FlaskModel[], extensions: FlaskExtension[], exitPoints: CASExitPoint[]): void {
+  private identifyDatabaseConnectionsImpl(application: FlaskApplication | null, models: FlaskModel[], extensions: FlaskExtension[], exitPoints: CASExitPoint[]): void {
     if (models.length > 0) {
+      const sourceNode = application ? `app_${this.sanitizeId(application.name)}` : `model_${this.sanitizeId(models[0].name)}`;
       exitPoints.push(this.createExitPoint(
         'exit_flask_database',
-        'flask-application',
+        sourceNode,
         'database',
         'Flask Database Connection',
         'SQLAlchemy database connection',
