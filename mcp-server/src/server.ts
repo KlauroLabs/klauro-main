@@ -1,9 +1,10 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { analyzeProject, getAnalysis, analyzeProjectIncremental } from './analyzer';
-import { listAnalyses, saveAnalysis } from './storage';
+import { listAnalyses, loadRuntimeObservations, saveRuntimeObservation } from './storage';
 import * as query from './query';
 import * as watcher from './watcher';
+import * as product from './product';
 
 export function createServer(): McpServer {
   const server = new McpServer(
@@ -39,6 +40,28 @@ async function withErrorHandling(fn: () => Promise<{ content: Array<{ type: 'tex
   } catch (error) {
     return errorResponse(error);
   }
+}
+
+async function loadRepositoryAnalyses(paths?: string[]): Promise<Array<{ path: string; name: string; cas: Awaited<ReturnType<typeof getAnalysis>> }>> {
+  const selectedPaths = paths && paths.length > 0
+    ? paths
+    : (await listAnalyses()).map(analysis => analysis.path);
+
+  const repositories = [];
+  for (const repositoryPath of selectedPaths) {
+    const cas = await getAnalysis(repositoryPath);
+    repositories.push({
+      path: repositoryPath,
+      name: cas.system?.name || repositoryPath.split('/').pop() || repositoryPath,
+      cas,
+    });
+  }
+
+  return repositories;
+}
+
+function runtimeObservationId(): string {
+  return `runtime_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function registerTools(server: McpServer) {
@@ -133,6 +156,65 @@ function registerTools(server: McpServer) {
     async ({ path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getSystemOverview(cas));
+    })
+  );
+
+  server.registerTool(
+    'list_answer_packs',
+    {
+      title: 'List Answer Packs',
+      description: 'List deterministic MCP answer packs. Answer packs are curated question sets that prove a codebase can be explained from CAS with evidence.',
+      inputSchema: {} as any,
+    } as any,
+    async () => withErrorHandling(async () => {
+      return json(product.getAnswerPackCatalog());
+    })
+  );
+
+  server.registerTool(
+    'run_answer_pack',
+    {
+      title: 'Run Answer Pack',
+      description: 'Answer core product questions from CAS using MCP query surfaces. Returns structured answers with evidence references, confidence, follow-up tools, and gaps.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        pack: z.string().optional().describe('Answer pack id (default: mastery)'),
+      } as any,
+    } as any,
+    async ({ path, pack }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(product.runAnswerPack(cas, path, pack));
+    })
+  );
+
+  server.registerTool(
+    'get_mcp_demo_flow',
+    {
+      title: 'Get MCP Demo Flow',
+      description: 'Agent-facing customer demo flow: exact MCP tool sequence plus representative CAS-backed outputs for explaining a codebase without UI.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        related_paths: z.array(z.string()).optional().describe('Optional related repos to include in the cross-repo step'),
+      } as any,
+    } as any,
+    async ({ path, related_paths }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(product.buildMcpDemoFlow(cas, path, related_paths || []));
+    })
+  );
+
+  server.registerTool(
+    'get_cross_repo_links',
+    {
+      title: 'Get Cross-Repo Links',
+      description: 'Discover deterministic relationships across analyzed repositories: API calls, shared databases, message contracts, and shared internal libraries.',
+      inputSchema: {
+        paths: z.array(z.string()).optional().describe('Project paths to link. Omit to use all analyzed repositories.'),
+      } as any,
+    } as any,
+    async ({ paths }: any) => withErrorHandling(async () => {
+      const repositories = await loadRepositoryAnalyses(paths);
+      return json(product.buildCrossRepositoryLinks(repositories));
     })
   );
 
@@ -804,6 +886,107 @@ function registerTools(server: McpServer) {
     async ({ path, telemetry_status, kind, limit, offset }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getRuntimeStaticLinks(cas, { telemetryStatus: telemetry_status, kind, limit, offset }));
+    })
+  );
+
+  server.registerTool(
+    'correlate_runtime_event',
+    {
+      title: 'Correlate Runtime Event',
+      description: 'Map a runtime event or error back to CAS nodes, entry points, exit points, call chains, and runtime_static_links without storing it.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        event: z.object({
+          type: z.enum(['request', 'error', 'exit', 'log', 'custom']),
+          timestamp: z.string().optional(),
+          signal: z.string().optional(),
+          static_id: z.string().optional(),
+          node_id: z.string().optional(),
+          entry_point_id: z.string().optional(),
+          exit_point_id: z.string().optional(),
+          call_chain_id: z.string().optional(),
+          method: z.string().optional(),
+          route: z.string().optional(),
+          path: z.string().optional(),
+          status_code: z.number().optional(),
+          duration_ms: z.number().optional(),
+          error_message: z.string().optional(),
+          stack: z.string().optional(),
+          attributes: z.record(z.unknown()).optional(),
+        }).describe('Runtime event payload to correlate'),
+      } as any,
+    } as any,
+    async ({ path, event }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(product.correlateRuntimeEvent(cas, event));
+    })
+  );
+
+  server.registerTool(
+    'record_runtime_event',
+    {
+      title: 'Record Runtime Event',
+      description: 'Store a runtime event after correlating it to CAS. Use for requests, errors, exits, logs, or custom telemetry signals.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        event: z.object({
+          type: z.enum(['request', 'error', 'exit', 'log', 'custom']),
+          timestamp: z.string().optional(),
+          signal: z.string().optional(),
+          static_id: z.string().optional(),
+          node_id: z.string().optional(),
+          entry_point_id: z.string().optional(),
+          exit_point_id: z.string().optional(),
+          call_chain_id: z.string().optional(),
+          method: z.string().optional(),
+          route: z.string().optional(),
+          path: z.string().optional(),
+          status_code: z.number().optional(),
+          duration_ms: z.number().optional(),
+          error_message: z.string().optional(),
+          stack: z.string().optional(),
+          attributes: z.record(z.unknown()).optional(),
+        }).describe('Runtime event payload to store'),
+      } as any,
+    } as any,
+    async ({ path, event }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      const eventWithTimestamp = {
+        ...event,
+        timestamp: event.timestamp || new Date().toISOString(),
+      };
+      const observation: product.RuntimeObservation = {
+        id: runtimeObservationId(),
+        project_path: path,
+        recorded_at: new Date().toISOString(),
+        event: eventWithTimestamp,
+        correlation: product.correlateRuntimeEvent(cas, eventWithTimestamp),
+      };
+      await saveRuntimeObservation(path, observation);
+      return json(observation);
+    })
+  );
+
+  server.registerTool(
+    'get_runtime_observations',
+    {
+      title: 'Get Runtime Observations',
+      description: 'Query stored runtime observations and their CAS correlations. Filter by type, timestamp, or static CAS id.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        type: z.enum(['request', 'error', 'exit', 'log', 'custom']).optional().describe('Runtime event type'),
+        since: z.string().optional().describe('ISO timestamp lower bound'),
+        static_id: z.string().optional().describe('CAS node, entry point, exit point, call chain, or runtime link id'),
+        limit: z.number().optional().describe('Max results (default storage order, newest first)'),
+      } as any,
+    } as any,
+    async ({ path, type, since, static_id, limit }: any) => withErrorHandling(async () => {
+      return json(await loadRuntimeObservations(path, {
+        type,
+        since,
+        staticId: static_id,
+        limit,
+      }));
     })
   );
 

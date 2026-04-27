@@ -51,6 +51,9 @@ From there, drill into targeted areas:
 - **Discover patterns**: `get_patterns` (summaries), `get_pattern_instances` (drill into specific pattern)
 - **Explore concepts**: `get_domain_concepts` (filterable, paginated)
 - **Understand recent changes**: `get_changes_since`, `get_change_summary`, `get_hot_spots`, `get_analysis_snapshots`
+- **Prove answerability**: `run_answer_pack` with `pack="mastery"`
+- **Connect repos**: `get_cross_repo_links` with related analyzed paths
+- **Map runtime back to code**: `correlate_runtime_event`, `record_runtime_event`, `get_runtime_observations`
 
 ---
 
@@ -83,6 +86,56 @@ Or use the `safe_modification_guide` prompt which composes all of these into a s
 3. Trace the call chain: `get_call_chain` from the entry point
 4. Check what it calls: `get_callees`
 5. See the workflow: `get_workflows`
+
+### Proving a repo is understandable
+
+Run the mastery answer pack:
+
+```
+Use the run_answer_pack tool with path="/absolute/path/to/project" and pack="mastery"
+```
+
+This returns deterministic answers for overview, entry points, representative flow, change impact, data, tests, external boundaries, security, and runtime readiness. Each answer includes CAS evidence and follow-up tools for deeper work.
+
+For an agent-facing demo sequence:
+
+```
+Use the get_mcp_demo_flow tool with path="/absolute/path/to/project"
+```
+
+This returns the exact MCP script to analyze, explain, trace, assess impact, connect repos, and inspect runtime correlation.
+
+### Linking multiple repositories
+
+Analyze each repository first, then call:
+
+```
+Use the get_cross_repo_links tool with paths=["/repo/a", "/repo/b", "/repo/c"]
+```
+
+When `paths` is omitted, the tool considers all stored analyses. It detects API links, shared databases, message contracts, and shared internal libraries with confidence and evidence.
+
+### Correlating runtime signals
+
+To check where a runtime request or error belongs in CAS without storing it:
+
+```
+Use correlate_runtime_event with path="/repo" and event={ "type": "request", "method": "GET", "route": "/api/users/:id" }
+```
+
+To store the observation:
+
+```
+Use record_runtime_event with path="/repo" and the same event payload
+```
+
+Then query observations:
+
+```
+Use get_runtime_observations with path="/repo", type="error", or static_id="<cas-id>"
+```
+
+Runtime events can include `signal`, `static_id`, `node_id`, `entry_point_id`, `exit_point_id`, `call_chain_id`, route details, status, duration, error message, stack trace, and arbitrary attributes.
 
 ### Checking runtime readiness and evidence
 
@@ -128,6 +181,7 @@ Storage behavior:
 - File-level cache entries are stored under that project directory's `file-cache/`.
 - Change history is stored as `change-history.json`.
 - Analysis snapshots are stored under `snapshots/` and capped by the MCP storage layer.
+- Runtime observations are stored as `runtime-observations.json`.
 
 Use `force_full=true` when the incremental state is suspect or when you need a clean rebuild.
 

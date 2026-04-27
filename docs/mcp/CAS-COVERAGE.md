@@ -14,9 +14,9 @@ This document maps public CAS concepts and related v1.8 analysis storage to the 
 | `progressive_levels` | `get_system_overview`, `get_level` | `overview` |
 | `configuration` | `get_system_overview` | `overview` |
 | `runtime` | `get_system_overview` | `overview` |
-| `runtime_static_links` | `get_system_overview` (count), `get_runtime_static_links` | |
+| `runtime_static_links` | `get_system_overview` (count), `get_runtime_static_links`, `correlate_runtime_event`, `record_runtime_event` | |
 | `analysis_facts` | `get_system_overview` (count), `get_analysis_facts` | |
-| `repository_links` | `get_system_overview` | `overview` |
+| `repository_links` | `get_system_overview`, `get_cross_repo_links` | `overview` |
 | `disclosure` | `get_system_overview` | `overview` |
 | `validation` | `get_system_overview` | `overview` |
 | `analyzer_contributions` | `get_summary`, `get_system_overview` | `overview` |
@@ -66,11 +66,13 @@ This document maps public CAS concepts and related v1.8 analysis storage to the 
 | `index` | Internal (search optimization) | |
 | `change_history` storage | `get_changes_since`, `get_changes_between`, `get_changes_for_node`, `get_changes_for_file`, `get_changes_for_entry_point`, `get_change_summary`, `get_hot_spots` | |
 | `analysis_snapshots` storage | `get_analysis_at`, `get_analysis_snapshots` | |
+| `runtime_observations` storage | `record_runtime_event`, `get_runtime_observations` | |
+| Answer packs | `list_answer_packs`, `run_answer_pack`, `get_mcp_demo_flow` | |
 | `incremental_state` storage | Internal incremental analysis input | |
 | `file_cache` storage | Internal incremental analysis cache | |
 
 ## Coverage Status
 
-The MCP server exposes the public CAS concepts needed by UI and agent workflows, plus v1.8 change-history and snapshot queries. Internal implementation artifacts such as `index`, `incremental_state`, and `file_cache` are intentionally not exposed directly.
+The MCP server exposes the public CAS concepts needed by UI and agent workflows, plus v1.8 change-history and snapshot queries. It also exposes product-level answer packs, cross-repository linking, and runtime observation correlation on top of CAS. Internal implementation artifacts such as `index`, `incremental_state`, and `file_cache` are intentionally not exposed directly.
 
 When adding a new public CAS field, update this matrix and add a tool/resource entry if humans or agents need to query it.

@@ -9,6 +9,7 @@ import type {
   ChangeReport,
   INCREMENTAL_STATE_VERSION,
 } from '../../backend/src/types/cas.types';
+import type { RuntimeObservation } from './product';
 
 const DEFAULT_STORAGE_PATH = path.join(
   process.env.HOME || process.env.USERPROFILE || '~',
@@ -512,4 +513,85 @@ export async function getAnalysisAt(
   }
 
   return null;
+}
+
+// =============================================================================
+// RUNTIME OBSERVATION STORAGE
+// =============================================================================
+
+const MAX_RUNTIME_OBSERVATIONS = 5000;
+
+export async function saveRuntimeObservation(
+  projectPath: string,
+  observation: RuntimeObservation
+): Promise<void> {
+  const projectDir = getProjectStorageDir(projectPath);
+  await fs.ensureDir(projectDir);
+
+  const observationsPath = path.join(projectDir, 'runtime-observations.json');
+  let observations: RuntimeObservation[] = [];
+
+  if (await fs.pathExists(observationsPath)) {
+    try {
+      observations = await fs.readJson(observationsPath);
+    } catch {
+      observations = [];
+    }
+  }
+
+  observations.unshift(observation);
+  if (observations.length > MAX_RUNTIME_OBSERVATIONS) {
+    observations = observations.slice(0, MAX_RUNTIME_OBSERVATIONS);
+  }
+
+  await fs.writeJson(observationsPath, observations, { spaces: 2 });
+}
+
+export async function loadRuntimeObservations(
+  projectPath: string,
+  options?: {
+    since?: string;
+    type?: string;
+    staticId?: string;
+    limit?: number;
+  }
+): Promise<RuntimeObservation[]> {
+  try {
+    const projectDir = getProjectStorageDir(projectPath);
+    const observationsPath = path.join(projectDir, 'runtime-observations.json');
+
+    if (!(await fs.pathExists(observationsPath))) {
+      return [];
+    }
+
+    let observations: RuntimeObservation[] = await fs.readJson(observationsPath);
+
+    if (options?.since) {
+      const sinceDate = new Date(options.since);
+      observations = observations.filter(observation => new Date(observation.event.timestamp) >= sinceDate);
+    }
+
+    if (options?.type) {
+      observations = observations.filter(observation => observation.event.type === options.type);
+    }
+
+    if (options?.staticId) {
+      observations = observations.filter(observation =>
+        observation.correlation.matches.some(match => match.id === options.staticId) ||
+        observation.event.static_id === options.staticId ||
+        observation.event.node_id === options.staticId ||
+        observation.event.entry_point_id === options.staticId ||
+        observation.event.exit_point_id === options.staticId ||
+        observation.event.call_chain_id === options.staticId
+      );
+    }
+
+    if (options?.limit && options.limit > 0) {
+      observations = observations.slice(0, options.limit);
+    }
+
+    return observations;
+  } catch {
+    return [];
+  }
 }

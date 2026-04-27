@@ -65,6 +65,52 @@ Full system metadata without condensation.
 
 **Returns:** `system`, `architecture_summary`, `system_purpose`, `enhanced_system_purpose`, `system_capabilities`, `progressive_levels`, `analyzer_contributions`, `analysis_errors`, `configuration`, `runtime`, `repository_links`, `runtime_static_links_count`, `analysis_facts_count`, `disclosure`, `validation`.
 
+---
+
+## Product Understanding
+
+### `list_answer_packs`
+
+List deterministic MCP answer packs. Answer packs are curated question sets that prove a codebase can be explained from CAS with evidence.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| (none) | | | |
+
+**Returns:** Array of answer packs with `id`, `name`, `description`, and questions. The default pack is `mastery`.
+
+### `run_answer_pack`
+
+Run a curated answer pack against an analyzed codebase.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `pack` | string | no | Answer pack ID, default `mastery` |
+
+**Returns:** Structured answers for overview, entry points, representative flow, change impact, data, tests, external boundaries, security, and runtime readiness. Each answer includes evidence references and follow-up MCP tools.
+
+### `get_mcp_demo_flow`
+
+Return an agent-facing product demo flow without requiring the UI.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `related_paths` | string[] | no | Related analyzed repositories to include in the cross-repo step |
+
+**Returns:** A sequenced MCP script plus representative entry point, target node, and answer-pack readiness summary.
+
+### `get_cross_repo_links`
+
+Discover deterministic links across analyzed repositories.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `paths` | string[] | no | Project paths to link. Omit to use all analyzed repositories. |
+
+**Returns:** Cross-repository links for API calls, shared databases, message contracts, and shared internal libraries, with evidence and confidence.
+
 ### `get_patterns`
 
 Design patterns and anti-patterns detected in the codebase. Returns **summaries only** -- instance counts and variation breakdowns without listing every instance ID. Use `get_pattern_instances` to drill into specific patterns.
@@ -567,6 +613,44 @@ Runtime-to-static correlation for entry points, exit points, call chains, and ex
 | `offset` | number | no | Skip first N results (default 0) |
 
 **Returns:** `runtime`, status counts, and links with `runtime_signal`, `telemetry_status`, `instrumentation_points`, confidence, and evidence.
+
+### `correlate_runtime_event`
+
+Map a runtime request, error, exit, log, or custom event back to CAS without storing it.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `event` | object | yes | Runtime event payload |
+
+The event object may include `type`, `timestamp`, `signal`, `static_id`, `node_id`, `entry_point_id`, `exit_point_id`, `call_chain_id`, `method`, `route`, `path`, `status_code`, `duration_ms`, `error_message`, `stack`, and `attributes`.
+
+**Returns:** Correlation status, best match, matched CAS evidence, runtime links, and suggested instrumentation when unmatched.
+
+### `record_runtime_event`
+
+Store a runtime event after correlating it to CAS.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `event` | object | yes | Runtime event payload |
+
+**Returns:** Stored runtime observation with generated ID, original event, and correlation result.
+
+### `get_runtime_observations`
+
+Query stored runtime observations.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `type` | string | no | Filter by request, error, exit, log, or custom |
+| `since` | string | no | ISO timestamp lower bound |
+| `static_id` | string | no | CAS node, entry point, exit point, call chain, or runtime link ID |
+| `limit` | number | no | Max results |
+
+**Returns:** Stored observations with runtime payloads and CAS correlations.
 
 ### `get_analysis_facts`
 
