@@ -27,7 +27,7 @@ export class RequestLoggerInterceptor implements NestInterceptor {
     response.setHeader('X-Request-ID', requestId);
 
     this.logger.log(
-      `📨 ${method} ${url} - ${userAgent} [${requestId}]`,
+      `${method} ${url} - ${userAgent} [${requestId}]`,
     );
 
     return next.handle().pipe(
@@ -37,14 +37,14 @@ export class RequestLoggerInterceptor implements NestInterceptor {
           const contentLength = response.getHeader('content-length') || 0;
           
           this.logger.log(
-            `✅ ${method} ${url} - ${response.statusCode} ${duration}ms ${contentLength}bytes [${requestId}]`,
+            `${method} ${url} - ${response.statusCode} ${duration}ms ${contentLength}bytes [${requestId}]`,
           );
         },
         error: (error) => {
           const duration = Date.now() - start;
           
           this.logger.error(
-            `❌ ${method} ${url} - ${error.status || 500} ${duration}ms [${requestId}] - ${error.message}`,
+            `${method} ${url} - ${error.status || 500} ${duration}ms [${requestId}] - ${error.message}`,
           );
         },
       }),

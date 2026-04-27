@@ -1,7 +1,5 @@
-// CAS v1.7.0 TypeScript interfaces
-
 export interface CASOutput {
-  cas_version: "1.7.0" | "1.6.0" | "1.5.0" | "1.4.0";
+  cas_version: string;
   analysis_timestamp: string;
   analysis_id: string;
 
@@ -61,6 +59,9 @@ export interface CASOutput {
   system_purpose?: SystemPurpose;
 
   flow_graph?: CASFlowGraph;
+  runtime?: any;
+  runtime_static_links?: any[];
+  analysis_facts?: any[];
 
   metadata?: SystemMetadata;
 }
@@ -657,27 +658,27 @@ export interface CASImplementationStatus {
 }
 
 export interface CASDocumentationSummary {
-  total_documented_nodes: number;
+  total_documented_nodes?: number;
+  documented_nodes?: number;
+  total_nodes?: number;
   documentation_coverage: number;
 
-  by_type: {
-    functions: { documented: number; total: number; coverage: number };
-    classes: { documented: number; total: number; coverage: number };
-    interfaces: { documented: number; total: number; coverage: number };
-    modules: { documented: number; total: number; coverage: number };
-  };
+  by_type: Record<string, { documented: number; total: number; coverage: number }>;
 
-  by_documentation_type: Record<string, number>;
+  by_documentation_type?: Record<string, number>;
 
   quality_metrics: {
-    average_description_length: number;
-    parameters_documented: number;
-    returns_documented: number;
-    examples_provided: number;
-    deprecated_items: number;
+    average_description_length?: number;
+    parameters_documented?: number;
+    returns_documented?: number;
+    examples_provided?: number;
+    deprecated_items?: number;
+    nodes_with_examples?: number;
+    nodes_with_parameters?: number;
+    nodes_with_returns?: number;
   };
 
-  missing_documentation: Array<{
+  missing_documentation?: Array<{
     node_id: string;
     node_name: string;
     node_type: string;
@@ -688,9 +689,9 @@ export interface CASDocumentationSummary {
 
 export interface CASTodoSummary {
   total_todos: number;
-  total_fixmes: number;
-  total_hacks: number;
-  total_warnings: number;
+  total_fixmes?: number;
+  total_hacks?: number;
+  total_warnings?: number;
 
   by_type: Record<string, number>;
   by_priority: {
@@ -705,7 +706,7 @@ export interface CASTodoSummary {
   technical_debt_items: number;
   blocking_items: number;
 
-  hotspots: Array<{
+  hotspots?: Array<{
     file: string;
     todo_count: number;
     types: string[];
@@ -721,16 +722,33 @@ export interface CASTodoSummary {
 }
 
 export interface CASImplementationHealth {
-  complete_implementations: number;
-  partial_implementations: number;
-  stubs: number;
-  not_implemented: number;
-  deprecated: number;
-  experimental: number;
+  complete_implementations?: number;
+  partial_implementations?: number;
+  stubs?: number;
+  not_implemented?: number;
+  deprecated?: number;
+  experimental?: number;
 
-  health_score: number;
+  health_score?: number;
+  overall_score?: number;
 
-  risk_areas: Array<{
+  status_breakdown?: {
+    complete?: number;
+    partial?: number;
+    stub?: number;
+    not_implemented?: number;
+    deprecated?: number;
+    experimental?: number;
+  };
+
+  quality_indicators?: {
+    nodes_with_todos?: number;
+    nodes_with_hardcoded_values?: number;
+    nodes_with_placeholder_code?: number;
+    nodes_with_commented_code?: number;
+  };
+
+  risk_areas?: Array<{
     node_id: string;
     node_name: string;
     risk_type: 'incomplete' | 'deprecated' | 'unstable' | 'high-todo-density';

@@ -1,0 +1,956 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Unravl - Design Flow Paths (Visual)</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        :root {
+            --bg-primary: #0a0a0a;
+            --bg-secondary: #1a1a2e;
+            --bg-card: #16213e;
+            --text-primary: #eee;
+            --text-secondary: #aaa;
+            --accent-blue: #667eea;
+            --accent-purple: #764ba2;
+            --accent-green: #4caf50;
+            --accent-orange: #ff9800;
+            --accent-red: #f44336;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            padding: 2rem;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .subtitle {
+            color: var(--text-secondary);
+            font-size: 1.1rem;
+            margin-bottom: 2rem;
+        }
+
+        h2 {
+            font-size: 1.8rem;
+            margin: 3rem 0 1.5rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 2px solid var(--accent-blue);
+        }
+
+        h3 {
+            font-size: 1.3rem;
+            margin: 2rem 0 1rem;
+            color: var(--accent-purple);
+        }
+
+        .flow-section {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+        }
+
+        .mermaid {
+            background: var(--bg-card);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin: 1rem 0;
+            overflow-x: auto;
+        }
+
+        .screen-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1rem;
+            margin: 1rem 0;
+        }
+
+        .screen-card {
+            background: var(--bg-card);
+            border-radius: 8px;
+            padding: 1.25rem;
+            border-left: 4px solid var(--accent-blue);
+        }
+
+        .screen-card h4 {
+            color: var(--accent-blue);
+            margin-bottom: 0.5rem;
+        }
+
+        .screen-card p {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .screen-card .elements {
+            margin-top: 0.75rem;
+            padding-top: 0.75rem;
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .screen-card .elements li {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-left: 1rem;
+        }
+
+        .role-badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            margin-right: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .role-owner { background: var(--accent-purple); }
+        .role-admin { background: var(--accent-blue); }
+        .role-member { background: var(--accent-green); }
+        .role-viewer { background: var(--accent-orange); }
+
+        .toc {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .toc h3 {
+            margin-top: 0;
+        }
+
+        .toc ul {
+            columns: 2;
+            list-style: none;
+        }
+
+        .toc li {
+            margin: 0.5rem 0;
+        }
+
+        .toc a {
+            color: var(--accent-blue);
+            text-decoration: none;
+        }
+
+        .toc a:hover {
+            text-decoration: underline;
+        }
+
+        .view-type {
+            display: inline-block;
+            padding: 0.5rem 1rem;
+            background: var(--bg-card);
+            border-radius: 6px;
+            margin: 0.25rem;
+            font-size: 0.9rem;
+        }
+
+        .nav-levels {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 1rem;
+            background: var(--bg-card);
+            border-radius: 8px;
+            margin: 1rem 0;
+            flex-wrap: wrap;
+        }
+
+        .nav-level {
+            padding: 0.5rem 1rem;
+            background: var(--accent-blue);
+            border-radius: 4px;
+            font-size: 0.85rem;
+        }
+
+        .nav-arrow {
+            color: var(--text-secondary);
+        }
+
+        @media (max-width: 768px) {
+            body { padding: 1rem; }
+            h1 { font-size: 1.8rem; }
+            .toc ul { columns: 1; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Unravl Design Flow Paths</h1>
+        <p class="subtitle">Visual guide for UI/UX designers - All user journeys and screen flows</p>
+
+        <div class="toc">
+            <h3>Table of Contents</h3>
+            <ul>
+                <li><a href="#roles">User Roles</a></li>
+                <li><a href="#auth">Authentication Flow</a></li>
+                <li><a href="#onboarding">Onboarding Journey</a></li>
+                <li><a href="#workspace">Workspace Dashboard</a></li>
+                <li><a href="#codebase">Codebase Management</a></li>
+                <li><a href="#visualization">Visualization Experience</a></li>
+                <li><a href="#navigation">Navigation Levels</a></li>
+                <li><a href="#org">Organization Management</a></li>
+                <li><a href="#settings">Settings & Billing</a></li>
+            </ul>
+        </div>
+
+        <section id="roles">
+            <h2>User Roles</h2>
+            <div class="flow-section">
+                <p>Users can have different roles with varying access levels:</p>
+                <div style="margin-top: 1rem;">
+                    <span class="role-badge role-owner">Owner</span>
+                    <span class="role-badge role-admin">Admin</span>
+                    <span class="role-badge role-member">Member</span>
+                    <span class="role-badge role-viewer">Viewer</span>
+                </div>
+                <div class="mermaid">
+graph TB
+    subgraph "Individual Account"
+        IU[Individual User]
+        IU --> PW[Personal Workspaces]
+    end
+
+    subgraph "Organization"
+        OO[Owner] --> |Full Access| OA[All Workspaces]
+        OO --> |Manages| OM[Members]
+        OO --> |Controls| OB[Billing]
+
+        AD[Admin] --> |Manages| OMW[Org Workspaces]
+        AD --> |Invites| NM[New Members]
+
+        ME[Member] --> |Accesses| AW[Assigned Workspaces]
+
+        VI[Viewer] --> |Read Only| RO[View Visualizations]
+    end
+
+    style OO fill:#764ba2
+    style AD fill:#667eea
+    style ME fill:#4caf50
+    style VI fill:#ff9800
+                </div>
+            </div>
+        </section>
+
+        <section id="auth">
+            <h2>Authentication Flow</h2>
+
+            <h3>New User Registration</h3>
+            <div class="flow-section">
+                <div class="mermaid">
+flowchart LR
+    subgraph "Registration Screen"
+        A[Landing Page] --> B[Click 'Sign Up']
+        B --> C[Registration Form]
+    end
+
+    subgraph "Form Fields"
+        C --> D[Email]
+        C --> E[Name]
+        C --> F[Password]
+        C --> G[Confirm Password]
+        C --> H[Organization Name\n*optional*]
+    end
+
+    subgraph "Validation"
+        D & E & F & G --> I{Valid?}
+        I -->|No| J[Show Errors]
+        J --> C
+        I -->|Yes| K[Create Account]
+    end
+
+    subgraph "Success"
+        K --> L[Welcome Screen\nor Dashboard]
+    end
+
+    style A fill:#667eea
+    style L fill:#4caf50
+                </div>
+
+                <div class="screen-list">
+                    <div class="screen-card">
+                        <h4>Registration Screen</h4>
+                        <p>Dark theme, centered card with frosted glass effect</p>
+                        <ul class="elements">
+                            <li>Email input (required)</li>
+                            <li>Name input (required)</li>
+                            <li>Password with strength check</li>
+                            <li>Confirm password</li>
+                            <li>Organization name (optional)</li>
+                            <li>Create Account button</li>
+                            <li>Link to login</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <h3>Existing User Login</h3>
+            <div class="flow-section">
+                <div class="mermaid">
+flowchart LR
+    A[Login Page] --> B[Enter Email]
+    B --> C[Enter Password]
+    C --> D{Valid?}
+    D -->|No| E[Error Message]
+    E --> A
+    D -->|Yes| F[Dashboard]
+
+    A --> G[Forgot Password?]
+    G --> H[Reset Flow]
+
+    style A fill:#667eea
+    style F fill:#4caf50
+                </div>
+
+                <div class="screen-list">
+                    <div class="screen-card">
+                        <h4>Login Screen</h4>
+                        <p>Minimal form, gradient button</p>
+                        <ul class="elements">
+                            <li>Email input</li>
+                            <li>Password input</li>
+                            <li>Login button</li>
+                            <li>"Don't have an account?" link</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="onboarding">
+            <h2>Onboarding Journey</h2>
+            <div class="flow-section">
+                <div class="mermaid">
+flowchart TB
+    A[First Login] --> B{Has Workspaces?}
+
+    B -->|No| C[Welcome Screen]
+    C --> D[Create First Workspace Button]
+    D --> E[Workspace Modal]
+
+    B -->|Yes| F[Dashboard]
+
+    E --> G[Enter Name & Description]
+    G --> H[Choose Type\nPersonal or Org]
+    H --> I[Set Visibility]
+    I --> J[Create]
+    J --> K[Empty Workspace Dashboard]
+
+    K --> L[Add Codebase Prompt]
+    L --> M[Add Codebase Modal]
+    M --> N[Choose Source\nURL / Local / Upload]
+    N --> O[Configure Settings]
+    O --> P[Start Analysis]
+    P --> Q[Visualization Ready!]
+
+    style A fill:#667eea
+    style Q fill:#4caf50
+    style C fill:#764ba2
+                </div>
+
+                <h3>Key Onboarding Screens</h3>
+                <div class="screen-list">
+                    <div class="screen-card">
+                        <h4>Welcome Screen</h4>
+                        <p>Shown when user has no workspaces</p>
+                        <ul class="elements">
+                            <li>Large business icon</li>
+                            <li>"Welcome to Unravl" heading</li>
+                            <li>Value proposition text</li>
+                            <li>Prominent CTA button</li>
+                        </ul>
+                    </div>
+                    <div class="screen-card">
+                        <h4>Create Workspace Modal</h4>
+                        <p>First major action for new users</p>
+                        <ul class="elements">
+                            <li>Workspace name input</li>
+                            <li>Auto-generated slug</li>
+                            <li>Description textarea</li>
+                            <li>Personal/Organization toggle</li>
+                            <li>Private/Internal visibility</li>
+                        </ul>
+                    </div>
+                    <div class="screen-card">
+                        <h4>Empty Workspace State</h4>
+                        <p>Encourages adding first codebase</p>
+                        <ul class="elements">
+                            <li>Info alert with guidance</li>
+                            <li>"Get Started" button</li>
+                            <li>Stats cards (all zeros)</li>
+                        </ul>
+                    </div>
+                    <div class="screen-card">
+                        <h4>Add Codebase Modal</h4>
+                        <p>Connect or upload code</p>
+                        <ul class="elements">
+                            <li>Source type tabs</li>
+                            <li>Repository URL input</li>
+                            <li>Branch selector</li>
+                            <li>Analysis settings</li>
+                            <li>Notification toggles</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="workspace">
+            <h2>Workspace Dashboard</h2>
+            <div class="flow-section">
+                <div class="mermaid">
+flowchart TB
+    subgraph "Dashboard Layout"
+        H[Header: Workspace Name + Type]
+        S[Stats Grid: 4 Cards]
+        CB[Codebases Section]
+        FAB[Floating Add Button]
+    end
+
+    H --> S
+    S --> CB
+
+    subgraph "Stats Cards"
+        S --> S1[Total Codebases]
+        S --> S2[Analyses This Month]
+        S --> S3[Storage Used]
+        S --> S4[Team Members]
+    end
+
+    subgraph "Codebase Actions"
+        CB --> CA1[Search Bar]
+        CB --> CA2[Codebase Cards Grid]
+        CA2 --> |Click| VIZ[Visualization]
+        CA2 --> |Analyze| AN[Trigger Analysis]
+        CA2 --> |Settings| CS[Codebase Settings]
+    end
+
+    FAB --> ADD[Add Codebase Modal]
+
+    style H fill:#667eea
+    style VIZ fill:#4caf50
+                </div>
+
+                <div class="screen-list">
+                    <div class="screen-card">
+                        <h4>Workspace Header</h4>
+                        <p>Identity and context</p>
+                        <ul class="elements">
+                            <li>Avatar (person/business icon)</li>
+                            <li>Workspace name (large)</li>
+                            <li>Description text</li>
+                            <li>Type badge (personal/org)</li>
+                        </ul>
+                    </div>
+                    <div class="screen-card">
+                        <h4>Stats Cards</h4>
+                        <p>4-column grid, color-coded</p>
+                        <ul class="elements">
+                            <li>Large number</li>
+                            <li>Label text</li>
+                            <li>Icon in colored circle</li>
+                            <li>Trend indicator</li>
+                        </ul>
+                    </div>
+                    <div class="screen-card">
+                        <h4>Codebase Card</h4>
+                        <p>Repository preview</p>
+                        <ul class="elements">
+                            <li>Repo icon (GitHub/GitLab/Folder)</li>
+                            <li>Codebase name</li>
+                            <li>Status chip (Ready/Analyzing/Failed)</li>
+                            <li>Language tags</li>
+                            <li>Last analyzed date</li>
+                            <li>Action buttons</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="codebase">
+            <h2>Codebase Management</h2>
+            <div class="flow-section">
+                <div class="mermaid">
+flowchart LR
+    subgraph "Source Types"
+        A[Repository URL] --> D[Clone & Analyze]
+        B[Local Path] --> D
+        C[Upload] --> D
+    end
+
+    subgraph "Analysis States"
+        D --> E[Pending]
+        E --> F[Cloning]
+        F --> G[Analyzing]
+        G --> H{Success?}
+        H -->|Yes| I[Ready]
+        H -->|No| J[Failed]
+        J --> K[Retry Option]
+        K --> E
+    end
+
+    I --> L[View Visualization]
+
+    style A fill:#667eea
+    style B fill:#667eea
+    style C fill:#888
+    style I fill:#4caf50
+    style J fill:#f44336
+                </div>
+
+                <h3>Codebase State Indicators</h3>
+                <div class="screen-list">
+                    <div class="screen-card" style="border-color: #888">
+                        <h4>Pending</h4>
+                        <p>Gray chip - Just added, waiting</p>
+                    </div>
+                    <div class="screen-card" style="border-color: #2196f3">
+                        <h4>Cloning / Analyzing</h4>
+                        <p>Blue spinner with progress</p>
+                    </div>
+                    <div class="screen-card" style="border-color: #4caf50">
+                        <h4>Ready</h4>
+                        <p>Green chip - Click to visualize</p>
+                    </div>
+                    <div class="screen-card" style="border-color: #f44336">
+                        <h4>Failed</h4>
+                        <p>Red chip - Shows error, retry option</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="visualization">
+            <h2>Visualization Experience</h2>
+            <p>The core product experience - making codebases understandable through progressive disclosure.</p>
+
+            <h3>View Hierarchy</h3>
+            <div class="flow-section">
+                <div class="mermaid">
+flowchart TB
+    subgraph "Level 0: System Overview"
+        SO[System Overview]
+        SO --> TS[Tech Stack Card]
+        SO --> AR[Architecture Card]
+        SO --> EP[Entry Points Card]
+        SO --> TE[Testing Card]
+        SO --> PA[Patterns Card]
+        SO --> NA[Needs Attention Card]
+        SO --> EI[External Integrations]
+        SO --> SEC[Sections Grid]
+    end
+
+    subgraph "Level 1: Domain/Section"
+        SEC --> |Click Section| DV[Domain View]
+        DV --> DH[Section Header + Stats]
+        DV --> CAP[Capabilities Grid]
+    end
+
+    subgraph "Level 2: Flow View"
+        CAP --> |Click Capability| FV[Flow View]
+        FV --> FH[Endpoint Header]
+        FV --> CT[Call Tree]
+    end
+
+    subgraph "Level 3: Node Detail"
+        CT --> |Click Node| ND[Node Detail Panel]
+        ND --> NS[Source Location]
+        ND --> NP[Parameters]
+        ND --> NC[Connections]
+        ND --> NE[Exit Points]
+    end
+
+    SO --> |View Architecture| GV[Graph View]
+    PA --> |View All| PV[Patterns View]
+    TE --> |View All| TV[Tests View]
+    NA --> |View All| HV[Health View]
+
+    style SO fill:#667eea
+    style DV fill:#764ba2
+    style FV fill:#4caf50
+    style ND fill:#ff9800
+                </div>
+            </div>
+
+            <h3>Navigation Example</h3>
+            <div class="nav-levels">
+                <span class="nav-level">System</span>
+                <span class="nav-arrow">></span>
+                <span class="nav-level">Authentication</span>
+                <span class="nav-arrow">></span>
+                <span class="nav-level">POST /auth/login</span>
+            </div>
+
+            <h3>Visualization Screens</h3>
+            <div class="screen-list">
+                <div class="screen-card">
+                    <h4>System Overview</h4>
+                    <p>First screen when viewing a codebase</p>
+                    <ul class="elements">
+                        <li>System name + type badge</li>
+                        <li>Tech Stack (languages, frameworks)</li>
+                        <li>Architecture layers breakdown</li>
+                        <li>Entry points by type</li>
+                        <li>Clickable section cards</li>
+                    </ul>
+                </div>
+                <div class="screen-card">
+                    <h4>Domain/Section View</h4>
+                    <p>All endpoints in a domain</p>
+                    <ul class="elements">
+                        <li>Back button + breadcrumb</li>
+                        <li>Section icon + name</li>
+                        <li>Stats (endpoints, auth, db)</li>
+                        <li>Capability cards grid</li>
+                    </ul>
+                </div>
+                <div class="screen-card">
+                    <h4>Flow View</h4>
+                    <p>Request trace visualization</p>
+                    <ul class="elements">
+                        <li>Endpoint header (method + path)</li>
+                        <li>Auth status chip</li>
+                        <li>Stats (steps, depth, db)</li>
+                        <li>Call tree with expand/collapse</li>
+                        <li>Bottleneck warnings</li>
+                    </ul>
+                </div>
+                <div class="screen-card">
+                    <h4>Node Detail Panel</h4>
+                    <p>Right sidebar, slides in on click</p>
+                    <ul class="elements">
+                        <li>Type chip + name</li>
+                        <li>Source file + line</li>
+                        <li>Documentation/JSDoc</li>
+                        <li>Parameters list</li>
+                        <li>Incoming/outgoing connections</li>
+                        <li>Exit points (db, api)</li>
+                    </ul>
+                </div>
+                <div class="screen-card">
+                    <h4>Graph View</h4>
+                    <p>Full architecture diagram</p>
+                    <ul class="elements">
+                        <li>Canvas with nodes + edges</li>
+                        <li>Zoom/pan controls</li>
+                        <li>Layout toggle</li>
+                        <li>Filter by type/layer</li>
+                        <li>Minimap</li>
+                        <li>Search</li>
+                    </ul>
+                </div>
+                <div class="screen-card">
+                    <h4>Patterns View</h4>
+                    <p>Design pattern analysis</p>
+                    <ul class="elements">
+                        <li>Pattern cards grid</li>
+                        <li>Instance counts</li>
+                        <li>Deviation warnings</li>
+                        <li>Click for details</li>
+                    </ul>
+                </div>
+            </div>
+
+            <h3>Call Tree Interaction</h3>
+            <div class="flow-section">
+                <div class="mermaid">
+flowchart LR
+    subgraph "Call Tree UI"
+        A[Entry Point\nController Method] --> B[Service Call]
+        B --> C[Repository Call]
+        C --> D[Database Exit]
+
+        B --> E[External API Call]
+        E --> F[HTTP Exit]
+    end
+
+    subgraph "Node Card"
+        N[Node Type Chip]
+        N2[Node Name]
+        N3[Expand Toggle]
+        N4[Exit Point Icons]
+    end
+
+    style A fill:#e0234e
+    style B fill:#3949ab
+    style C fill:#00897b
+    style D fill:#7e57c2
+    style F fill:#ff9800
+                </div>
+                <p style="color: var(--text-secondary); margin-top: 1rem;">
+                    Each node in the call tree is clickable and opens the detail panel.
+                    Nodes are color-coded by type (Controller=red, Service=blue, Repository=teal).
+                    Exit points show icons for database, external API, etc.
+                </p>
+            </div>
+        </section>
+
+        <section id="navigation">
+            <h2>Navigation Levels</h2>
+            <div class="flow-section">
+                <p>The visualization uses progressive disclosure - users drill down through levels:</p>
+
+                <div class="mermaid">
+flowchart TB
+    subgraph "Level 0"
+        L0[System Overview\nSee entire app architecture]
+    end
+
+    subgraph "Level 1"
+        L1A[Authentication Section]
+        L1B[Workspaces Section]
+        L1C[Billing Section]
+        L1D[Users Section]
+    end
+
+    subgraph "Level 2"
+        L2A[POST /auth/login]
+        L2B[POST /auth/register]
+        L2C[GET /workspaces]
+    end
+
+    subgraph "Level 3"
+        L3A[AuthService.login\nCall Tree]
+        L3B[WorkspacesService.findAll\nCall Tree]
+    end
+
+    subgraph "Level 4"
+        L4[Individual Methods\nVariables, Parameters]
+    end
+
+    L0 --> L1A & L1B & L1C & L1D
+    L1A --> L2A & L2B
+    L1B --> L2C
+    L2A --> L3A
+    L2C --> L3B
+    L3A --> L4
+    L3B --> L4
+
+    style L0 fill:#667eea
+    style L1A fill:#764ba2
+    style L1B fill:#764ba2
+    style L2A fill:#4caf50
+    style L2C fill:#4caf50
+    style L3A fill:#ff9800
+    style L3B fill:#ff9800
+                </div>
+            </div>
+
+            <h3>Available View Types</h3>
+            <div style="margin: 1rem 0;">
+                <span class="view-type">system</span>
+                <span class="view-type">domain</span>
+                <span class="view-type">section</span>
+                <span class="view-type">flow</span>
+                <span class="view-type">health</span>
+                <span class="view-type">architecture</span>
+                <span class="view-type">patterns</span>
+                <span class="view-type">pattern-detail</span>
+                <span class="view-type">graph</span>
+                <span class="view-type">tests</span>
+                <span class="view-type">test-area</span>
+            </div>
+        </section>
+
+        <section id="org">
+            <h2>Organization Management</h2>
+            <div class="flow-section">
+                <div class="mermaid">
+flowchart TB
+    subgraph "Organization Dashboard"
+        OH[Org Header\nName + Avatar + Role Badge]
+        OS[Stats Overview]
+        OM[Members Section]
+        OW[Workspaces Section]
+    end
+
+    OH --> OS
+    OS --> OM
+    OM --> OW
+
+    subgraph "Member Management"
+        OM --> MA[Member List Table]
+        MA --> |Click Invite| MI[Invite Modal]
+        MA --> |Click Member| MR[Change Role]
+        MA --> |Click Remove| MD[Remove Confirm]
+    end
+
+    subgraph "Invite Flow"
+        MI --> I1[Enter Email]
+        I1 --> I2[Select Role]
+        I2 --> I3[Choose Workspaces]
+        I3 --> I4[Send Invite]
+        I4 --> I5[Pending Status]
+        I5 --> I6[Accepted]
+    end
+
+    style OH fill:#667eea
+    style MI fill:#764ba2
+    style I6 fill:#4caf50
+                </div>
+            </div>
+        </section>
+
+        <section id="settings">
+            <h2>Settings & Billing</h2>
+            <div class="flow-section">
+                <div class="mermaid">
+flowchart LR
+    subgraph "User Settings"
+        US[Settings Page]
+        US --> UP[Profile Tab]
+        US --> UN[Notifications Tab]
+        US --> UI[Integrations Tab]
+        US --> UA[API Keys Tab]
+    end
+
+    subgraph "Workspace Settings"
+        WS[Workspace Settings]
+        WS --> WG[General Tab]
+        WS --> WM[Members Tab]
+        WS --> WI[Integrations Tab]
+    end
+
+    subgraph "Billing"
+        BI[Billing Page]
+        BI --> BP[Current Plan Card]
+        BI --> BU[Usage Stats]
+        BI --> BM[Payment Method]
+        BI --> BH[Invoice History]
+
+        BP --> |Upgrade| PL[Plan Selection]
+        PL --> |Checkout| ST[Stripe]
+        ST --> |Success| PC[Plan Changed]
+    end
+
+    style US fill:#667eea
+    style WS fill:#764ba2
+    style BI fill:#ff9800
+    style PC fill:#4caf50
+                </div>
+
+                <h3>Billing Tiers</h3>
+                <div class="screen-list">
+                    <div class="screen-card" style="border-color: #888">
+                        <h4>Free</h4>
+                        <p>For individuals getting started</p>
+                        <ul class="elements">
+                            <li>3 workspaces</li>
+                            <li>5 codebases per workspace</li>
+                            <li>1 user</li>
+                        </ul>
+                    </div>
+                    <div class="screen-card" style="border-color: #667eea">
+                        <h4>Pro</h4>
+                        <p>For serious developers</p>
+                        <ul class="elements">
+                            <li>Unlimited workspaces</li>
+                            <li>50 codebases per workspace</li>
+                            <li>10 users</li>
+                        </ul>
+                    </div>
+                    <div class="screen-card" style="border-color: #764ba2">
+                        <h4>Enterprise</h4>
+                        <p>For organizations</p>
+                        <ul class="elements">
+                            <li>Unlimited everything</li>
+                            <li>SSO integration</li>
+                            <li>Priority support</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <h2>URL Structure</h2>
+            <div class="flow-section">
+                <pre style="background: var(--bg-card); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: monospace; font-size: 0.9rem;">
+/                                           Landing Page (Marketing)
+/login                                      Login Screen
+/register                                   Registration Screen
+/workspaces                                 Dashboard (requires auth)
+/workspace/[id]                             Workspace Dashboard
+/workspace/[id]?codebase=[codebaseId]       Visualization
+/workspace/[id]/settings                    Workspace Settings
+/workspace/[id]/codebase/[id]/settings      Codebase Settings
+/organization/[id]                          Organization Dashboard
+/organization/[id]/settings                 Organization Settings
+/organization/[id]/billing                  Billing Page
+/settings                                   User Settings
+                </pre>
+            </div>
+        </section>
+
+        <section>
+            <h2>Node Type Color Legend</h2>
+            <div class="flow-section">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.5rem;">
+                    <div style="padding: 0.5rem; background: #e0234e20; border-left: 4px solid #e0234e;">Controller</div>
+                    <div style="padding: 0.5rem; background: #3949ab20; border-left: 4px solid #3949ab;">Service</div>
+                    <div style="padding: 0.5rem; background: #00897b20; border-left: 4px solid #00897b;">Repository</div>
+                    <div style="padding: 0.5rem; background: #ff980020; border-left: 4px solid #ff9800;">Guard</div>
+                    <div style="padding: 0.5rem; background: #7e57c220; border-left: 4px solid #7e57c2;">Module</div>
+                    <div style="padding: 0.5rem; background: #2196f320; border-left: 4px solid #2196f3;">Component</div>
+                    <div style="padding: 0.5rem; background: #9c27b020; border-left: 4px solid #9c27b0;">Hook</div>
+                    <div style="padding: 0.5rem; background: #607d8b20; border-left: 4px solid #607d8b;">Function</div>
+                </div>
+            </div>
+        </section>
+
+    </div>
+
+    <script>
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'dark',
+            themeVariables: {
+                primaryColor: '#667eea',
+                primaryTextColor: '#fff',
+                primaryBorderColor: '#764ba2',
+                lineColor: '#667eea',
+                secondaryColor: '#1a1a2e',
+                tertiaryColor: '#16213e',
+                background: '#0a0a0a',
+                mainBkg: '#1a1a2e',
+                nodeBorder: '#667eea',
+                clusterBkg: '#16213e',
+                clusterBorder: '#667eea',
+                titleColor: '#fff',
+                edgeLabelBackground: '#1a1a2e'
+            },
+            flowchart: {
+                useMaxWidth: true,
+                htmlLabels: true,
+                curve: 'basis'
+            }
+        });
+    </script>
+</body>
+</html>

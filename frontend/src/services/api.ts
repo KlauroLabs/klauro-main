@@ -87,15 +87,39 @@ export interface CASAnalysisResponse {
   }>;
 }
 
+export interface DetectedAnalyzerRecord {
+  id: string;
+  name: string;
+  type: string;
+  version: string;
+  detectPatterns: any;
+  requires?: string[];
+}
+
 export interface DetectedAnalyzersResponse {
-  analyzers: Array<{
-    id: string;
-    name: string;
-    type: string;
-    version: string;
-    detectPatterns: any;
-    requires?: string[];
-  }>;
+  analyzers: DetectedAnalyzerRecord[];
+  detectedAnalyzers?: DetectedAnalyzerRecord[];
+}
+
+export interface ComponentRecord {
+  id: string;
+  name: string;
+  type: string;
+  path?: string;
+  complexity?: number;
+  connectionCount?: number;
+  metadata?: Record<string, any>;
+}
+
+export interface ComponentConnectionRecord {
+  id: string;
+  from?: string;
+  to?: string;
+  source?: string;
+  target?: string;
+  type: string;
+  fromComponent?: ComponentRecord | string;
+  toComponent?: ComponentRecord | string;
 }
 
 class APIService {
@@ -133,29 +157,24 @@ class APIService {
   }
 
   async analyzeCAS(request: CASAnalysisRequest): Promise<CASAnalysisResponse> {
-    const response = await fetch(`${this.baseURL}/analyze/cas`, {
+    return this.fetchWithAuth<CASAnalysisResponse>('/analyze/cas', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
       body: JSON.stringify(request),
     });
-
-    if (!response.ok) {
-      throw new Error(`Analysis failed: ${response.statusText}`);
-    }
-
-    return response.json();
   }
 
   async getDetectedAnalyzers(projectPath: string): Promise<DetectedAnalyzersResponse> {
-    const response = await fetch(`${this.baseURL}/analyze/cas/detected-analyzers?projectPath=${encodeURIComponent(projectPath)}`);
+    const response = await this.fetchWithAuth<DetectedAnalyzersResponse>(`/analyze/cas/detected-analyzers?projectPath=${encodeURIComponent(projectPath)}`);
+    const analyzers = response.analyzers || response.detectedAnalyzers || [];
+    return { ...response, analyzers };
+  }
 
-    if (!response.ok) {
-      throw new Error(`Analyzer detection failed: ${response.statusText}`);
-    }
+  async getComponents(): Promise<ComponentRecord[]> {
+    return this.fetchWithAuth<ComponentRecord[]>('/components');
+  }
 
-    return response.json();
+  async getComponentConnections(componentId: string): Promise<ComponentConnectionRecord[]> {
+    return this.fetchWithAuth<ComponentConnectionRecord[]>(`/components/${componentId}/connections`);
   }
 
   async getArchitectureLayout(analysisId: string) {

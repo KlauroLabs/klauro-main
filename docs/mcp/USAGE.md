@@ -1,5 +1,7 @@
 # Unravl MCP Server - Usage Guide
 
+The MCP server is the agent-facing surface over CAS. It gives AI coding assistants the same source-of-truth graph the UI uses for human inspection.
+
 ## Typical Workflow
 
 ### 1. Analyze a Codebase
@@ -10,7 +12,9 @@ Before querying, analyze the target project:
 Use the analyze_codebase tool with path="/absolute/path/to/your/project"
 ```
 
-This runs the full CAS pipeline: language detection, framework detection, library detection, AST parsing, relationship extraction, flow analysis, and intelligence generation. Results are stored as JSON at `~/.unravl/analyses/`.
+This runs the CAS pipeline: language detection, framework detection, library detection, AST parsing, relationship extraction, flow analysis, and intelligence generation. When prior incremental state exists, the analyzer reuses it; set `force_full=true` to force a full rebuild.
+
+Results and analysis support files are stored under `~/.unravl/analyses/` unless `UNRAVL_STORAGE_PATH` is configured.
 
 ### 2. Orient with get_summary
 
@@ -46,6 +50,7 @@ From there, drill into targeted areas:
 - **Review security**: `get_security_overview`
 - **Discover patterns**: `get_patterns` (summaries), `get_pattern_instances` (drill into specific pattern)
 - **Explore concepts**: `get_domain_concepts` (filterable, paginated)
+- **Understand recent changes**: `get_changes_since`, `get_change_summary`, `get_hot_spots`, `get_analysis_snapshots`
 
 ---
 
@@ -79,6 +84,13 @@ Or use the `safe_modification_guide` prompt which composes all of these into a s
 4. Check what it calls: `get_callees`
 5. See the workflow: `get_workflows`
 
+### Checking runtime readiness and evidence
+
+1. Use `get_runtime_static_links` to see which entry points, exit points, call chains, and external services have runtime signals or instrumentation candidates.
+2. Filter by `telemetry_status=instrumentable` to find the next best instrumentation points.
+3. Use `get_analysis_facts` for source-backed claims behind nodes, edges, workflows, capabilities, runtime links, and repository links.
+4. Use `subject_id` when you need evidence for one concrete CAS object.
+
 ### Reviewing test quality
 
 Use the `test_coverage_analysis` prompt, or individually:
@@ -94,11 +106,30 @@ Use the `test_coverage_analysis` prompt, or individually:
 3. `get_exit_points` to see all external interactions
 4. `assess_change_risk` for nodes in security-sensitive areas
 
+### Understanding recent work
+
+1. `get_analysis_snapshots` to see available analysis snapshots
+2. `get_changes_since` for raw change history after a timestamp
+3. `get_change_summary` grouped by `file`, `module`, `author`, `intent`, `day`, or `week`
+4. `get_hot_spots` to find high-change or bug-prone files
+5. `get_changes_for_node`, `get_changes_for_file`, or `get_changes_for_entry_point` for targeted impact history
+
 ---
 
 ## Re-analyzing
 
-Run `analyze_codebase` again on the same path to refresh the analysis. The previous result is overwritten. The stored JSON file at `~/.unravl/analyses/` is replaced with the new output.
+Run `analyze_codebase` again on the same path to refresh the analysis.
+
+Storage behavior:
+
+- The main `{slugified-project-name}.json` analysis file is replaced with the latest CAS output.
+- `index.json` continues to map project paths to the latest analysis file.
+- Per-project incremental state is stored under a project directory inside `~/.unravl/analyses/`.
+- File-level cache entries are stored under that project directory's `file-cache/`.
+- Change history is stored as `change-history.json`.
+- Analysis snapshots are stored under `snapshots/` and capped by the MCP storage layer.
+
+Use `force_full=true` when the incremental state is suspect or when you need a clean rebuild.
 
 ## Multiple Projects
 

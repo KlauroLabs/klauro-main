@@ -156,16 +156,16 @@ export const CASv140ComponentTest: React.FC = () => {
         </Typography>
         <Box sx={{ mt: 1, display: 'flex', gap: 2 }}>
           <Typography variant="caption">
-            ✅ ProjectDashboard: {casData.documentation_summary ? 'Documentation metrics displayed' : 'No documentation metrics'}
+            ProjectDashboard: {casData.documentation_summary ? 'Documentation metrics displayed' : 'No documentation metrics'}
           </Typography>
           <Typography variant="caption">
-            ✅ NodeDetails: {selectedNode?.documentation ? 'Documentation panel loaded' : 'No documentation to display'}
+            NodeDetails: {selectedNode?.documentation ? 'Documentation panel loaded' : 'No documentation to display'}
           </Typography>
           <Typography variant="caption">
-            ✅ FilterPanel: {Object.keys(filters).length > 0 ? 'All filter options available' : 'Filters not loaded'}
+            FilterPanel: {Object.keys(filters).length > 0 ? 'All filter options available' : 'Filters not loaded'}
           </Typography>
           <Typography variant="caption">
-            ✅ SearchPanel: Search across all CAS v1.4.0 data fields enabled
+            SearchPanel: Search across all CAS v1.4.0 data fields enabled
           </Typography>
         </Box>
       </Paper>

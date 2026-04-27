@@ -235,7 +235,6 @@ const InteractiveArchitectureDiagram: React.FC<InteractiveArchitectureDiagramPro
     ...groupConnectionsByType(incoming).map(g => g.type)
   ]));
 
-  // Calculate spatial positions for connection groups
   const calculateGroupPositions = (groups: ConnectionGroup[], side: 'left' | 'right') => {
     const groupData: Array<{
       group: ConnectionGroup;

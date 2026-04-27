@@ -73,6 +73,22 @@ export function getSystemOverview(cas: CASOutput) {
       layers: cas.architecture_summary.layers,
     } : null,
     capabilities_count: cas.system_capabilities?.length || 0,
+    system_capabilities: cas.system_capabilities?.slice(0, 25).map(capability => ({
+      id: capability.id,
+      name: capability.name,
+      category: capability.category,
+      criticality: capability.criticality,
+      operation_count: capability.operations?.length || 0,
+      related_entities: capability.related_entities,
+      related_domains: capability.related_domains,
+    })) || [],
+    repository_links: cas.repository_links || cas.cross_repository_links || [],
+    disclosure: cas.disclosure || null,
+    configuration: cas.configuration || null,
+    runtime: cas.runtime || null,
+    validation: cas.validation || null,
+    runtime_static_links_count: cas.runtime_static_links?.length || 0,
+    analysis_facts_count: cas.analysis_facts?.length || 0,
     levels: cas.progressive_levels?.level_definitions?.map(l => ({
       level: l.level,
       name: l.name,
@@ -105,6 +121,19 @@ function trimEdge(e: CASEdge) {
       attributes: e.metadata.attributes,
     } : undefined,
   };
+}
+
+function normalizeFilePathForMatch(filePath: string): string {
+  return filePath.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+function pathsReferToSameFile(left: string, right: string): boolean {
+  const normalizedLeft = normalizeFilePathForMatch(left);
+  const normalizedRight = normalizeFilePathForMatch(right);
+
+  return normalizedLeft === normalizedRight ||
+    normalizedLeft.endsWith(`/${normalizedRight}`) ||
+    normalizedRight.endsWith(`/${normalizedLeft}`);
 }
 
 function splitCamelCase(str: string): string[] {
@@ -525,6 +554,65 @@ export function getWorkflows(cas: CASOutput, workflowId?: string) {
       service_count: w.services_used?.length || 0,
     })),
     workflow_graph: cas.workflow_graph || null,
+  };
+}
+
+export function getRuntimeStaticLinks(
+  cas: CASOutput,
+  opts: { telemetryStatus?: string; kind?: string; limit?: number; offset?: number } = {}
+) {
+  let links = cas.runtime_static_links || [];
+  if (opts.telemetryStatus) {
+    links = links.filter(link => link.telemetry_status === opts.telemetryStatus);
+  }
+  if (opts.kind) {
+    links = links.filter(link => link.kind === opts.kind);
+  }
+
+  const total = links.length;
+  const limit = opts.limit || 50;
+  const offset = opts.offset || 0;
+
+  const byStatus: Record<string, number> = {};
+  for (const link of cas.runtime_static_links || []) {
+    byStatus[link.telemetry_status] = (byStatus[link.telemetry_status] || 0) + 1;
+  }
+
+  return {
+    total,
+    offset,
+    limit,
+    by_status: byStatus,
+    links: links.slice(offset, offset + limit),
+    runtime: cas.runtime || null,
+  };
+}
+
+export function getAnalysisFacts(
+  cas: CASOutput,
+  opts: { subjectType?: string; subjectId?: string; factType?: string; limit?: number; offset?: number } = {}
+) {
+  let facts = cas.analysis_facts || [];
+
+  if (opts.subjectType) {
+    facts = facts.filter(fact => fact.subject_type === opts.subjectType);
+  }
+  if (opts.subjectId) {
+    facts = facts.filter(fact => fact.subject_id === opts.subjectId);
+  }
+  if (opts.factType) {
+    facts = facts.filter(fact => fact.fact_type === opts.factType);
+  }
+
+  const total = facts.length;
+  const limit = opts.limit || 50;
+  const offset = opts.offset || 0;
+
+  return {
+    total,
+    offset,
+    limit,
+    facts: facts.slice(offset, offset + limit),
   };
 }
 
@@ -2141,7 +2229,6 @@ export async function getChangesForNode(
 
   if (opts.includeCallers || opts.includeCallees) {
     const maxDepth = opts.depth || 1;
-    const nodeMap = new Map(cas.nodes.map(n => [n.id, n]));
 
     for (let d = 0; d < maxDepth; d++) {
       const currentIds = Array.from(relevantNodeIds);
@@ -2186,34 +2273,36 @@ export async function getChangesForFile(
     limit: 500,
   });
 
-  const relevantFiles = new Set<string>([filePath]);
+  const relevantFiles = new Set<string>([normalizeFilePathForMatch(filePath)]);
+  const addRelevantFile = (value: string) => relevantFiles.add(normalizeFilePathForMatch(value));
 
   if (opts.includeImporters || opts.includeImported) {
     for (const node of cas.nodes) {
       const nodeFile = node.source?.file;
       if (!nodeFile) continue;
 
-      if (opts.includeImported && nodeFile === filePath) {
+      if (opts.includeImported && pathsReferToSameFile(nodeFile, filePath)) {
         const imports = (node.metadata as Record<string, unknown>)?.imports;
         if (Array.isArray(imports)) {
           for (const imp of imports) {
-            if (typeof imp === 'string') relevantFiles.add(imp);
+            if (typeof imp === 'string') addRelevantFile(imp);
           }
         }
       }
 
       if (opts.includeImporters) {
         const imports = (node.metadata as Record<string, unknown>)?.imports;
-        if (Array.isArray(imports) && imports.includes(filePath)) {
-          relevantFiles.add(nodeFile);
+        if (Array.isArray(imports) && imports.some(imp => typeof imp === 'string' && pathsReferToSameFile(imp, filePath))) {
+          addRelevantFile(nodeFile);
         }
       }
     }
   }
 
+  const relevantFileList = Array.from(relevantFiles);
   const filteredHistory = allHistory.filter(entry => {
     for (const fileChange of entry.changes.files) {
-      if (relevantFiles.has(fileChange.path)) {
+      if (relevantFileList.some(relevantFile => pathsReferToSameFile(fileChange.path, relevantFile))) {
         return true;
       }
     }
@@ -2238,8 +2327,16 @@ export async function getChangesForEntryPoint(
 
   const relevantNodeIds = new Set<string>();
 
+  if (ep.source_node) {
+    relevantNodeIds.add(ep.source_node);
+  }
+
   if (ep.handler?.node_id) {
     relevantNodeIds.add(ep.handler.node_id);
+  }
+
+  for (const nodeId of ep.connected_nodes || []) {
+    relevantNodeIds.add(nodeId);
   }
 
   if (opts.includeFullChain && cas.call_chains) {
@@ -2259,6 +2356,12 @@ export async function getChangesForEntryPoint(
   });
 
   const filteredHistory = allHistory.filter(entry => {
+    for (const entryPointChange of entry.changes.entryPoints) {
+      if (entryPointChange.entryPointId === entryPointId) {
+        return true;
+      }
+    }
+
     for (const nodeChange of entry.changes.nodes) {
       if (relevantNodeIds.has(nodeChange.nodeId)) {
         return true;

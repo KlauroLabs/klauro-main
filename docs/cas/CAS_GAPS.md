@@ -1,8 +1,12 @@
 # CAS Analyzer Gaps
 
-## Current State (v1.5.0)
+## Scope
 
-All previously identified gaps have been addressed in CAS v1.5.0. See:
+This document is a historical v1.5.0 gap review. It is not the current CAS version summary. For the active specification, see [SPECIFICATION.md](./SPECIFICATION.md). For current product framing, see [README.md](./README.md).
+
+## Historical State (v1.5.0)
+
+The previously identified v1.5.0 gaps were addressed at the schema/spec level. See:
 - [v1.5.0 RFP](./v1.5.0-rfp.md) - Detailed specification of fixes
 - [SPECIFICATION.md](./SPECIFICATION.md) - Updated spec with new features
 
@@ -19,7 +23,7 @@ All previously identified gaps have been addressed in CAS v1.5.0. See:
 | 7 | Guards not applied to entry points | `allGuards` merges class-level + method-level guards |
 | 8 | Repository detection without @Injectable | Detection by naming convention and file path |
 | 9 | Constructor stub detection | Framework-aware detection (DI constructors valid) |
-| 10 | Pattern variation detection | Schema added - **detection not implemented (see Gap 12)** |
+| 10 | Pattern variation detection | Schema added and standard pattern catalog documented |
 | 11 | Class-level edges missing | New `uses`, `depends_on`, `injects` edge types |
 
 ### New in v1.5.0
@@ -69,69 +73,18 @@ cat cas-output.json | jq '[.nodes[] | select(.type == "method" and .parent == nu
 
 ---
 
-## Open Gaps
+## Resolved Gap
 
-### Gap 12: Pattern Catalog Not Specified (Critical)
+### Gap 12: Pattern Catalog
 
-**Problem:** The CAS spec defines `CASPattern`, `CASPatternVariation`, and `CASPatternDeviation` data structures but does NOT specify:
-1. What patterns are defined by the spec
-2. Detection criteria for each pattern
-3. How to identify variations within patterns
-4. Deviation thresholds and severity rules
+The active specification now defines a standard pattern catalog in `SPECIFICATION.md` under `Standard Pattern Catalog`. It covers:
 
-**Missing from Spec:**
+1. Standard pattern IDs for repositories, services, controllers, dependency injection, modules, guards, layered architecture, MVC, circular dependencies, and oversized objects.
+2. Detection criteria for each catalog pattern.
+3. Required variation categories where multiple implementation styles are expected.
+4. Deviation severity rules for `info`, `warning`, and `error`.
 
-```typescript
-// Standard Architectural Patterns
-type ArchitecturalPattern =
-  | 'mvc'                    // Model-View-Controller
-  | 'layered-architecture'   // Presentation/Business/Data layers
-  | 'microservices'          // Service decomposition
-  | 'modular-monolith';      // Module-based organization
-
-// Standard Design Patterns
-type DesignPattern =
-  | 'repository'             // Data access abstraction
-  | 'service-layer'          // Business logic encapsulation
-  | 'controller'             // Request handling
-  | 'dependency-injection'   // DI container usage
-  | 'factory'                // Object creation
-  | 'singleton'              // Single instance
-  | 'middleware'             // Request pipeline
-  | 'guard'                  // Authorization
-  | 'decorator';             // Metadata decoration
-
-// Standard Anti-Patterns
-type AntiPattern =
-  | 'god-object'             // >1000 lines or >50 complexity
-  | 'circular-dependency'    // A -> B -> A
-  | 'feature-envy'           // Method uses other class more than own
-  | 'data-clump'             // Same data groups repeated
-  | 'dead-code';             // Unreachable code
-
-// Variation Detection Rules
-interface PatternVariationRule {
-  pattern: string;
-  variations: Array<{
-    id: string;
-    implementation: string;
-    detection: {
-      has_decorator?: string[];      // e.g., ['@Injectable']
-      extends_class?: string[];      // e.g., ['Repository']
-      naming_pattern?: RegExp;       // e.g., /Repository$/
-      file_path_pattern?: RegExp;    // e.g., /\/repositories\//
-      uses_library?: string[];       // e.g., ['typeorm', 'mikroorm']
-    };
-  }>;
-  deviation_threshold: number;       // e.g., 0.9 = flag if <90% use preferred
-}
-```
-
-**Resolution Required:**
-1. Add pattern catalog to CAS spec (Section 4.8.1)
-2. Define detection criteria for each pattern type
-3. Define variation detection rules
-4. Define deviation thresholds and severity mapping
+Analyzers may still emit framework- or language-specific pattern IDs, but common concepts should map back to the standard catalog when possible.
 
 ---
 
@@ -139,7 +92,7 @@ interface PatternVariationRule {
 
 | Feature | Description | Priority |
 |---------|-------------|----------|
-| Pattern Detection Spec | Define patterns, criteria, variations in CAS spec | **Critical** |
+| Pattern Catalog Depth | Add more framework-specific catalog mappings as analyzers mature | Medium |
 | Frontend component hierarchy | React components with parent/child relationships | Medium |
 | Module boundaries | What's inside each NestJS module | Low |
 | Middleware execution order | Guards/interceptors order | Low |

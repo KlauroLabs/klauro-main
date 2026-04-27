@@ -89,10 +89,16 @@ export class AuthService {
   }
 
   private async generateAuthResponse(user: User): Promise<AuthResponseDto> {
+    const membership = await this.membershipRepository.findOne(
+      { user },
+      { populate: ['organization'] }
+    );
+
     const payload = {
       sub: user.id,
       email: user.email,
       name: user.name,
+      organizationId: membership?.organization?.id,
     };
 
     const accessToken = this.jwtService.sign(payload, { expiresIn: '1h' });

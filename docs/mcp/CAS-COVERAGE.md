@@ -1,6 +1,6 @@
 # Unravl MCP Server - CAS Output Coverage
 
-Every field in the CAS output is surfaced through one or more MCP tools. This document maps CAS fields to the tools/resources that expose them.
+This document maps public CAS concepts and related v1.8 analysis storage to the MCP tools/resources that expose them. It is a human-maintained coverage guide, not a generated conformance report.
 
 ## Coverage Matrix
 
@@ -14,6 +14,8 @@ Every field in the CAS output is surfaced through one or more MCP tools. This do
 | `progressive_levels` | `get_system_overview`, `get_level` | `overview` |
 | `configuration` | `get_system_overview` | `overview` |
 | `runtime` | `get_system_overview` | `overview` |
+| `runtime_static_links` | `get_system_overview` (count), `get_runtime_static_links` | |
+| `analysis_facts` | `get_system_overview` (count), `get_analysis_facts` | |
 | `repository_links` | `get_system_overview` | `overview` |
 | `disclosure` | `get_system_overview` | `overview` |
 | `validation` | `get_system_overview` | `overview` |
@@ -62,7 +64,13 @@ Every field in the CAS output is surfaced through one or more MCP tools. This do
 | `libraries` | `get_libraries` | |
 | `tags` | `search_nodes` | |
 | `index` | Internal (search optimization) | |
+| `change_history` storage | `get_changes_since`, `get_changes_between`, `get_changes_for_node`, `get_changes_for_file`, `get_changes_for_entry_point`, `get_change_summary`, `get_hot_spots` | |
+| `analysis_snapshots` storage | `get_analysis_at`, `get_analysis_snapshots` | |
+| `incremental_state` storage | Internal incremental analysis input | |
+| `file_cache` storage | Internal incremental analysis cache | |
 
-## Coverage: 100%
+## Coverage Status
 
-Every CAS output field is accessible through at least one MCP tool or resource. The `index` field is used internally for search optimization and is not directly exposed.
+The MCP server exposes the public CAS concepts needed by UI and agent workflows, plus v1.8 change-history and snapshot queries. Internal implementation artifacts such as `index`, `incremental_state`, and `file_cache` are intentionally not exposed directly.
+
+When adding a new public CAS field, update this matrix and add a tool/resource entry if humans or agents need to query it.

@@ -54,14 +54,14 @@ export * from './utils/database-utils';
  */
 export async function initializeDatabase(): Promise<void> {
   try {
-    console.log('🔌 Initializing database connections...');
+    console.log('Initializing database connections...');
     
     // Initialize main database connection
     await dbConnection.initialize();
     
-    console.log('✅ Database initialization complete');
+    console.log('Database initialization complete');
   } catch (error) {
-    console.error('❌ Database initialization failed:', error);
+    console.error('Database initialization failed:', error);
     throw error;
   }
 }
@@ -72,14 +72,14 @@ export async function initializeDatabase(): Promise<void> {
  */
 export async function shutdownDatabase(): Promise<void> {
   try {
-    console.log('🔌 Shutting down database connections...');
+    console.log('Shutting down database connections...');
     
     // Close main database connection
     await dbConnection.close();
     
-    console.log('✅ Database shutdown complete');
+    console.log('Database shutdown complete');
   } catch (error) {
-    console.error('❌ Database shutdown failed:', error);
+    console.error('Database shutdown failed:', error);
     throw error;
   }
 }

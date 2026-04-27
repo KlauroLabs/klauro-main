@@ -22,8 +22,6 @@ import { authConfig } from './config/auth.config';
 import { createAuthRoutes } from './routes/auth';
 import { createOrganizationRoutes } from './routes/organizations';
 import { createUserRoutes } from './routes/users';
-// import { createProjectRoutes } from './routes/projects'; // Temporarily disabled
-// import { createVisualizationRouter } from './routes/visualization';
 import { createAnalyzerRoutes } from './routes/analyzer';
 
 // Database
@@ -127,14 +125,12 @@ export class App {
     this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
     this.app.use(cookieParser());
     
-    // Logging - Temporarily disabled for Express 5 compatibility
-    // this.app.use(Logger.httpLoggerMiddleware());
+    this.app.use(Logger.httpLoggerMiddleware());
     
     // Global rate limiting
     this.app.use(globalRateLimiter);
     
-    // Input sanitization - Temporarily disabled due to Express 5 compatibility
-    // this.app.use(globalInputSanitizer);
+    this.app.use(globalInputSanitizer);
     
     // Passport initialization
     initializePassport();
@@ -177,8 +173,6 @@ export class App {
       this.app.use('/api/auth', createAuthRoutes(this.pool));
       this.app.use('/api/organizations', createOrganizationRoutes(this.pool));
       this.app.use('/api/users', createUserRoutes(this.pool));
-      // this.app.use('/api/projects', createProjectRoutes(this.pool)); // Temporarily disabled
-      // this.app.use('/api/visualization', createVisualizationRouter(this.pool));
     }
     
     // Always setup analyzer routes as they don't require database

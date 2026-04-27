@@ -1,5 +1,6 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import type {
   CASOutput,
   IncrementalState,
@@ -41,6 +42,12 @@ function slugify(input: string): string {
     .replace(/^-|-$/g, '')
     .toLowerCase()
     .substring(0, 80);
+}
+
+function projectSlug(projectPath: string): string {
+  const base = slugify(path.basename(projectPath)) || 'project';
+  const hash = crypto.createHash('sha256').update(path.resolve(projectPath)).digest('hex').slice(0, 12);
+  return `${base}-${hash}`;
 }
 
 async function ensureStorageDir(): Promise<string> {
@@ -122,7 +129,7 @@ const INCREMENTAL_STATE_VERSION_CURRENT = '1.0.0';
 
 function getProjectStorageDir(projectPath: string): string {
   const storagePath = getStoragePath();
-  const slug = slugify(path.basename(projectPath));
+  const slug = projectSlug(projectPath);
   return path.join(storagePath, slug);
 }
 
@@ -358,6 +365,36 @@ export async function clearChangeHistory(projectPath: string): Promise<void> {
 
 const MAX_SNAPSHOTS = 50;
 
+function isValidTimestamp(value: string): boolean {
+  return !Number.isNaN(new Date(value).getTime());
+}
+
+function encodeSnapshotTimestamp(timestamp: string): string {
+  return Buffer.from(timestamp, 'utf-8').toString('base64url');
+}
+
+function decodeSnapshotTimestamp(snapshotId: string): string | null {
+  const encoded = snapshotId.replace(/^snapshot-/, '');
+
+  try {
+    const decoded = Buffer.from(encoded, 'base64url').toString('utf-8');
+    if (isValidTimestamp(decoded)) {
+      return decoded;
+    }
+  } catch {
+  }
+
+  const legacyMatch = encoded.match(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d+)Z$/);
+  if (legacyMatch) {
+    const legacyTimestamp = `${legacyMatch[1]}T${legacyMatch[2]}:${legacyMatch[3]}:${legacyMatch[4]}.${legacyMatch[5]}Z`;
+    if (isValidTimestamp(legacyTimestamp)) {
+      return legacyTimestamp;
+    }
+  }
+
+  return null;
+}
+
 export async function saveAnalysisSnapshot(
   projectPath: string,
   output: CASOutput
@@ -367,7 +404,7 @@ export async function saveAnalysisSnapshot(
   await fs.ensureDir(snapshotsDir);
 
   const timestamp = output.analysis_timestamp;
-  const snapshotId = `snapshot-${timestamp.replace(/[:.]/g, '-')}`;
+  const snapshotId = `snapshot-${encodeSnapshotTimestamp(timestamp)}`;
   const snapshotPath = path.join(snapshotsDir, `${snapshotId}.json`);
 
   await fs.writeJson(snapshotPath, output);
@@ -382,13 +419,16 @@ async function pruneOldSnapshots(snapshotsDir: string): Promise<void> {
     const files = await fs.readdir(snapshotsDir);
     const snapshots = files
       .filter(f => f.startsWith('snapshot-') && f.endsWith('.json'))
-      .sort()
-      .reverse();
+      .map(file => ({
+        file,
+        timestamp: decodeSnapshotTimestamp(file.replace('.json', '')) || '',
+      }))
+      .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
 
     if (snapshots.length > MAX_SNAPSHOTS) {
       const toDelete = snapshots.slice(MAX_SNAPSHOTS);
-      for (const file of toDelete) {
-        await fs.remove(path.join(snapshotsDir, file));
+      for (const snapshot of toDelete) {
+        await fs.remove(path.join(snapshotsDir, snapshot.file));
       }
     }
   } catch {
@@ -426,16 +466,21 @@ export async function listAnalysisSnapshots(
     }
 
     const files = await fs.readdir(snapshotsDir);
-    return files
-      .filter(f => f.startsWith('snapshot-') && f.endsWith('.json'))
-      .map(f => {
-        const id = f.replace('.json', '');
-        const timestamp = id
-          .replace('snapshot-', '')
-          .replace(/-/g, (m, i) => (i < 10 ? '-' : i === 10 ? 'T' : ':'));
-        return { id, timestamp };
-      })
-      .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+    const snapshots: Array<{ id: string; timestamp: string }> = [];
+
+    for (const file of files) {
+      if (!file.startsWith('snapshot-') || !file.endsWith('.json')) {
+        continue;
+      }
+
+      const id = file.replace('.json', '');
+      const timestamp = decodeSnapshotTimestamp(id);
+      if (timestamp) {
+        snapshots.push({ id, timestamp });
+      }
+    }
+
+    return snapshots.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
   } catch {
     return [];
   }

@@ -248,7 +248,7 @@ export const UnravlThemeProvider: React.FC<UnravlThemeProviderProps> = ({
             outline-offset: 2px;
           }
           
-          /* Canvas and 3D context optimization */
+          /* Canvas optimization */
           canvas {
             display: block;
             outline: none;

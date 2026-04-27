@@ -1,165 +1,90 @@
 # CAS Analyzer Roadmap
 
-## Current State (v1.2.0)
+## Scope
 
-### Working Features
-- Language analyzers: TypeScript/JavaScript, Python, Java, C#, Go, Rust, PHP
-- Framework analyzers: NestJS, Express, React, Vue, Angular, Django, Flask, FastAPI, Laravel, Spring Boot
-- Testing analyzers: Jest, Cypress
-- Entry/exit point detection
-- Call graph generation (97.9% valid edges)
-- Architecture summary generation
-- Route table extraction
-- Database schema detection (entity-level)
-- External services inventory
-- Summary output format (30KB vs 26MB full)
+This roadmap tracks analyzer priorities after CAS v1.8.0. Older version-specific plans are preserved in the individual RFP documents. The active product framing is that CAS is the shared truth layer for both the human UI and the agent MCP surface.
 
-### Known Limitations
-- Database schema extraction only detects entities, not fields/relationships (requires ORM-specific decorator parsing)
-- External services detection groups console/path as SDKs (need better filtering)
-- No library-specific analyzers for deeper integration analysis
+## Current Foundation
 
----
+- Language analyzers for TypeScript/JavaScript, Python, Java, C#, Go, Rust, and PHP.
+- Framework analyzers for major web, frontend, testing, Rust, and .NET frameworks.
+- Library analyzers for selected database, routing, realtime, state, and data-fetching packages.
+- MCP query surface for summaries, nodes, calls, flows, tests, risks, dependencies, libraries, watch mode, and change history.
+- Incremental analysis with change detection, file cache, history, and snapshots.
+- Runtime-static links that identify telemetry signals and instrumentation candidates.
+- Evidence-backed analysis facts with confidence for graph objects and relationships.
+- Cross-repository links with confidence and source evidence for APIs, contracts, shared schemas, packages, and database usage.
+- Semantic change impact that maps modified code to workflows, capabilities, data entities, runtime links, and contracts.
 
-## Roadmap
+## Near-Term Priorities
 
-### v1.3.0 - Library Analyzers
+### 1. Trustworthy Relationship Graph
 
-**Goal**: Add per-library analyzers for deeper analysis of common dependencies.
+CAS quality is the product foundation. Prioritize fixes that make the graph more complete and more reliable:
 
-#### ORM Analyzers
-```
-backend/src/analyzer/libraries/orm/
-  mikro-orm-analyzer.ts
-  typeorm-analyzer.ts
-  prisma-analyzer.ts
-  sequelize-analyzer.ts
-```
+- Controller to service to repository call chains.
+- Parent/child relationships for methods, functions, components, hooks, and class members.
+- Entry point handler links.
+- Exit point links for database, API, SDK, file, queue, and cache operations.
+- Test-to-code links.
+- Import, dependency, and DI relationships.
 
-**MikroORM Analyzer Features**:
-- Parse `@Entity()` decorator for table names
-- Extract `@Property()` fields with types, nullable, default
-- Detect `@PrimaryKey()`, `@Unique()` constraints
-- Map `@ManyToOne()`, `@OneToMany()`, `@ManyToMany()` relationships
-- Extract `@Index()` definitions
-- Detect eager/lazy loading configuration
+### 2. Human Verification Surface
 
-**TypeORM Analyzer Features**:
-- Similar to MikroORM with TypeORM-specific decorators
-- `@Column()`, `@Entity()`, `@JoinColumn()`, etc.
+The UI must help people inspect what AI-generated and human-written systems actually contain:
 
-**Prisma Analyzer Features**:
-- Parse `schema.prisma` file
-- Extract models, fields, relations
-- Detect indexes and constraints
+- Top-level system overview.
+- Drilldown by framework role, flow, module, and node.
+- Route and flow tracing.
+- Risk, test, security, and data context on selected nodes.
+- Clear indicators when CAS data is missing or uncertain.
 
-#### AI/ML Library Analyzers
-```
-backend/src/analyzer/libraries/ai/
-  openai-analyzer.ts
-  anthropic-analyzer.ts
-  langchain-analyzer.ts
-```
+### 3. Agent Verification Surface
 
-**Features**:
-- Detect API usage patterns (chat, embeddings, completions)
-- Extract model configurations
-- Identify prompt templates
-- Map AI calls to exit points
+The MCP server should expose the same truth in agent-friendly slices:
 
-#### Auth Library Analyzers
-```
-backend/src/analyzer/libraries/auth/
-  passport-analyzer.ts
-  auth0-analyzer.ts
-  clerk-analyzer.ts
-```
+- High-signal summaries for orientation.
+- Targeted queries for callers, callees, flows, tests, risks, and history.
+- Coding context that avoids token-heavy file discovery.
+- Change-history and snapshot tools for recent-work awareness.
 
-**Features**:
-- Detect authentication strategies
-- Map protected routes
-- Extract OAuth provider configurations
+### 4. Library and Framework Depth
 
-### v1.4.0 - Cross-Repository Analysis
+Deepen analyzers where customer code needs richer behavior-level understanding:
 
-**Goal**: Enable linking multiple CAS outputs to understand microservice architectures.
+- ORM analyzers for entity fields, relations, indexes, queries, and migrations.
+- Auth analyzers for guards, roles, providers, and protected paths.
+- Frontend data/state analyzers for queries, mutations, stores, contexts, and protected views.
+- Messaging and queue analyzers for publishers, subscribers, topics, and payloads.
 
-**Features**:
-- API contract matching (OpenAPI specs)
-- Message broker integration (Kafka, RabbitMQ topics)
-- Shared database detection
-- Service mesh mapping
+### 5. Runtime Correlation
 
-### v1.5.0 - Query Interface
+Telemetry should validate and enrich the runtime-static links CAS already emits:
 
-**Goal**: Provide a CLI/API for querying CAS output without loading the full graph.
+- Runtime call frequency.
+- Error and latency hotspots.
+- Actual traffic through entry points and flows.
+- Drift between static expectations and production behavior.
+- Promotion of `instrumentable` links to `observed` links when telemetry is present.
 
-**Commands**:
-```bash
-cas query "show architecture"          # Summary view
-cas query "list endpoints"             # Route table
-cas query "trace POST /workspaces"     # Call chain from entry point
-cas query "show entity User"           # Entity details
-cas query "what calls UserService"     # Reverse dependency
-```
+## Priority Table
 
-### v2.0.0 - Telemetry Integration
+| Priority | Area | Why It Matters |
+| --- | --- | --- |
+| 1 | Relationship graph correctness | If CAS is wrong, UI and MCP are both wrong |
+| 2 | Route/flow tracing | This is the fastest way to prove behavior-level understanding |
+| 3 | UI drilldown | Customers need to see what AI-built systems contain |
+| 4 | MCP query ergonomics | Agents need focused context without reading every file |
+| 5 | ORM/auth/frontend library depth | These are common places where behavior hides |
+| 6 | Runtime correlation | Completes the static-to-runtime trust loop |
 
-**Goal**: Animate the static graph with runtime data.
+## Analyzer Design Rules
 
-**Features**:
-- Runtime call frequency overlay
-- Performance hotspot detection
-- Error rate visualization
-- Traffic flow animation
+Library and framework analyzers should:
 
----
-
-## Implementation Priority
-
-| Priority | Feature | Value | Effort |
-|----------|---------|-------|--------|
-| 1 | MikroORM Analyzer | High (database schema) | Medium |
-| 2 | TypeORM Analyzer | High (database schema) | Medium |
-| 3 | OpenAI/Anthropic Analyzer | Medium (AI integrations) | Low |
-| 4 | Passport Analyzer | Medium (auth patterns) | Low |
-| 5 | Query Interface | High (usability) | High |
-| 6 | Cross-Repository | High (microservices) | High |
-
----
-
-## Architecture for Library Analyzers
-
-Library analyzers should:
-1. Register with the orchestrator like framework analyzers
-2. Detect based on package.json/imports
-3. Run AFTER framework analyzers (to enhance existing nodes)
-4. Focus on adding metadata/relationships rather than new nodes
-
-```typescript
-interface LibraryAnalyzerRegistration {
-  id: string;
-  name: string;
-  type: 'library';
-  detectPatterns: {
-    dependencies: string[];  // npm package names
-    imports?: RegExp[];      // import patterns
-  };
-  enhances: string[];        // analyzer IDs this enhances
-  analyzer: BaseAnalyzer;
-}
-```
-
-Example registration:
-```typescript
-{
-  id: 'mikro-orm',
-  name: 'MikroORM Analyzer',
-  type: 'library',
-  detectPatterns: {
-    dependencies: ['@mikro-orm/core', '@mikro-orm/postgresql']
-  },
-  enhances: ['typescript-javascript', 'nestjs'],
-  analyzer: new MikroORMAnalyzer()
-}
-```
+1. Register with the orchestrator using stable analyzer IDs.
+2. Detect themselves from package metadata, imports, configuration, decorators, and file patterns.
+3. Enhance existing nodes when possible instead of creating duplicates.
+4. Preserve analyzer attribution on contributed metadata and relationships.
+5. Emit relationship edges for behavior that downstream surfaces need.
+6. Surface uncertainty rather than pretending incomplete analysis is complete.

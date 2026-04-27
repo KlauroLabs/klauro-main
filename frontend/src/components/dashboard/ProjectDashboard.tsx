@@ -84,22 +84,20 @@ interface MetricCard {
   trendValue?: string;
 }
 
+const getImplementationBreakdown = (health: CASImplementationHealth) => ({
+  complete: health.complete_implementations ?? health.status_breakdown?.complete ?? 0,
+  partial: health.partial_implementations ?? health.status_breakdown?.partial ?? 0,
+  stub: health.stubs ?? health.status_breakdown?.stub ?? 0,
+  not_implemented: health.not_implemented ?? health.status_breakdown?.not_implemented ?? 0,
+  deprecated: health.deprecated ?? health.status_breakdown?.deprecated ?? 0,
+  experimental: health.experimental ?? health.status_breakdown?.experimental ?? 0,
+});
+
 const calculateHealthScore = (health?: CASImplementationHealth): number => {
   if (!health) return 0;
 
-  const complete = health.status_breakdown.complete;
-  const total = Object.values(health.status_breakdown).reduce((sum, val) => sum + val, 0);
-
-  if (total === 0) return 0;
-
-  let score = (complete / total) * 100;
-
-  if (health.quality_indicators.nodes_with_todos > 0) score -= 5;
-  if (health.quality_indicators.nodes_with_hardcoded_values > 0) score -= 10;
-  if (health.quality_indicators.nodes_with_placeholder_code > 0) score -= 15;
-  if (health.quality_indicators.nodes_with_commented_code > 0) score -= 5;
-
-  return Math.max(0, Math.min(100, score));
+  const score = health.health_score ?? health.overall_score ?? 0;
+  return Math.max(0, Math.min(100, score <= 1 ? score * 100 : score));
 };
 
 const getHealthColor = (score: number): 'success' | 'warning' | 'error' => {
@@ -135,7 +133,7 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
         value: `${docCoverage.toFixed(0)}%`,
         icon: <Description />,
         color: docCoverage >= 70 ? 'success' : docCoverage >= 40 ? 'warning' : 'error',
-        subtitle: `${casData.documentation_summary?.documented_nodes || 0} / ${casData.documentation_summary?.total_nodes || 0} nodes`
+        subtitle: `${casData.documentation_summary?.total_documented_nodes ?? casData.documentation_summary?.documented_nodes ?? 0} / ${casData.documentation_summary?.total_nodes ?? casData.nodes.length} nodes`
       },
       {
         title: 'Technical Debt',
@@ -281,7 +279,9 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
     if (!casData.implementation_health) return null;
 
     const health = casData.implementation_health;
-    const total = Object.values(health.status_breakdown).reduce((sum, val) => sum + val, 0);
+    const breakdown = getImplementationBreakdown(health);
+    const total = Object.values(breakdown).reduce((sum, val) => sum + val, 0);
+    const healthScore = calculateHealthScore(health);
 
     return (
       <Card>
@@ -294,13 +294,13 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
             <Stack direction="row" justifyContent="space-between" sx={{ mb: 1 }}>
               <Typography variant="body2">Overall Score</Typography>
               <Typography variant="body2" fontWeight="bold">
-                {health.overall_score.toFixed(0)}%
+                {healthScore.toFixed(0)}%
               </Typography>
             </Stack>
             <LinearProgress
               variant="determinate"
-              value={health.overall_score}
-              color={getHealthColor(health.overall_score)}
+              value={healthScore}
+              color={getHealthColor(healthScore)}
               sx={{ height: 8, borderRadius: 4 }}
             />
           </Box>
@@ -309,7 +309,7 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
             Status Breakdown
           </Typography>
           <Grid container spacing={1} sx={{ mb: 2 }}>
-            {Object.entries(health.status_breakdown).map(([status, count]) => {
+            {Object.entries(breakdown).map(([status, count]) => {
               const percentage = total > 0 ? (count / total) * 100 : 0;
               const color = status === 'complete' ? 'success' :
                            status === 'partial' ? 'warning' :
@@ -340,39 +340,19 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
           </Grid>
 
           <Typography variant="subtitle2" gutterBottom>
-            Quality Indicators
+            Risk Areas
           </Typography>
           <Stack direction="row" spacing={1} flexWrap="wrap">
-            {health.quality_indicators.nodes_with_todos > 0 && (
+            {(health.risk_areas || []).length > 0 ? (health.risk_areas || []).slice(0, 8).map(risk => (
               <Chip
-                label={`${health.quality_indicators.nodes_with_todos} with TODOs`}
+                key={`${risk.node_id}-${risk.risk_type}`}
+                label={`${risk.node_name}: ${risk.risk_type.replace(/-/g, ' ')}`}
                 size="small"
-                color="warning"
+                color={risk.risk_level === 'high' ? 'error' : risk.risk_level === 'medium' ? 'warning' : 'default'}
                 variant="outlined"
               />
-            )}
-            {health.quality_indicators.nodes_with_hardcoded_values > 0 && (
-              <Chip
-                label={`${health.quality_indicators.nodes_with_hardcoded_values} hardcoded`}
-                size="small"
-                color="error"
-                variant="outlined"
-              />
-            )}
-            {health.quality_indicators.nodes_with_placeholder_code > 0 && (
-              <Chip
-                label={`${health.quality_indicators.nodes_with_placeholder_code} placeholders`}
-                size="small"
-                color="warning"
-                variant="outlined"
-              />
-            )}
-            {health.quality_indicators.nodes_with_commented_code > 0 && (
-              <Chip
-                label={`${health.quality_indicators.nodes_with_commented_code} commented`}
-                size="small"
-                variant="outlined"
-              />
+            )) : (
+              <Chip label="No implementation risks" size="small" color="success" variant="outlined" />
             )}
           </Stack>
         </CardContent>
@@ -420,7 +400,7 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
               </Box>
             </Box>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-              {docs.documented_nodes} / {docs.total_nodes} nodes documented
+              {docs.total_documented_nodes ?? docs.documented_nodes ?? 0} / {docs.total_nodes ?? casData.nodes.length} nodes documented
             </Typography>
           </Box>
 
@@ -461,19 +441,19 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
               <Typography variant="subtitle2">Quality Metrics</Typography>
               <Stack direction="row" spacing={1} flexWrap="wrap">
                 <Chip
-                  label={`${docs.quality_metrics.nodes_with_examples} with examples`}
+                  label={`${docs.quality_metrics.examples_provided ?? docs.quality_metrics.nodes_with_examples ?? 0} examples`}
                   size="small"
                   color="success"
                   variant="outlined"
                 />
                 <Chip
-                  label={`${docs.quality_metrics.nodes_with_parameters} with params`}
+                  label={`${docs.quality_metrics.parameters_documented ?? docs.quality_metrics.nodes_with_parameters ?? 0} parameters`}
                   size="small"
                   color="info"
                   variant="outlined"
                 />
                 <Chip
-                  label={`${docs.quality_metrics.nodes_with_returns} with returns`}
+                  label={`${docs.quality_metrics.returns_documented ?? docs.quality_metrics.nodes_with_returns ?? 0} returns`}
                   size="small"
                   color="info"
                   variant="outlined"

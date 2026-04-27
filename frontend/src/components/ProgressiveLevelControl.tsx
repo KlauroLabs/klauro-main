@@ -20,7 +20,7 @@ import {
   Speed as SpeedIcon,
   Architecture as ArchitectureIcon,
 } from '@mui/icons-material';
-import { ProgressiveLevel } from '../hooks/useSpatialData';
+import { ProgressiveLevel } from '../hooks/useCASAnalysisData';
 
 interface ProgressiveLevelControlProps {
   currentLevel: number;
