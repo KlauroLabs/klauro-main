@@ -79,7 +79,7 @@ module.exports = {
   setupFilesAfterEnv: ['<rootDir>/src/__tests__/setup.ts'],
   
   // Module name mapping for path aliases
-  moduleNameMapping: {
+  moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',
     '^@analyzer/(.*)$': '<rootDir>/src/analyzer/$1',
     '^@types/(.*)$': '<rootDir>/src/types/$1'
@@ -112,12 +112,6 @@ module.exports = {
   
   // Test result processor for custom formatting
   // testResultsProcessor: '<rootDir>/src/__tests__/testResultsProcessor.js',
-  
-  // Watch plugins
-  watchPlugins: [
-    'jest-watch-typeahead/filename',
-    'jest-watch-typeahead/testname'
-  ],
   
   // Maximum number of workers
   maxWorkers: '50%',

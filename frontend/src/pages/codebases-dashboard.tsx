@@ -45,6 +45,7 @@ import { CodebaseCard } from '../components/codebase/CodebaseCard';
 import { CodebaseCreate } from '../components/codebase/CodebaseCreate';
 import { WorkspaceSelector } from '../components/workspace/WorkspaceSelector';
 import { Codebase, AnalysisStatus } from '../types/workspace.types';
+import { apiService } from '../services/api';
 
 type ViewMode = 'grid' | 'list';
 type SortField = 'name' | 'last_analysis' | 'created_at' | 'file_count' | 'size';
@@ -56,6 +57,14 @@ interface CodebaseFilter {
   tags: string[];
   sortField: SortField;
   sortOrder: SortOrder;
+}
+
+function getCodebaseAnalysisStatus(codebase: Codebase): AnalysisStatus {
+  if (codebase.status === 'analyzing') return 'analyzing';
+  if (codebase.status === 'error') return 'failed';
+  if (codebase.status === 'archived') return 'cancelled';
+  if (codebase.lastAnalyzedAt) return 'completed';
+  return 'pending';
 }
 
 export function CodebasesDashboard() {
@@ -96,9 +105,7 @@ export function CodebasesDashboard() {
     };
 
     codebases.forEach(codebase => {
-      // For now, mock the analysis status since it's not in the Codebase interface
-      const status = 'completed' as AnalysisStatus; // TODO: Get actual analysis status
-      counts[status]++;
+      counts[getCodebaseAnalysisStatus(codebase)]++;
     });
 
     return counts;
@@ -111,7 +118,7 @@ export function CodebasesDashboard() {
         (codebase.description && codebase.description.toLowerCase().includes(filter.search.toLowerCase()));
 
       const matchesStatus = filter.status.length === 0 ||
-        filter.status.includes('completed'); // TODO: Use actual analysis status
+        filter.status.includes(getCodebaseAnalysisStatus(codebase));
 
       const matchesTags = filter.tags.length === 0 ||
         (codebase.tags && codebase.tags.length > 0 && filter.tags.some(tag => codebase.tags!.includes(tag)));
@@ -180,8 +187,9 @@ export function CodebasesDashboard() {
   };
 
   const handleStartAnalysis = async (codebase: Codebase) => {
-    // This would integrate with the analysis system
-    console.log('Starting analysis for:', codebase.name);
+    if (!currentWorkspace) return;
+    await apiService.startCodebaseAnalysis(currentWorkspace.id, codebase.id);
+    await refreshCodebases();
   };
 
   const handleSelectCodebase = (codebase: Codebase) => {

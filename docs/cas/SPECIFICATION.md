@@ -1672,6 +1672,36 @@ interface SystemMetadata {
 }
 ```
 
+#### CASValidation
+Completeness and graph integrity signals for consumers deciding how much to trust an analysis:
+
+```typescript
+interface CASValidation {
+  schema_version?: string;
+  validation_errors?: string[];
+  validation_warnings?: Array<{
+    path?: string;
+    message?: string;
+  }>;
+  completeness?: {
+    nodes_with_location?: number;
+    edges_with_metadata?: number;
+    documented_nodes?: number;
+  };
+  graph_integrity?: {
+    total_edges: number;
+    dangling_edges: number;
+    connected_nodes: number;
+    orphaned_nodes: number;
+    entry_points_with_handlers: number;
+    exit_points_with_sources: number;
+    runtime_links_with_instrumentation: number;
+    facts_with_evidence: number;
+    relationship_coverage_score: number;
+  };
+}
+```
+
 ## 5. Semantic Rules
 
 ### 5.1 Node Identity
@@ -1891,7 +1921,14 @@ Capability detection strategies MUST vary based on the detected system type:
 - Confidence MUST be expressed as a number from 0 to 1.
 - Cross-repository links SHOULD include `metadata.confidence` and evidence when the link is inferred rather than explicitly configured.
 
-### 5.25 Semantic Change Impact (v1.8.0+)
+### 5.25 Graph Integrity (v1.8.0+)
+
+- `validation.graph_integrity` SHOULD report dangling edges, orphaned nodes, entry point handler coverage, exit point source coverage, runtime instrumentation coverage, fact evidence coverage, and an aggregate relationship coverage score.
+- `dangling_edges` MUST count every source or target reference that does not resolve to a node.
+- `relationship_coverage_score` SHOULD be 0-100 and SHOULD combine source location, edge validity, entry/exit coverage, runtime link instrumentation, and analysis fact evidence.
+- UI and MCP consumers SHOULD expose low integrity scores as trust warnings rather than silently rendering incomplete analysis.
+
+### 5.26 Semantic Change Impact (v1.8.0+)
 
 - Incremental `ChangeReport` objects SHOULD include `semantic_impact`.
 - A changed node SHOULD be mapped to affected workflows, capabilities, data entities, and runtime links when those CAS objects reference the node directly or through a call chain.

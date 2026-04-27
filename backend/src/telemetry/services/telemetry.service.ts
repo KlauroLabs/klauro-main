@@ -10,8 +10,8 @@ import {
   TelemetrySubscription,
   TelemetryAggregation,
   TelemetryStream,
-  PerformanceMetrics,
-  TelemetryPayloadType
+  TelemetryEvent,
+  TelemetryEventType
 } from '../types/telemetry.types';
 import { EventAggregator } from './event-aggregator.service';
 import { MetricsCalculator } from './metrics-calculator.service';
@@ -24,6 +24,8 @@ export class TelemetryService {
   private readonly REDIS_TTL = 3600; // 1 hour cache TTL
   private batchQueue: Map<string, TelemetryMessage[]> = new Map();
   private batchTimers: Map<string, NodeJS.Timeout> = new Map();
+  private inMemoryEvents: Map<string, TelemetryData[]> = new Map();
+  private inMemoryAggregations: Map<string, TelemetryAggregation> = new Map();
 
   constructor(
     @Optional() @InjectRedis() private readonly redis: Redis | null,
@@ -36,19 +38,18 @@ export class TelemetryService {
   }
 
   private initializeBatchProcessing() {
-    setInterval(() => {
+    const interval = setInterval(() => {
       this.flushAllBatches();
     }, this.BATCH_INTERVAL * 10);
+    interval.unref?.();
   }
 
   async ingestTelemetry(message: TelemetryMessage): Promise<void> {
     try {
-      // Validate message version
       if (message.version !== '1.0') {
         throw new Error(`Unsupported telemetry version: ${message.version}`);
       }
 
-      // Add to batch queue
       const projectId = message.projectId;
       if (!this.batchQueue.has(projectId)) {
         this.batchQueue.set(projectId, []);
@@ -57,22 +58,18 @@ export class TelemetryService {
       const batch = this.batchQueue.get(projectId)!;
       batch.push(message);
 
-      // Check if batch should be flushed
       if (batch.length >= this.MAX_BATCH_SIZE) {
         await this.flushBatch(projectId);
       } else if (!this.batchTimers.has(projectId)) {
-        // Set timer for automatic flush
         const timer = setTimeout(() => {
           this.flushBatch(projectId);
           this.batchTimers.delete(projectId);
         }, this.BATCH_INTERVAL);
+        timer.unref?.();
         this.batchTimers.set(projectId, timer);
       }
 
-      // Publish to Redis for real-time subscribers
       await this.publishToRedis(message);
-
-      // Update metrics
       await this.updateMetrics(message);
     } catch (error) {
       this.logger.error(`Failed to ingest telemetry: ${error instanceof Error ? error.message : String(error)}`, error instanceof Error ? error.stack : undefined);
@@ -83,31 +80,18 @@ export class TelemetryService {
   async processBatch(batch: TelemetryBatch): Promise<void> {
     try {
       const aggregatedEvents = await this.eventAggregator.aggregate(batch.events);
-      
-      // Only persist to database if available
-      if (this.telemetryRepo) {
-        for (const event of aggregatedEvents) {
-          const telemetryData = new TelemetryData();
-          telemetryData.projectId = batch.projectId;
-          telemetryData.organizationId = batch.organizationId;
-          telemetryData.type = EntityTelemetryPayloadType.METRIC; // Map event types to payload types
-          telemetryData.timestamp = new Date(event.timestamp);
-          telemetryData.data = event.data;
-          telemetryData.metadata = batch.metadata ? {
-            sdkVersion: batch.metadata.sdkVersion,
-            runtime: batch.metadata.runtime,
-            hostname: batch.metadata.hostname,
-            environment: batch.metadata.environment,
-          } : undefined;
 
+      const telemetryRows = aggregatedEvents.map(event => this.toTelemetryData(batch, event));
+      this.storeInMemory(batch.projectId, telemetryRows);
+
+      if (this.telemetryRepo) {
+        for (const telemetryData of telemetryRows) {
           await this.telemetryRepo.getEntityManager().persistAndFlush(telemetryData);
         }
       }
 
-      // Update aggregated metrics
       await this.updateAggregatedMetrics(batch);
-      
-      // Publish batch processed event
+
       if (this.redis) {
         await this.redis.publish(
           `telemetry:batch:processed:${batch.projectId}`,
@@ -131,17 +115,15 @@ export class TelemetryService {
     }
 
     try {
-      // Clear the batch immediately to avoid duplicate processing
       this.batchQueue.set(projectId, []);
 
-      // Process batch in background
       const telemetryBatch: TelemetryBatch = {
         projectId,
         organizationId: batch[0].metadata?.environment || 'default',
         timestamp: Date.now(),
-        events: batch.map(msg => ({
-          id: `${msg.timestamp}-${Math.random()}`,
-          type: msg.type as any,
+        events: batch.map((msg, index) => ({
+          id: `${msg.timestamp}-${index}`,
+          type: this.payloadTypeToEventType(msg.type, msg.payload.data as TelemetryStream),
           timestamp: msg.timestamp,
           data: msg.payload.data as TelemetryStream,
         })),
@@ -174,7 +156,6 @@ export class TelemetryService {
     const channel = `telemetry:${message.projectId}:${message.type}`;
     await this.redis.publish(channel, JSON.stringify(message));
 
-    // Also publish to a general channel for project-wide subscribers
     await this.redis.publish(
       `telemetry:${message.projectId}:all`,
       JSON.stringify(message)
@@ -191,10 +172,9 @@ export class TelemetryService {
     await this.redis.hset(key, 'lastUpdate', Date.now());
     await this.redis.expire(key, this.REDIS_TTL);
 
-    // Update rate limiting counters
     const rateLimitKey = `ratelimit:${message.projectId}`;
     await this.redis.incr(rateLimitKey);
-    await this.redis.expire(rateLimitKey, 1); // 1 second window
+    await this.redis.expire(rateLimitKey, 1);
   }
 
   private async updateAggregatedMetrics(batch: TelemetryBatch): Promise<void> {
@@ -214,8 +194,8 @@ export class TelemetryService {
       },
       timestamp: Date.now(),
     };
+    this.inMemoryAggregations.set(`${batch.projectId}:1m`, aggregation);
 
-    // Store in Redis for quick access
     if (this.redis) {
       const key = `aggregation:${batch.projectId}:1m`;
       await this.redis.setex(
@@ -273,7 +253,13 @@ export class TelemetryService {
 
   async getProjectMetrics(projectId: string): Promise<any> {
     if (!this.redis) {
-      return {};
+      const events = this.inMemoryEvents.get(projectId) || [];
+      return events.reduce((metrics, event) => {
+        metrics[event.type] = metrics[event.type] || { count: 0, lastUpdate: 0 };
+        metrics[event.type].count++;
+        metrics[event.type].lastUpdate = Math.max(metrics[event.type].lastUpdate, event.timestamp.getTime());
+        return metrics;
+      }, {} as Record<string, { count: number; lastUpdate: number }>);
     }
     
     const keys = await this.redis.keys(`metrics:${projectId}:*`);
@@ -295,8 +281,10 @@ export class TelemetryService {
     limit: number = 100,
   ): Promise<TelemetryData[]> {
     if (!this.telemetryRepo) {
-      // Return empty array if no database
-      return [];
+      return (this.inMemoryEvents.get(projectId) || [])
+        .slice()
+        .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+        .slice(0, limit);
     }
     
     return this.telemetryRepo.find(
@@ -313,7 +301,7 @@ export class TelemetryService {
     window: '1m' | '5m' | '15m' | '1h' | '24h',
   ): Promise<TelemetryAggregation | null> {
     if (!this.redis) {
-      return null;
+      return this.inMemoryAggregations.get(`${projectId}:${window}`) || null;
     }
     
     const key = `aggregation:${projectId}:${window}`;
@@ -323,7 +311,15 @@ export class TelemetryService {
 
   async getConnectionCount(projectId: string): Promise<number> {
     if (!this.redis) {
-      return 0;
+      const events = this.inMemoryEvents.get(projectId) || [];
+      const clientIds = new Set<string>();
+      for (const event of events) {
+        const connections = event.data?.activeConnections || [];
+        for (const connection of connections) {
+          clientIds.add(`${connection.from}:${connection.to}`);
+        }
+      }
+      return clientIds.size;
     }
     
     const count = await this.redis.get(`connection_count:${projectId}`);
@@ -353,5 +349,87 @@ export class TelemetryService {
       limit,
       remaining: Math.max(0, limit - currentCount),
     };
+  }
+
+  private toTelemetryData(batch: TelemetryBatch, event: TelemetryEvent): TelemetryData {
+    return new TelemetryData({
+      projectId: batch.projectId,
+      organizationId: batch.organizationId,
+      type: this.mapEventTypeToPayloadType(event.type),
+      timestamp: new Date(event.timestamp),
+      data: event.data,
+      metadata: batch.metadata ? {
+        sdkVersion: batch.metadata.sdkVersion,
+        runtime: batch.metadata.runtime,
+        hostname: batch.metadata.hostname,
+        environment: batch.metadata.environment,
+      } : undefined,
+      componentId: this.extractComponentId(event.data),
+      tags: this.extractTags(event.data),
+      attributes: this.extractAttributes(event.data),
+      processed: true,
+      processedAt: new Date(),
+    });
+  }
+
+  private storeInMemory(projectId: string, events: TelemetryData[]): void {
+    const existing = this.inMemoryEvents.get(projectId) || [];
+    const merged = [...events, ...existing]
+      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+      .slice(0, 5000);
+    this.inMemoryEvents.set(projectId, merged);
+  }
+
+  private payloadTypeToEventType(type: string, stream: TelemetryStream): TelemetryEventType {
+    if (stream.requestFlow) return TelemetryEventType.REQUEST_FLOW;
+    if (stream.performanceMetrics) return TelemetryEventType.PERFORMANCE_METRICS;
+    if (stream.activeConnections) return TelemetryEventType.ACTIVE_CONNECTIONS;
+    if (stream.issues) return TelemetryEventType.ISSUES;
+    if (stream.componentStatus) return TelemetryEventType.COMPONENT_STATUS;
+    if (stream.databaseQuery) return TelemetryEventType.DATABASE_QUERY;
+    if (stream.messageQueue) return TelemetryEventType.MESSAGE_QUEUE;
+    if (type === 'heartbeat') return TelemetryEventType.COMPONENT_STATUS;
+    return TelemetryEventType.CUSTOM;
+  }
+
+  private mapEventTypeToPayloadType(type: TelemetryEventType): EntityTelemetryPayloadType {
+    switch (type) {
+      case TelemetryEventType.REQUEST_FLOW:
+      case TelemetryEventType.DATABASE_QUERY:
+      case TelemetryEventType.MESSAGE_QUEUE:
+        return EntityTelemetryPayloadType.TRACE;
+      case TelemetryEventType.PERFORMANCE_METRICS:
+        return EntityTelemetryPayloadType.METRIC;
+      case TelemetryEventType.COMPONENT_STATUS:
+        return EntityTelemetryPayloadType.HEARTBEAT;
+      default:
+        return EntityTelemetryPayloadType.EVENT;
+    }
+  }
+
+  private extractComponentId(stream: TelemetryStream): string | undefined {
+    return stream.performanceMetrics?.componentId ||
+      stream.requestFlow?.componentId ||
+      stream.componentStatus?.componentId ||
+      stream.issues?.[0]?.componentId ||
+      stream.databaseQuery?.componentId ||
+      stream.messageQueue?.componentId;
+  }
+
+  private extractTags(stream: TelemetryStream): string[] | undefined {
+    const tags = new Set<string>();
+    for (const tag of stream.requestFlow?.tags || []) tags.add(tag);
+    if (stream.databaseQuery?.table) tags.add(`table:${stream.databaseQuery.table}`);
+    if (stream.messageQueue?.queue) tags.add(`queue:${stream.messageQueue.queue}`);
+    return tags.size > 0 ? Array.from(tags) : undefined;
+  }
+
+  private extractAttributes(stream: TelemetryStream): Record<string, any> | undefined {
+    const attributes: Record<string, any> = {};
+    if (stream.requestFlow?.endpoint) attributes.endpoint = stream.requestFlow.endpoint;
+    if (stream.requestFlow?.method) attributes.method = stream.requestFlow.method;
+    if (stream.databaseQuery?.operation) attributes.databaseOperation = stream.databaseQuery.operation;
+    if (stream.messageQueue?.action) attributes.queueAction = stream.messageQueue.action;
+    return Object.keys(attributes).length > 0 ? attributes : undefined;
   }
 }

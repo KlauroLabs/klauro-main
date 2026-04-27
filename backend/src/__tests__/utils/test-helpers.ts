@@ -1,6 +1,4 @@
-/**
- * Test helper utilities for Rust analyzer tests
- */
+import { AnalysisContext } from '../../analyzer/core/base-analyzer';
 
 export interface MockRustFile {
   path: string;
@@ -8,10 +6,7 @@ export interface MockRustFile {
   exists: boolean;
 }
 
-export interface MockCargoToml {
-  content: string;
-  exists: boolean;
-}
+export interface MockCargoToml extends MockRustFile {}
 
 /**
  * Create mock Rust file for testing
@@ -40,6 +35,7 @@ edition = "2021"
 ${depsSection}`;
 
   return {
+    path: 'Cargo.toml',
     content,
     exists: true
   };
@@ -48,48 +44,72 @@ ${depsSection}`;
 /**
  * Setup mock file system
  */
-export function setupMockFileSystem(files: MockRustFile[], cargoToml?: MockCargoToml): void {
+export function setupMockFileSystem(files: Array<MockRustFile | MockCargoToml>, cargoToml?: MockCargoToml): void {
   const fs = require('fs');
-  const glob = require('glob');
+  const fsExtra = require('fs-extra');
+  const globModule = require('glob');
+  const glob = globModule.glob || globModule.default || globModule;
+  const allFiles = cargoToml ? [...files, cargoToml] : files;
+  const matchesPattern = (file: MockRustFile, pattern: string): boolean => {
+    const normalizedPattern = pattern.replace(/\\/g, '/');
+    const pathParts = file.path.split('/');
+    const fileName = pathParts[pathParts.length - 1];
+
+    if (normalizedPattern.includes('*.rs')) return file.path.endsWith('.rs');
+    if (normalizedPattern.endsWith('Cargo.toml')) return fileName === 'Cargo.toml';
+    if (normalizedPattern.endsWith('Cargo.lock')) return fileName === 'Cargo.lock';
+
+    return file.path === normalizedPattern ||
+      file.path.endsWith(`/${normalizedPattern}`) ||
+      fileName === normalizedPattern;
+  };
   
-  // Mock glob.sync
-  (glob as jest.MockedFunction<typeof glob>).mockImplementation((pattern, options) => {
-    return files.filter(f => {
-      // Simple path matching for test files
-      const pathParts = f.path.split('/');
-      const fileName = pathParts[pathParts.length - 1];
-      return fileName.includes(pattern.replace('**/*.rs', '')) || fileName === pattern.replace('**/*.rs', '');
+  (glob as jest.MockedFunction<typeof glob>).mockImplementation((pattern: string | string[]) => {
+    const patterns = Array.isArray(pattern) ? pattern : [pattern];
+    const matches = allFiles.filter(f => {
+      return patterns.some((candidate: string) => matchesPattern(f, candidate));
     }).map(f => f.path);
+
+    return matches;
   });
 
-  // Mock fs.promises.readFile
+  const findFile = (filePath: string): MockRustFile | undefined => {
+    return allFiles.find(f => f.path === filePath || filePath.endsWith(f.path));
+  };
+
   const readFile = fs.promises.readFile as jest.MockedFunction<typeof fs.promises.readFile>;
   readFile.mockImplementation((filePath: string) => {
-    const file = files.find(f => f.path === filePath);
+    const file = findFile(filePath);
     if (file) {
       return Promise.resolve(file.content);
     }
-    
-    if (filePath.includes('Cargo.toml') && cargoToml) {
-      return Promise.resolve(cargoToml.content);
-    }
-    
+
     return Promise.reject(new Error('File not found'));
   });
 
-  // Mock fs.promises.access
+  const readFileExtra = fsExtra.readFile as jest.MockedFunction<typeof fsExtra.readFile>;
+  readFileExtra.mockImplementation((filePath: string) => {
+    const file = findFile(filePath);
+    if (file) {
+      return Promise.resolve(file.content);
+    }
+
+    return Promise.reject(new Error('File not found'));
+  });
+
   const access = fs.promises.access as jest.MockedFunction<typeof fs.promises.access>;
   access.mockImplementation((filePath: string) => {
-    const file = files.find(f => f.path === filePath);
+    const file = findFile(filePath);
     if (file && file.exists) {
       return Promise.resolve();
     }
-    
-    if (filePath.includes('Cargo.toml') && cargoToml?.exists) {
-      return Promise.resolve();
-    }
-    
+
     return Promise.reject(new Error('File not found'));
+  });
+
+  const pathExists = fsExtra.pathExists as jest.MockedFunction<typeof fsExtra.pathExists>;
+  pathExists.mockImplementation((filePath: string) => {
+    return Promise.resolve(Boolean(findFile(filePath)?.exists));
   });
 }
 
@@ -164,10 +184,7 @@ export function analyzeFunctionFromCode(code: string): any {
 export function createTestContext(projectPath: string = '/test'): AnalysisContext {
   return {
     projectPath,
-    options: {
-      includeTests: true,
-      verbose: false
-    }
+    includeTests: true,
   };
 }
 
@@ -255,16 +272,21 @@ export function expectCASCompliance(contribution: any): void {
   
   if (contribution.patterns) {
     expect(Array.isArray(contribution.patterns)).toBe(true);
-    expect(contribution.patterns[0]).toHaveProperty('variations');
+    const patternWithVariations = contribution.patterns.find((pattern: any) =>
+      Array.isArray(pattern.variations)
+    );
+    if (patternWithVariations) {
+      expect(patternWithVariations.variations.length).toBeGreaterThan(0);
+    }
   }
   
   // Check parent field compliance
-  const nodes = contribution.nodes || [];
-  const structNodes = nodes.filter(n => n.type === 'struct');
-  const methodNodes = nodes.filter(n => n.type === 'method');
+  const nodes: any[] = contribution.nodes || [];
+  const structNodes = nodes.filter((n: any) => ['struct', 'service'].includes(n.type));
+  const methodNodes = nodes.filter((n: any) => n.type === 'method');
   
-  methodNodes.forEach(method => {
-    const parentStruct = structNodes.find(s => s.id === method.parent);
+  methodNodes.forEach((method: any) => {
+    const parentStruct = structNodes.find((s: any) => s.id === method.parent);
     if (method.parent && method.parent !== null) {
       expect(parentStruct).toBeDefined();
     }

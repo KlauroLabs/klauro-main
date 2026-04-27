@@ -881,6 +881,17 @@ export interface CASValidation {
     edges_with_metadata?: number;
     documented_nodes?: number;
   };
+  graph_integrity?: {
+    total_edges: number;
+    dangling_edges: number;
+    connected_nodes: number;
+    orphaned_nodes: number;
+    entry_points_with_handlers: number;
+    exit_points_with_sources: number;
+    runtime_links_with_instrumentation: number;
+    facts_with_evidence: number;
+    relationship_coverage_score: number;
+  };
 }
 
 export interface CASAnalyzer {
@@ -906,6 +917,8 @@ export interface CASContribution {
   tags?: CASTag[];
   perspectives?: CASPerspective[];
   provided_perspectives?: string[];
+  method_calls?: CASMethodCall[];
+  call_chains?: CASCallChain[];
 }
 
 export interface CASMergeStrategy {

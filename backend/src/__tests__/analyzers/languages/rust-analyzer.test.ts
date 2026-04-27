@@ -1,5 +1,5 @@
 import { RustAnalyzer } from '../../../analyzer/languages/rust-analyzer';
-import { AnalysisContext } from '../../../types/cas.types';
+import { AnalysisContext } from '../../../analyzer/core/base-analyzer';
 import { 
   setupMockFileSystem, 
   cleanupMocks, 
@@ -46,7 +46,7 @@ describe('RustAnalyzer', () => {
     });
 
     test('should get analyzer capabilities', () => {
-      const capabilities = analyzer.getCapabilities();
+      const capabilities = (analyzer as any).getCapabilities();
       expect(capabilities).toContain('struct-analysis');
       expect(capabilities).toContain('trait-analysis');
       expect(capabilities).toContain('framework-detection');
@@ -69,7 +69,7 @@ describe('RustAnalyzer', () => {
         createMockCargoToml()
       ]);
 
-      const result = await analyzer.analyze(testContext);
+      const result = await analyzer.analyze(testContext) as any;
 
       expect(result.nodes).toBeDefined();
       
@@ -103,7 +103,7 @@ describe('RustAnalyzer', () => {
         createMockCargoToml()
       ]);
 
-      const result = await analyzer.analyze(testContext);
+      const result = await analyzer.analyze(testContext) as any;
 
       const containerStruct = result.nodes.find((n: any) => n.name === 'Container');
       const userStruct = result.nodes.find((n: any) => n.name === 'User');
@@ -126,7 +126,7 @@ describe('RustAnalyzer', () => {
         createMockCargoToml()
       ]);
 
-      const result = await analyzer.analyze(testContext);
+      const result = await analyzer.analyze(testContext) as any;
 
       const userStruct = result.nodes.find((n: any) => n.type === 'struct' && n.name === 'User');
       const nameField = result.nodes.find((n: any) => n.type === 'field' && n.name === 'name');
@@ -149,11 +149,11 @@ describe('RustAnalyzer', () => {
         /// 
         /// # Arguments
         /// 
-        /// * `x` - Number to square
+        /// * \`x\` - Number to square
         /// 
         /// # Returns
         /// 
-        /// * `u32` - Square of x
+        /// * \`u32\` - Square of x
         pub fn square(x: u32) -> u32 {
             x * x
         }
@@ -164,7 +164,7 @@ describe('RustAnalyzer', () => {
         createMockCargoToml()
       ]);
 
-      const result = await analyzer.analyze(testContext);
+      const result = await analyzer.analyze(testContext) as any;
 
       const functionNode = result.nodes.find((n: any) => n.type === 'function' && n.name === 'square');
       expectCASNode(functionNode, {
@@ -202,7 +202,7 @@ describe('RustAnalyzer', () => {
         createMockCargoToml()
       ]);
 
-      const result = await analyzer.analyze(testContext);
+      const result = await analyzer.analyze(testContext) as any;
 
       const incompleteFunction = result.nodes.find((n: any) => 
         n.type === 'function' && n.name === 'incomplete_function'
@@ -242,7 +242,7 @@ describe('RustAnalyzer', () => {
         createMockCargoToml()
       ]);
 
-      const result = await analyzer.analyze(testContext);
+      const result = await analyzer.analyze(testContext) as any;
 
       const traitNode = result.nodes.find((n: any) => n.type === 'trait' && n.name === 'Greeter');
       expectCASNode(traitNode, {
@@ -290,7 +290,7 @@ describe('RustAnalyzer', () => {
         createMockCargoToml()
       ]);
 
-      const result = await analyzer.analyze(testContext);
+      const result = await analyzer.analyze(testContext) as any;
 
       // Check for method calls
       expect(result.method_calls).toBeDefined();
@@ -334,7 +334,7 @@ describe('RustAnalyzer', () => {
         createMockCargoToml()
       ]);
 
-      const result = await analyzer.analyze(testContext);
+      const result = await analyzer.analyze(testContext) as any;
 
       expect(result.patterns).toBeDefined();
       
@@ -370,7 +370,7 @@ describe('RustAnalyzer', () => {
         createMockCargoToml()
       ]);
 
-      const result = await analyzer.analyze(testContext);
+      const result = await analyzer.analyze(testContext) as any;
 
       expect(result.patterns).toBeDefined();
       
@@ -401,7 +401,7 @@ describe('RustAnalyzer', () => {
         createMockCargoToml()
       ]);
 
-      const result = await analyzer.analyze(testContext);
+      const result = await analyzer.analyze(testContext) as any;
 
       // Check for v1.5.0 compliance
       expectCASCompliance(result);
@@ -434,14 +434,14 @@ describe('RustAnalyzer', () => {
         createMockCargoToml(['actix-web'])
       ]);
 
-      const result = await analyzer.analyze(testContext);
+      const result = await analyzer.analyze(testContext) as any;
 
       // Check for framework detection
       expect(result.analyzer_metadata.framework_specific.actixFramework).toBe(true);
       
       // Check for route entry points
       if (result.entry_points) {
-        const httpEntryPoints = result.entry_points.filter(ep => ep.type === 'http');
+        const httpEntryPoints = result.entry_points.filter((ep: any) => ep.type === 'http');
         expect(httpEntryPoints.length).toBeGreaterThan(0);
       }
     });

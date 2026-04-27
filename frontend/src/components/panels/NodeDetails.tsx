@@ -484,7 +484,7 @@ export const NodeDetails: React.FC<NodeDetailsProps> = ({
       return (
         <Alert severity="info">
           <AlertTitle>No Method Calls</AlertTitle>
-          This component doesn't make any tracked method calls.
+          This component does not make any tracked method calls.
         </Alert>
       );
     }

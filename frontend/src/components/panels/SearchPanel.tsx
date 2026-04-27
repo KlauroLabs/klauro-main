@@ -546,7 +546,7 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
           {searchQuery && searchResults.length === 0 ? (
             <Alert severity="info" sx={{ m: 2 }}>
               <AlertTitle>No Results</AlertTitle>
-              No matches found for "{searchQuery}" in {searchScope === 'all' ? 'any field' : searchScope}.
+              {`No matches found for "${searchQuery}" in ${searchScope === 'all' ? 'any field' : searchScope}.`}
             </Alert>
           ) : searchQuery && searchResults.length > 0 ? (
             <>

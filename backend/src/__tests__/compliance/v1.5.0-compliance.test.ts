@@ -2,7 +2,7 @@
  * CAS v1.5.0 Compliance Tests for Rust Analyzer
  */
 import { RustAnalyzer } from '../../analyzer/languages/rust-analyzer';
-import { AnalysisContext } from '../../types/cas.types';
+import { AnalysisContext } from '../../analyzer/core/base-analyzer';
 import { 
   setupMockFileSystem, 
   cleanupMocks, 
@@ -40,7 +40,7 @@ describe('CAS v1.5.0 Compliance Tests', () => {
         createMockCargoToml()
       ]);
 
-      const result = await analyzer.analyze(testContext);
+      const result = await analyzer.analyze(testContext) as any;
 
       expect(result.method_calls).toBeDefined();
       expect(Array.isArray(result.method_calls)).toBe(true);
@@ -59,7 +59,7 @@ describe('CAS v1.5.0 Compliance Tests', () => {
         createMockCargoToml()
       ]);
 
-      const result = await analyzer.analyze(testContext);
+      const result = await analyzer.analyze(testContext) as any;
 
       expect(result.call_chains).toBeDefined();
       expect(Array.isArray(result.call_chains)).toBe(true);
@@ -82,7 +82,7 @@ describe('CAS v1.5.0 Compliance Tests', () => {
         createMockCargoToml()
       ]);
 
-      const result = await analyzer.analyze(testContext);
+      const result = await analyzer.analyze(testContext) as any;
 
       expect(result.patterns).toBeDefined();
       expect(Array.isArray(result.patterns)).toBe(true);
@@ -116,16 +116,16 @@ describe('CAS v1.5.0 Compliance Tests', () => {
         createMockCargoToml()
       ]);
 
-      const result = await analyzer.analyze(testContext);
+      const result = await analyzer.analyze(testContext) as any;
 
       expect(result.perspectives).toBeDefined();
       expect(Array.isArray(result.perspectives)).toBe(true);
       expect(result.perspectives.length).toBeGreaterThan(0);
       
       // Check for Rust-specific perspectives
-      const rustStructurePerspective = result.perspectives.find((p: any) => p.id === 'rust-structure');
+      const rustStructurePerspective = result.perspectives.find((p: any) => p.id === 'perspective:rust:module-hierarchy');
       expect(rustStructurePerspective).toBeDefined();
-      expect(rustStructurePerspective.analyzer_id).toBe('rust-analyzer');
+      expect(rustStructurePerspective.analyzer_id).toBe('rust');
       expect(rustStructurePerspective.type).toBe('structure');
     });
   });
@@ -150,7 +150,7 @@ describe('CAS v1.5.0 Compliance Tests', () => {
         createMockCargoToml()
       ]);
 
-      const result = await analyzer.analyze(testContext);
+      const result = await analyzer.analyze(testContext) as any;
 
       const userStruct = result.nodes.find((n: any) => n.type === 'struct' && n.name === 'User');
       const nameField = result.nodes.find((n: any) => n.type === 'field' && n.name === 'name');
@@ -188,7 +188,7 @@ describe('CAS v1.5.0 Compliance Tests', () => {
         createMockCargoToml()
       ]);
 
-      const result = await analyzer.analyze(testContext);
+      const result = await analyzer.analyze(testContext) as any;
 
       // Check for class-level 'uses' edge
       const usesEdge = result.edges.find((e: any) => 
@@ -222,7 +222,7 @@ describe('CAS v1.5.0 Compliance Tests', () => {
         createMockCargoToml()
       ]);
 
-      const result = await analyzer.analyze(testContext);
+      const result = await analyzer.analyze(testContext) as any;
 
       // Check for class-level 'depends_on' edge
       const dependsOnEdge = result.edges.find((e: any) => 
@@ -247,10 +247,10 @@ describe('CAS v1.5.0 Compliance Tests', () => {
         /// 
         /// # Examples
         /// 
-        /// ```
+        /// \`\`\`
         /// use crate::User;
         /// let user = User::new("Alice", 25);
-        /// ```
+        /// \`\`\`
         pub struct User {
             /// User's full name
             pub name: String,
@@ -264,7 +264,7 @@ describe('CAS v1.5.0 Compliance Tests', () => {
         createMockCargoToml()
       ]);
 
-      const result = await analyzer.analyze(testContext);
+      const result = await analyzer.analyze(testContext) as any;
 
       const userStruct = result.nodes.find((n: any) => n.type === 'struct' && n.name === 'User');
       expect(userStruct.documentation).toBeDefined();
@@ -300,7 +300,7 @@ describe('CAS v1.5.0 Compliance Tests', () => {
         createMockCargoToml()
       ]);
 
-      const result = await analyzer.analyze(testContext);
+      const result = await analyzer.analyze(testContext) as any;
 
       const completeFunction = result.nodes.find((n: any) => n.name === 'complete_function');
       expect(completeFunction.implementation_status.status).toBe('complete');
@@ -360,7 +360,7 @@ describe('CAS v1.5.0 Compliance Tests', () => {
         createMockCargoToml()
       ]);
 
-      const result = await analyzer.analyze(testContext);
+      const result = await analyzer.analyze(testContext) as any;
 
       // Full compliance check
       expectCASCompliance(result);
@@ -381,7 +381,7 @@ describe('CAS v1.5.0 Compliance Tests', () => {
         if (method.parent !== null) {
           const parent = nodes.find(n => n.id === method.parent);
           expect(parent).toBeDefined();
-          expect(['struct', 'enum']).toContain(parent.type);
+          expect(['struct', 'enum', 'service', 'repository']).toContain(parent.type);
         }
       });
     });

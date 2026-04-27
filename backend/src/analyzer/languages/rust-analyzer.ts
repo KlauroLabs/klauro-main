@@ -1,7 +1,7 @@
 import {
   CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint,
   CASDocumentation, CASComment, CASTodo, CASImplementationStatus,
-  CASPattern, CASPerspective
+  CASPattern, CASPerspective, CASMethodCall, CASCallChain
 } from '../../types/cas.types';
 import { BaseAnalyzer, AnalysisContext } from '../core/base-analyzer';
 import { AnalyzerError } from '../core/errors';
@@ -329,6 +329,7 @@ export class RustAnalyzer extends BaseAnalyzer {
     const edges: CASEdge[] = [];
     const entryPoints: CASEntryPoint[] = [];
     const exitPoints: CASExitPoint[] = [];
+    const methodCalls: CASMethodCall[] = [];
 
     try {
       await this.detectProjectType(context.projectPath);
@@ -343,7 +344,7 @@ export class RustAnalyzer extends BaseAnalyzer {
       for (const file of rustFiles) {
         const fullPath = path.resolve(context.projectPath, file);
         this.createFileNode(file, fullPath, nodes, context);
-        await this.analyzeFile(fullPath, nodes, edges, entryPoints, exitPoints, context);
+        await this.analyzeFile(fullPath, nodes, edges, entryPoints, exitPoints, methodCalls, context);
       }
 
       this.createExitPointsForLibraries(libraries, exitPoints, nodes);
@@ -352,6 +353,7 @@ export class RustAnalyzer extends BaseAnalyzer {
       const detectedFrameworks = this.getDetectedFrameworks();
       const patterns = this.detectPatterns(nodes);
       const perspectives = this.generatePerspectives(nodes);
+      const callChains = this.buildCallChains(methodCalls);
 
       const contribution = this.createContribution(nodes, edges, entryPoints, exitPoints, {
         analyzer_name: 'Rust Analyzer',
@@ -379,6 +381,15 @@ export class RustAnalyzer extends BaseAnalyzer {
       contribution.patterns = patterns;
       contribution.perspectives = perspectives;
       contribution.provided_perspectives = perspectives.map(p => p.id);
+      contribution.external_services = [];
+      contribution.method_calls = methodCalls;
+      contribution.call_chains = callChains;
+      contribution.analyzer_metadata.framework_specific = detectedFrameworks;
+      contribution.analyzer_metadata.framework_specific.actixFramework = detectedFrameworks.actix;
+      (contribution as any).analyzer_contributions = [contribution.analyzer_metadata];
+      (contribution as any).cas_version = '1.8.0';
+      (contribution as any).analysis_timestamp = new Date().toISOString();
+      (contribution as any).analysis_id = `rust:${Date.now()}`;
 
       return contribution;
 
@@ -453,6 +464,8 @@ export class RustAnalyzer extends BaseAnalyzer {
   protected getCapabilities(): string[] {
     return [
       'rust-syntax-parsing',
+      'struct-analysis',
+      'trait-analysis',
       'cargo-dependency-analysis',
       'call-graph-generation',
       'function-mapping',
@@ -648,6 +661,7 @@ export class RustAnalyzer extends BaseAnalyzer {
     edges: CASEdge[],
     entryPoints: CASEntryPoint[],
     exitPoints: CASExitPoint[],
+    methodCalls: CASMethodCall[],
     context: AnalysisContext
   ): Promise<void> {
     try {
@@ -661,7 +675,7 @@ export class RustAnalyzer extends BaseAnalyzer {
       const uses = await this.extractUses(content, relativePath, nodes);
 
       // Parse structs
-      const structs = await this.extractStructs(content, relativePath, nodes);
+      const structs = await this.extractStructs(content, relativePath, nodes, edges);
 
       // Parse enums
       const enums = await this.extractEnums(content, relativePath, nodes);
@@ -689,6 +703,7 @@ export class RustAnalyzer extends BaseAnalyzer {
 
       // Create relationships
       this.createRelationships(nodes, edges, structs, enums, traits, impls, functions, constants, statics, types);
+      this.createMethodCalls(functions, nodes, methodCalls);
 
       // Create exit points from function calls
       this.createExitPointsFromFunctions(functions, fullPath, exitPoints, nodes);
@@ -760,37 +775,47 @@ export class RustAnalyzer extends BaseAnalyzer {
     return uses;
   }
 
-  private async extractStructs(content: string, relativePath: string, nodes: CASNode[]): Promise<RustStruct[]> {
+  private async extractStructs(content: string, relativePath: string, nodes: CASNode[], edges: CASEdge[]): Promise<RustStruct[]> {
     const structs: RustStruct[] = [];
     const lines = content.split('\n');
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      if (line.includes('struct ') && !line.startsWith('//')) {
-        const structMatch = line.match(/(?:pub\s+)?struct\s+(\w+)/);
+      const trimmedLine = line.trim();
+      if (trimmedLine.includes('struct ') && !trimmedLine.startsWith('//')) {
+        const structMatch = trimmedLine.match(/(?:pub\s+)?struct\s+(\w+)(?:<([^>]+)>)?/);
         if (structMatch) {
           const structName = structMatch[1];
-          const isPublic = line.includes('pub');
+          const generics = structMatch[2]
+            ? structMatch[2].split(',').map(generic => generic.trim()).filter(Boolean)
+            : [];
+          const isPublic = trimmedLine.includes('pub');
 
           const attributes = this.extractPrecedingAttributes(lines, i);
+          const documentation = this.extractDocumentation(lines, i, relativePath);
 
           let structEnd = i;
-          let braceCount = 0;
-          for (let j = i; j < lines.length; j++) {
-            if (lines[j].includes('{')) braceCount++;
-            if (lines[j].includes('}')) braceCount--;
-            if (braceCount === 0 && lines[j].includes('}')) {
-              structEnd = j;
-              break;
+          if (trimmedLine.includes('{')) {
+            let braceCount = 0;
+            for (let j = i; j < lines.length; j++) {
+              if (lines[j].includes('{')) braceCount++;
+              if (lines[j].includes('}')) braceCount--;
+              if (braceCount === 0 && lines[j].includes('}')) {
+                structEnd = j;
+                break;
+              }
             }
           }
+
+          const structBodyLines = structEnd > i ? lines.slice(i + 1, structEnd) : [];
+          const fields = this.extractStructFields(structBodyLines, i + 2);
 
           const struct: RustStruct = {
             name: structName,
             moduleName: relativePath,
             filePath: relativePath,
-            fields: [],
-            generics: [],
+            fields,
+            generics,
             attributes: attributes,
             visibility: isPublic ? 'public' : 'private',
             lineStart: i + 1,
@@ -805,12 +830,53 @@ export class RustAnalyzer extends BaseAnalyzer {
           const subcategories = this.determineStructSubcategories(structName, attributes, relativePath);
 
           const nodeId = `struct:${relativePath}:${structName}`;
-          nodes.push(this.createNode(nodeId, structName, structType, 3, relativePath, i + 1, structEnd + 1, {
+          const structNode = this.createNode(nodeId, structName, structType, 3, relativePath, i + 1, structEnd + 1, {
             visibility: isPublic ? 'public' : 'private',
-            fieldCount: struct.fields.length,
-            attributes: attributes.length > 0 ? attributes : undefined,
+            fieldCount: fields.length,
+            attributes: {
+              fieldCount: fields.length,
+              generics,
+              rustAttributes: attributes,
+              visibility: isPublic ? 'public' : 'private'
+            },
             subcategories: subcategories
-          }));
+          });
+          if (documentation) structNode.documentation = documentation;
+          nodes.push(structNode);
+
+          for (const field of fields) {
+            const fieldId = `field:${relativePath}:${structName}:${field.name}`;
+            const fieldNode = this.createNode(fieldId, field.name, 'field', 5, relativePath, field.lineNumber, field.lineNumber, {
+              visibility: field.visibility,
+              type: field.type,
+              attributes: {
+                type: field.type,
+                visibility: field.visibility,
+                parentStruct: structName
+              }
+            });
+            fieldNode.parent = nodeId;
+            nodes.push(fieldNode);
+            edges.push(this.createEdge(
+              `field_edge:${nodeId}:${fieldId}`,
+              nodeId,
+              fieldId,
+              'has_field'
+            ));
+            const dependencyType = this.baseTypeName(field.type);
+            const dependencyNode = nodes.find(node =>
+              node.name === dependencyType &&
+              node.id !== nodeId
+            );
+            if (dependencyNode) {
+              edges.push(this.createEdge(
+                `field_dependency:${nodeId}:${dependencyNode.id}:${field.name}`,
+                nodeId,
+                dependencyNode.id,
+                'depends_on'
+              ));
+            }
+          }
 
           i = structEnd;
         }
@@ -833,6 +899,120 @@ export class RustAnalyzer extends BaseAnalyzer {
       }
     }
     return attributes;
+  }
+
+  private extractStructFields(lines: string[], startLine: number): RustField[] {
+    const fields: RustField[] = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const trimmedLine = lines[i].replace(/\/\/.*$/, '').trim().replace(/,$/, '');
+      if (!trimmedLine || trimmedLine.startsWith('//') || trimmedLine.startsWith('#[')) continue;
+      if (trimmedLine.includes('::')) continue;
+
+      const fieldMatch = trimmedLine.match(/^(pub(?:\([^)]*\))?\s+)?(\w+)\s*:\s*(.+)$/);
+      if (!fieldMatch) continue;
+
+      const isPublic = Boolean(fieldMatch[1]);
+      fields.push({
+        name: fieldMatch[2],
+        type: fieldMatch[3].replace(/,$/, '').trim(),
+        visibility: isPublic ? 'public' : 'private',
+        isPublic,
+        lineNumber: startLine + i
+      });
+    }
+
+    return fields;
+  }
+
+  private baseTypeName(typeName: string): string {
+    return typeName
+      .replace(/<.*$/, '')
+      .replace(/^&(?:mut\s+)?/, '')
+      .replace(/^Box<|>$/g, '')
+      .split('::')
+      .pop()
+      ?.trim() || typeName.trim();
+  }
+
+  private extractDocumentation(lines: string[], declarationLine: number, filePath: string): CASDocumentation | undefined {
+    const docLines: Array<{ text: string; line: number }> = [];
+
+    for (let i = declarationLine - 1; i >= 0; i--) {
+      const trimmedLine = lines[i].trim();
+      if (trimmedLine.startsWith('///')) {
+        docLines.unshift({
+          text: trimmedLine.replace(/^\/\/\/\s?/, ''),
+          line: i + 1
+        });
+        continue;
+      }
+      if (trimmedLine === '' || trimmedLine.startsWith('#[')) continue;
+      break;
+    }
+
+    if (docLines.length === 0) return undefined;
+
+    const raw = docLines.map(line => line.text).join('\n');
+    const contentLines = docLines.map(line => line.text);
+    const summary = contentLines.find(line => line.trim() && !line.trim().startsWith('#'))?.trim();
+    const descriptionLines: string[] = [];
+    const parameters: CASDocumentation['parameters'] = [];
+    let returns: CASDocumentation['returns'] | undefined;
+    const examples: CASDocumentation['examples'] = [];
+    let section: string | undefined;
+    let exampleLines: string[] = [];
+    let inExample = false;
+
+    for (const line of contentLines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('# ')) {
+        section = trimmed.slice(2).toLowerCase();
+        continue;
+      }
+      if (trimmed === '```') {
+        if (inExample) {
+          examples.push({ code: exampleLines.join('\n'), language: 'rust' });
+          exampleLines = [];
+          inExample = false;
+        } else {
+          inExample = true;
+        }
+        continue;
+      }
+      if (inExample) {
+        exampleLines.push(line);
+        continue;
+      }
+      const itemMatch = trimmed.match(/^\*\s+`?([^`\s]+)`?\s+-\s+(.+)$/);
+      if (itemMatch && section === 'arguments') {
+        parameters.push({ name: itemMatch[1], description: itemMatch[2] });
+        continue;
+      }
+      if (itemMatch && section === 'returns') {
+        returns = { type: itemMatch[1], description: itemMatch[2] };
+        continue;
+      }
+      if (!section && trimmed && trimmed !== summary) {
+        descriptionLines.push(trimmed);
+      }
+    }
+
+    return {
+      id: `doc:${filePath}:${declarationLine + 1}`,
+      format: 'rustdoc',
+      type: 'rustdoc',
+      raw,
+      summary,
+      description: descriptionLines.join('\n') || undefined,
+      parameters: parameters.length > 0 ? parameters : undefined,
+      returns,
+      examples: examples.length > 0 ? examples : undefined,
+      location: {
+        start_line: docLines[0].line,
+        end_line: docLines[docLines.length - 1].line
+      }
+    };
   }
 
   private determineStructType(name: string, attributes: string[], filePath: string): string {
@@ -1007,11 +1187,13 @@ export class RustAnalyzer extends BaseAnalyzer {
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      if (line.startsWith('impl ')) {
-        const implMatch = line.match(/impl(?:<[^>]+>)?\s+(?:(\w+)::)?(\w+)/);
-        if (implMatch) {
-          const traitName = implMatch[1];
-          const targetType = implMatch[2];
+      const trimmedLine = line.trim();
+      if (trimmedLine.startsWith('impl ')) {
+        const traitImplMatch = trimmedLine.match(/impl(?:<[^>]+>)?\s+(\w+)\s+for\s+(\w+)/);
+        const inherentImplMatch = trimmedLine.match(/impl(?:<[^>]+>)?\s+(\w+)/);
+        const targetType = traitImplMatch?.[2] || inherentImplMatch?.[1];
+        const traitName = traitImplMatch?.[1];
+        if (targetType) {
 
           // Find impl bounds
           let implEnd = i;
@@ -1038,7 +1220,14 @@ export class RustAnalyzer extends BaseAnalyzer {
 
           // Create node for impl block
           const nodeId = `impl:${relativePath}:${targetType}${traitName ? `:${traitName}` : ''}`;
-          nodes.push(this.createNode(nodeId, `impl ${targetType}${traitName ? ` for ${traitName}` : ''}`, 'impl', 4, relativePath, i + 1, implEnd + 1));
+          nodes.push(this.createNode(nodeId, `impl ${targetType}${traitName ? ` for ${traitName}` : ''}`, 'impl', 4, relativePath, i + 1, implEnd + 1, {
+            targetType,
+            traitName,
+            attributes: {
+              typeName: targetType,
+              traitName
+            }
+          }));
 
           // Create edges to target type
           const targetNodeId = `struct:${relativePath}:${targetType}`; // Assuming it's a struct, could be enum/trait too
@@ -1048,6 +1237,15 @@ export class RustAnalyzer extends BaseAnalyzer {
             targetNodeId,
             'implements'
           ));
+
+          if (traitName) {
+            edges.push(this.createEdge(
+              `impl_trait:${nodeId}:trait:${relativePath}:${traitName}`,
+              nodeId,
+              `trait:${relativePath}:${traitName}`,
+              'implements_for'
+            ));
+          }
 
           i = implEnd; // Skip to end of impl
         }
@@ -1065,16 +1263,19 @@ export class RustAnalyzer extends BaseAnalyzer {
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      if (line.includes('fn ') && !line.startsWith('//')) {
-        const fnMatch = line.match(/(?:pub\s+)?(?:async\s+)?fn\s+(\w+)/);
+      const trimmedLine = line.trim();
+      if (trimmedLine.includes('fn ') && !trimmedLine.startsWith('//')) {
+        const fnMatch = trimmedLine.match(/(?:pub\s+)?(?:async\s+)?fn\s+(\w+)/);
         if (fnMatch) {
           const fnName = fnMatch[1];
-          const isPublic = line.includes('pub');
-          const isAsync = line.includes('async');
+          const isPublic = trimmedLine.includes('pub');
+          const isAsync = trimmedLine.includes('async');
           const isMain = fnName === 'main';
+          const signature = this.parseFunctionSignature(trimmedLine);
 
           const prevLines = lines.slice(Math.max(0, i - 5), i).join('\n');
           const isTest = prevLines.includes('#[test]') || prevLines.includes('#[tokio::test]') || prevLines.includes('#[async_std::test]');
+          const documentation = this.extractDocumentation(lines, i, relativePath);
 
           let fnEnd = i;
           let braceCount = 0;
@@ -1101,8 +1302,8 @@ export class RustAnalyzer extends BaseAnalyzer {
             name: fnName,
             moduleName: relativePath,
             filePath: relativePath,
-            parameters: [],
-            returnType: '()',
+            parameters: signature.parameters,
+            returnType: signature.returnType,
             isAsync,
             isMain,
             isPublic,
@@ -1129,7 +1330,7 @@ export class RustAnalyzer extends BaseAnalyzer {
             ? `method:${relativePath}:${implType}:${fnName}`
             : `function:${relativePath}:${fnName}`;
 
-          nodes.push(this.createNode(nodeId, fnName, nodeType, 4, relativePath, i + 1, fnEnd + 1, {
+          const functionNode = this.createNode(nodeId, fnName, nodeType, 4, relativePath, i + 1, fnEnd + 1, {
             visibility: isPublic ? 'public' : 'private',
             isAsync,
             isMain,
@@ -1142,8 +1343,31 @@ export class RustAnalyzer extends BaseAnalyzer {
             has_async_calls: hasAsyncCalls,
             internal_call_count: internalCallCount,
             external_call_count: externalCallCount,
-            call_targets: calls.map(c => c.targetFunction)
-          }));
+            call_targets: calls.map(c => c.targetFunction),
+            attributes: {
+              visibility: isPublic ? 'public' : 'private',
+              isAsync,
+              isMain,
+              isTest,
+              isMethod,
+              implType: implType || undefined,
+              parameterCount: func.parameters.length,
+              call_targets: calls.map(c => c.targetFunction)
+            }
+          });
+          functionNode.signature = {
+            parameters: signature.parameters.map(parameter => ({
+              name: parameter.name,
+              type: parameter.type
+            })),
+            return_type: signature.returnType
+          };
+          if (implType) functionNode.parent = `struct:${relativePath}:${implType}`;
+          if (documentation) functionNode.documentation = documentation;
+          functionNode.implementation_status = this.determineImplementationStatus(body, prevLines, fnName);
+          const todos = this.extractTodos(body, relativePath, fnName, bodyStartLine + 1, nodeId);
+          if (todos.length > 0) functionNode.todos = todos;
+          nodes.push(functionNode);
 
           if (isMain) {
             entryPoints.push(this.createEntryPoint(
@@ -1152,6 +1376,31 @@ export class RustAnalyzer extends BaseAnalyzer {
               'cli',
               'main',
               'Program entry point'
+            ));
+          }
+
+          const routeMatch = prevLines.match(/#\[(get|post|put|delete|patch)\("([^"]+)"\)\]/);
+          if (routeMatch) {
+            entryPoints.push(this.createEntryPoint(
+              `entry:http:${relativePath}:${fnName}:${routeMatch[1]}:${routeMatch[2]}`,
+              nodeId,
+              'http',
+              `${routeMatch[1].toUpperCase()} ${routeMatch[2]}`,
+              `HTTP route handled by ${fnName}`,
+              {
+                method: routeMatch[1].toUpperCase(),
+                path: routeMatch[2]
+              },
+              undefined,
+              {
+                framework: 'actix-web'
+              },
+              {
+                node_id: nodeId,
+                method_name: fnName,
+                file: relativePath,
+                line: i + 1
+              }
             ));
           }
 
@@ -1182,6 +1431,125 @@ export class RustAnalyzer extends BaseAnalyzer {
     }
 
     return functions;
+  }
+
+  private parseFunctionSignature(line: string): { parameters: RustParameter[]; returnType: string } {
+    const signatureMatch = line.match(/fn\s+\w+(?:<[^>]+>)?\s*\(([^)]*)\)\s*(?:->\s*([^{]+))?/);
+    if (!signatureMatch) {
+      return { parameters: [], returnType: '()' };
+    }
+
+    const parameters = signatureMatch[1].split(',')
+      .map(parameter => parameter.trim())
+      .filter(Boolean)
+      .map((parameter, index) => {
+        if (parameter === '&self' || parameter === 'self' || parameter === '&mut self') {
+          return {
+            name: 'self',
+            type: parameter,
+            isMutable: parameter.includes('mut'),
+            isSelf: true,
+            lineNumber: index
+          };
+        }
+
+        const [namePart, ...typeParts] = parameter.split(':');
+        return {
+          name: namePart.replace(/^mut\s+/, '').trim(),
+          type: typeParts.join(':').trim() || 'unknown',
+          isMutable: namePart.includes('mut'),
+          isSelf: false,
+          lineNumber: index
+        };
+      });
+
+    return {
+      parameters,
+      returnType: signatureMatch[2]?.trim() || '()'
+    };
+  }
+
+  private determineImplementationStatus(body: string, precedingText: string, functionName: string): CASImplementationStatus {
+    const combined = `${precedingText}\n${body}`;
+    const hasTodoMarkers = /TODO|FIXME|todo!\s*\(/i.test(combined);
+    const hasNotImplemented = /unimplemented!\s*\(|todo!\s*\(|panic!\s*\(/.test(combined);
+    const hasStubReturns = /stub/i.test(functionName) || /"stub"|'stub'/.test(body);
+    const hasDeprecated = /#\[deprecated/.test(combined);
+    const hasPlaceholder = /placeholder|not implemented/i.test(combined);
+    let status: CASImplementationStatus['status'] = 'complete';
+
+    if (hasDeprecated) status = 'deprecated';
+    else if (/todo!\s*\(|unimplemented!\s*\(/.test(combined)) status = 'partial';
+    else if (hasStubReturns) status = 'stub';
+    else if (hasTodoMarkers || hasPlaceholder) status = 'partial';
+
+    const implementationStatus: CASImplementationStatus = {
+      status,
+      indicators: {
+        has_todo_markers: hasTodoMarkers,
+        has_not_implemented_exceptions: hasNotImplemented,
+        has_stub_returns: hasStubReturns,
+        has_placeholder_code: hasPlaceholder,
+        has_hardcoded_values: /"\w|'\w|\b\d+\b/.test(body),
+        has_commented_out_code: /^\s*\/\/\s*(pub\s+)?fn\s+/m.test(body),
+        has_deprecated_markers: hasDeprecated
+      },
+      confidence: 0.85
+    };
+
+    if (hasDeprecated) {
+      implementationStatus.deprecation = { is_deprecated: true };
+    }
+
+    return implementationStatus;
+  }
+
+  private extractTodos(body: string, filePath: string, functionName: string, startLine: number, nodeId: string): CASTodo[] {
+    const todos: CASTodo[] = [];
+    const lines = body.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const todoMatch = line.match(/\/\/\s*(TODO|FIXME|HACK|NOTE|WARNING|XXX|OPTIMIZE|REFACTOR):?\s*(.*)/i);
+      if (todoMatch) {
+        todos.push({
+          id: `todo:${filePath}:${startLine + i}:${todos.length}`,
+          type: todoMatch[1].toUpperCase() as CASTodo['type'],
+          text: todoMatch[2].trim() || todoMatch[1],
+          priority: todoMatch[1].toUpperCase() === 'FIXME' ? 'high' : 'medium',
+          category: 'general',
+          location: {
+            file: filePath,
+            line: startLine + i,
+            node_id: nodeId
+          },
+          context: {
+            function_name: functionName
+          }
+        });
+      }
+
+      const todoMacroMatch = line.match(/todo!\s*\(([^)]*)\)/);
+      if (todoMacroMatch) {
+        todos.push({
+          id: `todo:${filePath}:${startLine + i}:${todos.length}`,
+          type: 'TODO',
+          text: todoMacroMatch[1].replace(/^["']|["']$/g, '').trim() || 'todo macro',
+          priority: 'high',
+          category: 'feature',
+          location: {
+            file: filePath,
+            line: startLine + i,
+            node_id: nodeId
+          },
+          context: {
+            function_name: functionName
+          }
+        });
+      }
+    }
+
+    return todos;
   }
 
   private extractCallsFromBody(body: string, callerFunction: string, callerFile: string, bodyStartLine: number): RustFunctionCall[] {
@@ -1606,9 +1974,40 @@ export class RustAnalyzer extends BaseAnalyzer {
       if (!callerNode) continue;
 
       const callerNodeId = callerNode.id;
+      const referencedTypeNodes = nodes.filter(n =>
+        ['struct', 'service', 'enum', 'trait'].includes(n.type) &&
+        n.id !== callerNodeId &&
+        func.body?.includes(`${n.name}::`)
+      );
+      for (const referencedTypeNode of referencedTypeNodes) {
+        const edgeId = `uses:${callerNodeId}:${referencedTypeNode.id}`;
+        const existingEdge = edges.find(e => e.id === edgeId);
+        if (!existingEdge) {
+          edges.push({
+            ...this.createEdge(edgeId, callerNodeId, referencedTypeNode.id, 'uses'),
+            aggregated_from: [`body:${func.filePath}:${func.name}`]
+          } as CASEdge);
+        }
+      }
 
       for (const call of func.calls) {
-        if (call.isExternal) continue;
+        if (call.isExternal) {
+          const targetType = call.targetModule ? this.baseTypeName(call.targetModule) : undefined;
+          const targetNode = targetType
+            ? nodes.find(n => ['struct', 'enum', 'trait'].includes(n.type) && n.name === targetType)
+            : undefined;
+          if (targetNode) {
+            const edgeId = `uses:${callerNodeId}:${targetNode.id}:${call.callLine}`;
+            const existingEdge = edges.find(e => e.id === edgeId);
+            if (!existingEdge) {
+              edges.push({
+                ...this.createEdge(edgeId, callerNodeId, targetNode.id, 'uses'),
+                aggregated_from: [`call:${callerNodeId}:${call.targetFunction}:${call.callLine}`]
+              } as CASEdge);
+            }
+          }
+          continue;
+        }
 
         const targetNodeIds = functionNodeMap.get(call.targetFunction) || [];
         for (const targetNodeId of targetNodeIds) {
@@ -1669,6 +2068,114 @@ export class RustAnalyzer extends BaseAnalyzer {
         }
       }
     }
+  }
+
+  private createMethodCalls(functions: RustFunction[], nodes: CASNode[], methodCalls: CASMethodCall[]): void {
+    const functionNodeMap = new Map<string, string[]>();
+    for (const node of nodes) {
+      if (node.type === 'function' || node.type === 'method') {
+        if (!functionNodeMap.has(node.name)) functionNodeMap.set(node.name, []);
+        functionNodeMap.get(node.name)!.push(node.id);
+      }
+    }
+
+    for (const func of functions) {
+      const callerNode = nodes.find(node =>
+        (node.type === 'function' || node.type === 'method') &&
+        node.name === func.name &&
+        node.source?.file?.includes(func.filePath)
+      );
+      if (!callerNode) continue;
+
+      for (const call of func.calls) {
+        const targetNode = (functionNodeMap.get(call.targetFunction) || [])
+          .map(id => nodes.find(node => node.id === id))
+          .find((node): node is CASNode => Boolean(node));
+
+        methodCalls.push({
+          id: `call:${callerNode.id}:${call.targetFunction}:${call.callLine}:${methodCalls.length}`,
+          caller_node: callerNode.id,
+          target_node: targetNode?.id,
+          call_details: {
+            method_name: call.targetFunction,
+            location: {
+              file: call.callerFile,
+              line: call.callLine,
+              column: 1
+            },
+            call_type: call.isMethodCall ? 'method' : 'direct',
+            resolution_type: targetNode ? 'static' : call.isExternal ? 'external' : 'unresolved'
+          },
+          execution_context: {
+            is_async: call.isAsync,
+            is_conditional: false,
+            is_in_loop: false,
+            is_recursive: call.targetFunction === func.name,
+            call_depth: 1,
+            conditional_depth: 0,
+            loop_depth: 0,
+            enclosing_function: func.name
+          },
+          external_details: call.isExternal ? {
+            library: call.targetModule || call.targetFunction,
+            module: call.targetModule,
+            is_builtin: this.isStandardLibraryCall(call.targetModule || '', call.targetFunction),
+            is_sdk: !this.isStandardLibraryCall(call.targetModule || '', call.targetFunction)
+          } : undefined,
+          performance_hints: {
+            is_hot_path: false,
+            is_potential_bottleneck: call.isExternal
+          }
+        });
+      }
+    }
+  }
+
+  private buildCallChains(methodCalls: CASMethodCall[]): CASCallChain[] {
+    const callsByCaller = new Map<string, CASMethodCall[]>();
+    for (const call of methodCalls) {
+      if (!callsByCaller.has(call.caller_node)) callsByCaller.set(call.caller_node, []);
+      callsByCaller.get(call.caller_node)!.push(call);
+    }
+
+    return Array.from(callsByCaller.entries()).map(([callerNode, calls], index) => {
+      const hasExternalCalls = calls.some(call => call.call_details.resolution_type === 'external');
+      return {
+        id: `chain:rust:${index}:${callerNode}`,
+        chain_type: hasExternalCalls ? 'entry-to-exit' : 'dead-end',
+        entry_point: {
+          node_id: callerNode,
+          method_name: calls[0]?.execution_context.enclosing_function || callerNode
+        },
+        exit_point: hasExternalCalls ? {
+          node_id: calls[calls.length - 1]?.target_node,
+          method_name: calls[calls.length - 1]?.call_details.method_name || 'external'
+        } : undefined,
+        call_path: calls.map((call, callIndex) => ({
+          call_id: call.id,
+          node_id: call.target_node || call.caller_node,
+          method_name: call.call_details.method_name,
+          depth: callIndex + 1
+        })),
+        characteristics: {
+          total_calls: calls.length,
+          max_depth: calls.length,
+          has_external_calls: hasExternalCalls,
+          has_database_calls: calls.some(call => {
+            const library = call.external_details?.library?.toLowerCase() || '';
+            return ['diesel', 'sqlx', 'rusqlite', 'mongodb', 'redis'].includes(library);
+          }),
+          has_async_calls: calls.some(call => call.execution_context.is_async),
+          is_circular: false,
+          is_recursive: calls.some(call => call.execution_context.is_recursive),
+          complexity_score: Math.max(1, calls.length)
+        },
+        risk_analysis: {
+          risk_level: hasExternalCalls ? 'medium' : 'low',
+          risk_factors: hasExternalCalls ? ['external-call'] : []
+        }
+      };
+    });
   }
 
   private createExitPointsForLibraries(libraries: any[], exitPoints: CASExitPoint[], nodes: CASNode[]): void {
@@ -1877,6 +2384,97 @@ export class RustAnalyzer extends BaseAnalyzer {
         metadata: {
           language_specific: true,
           benefits: ['Zero-cost abstractions', 'Static dispatch', 'Compile-time polymorphism']
+        }
+      });
+    }
+
+    const serviceTraits = traits.filter(n => n.name.endsWith('Service'));
+    const serviceStructs = nodes.filter(n => ['struct', 'service'].includes(n.type) && n.name.endsWith('Service'));
+    if (serviceTraits.length > 0 || serviceStructs.length > 0) {
+      const variations = [];
+      if (serviceTraits.length > 0) {
+        variations.push({
+          id: 'trait-based',
+          implementation: 'trait',
+          description: 'Service contracts are expressed with Rust traits',
+          instances: serviceTraits.map(n => n.id),
+          percentage: Math.round((serviceTraits.length / Math.max(1, serviceTraits.length + serviceStructs.length)) * 100),
+          characteristics: { uses_traits: true }
+        });
+      }
+      if (serviceStructs.length > 0) {
+        variations.push({
+          id: 'struct-based',
+          implementation: 'struct',
+          description: 'Services are implemented directly as structs',
+          instances: serviceStructs.map(n => n.id),
+          percentage: Math.round((serviceStructs.length / Math.max(1, serviceTraits.length + serviceStructs.length)) * 100),
+          characteristics: { uses_structs: true }
+        });
+      }
+      patterns.push({
+        id: 'service-layer-pattern',
+        type: 'architectural-pattern',
+        name: 'Service Layer',
+        description: 'Application behavior is grouped behind service contracts or service structs',
+        confidence: 0.8,
+        instances: [...serviceTraits, ...serviceStructs].map(n => n.id),
+        variations,
+        metadata: {
+          language_specific: true
+        }
+      });
+    }
+
+    const resultFunctions = nodes.filter(n =>
+      (n.type === 'function' || n.type === 'method') &&
+      n.signature?.return_type?.includes('Result')
+    );
+    const panicFunctions = nodes.filter(n =>
+      (n.type === 'function' || n.type === 'method') &&
+      Boolean((n.implementation_status?.indicators as any)?.has_not_implemented_exceptions)
+    );
+    const plainFunctions = nodes.filter(n =>
+      (n.type === 'function' || n.type === 'method') &&
+      !n.signature?.return_type?.includes('Result') &&
+      !(n.implementation_status?.indicators as any)?.has_not_implemented_exceptions
+    );
+    if (resultFunctions.length > 0 || panicFunctions.length > 0 || plainFunctions.length > 0) {
+      patterns.push({
+        id: 'error-handling-pattern',
+        type: 'design-pattern',
+        name: 'Error Handling Styles',
+        description: 'Rust error handling approaches observed in functions and methods',
+        confidence: 0.75,
+        instances: [...resultFunctions, ...panicFunctions, ...plainFunctions].map(n => n.id),
+        variations: [
+          {
+            id: 'result-based',
+            implementation: 'Result',
+            description: 'Functions return Result for recoverable errors',
+            instances: resultFunctions.map(n => n.id),
+            percentage: Math.round((resultFunctions.length / Math.max(1, resultFunctions.length + panicFunctions.length + plainFunctions.length)) * 100),
+            characteristics: { uses_result: true }
+          },
+          {
+            id: 'panic-based',
+            implementation: 'panic',
+            description: 'Functions use panic-style failure',
+            instances: panicFunctions.map(n => n.id),
+            percentage: Math.round((panicFunctions.length / Math.max(1, resultFunctions.length + panicFunctions.length + plainFunctions.length)) * 100),
+            characteristics: { uses_panic: true }
+          },
+          {
+            id: 'implicit-success',
+            implementation: 'plain-return',
+            description: 'Functions return success values without explicit error channel',
+            instances: plainFunctions.map(n => n.id),
+            percentage: Math.round((plainFunctions.length / Math.max(1, resultFunctions.length + panicFunctions.length + plainFunctions.length)) * 100),
+            characteristics: { no_explicit_error_channel: true }
+          }
+        ],
+        metadata: {
+          language_specific: true
         }
       });
     }

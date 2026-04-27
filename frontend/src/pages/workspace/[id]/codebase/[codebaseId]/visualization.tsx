@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/router';
 import { getApiUrl } from '../../../../../config/api';
+import { apiService } from '../../../../../services/api';
+import { buildTelemetryMap, summarizeSystemHealth } from '../../../../../utils/telemetry';
 import {
   Box,
   Container,
@@ -52,7 +54,6 @@ import {
   Info,
   FilterList
 } from '@mui/icons-material';
-import axios from 'axios';
 
 interface ComponentAnalysis {
   complexity: number;
@@ -430,9 +431,7 @@ const CodebaseVisualizationPage: React.FC = () => {
       setCurrentLevel(minLevel);
 
       setArchitectureLayout(architectureData);
-
-      // Note: Telemetry endpoints are not implemented yet
-      // Skip telemetry fetching for now
+      await fetchTelemetryUpdates(codebaseId as string);
     } catch (err: any) {
       console.error('Failed to fetch architecture layout:', err);
       setError(err.response?.data?.message || 'Failed to load visualization data');
@@ -546,21 +545,19 @@ const CodebaseVisualizationPage: React.FC = () => {
     }));
   };
 
+  const fetchTelemetryUpdates = async (targetProjectId = codebaseId as string) => {
+    if (!targetProjectId) return;
 
-  const fetchSystemHealth = async (id: string) => {
     try {
-      const response = await axios.get('/api/architecture/health');
-      setSystemHealth(response.data);
+      const [recent, aggregated] = await Promise.all([
+        apiService.getRecentTelemetry(targetProjectId, 250),
+        apiService.getAggregatedTelemetry(targetProjectId, '1m'),
+      ]);
+      setTelemetryData(buildTelemetryMap(recent.events));
+      setSystemHealth(summarizeSystemHealth(aggregated));
     } catch (err) {
-      console.error('Failed to fetch system health:', err);
+      console.error('Failed to fetch telemetry:', err);
     }
-  };
-
-  const fetchTelemetryUpdates = async () => {
-    if (!architectureLayout?.components) return;
-
-    // Note: Telemetry endpoints are not implemented yet
-    // Skip telemetry fetching for now
   };
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {

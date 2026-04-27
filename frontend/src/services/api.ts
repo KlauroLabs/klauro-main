@@ -122,6 +122,39 @@ export interface ComponentConnectionRecord {
   toComponent?: ComponentRecord | string;
 }
 
+export interface TelemetryEventRecord {
+  id: string;
+  projectId: string;
+  type: string;
+  timestamp: string;
+  data: Record<string, any>;
+  componentId?: string;
+  tags?: string[];
+  attributes?: Record<string, any>;
+}
+
+export interface RecentTelemetryResponse {
+  projectId: string;
+  events: TelemetryEventRecord[];
+  count: number;
+  timestamp: number;
+}
+
+export interface AggregatedTelemetryResponse {
+  projectId: string;
+  componentId?: string;
+  window: '1m' | '5m' | '15m' | '1h' | '24h';
+  metrics: {
+    requestCount: number;
+    errorCount: number;
+    avgLatency: number;
+    avgCpu: number;
+    avgMemory: number;
+    availability: number;
+  };
+  timestamp: number;
+}
+
 class APIService {
   private baseURL = process.env.NODE_ENV === 'development'
     ? 'http://localhost:3001/api'
@@ -175,6 +208,14 @@ class APIService {
 
   async getComponentConnections(componentId: string): Promise<ComponentConnectionRecord[]> {
     return this.fetchWithAuth<ComponentConnectionRecord[]>(`/components/${componentId}/connections`);
+  }
+
+  async getRecentTelemetry(projectId: string, limit = 250): Promise<RecentTelemetryResponse> {
+    return this.fetchWithAuth<RecentTelemetryResponse>(`/telemetry/recent/${projectId}?limit=${limit}`);
+  }
+
+  async getAggregatedTelemetry(projectId: string, window: '1m' | '5m' | '15m' | '1h' | '24h' = '1m'): Promise<AggregatedTelemetryResponse> {
+    return this.fetchWithAuth<AggregatedTelemetryResponse>(`/telemetry/aggregated/${projectId}?window=${window}`);
   }
 
   async getArchitectureLayout(analysisId: string) {

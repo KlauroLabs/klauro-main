@@ -81,7 +81,8 @@ export class EventAggregator {
     // Aggregate each window
     const aggregated: TelemetryEvent[] = [];
     for (const [windowKey, windowEvents] of windows.entries()) {
-      const [componentId] = windowKey.split(':');
+      const delimiterIndex = windowKey.lastIndexOf(':');
+      const componentId = delimiterIndex === -1 ? windowKey : windowKey.slice(0, delimiterIndex);
       const aggregatedMetrics = this.calculateAggregatedMetrics(windowEvents);
       
       aggregated.push({

@@ -487,7 +487,6 @@ export class AnalyzerOrchestrator {
     const implementationHealth = this.buildImplementationHealth(allNodes);
     const securityContexts = this.buildSecurityContexts(allNodes, allEntryPoints, allEdges);
     const configuration = this.buildAllConfiguration(allNodes, allExitPoints, externalServices, projectPath);
-    const validation = this.buildValidation(allNodes, allEdges);
     logTiming('pp_finalMetadata', phaseStart);
 
     phaseStart = Date.now();
@@ -513,6 +512,7 @@ export class AnalyzerOrchestrator {
       repositoryLinks,
       contributions
     );
+    const validation = this.buildValidation(allNodes, allEdges, allEntryPoints, allExitPoints, runtimeStaticLinks, analysisFacts);
     logTiming('pp_traceability', phaseStart);
 
     const totalTime = Date.now() - startTime;
@@ -846,7 +846,6 @@ export class AnalyzerOrchestrator {
     const enhancedChangeRisks = this.enhanceChangeRisks(changeRisks, callGraphBuilder, callChains, entryPoints);
     const enhancedFlowSummary = this.buildEnhancedFlowSummary(callChains, entryPoints);
     const configuration = this.buildAllConfiguration(nodes, exitPoints, externalServices, projectPath);
-    const validation = this.buildValidation(nodes, edges);
     const runtime = this.buildRuntime(projectPath, entryPoints, exitPoints, externalServices, configuration, callChains);
     const repositoryLinks = this.buildRepositoryLinks(projectPath, nodes, entryPoints, exitPoints, externalServices, libraries, databaseSchema, configuration);
     const runtimeStaticLinks = this.buildRuntimeStaticLinks(nodes, entryPoints, exitPoints, callChains, externalServices);
@@ -862,6 +861,7 @@ export class AnalyzerOrchestrator {
       repositoryLinks,
       previousOutput.analyzer_contributions
     );
+    const validation = this.buildValidation(nodes, edges, entryPoints, exitPoints, runtimeStaticLinks, analysisFacts);
 
     const systemName = path.basename(projectPath);
     const analysisId = `analysis_incr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -5338,28 +5338,68 @@ export class AnalyzerOrchestrator {
     };
   }
 
-  private buildValidation(nodes: CASNode[], edges: CASEdge[]): CASValidation {
+  private buildValidation(
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[] = [],
+    exitPoints: CASExitPoint[] = [],
+    runtimeLinks: CASRuntimeStaticLink[] = [],
+    analysisFacts: CASAnalysisFact[] = []
+  ): CASValidation {
     const nodeIds = new Set(nodes.map(n => n.id));
     const warnings: Array<{ path?: string; message?: string }> = [];
+    let danglingEdges = 0;
+    const connectedNodeIds = new Set<string>();
 
     for (const edge of edges) {
       if (!nodeIds.has(edge.source)) {
+        danglingEdges++;
         warnings.push({
           path: `edges[${edge.id}].source`,
           message: `Edge source "${edge.source}" references nonexistent node`
         });
+      } else {
+        connectedNodeIds.add(edge.source);
       }
       if (!nodeIds.has(edge.target)) {
+        danglingEdges++;
         warnings.push({
           path: `edges[${edge.id}].target`,
           message: `Edge target "${edge.target}" references nonexistent node`
         });
+      } else {
+        connectedNodeIds.add(edge.target);
       }
     }
 
     const nodesWithLocation = nodes.filter(n => n.source?.file && n.source?.line).length;
     const edgesWithMetadata = edges.filter(e => e.metadata && Object.keys(e.metadata).length > 0).length;
     const documentedNodes = nodes.filter(n => n.documentation).length;
+    const entryPointNodeIds = new Set(entryPoints.flatMap(entryPoint => [entryPoint.source_node, entryPoint.handler?.node_id].filter(Boolean) as string[]));
+    const exitPointNodeIds = new Set(exitPoints.map(exitPoint => exitPoint.source_node).filter(Boolean));
+    const orphanedNodes = nodes.filter(node =>
+      !connectedNodeIds.has(node.id) &&
+      !entryPointNodeIds.has(node.id) &&
+      !exitPointNodeIds.has(node.id) &&
+      node.type !== 'system'
+    ).length;
+    const entryPointsWithHandlers = entryPoints.filter(entryPoint =>
+      !!entryPoint.handler?.node_id && nodeIds.has(entryPoint.handler.node_id)
+    ).length;
+    const exitPointsWithSources = exitPoints.filter(exitPoint => nodeIds.has(exitPoint.source_node)).length;
+    const runtimeLinksWithInstrumentation = runtimeLinks.filter(link => link.instrumentation_points.length > 0).length;
+    const factsWithEvidence = analysisFacts.filter(fact => fact.evidence.length > 0).length;
+    const coverageParts = [
+      nodes.length > 0 ? nodesWithLocation / nodes.length : 1,
+      edges.length > 0 ? (edges.length - danglingEdges) / edges.length : 1,
+      entryPoints.length > 0 ? entryPointsWithHandlers / entryPoints.length : 1,
+      exitPoints.length > 0 ? exitPointsWithSources / exitPoints.length : 1,
+      runtimeLinks.length > 0 ? runtimeLinksWithInstrumentation / runtimeLinks.length : 1,
+      analysisFacts.length > 0 ? factsWithEvidence / analysisFacts.length : 1
+    ];
+    const relationshipCoverageScore = Math.round(
+      (coverageParts.reduce((sum, value) => sum + value, 0) / coverageParts.length) * 100
+    );
 
     return {
       schema_version: '1.8.0',
@@ -5368,6 +5408,17 @@ export class AnalyzerOrchestrator {
         nodes_with_location: nodesWithLocation,
         edges_with_metadata: edgesWithMetadata,
         documented_nodes: documentedNodes
+      },
+      graph_integrity: {
+        total_edges: edges.length,
+        dangling_edges: danglingEdges,
+        connected_nodes: connectedNodeIds.size,
+        orphaned_nodes: orphanedNodes,
+        entry_points_with_handlers: entryPointsWithHandlers,
+        exit_points_with_sources: exitPointsWithSources,
+        runtime_links_with_instrumentation: runtimeLinksWithInstrumentation,
+        facts_with_evidence: factsWithEvidence,
+        relationship_coverage_score: relationshipCoverageScore
       }
     };
   }
