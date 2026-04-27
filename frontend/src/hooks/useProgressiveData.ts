@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { apiService, ComponentConnectionRecord, ComponentRecord } from '../services/api';
 
 interface ComponentDetail {
   id: string;
@@ -41,8 +42,100 @@ interface UseProgressiveDataReturn {
   cacheStats: { entries: number; sizeBytes: number; utilization: number };
 }
 
+function getComponentId(value?: ComponentRecord | string): string | undefined {
+  return typeof value === 'string' ? value : value?.id;
+}
+
+function getConnectionFrom(connection: ComponentConnectionRecord): string | undefined {
+  return connection.from || connection.source || getComponentId(connection.fromComponent);
+}
+
+function getConnectionTo(connection: ComponentConnectionRecord): string | undefined {
+  return connection.to || connection.target || getComponentId(connection.toComponent);
+}
+
+function getNeighborIds(componentId: string, connections: ComponentConnectionRecord[]): string[] {
+  const ids = new Set<string>();
+
+  for (const connection of connections) {
+    const from = getConnectionFrom(connection);
+    const to = getConnectionTo(connection);
+
+    if (from === componentId && to) {
+      ids.add(to);
+    } else if (to === componentId && from) {
+      ids.add(from);
+    }
+  }
+
+  return Array.from(ids);
+}
+
+function connectionCount(componentId: string, connections: ComponentConnectionRecord[]): number {
+  return connections.filter(connection =>
+    getConnectionFrom(connection) === componentId || getConnectionTo(connection) === componentId
+  ).length;
+}
+
+function toSummary(
+  component: ComponentRecord,
+  connections: ComponentConnectionRecord[],
+  children?: ComponentSummary[]
+): ComponentSummary {
+  const childCount = children?.length || 0;
+
+  return {
+    id: component.id,
+    name: component.name,
+    type: component.type,
+    complexity: component.complexity || 0,
+    connections: component.connectionCount ?? connectionCount(component.id, connections),
+    hasChildren: childCount > 0,
+    childCount,
+    children,
+  };
+}
+
+function toDetail(
+  component: ComponentRecord,
+  connections: ComponentConnectionRecord[],
+  children: ComponentSummary[]
+): ComponentDetail {
+  return {
+    ...toSummary(component, connections, children),
+    path: component.path || '',
+  };
+}
+
+function buildChildren(
+  componentId: string,
+  componentsById: Map<string, ComponentRecord>,
+  connections: ComponentConnectionRecord[],
+  remainingDepth: number,
+  visited: Set<string>
+): ComponentSummary[] {
+  if (remainingDepth <= 0) {
+    return [];
+  }
+
+  return getNeighborIds(componentId, connections)
+    .filter(id => !visited.has(id))
+    .map(id => {
+      const component = componentsById.get(id);
+      if (!component) {
+        return null;
+      }
+
+      const childVisited = new Set(visited);
+      childVisited.add(id);
+      const nestedChildren = buildChildren(id, componentsById, connections, remainingDepth - 1, childVisited);
+      return toSummary(component, connections, nestedChildren);
+    })
+    .filter((summary): summary is ComponentSummary => Boolean(summary));
+}
+
 export const useProgressiveData = ({
-  projectId,
+  projectId: _projectId,
   componentId,
   autoLoad = true,
   depth = 2
@@ -58,21 +151,24 @@ export const useProgressiveData = ({
     setError(null);
 
     try {
-      // Mock data - replace with actual API call
-      const componentData: ComponentDetail = {
-        id,
-        name: `Component ${id}`,
-        type: 'component',
-        path: `/src/components/${id}.tsx`,
-        complexity: Math.floor(Math.random() * 100),
-        connections: Math.floor(Math.random() * 20),
-        hasChildren: true,
-        childCount: Math.floor(Math.random() * 10),
-        children: []
-      };
-      setData(componentData);
-      setChildren(componentData.children || []);
-      setCacheStats({ entries: 1, sizeBytes: 1024, utilization: 0.5 });
+      const [components, connections] = await Promise.all([
+        apiService.getComponents(),
+        apiService.getComponentConnections(id),
+      ]);
+      const componentsById = new Map(components.map(component => [component.id, component]));
+      const component = componentsById.get(id);
+
+      if (!component) {
+        throw new Error(`Component not found: ${id}`);
+      }
+
+      const loadedChildren = buildChildren(id, componentsById, connections, loadDepth, new Set([id]));
+      setData(toDetail(component, connections, loadedChildren));
+      setChildren(loadedChildren);
+
+      const sizeBytes = JSON.stringify({ components, connections }).length;
+      const entries = components.length + connections.length;
+      setCacheStats({ entries, sizeBytes, utilization: entries > 0 ? 1 : 0 });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load component data');
     } finally {
@@ -86,33 +182,53 @@ export const useProgressiveData = ({
 
   const expandComponent = useCallback(async (id: string) => {
     setIsLoading(true);
+    setError(null);
+
     try {
-      // Mock expanded data
-      const expandedData: ComponentDetail = {
-        id,
-        name: `Expanded ${id}`,
-        type: 'expanded',
-        path: `/src/expanded/${id}.tsx`,
-        complexity: Math.floor(Math.random() * 100),
-        connections: Math.floor(Math.random() * 20),
-        hasChildren: false,
-        childCount: 0,
-        children: []
-      };
+      const [components, connections] = await Promise.all([
+        apiService.getComponents(),
+        apiService.getComponentConnections(id),
+      ]);
+      const componentsById = new Map(components.map(component => [component.id, component]));
+      const component = componentsById.get(id);
+
+      if (!component) {
+        throw new Error(`Component not found: ${id}`);
+      }
+
+      const expandedChildren = buildChildren(id, componentsById, connections, 1, new Set([id]));
+      const expanded = toSummary(component, connections, expandedChildren);
+
       setChildren(prev => prev.map(child =>
-        child.id === id ? { ...child, ...expandedData } : child
+        child.id === id ? expanded : child
       ));
-      setCacheStats({ entries: 2, sizeBytes: 2048, utilization: 0.6 });
+
+      if (data?.id === id) {
+        setData(toDetail(component, connections, expandedChildren));
+      }
+
+      const sizeBytes = JSON.stringify({ components, connections }).length;
+      const entries = components.length + connections.length;
+      setCacheStats({ entries, sizeBytes, utilization: entries > 0 ? 1 : 0 });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to expand component');
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [data?.id]);
 
   const preload = useCallback((id: string) => {
-    // Mock preload - in real implementation this would cache data
-    setCacheStats(prev => ({ ...prev, entries: prev.entries + 1 }));
+    apiService.getComponentConnections(id)
+      .then(connections => {
+        setCacheStats(prev => ({
+          entries: prev.entries + connections.length,
+          sizeBytes: prev.sizeBytes + JSON.stringify(connections).length,
+          utilization: connections.length > 0 ? 1 : prev.utilization,
+        }));
+      })
+      .catch(err => {
+        setError(err instanceof Error ? err.message : 'Failed to preload component');
+      });
   }, []);
 
   useEffect(() => {

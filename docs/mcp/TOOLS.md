@@ -10,13 +10,14 @@ Many tools support **pagination** via `limit` and `offset` parameters. When a to
 
 ### `analyze_codebase`
 
-Run full CAS analysis on a local directory. Detects languages, frameworks, and libraries automatically. Stores results as JSON for subsequent querying.
+Run CAS analysis on a local directory. Uses incremental analysis by default when a previous state exists, or a full rebuild when required. Detects languages, frameworks, and libraries automatically. Stores results as JSON for subsequent querying.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Absolute path to the project directory |
+| `force_full` | boolean | no | Force full rebuild even if incremental analysis is possible |
 
-**Returns:** Condensed summary (same format as `get_summary`).
+**Returns:** `{ status, analysis_type, path, name, nodes, edges, entry_points, analyzers_run, errors }`. Incremental runs also include `change_summary` with files changed, node changes, and risk level.
 
 ### `list_analyses`
 
@@ -62,7 +63,7 @@ Full system metadata without condensation.
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
 
-**Returns:** `system`, `architecture_summary`, `system_purpose`, `enhanced_system_purpose`, `system_capabilities`, `progressive_levels`, `analyzer_contributions`, `analysis_errors`, `configuration`, `runtime`, `repository_links`, `disclosure`, `validation`.
+**Returns:** `system`, `architecture_summary`, `system_purpose`, `enhanced_system_purpose`, `system_capabilities`, `progressive_levels`, `analyzer_contributions`, `analysis_errors`, `configuration`, `runtime`, `repository_links`, `runtime_static_links_count`, `analysis_facts_count`, `disclosure`, `validation`.
 
 ### `get_patterns`
 
@@ -553,6 +554,35 @@ Capability-level architecture view.
 
 **Returns:** `flow_graph` with capabilities (scored), dependencies, topology (root/leaf/critical path nodes), primary flow (value chain), layers (entry/business/data/infrastructure), system insights (detected patterns, entry type, data flow type).
 
+### `get_runtime_static_links`
+
+Runtime-to-static correlation for entry points, exit points, call chains, and external services.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `telemetry_status` | string | no | Filter: observed, instrumentable, not-instrumented |
+| `kind` | string | no | Filter: entry-point, exit-point, call-chain, external-service, telemetry-hook |
+| `limit` | number | no | Max results (default 50) |
+| `offset` | number | no | Skip first N results (default 0) |
+
+**Returns:** `runtime`, status counts, and links with `runtime_signal`, `telemetry_status`, `instrumentation_points`, confidence, and evidence.
+
+### `get_analysis_facts`
+
+Evidence-backed facts behind CAS objects.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `subject_type` | string | no | Filter by subject type, such as node, edge, entry_point, workflow, capability, runtime_link, repository_link |
+| `subject_id` | string | no | Filter by concrete CAS object ID |
+| `fact_type` | string | no | Filter by fact type, such as definition, relationship, workflow, runtime-correlation, cross-repository |
+| `limit` | number | no | Max results (default 50) |
+| `offset` | number | no | Skip first N results (default 0) |
+
+**Returns:** `{ total, offset, limit, facts }` with claim, producer, confidence, and source evidence.
+
 ### `get_domain_concepts`
 
 Core domain terminology extracted from the codebase. Sorted by frequency. Paginated (default 25).
@@ -714,6 +744,129 @@ Library usage analysis with optimization insights. Paginated (default 25).
 
 ---
 
+## Change History and Incremental Analysis
+
+Tools for querying how a codebase changed across incremental analyses. These tools read the change history and snapshots stored alongside each analyzed project.
+
+### `get_changes_since`
+
+Query changes after a specific timestamp.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `since` | string | yes | ISO timestamp to query changes from |
+| `limit` | number | no | Max results (default 50) |
+
+**Returns:** Array of change history entries with file changes, node changes, edge changes, impact analysis, and semantic summaries.
+
+### `get_changes_between`
+
+Query changes between two timestamps.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `from` | string | yes | Start ISO timestamp |
+| `to` | string | yes | End ISO timestamp |
+| `limit` | number | no | Max results (default 50) |
+
+**Returns:** Array of change history entries in the requested time range.
+
+### `get_changes_for_node`
+
+Query changes affecting a specific node. Optionally includes caller/callee ripple effects.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `node_id` | string | yes | Node ID to find changes for |
+| `since` | string | no | ISO timestamp to query changes from |
+| `include_callers` | boolean | no | Include changes to callers |
+| `include_callees` | boolean | no | Include changes to callees |
+| `depth` | number | no | Caller/callee traversal depth (default 1) |
+| `limit` | number | no | Max results (default 25) |
+
+**Returns:** Array of relevant change history entries.
+
+### `get_changes_for_file`
+
+Query changes affecting a file. Optionally includes import neighbors.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `file_path` | string | yes | Relative file path |
+| `since` | string | no | ISO timestamp to query changes from |
+| `include_importers` | boolean | no | Include changes to files that import this file |
+| `include_imported` | boolean | no | Include changes to files imported by this file |
+| `limit` | number | no | Max results (default 25) |
+
+**Returns:** Array of relevant change history entries.
+
+### `get_changes_for_entry_point`
+
+Query changes affecting an entry point such as an HTTP route, CLI command, scheduled job, or event handler.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `entry_point_id` | string | yes | Entry point ID |
+| `since` | string | no | ISO timestamp to query changes from |
+| `include_full_chain` | boolean | no | Include changes to all nodes in the call chain |
+| `limit` | number | no | Max results (default 25) |
+
+**Returns:** Array of relevant change history entries.
+
+### `get_change_summary`
+
+Aggregate change statistics by file, module, author, intent, day, or week.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `group_by` | string | yes | One of `file`, `module`, `author`, `intent`, `day`, `week` |
+| `since` | string | no | ISO timestamp to query changes from |
+| `until` | string | no | ISO timestamp to query changes until |
+
+**Returns:** Array of aggregates with counts, files changed, node changes, lines changed, risk summary, and velocity.
+
+### `get_hot_spots`
+
+Find frequently changed or bug-prone areas of the codebase.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `metric` | string | yes | One of `change-count`, `churn-lines`, `bug-fix-rate` |
+| `since` | string | no | ISO timestamp to query changes from |
+| `limit` | number | no | Max results (default 20) |
+
+**Returns:** Heat map data with normalized intensity values, scale information, and top hot spots.
+
+### `get_analysis_at`
+
+Retrieve the analysis state at a specific timestamp.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `timestamp` | string | yes | ISO timestamp to retrieve analysis for |
+
+**Returns:** Condensed summary for the nearest analysis snapshot at or before the timestamp, or `{ error }` when no snapshot exists.
+
+### `get_analysis_snapshots`
+
+List available analysis snapshots for time travel.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+
+**Returns:** Array of `{ id, timestamp }`.
+
+---
+
 ## Component Hierarchy (React/Frontend)
 
 Tools for understanding React component composition - which components render which, usage metrics, and shared component identification.
@@ -776,3 +929,75 @@ Find components that are used in multiple places. Useful for identifying high-im
 | `limit` | number | no | Max results (default 50) |
 
 **Returns:** Array of `{ node_id, name, file, usage_count, usage_locations }` sorted by usage_count descending.
+
+---
+
+## Watch Mode (Real-time Analysis)
+
+Tools for monitoring file changes and running incremental analysis automatically. Watch mode uses Node's `fs.watch` with recursive watching, debounces changes (500ms), and filters to only source files.
+
+### `start_watch`
+
+Begin watching a project for file changes. Automatically runs incremental analysis when files change.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Absolute path to the project directory |
+
+**Returns:** `{ watch_id, status }` where status is `started`, `already_watching`, or `error`.
+
+### `stop_watch`
+
+Stop watching a project for file changes.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `watch_id` | string | yes | Watch session ID from `start_watch` |
+
+**Returns:** `{ success, message }`.
+
+### `get_watch_status`
+
+Get the current status of a watch session including pending changes, recent analyses, and statistics.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `watch_id` | string | yes | Watch session ID from `start_watch` |
+
+**Returns:**
+- `watch_id`, `project_path`, `status` (`active`, `paused`, `stopped`, `error`)
+- `started_at`, `last_analysis`
+- `pending_changes` - Count of files waiting to be analyzed
+- `pending_files` - List of pending file paths (max 20)
+- `analysis_in_progress` - Boolean
+- `error` - Error message if status is `error`
+- `stats`:
+  - `total_changes_detected`
+  - `total_analyses_run`
+  - `average_analysis_time_ms`
+- `recent_changes` - Array of recent analysis results with `timestamp`, `files_changed`, `nodes_added`, `nodes_modified`, `nodes_deleted`, `risk_level`
+
+### `list_watches`
+
+List all active and recent watch sessions.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| (none) | | | |
+
+**Returns:** Array of watch status objects (same format as `get_watch_status`).
+
+### `poll_watch_changes`
+
+Poll for recent changes from a watch session. Use this to check if new analyses have completed since the last poll.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `watch_id` | string | yes | Watch session ID from `start_watch` |
+| `since` | string | no | ISO timestamp to filter changes newer than this |
+
+**Returns:**
+- `has_changes` - Boolean, true if there are changes or pending files
+- `changes` - Array of analysis results since the timestamp
+- `pending_files` - Files waiting to be analyzed (max 20)
+- `analysis_in_progress` - Boolean

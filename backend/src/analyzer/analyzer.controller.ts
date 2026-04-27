@@ -11,8 +11,10 @@ import {
   HttpStatus,
   BadRequestException,
   NotFoundException,
+  InternalServerErrorException,
   Logger,
   ValidationPipe,
+  Request,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiBody } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -76,7 +78,7 @@ interface AnalysisResponse {
 
 @ApiTags('Analyzer')
 @Controller('analyze')
-// @UseGuards(JwtAuthGuard) // Temporarily disabled for development
+@UseGuards(JwtAuthGuard)
 @ApiBearerAuth()
 @UseInterceptors(RateLimitInterceptor)
 export class AnalyzerController {
@@ -95,8 +97,8 @@ export class AnalyzerController {
   @ApiBody({ type: Object, description: 'Analysis request' })
   @ApiResponse({ status: 200, description: 'Analysis completed' })
   @ApiResponse({ status: 400, description: 'Invalid request' })
-  async analyzePython(@Body(new ValidationPipe()) request: AnalysisRequest) {
-    return this.analyzeProject({ ...request, language: 'python' });
+  async analyzePython(@Body(new ValidationPipe()) request: AnalysisRequest, @Request() req: any) {
+    return this.analyzeProject({ ...request, language: 'python' }, this.getAuthContext(req));
   }
 
   @Post('java')
@@ -105,8 +107,8 @@ export class AnalyzerController {
   @ApiBody({ type: Object, description: 'Analysis request' })
   @ApiResponse({ status: 200, description: 'Analysis completed' })
   @ApiResponse({ status: 400, description: 'Invalid request' })
-  async analyzeJava(@Body(new ValidationPipe()) request: AnalysisRequest) {
-    return this.analyzeProject({ ...request, language: 'java' });
+  async analyzeJava(@Body(new ValidationPipe()) request: AnalysisRequest, @Request() req: any) {
+    return this.analyzeProject({ ...request, language: 'java' }, this.getAuthContext(req));
   }
 
   @Post('csharp')
@@ -115,8 +117,8 @@ export class AnalyzerController {
   @ApiBody({ type: Object, description: 'Analysis request' })
   @ApiResponse({ status: 200, description: 'Analysis completed' })
   @ApiResponse({ status: 400, description: 'Invalid request' })
-  async analyzeCSharp(@Body(new ValidationPipe()) request: AnalysisRequest) {
-    return this.analyzeProject({ ...request, language: 'csharp' });
+  async analyzeCSharp(@Body(new ValidationPipe()) request: AnalysisRequest, @Request() req: any) {
+    return this.analyzeProject({ ...request, language: 'csharp' }, this.getAuthContext(req));
   }
 
   @Post('go')
@@ -125,8 +127,8 @@ export class AnalyzerController {
   @ApiBody({ type: Object, description: 'Analysis request' })
   @ApiResponse({ status: 200, description: 'Analysis completed' })
   @ApiResponse({ status: 400, description: 'Invalid request' })
-  async analyzeGo(@Body(new ValidationPipe()) request: AnalysisRequest) {
-    return this.analyzeProject({ ...request, language: 'go' });
+  async analyzeGo(@Body(new ValidationPipe()) request: AnalysisRequest, @Request() req: any) {
+    return this.analyzeProject({ ...request, language: 'go' }, this.getAuthContext(req));
   }
 
   @Post()
@@ -135,8 +137,8 @@ export class AnalyzerController {
   @ApiBody({ type: Object, description: 'Analysis request' })
   @ApiResponse({ status: 200, description: 'Analysis completed' })
   @ApiResponse({ status: 400, description: 'Invalid request' })
-  async analyzeAuto(@Body(new ValidationPipe()) request: AnalysisRequest) {
-    return this.analyzeProject({ ...request, language: 'auto' });
+  async analyzeAuto(@Body(new ValidationPipe()) request: AnalysisRequest, @Request() req: any) {
+    return this.analyzeProject({ ...request, language: 'auto' }, this.getAuthContext(req));
   }
 
   @Post('cas')
@@ -158,8 +160,6 @@ export class AnalyzerController {
     @Query('type') type?: string,
     @Query('nameFilter') nameFilter?: string
   ) {
-    // In a production system, you would retrieve the CAS output from storage
-    // For now, return an error indicating the analysis ID is not found
     throw new NotFoundException(`Analysis ${analysisId} not found. Use the /analyze/cas endpoint first.`);
   }
 
@@ -173,17 +173,20 @@ export class AnalyzerController {
 
     try {
       const analyzers = await this.casAnalyzerService.getDetectedAnalyzers(projectPath);
+      const analyzerDtos = analyzers.map((a: any) => ({
+        id: a.id,
+        name: a.name,
+        type: a.type,
+        version: a.version,
+        detectPatterns: a.detectPatterns,
+        requires: a.requires,
+        enhances: a.enhances
+      }));
+
       return {
         projectPath,
-        detectedAnalyzers: analyzers.map((a: any) => ({
-          id: a.id,
-          name: a.name,
-          type: a.type,
-          version: a.version,
-          detectPatterns: a.detectPatterns,
-          requires: a.requires,
-          enhances: a.enhances
-        }))
+        analyzers: analyzerDtos,
+        detectedAnalyzers: analyzerDtos
       };
     } catch (error) {
       this.logger.error(`Failed to detect analyzers: ${(error as Error).message}`, (error as Error).stack);
@@ -196,22 +199,7 @@ export class AnalyzerController {
   @ApiResponse({ status: 200, description: 'Detected patterns' })
   @ApiResponse({ status: 404, description: 'Project not found' })
   async getPatterns(@Param('projectId') projectId: string) {
-    try {
-      // In a real implementation, this would fetch from database
-      // For now, we'll return a placeholder
-      return {
-        projectId,
-        patterns: [],
-        antiPatterns: [],
-        architectureType: 'unknown',
-        confidenceScore: 0,
-        recommendations: [],
-        timestamp: new Date(),
-      };
-    } catch (error) {
-      this.logger.error(`Failed to get patterns: ${(error as Error).message}`, (error as Error).stack);
-      throw error;
-    }
+    throw new NotFoundException(`Pattern results are not stored for project ${projectId}. Run CAS analysis and read patterns from the CAS output.`);
   }
 
   @Get('performance/:projectId')
@@ -219,22 +207,7 @@ export class AnalyzerController {
   @ApiResponse({ status: 200, description: 'Performance metrics' })
   @ApiResponse({ status: 404, description: 'Project not found' })
   async getPerformanceMetrics(@Param('projectId') projectId: string) {
-    try {
-      // In a real implementation, this would fetch from database
-      return {
-        projectId,
-        metrics: {
-          complexity: 0,
-          maintainability: 0,
-          testCoverage: 0,
-          technicalDebt: 0,
-        },
-        timestamp: new Date(),
-      };
-    } catch (error) {
-      this.logger.error(`Failed to get performance metrics: ${(error as Error).message}`, (error as Error).stack);
-      throw error;
-    }
+    throw new NotFoundException(`Performance metrics are not stored for project ${projectId}. Run CAS analysis and read runtime or quality metrics from the CAS output.`);
   }
 
   @Post('python/ast')
@@ -311,7 +284,21 @@ export class AnalyzerController {
     }
   }
 
-  private async analyzeProject(request: AnalysisRequest): Promise<AnalysisResponse> {
+  private getAuthContext(req: any): { organizationId: string; userId: string } {
+    const organizationId = req.user?.organizationId;
+    const userId = req.user?.id || req.user?.userId;
+
+    if (!organizationId || !userId) {
+      throw new BadRequestException('Authenticated analysis requires organizationId and userId in the JWT payload');
+    }
+
+    return { organizationId, userId };
+  }
+
+  private async analyzeProject(
+    request: AnalysisRequest,
+    authContext: { organizationId: string; userId: string }
+  ): Promise<AnalysisResponse> {
     const startTime = Date.now();
 
     try {
@@ -357,8 +344,7 @@ export class AnalyzerController {
       const detectedFrameworks = this.extractFrameworksFromCAS(casResult);
       const primaryLanguage = detectedLanguages[0] || 'unknown';
 
-      // Generate project ID for use in both database persistence and response
-      let projectId = this.generateProjectId(projectPath);
+      const projectId = this.generateProjectId(projectPath);
 
       // Persist analysis results to database if persistResults is enabled
       try {
@@ -366,37 +352,30 @@ export class AnalyzerController {
         // Try to find existing project or create a new one
         let project;
         try {
-          // For now, use temp organization ID - this should come from auth context in production
-          const tempOrgId = '77777777-7777-7777-7777-777777777777';
-          project = await this.projectsService.findOne(tempOrgId, projectId);
+          project = await this.projectsService.findOne(authContext.organizationId, projectId);
           this.logger.log(`Found existing project: ${project.name}`);
         } catch (error) {
-          // Project doesn't exist, create a new one
           const projectName = path.basename(projectPath);
           const createProjectDto: CreateProjectDto = {
             name: projectName,
             description: `Auto-created from analysis of ${projectPath}`,
             language: primaryLanguage,
             defaultBranch: 'main',
-            repositoryProvider: RepositoryProvider.CUSTOM, // For local file system analysis
-            repositoryUrl: `file://${projectPath}`, // Store the path as a URL for consistency
+            repositoryProvider: RepositoryProvider.CUSTOM,
+            repositoryUrl: `file://${projectPath}`,
           };
 
           try {
-            // Create project with temp user/org IDs - this should come from auth context in production
-            // IMPORTANT: Pass the deterministic projectId to ensure consistency across analyses
             project = await this.projectsService.createWithId(
-              '77777777-7777-7777-7777-777777777777',
-              '88888888-8888-8888-8888-888888888888',
+              authContext.organizationId,
+              authContext.userId,
               projectId,
               createProjectDto
             );
             this.logger.log(`Created new project: ${project.name} (${project.id})`);
           } catch (createError) {
-            // If creation fails because name already exists, try to find by ID again
-            // This handles race conditions or name conflicts
             this.logger.warn(`Failed to create project, trying to find again: ${(createError as Error).message}`);
-            project = await this.projectsService.findOne('77777777-7777-7777-7777-777777777777', projectId);
+            project = await this.projectsService.findOne(authContext.organizationId, projectId);
           }
         }
 
@@ -476,14 +455,14 @@ export class AnalyzerController {
         await this.em.flush();
 
         // Mark project as analyzed
-        await this.projectsService.markAsAnalyzed('77777777-7777-7777-7777-777777777777', projectId);
+        await this.projectsService.markAsAnalyzed(authContext.organizationId, projectId);
 
-        this.logger.log(`✅ Analysis results persisted to database for project ${projectId}`);
+        this.logger.log(`Analysis results persisted to database for project ${projectId}`);
         this.logger.log(`   - Created ${componentMap.size} components`);
         this.logger.log(`   - Created ${result.connections?.length || 0} connections`);
       } catch (persistError) {
-        this.logger.warn(`⚠️ Failed to persist analysis results to database: ${(persistError as Error).message}`);
-        // Continue with response even if persistence fails
+        this.logger.error(`Failed to persist analysis results to database: ${(persistError as Error).message}`, (persistError as Error).stack);
+        throw new InternalServerErrorException('Analysis completed but persistence failed');
       }
 
       // Return analysis response in new CAS format with legacy compatibility

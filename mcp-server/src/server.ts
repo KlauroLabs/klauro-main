@@ -55,7 +55,7 @@ function registerTools(server: McpServer) {
         force_full: z.boolean().optional().describe('Force full rebuild even if incremental is possible'),
       } as any,
     } as any,
-    async ({ path, force_full }: any) => {
+    async ({ path, force_full }: any) => withErrorHandling(async () => {
       if (force_full) {
         const result = await analyzeProject(path);
         return json({
@@ -92,7 +92,7 @@ function registerTools(server: McpServer) {
           risk_level: result.changeReport.impact.riskLevel,
         },
       });
-    }
+    })
   );
 
   server.registerTool(
@@ -789,6 +789,45 @@ function registerTools(server: McpServer) {
   );
 
   server.registerTool(
+    'get_runtime_static_links',
+    {
+      title: 'Get Runtime Static Links',
+      description: 'Runtime-to-static correlation: entry points, exit points, call chains, and external services mapped to runtime signals with telemetry coverage status and instrumentation points.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        telemetry_status: z.enum(['observed', 'instrumentable', 'not-instrumented']).optional().describe('Filter by telemetry status'),
+        kind: z.enum(['entry-point', 'exit-point', 'call-chain', 'external-service', 'telemetry-hook']).optional().describe('Filter by link kind'),
+        limit: z.number().optional().describe('Max results (default 50)'),
+        offset: z.number().optional().describe('Skip first N results (default 0)'),
+      } as any,
+    } as any,
+    async ({ path, telemetry_status, kind, limit, offset }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(query.getRuntimeStaticLinks(cas, { telemetryStatus: telemetry_status, kind, limit, offset }));
+    })
+  );
+
+  server.registerTool(
+    'get_analysis_facts',
+    {
+      title: 'Get Analysis Facts',
+      description: 'Evidence-backed CAS facts. Filter by subject type, subject ID, or fact type to see the claim, producer, confidence, and source evidence behind CAS data.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        subject_type: z.string().optional().describe('Filter by subject type, such as node, edge, entry_point, workflow, capability, runtime_link, repository_link'),
+        subject_id: z.string().optional().describe('Filter by concrete CAS object ID'),
+        fact_type: z.string().optional().describe('Filter by fact type, such as definition, relationship, workflow, runtime-correlation, cross-repository'),
+        limit: z.number().optional().describe('Max results (default 50)'),
+        offset: z.number().optional().describe('Skip first N results (default 0)'),
+      } as any,
+    } as any,
+    async ({ path, subject_type, subject_id, fact_type, limit, offset }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(query.getAnalysisFacts(cas, { subjectType: subject_type, subjectId: subject_id, factType: fact_type, limit, offset }));
+    })
+  );
+
+  server.registerTool(
     'get_domain_concepts',
     {
       title: 'Get Domain Concepts',
@@ -1135,7 +1174,7 @@ function registerTools(server: McpServer) {
     async ({ path, timestamp }: any) => withErrorHandling(async () => {
       const result = await query.getAnalysisAt(path, timestamp);
       if (!result) return json({ error: `No analysis snapshot found at or before: ${timestamp}` });
-      return json(query.buildSummary(result));
+      return json(result);
     })
   );
 

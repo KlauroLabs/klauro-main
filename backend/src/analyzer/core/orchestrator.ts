@@ -43,6 +43,10 @@ import {
   CASAnalysisError,
   CASValidation,
   CASConfiguration,
+  CASRuntime,
+  CASRuntimeStaticLink,
+  CASAnalysisFact,
+  CASCrossRepositoryLink,
   CASMethodCall,
   CASDecorator,
   CASDocumentationSummary,
@@ -493,11 +497,29 @@ export class AnalyzerOrchestrator {
     const testSummary = this.buildTestSummary(allNodes, allEntryPoints);
     logTiming('pp_testData', phaseStart);
 
+    phaseStart = Date.now();
+    const runtime = this.buildRuntime(projectPath, allEntryPoints, allExitPoints, externalServices, configuration, callChains);
+    const repositoryLinks = this.buildRepositoryLinks(projectPath, allNodes, allEntryPoints, allExitPoints, externalServices, allLibraries, databaseSchema, configuration);
+    const runtimeStaticLinks = this.buildRuntimeStaticLinks(allNodes, allEntryPoints, allExitPoints, callChains, externalServices);
+    const analysisFacts = this.buildAnalysisFacts(
+      allNodes,
+      allEdges,
+      allEntryPoints,
+      allExitPoints,
+      externalServices,
+      workflows,
+      systemCapabilities,
+      runtimeStaticLinks,
+      repositoryLinks,
+      contributions
+    );
+    logTiming('pp_traceability', phaseStart);
+
     const totalTime = Date.now() - startTime;
     console.log(`[Unravl] Analysis completed in ${totalTime}ms. Breakdown:`, JSON.stringify(timings, null, 2));
 
     return {
-      cas_version: '1.7.0',
+      cas_version: '1.8.0',
       analysis_timestamp: new Date().toISOString(),
       analysis_id: analysisId,
       system: {
@@ -522,6 +544,8 @@ export class AnalyzerOrchestrator {
       perspectives: allPerspectives.length > 0 ? allPerspectives : undefined,
       index,
       external_services: externalServices.length > 0 ? externalServices : undefined,
+      repository_links: repositoryLinks.length > 0 ? repositoryLinks : undefined,
+      cross_repository_links: repositoryLinks.length > 0 ? repositoryLinks : undefined,
       libraries: allLibraries.length > 0 ? allLibraries : undefined,
       analyzer_contributions: contributions,
       progressive_levels: progressiveLevels,
@@ -552,6 +576,9 @@ export class AnalyzerOrchestrator {
       implementation_health: implementationHealth,
       security_contexts: securityContexts.length > 0 ? securityContexts : undefined,
       configuration,
+      runtime,
+      runtime_static_links: runtimeStaticLinks.length > 0 ? runtimeStaticLinks : undefined,
+      analysis_facts: analysisFacts.length > 0 ? analysisFacts : undefined,
       analysis_errors: analysisErrors,
       validation,
       test_suites: testSuites,
@@ -818,6 +845,23 @@ export class AnalyzerOrchestrator {
 
     const enhancedChangeRisks = this.enhanceChangeRisks(changeRisks, callGraphBuilder, callChains, entryPoints);
     const enhancedFlowSummary = this.buildEnhancedFlowSummary(callChains, entryPoints);
+    const configuration = this.buildAllConfiguration(nodes, exitPoints, externalServices, projectPath);
+    const validation = this.buildValidation(nodes, edges);
+    const runtime = this.buildRuntime(projectPath, entryPoints, exitPoints, externalServices, configuration, callChains);
+    const repositoryLinks = this.buildRepositoryLinks(projectPath, nodes, entryPoints, exitPoints, externalServices, libraries, databaseSchema, configuration);
+    const runtimeStaticLinks = this.buildRuntimeStaticLinks(nodes, entryPoints, exitPoints, callChains, externalServices);
+    const analysisFacts = this.buildAnalysisFacts(
+      nodes,
+      edges,
+      entryPoints,
+      exitPoints,
+      externalServices,
+      workflows,
+      systemCapabilities,
+      runtimeStaticLinks,
+      repositoryLinks,
+      previousOutput.analyzer_contributions
+    );
 
     const systemName = path.basename(projectPath);
     const analysisId = `analysis_incr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -836,6 +880,8 @@ export class AnalyzerOrchestrator {
       route_table: routeTable.length > 0 ? routeTable : undefined,
       database_schema: databaseSchema.entities.length > 0 ? databaseSchema : undefined,
       external_services: externalServices.length > 0 ? externalServices : undefined,
+      repository_links: repositoryLinks.length > 0 ? repositoryLinks : undefined,
+      cross_repository_links: repositoryLinks.length > 0 ? repositoryLinks : undefined,
       patterns: detectedPatterns.length > 0 ? detectedPatterns : undefined,
       intents: intents.length > 0 ? intents : undefined,
       flow_summary: enhancedFlowSummary,
@@ -855,7 +901,12 @@ export class AnalyzerOrchestrator {
       workflows: workflows.length > 0 ? workflows : undefined,
       workflow_graph: workflowGraph,
       domain_concepts: domainConcepts.length > 0 ? domainConcepts : undefined,
-      flow_graph: flowGraph
+      flow_graph: flowGraph,
+      configuration,
+      runtime,
+      runtime_static_links: runtimeStaticLinks.length > 0 ? runtimeStaticLinks : undefined,
+      analysis_facts: analysisFacts.length > 0 ? analysisFacts : undefined,
+      validation
     };
   }
 
@@ -998,6 +1049,98 @@ export class AnalyzerOrchestrator {
     };
   }
 
+  private buildSemanticChangeImpact(
+    output: CASOutput,
+    changedNodeIds: Set<string>,
+    affectedEntryPointIds: Set<string>,
+    affectedCallChainIds: Set<string>,
+    changedEntryPoints: CASEntryPoint[],
+    changedExitPoints: CASExitPoint[]
+  ) {
+    const affected_workflows = (output.workflows || [])
+      .filter(workflow =>
+        workflow.entry_points.some(id => affectedEntryPointIds.has(id)) ||
+        workflow.call_chains.some(id => affectedCallChainIds.has(id)) ||
+        workflow.services_used.some(id => changedNodeIds.has(id)) ||
+        workflow.entities_touched.some(id => changedNodeIds.has(id))
+      )
+      .map(workflow => ({
+        id: workflow.id,
+        name: workflow.name,
+        reason: 'Changed nodes or entry points participate in this workflow'
+      }));
+
+    const affected_capabilities = (output.system_capabilities || [])
+      .filter(capability =>
+        capability.operations.some(operation => affectedEntryPointIds.has(operation.entry_point_id)) ||
+        capability.related_entities.some(entity => changedNodeIds.has(entity))
+      )
+      .map(capability => ({
+        id: capability.id,
+        name: capability.name,
+        reason: 'Changed entry points or related entities participate in this capability'
+      }));
+
+    const affected_data_entities = (output.data_entities || [])
+      .filter(entity => {
+        const lifecycleNodes = [
+          ...entity.lifecycle.created_by,
+          ...entity.lifecycle.read_by,
+          ...entity.lifecycle.updated_by,
+          ...entity.lifecycle.deleted_by
+        ];
+        const transformationNodes = (entity.transformations || [])
+          .flatMap(transformation => [transformation.from_node, transformation.to_node]);
+        return [...lifecycleNodes, ...transformationNodes].some(nodeId => changedNodeIds.has(nodeId));
+      })
+      .map(entity => ({
+        id: entity.id,
+        name: entity.name,
+        reason: 'Changed nodes participate in this entity lifecycle'
+      }));
+
+    const affected_runtime_links = (output.runtime_static_links || [])
+      .filter(link =>
+        link.instrumentation_points.some(nodeId => changedNodeIds.has(nodeId)) ||
+        affectedEntryPointIds.has(link.static_id) ||
+        affectedCallChainIds.has(link.static_id)
+      )
+      .map(link => ({
+        id: link.id,
+        runtime_signal: link.runtime_signal,
+        reason: 'Changed nodes are runtime instrumentation points'
+      }));
+
+    const changed_contracts = [
+      ...changedEntryPoints.map(entryPoint => ({
+        id: entryPoint.id,
+        type: 'entry-point' as const,
+        name: entryPoint.name
+      })),
+      ...changedExitPoints.map(exitPoint => ({
+        id: exitPoint.id,
+        type: 'exit-point' as const,
+        name: exitPoint.name
+      }))
+    ];
+
+    const risk_reasons: string[] = [];
+    if (affected_workflows.length > 0) risk_reasons.push(`${affected_workflows.length} workflow(s) affected`);
+    if (affected_capabilities.length > 0) risk_reasons.push(`${affected_capabilities.length} capability/capabilities affected`);
+    if (affected_data_entities.length > 0) risk_reasons.push(`${affected_data_entities.length} data entity/entities affected`);
+    if (affected_runtime_links.length > 0) risk_reasons.push(`${affected_runtime_links.length} runtime signal(s) affected`);
+    if (changed_contracts.length > 0) risk_reasons.push(`${changed_contracts.length} externally visible contract(s) changed`);
+
+    return {
+      affected_workflows,
+      affected_capabilities,
+      affected_data_entities,
+      affected_runtime_links,
+      changed_contracts,
+      risk_reasons
+    };
+  }
+
   private buildChangeReport(
     previousOutput: CASOutput,
     currentOutput: CASOutput,
@@ -1009,7 +1152,7 @@ export class AnalyzerOrchestrator {
     const addedNodes = currentOutput.nodes.filter(n => !previousNodeIds.has(n.id));
     const deletedNodes = previousOutput.nodes.filter(n => !currentNodeIds.has(n.id));
 
-    const modifiedNodes: Array<{ id: string; name: string; changes: string[] }> = [];
+    const modifiedNodes: Array<{ id: string; name: string; type?: string; file?: string; changes: string[] }> = [];
     for (const currentNode of currentOutput.nodes) {
       if (previousNodeIds.has(currentNode.id)) {
         const previousNode = previousOutput.nodes.find(n => n.id === currentNode.id);
@@ -1025,7 +1168,13 @@ export class AnalyzerOrchestrator {
             changes.push('location');
           }
           if (changes.length > 0) {
-            modifiedNodes.push({ id: currentNode.id, name: currentNode.name, changes });
+              modifiedNodes.push({
+                id: currentNode.id,
+                name: currentNode.name,
+                type: currentNode.type,
+                file: currentNode.source?.file,
+                changes
+              });
           }
         }
       }
@@ -1037,7 +1186,43 @@ export class AnalyzerOrchestrator {
     const addedEdges = currentOutput.edges.filter(e => !previousEdgeIds.has(e.id));
     const deletedEdges = previousOutput.edges.filter(e => !currentEdgeIds.has(e.id));
 
+    const previousEntryPointIds = new Set((previousOutput.entry_points || []).map(ep => ep.id));
+    const currentEntryPointIds = new Set((currentOutput.entry_points || []).map(ep => ep.id));
+    const addedEntryPoints = (currentOutput.entry_points || []).filter(ep => !previousEntryPointIds.has(ep.id));
+    const deletedEntryPoints = (previousOutput.entry_points || []).filter(ep => !currentEntryPointIds.has(ep.id));
+
+    const previousExitPointIds = new Set((previousOutput.exit_points || []).map(ep => ep.id));
+    const currentExitPointIds = new Set((currentOutput.exit_points || []).map(ep => ep.id));
+    const addedExitPoints = (currentOutput.exit_points || []).filter(ep => !previousExitPointIds.has(ep.id));
+    const deletedExitPoints = (previousOutput.exit_points || []).filter(ep => !currentExitPointIds.has(ep.id));
+
+    const files = [
+      ...changeSet.added.map(filePath => ({
+        path: filePath,
+        type: 'added' as const,
+        linesAdded: 0,
+        linesRemoved: 0
+      })),
+      ...changeSet.modified.map(filePath => ({
+        path: filePath,
+        type: 'modified' as const,
+        linesAdded: 0,
+        linesRemoved: 0
+      })),
+      ...changeSet.deleted.map(filePath => ({
+        path: filePath,
+        type: 'deleted' as const,
+        linesAdded: 0,
+        linesRemoved: 0
+      }))
+    ];
+
     const changedFiles = new Set([...changeSet.added, ...changeSet.modified]);
+    const changedNodeIds = new Set([
+      ...addedNodes.map(n => n.id),
+      ...modifiedNodes.map(n => n.id),
+      ...deletedNodes.map(n => n.id)
+    ]);
     const affectedEntryPoints = (currentOutput.entry_points || [])
       .filter(ep => {
         const sourceNode = currentOutput.nodes.find(n => n.id === ep.source_node);
@@ -1059,12 +1244,34 @@ export class AnalyzerOrchestrator {
           distance: 0
         };
       });
+    const affectedEntryPointIds = new Set(affectedEntryPoints.map(ep => ep.id));
+    const affectedCallChains = (currentOutput.call_chains || [])
+      .filter(chain =>
+        affectedEntryPointIds.has(chain.entry_point?.entry_point_id || '') ||
+        chain.call_path.some(step => changedNodeIds.has(step.node_id))
+      )
+      .map(chain => ({
+        id: chain.id,
+        name: chain.business_context?.business_process || chain.business_context?.feature_area || chain.entry_point?.method_name,
+        criticality: chain.criticality,
+        affectedNodes: chain.call_path
+          .map(step => step.node_id)
+          .filter(nodeId => changedNodeIds.has(nodeId))
+      }));
+    const semanticImpact = this.buildSemanticChangeImpact(
+      currentOutput,
+      changedNodeIds,
+      affectedEntryPointIds,
+      new Set(affectedCallChains.map(chain => chain.id)),
+      [...addedEntryPoints, ...deletedEntryPoints],
+      [...addedExitPoints, ...deletedExitPoints]
+    );
 
     const riskLevel = this.calculateChangeRiskLevel(
       addedNodes.length,
       modifiedNodes.length,
       deletedNodes.length,
-      affectedEntryPoints.length
+      affectedEntryPoints.length + semanticImpact.affected_workflows.length
     );
 
     return {
@@ -1086,11 +1293,13 @@ export class AnalyzerOrchestrator {
         riskLevel,
         confidence: 0.8,
         affectedEntryPoints,
-        affectedCallChains: [],
+        affectedCallChains,
         affectedConsumers: [],
-        criticalPathsAffected: affectedEntryPoints.length > 0,
-        securitySensitive: false,
-        dataFlowAffected: false,
+        criticalPathsAffected: affectedEntryPoints.length > 0 || affectedCallChains.some(chain => chain.criticality === 'critical' || chain.criticality === 'high'),
+        securitySensitive: currentOutput.security_boundaries?.some(boundary =>
+          boundary.enforcement_points.some(point => changedNodeIds.has(point.node_id))
+        ) || false,
+        dataFlowAffected: semanticImpact.affected_data_entities.length > 0,
         testCoverage: {
           directTests: [],
           integrationTests: [],
@@ -1102,7 +1311,9 @@ export class AnalyzerOrchestrator {
           outdatedComments: []
         }
       },
+      semantic_impact: semanticImpact,
       details: {
+        files,
         addedNodes: addedNodes.map(n => ({
           id: n.id,
           name: n.name,
@@ -1113,17 +1324,41 @@ export class AnalyzerOrchestrator {
         deletedNodes: deletedNodes.map(n => ({
           id: n.id,
           name: n.name,
-          type: n.type
+          type: n.type,
+          file: n.source?.file
         })),
         addedEdges: addedEdges.map(e => ({
+          id: e.id,
           source: e.source,
           target: e.target,
           type: e.type
         })),
         deletedEdges: deletedEdges.map(e => ({
+          id: e.id,
           source: e.source,
           target: e.target,
           type: e.type
+        })),
+        addedEntryPoints: addedEntryPoints.map(ep => ({
+          id: ep.id,
+          name: ep.name
+        })),
+        modifiedEntryPoints: affectedEntryPoints.map(ep => ({
+          id: ep.id,
+          name: ep.name,
+          details: ep.path
+        })),
+        deletedEntryPoints: deletedEntryPoints.map(ep => ({
+          id: ep.id,
+          name: ep.name
+        })),
+        addedExitPoints: addedExitPoints.map(ep => ({
+          id: ep.id,
+          name: ep.name
+        })),
+        deletedExitPoints: deletedExitPoints.map(ep => ({
+          id: ep.id,
+          name: ep.name
         }))
       }
     };
@@ -5127,7 +5362,7 @@ export class AnalyzerOrchestrator {
     const documentedNodes = nodes.filter(n => n.documentation).length;
 
     return {
-      schema_version: '1.7.0',
+      schema_version: '1.8.0',
       validation_warnings: warnings.length > 0 ? warnings : undefined,
       completeness: {
         nodes_with_location: nodesWithLocation,
@@ -5372,6 +5607,553 @@ export class AnalyzerOrchestrator {
       risk_areas: riskAreas.slice(0, 50),
       deprecation_timeline: deprecationTimeline.length > 0 ? deprecationTimeline : undefined
     };
+  }
+
+  private buildRuntime(
+    projectPath: string,
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[],
+    externalServices: CASExternalService[],
+    configuration: CASConfiguration,
+    callChains: CASCallChain[]
+  ): CASRuntime {
+    const packageJsonPath = path.join(projectPath, 'package.json');
+    const dockerfilePath = path.join(projectPath, 'Dockerfile');
+    const dockerComposePath = path.join(projectPath, 'docker-compose.yml');
+    const composePath = path.join(projectPath, 'compose.yml');
+    const packageJson = fs.existsSync(packageJsonPath) ? fs.readJsonSync(packageJsonPath) : {};
+    const scripts = packageJson.scripts || {};
+    const runtimeDependencies = [
+      ...Object.keys(packageJson.dependencies || {}),
+      ...Object.keys(packageJson.peerDependencies || {})
+    ];
+
+    const healthEntryPoint = entryPoints.find(ep => {
+      const value = `${ep.name} ${ep.trigger?.path || ''}`.toLowerCase();
+      return value.includes('health') || value.includes('ready') || value.includes('live');
+    });
+    const metricsEntryPoint = entryPoints.find(ep => {
+      const value = `${ep.name} ${ep.trigger?.path || ''}`.toLowerCase();
+      return value.includes('metrics') || value.includes('prometheus');
+    });
+
+    const deployment: CASRuntime['deployment'] = {};
+    if (fs.existsSync(dockerfilePath)) {
+      deployment.type = 'container';
+    }
+    if (fs.existsSync(dockerComposePath) || fs.existsSync(composePath)) {
+      deployment.orchestration = 'docker-compose';
+    } else if (fs.existsSync(path.join(projectPath, 'k8s')) || fs.existsSync(path.join(projectPath, 'kubernetes'))) {
+      deployment.orchestration = 'kubernetes';
+    } else if (fs.existsSync(path.join(projectPath, 'vercel.json'))) {
+      deployment.type = 'vercel';
+    } else if (fs.existsSync(path.join(projectPath, 'render.yaml'))) {
+      deployment.type = 'render';
+    }
+
+    const runtime: CASRuntime = {};
+    if (Object.keys(deployment).length > 0) {
+      runtime.deployment = deployment;
+    }
+
+    const runtimeName = packageJson.engines?.node
+      ? `node ${packageJson.engines.node}`
+      : packageJson.engines?.python
+        ? `python ${packageJson.engines.python}`
+        : scripts.start
+          ? 'node'
+          : undefined;
+
+    runtime.dependencies = {
+      runtime: runtimeName,
+      system_libraries: runtimeDependencies.slice(0, 50),
+      external_services: externalServices.map(service => service.name)
+    };
+
+    if (healthEntryPoint || metricsEntryPoint || configuration.environment_variables?.some(env => env.name.toLowerCase().includes('log'))) {
+      runtime.monitoring = {
+        health_check: healthEntryPoint?.trigger?.path || healthEntryPoint?.name,
+        readiness_check: entryPoints.find(ep => `${ep.name} ${ep.trigger?.path || ''}`.toLowerCase().includes('ready'))?.trigger?.path,
+        metrics_endpoint: metricsEntryPoint?.trigger?.path || metricsEntryPoint?.name,
+        logging: configuration.environment_variables?.some(env => env.name.toLowerCase().includes('log'))
+          ? { destinations: ['application'] }
+          : undefined
+      };
+    }
+
+    runtime.instrumentation = {
+      instrumentable_entry_points: entryPoints
+        .filter(ep => ep.source_node || ep.handler?.node_id)
+        .map(ep => ep.id),
+      instrumentable_exit_points: exitPoints
+        .filter(ep => ep.source_node || (ep.connected_nodes || []).length > 0)
+        .map(ep => ep.id),
+      observed_call_chains: callChains
+        .filter(chain => !!chain.runtime_stats)
+        .map(chain => chain.id),
+      missing_runtime_coverage: callChains
+        .filter(chain => !chain.runtime_stats)
+        .slice(0, 100)
+        .map(chain => chain.id)
+    };
+
+    return runtime;
+  }
+
+  private buildRepositoryLinks(
+    projectPath: string,
+    nodes: CASNode[],
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[],
+    externalServices: CASExternalService[],
+    libraries: CASLibrary[],
+    databaseSchema: CASDatabaseSchema,
+    configuration: CASConfiguration
+  ): CASCrossRepositoryLink[] {
+    const sourceRepository = {
+      url: this.readGitRemote(projectPath),
+      path: projectPath
+    };
+    const links: CASCrossRepositoryLink[] = [];
+
+    for (const service of externalServices) {
+      if (!service.endpoint) continue;
+      links.push({
+        id: `repo_link_api_${service.id}`,
+        type: 'api',
+        source_repository: {
+          ...sourceRepository,
+          node_ids: service.connected_nodes
+        },
+        target_repository: {
+          url: service.endpoint
+        },
+        connection: {
+          protocol: service.endpoint.startsWith('http') ? 'http' : service.type,
+          endpoint: service.endpoint
+        },
+        metadata: {
+          verified: false,
+          confidence: 0.7,
+          evidence: [{
+            kind: 'runtime-signal',
+            source: service.name,
+            confidence: 0.7
+          }]
+        }
+      });
+    }
+
+    for (const library of libraries) {
+      const name = library.name || '';
+      const lower = name.toLowerCase();
+      const isContractPackage = name.startsWith('@') ||
+        lower.includes('client') ||
+        lower.includes('sdk') ||
+        lower.includes('schema') ||
+        lower.includes('proto') ||
+        lower.includes('contract');
+
+      if (!isContractPackage) continue;
+
+      links.push({
+        id: `repo_link_library_${this.slugForId(name)}`,
+        type: lower.includes('schema') || lower.includes('proto') || lower.includes('contract') ? 'shared-schema' : 'library',
+        source_repository: {
+          ...sourceRepository,
+          node_ids: library.connected_nodes
+        },
+        connection: {
+          package_name: name,
+          version: library.version
+        },
+        metadata: {
+          verified: false,
+          confidence: name.startsWith('@') ? 0.75 : 0.55,
+          evidence: [{
+            kind: 'dependency',
+            source: name,
+            confidence: name.startsWith('@') ? 0.75 : 0.55
+          }]
+        }
+      });
+    }
+
+    for (const exitPoint of exitPoints) {
+      if (exitPoint.type !== 'message' && exitPoint.type !== 'event') continue;
+      links.push({
+        id: `repo_link_message_${exitPoint.id}`,
+        type: 'message-contract',
+        source_repository: {
+          ...sourceRepository,
+          node_ids: [exitPoint.source_node, ...(exitPoint.connected_nodes || [])].filter(Boolean)
+        },
+        connection: {
+          broker: exitPoint.target?.service_id,
+          exchange: exitPoint.target?.resource,
+          routing_key: exitPoint.target?.endpoint
+        },
+        metadata: {
+          verified: false,
+          confidence: 0.65,
+          evidence: [{
+            kind: 'graph',
+            source: exitPoint.id,
+            file: this.nodeFile(nodes, exitPoint.source_node),
+            confidence: 0.65
+          }]
+        }
+      });
+    }
+
+    if (databaseSchema.entities.length > 0) {
+      const configFiles = configuration.config_files?.map(file => file.path).filter((value): value is string => !!value) || [];
+      links.push({
+        id: `repo_link_database_${this.slugForId(databaseSchema.entities.map(entity => entity.name).slice(0, 5).join('_'))}`,
+        type: 'shared-database',
+        source_repository: {
+          ...sourceRepository,
+          node_ids: databaseSchema.entities
+            .flatMap(entity => nodes
+              .filter(node => entity.source_file && node.source?.file === entity.source_file)
+              .map(node => node.id))
+            .slice(0, 100)
+        },
+        connection: {
+          contract: databaseSchema.entities.map(entity => entity.name).join(',')
+        },
+        metadata: {
+          verified: false,
+          confidence: configFiles.length > 0 ? 0.7 : 0.5,
+          evidence: configFiles.length > 0
+            ? configFiles.map(file => ({
+              kind: 'configuration' as const,
+              source: file,
+              file,
+              confidence: 0.7
+            }))
+            : [{
+              kind: 'graph' as const,
+              source: 'database_schema',
+              confidence: 0.5
+            }]
+        }
+      });
+    }
+
+    return links;
+  }
+
+  private buildRuntimeStaticLinks(
+    nodes: CASNode[],
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[],
+    callChains: CASCallChain[],
+    externalServices: CASExternalService[]
+  ): CASRuntimeStaticLink[] {
+    const links: CASRuntimeStaticLink[] = [];
+
+    for (const entryPoint of entryPoints) {
+      const signal = entryPoint.trigger?.path
+        ? `${entryPoint.trigger?.method || entryPoint.type} ${entryPoint.trigger.path}`
+        : `${entryPoint.type} ${entryPoint.name}`;
+      const instrumentationPoints = [entryPoint.source_node, entryPoint.handler?.node_id].filter((value): value is string => !!value);
+      links.push({
+        id: `runtime_entry_${entryPoint.id}`,
+        kind: 'entry-point',
+        static_id: entryPoint.id,
+        runtime_signal: signal,
+        telemetry_status: instrumentationPoints.length > 0 ? 'instrumentable' : 'not-instrumented',
+        confidence: instrumentationPoints.length > 0 ? 0.85 : 0.4,
+        instrumentation_points: instrumentationPoints,
+        evidence: [{
+          kind: 'route',
+          source: entryPoint.id,
+          file: this.nodeFile(nodes, entryPoint.source_node),
+          line: this.nodeLine(nodes, entryPoint.source_node),
+          confidence: instrumentationPoints.length > 0 ? 0.85 : 0.4
+        }]
+      });
+    }
+
+    for (const exitPoint of exitPoints) {
+      const instrumentationPoints = [exitPoint.source_node, ...(exitPoint.connected_nodes || [])].filter(Boolean);
+      links.push({
+        id: `runtime_exit_${exitPoint.id}`,
+        kind: 'exit-point',
+        static_id: exitPoint.id,
+        runtime_signal: exitPoint.target?.endpoint || exitPoint.target?.resource || exitPoint.name || exitPoint.type,
+        telemetry_status: instrumentationPoints.length > 0 ? 'instrumentable' : 'not-instrumented',
+        confidence: instrumentationPoints.length > 0 ? 0.8 : 0.4,
+        instrumentation_points: instrumentationPoints,
+        evidence: [{
+          kind: 'graph',
+          source: exitPoint.id,
+          file: this.nodeFile(nodes, exitPoint.source_node),
+          line: this.nodeLine(nodes, exitPoint.source_node),
+          confidence: instrumentationPoints.length > 0 ? 0.8 : 0.4
+        }]
+      });
+    }
+
+    for (const chain of callChains) {
+      const instrumentationPoints = chain.call_path.map(step => step.node_id);
+      links.push({
+        id: `runtime_chain_${chain.id}`,
+        kind: 'call-chain',
+        static_id: chain.id,
+        runtime_signal: chain.business_context?.business_process || chain.business_context?.feature_area || chain.entry_point?.method_name || chain.id,
+        telemetry_status: chain.runtime_stats ? 'observed' : instrumentationPoints.length > 0 ? 'instrumentable' : 'not-instrumented',
+        confidence: chain.runtime_stats ? 0.95 : instrumentationPoints.length > 0 ? 0.75 : 0.35,
+        instrumentation_points: instrumentationPoints,
+        evidence: [{
+          kind: chain.runtime_stats ? 'runtime-signal' : 'graph',
+          source: chain.id,
+          confidence: chain.runtime_stats ? 0.95 : 0.75
+        }]
+      });
+    }
+
+    for (const service of externalServices) {
+      links.push({
+        id: `runtime_service_${service.id}`,
+        kind: 'external-service',
+        static_id: service.id,
+        runtime_signal: service.endpoint || service.name,
+        telemetry_status: (service.connected_nodes || []).length > 0 ? 'instrumentable' : 'not-instrumented',
+        confidence: (service.connected_nodes || []).length > 0 ? 0.75 : 0.45,
+        instrumentation_points: service.connected_nodes || [],
+        evidence: [{
+          kind: 'runtime-signal',
+          source: service.name,
+          confidence: (service.connected_nodes || []).length > 0 ? 0.75 : 0.45
+        }]
+      });
+    }
+
+    return links;
+  }
+
+  private buildAnalysisFacts(
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[],
+    externalServices: CASExternalService[],
+    workflows: CASWorkflow[],
+    capabilities: SystemCapability[],
+    runtimeLinks: CASRuntimeStaticLink[],
+    repositoryLinks: CASCrossRepositoryLink[],
+    contributions: any[]
+  ): CASAnalysisFact[] {
+    const analyzerName = contributions[0]?.analyzer_name || 'AnalyzerOrchestrator';
+    const facts: CASAnalysisFact[] = [];
+
+    for (const node of nodes) {
+      if (!node.source?.file) continue;
+      facts.push({
+        id: `fact_node_${node.id}`,
+        subject_type: 'node',
+        subject_id: node.id,
+        fact_type: 'definition',
+        claim: `${node.name} is a ${node.type}`,
+        confidence: 0.9,
+        produced_by: node.primaryAnalyzer || analyzerName,
+        evidence: [{
+          kind: 'source-location',
+          source: node.name,
+          file: node.source.file,
+          line: node.source.line,
+          excerpt: node.source.raw,
+          confidence: 0.9
+        }]
+      });
+    }
+
+    for (const edge of edges) {
+      const location = edge.metadata?.locations?.[0];
+      facts.push({
+        id: `fact_edge_${edge.id}`,
+        subject_type: 'edge',
+        subject_id: edge.id,
+        fact_type: 'relationship',
+        claim: `${edge.source} ${edge.type} ${edge.target}`,
+        confidence: edge.metadata?.confidence || 0.75,
+        produced_by: analyzerName,
+        evidence: [{
+          kind: location ? 'source-location' : 'graph',
+          source: edge.id,
+          file: location?.file,
+          line: location?.line,
+          confidence: edge.metadata?.confidence || 0.75
+        }]
+      });
+    }
+
+    for (const entryPoint of entryPoints) {
+      facts.push({
+        id: `fact_entry_${entryPoint.id}`,
+        subject_type: 'entry_point',
+        subject_id: entryPoint.id,
+        fact_type: 'entry',
+        claim: `${entryPoint.name} exposes ${entryPoint.type}`,
+        confidence: 0.85,
+        produced_by: entryPoint.source_analyzer || analyzerName,
+        evidence: [{
+          kind: 'route',
+          source: entryPoint.id,
+          file: this.nodeFile(nodes, entryPoint.source_node),
+          line: this.nodeLine(nodes, entryPoint.source_node),
+          confidence: 0.85
+        }]
+      });
+    }
+
+    for (const exitPoint of exitPoints) {
+      facts.push({
+        id: `fact_exit_${exitPoint.id}`,
+        subject_type: 'exit_point',
+        subject_id: exitPoint.id,
+        fact_type: 'exit',
+        claim: `${exitPoint.name || exitPoint.id} leaves the system through ${exitPoint.type}`,
+        confidence: 0.8,
+        produced_by: analyzerName,
+        evidence: [{
+          kind: 'graph',
+          source: exitPoint.id,
+          file: this.nodeFile(nodes, exitPoint.source_node),
+          line: this.nodeLine(nodes, exitPoint.source_node),
+          confidence: 0.8
+        }]
+      });
+    }
+
+    for (const workflow of workflows) {
+      const evidence = workflow.entry_points.length > 0
+        ? workflow.entry_points.map(entryPointId => ({
+          kind: 'graph' as const,
+          source: entryPointId,
+          confidence: 0.75
+        }))
+        : [{
+          kind: 'graph' as const,
+          source: workflow.id,
+          confidence: 0.6
+        }];
+
+      facts.push({
+        id: `fact_workflow_${workflow.id}`,
+        subject_type: 'workflow',
+        subject_id: workflow.id,
+        fact_type: 'workflow',
+        claim: `${workflow.name} is a ${workflow.classification} ${workflow.workflow_type} workflow`,
+        confidence: 0.75,
+        produced_by: 'WorkflowDetector',
+        evidence
+      });
+    }
+
+    for (const capability of capabilities) {
+      const evidence = capability.operations.length > 0
+        ? capability.operations.map(operation => ({
+          kind: 'route' as const,
+          source: operation.entry_point_id,
+          confidence: 0.75
+        }))
+        : [{
+          kind: 'graph' as const,
+          source: capability.id,
+          confidence: 0.6
+        }];
+
+      facts.push({
+        id: `fact_capability_${capability.id}`,
+        subject_type: 'capability',
+        subject_id: capability.id,
+        fact_type: 'capability',
+        claim: `${capability.name} is a ${capability.criticality} ${capability.category} capability`,
+        confidence: 0.75,
+        produced_by: 'CapabilityDetector',
+        evidence
+      });
+    }
+
+    for (const runtimeLink of runtimeLinks) {
+      facts.push({
+        id: `fact_runtime_${runtimeLink.id}`,
+        subject_type: 'runtime_link',
+        subject_id: runtimeLink.id,
+        fact_type: 'runtime-correlation',
+        claim: `${runtimeLink.static_id} maps to runtime signal ${runtimeLink.runtime_signal}`,
+        confidence: runtimeLink.confidence,
+        produced_by: 'AnalyzerOrchestrator',
+        evidence: runtimeLink.evidence
+      });
+    }
+
+    for (const repositoryLink of repositoryLinks) {
+      const confidence = repositoryLink.metadata?.confidence || 0.5;
+      const evidence = repositoryLink.metadata?.evidence?.length
+        ? repositoryLink.metadata.evidence
+        : [{
+          kind: 'graph' as const,
+          source: repositoryLink.id,
+          confidence
+        }];
+
+      facts.push({
+        id: `fact_repository_${repositoryLink.id}`,
+        subject_type: 'repository_link',
+        subject_id: repositoryLink.id,
+        fact_type: 'cross-repository',
+        claim: `${repositoryLink.id} links this codebase through ${repositoryLink.type}`,
+        confidence,
+        produced_by: 'AnalyzerOrchestrator',
+        evidence
+      });
+    }
+
+    for (const service of externalServices) {
+      facts.push({
+        id: `fact_service_${service.id}`,
+        subject_type: 'external_service',
+        subject_id: service.id,
+        fact_type: 'relationship',
+        claim: `${service.name} is an external ${service.type} dependency`,
+        confidence: 0.7,
+        produced_by: analyzerName,
+        evidence: [{
+          kind: 'graph',
+          source: service.id,
+          confidence: 0.7
+        }]
+      });
+    }
+
+    return facts;
+  }
+
+  private readGitRemote(projectPath: string): string | undefined {
+    const gitConfigPath = path.join(projectPath, '.git', 'config');
+    if (!fs.existsSync(gitConfigPath)) return undefined;
+
+    const config = fs.readFileSync(gitConfigPath, 'utf-8');
+    const match = config.match(/\[remote "origin"\][\s\S]*?url = (.+)/);
+    return match?.[1]?.trim();
+  }
+
+  private slugForId(value: string): string {
+    return value.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase() || 'unknown';
+  }
+
+  private nodeFile(nodes: CASNode[], nodeId?: string): string | undefined {
+    if (!nodeId) return undefined;
+    return nodes.find(node => node.id === nodeId)?.source?.file;
+  }
+
+  private nodeLine(nodes: CASNode[], nodeId?: string): number | undefined {
+    if (!nodeId) return undefined;
+    return nodes.find(node => node.id === nodeId)?.source?.line;
   }
 
   private buildMethodCalls(nodes: CASNode[], edges: CASEdge[]): CASMethodCall[] {

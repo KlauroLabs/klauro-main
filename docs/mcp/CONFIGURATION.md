@@ -37,7 +37,8 @@ Add the server to your project-level `.mcp.json` (recommended) or global `~/.cla
   "mcpServers": {
     "unravl": {
       "command": "npx",
-      "args": ["tsx", "/absolute/path/to/proof-of-concept/mcp-server/src/index.ts"]
+      "args": ["tsx", "/absolute/path/to/proof-of-concept/mcp-server/src/index.ts"],
+      "cwd": "/absolute/path/to/proof-of-concept/mcp-server"
     }
   }
 }
@@ -50,7 +51,8 @@ Add the server to your project-level `.mcp.json` (recommended) or global `~/.cla
   "mcpServers": {
     "unravl": {
       "command": "npx",
-      "args": ["tsx", "/absolute/path/to/proof-of-concept/mcp-server/src/index.ts"]
+      "args": ["tsx", "/absolute/path/to/proof-of-concept/mcp-server/src/index.ts"],
+      "cwd": "/absolute/path/to/proof-of-concept/mcp-server"
     }
   }
 }
@@ -73,6 +75,10 @@ Analysis results are stored as JSON files at:
 Each analysis produces:
 - `{slugified-project-name}.json` - The full CAS output
 - `index.json` - Maps project paths to analysis files
+- `{project-slug}/incremental-state.json` - Incremental analysis state
+- `{project-slug}/file-cache/` - File-level analysis cache
+- `{project-slug}/change-history.json` - Incremental change history
+- `{project-slug}/snapshots/` - Analysis snapshots for time-travel queries
 
 ### Custom Storage Path
 
@@ -84,6 +90,7 @@ Set the `UNRAVL_STORAGE_PATH` environment variable to use a different location:
     "unravl": {
       "command": "npx",
       "args": ["tsx", "/absolute/path/to/proof-of-concept/mcp-server/src/index.ts"],
+      "cwd": "/absolute/path/to/proof-of-concept/mcp-server",
       "env": {
         "UNRAVL_STORAGE_PATH": "/custom/path/to/analyses"
       }

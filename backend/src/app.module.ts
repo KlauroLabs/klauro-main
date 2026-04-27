@@ -6,7 +6,6 @@ import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { PostgreSqlDriver } from '@mikro-orm/postgresql';
 
 import { HealthModule } from './health/health.module';
-// import { AnalyzerModule } from './analyzer/analyzer.module';
 import { WebSocketModule } from './websocket/websocket.module';
 import { TelemetryModule } from './telemetry/telemetry.module';
 import { DatabaseModule } from './database/database.module';
@@ -90,7 +89,6 @@ import { configurationSchema } from './config/configuration';
     ProjectsModule,
     AnalysisModule,
     ComponentsModule,
-    // AnalyzerModule, // Temporarily disabled due to compilation errors
     WebSocketModule,
     HealthModule,
     TelemetryModule,

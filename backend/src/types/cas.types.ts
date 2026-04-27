@@ -65,6 +65,8 @@ export interface CASOutput {
   enhanced_system_purpose?: EnhancedSystemPurpose;
 
   flow_graph?: CASFlowGraph;
+  runtime_static_links?: CASRuntimeStaticLink[];
+  analysis_facts?: CASAnalysisFact[];
 
   libraries?: CASLibrary[];
   progressive_levels: CASProgressiveLevels;
@@ -344,7 +346,7 @@ export interface CASExitPoint {
   id: string;
   source_node: string;
   source_analyzer?: string;
-  type: 'database' | 'api' | 'file' | 'message' | 'cache' | 'sdk' | 'webhook' | 'navigation' | 'client_storage' | 'analytics';
+  type: 'database' | 'api' | 'file' | 'message' | 'event' | 'cache' | 'sdk' | 'webhook' | 'navigation' | 'client_storage' | 'analytics';
   name: string;
   description?: string;
   target?: {
@@ -481,7 +483,7 @@ export interface CASExternalService {
 
 export interface CASCrossRepositoryLink {
   id: string;
-  type: 'api' | 'library' | 'shared-schema' | 'message-contract';
+  type: 'api' | 'library' | 'shared-schema' | 'message-contract' | 'shared-database';
   source_repository?: {
     url?: string;
     node_ids?: string[];
@@ -508,7 +510,40 @@ export interface CASCrossRepositoryLink {
     verified?: boolean;
     last_sync?: string;
     breaking_changes?: boolean;
+    confidence?: number;
+    evidence?: CASFactEvidence[];
   };
+}
+
+export interface CASFactEvidence {
+  kind: 'source-location' | 'analyzer' | 'configuration' | 'dependency' | 'route' | 'runtime-signal' | 'naming' | 'graph';
+  source: string;
+  file?: string;
+  line?: number;
+  excerpt?: string;
+  confidence: number;
+}
+
+export interface CASAnalysisFact {
+  id: string;
+  subject_type: 'node' | 'edge' | 'entry_point' | 'exit_point' | 'external_service' | 'workflow' | 'capability' | 'runtime_link' | 'repository_link';
+  subject_id: string;
+  fact_type: 'definition' | 'relationship' | 'entry' | 'exit' | 'workflow' | 'capability' | 'runtime-correlation' | 'cross-repository';
+  claim: string;
+  confidence: number;
+  produced_by: string;
+  evidence: CASFactEvidence[];
+}
+
+export interface CASRuntimeStaticLink {
+  id: string;
+  kind: 'entry-point' | 'exit-point' | 'call-chain' | 'external-service' | 'telemetry-hook';
+  static_id: string;
+  runtime_signal: string;
+  telemetry_status: 'observed' | 'instrumentable' | 'not-instrumented';
+  confidence: number;
+  instrumentation_points: string[];
+  evidence: CASFactEvidence[];
 }
 
 export interface CASSecurityContext {
@@ -813,6 +848,12 @@ export interface CASRuntime {
       format?: string;
       destinations?: string[];
     };
+  };
+  instrumentation?: {
+    instrumentable_entry_points: string[];
+    instrumentable_exit_points: string[];
+    observed_call_chains: string[];
+    missing_runtime_coverage: string[];
   };
 }
 
@@ -2514,16 +2555,32 @@ export interface ChangeReport {
   };
 
   impact: ImpactAnalysis;
+  semantic_impact?: ChangeSemanticImpact;
 
   details: {
+    files?: FileChange[];
     addedNodes: Array<{ id: string; name: string; type: string; file: string }>;
-    modifiedNodes: Array<{ id: string; name: string; changes: string[] }>;
-    deletedNodes: Array<{ id: string; name: string; type: string }>;
-    addedEdges: Array<{ source: string; target: string; type: string }>;
-    deletedEdges: Array<{ source: string; target: string; type: string }>;
+    modifiedNodes: Array<{ id: string; name: string; type?: string; file?: string; changes: string[] }>;
+    deletedNodes: Array<{ id: string; name: string; type: string; file?: string }>;
+    addedEdges: Array<{ id?: string; source: string; target: string; type: string }>;
+    deletedEdges: Array<{ id?: string; source: string; target: string; type: string }>;
+    addedEntryPoints?: Array<{ id: string; name: string }>;
+    modifiedEntryPoints?: Array<{ id: string; name: string; details?: string }>;
+    deletedEntryPoints?: Array<{ id: string; name: string }>;
+    addedExitPoints?: Array<{ id: string; name: string }>;
+    deletedExitPoints?: Array<{ id: string; name: string }>;
   };
 
   changeHistory?: ChangeHistoryEntry[];
+}
+
+export interface ChangeSemanticImpact {
+  affected_workflows: Array<{ id: string; name: string; reason: string }>;
+  affected_capabilities: Array<{ id: string; name: string; reason: string }>;
+  affected_data_entities: Array<{ id: string; name: string; reason: string }>;
+  affected_runtime_links: Array<{ id: string; runtime_signal: string; reason: string }>;
+  changed_contracts: Array<{ id: string; type: 'entry-point' | 'exit-point' | 'repository-link'; name: string }>;
+  risk_reasons: string[];
 }
 
 export interface AnalysisConfidence {

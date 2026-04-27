@@ -1,313 +1,137 @@
 # Unravl Authentication System
 
-## Overview
+## Current Implementation
 
-The Unravl platform implements a comprehensive authentication and authorization system supporting:
-- JWT-based authentication with access/refresh token flow
-- OAuth integration with multiple providers (GitHub, Google, Microsoft, GitLab)
-- Role-Based Access Control (RBAC) with granular permissions
-- Multi-tenant organization management
-- API key authentication for programmatic access
+The active NestJS authentication module currently provides email/password registration and login with JWT tokens.
 
-## Architecture
+Implemented files:
 
-### Components
+- `auth.module.ts` wires `AuthController`, `AuthService`, `JwtStrategy`, Passport, JWT, and MikroORM repositories.
+- `auth.controller.ts` exposes the public auth endpoints.
+- `auth.service.ts` creates users, verifies passwords, creates an optional organization on registration, and returns signed access/refresh tokens.
+- `guards/jwt-auth.guard.ts` protects controllers that opt into JWT auth.
+- `strategies/jwt.strategy.ts` reads bearer tokens from the `Authorization` header.
 
-1. **AuthService** (`auth-service.ts`)
-   - Handles user registration and login
-   - Manages JWT token generation and validation
-   - Processes OAuth authentication flows
-   - Handles password management and email verification
+There are older or standalone files in this folder, including `auth-service.ts`, OAuth strategy helpers, and Express-style middleware. Those files are not the active Nest controller surface unless they are explicitly wired into `auth.module.ts` or another module.
 
-2. **OAuth Providers** (`oauth-providers/oauth-strategies.ts`)
-   - Configures Passport.js strategies for OAuth providers
-   - Normalizes OAuth profiles across different providers
-   - Manages OAuth account linking
+## Product Role
 
-3. **Authentication Middleware** (`middleware/auth-middleware.ts`)
-   - JWT token verification
-   - Session validation
-   - Organization context enforcement
-   - Email verification checks
+Auth protects saved analyses, workspaces, teams, and collaboration features. It is not part of CAS itself. CAS should describe auth behavior in analyzed codebases, while this module protects the Unravl product.
 
-4. **RBAC Middleware** (`middleware/rbac-middleware.ts`)
-   - Role-based access control
-   - Permission-based authorization
-   - Resource ownership verification
-   - Team membership validation
+## Implemented Endpoints
 
-## Authentication Flow
+The backend sets the global API prefix to `/api`, so the active endpoints are:
 
-### Registration Flow
+| Method | Path | Description |
+| --- | --- | --- |
+| `POST` | `/api/auth/register` | Register a user and optionally create an organization |
+| `POST` | `/api/auth/login` | Login with email and password |
+
+No refresh, logout, OAuth callback, email verification, password reset, or API-key endpoints are currently exposed by `AuthController`.
+
+## Registration Flow
+
+1. Validate the request DTO.
+2. Reject duplicate email addresses.
+3. Hash the password with bcrypt.
+4. Create the user with free billing tier and incomplete onboarding.
+5. If `organizationName` is provided, create an organization and owner membership.
+6. Return an access token, refresh token, token type, expiry, and user payload.
+
+## Login Flow
+
+1. Find the user by email.
+2. Reject missing users and users without a password hash.
+3. Compare the supplied password with bcrypt.
+4. Update `lastLoginAt`.
+5. Return an access token, refresh token, token type, expiry, and user payload.
+
+## Token Behavior
+
+`auth.service.ts` signs:
+
+- Access token: 1 hour
+- Refresh token: 7 days
+
+The signed payload includes `sub`, `email`, `name`, and `organizationId` when the user has an organization membership. Analyzer persistence depends on `organizationId` being present.
+
+Both tokens are currently returned in the JSON response body. The active controller does not set httpOnly cookies, rotate refresh tokens, revoke refresh tokens, or expose a refresh endpoint.
+
+JWT-protected routes should use `JwtAuthGuard` and expect bearer tokens:
+
+```http
+Authorization: Bearer <accessToken>
 ```
-1. User submits registration form
-2. Validate input and password strength
-3. Hash password with bcrypt
-4. Create user account
-5. Optional: Create organization with user as owner
-6. Generate JWT access and refresh tokens
-7. Return tokens and user data
-```
-
-### Login Flow
-```
-1. User submits credentials
-2. Validate email and password
-3. Update last login timestamp
-4. Fetch user organizations
-5. Generate JWT tokens with organization roles
-6. Return tokens and user data
-```
-
-### OAuth Flow
-```
-1. User initiates OAuth with provider
-2. Redirect to provider authorization
-3. Provider redirects back with authorization code
-4. Exchange code for access token
-5. Fetch user profile from provider
-6. Create or link user account
-7. Generate JWT tokens
-8. Redirect to frontend with tokens
-```
-
-### Token Refresh Flow
-```
-1. Client sends refresh token
-2. Validate refresh token
-3. Check if token exists and not revoked
-4. Revoke old refresh token
-5. Generate new access and refresh tokens
-6. Return new tokens
-```
-
-## Role-Based Access Control
-
-### Roles
-
-- **Owner**: Full control over organization
-- **Admin**: Manage organization, projects, and users
-- **Member**: Create and manage projects, limited admin access
-- **Viewer**: Read-only access to organization and projects
-
-### Permission Matrix
-
-| Permission | Owner | Admin | Member | Viewer |
-|------------|-------|-------|--------|--------|
-| org:read | ✅ | ✅ | ✅ | ✅ |
-| org:write | ✅ | ✅ | ❌ | ❌ |
-| org:delete | ✅ | ❌ | ❌ | ❌ |
-| org:billing | ✅ | ❌ | ❌ | ❌ |
-| project:create | ✅ | ✅ | ✅ | ❌ |
-| project:read | ✅ | ✅ | ✅ | ✅ |
-| project:write | ✅ | ✅ | ✅ | ❌ |
-| project:delete | ✅ | ✅ | ❌ | ❌ |
-| user:invite | ✅ | ✅ | ❌ | ❌ |
-| user:remove | ✅ | ✅ | ❌ | ❌ |
-| user:update_role | ✅ | ❌ | ❌ | ❌ |
-
-## API Endpoints
-
-### Authentication Endpoints
-
-- `POST /api/auth/register` - Register new user
-- `POST /api/auth/login` - Login with email/password
-- `POST /api/auth/logout` - Logout current session
-- `POST /api/auth/logout-all` - Logout all devices
-- `POST /api/auth/refresh` - Refresh access token
-- `GET /api/auth/me` - Get current user
-- `GET /api/auth/oauth/:provider` - Initiate OAuth flow
-- `GET /api/auth/oauth/:provider/callback` - OAuth callback
-- `POST /api/auth/verify-email` - Verify email address
-- `POST /api/auth/forgot-password` - Request password reset
-- `POST /api/auth/reset-password` - Reset password with token
-
-### Organization Endpoints
-
-- `POST /api/organizations` - Create organization
-- `GET /api/organizations` - List user's organizations
-- `GET /api/organizations/:id` - Get organization details
-- `PUT /api/organizations/:id` - Update organization
-- `DELETE /api/organizations/:id` - Delete organization
-- `GET /api/organizations/:id/members` - List organization members
-- `POST /api/organizations/:id/invite` - Invite user to organization
-- `PUT /api/organizations/:id/members/:userId` - Update member role
-- `DELETE /api/organizations/:id/members/:userId` - Remove member
-- `POST /api/organizations/:id/leave` - Leave organization
-
-### User Endpoints
-
-- `GET /api/users/profile` - Get user profile
-- `PUT /api/users/profile` - Update profile
-- `PUT /api/users/settings` - Update settings
-- `POST /api/users/change-password` - Change password
-- `DELETE /api/users/account` - Delete account
-- `GET /api/users/api-keys` - List API keys
-- `POST /api/users/api-keys` - Create API key
-- `DELETE /api/users/api-keys/:id` - Revoke API key
-
-## Security Features
-
-### Password Security
-- Minimum length enforcement (default: 8 characters)
-- Character requirements (uppercase, lowercase, numbers, special)
-- bcrypt hashing with configurable rounds
-- Password strength validation
-
-### Token Security
-- Short-lived access tokens (15 minutes)
-- Long-lived refresh tokens (7 days)
-- Refresh token rotation
-- Token revocation support
-- Secure httpOnly cookies for refresh tokens
-
-### Rate Limiting
-- Authentication endpoints: 5 requests per 15 minutes
-- API endpoints: 100 requests per 15 minutes
-- Configurable limits per endpoint
-
-### Additional Security
-- Helmet.js for security headers
-- CORS configuration
-- CSRF protection (planned)
-- SQL injection prevention
-- XSS protection
-- Input validation and sanitization
 
 ## Configuration
 
-### Environment Variables
+The active Nest module reads:
 
 ```env
-# JWT Configuration
-JWT_ACCESS_SECRET=your-secret-key
-JWT_REFRESH_SECRET=your-refresh-secret
-JWT_ACCESS_EXPIRES_IN=15m
-JWT_REFRESH_EXPIRES_IN=7d
-
-# OAuth Providers
-GITHUB_CLIENT_ID=your-github-client-id
-GITHUB_CLIENT_SECRET=your-github-secret
-GOOGLE_CLIENT_ID=your-google-client-id
-GOOGLE_CLIENT_SECRET=your-google-secret
-
-# Security
-BCRYPT_ROUNDS=10
-PASSWORD_MIN_LENGTH=8
-MAX_LOGIN_ATTEMPTS=5
+JWT_SECRET=your-secret-key
 ```
 
-## Usage Examples
+If `JWT_SECRET` is not configured, the module falls back to `your-secret-key`. That fallback is acceptable only for local development and must not be used for production.
 
-### Protecting Routes
-
-```typescript
-// Require authentication
-router.get('/protected', 
-  authMiddleware.authenticate, 
-  (req, res) => {
-    // Access req.userId and req.user
-  }
-);
-
-// Require organization context
-router.get('/org/:organizationId/data',
-  authMiddleware.authenticate,
-  authMiddleware.requireOrganization,
-  rbacMiddleware.requirePermission('org:read'),
-  (req, res) => {
-    // Access req.organizationId and req.userRole
-  }
-);
-
-// Require specific role
-router.post('/admin-action',
-  authMiddleware.authenticate,
-  authMiddleware.requireOrganization,
-  rbacMiddleware.requireMinRole('admin'),
-  (req, res) => {
-    // Only admins and owners can access
-  }
-);
-```
-
-### Client Integration
+## Client Example
 
 ```typescript
-// Login
-const response = await fetch('/api/auth/login', {
+const loginResponse = await fetch('/api/auth/login', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ email, password }),
-  credentials: 'include', // Include cookies
 });
 
-const { access_token, user } = await response.json();
+const { accessToken, user } = await loginResponse.json();
 
-// Make authenticated request
-const data = await fetch('/api/protected', {
+const protectedResponse = await fetch('/api/workspaces', {
   headers: {
-    'Authorization': `Bearer ${access_token}`,
+    Authorization: `Bearer ${accessToken}`,
   },
 });
-
-// Refresh token
-const refreshResponse = await fetch('/api/auth/refresh', {
-  method: 'POST',
-  credentials: 'include', // Send refresh token cookie
-});
 ```
 
-## Database Schema
+## Implemented Security Controls
 
-### Users Table
-- id (UUID, primary key)
-- email (unique)
-- password_hash
-- first_name, last_name
-- email_verified_at
-- settings (JSONB)
+- DTO validation through Nest validation pipes.
+- bcrypt password hashing.
+- JWT bearer authentication.
+- Helmet and CORS configured in `main.ts`.
+- Cookie parser is installed globally, but auth tokens are not currently issued as cookies.
 
-### Organizations Table
-- id (UUID, primary key)
-- name
-- slug (unique)
-- settings (JSONB)
+## Not Yet Implemented
 
-### Memberships Table
-- user_id (foreign key)
-- organization_id (foreign key)
-- team_id (optional)
-- role (owner|admin|member|viewer)
-- permissions (JSONB)
+These are planned or partially scaffolded, but not active product behavior:
 
-### Refresh Tokens Table
-- id (UUID, primary key)
-- user_id (foreign key)
-- token (unique)
-- expires_at
-- revoked_at
+- Refresh endpoint and refresh-token rotation.
+- Logout and logout-all endpoints.
+- OAuth provider routes.
+- Email verification.
+- Forgot-password and reset-password flow.
+- API key management.
+- Auth rate limiting.
+- CSRF protection.
+- Session management UI.
+- Two-factor authentication.
+- Audit logging.
 
-### OAuth Accounts Table
-- user_id (foreign key)
-- provider
-- provider_user_id
-- profile (JSONB)
+## Database Entities Used
 
-## Testing
+The active auth service uses:
 
-Run authentication tests:
+- `User`
+- `Organization`
+- `Membership`
+
+Refresh-token and OAuth-account persistence are not part of the current active Nest auth flow.
+
+## Tests
+
+Run backend tests from the backend package:
+
 ```bash
-npm test -- auth
+cd backend
+npm run test -- auth
 ```
 
-## Future Enhancements
-
-- [ ] Two-factor authentication (2FA)
-- [ ] Email verification with tokens
-- [ ] Password reset email flow
-- [ ] Session management UI
-- [ ] Audit logging
-- [ ] IP-based restrictions
-- [ ] Device fingerprinting
-- [ ] Biometric authentication support
+If no auth-specific tests are discovered, add tests before relying on auth behavior for production gates.

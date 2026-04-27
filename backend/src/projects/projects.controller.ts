@@ -11,6 +11,8 @@ import {
   HttpStatus,
   UseGuards,
   Request,
+  BadRequestException,
+  NotFoundException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -32,15 +34,30 @@ import {
   ProjectDashboardDto,
 } from './dto/project-response.dto';
 
-// TODO: Implement JwtAuthGuard when auth module is ready
-// import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 @ApiTags('projects')
 @Controller('projects')
-// @UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard)
 @ApiBearerAuth('JWT-auth')
 export class ProjectsController {
   constructor(private readonly projectsService: ProjectsService) {}
+
+  private getOrganizationId(req: any): string {
+    const organizationId = req.user?.organizationId;
+    if (!organizationId) {
+      throw new BadRequestException('Authenticated project requests require organizationId in the JWT payload');
+    }
+    return organizationId;
+  }
+
+  private getUserId(req: any): string {
+    const userId = req.user?.id || req.user?.userId;
+    if (!userId) {
+      throw new BadRequestException('Authenticated project requests require userId in the JWT payload');
+    }
+    return userId;
+  }
 
   @Post()
   @ApiOperation({ 
@@ -64,9 +81,8 @@ export class ProjectsController {
     @Body() createProjectDto: CreateProjectDto,
     @Request() req: any,
   ): Promise<ProjectResponseDto> {
-    // TODO: Extract organizationId and userId from JWT token
-    const organizationId = req.user?.organizationId || 'temp-org-id';
-    const userId = req.user?.id || 'temp-user-id';
+    const organizationId = this.getOrganizationId(req);
+    const userId = this.getUserId(req);
     
     return this.projectsService.create(organizationId, userId, createProjectDto);
   }
@@ -85,7 +101,7 @@ export class ProjectsController {
     @Query() queryDto: ProjectQueryDto,
     @Request() req: any,
   ): Promise<ProjectListResponseDto> {
-    const organizationId = req.user?.organizationId || 'temp-org-id';
+    const organizationId = this.getOrganizationId(req);
     return this.projectsService.findAll(organizationId, queryDto);
   }
 
@@ -100,7 +116,7 @@ export class ProjectsController {
     type: ProjectDashboardDto,
   })
   async getDashboard(@Request() req: any): Promise<ProjectDashboardDto> {
-    const organizationId = req.user?.organizationId || 'temp-org-id';
+    const organizationId = this.getOrganizationId(req);
     return this.projectsService.getDashboard(organizationId);
   }
 
@@ -127,7 +143,7 @@ export class ProjectsController {
     @Param('id') id: string,
     @Request() req: any,
   ): Promise<ProjectResponseDto> {
-    const organizationId = req.user?.organizationId || 'temp-org-id';
+    const organizationId = this.getOrganizationId(req);
     return this.projectsService.findOne(organizationId, id);
   }
 
@@ -154,7 +170,7 @@ export class ProjectsController {
     @Param('id') id: string,
     @Request() req: any,
   ): Promise<ProjectWithStatsResponseDto> {
-    const organizationId = req.user?.organizationId || 'temp-org-id';
+    const organizationId = this.getOrganizationId(req);
     return this.projectsService.findOneWithStats(organizationId, id);
   }
 
@@ -186,7 +202,7 @@ export class ProjectsController {
     @Body() updateProjectDto: UpdateProjectDto,
     @Request() req: any,
   ): Promise<ProjectResponseDto> {
-    const organizationId = req.user?.organizationId || 'temp-org-id';
+    const organizationId = this.getOrganizationId(req);
     return this.projectsService.update(organizationId, id, updateProjectDto);
   }
 
@@ -213,7 +229,7 @@ export class ProjectsController {
     @Param('id') id: string,
     @Request() req: any,
   ): Promise<void> {
-    const organizationId = req.user?.organizationId || 'temp-org-id';
+    const organizationId = this.getOrganizationId(req);
     return this.projectsService.remove(organizationId, id);
   }
 
@@ -240,7 +256,7 @@ export class ProjectsController {
     @Param('id') id: string,
     @Request() req: any,
   ): Promise<ProjectResponseDto> {
-    const organizationId = req.user?.organizationId || 'temp-org-id';
+    const organizationId = this.getOrganizationId(req);
     return this.projectsService.restore(organizationId, id);
   }
 
@@ -267,7 +283,7 @@ export class ProjectsController {
     @Param('id') id: string,
     @Request() req: any,
   ): Promise<void> {
-    const organizationId = req.user?.organizationId || 'temp-org-id';
+    const organizationId = this.getOrganizationId(req);
     return this.projectsService.markAsAnalyzing(organizationId, id);
   }
 
@@ -294,7 +310,7 @@ export class ProjectsController {
     @Param('id') id: string,
     @Request() req: any,
   ): Promise<void> {
-    const organizationId = req.user?.organizationId || 'temp-org-id';
+    const organizationId = this.getOrganizationId(req);
     return this.projectsService.markAsAnalyzed(organizationId, id);
   }
 
@@ -321,7 +337,7 @@ export class ProjectsController {
     @Param('id') id: string,
     @Request() req: any,
   ): Promise<void> {
-    const organizationId = req.user?.organizationId || 'temp-org-id';
+    const organizationId = this.getOrganizationId(req);
     return this.projectsService.markAsError(organizationId, id);
   }
 
@@ -354,9 +370,8 @@ export class ProjectsController {
     @Query('days') days: number = 30,
     @Request() req: any,
   ): Promise<any> {
-    const organizationId = req.user?.organizationId || 'temp-org-id';
-    // return this.projectsService.getHistory(organizationId, id, days);
-    return { message: 'History endpoint temporarily disabled' };
+    this.getOrganizationId(req);
+    throw new NotFoundException(`Analysis history is not exposed by ProjectsController for project ${id}. Use the MCP change-history tools for project history.`);
   }
 
   @Get(':id/compare')
@@ -395,9 +410,8 @@ export class ProjectsController {
     @Query('to') toVersion: string,
     @Request() req: any,
   ): Promise<any> {
-    const organizationId = req.user?.organizationId || 'temp-org-id';
-    // return this.projectsService.compareVersions(organizationId, id, fromVersion, toVersion);
-    return { message: 'Compare versions endpoint temporarily disabled' };
+    this.getOrganizationId(req);
+    throw new NotFoundException(`Version comparison is not exposed by ProjectsController for project ${id}. Use the MCP snapshot tools to inspect analyses over time.`);
   }
 
   @Post(':id/scan')
@@ -422,9 +436,8 @@ export class ProjectsController {
     @Param('id') id: string,
     @Request() req: any,
   ): Promise<any> {
-    const organizationId = req.user?.organizationId || 'temp-org-id';
-    // return this.projectsService.scanForIssues(organizationId, id);
-    return { message: 'Scan for issues endpoint temporarily disabled' };
+    this.getOrganizationId(req);
+    throw new NotFoundException(`Issue scanning is not exposed by ProjectsController for project ${id}. Use CAS implementation health, risks, and analysis errors.`);
   }
 
   @Get(':id/issues')
@@ -463,9 +476,8 @@ export class ProjectsController {
     @Query('status') status?: string,
     @Query('severity') severity?: string,
   ): Promise<any> {
-    const organizationId = req.user?.organizationId || 'temp-org-id';
-    // return this.projectsService.getIssues(organizationId, id, { status, severity });
-    return { message: 'Get issues endpoint temporarily disabled' };
+    this.getOrganizationId(req);
+    throw new NotFoundException(`Issues are not exposed by ProjectsController for project ${id}. Use CAS implementation health, risks, and analysis errors.`);
   }
 
   @Get(':id/hotspots')
@@ -497,8 +509,7 @@ export class ProjectsController {
     @Query('limit') limit: number = 10,
     @Request() req: any,
   ): Promise<any> {
-    const organizationId = req.user?.organizationId || 'temp-org-id';
-    // return this.projectsService.getBugHotspots(organizationId, id, limit);
-    return { message: 'Bug hotspots endpoint temporarily disabled' };
+    this.getOrganizationId(req);
+    throw new NotFoundException(`Bug hotspots are not exposed by ProjectsController for project ${id}. Use the MCP hot-spot tools over change history.`);
   }
 }

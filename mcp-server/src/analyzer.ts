@@ -1,5 +1,5 @@
 import { AnalyzerOrchestrator } from '../../backend/src/analyzer/core/orchestrator';
-import type { CASOutput, IncrementalState, ChangeReport } from '../../backend/src/types/cas.types';
+import type { CASOutput, IncrementalState, ChangeReport, ChangeHistoryEntry } from '../../backend/src/types/cas.types';
 import { TypeScriptJavaScriptAnalyzer } from '../../backend/src/analyzer/languages/typescript-javascript-analyzer';
 import { PythonAnalyzer } from '../../backend/src/analyzer/languages/python-analyzer';
 import { JavaAnalyzer } from '../../backend/src/analyzer/languages/java-analyzer';
@@ -23,7 +23,14 @@ import {
 } from '../../backend/src/analyzer/frameworks/web';
 import { JestAnalyzer, CypressAnalyzer } from '../../backend/src/analyzer/frameworks/testing';
 import { WPFAnalyzer, AspNetCoreAnalyzer } from '../../backend/src/analyzer/frameworks/dotnet';
-import { PrismaAnalyzer, SocketIOAnalyzer } from '../../backend/src/analyzer/libraries';
+import {
+  PrismaAnalyzer,
+  SocketIOAnalyzer,
+  ReactRouterAnalyzer,
+  ReduxAnalyzer,
+  ZustandAnalyzer,
+  TanStackQueryAnalyzer
+} from '../../backend/src/analyzer/libraries';
 import type { AnalyzerRegistration } from '../../backend/src/analyzer/core/orchestrator';
 import * as fs from 'fs-extra';
 import {
@@ -146,6 +153,10 @@ function getOrchestrator(): AnalyzerOrchestrator {
   const libraryRegistrations: AnalyzerRegistration[] = [
     { id: 'prisma', name: 'Prisma ORM Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['prisma', '@prisma/client'], files: ['prisma/schema.prisma'] }, requires: ['typescript-javascript'], analyzer: new PrismaAnalyzer() },
     { id: 'socketio', name: 'Socket.io Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['socket.io', 'socket.io-client'] }, requires: ['typescript-javascript'], analyzer: new SocketIOAnalyzer() },
+    { id: 'react-router', name: 'React Router Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['react-router-dom', 'react-router'] }, requires: ['typescript-javascript'], analyzer: new ReactRouterAnalyzer() },
+    { id: 'redux', name: 'Redux/RTK Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@reduxjs/toolkit', 'redux'] }, requires: ['typescript-javascript'], analyzer: new ReduxAnalyzer() },
+    { id: 'zustand', name: 'Zustand Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['zustand'] }, requires: ['typescript-javascript'], analyzer: new ZustandAnalyzer() },
+    { id: 'tanstack-query', name: 'TanStack Query Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@tanstack/react-query', 'react-query', '@tanstack/vue-query', '@tanstack/svelte-query'] }, requires: ['typescript-javascript'], analyzer: new TanStackQueryAnalyzer() },
   ];
 
   for (const reg of [...languageRegistrations, ...frameworkRegistrations, ...libraryRegistrations]) {
@@ -164,6 +175,7 @@ export async function analyzeProject(projectPath: string): Promise<CASOutput> {
   const result = await orch.orchestrateAnalysis(projectPath);
 
   await saveAnalysis(projectPath, result);
+  await saveAnalysisSnapshot(projectPath, result);
 
   return result;
 }
@@ -179,6 +191,125 @@ export interface IncrementalAnalysisResult {
   state: IncrementalState;
   changeReport: ChangeReport;
   wasFullRebuild: boolean;
+}
+
+function makeEdgeId(edge: { id?: string; source: string; target: string; type: string }): string {
+  return edge.id || `edge_${edge.source}_${edge.target}_${edge.type}`;
+}
+
+function hasReportChanges(report: ChangeReport): boolean {
+  const summary = report.summary;
+  return summary.filesAdded > 0 ||
+    summary.filesModified > 0 ||
+    summary.filesDeleted > 0 ||
+    summary.nodesAdded > 0 ||
+    summary.nodesModified > 0 ||
+    summary.nodesDeleted > 0 ||
+    summary.edgesAdded > 0 ||
+    summary.edgesModified > 0 ||
+    summary.edgesDeleted > 0 ||
+    (report.details.addedEntryPoints?.length || 0) > 0 ||
+    (report.details.modifiedEntryPoints?.length || 0) > 0 ||
+    (report.details.deletedEntryPoints?.length || 0) > 0 ||
+    (report.details.addedExitPoints?.length || 0) > 0 ||
+    (report.details.deletedExitPoints?.length || 0) > 0;
+}
+
+function buildChangeHistoryEntry(result: IncrementalAnalysisResult): ChangeHistoryEntry {
+  const report = result.changeReport;
+  const details = report.details;
+
+  return {
+    id: `change_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+    timestamp: report.timestamp,
+    gitCommitHash: result.state.gitCommitHash,
+    source: 'unknown',
+    changes: {
+      files: details.files || [],
+      nodes: [
+        ...details.addedNodes.map(node => ({
+          nodeId: node.id,
+          nodeName: node.name,
+          nodeType: node.type,
+          file: node.file,
+          changeType: 'added' as const,
+        })),
+        ...details.modifiedNodes.map(node => ({
+          nodeId: node.id,
+          nodeName: node.name,
+          nodeType: node.type || 'unknown',
+          file: node.file || 'unknown',
+          changeType: 'modified' as const,
+          semanticChange: node.changes.join(', '),
+        })),
+        ...details.deletedNodes.map(node => ({
+          nodeId: node.id,
+          nodeName: node.name,
+          nodeType: node.type,
+          file: node.file || 'unknown',
+          changeType: 'deleted' as const,
+        })),
+      ],
+      edges: [
+        ...details.addedEdges.map(edge => ({
+          edgeId: makeEdgeId(edge),
+          source: edge.source,
+          target: edge.target,
+          edgeType: edge.type,
+          changeType: 'added' as const,
+        })),
+        ...details.deletedEdges.map(edge => ({
+          edgeId: makeEdgeId(edge),
+          source: edge.source,
+          target: edge.target,
+          edgeType: edge.type,
+          changeType: 'deleted' as const,
+        })),
+      ],
+      entryPoints: [
+        ...(details.addedEntryPoints || []).map(entryPoint => ({
+          entryPointId: entryPoint.id,
+          name: entryPoint.name,
+          changeType: 'added' as const,
+        })),
+        ...(details.modifiedEntryPoints || []).map(entryPoint => ({
+          entryPointId: entryPoint.id,
+          name: entryPoint.name,
+          changeType: 'modified' as const,
+          details: entryPoint.details,
+        })),
+        ...(details.deletedEntryPoints || []).map(entryPoint => ({
+          entryPointId: entryPoint.id,
+          name: entryPoint.name,
+          changeType: 'deleted' as const,
+        })),
+      ],
+      exitPoints: [
+        ...(details.addedExitPoints || []).map(exitPoint => ({
+          exitPointId: exitPoint.id,
+          name: exitPoint.name,
+          changeType: 'added' as const,
+        })),
+        ...(details.deletedExitPoints || []).map(exitPoint => ({
+          exitPointId: exitPoint.id,
+          name: exitPoint.name,
+          changeType: 'deleted' as const,
+        })),
+      ],
+    },
+    semanticSummary: result.wasFullRebuild
+      ? 'Full rebuild triggered'
+      : `${report.summary.filesAdded + report.summary.filesModified + report.summary.filesDeleted} files changed; ${report.summary.nodesAdded} nodes added, ${report.summary.nodesModified} modified, ${report.summary.nodesDeleted} deleted`,
+    intent: {
+      type: 'unknown' as const,
+      confidence: 0,
+      evidence: [],
+    },
+    impact: report.impact,
+    suggestedActions: [],
+    breakingChanges: [],
+    minimumTestSet: [],
+  };
 }
 
 export async function analyzeProjectIncremental(projectPath: string): Promise<IncrementalAnalysisResult> {
@@ -224,44 +355,8 @@ export async function analyzeProjectIncremental(projectPath: string): Promise<In
   await saveAnalysis(projectPath, result.output);
   await saveIncrementalState(projectPath, result.state);
 
-  if (result.changeReport.summary.nodesAdded > 0 ||
-      result.changeReport.summary.nodesModified > 0 ||
-      result.changeReport.summary.nodesDeleted > 0) {
-    await saveChangeHistoryEntry(projectPath, {
-      id: `change_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      timestamp: result.changeReport.timestamp,
-      gitCommitHash: result.state.gitCommitHash,
-      source: 'unknown',
-      changes: {
-        files: result.changeReport.summary.filesAdded +
-               result.changeReport.summary.filesModified +
-               result.changeReport.summary.filesDeleted > 0
-          ? [{
-              path: 'multiple',
-              type: 'modified' as const,
-              linesAdded: 0,
-              linesRemoved: 0
-            }]
-          : [],
-        nodes: [],
-        edges: [],
-        entryPoints: [],
-        exitPoints: []
-      },
-      semanticSummary: result.wasFullRebuild
-        ? 'Full rebuild triggered'
-        : `${result.changeReport.summary.nodesAdded} nodes added, ${result.changeReport.summary.nodesModified} modified, ${result.changeReport.summary.nodesDeleted} deleted`,
-      intent: {
-        type: 'unknown' as const,
-        confidence: 0,
-        evidence: []
-      },
-      impact: result.changeReport.impact,
-      suggestedActions: [],
-      breakingChanges: [],
-      minimumTestSet: []
-    });
-
+  if (hasReportChanges(result.changeReport)) {
+    await saveChangeHistoryEntry(projectPath, buildChangeHistoryEntry(result));
     await saveAnalysisSnapshot(projectPath, result.output);
   }
 

@@ -1,34 +1,56 @@
 # Code Analysis Specification (CAS)
 
-> **Current Version:** [1.1.0](./SPECIFICATION.md)
+> **Current Version:** [1.8.0](./SPECIFICATION.md)
 > **Status:** Active
 > **Full Specification:** [SPECIFICATION.md](./SPECIFICATION.md)
 
 ## Overview
 
-The Code Analysis Specification (CAS) defines how Unravl analyzes, structures, and represents codebases as interconnected nodes and edges. It enables multiple analytical perspectives through a flexible tagging and hierarchy system that adapts to different languages, frameworks, and libraries.
+The Code Analysis Specification (CAS) is Unravl's source-of-truth format for understanding software systems. CAS represents a codebase as a complete relationship graph that can be inspected by humans in the UI and queried by AI agents through MCP.
+
+CAS exists so Unravl can answer behavior-level questions:
+
+- What did this codebase actually build?
+- How does a feature flow from entry point to exit point?
+- What calls this node, and what does this node call?
+- What data, tests, and security boundaries are involved?
+- What changed recently, and how risky is a modification?
 
 ## Core Concepts
 
+### Shared Truth Layer
+
+CAS is the shared model behind both product surfaces:
+
+- **UI:** human inspection and verification of AI-built or human-built systems.
+- **MCP:** agent access to codebase context without file-by-file rediscovery.
+
+The UI and MCP server should render or query CAS. They should not invent relationships that belong in the analyzer output.
+
 ### Multi-Perspective Analysis
+
 Every codebase can be understood from multiple perspectives:
-- **Language perspective**: Basic code constructs (classes, functions, variables)
-- **Framework perspective**: Framework-specific patterns (controllers, services, components)
-- **Library perspective**: Library-specific patterns (reducers, sagas, queries)
-- **Domain perspective**: Business logic organization (features, modules, bounded contexts)
+
+- **Language perspective:** classes, functions, methods, variables, imports, and files.
+- **Framework perspective:** controllers, services, components, routes, hooks, modules, guards, and framework conventions.
+- **Library perspective:** ORMs, state libraries, routing, data fetching, realtime, testing, and package-specific behavior.
+- **Domain perspective:** capabilities, workflows, business concepts, data entities, and critical flows.
 
 ### Progressive Disclosure
-The CAS supports progressive disclosure through hierarchical levels, allowing consumers (UI, MCP) to request only the depth of information needed, from high-level architecture down to individual functions.
+
+CAS supports progressive disclosure through levels and targeted query surfaces. Consumers can start with the system overview, then drill into modules, flows, nodes, callers, callees, tests, data entities, risks, and history.
 
 ## Version History
 
 ### [v1.0.0](./v1.0.0.md) - Initial Specification
+
 - Basic node and edge structure
 - Simple type and subcategory system
 - Language analyzer foundation
 - Initial framework analyzers
 
 ### [v1.1.0](./v1.1.0.md) - Multi-Perspective Architecture with Comprehensive Metadata
+
 - Tag-based node classification replacing type/subcategory system
 - Multiple analyzer perspectives with independent hierarchies
 - Rich documentation and purpose tracking
@@ -41,38 +63,93 @@ The CAS supports progressive disclosure through hierarchical levels, allowing co
 - Data flow and transformation tracking
 - Progressive disclosure support for efficient querying
 
+### [v1.2.0](./v1.2.0.md) - Perspective and Pattern Refinement
+
+- Expanded multi-perspective support
+- Enhanced pattern representation
+- Improved hierarchy and disclosure semantics
+
+### [v1.3.0](./v1.3.0-rfp.md) - Call Graph Tracking
+
+- Method invocation analysis
+- Call chain structures
+- Decorator metadata and framework call context
+
+### [v1.4.0](./v1.4.0-rfp.md) - Documentation and Implementation Health
+
+- Documentation extraction
+- Comments and TODO tracking
+- Implementation status and health summaries
+
+### [v1.5.0](./v1.5.0-rfp.md) - Class Relationships and Pattern Variations
+
+- Class-level relationship edges
+- Enhanced entry point paths and guard detection
+- Pattern variations and deviations
+
+### [v1.6.0](./v1.6.0-rfp.md) - Test Architecture
+
+- Test suites, test cases, mocks, fixtures, and assertions
+- Test-to-code relationships
+- Coverage summaries and test gap detection
+
+### [v1.7.0](./v1.7.0-rfp.md) - Inference-Based Intelligence
+
+- Intent inference
+- Critical flow summaries
+- Change risk
+- Data entities
+- Security boundaries
+- Flow coverage
+- Temporal stability
+
+### [v1.8.0](./v1.8.0-rfp.md) - Incremental Analysis
+
+- Change detection
+- Incremental state
+- File cache
+- Change history
+- Analysis snapshots
+- Impact analysis
+- Runtime-to-static correlation
+- Evidence-backed analysis facts
+- Semantic change impact
+- Cross-repository link confidence
+
 ## Key Principles
 
-1. **Analyzers Don't Compete, They Collaborate**: Each analyzer adds its perspective without overwriting others
-2. **Tags Over Types**: Nodes have multiple tags rather than a single type, enabling multi-faceted classification
-3. **Hierarchies Are Perspective-Specific**: Each analyzer defines its own organizational hierarchy
-4. **Progressive Enhancement**: Language analyzers provide the base, frameworks add specificity
-5. **Query From Any Angle**: Users can explore and query the codebase from any analytical perspective
+1. **CAS is authoritative:** downstream surfaces render or query the graph; they do not compute missing relationships.
+2. **Analyzers collaborate:** language, framework, library, pattern, and domain analyzers hydrate the same output.
+3. **Relationships matter most:** nodes are useful only when callers, callees, containment, data access, tests, entry points, and exits are connected.
+4. **Framework semantics are first-class:** a controller, hook, route, repository, guard, and test are product concepts, not just syntax.
+5. **Humans and agents share the same truth:** the UI and MCP should expose different views of the same CAS output.
 
 ## Implementation
 
-The CAS is implemented through a series of analyzers that work together:
+The CAS is implemented through analyzers that work together:
 
-1. **Language Analyzers**: Create the foundational nodes (TypeScript, Python, Java, etc.)
-2. **Framework Analyzers**: Tag and enhance nodes with framework-specific metadata (NestJS, React, Django, etc.)
-3. **Library Analyzers**: Add library-specific patterns and relationships (Redux, MikroORM, etc.)
-4. **Pattern Analyzers**: Identify cross-cutting concerns (authentication, caching, logging)
-
-Each analyzer declares its capabilities, dependencies, and the perspectives it provides.
+1. **Language analyzers:** create foundational code nodes.
+2. **Framework analyzers:** add framework-specific roles and relationships.
+3. **Library analyzers:** add package-specific metadata and behavior.
+4. **Pattern analyzers:** identify cross-cutting conventions, deviations, and risks.
+5. **Incremental analysis:** tracks what changed and reuses prior analysis where possible.
 
 ## Usage
 
 The CAS enables:
-- **Unravl UI**: Interactive visualization with multiple viewing perspectives
-- **MCP Services**: AI assistants that understand codebases from any angle
-- **Analysis APIs**: Programmatic access to multi-perspective codebase understanding
+
+- **Unravl UI:** visual inspection, drilldown, and behavior verification.
+- **MCP server:** AI agents that query codebase context directly.
+- **Analysis APIs:** programmatic access to system structure, flow, risk, tests, and history.
 
 ## Contributing
 
 When adding new analyzers or perspectives:
-1. Define the tags your analyzer will use
-2. Specify the hierarchical organization for your perspective
-3. Document how your analyzer collaborates with others
-4. Provide examples of the insights your perspective enables
 
-See the latest version specification for detailed implementation guidelines.
+1. Define the nodes, tags, and metadata your analyzer contributes.
+2. Define the relationships it must create or hydrate.
+3. Preserve analyzer attribution.
+4. Avoid duplicate nodes when an existing node can be enhanced.
+5. Add query/MCP documentation for any new CAS field that should be visible downstream.
+
+See [SPECIFICATION.md](./SPECIFICATION.md) for detailed implementation guidelines.

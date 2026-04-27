@@ -554,7 +554,7 @@ export const CallChainVisualization: React.FC<CallChainVisualizationProps> = ({
                     fill="white"
                     fontSize="10"
                   >
-                    ⚠️ BOTTLENECK
+                    BOTTLENECK
                   </text>
                 )}
               </g>

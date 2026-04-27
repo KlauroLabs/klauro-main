@@ -110,10 +110,12 @@ interface CASOutput {
   exit_points: ExitPoint[];        // Added in v1.1.0
   external_services: ExternalService[]; // Added in v1.1.0, filtered in v1.5.0
 
-  repository_links?: RepositoryLink[];
+  repository_links?: CrossRepositoryLink[];
+  cross_repository_links?: CrossRepositoryLink[]; // Backward-compatible alias
   dependencies?: Dependencies;
   disclosure?: DisclosureHints;     // Added in v1.1.0
   analyzer_contributions: AnalyzerContribution[];
+  progressive_levels?: ProgressiveLevels;
 
   perspectives?: CASPerspective[];  // Added in v1.2.0
 
@@ -146,6 +148,12 @@ interface CASOutput {
   test_gaps?: CASTestGap[];                     // Added in v1.7.0
   temporal_stability?: CASTemporalStability[];  // Added in v1.7.0
   stability_summary?: CASStabilitySummary;      // Added in v1.7.0
+
+  // v1.8.0 Analysis Truth and Runtime Readiness
+  configuration?: CASConfiguration;              // Runtime/configuration signals inferred from code
+  runtime?: CASRuntime;                          // Deployment, monitoring, and instrumentation readiness
+  runtime_static_links?: CASRuntimeStaticLink[]; // Static objects mapped to runtime signals
+  analysis_facts?: CASAnalysisFact[];            // Evidence-backed claims behind CAS objects
 
   metadata?: SystemMetadata;
 }
@@ -716,29 +724,40 @@ External system interactions:
 ```typescript
 interface ExitPoint {
   id: string;
-  type: 'database' | 'api' | 'file' | 'cache' | 'queue' |
-        'email' | 'storage' | 'other';
+  source_node: string;
+  source_analyzer?: string;
+  type: 'database' | 'api' | 'file' | 'message' | 'event' |
+        'cache' | 'sdk' | 'webhook' | 'navigation' |
+        'client_storage' | 'analytics';
   name: string;
   description?: string;
 
-  target: {
-    system?: string;      // External system name
-    endpoint?: string;    // API endpoint, table name, etc.
-    protocol?: string;    // HTTP, AMQP, etc.
+  target?: {
+    service_id?: string;
+    endpoint?: string;
+    resource?: string;
+    sdk?: string;
   };
 
-  operations?: Array<{
-    type: string;         // SELECT, INSERT, GET, POST, etc.
-    frequency?: 'high' | 'medium' | 'low';
-  }>;
-
-  calling_nodes: string[]; // Node IDs that use this exit
-
-  authentication?: {
+  operation?: {
+    action?: string;
     method?: string;
-    config_location?: string;
+    async?: boolean;
   };
 
+  data?: {
+    input_type?: string;
+    output_type?: string;
+    transformation_node?: string;
+  };
+
+  reliability?: {
+    retry_attempts?: number;
+    timeout_ms?: number;
+    circuit_breaker?: boolean;
+  };
+
+  connected_nodes?: string[];
   metadata?: Record<string, any>;
 }
 ```
@@ -750,35 +769,151 @@ Third-party service dependencies:
 interface ExternalService {
   id: string;
   name: string;
-  type: 'api' | 'database' | 'cache' | 'queue' | 'storage' |
-        'auth' | 'payment' | 'notification' | 'analytics' | 'other';
+  type: string;
+  purpose?: 'consumption' | 'production' | 'bidirectional';
+  description?: string;
+  endpoint?: string;
   provider?: string;
-  version?: string;
+  usage_pattern?: {
+    frequency?: string;
+    criticality?: string;
+    operations?: string[];
+  };
+  connected_nodes?: string[];
+  entry_points?: string[];
+  exit_points?: string[];
+  configuration?: Record<string, any>;
+  monitoring?: {
+    health_check?: string;
+    metrics?: string[];
+  };
+  cost?: {
+    model?: string;
+    estimated_monthly?: string;
+  };
+}
+```
 
-  connection: {
-    protocol: string;
-    host?: string;
-    port?: number;
+#### CrossRepositoryLink
+Deterministic links between this analysis and another repository or system boundary:
+
+```typescript
+interface CrossRepositoryLink {
+  id: string;
+  type: 'api' | 'library' | 'shared-schema' | 'message-contract' | 'shared-database';
+  source_repository?: {
+    url?: string;
+    node_ids?: string[];
     path?: string;
   };
-
-  usage: {
-    nodes: string[];      // Node IDs using this service
-    operations: string[];
-    frequency?: 'high' | 'medium' | 'low';
+  target_repository?: {
+    url?: string;
+    node_ids?: string[];
+    path?: string;
   };
-
-  configuration?: {
-    source?: 'environment' | 'file' | 'hardcoded';
-    location?: string;
+  connection?: {
+    protocol?: string;
+    endpoint?: string;
+    method?: string;
+    contract?: string;
+    package_name?: string;
+    version?: string;
+    broker?: string;
+    exchange?: string;
+    routing_key?: string;
+    message_schema?: string;
   };
+  metadata?: {
+    verified?: boolean;
+    last_sync?: string;
+    breaking_changes?: boolean;
+    confidence?: number;
+    evidence?: CASFactEvidence[];
+  };
+}
+```
 
-  criticality?: 'critical' | 'important' | 'optional';
+#### CASRuntime
+Runtime and instrumentation readiness inferred from code and configuration:
 
-  is_builtin?: boolean;          // v1.5.0: true for Object, Array, Promise, etc.
-  is_standard_library?: boolean; // v1.5.0: true for fs, path, crypto, etc.
+```typescript
+interface CASRuntime {
+  deployment?: {
+    type?: string;
+    orchestration?: string;
+  };
+  performance?: {
+    request_duration_p50?: string;
+    request_duration_p95?: string;
+    request_duration_p99?: string;
+  };
+  dependencies?: {
+    runtime?: string;
+    system_libraries?: string[];
+    external_services?: string[];
+  };
+  monitoring?: {
+    health_check?: string;
+    readiness_check?: string;
+    metrics_endpoint?: string;
+    logging?: {
+      level?: string;
+      format?: string;
+      destinations?: string[];
+    };
+  };
+  instrumentation?: {
+    instrumentable_entry_points: string[];
+    instrumentable_exit_points: string[];
+    observed_call_chains: string[];
+    missing_runtime_coverage: string[];
+  };
+}
+```
 
-  metadata?: Record<string, any>;
+#### CASRuntimeStaticLink
+Bridge between a static CAS object and the runtime signal that would validate it:
+
+```typescript
+interface CASRuntimeStaticLink {
+  id: string;
+  kind: 'entry-point' | 'exit-point' | 'call-chain' | 'external-service' | 'telemetry-hook';
+  static_id: string;
+  runtime_signal: string;
+  telemetry_status: 'observed' | 'instrumentable' | 'not-instrumented';
+  confidence: number;
+  instrumentation_points: string[];
+  evidence: CASFactEvidence[];
+}
+```
+
+#### CASAnalysisFact
+Evidence-backed claims explaining why CAS contains a relationship, flow, or object:
+
+```typescript
+interface CASFactEvidence {
+  kind: 'source-location' | 'analyzer' | 'configuration' | 'dependency' |
+        'route' | 'runtime-signal' | 'naming' | 'graph';
+  source: string;
+  file?: string;
+  line?: number;
+  excerpt?: string;
+  confidence: number;
+}
+
+interface CASAnalysisFact {
+  id: string;
+  subject_type: 'node' | 'edge' | 'entry_point' | 'exit_point' |
+                'external_service' | 'workflow' | 'capability' |
+                'runtime_link' | 'repository_link';
+  subject_id: string;
+  fact_type: 'definition' | 'relationship' | 'entry' | 'exit' |
+             'workflow' | 'capability' | 'runtime-correlation' |
+             'cross-repository';
+  claim: string;
+  confidence: number;
+  produced_by: string;
+  evidence: CASFactEvidence[];
 }
 ```
 
@@ -790,6 +925,7 @@ Architectural and design patterns with variation tracking:
 ```typescript
 interface CASPattern {
   id: string;
+  type?: 'design-pattern' | 'architectural-pattern' | 'anti-pattern';
   name: string;
   description?: string;
   confidence: number;           // 0-1 confidence score
@@ -823,6 +959,31 @@ interface CASPatternDeviation {
 1. When same pattern has multiple implementation approaches, create variations
 2. Calculate percentage as `(variation.instances.length / pattern.instances.length) * 100`
 3. Flag deviations when variations suggest inconsistency (e.g., <90% adoption of preferred approach)
+
+#### Standard Pattern Catalog
+
+CAS defines these standard pattern IDs so analyzer output is comparable across repositories:
+
+| Pattern ID | Type | Detection Criteria | Required Variations |
+|------------|------|--------------------|---------------------|
+| `repository-pattern` | design-pattern | Nodes typed/tagged as repositories, names ending in `Repository` or `Repo`, or files under repository/data-access directories | `dependency-injection`, `manual-instantiation` when both appear |
+| `service-layer-pattern` | design-pattern | Nodes typed/tagged as services or names ending in `Service` that encapsulate business operations | `dependency-injection`, `standalone` when both appear |
+| `controller-pattern` | design-pattern | Controller, resolver, route handler, page, or view nodes that receive external input | `rest-api`, `graphql-resolver`, `page-route`, or framework-specific route style |
+| `dependency-injection-pattern` | design-pattern | Constructor/property injection, provider registration, injectable decorators, or DI container bindings | `constructor-injection`, `provider-module`, `property-injection` when detectable |
+| `module-pattern` | architectural-pattern | Module/package/bounded-context nodes grouping related providers, routes, components, or exports | `feature-module`, `core-module`, `shared-module` when detectable |
+| `guard-pattern` | design-pattern | Guard, middleware, policy, interceptor, permission, or auth enforcement nodes | `authentication-guard`, `role-based-guard`, `custom-guard` |
+| `layered-architecture` | architectural-pattern | Consistent entry/business/data/infrastructure layering visible through node tags and edges | Layer names present in `flow_graph.layers` |
+| `mvc` | architectural-pattern | Model, view/page/template, and controller/handler roles connected through routes or framework conventions | `server-rendered`, `api-plus-client`, or framework-specific style |
+| `circular-dependency-anti-pattern` | anti-pattern | Cycle detected in imports, `depends_on`, or `uses` edges | Each cycle represented as a deviation |
+| `god-object-anti-pattern` | anti-pattern | Node exceeds configured size, complexity, or member-count thresholds | Each oversized node represented as a deviation |
+
+Deviation severity SHOULD be assigned consistently:
+
+- `error` when the pattern can break correctness or block analysis, such as circular dependencies.
+- `warning` when the pattern creates maintainability risk, such as oversized objects or mixed repository styles.
+- `info` when the analyzer finds a weaker consistency issue that does not imply immediate risk.
+
+Analyzers MAY emit additional framework- or language-specific pattern IDs, but SHOULD map common concepts back to the catalog above when possible.
 
 ### 4.9 Test Structures (v1.6.0)
 
@@ -1414,7 +1575,56 @@ interface CASImplementationHealth {
 }
 ```
 
-### 4.9 Core Supporting Types
+### 4.12 Incremental Analysis Structures (v1.8.0)
+
+#### ChangeReport
+Semantic and structural summary of an incremental analysis run:
+
+```typescript
+interface ChangeReport {
+  timestamp: string;
+  previousAnalysis: string;
+  currentAnalysis: string;
+  summary: {
+    filesAdded: number;
+    filesModified: number;
+    filesDeleted: number;
+    nodesAdded: number;
+    nodesModified: number;
+    nodesDeleted: number;
+    edgesAdded: number;
+    edgesModified: number;
+    edgesDeleted: number;
+  };
+  impact: ImpactAnalysis;
+  semantic_impact?: ChangeSemanticImpact;
+  details: {
+    files?: FileChange[];
+    addedNodes: Array<{ id: string; name: string; type: string; file: string }>;
+    modifiedNodes: Array<{ id: string; name: string; type?: string; file?: string; changes: string[] }>;
+    deletedNodes: Array<{ id: string; name: string; type: string; file?: string }>;
+    addedEdges: Array<{ id?: string; source: string; target: string; type: string }>;
+    deletedEdges: Array<{ id?: string; source: string; target: string; type: string }>;
+    addedEntryPoints?: Array<{ id: string; name: string }>;
+    modifiedEntryPoints?: Array<{ id: string; name: string; details?: string }>;
+    deletedEntryPoints?: Array<{ id: string; name: string }>;
+    addedExitPoints?: Array<{ id: string; name: string }>;
+    deletedExitPoints?: Array<{ id: string; name: string }>;
+  };
+  changeHistory?: ChangeHistoryEntry[];
+}
+
+interface ChangeSemanticImpact {
+  affected_workflows: Array<{ id: string; name: string; reason: string }>;
+  affected_capabilities: Array<{ id: string; name: string; reason: string }>;
+  affected_data_entities: Array<{ id: string; name: string; reason: string }>;
+  affected_runtime_links: Array<{ id: string; runtime_signal: string; reason: string }>;
+  changed_contracts: Array<{ id: string; type: 'entry-point' | 'exit-point' | 'repository-link'; name: string }>;
+  risk_reasons: string[];
+}
+```
+
+### 4.13 Core Supporting Types
 
 #### SourceLocation
 File location information:
@@ -1665,6 +1875,29 @@ Capability detection strategies MUST vary based on the detected system type:
 - Capabilities are the functionality domains the exports provide
 - Group related exports into capability domains
 
+### 5.23 Runtime-to-Static Correlation (v1.8.0+)
+
+- `runtime_static_links` MUST reference existing entry points, exit points, call chains, external services, or telemetry hooks.
+- `runtime_signal` MUST name the runtime metric, route, operation, service, or event stream that validates the static object.
+- `telemetry_status` MUST be `observed` only when runtime evidence is present.
+- Static-only candidates MUST use `instrumentable` or `not-instrumented` and SHOULD list concrete `instrumentation_points`.
+- Runtime correlation MUST be emitted by CAS, not reconstructed by UI consumers.
+
+### 5.24 Evidence and Confidence (v1.8.0+)
+
+- `analysis_facts` SHOULD explain important CAS objects and relationships with evidence.
+- Each fact MUST include at least one evidence item.
+- Evidence SHOULD point to source locations, analyzer output, configuration, dependencies, routes, runtime signals, naming conventions, or graph structure.
+- Confidence MUST be expressed as a number from 0 to 1.
+- Cross-repository links SHOULD include `metadata.confidence` and evidence when the link is inferred rather than explicitly configured.
+
+### 5.25 Semantic Change Impact (v1.8.0+)
+
+- Incremental `ChangeReport` objects SHOULD include `semantic_impact`.
+- A changed node SHOULD be mapped to affected workflows, capabilities, data entities, and runtime links when those CAS objects reference the node directly or through a call chain.
+- Added, modified, or deleted entry points, exit points, and repository links SHOULD be listed as changed contracts.
+- `risk_reasons` SHOULD explain why the change matters beyond raw node or file counts.
+
 ## 6. Query Interface
 
 ### 6.1 Tag-Based Queries
@@ -1687,6 +1920,15 @@ Implementations SHOULD support:
 - Level-based retrieval
 - Incremental detail loading
 - Context preservation
+
+### 6.4 Evidence, Runtime, and Change Queries
+
+Implementations SHOULD support:
+- Retrieving runtime-static links by kind, telemetry status, and static object ID
+- Retrieving analysis facts by subject type, subject ID, and fact type
+- Retrieving change history by time range, file, node, entry point, grouping, and hot spots
+- Retrieving historical analysis snapshots by timestamp or snapshot ID
+- Returning semantic impact for incremental changes when workflow, capability, data, or runtime context is available
 
 ## 7. Extensions
 
@@ -2154,6 +2396,10 @@ This document has no IANA actions.
 - Generate `ChangeReport` for each incremental analysis
 - Store `ChangeHistoryEntry` records for change queries
 - Implement change detection using mtime, git, or content hash
+- Emit `runtime`, `runtime_static_links`, and instrumentation readiness so static analysis can be validated by telemetry
+- Emit `analysis_facts` with confidence and evidence for nodes, edges, flows, capabilities, runtime links, and repository links
+- Include `semantic_impact` in change reports for affected workflows, capabilities, data entities, contracts, and runtime links
+- Include confidence and evidence on cross-repository links inferred from APIs, shared packages, message contracts, schemas, or database usage
 
 **New analyzer interface:**
 ```typescript
@@ -2248,6 +2494,10 @@ All versions maintain backward compatibility:
   - Change history storage and querying
   - Impact analysis for changes
   - Full rebuild triggers for major changes
+  - Runtime-static correlation and instrumentation readiness
+  - Evidence-backed analysis facts with confidence
+  - Semantic impact reporting for workflows, capabilities, data entities, and contracts
+  - Cross-repository link confidence and evidence
 
 ### Appendix B: Language Support
 

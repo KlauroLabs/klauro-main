@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Unravl - User Flow Paths</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 40px 20px;
+            background: #f8f9fa;
+            color: #333;
+        }
+        h1 {
+            color: #1a1a2e;
+            border-bottom: 3px solid #667eea;
+            padding-bottom: 15px;
+        }
+        h2 {
+            color: #fff;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-top: 50px;
+        }
+        .diagram-box {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            padding: 30px;
+            margin: 20px 0 40px 0;
+        }
+        .mermaid {
+            display: flex;
+            justify-content: center;
+        }
+        .toc {
+            background: white;
+            padding: 20px 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            margin-bottom: 40px;
+        }
+        .toc ul {
+            list-style: none;
+            padding: 0;
+            columns: 2;
+        }
+        .toc li { margin: 8px 0; }
+        .toc a { color: #667eea; text-decoration: none; }
+        .toc a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <h1>Unravl - User Flow Paths</h1>
+    <p>Visual page-to-page navigation flows for designers</p>
+
+    <div class="toc">
+        <strong>Flows:</strong>
+        <ul>
+            <li><a href="#flow1">1. New User First Experience</a></li>
+            <li><a href="#flow2">2. Returning User Login</a></li>
+            <li><a href="#flow3">3. Visualization Navigation</a></li>
+            <li><a href="#flow4">4. Switching Workspaces</a></li>
+            <li><a href="#flow5">5. Adding a Codebase</a></li>
+            <li><a href="#flow6">6. Org Owner Inviting Members</a></li>
+            <li><a href="#flow7">7. Invited User Accepts</a></li>
+            <li><a href="#flow8">8. Managing Member Roles</a></li>
+            <li><a href="#flow9">9. Workspace Settings</a></li>
+            <li><a href="#flow10">10. User Account Settings</a></li>
+            <li><a href="#flow11">11. Billing & Upgrade</a></li>
+            <li><a href="#flow12">12. Codebase States</a></li>
+        </ul>
+    </div>
+
+    <h2 id="flow1">1. New User First Experience</h2>
+    <div class="diagram-box">
+        <div class="mermaid">
+flowchart TD
+    A[Landing Page] -->|Click Sign Up| B[Registration Page]
+    B -->|Fill form, submit| C{Valid?}
+    C -->|No| B
+    C -->|Yes| D[Workspaces Page\nempty state]
+    D -->|Click Create Workspace| E[Create Workspace Modal]
+    E -->|Cancel| D
+    E -->|Fill & Create| F[Workspace Dashboard\nno codebases]
+    F -->|Click Add Codebase| G[Add Codebase Modal]
+    G -->|Enter repo, submit| H[Workspace Dashboard\nshows Analyzing status]
+    H -->|Wait for completion| I[Workspace Dashboard\nshows Ready status]
+    I -->|Click codebase| J[System Overview]
+
+    style A fill:#667eea,color:#fff
+    style J fill:#4caf50,color:#fff
+        </div>
+    </div>
+
+    <h2 id="flow2">2. Returning User Login</h2>
+    <div class="diagram-box">
+        <div class="mermaid">
+flowchart TD
+    A[Landing Page] -->|Click Login| B[Login Page]
+    B -->|Enter credentials| C{Valid?}
+    C -->|No| D[Show error]
+    D --> B
+    C -->|Yes| E{Has workspaces?}
+    E -->|Yes| F[Workspaces Page\nshows workspace cards]
+    E -->|No| G[Workspaces Page\nempty state]
+
+    style A fill:#667eea,color:#fff
+    style F fill:#4caf50,color:#fff
+    style G fill:#ff9800,color:#fff
+        </div>
+    </div>
+
+    <h2 id="flow3">3. Visualization Navigation (Core Experience)</h2>
+    <div class="diagram-box">
+        <div class="mermaid">
+flowchart TD
+    A[Workspace Dashboard] -->|Click codebase| B[System Overview]
+
+    B -->|Click Section card| C[Section View]
+    C -->|Click endpoint| D[Flow View]
+    D -->|Click node| E[Node Detail Panel]
+    E -->|Click X| D
+    E -->|Click connected node| E
+    D -->|Click Back| C
+    C -->|Click Back| B
+
+    B -->|Click Architecture Diagram| F[Graph View]
+    F -->|Click node| G[Node Detail Panel]
+    F -->|Click Back| B
+
+    B -->|Click Patterns card| H[Patterns View]
+    H -->|Click pattern| I[Pattern Detail]
+    I -->|Click Back| H
+    H -->|Click Back| B
+
+    B -->|Click Testing card| J[Tests View]
+    J -->|Click test area| K[Test Area View]
+    K -->|Click Back| J
+    J -->|Click Back| B
+
+    B -->|Click Needs Attention| L[Health View]
+    L -->|Click item| M[Node Detail Panel]
+    L -->|Click Back| B
+
+    style A fill:#667eea,color:#fff
+    style B fill:#764ba2,color:#fff
+    style C fill:#3949ab,color:#fff
+    style D fill:#00897b,color:#fff
+    style E fill:#ff9800,color:#fff
+    style G fill:#ff9800,color:#fff
+    style M fill:#ff9800,color:#fff
+        </div>
+    </div>
+
+    <h2 id="flow4">4. Switching Workspaces</h2>
+    <div class="diagram-box">
+        <div class="mermaid">
+flowchart TD
+    A[Any Page] -->|Click workspace dropdown| B[Workspace Selector]
+    B -->|Click workspace| C[That Workspace Dashboard]
+    B -->|Click Create New| D[Create Workspace Modal]
+    B -->|Click View All| E[Workspaces Page]
+
+    style A fill:#667eea,color:#fff
+    style C fill:#4caf50,color:#fff
+        </div>
+    </div>
+
+    <h2 id="flow5">5. Adding a Codebase</h2>
+    <div class="diagram-box">
+        <div class="mermaid">
+flowchart TD
+    A[Workspace Dashboard] -->|Click + or Add Codebase| B[Add Codebase Modal]
+    B -->|Select source type| C{Source?}
+    C -->|Repository URL| D[Enter URL]
+    C -->|Local Path| E[Enter path]
+    D --> F[Configure settings]
+    E --> F
+    F -->|Click Add| G[Workspace Dashboard\nnew codebase with status]
+
+    style A fill:#667eea,color:#fff
+    style G fill:#4caf50,color:#fff
+        </div>
+    </div>
+
+    <h2 id="flow6">6. Org Owner - Inviting Members</h2>
+    <div class="diagram-box">
+        <div class="mermaid">
+flowchart TD
+    A[Workspace Dashboard] -->|Click Organization| B[Organization Dashboard]
+    B -->|Click Invite Member| C[Invite Modal]
+    C -->|Enter email| D[Select role]
+    D -->|Admin / Member / Viewer| E[Click Send]
+    E --> F[Organization Dashboard\nnew member with Pending badge]
+
+    style A fill:#667eea,color:#fff
+    style F fill:#4caf50,color:#fff
+        </div>
+    </div>
+
+    <h2 id="flow7">7. Invited User Accepts Invitation</h2>
+    <div class="diagram-box">
+        <div class="mermaid">
+flowchart TD
+    A[Email Inbox] -->|Click invite link| B[Accept Invitation Page]
+    B --> C{Has account?}
+    C -->|Yes| D[Login Page]
+    C -->|No| E[Registration Page]
+    D -->|Login| F[Workspaces Page\nnow includes org workspace]
+    E -->|Register| F
+
+    style A fill:#667eea,color:#fff
+    style F fill:#4caf50,color:#fff
+        </div>
+    </div>
+
+    <h2 id="flow8">8. Managing Member Roles (Owner/Admin)</h2>
+    <div class="diagram-box">
+        <div class="mermaid">
+flowchart TD
+    A[Organization Dashboard] -->|Click member row| B[Member Actions]
+    B -->|Change Role| C[Role Dropdown]
+    C -->|Select role| D[Role Updated]
+    B -->|Remove| E[Confirm Dialog]
+    E -->|Confirm| F[Member Removed]
+
+    style A fill:#667eea,color:#fff
+    style D fill:#4caf50,color:#fff
+    style F fill:#f44336,color:#fff
+        </div>
+    </div>
+
+    <h2 id="flow9">9. Workspace Settings</h2>
+    <div class="diagram-box">
+        <div class="mermaid">
+flowchart TD
+    A[Workspace Dashboard] -->|Click gear icon| B[Workspace Settings]
+    B --> C[General Tab]
+    B --> D[Members Tab]
+    B --> E[Integrations Tab]
+    C -->|Edit, Save| F[Changes Saved]
+    D -->|Manage access| F
+    E -->|Configure| F
+    F -->|Click Back| A
+
+    style A fill:#667eea,color:#fff
+    style F fill:#4caf50,color:#fff
+        </div>
+    </div>
+
+    <h2 id="flow10">10. User Account Settings</h2>
+    <div class="diagram-box">
+        <div class="mermaid">
+flowchart TD
+    A[Any Page] -->|Click avatar| B[User Menu]
+    B -->|Settings| C[User Settings Page]
+    C --> D[Profile Tab]
+    C --> E[Notifications Tab]
+    C --> F[Integrations Tab]
+    C --> G[API Keys Tab]
+    B -->|Logout| H[Landing Page]
+
+    style A fill:#667eea,color:#fff
+    style H fill:#f44336,color:#fff
+        </div>
+    </div>
+
+    <h2 id="flow11">11. Billing & Upgrade</h2>
+    <div class="diagram-box">
+        <div class="mermaid">
+flowchart TD
+    A[Settings or Org Dashboard] -->|Click Billing| B[Billing Page]
+    B -->|Click Upgrade| C[Plan Selection]
+    C -->|Select plan| D[Stripe Checkout]
+    D -->|Complete payment| E[Billing Page\nshows new plan]
+    B -->|Update Payment| F[Payment Modal]
+    F -->|Update| B
+
+    style A fill:#667eea,color:#fff
+    style E fill:#4caf50,color:#fff
+        </div>
+    </div>
+
+    <h2 id="flow12">12. Codebase States & Actions</h2>
+    <div class="diagram-box">
+        <div class="mermaid">
+flowchart TD
+    subgraph States
+        A[PENDING\ngray] -->|Worker starts| B[ANALYZING\nspinner]
+        B -->|Success| C[READY\ngreen]
+        B -->|Error| D[FAILED\nred]
+        D -->|Retry| A
+        C -->|Re-analyze| A
+    end
+
+    subgraph "Actions by State"
+        A1[Pending] --> A2[Delete, Settings]
+        B1[Analyzing] --> B2[Cancel]
+        C1[Ready] --> C2[View, Re-analyze, Settings, Delete]
+        D1[Failed] --> D2[Retry, View Error, Settings, Delete]
+    end
+
+    C -->|Click View| E[System Overview]
+
+    style A fill:#9e9e9e,color:#fff
+    style B fill:#2196f3,color:#fff
+    style C fill:#4caf50,color:#fff
+    style D fill:#f44336,color:#fff
+    style E fill:#764ba2,color:#fff
+        </div>
+    </div>
+
+    <script>
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'default',
+            flowchart: {
+                useMaxWidth: true,
+                htmlLabels: true,
+                curve: 'basis',
+                nodeSpacing: 50,
+                rankSpacing: 50
+            }
+        });
+    </script>
+</body>
+</html>

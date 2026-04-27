@@ -154,11 +154,11 @@ class DatabaseConnection {
       this.startHealthMonitoring();
 
       this.isInitialized = true;
-      console.log('✅ Database connection pool initialized successfully');
-      console.log(`📊 Pool config: min=${this.config.poolConfig.min}, max=${this.config.poolConfig.max}`);
+      console.log('Database connection pool initialized successfully');
+      console.log(`Pool config: min=${this.config.poolConfig.min}, max=${this.config.poolConfig.max}`);
       
     } catch (error) {
-      console.error('❌ Failed to initialize database connection:', error);
+      console.error('Failed to initialize database connection:', error);
       throw error;
     }
   }
@@ -170,7 +170,7 @@ class DatabaseConnection {
     if (!this.pool) return;
 
     this.pool.on('connect', (client) => {
-      console.log('🔗 New database client connected');
+      console.log('New database client connected');
     });
 
     this.pool.on('acquire', () => {
@@ -178,15 +178,15 @@ class DatabaseConnection {
     });
 
     this.pool.on('release', () => {
-      console.log('📤 Client released back to pool');
+      console.log('Client released back to pool');
     });
 
     this.pool.on('remove', () => {
-      console.log('🗑️  Client removed from pool');
+      console.log('Client removed from pool');
     });
 
     this.pool.on('error', (error, client) => {
-      console.error('❌ Database pool error:', error);
+      console.error('Database pool error:', error);
       this.healthErrors.push(`Pool error: ${error.message}`);
       
       // Keep only last 10 errors
@@ -207,10 +207,10 @@ class DatabaseConnection {
     try {
       const client = await this.pool.connect();
       const result = await client.query('SELECT NOW() as current_time, version() as pg_version');
-      console.log(`🚀 Database connected: ${result.rows[0].pg_version}`);
+      console.log(`Database connected: ${result.rows[0].pg_version}`);
       client.release();
     } catch (error) {
-      console.error('❌ Database connection test failed:', error);
+      console.error('Database connection test failed:', error);
       throw error;
     }
   }
@@ -245,7 +245,7 @@ class DatabaseConnection {
       
       const duration = Date.now() - start;
       if (duration > 1000) {
-        console.warn(`⚠️  Slow query detected (${duration}ms): ${text.substring(0, 100)}...`);
+        console.warn(`Slow query detected (${duration}ms): ${text.substring(0, 100)}...`);
       }
 
       return {
@@ -256,7 +256,7 @@ class DatabaseConnection {
       };
     } catch (error) {
       const duration = Date.now() - start;
-      console.error(`❌ Query failed after ${duration}ms:`, error);
+      console.error(`Query failed after ${duration}ms:`, error);
       console.error(`Query: ${text}`);
       console.error(`Params:`, params);
       throw error;
@@ -291,7 +291,7 @@ class DatabaseConnection {
       return result;
     } catch (error) {
       await client.query('ROLLBACK');
-      console.error('❌ Transaction rolled back due to error:', error);
+      console.error('Transaction rolled back due to error:', error);
       throw error;
     } finally {
       client.release();
@@ -379,13 +379,13 @@ class DatabaseConnection {
     }
 
     if (this.pool) {
-      console.log('🔌 Closing database connection pool...');
+      console.log('Closing database connection pool...');
       await this.pool.end();
       this.pool = null;
     }
 
     this.isInitialized = false;
-    console.log('✅ Database connection pool closed');
+    console.log('Database connection pool closed');
   }
 
   /**
@@ -413,14 +413,14 @@ export default db;
 
 // Handle graceful shutdown
 const gracefulShutdown = async (signal: string) => {
-  console.log(`\n🛑 Received ${signal}, closing database connections...`);
+  console.log(`\nReceived ${signal}, closing database connections...`);
   
   try {
     await db.close();
-    console.log('✅ Database connections closed successfully');
+    console.log('Database connections closed successfully');
     process.exit(0);
   } catch (error) {
-    console.error('❌ Error closing database connections:', error);
+    console.error('Error closing database connections:', error);
     process.exit(1);
   }
 };

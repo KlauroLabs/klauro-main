@@ -96,9 +96,9 @@ async function bootstrap() {
   const port = configService.get('PORT', 3001);
   
   await app.listen(port);
-  console.log(`🚀 Unravl API is running on: http://localhost:${port}`);
-  console.log(`📖 API Documentation: http://localhost:${port}/api/docs`);
-  console.log(`🏥 Health Check: http://localhost:${port}/health`);
+  console.log(`Unravl API is running on: http://localhost:${port}`);
+  console.log(`API Documentation: http://localhost:${port}/api/docs`);
+  console.log(`Health Check: http://localhost:${port}/health`);
 }
 
 bootstrap();
