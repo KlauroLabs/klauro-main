@@ -5,6 +5,7 @@ import { listAnalyses, loadRuntimeObservations, saveRuntimeObservation } from '.
 import * as query from './query';
 import * as watcher from './watcher';
 import * as product from './product';
+import * as agentAdoption from './agent-adoption';
 
 export function createServer(): McpServer {
   const server = new McpServer(
@@ -215,6 +216,63 @@ function registerTools(server: McpServer) {
     async ({ paths }: any) => withErrorHandling(async () => {
       const repositories = await loadRepositoryAnalyses(paths);
       return json(product.buildCrossRepositoryLinks(repositories));
+    })
+  );
+
+  server.registerTool(
+    'get_agent_start_context',
+    {
+      title: 'Get Agent Start Context',
+      description: 'Default first-call context for Codex, Claude, and other coding agents. Returns CAS-backed orientation, readiness, top graph anchors, answer-pack status, and recommended first MCP calls before broad file reads.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        task: z.object({
+          task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional(),
+          target: z.string().optional(),
+          related_paths: z.array(z.string()).optional(),
+          runtime_event: z.record(z.unknown()).optional(),
+        }).optional().describe('Optional task context for tailoring the default MCP path'),
+      } as any,
+    } as any,
+    async ({ path, task }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(agentAdoption.getAgentStartContext(cas, path, task || {}));
+    })
+  );
+
+  server.registerTool(
+    'get_agent_tool_plan',
+    {
+      title: 'Get Agent Tool Plan',
+      description: 'Task-specific MCP call plan for agents. Use before deciding whether to read files so the CAS graph narrows the work area first.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        task: z.object({
+          task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional(),
+          target: z.string().optional(),
+          related_paths: z.array(z.string()).optional(),
+          runtime_event: z.record(z.unknown()).optional(),
+        }).optional().describe('Task context for selecting a plan'),
+      } as any,
+    } as any,
+    async ({ path, task }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(agentAdoption.getAgentToolPlan(cas, { path, task: task || {} }));
+    })
+  );
+
+  server.registerTool(
+    'evaluate_agent_readiness',
+    {
+      title: 'Evaluate Agent Readiness',
+      description: 'Score whether CAS/MCP is strong enough for agents to use by default on this repository. Checks graph quality, answerability, evidence, tests, runtime links, and safety surfaces.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+      } as any,
+    } as any,
+    async ({ path }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(agentAdoption.evaluateAgentReadiness(cas, path));
     })
   );
 

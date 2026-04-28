@@ -17,6 +17,21 @@ AI-built software is often judged by inputs and outputs: prompt in, app out, dem
 
 Unravl is the visibility layer for that world.
 
+## Using Unravl MCP By Default
+
+The product bar is that Codex, Claude, Cursor, and other coding agents should use Unravl MCP before broad source-file exploration whenever an analysis exists.
+
+Agent operating loop:
+
+1. If MCP has an analysis for the repository, call `get_agent_start_context` before broad file reads.
+2. Call `get_agent_tool_plan` with the user's task (`orient`, `modify`, `debug`, `review`, `trace`, `cross-repo`, or `runtime`).
+3. Use `run_answer_pack` or the recommended follow-up tools when the task needs explanation with evidence.
+4. Before code edits, call `get_coding_context` for the target, then `assess_change_risk` and `find_tests` when connected behavior can be affected.
+5. Read source files after MCP narrows the target to specific files, nodes, tests, or explicit CAS gaps.
+6. If CAS/MCP returns an error or readiness fails, report that as a blocker to default use and then fall back to direct code reading for the task.
+
+Use `evaluate_agent_readiness` to decide whether a repository is ready for default agent use. Use `npm run agent-gauntlet` from `mcp-server/` to verify this across the configured repo set.
+
 ## Non-Negotiable Rules
 
 - ABSOLUTELY NO 3D.

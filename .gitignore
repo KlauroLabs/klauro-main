@@ -11,6 +11,7 @@ dist/
 .unravl-cache/
 .unravl-gauntlet/
 .unravl-answer-gauntlet/
+.unravl-agent-gauntlet/
 /CURRENT_STATE.md
 /MOAR_CONTEXT.md
 /PROJECT_PLAN.md

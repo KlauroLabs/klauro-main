@@ -111,6 +111,38 @@ Discover deterministic links across analyzed repositories.
 
 **Returns:** Cross-repository links for API calls, shared databases, message contracts, and shared internal libraries, with evidence and confidence.
 
+### `get_agent_start_context`
+
+Default first call for Codex, Claude, Cursor, and other coding agents when an analysis exists. Returns the CAS-backed orientation an agent needs before broad file reads.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `task` | object | no | Optional task context with `task_type`, `target`, `related_paths`, or `runtime_event` |
+
+**Returns:** Default-use rule, agent readiness status, system summary, scale metrics, top entry/exit points, connected nodes, runtime links, answer-pack status, recommended first MCP tools, and guidance for when source file reads are still required.
+
+### `get_agent_tool_plan`
+
+Task-specific MCP call plan for agents. Use this before choosing source files so CAS narrows the work area first.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `task` | object | no | Optional task context. `task_type` supports `orient`, `modify`, `debug`, `review`, `trace`, `cross-repo`, and `runtime` |
+
+**Returns:** Ordered MCP steps with tool names, arguments, purpose, required/optional status, and fallback behavior if CAS/MCP is missing or stale.
+
+### `evaluate_agent_readiness`
+
+Score whether this repository's CAS/MCP surface is good enough for agents to use by default.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+
+**Returns:** Pass/warn/fail status, score, `default_use` boolean, graph and answerability gates, adoption gaps, and the required agent behavior contract.
+
 ### `get_patterns`
 
 Design patterns and anti-patterns detected in the codebase. Returns **summaries only** -- instance counts and variation breakdowns without listing every instance ID. Use `get_pattern_instances` to drill into specific patterns.
