@@ -59,12 +59,18 @@ export interface AnswerPackResult {
 export interface RuntimeEventInput {
   type: 'request' | 'error' | 'exit' | 'log' | 'custom';
   timestamp?: string;
+  schema_version?: string;
+  service_name?: string;
+  environment?: string;
   signal?: string;
   static_id?: string;
   node_id?: string;
   entry_point_id?: string;
   exit_point_id?: string;
   call_chain_id?: string;
+  trace_id?: string;
+  span_id?: string;
+  parent_span_id?: string;
   method?: string;
   route?: string;
   path?: string;
@@ -322,6 +328,17 @@ export function buildCrossRepositoryLinks(repositories: Array<{ path: string; na
   repository_count: number;
   links: CASCrossRepositoryLink[];
   summary: Record<string, number>;
+  certainty: {
+    confirmed: number;
+    likely: number;
+    possible: number;
+    conflicts: number;
+  };
+  conflicts: Array<{
+    id: string;
+    link_ids: string[];
+    reason: string;
+  }>;
 } {
   const links: CASCrossRepositoryLink[] = [];
 
@@ -343,12 +360,23 @@ export function buildCrossRepositoryLinks(repositories: Array<{ path: string; na
     counts[link.type] = (counts[link.type] || 0) + 1;
     return counts;
   }, {});
+  const conflicts = findCrossRepoLinkConflicts(deduped);
+  const certainty = deduped.reduce(
+    (counts, link) => {
+      const band = certaintyBand(link.metadata?.confidence || 0);
+      counts[band]++;
+      return counts;
+    },
+    { confirmed: 0, likely: 0, possible: 0, conflicts: conflicts.length }
+  );
 
   return {
     generated_at: new Date().toISOString(),
     repository_count: repositories.length,
     links: deduped,
     summary,
+    certainty,
+    conflicts,
   };
 }
 
@@ -363,10 +391,18 @@ function detectApiLinks(
   for (const exitPoint of apiExits) {
     const exitRoute = normalizeRoute(exitPoint.target?.endpoint || exitPoint.target?.resource || exitPoint.name);
     if (!exitRoute) continue;
+    const exitMethod = normalizeHttpMethod(exitPoint.operation?.method || exitPoint.operation?.action);
 
     for (const entryPoint of entries) {
       const entryRoute = normalizeRoute(entryPoint.trigger?.path || entryPoint.name);
       if (!entryRoute || !routesCompatible(exitRoute, entryRoute)) continue;
+      const entryMethod = normalizeHttpMethod(entryPoint.trigger?.method);
+      const methodCompatible = !exitMethod || !entryMethod || exitMethod === 'FETCH' || entryMethod === 'ALL' || exitMethod === entryMethod;
+      if (!methodCompatible) continue;
+
+      const routeScore = routeMatchScore(exitRoute, entryRoute);
+      const methodScore = !exitMethod || exitMethod === 'FETCH' || !entryMethod || entryMethod === 'ALL' ? 0.86 : 1;
+      const confidenceValue = Math.min(0.98, Math.round(routeScore * methodScore * 100) / 100);
 
       links.push({
         id: crossRepoId('api', consumer.name, exitPoint.id, producer.name, entryPoint.id),
@@ -379,12 +415,12 @@ function detectApiLinks(
           method: entryPoint.trigger?.method || exitPoint.operation?.method,
         },
         metadata: {
-          verified: false,
+          verified: confidenceValue >= 0.9,
           last_sync: new Date().toISOString(),
-          confidence: exitRoute === entryRoute ? 0.9 : 0.65,
+          confidence: confidenceValue,
           evidence: [
-            { kind: 'graph', source: `${consumer.name}:${exitPoint.id}`, confidence: 0.8 },
-            { kind: 'route', source: `${producer.name}:${entryPoint.id}`, file: entryPoint.handler?.file, line: entryPoint.handler?.line, confidence: 0.8 },
+            { kind: 'graph', source: `${consumer.name}:${exitPoint.id}`, confidence: 0.85 },
+            { kind: 'route', source: `${producer.name}:${entryPoint.id}`, file: entryPoint.handler?.file, line: entryPoint.handler?.line, confidence: 0.9 },
           ],
         },
       });
@@ -413,12 +449,12 @@ function detectSharedDatabaseLinks(
       target_repository: { path: right.path, node_ids: rightResource.nodeId ? [rightResource.nodeId] : [] },
       connection: { resource: leftResource.name } as any,
       metadata: {
-        verified: false,
+        verified: true,
         last_sync: new Date().toISOString(),
-        confidence: 0.75,
+        confidence: 0.88,
         evidence: [
-          { kind: 'graph', source: `${left.name}:${leftResource.id}`, confidence: 0.75 },
-          { kind: 'graph', source: `${right.name}:${rightResource.id}`, confidence: 0.75 },
+          { kind: 'graph', source: `${left.name}:${leftResource.id}`, confidence: 0.88 },
+          { kind: 'graph', source: `${right.name}:${rightResource.id}`, confidence: 0.88 },
         ],
       },
     });
@@ -452,15 +488,15 @@ function detectMessageLinks(
           routing_key: exitTopic,
           message_schema: exitPoint.data?.output_type || entryPoint.input?.schema,
         },
-        metadata: {
-          verified: false,
-          last_sync: new Date().toISOString(),
-          confidence: 0.8,
-          evidence: [
-            { kind: 'graph', source: `${producer.name}:${exitPoint.id}`, confidence: 0.8 },
-            { kind: 'graph', source: `${consumer.name}:${entryPoint.id}`, confidence: 0.8 },
-          ],
-        },
+      metadata: {
+        verified: true,
+        last_sync: new Date().toISOString(),
+        confidence: 0.92,
+        evidence: [
+          { kind: 'graph', source: `${producer.name}:${exitPoint.id}`, confidence: 0.92 },
+          { kind: 'graph', source: `${consumer.name}:${entryPoint.id}`, confidence: 0.92 },
+        ],
+      },
       });
     }
   }
@@ -788,6 +824,56 @@ function routesCompatible(left: string, right: string): boolean {
     return leftParts.every((part, index) => part === rightParts[index] || part === ':param' || rightParts[index] === ':param');
   }
   return left.endsWith(right) || right.endsWith(left);
+}
+
+function routeMatchScore(left: string, right: string): number {
+  if (left === right) return 0.98;
+  const leftParts = left.split('/').filter(Boolean);
+  const rightParts = right.split('/').filter(Boolean);
+  if (leftParts.length === 0 && rightParts.length === 0) return 0.98;
+  if (leftParts.length === rightParts.length) {
+    const matches = leftParts.filter((part, index) =>
+      part === rightParts[index] || part === ':param' || rightParts[index] === ':param'
+    ).length;
+    return Math.max(0.65, Math.round((matches / leftParts.length) * 100) / 100);
+  }
+  if (left.endsWith(right) || right.endsWith(left)) return 0.78;
+  return 0.55;
+}
+
+function normalizeHttpMethod(value?: string): string | undefined {
+  if (!value) return undefined;
+  const normalized = value.toUpperCase();
+  if (['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS', 'ALL', 'FETCH'].includes(normalized)) return normalized;
+  return normalized;
+}
+
+function certaintyBand(confidenceValue: number): 'confirmed' | 'likely' | 'possible' {
+  if (confidenceValue >= 0.9) return 'confirmed';
+  if (confidenceValue >= 0.75) return 'likely';
+  return 'possible';
+}
+
+function findCrossRepoLinkConflicts(links: CASCrossRepositoryLink[]): Array<{ id: string; link_ids: string[]; reason: string }> {
+  const byConsumerContract = new Map<string, CASCrossRepositoryLink[]>();
+
+  for (const link of links) {
+    if (link.type !== 'api' && link.type !== 'message-contract') continue;
+    const endpoint = link.connection?.endpoint || link.connection?.routing_key;
+    const method = link.connection?.method || '*';
+    const source = link.source_repository?.path || 'unknown';
+    if (!endpoint) continue;
+    const key = `${link.type}:${source}:${method}:${normalizeRoute(endpoint)}`;
+    byConsumerContract.set(key, [...(byConsumerContract.get(key) || []), link]);
+  }
+
+  return [...byConsumerContract.entries()]
+    .filter(([, candidates]) => new Set(candidates.map(link => link.target_repository?.path || '')).size > 1)
+    .map(([key, candidates]) => ({
+      id: `conflict:${normalizeTopic(key)}`,
+      link_ids: candidates.map(link => link.id),
+      reason: 'One consumed contract maps to multiple target repositories with compatible certainty.',
+    }));
 }
 
 function normalizeTopic(value: string): string {

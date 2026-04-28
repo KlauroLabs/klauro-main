@@ -68,12 +68,12 @@ This document maps public CAS concepts and related v1.8 analysis storage to the 
 | `analysis_snapshots` storage | `get_analysis_at`, `get_analysis_snapshots` | |
 | `runtime_observations` storage | `record_runtime_event`, `get_runtime_observations` | |
 | Answer packs | `list_answer_packs`, `run_answer_pack`, `get_mcp_demo_flow` | |
-| Agent default-use context | `get_agent_start_context`, `get_agent_tool_plan`, `get_agent_work_packet`, `evaluate_agent_readiness` | `agent-start`, `agent-readiness` |
+| Agent default-use context | `get_agent_bootstrap`, `get_agent_start_context`, `get_agent_tool_plan`, `get_agent_work_packet`, `evaluate_agent_readiness` | `agent-bootstrap`, `agent-start`, `agent-readiness` |
 | Ground-truth analysis checks | `evaluate_analysis_truth` | |
 | Source-level semantic map | `get_semantic_map` | |
 | Framework/library depth | `get_framework_depth_report` | |
 | Cross-repository contracts | `get_cross_repo_contracts` | |
-| Runtime instrumentation plan | `get_runtime_instrumentation_plan` | |
+| Runtime instrumentation plan | `get_runtime_instrumentation_plan`, `get_runtime_event_contract` | `runtime-event-contract` |
 | Agent task proof | `evaluate_agent_task_proof` | |
 | `incremental_state` storage | Internal incremental analysis input | |
 | `file_cache` storage | Internal incremental analysis cache | |

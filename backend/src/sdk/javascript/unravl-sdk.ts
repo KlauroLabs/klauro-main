@@ -46,6 +46,31 @@ export interface ErrorReport {
   severity?: 'low' | 'medium' | 'high' | 'critical';
 }
 
+export interface CASRuntimeEvent {
+  type: 'request' | 'error' | 'exit' | 'log' | 'custom';
+  timestamp?: string;
+  schema_version?: string;
+  service_name?: string;
+  environment?: string;
+  signal?: string;
+  static_id?: string;
+  node_id?: string;
+  entry_point_id?: string;
+  exit_point_id?: string;
+  call_chain_id?: string;
+  trace_id?: string;
+  span_id?: string;
+  parent_span_id?: string;
+  method?: string;
+  route?: string;
+  path?: string;
+  status_code?: number;
+  duration_ms?: number;
+  error_message?: string;
+  stack?: string;
+  attributes?: Record<string, unknown>;
+}
+
 export class Trace {
   private context: TraceContext;
   private sdk: UnravlSDK;
@@ -88,9 +113,9 @@ export class Trace {
 
   end(): void {
     if (this.ended) return;
-    this.ended = true;
     const duration = performance.now() - this.context.startTime;
     this.setAttribute('duration_ms', duration);
+    this.ended = true;
     this.sdk.submitTrace(this.context);
   }
 
@@ -102,7 +127,7 @@ export class Trace {
 
 export class UnravlSDK extends EventEmitter {
   private config: Required<UnravlConfig>;
-  private buffer: Array<TraceContext | Metric | ErrorReport> = [];
+  private buffer: Array<TraceContext | Metric | ErrorReport | CASRuntimeEvent> = [];
   private flushTimer?: NodeJS.Timeout;
   private activeTraces = new Map<string, Trace>();
   private originalHttpRequest?: typeof http.request;
@@ -172,6 +197,28 @@ export class UnravlSDK extends EventEmitter {
     if (severity === 'critical') {
       this.flush();
     }
+  }
+
+  recordCasEvent(event: CASRuntimeEvent): void {
+    this.addToBuffer({
+      schema_version: event.schema_version || '1.0.0',
+      timestamp: event.timestamp || new Date().toISOString(),
+      service_name: event.service_name || this.config.serviceName,
+      environment: event.environment || this.config.environment,
+      ...event,
+      attributes: {
+        ...event.attributes,
+        project_id: this.config.projectId,
+      },
+    });
+  }
+
+  recordCasRequest(input: Omit<CASRuntimeEvent, 'type'>): void {
+    this.recordCasEvent({ ...input, type: 'request' });
+  }
+
+  recordCasExit(input: Omit<CASRuntimeEvent, 'type'>): void {
+    this.recordCasEvent({ ...input, type: 'exit' });
   }
 
   // Express middleware
@@ -250,7 +297,7 @@ export class UnravlSDK extends EventEmitter {
 
     // MongoDB instrumentation
     if (client.collection && typeof client.collection === 'function') {
-      const collections = new WeakMap();
+      const collections = new Map<string, any>();
       const originalCollection = client.collection.bind(client);
       
       client.collection = (name: string) => {
@@ -278,7 +325,7 @@ export class UnravlSDK extends EventEmitter {
       this.originalHttpRequest = http.request;
       const sdk = this;
       
-      http.request = function(...args: any[]): http.ClientRequest {
+      (http as any).request = function(...args: any[]): http.ClientRequest {
         const trace = sdk.startTrace('http.request');
         const options = args[0];
         
@@ -289,7 +336,7 @@ export class UnravlSDK extends EventEmitter {
           'http.path': options.path || '/',
         });
 
-        const req = sdk.originalHttpRequest!(...args);
+        const req = (sdk.originalHttpRequest as any)(...args);
         
         req.on('response', (res: http.IncomingMessage) => {
           trace.setAttribute('http.status_code', res.statusCode);
@@ -311,7 +358,7 @@ export class UnravlSDK extends EventEmitter {
       this.originalHttpsRequest = https.request;
       const sdk = this;
       
-      https.request = function(...args: any[]): http.ClientRequest {
+      (https as any).request = function(...args: any[]): http.ClientRequest {
         const trace = sdk.startTrace('https.request');
         const options = args[0];
         
@@ -323,7 +370,7 @@ export class UnravlSDK extends EventEmitter {
           'http.scheme': 'https',
         });
 
-        const req = sdk.originalHttpsRequest!(...args);
+        const req = (sdk.originalHttpsRequest as any)(...args);
         
         req.on('response', (res: http.IncomingMessage) => {
           trace.setAttribute('http.status_code', res.statusCode);
@@ -472,7 +519,7 @@ export class UnravlSDK extends EventEmitter {
     return 'low';
   }
 
-  private addToBuffer(data: TraceContext | Metric | ErrorReport): void {
+  private addToBuffer(data: TraceContext | Metric | ErrorReport | CASRuntimeEvent): void {
     this.buffer.push(data);
     
     if (this.buffer.length >= this.config.batchSize) {
@@ -503,27 +550,63 @@ export class UnravlSDK extends EventEmitter {
     }
   }
 
-  private async sendBatch(batch: Array<TraceContext | Metric | ErrorReport>): Promise<void> {
-    const payload = {
-      projectId: this.config.projectId,
-      environment: this.config.environment,
-      serviceName: this.config.serviceName,
-      timestamp: Date.now(),
-      data: batch,
-    };
+  private async sendBatch(batch: Array<TraceContext | Metric | ErrorReport | CASRuntimeEvent>): Promise<void> {
+    await Promise.all(batch.map(item => this.sendTelemetryMessage(item)));
+  }
 
+  private async sendTelemetryMessage(item: TraceContext | Metric | ErrorReport | CASRuntimeEvent): Promise<void> {
     const response = await fetch(`${this.config.endpoint}/api/telemetry/ingest`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${this.config.apiKey}`,
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(this.toTelemetryMessage(item)),
     });
 
     if (!response.ok) {
       throw new Error(`Failed to send telemetry: ${response.statusText}`);
     }
+  }
+
+  private toTelemetryMessage(item: TraceContext | Metric | ErrorReport | CASRuntimeEvent) {
+    const payloadType = this.payloadType(item);
+    return {
+      version: '1.0',
+      timestamp: Date.now(),
+      projectId: this.config.projectId,
+      type: payloadType,
+      payload: {
+        type: payloadType,
+        data: this.payloadData(item),
+      },
+      metadata: {
+        sdkVersion: '1.0.0',
+        runtime: `node:${process.version}`,
+        hostname: process.env.HOSTNAME || '',
+        environment: this.config.environment,
+      },
+    };
+  }
+
+  private payloadType(item: TraceContext | Metric | ErrorReport | CASRuntimeEvent): 'metric' | 'trace' | 'event' {
+    if ('value' in item && 'name' in item) return 'metric';
+    if ('traceId' in item && 'spanId' in item) return 'trace';
+    return 'event';
+  }
+
+  private payloadData(item: TraceContext | Metric | ErrorReport | CASRuntimeEvent): Record<string, unknown> {
+    if ('error' in item) {
+      return {
+        type: 'error',
+        timestamp: new Date(item.timestamp).toISOString(),
+        error_message: item.error.message,
+        stack: item.stackTrace,
+        severity: item.severity,
+        attributes: item.context,
+      };
+    }
+    return item as unknown as Record<string, unknown>;
   }
 
   shutdown(): void {
@@ -536,10 +619,10 @@ export class UnravlSDK extends EventEmitter {
     
     // Restore original functions
     if (this.originalHttpRequest) {
-      http.request = this.originalHttpRequest;
+      (http as any).request = this.originalHttpRequest;
     }
     if (this.originalHttpsRequest) {
-      https.request = this.originalHttpsRequest;
+      (https as any).request = this.originalHttpsRequest;
     }
   }
 }

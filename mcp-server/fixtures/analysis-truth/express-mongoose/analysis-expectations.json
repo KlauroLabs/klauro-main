@@ -1,0 +1,19 @@
+{
+  "name": "express-mongoose-truth-fixture",
+  "frameworks": ["Express"],
+  "languages": ["TypeScript/JavaScript"],
+  "routes": [
+    { "method": "GET", "path": "/users/:id", "handler": "getUser" },
+    { "method": "POST", "path": "/users", "handler": "createUser" }
+  ],
+  "nodes": [
+    { "name": "getUser" },
+    { "name": "createUser" },
+    { "name": "User" }
+  ],
+  "minimums": {
+    "entry_points": 2,
+    "method_calls": 2,
+    "runtime_static_links": 1
+  }
+}

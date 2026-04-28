@@ -6,7 +6,9 @@ import * as query from './query';
 import * as watcher from './watcher';
 import * as product from './product';
 import * as agentAdoption from './agent-adoption';
+import * as agentBootstrap from './agent-bootstrap';
 import * as analysisMastery from './analysis-mastery';
+import * as runtimeContract from './runtime-contract';
 
 export function createServer(): McpServer {
   const server = new McpServer(
@@ -221,6 +223,27 @@ function registerTools(server: McpServer) {
   );
 
   server.registerTool(
+    'get_agent_bootstrap',
+    {
+      title: 'Get Agent Bootstrap',
+      description: 'Single default agent-start payload. Returns readiness, start context, tool plan, work packet, and a ready-to-use prompt for Codex, Claude, Cursor, or any coding agent.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        task: z.object({
+          task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional(),
+          target: z.string().optional(),
+          related_paths: z.array(z.string()).optional(),
+          runtime_event: z.record(z.unknown()).optional(),
+        }).optional().describe('Optional task context for tailoring the default bootstrap'),
+      } as any,
+    } as any,
+    async ({ path, task }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(agentBootstrap.getAgentBootstrap(cas, path, task || {}));
+    })
+  );
+
+  server.registerTool(
     'get_agent_start_context',
     {
       title: 'Get Agent Start Context',
@@ -383,6 +406,22 @@ function registerTools(server: McpServer) {
     async ({ path, limit }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(analysisMastery.getRuntimeInstrumentationPlan(cas, { limit }));
+    })
+  );
+
+  server.registerTool(
+    'get_runtime_event_contract',
+    {
+      title: 'Get Runtime Event Contract',
+      description: 'Return the canonical runtime event schema and CAS-specific event payloads that SDKs should emit so production telemetry can correlate back to CAS.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        limit: z.number().optional().describe('Max CAS runtime link contracts to include'),
+      } as any,
+    } as any,
+    async ({ path, limit }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(runtimeContract.getRuntimeEventContract(cas, { limit }));
     })
   );
 
@@ -1103,12 +1142,18 @@ function registerTools(server: McpServer) {
         event: z.object({
           type: z.enum(['request', 'error', 'exit', 'log', 'custom']),
           timestamp: z.string().optional(),
+          schema_version: z.string().optional(),
+          service_name: z.string().optional(),
+          environment: z.string().optional(),
           signal: z.string().optional(),
           static_id: z.string().optional(),
           node_id: z.string().optional(),
           entry_point_id: z.string().optional(),
           exit_point_id: z.string().optional(),
           call_chain_id: z.string().optional(),
+          trace_id: z.string().optional(),
+          span_id: z.string().optional(),
+          parent_span_id: z.string().optional(),
           method: z.string().optional(),
           route: z.string().optional(),
           path: z.string().optional(),
@@ -1136,12 +1181,18 @@ function registerTools(server: McpServer) {
         event: z.object({
           type: z.enum(['request', 'error', 'exit', 'log', 'custom']),
           timestamp: z.string().optional(),
+          schema_version: z.string().optional(),
+          service_name: z.string().optional(),
+          environment: z.string().optional(),
           signal: z.string().optional(),
           static_id: z.string().optional(),
           node_id: z.string().optional(),
           entry_point_id: z.string().optional(),
           exit_point_id: z.string().optional(),
           call_chain_id: z.string().optional(),
+          trace_id: z.string().optional(),
+          span_id: z.string().optional(),
+          parent_span_id: z.string().optional(),
           method: z.string().optional(),
           route: z.string().optional(),
           path: z.string().optional(),
@@ -1680,6 +1731,19 @@ function registerResources(server: McpServer) {
   );
 
   server.registerResource(
+    'project-agent-bootstrap',
+    new ResourceTemplate('unravl://{project_name}/agent-bootstrap', { list: undefined }),
+    { title: 'Agent Bootstrap', description: 'One payload with agent readiness, start context, MCP plan, work packet, and prompt text.', mimeType: 'application/json' } as any,
+    async (uri, params) => {
+      const analyses = await listAnalyses();
+      const entry = analyses.find(a => slugify(a.name) === params.project_name);
+      if (!entry) return { contents: [{ uri: uri.href, text: JSON.stringify({ error: 'Analysis not found' }) }] };
+      const cas = await getAnalysis(entry.path);
+      return { contents: [{ uri: uri.href, text: JSON.stringify(agentBootstrap.getAgentBootstrap(cas, entry.path)) }] };
+    }
+  );
+
+  server.registerResource(
     'project-agent-start',
     new ResourceTemplate('unravl://{project_name}/agent-start', { list: undefined }),
     { title: 'Agent Start Context', description: 'Default CAS-backed start context for coding agents before broad file reads.', mimeType: 'application/json' } as any,
@@ -1689,6 +1753,19 @@ function registerResources(server: McpServer) {
       if (!entry) return { contents: [{ uri: uri.href, text: JSON.stringify({ error: 'Analysis not found' }) }] };
       const cas = await getAnalysis(entry.path);
       return { contents: [{ uri: uri.href, text: JSON.stringify(agentAdoption.getAgentStartContext(cas, entry.path)) }] };
+    }
+  );
+
+  server.registerResource(
+    'project-runtime-event-contract',
+    new ResourceTemplate('unravl://{project_name}/runtime-event-contract', { list: undefined }),
+    { title: 'Runtime Event Contract', description: 'Canonical runtime event schema and CAS-specific payloads for SDK telemetry correlation.', mimeType: 'application/json' } as any,
+    async (uri, params) => {
+      const analyses = await listAnalyses();
+      const entry = analyses.find(a => slugify(a.name) === params.project_name);
+      if (!entry) return { contents: [{ uri: uri.href, text: JSON.stringify({ error: 'Analysis not found' }) }] };
+      const cas = await getAnalysis(entry.path);
+      return { contents: [{ uri: uri.href, text: JSON.stringify(runtimeContract.getRuntimeEventContract(cas)) }] };
     }
   );
 
@@ -1827,65 +1904,12 @@ function registerPrompts(server: McpServer) {
     async ({ path, task_type, target }: any) => {
       const cas = await getAnalysis(path);
       const task = { task_type: task_type || 'orient', target };
-      const start = agentAdoption.getAgentStartContext(cas, path, task);
-      const plan = agentAdoption.getAgentToolPlan(cas, { path, task });
-      const packet = agentAdoption.getAgentWorkPacket(cas, path, task);
-      const readiness = agentAdoption.evaluateAgentReadiness(cas, path);
-
-      const sections: string[] = [];
-      sections.push(`# Agent Coding Session: ${cas.system.name}`);
-      sections.push(`Default use: ${readiness.default_use ? 'yes' : 'no'}`);
-      sections.push(`Readiness: ${readiness.status.toUpperCase()} (${readiness.score}/100)`);
-      if (readiness.adoption_gaps.length > 0) {
-        sections.push(`Gaps: ${readiness.adoption_gaps.join('; ')}`);
-      }
-
-      sections.push(`\n## Operating Rule`);
-      sections.push(start.default_rule);
-      sections.push(plan.rule);
-
-      sections.push(`\n## System`);
-      sections.push(`Type: ${start.system.type || 'unknown'}`);
-      sections.push(`Description: ${start.system.description || 'unknown'}`);
-      sections.push(`Languages: ${start.system.languages.join(', ') || 'unknown'}`);
-      sections.push(`Frameworks: ${start.system.frameworks.join(', ') || 'unknown'}`);
-      sections.push(`Top capabilities: ${start.system.top_capabilities.slice(0, 8).join(', ') || 'none detected'}`);
-
-      sections.push(`\n## Scale`);
-      sections.push(`Nodes: ${start.scale.nodes}, Edges: ${start.scale.edges}, Entry points: ${start.scale.entry_points}, Analysis errors: ${start.scale.analysis_errors}`);
-
-      if (start.answer_pack.gaps.length > 0) {
-        sections.push(`\n## Answer Pack Gaps`);
-        for (const gap of start.answer_pack.gaps) sections.push(`- ${gap}`);
-      }
-
-      sections.push(`\n## MCP Plan`);
-      for (const stepValue of plan.steps) {
-        const required = stepValue.required ? 'required' : 'optional';
-        sections.push(`${stepValue.order}. ${stepValue.tool} (${required}) - ${stepValue.purpose}`);
-        sections.push(`   args: ${JSON.stringify(stepValue.args)}`);
-      }
-
-      if (packet.selected_node) {
-        sections.push(`\n## Selected Target`);
-        sections.push(`${packet.selected_node.name} (${packet.selected_node.type})`);
-        if (packet.selected_node.file) sections.push(`File: ${packet.selected_node.file}:${packet.selected_node.line || 1}`);
-      }
-
-      if (packet.file_read_plan.length > 0) {
-        sections.push(`\n## File Read Plan`);
-        for (const item of packet.file_read_plan) {
-          sections.push(`- ${item.file}${item.line ? `:${item.line}` : ''} - ${item.reason}`);
-        }
-      }
-
-      sections.push(`\n## When To Read Files`);
-      for (const rule of start.when_to_read_files) sections.push(`- ${rule}`);
+      const bootstrap = agentBootstrap.getAgentBootstrap(cas, path, task);
 
       return {
         messages: [{
           role: 'user',
-          content: { type: 'text', text: sections.join('\n') } as any,
+          content: { type: 'text', text: bootstrap.prompt } as any,
         }],
       };
     }

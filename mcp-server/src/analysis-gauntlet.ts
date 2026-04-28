@@ -84,12 +84,23 @@ function printHelp(): void {
 
 async function defaultTargets(includeDefaultFixture: boolean): Promise<Target[]> {
   if (!includeDefaultFixture) return [];
-  const fixturePath = path.join(process.cwd(), 'fixtures', 'analysis-truth', 'nest-react-prisma');
-  return [{
-    name: 'nest-react-prisma-truth-fixture',
-    path: fixturePath,
-    expectation: await fs.readJson(path.join(fixturePath, 'analysis-expectations.json')),
-  }];
+  const fixtureRoot = path.join(process.cwd(), 'fixtures', 'analysis-truth');
+  const entries = await fs.readdir(fixtureRoot, { withFileTypes: true });
+  const targets: Target[] = [];
+
+  for (const entry of entries.filter(candidate => candidate.isDirectory()).sort((left, right) => left.name.localeCompare(right.name))) {
+    const fixturePath = path.join(fixtureRoot, entry.name);
+    const expectationPath = path.join(fixturePath, 'analysis-expectations.json');
+    if (!await fs.pathExists(expectationPath)) continue;
+    const expectation = await fs.readJson(expectationPath);
+    targets.push({
+      name: expectation.name || `${entry.name}-truth-fixture`,
+      path: fixturePath,
+      expectation,
+    });
+  }
+
+  return targets;
 }
 
 async function analyzeTarget(target: Target): Promise<TargetReport> {

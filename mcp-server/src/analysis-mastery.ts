@@ -14,7 +14,10 @@ export interface AnalysisTruthExpectation {
   nodes?: Array<{ name: string; type?: string; file?: string }>;
   data_entities?: string[];
   relationships?: Array<{ source: string; target: string; type?: string }>;
+  method_calls?: Array<{ caller: string; target?: string; method?: string; resolution_type?: string }>;
+  exit_points?: Array<{ type?: string; name?: string; target?: string }>;
   runtime_signals?: string[];
+  minimums?: Partial<Record<'nodes' | 'edges' | 'entry_points' | 'exit_points' | 'method_calls' | 'runtime_static_links' | 'analysis_facts', number>>;
 }
 
 interface MasteryCheck {
@@ -48,7 +51,10 @@ export function evaluateAnalysisTruth(cas: CASOutput, expectation: AnalysisTruth
     ...checkNodes(cas, expectation.nodes || []),
     ...checkNames('data-entity', expectation.data_entities || [], dataEntityNames(cas)),
     ...checkRelationships(cas, expectation.relationships || []),
+    ...checkMethodCalls(cas, expectation.method_calls || []),
+    ...checkExitPoints(cas, expectation.exit_points || []),
     ...checkNames('runtime-signal', expectation.runtime_signals || [], (cas.runtime_static_links || []).map(link => link.runtime_signal)),
+    ...checkMinimums(cas, expectation.minimums || {}),
   ];
   const score = checks.length === 0
     ? 100
@@ -425,6 +431,85 @@ function checkRelationships(cas: CASOutput, expected: NonNullable<AnalysisTruthE
   });
 }
 
+function checkMethodCalls(cas: CASOutput, expected: NonNullable<AnalysisTruthExpectation['method_calls']>): MasteryCheck[] {
+  return expected.map(callExpectation => {
+    const found = (cas.method_calls || []).find(call => {
+      const caller = cas.nodes.find(node => node.id === call.caller_node);
+      const target = call.target_node ? cas.nodes.find(node => node.id === call.target_node) : undefined;
+      const callerMatches = caller && (namesCompatible(caller.name, callExpectation.caller) || caller.id === callExpectation.caller);
+      const targetMatches = !callExpectation.target ||
+        (target && (namesCompatible(target.name, callExpectation.target) || target.id === callExpectation.target)) ||
+        namesCompatible(call.call_details.method_name, callExpectation.target);
+      const methodMatches = !callExpectation.method || namesCompatible(call.call_details.method_name, callExpectation.method);
+      const resolutionMatches = !callExpectation.resolution_type || call.call_details.resolution_type === callExpectation.resolution_type;
+      return callerMatches && targetMatches && methodMatches && resolutionMatches;
+    });
+    return {
+      id: `method-call:${callExpectation.caller}->${callExpectation.target || callExpectation.method || '*'}`,
+      status: found ? 'pass' : 'fail',
+      score: found ? 100 : 0,
+      expected: callExpectation,
+      actual: found ? {
+        id: found.id,
+        method: found.call_details.method_name,
+        resolution_type: found.call_details.resolution_type,
+      } : null,
+      detail: found ? `Found ${found.call_details.method_name}` : `Missing method call ${callExpectation.caller} -> ${callExpectation.target || callExpectation.method || '*'}`,
+    };
+  });
+}
+
+function checkExitPoints(cas: CASOutput, expected: NonNullable<AnalysisTruthExpectation['exit_points']>): MasteryCheck[] {
+  return expected.map(exitExpectation => {
+    const found = (cas.exit_points || []).find(exitPoint => {
+      const typeMatches = !exitExpectation.type || exitPoint.type === exitExpectation.type;
+      const nameMatches = !exitExpectation.name || namesCompatible(exitPoint.name, exitExpectation.name);
+      const targetValues = [
+        exitPoint.target?.endpoint,
+        exitPoint.target?.resource,
+        exitPoint.target?.service_id,
+        exitPoint.target?.sdk,
+        exitPoint.name,
+      ].filter(Boolean) as string[];
+      const targetMatches = !exitExpectation.target || targetValues.some(value => targetCompatible(value, exitExpectation.target!));
+      return typeMatches && nameMatches && targetMatches;
+    });
+    return {
+      id: `exit-point:${exitExpectation.type || '*'}:${exitExpectation.name || exitExpectation.target || '*'}`,
+      status: found ? 'pass' : 'fail',
+      score: found ? 100 : 0,
+      expected: exitExpectation,
+      actual: found ? { id: found.id, name: found.name, type: found.type, target: found.target } : null,
+      detail: found ? `Found ${found.name}` : `Missing exit point ${exitExpectation.name || exitExpectation.target || exitExpectation.type || '*'}`,
+    };
+  });
+}
+
+function checkMinimums(cas: CASOutput, minimums: NonNullable<AnalysisTruthExpectation['minimums']>): MasteryCheck[] {
+  const actuals: Record<string, number> = {
+    nodes: cas.nodes.length,
+    edges: cas.edges.length,
+    entry_points: cas.entry_points?.length || 0,
+    exit_points: cas.exit_points?.length || 0,
+    method_calls: cas.method_calls?.length || 0,
+    runtime_static_links: cas.runtime_static_links?.length || 0,
+    analysis_facts: cas.analysis_facts?.length || 0,
+  };
+
+  return Object.entries(minimums).map(([key, minimum]) => {
+    const actual = actuals[key as keyof typeof actuals] || 0;
+    const passed = actual >= (minimum || 0);
+    return {
+      id: `minimum:${key}`,
+      status: passed ? 'pass' : 'fail',
+      score: passed ? 100 : ratioScore(actual, minimum || 1),
+      expected: minimum,
+      actual,
+      detail: passed ? `${actual}/${minimum}` : `Expected at least ${minimum}, found ${actual}`,
+    };
+  });
+}
+
 function simpleCheck(id: string, passed: boolean, detail: string): MasteryCheck {
   return {
     id,
@@ -434,6 +519,11 @@ function simpleCheck(id: string, passed: boolean, detail: string): MasteryCheck 
     actual: passed,
     detail,
   };
+}
+
+function ratioScore(actual: number, expected: number): number {
+  if (expected <= 0) return 100;
+  return Math.round(Math.min(100, (actual / expected) * 100));
 }
 
 function detectedFrameworks(cas: CASOutput): string[] {
@@ -491,6 +581,24 @@ function routesCompatible(actual: string | undefined, expected: string): boolean
   const left = normalizeRoute(actual);
   const right = normalizeRoute(expected);
   return left === right || left.endsWith(right) || right.endsWith(left);
+}
+
+function targetCompatible(actual: string, expected: string): boolean {
+  if (namesCompatible(actual, expected)) return true;
+  return normalizeDynamicTarget(actual) === normalizeDynamicTarget(expected);
+}
+
+function normalizeDynamicTarget(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/^https?:\/\/[^/]+/, '')
+    .replace(/[?#].*$/, '')
+    .replace(/\$\{[^}]+\}/g, ':param')
+    .replace(/\{[^}]+\}/g, ':param')
+    .replace(/\[[^\]]+\]/g, ':param')
+    .replace(/:[a-z0-9_.]+/g, ':param')
+    .replace(/\/+/g, '/')
+    .replace(/\/$/, '');
 }
 
 function nodeSummary(node: CASNode) {

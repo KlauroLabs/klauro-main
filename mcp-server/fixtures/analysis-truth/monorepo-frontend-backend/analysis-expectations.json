@@ -1,0 +1,23 @@
+{
+  "name": "monorepo-frontend-backend-truth-fixture",
+  "frameworks": ["React", "Express"],
+  "languages": ["TypeScript/JavaScript"],
+  "routes": [
+    { "method": "GET", "path": "/api/accounts/:id", "handler": "getAccount" }
+  ],
+  "nodes": [
+    { "name": "AccountPage" },
+    { "name": "getAccount" }
+  ],
+  "method_calls": [
+    { "caller": "AccountPage", "method": "fetch", "resolution_type": "external" }
+  ],
+  "exit_points": [
+    { "type": "api", "target": "/api/accounts/${accountId}" }
+  ],
+  "minimums": {
+    "entry_points": 1,
+    "method_calls": 1,
+    "runtime_static_links": 1
+  }
+}

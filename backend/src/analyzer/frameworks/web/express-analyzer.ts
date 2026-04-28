@@ -677,9 +677,12 @@ export class ExpressAnalyzer extends BaseAnalyzer {
   }
 
   private isRouterFile(content: string): boolean {
+    const hasRoute = ['get', 'post', 'put', 'delete', 'patch', 'head', 'options'].some(method =>
+      content.includes(`.${method}(`)
+    );
     return content.includes('express.Router()') ||
            content.includes('Router()') ||
-           (content.includes('.get(') && content.includes('.post('));
+           hasRoute;
   }
 
   private isMiddlewareFile(content: string): boolean {

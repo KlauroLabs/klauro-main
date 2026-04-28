@@ -20,6 +20,14 @@ System overview combining architecture summary, tech stack, system purpose, capa
 
 ---
 
+## `unravl://{project_name}/agent-bootstrap`
+
+Default agent bootstrap payload for coding agents.
+
+**Includes:** default-use rule, readiness report, start context, task plan, work packet, file read plan, and ready-to-use prompt text.
+
+---
+
 ## `unravl://{project_name}/agent-start`
 
 Default CAS-backed start context for coding agents before broad file reads.
@@ -33,6 +41,14 @@ Default CAS-backed start context for coding agents before broad file reads.
 Default-use readiness score and gaps for agent adoption.
 
 **Includes:** pass/warn/fail status, score, `default_use`, summary metrics, readiness gates, adoption gaps, and required agent behavior.
+
+---
+
+## `unravl://{project_name}/runtime-event-contract`
+
+SDK-facing runtime event schema for CAS correlation.
+
+**Includes:** transport details, event fields, correlation order, per-runtime-link event payloads, SDK method contract, totals, and gaps.
 
 ---
 
@@ -90,8 +106,9 @@ Resources are best for loading a complete view of a domain in a single read. Too
 
 | Need | Use |
 |------|-----|
-| Start an agent session | Resource: `unravl://{name}/agent-start` or Prompt: `agent_coding_session` |
+| Start an agent session | Resource: `unravl://{name}/agent-bootstrap` or Prompt: `agent_coding_session` |
 | Check whether agents should default to MCP | Resource: `unravl://{name}/agent-readiness` or Tool: `evaluate_agent_readiness` |
+| Get SDK runtime event payloads | Resource: `unravl://{name}/runtime-event-contract` or Tool: `get_runtime_event_contract` |
 | Load all endpoints at once | Resource: `unravl://{name}/endpoints` |
 | Filter entry points by type | Tool: `get_entry_points` with `type` param |
 | Get full security posture | Resource: `unravl://{name}/security` |

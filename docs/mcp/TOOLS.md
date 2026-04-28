@@ -109,7 +109,18 @@ Discover deterministic links across analyzed repositories.
 |-----------|------|----------|-------------|
 | `paths` | string[] | no | Project paths to link. Omit to use all analyzed repositories. |
 
-**Returns:** Cross-repository links for API calls, shared databases, message contracts, and shared internal libraries, with evidence and confidence.
+**Returns:** Cross-repository links for API calls, shared databases, message contracts, and shared internal libraries, with evidence, confidence, certainty counts, and conflict reports.
+
+### `get_agent_bootstrap`
+
+Default first payload for Codex, Claude, Cursor, and other coding agents when an analysis exists.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `task` | object | no | Optional task context with `task_type`, `target`, `related_paths`, or `runtime_event` |
+
+**Returns:** Default-use rule, agent readiness, start context, task-specific tool plan, work packet, source file read plan, and a ready-to-use prompt. This is the highest-level agent bootstrap surface.
 
 ### `get_agent_start_context`
 
@@ -207,6 +218,17 @@ Turn CAS runtime links into concrete event contracts and instrumentation points.
 | `limit` | number | no | Max instrumentation points |
 
 **Returns:** Runtime link totals, required/recommended event fields, instrumentation points, suggested runtime event payloads, and gaps.
+
+### `get_runtime_event_contract`
+
+Return the canonical runtime event schema plus CAS-specific event payloads that SDKs should emit.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `limit` | number | no | Max runtime link contracts |
+
+**Returns:** Contract version, transport details, event types, field definitions, correlation order, per-runtime-link minimum and recommended event payloads, SDK method contract, totals, and gaps.
 
 ### `evaluate_agent_task_proof`
 

@@ -1,0 +1,14 @@
+{
+  "name": "nest-event-flow-truth-fixture",
+  "frameworks": ["NestJS"],
+  "languages": ["TypeScript/JavaScript"],
+  "nodes": [
+    { "name": "BillingEvents" },
+    { "name": "handleInvoicePaid" },
+    { "name": "handleUserCreated" }
+  ],
+  "minimums": {
+    "entry_points": 2,
+    "runtime_static_links": 1
+  }
+}

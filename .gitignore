@@ -13,6 +13,8 @@ dist/
 .unravl-answer-gauntlet/
 .unravl-agent-gauntlet/
 .unravl-analysis-gauntlet/
+.unravl-agent-benchmark/
+.unravl-contract-gauntlet/
 /CURRENT_STATE.md
 /MOAR_CONTEXT.md
 /PROJECT_PLAN.md

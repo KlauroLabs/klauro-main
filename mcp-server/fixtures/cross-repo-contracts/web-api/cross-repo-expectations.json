@@ -1,0 +1,22 @@
+{
+  "name": "web-api-cross-repo-contract-fixture",
+  "repositories": [
+    { "name": "contract-web", "path": "web" },
+    { "name": "contract-api", "path": "api" }
+  ],
+  "expected_links": [
+    {
+      "type": "api",
+      "source_repository": "web",
+      "target_repository": "api",
+      "method": "GET",
+      "endpoint": "/api/accounts/:id",
+      "minimum_confidence": 0.8
+    }
+  ],
+  "minimums": {
+    "links": 1,
+    "confirmed_or_likely": 1,
+    "conflicts": 0
+  }
+}

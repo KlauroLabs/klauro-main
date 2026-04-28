@@ -1,0 +1,21 @@
+{
+  "name": "prisma-schema-heavy-truth-fixture",
+  "frameworks": ["Prisma"],
+  "languages": ["TypeScript/JavaScript"],
+  "data_entities": ["User", "Account", "Transaction", "AuditLog"],
+  "nodes": [
+    { "name": "LedgerService" },
+    { "name": "recordTransaction" }
+  ],
+  "method_calls": [
+    { "caller": "recordTransaction", "method": "create", "resolution_type": "external" }
+  ],
+  "exit_points": [
+    { "type": "database", "target": "Transaction" }
+  ],
+  "minimums": {
+    "nodes": 8,
+    "method_calls": 1,
+    "runtime_static_links": 1
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "prisma-schema-heavy-truth",
+  "version": "1.0.0",
+  "dependencies": {
+    "@prisma/client": "5.20.0",
+    "prisma": "5.20.0"
+  },
+  "devDependencies": {
+    "typescript": "5.4.5"
+  }
+}

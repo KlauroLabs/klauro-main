@@ -1,0 +1,19 @@
+{
+  "name": "fastapi-sqlalchemy-truth-fixture",
+  "frameworks": ["FastAPI"],
+  "languages": ["Python"],
+  "routes": [
+    { "method": "GET", "path": "/users/{user_id}", "handler": "get_user" },
+    { "method": "POST", "path": "/users", "handler": "create_user" }
+  ],
+  "nodes": [
+    { "name": "get_user" },
+    { "name": "create_user" },
+    { "name": "UserRead" }
+  ],
+  "minimums": {
+    "entry_points": 2,
+    "nodes": 5,
+    "runtime_static_links": 1
+  }
+}

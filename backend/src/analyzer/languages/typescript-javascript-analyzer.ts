@@ -2433,14 +2433,18 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     if (!target.includes('.')) return false;
     const parts = target.split('.');
     const methodName = (parts.pop() || '').toLowerCase();
-    const callerName = parts.join('.').toLowerCase().replace('this.', '');
+    const originalCallerName = parts.join('.').replace('this.', '');
+    const callerName = originalCallerName.toLowerCase();
 
     const ormSpecificMethods = [
       'findoneorfail', 'findall', 'findandcount',
       'persistandflush', 'removeandflush', 'nativeupdate', 'nativedelete',
       'getreference', 'populate', 'assign', 'flush', 'upsert', 'persist',
       'findunique', 'findfirst', 'findmany', 'createmany', 'updatemany',
-      'deletemany', 'aggregate', 'groupby'
+      'deletemany', 'aggregate', 'groupby',
+      'findbyid', 'findbyidandupdate', 'findbyidanddelete', 'findbyidandremove',
+      'findoneandupdate', 'findoneanddelete', 'findoneandremove',
+      'updateone', 'deleteone', 'insertmany'
     ];
 
     if (ormSpecificMethods.includes(methodName)) return true;
@@ -2451,10 +2455,15 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     ];
 
     if (ambiguousMethods.includes(methodName)) {
-      return this.isRepositoryLikeCaller(callerName);
+      return this.isRepositoryLikeCaller(callerName) || this.isModelLikeCaller(originalCallerName);
     }
 
     return false;
+  }
+
+  private isModelLikeCaller(callerName: string): boolean {
+    const lastPart = callerName.split('.').pop() || '';
+    return /^[A-Z][A-Za-z0-9_]*$/.test(lastPart);
   }
 
   private isRepositoryLikeCaller(callerName: string): boolean {

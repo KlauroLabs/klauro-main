@@ -1,4 +1,4 @@
-import type { CASOutput, CASNode } from '../../backend/src/types/cas.types';
+import type { CASEntryPoint, CASOutput, CASNode } from '../../backend/src/types/cas.types';
 import {
   assessChangeRisk,
   buildSummary,
@@ -259,6 +259,15 @@ function resolveTaskTarget(cas: CASOutput, target?: string) {
       candidateNodes.set(node.id, node);
     }
 
+    const routeMatches = (cas.entry_points || [])
+      .filter(entry => entryPointMatchesTarget(entry, target))
+      .flatMap(entry => [entry.source_node, entry.handler?.node_id].filter(Boolean) as string[])
+      .map(nodeId => cas.nodes.find(node => node.id === nodeId))
+      .filter((node): node is CASNode => Boolean(node));
+    for (const node of routeMatches) {
+      candidateNodes.set(node.id, node);
+    }
+
     const scoredCandidates = [...candidateNodes.values()]
       .map(node => ({ node, score: scoreNodeForTarget(node, target) }))
       .sort((left, right) => right.score - left.score);
@@ -319,6 +328,37 @@ function scoreNodeForTarget(node: CASNode, target?: string): number {
   if (node.name.toLowerCase().includes('dto')) score -= 20;
 
   return score;
+}
+
+function entryPointMatchesTarget(entry: CASEntryPoint, target: string): boolean {
+  const query = target.toLowerCase();
+  const route = entry.trigger?.path || '';
+  return entry.id === target ||
+    entry.name.toLowerCase().includes(query) ||
+    Boolean(route && routesCompatibleForAgent(route, target));
+}
+
+function routesCompatibleForAgent(actual: string, expected: string): boolean {
+  const left = normalizeRouteForAgent(actual);
+  const right = normalizeRouteForAgent(expected);
+  if (left === right) return true;
+  const leftParts = left.split('/').filter(Boolean);
+  const rightParts = right.split('/').filter(Boolean);
+  if (leftParts.length !== rightParts.length) return left.endsWith(right) || right.endsWith(left);
+  return leftParts.every((part, index) => part === rightParts[index] || part === ':param' || rightParts[index] === ':param');
+}
+
+function normalizeRouteForAgent(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/^https?:\/\/[^/]+/, '')
+    .replace(/[?#].*$/, '')
+    .replace(/\[[^\]]+\]/g, ':param')
+    .replace(/:[a-z0-9_]+/g, ':param')
+    .replace(/\{[^}]+\}/g, ':param')
+    .replace(/\$\{[^}]+\}/g, ':param')
+    .replace(/\/+/g, '/')
+    .replace(/\/$/, '') || '/';
 }
 
 function buildEntryContext(cas: CASOutput, task: Required<Pick<AgentTask, 'task_type'>> & AgentTask, nodeId?: string) {

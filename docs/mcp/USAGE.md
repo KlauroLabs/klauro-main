@@ -21,7 +21,7 @@ Results and analysis support files are stored under `~/.unravl/analyses/` unless
 For Codex, Claude, Cursor, and other coding agents, the default first call after analysis is:
 
 ```
-Use get_agent_start_context with path="/absolute/path/to/your/project"
+Use get_agent_bootstrap with path="/absolute/path/to/your/project"
 ```
 
 MCP clients that start from prompts can use:
@@ -33,16 +33,16 @@ Use the agent_coding_session prompt with path="/absolute/path/to/your/project"
 MCP clients that prefer resources can read:
 
 ```
-unravl://{project_name}/agent-start
+unravl://{project_name}/agent-bootstrap
 ```
 
 For a specific task, include task context:
 
 ```
-Use get_agent_start_context with path="/repo" and task={ "task_type": "modify", "target": "auth" }
+Use get_agent_bootstrap with path="/repo" and task={ "task_type": "modify", "target": "auth" }
 ```
 
-This returns readiness, the system summary, graph anchors, answer-pack status, and the recommended first MCP calls. Agents should use it before broad file reads whenever an analysis exists.
+This returns readiness, the system summary, graph anchors, answer-pack status, the recommended first MCP calls, a work packet, and a source file read plan. Agents should use it before broad file reads whenever an analysis exists.
 
 ### 3. Plan MCP Tool Use
 
@@ -117,7 +117,7 @@ From there, drill into targeted areas:
 - **Understand recent changes**: `get_changes_since`, `get_change_summary`, `get_hot_spots`, `get_analysis_snapshots`
 - **Prove answerability**: `run_answer_pack` with `pack="mastery"`
 - **Connect repos**: `get_cross_repo_links` with related analyzed paths
-- **Map runtime back to code**: `correlate_runtime_event`, `record_runtime_event`, `get_runtime_observations`
+- **Map runtime back to code**: `get_runtime_event_contract`, `correlate_runtime_event`, `record_runtime_event`, `get_runtime_observations`
 
 ---
 
@@ -125,10 +125,10 @@ From there, drill into targeted areas:
 
 ### Starting a coding session
 
-Use `get_agent_start_context` first, or use the `agent_coding_session` prompt when your MCP client supports prompts:
+Use `get_agent_bootstrap` first, or use the `agent_coding_session` prompt when your MCP client supports prompts:
 
 ```
-Use get_agent_start_context with path="/absolute/path/to/your/project"
+Use get_agent_bootstrap with path="/absolute/path/to/your/project"
 ```
 
 Then use `get_agent_work_packet` with the user's task. Use source files after MCP identifies the relevant nodes, files, tests, or gaps.
@@ -218,7 +218,7 @@ Analyze each repository first, then call:
 Use the get_cross_repo_links tool with paths=["/repo/a", "/repo/b", "/repo/c"]
 ```
 
-When `paths` is omitted, the tool considers all stored analyses. It detects API links, shared databases, message contracts, and shared internal libraries with confidence and evidence.
+When `paths` is omitted, the tool considers all stored analyses. It detects API links, shared databases, message contracts, and shared internal libraries with confidence, certainty bands, and conflict reports.
 
 For contract-level details:
 
@@ -254,12 +254,19 @@ To generate instrumentation payloads from CAS:
 Use get_runtime_instrumentation_plan with path="/repo"
 ```
 
+To generate the SDK-facing event schema:
+
+```
+Use get_runtime_event_contract with path="/repo"
+```
+
 ### Checking runtime readiness and evidence
 
-1. Use `get_runtime_static_links` to see which entry points, exit points, call chains, and external services have runtime signals or instrumentation candidates.
-2. Filter by `telemetry_status=instrumentable` to find the next best instrumentation points.
-3. Use `get_analysis_facts` for source-backed claims behind nodes, edges, workflows, capabilities, runtime links, and repository links.
-4. Use `subject_id` when you need evidence for one concrete CAS object.
+1. Use `get_runtime_event_contract` to see the event payloads SDKs should emit.
+2. Use `get_runtime_static_links` to see which entry points, exit points, call chains, and external services have runtime signals or instrumentation candidates.
+3. Filter by `telemetry_status=instrumentable` to find the next best instrumentation points.
+4. Use `get_analysis_facts` for source-backed claims behind nodes, edges, workflows, capabilities, runtime links, and repository links.
+5. Use `subject_id` when you need evidence for one concrete CAS object.
 
 ### Reviewing test quality
 
@@ -293,6 +300,26 @@ npm run agent-gauntlet
 ```
 
 This analyzes the configured repositories and runs `evaluate_agent_readiness` against each one. The report is written to `.unravl-agent-gauntlet/latest-report.json` unless `--output` is provided. A passing target has `default_use=true`, meaning agents should use MCP as the first path for that repo.
+
+### Running the agent usefulness benchmark
+
+From `mcp-server/`:
+
+```
+npm run agent-benchmark
+```
+
+This checks whether task work packets resolve targets, produce a focused file read plan, include the selected target file, and keep agents out of broad source scans.
+
+### Running the cross-repo contract gauntlet
+
+From `mcp-server/`:
+
+```
+npm run contract-gauntlet
+```
+
+This analyzes paired fixture repositories and verifies that CAS-derived consumed contracts link to provided contracts with expected confidence and no unexpected conflicts.
 
 ### Running the analysis mastery gauntlet
 
