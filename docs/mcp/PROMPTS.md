@@ -4,6 +4,30 @@ Prompts generate structured context for injection into AI assistant conversation
 
 ---
 
+## `agent_coding_session`
+
+Default prompt for Codex, Claude, Cursor, and other agents. It loads CAS readiness, start context, task-specific MCP tool plan, and the work packet before source-file exploration.
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `task_type` | string | no | One of `orient`, `modify`, `debug`, `review`, `trace`, `cross-repo`, or `runtime` |
+| `target` | string | no | Task target, such as a feature, node, file, route, error, or subsystem |
+
+**Generates sections:**
+
+1. **Header** - System name, default-use status, readiness score, and adoption gaps
+2. **Operating Rule** - When to use MCP and when to read source files
+3. **System** - Type, description, languages, frameworks, and top capabilities
+4. **Scale** - Node, edge, entry point, and analysis error counts
+5. **Answer Pack Gaps** - Any missing explanation surfaces
+6. **MCP Plan** - Ordered tool calls with arguments and purpose
+7. **Selected Target** - Resolved CAS node for the task when available
+8. **File Read Plan** - First source files to inspect with reasons
+9. **When To Read Files** - Concrete conditions for targeted source inspection
+
+---
+
 ## `architectural_context`
 
 Generates comprehensive architectural context for a codebase. Designed to be injected at the start of a coding session to give an AI assistant full awareness of the system.

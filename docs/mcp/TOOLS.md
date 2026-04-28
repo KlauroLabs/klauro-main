@@ -133,6 +133,17 @@ Task-specific MCP call plan for agents. Use this before choosing source files so
 
 **Returns:** Ordered MCP steps with tool names, arguments, purpose, required/optional status, and fallback behavior if CAS/MCP is missing or stale.
 
+### `get_agent_work_packet`
+
+One-call task packet for agents. Use this after `get_agent_start_context` when an agent needs to begin real work without manually orchestrating every query.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `task` | object | no | Optional task context with `task_type`, `target`, `related_paths`, or `runtime_event` |
+
+**Returns:** Target resolution, selected node, coding context, change risk, callers, callees, tests, error contracts for debug tasks, representative entry/call-chain context, recommended MCP follow-ups, adoption gaps, and a file read plan with concrete source files and reasons.
+
 ### `evaluate_agent_readiness`
 
 Score whether this repository's CAS/MCP surface is good enough for agents to use by default.
@@ -142,6 +153,71 @@ Score whether this repository's CAS/MCP surface is good enough for agents to use
 | `path` | string | yes | Project path |
 
 **Returns:** Pass/warn/fail status, score, `default_use` boolean, graph and answerability gates, adoption gaps, and the required agent behavior contract.
+
+### `evaluate_analysis_truth`
+
+Compare CAS against explicit ground-truth expectations. Use this for fixture repos, customer validation repos, and regression tests where the expected architecture is known.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `expectation` | object | no | Expected frameworks, languages, routes, nodes, data entities, relationships, and runtime signals. If omitted, MCP looks for repo-local analysis expectation files |
+
+**Returns:** Pass/warn/fail status, score, per-expectation checks, and misses.
+
+### `get_semantic_map`
+
+Return a CAS-derived source-level map for a target area.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `target` | string | no | Optional target query |
+| `limit` | number | no | Max matching nodes |
+
+**Returns:** Files, nodes, imports, exports, data entities, entry/exit ownership, relationships, and method calls.
+
+### `get_framework_depth_report`
+
+Score detected frameworks and important libraries by analyzer depth.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+
+**Returns:** Per-framework scores for analyzer presence, tagged nodes, entry points, evidence, runtime links, and expected framework-specific surfaces.
+
+### `get_cross_repo_contracts`
+
+Build a contract-level view across analyzed repositories.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `paths` | string[] | no | Repositories to include. Omit to use all stored analyses |
+
+**Returns:** Provided HTTP/message/database contracts, consumed APIs/messages/databases, deterministic cross-repo links, and contract gaps.
+
+### `get_runtime_instrumentation_plan`
+
+Turn CAS runtime links into concrete event contracts and instrumentation points.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `limit` | number | no | Max instrumentation points |
+
+**Returns:** Runtime link totals, required/recommended event fields, instrumentation points, suggested runtime event payloads, and gaps.
+
+### `evaluate_agent_task_proof`
+
+Run agent work packets for representative tasks and score whether CAS gives enough target, risk, test, MCP, and file-read context to begin work.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `tasks` | object[] | no | Agent tasks to evaluate |
+
+**Returns:** Per-task scores, selected nodes, file read plans, and gaps.
 
 ### `get_patterns`
 

@@ -5486,27 +5486,30 @@ export class AnalyzerOrchestrator {
     analysisFacts: CASAnalysisFact[] = []
   ): CASValidation {
     const nodeIds = new Set(nodes.map(n => n.id));
+    const entryPointIds = new Set(entryPoints.map(entryPoint => entryPoint.id));
+    const exitPointIds = new Set(exitPoints.map(exitPoint => exitPoint.id));
+    const graphEndpointIds = new Set([...nodeIds, ...entryPointIds, ...exitPointIds]);
     const warnings: Array<{ path?: string; message?: string }> = [];
     let danglingEdges = 0;
     const connectedNodeIds = new Set<string>();
 
     for (const edge of edges) {
-      if (!nodeIds.has(edge.source)) {
+      if (!graphEndpointIds.has(edge.source)) {
         danglingEdges++;
         warnings.push({
           path: `edges[${edge.id}].source`,
-          message: `Edge source "${edge.source}" references nonexistent node`
+          message: `Edge source "${edge.source}" references nonexistent graph endpoint`
         });
-      } else {
+      } else if (nodeIds.has(edge.source)) {
         connectedNodeIds.add(edge.source);
       }
-      if (!nodeIds.has(edge.target)) {
+      if (!graphEndpointIds.has(edge.target)) {
         danglingEdges++;
         warnings.push({
           path: `edges[${edge.id}].target`,
-          message: `Edge target "${edge.target}" references nonexistent node`
+          message: `Edge target "${edge.target}" references nonexistent graph endpoint`
         });
-      } else {
+      } else if (nodeIds.has(edge.target)) {
         connectedNodeIds.add(edge.target);
       }
     }
@@ -6351,6 +6354,7 @@ export class AnalyzerOrchestrator {
     const methodCalls: CASMethodCall[] = [];
     const nodeMap = new Map(nodes.map(n => [n.id, n]));
     const callEdgeTypes = new Set(['calls', 'invokes', 'method_call', 'delegates_to']);
+    const seen = new Set<string>();
 
     for (const edge of edges) {
       if (!callEdgeTypes.has(edge.type)) continue;
@@ -6360,19 +6364,19 @@ export class AnalyzerOrchestrator {
 
       if (!sourceNode) continue;
 
-      const attrs = edge.metadata?.attributes || {};
+      const attrs: Record<string, any> = { ...(edge.metadata || {}), ...(edge.metadata?.attributes || {}) };
       const locations = edge.metadata?.locations || [];
       const firstLocation = locations[0];
 
-      const methodName = targetNode?.name || attrs.method_name || 'unknown';
+      const methodName = targetNode?.name || attrs.method_name || attrs.target_method || attrs.method || 'unknown';
       const file = firstLocation?.file || sourceNode.source?.file || '';
-      const line = firstLocation?.line || sourceNode.source?.line || 0;
+      const line = firstLocation?.line || attrs.line || sourceNode.source?.line || 0;
+      const key = `${edge.source}:${edge.target}:${methodName}:${line}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
 
-      const callType: CASMethodCall['call_details']['call_type'] =
-        attrs.call_type || (targetNode?.type === 'constructor' ? 'constructor' : 'direct');
-
-      const resolutionType: CASMethodCall['call_details']['resolution_type'] =
-        targetNode ? 'static' : (attrs.resolution_type || 'unresolved');
+      const callType = this.normalizeMethodCallType(attrs.call_type, targetNode);
+      const resolutionType = this.normalizeMethodCallResolution(attrs.resolution_type, targetNode, edge.target);
 
       methodCalls.push({
         id: `mc_${edge.id}_${edge.target}`,
@@ -6386,24 +6390,78 @@ export class AnalyzerOrchestrator {
           resolution_type: resolutionType
         },
         execution_context: {
-          is_async: !!sourceNode.metadata?.is_async || !!edge.metadata?.async,
-          is_conditional: !!edge.metadata?.conditional,
-          is_in_loop: false,
+          is_async: !!sourceNode.metadata?.is_async || !!edge.metadata?.async || !!attrs.is_async,
+          is_conditional: !!edge.metadata?.conditional || !!attrs.is_conditional,
+          is_in_loop: !!attrs.is_in_loop,
           is_recursive: edge.source === edge.target,
           call_depth: 0,
-          conditional_depth: 0,
-          loop_depth: 0,
+          conditional_depth: attrs.is_conditional ? 1 : 0,
+          loop_depth: attrs.is_in_loop ? 1 : 0,
           enclosing_function: sourceNode.type === 'function' || sourceNode.type === 'method' ? sourceNode.name : undefined,
           enclosing_class: sourceNode.parent ? nodeMap.get(sourceNode.parent)?.name : undefined
         },
+        arguments: Array.isArray(attrs.arguments) ? attrs.arguments.map((arg: any, index: number) => ({
+          position: index,
+          type: arg.type,
+          value: arg.value === undefined ? undefined : String(arg.value),
+          is_literal: !!arg.is_literal,
+          is_variable: !arg.is_literal
+        })) : undefined,
+        external_details: this.buildMethodCallExternalDetails(attrs, resolutionType, edge.target),
         performance_hints: {
-          is_hot_path: false,
-          is_potential_bottleneck: false
+          is_hot_path: !!sourceNode.call_graph?.is_hot_path,
+          is_potential_bottleneck: attrs.target_type === 'database' || attrs.target_type === 'api',
+          is_critical_path: attrs.target_type === 'database' || attrs.target_type === 'api'
         }
       });
     }
 
     return methodCalls;
+  }
+
+  private normalizeMethodCallType(rawType: unknown, targetNode?: CASNode): CASMethodCall['call_details']['call_type'] {
+    if (targetNode?.type === 'constructor') return 'constructor';
+    if (typeof rawType !== 'string') return targetNode?.type === 'method' ? 'method' : 'direct';
+
+    const lower = rawType.toLowerCase();
+    if (['direct', 'method', 'constructor', 'abstract', 'interface', 'callback', 'hook', 'dynamic'].includes(lower)) {
+      return lower as CASMethodCall['call_details']['call_type'];
+    }
+    if (lower.includes('constructor')) return 'constructor';
+    if (lower.includes('abstract')) return 'abstract';
+    if (lower.includes('interface')) return 'interface';
+    if (lower.includes('callback')) return 'callback';
+    if (lower.includes('hook') || lower.includes('event')) return 'hook';
+    if (lower.includes('dynamic')) return 'dynamic';
+    if (lower.includes('method') || lower.includes('injection') || lower.includes('library')) return 'method';
+    return 'direct';
+  }
+
+  private normalizeMethodCallResolution(rawType: unknown, targetNode: CASNode | undefined, targetId: string): CASMethodCall['call_details']['resolution_type'] {
+    if (targetNode) return 'static';
+    if (typeof rawType === 'string') {
+      const lower = rawType.toLowerCase();
+      if (['dynamic', 'polymorphic', 'external', 'unresolved'].includes(lower)) {
+        return lower as CASMethodCall['call_details']['resolution_type'];
+      }
+    }
+    return targetId.startsWith('exit_') ? 'external' : 'unresolved';
+  }
+
+  private buildMethodCallExternalDetails(
+    attrs: Record<string, any>,
+    resolutionType: CASMethodCall['call_details']['resolution_type'],
+    targetId: string
+  ): CASMethodCall['external_details'] | undefined {
+    if (resolutionType !== 'external') return undefined;
+
+    return {
+      library: attrs.library || attrs.target_object || attrs.target_type || 'external',
+      module: attrs.module || attrs.endpoint,
+      is_builtin: !!attrs.is_builtin,
+      is_sdk: attrs.target_type === 'sdk' || attrs.call_type === 'library_call',
+      exit_point_id: targetId.startsWith('exit_') ? targetId : undefined
+    };
   }
 
   private formatSignature(node: CASNode): string {

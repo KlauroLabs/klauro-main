@@ -25,12 +25,15 @@ Agent operating loop:
 
 1. If MCP has an analysis for the repository, call `get_agent_start_context` before broad file reads.
 2. Call `get_agent_tool_plan` with the user's task (`orient`, `modify`, `debug`, `review`, `trace`, `cross-repo`, or `runtime`).
-3. Use `run_answer_pack` or the recommended follow-up tools when the task needs explanation with evidence.
-4. Before code edits, call `get_coding_context` for the target, then `assess_change_risk` and `find_tests` when connected behavior can be affected.
-5. Read source files after MCP narrows the target to specific files, nodes, tests, or explicit CAS gaps.
-6. If CAS/MCP returns an error or readiness fails, report that as a blocker to default use and then fall back to direct code reading for the task.
+3. Call `get_agent_work_packet` for real work so CAS resolves the target, risk, tests, call context, and first files to inspect.
+4. Use `run_answer_pack` or the recommended follow-up tools when the task needs explanation with evidence.
+5. Before code edits, call `get_coding_context` for the target, then `assess_change_risk` and `find_tests` when connected behavior can be affected.
+6. Read source files after MCP narrows the target to specific files, nodes, tests, or explicit CAS gaps.
+7. If CAS/MCP returns an error or readiness fails, report that as a blocker to default use and then fall back to direct code reading for the task.
 
-Use `evaluate_agent_readiness` to decide whether a repository is ready for default agent use. Use `npm run agent-gauntlet` from `mcp-server/` to verify this across the configured repo set.
+When an MCP client starts from prompts or resources instead of tools, use the `agent_coding_session` prompt or read `unravl://{project_name}/agent-start`.
+
+Use `evaluate_agent_readiness` to decide whether a repository is ready for default agent use. Use `evaluate_analysis_truth`, `get_semantic_map`, `get_framework_depth_report`, `get_cross_repo_contracts`, `get_runtime_instrumentation_plan`, and `evaluate_agent_task_proof` when judging whether the analysis is accurate enough for real work. Use `npm run agent-gauntlet` and `npm run analysis-gauntlet` from `mcp-server/` to verify this across the configured repo set and the ground-truth fixture.
 
 ## Non-Negotiable Rules
 

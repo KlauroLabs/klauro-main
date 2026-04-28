@@ -6,6 +6,7 @@ import * as query from './query';
 import * as watcher from './watcher';
 import * as product from './product';
 import * as agentAdoption from './agent-adoption';
+import * as analysisMastery from './analysis-mastery';
 
 export function createServer(): McpServer {
   const server = new McpServer(
@@ -258,6 +259,151 @@ function registerTools(server: McpServer) {
     async ({ path, task }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(agentAdoption.getAgentToolPlan(cas, { path, task: task || {} }));
+    })
+  );
+
+  server.registerTool(
+    'get_agent_work_packet',
+    {
+      title: 'Get Agent Work Packet',
+      description: 'One-call task packet for agents. Resolves the target, returns coding context, risk, callers, callees, tests, entry context, MCP follow-ups, and the first source files to inspect.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        task: z.object({
+          task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional(),
+          target: z.string().optional(),
+          related_paths: z.array(z.string()).optional(),
+          runtime_event: z.record(z.unknown()).optional(),
+        }).optional().describe('Task context for building the work packet'),
+      } as any,
+    } as any,
+    async ({ path, task }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(agentAdoption.getAgentWorkPacket(cas, path, task || {}));
+    })
+  );
+
+  server.registerTool(
+    'evaluate_analysis_truth',
+    {
+      title: 'Evaluate Analysis Truth',
+      description: 'Compare CAS against explicit ground-truth expectations for frameworks, languages, routes, nodes, data entities, relationships, and runtime signals.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        expectation: z.object({
+          name: z.string().optional(),
+          frameworks: z.array(z.string()).optional(),
+          languages: z.array(z.string()).optional(),
+          routes: z.array(z.object({
+            method: z.string().optional(),
+            path: z.string(),
+            handler: z.string().optional(),
+            controller: z.string().optional(),
+          })).optional(),
+          nodes: z.array(z.object({
+            name: z.string(),
+            type: z.string().optional(),
+            file: z.string().optional(),
+          })).optional(),
+          data_entities: z.array(z.string()).optional(),
+          relationships: z.array(z.object({
+            source: z.string(),
+            target: z.string(),
+            type: z.string().optional(),
+          })).optional(),
+          runtime_signals: z.array(z.string()).optional(),
+        }).optional().describe('Ground-truth expectations. If omitted, MCP tries repo-local .unravl/analysis-expectations.json.'),
+      } as any,
+    } as any,
+    async ({ path, expectation }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      const loadedExpectation = expectation || await analysisMastery.loadTruthExpectation(path);
+      if (!loadedExpectation) return json({ error: 'No expectation provided and no repo-local analysis expectation file found.' });
+      return json(analysisMastery.evaluateAnalysisTruth(cas, loadedExpectation));
+    })
+  );
+
+  server.registerTool(
+    'get_semantic_map',
+    {
+      title: 'Get Semantic Map',
+      description: 'Return a CAS-derived symbol and data map: files, imports, exports, entry/exit ownership, data entities, relationships, and method calls. Use when source-level semantics matter before reading files.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        target: z.string().optional().describe('Optional target query to narrow the semantic map'),
+        limit: z.number().optional().describe('Max matching nodes to include'),
+      } as any,
+    } as any,
+    async ({ path, target, limit }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(analysisMastery.getSemanticMap(cas, { target, limit }));
+    })
+  );
+
+  server.registerTool(
+    'get_framework_depth_report',
+    {
+      title: 'Get Framework Depth Report',
+      description: 'Score detected frameworks by analyzer presence, framework-tagged nodes, entry points, evidence, runtime links, and expected framework-specific surfaces.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+      } as any,
+    } as any,
+    async ({ path }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(analysisMastery.getFrameworkDepthReport(cas));
+    })
+  );
+
+  server.registerTool(
+    'get_cross_repo_contracts',
+    {
+      title: 'Get Cross Repo Contracts',
+      description: 'Build contract-level views across repositories: provided HTTP/message/database contracts, consumed APIs/messages/databases, deterministic links, and contract gaps.',
+      inputSchema: {
+        paths: z.array(z.string()).optional().describe('Project paths to include. Omit to use all analyzed repositories.'),
+      } as any,
+    } as any,
+    async ({ paths }: any) => withErrorHandling(async () => {
+      const repositories = await loadRepositoryAnalyses(paths);
+      return json(analysisMastery.getCrossRepoContracts(repositories));
+    })
+  );
+
+  server.registerTool(
+    'get_runtime_instrumentation_plan',
+    {
+      title: 'Get Runtime Instrumentation Plan',
+      description: 'Turn CAS runtime_static_links into concrete runtime event contracts and instrumentation points for correlating production behavior back to CAS.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        limit: z.number().optional().describe('Max instrumentation points to return'),
+      } as any,
+    } as any,
+    async ({ path, limit }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(analysisMastery.getRuntimeInstrumentationPlan(cas, { limit }));
+    })
+  );
+
+  server.registerTool(
+    'evaluate_agent_task_proof',
+    {
+      title: 'Evaluate Agent Task Proof',
+      description: 'Run agent work packets for representative tasks and score whether CAS gives agents enough target, risk, test, MCP, and file-read context to start work.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        tasks: z.array(z.object({
+          task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional(),
+          target: z.string().optional(),
+          related_paths: z.array(z.string()).optional(),
+          runtime_event: z.record(z.unknown()).optional(),
+        })).optional().describe('Tasks to evaluate. Defaults to an orient task.'),
+      } as any,
+    } as any,
+    async ({ path, tasks }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(analysisMastery.evaluateAgentTaskProof(cas, path, tasks || [{ task_type: 'orient' }]));
     })
   );
 
@@ -1534,6 +1680,32 @@ function registerResources(server: McpServer) {
   );
 
   server.registerResource(
+    'project-agent-start',
+    new ResourceTemplate('unravl://{project_name}/agent-start', { list: undefined }),
+    { title: 'Agent Start Context', description: 'Default CAS-backed start context for coding agents before broad file reads.', mimeType: 'application/json' } as any,
+    async (uri, params) => {
+      const analyses = await listAnalyses();
+      const entry = analyses.find(a => slugify(a.name) === params.project_name);
+      if (!entry) return { contents: [{ uri: uri.href, text: JSON.stringify({ error: 'Analysis not found' }) }] };
+      const cas = await getAnalysis(entry.path);
+      return { contents: [{ uri: uri.href, text: JSON.stringify(agentAdoption.getAgentStartContext(cas, entry.path)) }] };
+    }
+  );
+
+  server.registerResource(
+    'project-agent-readiness',
+    new ResourceTemplate('unravl://{project_name}/agent-readiness', { list: undefined }),
+    { title: 'Agent Readiness', description: 'Default-use readiness score and gaps for agent adoption.', mimeType: 'application/json' } as any,
+    async (uri, params) => {
+      const analyses = await listAnalyses();
+      const entry = analyses.find(a => slugify(a.name) === params.project_name);
+      if (!entry) return { contents: [{ uri: uri.href, text: JSON.stringify({ error: 'Analysis not found' }) }] };
+      const cas = await getAnalysis(entry.path);
+      return { contents: [{ uri: uri.href, text: JSON.stringify(agentAdoption.evaluateAgentReadiness(cas, entry.path)) }] };
+    }
+  );
+
+  server.registerResource(
     'project-endpoints',
     new ResourceTemplate('unravl://{project_name}/endpoints', { list: undefined }),
     { title: 'Project Endpoints', description: 'All entry points and route table.', mimeType: 'application/json' } as any,
@@ -1641,6 +1813,84 @@ function registerResources(server: McpServer) {
 }
 
 function registerPrompts(server: McpServer) {
+  server.registerPrompt(
+    'agent_coding_session',
+    {
+      title: 'Agent Coding Session',
+      description: 'Default prompt for Codex, Claude, Cursor, and other agents. Loads CAS readiness, start context, and task-specific MCP tool plan before source-file exploration.',
+      argsSchema: {
+        path: z.string().describe('Project path'),
+        task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional().describe('Task type'),
+        target: z.string().optional().describe('Task target, such as a feature, node, file, route, error, or subsystem'),
+      } as any,
+    } as any,
+    async ({ path, task_type, target }: any) => {
+      const cas = await getAnalysis(path);
+      const task = { task_type: task_type || 'orient', target };
+      const start = agentAdoption.getAgentStartContext(cas, path, task);
+      const plan = agentAdoption.getAgentToolPlan(cas, { path, task });
+      const packet = agentAdoption.getAgentWorkPacket(cas, path, task);
+      const readiness = agentAdoption.evaluateAgentReadiness(cas, path);
+
+      const sections: string[] = [];
+      sections.push(`# Agent Coding Session: ${cas.system.name}`);
+      sections.push(`Default use: ${readiness.default_use ? 'yes' : 'no'}`);
+      sections.push(`Readiness: ${readiness.status.toUpperCase()} (${readiness.score}/100)`);
+      if (readiness.adoption_gaps.length > 0) {
+        sections.push(`Gaps: ${readiness.adoption_gaps.join('; ')}`);
+      }
+
+      sections.push(`\n## Operating Rule`);
+      sections.push(start.default_rule);
+      sections.push(plan.rule);
+
+      sections.push(`\n## System`);
+      sections.push(`Type: ${start.system.type || 'unknown'}`);
+      sections.push(`Description: ${start.system.description || 'unknown'}`);
+      sections.push(`Languages: ${start.system.languages.join(', ') || 'unknown'}`);
+      sections.push(`Frameworks: ${start.system.frameworks.join(', ') || 'unknown'}`);
+      sections.push(`Top capabilities: ${start.system.top_capabilities.slice(0, 8).join(', ') || 'none detected'}`);
+
+      sections.push(`\n## Scale`);
+      sections.push(`Nodes: ${start.scale.nodes}, Edges: ${start.scale.edges}, Entry points: ${start.scale.entry_points}, Analysis errors: ${start.scale.analysis_errors}`);
+
+      if (start.answer_pack.gaps.length > 0) {
+        sections.push(`\n## Answer Pack Gaps`);
+        for (const gap of start.answer_pack.gaps) sections.push(`- ${gap}`);
+      }
+
+      sections.push(`\n## MCP Plan`);
+      for (const stepValue of plan.steps) {
+        const required = stepValue.required ? 'required' : 'optional';
+        sections.push(`${stepValue.order}. ${stepValue.tool} (${required}) - ${stepValue.purpose}`);
+        sections.push(`   args: ${JSON.stringify(stepValue.args)}`);
+      }
+
+      if (packet.selected_node) {
+        sections.push(`\n## Selected Target`);
+        sections.push(`${packet.selected_node.name} (${packet.selected_node.type})`);
+        if (packet.selected_node.file) sections.push(`File: ${packet.selected_node.file}:${packet.selected_node.line || 1}`);
+      }
+
+      if (packet.file_read_plan.length > 0) {
+        sections.push(`\n## File Read Plan`);
+        for (const item of packet.file_read_plan) {
+          sections.push(`- ${item.file}${item.line ? `:${item.line}` : ''} - ${item.reason}`);
+        }
+      }
+
+      sections.push(`\n## When To Read Files`);
+      for (const rule of start.when_to_read_files) sections.push(`- ${rule}`);
+
+      return {
+        messages: [{
+          role: 'user',
+          content: { type: 'text', text: sections.join('\n') } as any,
+        }],
+      };
+    }
+  );
+
   server.registerPrompt(
     'architectural_context',
     {

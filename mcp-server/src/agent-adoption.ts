@@ -1,12 +1,19 @@
 import type { CASOutput, CASNode } from '../../backend/src/types/cas.types';
 import {
+  assessChangeRisk,
   buildSummary,
   findTests,
+  getCallees,
+  getCallChain,
+  getCallers,
+  getCodingContext,
   getEntryPoints,
+  getErrorContracts,
   getExitPoints,
   getFlowCoverage,
   getRuntimeStaticLinks,
   getSecurityOverview,
+  searchNodes,
 } from './query';
 import { runAnswerPack } from './product';
 
@@ -57,6 +64,13 @@ export interface AgentReadinessReport {
   gates: AgentReadinessGate[];
   adoption_gaps: string[];
   required_agent_behavior: string[];
+}
+
+interface FileReadPlanItem {
+  file: string;
+  reason: string;
+  node_ids: string[];
+  line?: number;
 }
 
 export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTask = {}) {
@@ -141,6 +155,61 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
   };
 }
 
+export function getAgentWorkPacket(cas: CASOutput, path: string, taskInput: AgentTask = {}) {
+  const task = normalizeTask(taskInput);
+  const readiness = evaluateAgentReadiness(cas, path);
+  const plan = getAgentToolPlan(cas, { path, task });
+  const targetResolution = resolveTaskTarget(cas, task.target);
+  const selectedNode = targetResolution.selected_node;
+  const tests = selectedNode
+    ? findTests(cas, { nodeId: selectedNode.id, limit: 10 })
+    : findTests(cas, { limit: 10 });
+  const callers = selectedNode ? getCallers(cas, selectedNode.id, 2, 25) : null;
+  const callees = selectedNode ? getCallees(cas, selectedNode.id, 2, 25) : null;
+  const risk = selectedNode ? assessChangeRisk(cas, selectedNode.id) : null;
+  const codingContext = selectedNode || task.target
+    ? getCodingContext(cas, selectedNode?.id || task.target || '', { task_type: workPacketTaskType(task.task_type) })
+    : null;
+  const errorContracts = selectedNode && task.task_type === 'debug'
+    ? getErrorContracts(cas, selectedNode.id, 'both')
+    : null;
+  const entryContext = buildEntryContext(cas, task, selectedNode?.id);
+  const fileReadPlan = buildFileReadPlan(cas, selectedNode || undefined, callers, callees, tests, entryContext);
+  const gaps = [
+    ...readiness.adoption_gaps,
+    ...targetResolution.gaps,
+    ...(fileReadPlan.length === 0 ? ['file-read-plan: no concrete source files resolved'] : []),
+  ];
+
+  return {
+    path,
+    generated_at: new Date().toISOString(),
+    task,
+    status: gaps.length === 0 ? 'ready' : 'needs-review',
+    default_use: readiness.default_use,
+    readiness: {
+      status: readiness.status,
+      score: readiness.score,
+      gaps: readiness.adoption_gaps,
+    },
+    target_resolution: targetResolution,
+    selected_node: selectedNode ? summarizeNodeForAgent(selectedNode) : null,
+    work_context: {
+      coding_context: codingContext,
+      risk,
+      callers,
+      callees,
+      tests,
+      error_contracts: errorContracts,
+      entry_context: entryContext,
+    },
+    file_read_plan: fileReadPlan,
+    next_mcp_calls: plan.steps,
+    source_reading_rule: 'Read only the files in file_read_plan first. Expand only when those files or MCP evidence show a concrete gap.',
+    gaps,
+  };
+}
+
 export function getAgentToolPlan(cas: CASOutput, input: { path: string; task?: AgentTask }) {
   const task = normalizeTask(input.task || {});
   const representativeNodeId = representativeTarget(cas)?.id;
@@ -161,6 +230,229 @@ export function getAgentToolPlan(cas: CASOutput, input: { path: string; task?: A
       action: 'Run analyze_codebase. If the error remains, report the MCP/CAS failure and fall back to direct code reading for the task.',
     },
   };
+}
+
+function resolveTaskTarget(cas: CASOutput, target?: string) {
+  const gaps: string[] = [];
+  const candidateNodes = new Map<string, CASNode>();
+  let selectedNode: CASNode | undefined;
+
+  if (target) {
+    const exactNode = cas.nodes.find(node => node.id === target);
+    if (exactNode) {
+      selectedNode = exactNode;
+      candidateNodes.set(exactNode.id, exactNode);
+    }
+
+    const searched = searchNodes(cas, target, { limit: 10 })
+      .map(result => cas.nodes.find(node => node.id === result.id))
+      .filter((node): node is CASNode => Boolean(node));
+    for (const node of searched) {
+      candidateNodes.set(node.id, node);
+    }
+
+    const fileMatches = cas.nodes.filter(node =>
+      node.source?.file &&
+      (node.source.file.endsWith(target) || target.endsWith(node.source.file))
+    ).slice(0, 10);
+    for (const node of fileMatches) {
+      candidateNodes.set(node.id, node);
+    }
+
+    const scoredCandidates = [...candidateNodes.values()]
+      .map(node => ({ node, score: scoreNodeForTarget(node, target) }))
+      .sort((left, right) => right.score - left.score);
+    if (!selectedNode) selectedNode = scoredCandidates[0]?.node;
+
+    if (!selectedNode) gaps.push(`target: no CAS node resolved for "${target}"`);
+    if (scoredCandidates.length > 1 && scoredCandidates[0].score - scoredCandidates[1].score < 15) {
+      gaps.push(`target: "${target}" is ambiguous; review candidate nodes before editing`);
+    }
+
+    return {
+      query: target,
+      selected_node_id: selectedNode?.id || null,
+      selected_node: selectedNode || null,
+      candidates: scoredCandidates.map(candidate => ({
+        ...summarizeNodeForAgent(candidate.node),
+        score: candidate.score,
+      })),
+      gaps,
+    };
+  } else {
+    selectedNode = representativeTarget(cas);
+    if (selectedNode) candidateNodes.set(selectedNode.id, selectedNode);
+    else gaps.push('target: no representative CAS node available');
+  }
+
+  return {
+    query: target || null,
+    selected_node_id: selectedNode?.id || null,
+    selected_node: selectedNode || null,
+    candidates: [...candidateNodes.values()].map(node => ({
+      ...summarizeNodeForAgent(node),
+      score: scoreNodeForTarget(node, target),
+    })),
+    gaps,
+  };
+}
+
+function scoreNodeForTarget(node: CASNode, target?: string): number {
+  if (!target) return 50;
+  const query = target.toLowerCase();
+  const name = node.name.toLowerCase();
+  const qualifiedName = node.qualified_name?.toLowerCase() || '';
+  const file = node.source?.file?.toLowerCase() || '';
+  let score = 0;
+
+  if (node.id === target) score += 200;
+  if (name === query) score += 120;
+  if (name.startsWith(query)) score += 70;
+  if (name.includes(query)) score += 45;
+  if (qualifiedName.includes(query)) score += 30;
+  if (file.includes(query)) score += 25;
+
+  const preferredTypes = ['controller', 'service', 'guard', 'middleware', 'gateway', 'resolver', 'handler', 'route', 'api_route', 'react_page', 'custom_hook', 'function', 'method'];
+  if (preferredTypes.includes(node.type)) score += 20;
+  if (node.type === 'file' || node.type === 'import') score -= 100;
+  if (node.type.toLowerCase().includes('dto')) score -= 20;
+  if (node.name.toLowerCase().includes('dto')) score -= 20;
+
+  return score;
+}
+
+function buildEntryContext(cas: CASOutput, task: Required<Pick<AgentTask, 'task_type'>> & AgentTask, nodeId?: string) {
+  const relatedEntries = nodeId
+    ? (cas.entry_points || []).filter(entry =>
+        entry.source_node === nodeId ||
+        entry.handler?.node_id === nodeId ||
+        entry.connected_nodes?.includes(nodeId)
+      )
+    : [];
+  const selectedEntry = relatedEntries[0] || (cas.entry_points || [])[0];
+  const chains = selectedEntry
+    ? getCallChain(cas, { entryPointId: selectedEntry.id, limit: 5 })
+    : getCallChain(cas, { limit: 5 });
+
+  return {
+    task_type: task.task_type,
+    related_entry_points: relatedEntries.slice(0, 5).map(entry => ({
+      id: entry.id,
+      name: entry.name,
+      type: entry.type,
+      trigger: entry.trigger,
+      handler: entry.handler,
+    })),
+    representative_entry_point: selectedEntry ? {
+      id: selectedEntry.id,
+      name: selectedEntry.name,
+      type: selectedEntry.type,
+      trigger: selectedEntry.trigger,
+      handler: selectedEntry.handler,
+    } : null,
+    call_chains: chains,
+  };
+}
+
+function buildFileReadPlan(
+  cas: CASOutput,
+  selectedNode: CASNode | undefined,
+  callers: ReturnType<typeof getCallers> | null,
+  callees: ReturnType<typeof getCallees> | null,
+  tests: ReturnType<typeof findTests>,
+  entryContext: ReturnType<typeof buildEntryContext>
+): FileReadPlanItem[] {
+  const items = new Map<string, FileReadPlanItem>();
+  const rootPath = cas.system?.root_path;
+  const addNode = (node: CASNode | undefined, reason: string) => {
+    if (!node?.source?.file) return;
+    const file = normalizeSourceFile(node.source.file, rootPath);
+    const existing = items.get(file);
+    if (existing) {
+      if (!existing.node_ids.includes(node.id)) existing.node_ids.push(node.id);
+      if (!existing.reason.includes(reason)) existing.reason = `${existing.reason}; ${reason}`;
+      return;
+    }
+    items.set(file, {
+      file,
+      reason,
+      node_ids: [node.id],
+      line: node.source.line,
+    });
+  };
+
+  addNode(selectedNode, 'selected target');
+
+  for (const caller of callers?.callers.slice(0, 5) || []) {
+    addNode(cas.nodes.find(node => node.id === caller.node_id), `caller via ${caller.via}`);
+  }
+
+  for (const callee of callees?.callees.slice(0, 5) || []) {
+    addNode(cas.nodes.find(node => node.id === callee.node_id), `callee via ${callee.via}`);
+  }
+
+  for (const suite of (tests.suites || []).slice(0, 5) as Array<{ file_path?: string; name?: string }>) {
+    if (!suite.file_path) continue;
+    const file = normalizeSourceFile(suite.file_path, rootPath);
+    const existing = items.get(file);
+    if (existing) {
+      if (!existing.reason.includes('test coverage')) existing.reason = `${existing.reason}; test coverage`;
+    } else {
+      items.set(file, {
+        file,
+        reason: `test coverage${suite.name ? `: ${suite.name}` : ''}`,
+        node_ids: [],
+      });
+    }
+  }
+
+  const representativeEntry = entryContext.representative_entry_point;
+  if (representativeEntry?.handler?.file) {
+    const file = normalizeSourceFile(representativeEntry.handler.file, rootPath);
+    const existing = items.get(file);
+    if (existing) {
+      if (!existing.reason.includes('representative entry point')) existing.reason = `${existing.reason}; representative entry point`;
+    } else {
+      items.set(file, {
+        file,
+        reason: 'representative entry point',
+        node_ids: representativeEntry.handler.node_id ? [representativeEntry.handler.node_id] : [],
+        line: representativeEntry.handler.line,
+      });
+    }
+  }
+
+  return [...items.values()].slice(0, 12);
+}
+
+function normalizeSourceFile(file: string, rootPath?: string): string {
+  const normalizedFile = file.replace(/\\/g, '/');
+  if (!rootPath) return normalizedFile.replace(/^\.\//, '');
+  const normalizedRoot = rootPath.replace(/\\/g, '/').replace(/\/$/, '');
+  if (normalizedFile.startsWith(`${normalizedRoot}/`)) {
+    return normalizedFile.slice(normalizedRoot.length + 1);
+  }
+  return normalizedFile.replace(/^\.\//, '');
+}
+
+function summarizeNodeForAgent(node: CASNode) {
+  return {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    qualified_name: node.qualified_name,
+    file: node.source?.file,
+    line: node.source?.line,
+    level: node.level,
+    category: node.category,
+    tags: node.tags,
+  };
+}
+
+function workPacketTaskType(taskType?: AgentTaskType): 'add' | 'modify' | 'delete' | 'refactor' {
+  if (taskType === 'review' || taskType === 'trace' || taskType === 'runtime' || taskType === 'cross-repo' || taskType === 'orient') return 'modify';
+  if (taskType === 'debug') return 'modify';
+  return 'modify';
 }
 
 export function evaluateAgentReadiness(cas: CASOutput, path: string): AgentReadinessReport {

@@ -1,0 +1,20 @@
+{
+  "name": "nest-react-prisma-truth-fixture",
+  "frameworks": ["NestJS", "React", "Prisma"],
+  "languages": ["TypeScript/JavaScript"],
+  "routes": [
+    { "method": "GET", "path": "/users/:id", "handler": "getUser" },
+    { "method": "POST", "path": "/users", "handler": "createUser" }
+  ],
+  "nodes": [
+    { "name": "UsersController", "type": "controller" },
+    { "name": "UsersService", "type": "service" },
+    { "name": "UserPage" }
+  ],
+  "data_entities": ["User"],
+  "relationships": [
+    { "source": "UsersController", "target": "UsersService" },
+    { "source": "getUser", "target": "findUser", "type": "calls" },
+    { "source": "createUser", "target": "createUser", "type": "calls" }
+  ]
+}

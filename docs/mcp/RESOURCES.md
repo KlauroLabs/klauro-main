@@ -20,6 +20,22 @@ System overview combining architecture summary, tech stack, system purpose, capa
 
 ---
 
+## `unravl://{project_name}/agent-start`
+
+Default CAS-backed start context for coding agents before broad file reads.
+
+**Includes:** agent default-use rule, readiness summary, system summary, scale metrics, top entry/exit points, connected nodes, runtime links, answer-pack status, recommended first MCP tools, and file-read guidance.
+
+---
+
+## `unravl://{project_name}/agent-readiness`
+
+Default-use readiness score and gaps for agent adoption.
+
+**Includes:** pass/warn/fail status, score, `default_use`, summary metrics, readiness gates, adoption gaps, and required agent behavior.
+
+---
+
 ## `unravl://{project_name}/endpoints`
 
 All entry points and the HTTP route table.
@@ -74,6 +90,8 @@ Resources are best for loading a complete view of a domain in a single read. Too
 
 | Need | Use |
 |------|-----|
+| Start an agent session | Resource: `unravl://{name}/agent-start` or Prompt: `agent_coding_session` |
+| Check whether agents should default to MCP | Resource: `unravl://{name}/agent-readiness` or Tool: `evaluate_agent_readiness` |
 | Load all endpoints at once | Resource: `unravl://{name}/endpoints` |
 | Filter entry points by type | Tool: `get_entry_points` with `type` param |
 | Get full security posture | Resource: `unravl://{name}/security` |

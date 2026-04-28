@@ -1,0 +1,634 @@
+import * as fs from 'fs-extra';
+import * as path from 'path';
+import type { CASOutput, CASEntryPoint, CASExitPoint, CASNode } from '../../backend/src/types/cas.types';
+import { buildCrossRepositoryLinks } from './product';
+import { getAgentWorkPacket, type AgentTask } from './agent-adoption';
+
+type GateStatus = 'pass' | 'warn' | 'fail';
+
+export interface AnalysisTruthExpectation {
+  name?: string;
+  frameworks?: string[];
+  languages?: string[];
+  routes?: Array<{ method?: string; path: string; handler?: string; controller?: string }>;
+  nodes?: Array<{ name: string; type?: string; file?: string }>;
+  data_entities?: string[];
+  relationships?: Array<{ source: string; target: string; type?: string }>;
+  runtime_signals?: string[];
+}
+
+interface MasteryCheck {
+  id: string;
+  status: GateStatus;
+  score: number;
+  expected: unknown;
+  actual?: unknown;
+  detail: string;
+}
+
+export async function loadTruthExpectation(projectPath: string): Promise<AnalysisTruthExpectation | null> {
+  const candidates = [
+    path.join(projectPath, '.unravl', 'analysis-expectations.json'),
+    path.join(projectPath, 'unravl.analysis.json'),
+    path.join(projectPath, 'analysis-expectations.json'),
+  ];
+
+  for (const candidate of candidates) {
+    if (await fs.pathExists(candidate)) return fs.readJson(candidate);
+  }
+
+  return null;
+}
+
+export function evaluateAnalysisTruth(cas: CASOutput, expectation: AnalysisTruthExpectation) {
+  const checks: MasteryCheck[] = [
+    ...checkNames('framework', expectation.frameworks || [], detectedFrameworks(cas)),
+    ...checkNames('language', expectation.languages || [], detectedLanguages(cas)),
+    ...checkRoutes(cas, expectation.routes || []),
+    ...checkNodes(cas, expectation.nodes || []),
+    ...checkNames('data-entity', expectation.data_entities || [], dataEntityNames(cas)),
+    ...checkRelationships(cas, expectation.relationships || []),
+    ...checkNames('runtime-signal', expectation.runtime_signals || [], (cas.runtime_static_links || []).map(link => link.runtime_signal)),
+  ];
+  const score = checks.length === 0
+    ? 100
+    : Math.round(checks.reduce((sum, check) => sum + check.score, 0) / checks.length);
+  const status = checks.some(check => check.status === 'fail')
+    ? 'fail'
+    : checks.some(check => check.status === 'warn') ? 'warn' : 'pass';
+
+  return {
+    expectation: expectation.name || 'analysis-truth',
+    generated_at: new Date().toISOString(),
+    status,
+    score,
+    total_checks: checks.length,
+    checks,
+    misses: checks.filter(check => check.status !== 'pass'),
+  };
+}
+
+export function getSemanticMap(cas: CASOutput, opts: { target?: string; limit?: number } = {}) {
+  const limit = opts.limit || 50;
+  const target = opts.target?.toLowerCase();
+  const nodes = target
+    ? cas.nodes.filter(node => [
+        node.name,
+        node.qualified_name,
+        node.source?.file,
+        node.description,
+      ].filter(Boolean).some(value => String(value).toLowerCase().includes(target)))
+    : cas.nodes;
+  const selectedNodes = nodes.slice(0, limit);
+  const selectedIds = new Set(selectedNodes.map(node => node.id));
+  const files = new Map<string, {
+    file: string;
+    nodes: Array<Record<string, unknown>>;
+    imports: Array<Record<string, unknown>>;
+    exports: Array<Record<string, unknown>>;
+    data_entities: string[];
+    entry_points: string[];
+    exit_points: string[];
+  }>();
+
+  const ensureFile = (file?: string) => {
+    const key = file || '<unknown>';
+    if (!files.has(key)) {
+      files.set(key, {
+        file: key,
+        nodes: [],
+        imports: [],
+        exports: [],
+        data_entities: [],
+        entry_points: [],
+        exit_points: [],
+      });
+    }
+    return files.get(key)!;
+  };
+
+  for (const node of selectedNodes) {
+    const file = ensureFile(normalizeFile(cas, node.source?.file));
+    file.nodes.push(nodeSummary(node));
+    if (node.type === 'import') {
+      const nodeMetadata = node.metadata as Record<string, any> | undefined;
+      file.imports.push({
+        id: node.id,
+        source: nodeMetadata?.source || nodeMetadata?.attributes?.source,
+        specifiers: nodeMetadata?.specifiers || nodeMetadata?.attributes?.specifiers || [],
+        line: node.source?.line,
+      });
+    }
+    if (node.metadata?.is_exported) {
+      file.exports.push(nodeSummary(node));
+    }
+  }
+
+  for (const entity of cas.data_entities || []) {
+    for (const nodeId of [
+      ...(entity.lifecycle?.created_by || []),
+      ...(entity.lifecycle?.read_by || []),
+      ...(entity.lifecycle?.updated_by || []),
+      ...(entity.lifecycle?.deleted_by || []),
+    ]) {
+      const node = cas.nodes.find(candidate => candidate.id === nodeId);
+      if (node?.source?.file && (!target || selectedIds.has(node.id))) {
+        const file = ensureFile(normalizeFile(cas, node.source.file));
+        if (!file.data_entities.includes(entity.name)) file.data_entities.push(entity.name);
+      }
+    }
+  }
+
+  for (const entry of cas.entry_points || []) {
+    const node = cas.nodes.find(candidate => candidate.id === entry.source_node || candidate.id === entry.handler?.node_id);
+    if (node?.source?.file && (!target || selectedIds.has(node.id))) {
+      ensureFile(normalizeFile(cas, node.source.file)).entry_points.push(entry.id);
+    }
+  }
+
+  for (const exitPoint of cas.exit_points || []) {
+    const node = cas.nodes.find(candidate => candidate.id === exitPoint.source_node);
+    if (node?.source?.file && (!target || selectedIds.has(node.id))) {
+      ensureFile(normalizeFile(cas, node.source.file)).exit_points.push(exitPoint.id);
+    }
+  }
+
+  return {
+    generated_at: new Date().toISOString(),
+    target: opts.target || null,
+    total_matching_nodes: nodes.length,
+    files: [...files.values()],
+    relationships: cas.edges
+      .filter(edge => selectedIds.has(edge.source) || selectedIds.has(edge.target))
+      .slice(0, limit * 3)
+      .map(edge => ({
+        id: edge.id,
+        source: nodeLabel(cas, edge.source),
+        target: nodeLabel(cas, edge.target),
+        type: edge.type,
+        category: edge.category,
+        confidence: edge.metadata?.confidence,
+      })),
+    method_calls: (cas.method_calls || [])
+      .filter(call => selectedIds.has(call.caller_node) || Boolean(call.target_node && selectedIds.has(call.target_node)))
+      .slice(0, limit * 2)
+      .map(call => ({
+        id: call.id,
+        caller: nodeLabel(cas, call.caller_node),
+        target: call.target_node ? nodeLabel(cas, call.target_node) : call.call_details.method_name,
+        method: call.call_details.method_name,
+        file: normalizeFile(cas, call.call_details.location.file),
+        line: call.call_details.location.line,
+        resolution_type: call.call_details.resolution_type,
+        external: call.external_details || null,
+      })),
+  };
+}
+
+export function getFrameworkDepthReport(cas: CASOutput) {
+  const frameworks = detectedFrameworks(cas);
+  const analyzers = new Set((cas.analyzer_contributions || []).map(contribution => contribution.analyzer_name.toLowerCase()));
+  const rows = frameworks.map(framework => {
+    const lower = framework.toLowerCase();
+    const relatedNodes = cas.nodes.filter(node =>
+      node.metadata?.framework?.toLowerCase().includes(lower) ||
+      node.tags?.some(tag => tag.toLowerCase().includes(lower)) ||
+      node.type.toLowerCase().includes(lower.replace(/[^a-z0-9]/g, '')) ||
+      frameworkNodeMatch(node, lower)
+    );
+    const relatedEntries = (cas.entry_points || []).filter(entry =>
+      entry.metadata?.framework?.toLowerCase?.().includes(lower) ||
+      relatedNodes.some(node => node.id === entry.source_node || node.id === entry.handler?.node_id)
+    );
+    const relatedExits = (cas.exit_points || []).filter(exitPoint =>
+      relatedNodes.some(node => node.id === exitPoint.source_node)
+    );
+    const scoreParts = [
+      analyzers.has(`${lower} analyzer`) || analyzers.has(lower) ? 100 : 70,
+      relatedNodes.length > 0 ? 100 : 40,
+      relatedEntries.length > 0 || lower.includes('react') || lower.includes('prisma') ? 100 : 65,
+      cas.analysis_facts?.length ? 100 : 75,
+      cas.runtime_static_links?.length ? 100 : 75,
+    ];
+    const score = Math.round(scoreParts.reduce((sum, value) => sum + value, 0) / scoreParts.length);
+    const gaps = [];
+    if (relatedNodes.length === 0) gaps.push('No framework-tagged nodes');
+    if (relatedEntries.length === 0 && !lower.includes('react') && !lower.includes('prisma')) gaps.push('No framework entry points');
+    if (!cas.analysis_facts?.length) gaps.push('No evidence facts');
+    if (!cas.runtime_static_links?.length) gaps.push('No runtime links');
+
+    return {
+      framework,
+      status: score >= 90 ? 'pass' : score >= 75 ? 'warn' : 'fail',
+      score,
+      analyzer_present: scoreParts[0] === 100,
+      nodes: relatedNodes.length,
+      entry_points: relatedEntries.length,
+      exit_points: relatedExits.length,
+      gaps,
+    };
+  });
+
+  return {
+    generated_at: new Date().toISOString(),
+    status: rows.some(row => row.status === 'fail') ? 'fail' : rows.some(row => row.status === 'warn') ? 'warn' : 'pass',
+    frameworks: rows,
+    uncovered_expectations: expectedFrameworkSurfaces(frameworks, cas),
+  };
+}
+
+export function getCrossRepoContracts(repositories: Array<{ path: string; name: string; cas: CASOutput }>) {
+  const repoContracts = repositories.map(repository => ({
+    path: repository.path,
+    name: repository.name,
+    provides: {
+      http: (repository.cas.entry_points || [])
+        .filter(entry => entry.type === 'http' || entry.type === 'route')
+        .map(entry => httpContract(entry)),
+      messages: (repository.cas.entry_points || [])
+        .filter(entry => entry.type === 'message' || entry.type === 'event')
+        .map(entry => messageEntryContract(entry)),
+      databases: dataEntityNames(repository.cas),
+    },
+    consumes: {
+      http: (repository.cas.exit_points || [])
+        .filter(exitPoint => exitPoint.type === 'api' || exitPoint.type === 'webhook')
+        .map(exitPoint => apiExitContract(exitPoint)),
+      messages: (repository.cas.exit_points || [])
+        .filter(exitPoint => exitPoint.type === 'message' || exitPoint.type === 'event')
+        .map(exitPoint => messageExitContract(exitPoint)),
+      databases: (repository.cas.exit_points || [])
+        .filter(exitPoint => exitPoint.type === 'database')
+        .map(exitPoint => exitPoint.target?.resource || exitPoint.name),
+    },
+  }));
+  const links = buildCrossRepositoryLinks(repositories);
+
+  return {
+    generated_at: new Date().toISOString(),
+    repository_count: repositories.length,
+    repositories: repoContracts,
+    links,
+    contract_gaps: findContractGaps(repoContracts, links.links.length),
+  };
+}
+
+export function getRuntimeInstrumentationPlan(cas: CASOutput, opts: { limit?: number } = {}) {
+  const limit = opts.limit || 50;
+  const links = cas.runtime_static_links || [];
+  const byStatus = links.reduce<Record<string, number>>((counts, link) => {
+    counts[link.telemetry_status] = (counts[link.telemetry_status] || 0) + 1;
+    return counts;
+  }, {});
+
+  return {
+    generated_at: new Date().toISOString(),
+    status: links.length > 0 ? 'ready' : 'needs-instrumentation',
+    totals: {
+      runtime_static_links: links.length,
+      by_status: byStatus,
+    },
+    event_contract: {
+      required: ['type', 'timestamp'],
+      recommended: ['static_id', 'node_id', 'entry_point_id', 'exit_point_id', 'call_chain_id', 'signal', 'route', 'method', 'status_code', 'duration_ms', 'error_message', 'stack'],
+    },
+    instrumentation_points: links.slice(0, limit).map(link => ({
+      runtime_signal: link.runtime_signal,
+      telemetry_status: link.telemetry_status,
+      confidence: link.confidence,
+      kind: link.kind,
+      static_id: link.static_id,
+      static_label: staticLabel(cas, link.static_id),
+      instrumentation_points: link.instrumentation_points,
+      suggested_event: suggestedRuntimeEvent(cas, link),
+    })),
+    gaps: [
+      ...(links.length === 0 ? ['No runtime_static_links available'] : []),
+      ...links.filter(link => link.telemetry_status === 'not-instrumented').slice(0, 10).map(link => `${link.runtime_signal}: not instrumented`),
+    ],
+  };
+}
+
+export function evaluateAgentTaskProof(cas: CASOutput, pathValue: string, tasks: AgentTask[]) {
+  const taskReports = tasks.map(task => {
+    const packet = getAgentWorkPacket(cas, pathValue, task);
+    const checks: MasteryCheck[] = [
+      simpleCheck('target-resolved', Boolean(packet.selected_node), packet.selected_node?.id || 'no selected node'),
+      simpleCheck('file-read-plan', packet.file_read_plan.length > 0, `${packet.file_read_plan.length} files`),
+      simpleCheck('coding-context', Boolean(packet.work_context.coding_context && !('error' in (packet.work_context.coding_context as Record<string, unknown>))), 'coding context'),
+      simpleCheck('risk-context', Boolean(packet.work_context.risk), 'risk context'),
+      simpleCheck('test-context', Boolean(packet.work_context.tests), 'test context'),
+      simpleCheck('mcp-followups', packet.next_mcp_calls.length > 0, `${packet.next_mcp_calls.length} calls`),
+    ];
+    const score = Math.round(checks.reduce((sum, check) => sum + check.score, 0) / checks.length);
+    return {
+      task,
+      status: score >= 90 ? 'pass' : score >= 75 ? 'warn' : 'fail',
+      score,
+      checks,
+      selected_node: packet.selected_node,
+      file_read_plan: packet.file_read_plan,
+      gaps: packet.gaps,
+    };
+  });
+  const score = taskReports.length
+    ? Math.round(taskReports.reduce((sum, report) => sum + report.score, 0) / taskReports.length)
+    : 100;
+
+  return {
+    generated_at: new Date().toISOString(),
+    status: taskReports.some(report => report.status === 'fail') ? 'fail' : taskReports.some(report => report.status === 'warn') ? 'warn' : 'pass',
+    score,
+    tasks: taskReports,
+  };
+}
+
+function checkNames(kind: string, expected: string[], actual: string[]): MasteryCheck[] {
+  return expected.map(value => {
+    const found = actual.find(candidate => namesCompatible(candidate, value));
+    return {
+      id: `${kind}:${value}`,
+      status: found ? 'pass' : 'fail',
+      score: found ? 100 : 0,
+      expected: value,
+      actual: found || null,
+      detail: found ? `Found ${found}` : `Missing ${value}`,
+    };
+  });
+}
+
+function checkRoutes(cas: CASOutput, expected: NonNullable<AnalysisTruthExpectation['routes']>): MasteryCheck[] {
+  const entries = [...(cas.entry_points || []), ...(cas.route_table || []).map(route => ({
+    id: `route-table:${route.method}:${route.path}`,
+    type: 'http',
+    name: `${route.method} ${route.path}`,
+    source_node: '',
+    trigger: { method: route.method, path: route.path },
+    handler: { node_id: route.source_node || '', method_name: route.handler || '' },
+    metadata: { controller: route.controller },
+  } as CASEntryPoint))];
+
+  return expected.map(route => {
+    const found = entries.find(entry => {
+      const methodMatches = !route.method || !entry.trigger?.method || entry.trigger.method.toLowerCase() === route.method!.toLowerCase();
+      const pathMatches = routesCompatible(entry.trigger?.path || entry.name, route.path);
+      const handlerMatches = !route.handler || entry.handler?.method_name?.toLowerCase().includes(route.handler.toLowerCase());
+      const controllerMatches = !route.controller || String(entry.metadata?.controller || entry.name).toLowerCase().includes(route.controller.toLowerCase());
+      return methodMatches && pathMatches && handlerMatches && controllerMatches;
+    });
+    return {
+      id: `route:${route.method || '*'}:${route.path}`,
+      status: found ? 'pass' : 'fail',
+      score: found ? 100 : 0,
+      expected: route,
+      actual: found ? { id: found.id, method: found.trigger?.method, path: found.trigger?.path, handler: found.handler } : null,
+      detail: found ? `Found ${found.name}` : `Missing ${route.method || '*'} ${route.path}`,
+    };
+  });
+}
+
+function checkNodes(cas: CASOutput, expected: NonNullable<AnalysisTruthExpectation['nodes']>): MasteryCheck[] {
+  return expected.map(nodeExpectation => {
+    const found = cas.nodes.find(node =>
+      namesCompatible(node.name, nodeExpectation.name) &&
+      (!nodeExpectation.type || node.type === nodeExpectation.type) &&
+      (!nodeExpectation.file || normalizeFile(cas, node.source?.file).endsWith(nodeExpectation.file))
+    );
+    return {
+      id: `node:${nodeExpectation.name}`,
+      status: found ? 'pass' : 'fail',
+      score: found ? 100 : 0,
+      expected: nodeExpectation,
+      actual: found ? nodeSummary(found) : null,
+      detail: found ? `Found ${found.name}` : `Missing ${nodeExpectation.name}`,
+    };
+  });
+}
+
+function checkRelationships(cas: CASOutput, expected: NonNullable<AnalysisTruthExpectation['relationships']>): MasteryCheck[] {
+  return expected.map(relationship => {
+    const sourceNodes = cas.nodes.filter(node => namesCompatible(node.name, relationship.source) || node.id === relationship.source);
+    const targetNodes = cas.nodes.filter(node => namesCompatible(node.name, relationship.target) || node.id === relationship.target);
+    const found = cas.edges.find(edge =>
+      sourceNodes.some(node => node.id === edge.source) &&
+      targetNodes.some(node => node.id === edge.target) &&
+      (!relationship.type || edge.type === relationship.type)
+    );
+    return {
+      id: `relationship:${relationship.source}->${relationship.target}`,
+      status: found ? 'pass' : 'fail',
+      score: found ? 100 : 0,
+      expected: relationship,
+      actual: found ? { id: found.id, type: found.type } : null,
+      detail: found ? `Found ${found.type}` : `Missing ${relationship.source} -> ${relationship.target}`,
+    };
+  });
+}
+
+function simpleCheck(id: string, passed: boolean, detail: string): MasteryCheck {
+  return {
+    id,
+    status: passed ? 'pass' : 'fail',
+    score: passed ? 100 : 0,
+    expected: true,
+    actual: passed,
+    detail,
+  };
+}
+
+function detectedFrameworks(cas: CASOutput): string[] {
+  const names = new Set<string>();
+  for (const framework of cas.system.technologies?.frameworks || []) {
+    if (framework.name) names.add(framework.name);
+  }
+  for (const contribution of cas.analyzer_contributions || []) {
+    const name = contribution.analyzer_name
+      .replace(/\s+Analyzer$/i, '')
+      .replace(/\s+ORM$/i, '')
+      .trim();
+    if (['Prisma', 'Socket.io', 'React Router', 'Redux/RTK', 'Zustand', 'TanStack Query'].some(value => namesCompatible(name, value))) {
+      names.add(name);
+    }
+  }
+  return [...names];
+}
+
+function detectedLanguages(cas: CASOutput): string[] {
+  return cas.system.technologies?.languages?.map(language => language.name).filter(Boolean) || [];
+}
+
+function dataEntityNames(cas: CASOutput): string[] {
+  return [
+    ...(cas.data_entities || []).map(entity => entity.name),
+    ...(cas.database_schema?.entities || []).map(entity => entity.name),
+    ...cas.nodes.filter(node => node.type === 'entity' || node.type === 'model').map(node => node.name),
+  ];
+}
+
+function namesCompatible(actual: string, expected: string): boolean {
+  const left = normalizeName(actual);
+  const right = normalizeName(expected);
+  return left === right || left.includes(right) || right.includes(left);
+}
+
+function normalizeName(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function normalizeRoute(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/^https?:\/\/[^/]+/, '')
+    .replace(/[?#].*$/, '')
+    .replace(/\/+/g, '/')
+    .replace(/\/$/, '')
+    .replace(/:[a-z0-9_]+/g, ':param')
+    .replace(/\{[a-z0-9_]+\}/g, ':param');
+}
+
+function routesCompatible(actual: string | undefined, expected: string): boolean {
+  if (!actual) return false;
+  const left = normalizeRoute(actual);
+  const right = normalizeRoute(expected);
+  return left === right || left.endsWith(right) || right.endsWith(left);
+}
+
+function nodeSummary(node: CASNode) {
+  return {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    qualified_name: node.qualified_name,
+    file: node.source?.file,
+    line: node.source?.line,
+    exported: node.metadata?.is_exported || false,
+  };
+}
+
+function nodeLabel(cas: CASOutput, nodeId: string) {
+  const node = cas.nodes.find(candidate => candidate.id === nodeId);
+  return node ? { id: node.id, name: node.name, type: node.type, file: normalizeFile(cas, node.source?.file), line: node.source?.line } : { id: nodeId };
+}
+
+function normalizeFile(cas: CASOutput, file?: string): string {
+  if (!file) return '';
+  const normalizedFile = file.replace(/\\/g, '/');
+  const root = cas.system.root_path?.replace(/\\/g, '/').replace(/\/$/, '');
+  if (root && normalizedFile.startsWith(`${root}/`)) return normalizedFile.slice(root.length + 1);
+  return normalizedFile.replace(/^\.\//, '');
+}
+
+function expectedFrameworkSurfaces(frameworks: string[], cas: CASOutput): string[] {
+  const gaps: string[] = [];
+  const lower = frameworks.map(framework => framework.toLowerCase());
+  if (lower.some(framework => framework.includes('nest')) && !(cas.entry_points || []).some(entry => entry.type === 'http')) {
+    gaps.push('NestJS detected but no HTTP entry points found');
+  }
+  if (lower.some(framework => framework.includes('react')) && !cas.nodes.some(node => node.type.includes('component') || node.type.includes('page') || frameworkNodeMatch(node, 'react'))) {
+    gaps.push('React detected but no component/page nodes found');
+  }
+  if (lower.some(framework => framework.includes('django') || framework.includes('flask') || framework.includes('fastapi')) && !(cas.entry_points || []).length) {
+    gaps.push('Python web framework detected but no entry points found');
+  }
+  return gaps;
+}
+
+function frameworkNodeMatch(node: CASNode, framework: string): boolean {
+  const file = node.source?.file?.toLowerCase() || '';
+  if (framework.includes('react')) {
+    return file.endsWith('.tsx') && /^[A-Z]/.test(node.name) && ['function', 'class', 'method', 'arrow'].includes(node.type);
+  }
+  if (framework.includes('prisma')) {
+    const metadata = node.metadata as Record<string, any> | undefined;
+    return node.type === 'entity' || metadata?.orm === 'Prisma' || metadata?.source === 'prisma_schema';
+  }
+  return false;
+}
+
+function httpContract(entry: CASEntryPoint) {
+  return {
+    id: entry.id,
+    method: entry.trigger?.method,
+    path: entry.trigger?.path,
+    handler: entry.handler,
+    input: entry.input,
+    output: entry.output,
+    security: entry.security,
+  };
+}
+
+function messageEntryContract(entry: CASEntryPoint) {
+  return {
+    id: entry.id,
+    event: entry.trigger?.event || entry.name,
+    input: entry.input,
+    handler: entry.handler,
+  };
+}
+
+function apiExitContract(exitPoint: CASExitPoint) {
+  return {
+    id: exitPoint.id,
+    endpoint: exitPoint.target?.endpoint || exitPoint.target?.resource || exitPoint.name,
+    method: exitPoint.operation?.method,
+    source_node: exitPoint.source_node,
+    data: exitPoint.data,
+  };
+}
+
+function messageExitContract(exitPoint: CASExitPoint) {
+  return {
+    id: exitPoint.id,
+    topic: exitPoint.target?.resource || exitPoint.name,
+    source_node: exitPoint.source_node,
+    data: exitPoint.data,
+  };
+}
+
+function findContractGaps(repoContracts: Array<Record<string, any>>, linkCount: number): string[] {
+  const gaps: string[] = [];
+  if (repoContracts.length > 1 && linkCount === 0) gaps.push('No deterministic cross-repo links found');
+  for (const repo of repoContracts) {
+    const provides = repo.provides;
+    const consumes = repo.consumes;
+    if (provides.http.length === 0 && provides.messages.length === 0 && provides.databases.length === 0) {
+      gaps.push(`${repo.name}: no provided contracts detected`);
+    }
+    if (consumes.http.length === 0 && consumes.messages.length === 0 && consumes.databases.length === 0) {
+      gaps.push(`${repo.name}: no consumed contracts detected`);
+    }
+  }
+  return gaps.slice(0, 20);
+}
+
+function staticLabel(cas: CASOutput, staticId: string) {
+  const node = cas.nodes.find(candidate => candidate.id === staticId);
+  if (node) return nodeSummary(node);
+  const entry = (cas.entry_points || []).find(candidate => candidate.id === staticId);
+  if (entry) return { id: entry.id, name: entry.name, type: `entry:${entry.type}` };
+  const exitPoint = (cas.exit_points || []).find(candidate => candidate.id === staticId);
+  if (exitPoint) return { id: exitPoint.id, name: exitPoint.name, type: `exit:${exitPoint.type}` };
+  const chain = (cas.call_chains || []).find(candidate => candidate.id === staticId);
+  if (chain) return { id: chain.id, name: chain.chain_type, type: 'call-chain' };
+  return { id: staticId };
+}
+
+function suggestedRuntimeEvent(cas: CASOutput, link: NonNullable<CASOutput['runtime_static_links']>[number]) {
+  const base: Record<string, unknown> = {
+    type: link.kind === 'exit-point' ? 'exit' : 'request',
+    static_id: link.static_id,
+    signal: link.runtime_signal,
+  };
+  const entry = (cas.entry_points || []).find(candidate => candidate.id === link.static_id);
+  if (entry) {
+    base.entry_point_id = entry.id;
+    base.method = entry.trigger?.method;
+    base.route = entry.trigger?.path;
+  }
+  const exitPoint = (cas.exit_points || []).find(candidate => candidate.id === link.static_id);
+  if (exitPoint) {
+    base.exit_point_id = exitPoint.id;
+    base.path = exitPoint.target?.endpoint || exitPoint.target?.resource;
+  }
+  return base;
+}

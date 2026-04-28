@@ -68,12 +68,18 @@ This document maps public CAS concepts and related v1.8 analysis storage to the 
 | `analysis_snapshots` storage | `get_analysis_at`, `get_analysis_snapshots` | |
 | `runtime_observations` storage | `record_runtime_event`, `get_runtime_observations` | |
 | Answer packs | `list_answer_packs`, `run_answer_pack`, `get_mcp_demo_flow` | |
-| Agent default-use context | `get_agent_start_context`, `get_agent_tool_plan`, `evaluate_agent_readiness` | |
+| Agent default-use context | `get_agent_start_context`, `get_agent_tool_plan`, `get_agent_work_packet`, `evaluate_agent_readiness` | `agent-start`, `agent-readiness` |
+| Ground-truth analysis checks | `evaluate_analysis_truth` | |
+| Source-level semantic map | `get_semantic_map` | |
+| Framework/library depth | `get_framework_depth_report` | |
+| Cross-repository contracts | `get_cross_repo_contracts` | |
+| Runtime instrumentation plan | `get_runtime_instrumentation_plan` | |
+| Agent task proof | `evaluate_agent_task_proof` | |
 | `incremental_state` storage | Internal incremental analysis input | |
 | `file_cache` storage | Internal incremental analysis cache | |
 
 ## Coverage Status
 
-The MCP server exposes the public CAS concepts needed by UI and agent workflows, plus v1.8 change-history and snapshot queries. It also exposes product-level answer packs, cross-repository linking, runtime observation correlation, and agent default-use readiness on top of CAS. Internal implementation artifacts such as `index`, `incremental_state`, and `file_cache` are intentionally not exposed directly.
+The MCP server exposes the public CAS concepts needed by UI and agent workflows, plus v1.8 change-history and snapshot queries. It also exposes product-level answer packs, cross-repository linking, contract views, runtime observation correlation, instrumentation plans, truth evaluation, semantic maps, and agent default-use readiness on top of CAS. Internal implementation artifacts such as `index`, `incremental_state`, and `file_cache` are intentionally not exposed directly.
 
 When adding a new public CAS field, update this matrix and add a tool/resource entry if humans or agents need to query it.

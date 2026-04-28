@@ -859,7 +859,10 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     edges: CASEdge[],
     _entryPoints: CASEntryPoint[]
   ): TSExtractedFunction[] {
-    const allFunctions: TSExtractedFunction[] = [...extraction.functions];
+    const allFunctions: TSExtractedFunction[] = [
+      ...extraction.functions,
+      ...extraction.classes.flatMap(cls => cls.methods)
+    ];
 
     extraction.functions.forEach((func, index) => {
       const funcId = `function_${filePath}_${func.name}_${index}`;
@@ -922,6 +925,20 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       const classType = this.determineClassTypeFromExtraction(cls, filePath);
       const subcategories = this.determineClassSubcategoriesFromExtraction(cls, filePath);
       const documentation = cls.documentation ? this.parseJSDoc(cls.documentation, cls.lineStart - 1, cls.lineStart) : undefined;
+      const constructorMethod = cls.methods.find(method => method.type === 'constructor' || method.name === 'constructor');
+      const dependencies = (constructorMethod?.parameters || [])
+        .filter(param => param.name && param.type)
+        .map(param => {
+          const library = this.getLibraryForType(param.type!);
+          this.classFieldTypes.set(`${cls.name}.${param.name}`, {
+            typeName: param.type!,
+            library
+          });
+          if (this.isRepositoryLikeType(param.type!)) {
+            this.repositoryPropertyTypes.set(param.name, param.type!);
+          }
+          return param.type!;
+        });
 
       const classNode = this.createNodeBuilder(
         classId,
@@ -940,7 +957,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
             methodCount: cls.methods.length,
             propertyCount: cls.properties.length,
             hasDocumentation: !!documentation,
-            decorators: cls.decorators.length > 0 ? cls.decorators : undefined
+            decorators: cls.decorators.length > 0 ? cls.decorators : undefined,
+            dependencies: dependencies.length > 0 ? dependencies : undefined
           }
         })
         .withDocumentation(documentation)
@@ -1121,6 +1139,27 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     }
   }
 
+  private isClassLikeNode(node?: CASNode): boolean {
+    if (!node) return false;
+    return ['class', 'service', 'controller', 'repository', 'guard', 'middleware', 'gateway', 'provider'].includes(node.type);
+  }
+
+  private addCallEdge(edges: CASEdge[], edge: CASEdge): void {
+    if (!edges.some(existing => existing.id === edge.id)) {
+      edges.push(edge);
+    }
+  }
+
+  private isRepositoryLikeType(typeName: string): boolean {
+    const lower = typeName.toLowerCase();
+    return lower.includes('repository') ||
+      lower.includes('prismaclient') ||
+      lower.includes('entitymanager') ||
+      lower.includes('model') ||
+      lower.includes('database') ||
+      lower.includes('knex');
+  }
+
   private findNodeIdByNameIndexed(targetName: string): string | undefined {
     if (this.isRepositoryCall(targetName)) {
       const parts = targetName.split('.');
@@ -1133,7 +1172,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           const classNodes = this.nodesByName.get(repositoryClassName);
           if (classNodes) {
             for (const classNode of classNodes) {
-              if (classNode.type === 'class') {
+              if (this.isClassLikeNode(classNode)) {
                 const methods = this.methodsByParent.get(classNode.id);
                 if (methods) {
                   const methodNode = methods.find(m => m.name === methodName);
@@ -1173,7 +1212,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         for (const methodNode of methodNodes) {
           if (methodNode.type !== 'method' || !methodNode.parent) continue;
           const parentClass = this.nodeById.get(methodNode.parent);
-          if (!parentClass || parentClass.type !== 'class') continue;
+          if (!parentClass || !this.isClassLikeNode(parentClass)) continue;
           if (parentClass.name.toLowerCase() === expectedClassName.toLowerCase() ||
               parentClass.name.toLowerCase().includes(propertyName.toLowerCase())) {
             return methodNode.id;
@@ -1186,7 +1225,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         for (const [name, nodes] of this.nodesByName) {
           if (name.toLowerCase().includes(propertyName.toLowerCase())) {
             for (const node of nodes) {
-              if (node.type === 'class') {
+              if (this.isClassLikeNode(node)) {
                 const methods = this.methodsByParent.get(node.id);
                 if (methods) {
                   const methodNode = methods.find(m => m.name === methodName);
@@ -1198,7 +1237,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         }
       } else {
         for (const classNode of classNodes) {
-          if (classNode.type === 'class') {
+          if (this.isClassLikeNode(classNode)) {
             const methods = this.methodsByParent.get(classNode.id);
             if (methods) {
               const methodNode = methods.find(m => m.name === methodName);
@@ -1215,8 +1254,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       for (const methodNode of methodNodes) {
         if (methodNode.type !== 'method' || !methodNode.parent) continue;
         const parentClass = this.nodeById.get(methodNode.parent);
-        if (parentClass && parentClass.type === 'class' &&
-            parentClass.name.toLowerCase().includes(objectName)) {
+        if (!parentClass || !this.isClassLikeNode(parentClass)) continue;
+        if (parentClass.name.toLowerCase().includes(objectName)) {
           return methodNode.id;
         }
       }
@@ -1273,8 +1312,9 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     let t = Date.now();
     extractedFunctions.forEach(func => {
       func.calls.forEach((call: any) => {
+        const sourceNodeId = this.resolveSourceNodeIdIndexed(filePath, func);
+
         if (call.httpMethod && call.httpPath) {
-          const sourceNodeId = this.resolveSourceNodeIdIndexed(filePath, func);
           if (sourceNodeId) {
             entryPoints.push({
               id: `http_${func.name}_${call.httpMethod}`,
@@ -1294,11 +1334,10 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         }
 
         if (call.targetType === 'abstract') {
-          const sourceNodeId = this.resolveSourceNodeIdIndexed(filePath, func);
           const targetNodeId = this.findNodeIdByNameIndexed(call.target);
 
           if (sourceNodeId && targetNodeId) {
-            edges.push({
+            this.addCallEdge(edges, {
               id: `abstract_call_${sourceNodeId}_${targetNodeId}`,
               source: sourceNodeId,
               target: targetNodeId,
@@ -1316,11 +1355,10 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         }
 
         if (call.injectionType) {
-          const sourceNodeId = this.resolveSourceNodeIdIndexed(filePath, func);
           const targetNodeId = this.findNodeIdByNameIndexed(call.target);
 
           if (sourceNodeId && targetNodeId) {
-            edges.push({
+            this.addCallEdge(edges, {
               id: `injection_${sourceNodeId}_${targetNodeId}`,
               source: sourceNodeId,
               target: targetNodeId,
@@ -1337,11 +1375,10 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         }
 
         if (call.targetType === 'method' || call.targetType === 'function') {
-          const sourceNodeId = this.resolveSourceNodeIdIndexed(filePath, func);
           const targetNodeId = this.findNodeIdByNameIndexed(call.target);
 
           if (sourceNodeId && targetNodeId && sourceNodeId !== targetNodeId) {
-            edges.push({
+            this.addCallEdge(edges, {
               id: `call_${sourceNodeId}_${targetNodeId}`,
               source: sourceNodeId,
               target: targetNodeId,
@@ -1352,7 +1389,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
                   is_async: call.isAsync,
                   is_conditional: call.isConditional,
                   is_in_loop: call.isInLoop,
-                  line: call.line
+                  line: call.line,
+                  method_name: call.target.split('.').pop()
                 }
               }
             });
@@ -1363,53 +1401,147 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
                 || this.getLibraryForType('Repository')
                 || this.getLibraryForType('PrismaClient')
                 || this.getLibraryForType('Model');
-              exitPoints.push({
-                id: `exit_db_${func.name}_${repoInfo.method}_${call.line}`,
-                source_node: sourceNodeId,
-                type: 'database',
-                name: `${repoInfo.repository}.${repoInfo.method}`,
-                target: {
-                  service_id: 'database',
-                  resource: repoInfo.repository
-                },
-                operation: {
-                  action: repoInfo.method,
-                  async: call.isAsync
-                },
+              const exitPointId = `exit_db_${func.name}_${repoInfo.method}_${call.line}`;
+              if (!exitPoints.some(exitPoint => exitPoint.id === exitPointId)) {
+                exitPoints.push({
+                  id: exitPointId,
+                  source_node: sourceNodeId,
+                  type: 'database',
+                  name: `${repoInfo.repository}.${repoInfo.method}`,
+                  target: {
+                    service_id: 'database',
+                    resource: repoInfo.repository
+                  },
+                  operation: {
+                    action: repoInfo.method,
+                    async: call.isAsync
+                  },
+                  metadata: {
+                    repository: repoInfo.repository,
+                    method: repoInfo.method,
+                    line: call.line,
+                    call_expression: call.callExpression,
+                    library
+                  }
+                });
+              }
+              this.addCallEdge(edges, {
+                id: `call_${sourceNodeId}_${exitPointId}`,
+                source: sourceNodeId,
+                target: exitPointId,
+                type: 'calls',
+                category: 'behavior',
                 metadata: {
-                  repository: repoInfo.repository,
-                  method: repoInfo.method,
-                  line: call.line,
-                  call_expression: call.callExpression,
-                  library
+                  attributes: {
+                    call_type: 'method',
+                    resolution_type: 'external',
+                    target_type: 'database',
+                    target_object: repoInfo.repository,
+                    method_name: repoInfo.method,
+                    library,
+                    is_async: call.isAsync,
+                    is_conditional: call.isConditional,
+                    is_in_loop: call.isInLoop,
+                    line: call.line,
+                    call_expression: call.callExpression
+                  }
                 }
               });
             }
           } else if (sourceNodeId && !targetNodeId && this.isApiCall(call.target, call.callExpression)) {
             const apiInfo = this.parseApiCall(call.target, call.callExpression);
             if (apiInfo) {
-              exitPoints.push({
-                id: `exit_api_${func.name}_${apiInfo.method}_${call.line}`,
-                source_node: sourceNodeId,
-                type: 'api',
-                name: `${apiInfo.method.toUpperCase()} ${apiInfo.endpoint || 'external'}`,
-                target: {
-                  service_id: 'external_api',
-                  endpoint: apiInfo.endpoint
-                },
-                operation: {
-                  method: apiInfo.method.toUpperCase(),
-                  action: apiInfo.method,
-                  async: call.isAsync
-                },
+              const exitPointId = `exit_api_${func.name}_${apiInfo.method}_${call.line}`;
+              if (!exitPoints.some(exitPoint => exitPoint.id === exitPointId)) {
+                exitPoints.push({
+                  id: exitPointId,
+                  source_node: sourceNodeId,
+                  type: 'api',
+                  name: `${apiInfo.method.toUpperCase()} ${apiInfo.endpoint || 'external'}`,
+                  target: {
+                    service_id: 'external_api',
+                    endpoint: apiInfo.endpoint
+                  },
+                  operation: {
+                    method: apiInfo.method.toUpperCase(),
+                    action: apiInfo.method,
+                    async: call.isAsync
+                  },
+                  metadata: {
+                    line: call.line,
+                    call_expression: call.callExpression,
+                    endpoint: apiInfo.endpoint
+                  }
+                });
+              }
+              this.addCallEdge(edges, {
+                id: `call_${sourceNodeId}_${exitPointId}`,
+                source: sourceNodeId,
+                target: exitPointId,
+                type: 'calls',
+                category: 'behavior',
                 metadata: {
-                  line: call.line,
-                  call_expression: call.callExpression,
-                  endpoint: apiInfo.endpoint
+                  attributes: {
+                    call_type: 'direct',
+                    resolution_type: 'external',
+                    target_type: 'api',
+                    method_name: apiInfo.method,
+                    endpoint: apiInfo.endpoint,
+                    is_async: call.isAsync,
+                    is_conditional: call.isConditional,
+                    is_in_loop: call.isInLoop,
+                    line: call.line,
+                    call_expression: call.callExpression
+                  }
                 }
               });
             }
           }
+        } else if (sourceNodeId && (call.targetType === 'external' || call.targetType === 'library')) {
+          const library = this.getLibraryForType(call.target) || this.importSourceMap.get(call.target) || call.target;
+          const exitPointId = `exit_sdk_${func.name}_${call.target}_${call.line}`.replace(/[^a-zA-Z0-9_]/g, '_');
+          if (!exitPoints.some(exitPoint => exitPoint.id === exitPointId)) {
+            exitPoints.push({
+              id: exitPointId,
+              source_node: sourceNodeId,
+              type: 'sdk',
+              name: `Call to ${call.target}`,
+              target: {
+                sdk: library,
+                endpoint: call.target
+              },
+              operation: {
+                action: call.target,
+                async: call.isAsync
+              },
+              metadata: {
+                line: call.line,
+                library,
+                call_expression: call.callExpression
+              }
+            } as CASExitPoint);
+          }
+          this.addCallEdge(edges, {
+            id: `call_${sourceNodeId}_${exitPointId}`,
+            source: sourceNodeId,
+            target: exitPointId,
+            type: 'calls',
+            category: 'behavior',
+            metadata: {
+              attributes: {
+                call_type: call.targetType === 'library' ? 'method' : 'direct',
+                resolution_type: 'external',
+                target_type: 'sdk',
+                method_name: call.target.split('.').pop(),
+                library,
+                is_async: call.isAsync,
+                is_conditional: call.isConditional,
+                is_in_loop: call.isInLoop,
+                line: call.line,
+                call_expression: call.callExpression
+              }
+            }
+          });
         }
       });
     });
@@ -2306,7 +2438,9 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     const ormSpecificMethods = [
       'findoneorfail', 'findall', 'findandcount',
       'persistandflush', 'removeandflush', 'nativeupdate', 'nativedelete',
-      'getreference', 'populate', 'assign', 'flush', 'upsert', 'persist'
+      'getreference', 'populate', 'assign', 'flush', 'upsert', 'persist',
+      'findunique', 'findfirst', 'findmany', 'createmany', 'updatemany',
+      'deletemany', 'aggregate', 'groupby'
     ];
 
     if (ormSpecificMethods.includes(methodName)) return true;
@@ -2445,7 +2579,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           const targetNode = nodes.find(n =>
             n.type === 'method' &&
             n.name === methodName &&
-            n.parent && nodes.find(p => p.id === n.parent && p.name === repositoryClassName)
+            n.parent && nodes.find(p => p.id === n.parent && p.name === repositoryClassName && this.isClassLikeNode(p))
           );
           if (targetNode) return targetNode.id;
         }
@@ -2472,7 +2606,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       targetNode = nodes.find(n => {
         if (n.name !== methodName || n.type !== 'method') return false;
 
-        const parentClass = nodes.find(p => p.id === n.parent && p.type === 'class');
+        const parentClass = nodes.find(p => p.id === n.parent && this.isClassLikeNode(p));
         if (!parentClass) return false;
 
         return parentClass.name.toLowerCase() === expectedClassName.toLowerCase() ||
@@ -2482,7 +2616,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       if (targetNode) return targetNode.id;
 
       const classNode = nodes.find(n =>
-        n.type === 'class' &&
+        this.isClassLikeNode(n) &&
         (n.name.toLowerCase() === expectedClassName.toLowerCase() ||
          n.name.toLowerCase().includes(propertyName.toLowerCase()))
       );
@@ -2499,7 +2633,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     const objectName = parts.join('.');
     targetNode = nodes.find(n => {
       if (n.name !== methodName || n.type !== 'method') return false;
-      const parentClass = nodes.find(p => p.id === n.parent && p.type === 'class');
+      const parentClass = nodes.find(p => p.id === n.parent && this.isClassLikeNode(p));
       if (!parentClass) return false;
       return parentClass.name.toLowerCase().includes(objectName.toLowerCase().replace('this.', ''));
     });

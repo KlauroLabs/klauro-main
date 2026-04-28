@@ -24,6 +24,18 @@ For Codex, Claude, Cursor, and other coding agents, the default first call after
 Use get_agent_start_context with path="/absolute/path/to/your/project"
 ```
 
+MCP clients that start from prompts can use:
+
+```
+Use the agent_coding_session prompt with path="/absolute/path/to/your/project"
+```
+
+MCP clients that prefer resources can read:
+
+```
+unravl://{project_name}/agent-start
+```
+
 For a specific task, include task context:
 
 ```
@@ -42,7 +54,17 @@ Use get_agent_tool_plan with path="/repo" and task={ "task_type": "debug", "targ
 
 Supported task types are `orient`, `modify`, `debug`, `review`, `trace`, `cross-repo`, and `runtime`. The plan tells the agent which MCP tools to call, why, and when file reads are appropriate.
 
-### 4. Check Default-Use Readiness
+### 4. Get the Work Packet
+
+When the agent is ready to act, request the task packet:
+
+```
+Use get_agent_work_packet with path="/repo" and task={ "task_type": "modify", "target": "auth" }
+```
+
+The work packet resolves the target, includes coding context, risk, callers, callees, tests, entry/call-chain context, and returns a concrete file read plan. Agents should inspect those files first before expanding to broader source reads.
+
+### 5. Check Default-Use Readiness
 
 Use this when deciding whether an agent should rely on MCP by default:
 
@@ -50,9 +72,15 @@ Use this when deciding whether an agent should rely on MCP by default:
 Use evaluate_agent_readiness with path="/repo"
 ```
 
+Or read:
+
+```
+unravl://{project_name}/agent-readiness
+```
+
 This checks analysis errors, graph integrity, entry and exit coverage, call chains, method calls, answer-pack gaps, evidence, tests, security surfaces, runtime links, and flow coverage. `default_use=true` means CAS/MCP is strong enough to be the first path for the repository.
 
-### 5. Orient with get_summary
+### 6. Orient with get_summary
 
 After analysis, call `get_summary` to understand the system at a high level:
 
@@ -62,7 +90,7 @@ Use the get_summary tool with path="/absolute/path/to/your/project"
 
 This returns the condensed intelligence view: what the system does, its tech stack, architecture layers, key capabilities, and scale metrics.
 
-### 6. Navigate Progressively
+### 7. Navigate Progressively
 
 Use `get_level` to explore the codebase top-down:
 
@@ -73,7 +101,7 @@ Use `get_level` to explore the codebase top-down:
 
 Each call returns the available levels with node counts, so you always know what's above and below. Cross-level edges show how the current level connects to others.
 
-### 7. Drill Into Specifics
+### 8. Drill Into Specifics
 
 From there, drill into targeted areas:
 
@@ -97,13 +125,13 @@ From there, drill into targeted areas:
 
 ### Starting a coding session
 
-Use `get_agent_start_context` first:
+Use `get_agent_start_context` first, or use the `agent_coding_session` prompt when your MCP client supports prompts:
 
 ```
 Use get_agent_start_context with path="/absolute/path/to/your/project"
 ```
 
-Then use `get_agent_tool_plan` with the user's task. Use source files after MCP identifies the relevant nodes, files, tests, or gaps.
+Then use `get_agent_work_packet` with the user's task. Use source files after MCP identifies the relevant nodes, files, tests, or gaps.
 
 You can also use the `architectural_context` prompt to inject full system awareness:
 
@@ -116,11 +144,9 @@ This gives the AI assistant knowledge of system type, tech stack, architecture l
 ### Before modifying code
 
 1. Call `get_agent_tool_plan` with `task_type="modify"` and the target.
-2. Resolve the node with `search_nodes`.
-3. Get full context with `get_coding_context`.
-4. Check risk with `assess_change_risk`.
-5. Review callers and callees.
-6. Find tests with `find_tests`.
+2. Call `get_agent_work_packet` with the same task.
+3. Read the packet's file read plan first.
+4. Use the packet's risk, callers, callees, and tests to decide the edit and verification path.
 
 Or use the `safe_modification_guide` prompt which composes all of these into a single output.
 
@@ -156,6 +182,34 @@ Use the get_mcp_demo_flow tool with path="/absolute/path/to/project"
 
 This returns the exact MCP script to analyze, explain, trace, assess impact, connect repos, and inspect runtime correlation.
 
+### Proving analysis accuracy
+
+Use explicit expectations when you know what the analyzer should find:
+
+```
+Use evaluate_analysis_truth with path="/repo" and expectation={ "frameworks": ["NestJS"], "routes": [{ "method": "GET", "path": "/users/:id" }] }
+```
+
+Repos can also provide `.unravl/analysis-expectations.json`, `unravl.analysis.json`, or `analysis-expectations.json`; then call `evaluate_analysis_truth` without an inline expectation.
+
+For source-level semantics before reading files:
+
+```
+Use get_semantic_map with path="/repo" and target="auth"
+```
+
+For framework depth:
+
+```
+Use get_framework_depth_report with path="/repo"
+```
+
+For task-level agent proof:
+
+```
+Use evaluate_agent_task_proof with path="/repo" and tasks=[{ "task_type": "debug", "target": "auth" }]
+```
+
 ### Linking multiple repositories
 
 Analyze each repository first, then call:
@@ -165,6 +219,12 @@ Use the get_cross_repo_links tool with paths=["/repo/a", "/repo/b", "/repo/c"]
 ```
 
 When `paths` is omitted, the tool considers all stored analyses. It detects API links, shared databases, message contracts, and shared internal libraries with confidence and evidence.
+
+For contract-level details:
+
+```
+Use get_cross_repo_contracts with paths=["/repo/a", "/repo/b", "/repo/c"]
+```
 
 ### Correlating runtime signals
 
@@ -187,6 +247,12 @@ Use get_runtime_observations with path="/repo", type="error", or static_id="<cas
 ```
 
 Runtime events can include `signal`, `static_id`, `node_id`, `entry_point_id`, `exit_point_id`, `call_chain_id`, route details, status, duration, error message, stack trace, and arbitrary attributes.
+
+To generate instrumentation payloads from CAS:
+
+```
+Use get_runtime_instrumentation_plan with path="/repo"
+```
 
 ### Checking runtime readiness and evidence
 
@@ -227,6 +293,16 @@ npm run agent-gauntlet
 ```
 
 This analyzes the configured repositories and runs `evaluate_agent_readiness` against each one. The report is written to `.unravl-agent-gauntlet/latest-report.json` unless `--output` is provided. A passing target has `default_use=true`, meaning agents should use MCP as the first path for that repo.
+
+### Running the analysis mastery gauntlet
+
+From `mcp-server/`:
+
+```
+npm run analysis-gauntlet
+```
+
+This runs the built-in ground-truth fixture and any repos passed with `--repo`. It checks truth expectations, framework depth, runtime instrumentation readiness, semantic map availability, and agent task proof. The report is written to `.unravl-analysis-gauntlet/latest-report.json` unless `--output` is provided.
 
 ---
 
