@@ -1,7 +1,7 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { analyzeProject, getAnalysis, analyzeProjectIncremental } from './analyzer';
-import { listAnalyses, loadRuntimeObservations, saveRuntimeObservation } from './storage';
+import { getStorageHealth, listAnalyses, loadRuntimeObservations, loadRuntimeTrace, saveRuntimeObservation } from './storage';
 import * as query from './query';
 import * as watcher from './watcher';
 import * as product from './product';
@@ -9,6 +9,7 @@ import * as agentAdoption from './agent-adoption';
 import * as agentBootstrap from './agent-bootstrap';
 import * as analysisMastery from './analysis-mastery';
 import * as runtimeContract from './runtime-contract';
+import * as casContract from './cas-contract';
 
 export function createServer(): McpServer {
   const server = new McpServer(
@@ -133,6 +134,37 @@ function registerTools(server: McpServer) {
       const analyses = await listAnalyses();
       return json(analyses);
     }
+  );
+
+  server.registerTool(
+    'validate_cas_contract',
+    {
+      title: 'Validate CAS Contract',
+      description: 'Run executable CAS completeness checks: graph integrity, entry/exit references, runtime links, facts, method calls, call chains, and optional runtime observation correlation.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        include_runtime_observations: z.boolean().optional().describe('Include stored runtime observations in correlation gates'),
+      } as any,
+    } as any,
+    async ({ path, include_runtime_observations }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      const observations = include_runtime_observations ? await loadRuntimeObservations(path) : [];
+      return json(casContract.validateCASContract(cas, observations));
+    })
+  );
+
+  server.registerTool(
+    'get_storage_health',
+    {
+      title: 'Get Storage Health',
+      description: 'Inspect MCP analysis storage: indexed analyses, snapshots, change history, file cache size, and runtime observation counts.',
+      inputSchema: {
+        path: z.string().optional().describe('Optional project path filter'),
+      } as any,
+    } as any,
+    async ({ path }: any) => withErrorHandling(async () => {
+      return json(await getStorageHealth(path));
+    })
   );
 
   // -- System-Level Understanding --
@@ -1232,16 +1264,35 @@ function registerTools(server: McpServer) {
         type: z.enum(['request', 'error', 'exit', 'log', 'custom']).optional().describe('Runtime event type'),
         since: z.string().optional().describe('ISO timestamp lower bound'),
         static_id: z.string().optional().describe('CAS node, entry point, exit point, call chain, or runtime link id'),
+        trace_id: z.string().optional().describe('Runtime trace id'),
+        span_id: z.string().optional().describe('Runtime span id or parent span id'),
         limit: z.number().optional().describe('Max results (default storage order, newest first)'),
       } as any,
     } as any,
-    async ({ path, type, since, static_id, limit }: any) => withErrorHandling(async () => {
+    async ({ path, type, since, static_id, trace_id, span_id, limit }: any) => withErrorHandling(async () => {
       return json(await loadRuntimeObservations(path, {
         type,
         since,
         staticId: static_id,
+        traceId: trace_id,
+        spanId: span_id,
         limit,
       }));
+    })
+  );
+
+  server.registerTool(
+    'get_runtime_trace',
+    {
+      title: 'Get Runtime Trace',
+      description: 'Replay stored runtime observations for a trace id with matched CAS static ids.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        trace_id: z.string().describe('Runtime trace id'),
+      } as any,
+    } as any,
+    async ({ path, trace_id }: any) => withErrorHandling(async () => {
+      return json(await loadRuntimeTrace(path, trace_id));
     })
   );
 
@@ -1766,6 +1817,20 @@ function registerResources(server: McpServer) {
       if (!entry) return { contents: [{ uri: uri.href, text: JSON.stringify({ error: 'Analysis not found' }) }] };
       const cas = await getAnalysis(entry.path);
       return { contents: [{ uri: uri.href, text: JSON.stringify(runtimeContract.getRuntimeEventContract(cas)) }] };
+    }
+  );
+
+  server.registerResource(
+    'project-cas-contract',
+    new ResourceTemplate('unravl://{project_name}/cas-contract', { list: undefined }),
+    { title: 'CAS Contract Validation', description: 'Executable graph completeness and evidence checks for the stored CAS output.', mimeType: 'application/json' } as any,
+    async (uri, params) => {
+      const analyses = await listAnalyses();
+      const entry = analyses.find(a => slugify(a.name) === params.project_name);
+      if (!entry) return { contents: [{ uri: uri.href, text: JSON.stringify({ error: 'Analysis not found' }) }] };
+      const cas = await getAnalysis(entry.path);
+      const observations = await loadRuntimeObservations(entry.path);
+      return { contents: [{ uri: uri.href, text: JSON.stringify(casContract.validateCASContract(cas, observations)) }] };
     }
   );
 

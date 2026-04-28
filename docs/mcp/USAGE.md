@@ -117,7 +117,9 @@ From there, drill into targeted areas:
 - **Understand recent changes**: `get_changes_since`, `get_change_summary`, `get_hot_spots`, `get_analysis_snapshots`
 - **Prove answerability**: `run_answer_pack` with `pack="mastery"`
 - **Connect repos**: `get_cross_repo_links` with related analyzed paths
-- **Map runtime back to code**: `get_runtime_event_contract`, `correlate_runtime_event`, `record_runtime_event`, `get_runtime_observations`
+- **Validate CAS completeness**: `validate_cas_contract`
+- **Inspect MCP storage**: `get_storage_health`
+- **Map runtime back to code**: `get_runtime_event_contract`, `correlate_runtime_event`, `record_runtime_event`, `get_runtime_observations`, `get_runtime_trace`
 
 ---
 
@@ -243,7 +245,13 @@ Use record_runtime_event with path="/repo" and the same event payload
 Then query observations:
 
 ```
-Use get_runtime_observations with path="/repo", type="error", or static_id="<cas-id>"
+Use get_runtime_observations with path="/repo", type="error", static_id="<cas-id>", or trace_id="<trace-id>"
+```
+
+To replay one trace:
+
+```
+Use get_runtime_trace with path="/repo" and trace_id="<trace-id>"
 ```
 
 Runtime events can include `signal`, `static_id`, `node_id`, `entry_point_id`, `exit_point_id`, `call_chain_id`, route details, status, duration, error message, stack trace, and arbitrary attributes.
@@ -309,7 +317,17 @@ From `mcp-server/`:
 npm run agent-benchmark
 ```
 
-This checks whether task work packets resolve targets, produce a focused file read plan, include the selected target file, and keep agents out of broad source scans.
+This checks whether task work packets resolve targets, produce a focused file read plan, include the selected target file, return follow-up MCP calls, and beat a cold repo read. The report includes file-reduction percentages so agent adoption is measured against the baseline of reading broad source files.
+
+### Running the vision gauntlet
+
+From `mcp-server/`:
+
+```
+npm run vision-gauntlet
+```
+
+This runs the full technical proof across discovered real repos: CAS contract validation, answer-pack readiness, agent default-use readiness, runtime event contract coverage, and cross-repo links. Default discovery includes Unravl, Kadra, Money, Zerac, Soon, and SoundSync when those repos exist under `~/dev`. Use `--repo name=/path/to/repo` to add or override targets. The report is written to `.unravl-vision-gauntlet/latest-report.json` unless `--output` is provided.
 
 ### Running the cross-repo contract gauntlet
 

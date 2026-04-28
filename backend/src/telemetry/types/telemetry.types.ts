@@ -33,6 +33,31 @@ export interface TelemetryMessage {
   };
 }
 
+export interface CASRuntimeEvent {
+  type: 'request' | 'error' | 'exit' | 'log' | 'custom';
+  timestamp?: string;
+  schema_version?: string;
+  service_name?: string;
+  environment?: string;
+  signal?: string;
+  static_id?: string;
+  node_id?: string;
+  entry_point_id?: string;
+  exit_point_id?: string;
+  call_chain_id?: string;
+  trace_id?: string;
+  span_id?: string;
+  parent_span_id?: string;
+  method?: string;
+  route?: string;
+  path?: string;
+  status_code?: number;
+  duration_ms?: number;
+  error_message?: string;
+  stack?: string;
+  attributes?: Record<string, any>;
+}
+
 export enum FlowStatus {
   IN_PROGRESS = 'in-progress',
   COMPLETED = 'completed',

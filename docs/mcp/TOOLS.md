@@ -29,6 +29,27 @@ List all previously analyzed codebases with metadata.
 
 **Returns:** Array of `{ name, path, file, analyzed_at, system_type, frameworks, node_count, edge_count }`.
 
+### `validate_cas_contract`
+
+Run executable CAS completeness checks for graph integrity, entry/exit references, runtime links, evidence facts, method calls, call chains, and optional stored runtime observations.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `include_runtime_observations` | boolean | no | Include stored runtime observations in correlation gates |
+
+**Returns:** `{ status, score, gates, summary, snapshot }`, where `snapshot` is a stable golden-shape summary of the CAS graph.
+
+### `get_storage_health`
+
+Inspect MCP analysis storage.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | no | Optional project path filter |
+
+**Returns:** Storage path, index version, analysis count, and per-project snapshot, change-history, runtime-observation, and file-cache totals.
+
 ---
 
 ## System-Level Understanding
@@ -109,7 +130,7 @@ Discover deterministic links across analyzed repositories.
 |-----------|------|----------|-------------|
 | `paths` | string[] | no | Project paths to link. Omit to use all analyzed repositories. |
 
-**Returns:** Cross-repository links for API calls, shared databases, message contracts, and shared internal libraries, with evidence, confidence, certainty counts, and conflict reports.
+**Returns:** Cross-repository links for API calls, external services, env/configured base URLs, GraphQL/OpenAPI/protobuf/gRPC shared schemas, shared databases, message contracts, webhooks, and shared internal libraries, with evidence, confidence, certainty counts, and conflict reports.
 
 ### `get_agent_bootstrap`
 
@@ -778,9 +799,22 @@ Query stored runtime observations.
 | `type` | string | no | Filter by request, error, exit, log, or custom |
 | `since` | string | no | ISO timestamp lower bound |
 | `static_id` | string | no | CAS node, entry point, exit point, call chain, or runtime link ID |
+| `trace_id` | string | no | Runtime trace ID |
+| `span_id` | string | no | Runtime span ID or parent span ID |
 | `limit` | number | no | Max results |
 
 **Returns:** Stored observations with runtime payloads and CAS correlations.
+
+### `get_runtime_trace`
+
+Replay stored runtime observations for a trace ID.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `trace_id` | string | yes | Runtime trace ID |
+
+**Returns:** Ordered observations for the trace, matched/unmatched counts, and CAS static IDs touched by the trace.
 
 ### `get_analysis_facts`
 

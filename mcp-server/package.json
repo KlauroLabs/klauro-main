@@ -16,6 +16,7 @@
     "agent-benchmark": "tsx src/agent-benchmark.ts",
     "analysis-gauntlet": "tsx src/analysis-gauntlet.ts",
     "contract-gauntlet": "tsx src/contract-gauntlet.ts",
+    "vision-gauntlet": "tsx src/vision-gauntlet.ts",
     "typecheck": "NODE_OPTIONS='--max-old-space-size=8192' tsc --noEmit"
   },
   "dependencies": {

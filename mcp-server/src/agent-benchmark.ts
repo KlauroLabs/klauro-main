@@ -20,6 +20,11 @@ interface TaskScore {
   score: number;
   selected_node?: unknown;
   file_read_plan: unknown[];
+  baseline: {
+    cold_repo_files: number;
+    planned_files: number;
+    file_reduction_percentage: number;
+  };
   gates: Array<{ id: string; status: GateStatus; score: number; detail: string }>;
 }
 
@@ -104,12 +109,14 @@ function scoreTask(cas: CASOutput, projectPath: string, task: AgentTask, filesIn
   const packet = getAgentWorkPacket(cas, projectPath, task);
   const planFiles = packet.file_read_plan.map(item => String(item.file)).filter(Boolean);
   const selectedFile = packet.selected_node?.file ? String(packet.selected_node.file) : undefined;
+  const reduction = filesInRepo === 0 ? 0 : Math.max(0, Math.round(((filesInRepo - planFiles.length) / filesInRepo) * 100));
   const gates = [
     gate('target-resolved', Boolean(packet.selected_node) || task.task_type === 'orient', packet.selected_node?.name || 'not resolved'),
     gate('file-plan-present', planFiles.length > 0, `${planFiles.length} files`),
     gate('file-plan-narrower-than-repo', filesInRepo <= 1 || planFiles.length < filesInRepo, `${planFiles.length}/${filesInRepo}`),
     gate('selected-file-included', !selectedFile || planFiles.some(file => pathsCompatible(file, selectedFile)), selectedFile || 'no selected file'),
     gate('mcp-followups-present', packet.next_mcp_calls.length > 0, `${packet.next_mcp_calls.length} calls`),
+    gate('beats-cold-repo-read', beatsColdRepoRead(filesInRepo, planFiles.length, reduction), `${reduction}% fewer files`),
   ];
   const score = Math.round(gates.reduce((sum, result) => sum + result.score, 0) / gates.length);
 
@@ -119,6 +126,11 @@ function scoreTask(cas: CASOutput, projectPath: string, task: AgentTask, filesIn
     score,
     selected_node: packet.selected_node,
     file_read_plan: packet.file_read_plan,
+    baseline: {
+      cold_repo_files: filesInRepo,
+      planned_files: planFiles.length,
+      file_reduction_percentage: reduction,
+    },
     gates,
   };
 }
@@ -130,6 +142,13 @@ function gate(id: string, passed: boolean, detail: string) {
     score: passed ? 100 : 0,
     detail,
   };
+}
+
+function beatsColdRepoRead(filesInRepo: number, plannedFiles: number, reduction: number): boolean {
+  if (filesInRepo <= 1) return true;
+  if (filesInRepo <= 3) return plannedFiles <= 1;
+  if (filesInRepo <= 8) return plannedFiles <= 3;
+  return reduction >= 70;
 }
 
 function pathsCompatible(left: string, right: string): boolean {
@@ -162,6 +181,7 @@ async function analyzeTarget(target: BenchmarkTarget) {
   const tasks = tasksForExpectation(target.expectation);
   const taskScores = tasks.map(task => scoreTask(cas, target.path, task, filesInRepo));
   const score = Math.round(average(taskScores.map(task => task.score)));
+  const averageReduction = Math.round(average(taskScores.map(task => task.baseline.file_reduction_percentage)));
   return {
     name: target.name,
     path: target.path,
@@ -169,6 +189,11 @@ async function analyzeTarget(target: BenchmarkTarget) {
     score,
     durationMs: Date.now() - startedAt,
     source_files: filesInRepo,
+    adoption_delta: {
+      average_file_reduction_percentage: averageReduction,
+      cold_repo_files_per_task: filesInRepo,
+      planned_files_per_task: Math.round(average(taskScores.map(task => task.baseline.planned_files))),
+    },
     tasks: taskScores,
   };
 }
@@ -198,7 +223,7 @@ async function main(): Promise<void> {
   await fs.writeJson(args.outputPath, report, { spaces: 2 });
   console.log(`Agent usefulness benchmark: ${report.status.toUpperCase()} (${report.score}/100)`);
   for (const target of reports) {
-    console.log(`${target.status.toUpperCase().padEnd(4)} ${String(target.score).padStart(3)}/100 | ${target.name} | ${target.source_files} source files | ${Math.round(target.durationMs / 1000)}s`);
+    console.log(`${target.status.toUpperCase().padEnd(4)} ${String(target.score).padStart(3)}/100 | ${target.name} | ${target.source_files} source files | ${target.adoption_delta.average_file_reduction_percentage}% file reduction | ${Math.round(target.durationMs / 1000)}s`);
     for (const task of target.tasks.filter(result => result.status !== 'pass').slice(0, 5)) {
       console.log(`  - ${task.task.task_type || 'orient'} ${task.task.target || ''}: ${task.score}/100`);
     }

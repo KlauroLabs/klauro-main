@@ -351,6 +351,11 @@ export function buildCrossRepositoryLinks(repositories: Array<{ path: string; na
       links.push(...detectSharedDatabaseLinks(left, right));
       links.push(...detectMessageLinks(left, right));
       links.push(...detectMessageLinks(right, left));
+      links.push(...detectExternalServiceLinks(left, right));
+      links.push(...detectExternalServiceLinks(right, left));
+      links.push(...detectEnvironmentContractLinks(left, right));
+      links.push(...detectEnvironmentContractLinks(right, left));
+      links.push(...detectSharedSchemaLinks(left, right));
       links.push(...detectSharedLibraryLinks(left, right));
     }
   }
@@ -386,11 +391,12 @@ function detectApiLinks(
 ): CASCrossRepositoryLink[] {
   const links: CASCrossRepositoryLink[] = [];
   const apiExits = (consumer.cas.exit_points || []).filter(exitPoint => exitPoint.type === 'api' || exitPoint.type === 'webhook');
-  const entries = (producer.cas.entry_points || []).filter(entryPoint => entryPoint.type === 'http' || entryPoint.type === 'route');
+  const entries = (producer.cas.entry_points || []).filter(entryPoint => isApiProviderEntry(producer.cas, entryPoint));
 
   for (const exitPoint of apiExits) {
-    const exitRoute = normalizeRoute(exitPoint.target?.endpoint || exitPoint.target?.resource || exitPoint.name);
-    if (!exitRoute) continue;
+    const rawExitTarget = exitPoint.target?.endpoint || exitPoint.target?.resource || exitPoint.name;
+    const exitRoute = normalizeRoute(rawExitTarget);
+    if (!exitRoute || exitRoute === '/' || isExternalAbsoluteEndpoint(rawExitTarget)) continue;
     const exitMethod = normalizeHttpMethod(exitPoint.operation?.method || exitPoint.operation?.action);
 
     for (const entryPoint of entries) {
@@ -430,6 +436,31 @@ function detectApiLinks(
   return links;
 }
 
+function isApiProviderEntry(cas: CASOutput, entryPoint: CASEntryPoint): boolean {
+  if (entryPoint.type === 'http') return true;
+  if (entryPoint.type !== 'route') return false;
+  const node = cas.nodes.find(candidate => candidate.id === entryPoint.source_node || candidate.id === entryPoint.handler?.node_id);
+  const framework = node?.metadata?.framework?.toLowerCase() || '';
+  const nodeType = node?.type?.toLowerCase() || '';
+  const file = node?.source?.file?.toLowerCase() || entryPoint.handler?.file?.toLowerCase() || '';
+  if (framework.includes('react') || nodeType.includes('component') || nodeType.includes('page')) return false;
+  if (file.includes('/pages/') && !file.includes('/api/')) return false;
+  if (file.includes('/app/') && !file.includes('/api/')) return false;
+  return Boolean(entryPoint.trigger?.method || entryPoint.trigger?.path);
+}
+
+function isExternalAbsoluteEndpoint(value: string): boolean {
+  if (!/^https?:\/\//i.test(value)) return false;
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.toLowerCase();
+    if (host === 'localhost' || host === '127.0.0.1' || host.endsWith('.local')) return false;
+    return normalizeRoute(value) === '/' || !value.includes('/api/');
+  } catch {
+    return false;
+  }
+}
+
 function detectSharedDatabaseLinks(
   left: { path: string; name: string; cas: CASOutput },
   right: { path: string; name: string; cas: CASOutput }
@@ -455,6 +486,152 @@ function detectSharedDatabaseLinks(
         evidence: [
           { kind: 'graph', source: `${left.name}:${leftResource.id}`, confidence: 0.88 },
           { kind: 'graph', source: `${right.name}:${rightResource.id}`, confidence: 0.88 },
+        ],
+      },
+    });
+  }
+
+  return links;
+}
+
+function detectExternalServiceLinks(
+  consumer: { path: string; name: string; cas: CASOutput },
+  producer: { path: string; name: string; cas: CASOutput }
+): CASCrossRepositoryLink[] {
+  const links: CASCrossRepositoryLink[] = [];
+  const services = consumer.cas.external_services || [];
+  const producerNames = producerServiceNames(producer);
+  const producerEntries = (producer.cas.entry_points || []).filter(entryPoint =>
+    ['http', 'route', 'websocket', 'event', 'message'].includes(entryPoint.type)
+  );
+
+  for (const service of services) {
+    if (!service.endpoint) continue;
+    const serviceKey = normalizeServiceKey(service.name || service.endpoint || service.id);
+    const nameMatch = producerNames.find(name => name === serviceKey || name.includes(serviceKey) || serviceKey.includes(name));
+    if (!nameMatch && !service.endpoint) continue;
+
+    const serviceRoute = normalizeRoute(service.endpoint || '/');
+    const hasConcreteRoute = Boolean(service.endpoint) && serviceRoute !== '/';
+    const candidateEntries = hasConcreteRoute
+      ? producerEntries.filter(entryPoint => routesCompatible(serviceRoute, normalizeRoute(entryPoint.trigger?.path || entryPoint.name || '/')))
+      : nameMatch ? representativeEntries(producerEntries) : [];
+
+    for (const entryPoint of candidateEntries) {
+      const entryRoute = normalizeRoute(entryPoint.trigger?.path || entryPoint.name || '/');
+      const routeCompatible = hasConcreteRoute && routesCompatible(serviceRoute, entryRoute);
+
+      const confidenceValue = nameMatch && routeCompatible ? 0.91 : nameMatch ? 0.82 : 0.76;
+      links.push({
+        id: crossRepoId('api', consumer.name, service.id, producer.name, entryPoint.id),
+        type: 'api',
+        source_repository: { path: consumer.path, node_ids: service.connected_nodes || [] },
+        target_repository: { path: producer.path, node_ids: [entryPoint.source_node] },
+        connection: {
+          protocol: service.type?.includes('grpc') ? 'grpc' : service.endpoint?.includes('graphql') ? 'graphql' : service.type || 'http',
+          endpoint: entryPoint.trigger?.path || service.endpoint,
+          method: entryPoint.trigger?.method,
+          contract: service.name,
+        },
+        metadata: {
+          verified: confidenceValue >= 0.9,
+          last_sync: new Date().toISOString(),
+          confidence: confidenceValue,
+          evidence: [
+            { kind: 'graph', source: `${consumer.name}:${service.id}`, confidence: confidenceValue },
+            { kind: 'route', source: `${producer.name}:${entryPoint.id}`, file: entryPoint.handler?.file, line: entryPoint.handler?.line, confidence: 0.88 },
+          ],
+        },
+      });
+    }
+  }
+
+  return links;
+}
+
+function detectEnvironmentContractLinks(
+  consumer: { path: string; name: string; cas: CASOutput },
+  producer: { path: string; name: string; cas: CASOutput }
+): CASCrossRepositoryLink[] {
+  const links: CASCrossRepositoryLink[] = [];
+  const envs = consumer.cas.configuration?.environment_variables || [];
+  const producerNames = producerServiceNames(producer);
+  const entries = producer.cas.entry_points || [];
+
+  for (const env of envs) {
+    const envName = env.name.toLowerCase();
+    const envValue = String(env.default || '').toLowerCase();
+    const looksLikeEndpoint = /url|uri|endpoint|base|host|graphql|grpc|webhook/.test(envName) || /^https?:\/\//.test(envValue);
+    if (!looksLikeEndpoint) continue;
+
+    const serviceKey = normalizeServiceKey(envName.replace(/_(url|uri|endpoint|base|host|api|service)$/i, ''));
+    const producerNameMatch = producerNames.some(name => serviceKey && (name.includes(serviceKey) || serviceKey.includes(name)));
+    const valueRoute = normalizeRoute(envValue || '/');
+    const hasConcreteRoute = Boolean(envValue) && valueRoute !== '/';
+    const candidateEntries = hasConcreteRoute
+      ? entries.filter(entryPoint => routesCompatible(valueRoute, normalizeRoute(entryPoint.trigger?.path || entryPoint.name || '/')))
+      : producerNameMatch ? representativeEntries(entries) : [];
+
+    for (const entryPoint of candidateEntries) {
+      const entryRoute = normalizeRoute(entryPoint.trigger?.path || entryPoint.name || '/');
+      const routeMatch = hasConcreteRoute && routesCompatible(valueRoute, entryRoute);
+
+      const confidenceValue = producerNameMatch && routeMatch ? 0.89 : producerNameMatch ? 0.78 : 0.74;
+      links.push({
+        id: crossRepoId('api', consumer.name, `env-${env.name}`, producer.name, entryPoint.id),
+        type: 'api',
+        source_repository: { path: consumer.path, node_ids: env.used_by || [] },
+        target_repository: { path: producer.path, node_ids: [entryPoint.source_node] },
+        connection: {
+          protocol: envName.includes('grpc') ? 'grpc' : envName.includes('graphql') ? 'graphql' : 'http',
+          endpoint: entryPoint.trigger?.path || env.default,
+          method: entryPoint.trigger?.method,
+          contract: env.name,
+        },
+        metadata: {
+          verified: false,
+          last_sync: new Date().toISOString(),
+          confidence: confidenceValue,
+          evidence: [
+            { kind: 'configuration', source: `${consumer.name}:${env.name}`, confidence: confidenceValue },
+            { kind: 'route', source: `${producer.name}:${entryPoint.id}`, file: entryPoint.handler?.file, line: entryPoint.handler?.line, confidence: 0.86 },
+          ],
+        },
+      });
+    }
+  }
+
+  return links;
+}
+
+function detectSharedSchemaLinks(
+  left: { path: string; name: string; cas: CASOutput },
+  right: { path: string; name: string; cas: CASOutput }
+): CASCrossRepositoryLink[] {
+  const links: CASCrossRepositoryLink[] = [];
+  const leftSchemas = schemaContracts(left.cas);
+  const rightSchemas = schemaContracts(right.cas);
+
+  for (const schema of leftSchemas) {
+    const match = rightSchemas.find(candidate => candidate.key === schema.key);
+    if (!match) continue;
+
+    links.push({
+      id: crossRepoId('shared-schema', left.name, schema.id, right.name, match.id),
+      type: 'shared-schema',
+      source_repository: { path: left.path, node_ids: schema.nodeIds },
+      target_repository: { path: right.path, node_ids: match.nodeIds },
+      connection: {
+        contract: schema.name,
+        protocol: schema.protocol,
+      },
+      metadata: {
+        verified: schema.exact && match.exact,
+        last_sync: new Date().toISOString(),
+        confidence: schema.exact && match.exact ? 0.93 : 0.81,
+        evidence: [
+          { kind: schema.kind, source: `${left.name}:${schema.name}`, file: schema.file, confidence: schema.exact ? 0.92 : 0.8 },
+          { kind: match.kind, source: `${right.name}:${match.name}`, file: match.file, confidence: match.exact ? 0.92 : 0.8 },
         ],
       },
     });
@@ -795,6 +972,99 @@ function databaseResources(cas: CASOutput): Array<{ id: string; key: string; nam
   return dedupeBy(resources, resource => resource.key);
 }
 
+function producerServiceNames(repository: { name: string; cas: CASOutput }): string[] {
+  return [
+    repository.name,
+    repository.cas.system.name,
+    ...(repository.cas.external_services || []).map(service => service.name),
+    ...(repository.cas.libraries || []).map(library => library.name),
+  ]
+    .map(normalizeServiceKey)
+    .filter(Boolean);
+}
+
+function representativeEntries(entries: CASEntryPoint[]): CASEntryPoint[] {
+  return entries
+    .filter(entry => entry.type === 'http' || entry.type === 'route' || entry.type === 'message' || entry.type === 'event')
+    .slice(0, 3);
+}
+
+function schemaContracts(cas: CASOutput): Array<{
+  id: string;
+  key: string;
+  name: string;
+  protocol?: string;
+  nodeIds?: string[];
+  file?: string;
+  exact: boolean;
+  kind: 'configuration' | 'dependency' | 'graph';
+}> {
+  const schemas = [];
+
+  for (const file of cas.configuration?.config_files || []) {
+    const filePath = file.path || '';
+    const lower = filePath.toLowerCase();
+    if (!isSchemaLike(lower)) continue;
+    schemas.push({
+      id: `config:${filePath}`,
+      key: normalizeSchemaKey(filePath),
+      name: filePath,
+      protocol: protocolForSchema(lower),
+      file: filePath,
+      exact: true,
+      kind: 'configuration' as const,
+    });
+  }
+
+  for (const library of cas.libraries || []) {
+    const lower = library.name.toLowerCase();
+    if (!isSchemaLike(lower) && !lower.includes('graphql') && !lower.includes('grpc')) continue;
+    schemas.push({
+      id: `library:${library.name}`,
+      key: normalizeSchemaKey(library.name),
+      name: library.name,
+      protocol: protocolForSchema(lower),
+      nodeIds: library.connected_nodes,
+      exact: lower.includes('proto') || lower.includes('openapi') || lower.includes('graphql') || lower.includes('schema'),
+      kind: 'dependency' as const,
+    });
+  }
+
+  for (const entryPoint of cas.entry_points || []) {
+    const operation = String(entryPoint.metadata?.graphql_operation || entryPoint.input?.schema || entryPoint.output?.schema || '');
+    if (!operation) continue;
+    const isGraphql = Boolean(entryPoint.metadata?.graphql_operation_type) || operation.toLowerCase().includes('graphql');
+    if (!isGraphql) continue;
+    schemas.push({
+      id: `entry:${entryPoint.id}`,
+      key: normalizeSchemaKey(operation || entryPoint.name),
+      name: operation || entryPoint.name,
+      protocol: 'graphql',
+      nodeIds: [entryPoint.source_node],
+      file: entryPoint.handler?.file,
+      exact: Boolean(entryPoint.metadata?.graphql_operation),
+      kind: 'graph' as const,
+    });
+  }
+
+  for (const exitPoint of cas.exit_points || []) {
+    const contract = exitPoint.data?.output_type || exitPoint.target?.resource || exitPoint.target?.endpoint || '';
+    const lower = String(contract).toLowerCase();
+    if (!isSchemaLike(lower) && !lower.includes('graphql') && !lower.includes('proto')) continue;
+    schemas.push({
+      id: `exit:${exitPoint.id}`,
+      key: normalizeSchemaKey(contract),
+      name: contract,
+      protocol: protocolForSchema(lower),
+      nodeIds: [exitPoint.source_node],
+      exact: lower.includes('schema') || lower.includes('proto') || lower.includes('graphql'),
+      kind: 'graph' as const,
+    });
+  }
+
+  return dedupeBy(schemas, schema => schema.key);
+}
+
 function internalLibraries(cas: CASOutput): Array<{ name: string; version?: string }> {
   return (cas.libraries || [])
     .filter(library => {
@@ -802,6 +1072,49 @@ function internalLibraries(cas: CASOutput): Array<{ name: string; version?: stri
       return name.startsWith('@') || name.includes('unravl') || name.includes('zerac') || name.includes('soon') || name.includes('kadra');
     })
     .map(library => ({ name: library.name, version: library.version }));
+}
+
+function isSchemaLike(value: string): boolean {
+  return value.includes('openapi') ||
+    value.includes('swagger') ||
+    value.includes('graphql') ||
+    value.includes('schema') ||
+    value.includes('proto') ||
+    value.includes('grpc') ||
+    value.endsWith('.proto') ||
+    value.endsWith('.graphql') ||
+    value.endsWith('.gql') ||
+    value.endsWith('openapi.json') ||
+    value.endsWith('openapi.yaml') ||
+    value.endsWith('swagger.json') ||
+    value.endsWith('swagger.yaml');
+}
+
+function protocolForSchema(value: string): string | undefined {
+  if (value.includes('graphql') || value.endsWith('.gql')) return 'graphql';
+  if (value.includes('proto') || value.includes('grpc')) return 'grpc';
+  if (value.includes('openapi') || value.includes('swagger')) return 'http';
+  return undefined;
+}
+
+function normalizeSchemaKey(value: string): string {
+  const normalized = value
+    .toLowerCase()
+    .replace(/^.*\/([^/]+)$/, '$1')
+    .replace(/\.(json|yaml|yml|proto|graphql|gql|ts|js|py)$/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+  return normalized || normalizeTopic(value);
+}
+
+function normalizeServiceKey(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/[:/?#].*$/, '')
+    .replace(/\.(local|localhost|com|io|dev|net|org)$/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
 }
 
 function normalizeRoute(value: string): string {

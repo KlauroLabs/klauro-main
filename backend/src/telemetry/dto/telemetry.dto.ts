@@ -1,4 +1,4 @@
-import { IsString, IsNumber, IsEnum, IsOptional, IsArray, ValidateNested, IsBoolean, IsUUID, Min, Max } from 'class-validator';
+import { IsString, IsNumber, IsEnum, IsOptional, IsArray, ValidateNested, IsBoolean, IsUUID, Min, Max, IsObject, IsIn } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { TelemetryEventType, FlowStatus, IssueType, ComponentStatus } from '../types/telemetry.types';
@@ -368,4 +368,116 @@ export class TelemetrySubscriptionDto {
     tags?: string[];
     statusFilter?: string[];
   };
+}
+
+export class CASRuntimeEventDto {
+  @ApiProperty({ enum: ['request', 'error', 'exit', 'log', 'custom'] })
+  @IsIn(['request', 'error', 'exit', 'log', 'custom'])
+  type!: 'request' | 'error' | 'exit' | 'log' | 'custom';
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  timestamp?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  schema_version?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  service_name?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  environment?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  signal?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  static_id?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  node_id?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  entry_point_id?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  exit_point_id?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  call_chain_id?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  trace_id?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  span_id?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  parent_span_id?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  method?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  route?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  path?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  status_code?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  duration_ms?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  error_message?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  stack?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsObject()
+  attributes?: Record<string, any>;
 }

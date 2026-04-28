@@ -5,13 +5,16 @@ import { InjectRepository } from '@mikro-orm/nestjs';
 import { EntityRepository } from '@mikro-orm/postgresql';
 import { TelemetryData, TelemetryPayloadType as EntityTelemetryPayloadType } from '../../database/entities/telemetry-data.entity';
 import { 
+  CASRuntimeEvent,
   TelemetryMessage, 
   TelemetryBatch, 
   TelemetrySubscription,
   TelemetryAggregation,
   TelemetryStream,
   TelemetryEvent,
-  TelemetryEventType
+  TelemetryEventType,
+  FlowStatus,
+  IssueType
 } from '../types/telemetry.types';
 import { EventAggregator } from './event-aggregator.service';
 import { MetricsCalculator } from './metrics-calculator.service';
@@ -106,6 +109,36 @@ export class TelemetryService {
       this.logger.error(`Failed to process batch: ${error instanceof Error ? error.message : String(error)}`, error instanceof Error ? error.stack : undefined);
       throw error;
     }
+  }
+
+  async ingestRuntimeEvent(data: {
+    projectId: string;
+    organizationId: string;
+    event: CASRuntimeEvent;
+  }): Promise<{ eventId: string; timestamp: string }> {
+    const normalized = this.normalizeRuntimeEvent(data.event);
+    const timestamp = new Date(normalized.timestamp).getTime();
+    const eventId = `${normalized.type}-${timestamp}-${Math.random().toString(36).slice(2, 10)}`;
+    const batch: TelemetryBatch = {
+      projectId: data.projectId,
+      organizationId: data.organizationId,
+      timestamp,
+      metadata: {
+        sdkVersion: String(normalized.attributes?.sdk_version || ''),
+        runtime: String(normalized.attributes?.runtime || normalized.service_name || ''),
+        hostname: String(normalized.attributes?.hostname || ''),
+        environment: normalized.environment || '',
+      },
+      events: [{
+        id: eventId,
+        type: this.runtimeEventTypeToTelemetryType(normalized),
+        timestamp,
+        data: this.runtimeEventToTelemetryStream(data.projectId, normalized),
+      }],
+    };
+
+    await this.processBatch(batch);
+    return { eventId, timestamp: normalized.timestamp };
   }
 
   private async flushBatch(projectId: string): Promise<void> {
@@ -392,6 +425,107 @@ export class TelemetryService {
     return TelemetryEventType.CUSTOM;
   }
 
+  private normalizeRuntimeEvent(event: CASRuntimeEvent): CASRuntimeEvent & { timestamp: string } {
+    const timestamp = event.timestamp || new Date().toISOString();
+    if (Number.isNaN(new Date(timestamp).getTime())) {
+      throw new Error(`Invalid runtime event timestamp: ${timestamp}`);
+    }
+
+    const hasCorrelation =
+      event.static_id ||
+      event.node_id ||
+      event.entry_point_id ||
+      event.exit_point_id ||
+      event.call_chain_id ||
+      event.signal ||
+      event.route ||
+      event.path ||
+      event.stack;
+
+    if (!hasCorrelation) {
+      throw new Error('Runtime event must include at least one CAS id, signal, route, path, or stack trace.');
+    }
+
+    if (typeof event.duration_ms === 'number' && event.duration_ms < 0) {
+      throw new Error('Runtime event duration_ms must be greater than or equal to zero.');
+    }
+
+    return {
+      ...event,
+      timestamp,
+      schema_version: event.schema_version || '1.0.0',
+    };
+  }
+
+  private runtimeEventTypeToTelemetryType(event: CASRuntimeEvent): TelemetryEventType {
+    if (event.type === 'request') return TelemetryEventType.REQUEST_FLOW;
+    if (event.type === 'exit') return TelemetryEventType.CUSTOM;
+    if (event.type === 'error') return TelemetryEventType.ISSUES;
+    return TelemetryEventType.CUSTOM;
+  }
+
+  private runtimeEventToTelemetryStream(projectId: string, event: CASRuntimeEvent & { timestamp: string }): TelemetryStream {
+    const timestamp = new Date(event.timestamp).getTime();
+    const componentId = event.node_id || event.static_id || event.entry_point_id || event.exit_point_id || event.call_chain_id || event.signal || 'cas-runtime-event';
+    const endpoint = event.route || event.path || event.signal || componentId;
+
+    if (event.type === 'request') {
+      return {
+        requestFlow: {
+          id: event.trace_id || `${componentId}:${timestamp}`,
+          traceId: event.trace_id || `${componentId}:${timestamp}`,
+          spanId: event.span_id || `${componentId}:span`,
+          parentSpanId: event.parent_span_id,
+          projectId,
+          componentId,
+          path: [componentId],
+          method: event.method || 'EVENT',
+          endpoint,
+          timestamp,
+          duration: event.duration_ms,
+          status: event.status_code && event.status_code >= 500 ? FlowStatus.FAILED : FlowStatus.COMPLETED,
+          metadata: { casRuntimeEvent: event },
+          tags: this.runtimeEventTags(event),
+        },
+      };
+    }
+
+    if (event.type === 'error') {
+      return {
+        issues: [{
+          id: `${componentId}:${timestamp}`,
+          componentId,
+          projectId,
+          type: IssueType.ERROR,
+          severity: 'critical',
+          message: event.error_message || 'Runtime error event',
+          details: { casRuntimeEvent: event },
+          stackTrace: event.stack,
+          count: 1,
+          firstOccurrence: timestamp,
+          lastOccurrence: timestamp,
+          timestamp,
+          resolved: false,
+        }],
+      };
+    }
+
+    return {
+      casRuntimeEvent: event,
+    } as TelemetryStream;
+  }
+
+  private runtimeEventTags(event: CASRuntimeEvent): string[] {
+    return [
+      'cas-runtime',
+      event.type ? `type:${event.type}` : undefined,
+      event.static_id ? `static:${event.static_id}` : undefined,
+      event.entry_point_id ? `entry:${event.entry_point_id}` : undefined,
+      event.exit_point_id ? `exit:${event.exit_point_id}` : undefined,
+      event.call_chain_id ? `chain:${event.call_chain_id}` : undefined,
+    ].filter((tag): tag is string => Boolean(tag));
+  }
+
   private mapEventTypeToPayloadType(type: TelemetryEventType): EntityTelemetryPayloadType {
     switch (type) {
       case TelemetryEventType.REQUEST_FLOW:
@@ -408,12 +542,19 @@ export class TelemetryService {
   }
 
   private extractComponentId(stream: TelemetryStream): string | undefined {
+    const runtimeEvent = this.extractRuntimeEvent(stream);
     return stream.performanceMetrics?.componentId ||
       stream.requestFlow?.componentId ||
       stream.componentStatus?.componentId ||
       stream.issues?.[0]?.componentId ||
       stream.databaseQuery?.componentId ||
-      stream.messageQueue?.componentId;
+      stream.messageQueue?.componentId ||
+      runtimeEvent?.node_id ||
+      runtimeEvent?.static_id ||
+      runtimeEvent?.entry_point_id ||
+      runtimeEvent?.exit_point_id ||
+      runtimeEvent?.call_chain_id ||
+      runtimeEvent?.signal;
   }
 
   private extractTags(stream: TelemetryStream): string[] | undefined {
@@ -421,6 +562,8 @@ export class TelemetryService {
     for (const tag of stream.requestFlow?.tags || []) tags.add(tag);
     if (stream.databaseQuery?.table) tags.add(`table:${stream.databaseQuery.table}`);
     if (stream.messageQueue?.queue) tags.add(`queue:${stream.messageQueue.queue}`);
+    const runtimeEvent = this.extractRuntimeEvent(stream);
+    for (const tag of runtimeEvent ? this.runtimeEventTags(runtimeEvent) : []) tags.add(tag);
     return tags.size > 0 ? Array.from(tags) : undefined;
   }
 
@@ -430,6 +573,26 @@ export class TelemetryService {
     if (stream.requestFlow?.method) attributes.method = stream.requestFlow.method;
     if (stream.databaseQuery?.operation) attributes.databaseOperation = stream.databaseQuery.operation;
     if (stream.messageQueue?.action) attributes.queueAction = stream.messageQueue.action;
+    const runtimeEvent = this.extractRuntimeEvent(stream);
+    if (runtimeEvent) {
+      attributes.runtimeEventType = runtimeEvent.type;
+      attributes.staticId = runtimeEvent.static_id;
+      attributes.nodeId = runtimeEvent.node_id;
+      attributes.entryPointId = runtimeEvent.entry_point_id;
+      attributes.exitPointId = runtimeEvent.exit_point_id;
+      attributes.callChainId = runtimeEvent.call_chain_id;
+      attributes.traceId = runtimeEvent.trace_id;
+      attributes.spanId = runtimeEvent.span_id;
+      attributes.signal = runtimeEvent.signal;
+      attributes.route = runtimeEvent.route;
+      attributes.path = runtimeEvent.path;
+    }
     return Object.keys(attributes).length > 0 ? attributes : undefined;
+  }
+
+  private extractRuntimeEvent(stream: TelemetryStream): CASRuntimeEvent | undefined {
+    return (stream as any).casRuntimeEvent ||
+      stream.requestFlow?.metadata?.casRuntimeEvent ||
+      stream.issues?.[0]?.details?.casRuntimeEvent;
   }
 }

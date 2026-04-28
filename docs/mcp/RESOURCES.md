@@ -52,6 +52,14 @@ SDK-facing runtime event schema for CAS correlation.
 
 ---
 
+## `unravl://{project_name}/cas-contract`
+
+Executable CAS completeness report.
+
+**Includes:** pass/warn/fail status, graph completeness gates, entry/exit reference checks, runtime-link checks, evidence coverage, runtime-observation correlation, and a golden-shape snapshot summary.
+
+---
+
 ## `unravl://{project_name}/endpoints`
 
 All entry points and the HTTP route table.
@@ -109,6 +117,7 @@ Resources are best for loading a complete view of a domain in a single read. Too
 | Start an agent session | Resource: `unravl://{name}/agent-bootstrap` or Prompt: `agent_coding_session` |
 | Check whether agents should default to MCP | Resource: `unravl://{name}/agent-readiness` or Tool: `evaluate_agent_readiness` |
 | Get SDK runtime event payloads | Resource: `unravl://{name}/runtime-event-contract` or Tool: `get_runtime_event_contract` |
+| Validate CAS completeness | Resource: `unravl://{name}/cas-contract` or Tool: `validate_cas_contract` |
 | Load all endpoints at once | Resource: `unravl://{name}/endpoints` |
 | Filter entry points by type | Tool: `get_entry_points` with `type` param |
 | Get full security posture | Resource: `unravl://{name}/security` |

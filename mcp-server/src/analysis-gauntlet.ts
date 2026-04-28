@@ -10,6 +10,7 @@ import {
   loadTruthExpectation,
   type AnalysisTruthExpectation,
 } from './analysis-mastery';
+import { validateCASContract } from './cas-contract';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 
@@ -29,6 +30,7 @@ interface TargetReport {
   framework_depth: ReturnType<typeof getFrameworkDepthReport>;
   runtime_plan: ReturnType<typeof getRuntimeInstrumentationPlan>;
   agent_task_proof: ReturnType<typeof evaluateAgentTaskProof>;
+  cas_contract: ReturnType<typeof validateCASContract>;
   semantic_map: {
     files: number;
     relationships: number;
@@ -112,6 +114,7 @@ async function analyzeTarget(target: Target): Promise<TargetReport> {
   const truth = evaluateAnalysisTruth(cas, expectation);
   const frameworkDepth = getFrameworkDepthReport(cas);
   const runtimePlan = getRuntimeInstrumentationPlan(cas, { limit: 20 });
+  const casContract = validateCASContract(cas);
   const agentTaskProof = evaluateAgentTaskProof(cas, target.path, [
     { task_type: 'orient' },
     { task_type: 'modify', target: expectation.nodes?.[0]?.name || expectation.routes?.[0]?.handler },
@@ -122,6 +125,7 @@ async function analyzeTarget(target: Target): Promise<TargetReport> {
     truth.score,
     frameworkDepth.frameworks.length ? average(frameworkDepth.frameworks.map(row => row.score)) : 100,
     runtimePlan.totals.runtime_static_links > 0 ? 100 : 80,
+    casContract.score,
     agentTaskProof.score,
     semanticMap.files.length > 0 ? 100 : 0,
   ];
@@ -135,8 +139,8 @@ async function analyzeTarget(target: Target): Promise<TargetReport> {
   ].slice(0, 25);
   const status: GateStatus = truth.status === 'fail' || agentTaskProof.status === 'fail' || semanticMap.files.length === 0
     ? 'fail'
-    : frameworkDepth.status === 'fail' ? 'fail'
-      : gaps.length > 0 || score < 95 ? 'warn' : 'pass';
+    : frameworkDepth.status === 'fail' || casContract.status === 'fail' ? 'fail'
+      : truth.status === 'warn' || agentTaskProof.status === 'warn' || score < 95 ? 'warn' : 'pass';
 
   return {
     name: target.name,
@@ -147,6 +151,7 @@ async function analyzeTarget(target: Target): Promise<TargetReport> {
     truth,
     framework_depth: frameworkDepth,
     runtime_plan: runtimePlan,
+    cas_contract: casContract,
     agent_task_proof: agentTaskProof,
     semantic_map: {
       files: semanticMap.files.length,

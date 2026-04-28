@@ -14,11 +14,11 @@ This document maps public CAS concepts and related v1.8 analysis storage to the 
 | `progressive_levels` | `get_system_overview`, `get_level` | `overview` |
 | `configuration` | `get_system_overview` | `overview` |
 | `runtime` | `get_system_overview` | `overview` |
-| `runtime_static_links` | `get_system_overview` (count), `get_runtime_static_links`, `correlate_runtime_event`, `record_runtime_event` | |
+| `runtime_static_links` | `get_system_overview` (count), `get_runtime_static_links`, `correlate_runtime_event`, `record_runtime_event`, `validate_cas_contract` | `cas-contract` |
 | `analysis_facts` | `get_system_overview` (count), `get_analysis_facts` | |
 | `repository_links` | `get_system_overview`, `get_cross_repo_links` | `overview` |
 | `disclosure` | `get_system_overview` | `overview` |
-| `validation` | `get_system_overview` | `overview` |
+| `validation` | `get_system_overview`, `validate_cas_contract` | `overview`, `cas-contract` |
 | `analyzer_contributions` | `get_summary`, `get_system_overview` | `overview` |
 | `analysis_errors` | `get_summary`, `get_system_overview` | `health` |
 | `nodes` | `search_nodes`, `get_node`, `get_file_nodes` | |
@@ -66,7 +66,7 @@ This document maps public CAS concepts and related v1.8 analysis storage to the 
 | `index` | Internal (search optimization) | |
 | `change_history` storage | `get_changes_since`, `get_changes_between`, `get_changes_for_node`, `get_changes_for_file`, `get_changes_for_entry_point`, `get_change_summary`, `get_hot_spots` | |
 | `analysis_snapshots` storage | `get_analysis_at`, `get_analysis_snapshots` | |
-| `runtime_observations` storage | `record_runtime_event`, `get_runtime_observations` | |
+| `runtime_observations` storage | `record_runtime_event`, `get_runtime_observations`, `get_runtime_trace`, `validate_cas_contract` | `cas-contract` |
 | Answer packs | `list_answer_packs`, `run_answer_pack`, `get_mcp_demo_flow` | |
 | Agent default-use context | `get_agent_bootstrap`, `get_agent_start_context`, `get_agent_tool_plan`, `get_agent_work_packet`, `evaluate_agent_readiness` | `agent-bootstrap`, `agent-start`, `agent-readiness` |
 | Ground-truth analysis checks | `evaluate_analysis_truth` | |
@@ -75,11 +75,13 @@ This document maps public CAS concepts and related v1.8 analysis storage to the 
 | Cross-repository contracts | `get_cross_repo_contracts` | |
 | Runtime instrumentation plan | `get_runtime_instrumentation_plan`, `get_runtime_event_contract` | `runtime-event-contract` |
 | Agent task proof | `evaluate_agent_task_proof` | |
+| Storage health | `get_storage_health` | |
+| CAS golden-shape validation | `validate_cas_contract` | `cas-contract` |
 | `incremental_state` storage | Internal incremental analysis input | |
 | `file_cache` storage | Internal incremental analysis cache | |
 
 ## Coverage Status
 
-The MCP server exposes the public CAS concepts needed by UI and agent workflows, plus v1.8 change-history and snapshot queries. It also exposes product-level answer packs, cross-repository linking, contract views, runtime observation correlation, instrumentation plans, truth evaluation, semantic maps, and agent default-use readiness on top of CAS. Internal implementation artifacts such as `index`, `incremental_state`, and `file_cache` are intentionally not exposed directly.
+The MCP server exposes the public CAS concepts needed by UI and agent workflows, plus v1.8 change-history and snapshot queries. It also exposes product-level answer packs, cross-repository linking, contract views, runtime observation correlation and trace replay, instrumentation plans, truth evaluation, semantic maps, CAS contract validation, storage health, and agent default-use readiness on top of CAS. Internal implementation artifacts such as `index`, `incremental_state`, and `file_cache` are intentionally not exposed directly beyond aggregate storage health.
 
 When adding a new public CAS field, update this matrix and add a tool/resource entry if humans or agents need to query it.

@@ -15,6 +15,7 @@ dist/
 .unravl-analysis-gauntlet/
 .unravl-agent-benchmark/
 .unravl-contract-gauntlet/
+.unravl-vision-gauntlet/
 /CURRENT_STATE.md
 /MOAR_CONTEXT.md
 /PROJECT_PLAN.md

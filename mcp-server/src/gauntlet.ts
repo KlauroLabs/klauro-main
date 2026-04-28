@@ -131,6 +131,47 @@ const DEFAULT_TARGETS: Array<{ name: string; relativePath: string; expectation: 
       minNodes: 75,
       minEdges: 40
     }
+  },
+  {
+    name: 'soon-sync-root',
+    relativePath: 'soon-sync',
+    expectation: {
+      minNodes: 75,
+      minEdges: 40
+    }
+  },
+  {
+    name: 'soon-ui',
+    relativePath: 'soon/soon-ui',
+    expectation: {
+      minNodes: 75,
+      minEdges: 40,
+      requiredFrameworks: ['React']
+    }
+  },
+  {
+    name: 'soon-bos',
+    relativePath: 'soon/soon-bos',
+    expectation: {
+      minNodes: 75,
+      minEdges: 40
+    }
+  },
+  {
+    name: 'soundsync',
+    relativePath: 'SoundSync',
+    expectation: {
+      minNodes: 75,
+      minEdges: 40
+    }
+  },
+  {
+    name: 'soundsync-lower',
+    relativePath: 'soundsync',
+    expectation: {
+      minNodes: 75,
+      minEdges: 40
+    }
   }
 ];
 
@@ -194,6 +235,12 @@ async function discoverTargets(devRoot: string): Promise<RepoTarget[]> {
   for (const candidate of DEFAULT_TARGETS) {
     const repoPath = path.join(devRoot, candidate.relativePath);
     if (await fs.pathExists(repoPath)) {
+      if (!await repoHasAnalyzableSource(repoPath)) {
+        continue;
+      }
+      if (targets.some(target => path.resolve(target.path) === path.resolve(repoPath))) {
+        continue;
+      }
       targets.push({
         name: candidate.name,
         path: repoPath,
@@ -203,6 +250,34 @@ async function discoverTargets(devRoot: string): Promise<RepoTarget[]> {
   }
 
   return targets;
+}
+
+async function repoHasAnalyzableSource(repoPath: string): Promise<boolean> {
+  const matches = await glob([
+    '**/package.json',
+    '**/pyproject.toml',
+    '**/requirements.txt',
+    '**/Cargo.toml',
+    '**/go.mod',
+    '**/pom.xml',
+    '**/*.csproj',
+    '**/*.{ts,tsx,js,jsx,mjs,cjs,py,rs,go,java,cs,php,prisma}',
+  ], {
+    cwd: repoPath,
+    ignore: [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/build/**',
+      '**/.git/**',
+      '**/target/**',
+      '**/coverage/**',
+      '**/vendor/**',
+      '**/.next/**',
+    ],
+    nodir: true,
+  });
+
+  return matches.length > 0;
 }
 
 async function resolveExpectation(repoPath: string, expectation: RepoExpectation): Promise<RepoExpectation> {

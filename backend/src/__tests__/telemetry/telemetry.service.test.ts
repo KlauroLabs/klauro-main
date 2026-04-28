@@ -111,4 +111,48 @@ describe('TelemetryService runtime store', () => {
     expect(recent).toHaveLength(1);
     expect(recent[0].timestamp.getTime()).toBe(1700000000002);
   });
+
+  it('stores CAS runtime events with queryable correlation fields', async () => {
+    const service = createService();
+
+    await service.ingestRuntimeEvent({
+      projectId,
+      organizationId,
+      event: {
+        type: 'request',
+        timestamp: '2024-01-01T00:00:00.000Z',
+        entry_point_id: 'entry-users-index',
+        trace_id: 'trace-cas-1',
+        span_id: 'span-cas-1',
+        method: 'GET',
+        route: '/users',
+        duration_ms: 15,
+        status_code: 200,
+      },
+    });
+
+    const recent = await service.getRecentTelemetry(projectId, 1);
+
+    expect(recent).toHaveLength(1);
+    expect(recent[0].componentId).toBe('entry-users-index');
+    expect(recent[0].tags).toEqual(expect.arrayContaining(['cas-runtime', 'entry:entry-users-index']));
+    expect(recent[0].attributes).toMatchObject({
+      entryPointId: 'entry-users-index',
+      traceId: 'trace-cas-1',
+      route: '/users',
+    });
+  });
+
+  it('rejects CAS runtime events without correlation evidence', async () => {
+    const service = createService();
+
+    await expect(service.ingestRuntimeEvent({
+      projectId,
+      organizationId,
+      event: {
+        type: 'custom',
+        timestamp: '2024-01-01T00:00:00.000Z',
+      },
+    })).rejects.toThrow('Runtime event must include at least one CAS id, signal, route, path, or stack trace.');
+  });
 });

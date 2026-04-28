@@ -21,7 +21,7 @@ import { TelemetryService } from './services/telemetry.service';
 import { BackpressureManager } from './services/backpressure.service';
 import { MetricsCalculator } from './services/metrics-calculator.service';
 import { TelemetryMessage, TelemetryPayloadType } from './types/telemetry.types';
-import { TelemetryBatchDto } from './dto/telemetry.dto';
+import { CASRuntimeEventDto, TelemetryBatchDto } from './dto/telemetry.dto';
 
 @ApiTags('Telemetry')
 @Controller('api/telemetry')
@@ -116,6 +116,48 @@ export class TelemetryController {
     } catch (error: any) {
       this.logger.error(`Failed to process batch: ${error.message}`, error.stack);
       throw error;
+    }
+  }
+
+  @Post('runtime-events/:projectId')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({ summary: 'Ingest a CAS-correlatable runtime event' })
+  @ApiResponse({ status: 202, description: 'Runtime event accepted for processing' })
+  @ApiResponse({ status: 400, description: 'Invalid runtime event' })
+  async ingestRuntimeEvent(
+    @Param('projectId') projectId: string,
+    @Body(new ValidationPipe({ transform: true })) event: CASRuntimeEventDto,
+  ) {
+    try {
+      const rateLimitStatus = await this.telemetryService.getRateLimitStatus(projectId);
+      if (rateLimitStatus.remaining <= 0) {
+        throw new BadRequestException('Rate limit exceeded. Please retry later.');
+      }
+
+      const canProcess = await this.backpressureManager.checkBackpressure(projectId, 1);
+      if (!canProcess) {
+        return {
+          success: false,
+          message: 'System overloaded. Please retry later.',
+          retryAfter: 5000,
+        };
+      }
+
+      const result = await this.telemetryService.ingestRuntimeEvent({
+        projectId,
+        organizationId: event.environment || 'runtime',
+        event,
+      });
+
+      return {
+        success: true,
+        message: 'Runtime event accepted',
+        ...result,
+      };
+    } catch (error: any) {
+      this.logger.error(`Failed to ingest runtime event: ${error.message}`, error.stack);
+      if (error instanceof BadRequestException) throw error;
+      throw new BadRequestException(error.message);
     }
   }
 

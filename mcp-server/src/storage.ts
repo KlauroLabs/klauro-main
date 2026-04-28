@@ -18,6 +18,8 @@ const DEFAULT_STORAGE_PATH = path.join(
 );
 
 interface AnalysisIndex {
+  version?: string;
+  updated_at?: string;
   analyses: Record<string, AnalysisEntry>;
 }
 
@@ -69,7 +71,18 @@ async function loadIndex(): Promise<AnalysisIndex> {
 async function saveIndex(index: AnalysisIndex): Promise<void> {
   const storagePath = await ensureStorageDir();
   const indexPath = path.join(storagePath, 'index.json');
-  await fs.writeJson(indexPath, index, { spaces: 2 });
+  await writeJsonAtomic(indexPath, {
+    ...index,
+    version: '2.0.0',
+    updated_at: new Date().toISOString(),
+  });
+}
+
+async function writeJsonAtomic(filePath: string, value: unknown, options: { spaces?: number } = { spaces: 2 }): Promise<void> {
+  await fs.ensureDir(path.dirname(filePath));
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  await fs.writeJson(tmpPath, value, options);
+  await fs.move(tmpPath, filePath, { overwrite: true });
 }
 
 export async function saveAnalysis(projectPath: string, output: CASOutput): Promise<AnalysisEntry> {
@@ -78,7 +91,7 @@ export async function saveAnalysis(projectPath: string, output: CASOutput): Prom
   const fileName = `${slug}.json`;
   const filePath = path.join(storagePath, fileName);
 
-  await fs.writeJson(filePath, output);
+  await writeJsonAtomic(filePath, output);
 
   const frameworks = output.system.technologies?.frameworks?.map(f => f.name) || [];
 
@@ -150,7 +163,7 @@ export async function saveIncrementalState(
     ),
   };
 
-  await fs.writeJson(statePath, stateToSave, { spaces: 2 });
+  await writeJsonAtomic(statePath, stateToSave);
 }
 
 export async function loadIncrementalState(
@@ -208,7 +221,7 @@ export async function saveFileCache(
   await fs.ensureDir(cacheDir);
 
   const cachePath = path.join(cacheDir, `${contentHash}.json`);
-  await fs.writeJson(cachePath, result);
+  await writeJsonAtomic(cachePath, result, { spaces: 0 });
 }
 
 export async function loadFileCache(
@@ -298,7 +311,7 @@ export async function saveChangeHistoryEntry(
     history = history.slice(0, MAX_HISTORY_ENTRIES);
   }
 
-  await fs.writeJson(historyPath, history, { spaces: 2 });
+  await writeJsonAtomic(historyPath, history);
 }
 
 export async function loadChangeHistory(
@@ -408,7 +421,7 @@ export async function saveAnalysisSnapshot(
   const snapshotId = `snapshot-${encodeSnapshotTimestamp(timestamp)}`;
   const snapshotPath = path.join(snapshotsDir, `${snapshotId}.json`);
 
-  await fs.writeJson(snapshotPath, output);
+  await writeJsonAtomic(snapshotPath, output);
 
   await pruneOldSnapshots(snapshotsDir);
 
@@ -544,7 +557,7 @@ export async function saveRuntimeObservation(
     observations = observations.slice(0, MAX_RUNTIME_OBSERVATIONS);
   }
 
-  await fs.writeJson(observationsPath, observations, { spaces: 2 });
+  await writeJsonAtomic(observationsPath, observations);
 }
 
 export async function loadRuntimeObservations(
@@ -553,6 +566,8 @@ export async function loadRuntimeObservations(
     since?: string;
     type?: string;
     staticId?: string;
+    traceId?: string;
+    spanId?: string;
     limit?: number;
   }
 ): Promise<RuntimeObservation[]> {
@@ -586,6 +601,14 @@ export async function loadRuntimeObservations(
       );
     }
 
+    if (options?.traceId) {
+      observations = observations.filter(observation => observation.event.trace_id === options.traceId);
+    }
+
+    if (options?.spanId) {
+      observations = observations.filter(observation => observation.event.span_id === options.spanId || observation.event.parent_span_id === options.spanId);
+    }
+
     if (options?.limit && options.limit > 0) {
       observations = observations.slice(0, options.limit);
     }
@@ -594,4 +617,88 @@ export async function loadRuntimeObservations(
   } catch {
     return [];
   }
+}
+
+export async function loadRuntimeTrace(projectPath: string, traceId: string): Promise<{
+  trace_id: string;
+  observations: RuntimeObservation[];
+  matched: number;
+  unmatched: number;
+  static_ids: string[];
+}> {
+  const observations = await loadRuntimeObservations(projectPath, { traceId });
+  const staticIds = new Set<string>();
+  for (const observation of observations) {
+    for (const match of observation.correlation.matches) {
+      staticIds.add(match.id);
+    }
+    for (const id of [
+      observation.event.static_id,
+      observation.event.node_id,
+      observation.event.entry_point_id,
+      observation.event.exit_point_id,
+      observation.event.call_chain_id,
+    ]) {
+      if (id) staticIds.add(id);
+    }
+  }
+
+  return {
+    trace_id: traceId,
+    observations,
+    matched: observations.filter(observation => observation.correlation.status !== 'unmatched').length,
+    unmatched: observations.filter(observation => observation.correlation.status === 'unmatched').length,
+    static_ids: Array.from(staticIds).sort(),
+  };
+}
+
+export async function getStorageHealth(projectPath?: string): Promise<{
+  storage_path: string;
+  index_version?: string;
+  analyses: number;
+  projects: Array<{
+    path: string;
+    name: string;
+    analyzed_at: string;
+    node_count: number;
+    edge_count: number;
+    snapshots: number;
+    change_history_entries: number;
+    runtime_observations: number;
+    file_cache: { files: number; bytes: number };
+  }>;
+}> {
+  const storagePath = await ensureStorageDir();
+  const index = await loadIndex();
+  const entries = Object.entries(index.analyses)
+    .filter(([entryPath]) => !projectPath || path.resolve(entryPath) === path.resolve(projectPath));
+  const projects = [];
+
+  for (const [entryPath, entry] of entries) {
+    const [snapshots, history, runtimeObservations, fileCache] = await Promise.all([
+      listAnalysisSnapshots(entryPath),
+      loadChangeHistory(entryPath),
+      loadRuntimeObservations(entryPath),
+      getFileCacheSize(entryPath),
+    ]);
+
+    projects.push({
+      path: entryPath,
+      name: entry.name,
+      analyzed_at: entry.analyzed_at,
+      node_count: entry.node_count,
+      edge_count: entry.edge_count,
+      snapshots: snapshots.length,
+      change_history_entries: history.length,
+      runtime_observations: runtimeObservations.length,
+      file_cache: fileCache,
+    });
+  }
+
+  return {
+    storage_path: storagePath,
+    index_version: index.version,
+    analyses: Object.keys(index.analyses).length,
+    projects,
+  };
 }
