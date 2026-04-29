@@ -141,6 +141,8 @@ interface CASOutput {
   change_risk_summary?: CASChangeRiskSummary;   // Added in v1.7.0
   data_entities?: CASDataEntity[];              // Added in v1.7.0
   data_summary?: CASDataSummary;                // Added in v1.7.0
+  behavioral_invariants?: CASBehavioralInvariant[];           // Added in v1.8.0
+  behavioral_invariant_summary?: CASBehavioralInvariantSummary; // Added in v1.8.0
   security_boundaries?: CASSecurityBoundary[];  // Added in v1.7.0
   security_contexts?: CASSecurityContext[];     // Added in v1.7.0
   security_summary?: CASSecuritySummary;        // Added in v1.7.0
@@ -1331,6 +1333,49 @@ interface CASDataSummary {
     entity_id: string;
     missing_validation: string;
   }>;
+}
+```
+
+#### CASBehavioralInvariant
+Behavior-level rules that must stay true across code, schema, tests, and security boundaries:
+
+```typescript
+interface CASBehavioralInvariant {
+  id: string;
+  name: string;
+  invariant_type: 'tenant-scope' | 'auth-boundary' | 'authorization' |
+                  'db-constraint' | 'migration-contract' | 'test-coverage' |
+                  'data-lifecycle' | 'business-rule';
+  description: string;
+  scope: {
+    node_ids?: string[];
+    entry_point_ids?: string[];
+    entity_names?: string[];
+    field_names?: string[];
+    file_paths?: string[];
+  };
+  enforcement: Array<{
+    source: 'code' | 'decorator' | 'database-schema' | 'migration' |
+            'test' | 'configuration' | 'security-boundary' | 'naming';
+    mechanism: string;
+    confidence: 'enforced' | 'inferred' | 'missing';
+    node_id?: string;
+    file?: string;
+    line?: number;
+  }>;
+  evidence: Array<{
+    source: 'node' | 'entry_point' | 'database_schema' | 'security_boundary' |
+            'test_suite' | 'migration_file' | 'source_file';
+    id?: string;
+    file?: string;
+    line?: number;
+    excerpt?: string;
+  }>;
+  related_tests?: string[];
+  related_boundaries?: string[];
+  related_entities?: string[];
+  gaps?: string[];
+  confidence: 'high' | 'medium' | 'low';
 }
 ```
 

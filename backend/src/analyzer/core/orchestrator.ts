@@ -22,6 +22,8 @@ import {
   CASChangeRiskSummary,
   CASDataEntity,
   CASDataSummary,
+  CASBehavioralInvariant,
+  CASBehavioralInvariantSummary,
   CASSecurityBoundary,
   CASSecuritySummary,
   CASFlowCoverage,
@@ -37,6 +39,7 @@ import {
   EnhancedSystemPurpose,
   CASFlowGraph,
   CASTestSuite,
+  CASTestCase,
   CASMock,
   CASFixture,
   CASTestSummary,
@@ -179,8 +182,7 @@ export class AnalyzerOrchestrator {
     const detectedAnalyzers = await this.detectAnalyzers(projectPath);
     logTiming('detectAnalyzers', phaseStart);
     const context: AnalysisContext = {
-      projectPath,
-      filters: ['**/src/analyzer/**', '**/analyzer/**', '**/analyzers/**']
+      projectPath
     };
 
     const allNodes: CASNode[] = [];
@@ -365,7 +367,7 @@ export class AnalyzerOrchestrator {
     phaseStart = Date.now();
     const architectureSummary = this.buildArchitectureSummary(allNodes, allEntryPoints, allExitPoints, contributions);
     const routeTable = this.buildRouteTable(allEntryPoints);
-    const databaseSchema = this.buildDatabaseSchema(allNodes, allLibraries);
+    const databaseSchema = this.buildDatabaseSchema(allNodes, allLibraries, projectPath);
     const externalServices = this.buildExternalServices(allNodes, allExitPoints, allLibraries);
     logTiming('pp_architecture', phaseStart);
 
@@ -490,10 +492,12 @@ export class AnalyzerOrchestrator {
     logTiming('pp_finalMetadata', phaseStart);
 
     phaseStart = Date.now();
-    const testSuites = this.buildTestSuites(allNodes, allEntryPoints);
+    const testSuites = this.buildTestSuites(allNodes, allEntryPoints, projectPath);
     const mocks = this.buildMocks(allNodes);
     const fixtures = this.buildFixtures(allNodes);
     const testSummary = this.buildTestSummary(allNodes, allEntryPoints);
+    const behavioralInvariants = this.buildBehavioralInvariants(allNodes, allEdges, allEntryPoints, databaseSchema, dataEntities, securityBoundaries, testSuites, projectPath);
+    const behavioralInvariantSummary = this.buildBehavioralInvariantSummary(behavioralInvariants);
     logTiming('pp_testData', phaseStart);
 
     phaseStart = Date.now();
@@ -553,6 +557,8 @@ export class AnalyzerOrchestrator {
       change_risk_summary: changeRiskSummary,
       data_entities: dataEntities.length > 0 ? dataEntities : undefined,
       data_summary: dataSummary,
+      behavioral_invariants: behavioralInvariants.length > 0 ? behavioralInvariants : undefined,
+      behavioral_invariant_summary: behavioralInvariants.length > 0 ? behavioralInvariantSummary : undefined,
       security_boundaries: securityBoundaries.length > 0 ? securityBoundaries : undefined,
       security_summary: securitySummary,
       flow_coverage: flowCoverage.length > 0 ? flowCoverage : undefined,
@@ -796,7 +802,7 @@ export class AnalyzerOrchestrator {
       nodes, entryPoints, exitPoints, previousOutput.analyzer_contributions
     );
     const routeTable = this.buildRouteTable(entryPoints);
-    const databaseSchema = this.buildDatabaseSchema(nodes, libraries);
+    const databaseSchema = this.buildDatabaseSchema(nodes, libraries, projectPath);
     const externalServices = this.buildExternalServices(nodes, exitPoints, libraries);
 
     const detectedPatterns = this.detectPatterns(nodes, edges);
@@ -810,6 +816,9 @@ export class AnalyzerOrchestrator {
     const securitySummary = this.buildSecuritySummary(securityBoundaries, nodes);
     const temporalStability = this.buildTemporalStability(nodes, gitAnalyzer);
     const stabilitySummary = this.buildStabilitySummary(temporalStability);
+    const testSuites = this.buildTestSuites(nodes, entryPoints, projectPath);
+    const behavioralInvariants = this.buildBehavioralInvariants(nodes, edges, entryPoints, databaseSchema, dataEntities, securityBoundaries, testSuites, projectPath);
+    const behavioralInvariantSummary = this.buildBehavioralInvariantSummary(behavioralInvariants);
 
     const systemCapabilities = this.buildSystemCapabilities(entryPoints, dataEntities, nodes, edges);
     const systemPurpose = this.inferSystemPurpose(entryPoints, dataEntities, systemCapabilities, nodes);
@@ -889,6 +898,8 @@ export class AnalyzerOrchestrator {
       change_risk_summary: changeRiskSummary,
       data_entities: dataEntities.length > 0 ? dataEntities : undefined,
       data_summary: dataSummary,
+      behavioral_invariants: behavioralInvariants.length > 0 ? behavioralInvariants : undefined,
+      behavioral_invariant_summary: behavioralInvariants.length > 0 ? behavioralInvariantSummary : undefined,
       security_boundaries: securityBoundaries.length > 0 ? securityBoundaries : undefined,
       security_summary: securitySummary,
       temporal_stability: temporalStability.length > 0 ? temporalStability : undefined,
@@ -906,7 +917,8 @@ export class AnalyzerOrchestrator {
       runtime,
       runtime_static_links: runtimeStaticLinks.length > 0 ? runtimeStaticLinks : undefined,
       analysis_facts: analysisFacts.length > 0 ? analysisFacts : undefined,
-      validation
+      validation,
+      test_suites: testSuites
     };
   }
 
@@ -2159,7 +2171,7 @@ export class AnalyzerOrchestrator {
     });
   }
 
-  private buildDatabaseSchema(nodes: CASNode[], libraries: any[]): CASDatabaseSchema {
+  private buildDatabaseSchema(nodes: CASNode[], libraries: any[], projectPath?: string): CASDatabaseSchema {
     const entities: CASDatabaseEntity[] = [];
     const relationships: string[] = [];
 
@@ -2195,15 +2207,17 @@ export class AnalyzerOrchestrator {
       const fields: CASDatabaseEntity['fields'] = [];
       const entityRelationships: CASDatabaseEntity['relationships'] = [];
 
-      const propertyNodes = nodes.filter(n =>
-        n.parent === entityNode.id &&
-        (n.type === 'property' || n.type === 'field' || n.type === 'attribute' || n.type === 'variable')
-      );
+      const propertyNodes = this.entityPropertyNodes(nodes, entityNode);
 
       propertyNodes.forEach(prop => {
-        const annotations = prop.metadata?.annotations || [];
+        const annotations = [
+          ...(prop.metadata?.annotations || []),
+          ...this.sourceDecoratorsForNode(projectPath, prop),
+        ];
         const isPrimary = annotations.some(a => a.includes('PrimaryKey') || a.includes('PrimaryGeneratedColumn'));
         const isUnique = annotations.some(a => a.includes('Unique'));
+        const nullable = this.decoratorOptionBoolean(annotations, 'nullable');
+        const defaultValue = this.decoratorOptionValue(annotations, 'default');
 
         let relationType: string | undefined;
         let relTarget: string | undefined;
@@ -2234,7 +2248,9 @@ export class AnalyzerOrchestrator {
             name: prop.name,
             type: prop.signature?.return_type || 'unknown',
             primary: isPrimary,
-            unique: isUnique
+            unique: isUnique,
+            nullable,
+            default: defaultValue
           });
         }
       });
@@ -2253,6 +2269,80 @@ export class AnalyzerOrchestrator {
       entities,
       relationships_summary: [...new Set(relationships)]
     };
+  }
+
+  private entityPropertyNodes(nodes: CASNode[], entityNode: CASNode): CASNode[] {
+    return nodes.filter(n =>
+      (n.type === 'property' || n.type === 'field' || n.type === 'attribute' || n.type === 'variable') &&
+      (
+        n.parent === entityNode.id ||
+        (n.source?.file && entityNode.source?.file && this.sourceFilesCompatible(n.source.file, entityNode.source.file) && n.id.includes(entityNode.id))
+      )
+    );
+  }
+
+  private sourceFilesCompatible(left: string, right: string): boolean {
+    const normalizedLeft = left.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+    const normalizedRight = right.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+    return normalizedLeft === normalizedRight || normalizedLeft.endsWith(`/${normalizedRight}`) || normalizedRight.endsWith(`/${normalizedLeft}`);
+  }
+
+  private sourceDecoratorsForNode(projectPath: string | undefined, node: CASNode): string[] {
+    if (!projectPath || !node.source?.file || !node.source.line) return [];
+    const filePath = path.isAbsolute(node.source.file)
+      ? node.source.file
+      : path.join(projectPath, node.source.file);
+    if (!fs.existsSync(filePath)) return [];
+    try {
+      const lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/);
+      const decorators: string[] = [];
+      const propertyIndex = this.sourceDeclarationLine(lines, node);
+      for (let index = Math.max(0, propertyIndex - 1); index >= 0; index--) {
+        const line = lines[index]?.trim() || '';
+        if (!line) {
+          if (decorators.length > 0) break;
+          continue;
+        }
+        if (line.startsWith('@')) {
+          decorators.unshift(line);
+          continue;
+        }
+        if (line.startsWith('})') || line.startsWith(')')) {
+          decorators.unshift(line);
+          continue;
+        }
+        if (/^[A-Za-z0-9_]+:/.test(line) || line === '{' || line === '})' || line.endsWith(',')) {
+          decorators.unshift(line);
+          continue;
+        }
+        break;
+      }
+      return decorators;
+    } catch {
+      return [];
+    }
+  }
+
+  private sourceDeclarationLine(lines: string[], node: CASNode): number {
+    const start = Math.max(0, (node.source?.line || 1) - 1);
+    const pattern = new RegExp(`\\b${node.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+    for (let index = start; index < Math.min(lines.length, start + 12); index++) {
+      const line = lines[index] || '';
+      if (!line.trim().startsWith('@') && pattern.test(line)) return index;
+    }
+    return start;
+  }
+
+  private decoratorOptionBoolean(annotations: string[], option: string): boolean | undefined {
+    const text = annotations.join(' ');
+    const match = text.match(new RegExp(`${option}\\s*:\\s*(true|false)`));
+    return match ? match[1] === 'true' : undefined;
+  }
+
+  private decoratorOptionValue(annotations: string[], option: string): string | undefined {
+    const text = annotations.join(' ');
+    const match = text.match(new RegExp(`${option}\\s*:\\s*([^,})]+)`));
+    return match?.[1]?.trim();
   }
 
   private buildExternalServices(
@@ -3517,10 +3607,7 @@ export class AnalyzerOrchestrator {
         validation?: string[];
       }> = [];
 
-      const propertyNodes = nodes.filter(n =>
-        n.parent === entityNode.id &&
-        (n.type === 'property' || n.type === 'field' || n.type === 'attribute')
-      );
+      const propertyNodes = this.entityPropertyNodes(nodes, entityNode);
 
       const sensitivePatterns = [
         'password', 'secret', 'token', 'key', 'credential',
@@ -3600,6 +3687,431 @@ export class AnalyzerOrchestrator {
       sensitive_data_nodes: [...new Set(sensitiveDataNodes)],
       validation_gaps: []
     };
+  }
+
+  private buildBehavioralInvariants(
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[],
+    databaseSchema: CASDatabaseSchema,
+    dataEntities: CASDataEntity[],
+    securityBoundaries: CASSecurityBoundary[],
+    testSuites: CASTestSuite[],
+    projectPath: string
+  ): CASBehavioralInvariant[] {
+    const invariants: CASBehavioralInvariant[] = [];
+    const migrationFiles = this.detectMigrationFiles(nodes, projectPath);
+
+    for (const entity of this.scopedEntities(databaseSchema, dataEntities)) {
+      const scopeFields = entity.fields.filter(field => this.isScopeField(field.name));
+      const uniqueFields = entity.fields.filter(field => field.unique && !this.isScopeField(field.name));
+      const relatedNodes = this.nodesRelatedToEntity(nodes, entity.name);
+      const scopedCodeNodes = relatedNodes.filter(node => this.nodeText(node).match(/\b(tenant|organization|organisation|org|workspace|account|company)id\b/i));
+      const relatedTests = this.testsRelatedToInvariant(testSuites, [
+        entity.name,
+        ...scopeFields.map(field => field.name),
+        ...uniqueFields.map(field => field.name),
+      ]);
+      const gaps = [
+        ...(scopedCodeNodes.length === 0 ? [`No code enforcement found for ${entity.name} tenant/organization scope.`] : []),
+        ...uniqueFields.map(field => `Unique field ${field.name} appears on tenant-scoped entity ${entity.name}; verify a composite unique constraint or service preflight includes ${scopeFields.map(scope => scope.name).join(', ')}.`),
+        ...(relatedTests.length === 0 ? [`No tests found that mention ${entity.name} scope or uniqueness.`] : []),
+      ];
+
+      invariants.push({
+        id: `invariant_tenant_scope_${this.slugForId(entity.name)}`,
+        name: `${entity.name} tenant/organization scope`,
+        invariant_type: 'tenant-scope',
+        description: `${entity.name} records appear scoped by ${scopeFields.map(field => field.name).join(', ')}, so reads and uniqueness checks should preserve that scope.`,
+        scope: {
+          entity_names: [entity.name],
+          field_names: [...scopeFields.map(field => field.name), ...uniqueFields.map(field => field.name)],
+          node_ids: relatedNodes.map(node => node.id).slice(0, 30),
+          file_paths: [...new Set([entity.source_file, ...relatedNodes.map(node => node.source?.file)].filter((file): file is string => Boolean(file)))],
+        },
+        enforcement: [
+          ...scopeFields.map(field => ({
+            source: 'database-schema' as const,
+            mechanism: `${field.name} scopes ${entity.name}`,
+            confidence: 'inferred' as const,
+            file: entity.source_file,
+          })),
+          ...scopedCodeNodes.slice(0, 12).map(node => ({
+            source: 'code' as const,
+            mechanism: `${node.name} references tenant/organization scope`,
+            confidence: 'inferred' as const,
+            node_id: node.id,
+            file: node.source?.file,
+            line: node.source?.line,
+          })),
+        ],
+        evidence: [
+          ...scopeFields.map(field => ({
+            source: 'database_schema' as const,
+            id: `${entity.name}.${field.name}`,
+            file: entity.source_file,
+          })),
+          ...scopedCodeNodes.slice(0, 8).map(node => ({
+            source: 'node' as const,
+            id: node.id,
+            file: node.source?.file,
+            line: node.source?.line,
+          })),
+        ],
+        related_tests: relatedTests,
+        related_entities: [entity.name],
+        gaps,
+        confidence: scopedCodeNodes.length > 0 && gaps.length <= uniqueFields.length ? 'medium' : 'low',
+      });
+    }
+
+    for (const entity of databaseSchema.entities || []) {
+      for (const field of entity.fields || []) {
+        if (!field.primary && !field.unique && field.nullable === undefined && field.default === undefined) continue;
+        const mechanisms = [
+          field.primary ? 'primary key' : '',
+          field.unique ? 'unique' : '',
+          field.nullable === false ? 'not nullable' : '',
+          field.default ? `default ${field.default}` : '',
+        ].filter(Boolean);
+        invariants.push({
+          id: `invariant_db_constraint_${this.slugForId(entity.name)}_${this.slugForId(field.name)}`,
+          name: `${entity.name}.${field.name} database constraint`,
+          invariant_type: 'db-constraint',
+          description: `${entity.name}.${field.name} has database/ORM constraint semantics: ${mechanisms.join(', ')}.`,
+          scope: {
+            entity_names: [entity.name],
+            field_names: [field.name],
+            file_paths: entity.source_file ? [entity.source_file] : undefined,
+          },
+          enforcement: [{
+            source: 'database-schema',
+            mechanism: mechanisms.join(', '),
+            confidence: 'enforced',
+            file: entity.source_file,
+          }],
+          evidence: [{
+            source: 'database_schema',
+            id: `${entity.name}.${field.name}`,
+            file: entity.source_file,
+          }],
+          related_tests: this.testsRelatedToInvariant(testSuites, [entity.name, field.name]),
+          related_entities: [entity.name],
+          confidence: 'high',
+        });
+      }
+    }
+
+    for (const boundary of securityBoundaries) {
+      invariants.push({
+        id: `invariant_security_${this.slugForId(boundary.id)}`,
+        name: boundary.name,
+        invariant_type: boundary.boundary_type === 'authorization' ? 'authorization' : 'auth-boundary',
+        description: `${boundary.name} moves trust from ${boundary.trust_transition.from_trust_level} to ${boundary.trust_transition.to_trust_level}.`,
+        scope: {
+          node_ids: boundary.enforcement_points.map(point => point.node_id).filter(id => id !== 'entry_point_security'),
+          entry_point_ids: entryPoints
+            .filter(entry => boundary.sensitive_operations.includes(entry.source_node))
+            .map(entry => entry.id),
+        },
+        enforcement: boundary.enforcement_points.map(point => ({
+          source: 'security-boundary',
+          mechanism: point.mechanism,
+          confidence: point.confidence === 'enforced' ? 'enforced' : point.confidence === 'missing' ? 'missing' : 'inferred',
+          node_id: point.node_id === 'entry_point_security' ? undefined : point.node_id,
+        })),
+        evidence: boundary.enforcement_points.map(point => ({
+          source: 'security_boundary' as const,
+          id: boundary.id,
+          file: this.nodeFile(nodes, point.node_id),
+          line: this.nodeLine(nodes, point.node_id),
+        })),
+        related_boundaries: [boundary.id],
+        gaps: boundary.bypass_risks,
+        confidence: boundary.enforcement_points.some(point => point.confidence === 'enforced') ? 'high' : 'medium',
+      });
+    }
+
+    if ((databaseSchema.entities || []).length > 0) {
+      invariants.push({
+        id: 'invariant_database_migrations',
+        name: 'Database schema changes use migrations',
+        invariant_type: 'migration-contract',
+        description: 'Database shape is represented by ORM schema and should be changed through migration files.',
+        scope: {
+          entity_names: (databaseSchema.entities || []).map(entity => entity.name),
+          file_paths: migrationFiles,
+        },
+        enforcement: migrationFiles.length > 0
+          ? migrationFiles.slice(0, 20).map(file => ({
+            source: 'migration' as const,
+            mechanism: 'Migration file present',
+            confidence: 'enforced' as const,
+            file,
+          }))
+          : [{
+            source: 'migration' as const,
+            mechanism: 'No migration files detected for database schema',
+            confidence: 'missing' as const,
+          }],
+        evidence: migrationFiles.slice(0, 20).map(file => ({
+          source: 'migration_file' as const,
+          file,
+        })),
+        gaps: migrationFiles.length === 0 ? ['Database schema exists but no migration files were detected.'] : undefined,
+        confidence: migrationFiles.length > 0 ? 'high' : 'low',
+      });
+    }
+
+    const coveredNodeIds = new Set<string>();
+    for (const suite of testSuites) {
+      for (const nodeId of suite.coverage?.nodes_tested || []) coveredNodeIds.add(nodeId);
+      for (const test of suite.tests || []) {
+        for (const nodeId of test.targets || []) coveredNodeIds.add(nodeId);
+      }
+    }
+    const behaviorNodes = nodes.filter(node => this.isBehaviorNode(node));
+    if (behaviorNodes.length > 0 || testSuites.length > 0) {
+      const untested = behaviorNodes.filter(node => !coveredNodeIds.has(node.id)).slice(0, 20);
+      invariants.push({
+        id: 'invariant_behavior_test_coverage',
+        name: 'Behavioral code has test coverage evidence',
+        invariant_type: 'test-coverage',
+        description: 'Controllers, services, repositories, guards, and handlers should have direct or related test evidence.',
+        scope: {
+          node_ids: behaviorNodes.slice(0, 50).map(node => node.id),
+          file_paths: testSuites.slice(0, 20).map(suite => suite.file_path),
+        },
+        enforcement: testSuites.slice(0, 20).map(suite => ({
+          source: 'test' as const,
+          mechanism: `${suite.framework} ${suite.test_type} suite ${suite.name}`,
+          confidence: 'enforced' as const,
+          file: suite.file_path,
+        })),
+        evidence: testSuites.slice(0, 20).map(suite => ({
+          source: 'test_suite' as const,
+          id: suite.id,
+          file: suite.file_path,
+        })),
+        related_tests: testSuites.slice(0, 20).map(suite => suite.file_path),
+        gaps: untested.length > 0 ? untested.map(node => `${node.name} has no direct test coverage evidence.`) : undefined,
+        confidence: testSuites.length > 0 ? 'medium' : 'low',
+      });
+    }
+
+    return this.dedupeBehavioralInvariants(invariants);
+  }
+
+  private buildBehavioralInvariantSummary(invariants: CASBehavioralInvariant[]): CASBehavioralInvariantSummary {
+    const byType: Record<string, number> = {};
+    const byConfidence: Record<string, number> = {};
+    let enforced = 0;
+    let inferred = 0;
+    let missing = 0;
+
+    for (const invariant of invariants) {
+      byType[invariant.invariant_type] = (byType[invariant.invariant_type] || 0) + 1;
+      byConfidence[invariant.confidence] = (byConfidence[invariant.confidence] || 0) + 1;
+      for (const enforcement of invariant.enforcement) {
+        if (enforcement.confidence === 'enforced') enforced++;
+        else if (enforcement.confidence === 'missing') missing++;
+        else inferred++;
+      }
+    }
+
+    return {
+      total: invariants.length,
+      by_type: byType,
+      by_confidence: byConfidence,
+      enforced,
+      inferred,
+      missing,
+      gaps: invariants.flatMap(invariant => (invariant.gaps || []).map(gap => ({
+        invariant_id: invariant.id,
+        gap,
+        severity: this.invariantGapSeverity(invariant, gap),
+      }))),
+    };
+  }
+
+  private scopedEntities(databaseSchema: CASDatabaseSchema, dataEntities: CASDataEntity[]) {
+    const byName = new Map<string, {
+      name: string;
+      source_file?: string;
+      fields: Array<{ name: string; unique?: boolean; primary?: boolean }>;
+    }>();
+
+    for (const entity of databaseSchema.entities || []) {
+      byName.set(entity.name, {
+        name: entity.name,
+        source_file: entity.source_file,
+        fields: [
+          ...(entity.fields || []).map(field => ({
+            name: field.name,
+            unique: field.unique,
+            primary: field.primary,
+          })),
+          ...(entity.relationships || []).map(relationship => ({
+            name: relationship.field,
+          })),
+        ],
+      });
+    }
+
+    for (const entity of dataEntities || []) {
+      const existing = byName.get(entity.name) || {
+        name: entity.name,
+        source_file: entity.schema_source,
+        fields: [],
+      };
+      existing.fields = [
+        ...existing.fields,
+        ...((entity.fields || []).map(field => ({ name: field.name }))),
+      ];
+      byName.set(entity.name, existing);
+    }
+
+    return [...byName.values()]
+      .map(entity => ({
+        ...entity,
+        fields: this.uniqueFields(entity.fields),
+      }))
+      .filter(entity => entity.fields.some(field => this.isScopeField(field.name)));
+  }
+
+  private uniqueFields(fields: Array<{ name: string; unique?: boolean; primary?: boolean }>) {
+    const byName = new Map<string, { name: string; unique?: boolean; primary?: boolean }>();
+    for (const field of fields) {
+      const key = field.name.toLowerCase();
+      const existing = byName.get(key);
+      byName.set(key, {
+        name: existing?.name || field.name,
+        unique: Boolean(existing?.unique || field.unique),
+        primary: Boolean(existing?.primary || field.primary),
+      });
+    }
+    return [...byName.values()];
+  }
+
+  private isScopeField(name: string): boolean {
+    return /^(tenant|tenantid|tenant_id|organization|organizationid|organization_id|organisation|orgid|org_id|workspace|workspaceid|workspace_id|account|accountid|account_id|company|companyid|company_id)$/i.test(name);
+  }
+
+  private nodesRelatedToEntity(nodes: CASNode[], entityName: string): CASNode[] {
+    const entitySlug = entityName.toLowerCase();
+    return nodes.filter(node => {
+      const nameText = [
+        node.name,
+        node.qualified_name,
+        node.type,
+        ...(node.tags || []),
+        ...(node.subcategories || []),
+      ].filter(Boolean).join(' ').toLowerCase();
+      const file = (node.source?.file || '').replace(/\\/g, '/').toLowerCase();
+      const fileBase = file.split('/').pop() || '';
+      const fileSegments = file.split('/').filter(Boolean);
+      const exactName = new RegExp(`(^|[^a-z0-9])${entitySlug}([^a-z0-9]|$)`).test(nameText);
+      const entityDirectory = fileSegments.includes(entitySlug);
+      const entityFile = fileBase === `${entitySlug}.ts` ||
+        fileBase === `${entitySlug}.js` ||
+        fileBase === `${entitySlug}.entity.ts` ||
+        fileBase === `${entitySlug}.model.ts` ||
+        fileBase.startsWith(`${entitySlug}.`) ||
+        fileBase.startsWith(`${entitySlug}-`) ||
+        fileBase.startsWith(`${entitySlug}_`);
+      const pluralDirectory = entitySlug.length > 4 && fileSegments.includes(`${entitySlug}s`);
+      return exactName || entityDirectory || entityFile || pluralDirectory;
+    });
+  }
+
+  private testsRelatedToInvariant(testSuites: CASTestSuite[], keywords: string[]): string[] {
+    const terms = keywords.map(keyword => keyword.toLowerCase()).filter(Boolean);
+    return [...new Set(testSuites
+      .filter(suite => {
+        const text = [
+          suite.name,
+          suite.file_path,
+          ...(suite.tests || []).map(test => test.name),
+          ...(suite.tests || []).flatMap(test => test.assertions?.map(assertion => assertion.description || assertion.target || '') || []),
+        ].join(' ').toLowerCase();
+        return terms.some(term => text.includes(term));
+      })
+      .map(suite => suite.file_path))];
+  }
+
+  private detectMigrationFiles(nodes: CASNode[], projectPath: string): string[] {
+    const fromNodes = nodes
+      .map(node => node.source?.file)
+      .filter((file): file is string => Boolean(file))
+      .filter(file => this.isMigrationFile(file));
+    const fromDisk = [
+      'migrations/**/*',
+      'migration/**/*',
+      'database/migrations/**/*',
+      'prisma/migrations/**/*',
+      'db/migrations/**/*',
+      'src/migrations/**/*',
+    ].flatMap(pattern => {
+      try {
+        return glob.sync(pattern, {
+          cwd: projectPath,
+          nodir: true,
+          ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**'],
+        });
+      } catch {
+        return [];
+      }
+    });
+    return [...new Set([...fromNodes, ...fromDisk].map(file => file.replace(/\\/g, '/')))].slice(0, 100);
+  }
+
+  private isMigrationFile(file: string): boolean {
+    const lower = file.toLowerCase();
+    return lower.includes('/migrations/') ||
+      lower.includes('/migration/') ||
+      lower.includes('prisma/migrations') ||
+      /(^|\/)\d{8,}.*\.(ts|js|sql|php|py)$/.test(lower);
+  }
+
+  private isBehaviorNode(node: CASNode): boolean {
+    if (node.source?.file && this.isMigrationFile(node.source.file)) return false;
+    if (node.name === 'constructor' || node.name === 'up' || node.name === 'down') return false;
+    return ['controller', 'service', 'repository', 'guard', 'middleware', 'handler', 'resolver', 'gateway'].includes(node.type) ||
+      Boolean(node.subcategories?.some(category => ['controller', 'service', 'repository', 'guard', 'middleware'].includes(category)));
+  }
+
+  private nodeText(node: CASNode): string {
+    return [
+      node.id,
+      node.name,
+      node.qualified_name,
+      node.type,
+      node.category,
+      node.source?.file,
+      node.signature?.return_type,
+      ...(node.tags || []),
+      ...(node.subcategories || []),
+      ...(node.metadata?.annotations || []),
+      ...Object.values((node.metadata?.attributes || {}) as Record<string, any>).map(value => String(value)),
+    ].filter(Boolean).join(' ').toLowerCase();
+  }
+
+  private dedupeBehavioralInvariants(invariants: CASBehavioralInvariant[]): CASBehavioralInvariant[] {
+    const seen = new Set<string>();
+    const unique: CASBehavioralInvariant[] = [];
+    for (const invariant of invariants) {
+      if (seen.has(invariant.id)) continue;
+      seen.add(invariant.id);
+      unique.push(invariant);
+    }
+    return unique;
+  }
+
+  private invariantGapSeverity(invariant: CASBehavioralInvariant, gap: string): 'high' | 'medium' | 'low' {
+    if (invariant.invariant_type === 'tenant-scope' && gap.toLowerCase().includes('unique')) return 'high';
+    if (invariant.invariant_type === 'auth-boundary' || invariant.invariant_type === 'authorization') return 'high';
+    if (invariant.invariant_type === 'migration-contract') return 'medium';
+    return 'low';
   }
 
   private buildSecurityBoundaries(nodes: CASNode[], entryPoints: CASEntryPoint[]): CASSecurityBoundary[] {
@@ -5010,7 +5522,7 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  private buildTestSuites(nodes: CASNode[], entryPoints: CASEntryPoint[]): CASTestSuite[] {
+  private buildTestSuites(nodes: CASNode[], entryPoints: CASEntryPoint[], projectPath: string): CASTestSuite[] {
     const testSuites: CASTestSuite[] = [];
     const addedSuiteIds = new Set<string>();
 
@@ -5195,15 +5707,7 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    const testFiles = nodes.filter(n =>
-      n.type === 'file' &&
-      (n.name.endsWith('.spec.ts') || n.name.endsWith('.spec.js') ||
-       n.name.endsWith('.test.ts') || n.name.endsWith('.test.js') ||
-       n.name.endsWith('.test.tsx') || n.name.endsWith('.spec.tsx') ||
-       n.name.startsWith('test_') || n.name.endsWith('_test.py') ||
-       n.name.endsWith('_test.go') || n.name.endsWith('Test.java') ||
-       n.name.endsWith('Tests.cs') || n.name.endsWith('Test.cs'))
-    );
+    const testFiles = nodes.filter(n => n.type === 'file' && this.isTestFileNode(n));
 
     const suiteFiles = new Set(testSuites.map(s => s.file_path));
 
@@ -5218,8 +5722,26 @@ export class AnalyzerOrchestrator {
         (n.name.startsWith('test') || n.name.startsWith('it') ||
          n.name.startsWith('should') || n.name.startsWith('Test'))
       );
+      const inferredTests = childTests.length > 0
+        ? childTests.map(m => ({
+          id: `test_${m.id}`,
+          name: m.name,
+          description: m.description,
+          test_type: this.inferTestType(testFile),
+          status: {
+            skipped: false,
+            focused: false,
+            flaky: false
+          },
+          source: m.source?.file && m.source?.line ? {
+            file: m.source.file,
+            line: m.source.line,
+            end_line: m.source.end_line
+          } : undefined
+        }))
+        : this.extractTestCasesFromFile(projectPath, testFile);
 
-      if (childTests.length > 0) {
+      if (inferredTests.length > 0) {
         addedSuiteIds.add(fileId);
         testSuites.push({
           id: fileId,
@@ -5227,27 +5749,140 @@ export class AnalyzerOrchestrator {
           file_path: testFile.source?.file || testFile.name,
           test_type: this.inferTestType(testFile),
           framework: this.inferTestFramework(testFile),
-          tests: childTests.map(m => ({
-            id: `test_${m.id}`,
-            name: m.name,
-            description: m.description,
-            test_type: this.inferTestType(testFile),
-            status: {
-              skipped: false,
-              focused: false,
-              flaky: false
-            },
-            source: m.source?.file && m.source?.line ? {
-              file: m.source.file,
-              line: m.source.line,
-              end_line: m.source.end_line
-            } : undefined
-          }))
+          tests: inferredTests
         });
       }
     }
 
     return testSuites;
+  }
+
+  private isTestFileNode(node: CASNode): boolean {
+    const file = (node.source?.file || node.name || '').replace(/\\/g, '/');
+    const name = path.basename(file);
+    return /\.(spec|test)\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(name) ||
+      /\.cy\.(ts|tsx|js|jsx)$/i.test(name) ||
+      /^test_.*\.py$/i.test(name) ||
+      /_test\.py$/i.test(name) ||
+      /_test\.(go|rs)$/i.test(name) ||
+      /(Test|Tests)\.(java|kt|cs|php)$/i.test(name) ||
+      (/\/tests?\//i.test(file) && this.looksLikeExecutableTestFile(file));
+  }
+
+  private looksLikeExecutableTestFile(file: string): boolean {
+    const name = path.basename(file);
+    if (name === '__init__.py' || name.endsWith('.d.ts')) return false;
+    if (/\.(spec|test)\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(name)) return true;
+    if (/^test_.*\.py$/i.test(name) || /_test\.py$/i.test(name)) return true;
+    if (/_test\.(go|rs)$/i.test(name)) return true;
+    if (/(Test|Tests)\.(java|kt|cs|php)$/i.test(name)) return true;
+    return false;
+  }
+
+  private extractTestCasesFromFile(projectPath: string, testFile: CASNode): CASTestCase[] {
+    const sourceFile = testFile.source?.file || testFile.name;
+    const absolutePath = path.isAbsolute(sourceFile) ? sourceFile : path.join(projectPath, sourceFile);
+    if (!fs.existsSync(absolutePath)) return [];
+    const content = fs.readFileSync(absolutePath, 'utf8');
+    const testType = this.inferTestType(testFile);
+    const tests: CASTestCase[] = [];
+
+    const patterns = this.testCasePatternsForFile(sourceFile);
+    for (const pattern of patterns) {
+      let match: RegExpExecArray | null;
+      while ((match = pattern.regex.exec(content)) !== null) {
+        const name = match[pattern.nameGroup] || match[0].trim();
+        const line = this.lineNumberAtOffset(content, match.index);
+        tests.push({
+          id: this.testCaseId(sourceFile, name, line, tests.length),
+          name,
+          test_type: testType,
+          status: {
+            skipped: pattern.skipped(match[0]),
+            focused: pattern.focused(match[0]),
+            flaky: false
+          },
+          source: {
+            file: sourceFile,
+            line
+          }
+        });
+      }
+    }
+
+    return this.dedupeTestCases(tests);
+  }
+
+  private testCasePatternsForFile(file: string): Array<{
+    regex: RegExp;
+    nameGroup: number;
+    skipped: (raw: string) => boolean;
+    focused: (raw: string) => boolean;
+  }> {
+    const lowerFile = file.toLowerCase();
+    const commonStatus = {
+      skipped: (raw: string) => /\.skip\b|^x(it|test|describe)\b/.test(raw.trim()),
+      focused: (raw: string) => /\.only\b|^f(it|test|describe)\b/.test(raw.trim())
+    };
+
+    if (lowerFile.endsWith('.py')) {
+      return [
+        { regex: /^\s*(?:async\s+)?def\s+(test_[A-Za-z0-9_]+)\s*\(/gm, nameGroup: 1, skipped: () => false, focused: () => false },
+        { regex: /^\s*class\s+(Test[A-Za-z0-9_]+)\s*[:(]/gm, nameGroup: 1, skipped: () => false, focused: () => false },
+      ];
+    }
+    if (lowerFile.endsWith('_test.go')) {
+      return [
+        { regex: /^\s*func\s+(Test[A-Za-z0-9_]+)\s*\(/gm, nameGroup: 1, skipped: () => false, focused: () => false },
+      ];
+    }
+    if (lowerFile.endsWith('_test.rs')) {
+      return [
+        { regex: /#\[(?:tokio::)?test\][\s\S]{0,160}?\bfn\s+([A-Za-z0-9_]+)/g, nameGroup: 1, skipped: () => false, focused: () => false },
+      ];
+    }
+    if (/\.(java|kt|cs|php)$/i.test(lowerFile)) {
+      return [
+        { regex: /@Test[\s\S]{0,220}?\b(?:fun|void|public\s+\w+|function)\s+([A-Za-z0-9_]+)/g, nameGroup: 1, skipped: () => false, focused: () => false },
+      ];
+    }
+    return [
+      {
+        regex: /\b(?:describe|context|suite|it|test|specify)(?:\.(?:skip|only))?(?:\.each\s*\([^)]*\))?\s*\(\s*(['"`])([^'"`]+)\1/g,
+        nameGroup: 2,
+        skipped: commonStatus.skipped,
+        focused: commonStatus.focused
+      },
+      {
+        regex: /\b(?:xdescribe|xit|xtest|fdescribe|fit|ftest)\s*\(\s*(['"`])([^'"`]+)\1/g,
+        nameGroup: 2,
+        skipped: commonStatus.skipped,
+        focused: commonStatus.focused
+      },
+    ];
+  }
+
+  private lineNumberAtOffset(content: string, offset: number): number {
+    return content.slice(0, offset).split(/\r?\n/).length;
+  }
+
+  private testCaseId(file: string, name: string, line: number, index: number): string {
+    const slug = `${file}:${line}:${name}:${index}`
+      .replace(/\\/g, '/')
+      .replace(/[^a-zA-Z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .toLowerCase();
+    return `test_${slug || `case_${index}`}`;
+  }
+
+  private dedupeTestCases(tests: CASTestCase[]): CASTestCase[] {
+    const seen = new Set<string>();
+    return tests.filter(test => {
+      const key = `${test.source?.file}:${test.source?.line}:${test.name}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
 
   private inferTestType(node: CASNode): 'unit' | 'integration' | 'e2e' | 'acceptance' {
@@ -5274,6 +5909,7 @@ export class AnalyzerOrchestrator {
     if (name.includes('testcase') || file.includes('unittest')) return 'unittest';
     if (file.includes('pytest') || file.includes('conftest')) return 'pytest';
     if (file.includes('django')) return 'django.test';
+    if (file.endsWith('.py') && (file.includes('/tests/') || name.startsWith('test') || name.endsWith('tests'))) return 'pytest';
     if (file.endsWith('_test.go')) return 'go-test';
     if (file.endsWith('test.java') || file.endsWith('test.kt')) return 'junit';
     if (file.endsWith('tests.cs') || file.endsWith('test.cs')) return 'xunit';

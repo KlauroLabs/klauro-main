@@ -117,7 +117,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     try {
       const files = await glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
         cwd: projectPath,
-        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/target/**', '**/vendor/**', '**/__pycache__/**']
+        ignore: this.getIgnorePatterns({ projectPath })
       });
       return files.length > 0;
     } catch {
@@ -132,7 +132,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   async getRelevantFiles(projectPath: string): Promise<string[]> {
     return glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
       cwd: projectPath,
-      ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/target/**', '**/vendor/**', '**/__pycache__/**']
+      ignore: this.getIgnorePatterns({ projectPath })
     });
   }
 
@@ -338,7 +338,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
       const sourceFiles = await glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
         cwd: context.projectPath,
-        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/target/**', '**/vendor/**', '**/__pycache__/**']
+        ignore: this.getIgnorePatterns(context)
       });
       tsTimings['glob'] = Date.now() - tsStart;
 
@@ -537,7 +537,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       this.processTimings['extractClasses'] = (this.processTimings['extractClasses'] || 0) + (Date.now() - t);
 
       t = Date.now();
-      this.extractVariables(ast, relativePath, nodes, content);
+      this.extractVariables(ast, relativePath, nodes, edges, content);
       this.processTimings['extractVariables'] = (this.processTimings['extractVariables'] || 0) + (Date.now() - t);
 
       t = Date.now();
@@ -602,7 +602,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       this.processTreeSitterImports(extraction, relativePath, fileId, nodes, edges, exitPoints);
       const extractedFunctions = this.processTreeSitterFunctions(extraction, relativePath, fileId, nodes, edges, entryPoints);
       this.processTreeSitterClasses(extraction, relativePath, fileId, nodes, edges);
-      this.processTreeSitterVariables(extraction, relativePath, fileId, nodes);
+      this.processTreeSitterVariables(extraction, relativePath, fileId, nodes, edges);
       this.processTreeSitterExports(extraction, relativePath, entryPoints);
 
       return extractedFunctions;
@@ -661,7 +661,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       this.processTreeSitterImportsForSingleFile(extraction, relativePath, fileId, nodes, edges, exitPoints, imports);
       const extractedFunctions = this.processTreeSitterFunctions(extraction, relativePath, fileId, nodes, edges, entryPoints);
       this.processTreeSitterClasses(extraction, relativePath, fileId, nodes, edges);
-      this.processTreeSitterVariables(extraction, relativePath, fileId, nodes);
+      this.processTreeSitterVariables(extraction, relativePath, fileId, nodes, edges);
       this.processTreeSitterExportsForSingleFile(extraction, relativePath, entryPoints, exports);
 
       return extractedFunctions;
@@ -1047,11 +1047,12 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private processTreeSitterVariables(
     extraction: TSFileExtraction,
     filePath: string,
-    _fileId: string,
-    nodes: CASNode[]
+    fileId: string,
+    nodes: CASNode[],
+    edges: CASEdge[]
   ): void {
     extraction.variables.forEach((variable, index) => {
-      const varId = `variable_${filePath}_${variable.name}_${index}`;
+      const varId = `variable_${filePath.replace(/[^a-zA-Z0-9]/g, '_')}_${variable.name.replace(/[^a-zA-Z0-9]/g, '_')}_${index}`;
 
       nodes.push(this.createNode(
         varId,
@@ -1067,6 +1068,13 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           isExported: variable.isExported,
           value: variable.value?.substring(0, 100)
         }
+      ));
+
+      edges.push(this.createEdge(
+        `${fileId}_contains_${varId}`,
+        fileId,
+        varId,
+        'contains'
       ));
     });
   }
@@ -1607,7 +1615,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       this.extractImports(ast, relativePath, nodes, edges, exitPoints);
       this.extractFunctions(ast, relativePath, nodes, edges, entryPoints, content, lines);
       this.extractClasses(ast, relativePath, nodes, edges, content, lines);
-      this.extractVariables(ast, relativePath, nodes, content);
+      this.extractVariables(ast, relativePath, nodes, edges, content);
       this.extractExports(ast, relativePath, entryPoints);
 
       // Use enhanced call graph extractor for comprehensive analysis
@@ -1931,12 +1939,12 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     return [...new Set(subcategories)];
   }
 
-  private extractVariables(ast: TSESTree.Program, filePath: string, nodes: CASNode[], content: string): void {
+  private extractVariables(ast: TSESTree.Program, filePath: string, nodes: CASNode[], edges: CASEdge[], content: string): void {
     const variables = this.findVariablesInAST(ast, content);
     const fileId = `file_${filePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
 
     variables.forEach((variable, index) => {
-      const variableId = `variable_${filePath}_${variable.name}_${index}`;
+      const variableId = `variable_${filePath.replace(/[^a-zA-Z0-9]/g, '_')}_${variable.name.replace(/[^a-zA-Z0-9]/g, '_')}_${index}`;
 
       nodes.push(this.createNodeBuilder(
         variableId,
@@ -1955,6 +1963,13 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           }
         })
         .build());
+
+      edges.push(this.createEdge(
+        `${fileId}_contains_${variableId}`,
+        fileId,
+        variableId,
+        'contains'
+      ));
     });
   }
 

@@ -169,7 +169,7 @@ export class GoAnalyzer extends BaseAnalyzer {
 
       const goFiles = await glob(['**/*.go'], {
         cwd: context.projectPath,
-        ignore: ['**/vendor/**', '**/.git/**', '**/*_test.go']
+        ignore: this.getIgnorePatterns(context)
       });
 
       const packages = new Map<string, string[]>();

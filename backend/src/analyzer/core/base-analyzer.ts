@@ -158,9 +158,25 @@ export abstract class BaseAnalyzer {
       '**/node_modules/**',
       '**/dist/**',
       '**/build/**',
+      '**/target/**',
+      '**/vendor/**',
+      '**/venv/**',
+      '**/.venv/**',
+      '**/env/**',
       '**/.git/**',
       '**/coverage/**',
-      '**/.nyc_output/**'
+      '**/.nyc_output/**',
+      '**/__pycache__/**',
+      '**/.next/**',
+      '**/.turbo/**',
+      '**/.cache/**',
+      '**/.vite/**',
+      '**/out/**',
+      '**/storybook-static/**',
+      '**/storybook-build/**',
+      '**/web/assets/**',
+      '**/public/assets/**',
+      '**/static/assets/**'
     ];
 
     if (context.filters && Array.isArray(context.filters)) {

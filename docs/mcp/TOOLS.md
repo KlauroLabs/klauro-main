@@ -40,6 +40,36 @@ Run executable CAS completeness checks for graph integrity, entry/exit reference
 
 **Returns:** `{ status, score, gates, summary, snapshot }`, where `snapshot` is a stable golden-shape summary of the CAS graph.
 
+### `get_analysis_freshness`
+
+Compare the stored analysis timestamp and incremental state against source file modification times.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+
+**Returns:** Fresh/stale/no-analysis status, source file counts, tracked file counts, modified sample files, latest source change time, analyzed-at time, and a recommendation.
+
+### `save_cas_golden_snapshot`
+
+Save the current CAS golden-shape snapshot for later regression comparison.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+
+**Returns:** Snapshot save metadata with file path, saved timestamp, and snapshot summary.
+
+### `compare_cas_golden_snapshot`
+
+Compare the current CAS shape against the saved golden snapshot for the same repository.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+
+**Returns:** Pass/warn/fail status and CAS contract gates comparing current structure to the saved snapshot.
+
 ### `get_storage_health`
 
 Inspect MCP analysis storage.
@@ -48,7 +78,7 @@ Inspect MCP analysis storage.
 |-----------|------|----------|-------------|
 | `path` | string | no | Optional project path filter |
 
-**Returns:** Storage path, index version, analysis count, and per-project snapshot, change-history, runtime-observation, and file-cache totals.
+**Returns:** Storage path, index version, analysis count, workspace graph count, agentic benchmark report count, and per-project snapshot, golden-snapshot, change-history, runtime-observation, and file-cache totals.
 
 ---
 
@@ -132,6 +162,51 @@ Discover deterministic links across analyzed repositories.
 
 **Returns:** Cross-repository links for API calls, external services, env/configured base URLs, GraphQL/OpenAPI/protobuf/gRPC shared schemas, shared databases, message contracts, webhooks, and shared internal libraries, with evidence, confidence, certainty counts, and conflict reports.
 
+### `save_workspace_graph`
+
+Build and persist a multi-repository workspace graph.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | no | Workspace graph name, default `analyzed-workspace` |
+| `paths` | string[] | no | Project paths to include. Omit to use all analyzed repositories |
+
+**Returns:** Save metadata, workspace graph summary, repositories, cross-repository links, confidence, conflicts, and per-link review decisions.
+
+### `get_workspace_graph`
+
+Load a persisted workspace graph by id or name.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `workspace_id_or_name` | string | yes | Workspace graph id or name |
+
+**Returns:** Workspace graph summary and full persisted graph.
+
+### `list_workspace_graphs`
+
+List persisted workspace graphs.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| (none) | | | |
+
+**Returns:** Array of workspace graph metadata with id, name, timestamps, repository count, link count, and storage file.
+
+### `verify_workspace_link`
+
+Record a human or agent review decision for a persisted cross-repository link.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `workspace_id_or_name` | string | yes | Workspace graph id or name |
+| `link_id` | string | yes | Link id from the workspace graph |
+| `decision` | string | yes | `verified`, `rejected`, or `unreviewed` |
+| `reason` | string | no | Review reason or supporting evidence |
+| `actor` | string | no | Person or agent recording the decision |
+
+**Returns:** Save metadata, updated summary, and updated graph.
+
 ### `get_agent_bootstrap`
 
 Default first payload for Codex, Claude, Cursor, and other coding agents when an analysis exists.
@@ -161,7 +236,7 @@ Task-specific MCP call plan for agents. Use this before choosing source files so
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
-| `task` | object | no | Optional task context. `task_type` supports `orient`, `modify`, `debug`, `review`, `trace`, `cross-repo`, and `runtime` |
+| `task` | object | no | Optional task context. `task_type` supports `orient`, `modify`, `debug`, `review`, `trace`, `cross-repo`, and `runtime`; `instructions` and `success_criteria` preserve the user's exact behavioral ask |
 
 **Returns:** Ordered MCP steps with tool names, arguments, purpose, required/optional status, and fallback behavior if CAS/MCP is missing or stale.
 
@@ -172,9 +247,9 @@ One-call task packet for agents. Use this after `get_agent_start_context` when a
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
-| `task` | object | no | Optional task context with `task_type`, `target`, `related_paths`, or `runtime_event` |
+| `task` | object | no | Optional task context with `task_type`, `target`, `related_paths`, `runtime_event`, `instructions`, or `success_criteria` |
 
-**Returns:** Target resolution, selected node, coding context, change risk, callers, callees, tests, error contracts for debug tasks, representative entry/call-chain context, recommended MCP follow-ups, adoption gaps, and a file read plan with concrete source files and reasons.
+**Returns:** Target resolution, selected node, coding context, change risk, callers, callees, tests, error contracts for debug tasks, representative entry/call-chain context, recommended MCP follow-ups, adoption gaps, a file read plan with concrete source files and reasons, and a validation plan with focused test/typecheck/build commands, tests to inspect, manual checks, environment rules, and validation gaps.
 
 ### `evaluate_agent_readiness`
 
@@ -185,6 +260,38 @@ Score whether this repository's CAS/MCP surface is good enough for agents to use
 | `path` | string | yes | Project path |
 
 **Returns:** Pass/warn/fail status, score, `default_use` boolean, graph and answerability gates, adoption gaps, and the required agent behavior contract.
+
+### `get_agent_doctor`
+
+Run the default-use readiness doctor for Codex, Claude, and other coding agents. This combines CAS contract validation, analysis freshness, test discovery evidence, runtime SDK proof, and golden snapshot status into one payload.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+
+**Returns:** Pass/warn/fail status, `default_use` boolean, readiness report, freshness report, test discovery evidence, runtime event contract, runtime SDK package proof, golden snapshot comparison, and recommended first MCP tools.
+
+### `get_agent_default_config`
+
+Return install-ready default-use instructions for an agent without writing files.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `task` | object | no | Optional task context |
+
+**Returns:** Required agent rule, MCP server command, first calls, prompt text, doctor output, and bootstrap output.
+
+### `install_agent_default_config`
+
+Write `.unravl/agent-defaults.json` and `.unravl/agent-defaults.md` into a repository.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `task` | object | no | Optional task context |
+
+**Returns:** The installed config and file paths. Agents can read these files to use Unravl as the default first context path.
 
 ### `evaluate_analysis_truth`
 
@@ -219,6 +326,16 @@ Score detected frameworks and important libraries by analyzer depth.
 
 **Returns:** Per-framework scores for analyzer presence, tagged nodes, entry points, evidence, runtime links, and expected framework-specific surfaces.
 
+### `get_integration_depth_report`
+
+Detect deeper library and platform integrations that need richer analyzer coverage.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+
+**Returns:** Scores and evidence for jobs, brokers, auth, payments, AI SDKs, infrastructure, observability, cache, and persistence, including found surfaces, missing surfaces, and recommended analyzers.
+
 ### `get_cross_repo_contracts`
 
 Build a contract-level view across analyzed repositories.
@@ -251,6 +368,16 @@ Return the canonical runtime event schema plus CAS-specific event payloads that 
 
 **Returns:** Contract version, transport details, event types, field definitions, correlation order, per-runtime-link minimum and recommended event payloads, SDK method contract, totals, and gaps.
 
+### `get_runtime_sdk_package`
+
+Generate a deterministic TypeScript runtime SDK package from the CAS runtime contract.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+
+**Returns:** Package manifest, transport target, generated file list with hashes, quick-start commands, and proof metadata tying the SDK to CAS runtime links.
+
 ### `evaluate_agent_task_proof`
 
 Run agent work packets for representative tasks and score whether CAS gives enough target, risk, test, MCP, and file-read context to begin work.
@@ -261,6 +388,51 @@ Run agent work packets for representative tasks and score whether CAS gives enou
 | `tasks` | object[] | no | Agent tasks to evaluate |
 
 **Returns:** Per-task scores, selected nodes, file read plans, and gaps.
+
+### `run_agentic_benchmark`
+
+Benchmark the same task with Unravl vs without Unravl.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `paths` | string[] | no | Project paths to benchmark. Omit to use all analyzed repositories |
+| `task` | object | no | Task to hand to both agents. Supports `task_type`, `target`, `instructions`, `success_criteria`, `related_paths`, and `runtime_event` |
+| `suite` | boolean | no | Generate several CAS-derived task cards per repository |
+| `max_tasks_per_repo` | number | no | Maximum generated suite tasks per repository |
+
+**Returns:** Persisted report metadata, JSON report, Markdown report, per-task success gates, estimated token counts, estimated cached and first-run solution time, estimated speedups, projected baseline success, and a two-agent live-run protocol for provider-reported token measurement.
+
+### `get_agentic_benchmark_report`
+
+Load persisted agentic benchmark reports.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | no | Report id, default `latest` |
+| `list` | boolean | no | List reports instead of loading one |
+
+**Returns:** Report list or one report with Markdown rendering.
+
+### `run_agent_quality_benchmark`
+
+Run the work-quality benchmark layer on top of the agentic benchmark suite.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `paths` | string[] | no | Project paths to benchmark. Omit to use all analyzed repositories |
+| `task` | object | no | Single task to hand to both agents. Supports `task_type`, `target`, `instructions`, `success_criteria`, `related_paths`, and `runtime_event`; omit to generate a task suite |
+| `max_tasks_per_repo` | number | no | Maximum generated suite tasks per repository |
+| `agent_with_command` | string | no | Live with-Unravl command template. Supports `{workspace}`, `{prompt_file}`, `{metrics_file}`, `{result_file}`, `{arm}`, and `{task_id}` |
+| `agent_without_command` | string | no | Live without-Unravl command template. Supports the same arm placeholders |
+| `orchestrator_command` | string | no | Optional evaluator command template. Supports `{evaluation_input}`, `{evaluation_file}`, `{with_workspace}`, `{without_workspace}`, `{with_diff}`, and `{without_diff}` |
+| `test_command` | string | no | Optional command to run inside each copied repo after the agent attempt |
+| `work_root` | string | no | Directory for copied repos, prompts, diffs, metrics, and evaluator artifacts |
+| `max_live_tasks` | number | no | Maximum task pairs to run through live agents |
+| `timeout_ms` | number | no | Per-agent command timeout in milliseconds |
+| `test_timeout_ms` | number | no | Per-test command timeout in milliseconds |
+| `orchestrator_timeout_ms` | number | no | Evaluator command timeout in milliseconds |
+
+**Returns:** Persisted report metadata, JSON report, Markdown report, success gates, context completeness, projected baseline quality, quality-score delta, token/time/file deltas, and optional live A/B execution results. Live results include copied repo paths, prompt/result/metric files, the with-Unravl work-packet artifact, binary diff paths, changed files, lines added/deleted, wall-clock duration, test status, provider token metrics when reported, deterministic orchestrator scores, optional external-orchestrator scores, and separated patch-quality, hidden-validation, command-completion, and timeout signals.
 
 ### `get_patterns`
 
@@ -690,6 +862,20 @@ Security posture of the analyzed system.
 
 **Returns:** `security_boundaries` (trust transitions, enforcement points, bypass risks), `security_summary` (unprotected ops, enforced vs assumed vs missing), `security_contexts` (per-node trust levels, protection gaps).
 
+### `get_behavioral_invariants`
+
+Behavior-level invariants inferred from CAS. Use this when a task depends on tenant/org scope, auth boundaries, authorization, database uniqueness/nullability, migrations, or test coverage.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `invariant_type` | string | no | Filter by `tenant-scope`, `auth-boundary`, `authorization`, `db-constraint`, `migration-contract`, `test-coverage`, `data-lifecycle`, or `business-rule` |
+| `target` | string | no | Node id, file path, entity, field, or text target |
+| `limit` | number | no | Max results (default 25) |
+| `offset` | number | no | Skip first N results (default 0) |
+
+**Returns:** Summary counts and invariants with scope, enforcement points, evidence, related tests, related boundaries/entities, confidence, and gaps.
+
 ### `get_stability`
 
 Code stability and churn analysis. Behavior depends on parameters:
@@ -902,7 +1088,7 @@ Find test suites and test cases covering a specific node or file. Behavior depen
 | `limit` | number | no | Max results when listing all (default 25) |
 | `offset` | number | no | Skip first N results (default 0) |
 
-- **With `node_id` or `file_path`:** Returns matching `suites` (with test cases, assertions, coverage info), `mocks`, `fixtures`.
+- **With `node_id` or `file_path`:** Returns matching `suites` (with test cases, assertions, coverage info), `mocks`, `fixtures`, and `resolution` metadata. Resolution combines explicit CAS coverage with related test-file inference, such as co-located `.spec`/`.test` files and matching test filenames.
 - **Without filters:** Returns paginated lists with `total_suites`, `total_mocks`, `total_fixtures`, `offset`, `limit`.
 
 ### `get_test_summary`
@@ -914,6 +1100,16 @@ Full test overview across the entire codebase.
 | `path` | string | yes | Project path |
 
 **Returns:** `test_summary` (counts by type/status, coverage percentage, mocks total, fixtures total) and `test_gaps` (untested flows, branches, mock-only coverage, no-assertion tests, with severity and recommendations).
+
+### `get_test_discovery_evidence`
+
+Compare source test files and test configuration files against the CAS test surface. Use this to tell the difference between repositories that have no tests and repositories where tests exist but analysis missed them.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+
+**Returns:** Status, CAS suite count, discovered source test file count, potential uncovered test files, test config files, sample source test files, and a summary.
 
 ---
 

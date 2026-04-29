@@ -1,7 +1,7 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { analyzeProject, getAnalysis, analyzeProjectIncremental } from './analyzer';
-import { getStorageHealth, listAnalyses, loadRuntimeObservations, loadRuntimeTrace, saveRuntimeObservation } from './storage';
+import { getStorageHealth, listAgenticBenchmarkReports, listAnalyses, listWorkspaceGraphs, loadAgenticBenchmarkReport, loadGoldenSnapshot, loadRuntimeObservations, loadRuntimeTrace, loadWorkspaceGraph, saveAgenticBenchmarkReport, saveGoldenSnapshot, saveRuntimeObservation, saveWorkspaceGraph } from './storage';
 import * as query from './query';
 import * as watcher from './watcher';
 import * as product from './product';
@@ -10,6 +10,15 @@ import * as agentBootstrap from './agent-bootstrap';
 import * as analysisMastery from './analysis-mastery';
 import * as runtimeContract from './runtime-contract';
 import * as casContract from './cas-contract';
+import * as testDiscovery from './test-discovery';
+import * as freshness from './freshness';
+import * as runtimeSdk from './runtime-sdk';
+import * as agentDoctor from './agent-doctor';
+import * as workspaceGraph from './workspace-graph';
+import * as agentDefaults from './agent-defaults';
+import * as integrationDepth from './integration-depth';
+import { formatMarkdownReport, runAgenticBenchmark } from './agent-benchmark';
+import { formatQualityMarkdownReport, runAgentQualityBenchmark } from './agent-quality-benchmark';
 
 export function createServer(): McpServer {
   const server = new McpServer(
@@ -167,6 +176,74 @@ function registerTools(server: McpServer) {
     })
   );
 
+  server.registerTool(
+    'get_analysis_freshness',
+    {
+      title: 'Get Analysis Freshness',
+      description: 'Check whether stored CAS is fresh relative to source file mtimes and incremental state.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+      } as any,
+    } as any,
+    async ({ path }: any) => withErrorHandling(async () => {
+      return json(await freshness.getAnalysisFreshness(path));
+    })
+  );
+
+  server.registerTool(
+    'get_test_discovery_evidence',
+    {
+      title: 'Get Test Discovery Evidence',
+      description: 'Distinguish CAS-covered tests, missed source tests, and repos with no source test files by scanning test paths and names.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+      } as any,
+    } as any,
+    async ({ path }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(await testDiscovery.getTestDiscoveryEvidence(path, cas));
+    })
+  );
+
+  server.registerTool(
+    'save_cas_golden_snapshot',
+    {
+      title: 'Save CAS Golden Snapshot',
+      description: 'Persist the current stable CAS shape snapshot for regression checks.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+      } as any,
+    } as any,
+    async ({ path }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      const snapshot = casContract.buildCASGoldenSnapshot(cas);
+      const saved = await saveGoldenSnapshot(path, snapshot);
+      return json({ saved, snapshot });
+    })
+  );
+
+  server.registerTool(
+    'compare_cas_golden_snapshot',
+    {
+      title: 'Compare CAS Golden Snapshot',
+      description: 'Compare current CAS shape against the saved golden snapshot for this repository.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+      } as any,
+    } as any,
+    async ({ path }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      const saved = await loadGoldenSnapshot(path);
+      if (!saved) return json({ status: 'warn', gates: [], detail: 'No saved CAS golden snapshot' });
+      const gates = casContract.compareCASGoldenSnapshot(cas, saved.snapshot as any);
+      return json({
+        status: gates.some(gate => gate.status === 'fail') ? 'fail' : gates.some(gate => gate.status === 'warn') ? 'warn' : 'pass',
+        saved_at: saved.saved_at,
+        gates,
+      });
+    })
+  );
+
   // -- System-Level Understanding --
 
   server.registerTool(
@@ -255,6 +332,76 @@ function registerTools(server: McpServer) {
   );
 
   server.registerTool(
+    'save_workspace_graph',
+    {
+      title: 'Save Workspace Graph',
+      description: 'Build and persist a multi-repository workspace graph with cross-repo links, repository contracts, confidence, conflicts, and review decisions.',
+      inputSchema: {
+        name: z.string().optional().describe('Workspace graph name. Defaults to analyzed-workspace.'),
+        paths: z.array(z.string()).optional().describe('Project paths to include. Omit to use all analyzed repositories.'),
+      } as any,
+    } as any,
+    async ({ name, paths }: any) => withErrorHandling(async () => {
+      const repositories = await loadRepositoryAnalyses(paths);
+      const graphName = name || 'analyzed-workspace';
+      const existing = await loadWorkspaceGraph(graphName);
+      const graph = workspaceGraph.buildWorkspaceGraph(graphName, repositories, existing);
+      const saved = await saveWorkspaceGraph(graph);
+      return json({ saved, summary: workspaceGraph.summarizeWorkspaceGraph(graph), graph });
+    })
+  );
+
+  server.registerTool(
+    'get_workspace_graph',
+    {
+      title: 'Get Workspace Graph',
+      description: 'Load a persisted multi-repository workspace graph by id or name.',
+      inputSchema: {
+        workspace_id_or_name: z.string().describe('Workspace graph id or name'),
+      } as any,
+    } as any,
+    async ({ workspace_id_or_name }: any) => withErrorHandling(async () => {
+      const graph = await loadWorkspaceGraph(workspace_id_or_name);
+      if (!graph) return json({ error: `Workspace graph not found: ${workspace_id_or_name}` });
+      return json({ summary: workspaceGraph.summarizeWorkspaceGraph(graph), graph });
+    })
+  );
+
+  server.registerTool(
+    'list_workspace_graphs',
+    {
+      title: 'List Workspace Graphs',
+      description: 'List persisted multi-repository workspace graphs.',
+      inputSchema: {} as any,
+    } as any,
+    async () => withErrorHandling(async () => {
+      return json(await listWorkspaceGraphs());
+    })
+  );
+
+  server.registerTool(
+    'verify_workspace_link',
+    {
+      title: 'Verify Workspace Link',
+      description: 'Mark a persisted workspace graph link as verified, rejected, or unreviewed while preserving the detected graph evidence.',
+      inputSchema: {
+        workspace_id_or_name: z.string().describe('Workspace graph id or name'),
+        link_id: z.string().describe('Cross-repository link id'),
+        decision: z.enum(['unreviewed', 'verified', 'rejected']).describe('Review decision'),
+        reason: z.string().optional().describe('Reason or evidence for the decision'),
+        actor: z.string().optional().describe('Person or agent recording the decision'),
+      } as any,
+    } as any,
+    async ({ workspace_id_or_name, link_id, decision, reason, actor }: any) => withErrorHandling(async () => {
+      const graph = await loadWorkspaceGraph(workspace_id_or_name);
+      if (!graph) return json({ error: `Workspace graph not found: ${workspace_id_or_name}` });
+      const updated = workspaceGraph.applyWorkspaceGraphDecision(graph, link_id, decision, { reason, actor });
+      const saved = await saveWorkspaceGraph(updated);
+      return json({ saved, summary: workspaceGraph.summarizeWorkspaceGraph(updated), graph: updated });
+    })
+  );
+
+  server.registerTool(
     'get_agent_bootstrap',
     {
       title: 'Get Agent Bootstrap',
@@ -272,6 +419,63 @@ function registerTools(server: McpServer) {
     async ({ path, task }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(agentBootstrap.getAgentBootstrap(cas, path, task || {}));
+    })
+  );
+
+  server.registerTool(
+    'get_agent_doctor',
+    {
+      title: 'Get Agent Doctor',
+      description: 'Default-use readiness check for Codex, Claude, and other agents: CAS contract, freshness, tests, runtime SDK proof, and golden snapshot status.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+      } as any,
+    } as any,
+    async ({ path }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(await agentDoctor.getAgentDoctor(cas, path));
+    })
+  );
+
+  server.registerTool(
+    'get_agent_default_config',
+    {
+      title: 'Get Agent Default Config',
+      description: 'Return install-ready default-use instructions for Codex, Claude, Cursor, or another coding agent without writing files.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        task: z.object({
+          task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional(),
+          target: z.string().optional(),
+          related_paths: z.array(z.string()).optional(),
+          runtime_event: z.record(z.unknown()).optional(),
+        }).optional().describe('Optional task context for tailoring default-use instructions'),
+      } as any,
+    } as any,
+    async ({ path, task }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(await agentDefaults.getAgentDefaultConfig(cas, path, task || {}));
+    })
+  );
+
+  server.registerTool(
+    'install_agent_default_config',
+    {
+      title: 'Install Agent Default Config',
+      description: 'Write .unravl/agent-defaults.json and .unravl/agent-defaults.md into a repository so agents have a default Unravl start path.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        task: z.object({
+          task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional(),
+          target: z.string().optional(),
+          related_paths: z.array(z.string()).optional(),
+          runtime_event: z.record(z.unknown()).optional(),
+        }).optional().describe('Optional task context for tailoring default-use instructions'),
+      } as any,
+    } as any,
+    async ({ path, task }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(await agentDefaults.writeAgentDefaultConfig(cas, path, task || {}));
     })
   );
 
@@ -308,6 +512,8 @@ function registerTools(server: McpServer) {
           target: z.string().optional(),
           related_paths: z.array(z.string()).optional(),
           runtime_event: z.record(z.unknown()).optional(),
+          instructions: z.string().optional(),
+          success_criteria: z.array(z.string()).optional(),
         }).optional().describe('Task context for selecting a plan'),
       } as any,
     } as any,
@@ -329,6 +535,8 @@ function registerTools(server: McpServer) {
           target: z.string().optional(),
           related_paths: z.array(z.string()).optional(),
           runtime_event: z.record(z.unknown()).optional(),
+          instructions: z.string().optional(),
+          success_criteria: z.array(z.string()).optional(),
         }).optional().describe('Task context for building the work packet'),
       } as any,
     } as any,
@@ -411,6 +619,21 @@ function registerTools(server: McpServer) {
   );
 
   server.registerTool(
+    'get_integration_depth_report',
+    {
+      title: 'Get Integration Depth Report',
+      description: 'Detect deeper library and platform integrations such as jobs, brokers, auth, payments, AI SDKs, infrastructure, observability, cache, and persistence; reports coverage and missing analyzer depth.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+      } as any,
+    } as any,
+    async ({ path }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(integrationDepth.getIntegrationDepthReport(cas));
+    })
+  );
+
+  server.registerTool(
     'get_cross_repo_contracts',
     {
       title: 'Get Cross Repo Contracts',
@@ -458,6 +681,22 @@ function registerTools(server: McpServer) {
   );
 
   server.registerTool(
+    'get_runtime_sdk_package',
+    {
+      title: 'Get Runtime SDK Package',
+      description: 'Generate a TypeScript runtime telemetry SDK package from the CAS runtime event contract, including client, middleware, fetch wrapper, and contract file.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        limit: z.number().optional().describe('Max CAS runtime link contracts to include in the generated contract file'),
+      } as any,
+    } as any,
+    async ({ path, limit }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(runtimeSdk.getRuntimeSdkPackage(cas, { limit }));
+    })
+  );
+
+  server.registerTool(
     'evaluate_agent_task_proof',
     {
       title: 'Evaluate Agent Task Proof',
@@ -489,7 +728,112 @@ function registerTools(server: McpServer) {
     } as any,
     async ({ path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      return json(agentAdoption.evaluateAgentReadiness(cas, path));
+      const evidence = await testDiscovery.getTestDiscoveryEvidence(path, cas);
+      return json(agentAdoption.evaluateAgentReadiness(cas, path, { testEvidence: evidence }));
+    })
+  );
+
+  server.registerTool(
+    'run_agentic_benchmark',
+    {
+      title: 'Run Agentic Benchmark',
+      description: 'Benchmark the same agent task with Unravl vs without Unravl using deterministic token/file/speed estimates and a two-agent live-run protocol.',
+      inputSchema: {
+        paths: z.array(z.string()).optional().describe('Project paths to benchmark. Omit to use all analyzed repositories.'),
+        task: z.object({
+          task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional(),
+          target: z.string().optional(),
+          related_paths: z.array(z.string()).optional(),
+          runtime_event: z.record(z.unknown()).optional(),
+          instructions: z.string().optional(),
+          success_criteria: z.array(z.string()).optional(),
+        }).optional().describe('Task to hand to both agents. Defaults to fixture-derived representative tasks.'),
+        suite: z.boolean().optional().describe('Generate several CAS-derived task cards per repository.'),
+        max_tasks_per_repo: z.number().optional().describe('Maximum generated suite tasks per repository'),
+      } as any,
+    } as any,
+    async ({ paths, task, suite, max_tasks_per_repo }: any) => withErrorHandling(async () => {
+      const selectedPaths = paths && paths.length > 0 ? paths : (await listAnalyses()).map(analysis => analysis.path);
+      const report = await runAgenticBenchmark({
+        repos: selectedPaths.map((repoPath: string) => ({ path: repoPath })),
+        includeFixtures: false,
+        task: task || undefined,
+        suite: Boolean(suite),
+        maxTasksPerRepo: max_tasks_per_repo,
+        quiet: true,
+      });
+      const saved = await saveAgenticBenchmarkReport(report);
+      return json({ saved, report, markdown: formatMarkdownReport(report) });
+    })
+  );
+
+  server.registerTool(
+    'get_agentic_benchmark_report',
+    {
+      title: 'Get Agentic Benchmark Report',
+      description: 'Load persisted agentic benchmark reports. Use id=latest for the latest report.',
+      inputSchema: {
+        id: z.string().optional().describe('Benchmark report id. Defaults to latest.'),
+        list: z.boolean().optional().describe('When true, list reports instead of loading one.'),
+      } as any,
+    } as any,
+    async ({ id, list }: any) => withErrorHandling(async () => {
+      if (list) return json(await listAgenticBenchmarkReports());
+      const report = await loadAgenticBenchmarkReport(id || 'latest');
+      if (!report) return json({ error: `Agentic benchmark report not found: ${id || 'latest'}` });
+      return json({ report, markdown: formatMarkdownReport(report) });
+    })
+  );
+
+  server.registerTool(
+    'run_agent_quality_benchmark',
+    {
+      title: 'Run Agent Quality Benchmark',
+      description: 'Run the work-quality benchmark layer: success gates, context completeness, projected patch quality, token/time/file deltas, and optional live A/B agent command execution.',
+      inputSchema: {
+        paths: z.array(z.string()).optional().describe('Project paths to benchmark. Omit to use all analyzed repositories.'),
+        task: z.object({
+          task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional(),
+          target: z.string().optional(),
+          related_paths: z.array(z.string()).optional(),
+          runtime_event: z.record(z.unknown()).optional(),
+          instructions: z.string().optional(),
+          success_criteria: z.array(z.string()).optional(),
+        }).optional().describe('Single task to hand to both agents. Omit to generate a suite.'),
+        max_tasks_per_repo: z.number().optional().describe('Maximum generated suite tasks per repository'),
+        agent_with_command: z.string().optional().describe('Live with-Unravl agent command template. Supports {workspace}, {prompt_file}, {metrics_file}, {result_file}, {arm}, and {task_id}.'),
+        agent_without_command: z.string().optional().describe('Live without-Unravl agent command template. Supports {workspace}, {prompt_file}, {metrics_file}, {result_file}, {arm}, and {task_id}.'),
+        orchestrator_command: z.string().optional().describe('Optional evaluator command template. Supports {evaluation_input}, {evaluation_file}, {with_workspace}, {without_workspace}, {with_diff}, and {without_diff}.'),
+        test_command: z.string().optional().describe('Optional command to run inside each copied repo after the agent attempt.'),
+        work_root: z.string().optional().describe('Directory for live repo copies and benchmark artifacts.'),
+        max_live_tasks: z.number().optional().describe('Maximum task pairs to run through live agents.'),
+        timeout_ms: z.number().optional().describe('Per-agent command timeout in milliseconds.'),
+        test_timeout_ms: z.number().optional().describe('Per-test command timeout in milliseconds.'),
+        orchestrator_timeout_ms: z.number().optional().describe('Evaluator command timeout in milliseconds.'),
+      } as any,
+    } as any,
+    async ({ paths, task, max_tasks_per_repo, agent_with_command, agent_without_command, orchestrator_command, test_command, work_root, max_live_tasks, timeout_ms, test_timeout_ms, orchestrator_timeout_ms }: any) => withErrorHandling(async () => {
+      const selectedPaths = paths && paths.length > 0 ? paths : (await listAnalyses()).map(analysis => analysis.path);
+      const report = await runAgentQualityBenchmark({
+        repos: selectedPaths.map((repoPath: string) => ({ path: repoPath })),
+        maxTasksPerRepo: max_tasks_per_repo,
+        task: task || undefined,
+        commands: {
+          withUnravl: agent_with_command,
+          withoutUnravl: agent_without_command,
+          orchestrator: orchestrator_command,
+          testCommand: test_command,
+          workRoot: work_root,
+          maxLiveTasks: max_live_tasks,
+          timeoutMs: timeout_ms,
+          testTimeoutMs: test_timeout_ms,
+          orchestratorTimeoutMs: orchestrator_timeout_ms,
+        },
+        live: Boolean(agent_with_command || agent_without_command),
+        quiet: true,
+      });
+      const saved = await saveAgenticBenchmarkReport(report);
+      return json({ saved, report, markdown: formatQualityMarkdownReport(report) });
     })
   );
 
@@ -1063,6 +1407,25 @@ function registerTools(server: McpServer) {
     async ({ path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getSecurityOverview(cas));
+    })
+  );
+
+  server.registerTool(
+    'get_behavioral_invariants',
+    {
+      title: 'Get Behavioral Invariants',
+      description: 'First-class behavior-level invariants inferred from CAS: tenant/org scope, auth and authorization boundaries, database constraints, migration contracts, and test coverage evidence.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        invariant_type: z.enum(['tenant-scope', 'auth-boundary', 'authorization', 'db-constraint', 'migration-contract', 'test-coverage', 'data-lifecycle', 'business-rule']).optional().describe('Filter by invariant type'),
+        target: z.string().optional().describe('Node id, file path, entity, field, or text target to filter invariants'),
+        limit: z.number().optional().describe('Max results (default 25)'),
+        offset: z.number().optional().describe('Skip first N results (default 0)'),
+      } as any,
+    } as any,
+    async ({ path, invariant_type, target, limit, offset }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(query.getBehavioralInvariants(cas, { invariantType: invariant_type, target, limit, offset }));
     })
   );
 
@@ -1769,6 +2132,48 @@ function registerResources(server: McpServer) {
   );
 
   server.registerResource(
+    'workspace-graphs-list',
+    'unravl://workspaces',
+    { title: 'Workspace Graphs', description: 'Persisted multi-repository workspace graphs.', mimeType: 'application/json' } as any,
+    async () => {
+      const graphs = await listWorkspaceGraphs();
+      return { contents: [{ uri: 'unravl://workspaces', text: JSON.stringify(graphs) }] };
+    }
+  );
+
+  server.registerResource(
+    'workspace-graph',
+    new ResourceTemplate('unravl://workspace/{workspace_id_or_name}/graph', { list: undefined }),
+    { title: 'Workspace Graph', description: 'Persisted cross-repository graph with links, conflicts, confidence, and review decisions.', mimeType: 'application/json' } as any,
+    async (uri, params) => {
+      const graph = await loadWorkspaceGraph(String(params.workspace_id_or_name));
+      if (!graph) return { contents: [{ uri: uri.href, text: JSON.stringify({ error: 'Workspace graph not found' }) }] };
+      return { contents: [{ uri: uri.href, text: JSON.stringify({ summary: workspaceGraph.summarizeWorkspaceGraph(graph), graph }) }] };
+    }
+  );
+
+  server.registerResource(
+    'agentic-benchmark-reports',
+    'unravl://agentic-benchmarks',
+    { title: 'Agentic Benchmark Reports', description: 'Persisted with-Unravl vs without-Unravl agent benchmark reports.', mimeType: 'application/json' } as any,
+    async () => {
+      const reports = await listAgenticBenchmarkReports();
+      return { contents: [{ uri: 'unravl://agentic-benchmarks', text: JSON.stringify(reports) }] };
+    }
+  );
+
+  server.registerResource(
+    'agentic-benchmark-report',
+    new ResourceTemplate('unravl://agentic-benchmark/{report_id}', { list: undefined }),
+    { title: 'Agentic Benchmark Report', description: 'A persisted agent benchmark report with deterministic estimates and a two-agent run sheet.', mimeType: 'application/json' } as any,
+    async (uri, params) => {
+      const report = await loadAgenticBenchmarkReport(String(params.report_id));
+      if (!report) return { contents: [{ uri: uri.href, text: JSON.stringify({ error: 'Agentic benchmark report not found' }) }] };
+      return { contents: [{ uri: uri.href, text: JSON.stringify({ report, markdown: formatMarkdownReport(report) }) }] };
+    }
+  );
+
+  server.registerResource(
     'project-overview',
     new ResourceTemplate('unravl://{project_name}/overview', { list: undefined }),
     { title: 'Project Overview', description: 'System overview: architecture summary, tech stack, capabilities, purpose.', mimeType: 'application/json' } as any,
@@ -1843,7 +2248,85 @@ function registerResources(server: McpServer) {
       const entry = analyses.find(a => slugify(a.name) === params.project_name);
       if (!entry) return { contents: [{ uri: uri.href, text: JSON.stringify({ error: 'Analysis not found' }) }] };
       const cas = await getAnalysis(entry.path);
-      return { contents: [{ uri: uri.href, text: JSON.stringify(agentAdoption.evaluateAgentReadiness(cas, entry.path)) }] };
+      const evidence = await testDiscovery.getTestDiscoveryEvidence(entry.path, cas);
+      return { contents: [{ uri: uri.href, text: JSON.stringify(agentAdoption.evaluateAgentReadiness(cas, entry.path, { testEvidence: evidence })) }] };
+    }
+  );
+
+  server.registerResource(
+    'project-agent-doctor',
+    new ResourceTemplate('unravl://{project_name}/agent-doctor', { list: undefined }),
+    { title: 'Agent Doctor', description: 'Default-use readiness, freshness, tests, runtime SDK proof, and golden snapshot status.', mimeType: 'application/json' } as any,
+    async (uri, params) => {
+      const analyses = await listAnalyses();
+      const entry = analyses.find(a => slugify(a.name) === params.project_name);
+      if (!entry) return { contents: [{ uri: uri.href, text: JSON.stringify({ error: 'Analysis not found' }) }] };
+      const cas = await getAnalysis(entry.path);
+      return { contents: [{ uri: uri.href, text: JSON.stringify(await agentDoctor.getAgentDoctor(cas, entry.path)) }] };
+    }
+  );
+
+  server.registerResource(
+    'project-agent-defaults',
+    new ResourceTemplate('unravl://{project_name}/agent-defaults', { list: undefined }),
+    { title: 'Agent Defaults', description: 'Install-ready default-use instructions for coding agents.', mimeType: 'application/json' } as any,
+    async (uri, params) => {
+      const analyses = await listAnalyses();
+      const entry = analyses.find(a => slugify(a.name) === params.project_name);
+      if (!entry) return { contents: [{ uri: uri.href, text: JSON.stringify({ error: 'Analysis not found' }) }] };
+      const cas = await getAnalysis(entry.path);
+      return { contents: [{ uri: uri.href, text: JSON.stringify(await agentDefaults.getAgentDefaultConfig(cas, entry.path)) }] };
+    }
+  );
+
+  server.registerResource(
+    'project-analysis-freshness',
+    new ResourceTemplate('unravl://{project_name}/freshness', { list: undefined }),
+    { title: 'Analysis Freshness', description: 'Stored CAS freshness against source file mtimes and incremental state.', mimeType: 'application/json' } as any,
+    async (uri, params) => {
+      const analyses = await listAnalyses();
+      const entry = analyses.find(a => slugify(a.name) === params.project_name);
+      if (!entry) return { contents: [{ uri: uri.href, text: JSON.stringify({ error: 'Analysis not found' }) }] };
+      return { contents: [{ uri: uri.href, text: JSON.stringify(await freshness.getAnalysisFreshness(entry.path)) }] };
+    }
+  );
+
+  server.registerResource(
+    'project-test-discovery',
+    new ResourceTemplate('unravl://{project_name}/test-discovery', { list: undefined }),
+    { title: 'Test Discovery Evidence', description: 'Repo scan proving whether missing CAS tests are true absence or analyzer coverage gaps.', mimeType: 'application/json' } as any,
+    async (uri, params) => {
+      const analyses = await listAnalyses();
+      const entry = analyses.find(a => slugify(a.name) === params.project_name);
+      if (!entry) return { contents: [{ uri: uri.href, text: JSON.stringify({ error: 'Analysis not found' }) }] };
+      const cas = await getAnalysis(entry.path);
+      return { contents: [{ uri: uri.href, text: JSON.stringify(await testDiscovery.getTestDiscoveryEvidence(entry.path, cas)) }] };
+    }
+  );
+
+  server.registerResource(
+    'project-runtime-sdk',
+    new ResourceTemplate('unravl://{project_name}/runtime-sdk', { list: undefined }),
+    { title: 'Runtime SDK Package', description: 'Generated TypeScript SDK package for emitting CAS-correlated runtime telemetry.', mimeType: 'application/json' } as any,
+    async (uri, params) => {
+      const analyses = await listAnalyses();
+      const entry = analyses.find(a => slugify(a.name) === params.project_name);
+      if (!entry) return { contents: [{ uri: uri.href, text: JSON.stringify({ error: 'Analysis not found' }) }] };
+      const cas = await getAnalysis(entry.path);
+      return { contents: [{ uri: uri.href, text: JSON.stringify(runtimeSdk.getRuntimeSdkPackage(cas)) }] };
+    }
+  );
+
+  server.registerResource(
+    'project-integration-depth',
+    new ResourceTemplate('unravl://{project_name}/integration-depth', { list: undefined }),
+    { title: 'Integration Depth', description: 'Library and platform integration coverage with missing analyzer depth.', mimeType: 'application/json' } as any,
+    async (uri, params) => {
+      const analyses = await listAnalyses();
+      const entry = analyses.find(a => slugify(a.name) === params.project_name);
+      if (!entry) return { contents: [{ uri: uri.href, text: JSON.stringify({ error: 'Analysis not found' }) }] };
+      const cas = await getAnalysis(entry.path);
+      return { contents: [{ uri: uri.href, text: JSON.stringify(integrationDepth.getIntegrationDepthReport(cas)) }] };
     }
   );
 

@@ -164,7 +164,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
       await this.extractDependencies(context.projectPath, libraries);
 
       const ignorePatterns = this.getIgnorePatterns(context);
-      const pythonIgnorePatterns = [...ignorePatterns, '**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**', '**/test_*.py', '**/*_test.py'];
+      const pythonIgnorePatterns = [...ignorePatterns, '**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**'];
       const pythonFiles = await glob(['**/*.py'], {
         cwd: context.projectPath,
         ignore: pythonIgnorePatterns

@@ -3,6 +3,7 @@ import * as path from 'path';
 import { getOrchestrator } from './analyzer';
 import { discoverTargets, type RepoTarget } from './gauntlet';
 import { evaluateAgentReadiness, type AgentReadinessReport } from './agent-adoption';
+import { getTestDiscoveryEvidence } from './test-discovery';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 
@@ -75,8 +76,9 @@ function printHelp(): void {
 async function analyzeTarget(target: RepoTarget): Promise<TargetAgentReport> {
   const startedAt = Date.now();
   const output = await getOrchestrator().orchestrateAnalysis(target.path);
+  const testEvidence = await getTestDiscoveryEvidence(target.path, output);
   return {
-    ...evaluateAgentReadiness(output, target.path),
+    ...evaluateAgentReadiness(output, target.path, { testEvidence }),
     name: target.name,
     durationMs: Date.now() - startedAt,
   };

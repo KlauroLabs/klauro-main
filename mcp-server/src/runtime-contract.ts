@@ -38,7 +38,7 @@ export function getRuntimeEventContract(cas: CASOutput, opts: { limit?: number }
       analysis_id: cas.analysis_id,
     },
     transport: {
-      ingest_path: '/api/telemetry/ingest',
+      ingest_path: '/api/telemetry/runtime-events/:projectId',
       batch_key: 'events',
       content_type: 'application/json',
     },

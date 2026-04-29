@@ -6,6 +6,11 @@ import { evaluateAgentReadiness } from './agent-adoption';
 import { validateCASContract } from './cas-contract';
 import { buildCrossRepositoryLinks, runAnswerPack } from './product';
 import { getRuntimeEventContract } from './runtime-contract';
+import { getRuntimeSdkPackage } from './runtime-sdk';
+import { getTestDiscoveryEvidence } from './test-discovery';
+import { getAgentDefaultConfig } from './agent-defaults';
+import { getIntegrationDepthReport } from './integration-depth';
+import { buildWorkspaceGraph, summarizeWorkspaceGraph } from './workspace-graph';
 import type { CASOutput } from '../../backend/src/types/cas.types';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
@@ -20,6 +25,10 @@ interface VisionTargetReport {
   agent_readiness: ReturnType<typeof evaluateAgentReadiness>;
   answer_pack: ReturnType<typeof runAnswerPack>;
   runtime_contract: ReturnType<typeof getRuntimeEventContract>;
+  runtime_sdk: ReturnType<typeof getRuntimeSdkPackage>;
+  agent_defaults: Awaited<ReturnType<typeof getAgentDefaultConfig>>;
+  integration_depth: ReturnType<typeof getIntegrationDepthReport>;
+  test_discovery: Awaited<ReturnType<typeof getTestDiscoveryEvidence>>;
 }
 
 function parseArgs(argv: string[]) {
@@ -71,21 +80,31 @@ async function analyzeTarget(target: RepoTarget): Promise<{ report: VisionTarget
   const startedAt = Date.now();
   const cas = await getOrchestrator().orchestrateAnalysis(target.path);
   const casContract = validateCASContract(cas);
-  const agentReadiness = evaluateAgentReadiness(cas, target.path);
+  const testEvidence = await getTestDiscoveryEvidence(target.path, cas);
+  const agentReadiness = evaluateAgentReadiness(cas, target.path, { testEvidence });
   const answerPack = runAnswerPack(cas, target.path);
   const runtimeEventContract = getRuntimeEventContract(cas, { limit: 50 });
+  const runtimeSdkPackage = getRuntimeSdkPackage(cas, { limit: 10 });
+  const agentDefaults = await getAgentDefaultConfig(cas, target.path, {}, { assumeFresh: true });
+  const integrationReport = getIntegrationDepthReport(cas);
   const scores = [
     casContract.score,
     agentReadiness.score,
+    agentDefaults.default_use ? 100 : 70,
+    integrationReport.score,
     answerPack.gaps.length === 0 ? 100 : Math.max(60, 100 - answerPack.gaps.length * 8),
     runtimeEventContract.totals.runtime_static_links > 0 ? 100 : 75,
+    runtimeSdkPackage.files.length >= 4 ? 100 : 75,
   ];
   const score = Math.round(average(scores));
   const status = aggregateStatus([
     casContract.status,
     agentReadiness.status,
+    agentDefaults.default_use ? 'pass' : 'warn',
+    integrationReport.status === 'missing-depth' ? 'warn' : 'pass',
     answerPack.gaps.length === 0 ? 'pass' : 'warn',
     runtimeEventContract.totals.runtime_static_links > 0 ? 'pass' : 'warn',
+    runtimeSdkPackage.files.length >= 4 ? 'pass' : 'warn',
   ]);
 
   return {
@@ -100,6 +119,10 @@ async function analyzeTarget(target: RepoTarget): Promise<{ report: VisionTarget
       agent_readiness: agentReadiness,
       answer_pack: answerPack,
       runtime_contract: runtimeEventContract,
+      runtime_sdk: runtimeSdkPackage,
+      agent_defaults: agentDefaults,
+      integration_depth: integrationReport,
+      test_discovery: testEvidence,
     },
   };
 }
@@ -142,6 +165,8 @@ async function main(): Promise<void> {
   }
 
   const crossRepo = buildCrossRepositoryLinks(repositories);
+  const workspace = buildWorkspaceGraph('vision-gauntlet', repositories);
+  const workspaceSummary = summarizeWorkspaceGraph(workspace);
   const crossRepoStatus: GateStatus = repositories.length <= 1
     ? 'pass'
     : crossRepo.links.length > 0 ? 'pass' : 'warn';
@@ -155,6 +180,7 @@ async function main(): Promise<void> {
     target_count: targetReports.length,
     targets: targetReports,
     cross_repository: crossRepo,
+    workspace_graph: workspaceSummary,
   };
 
   await fs.ensureDir(path.dirname(args.outputPath));
@@ -169,6 +195,7 @@ function printReport(report: {
   score: number;
   targets: VisionTargetReport[];
   cross_repository: ReturnType<typeof buildCrossRepositoryLinks>;
+  workspace_graph: ReturnType<typeof summarizeWorkspaceGraph>;
 }): void {
   console.log(`Vision gauntlet: ${report.status.toUpperCase()} (${report.score}/100)`);
   for (const target of report.targets) {
@@ -177,8 +204,11 @@ function printReport(report: {
       target.name,
       `CAS ${target.cas_contract.score}/100`,
       `agent ${target.agent_readiness.score}/100`,
+      `defaults ${target.agent_defaults.default_use ? 'ready' : 'review'}`,
+      `integrations ${target.integration_depth.score}/100`,
       `answers ${target.answer_pack.gaps.length === 0 ? 'ready' : `${target.answer_pack.gaps.length} gaps`}`,
       `runtime ${target.runtime_contract.totals.runtime_static_links} links`,
+      `sdk ${target.runtime_sdk.files.length} files`,
       `${Math.round(target.durationMs / 1000)}s`,
     ].join(' | '));
     for (const gate of target.cas_contract.gates.filter(result => result.status !== 'pass').slice(0, 4)) {
@@ -187,8 +217,12 @@ function printReport(report: {
     for (const gap of target.agent_readiness.adoption_gaps.slice(0, 4)) {
       console.log(`  - agent ${gap}`);
     }
+    if (target.test_discovery.status !== 'cas-covered') {
+      console.log(`  - tests ${target.test_discovery.summary}`);
+    }
   }
   console.log(`Cross-repo links: ${report.cross_repository.links.length}, confirmed ${report.cross_repository.certainty.confirmed}, likely ${report.cross_repository.certainty.likely}, conflicts ${report.cross_repository.conflicts.length}`);
+  console.log(`Workspace graph: ${report.workspace_graph.link_count} links, ${report.workspace_graph.linked_repositories} linked repositories, ${report.workspace_graph.conflicts} conflicts`);
 }
 
 if (require.main === module) {

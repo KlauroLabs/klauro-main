@@ -7,6 +7,7 @@ import type {
   CASOutput,
   CASRuntimeStaticLink,
 } from '../../backend/src/types/cas.types';
+import * as path from 'path';
 import {
   assessChangeRisk,
   buildSummary,
@@ -14,6 +15,7 @@ import {
   getCallChain,
   getCallers,
   getCallees,
+  getBehavioralInvariants,
   getCodingContext,
   getDataEntities,
   getEntryPoints,
@@ -249,11 +251,13 @@ function answerImpact(cas: CASOutput) {
 function answerData(cas: CASOutput) {
   const dataEntities = getDataEntities(cas, { limit: 15 });
   const databaseExits = getExitPoints(cas, { type: 'database', limit: 15 });
+  const invariants = getBehavioralInvariants(cas, { invariantType: 'tenant-scope', limit: 10 });
   const hasData = dataEntities.total > 0 || databaseExits.total > 0 || Boolean(cas.database_schema?.entities?.length);
   return answer('data', {
     data_entities: dataEntities,
     database_schema: cas.database_schema || null,
     database_exit_points: databaseExits,
+    behavioral_invariants: invariants,
   }, [
     summaryEvidence('data-summary', hasData ? 'CAS data surfaces found' : 'CAS reports no data surface'),
     ...dataEntities.entities.slice(0, 8).map(entity => ({ type: 'data_entity' as const, id: entity.id, label: entity.name })),
@@ -264,9 +268,11 @@ function answerData(cas: CASOutput) {
 function answerTests(cas: CASOutput) {
   const tests = findTests(cas, { limit: 15 });
   const flowCoverage = getFlowCoverage(cas) as Record<string, unknown>;
+  const invariants = getBehavioralInvariants(cas, { invariantType: 'test-coverage', limit: 5 });
   return answer('tests', {
     tests,
     flow_coverage: flowCoverage,
+    behavioral_invariants: invariants,
   }, [
     summaryEvidence('test-summary', tests.total_suites > 0 ? 'CAS test suites found' : 'CAS reports no test suites'),
     ...tests.suites.slice(0, 8).map(suite => ({ type: 'test' as const, id: suite.file_path, label: suite.name, file: suite.file_path })),
@@ -288,10 +294,12 @@ function answerExternalBoundaries(cas: CASOutput) {
 function answerSecurity(cas: CASOutput) {
   const security = getSecurityOverview(cas);
   const authNodes = searchNodes(cas, 'auth', { limit: 15 });
+  const invariants = getBehavioralInvariants(cas, { invariantType: 'auth-boundary', limit: 10 });
   const hasSecurity = security.boundary_count > 0 || security.context_count > 0 || authNodes.length > 0;
   return answer('security', {
     security,
     auth_nodes: authNodes,
+    behavioral_invariants: invariants,
   }, [
     summaryEvidence('security-summary', hasSecurity ? 'CAS security surfaces found' : 'CAS reports no security surface'),
     ...idsToNodes(cas, authNodes.map(node => node.id)).map(node => nodeRef(node)),
@@ -406,9 +414,12 @@ function detectApiLinks(
       const methodCompatible = !exitMethod || !entryMethod || exitMethod === 'FETCH' || entryMethod === 'ALL' || exitMethod === entryMethod;
       if (!methodCompatible) continue;
 
+      const affinityScore = repositoryAffinityScore(consumer, producer);
+      if (affinityScore === 0 && isGenericApiRoute(exitRoute, entryRoute)) continue;
+
       const routeScore = routeMatchScore(exitRoute, entryRoute);
       const methodScore = !exitMethod || exitMethod === 'FETCH' || !entryMethod || entryMethod === 'ALL' ? 0.86 : 1;
-      const confidenceValue = Math.min(0.98, Math.round(routeScore * methodScore * 100) / 100);
+      const confidenceValue = Math.min(0.98, Math.round((routeScore * methodScore + affinityScore) * 100) / 100);
 
       links.push({
         id: crossRepoId('api', consumer.name, exitPoint.id, producer.name, entryPoint.id),
@@ -427,6 +438,7 @@ function detectApiLinks(
           evidence: [
             { kind: 'graph', source: `${consumer.name}:${exitPoint.id}`, confidence: 0.85 },
             { kind: 'route', source: `${producer.name}:${entryPoint.id}`, file: entryPoint.handler?.file, line: entryPoint.handler?.line, confidence: 0.9 },
+            ...(affinityScore > 0 ? [{ kind: 'naming' as const, source: `${consumer.name}<->${producer.name}`, confidence: affinityScore }] : []),
           ],
         },
       });
@@ -439,14 +451,51 @@ function detectApiLinks(
 function isApiProviderEntry(cas: CASOutput, entryPoint: CASEntryPoint): boolean {
   if (entryPoint.type === 'http') return true;
   if (entryPoint.type !== 'route') return false;
+  const sourceAnalyzer = (entryPoint.source_analyzer || '').toLowerCase();
+  const entryFramework = String(entryPoint.metadata?.framework || '').toLowerCase();
+  if (sourceAnalyzer === 'react' || sourceAnalyzer === 'react-router' || entryFramework === 'react-router') return false;
   const node = cas.nodes.find(candidate => candidate.id === entryPoint.source_node || candidate.id === entryPoint.handler?.node_id);
   const framework = node?.metadata?.framework?.toLowerCase() || '';
   const nodeType = node?.type?.toLowerCase() || '';
   const file = node?.source?.file?.toLowerCase() || entryPoint.handler?.file?.toLowerCase() || '';
+  if (isNonRuntimeSourceFile(file)) return false;
   if (framework.includes('react') || nodeType.includes('component') || nodeType.includes('page')) return false;
+  if (nodeType === 'react_route' || nodeType === 'react_page') return false;
   if (file.includes('/pages/') && !file.includes('/api/')) return false;
   if (file.includes('/app/') && !file.includes('/api/')) return false;
+  if (isFrontendRouteFile(file) && !file.includes('/api/')) return false;
   return Boolean(entryPoint.trigger?.method || entryPoint.trigger?.path);
+}
+
+function isFrontendRouteFile(file: string): boolean {
+  if (!file) return false;
+  const frontendSegments = [
+    '/frontend/',
+    '/vault_frontend/',
+    '/admin-ui/',
+    '/user-ui/',
+    '/client/',
+    '/web/',
+  ];
+  if (frontendSegments.some(segment => file.includes(segment))) return true;
+  return file.endsWith('/src/app.tsx') ||
+    file.endsWith('/src/app.jsx') ||
+    file.endsWith('/src/app.ts') ||
+    file.endsWith('/src/app.js');
+}
+
+function isNonRuntimeSourceFile(file: string): boolean {
+  if (!file) return false;
+  return file.includes('/fixtures/') ||
+    file.includes('/__tests__/') ||
+    file.includes('/tests/') ||
+    file.includes('/test/') ||
+    file.endsWith('.spec.ts') ||
+    file.endsWith('.test.ts') ||
+    file.endsWith('.spec.js') ||
+    file.endsWith('.test.js') ||
+    file.endsWith('.spec.tsx') ||
+    file.endsWith('.test.tsx');
 }
 
 function isExternalAbsoluteEndpoint(value: string): boolean {
@@ -459,6 +508,34 @@ function isExternalAbsoluteEndpoint(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isGenericApiRoute(...routes: string[]): boolean {
+  const generic = new Set([
+    'auth',
+    'login',
+    'logout',
+    'register',
+    'signup',
+    'signin',
+    'users',
+    'user',
+    'profile',
+    'account',
+    'accounts',
+    'health',
+    'status',
+    'me',
+  ]);
+
+  return routes.some(route => {
+    const topics = route.split('/')
+      .filter(Boolean)
+      .map(part => part.toLowerCase())
+      .filter(part => !part.startsWith(':') && !/^v\d+$/.test(part) && part !== 'api');
+    if (topics.length === 0 || topics.length > 2) return false;
+    return topics.every(topic => generic.has(topic));
+  });
 }
 
 function detectSharedDatabaseLinks(
@@ -1154,6 +1231,41 @@ function routeMatchScore(left: string, right: string): number {
   return 0.55;
 }
 
+function repositoryAffinityScore(
+  consumer: { path: string; name: string },
+  producer: { path: string; name: string }
+): number {
+  const consumerParts = repositoryIdentityParts(consumer);
+  const producerParts = repositoryIdentityParts(producer);
+  const shared = consumerParts.filter(part => producerParts.includes(part));
+  if (shared.length >= 2) return 0.1;
+  if (shared.length === 1) return 0.06;
+  const leftPrefix = normalizeTopic(consumer.name).split('-')[0];
+  const rightPrefix = normalizeTopic(producer.name).split('-')[0];
+  return leftPrefix && leftPrefix === rightPrefix ? 0.06 : 0;
+}
+
+function repositoryIdentityParts(repo: { path: string; name: string }): string[] {
+  const homeName = path.basename(process.env.HOME || '').toLowerCase();
+  const userName = (process.env.USER || '').toLowerCase();
+  const ignored = new Set([
+    'users',
+    'dev',
+    'personal',
+    'proof-of-concept',
+    'backend',
+    'frontend',
+    homeName,
+    userName,
+  ].filter(Boolean));
+  const parts = repo.path.split(/[\\/]/).slice(-4).map(normalizeTopic).filter(part =>
+    part.length > 2 &&
+    !ignored.has(part)
+  );
+  parts.push(...normalizeTopic(repo.name).split('-').filter(part => part.length > 2 && !ignored.has(part)));
+  return [...new Set(parts)];
+}
+
 function normalizeHttpMethod(value?: string): string | undefined {
   if (!value) return undefined;
   const normalized = value.toUpperCase();
@@ -1181,6 +1293,11 @@ function findCrossRepoLinkConflicts(links: CASCrossRepositoryLink[]): Array<{ id
   }
 
   return [...byConsumerContract.entries()]
+    .map(([key, candidates]) => {
+      const maxConfidence = Math.max(...candidates.map(link => link.metadata?.confidence || 0));
+      const competing = candidates.filter(link => (link.metadata?.confidence || 0) >= maxConfidence - 0.05);
+      return [key, competing] as const;
+    })
     .filter(([, candidates]) => new Set(candidates.map(link => link.target_repository?.path || '')).size > 1)
     .map(([key, candidates]) => ({
       id: `conflict:${normalizeTopic(key)}`,

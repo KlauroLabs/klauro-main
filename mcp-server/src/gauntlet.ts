@@ -158,19 +158,21 @@ const DEFAULT_TARGETS: Array<{ name: string; relativePath: string; expectation: 
     }
   },
   {
-    name: 'soundsync',
-    relativePath: 'SoundSync',
+    name: 'soundsyft',
+    relativePath: 'personal/cleanmusic',
     expectation: {
       minNodes: 75,
-      minEdges: 40
+      minEdges: 40,
+      requiredLanguages: ['Python']
     }
   },
   {
-    name: 'soundsync-lower',
-    relativePath: 'soundsync',
+    name: 'soundsyft-backend',
+    relativePath: 'personal/cleanmusic/backend',
     expectation: {
       minNodes: 75,
-      minEdges: 40
+      minEdges: 40,
+      requiredLanguages: ['Python']
     }
   }
 ];

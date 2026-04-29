@@ -50,6 +50,8 @@ export interface CASOutput {
   change_risk_summary?: CASChangeRiskSummary;
   data_entities?: CASDataEntity[];
   data_summary?: CASDataSummary;
+  behavioral_invariants?: CASBehavioralInvariant[];
+  behavioral_invariant_summary?: CASBehavioralInvariantSummary;
   security_boundaries?: CASSecurityBoundary[];
   security_summary?: CASSecuritySummary;
   flow_coverage?: CASFlowCoverage[];
@@ -2028,6 +2030,60 @@ export interface CASDataSummary {
   validation_gaps: Array<{
     entity_id: string;
     missing_validation: string;
+  }>;
+}
+
+// v1.8.0 Behavior-Level Invariants
+
+export interface CASBehavioralInvariant {
+  id: string;
+  name: string;
+  invariant_type: 'tenant-scope' | 'auth-boundary' | 'authorization' |
+                  'db-constraint' | 'migration-contract' | 'test-coverage' |
+                  'data-lifecycle' | 'business-rule';
+  description: string;
+  scope: {
+    node_ids?: string[];
+    entry_point_ids?: string[];
+    entity_names?: string[];
+    field_names?: string[];
+    file_paths?: string[];
+  };
+  enforcement: Array<{
+    source: 'code' | 'decorator' | 'database-schema' | 'migration' |
+            'test' | 'configuration' | 'security-boundary' | 'naming';
+    mechanism: string;
+    confidence: 'enforced' | 'inferred' | 'missing';
+    node_id?: string;
+    file?: string;
+    line?: number;
+  }>;
+  evidence: Array<{
+    source: 'node' | 'entry_point' | 'database_schema' | 'security_boundary' |
+            'test_suite' | 'migration_file' | 'source_file';
+    id?: string;
+    file?: string;
+    line?: number;
+    excerpt?: string;
+  }>;
+  related_tests?: string[];
+  related_boundaries?: string[];
+  related_entities?: string[];
+  gaps?: string[];
+  confidence: 'high' | 'medium' | 'low';
+}
+
+export interface CASBehavioralInvariantSummary {
+  total: number;
+  by_type: Record<string, number>;
+  by_confidence: Record<string, number>;
+  enforced: number;
+  inferred: number;
+  missing: number;
+  gaps: Array<{
+    invariant_id: string;
+    gap: string;
+    severity: 'high' | 'medium' | 'low';
   }>;
 }
 

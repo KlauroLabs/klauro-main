@@ -2,7 +2,7 @@ import type {
   CASOutput, CASNode, CASEdge, CASEntryPoint, CASExitPoint,
   CASCallChain, CASMethodCall, CASDecorator, CASIntent,
   CASChangeRisk, CASTemporalStability, CASFlowCoverage,
-  ChangeHistoryEntry, ChangeAggregate, HeatMapData, ImpactAnalysis,
+  CASTestSuite, ChangeHistoryEntry, ChangeAggregate, HeatMapData, ImpactAnalysis,
 } from '../../backend/src/types/cas.types';
 import {
   loadChangeHistory,
@@ -484,6 +484,68 @@ export function getSecurityOverview(cas: CASOutput) {
   };
 }
 
+export function getBehavioralInvariants(
+  cas: CASOutput,
+  opts: { invariantType?: string; target?: string; limit?: number; offset?: number } = {}
+) {
+  let invariants = cas.behavioral_invariants || [];
+  if (opts.invariantType) {
+    invariants = invariants.filter(invariant => invariant.invariant_type === opts.invariantType);
+  }
+  if (opts.target) {
+    const target = opts.target.toLowerCase();
+    const targetNode = cas.nodes.find(node => node.id === opts.target);
+    invariants = invariants.filter(invariant => {
+      const scope = invariant.scope || {};
+      const nodeMatch = scope.node_ids?.includes(opts.target!) ||
+        (targetNode?.source?.file && scope.file_paths?.some(file => pathsCompatibleForBehavior(file, targetNode.source!.file!)));
+      const text = [
+        invariant.id,
+        invariant.name,
+        invariant.description,
+        ...(scope.entity_names || []),
+        ...(scope.field_names || []),
+        ...(scope.file_paths || []),
+      ].join(' ').toLowerCase();
+      return Boolean(nodeMatch || text.includes(target));
+    });
+  }
+
+  const limit = opts.limit || 25;
+  const offset = opts.offset || 0;
+  return {
+    total: invariants.length,
+    offset,
+    limit,
+    summary: cas.behavioral_invariant_summary || null,
+    invariants: invariants.slice(offset, offset + limit).map(invariant => ({
+      id: invariant.id,
+      name: invariant.name,
+      invariant_type: invariant.invariant_type,
+      description: invariant.description,
+      scope: invariant.scope,
+      enforcement_summary: {
+        enforced: invariant.enforcement.filter(point => point.confidence === 'enforced').length,
+        inferred: invariant.enforcement.filter(point => point.confidence === 'inferred').length,
+        missing: invariant.enforcement.filter(point => point.confidence === 'missing').length,
+      },
+      enforcement: invariant.enforcement.slice(0, 10),
+      evidence: invariant.evidence.slice(0, 10),
+      related_tests: invariant.related_tests,
+      related_boundaries: invariant.related_boundaries,
+      related_entities: invariant.related_entities,
+      gaps: invariant.gaps || [],
+      confidence: invariant.confidence,
+    })),
+  };
+}
+
+function pathsCompatibleForBehavior(left: string, right: string): boolean {
+  const normalizedLeft = left.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+  const normalizedRight = right.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+  return normalizedLeft === normalizedRight || normalizedLeft.endsWith(`/${normalizedRight}`) || normalizedRight.endsWith(`/${normalizedLeft}`);
+}
+
 export function getStability(cas: CASOutput, nodeId?: string) {
   if (nodeId) {
     return (cas.temporal_stability || []).find(s => s.node_id === nodeId) || null;
@@ -896,28 +958,65 @@ export function findTests(cas: CASOutput, opts: { nodeId?: string; filePath?: st
   const suites = cas.test_suites || [];
   const mocks = cas.mocks || [];
   const fixtures = cas.fixtures || [];
+  const limit = opts.limit || 25;
+  const offset = opts.offset || 0;
 
   if (opts.nodeId) {
-    const relevantSuites = suites.filter(s =>
-      s.coverage?.nodes_tested?.includes(opts.nodeId!) ||
-      s.tests.some(t => t.targets?.includes(opts.nodeId!))
-    );
+    const node = cas.nodes.find(n => n.id === opts.nodeId);
+    const rankedSuites = rankTestSuitesForNode(cas, suites, opts.nodeId, node);
+    const relevantSuites = rankedSuites.map(match => match.suite);
     const relevantMocks = mocks.filter(m =>
       m.target_node === opts.nodeId || m.used_by?.includes(opts.nodeId!)
     );
-    return { total_suites: relevantSuites.length, suites: relevantSuites, mocks: relevantMocks, fixtures };
+    return {
+      total_suites: relevantSuites.length,
+      suites: relevantSuites.slice(offset, offset + limit),
+      mocks: relevantMocks,
+      fixtures,
+      resolution: {
+        strategy: 'explicit-coverage-plus-related-test-files',
+        node_file: node?.source?.file || null,
+        matches: rankedSuites.slice(offset, offset + limit).map(match => ({
+          file_path: match.suite.file_path,
+          reason: match.reason,
+          score: match.score,
+        })),
+      },
+    };
   }
 
   if (opts.filePath) {
-    const normalized = opts.filePath.replace(/\\/g, '/');
-    const relevantSuites = suites.filter(s =>
-      s.file_path.replace(/\\/g, '/').includes(normalized)
-    );
-    return { total_suites: relevantSuites.length, suites: relevantSuites, mocks, fixtures };
+    const normalized = normalizeProjectPathForQuery(opts.filePath);
+    const rankedSuites = uniqueSuitesForQuery(suites
+      .map(suite => {
+        const testFile = normalizeProjectPathForQuery(suite.file_path);
+        const score = testFile.includes(normalized)
+          ? 100
+          : relatedTestCandidates(normalized).some(candidate => projectPathsMatchForQuery(testFile, candidate)) ? 90
+            : pathStemForQuery(testFile) === pathStemForQuery(normalized) ? 65
+              : 0;
+        return { suite, score, reason: score >= 90 ? 'file path match' : score > 0 ? 'related test filename' : '' };
+      })
+      .filter(match => match.score > 0)
+      .sort((left, right) => right.score - left.score));
+    const relevantSuites = rankedSuites.map(match => match.suite);
+    return {
+      total_suites: relevantSuites.length,
+      suites: relevantSuites.slice(offset, offset + limit),
+      mocks,
+      fixtures,
+      resolution: {
+        strategy: 'file-path-plus-related-test-files',
+        file_path: opts.filePath,
+        matches: rankedSuites.slice(offset, offset + limit).map(match => ({
+          file_path: match.suite.file_path,
+          reason: match.reason,
+          score: match.score,
+        })),
+      },
+    };
   }
 
-  const limit = opts.limit || 25;
-  const offset = opts.offset || 0;
   return {
     total_suites: suites.length,
     total_mocks: mocks.length,
@@ -928,6 +1027,66 @@ export function findTests(cas: CASOutput, opts: { nodeId?: string; filePath?: st
     mocks: mocks.slice(offset, offset + limit),
     fixtures: fixtures.slice(offset, offset + limit),
   };
+}
+
+function rankTestSuitesForNode(cas: CASOutput, suites: CASTestSuite[], nodeId: string, node?: CASNode) {
+  const nodeFile = node?.source?.file ? normalizeProjectPathForQuery(node.source.file) : '';
+  const candidates = nodeFile ? relatedTestCandidates(nodeFile) : [];
+  const nodeStem = nodeFile ? pathStemForQuery(nodeFile) : '';
+  return uniqueSuitesForQuery(suites
+    .map(suite => {
+      const testFile = normalizeProjectPathForQuery(suite.file_path);
+      const coversNode = suite.coverage?.nodes_tested?.includes(nodeId) || suite.tests.some(test => test.targets?.includes(nodeId));
+      const colocated = candidates.some(candidate => projectPathsMatchForQuery(testFile, candidate));
+      const sameStem = Boolean(nodeStem && pathStemForQuery(testFile) === nodeStem);
+      const score = coversNode ? 100 : colocated ? 90 : sameStem ? 65 : 0;
+      const reason = coversNode ? 'explicit CAS coverage' : colocated ? 'co-located test file' : sameStem ? 'matching test filename' : '';
+      return { suite, score, reason };
+    })
+    .filter(match => match.score > 0)
+    .sort((left, right) => right.score - left.score));
+}
+
+function uniqueSuitesForQuery(matches: Array<{ suite: CASTestSuite; score: number; reason: string }>) {
+  const seen = new Set<string>();
+  const unique: Array<{ suite: CASTestSuite; score: number; reason: string }> = [];
+  for (const match of matches) {
+    if (seen.has(match.suite.file_path)) continue;
+    seen.add(match.suite.file_path);
+    unique.push(match);
+  }
+  return unique;
+}
+
+function relatedTestCandidates(sourceFile: string): string[] {
+  return [
+    sourceFile.replace(/\.([cm]?[jt]sx?)$/, '.spec.$1'),
+    sourceFile.replace(/\.([cm]?[jt]sx?)$/, '.test.$1'),
+    sourceFile.replace(/\.py$/, '_test.py'),
+    sourceFile.replace(/\.py$/, '.test.py'),
+    sourceFile.replace(/\.go$/, '_test.go'),
+    sourceFile.replace(/\.rs$/, '_test.rs'),
+  ];
+}
+
+function normalizeProjectPathForQuery(file: string): string {
+  return file.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+}
+
+function projectPathsMatchForQuery(left: string, right: string): boolean {
+  const normalizedLeft = normalizeProjectPathForQuery(left);
+  const normalizedRight = normalizeProjectPathForQuery(right);
+  return normalizedLeft === normalizedRight || normalizedLeft.endsWith(`/${normalizedRight}`) || normalizedRight.endsWith(`/${normalizedLeft}`);
+}
+
+function pathStemForQuery(file: string): string {
+  const base = file.split('/').pop() || file;
+  return base
+    .replace(/\.(spec|test)\.([cm]?[jt]sx?)$/i, '')
+    .replace(/_test\.(py|go|rs)$/i, '')
+    .replace(/\.test\.py$/i, '')
+    .replace(/\.([cm]?[jt]sx?|py|go|rs)$/i, '')
+    .toLowerCase();
 }
 
 export function getTestSummary(cas: CASOutput) {

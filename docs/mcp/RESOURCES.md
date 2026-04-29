@@ -12,6 +12,38 @@ List of all analyzed codebases with metadata.
 
 ---
 
+## `unravl://workspaces`
+
+List of persisted multi-repository workspace graphs.
+
+**Returns:** Array of workspace graph entries with id, name, timestamps, repository count, link count, and storage file.
+
+---
+
+## `unravl://workspace/{workspace_id_or_name}/graph`
+
+Persisted cross-repository workspace graph.
+
+**Includes:** repositories, repository contracts, detected links, confidence, evidence counts, conflicts, and review decisions.
+
+---
+
+## `unravl://agentic-benchmarks`
+
+List of persisted with-Unravl vs without-Unravl benchmark reports.
+
+**Returns:** Array of report entries with id, timestamps, status, score, target count, and storage file.
+
+---
+
+## `unravl://agentic-benchmark/{report_id}`
+
+One persisted agentic benchmark report.
+
+**Includes:** JSON report, Markdown rendering, estimated token/file/speed deltas, and the two-agent live-run sheet.
+
+---
+
 ## `unravl://{project_name}/overview`
 
 System overview combining architecture summary, tech stack, system purpose, capabilities, and progressive disclosure levels.
@@ -44,11 +76,59 @@ Default-use readiness score and gaps for agent adoption.
 
 ---
 
+## `unravl://{project_name}/agent-doctor`
+
+One-shot default-use health report for coding agents.
+
+**Includes:** pass/warn/fail status, `default_use`, readiness report, analysis freshness, test discovery evidence, runtime event contract proof, runtime SDK package proof, golden snapshot comparison, and first recommended MCP tools.
+
+---
+
+## `unravl://{project_name}/agent-defaults`
+
+Install-ready default-use instructions for coding agents.
+
+**Includes:** required agent rule, MCP server command, first calls, prompt text, doctor output, and bootstrap output.
+
+---
+
+## `unravl://{project_name}/freshness`
+
+Stored analysis freshness against the current source tree.
+
+**Includes:** fresh/stale/no-analysis status, analyzed-at timestamp, latest source modification time, source file counts, tracked file counts, modified sample files, and recommendation.
+
+---
+
+## `unravl://{project_name}/test-discovery`
+
+Source test evidence compared to the CAS test surface.
+
+**Includes:** status, CAS suite count, discovered source test file count, potential uncovered test files, test configuration files, sample source test files, and summary.
+
+---
+
 ## `unravl://{project_name}/runtime-event-contract`
 
 SDK-facing runtime event schema for CAS correlation.
 
 **Includes:** transport details, event fields, correlation order, per-runtime-link event payloads, SDK method contract, totals, and gaps.
+
+---
+
+## `unravl://{project_name}/runtime-sdk`
+
+Deterministic TypeScript runtime SDK package generated from the CAS runtime contract.
+
+**Includes:** package manifest, transport target, generated files with hashes, quick-start commands, and proof metadata tying SDK output to runtime links.
+
+---
+
+## `unravl://{project_name}/integration-depth`
+
+Library and platform integration depth report.
+
+**Includes:** jobs, brokers, auth, payments, AI SDKs, infrastructure, observability, cache, and persistence coverage, with evidence, found surfaces, missing surfaces, and recommended analyzers.
 
 ---
 
@@ -116,7 +196,15 @@ Resources are best for loading a complete view of a domain in a single read. Too
 |------|-----|
 | Start an agent session | Resource: `unravl://{name}/agent-bootstrap` or Prompt: `agent_coding_session` |
 | Check whether agents should default to MCP | Resource: `unravl://{name}/agent-readiness` or Tool: `evaluate_agent_readiness` |
+| Run the full agent default-use doctor | Resource: `unravl://{name}/agent-doctor` or Tool: `get_agent_doctor` |
+| Install default-use agent instructions | Resource: `unravl://{name}/agent-defaults` or Tool: `install_agent_default_config` |
+| Check whether stored analysis is stale | Resource: `unravl://{name}/freshness` or Tool: `get_analysis_freshness` |
+| Verify whether tests were found or missed | Resource: `unravl://{name}/test-discovery` or Tool: `get_test_discovery_evidence` |
 | Get SDK runtime event payloads | Resource: `unravl://{name}/runtime-event-contract` or Tool: `get_runtime_event_contract` |
+| Generate a runtime SDK package | Resource: `unravl://{name}/runtime-sdk` or Tool: `get_runtime_sdk_package` |
+| Check integration analyzer depth | Resource: `unravl://{name}/integration-depth` or Tool: `get_integration_depth_report` |
+| Load a multi-repo graph | Resource: `unravl://workspace/{id}/graph` or Tool: `get_workspace_graph` |
+| Load benchmark proof | Resource: `unravl://agentic-benchmark/latest` or Tool: `get_agentic_benchmark_report` |
 | Validate CAS completeness | Resource: `unravl://{name}/cas-contract` or Tool: `validate_cas_contract` |
 | Load all endpoints at once | Resource: `unravl://{name}/endpoints` |
 | Filter entry points by type | Tool: `get_entry_points` with `type` param |

@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as nodePath from 'path';
 import type { CASEntryPoint, CASOutput, CASNode } from '../../backend/src/types/cas.types';
 import {
   assessChangeRisk,
@@ -6,6 +8,7 @@ import {
   getCallees,
   getCallChain,
   getCallers,
+  getBehavioralInvariants,
   getCodingContext,
   getEntryPoints,
   getErrorContracts,
@@ -16,6 +19,7 @@ import {
   searchNodes,
 } from './query';
 import { runAnswerPack } from './product';
+import type { TestDiscoveryEvidence } from './test-discovery';
 
 export type AgentTaskType = 'orient' | 'modify' | 'debug' | 'review' | 'trace' | 'cross-repo' | 'runtime';
 type GateStatus = 'pass' | 'warn' | 'fail';
@@ -25,6 +29,8 @@ export interface AgentTask {
   target?: string;
   related_paths?: string[];
   runtime_event?: Record<string, unknown>;
+  instructions?: string;
+  success_criteria?: string[];
 }
 
 interface AgentToolStep {
@@ -60,10 +66,20 @@ export interface AgentReadinessReport {
     analysis_facts: number;
     tests: number;
     analysis_errors: number;
+    behavioral_invariants?: {
+      total: number;
+      gaps: number;
+    };
+    test_discovery?: {
+      status: string;
+      source_test_files: number;
+      potential_uncovered_test_files: number;
+    };
   };
   gates: AgentReadinessGate[];
   adoption_gaps: string[];
   required_agent_behavior: string[];
+  test_discovery?: TestDiscoveryEvidence;
 }
 
 interface FileReadPlanItem {
@@ -71,6 +87,28 @@ interface FileReadPlanItem {
   reason: string;
   node_ids: string[];
   line?: number;
+}
+
+interface AgentTestSuiteRef {
+  file_path?: string;
+  name?: string;
+}
+
+interface AgentValidationCommand {
+  command: string;
+  purpose: string;
+  scope: 'focused-test' | 'typecheck' | 'build' | 'broad-test';
+  files?: string[];
+  confidence: number;
+}
+
+interface AgentValidationPlan {
+  strategy: string;
+  commands: AgentValidationCommand[];
+  tests_to_inspect: Array<{ file: string; name?: string; reason: string }>;
+  manual_checks: string[];
+  environment_rule: string;
+  gaps: string[];
 }
 
 export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTask = {}) {
@@ -173,12 +211,18 @@ export function getAgentWorkPacket(cas: CASOutput, path: string, taskInput: Agen
   const errorContracts = selectedNode && task.task_type === 'debug'
     ? getErrorContracts(cas, selectedNode.id, 'both')
     : null;
+  const behavioralInvariants = getBehavioralInvariants(cas, {
+    target: selectedNode?.id || task.target,
+    limit: 12,
+  });
   const entryContext = buildEntryContext(cas, task, selectedNode?.id);
   const fileReadPlan = buildFileReadPlan(cas, selectedNode || undefined, callers, callees, tests, entryContext);
+  const validationPlan = buildValidationPlan(path, cas, task, selectedNode || undefined, tests, fileReadPlan, risk, behavioralInvariants);
   const gaps = [
     ...readiness.adoption_gaps,
     ...targetResolution.gaps,
     ...(fileReadPlan.length === 0 ? ['file-read-plan: no concrete source files resolved'] : []),
+    ...validationPlan.gaps.map(gap => `validation-plan: ${gap}`),
   ];
 
   return {
@@ -201,9 +245,11 @@ export function getAgentWorkPacket(cas: CASOutput, path: string, taskInput: Agen
       callees,
       tests,
       error_contracts: errorContracts,
+      behavioral_invariants: behavioralInvariants,
       entry_context: entryContext,
     },
     file_read_plan: fileReadPlan,
+    validation_plan: validationPlan,
     next_mcp_calls: plan.steps,
     source_reading_rule: 'Read only the files in file_read_plan first. Expand only when those files or MCP evidence show a concrete gap.',
     gaps,
@@ -256,6 +302,16 @@ function resolveTaskTarget(cas: CASOutput, target?: string) {
       (node.source.file.endsWith(target) || target.endsWith(node.source.file))
     ).slice(0, 10);
     for (const node of fileMatches) {
+      candidateNodes.set(node.id, node);
+    }
+
+    const naturalMatches = cas.nodes
+      .map(node => ({ node, score: scoreNodeForTarget(node, target) }))
+      .filter(candidate => candidate.score >= 55)
+      .sort((left, right) => right.score - left.score)
+      .slice(0, 10)
+      .map(candidate => candidate.node);
+    for (const node of naturalMatches) {
       candidateNodes.set(node.id, node);
     }
 
@@ -312,6 +368,16 @@ function scoreNodeForTarget(node: CASNode, target?: string): number {
   const name = node.name.toLowerCase();
   const qualifiedName = node.qualified_name?.toLowerCase() || '';
   const file = node.source?.file?.toLowerCase() || '';
+  const targetTokens = meaningfulTokens(target);
+  const nodeTokens = meaningfulTokens([
+    node.name,
+    node.qualified_name,
+    node.source?.file,
+    node.description,
+    ...(node.tags || []),
+  ].filter(Boolean).join(' '));
+  const normalizedQuery = normalizeIdentifier(target);
+  const normalizedName = normalizeIdentifier(node.name);
   let score = 0;
 
   if (node.id === target) score += 200;
@@ -320,14 +386,45 @@ function scoreNodeForTarget(node: CASNode, target?: string): number {
   if (name.includes(query)) score += 45;
   if (qualifiedName.includes(query)) score += 30;
   if (file.includes(query)) score += 25;
+  if (normalizedName.length >= 6 && normalizedQuery.includes(normalizedName)) score += 85;
+
+  const matchedTokens = targetTokens.filter(token =>
+    nodeTokens.some(nodeToken => nodeToken === token || nodeToken.includes(token) || (token.length >= 5 && token.includes(nodeToken)))
+  );
+  if (matchedTokens.length > 0) {
+    score += matchedTokens.length * 14;
+    score += Math.round((matchedTokens.length / Math.max(1, targetTokens.length)) * 45);
+  }
+  const nodeNameTokens = meaningfulTokens(node.name);
+  if (nodeNameTokens.length > 1 && nodeNameTokens.every(token => targetTokens.includes(token))) {
+    score += 60;
+  }
 
   const preferredTypes = ['controller', 'service', 'guard', 'middleware', 'gateway', 'resolver', 'handler', 'route', 'api_route', 'react_page', 'custom_hook', 'function', 'method'];
   if (preferredTypes.includes(node.type)) score += 20;
   if (node.type === 'file' || node.type === 'import') score -= 100;
+  if (node.type === 'mock') score -= 90;
+  if (node.type === 'test' || node.category === 'test' || node.source?.file?.toLowerCase().includes('.spec.')) score -= 45;
+  if (node.type === 'property' || node.type === 'variable') score -= 45;
   if (node.type.toLowerCase().includes('dto')) score -= 20;
   if (node.name.toLowerCase().includes('dto')) score -= 20;
 
   return score;
+}
+
+function meaningfulTokens(value: string): string[] {
+  const stopwords = new Set(['the', 'a', 'an', 'and', 'or', 'to', 'for', 'of', 'in', 'on', 'by', 'with', 'when', 'from', 'into', 'must', 'should', 'only', 'same', 'different', 'uniqueness', 'unique']);
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/[^a-zA-Z0-9]+/g, ' ')
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(token => token.length >= 2 && !stopwords.has(token));
+}
+
+function normalizeIdentifier(value: string): string {
+  return value.replace(/[^a-zA-Z0-9]+/g, '').toLowerCase();
 }
 
 function entryPointMatchesTarget(entry: CASEntryPoint, target: string): boolean {
@@ -431,7 +528,12 @@ function buildFileReadPlan(
     addNode(cas.nodes.find(node => node.id === callee.node_id), `callee via ${callee.via}`);
   }
 
-  for (const suite of (tests.suites || []).slice(0, 5) as Array<{ file_path?: string; name?: string }>) {
+  const testSuites = uniqueTestSuites([
+    ...((tests.suites || []).slice(0, 5) as AgentTestSuiteRef[]),
+    ...inferRelatedTestSuites(cas, selectedNode),
+  ]).slice(0, 8);
+
+  for (const suite of testSuites) {
     if (!suite.file_path) continue;
     const file = normalizeSourceFile(suite.file_path, rootPath);
     const existing = items.get(file);
@@ -465,6 +567,163 @@ function buildFileReadPlan(
   return [...items.values()].slice(0, 12);
 }
 
+function buildValidationPlan(
+  projectPath: string,
+  cas: CASOutput,
+  task: Required<Pick<AgentTask, 'task_type'>> & AgentTask,
+  selectedNode: CASNode | undefined,
+  tests: ReturnType<typeof findTests>,
+  fileReadPlan: FileReadPlanItem[],
+  risk: ReturnType<typeof assessChangeRisk> | null,
+  behavioralInvariants: ReturnType<typeof getBehavioralInvariants>
+): AgentValidationPlan {
+  const scripts = readPackageScripts(projectPath);
+  const testFiles = uniqueStrings([
+    ...(tests.suites || []).map((suite: AgentTestSuiteRef) => suite.file_path).filter((file): file is string => Boolean(file)),
+    ...fileReadPlan
+      .filter(item => isTestPath(item.file))
+      .map(item => item.file),
+  ].map(file => normalizeValidationFile(projectPath, file))).slice(0, 8);
+  const commands: AgentValidationCommand[] = [];
+  const focusedTestCommand = buildFocusedTestCommand(projectPath, scripts, testFiles);
+  if (focusedTestCommand) {
+    commands.push({
+      command: focusedTestCommand,
+      purpose: testFiles.length > 0 ? 'Run tests that cover or sit next to the selected target.' : 'Run the repository test script because no focused test file was resolved.',
+      scope: testFiles.length > 0 ? 'focused-test' : 'broad-test',
+      files: testFiles,
+      confidence: testFiles.length > 0 ? 0.9 : 0.58,
+    });
+  }
+
+  const typecheckCommand = buildScriptCommand(scripts, ['typecheck', 'type-check', 'check', 'tsc']);
+  if (typecheckCommand && typecheckCommand !== focusedTestCommand) {
+    commands.push({
+      command: typecheckCommand,
+      purpose: 'Verify type contracts after the edit.',
+      scope: 'typecheck',
+      confidence: 0.78,
+    });
+  }
+
+  const buildCommand = buildScriptCommand(scripts, ['build']);
+  if (buildCommand && task.task_type !== 'orient') {
+    commands.push({
+      command: buildCommand,
+      purpose: 'Verify the package still builds when the touched files are compile-time sensitive.',
+      scope: 'build',
+      confidence: 0.64,
+    });
+  }
+
+  const manualChecks = [
+    selectedNode ? `Confirm the edit preserves the contract of ${selectedNode.name}.` : 'Confirm the edit target was resolved before changing source files.',
+    ...(task.success_criteria || []).map(criterion => `Verify success criterion: ${criterion}`),
+    ...behavioralInvariants.invariants.slice(0, 6).map((invariant: any) => `Preserve invariant: ${invariant.name} - ${invariant.description}`),
+  ];
+  const riskReasons = risk?.risk
+    ? [
+      risk.risk.risk_level ? `Risk level is ${risk.risk.risk_level}.` : '',
+      ...(risk.risk.risk_factors || []).map(factor => `${factor.factor}: ${factor.details}`),
+      ...(risk.risk.recommendations || []),
+    ].filter(Boolean)
+    : [];
+  manualChecks.push(...riskReasons.slice(0, 4));
+
+  const testsToInspect = testFiles.map(file => ({
+    file,
+    name: (tests.suites || []).find((suite: AgentTestSuiteRef) => suite.file_path === file)?.name,
+    reason: 'Use this as the focused validation surface before broad test exploration.',
+  }));
+
+  return {
+    strategy: testFiles.length > 0
+      ? 'focused-tests-first'
+      : commands.length > 0 ? 'repo-script-fallback' : 'manual-validation-required',
+    commands: commands.slice(0, 4),
+    tests_to_inspect: testsToInspect,
+    manual_checks: uniqueStrings(manualChecks).slice(0, 8),
+    environment_rule: 'Do not install dependencies or run broad environment setup unless the task explicitly asks for it. If focused validation cannot run in the existing checkout, report that as an environment blocker.',
+    gaps: commands.length === 0 ? ['no runnable validation command inferred from package scripts or test files'] : [],
+  };
+}
+
+function readPackageScripts(projectPath: string): Record<string, string> {
+  const packagePath = nodePath.join(projectPath, 'package.json');
+  if (!fs.existsSync(packagePath)) return {};
+  try {
+    const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+    return pkg && typeof pkg === 'object' && pkg.scripts && typeof pkg.scripts === 'object'
+      ? pkg.scripts
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function buildFocusedTestCommand(projectPath: string, scripts: Record<string, string>, testFiles: string[]): string | null {
+  if (testFiles.length === 0) {
+    return buildScriptCommand(scripts, ['test']);
+  }
+  const quotedFiles = testFiles.map(shellQuoteForAgent).join(' ');
+  const testScript = pickScript(scripts, ['test:unit', 'unit', 'test']);
+  if (testScript) {
+    return scriptCommand(testScript, true, quotedFiles);
+  }
+  const first = testFiles[0];
+  if (first.endsWith('.py')) return `pytest ${quotedFiles}`;
+  if (first.endsWith('.go')) return `go test ${uniqueGoPackages(projectPath, testFiles).join(' ')}`;
+  if (first.endsWith('.rs')) return 'cargo test';
+  if (first.match(/\.[cm]?[jt]sx?$/)) return `npm test -- ${quotedFiles}`;
+  return null;
+}
+
+function buildScriptCommand(scripts: Record<string, string>, preferred: string[]): string | null {
+  const script = pickScript(scripts, preferred);
+  return script ? scriptCommand(script, false) : null;
+}
+
+function pickScript(scripts: Record<string, string>, preferred: string[]): string | null {
+  for (const name of preferred) {
+    if (scripts[name]) return name;
+  }
+  return null;
+}
+
+function scriptCommand(script: string, passFiles: boolean, files = ''): string {
+  const base = script === 'test' ? 'npm test' : `npm run ${script}`;
+  return passFiles ? `${base} -- ${files}` : base;
+}
+
+function uniqueGoPackages(projectPath: string, testFiles: string[]): string[] {
+  return uniqueStrings(testFiles.map(file => {
+    const directory = nodePath.dirname(nodePath.resolve(projectPath, file));
+    const relative = nodePath.relative(projectPath, directory).replace(/\\/g, '/');
+    return relative ? `./${relative}` : './...';
+  }));
+}
+
+function shellQuoteForAgent(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function normalizeValidationFile(projectPath: string, file: string): string {
+  const normalizedFile = file.replace(/\\/g, '/').replace(/^\.\//, '');
+  const normalizedRoot = projectPath.replace(/\\/g, '/').replace(/\/$/, '');
+  if (normalizedFile.startsWith(`${normalizedRoot}/`)) {
+    return normalizedFile.slice(normalizedRoot.length + 1);
+  }
+  return normalizedFile;
+}
+
+function isTestPath(file: string): boolean {
+  return /(\.(spec|test)\.[cm]?[jt]sx?|_test\.(py|go|rs)|\.test\.py)$/i.test(file);
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
+}
+
 function normalizeSourceFile(file: string, rootPath?: string): string {
   const normalizedFile = file.replace(/\\/g, '/');
   if (!rootPath) return normalizedFile.replace(/^\.\//, '');
@@ -473,6 +732,54 @@ function normalizeSourceFile(file: string, rootPath?: string): string {
     return normalizedFile.slice(normalizedRoot.length + 1);
   }
   return normalizedFile.replace(/^\.\//, '');
+}
+
+function inferRelatedTestSuites(cas: CASOutput, selectedNode?: CASNode): AgentTestSuiteRef[] {
+  if (!selectedNode?.source?.file) return [];
+  const rootPath = cas.system?.root_path;
+  const sourceFile = normalizeSourceFile(selectedNode.source.file, rootPath);
+  const sourceStem = pathStem(sourceFile);
+  const colocatedCandidates = colocatedTestCandidates(sourceFile);
+
+  return ((cas.test_suites || []) as AgentTestSuiteRef[]).filter(suite => {
+    if (!suite.file_path) return false;
+    const testFile = normalizeSourceFile(suite.file_path, rootPath);
+    if (colocatedCandidates.some(candidate => projectPathsMatch(testFile, candidate))) return true;
+    return Boolean(sourceStem && pathStem(testFile) === sourceStem);
+  });
+}
+
+function uniqueTestSuites(suites: AgentTestSuiteRef[]): AgentTestSuiteRef[] {
+  const seen = new Set<string>();
+  const unique: AgentTestSuiteRef[] = [];
+  for (const suite of suites) {
+    const key = suite.file_path || suite.name;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(suite);
+  }
+  return unique;
+}
+
+function colocatedTestCandidates(sourceFile: string): string[] {
+  return [
+    sourceFile.replace(/\.([cm]?[jt]sx?)$/, '.spec.$1'),
+    sourceFile.replace(/\.([cm]?[jt]sx?)$/, '.test.$1'),
+  ];
+}
+
+function projectPathsMatch(left: string, right: string): boolean {
+  const normalizedLeft = left.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+  const normalizedRight = right.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+  return normalizedLeft === normalizedRight || normalizedLeft.endsWith(`/${normalizedRight}`) || normalizedRight.endsWith(`/${normalizedLeft}`);
+}
+
+function pathStem(file: string): string {
+  const base = file.split('/').pop() || file;
+  return base
+    .replace(/\.(spec|test)\.([cm]?[jt]sx?)$/i, '')
+    .replace(/\.([cm]?[jt]sx?)$/i, '')
+    .toLowerCase();
 }
 
 function summarizeNodeForAgent(node: CASNode) {
@@ -495,7 +802,7 @@ function workPacketTaskType(taskType?: AgentTaskType): 'add' | 'modify' | 'delet
   return 'modify';
 }
 
-export function evaluateAgentReadiness(cas: CASOutput, path: string): AgentReadinessReport {
+export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { testEvidence?: TestDiscoveryEvidence } = {}): AgentReadinessReport {
   const summary = buildSummary(cas);
   const answerPack = runAnswerPack(cas, path);
   const methodCalls = cas.method_calls?.length || cas.nodes.reduce((total, node) => total + (node.call_graph?.calls?.length || 0), 0);
@@ -506,6 +813,8 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string): AgentReadi
   const runtimeLinks = cas.runtime_static_links?.length || 0;
   const facts = cas.analysis_facts?.length || 0;
   const analysisErrors = cas.analysis_errors?.length || 0;
+  const testGate = testReadinessGate(tests.total_suites, opts.testEvidence);
+  const invariantGapCount = cas.behavioral_invariant_summary?.gaps?.length || 0;
   const gates: AgentReadinessGate[] = [
     gate('analysis-errors', analysisErrors === 0 ? 'pass' : 'fail', analysisErrors === 0 ? 100 : 0, `${analysisErrors} analysis errors`),
     gate('nodes', cas.nodes.length > 0 ? 'pass' : 'fail', cas.nodes.length > 0 ? 100 : 0, `${cas.nodes.length} nodes`),
@@ -515,7 +824,15 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string): AgentReadi
     relationshipDetailGate(cas, methodCalls),
     gate('answer-pack', answerPack.gaps.length === 0 ? 'pass' : 'warn', answerPack.gaps.length === 0 ? 100 : 75, answerPack.gaps.length === 0 ? 'Mastery answer pack has no gaps' : answerPack.gaps.join('; ')),
     gate('evidence', facts > 0 ? 'pass' : 'warn', facts > 0 ? 100 : 75, `${facts} analysis facts`),
-    gate('tests', tests.total_suites > 0 ? 'pass' : 'warn', tests.total_suites > 0 ? 100 : 80, `${tests.total_suites} test suites detected`),
+    gate(
+      'behavioral-invariants',
+      (cas.behavioral_invariants?.length || 0) > 0 ? invariantGapCount > 0 ? 'warn' : 'pass' : 'warn',
+      (cas.behavioral_invariants?.length || 0) > 0 ? invariantGapCount > 0 ? 82 : 100 : 70,
+      (cas.behavioral_invariants?.length || 0) > 0
+        ? `${cas.behavioral_invariants?.length || 0} behavior-level invariants, ${invariantGapCount} gaps`
+        : 'No behavior-level invariants inferred'
+    ),
+    testGate,
     gate('security', security.boundary_count > 0 || security.context_count > 0 ? 'pass' : 'warn', security.boundary_count > 0 || security.context_count > 0 ? 100 : 80, `${security.boundary_count || 0} boundaries, ${security.context_count || 0} contexts`),
     gate('runtime-correlation', runtimeLinks > 0 ? 'pass' : 'warn', runtimeLinks > 0 ? 100 : 80, `${runtimeLinks} runtime static links`),
     gate('flow-coverage', hasFlowCoverage(flowCoverage) ? 'pass' : 'warn', hasFlowCoverage(flowCoverage) ? 100 : 80, flowCoverageDetail(flowCoverage)),
@@ -574,6 +891,15 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string): AgentReadi
       analysis_facts: facts,
       tests: tests.total_suites,
       analysis_errors: analysisErrors,
+      behavioral_invariants: cas.behavioral_invariant_summary ? {
+        total: cas.behavioral_invariant_summary.total,
+        gaps: cas.behavioral_invariant_summary.gaps.length,
+      } : undefined,
+      test_discovery: opts.testEvidence ? {
+        status: opts.testEvidence.status,
+        source_test_files: opts.testEvidence.source_test_files,
+        potential_uncovered_test_files: opts.testEvidence.potential_uncovered_test_files.length,
+      } : undefined,
     },
     gates,
     adoption_gaps: adoptionGaps,
@@ -584,7 +910,24 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string): AgentReadi
       'Use assess_change_risk and find_tests before landing changes that touch connected behavior.',
       'Report CAS/MCP errors as blockers to default use and then fall back to direct code reading.',
     ],
+    test_discovery: opts.testEvidence,
   };
+}
+
+function testReadinessGate(totalSuites: number, evidence?: TestDiscoveryEvidence): AgentReadinessGate {
+  if (totalSuites > 0 && (!evidence || evidence.status === 'cas-covered')) {
+    return gate('tests', 'pass', 100, `${totalSuites} test suites detected`);
+  }
+  if (totalSuites > 0 && evidence?.status === 'cas-partial') {
+    return gate('tests', 'warn', 88, `${totalSuites} test suites detected; ${evidence.potential_uncovered_test_files.length} source test files are not represented in CAS`);
+  }
+  if (evidence?.status === 'potential-tests-missing-from-cas') {
+    return gate('tests', 'warn', 65, `0 CAS test suites; ${evidence.source_test_files} source test files found but not represented in CAS`);
+  }
+  if (evidence?.status === 'no-source-tests-found') {
+    return gate('tests', 'pass', 100, '0 CAS test suites; no source test files found in repository scan');
+  }
+  return gate('tests', 'warn', 80, `${totalSuites} test suites detected`);
 }
 
 function normalizeTask(task: AgentTask): Required<Pick<AgentTask, 'task_type'>> & AgentTask {

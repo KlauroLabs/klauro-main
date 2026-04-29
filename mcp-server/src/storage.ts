@@ -135,6 +135,161 @@ export async function getAnalysisEntry(projectPath: string): Promise<AnalysisEnt
   return index.analyses[projectPath] || null;
 }
 
+export async function saveWorkspaceGraph(graph: { id: string; name: string; generated_at: string }): Promise<{
+  id: string;
+  saved_at: string;
+  file: string;
+}> {
+  const storagePath = await ensureStorageDir();
+  const directory = path.join(storagePath, 'workspace-graphs');
+  const id = graph.id || slugify(graph.name) || 'workspace';
+  const file = path.join(directory, `${id}.json`);
+  const savedAt = new Date().toISOString();
+  await writeJsonAtomic(file, {
+    ...graph,
+    id,
+    saved_at: savedAt,
+  });
+  return { id, saved_at: savedAt, file };
+}
+
+export async function loadWorkspaceGraph(idOrName: string): Promise<any | null> {
+  const storagePath = await ensureStorageDir();
+  const directory = path.join(storagePath, 'workspace-graphs');
+  const directPath = path.join(directory, `${slugify(idOrName)}.json`);
+  if (await fs.pathExists(directPath)) return fs.readJson(directPath);
+  if (!(await fs.pathExists(directory))) return null;
+
+  const files = await fs.readdir(directory);
+  for (const file of files.filter(candidate => candidate.endsWith('.json'))) {
+    const graph = await fs.readJson(path.join(directory, file));
+    if (graph.id === idOrName || graph.name === idOrName || slugify(graph.name || '') === slugify(idOrName)) {
+      return graph;
+    }
+  }
+  return null;
+}
+
+export async function listWorkspaceGraphs(): Promise<Array<{
+  id: string;
+  name: string;
+  generated_at?: string;
+  saved_at?: string;
+  repository_count?: number;
+  link_count?: number;
+  file: string;
+}>> {
+  const storagePath = await ensureStorageDir();
+  const directory = path.join(storagePath, 'workspace-graphs');
+  if (!(await fs.pathExists(directory))) return [];
+
+  const files = await fs.readdir(directory);
+  const graphs = [];
+  for (const file of files.filter(candidate => candidate.endsWith('.json'))) {
+    const graph = await fs.readJson(path.join(directory, file));
+    graphs.push({
+      id: graph.id,
+      name: graph.name,
+      generated_at: graph.generated_at,
+      saved_at: graph.saved_at,
+      repository_count: graph.repository_count,
+      link_count: graph.links?.length || 0,
+      file: path.join(directory, file),
+    });
+  }
+  return graphs.sort((left, right) => String(right.saved_at || right.generated_at || '').localeCompare(String(left.saved_at || left.generated_at || '')));
+}
+
+export async function saveAgenticBenchmarkReport(report: { id?: string; generated_at?: string; generatedAt?: string }): Promise<{
+  id: string;
+  saved_at: string;
+  file: string;
+}> {
+  const storagePath = await ensureStorageDir();
+  const directory = path.join(storagePath, 'agentic-benchmarks');
+  const timestamp = report.generated_at || report.generatedAt || new Date().toISOString();
+  const id = report.id || `benchmark-${Buffer.from(timestamp, 'utf-8').toString('base64url')}`;
+  const file = path.join(directory, `${id}.json`);
+  const latestFile = path.join(directory, 'latest.json');
+  const savedAt = new Date().toISOString();
+  const payload = {
+    ...report,
+    id,
+    saved_at: savedAt,
+  };
+  await writeJsonAtomic(file, payload);
+  await writeJsonAtomic(latestFile, payload);
+  return { id, saved_at: savedAt, file };
+}
+
+export async function loadAgenticBenchmarkReport(id = 'latest'): Promise<any | null> {
+  const storagePath = await ensureStorageDir();
+  const directory = path.join(storagePath, 'agentic-benchmarks');
+  const directFile = path.join(directory, `${id || 'latest'}.json`);
+  if (await fs.pathExists(directFile)) return fs.readJson(directFile);
+  const slugFile = path.join(directory, `${slugify(id) || 'latest'}.json`);
+  if (await fs.pathExists(slugFile)) return fs.readJson(slugFile);
+  return null;
+}
+
+export async function listAgenticBenchmarkReports(): Promise<Array<{
+  id: string;
+  generated_at?: string;
+  saved_at?: string;
+  status?: string;
+  score?: number;
+  target_count?: number;
+  file: string;
+}>> {
+  const storagePath = await ensureStorageDir();
+  const directory = path.join(storagePath, 'agentic-benchmarks');
+  if (!(await fs.pathExists(directory))) return [];
+
+  const files = (await fs.readdir(directory)).filter(file => file.endsWith('.json') && file !== 'latest.json');
+  const reports = [];
+  for (const file of files) {
+    const report = await fs.readJson(path.join(directory, file));
+    reports.push({
+      id: report.id,
+      generated_at: report.generated_at || report.generatedAt,
+      saved_at: report.saved_at,
+      status: report.status,
+      score: report.score,
+      target_count: report.targets?.length,
+      file: path.join(directory, file),
+    });
+  }
+  return reports.sort((left, right) => String(right.saved_at || right.generated_at || '').localeCompare(String(left.saved_at || left.generated_at || '')));
+}
+
+export async function saveGoldenSnapshot(projectPath: string, snapshot: unknown): Promise<{
+  saved_at: string;
+  path: string;
+  file: string;
+}> {
+  const projectDir = getProjectStorageDir(projectPath);
+  await fs.ensureDir(projectDir);
+  const savedAt = new Date().toISOString();
+  const snapshotPath = path.join(projectDir, 'cas-golden-snapshot.json');
+  await writeJsonAtomic(snapshotPath, {
+    saved_at: savedAt,
+    project_path: projectPath,
+    snapshot,
+  });
+  return { saved_at: savedAt, path: projectPath, file: snapshotPath };
+}
+
+export async function loadGoldenSnapshot(projectPath: string): Promise<{
+  saved_at: string;
+  project_path: string;
+  snapshot: unknown;
+} | null> {
+  const projectDir = getProjectStorageDir(projectPath);
+  const snapshotPath = path.join(projectDir, 'cas-golden-snapshot.json');
+  if (!(await fs.pathExists(snapshotPath))) return null;
+  return fs.readJson(snapshotPath);
+}
+
 // =============================================================================
 // INCREMENTAL ANALYSIS STORAGE
 // =============================================================================
@@ -656,6 +811,8 @@ export async function getStorageHealth(projectPath?: string): Promise<{
   storage_path: string;
   index_version?: string;
   analyses: number;
+  workspace_graphs: number;
+  agentic_benchmark_reports: number;
   projects: Array<{
     path: string;
     name: string;
@@ -665,21 +822,27 @@ export async function getStorageHealth(projectPath?: string): Promise<{
     snapshots: number;
     change_history_entries: number;
     runtime_observations: number;
+    golden_snapshot_saved_at?: string;
     file_cache: { files: number; bytes: number };
   }>;
 }> {
   const storagePath = await ensureStorageDir();
   const index = await loadIndex();
+  const [workspaceGraphs, agenticBenchmarkReports] = await Promise.all([
+    listWorkspaceGraphs(),
+    listAgenticBenchmarkReports(),
+  ]);
   const entries = Object.entries(index.analyses)
     .filter(([entryPath]) => !projectPath || path.resolve(entryPath) === path.resolve(projectPath));
   const projects = [];
 
   for (const [entryPath, entry] of entries) {
-    const [snapshots, history, runtimeObservations, fileCache] = await Promise.all([
+    const [snapshots, history, runtimeObservations, fileCache, goldenSnapshot] = await Promise.all([
       listAnalysisSnapshots(entryPath),
       loadChangeHistory(entryPath),
       loadRuntimeObservations(entryPath),
       getFileCacheSize(entryPath),
+      loadGoldenSnapshot(entryPath),
     ]);
 
     projects.push({
@@ -691,6 +854,7 @@ export async function getStorageHealth(projectPath?: string): Promise<{
       snapshots: snapshots.length,
       change_history_entries: history.length,
       runtime_observations: runtimeObservations.length,
+      golden_snapshot_saved_at: goldenSnapshot?.saved_at,
       file_cache: fileCache,
     });
   }
@@ -699,6 +863,8 @@ export async function getStorageHealth(projectPath?: string): Promise<{
     storage_path: storagePath,
     index_version: index.version,
     analyses: Object.keys(index.analyses).length,
+    workspace_graphs: workspaceGraphs.length,
+    agentic_benchmark_reports: agenticBenchmarkReports.length,
     projects,
   };
 }

@@ -16,7 +16,7 @@ This document maps public CAS concepts and related v1.8 analysis storage to the 
 | `runtime` | `get_system_overview` | `overview` |
 | `runtime_static_links` | `get_system_overview` (count), `get_runtime_static_links`, `correlate_runtime_event`, `record_runtime_event`, `validate_cas_contract` | `cas-contract` |
 | `analysis_facts` | `get_system_overview` (count), `get_analysis_facts` | |
-| `repository_links` | `get_system_overview`, `get_cross_repo_links` | `overview` |
+| `repository_links` | `get_system_overview`, `get_cross_repo_links`, `save_workspace_graph`, `get_workspace_graph`, `verify_workspace_link` | `overview`, `workspace/{id}/graph` |
 | `disclosure` | `get_system_overview` | `overview` |
 | `validation` | `get_system_overview`, `validate_cas_contract` | `overview`, `cas-contract` |
 | `analyzer_contributions` | `get_summary`, `get_system_overview` | `overview` |
@@ -34,6 +34,8 @@ This document maps public CAS concepts and related v1.8 analysis storage to the 
 | `data_entities` | `get_data_entities` | `schema` |
 | `data_summary` | `get_data_entities` | `schema` |
 | `database_schema` | `get_database_schema` | `schema` |
+| `behavioral_invariants` | `get_behavioral_invariants`, `get_agent_work_packet`, `evaluate_agent_readiness` | `agent-work-packet` |
+| `behavioral_invariant_summary` | `get_behavioral_invariants`, `validate_cas_contract`, `evaluate_agent_readiness` | `cas-contract`, `agent-readiness` |
 | `security_boundaries` | `get_security_overview` | `security` |
 | `security_summary` | `get_security_overview` | `security` |
 | `security_contexts` | `get_security_overview` | `security` |
@@ -50,6 +52,7 @@ This document maps public CAS concepts and related v1.8 analysis storage to the 
 | `test_coverage` | `find_tests`, `get_test_summary` | |
 | `mocks` | `find_tests`, `get_test_summary` | |
 | `fixtures` | `find_tests`, `get_test_summary` | |
+| Source test discovery evidence | `get_test_discovery_evidence`, `evaluate_agent_readiness`, `get_agent_doctor` | `test-discovery`, `agent-readiness`, `agent-doctor` |
 | `workflows` | `get_workflows` | `flows` |
 | `workflow_graph` | `get_workflows` | `flows` |
 | `domain_concepts` | `get_domain_concepts` | |
@@ -60,28 +63,34 @@ This document maps public CAS concepts and related v1.8 analysis storage to the 
 | `implementation_health` | `get_implementation_health` | `health` |
 | `documentation_summary` | `get_documentation_coverage` | `health` |
 | `todos_summary` | `get_todos` | `health` |
-| `dependencies` | `get_dependencies` | |
-| `libraries` | `get_libraries` | |
+| `dependencies` | `get_dependencies`, `get_integration_depth_report` | `integration-depth` |
+| `libraries` | `get_libraries`, `get_integration_depth_report` | `integration-depth` |
 | `tags` | `search_nodes` | |
 | `index` | Internal (search optimization) | |
 | `change_history` storage | `get_changes_since`, `get_changes_between`, `get_changes_for_node`, `get_changes_for_file`, `get_changes_for_entry_point`, `get_change_summary`, `get_hot_spots` | |
 | `analysis_snapshots` storage | `get_analysis_at`, `get_analysis_snapshots` | |
 | `runtime_observations` storage | `record_runtime_event`, `get_runtime_observations`, `get_runtime_trace`, `validate_cas_contract` | `cas-contract` |
 | Answer packs | `list_answer_packs`, `run_answer_pack`, `get_mcp_demo_flow` | |
-| Agent default-use context | `get_agent_bootstrap`, `get_agent_start_context`, `get_agent_tool_plan`, `get_agent_work_packet`, `evaluate_agent_readiness` | `agent-bootstrap`, `agent-start`, `agent-readiness` |
+| Agent default-use context | `get_agent_bootstrap`, `get_agent_start_context`, `get_agent_tool_plan`, `get_agent_work_packet`, `evaluate_agent_readiness`, `get_agent_default_config`, `install_agent_default_config` | `agent-bootstrap`, `agent-start`, `agent-readiness`, `agent-defaults` |
 | Ground-truth analysis checks | `evaluate_analysis_truth` | |
 | Source-level semantic map | `get_semantic_map` | |
-| Framework/library depth | `get_framework_depth_report` | |
-| Cross-repository contracts | `get_cross_repo_contracts` | |
+| Framework/library depth | `get_framework_depth_report`, `get_integration_depth_report` | `integration-depth` |
+| Cross-repository contracts | `get_cross_repo_contracts`, `save_workspace_graph`, `get_workspace_graph`, `verify_workspace_link` | `workspaces`, `workspace/{id}/graph` |
 | Runtime instrumentation plan | `get_runtime_instrumentation_plan`, `get_runtime_event_contract` | `runtime-event-contract` |
+| Runtime SDK package | `get_runtime_sdk_package`, `get_agent_doctor` | `runtime-sdk`, `agent-doctor` |
 | Agent task proof | `evaluate_agent_task_proof` | |
+| Agentic benchmark reports | `run_agentic_benchmark`, `run_agent_quality_benchmark`, `get_agentic_benchmark_report` | `agentic-benchmarks`, `agentic-benchmark/{id}` |
+| Live agent A/B trial artifacts | `run_agent_quality_benchmark` with live command templates | `agentic-benchmarks`, `agentic-benchmark/{id}` |
 | Storage health | `get_storage_health` | |
-| CAS golden-shape validation | `validate_cas_contract` | `cas-contract` |
+| Analysis freshness | `get_analysis_freshness`, `get_agent_doctor` | `freshness`, `agent-doctor` |
+| CAS golden-shape validation | `validate_cas_contract`, `save_cas_golden_snapshot`, `compare_cas_golden_snapshot`, `get_agent_doctor` | `cas-contract`, `agent-doctor` |
 | `incremental_state` storage | Internal incremental analysis input | |
 | `file_cache` storage | Internal incremental analysis cache | |
+| `workspace_graphs` storage | `save_workspace_graph`, `get_workspace_graph`, `list_workspace_graphs`, `verify_workspace_link`, `get_storage_health` | `workspaces`, `workspace/{id}/graph` |
+| `agentic_benchmarks` storage | `run_agentic_benchmark`, `get_agentic_benchmark_report`, `get_storage_health` | `agentic-benchmarks`, `agentic-benchmark/{id}` |
 
 ## Coverage Status
 
-The MCP server exposes the public CAS concepts needed by UI and agent workflows, plus v1.8 change-history and snapshot queries. It also exposes product-level answer packs, cross-repository linking, contract views, runtime observation correlation and trace replay, instrumentation plans, truth evaluation, semantic maps, CAS contract validation, storage health, and agent default-use readiness on top of CAS. Internal implementation artifacts such as `index`, `incremental_state`, and `file_cache` are intentionally not exposed directly beyond aggregate storage health.
+The MCP server exposes the public CAS concepts needed by UI and agent workflows, plus v1.8 change-history and snapshot queries. It also exposes product-level answer packs, persisted workspace graphs, cross-repository linking, contract views, behavioral invariants, runtime observation correlation and trace replay, instrumentation plans, runtime SDK package generation, truth evaluation, semantic maps, integration depth reports, source test discovery evidence, analysis freshness, CAS contract validation, saved golden-shape comparisons, storage health, agent default-use readiness, installable agent defaults, with-Unravl vs without-Unravl benchmark reports, and live copied-repo agent trial artifacts on top of CAS. Internal implementation artifacts such as `index`, `incremental_state`, and `file_cache` are intentionally not exposed directly beyond aggregate storage health and freshness checks.
 
 When adding a new public CAS field, update this matrix and add a tool/resource entry if humans or agents need to query it.
