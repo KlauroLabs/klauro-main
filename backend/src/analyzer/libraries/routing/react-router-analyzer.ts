@@ -1,4 +1,4 @@
-import { BaseAnalyzer, AnalysisContext } from '../../core/base-analyzer';
+import { BaseAnalyzer, AnalysisContext, FileAnalysisContext, FileAnalysisResult } from '../../core/base-analyzer';
 import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint } from '../../../types/cas.types';
 import * as path from 'path';
 import * as fs from 'fs-extra';
@@ -28,6 +28,56 @@ export class ReactRouterAnalyzer extends BaseAnalyzer {
     } catch {
       return false;
     }
+  }
+
+  supportsIncrementalAnalysis(): boolean {
+    return true;
+  }
+
+  async getRelevantFiles(projectPath: string): Promise<string[]> {
+    return glob('**/*.{ts,tsx,js,jsx}', {
+      cwd: projectPath,
+      ignore: [
+        ...this.getIgnorePatterns({ projectPath }),
+        '**/*.test.*',
+        '**/*.spec.*'
+      ],
+      absolute: false
+    });
+  }
+
+  async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
+    const nodes: CASNode[] = [];
+    const edges: CASEdge[] = [];
+    const entryPoints: CASEntryPoint[] = [];
+    const exitPoints: CASExitPoint[] = [];
+    const seenRoutes = new Set<string>();
+    const seenExitIds = new Set<string>();
+    const content = await fs.readFile(context.filePath, 'utf-8');
+    const stat = await fs.stat(context.filePath);
+
+    if (this.hasRouterUsage(content)) {
+      const fileNodeId = this.findFileNodeId(context.relativePath, context.existingAnalysis);
+      const sanitizedPath = context.relativePath.replace(/[^a-zA-Z0-9]/g, '_');
+
+      this.extractRouteDefinitions(content, context.relativePath, sanitizedPath, fileNodeId, context, nodes, edges, entryPoints, seenRoutes);
+      this.extractNavigationCalls(content, context.relativePath, sanitizedPath, fileNodeId, nodes, exitPoints, seenExitIds);
+      this.extractLinkUsages(content, context.relativePath, sanitizedPath, fileNodeId, nodes, exitPoints, seenExitIds);
+      this.extractLoaderActions(content, context.relativePath, sanitizedPath, fileNodeId, nodes, edges);
+    }
+
+    return this.createFileAnalysisResult(
+      context.filePath,
+      context.relativePath,
+      context.contentHash || this.computeContentHash(content),
+      stat.mtimeMs,
+      nodes,
+      edges,
+      entryPoints,
+      exitPoints,
+      this.extractImports(content),
+      [...new Set(nodes.map(node => node.name))]
+    );
   }
 
   async analyze(context: AnalysisContext): Promise<CASContribution> {
@@ -73,6 +123,18 @@ export class ReactRouterAnalyzer extends BaseAnalyzer {
     return content.includes('Route') || content.includes('Router') ||
            content.includes('useNavigate') || content.includes('useParams') ||
            content.includes('Link') || content.includes('createBrowserRouter');
+  }
+
+  private extractImports(content: string): string[] {
+    const imports: string[] = [];
+    const importPattern = /import\s+(?:\{[^}]*\}|\w+|\*\s+as\s+\w+)\s+from\s+['"]([^'"]+)['"]/g;
+    let match;
+
+    while ((match = importPattern.exec(content)) !== null) {
+      imports.push(match[1]);
+    }
+
+    return imports;
   }
 
   private extractRouteDefinitions(

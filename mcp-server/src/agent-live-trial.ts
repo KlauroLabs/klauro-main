@@ -20,6 +20,8 @@ export interface LiveAgentCommandConfig {
   testTimeoutMs?: number;
   orchestratorTimeoutMs?: number;
   maxLiveTasks?: number;
+  liveTaskTypes?: string[];
+  liveTaskCategories?: string[];
 }
 
 export interface LiveAgentPairInput {
@@ -32,6 +34,7 @@ export interface LiveAgentPairInput {
   expectedOutcome: string;
   fileReadPlan: unknown[];
   selectedNode?: unknown;
+  validationPlan?: unknown;
 }
 
 export interface LiveAgentArmResult {
@@ -134,9 +137,9 @@ interface AgentMetricFile {
   provider_total_tokens?: number;
   total_tokens?: number;
   tool_calls?: number;
-  files_read?: number;
-  source_files_read?: number;
-  tests_run?: number;
+  files_read?: number | unknown[];
+  source_files_read?: number | unknown[];
+  tests_run?: number | unknown[];
   task_success?: boolean;
   success?: boolean;
   quality_score?: number;
@@ -148,7 +151,7 @@ export async function runLiveAgentPair(input: LiveAgentPairInput, config: LiveAg
   }
 
   const trialId = `${slugify(input.repo)}-${slugify(input.taskId)}-${Date.now()}`;
-  const workRoot = path.resolve(config.workRoot || path.join(process.cwd(), '.unravl-agent-live-trials'));
+  const workRoot = path.resolve(config.workRoot || path.join(process.env.HOME || process.cwd(), '.unravl', 'agent-live-trials'));
   const trialDirectory = path.join(workRoot, trialId);
   await fs.ensureDir(trialDirectory);
 
@@ -256,8 +259,8 @@ async function runLiveAgentArm(
       estimated_output_tokens: estimatedOutputTokens,
       estimated_total_tokens: estimatedInputTokens + estimatedOutputTokens,
       tool_calls: firstNumber(metrics.tool_calls, parsed.tool_calls),
-      files_read: firstNumber(metrics.files_read, metrics.source_files_read, parsed.files_read),
-      tests_run: firstNumber(metrics.tests_run, parsed.tests_run),
+      files_read: firstNumber(metricCount(metrics.files_read), metricCount(metrics.source_files_read), metricCount(parsed.files_read)),
+      tests_run: firstNumber(metricCount(metrics.tests_run), metricCount(parsed.tests_run)),
       task_success: taskSuccess,
       self_reported_quality_score: clampScore(firstNumber(metrics.quality_score)),
       stdout_tail: tail(result.stdout),
@@ -341,19 +344,21 @@ async function evaluateLivePair(
 
 function deterministicEvaluation(input: LiveAgentPairInput, withResult: LiveAgentArmResult, withoutResult: LiveAgentArmResult): LivePairEvaluation {
   const expectsEdit = taskExpectsEdit(input);
-  const plannedFiles = input.fileReadPlan.map(item => String((item as any)?.file || item)).filter(Boolean);
-  const intendedFiles = [...plannedFiles, input.task.target].filter((value): value is string => typeof value === 'string' && value.length > 0);
-  const withPrecision = !expectsEdit && withResult.changed_files.length === 0 ? 100 : changedFilePrecision(withResult.changed_files, intendedFiles);
-  const withoutPrecision = !expectsEdit && withoutResult.changed_files.length === 0 ? 100 : changedFilePrecision(withoutResult.changed_files, intendedFiles);
+  const expectedEditFiles = extractExpectedEditFiles(input);
+  const withPrecision = !expectsEdit && withResult.changed_files.length === 0 ? 100 : changedFilePrecision(withResult.changed_files, expectedEditFiles);
+  const withoutPrecision = !expectsEdit && withoutResult.changed_files.length === 0 ? 100 : changedFilePrecision(withoutResult.changed_files, expectedEditFiles);
   const withScore = armQualityScore(withResult, withPrecision, expectsEdit);
   const withoutScore = armQualityScore(withoutResult, withoutPrecision, expectsEdit);
   const withCompletionScore = armCompletionScore(withResult);
   const withoutCompletionScore = armCompletionScore(withoutResult);
   const tokenReduction = tokenReductionPercentage(withResult, withoutResult);
+  const precisionDelta = precisionMetricDelta(withPrecision, withoutPrecision);
   const reasons = [
     `With Unravl changed ${withResult.files_changed} files and ${withResult.lines_added + withResult.lines_deleted} lines.`,
     `Without Unravl changed ${withoutResult.files_changed} files and ${withoutResult.lines_added + withoutResult.lines_deleted} lines.`,
-    `With Unravl changed-file precision ${withPrecision}/100; without-Unravl precision ${withoutPrecision}/100.`,
+    withPrecision === undefined || withoutPrecision === undefined
+      ? 'Changed-file precision was not scored because no explicit expected edit file list was available.'
+      : `With Unravl changed-file precision ${withPrecision}/100; without-Unravl precision ${withoutPrecision}/100.`,
     `With Unravl completion score ${withCompletionScore}/100; without-Unravl completion score ${withoutCompletionScore}/100.`,
   ];
   if (withResult.provider_total_tokens || withoutResult.provider_total_tokens) {
@@ -368,12 +373,12 @@ function deterministicEvaluation(input: LiveAgentPairInput, withResult: LiveAgen
     with_unravl_quality_score: withScore,
     without_unravl_quality_score: withoutScore,
     quality_score_delta: withScore - withoutScore,
-    with_unravl_success: withScore >= 90,
-    without_unravl_success: withoutScore >= 90,
+    with_unravl_success: armSucceeded(withResult, withScore),
+    without_unravl_success: armSucceeded(withoutResult, withoutScore),
     token_reduction_percentage: tokenReduction,
     time_reduction_percentage: percentReduction(withoutResult.duration_ms, withResult.duration_ms),
     file_change_delta: withoutResult.files_changed - withResult.files_changed,
-    changed_file_precision_delta: withPrecision - withoutPrecision,
+    changed_file_precision_delta: precisionDelta,
     with_unravl_completion_score: withCompletionScore,
     without_unravl_completion_score: withoutCompletionScore,
     completion_score_delta: withCompletionScore - withoutCompletionScore,
@@ -384,7 +389,18 @@ function deterministicEvaluation(input: LiveAgentPairInput, withResult: LiveAgen
   };
 }
 
-function armQualityScore(result: LiveAgentArmResult, changedFilePrecision: number, expectsEdit: boolean): number {
+function extractExpectedEditFiles(input: LiveAgentPairInput): string[] {
+  const values = [
+    input.task.target,
+    ...(input.task.related_paths || []),
+    input.task.instructions,
+    input.expectedOutcome,
+    ...(input.task.success_criteria || []),
+  ].filter((value): value is string => typeof value === 'string' && value.length > 0);
+  return unique(values.flatMap(extractPathLikeFragments));
+}
+
+function armQualityScore(result: LiveAgentArmResult, changedFilePrecision: number | undefined, expectsEdit: boolean): number {
   const validationScore = result.validation_passed === true
     ? 100
     : result.validation_passed === false ? 0 : result.status === 'pass' ? 100 : result.status === 'warn' ? 80 : 0;
@@ -399,10 +415,20 @@ function armQualityScore(result: LiveAgentArmResult, changedFilePrecision: numbe
     result.task_success === undefined ? 80 : result.task_success ? 100 : 0,
     editScore,
     editSizeScore,
-    changedFilePrecision,
   ];
+  if (changedFilePrecision !== undefined) scores.push(changedFilePrecision);
   if (typeof result.self_reported_quality_score === 'number') scores.push(result.self_reported_quality_score);
   return Math.round(average(scores));
+}
+
+function armSucceeded(result: LiveAgentArmResult, score: number): boolean {
+  if (result.command_passed === true && result.validation_passed === true && result.task_success !== false) return true;
+  return score >= 90;
+}
+
+function precisionMetricDelta(withPrecision: number | undefined, withoutPrecision: number | undefined): number {
+  if (withPrecision === undefined || withoutPrecision === undefined) return 0;
+  return withPrecision - withoutPrecision;
 }
 
 function armCompletionScore(result: LiveAgentArmResult): number {
@@ -453,10 +479,12 @@ function buildLiveWorkPacket(input: LiveAgentPairInput, workspace: string) {
     expected_outcome: input.expectedOutcome,
     selected_node: input.selectedNode || null,
     file_read_plan: input.fileReadPlan,
-    source_reading_rule: 'Read only the files in file_read_plan first. Expand only when those files show a concrete gap.',
+    validation_plan: input.validationPlan || null,
+    source_reading_rule: 'Read only the line_window slices in file_read_plan first. Expand to whole files only when those slices show a concrete gap.',
     next_steps: [
       'Use file_read_plan to inspect the target files before broad repository search.',
       'Make an edit only when the task requires one.',
+      'For behavior changes, inspect and update focused tests from validation_plan or file_read_plan when a relevant test file is available.',
       'Run the narrowest validation that proves the expected outcome.',
       'Record task_success, quality_score, files_read, and tests_run in the result JSON.',
     ],
@@ -464,19 +492,22 @@ function buildLiveWorkPacket(input: LiveAgentPairInput, workspace: string) {
 }
 
 function promptWithUnravl(input: LiveAgentPairInput, workspace: string, metricsFile: string, resultFile: string, workPacketFile?: string): string {
-  const storagePath = path.join(workspace, '.unravl-agent-home', 'analyses');
-  const workPacketCommand = [
-    `cd ${shellQuote(process.cwd())} && UNRAVL_STORAGE_PATH=${shellQuote(storagePath)} npm run agent-work-packet -- ${shellQuote(workspace)} --json --compact --quiet --task-type ${shellQuote(input.task.task_type || 'orient')}`,
-    input.task.target ? `--target ${shellQuote(input.task.target)}` : '',
-    input.task.instructions ? `--instructions ${shellQuote(input.task.instructions)}` : '',
-    ...(input.task.success_criteria || []).map(criterion => `--success-criterion ${shellQuote(criterion)}`),
-  ].filter(Boolean).join(' ');
   const filePlan = input.fileReadPlan
     .map(item => {
       const value = item as any;
-      return [value.file || value.path || String(item), value.reason].filter(Boolean).join(' - ');
+      return [
+        value.file || value.path || String(item),
+        value.line_window?.instruction,
+        value.reason,
+      ].filter(Boolean).join(' - ');
     })
     .slice(0, 12);
+  const validationCommands = Array.isArray((input.validationPlan as any)?.commands)
+    ? (input.validationPlan as any).commands
+      .map((command: any) => String(command.command || '').trim())
+      .filter(Boolean)
+      .slice(0, 5)
+    : [];
   return [
     `Repository copy: ${workspace}`,
     `Task: ${input.taskLabel}`,
@@ -486,12 +517,13 @@ function promptWithUnravl(input: LiveAgentPairInput, workspace: string, metricsF
     input.task.success_criteria?.length ? `Success criteria: ${input.task.success_criteria.join('; ')}` : '',
     '',
     'Use Unravl before broad source reads.',
-    `First call get_agent_doctor with path ${JSON.stringify(workspace)}.`,
-    `Then call get_agent_start_context with path ${JSON.stringify(workspace)}.`,
-    `Then call get_agent_work_packet with path ${JSON.stringify(workspace)} and task ${JSON.stringify(input.task)}.`,
-    workPacketFile ? `If MCP tools are unavailable in this runtime, read the precomputed Unravl work packet at ${workPacketFile}.` : '',
-    `Only if that work-packet file is missing, run this compact CLI fallback: ${workPacketCommand}.`,
+    workPacketFile ? `Immediately read this precomputed Unravl work packet first: ${workPacketFile}.` : '',
+    'Do not regenerate analysis or run broad repository discovery before using the work packet.',
+    `If MCP tools are available, call get_agent_work_packet only if the precomputed packet is missing or unreadable. Use follow-up MCP tools only when the packet names a concrete need.`,
     filePlan.length ? `Precomputed Unravl file-read plan: ${filePlan.join('; ')}` : '',
+    validationCommands.length ? `Unravl validation commands: ${validationCommands.join('; ')}` : '',
+    'Read only the work packet and the planned line_window slices first. Expand beyond them only if they prove insufficient for the requested change.',
+    'For behavior changes, inspect and update focused tests named by the work packet when feasible.',
     'Use the work packet to choose files, make an edit only when the task requires one, and run relevant tests when possible.',
     'Do not install dependencies or run broad environment setup unless the task explicitly asks for it. If the existing environment cannot run a broad test, record that and stop after focused validation.',
     '',
@@ -533,6 +565,15 @@ async function copyRepo(source: string, destination: string): Promise<void> {
         'coverage',
         '.next',
         '.turbo',
+        '.venv',
+        'venv',
+        'env',
+        '.cache',
+        '__pycache__',
+        '.pytest_cache',
+        '.mypy_cache',
+        '.ruff_cache',
+        '.DS_Store',
         '.unravl-cache',
         '.unravl-agent-benchmark',
         '.unravl-agent-quality-benchmark',
@@ -544,9 +585,13 @@ async function copyRepo(source: string, destination: string): Promise<void> {
 }
 
 async function initializeBaseline(workspace: string): Promise<void> {
-  await runShell('git init', workspace, 60 * 1000);
-  await runShell('git add .', workspace, 60 * 1000);
-  await execFileAsync('git', ['commit', '-m', 'benchmark baseline'], { cwd: workspace, env: gitEnv(), timeout: 60 * 1000 }).catch(() => undefined);
+  const init = await runShell('git init', workspace, 60 * 1000);
+  if (init.exitCode !== 0) throw new Error(`Failed to initialize live benchmark git repo: ${tail(init.stderr || init.stdout)}`);
+  const add = await runShell('git add .', workspace, 120 * 1000);
+  if (add.exitCode !== 0) throw new Error(`Failed to stage live benchmark baseline: ${tail(add.stderr || add.stdout)}`);
+  await execFileAsync('git', ['commit', '-m', 'benchmark baseline'], { cwd: workspace, env: gitEnv(), timeout: 120 * 1000 });
+  const head = await runShell('git rev-parse --verify HEAD', workspace, 60 * 1000);
+  if (head.exitCode !== 0) throw new Error(`Failed to create live benchmark baseline commit: ${tail(head.stderr || head.stdout)}`);
 }
 
 async function runShell(command: string, cwd: string, timeoutMs: number): Promise<ShellResult> {
@@ -614,12 +659,12 @@ function parseMetricsFromText(text: string): AgentMetricFile {
   const jsonMetrics = parseJsonMetricsFromText(text);
   return {
     ...jsonMetrics,
-    provider_input_tokens: firstNumber(jsonMetrics.provider_input_tokens, numberFromText(text, [/input tokens?\D+([\d,]+)/i, /prompt tokens?\D+([\d,]+)/i])),
-    provider_output_tokens: firstNumber(jsonMetrics.provider_output_tokens, numberFromText(text, [/output tokens?\D+([\d,]+)/i, /completion tokens?\D+([\d,]+)/i])),
-    provider_total_tokens: firstNumber(jsonMetrics.provider_total_tokens, numberFromText(text, [/total tokens?\D+([\d,]+)/i, /tokens used\D+([\d,]+)/i])),
-    tool_calls: firstNumber(jsonMetrics.tool_calls, numberFromText(text, [/tool calls?\D+([\d,]+)/i])),
-    files_read: firstNumber(jsonMetrics.files_read, numberFromText(text, [/files read\D+([\d,]+)/i, /source files read\D+([\d,]+)/i])),
-    tests_run: firstNumber(jsonMetrics.tests_run, numberFromText(text, [/tests run\D+([\d,]+)/i])),
+    provider_input_tokens: firstNumber(jsonMetrics.provider_input_tokens, numberFromText(text, [/input tokens?[^\n\r\d]+([\d,]+)/i, /prompt tokens?[^\n\r\d]+([\d,]+)/i])),
+    provider_output_tokens: firstNumber(jsonMetrics.provider_output_tokens, numberFromText(text, [/output tokens?[^\n\r\d]+([\d,]+)/i, /completion tokens?[^\n\r\d]+([\d,]+)/i])),
+    provider_total_tokens: firstNumber(jsonMetrics.provider_total_tokens, numberFromText(text, [/total tokens?[^\n\r\d]+([\d,]+)/i, /tokens used[^\n\r]*[\n\r]+\s*([\d,]+)/i, /tokens used[^\n\r\d]+([\d,]+)/i])),
+    tool_calls: firstNumber(jsonMetrics.tool_calls, numberFromText(text, [/tool calls?[^\n\r\d]+([\d,]+)/i])),
+    files_read: firstNumber(metricCount(jsonMetrics.files_read), numberFromText(text, [/files read[^\n\r\d]+([\d,]+)/i, /source files read[^\n\r\d]+([\d,]+)/i])),
+    tests_run: firstNumber(metricCount(jsonMetrics.tests_run), numberFromText(text, [/tests run[^\n\r\d]+([\d,]+)/i])),
   };
 }
 
@@ -665,11 +710,27 @@ function numberFromText(text: string, patterns: RegExp[]): number | undefined {
   return undefined;
 }
 
-function changedFilePrecision(changedFiles: string[], plannedFiles: string[]): number {
+function changedFilePrecision(changedFiles: string[], plannedFiles: string[]): number | undefined {
+  if (plannedFiles.length === 0) return undefined;
   if (changedFiles.length === 0) return 60;
-  if (plannedFiles.length === 0) return 70;
   const matches = changedFiles.filter(file => plannedFiles.some(planned => pathsCompatible(file, planned))).length;
   return Math.round((matches / changedFiles.length) * 100);
+}
+
+function extractPathLikeFragments(value: string): string[] {
+  const matches = value.match(/(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+(?:\.[A-Za-z0-9]+)?/g) || [];
+  return matches
+    .map(match => match.replace(/^['"`(]+|['"`),.;:]+$/g, ''))
+    .filter(match => match.includes('/') && match.length >= 5 && isSourceLikePath(match));
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+function isSourceLikePath(value: string): boolean {
+  return /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|cs|java|php|dart|json|ya?ml|toml|md|sql|prisma)$/i.test(value) ||
+    /(^|\/)(package\.json|pyproject\.toml|go\.mod|cargo\.toml|pubspec\.yaml|composer\.json|requirements\.txt)$/i.test(value);
 }
 
 function tokenReductionPercentage(withResult: LiveAgentArmResult, withoutResult: LiveAgentArmResult): number | null {
@@ -699,6 +760,12 @@ function statusFromScore(score: number): GateStatus {
 function average(values: number[]): number {
   if (values.length === 0) return 100;
   return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function metricCount(value: number | unknown[] | undefined): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (Array.isArray(value)) return value.length;
+  return undefined;
 }
 
 function firstNumber(...values: Array<number | undefined>): number | undefined {

@@ -1,9 +1,9 @@
 import {
   CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint,
   CASDocumentation, CASComment, CASTodo, CASImplementationStatus,
-  CASPattern, CASPerspective, CASMethodCall, CASCallChain
+  CASPattern, CASPerspective, CASMethodCall, CASCallChain, FileAnalysisResult
 } from '../../types/cas.types';
-import { BaseAnalyzer, AnalysisContext } from '../core/base-analyzer';
+import { BaseAnalyzer, AnalysisContext, FileAnalysisContext } from '../core/base-analyzer';
 import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
@@ -323,6 +323,49 @@ export class RustAnalyzer extends BaseAnalyzer {
     } catch {
       return false;
     }
+  }
+
+  supportsIncrementalAnalysis(): boolean {
+    return true;
+  }
+
+  async getRelevantFiles(projectPath: string): Promise<string[]> {
+    return glob(['**/*.rs'], {
+      cwd: projectPath,
+      ignore: ['**/target/**', '**/.git/**']
+    });
+  }
+
+  async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
+    const nodes: CASNode[] = [];
+    const edges: CASEdge[] = [];
+    const entryPoints: CASEntryPoint[] = [];
+    const exitPoints: CASExitPoint[] = [];
+    const methodCalls: CASMethodCall[] = [];
+    const content = await fs.readFile(context.filePath, 'utf-8');
+    const stat = await fs.stat(context.filePath);
+
+    await this.detectProjectType(context.projectPath);
+    this.createFileNode(context.relativePath, context.filePath, nodes, context);
+    await this.analyzeFile(context.filePath, nodes, edges, entryPoints, exitPoints, methodCalls, context);
+
+    const imports = [...content.matchAll(/^\s*(?:pub\s+)?use\s+([^;]+);/gm)].map(match => match[1].trim());
+    const exports = nodes
+      .filter(node => ['module', 'struct', 'enum', 'trait', 'impl', 'function', 'method', 'constant', 'static', 'type_alias'].includes(node.type))
+      .map(node => node.name);
+
+    return this.createFileAnalysisResult(
+      context.filePath,
+      context.relativePath,
+      context.contentHash || this.computeContentHash(content),
+      stat.mtimeMs,
+      nodes,
+      edges,
+      entryPoints,
+      exitPoints,
+      imports,
+      exports
+    );
   }
 
   async analyze(context: AnalysisContext): Promise<CASContribution> {

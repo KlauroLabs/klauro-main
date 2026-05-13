@@ -16,12 +16,24 @@ This runs the CAS pipeline: language detection, framework detection, library det
 
 Results and analysis support files are stored under `~/.unravl/analyses/` unless `UNRAVL_STORAGE_PATH` is configured.
 
-### 2. Start with Agent Context
+### 2. Resolve the Best Analysis
 
 For Codex, Claude, Cursor, and other coding agents, the default first call after analysis is:
 
 ```
-Use get_agent_bootstrap with path="/absolute/path/to/your/project"
+Use resolve_agent_analysis with path="/absolute/path/to/your/project" and task={ "task_type": "modify", "target": "auth" }
+```
+
+This is especially important for monorepos and workspace roots. The resolver compares the requested path with stored parent/subproject analyses and returns the selected path, readiness, analysis profile, target matches, and alternatives. Use `selected_path` for subsequent agent tools when it differs from the path you were handed.
+
+Use `get_agent_project_map` when you want to inspect all matching analyses instead of taking the resolver's selected candidate.
+
+### 3. Start with Agent Context
+
+After resolving the analysis path, request the agent bootstrap:
+
+```
+Use get_agent_bootstrap with path="/selected/path/from/resolve_agent_analysis"
 ```
 
 MCP clients that start from prompts can use:
@@ -29,6 +41,8 @@ MCP clients that start from prompts can use:
 ```
 Use the agent_coding_session prompt with path="/absolute/path/to/your/project"
 ```
+
+The prompt runs the same analysis-resolution step internally and prepends the selected path when it chooses a subproject analysis.
 
 MCP clients that prefer resources can read:
 
@@ -39,12 +53,12 @@ unravl://{project_name}/agent-bootstrap
 For a specific task, include task context:
 
 ```
-Use get_agent_bootstrap with path="/repo" and task={ "task_type": "modify", "target": "auth" }
+Use get_agent_bootstrap with path="/selected/path" and task={ "task_type": "modify", "target": "auth" }
 ```
 
 This returns readiness, the system summary, graph anchors, answer-pack status, the recommended first MCP calls, a work packet, and a source file read plan. Agents should use it before broad file reads whenever an analysis exists.
 
-### 3. Plan MCP Tool Use
+### 4. Plan MCP Tool Use
 
 Before deciding which files to inspect, ask CAS for a task-specific tool sequence:
 
@@ -54,7 +68,7 @@ Use get_agent_tool_plan with path="/repo" and task={ "task_type": "debug", "targ
 
 Supported task types are `orient`, `modify`, `debug`, `review`, `trace`, `cross-repo`, and `runtime`. The plan tells the agent which MCP tools to call, why, and when file reads are appropriate.
 
-### 4. Get the Work Packet
+### 5. Get the Work Packet
 
 When the agent is ready to act, request the task packet:
 
@@ -62,9 +76,21 @@ When the agent is ready to act, request the task packet:
 Use get_agent_work_packet with path="/repo" and task={ "task_type": "modify", "target": "auth" }
 ```
 
-The work packet resolves the target, includes coding context, risk, callers, callees, tests, entry/call-chain context, and returns a concrete file read plan. Agents should inspect those files first before expanding to broader source reads.
+The work packet resolves the target, includes coding context, risk, callers, callees, tests, behavioral invariant impact, entry/call-chain context, and returns a concrete file read plan. Agents should inspect those files first before expanding to broader source reads.
 
-### 5. Check Default-Use Readiness
+The CLI mirrors this behavior. `npm --silent run agent-work-packet -- /repo --json --compact` includes each file plan's `line_window`, and the plain-text output prints the same line range so CLI-first agents can avoid reading whole files by default. Use `npm --silent` for JSON output so npm's command banner does not pollute stdout.
+
+### 6. Validate Behavioral Invariants After Edits
+
+Before claiming a code change is complete, validate the working diff against CAS behavior-level invariants:
+
+```
+Use validate_behavioral_invariants with path="/repo" and target="auth"
+```
+
+The validator reads working-tree and staged changes by default. It can also validate an explicit `files` list or supplied `diff_text`. Treat `status="fail"` as a blocker and `status="warn"` as evidence that focused tests, migration coverage, or direct invariant review is still needed.
+
+### 7. Check Default-Use Readiness
 
 Use this when deciding whether an agent should rely on MCP by default:
 
@@ -100,7 +126,9 @@ Use install_agent_default_config with path="/repo"
 
 This writes `.unravl/agent-defaults.json` and `.unravl/agent-defaults.md`. Agents can read those files to know the required first MCP calls before broad file reads.
 
-### 6. Orient with get_summary
+The installed defaults intentionally use a selected-path placeholder for follow-up calls. Agents should call `resolve_agent_analysis` first and then use the returned `selected_path` for doctor, start-context, work-packet, invariant validation, and benchmark proof calls when it differs from the original path.
+
+### 8. Orient with get_summary
 
 After analysis, call `get_summary` to understand the system at a high level:
 
@@ -110,7 +138,7 @@ Use the get_summary tool with path="/absolute/path/to/your/project"
 
 This returns the condensed intelligence view: what the system does, its tech stack, architecture layers, key capabilities, and scale metrics.
 
-### 7. Navigate Progressively
+### 9. Navigate Progressively
 
 Use `get_level` to explore the codebase top-down:
 
@@ -121,7 +149,7 @@ Use `get_level` to explore the codebase top-down:
 
 Each call returns the available levels with node counts, so you always know what's above and below. Cross-level edges show how the current level connects to others.
 
-### 8. Drill Into Specifics
+### 10. Drill Into Specifics
 
 From there, drill into targeted areas:
 
@@ -135,13 +163,14 @@ From there, drill into targeted areas:
 - **Discover patterns**: `get_patterns` (summaries), `get_pattern_instances` (drill into specific pattern)
 - **Explore concepts**: `get_domain_concepts` (filterable, paginated)
 - **Understand recent changes**: `get_changes_since`, `get_change_summary`, `get_hot_spots`, `get_analysis_snapshots`
+- **Resolve monorepos/subprojects**: `resolve_agent_analysis`, `get_agent_project_map`
 - **Check freshness and test discovery**: `get_analysis_freshness`, `get_test_discovery_evidence`
 - **Prove answerability**: `run_answer_pack` with `pack="mastery"`
 - **Connect repos**: `get_cross_repo_links` with related analyzed paths
 - **Persist workspace graphs**: `save_workspace_graph`, `get_workspace_graph`, `verify_workspace_link`
 - **Validate CAS completeness**: `validate_cas_contract`, `save_cas_golden_snapshot`, `compare_cas_golden_snapshot`
 - **Check integration analyzer depth**: `get_integration_depth_report`
-- **Inspect behavior-level rules**: `get_behavioral_invariants` for tenant scope, auth, DB constraints, migrations, and test coverage
+- **Inspect and validate behavior-level rules**: `get_behavioral_invariants` before edits and `validate_behavioral_invariants` after edits for tenant scope, auth, DB constraints, migrations, and test coverage
 - **Inspect MCP storage**: `get_storage_health`
 - **Map runtime back to code**: `get_runtime_event_contract`, `get_runtime_sdk_package`, `correlate_runtime_event`, `record_runtime_event`, `get_runtime_observations`, `get_runtime_trace`
 
@@ -157,7 +186,7 @@ Use `get_agent_bootstrap` first, or use the `agent_coding_session` prompt when y
 Use get_agent_bootstrap with path="/absolute/path/to/your/project"
 ```
 
-Then use `get_agent_work_packet` with the user's task, including the user's exact `instructions` and `success_criteria` when the request is behaviorally specific. Use source files after MCP identifies the relevant nodes, files, tests, validation commands, or gaps.
+Then use `get_agent_work_packet` with the user's task, including the user's exact `instructions` and `success_criteria` when the request is behaviorally specific. Use source files after MCP identifies the relevant nodes, files, line windows, tests, validation commands, or gaps.
 
 You can also use the `architectural_context` prompt to inject full system awareness:
 
@@ -171,10 +200,12 @@ This gives the AI assistant knowledge of system type, tech stack, architecture l
 
 1. Call `get_agent_tool_plan` with `task_type="modify"` and the target.
 2. Call `get_agent_work_packet` with the same task.
-3. Read the packet's file read plan first.
+3. Read the packet's file read plan first, starting with each item's `line_window` when present.
 4. Use the packet's risk, callers, callees, tests, and validation plan to decide the edit and verification path.
+5. Run the packet's validation commands. In monorepos these may route to package roots, such as `cd backend && npm test`.
+6. After edits, call `validate_behavioral_invariants` against the working diff before finalizing.
 
-The validation plan is part of the product surface, not a benchmark-only artifact. It gives agents focused test/typecheck/build commands when CAS can infer them, lists tests to inspect first, and tells agents to report an environment blocker instead of installing dependencies or doing broad setup unless the task explicitly asks for that. The packet also includes behavioral invariants so agents preserve tenant/org scope, auth boundaries, DB constraints, migration contracts, and test coverage while editing.
+The validation plan is part of the product surface, not a benchmark-only artifact. It gives agents focused test/typecheck/build commands when CAS can infer them, lists tests to inspect first, and tells agents to report an environment blocker instead of installing dependencies or doing broad setup unless the task explicitly asks for that. The packet also includes behavioral invariants and invariant impact so agents preserve tenant/org scope, auth boundaries, DB constraints, migration contracts, and test coverage while editing.
 
 Or use the `safe_modification_guide` prompt which composes all of these into a single output.
 
@@ -213,7 +244,7 @@ The doctor combines CAS contract validation, source freshness, test discovery ev
 To make this default path reusable by agents:
 
 ```
-npm run agent-install -- /absolute/path/to/project
+npm --silent run agent-install -- /absolute/path/to/project --json
 ```
 
 or:
@@ -257,6 +288,8 @@ For deeper integrations such as jobs, brokers, auth, payments, AI SDKs, infrastr
 ```
 Use get_integration_depth_report with path="/repo"
 ```
+
+The report distinguishes `missing_surfaces` from `unobserved_surfaces`. Missing surfaces are analyzer-depth gaps for behavior the code appears to use. Unobserved surfaces are optional integration capabilities that were not present in the analyzed codebase, so agents should not treat them as implementation gaps.
 
 For task-level agent proof:
 
@@ -468,11 +501,15 @@ This runs the same generated task suite and adds quality metrics: context comple
 npm run agent-live-benchmark -- --repo app=/repo --task-type modify --target auth --agent-with-cmd "agent-with --workspace {workspace} --prompt-file {prompt_file}" --agent-without-cmd "agent-without --workspace {workspace} --prompt-file {prompt_file}" --test-command "npm test" --max-live-tasks 1
 ```
 
+For generated suites, use `--live-task-type` or `--live-task-category` to keep live runs focused on harder edit/debug/review tasks instead of spending live-agent budget on easy orientation tasks.
+
 When live commands are supplied, the harness creates paired repository copies under `.unravl-agent-live-trials/`, writes separate with-Unravl and without-Unravl prompts, initializes each copy as a clean git baseline, runs each command, records duration, changed files, added/deleted lines, test status, provider token metrics when reported, and writes binary diffs. The with-Unravl arm also receives a real CAS-derived work-packet artifact for the copied repo; if MCP tools are unavailable in the trial runtime, the agent reads that artifact instead of generating analysis inside its own turn. A deterministic orchestrator compares both diffs and reports patch quality, hidden-validation pass/fail, command completion, changed-file precision, time reduction, token reduction, and confidence as separate signals.
 
 For fair live proof, write tasks in behavioral terms and keep implementation paths out of the agent prompt. Hidden validation can still assert exact files, strings, tests, or diffs through `--test-command`; the no-Unravl arm should not receive the path that Unravl is supposed to discover.
 
 Patch quality answers whether the resulting diff solved the requested behavior. Completion score answers whether the agent process ended cleanly without timeout or environment churn. Keep those separate: a correct patch that passes hidden validation but times out while trying to run a broken broad test environment should show high patch quality and lower completion, not a failed fix.
+
+See `docs/mcp/AGENT-PERFORMANCE-PROOF.md` for the current tracked proof summary, including copied-repo live A/B results, deterministic benchmark results, and incremental edit-loop results.
 
 Agent command templates may use:
 
@@ -510,6 +547,52 @@ Through MCP:
 ```
 Use run_agent_quality_benchmark with paths=["/repo/a", "/repo/b"], max_tasks_per_repo=8, agent_with_command="agent-with --workspace {workspace} --prompt-file {prompt_file}", agent_without_command="agent-without --workspace {workspace} --prompt-file {prompt_file}", orchestrator_command="judge-agent --input {evaluation_input} --output {evaluation_file}", test_command="npm test", max_live_tasks=4
 ```
+
+### Running the incremental value benchmark
+
+From `mcp-server/`:
+
+```
+npm run incremental-benchmark
+```
+
+This copies discovered repositories into isolated workspaces, runs an initial analysis, reruns analysis with no source changes, edits one source file safely, reruns incremental analysis, and then generates an agent work packet from the edited CAS. With `--verify-full`, it also runs a fresh full analysis after the edit and compares node/edge/entry/exit count parity.
+
+The report shows whether iterative analysis stayed incremental, how much faster it was than a full rebuild, whether the edit produced a change summary, how many files are tracked in incremental state, how many file-cache entries exist, and whether an agent can immediately get a focused post-edit work packet instead of rediscovering the repo.
+
+Copied workspaces are discarded by default after each target so proof runs do not accumulate large dependency trees. Use `--keep-workspaces` only when debugging a failed target.
+
+To run it through MCP:
+
+```
+Use run_incremental_value_benchmark with paths=["/repo/a", "/repo/b"], verify_full=true, max_targets=4
+```
+
+To retrieve the current agent-performance proof through MCP:
+
+```
+Use get_agent_performance_proof
+```
+
+By default the proof query uses reports generated in the last 7 days so stale benchmark runs do not leak into current evidence. Pass `since_days=0` only when you intentionally want all persisted history.
+
+For one report family, use `get_agentic_benchmark_report` with `benchmark_type="live-agent-quality-ab"` or `benchmark_type="incremental-analysis-agent-value"`. Markdown rendering is selected from the stored report type, so live-quality, deterministic, and incremental reports are not flattened into the wrong format.
+
+To enforce the complete non-UI product bar from the latest proof artifacts:
+
+```
+npm run agent-vision-acceptance
+```
+
+This fails if the recent CAS mastery, default-agent-readiness, real-repo vision, deterministic usefulness, deterministic quality, copied-repo live A/B proof, or incremental edit-loop reports no longer support default agent use. It is the quick acceptance gate for proving that Unravl is materially useful to agents before relying on MCP by default.
+
+To regenerate the proof from scratch and then enforce the same gate:
+
+```
+npm run agent-proof-full
+```
+
+This runs MCP typecheck/tests, the analysis mastery gauntlet, default-agent-readiness gauntlet, real-repo vision gauntlet, deterministic usefulness benchmark, deterministic quality benchmark, incremental edit-loop benchmark, and final acceptance gate in sequence.
 
 ### Running the vision gauntlet
 
@@ -558,7 +641,7 @@ Storage behavior:
 - Saved CAS golden snapshots are stored as `cas-golden-snapshot.json`.
 - Runtime observations are stored as `runtime-observations.json`.
 - Persisted workspace graphs are stored under `workspace-graphs/`.
-- Agentic benchmark reports are stored under `agentic-benchmarks/`, with `latest.json` pointing to the latest report.
+- Agentic benchmark, quality, live, and incremental benchmark reports are stored under `agentic-benchmarks/`, with `latest.json` pointing to the latest report. MCP benchmark tools persist reports automatically, and the benchmark CLIs persist their generated reports after writing local JSON/Markdown artifacts.
 
 Use `force_full=true` when the incremental state is suspect or when you need a clean rebuild.
 

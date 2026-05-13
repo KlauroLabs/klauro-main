@@ -1,0 +1,21 @@
+{
+  "name": "flutter-mobile-flow-truth-fixture",
+  "languages": ["Dart/Flutter"],
+  "nodes": [
+    { "name": "AccountApp", "type": "widget" },
+    { "name": "HomeScreen", "type": "mobile_screen" },
+    { "name": "SettingsScreen", "type": "mobile_screen" },
+    { "name": "main", "type": "function" }
+  ],
+  "routes": [
+    { "path": "/" },
+    { "path": "/settings" }
+  ],
+  "minimums": {
+    "nodes": 10,
+    "edges": 8,
+    "entry_points": 4,
+    "runtime_static_links": 1,
+    "analysis_facts": 10
+  }
+}

@@ -36,11 +36,19 @@ List of persisted with-Unravl vs without-Unravl benchmark reports.
 
 ---
 
+## `unravl://agent-performance-proof`
+
+Recent proof that Unravl improves agent token use, speed, quality, and incremental edit-loop performance.
+
+**Returns:** Current 7-day proof summary with live A/B rollups, latest report summaries by benchmark type, proof claims, compact metrics, and Markdown.
+
+---
+
 ## `unravl://agentic-benchmark/{report_id}`
 
-One persisted agentic benchmark report.
+One persisted agentic benchmark, live-quality, or incremental value report.
 
-**Includes:** JSON report, Markdown rendering, estimated token/file/speed deltas, and the two-agent live-run sheet.
+**Includes:** JSON report and report-type-specific Markdown rendering. Deterministic, live-quality, and incremental reports each use their own formatter.
 
 ---
 
@@ -128,7 +136,7 @@ Deterministic TypeScript runtime SDK package generated from the CAS runtime cont
 
 Library and platform integration depth report.
 
-**Includes:** jobs, brokers, auth, payments, AI SDKs, infrastructure, observability, cache, and persistence coverage, with evidence, found surfaces, missing surfaces, and recommended analyzers.
+**Includes:** jobs, brokers, auth, payments, AI SDKs, infrastructure, observability, cache, and persistence coverage, with evidence, found surfaces, missing extracted surfaces, unobserved optional surfaces, and recommended analyzers.
 
 ---
 
@@ -204,7 +212,7 @@ Resources are best for loading a complete view of a domain in a single read. Too
 | Generate a runtime SDK package | Resource: `unravl://{name}/runtime-sdk` or Tool: `get_runtime_sdk_package` |
 | Check integration analyzer depth | Resource: `unravl://{name}/integration-depth` or Tool: `get_integration_depth_report` |
 | Load a multi-repo graph | Resource: `unravl://workspace/{id}/graph` or Tool: `get_workspace_graph` |
-| Load benchmark proof | Resource: `unravl://agentic-benchmark/latest` or Tool: `get_agentic_benchmark_report` |
+| Load benchmark proof | Resource: `unravl://agent-performance-proof` or Tool: `get_agent_performance_proof` |
 | Validate CAS completeness | Resource: `unravl://{name}/cas-contract` or Tool: `validate_cas_contract` |
 | Load all endpoints at once | Resource: `unravl://{name}/endpoints` |
 | Filter entry points by type | Tool: `get_entry_points` with `type` param |

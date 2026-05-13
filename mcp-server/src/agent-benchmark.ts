@@ -5,6 +5,7 @@ import { getOrchestrator } from './analyzer';
 import { getAgentWorkPacket, type AgentTask } from './agent-adoption';
 import { loadTruthExpectation, type AnalysisTruthExpectation } from './analysis-mastery';
 import { discoverTargets } from './gauntlet';
+import { saveAgenticBenchmarkReport } from './storage';
 import type { CASEntryPoint, CASNode, CASOutput } from '../../backend/src/types/cas.types';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
@@ -98,6 +99,7 @@ interface TaskScore {
   score: number;
   selected_node?: unknown;
   file_read_plan: unknown[];
+  validation_plan: unknown;
   baseline: {
     cold_repo_files: number;
     planned_files: number;
@@ -203,9 +205,12 @@ async function fixtureTargets(fixtureRoot: string): Promise<BenchmarkTarget[]> {
 }
 
 async function sourceFileStats(projectPath: string): Promise<SourceFileStat[]> {
-  const files = await glob(['**/*.{ts,tsx,js,jsx,py,rs,go,java,cs,php,prisma}'], {
+  const files = await glob([
+    '**/*.{ts,tsx,js,jsx,mjs,cjs,py,rs,go,java,cs,php,dart,prisma}',
+    '**/{package.json,tsconfig.json,jsconfig.json,pyproject.toml,requirements.txt,go.mod,Cargo.toml,composer.json,pubspec.yaml,*.csproj,*.sln,README.md,readme.md}',
+  ], {
     cwd: projectPath,
-    ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/target/**', '**/coverage/**'],
+    ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/target/**', '**/coverage/**', '**/.dart_tool/**', '**/bin/**', '**/obj/**'],
     nodir: true,
   });
   const stats: SourceFileStat[] = [];
@@ -325,6 +330,7 @@ function scoreTask(cas: CASOutput, projectPath: string, benchmarkTask: Benchmark
     score,
     selected_node: packet.selected_node,
     file_read_plan: packet.file_read_plan,
+    validation_plan: packet.validation_plan,
     baseline: {
       cold_repo_files: filesInRepo,
       planned_files: planFiles.length,
@@ -361,11 +367,9 @@ function buildAgenticComparison(
   amortizedAnalysisMs = 0
 ): AgenticComparison {
   const planFiles = packet.file_read_plan.map(item => String(item.file)).filter(Boolean);
-  const plannedStats = planFiles
-    .map(file => findSourceStat(sourceFiles, file))
-    .filter((stat): stat is SourceFileStat => Boolean(stat));
+  const planItems = packet.file_read_plan as Array<{ file?: string; line_window?: { start?: number; end?: number } }>;
   const packetTokens = estimateTokens(JSON.stringify(packet).length);
-  const withSourceTokens = sum(plannedStats.map(file => file.estimated_tokens));
+  const withSourceTokens = estimatePlannedSourceTokens(projectPath, planItems, sourceFiles);
   const withTotalTokens = withSourceTokens + packetTokens;
   const coldScanTokens = sum(sourceFiles.map(file => file.estimated_tokens));
   const searchStats = sourceSearchBaseline(sourceFiles, task);
@@ -504,6 +508,31 @@ function estimateTokens(size: number): number {
   return Math.max(1, Math.ceil(size / 4));
 }
 
+function estimatePlannedSourceTokens(
+  projectPath: string,
+  planItems: Array<{ file?: string; line_window?: { start?: number; end?: number } }>,
+  sourceFiles: SourceFileStat[]
+): number {
+  return sum(planItems.map(item => {
+    const file = item.file ? String(item.file) : '';
+    const stat = findSourceStat(sourceFiles, file);
+    if (!stat) return 0;
+    const window = item.line_window;
+    if (!window?.start || !window?.end || window.end < window.start) return stat.estimated_tokens;
+    try {
+      const absolutePath = path.resolve(projectPath, file);
+      const lines = fs.readFileSync(absolutePath, 'utf8').split(/\r?\n/);
+      const startIndex = Math.max(0, Math.floor(window.start) - 1);
+      const endIndex = Math.min(lines.length, Math.floor(window.end));
+      if (startIndex >= endIndex) return stat.estimated_tokens;
+      const sliceTokens = estimateTokens(lines.slice(startIndex, endIndex).join('\n').length);
+      return Math.min(stat.estimated_tokens, Math.max(1, sliceTokens));
+    } catch {
+      return stat.estimated_tokens;
+    }
+  }));
+}
+
 function estimateAgentWorkMs(files: number, tokens: number, baseMs: number): number {
   return Math.max(1, Math.round(baseMs + files * 40 + tokens * 0.35));
 }
@@ -573,8 +602,15 @@ function isGoodBenchmarkNode(node: CASNode): boolean {
   const type = node.type.toLowerCase();
   const name = node.name.toLowerCase();
   if (type.includes('call') || type === 'import' || type === 'export' || type === 'variable' || type === 'file' || type === 'test') return false;
+  if (isSyntheticCallsiteNode(node)) return false;
   if (name.startsWith('call to ') || name.startsWith('import ')) return false;
   return true;
+}
+
+function isSyntheticCallsiteNode(node: CASNode): boolean {
+  return node.id.startsWith('callee_') ||
+    node.subcategories?.includes('callee') === true ||
+    node.description?.toLowerCase().startsWith('called by handler') === true;
 }
 
 function exitTaskTarget(cas: CASOutput, exitPoint: { name: string; source_node: string; target?: { resource?: string; endpoint?: string; sdk?: string; service_id?: string } }): string {
@@ -883,6 +919,7 @@ async function main(): Promise<void> {
   await fs.writeJson(args.outputPath, report, { spaces: 2 });
   await fs.ensureDir(path.dirname(args.markdownPath));
   await fs.writeFile(args.markdownPath, formatMarkdownReport(report), 'utf8');
+  const saved = await saveAgenticBenchmarkReport(report);
   console.log(`Agent usefulness benchmark: ${report.status.toUpperCase()} (${report.score}/100)`);
   console.log(`Tasks: ${report.summary.task_count} | With Unravl success ${Math.round(report.summary.with_unravl_success_rate * 100)}% | Projected baseline success ${Math.round(report.summary.projected_without_unravl_success_rate * 100)}% | Token reduction ${report.summary.average_token_reduction_vs_search}% vs search | Speedup ${report.summary.average_speedup_vs_search}x vs search`);
   for (const target of report.targets) {
@@ -893,6 +930,7 @@ async function main(): Promise<void> {
   }
   console.log(`Report: ${args.outputPath}`);
   console.log(`Markdown: ${args.markdownPath}`);
+  console.log(`Persisted MCP report: ${saved.file}`);
 
   if (report.status === 'fail') process.exitCode = 1;
 }

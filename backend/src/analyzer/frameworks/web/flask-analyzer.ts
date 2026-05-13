@@ -1,4 +1,4 @@
-import { BaseAnalyzer, CASAnalysisResult, CASNode, CASEdge, CASExitPoint, AnalysisContext } from '../../core/base-analyzer';
+import { BaseAnalyzer, CASAnalysisResult, CASNode, CASEdge, CASExitPoint, AnalysisContext, FileAnalysisContext, FileAnalysisResult } from '../../core/base-analyzer';
 import {
   CASContribution, CASEntryPoint,
   CASDocumentation, CASComment, CASTodo, CASImplementationStatus
@@ -139,6 +139,56 @@ export class FlaskAnalyzer extends BaseAnalyzer {
     } catch {
       return false;
     }
+  }
+
+  supportsIncrementalAnalysis(): boolean {
+    return true;
+  }
+
+  async getRelevantFiles(projectPath: string): Promise<string[]> {
+    return glob(['**/*.py'], {
+      cwd: projectPath,
+      ignore: [
+        ...this.getIgnorePatterns({ projectPath }),
+        '**/venv/**',
+        '**/.venv/**',
+        '**/env/**',
+        '**/__pycache__/**'
+      ]
+    });
+  }
+
+  async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
+    const nodes: CASNode[] = [];
+    const edges: CASEdge[] = [];
+    const entryPoints: CASEntryPoint[] = [];
+    const exitPoints: CASExitPoint[] = [];
+    const file = context.relativePath;
+    const content = await fs.readFile(context.filePath, 'utf-8');
+    const stat = await fs.stat(context.filePath);
+
+    const application = await this.analyzeApplication([file], context.projectPath, nodes);
+    const blueprints = await this.analyzeBlueprints([file], context.projectPath, nodes, edges, entryPoints);
+    const views = await this.analyzeViews([file], context.projectPath, nodes, edges, entryPoints);
+    const models = await this.analyzeModels([file], context.projectPath, nodes, edges, exitPoints);
+    const forms = await this.analyzeFormsImpl([file], context.projectPath, nodes, edges);
+    const extensions = await this.analyzeExtensionsImpl([file], context.projectPath, nodes);
+
+    this.buildFlaskRelationshipsImpl(application, blueprints, views, models, [], nodes, edges);
+    this.identifyDatabaseConnectionsImpl(application, models, extensions, exitPoints);
+
+    return this.createFileAnalysisResult(
+      context.filePath,
+      file,
+      context.contentHash || this.computeContentHash(content),
+      stat.mtimeMs,
+      nodes,
+      edges,
+      entryPoints,
+      exitPoints,
+      this.extractPythonImports(content),
+      [...new Set([...nodes.map(node => node.name), ...forms.map(form => form.name)])]
+    );
   }
 
   async analyze(context: AnalysisContext): Promise<CASAnalysisResult> {
@@ -685,6 +735,18 @@ export class FlaskAnalyzer extends BaseAnalyzer {
     const appPattern = /(\w+)\s*=\s*Flask\s*\(/;
     const match = appPattern.exec(content);
     return match ? match[1] : null;
+  }
+
+  private extractPythonImports(content: string): string[] {
+    const imports: string[] = [];
+    const importPattern = /^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))/gm;
+    let match;
+
+    while ((match = importPattern.exec(content)) !== null) {
+      imports.push(match[1] || match[2]);
+    }
+
+    return imports;
   }
 
   private extractConfig(content: string): FlaskConfig {

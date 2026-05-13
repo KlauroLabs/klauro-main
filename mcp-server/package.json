@@ -22,9 +22,13 @@
     "agentic-benchmark-suite": "tsx src/agent-benchmark.ts --agentic --suite --real-repos --no-fixtures --max-targets 6 --max-tasks-per-repo 8",
     "agent-quality-benchmark": "tsx src/agent-quality-benchmark.ts --real-repos --max-targets 6 --max-tasks-per-repo 8",
     "agent-live-benchmark": "tsx src/agent-quality-benchmark.ts --live",
+    "agent-vision-acceptance": "tsx src/agent-vision-acceptance.ts",
+    "agent-proof-full": "npm run typecheck && npm test && npm run analysis-gauntlet && npm run agent-gauntlet && npm run vision-gauntlet && npm run agentic-benchmark-suite && npm run agent-quality-benchmark && npm run incremental-benchmark && npm run agent-vision-acceptance",
+    "incremental-benchmark": "tsx src/incremental-benchmark.ts",
     "analysis-gauntlet": "tsx src/analysis-gauntlet.ts",
     "contract-gauntlet": "tsx src/contract-gauntlet.ts",
     "vision-gauntlet": "tsx src/vision-gauntlet.ts",
+    "test": "tsx --test src/*.test.ts",
     "typecheck": "NODE_OPTIONS='--max-old-space-size=8192' tsc --noEmit"
   },
   "dependencies": {

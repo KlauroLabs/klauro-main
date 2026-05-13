@@ -38,6 +38,7 @@ export function buildAgentBootstrapPrompt(
   sections.push(`# Agent Bootstrap: ${cas.system.name}`);
   sections.push(`Default use: ${readiness.default_use ? 'yes' : 'no'}`);
   sections.push(`Readiness: ${readiness.status.toUpperCase()} (${readiness.score}/100)`);
+  sections.push(`Analysis profile: ${readiness.profile.kind} (${Math.round(readiness.profile.confidence * 100)}% confidence)`);
   if (readiness.adoption_gaps.length > 0) sections.push(`Gaps: ${readiness.adoption_gaps.join('; ')}`);
 
   sections.push('');
@@ -83,6 +84,16 @@ export function buildAgentBootstrapPrompt(
     sections.push('## File Read Plan');
     for (const item of packet.file_read_plan) {
       sections.push(`- ${item.file}${item.line ? `:${item.line}` : ''} - ${item.reason}`);
+    }
+  }
+
+  const invariantImpact = (packet as any).invariant_impact;
+  if (invariantImpact?.impacted_count > 0) {
+    sections.push('');
+    sections.push('## Invariant Impact');
+    sections.push(`Status: ${invariantImpact.status}, impacted invariants: ${invariantImpact.impacted_count}`);
+    for (const invariant of invariantImpact.impacted_invariants.slice(0, 8)) {
+      sections.push(`- ${invariant.status.toUpperCase()} ${invariant.name} (${invariant.invariant_type})`);
     }
   }
 

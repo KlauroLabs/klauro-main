@@ -8,6 +8,7 @@ export { CSharpAnalyzer } from './csharp-analyzer';
 export { GoAnalyzer } from './go-analyzer';
 export { RustAnalyzer } from './rust-analyzer';
 export { PHPAnalyzer } from './php-analyzer';
+export { DartAnalyzer } from './dart-analyzer';
 
 // Language analyzer mappings for easy lookup
 export const LanguageAnalyzers = {
@@ -22,7 +23,8 @@ export const LanguageAnalyzers = {
   vb: 'CSharpAnalyzer',
   go: 'GoAnalyzer',
   rust: 'RustAnalyzer',
-  php: 'PHPAnalyzer'
+  php: 'PHPAnalyzer',
+  dart: 'DartAnalyzer'
 } as const;
 
 // Supported languages list
@@ -136,6 +138,13 @@ export const ANALYZER_METADATA = [
     name: 'PHPAnalyzer',
     languages: ['php'],
     frameworks: ['laravel', 'symfony', 'codeigniter', 'slim', 'wordpress', 'drupal', 'phpunit'],
+    priority: 90,
+    category: 'language'
+  },
+  {
+    name: 'DartAnalyzer',
+    languages: ['dart'],
+    frameworks: ['flutter', 'dart'],
     priority: 90,
     category: 'language'
   }

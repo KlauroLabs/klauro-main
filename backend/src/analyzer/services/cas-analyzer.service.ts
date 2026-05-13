@@ -10,6 +10,7 @@ import { CSharpAnalyzer } from '../languages/csharp-analyzer';
 import { GoAnalyzer } from '../languages/go-analyzer';
 import { RustAnalyzer } from '../languages/rust-analyzer';
 import { PHPAnalyzer } from '../languages/php-analyzer';
+import { DartAnalyzer } from '../languages/dart-analyzer';
 
 import {
   NestJSAnalyzer,
@@ -303,6 +304,17 @@ export class CASAnalyzerService {
           content: [/\.php$/]
         },
         analyzer: new PHPAnalyzer()
+      },
+      {
+        id: 'dart',
+        name: 'Dart/Flutter Analyzer',
+        type: 'language',
+        version: '1.0.0',
+        detectPatterns: {
+          files: ['pubspec.yaml'],
+          content: [/\.dart$/]
+        },
+        analyzer: new DartAnalyzer()
       }
     ];
 

@@ -21,6 +21,7 @@ export interface AgentDefaultConfig {
     tool: string;
     args: Record<string, unknown>;
     purpose: string;
+    path_source?: string;
   }>;
   prompts: {
     agent_instruction: string;
@@ -44,24 +45,34 @@ export async function getAgentDefaultConfig(
   const doctor = await getAgentDoctor(cas, projectPath, options);
   const bootstrap = getAgentBootstrap(cas, projectPath, task);
   const mcpServerDir = findMcpServerDir();
+  const selectedPathSource = 'Use resolve_agent_analysis.selected_path when present; otherwise use this original path.';
   const firstCalls = [
     {
       order: 1,
-      tool: 'get_agent_doctor',
-      args: { path: projectPath },
-      purpose: 'Verify the CAS is fresh enough and complete enough for default agent use.',
+      tool: 'resolve_agent_analysis',
+      args: { path: projectPath, task },
+      purpose: 'Select the most specific default-use analysis when the repository has analyzed subprojects.',
     },
     {
       order: 2,
-      tool: 'get_agent_start_context',
-      args: { path: projectPath, task },
-      purpose: 'Load system orientation, graph anchors, readiness, and first MCP calls.',
+      tool: 'get_agent_doctor',
+      args: { path: projectPath },
+      purpose: 'Verify the CAS is fresh enough and complete enough for default agent use.',
+      path_source: selectedPathSource,
     },
     {
       order: 3,
+      tool: 'get_agent_start_context',
+      args: { path: projectPath, task },
+      purpose: 'Load system orientation, graph anchors, readiness, and first MCP calls.',
+      path_source: selectedPathSource,
+    },
+    {
+      order: 4,
       tool: 'get_agent_work_packet',
       args: { path: projectPath, task },
       purpose: 'Resolve the target, change risk, tests, follow-up tools, and first source files.',
+      path_source: selectedPathSource,
     },
   ];
 
@@ -70,7 +81,7 @@ export async function getAgentDefaultConfig(
     generated_at: new Date().toISOString(),
     status: doctor.status,
     default_use: doctor.default_use,
-    required_rule: 'Before broad file reads, call Unravl MCP for doctor, start context, and work packet. Read source after Unravl narrows the graph or reports a gap.',
+    required_rule: 'Before broad file reads, call Unravl MCP for doctor, start context, and work packet. Read source after Unravl narrows the graph or reports a gap. After edits, call validate_behavioral_invariants before finalizing.',
     mcp_server: {
       name: 'unravl',
       command: `npm --prefix ${mcpServerDir} run start`,
@@ -112,7 +123,9 @@ export async function writeAgentDefaultConfig(
 }
 
 export function formatAgentDefaultMarkdown(config: AgentDefaultConfig): string {
-  const calls = config.first_calls.map(call => `${call.order}. ${call.tool} ${JSON.stringify(call.args)}\n   ${call.purpose}`).join('\n');
+  const calls = config.first_calls
+    .map(call => `${call.order}. ${call.tool} ${JSON.stringify(call.args)}\n   ${call.purpose}${call.path_source ? `\n   Path source: ${call.path_source}` : ''}`)
+    .join('\n');
   return [
     '# Unravl Agent Defaults',
     '',
@@ -123,6 +136,8 @@ export function formatAgentDefaultMarkdown(config: AgentDefaultConfig): string {
     '## Required Rule',
     '',
     config.required_rule,
+    '',
+    'Use the `selected_path` returned by `resolve_agent_analysis` for every follow-up call when it differs from the original path.',
     '',
     '## MCP Server',
     '',
@@ -149,11 +164,13 @@ function repositorySnippet(projectPath: string): string {
     '',
     'Before broad file reads, use the Unravl MCP server for this repository.',
     '',
-    `1. Call get_agent_doctor with path ${JSON.stringify(projectPath)}.`,
-    `2. Call get_agent_start_context with path ${JSON.stringify(projectPath)} and the current task.`,
-    `3. Call get_agent_work_packet with path ${JSON.stringify(projectPath)} and the current task.`,
-    '4. Read source files after the work packet identifies the target files or after MCP reports a concrete gap.',
-    '5. Treat stale analysis, CAS errors, and failed doctor checks as blocking context problems to report before coding.',
+    `1. Call resolve_agent_analysis with path ${JSON.stringify(projectPath)} and the current task; use the selected path when it differs.`,
+    `2. Call get_agent_doctor with the selected path.`,
+    `3. Call get_agent_start_context with the selected path and current task.`,
+    `4. Call get_agent_work_packet with the selected path and current task.`,
+    '5. Read source files after the work packet identifies the target files or after MCP reports a concrete gap.',
+    '6. After edits, call validate_behavioral_invariants with the same selected path and task target before finalizing.',
+    '7. Treat stale analysis, CAS errors, and failed doctor checks as blocking context problems to report before coding.',
   ].join('\n');
 }
 

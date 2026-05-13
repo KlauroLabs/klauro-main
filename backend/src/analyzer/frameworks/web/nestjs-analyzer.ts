@@ -1,4 +1,4 @@
-import { BaseAnalyzer, AnalysisContext } from '../../core/base-analyzer';
+import { BaseAnalyzer, AnalysisContext, FileAnalysisContext, FileAnalysisResult } from '../../core/base-analyzer';
 import {
   CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint, CASPerspective,
   CASDocumentation, CASComment, CASTodo, CASImplementationStatus, CASCallGraph
@@ -130,6 +130,68 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     } catch {
       return false;
     }
+  }
+
+  supportsIncrementalAnalysis(): boolean {
+    return true;
+  }
+
+  async getRelevantFiles(projectPath: string): Promise<string[]> {
+    return glob(['**/*.{ts,js}'], {
+      cwd: projectPath,
+      ignore: [
+        '**/node_modules/**',
+        '**/dist/**',
+        '**/build/**',
+        '**/.git/**',
+        '**/test/**',
+        '**/*.spec.ts',
+        '**/*.test.ts'
+      ]
+    });
+  }
+
+  async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
+    const newNodes: CASNode[] = [];
+    const enhancedNodes: CASNode[] = [];
+    const edges: CASEdge[] = [];
+    const entryPoints: CASEntryPoint[] = [];
+    const exitPoints: CASExitPoint[] = [];
+    const file = context.relativePath;
+    const content = await fs.readFile(context.filePath, 'utf-8');
+    const stat = await fs.stat(context.filePath);
+    const existingNodes = context.existingAnalysis?.flatMap(contribution => contribution.nodes || []) || [];
+    const allNodes = [...existingNodes];
+
+    this.callGraphExtractor = new EnhancedCallGraphExtractor(context.projectPath);
+
+    const modules = await this.analyzeModules([file], context.projectPath, allNodes, edges, newNodes);
+    const controllers = await this.analyzeControllers([file], context.projectPath, allNodes, edges, entryPoints, enhancedNodes, newNodes);
+    const providers = await this.analyzeProviders([file], context.projectPath, allNodes, edges, enhancedNodes, newNodes);
+    const guards = await this.analyzeGuards([file], context.projectPath, allNodes, edges, enhancedNodes, newNodes);
+    const middleware = await this.analyzeMiddleware([file], context.projectPath, allNodes, edges, enhancedNodes, newNodes);
+    await this.analyzeEntryPoints([file], context.projectPath, allNodes, edges, entryPoints, newNodes);
+    this.buildNestJSRelationships(modules, controllers, providers, guards, middleware, allNodes, newNodes, edges, exitPoints);
+    this.identifyDatabaseConnections(providers, allNodes, exitPoints);
+
+    const contributedNodes = [...enhancedNodes, ...newNodes].filter(node => {
+      const nodeFile = node.source?.file;
+      if (!nodeFile) return true;
+      return nodeFile === file || nodeFile.endsWith(`/${file}`);
+    });
+
+    return this.createFileAnalysisResult(
+      context.filePath,
+      file,
+      context.contentHash || this.computeContentHash(content),
+      stat.mtimeMs,
+      contributedNodes,
+      edges,
+      entryPoints,
+      exitPoints,
+      this.extractImportsForIncremental(content),
+      [...new Set(contributedNodes.map(node => node.name))]
+    );
   }
 
   async analyze(context: AnalysisContext): Promise<CASContribution> {
@@ -2638,6 +2700,18 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       'middleware-detection',
       'provider-analysis'
     ];
+  }
+
+  private extractImportsForIncremental(content: string): string[] {
+    const imports: string[] = [];
+    const importPattern = /import\s+(?:\{[^}]*\}|\w+|\*\s+as\s+\w+)\s+from\s+['"]([^'"]+)['"]/g;
+    let match;
+
+    while ((match = importPattern.exec(content)) !== null) {
+      imports.push(match[1]);
+    }
+
+    return imports;
   }
 
   private extractRolesFromGuards(guards: string[]): string[] {

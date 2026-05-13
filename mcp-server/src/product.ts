@@ -27,6 +27,7 @@ import {
   getSystemOverview,
   searchNodes,
 } from './query';
+import { classifyAnalysisProfile, shouldSuppressAnswerGap } from './analysis-profile';
 
 export interface EvidenceRef {
   type: 'node' | 'edge' | 'entry_point' | 'exit_point' | 'call_chain' | 'runtime_link' | 'repository_link' | 'fact' | 'data_entity' | 'test' | 'summary';
@@ -127,6 +128,7 @@ export function runAnswerPack(cas: CASOutput, path: string, pack = 'mastery'): A
   }
 
   const gaps: string[] = [];
+  const profile = classifyAnalysisProfile(cas, path);
   const answers = [
     answerOverview(cas),
     answerEntryPoints(cas),
@@ -140,7 +142,7 @@ export function runAnswerPack(cas: CASOutput, path: string, pack = 'mastery'): A
   ];
 
   for (const answer of answers) {
-    if (answer.confidence < 0.8) {
+    if (answer.confidence < 0.8 && !shouldSuppressAnswerGap(profile, answer.id)) {
       gaps.push(`${answer.id}: low confidence (${answer.confidence})`);
     }
   }

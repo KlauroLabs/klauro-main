@@ -31,12 +31,13 @@ export interface TestDiscoveryEvidence {
 const TEST_PATTERNS = [
   '**/*.{test,spec}.{js,jsx,ts,tsx,mjs,cjs}',
   '**/*.cy.{js,jsx,ts,tsx}',
-  '**/tests/**/*.{js,jsx,ts,tsx,mjs,cjs,py,go,rs,java,kt,cs,php}',
-  '**/test/**/*.{js,jsx,ts,tsx,mjs,cjs,py,go,rs,java,kt,cs,php}',
+  '**/tests/**/*.{js,jsx,ts,tsx,mjs,cjs,py,go,rs,dart,java,kt,cs,php}',
+  '**/test/**/*.{js,jsx,ts,tsx,mjs,cjs,py,go,rs,dart,java,kt,cs,php}',
   '**/test_*.py',
   '**/*_test.py',
   '**/*_test.go',
   '**/*_test.rs',
+  '**/*_test.dart',
   '**/*Test.java',
   '**/*Tests.java',
   '**/*Test.kt',
@@ -61,6 +62,7 @@ const TEST_CONFIG_PATTERNS = [
   'pom.xml',
   'build.gradle',
   'build.gradle.kts',
+  'pubspec.yaml',
 ];
 
 const IGNORE_PATTERNS = [
@@ -174,6 +176,7 @@ function inferFramework(filePath: string): string {
   if (lower.endsWith('.py')) return 'pytest';
   if (lower.endsWith('_test.go')) return 'go-test';
   if (lower.endsWith('_test.rs')) return 'rust-test';
+  if (lower.endsWith('_test.dart')) return 'flutter-test';
   if (lower.endsWith('test.java') || lower.endsWith('tests.java') || lower.endsWith('test.kt') || lower.endsWith('tests.kt')) return 'junit';
   if (lower.endsWith('test.cs') || lower.endsWith('tests.cs')) return 'xunit';
   if (lower.endsWith('test.php')) return 'phpunit';
@@ -198,6 +201,7 @@ async function isExecutableTestFile(projectPath: string, filePath: string): Prom
   }
   if (/_test\.go$/i.test(name)) return /^\s*func\s+Test[A-Za-z0-9_]+\s*\(/m.test(content);
   if (/_test\.rs$/i.test(name)) return /#\[(?:tokio::)?test\][\s\S]{0,160}?\bfn\s+[A-Za-z0-9_]+/.test(content);
+  if (/_test\.dart$/i.test(name)) return /\b(?:test|testWidgets)\s*\(\s*(['"`])([^'"`]+)\1/.test(content);
   if (/(Test|Tests)\.(java|kt|cs|php)$/i.test(name)) return /@Test/.test(content);
   return false;
 }

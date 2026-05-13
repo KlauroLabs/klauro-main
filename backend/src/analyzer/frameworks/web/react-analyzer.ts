@@ -1,4 +1,4 @@
-import { BaseAnalyzer, AnalysisContext } from '../../core/base-analyzer';
+import { BaseAnalyzer, AnalysisContext, FileAnalysisContext, FileAnalysisResult } from '../../core/base-analyzer';
 import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint, CASPerspective, CASDocumentation, CASComment, CASTodo, CASImplementationStatus } from '../../../types/cas.types';
 import { AnalyzerError } from '../../core/errors';
 import * as path from 'path';
@@ -131,6 +131,78 @@ export class ReactAnalyzer extends BaseAnalyzer {
     } catch {
       return false;
     }
+  }
+
+  supportsIncrementalAnalysis(): boolean {
+    return true;
+  }
+
+  async getRelevantFiles(projectPath: string): Promise<string[]> {
+    return glob(['**/*.{ts,tsx,js,jsx}'], {
+      cwd: projectPath,
+      ignore: [
+        ...this.getIgnorePatterns({ projectPath }),
+        '**/*.test.*',
+        '**/*.spec.*'
+      ]
+    });
+  }
+
+  async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
+    const nodes: CASNode[] = [];
+    const edges: CASEdge[] = [];
+    const entryPoints: CASEntryPoint[] = [];
+    const exitPoints: CASExitPoint[] = [];
+    const file = context.relativePath;
+    const content = await fs.readFile(context.filePath, 'utf-8');
+    const stat = await fs.stat(context.filePath);
+
+    const localNodes: CASNode[][] = [[], [], [], [], [], [], []];
+    const localEdges: CASEdge[][] = [[], [], [], [], [], [], []];
+    const localEntryPoints: CASEntryPoint[][] = [[], []];
+
+    const [components, hooks, contexts, routes, stores, pages, utils] = await Promise.all([
+      this.analyzeComponents([file], context.projectPath, localNodes[0], localEdges[0]),
+      this.analyzeHooks([file], context.projectPath, localNodes[1], localEdges[1]),
+      this.analyzeContexts([file], context.projectPath, localNodes[2], localEdges[2]),
+      this.analyzeRoutes([file], context.projectPath, localNodes[3], localEdges[3], localEntryPoints[0]),
+      this.analyzeStores([file], context.projectPath, localNodes[4], localEdges[4]),
+      this.analyzePages([file], context.projectPath, localNodes[5], localEdges[5], localEntryPoints[1]),
+      this.analyzeUtils([file], context.projectPath, localNodes[6], localEdges[6])
+    ]);
+
+    for (const n of localNodes) nodes.push(...n);
+    for (const e of localEdges) edges.push(...e);
+    for (const ep of localEntryPoints) entryPoints.push(...ep);
+
+    const existingFacts = this.extractExistingReactFacts(context, file);
+    this.buildReactRelationships(
+      [...components, ...existingFacts.components],
+      [...hooks, ...existingFacts.hooks],
+      [...contexts, ...existingFacts.contexts],
+      routes,
+      [...stores, ...existingFacts.stores],
+      pages,
+      [...utils, ...existingFacts.utils],
+      nodes,
+      edges
+    );
+    this.computeComponentMetrics([...components, ...existingFacts.components], nodes, edges);
+    this.identifyAPIConnections(components, hooks, nodes, exitPoints);
+    this.tagNodesWithPerspectives(nodes, edges);
+
+    return this.createFileAnalysisResult(
+      context.filePath,
+      file,
+      context.contentHash || this.computeContentHash(content),
+      stat.mtimeMs,
+      nodes,
+      edges,
+      entryPoints,
+      exitPoints,
+      this.extractImports(content),
+      this.extractExports(content)
+    );
   }
 
   async analyze(context: AnalysisContext): Promise<CASContribution> {
@@ -1783,6 +1855,95 @@ export class ReactAnalyzer extends BaseAnalyzer {
     } catch {
       return 'unknown';
     }
+  }
+
+  private extractExistingReactFacts(context: FileAnalysisContext, excludedFile: string): {
+    components: ReactComponent[];
+    hooks: ReactHook[];
+    contexts: ReactContext[];
+    stores: ReactStore[];
+    utils: ReactUtil[];
+  } {
+    const facts = {
+      components: [] as ReactComponent[],
+      hooks: [] as ReactHook[],
+      contexts: [] as ReactContext[],
+      stores: [] as ReactStore[],
+      utils: [] as ReactUtil[]
+    };
+
+    for (const contribution of context.existingAnalysis || []) {
+      for (const node of contribution.nodes || []) {
+        if (!node.analyzers?.includes(this.analyzerId) && node.primaryAnalyzer !== this.analyzerId) continue;
+
+        const filePath = this.relativeNodeFile(context.projectPath, node.source?.file);
+        if (!filePath || filePath === excludedFile) continue;
+
+        if (node.type === 'functional_component' || node.type === 'class_component') {
+          facts.components.push({
+            name: node.name,
+            filePath,
+            type: node.type === 'class_component' ? 'class' : 'functional',
+            isDefaultExport: Boolean(node.metadata?.attributes?.is_default_export),
+            props: [],
+            state: [],
+            hooks: [],
+            lifecycle: [],
+            children: [],
+            imports: [],
+            exports: [],
+            jsx: Boolean(node.metadata?.attributes?.jsx),
+            renderedComponents: []
+          });
+        } else if (node.type === 'custom_hook') {
+          facts.hooks.push({
+            name: node.name,
+            filePath,
+            type: 'custom',
+            parameters: [],
+            returnType: node.signature?.return_type || 'unknown',
+            dependencies: [],
+            effectDependencies: []
+          });
+        } else if (node.type === 'react_context') {
+          facts.contexts.push({
+            name: node.name,
+            filePath,
+            defaultValue: node.metadata?.attributes?.default_value,
+            provider: node.metadata?.attributes?.provider || `${node.name}.Provider`,
+            consumer: node.metadata?.attributes?.consumer || `${node.name}.Consumer`,
+            properties: []
+          });
+        } else if (node.type.endsWith('_store')) {
+          const storeType = node.type.replace(/_store$/, '') as ReactStore['type'];
+          facts.stores.push({
+            name: node.name,
+            filePath,
+            type: ['redux', 'zustand', 'recoil', 'context', 'custom'].includes(storeType) ? storeType : 'custom',
+            actions: [],
+            reducers: [],
+            selectors: [],
+            initialState: {}
+          });
+        } else if (node.type.endsWith('_util')) {
+          const utilType = node.type.replace(/_util$/, '') as ReactUtil['type'];
+          facts.utils.push({
+            name: node.name,
+            filePath,
+            type: ['function', 'class', 'constant'].includes(utilType) ? utilType : 'function',
+            exports: [node.name],
+            dependencies: []
+          });
+        }
+      }
+    }
+
+    return facts;
+  }
+
+  private relativeNodeFile(projectPath: string, file?: string): string | null {
+    if (!file) return null;
+    return path.isAbsolute(file) ? path.relative(projectPath, file) : file;
   }
 
   private buildReactRelationships(

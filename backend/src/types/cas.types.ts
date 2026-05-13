@@ -2077,6 +2077,7 @@ export interface CASBehavioralInvariantSummary {
   total: number;
   by_type: Record<string, number>;
   by_confidence: Record<string, number>;
+  by_gap_severity?: Record<'high' | 'medium' | 'low', number>;
   enforced: number;
   inferred: number;
   missing: number;
@@ -2396,6 +2397,8 @@ export interface CASFlowGraph {
     data_flow_type: string;
   };
 }
+
+export const CAS_VERSION = '1.8.0';
 
 export interface CASFlowLayer {
   layer_number: number;

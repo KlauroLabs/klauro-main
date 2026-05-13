@@ -87,8 +87,7 @@ async function writeJsonAtomic(filePath: string, value: unknown, options: { spac
 
 export async function saveAnalysis(projectPath: string, output: CASOutput): Promise<AnalysisEntry> {
   const storagePath = await ensureStorageDir();
-  const slug = slugify(output.system.name || path.basename(projectPath));
-  const fileName = `${slug}.json`;
+  const fileName = `${projectSlug(projectPath)}.json`;
   const filePath = path.join(storagePath, fileName);
 
   await writeJsonAtomic(filePath, output);
@@ -232,13 +231,46 @@ export async function loadAgenticBenchmarkReport(id = 'latest'): Promise<any | n
   return null;
 }
 
+export async function loadLatestAgenticBenchmarkReportByType(benchmarkType: string): Promise<any | null> {
+  const reports = await listAgenticBenchmarkReports({ benchmarkType });
+  if (reports.length === 0) return null;
+  return loadAgenticBenchmarkReport(reports[0].id);
+}
+
 export async function listAgenticBenchmarkReports(): Promise<Array<{
   id: string;
   generated_at?: string;
   saved_at?: string;
   status?: string;
   score?: number;
+  benchmark_type?: string;
   target_count?: number;
+  task_count?: number;
+  live_trials_attempted?: number;
+  file: string;
+}>>;
+export async function listAgenticBenchmarkReports(options: { benchmarkType?: string }): Promise<Array<{
+  id: string;
+  generated_at?: string;
+  saved_at?: string;
+  status?: string;
+  score?: number;
+  benchmark_type?: string;
+  target_count?: number;
+  task_count?: number;
+  live_trials_attempted?: number;
+  file: string;
+}>>;
+export async function listAgenticBenchmarkReports(options: { benchmarkType?: string } = {}): Promise<Array<{
+  id: string;
+  generated_at?: string;
+  saved_at?: string;
+  status?: string;
+  score?: number;
+  benchmark_type?: string;
+  target_count?: number;
+  task_count?: number;
+  live_trials_attempted?: number;
   file: string;
 }>> {
   const storagePath = await ensureStorageDir();
@@ -249,13 +281,17 @@ export async function listAgenticBenchmarkReports(): Promise<Array<{
   const reports = [];
   for (const file of files) {
     const report = await fs.readJson(path.join(directory, file));
+    if (options.benchmarkType && report.benchmark_type !== options.benchmarkType) continue;
     reports.push({
-      id: report.id,
+      id: report.id || path.basename(file, '.json'),
       generated_at: report.generated_at || report.generatedAt,
       saved_at: report.saved_at,
       status: report.status,
       score: report.score,
-      target_count: report.targets?.length,
+      benchmark_type: report.benchmark_type,
+      target_count: report.summary?.target_count ?? report.targets?.length,
+      task_count: report.summary?.task_count ?? report.trials?.length,
+      live_trials_attempted: report.summary?.live_trials_attempted,
       file: path.join(directory, file),
     });
   }

@@ -193,33 +193,34 @@ export function getSemanticMap(cas: CASOutput, opts: { target?: string; limit?: 
 
 export function getFrameworkDepthReport(cas: CASOutput) {
   const frameworks = detectedFrameworks(cas);
-  const analyzers = new Set((cas.analyzer_contributions || []).map(contribution => contribution.analyzer_name.toLowerCase()));
+  const analyzers = (cas.analyzer_contributions || []).map(contribution => contribution.analyzer_name);
   const rows = frameworks.map(framework => {
     const lower = framework.toLowerCase();
     const relatedNodes = cas.nodes.filter(node =>
-      node.metadata?.framework?.toLowerCase().includes(lower) ||
-      node.tags?.some(tag => tag.toLowerCase().includes(lower)) ||
-      node.type.toLowerCase().includes(lower.replace(/[^a-z0-9]/g, '')) ||
+      namesCompatible(String(node.metadata?.framework || ''), framework) ||
+      node.tags?.some(tag => namesCompatible(tag.replace(/^analyzer:/i, ''), framework)) ||
+      node.subcategories?.some(category => namesCompatible(category, framework)) ||
+      namesCompatible(node.type, framework) ||
       frameworkNodeMatch(node, lower)
     );
     const relatedEntries = (cas.entry_points || []).filter(entry =>
-      entry.metadata?.framework?.toLowerCase?.().includes(lower) ||
+      namesCompatible(String(entry.metadata?.framework || ''), framework) ||
       relatedNodes.some(node => node.id === entry.source_node || node.id === entry.handler?.node_id)
     );
     const relatedExits = (cas.exit_points || []).filter(exitPoint =>
       relatedNodes.some(node => node.id === exitPoint.source_node)
     );
     const scoreParts = [
-      analyzers.has(`${lower} analyzer`) || analyzers.has(lower) ? 100 : 70,
+      analyzers.some(analyzer => namesCompatible(analyzer.replace(/\s+Analyzer$/i, '').replace(/\s+ORM$/i, ''), framework)) ? 100 : 70,
       relatedNodes.length > 0 ? 100 : 40,
-      relatedEntries.length > 0 || lower.includes('react') || lower.includes('prisma') ? 100 : 65,
+      frameworkRequiresEntryPoint(lower) ? (relatedEntries.length > 0 ? 100 : 65) : 100,
       cas.analysis_facts?.length ? 100 : 75,
       cas.runtime_static_links?.length ? 100 : 75,
     ];
     const score = Math.round(scoreParts.reduce((sum, value) => sum + value, 0) / scoreParts.length);
     const gaps = [];
     if (relatedNodes.length === 0) gaps.push('No framework-tagged nodes');
-    if (relatedEntries.length === 0 && !lower.includes('react') && !lower.includes('prisma')) gaps.push('No framework entry points');
+    if (relatedEntries.length === 0 && frameworkRequiresEntryPoint(lower)) gaps.push('No framework entry points');
     if (!cas.analysis_facts?.length) gaps.push('No evidence facts');
     if (!cas.runtime_static_links?.length) gaps.push('No runtime links');
 
@@ -629,8 +630,8 @@ function normalizeFile(cas: CASOutput, file?: string): string {
 function expectedFrameworkSurfaces(frameworks: string[], cas: CASOutput): string[] {
   const gaps: string[] = [];
   const lower = frameworks.map(framework => framework.toLowerCase());
-  if (lower.some(framework => framework.includes('nest')) && !(cas.entry_points || []).some(entry => entry.type === 'http')) {
-    gaps.push('NestJS detected but no HTTP entry points found');
+  if (lower.some(framework => framework.includes('nest')) && !(cas.entry_points || []).some(entry => ['http', 'route', 'message', 'event', 'websocket'].includes(entry.type))) {
+    gaps.push('NestJS detected but no entry points found');
   }
   if (lower.some(framework => framework.includes('react')) && !cas.nodes.some(node => node.type.includes('component') || node.type.includes('page') || frameworkNodeMatch(node, 'react'))) {
     gaps.push('React detected but no component/page nodes found');
@@ -643,6 +644,13 @@ function expectedFrameworkSurfaces(frameworks: string[], cas: CASOutput): string
 
 function frameworkNodeMatch(node: CASNode, framework: string): boolean {
   const file = node.source?.file?.toLowerCase() || '';
+  const metadata = node.metadata as Record<string, any> | undefined;
+  const subcategories = node.subcategories || [];
+  const tags = node.tags || [];
+  if ((framework.includes('express') || framework.includes('next') || framework.includes('nest')) && subcategories.some(category => namesCompatible(category, framework))) return true;
+  if (framework.includes('express') && (metadata?.framework === 'express' || subcategories.includes('express') || file.endsWith('server.ts'))) return true;
+  if (framework.includes('next')) return file.includes('/app/') || file.endsWith('next.config.js') || metadata?.framework === 'nextjs';
+  if (framework.includes('nest')) return subcategories.some(category => category.includes('nestjs')) || tags.some(tag => tag.includes('nestjs')) || file.includes('.controller.') || file.includes('.events.');
   if (framework.includes('react')) {
     return file.endsWith('.tsx') && /^[A-Z]/.test(node.name) && ['function', 'class', 'method', 'arrow'].includes(node.type);
   }
@@ -651,6 +659,12 @@ function frameworkNodeMatch(node: CASNode, framework: string): boolean {
     return node.type === 'entity' || metadata?.orm === 'Prisma' || metadata?.source === 'prisma_schema';
   }
   return false;
+}
+
+function frameworkRequiresEntryPoint(framework: string): boolean {
+  if (framework.includes('react') || framework.includes('prisma')) return false;
+  if (framework === 'c#' || framework.includes('csharp')) return false;
+  return true;
 }
 
 function httpContract(entry: CASEntryPoint) {

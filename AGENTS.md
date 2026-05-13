@@ -23,13 +23,14 @@ The product bar is that Codex, Claude, Cursor, and other coding agents should us
 
 Agent operating loop:
 
-1. If MCP has an analysis for the repository, call `get_agent_start_context` before broad file reads.
-2. Call `get_agent_tool_plan` with the user's task (`orient`, `modify`, `debug`, `review`, `trace`, `cross-repo`, or `runtime`).
-3. Call `get_agent_work_packet` for real work so CAS resolves the target, risk, tests, call context, and first files to inspect.
-4. Use `run_answer_pack` or the recommended follow-up tools when the task needs explanation with evidence.
-5. Before code edits, call `get_coding_context` for the target, then `assess_change_risk` and `find_tests` when connected behavior can be affected.
-6. Read source files after MCP narrows the target to specific files, nodes, tests, or explicit CAS gaps.
-7. If CAS/MCP returns an error or readiness fails, report that as a blocker to default use and then fall back to direct code reading for the task.
+1. Call `resolve_agent_analysis` for the handed path and current task so monorepo roots can route to the best analyzed subproject.
+2. If MCP has a selected analysis, call `get_agent_start_context` for that selected path before broad file reads.
+3. Call `get_agent_tool_plan` with the user's task (`orient`, `modify`, `debug`, `review`, `trace`, `cross-repo`, or `runtime`).
+4. Call `get_agent_work_packet` for real work so CAS resolves the target, risk, tests, call context, invariants, and first files to inspect.
+5. Use `run_answer_pack` or the recommended follow-up tools when the task needs explanation with evidence.
+6. Before code edits, call `get_coding_context` for the target, then `assess_change_risk`, `get_behavioral_invariants`, and `find_tests` when connected behavior can be affected.
+7. Read source files after MCP narrows the target to specific files, nodes, tests, or explicit CAS gaps.
+8. If CAS/MCP returns an error or readiness fails, report that as a blocker to default use and then fall back to direct code reading for the task.
 
 When an MCP client starts from prompts or resources instead of tools, use the `agent_coding_session` prompt or read `unravl://{project_name}/agent-start`.
 
@@ -56,8 +57,8 @@ Use `evaluate_agent_readiness` to decide whether a repository is ready for defau
 ### CAS Analyzer (`backend/src/analyzer/`)
 
 - TypeScript/NestJS analyzer engine.
-- Multi-language analysis for TypeScript/JavaScript, Python, Java, C#, Go, Rust, and PHP.
-- Framework analyzers for NestJS, React, Express, Django, Flask, FastAPI, Laravel, Spring Boot, and others.
+- Multi-language analysis for TypeScript/JavaScript, Python, Java, C#, Dart, Go, Rust, and PHP.
+- Framework analyzers for NestJS, React, Express, Django, Flask, FastAPI, Laravel, Spring Boot, ASP.NET Core, Flutter/Dart mobile apps, .NET worker services, and others.
 - Library analyzers for package-specific semantics such as ORMs, routing, state, realtime, and data fetching.
 - Generates CAS output for UI rendering, MCP querying, change-risk analysis, and future telemetry correlation.
 

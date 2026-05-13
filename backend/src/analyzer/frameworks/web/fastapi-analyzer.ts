@@ -1,4 +1,4 @@
-import { BaseAnalyzer, CASAnalysisResult, CASNode, CASEdge, AnalysisContext } from '../../core/base-analyzer';
+import { BaseAnalyzer, CASAnalysisResult, CASNode, CASEdge, AnalysisContext, FileAnalysisContext, FileAnalysisResult } from '../../core/base-analyzer';
 import {
   CASContribution, CASEntryPoint, CASExitPoint,
   CASDocumentation, CASComment, CASTodo, CASImplementationStatus,
@@ -146,6 +146,58 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
     } catch {
       return false;
     }
+  }
+
+  supportsIncrementalAnalysis(): boolean {
+    return true;
+  }
+
+  async getRelevantFiles(projectPath: string): Promise<string[]> {
+    return glob(['**/*.py'], {
+      cwd: projectPath,
+      ignore: [
+        ...this.getIgnorePatterns({ projectPath }),
+        '**/venv/**',
+        '**/.venv/**',
+        '**/env/**',
+        '**/__pycache__/**'
+      ]
+    });
+  }
+
+  async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
+    const nodes: CASNode[] = [];
+    const edges: CASEdge[] = [];
+    const entryPoints: CASEntryPoint[] = [];
+    const exitPoints: CASExitPoint[] = [];
+    const file = context.relativePath;
+    const content = await fs.readFile(context.filePath, 'utf-8');
+    const stat = await fs.stat(context.filePath);
+
+    const application = await this.analyzeApplication([file], context.projectPath, nodes);
+    const routers = await this.analyzeRouters([file], context.projectPath, nodes, edges, entryPoints);
+    const models = await this.analyzeModels([file], context.projectPath, nodes, edges);
+    const dependencies = await this.analyzeDependencies([file], context.projectPath, nodes, edges);
+    const middleware = await this.analyzeMiddleware([file], context.projectPath, nodes, edges);
+    await this.analyzeBackgroundTasks([file], context.projectPath, nodes);
+    await this.analyzeWebSockets([file], context.projectPath, nodes, entryPoints);
+
+    this.buildFastAPIRelationships(application, routers, models, dependencies, middleware, nodes, edges);
+    this.identifyDatabaseConnections(models, exitPoints);
+    this.tagNodesWithPerspectives(nodes, edges);
+
+    return this.createFileAnalysisResult(
+      context.filePath,
+      file,
+      context.contentHash || this.computeContentHash(content),
+      stat.mtimeMs,
+      nodes,
+      edges,
+      entryPoints,
+      exitPoints,
+      this.extractPythonImports(content),
+      [...new Set(nodes.map(node => node.name))]
+    );
   }
 
   async analyze(context: AnalysisContext): Promise<CASAnalysisResult> {
@@ -1314,6 +1366,18 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
     }
 
     return 'unknown';
+  }
+
+  private extractPythonImports(content: string): string[] {
+    const imports: string[] = [];
+    const importPattern = /^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))/gm;
+    let match;
+
+    while ((match = importPattern.exec(content)) !== null) {
+      imports.push(match[1] || match[2]);
+    }
+
+    return imports;
   }
 
   private buildFastAPIRelationships(

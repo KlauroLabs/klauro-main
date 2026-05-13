@@ -1,7 +1,7 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { analyzeProject, getAnalysis, analyzeProjectIncremental } from './analyzer';
-import { getStorageHealth, listAgenticBenchmarkReports, listAnalyses, listWorkspaceGraphs, loadAgenticBenchmarkReport, loadGoldenSnapshot, loadRuntimeObservations, loadRuntimeTrace, loadWorkspaceGraph, saveAgenticBenchmarkReport, saveGoldenSnapshot, saveRuntimeObservation, saveWorkspaceGraph } from './storage';
+import { getStorageHealth, listAgenticBenchmarkReports, listAnalyses, listWorkspaceGraphs, loadAgenticBenchmarkReport, loadGoldenSnapshot, loadLatestAgenticBenchmarkReportByType, loadRuntimeObservations, loadRuntimeTrace, loadWorkspaceGraph, saveAgenticBenchmarkReport, saveGoldenSnapshot, saveRuntimeObservation, saveWorkspaceGraph } from './storage';
 import * as query from './query';
 import * as watcher from './watcher';
 import * as product from './product';
@@ -17,8 +17,12 @@ import * as agentDoctor from './agent-doctor';
 import * as workspaceGraph from './workspace-graph';
 import * as agentDefaults from './agent-defaults';
 import * as integrationDepth from './integration-depth';
+import * as invariantValidation from './invariant-validation';
+import * as agentProjectMap from './agent-project-map';
 import { formatMarkdownReport, runAgenticBenchmark } from './agent-benchmark';
 import { formatQualityMarkdownReport, runAgentQualityBenchmark } from './agent-quality-benchmark';
+import { formatIncrementalValueMarkdownReport, runIncrementalValueBenchmark } from './incremental-benchmark';
+import { buildAgentPerformanceProof, formatStoredBenchmarkReport } from './agent-performance-proof';
 
 export function createServer(): McpServer {
   const server = new McpServer(
@@ -413,12 +417,59 @@ function registerTools(server: McpServer) {
           target: z.string().optional(),
           related_paths: z.array(z.string()).optional(),
           runtime_event: z.record(z.unknown()).optional(),
+          instructions: z.string().optional(),
+          success_criteria: z.array(z.string()).optional(),
         }).optional().describe('Optional task context for tailoring the default bootstrap'),
       } as any,
     } as any,
     async ({ path, task }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(agentBootstrap.getAgentBootstrap(cas, path, task || {}));
+    })
+  );
+
+  server.registerTool(
+    'get_agent_project_map',
+    {
+      title: 'Get Agent Project Map',
+      description: 'List analyzed parent/subproject candidates for a repository path so agents can choose the most specific default-use CAS analysis before broad file reads.',
+      inputSchema: {
+        path: z.string().optional().describe('Repository or subproject path to filter candidates. Omit to map all stored analyses.'),
+        task: z.object({
+          task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional(),
+          target: z.string().optional(),
+          related_paths: z.array(z.string()).optional(),
+          runtime_event: z.record(z.unknown()).optional(),
+          instructions: z.string().optional(),
+          success_criteria: z.array(z.string()).optional(),
+        }).optional().describe('Optional task context used to score target matches.'),
+        limit: z.number().optional().describe('Maximum candidates to return'),
+      } as any,
+    } as any,
+    async ({ path, task, limit }: any) => withErrorHandling(async () => {
+      return json(await agentProjectMap.getAgentProjectMap({ path, task: task || {}, limit }));
+    })
+  );
+
+  server.registerTool(
+    'resolve_agent_analysis',
+    {
+      title: 'Resolve Agent Analysis',
+      description: 'Select the best stored CAS analysis for an agent task, especially when the requested path is a monorepo/root and a subproject analysis is more accurate.',
+      inputSchema: {
+        path: z.string().describe('Repository or subproject path the agent was handed'),
+        task: z.object({
+          task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional(),
+          target: z.string().optional(),
+          related_paths: z.array(z.string()).optional(),
+          runtime_event: z.record(z.unknown()).optional(),
+          instructions: z.string().optional(),
+          success_criteria: z.array(z.string()).optional(),
+        }).optional().describe('Optional task context used to score the selected analysis'),
+      } as any,
+    } as any,
+    async ({ path, task }: any) => withErrorHandling(async () => {
+      return json(await agentProjectMap.resolveAgentAnalysis({ path, task: task || {} }));
     })
   );
 
@@ -449,6 +500,8 @@ function registerTools(server: McpServer) {
           target: z.string().optional(),
           related_paths: z.array(z.string()).optional(),
           runtime_event: z.record(z.unknown()).optional(),
+          instructions: z.string().optional(),
+          success_criteria: z.array(z.string()).optional(),
         }).optional().describe('Optional task context for tailoring default-use instructions'),
       } as any,
     } as any,
@@ -470,6 +523,8 @@ function registerTools(server: McpServer) {
           target: z.string().optional(),
           related_paths: z.array(z.string()).optional(),
           runtime_event: z.record(z.unknown()).optional(),
+          instructions: z.string().optional(),
+          success_criteria: z.array(z.string()).optional(),
         }).optional().describe('Optional task context for tailoring default-use instructions'),
       } as any,
     } as any,
@@ -491,6 +546,8 @@ function registerTools(server: McpServer) {
           target: z.string().optional(),
           related_paths: z.array(z.string()).optional(),
           runtime_event: z.record(z.unknown()).optional(),
+          instructions: z.string().optional(),
+          success_criteria: z.array(z.string()).optional(),
         }).optional().describe('Optional task context for tailoring the default MCP path'),
       } as any,
     } as any,
@@ -774,14 +831,47 @@ function registerTools(server: McpServer) {
       description: 'Load persisted agentic benchmark reports. Use id=latest for the latest report.',
       inputSchema: {
         id: z.string().optional().describe('Benchmark report id. Defaults to latest.'),
+        benchmark_type: z.string().optional().describe('When loading latest or listing, restrict to an exact benchmark_type such as agentic-suite-with-unravl-vs-without-unravl, deterministic-agent-quality-proxy, live-agent-quality-ab, or incremental-analysis-agent-value.'),
         list: z.boolean().optional().describe('When true, list reports instead of loading one.'),
       } as any,
     } as any,
-    async ({ id, list }: any) => withErrorHandling(async () => {
-      if (list) return json(await listAgenticBenchmarkReports());
-      const report = await loadAgenticBenchmarkReport(id || 'latest');
+    async ({ id, benchmark_type, list }: any) => withErrorHandling(async () => {
+      if (list) return json(await listAgenticBenchmarkReports({ benchmarkType: benchmark_type }));
+      const report = benchmark_type && (!id || id === 'latest')
+        ? await loadLatestAgenticBenchmarkReportByType(benchmark_type)
+        : await loadAgenticBenchmarkReport(id || 'latest');
       if (!report) return json({ error: `Agentic benchmark report not found: ${id || 'latest'}` });
-      return json({ report, markdown: formatMarkdownReport(report) });
+      if (benchmark_type && report.benchmark_type !== benchmark_type) {
+        return json({ error: `Agentic benchmark report ${id || 'latest'} has benchmark_type ${report.benchmark_type || 'unknown'}, not ${benchmark_type}` });
+      }
+      return json({ report, markdown: formatStoredBenchmarkReport(report) });
+    })
+  );
+
+  server.registerTool(
+    'get_agent_performance_proof',
+    {
+      title: 'Get Agent Performance Proof',
+      description: 'Summarize persisted agent benchmarks into the current evidence that Unravl saves tokens, speeds agents up, preserves or improves quality, and keeps incremental analysis useful after edits.',
+      inputSchema: {
+        benchmark_types: z.array(z.string()).optional().describe('Exact benchmark_type values to include. Omit to include all persisted types.'),
+        max_reports: z.number().optional().describe('Maximum persisted reports to inspect before grouping by latest benchmark type. Default 25.'),
+        since_days: z.number().optional().describe('Only include reports generated within this many days. Defaults to 7. Use 0 to include all persisted reports.'),
+      } as any,
+    } as any,
+    async ({ benchmark_types, max_reports, since_days }: any) => withErrorHandling(async () => {
+      const benchmarkTypes = Array.isArray(benchmark_types) ? new Set(benchmark_types) : null;
+      const sinceDays = since_days ?? 7;
+      const summaries = (await listAgenticBenchmarkReports())
+        .filter(summary => !benchmarkTypes || benchmarkTypes.has(summary.benchmark_type || ''))
+        .filter(summary => reportSummaryWithinWindow(summary, sinceDays))
+        .slice(0, max_reports || 25);
+      const reports = [];
+      for (const summary of summaries) {
+        const report = await loadAgenticBenchmarkReport(summary.id);
+        if (report) reports.push(report);
+      }
+      return json(buildAgentPerformanceProof(reports, { sinceDays }));
     })
   );
 
@@ -807,12 +897,14 @@ function registerTools(server: McpServer) {
         test_command: z.string().optional().describe('Optional command to run inside each copied repo after the agent attempt.'),
         work_root: z.string().optional().describe('Directory for live repo copies and benchmark artifacts.'),
         max_live_tasks: z.number().optional().describe('Maximum task pairs to run through live agents.'),
+        live_task_types: z.array(z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime'])).optional().describe('Only run live pairs for these task types.'),
+        live_task_categories: z.array(z.string()).optional().describe('Only run live pairs for these generated task categories, such as modify, debug, review, trace, data, external, runtime, or test.'),
         timeout_ms: z.number().optional().describe('Per-agent command timeout in milliseconds.'),
         test_timeout_ms: z.number().optional().describe('Per-test command timeout in milliseconds.'),
         orchestrator_timeout_ms: z.number().optional().describe('Evaluator command timeout in milliseconds.'),
       } as any,
     } as any,
-    async ({ paths, task, max_tasks_per_repo, agent_with_command, agent_without_command, orchestrator_command, test_command, work_root, max_live_tasks, timeout_ms, test_timeout_ms, orchestrator_timeout_ms }: any) => withErrorHandling(async () => {
+    async ({ paths, task, max_tasks_per_repo, agent_with_command, agent_without_command, orchestrator_command, test_command, work_root, max_live_tasks, live_task_types, live_task_categories, timeout_ms, test_timeout_ms, orchestrator_timeout_ms }: any) => withErrorHandling(async () => {
       const selectedPaths = paths && paths.length > 0 ? paths : (await listAnalyses()).map(analysis => analysis.path);
       const report = await runAgentQualityBenchmark({
         repos: selectedPaths.map((repoPath: string) => ({ path: repoPath })),
@@ -825,6 +917,8 @@ function registerTools(server: McpServer) {
           testCommand: test_command,
           workRoot: work_root,
           maxLiveTasks: max_live_tasks,
+          liveTaskTypes: live_task_types,
+          liveTaskCategories: live_task_categories,
           timeoutMs: timeout_ms,
           testTimeoutMs: test_timeout_ms,
           orchestratorTimeoutMs: orchestrator_timeout_ms,
@@ -834,6 +928,34 @@ function registerTools(server: McpServer) {
       });
       const saved = await saveAgenticBenchmarkReport(report);
       return json({ saved, report, markdown: formatQualityMarkdownReport(report) });
+    })
+  );
+
+  server.registerTool(
+    'run_incremental_value_benchmark',
+    {
+      title: 'Run Incremental Value Benchmark',
+      description: 'Copy repositories, run an initial analysis, rerun with no changes, edit one source file, rerun incremental analysis, optionally verify against a fresh full analysis, and report speed, correctness, cache, and agent work-packet value.',
+      inputSchema: {
+        paths: z.array(z.string()).optional().describe('Project paths to benchmark. Omit to use all analyzed repositories.'),
+        max_targets: z.number().optional().describe('Maximum repositories to benchmark'),
+        work_root: z.string().optional().describe('Directory for copied repo workspaces and isolated benchmark storage.'),
+        verify_full: z.boolean().optional().describe('Run a fresh full analysis after the edit and compare CAS count parity.'),
+        discard_workspaces: z.boolean().optional().describe('Remove copied repositories after collecting results.'),
+      } as any,
+    } as any,
+    async ({ paths, max_targets, work_root, verify_full, discard_workspaces }: any) => withErrorHandling(async () => {
+      const selectedPaths = paths && paths.length > 0 ? paths : (await listAnalyses()).map(analysis => analysis.path);
+      const report = await runIncrementalValueBenchmark({
+        repos: selectedPaths.map((repoPath: string) => ({ path: repoPath })),
+        maxTargets: max_targets,
+        workRoot: work_root,
+        verifyFull: Boolean(verify_full),
+        keepWorkspaces: discard_workspaces ? false : true,
+        quiet: true,
+      });
+      const saved = await saveAgenticBenchmarkReport(report);
+      return json({ saved, report, markdown: formatIncrementalValueMarkdownReport(report) });
     })
   );
 
@@ -1426,6 +1548,34 @@ function registerTools(server: McpServer) {
     async ({ path, invariant_type, target, limit, offset }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getBehavioralInvariants(cas, { invariantType: invariant_type, target, limit, offset }));
+    })
+  );
+
+  server.registerTool(
+    'validate_behavioral_invariants',
+    {
+      title: 'Validate Behavioral Invariants',
+      description: 'Validate a working diff, explicit file list, or provided diff text against CAS behavioral invariants. Use after edits and before final answers to catch tenant-scope, auth, DB constraint, migration, and test-coverage risks.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        target: z.string().optional().describe('Optional node id, file path, entity, field, or text target'),
+        invariant_type: z.enum(['tenant-scope', 'auth-boundary', 'authorization', 'db-constraint', 'migration-contract', 'test-coverage', 'data-lifecycle', 'business-rule']).optional().describe('Filter by invariant type'),
+        files: z.array(z.string()).optional().describe('Explicit changed files to validate instead of reading the working tree'),
+        diff_text: z.string().optional().describe('Optional unified diff text to validate'),
+        include_working_tree: z.boolean().optional().describe('When false, validate only files/diff_text. Default true reads git working-tree and staged changes.'),
+        limit: z.number().optional().describe('Maximum impacted invariants to return'),
+      } as any,
+    } as any,
+    async ({ path, target, invariant_type, files, diff_text, include_working_tree, limit }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(invariantValidation.validateBehavioralInvariants(cas, path, {
+        target,
+        invariantType: invariant_type,
+        files,
+        diffText: diff_text,
+        includeWorkingTree: include_working_tree,
+        limit,
+      }));
     })
   );
 
@@ -2120,6 +2270,13 @@ function registerTools(server: McpServer) {
   );
 }
 
+function reportSummaryWithinWindow(summary: { generated_at?: string; saved_at?: string }, sinceDays?: number | null): boolean {
+  if (!sinceDays || sinceDays <= 0) return true;
+  const parsed = Date.parse(String(summary.generated_at || summary.saved_at || ''));
+  if (!Number.isFinite(parsed)) return false;
+  return parsed >= Date.now() - sinceDays * 24 * 60 * 60 * 1000;
+}
+
 function registerResources(server: McpServer) {
   server.registerResource(
     'analyses-list',
@@ -2163,13 +2320,31 @@ function registerResources(server: McpServer) {
   );
 
   server.registerResource(
+    'agent-performance-proof',
+    'unravl://agent-performance-proof',
+    { title: 'Agent Performance Proof', description: 'Recent proof that Unravl improves agent token use, speed, quality, and incremental edit-loop performance.', mimeType: 'application/json' } as any,
+    async () => {
+      const summaries = (await listAgenticBenchmarkReports())
+        .filter(summary => reportSummaryWithinWindow(summary, 7))
+        .slice(0, 25);
+      const reports = [];
+      for (const summary of summaries) {
+        const report = await loadAgenticBenchmarkReport(summary.id);
+        if (report) reports.push(report);
+      }
+      const proof = buildAgentPerformanceProof(reports, { sinceDays: 7 });
+      return { contents: [{ uri: 'unravl://agent-performance-proof', text: JSON.stringify(proof) }] };
+    }
+  );
+
+  server.registerResource(
     'agentic-benchmark-report',
     new ResourceTemplate('unravl://agentic-benchmark/{report_id}', { list: undefined }),
-    { title: 'Agentic Benchmark Report', description: 'A persisted agent benchmark report with deterministic estimates and a two-agent run sheet.', mimeType: 'application/json' } as any,
+    { title: 'Agentic Benchmark Report', description: 'A persisted agent benchmark, live quality, or incremental value report.', mimeType: 'application/json' } as any,
     async (uri, params) => {
       const report = await loadAgenticBenchmarkReport(String(params.report_id));
       if (!report) return { contents: [{ uri: uri.href, text: JSON.stringify({ error: 'Agentic benchmark report not found' }) }] };
-      return { contents: [{ uri: uri.href, text: JSON.stringify({ report, markdown: formatMarkdownReport(report) }) }] };
+      return { contents: [{ uri: uri.href, text: JSON.stringify({ report, markdown: formatStoredBenchmarkReport(report) }) }] };
     }
   );
 
@@ -2442,22 +2617,29 @@ function registerPrompts(server: McpServer) {
     'agent_coding_session',
     {
       title: 'Agent Coding Session',
-      description: 'Default prompt for Codex, Claude, Cursor, and other agents. Loads CAS readiness, start context, and task-specific MCP tool plan before source-file exploration.',
+      description: 'Default prompt for Codex, Claude, Cursor, and other agents. Resolves the best analysis, then loads CAS readiness, start context, and task-specific MCP tool plan before source-file exploration.',
       argsSchema: {
         path: z.string().describe('Project path'),
         task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional().describe('Task type'),
         target: z.string().optional().describe('Task target, such as a feature, node, file, route, error, or subsystem'),
+        instructions: z.string().optional().describe('Exact user instructions to preserve in the work packet'),
+        success_criteria: z.array(z.string()).optional().describe('Success criteria for the task'),
       } as any,
     } as any,
-    async ({ path, task_type, target }: any) => {
-      const cas = await getAnalysis(path);
-      const task = { task_type: task_type || 'orient', target };
-      const bootstrap = agentBootstrap.getAgentBootstrap(cas, path, task);
+    async ({ path, task_type, target, instructions, success_criteria }: any) => {
+      const task = { task_type: task_type || 'orient', target, instructions, success_criteria };
+      const resolution = await agentProjectMap.resolveAgentAnalysis({ path, task });
+      const selectedPath = resolution.selected_path || path;
+      const cas = await getAnalysis(selectedPath);
+      const bootstrap = agentBootstrap.getAgentBootstrap(cas, selectedPath, task);
+      const prefix = resolution.selected_path && resolution.selected_path !== path
+        ? `# Analysis Resolution\nRequested path: ${path}\nSelected path: ${resolution.selected_path}\nRecommendation: ${resolution.recommendation}\n\n`
+        : '';
 
       return {
         messages: [{
           role: 'user',
-          content: { type: 'text', text: bootstrap.prompt } as any,
+          content: { type: 'text', text: `${prefix}${bootstrap.prompt}` } as any,
         }],
       };
     }
@@ -2580,6 +2762,12 @@ function registerPrompts(server: McpServer) {
       const risk = query.assessChangeRisk(cas, node_id);
       const tests = query.findTests(cas, { nodeId: node_id });
       const stability = query.getStability(cas, node_id);
+      const invariants = query.getBehavioralInvariants(cas, { target: node_id, limit: 8 });
+      const invariantImpact = invariantValidation.assessBehavioralInvariantImpact(cas, {
+        target: node_id,
+        files: node.source?.file ? [node.source.file] : [],
+        limit: 8,
+      });
 
       const sections: string[] = [];
       sections.push(`# Safe Modification Guide: ${node.name}`);
@@ -2611,6 +2799,15 @@ function registerPrompts(server: McpServer) {
       } else {
         sections.push(`  WARNING: No tests directly cover this node.`);
       }
+
+      sections.push(`\n## Behavioral Invariants`);
+      sections.push(`Relevant invariants: ${invariants.total}`);
+      for (const invariant of invariants.invariants.slice(0, 8)) {
+        const gaps = invariant.gaps?.length ? `, gaps=${invariant.gaps.length}` : '';
+        sections.push(`  [${invariant.confidence}] ${invariant.name} (${invariant.invariant_type}${gaps})`);
+      }
+      sections.push(`Invariant impact status: ${invariantImpact.status}, impacted=${invariantImpact.impacted_count}`);
+      sections.push(`After edits, call validate_behavioral_invariants with path=${JSON.stringify(path)} and target=${JSON.stringify(node_id)} before finalizing.`);
 
       if (stability && 'stability_score' in stability) {
         sections.push(`\n## Stability`);

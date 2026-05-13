@@ -147,13 +147,16 @@ function printHelp(): void {
     '  unravl doctor .',
     '  unravl save-golden .',
     '  unravl agent-start ~/dev/unravl/proof-of-concept --task-type debug --target auth',
-    '  npm run agent-start -- . --json',
-    '  npm run agent-install -- .',
+    '  npm --silent run agent-start -- . --json',
+    '  npm --silent run agent-install -- . --json',
   ].join('\n') + '\n');
 }
 
 function compactWorkPacket(packet: Awaited<ReturnType<typeof getAgentWorkPacket>>) {
   const context = packet.work_context as any;
+  const nextMcpCalls = packet.next_mcp_calls.filter((step: any, index: number) =>
+    index < 6 || step.tool === 'validate_behavioral_invariants'
+  );
   return {
     path: packet.path,
     generated_at: packet.generated_at,
@@ -167,6 +170,7 @@ function compactWorkPacket(packet: Awaited<ReturnType<typeof getAgentWorkPacket>
       file: item.file,
       reason: item.reason,
       line: item.line,
+      line_window: item.line_window,
       node_ids: Array.isArray(item.node_ids) ? item.node_ids.slice(0, 8) : item.node_ids,
     })),
     risk: context.risk ? {
@@ -179,8 +183,9 @@ function compactWorkPacket(packet: Awaited<ReturnType<typeof getAgentWorkPacket>
       total: context.behavioral_invariants.total,
       invariants: context.behavioral_invariants.invariants?.slice(0, 8),
     } : null,
+    invariant_impact: (packet as any).invariant_impact,
     validation_plan: (packet as any).validation_plan,
-    next_mcp_calls: packet.next_mcp_calls.slice(0, 6).map((step: any) => ({
+    next_mcp_calls: nextMcpCalls.map((step: any) => ({
       tool: step.tool,
       purpose: step.purpose,
       required: step.required,
@@ -208,6 +213,15 @@ function formatWorkPacket(packet: Awaited<ReturnType<typeof getAgentWorkPacket>>
   const selected = packet.selected_node
     ? `${packet.selected_node.name || packet.selected_node.id} (${packet.selected_node.file || 'unknown file'})`
     : 'none';
+  const invariantImpact = (packet as any).invariant_impact;
+  const validateCall = packet.next_mcp_calls.find(step => step.tool === 'validate_behavioral_invariants');
+  const validationCommands = ((packet as any).validation_plan?.commands || []).slice(0, 5);
+  const validationLines = validationCommands.length > 0
+    ? validationCommands.map((command: any) => `- ${command.command}: ${command.purpose}`)
+    : ['- none inferred'];
+  if (validateCall) {
+    validationLines.push(`- MCP ${validateCall.tool}: ${validateCall.purpose}`);
+  }
   const lines = [
     `Unravl work packet: ${packet.status.toUpperCase()}`,
     `Default use: ${packet.default_use ? 'yes' : 'no'}`,
@@ -216,10 +230,20 @@ function formatWorkPacket(packet: Awaited<ReturnType<typeof getAgentWorkPacket>>
     `Selected node: ${selected}`,
     '',
     'First files:',
-    ...packet.file_read_plan.slice(0, 10).map(item => `- ${item.file}: ${item.reason}`),
+    ...packet.file_read_plan.slice(0, 10).map(item => {
+      const window = item.line_window
+        ? ` lines ${item.line_window.start}-${item.line_window.end}`
+        : item.line
+          ? ` line ${item.line}`
+          : '';
+      return `- ${item.file}${window}: ${item.reason}`;
+    }),
+    '',
+    'Invariant impact:',
+    invariantImpact ? `- ${invariantImpact.status}: ${invariantImpact.impacted_count} impacted invariants` : '- none',
     '',
     'Validation:',
-    ...(((packet as any).validation_plan?.commands || []).slice(0, 5).map((command: any) => `- ${command.command}: ${command.purpose}`) || ['- none inferred']),
+    ...validationLines,
     '',
     'Gaps:',
     ...(packet.gaps.length ? packet.gaps.map(gap => `- ${gap}`) : ['- none']),

@@ -6,25 +6,29 @@ Prompts generate structured context for injection into AI assistant conversation
 
 ## `agent_coding_session`
 
-Default prompt for Codex, Claude, Cursor, and other agents. It loads CAS readiness, start context, task-specific MCP tool plan, and the work packet before source-file exploration.
+Default prompt for Codex, Claude, Cursor, and other agents. It resolves the best stored analysis for the requested path, then loads CAS readiness, start context, task-specific MCP tool plan, and the work packet before source-file exploration.
 
 | Argument | Type | Required | Description |
 |----------|------|----------|-------------|
 | `path` | string | yes | Project path |
 | `task_type` | string | no | One of `orient`, `modify`, `debug`, `review`, `trace`, `cross-repo`, or `runtime` |
 | `target` | string | no | Task target, such as a feature, node, file, route, error, or subsystem |
+| `instructions` | string | no | Exact user instructions to preserve in the work packet |
+| `success_criteria` | string[] | no | Success criteria for the task |
 
 **Generates sections:**
 
-1. **Header** - System name, default-use status, readiness score, and adoption gaps
-2. **Operating Rule** - When to use MCP and when to read source files
-3. **System** - Type, description, languages, frameworks, and top capabilities
-4. **Scale** - Node, edge, entry point, and analysis error counts
-5. **Answer Pack Gaps** - Any missing explanation surfaces
-6. **MCP Plan** - Ordered tool calls with arguments and purpose
-7. **Selected Target** - Resolved CAS node for the task when available
-8. **File Read Plan** - First source files to inspect with reasons
-9. **When To Read Files** - Concrete conditions for targeted source inspection
+1. **Analysis Resolution** - Requested path, selected path, and recommendation when a subproject analysis is chosen
+2. **Header** - System name, default-use status, readiness score, and adoption gaps
+3. **Operating Rule** - When to use MCP and when to read source files
+4. **System** - Type, description, languages, frameworks, and top capabilities
+5. **Scale** - Node, edge, entry point, and analysis error counts
+6. **Answer Pack Gaps** - Any missing explanation surfaces
+7. **MCP Plan** - Ordered tool calls with arguments and purpose
+8. **Selected Target** - Resolved CAS node for the task when available
+9. **File Read Plan** - First source files to inspect with reasons
+10. **Invariant Impact** - Behavior-level invariants likely affected by the task
+11. **When To Read Files** - Concrete conditions for targeted source inspection
 
 ---
 
@@ -52,7 +56,7 @@ Generates comprehensive architectural context for a codebase. Designed to be inj
 
 ## `safe_modification_guide`
 
-Generates guidance for safely modifying a specific code element. Useful before making changes to understand blast radius and risk.
+Generates guidance for safely modifying a specific code element. Useful before making changes to understand blast radius, risk, tests, behavioral invariants, and required post-edit validation.
 
 | Argument | Type | Required | Description |
 |----------|------|----------|-------------|
@@ -65,8 +69,9 @@ Generates guidance for safely modifying a specific code element. Useful before m
 2. **Risk Assessment** - Risk level, contributing factors, direct/transitive caller counts, affected entry points, recommendations
 3. **Callers** - Up to 20 callers with indentation showing depth, relationship type
 4. **Test Coverage** - Test suites covering the node, or warning if uncovered
-5. **Stability** - Stability score/class, commit metrics (30d), author count
-6. **Connected Components** - Incoming/outgoing edge counts, entry/exit point counts
+5. **Behavioral Invariants** - Relevant tenant/auth/schema/test invariants and the `validate_behavioral_invariants` call to run after edits
+6. **Stability** - Stability score/class, commit metrics (30d), author count
+7. **Connected Components** - Incoming/outgoing edge counts, entry/exit point counts
 
 ---
 

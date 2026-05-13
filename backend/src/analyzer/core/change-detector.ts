@@ -31,11 +31,19 @@ const CORE_CONFIG_FILES = [
   'Cargo.lock',
   'go.mod',
   'go.sum',
+  'pubspec.yaml',
+  'pubspec.lock',
   'pom.xml',
   'build.gradle',
   'composer.json',
   'composer.lock',
 ];
+
+const CORE_CONFIG_PATTERNS = CORE_CONFIG_FILES.flatMap(pattern =>
+  pattern.startsWith('**/') || pattern.includes('/')
+    ? [pattern]
+    : [pattern, `**/${pattern}`]
+);
 
 const SOURCE_EXTENSIONS = [
   '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
@@ -45,6 +53,8 @@ const SOURCE_EXTENSIONS = [
   '.go',
   '.rs',
   '.php',
+  '.dart',
+  '.prisma',
   '.rb',
   '.swift',
   '.c', '.cpp', '.h', '.hpp',
@@ -68,6 +78,7 @@ const IGNORE_PATTERNS = [
 export class ChangeDetector {
   private projectPath: string;
   private isGitRepo: boolean;
+  private lastSourceFileScan: string[] | null = null;
 
   constructor(projectPath: string) {
     this.projectPath = projectPath;
@@ -121,6 +132,7 @@ export class ChangeDetector {
   private async scanByMtime(lastAnalysisTimestamp: number): Promise<string[]> {
     const candidates: string[] = [];
     const files = await this.getAllSourceFiles();
+    this.lastSourceFileScan = files;
 
     for (const file of files) {
       try {
@@ -137,7 +149,10 @@ export class ChangeDetector {
   }
 
   private async getAllSourceFiles(): Promise<string[]> {
-    const patterns = SOURCE_EXTENSIONS.map(ext => `**/*${ext}`);
+    const patterns = [
+      ...SOURCE_EXTENSIONS.map(ext => `**/*${ext}`),
+      ...CORE_CONFIG_PATTERNS,
+    ];
     const files: string[] = [];
 
     for (const pattern of patterns) {
@@ -179,7 +194,7 @@ export class ChangeDetector {
         processChange(file, status);
       }
 
-      const coreConfigChanged = this.checkCoreConfigChanges([...added, ...modified]);
+      const coreConfigChanged = this.checkCoreConfigChanges([...added, ...modified, ...deleted]);
       if (coreConfigChanged) {
         return {
           added,
@@ -312,7 +327,7 @@ export class ChangeDetector {
     const deleted: string[] = [];
 
     const allCurrentFiles = new Set(
-      (await this.getAllSourceFiles()).map(f => path.relative(this.projectPath, f))
+      (this.lastSourceFileScan || await this.getAllSourceFiles()).map(f => path.relative(this.projectPath, f))
     );
 
     for (const filePath of Object.keys(previousState.files)) {
@@ -342,7 +357,7 @@ export class ChangeDetector {
       }
     }
 
-    const coreConfigChanged = this.checkCoreConfigChanges([...added, ...modified]);
+    const coreConfigChanged = this.checkCoreConfigChanges([...added, ...modified, ...deleted]);
     if (coreConfigChanged) {
       return {
         added,

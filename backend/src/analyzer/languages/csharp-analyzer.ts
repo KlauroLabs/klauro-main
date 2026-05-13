@@ -1,7 +1,7 @@
-import { BaseAnalyzer, AnalysisContext } from '../core/base-analyzer';
+import { BaseAnalyzer, AnalysisContext, FileAnalysisContext } from '../core/base-analyzer';
 import {
   CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint,
-  CASDocumentation, CASComment, CASTodo, CASImplementationStatus
+  CASDocumentation, CASComment, CASTodo, CASImplementationStatus, FileAnalysisResult
 } from '../../types/cas.types';
 import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
@@ -173,6 +173,75 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     }
   }
 
+  supportsIncrementalAnalysis(): boolean {
+    return true;
+  }
+
+  async getRelevantFiles(projectPath: string): Promise<string[]> {
+    return glob(['**/*.cs'], {
+      cwd: projectPath,
+      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**', '**/vendor/**', '**/Tests/**', '**/*Test.cs', '**/*Tests.cs']
+    });
+  }
+
+  async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
+    const nodes: CASNode[] = [];
+    const edges: CASEdge[] = [];
+    const entryPoints: CASEntryPoint[] = [];
+    const exitPoints: CASExitPoint[] = [];
+    const namespaces = new Map<string, string[]>();
+    const content = await fs.readFile(context.filePath, 'utf-8');
+    const stat = await fs.stat(context.filePath);
+
+    await this.detectProjectType(context.projectPath);
+    await this.analyzeCSharpFile(
+      context.filePath,
+      context.relativePath,
+      nodes,
+      edges,
+      entryPoints,
+      exitPoints,
+      namespaces,
+      context
+    );
+    this.detectAspNetPatterns(nodes, edges, entryPoints);
+    this.detectProgramEntryPoint(context.relativePath, context.filePath, content, nodes, edges, entryPoints);
+    this.detectHostedServices(context.relativePath, context.filePath, content, nodes, edges, entryPoints);
+    this.detectDotNetScheduledJobs(context.relativePath, context.filePath, content, nodes, edges, entryPoints);
+    this.detectAzureFunctions(context.relativePath, context.filePath, content, nodes, entryPoints);
+    this.buildInheritanceRelationships(nodes, edges);
+    this.buildInterfaceImplementationEdges(nodes, edges);
+    this.linkEnumUsages(nodes, edges);
+    await this.analyzeCallGraphFallback(
+      context.filePath,
+      context.relativePath,
+      nodes,
+      edges,
+      exitPoints,
+      nodes.filter(node => node.type === 'method' || node.type === 'function'),
+      nodes.filter(node => node.type === 'class' || node.type === 'worker'),
+      context.projectPath
+    );
+
+    const usings = this.extractUsings(content).map(using => using.namespace);
+    const exports = nodes
+      .filter(node => ['class', 'interface', 'enum', 'struct', 'method', 'property'].includes(node.type))
+      .map(node => node.name);
+
+    return this.createFileAnalysisResult(
+      context.filePath,
+      context.relativePath,
+      context.contentHash || this.computeContentHash(content),
+      stat.mtimeMs,
+      nodes,
+      edges,
+      entryPoints,
+      exitPoints,
+      usings,
+      exports
+    );
+  }
+
   async analyze(context: AnalysisContext): Promise<CASContribution> {
     const nodes: CASNode[] = [];
     const edges: CASEdge[] = [];
@@ -198,6 +267,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
 
       this.buildNamespaceHierarchy(namespaces, nodes, edges);
       this.detectAspNetPatterns(nodes, edges, entryPoints);
+      await this.detectDotNetRuntimePatterns(context.projectPath, nodes, edges, entryPoints);
       this.buildInheritanceRelationships(nodes, edges);
       await this.buildProjectReferenceEdges(context.projectPath, nodes, edges);
       this.buildInterfaceImplementationEdges(nodes, edges);
@@ -629,34 +699,6 @@ export class CSharpAnalyzer extends BaseAnalyzer {
         'has_method'
       ));
 
-      if (method.modifiers.includes('public') && !method.isConstructor && !method.isDestructor) {
-        entryPoints.push({
-          id: `entry_${methodId}`,
-          name: `Public method: ${cls.name}.${method.name}`,
-          type: 'public_method',
-          source_node: methodId,
-          metadata: {
-            className: cls.name,
-            methodName: method.name,
-            returnType: method.returnType,
-            parameters: method.parameters.map(p => p.type)
-          }
-        });
-      }
-    }
-
-    if (cls.modifiers.includes('public')) {
-      entryPoints.push({
-        id: `entry_${classId}`,
-        name: `Public class: ${cls.name}`,
-        type: 'public_class',
-        source_node: classId,
-        metadata: {
-          namespace: cls.namespace,
-          className: cls.name,
-          attributes: cls.attributes
-        }
-      });
     }
   }
 
@@ -753,17 +795,6 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       ));
     }
 
-    entryPoints.push({
-      id: `entry_${interfaceId}`,
-      name: `Interface: ${intf.name}`,
-      type: 'interface',
-      source_node: interfaceId,
-      metadata: {
-        namespace: intf.namespace,
-        interfaceName: intf.name,
-        attributes: intf.attributes
-      }
-    });
   }
 
   private async processCSharpEnum(
@@ -987,7 +1018,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
 
           const fields = this.extractFields(lines, i, classEndLine);
           const properties = this.extractProperties(lines, i, classEndLine);
-          const methods = this.extractMethods(lines, i, classEndLine);
+          const methods = this.extractMethods(lines, i, classEndLine, className);
           const attributes = this.extractAttributes(lines, i);
 
           classes.push({
@@ -1037,7 +1068,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
           const interfaceStartLine = i + 1;
           const interfaceEndLine = this.findBlockEnd(lines, i);
 
-          const methods = this.extractMethods(lines, i, interfaceEndLine);
+          const methods = this.extractMethods(lines, i, interfaceEndLine, interfaceName);
           const properties = this.extractProperties(lines, i, interfaceEndLine);
           const attributes = this.extractAttributes(lines, i);
 
@@ -1124,7 +1155,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
 
           const fields = this.extractFields(lines, i, structEndLine);
           const properties = this.extractProperties(lines, i, structEndLine);
-          const methods = this.extractMethods(lines, i, structEndLine);
+          const methods = this.extractMethods(lines, i, structEndLine, structName);
           const attributes = this.extractAttributes(lines, i);
 
           structs.push({
@@ -1148,16 +1179,15 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     return structs;
   }
 
-  private extractMethods(lines: string[], classStart: number, classEnd: number): CSharpMethod[] {
+  private extractMethods(lines: string[], classStart: number, classEnd: number, ownerName?: string): CSharpMethod[] {
     const methods: CSharpMethod[] = [];
 
     for (let i = classStart; i < classEnd; i++) {
       const line = lines[i].trim();
 
       if (this.isMethodDeclaration(line)) {
-        const methodMatch = line.match(/\b(\w+)\s*\(/);
-        if (methodMatch) {
-          const methodName = methodMatch[1];
+        const methodName = this.extractMethodName(line);
+        if (methodName) {
           const modifiers = this.extractModifiers(line);
           const returnType = this.extractReturnType(line);
           const parameters = this.extractParameters(line);
@@ -1165,7 +1195,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
 
           const methodEndLine = this.findMethodEnd(lines, i);
 
-          const isConstructor = methodName === lines[classStart]?.match(/class\s+(\w+)/)?.[1];
+          const isConstructor = methodName === ownerName;
           const isDestructor = methodName.startsWith('~');
           const isAsync = line.includes('async ');
 
@@ -1337,6 +1367,13 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     return returnTypeIndex > 0 ? parts[returnTypeIndex] : 'void';
   }
 
+  private extractMethodName(line: string): string | undefined {
+    const beforeParen = line.slice(0, line.indexOf('(')).trim();
+    if (!beforeParen) return undefined;
+    const token = beforeParen.split(/\s+/).pop();
+    return token?.replace(/^.*\./, '').replace(/<.*>$/, '');
+  }
+
   private extractParameters(line: string): CSharpParameter[] {
     const parameters: CSharpParameter[] = [];
     const paramMatch = line.match(/\((.*?)\)/);
@@ -1347,7 +1384,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
 
       for (const param of params) {
         const trimmed = param.trim();
-        const paramMatch = trimmed.match(/^(ref\s+|out\s+|params\s+)?(\w+(?:\[\])?)\s+(\w+)(?:\s*=\s*(.+))?$/);
+        const paramMatch = trimmed.match(/^(ref\s+|out\s+|params\s+)?([\w.<>,?\[\]]+)\s+(\w+)(?:\s*=\s*(.+))?$/);
 
         if (paramMatch) {
           const modifier = paramMatch[1]?.trim();
@@ -1483,14 +1520,11 @@ export class CSharpAnalyzer extends BaseAnalyzer {
 
     for (const node of nodes) {
       if ((node.type === 'class' || node.type === 'method') && node.metadata?.attributes) {
-        const attributes = node.metadata.attributes as string[];
+        const attributes = this.getCSharpAttributeList(node);
         const aspNetAttribute = attributes.find(a => aspNetAttributes.some(attr => a.includes(attr)));
 
         if (aspNetAttribute) {
-          if (!node.metadata.attributes) {
-            node.metadata.attributes = {};
-          }
-          node.metadata.attributes.aspNetComponent = aspNetAttribute;
+          this.setMetadataAttribute(node, 'aspNetComponent', aspNetAttribute);
 
           if (!node || typeof node !== 'object') return;
 
@@ -1498,7 +1532,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
             entryPoints.push({
               id: `entry_aspnet_${node.id}`,
               name: `ASP.NET Controller: ${node.name}`,
-              type: 'aspnet_controller',
+              type: 'http',
               source_node: node.id,
               metadata: {
                 attribute: aspNetAttribute,
@@ -1531,8 +1565,390 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     }
   }
 
+  private async detectDotNetRuntimePatterns(
+    projectPath: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[]
+  ): Promise<void> {
+    const csharpFiles = await glob(['**/*.cs'], {
+      cwd: projectPath,
+      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**', '**/vendor/**']
+    });
+
+    for (const relativeFile of csharpFiles) {
+      const fullPath = path.join(projectPath, relativeFile);
+      let content = '';
+      try {
+        content = await fs.readFile(fullPath, 'utf8');
+      } catch {
+        continue;
+      }
+
+      this.detectProgramEntryPoint(relativeFile, fullPath, content, nodes, edges, entryPoints);
+      this.detectHostedServices(relativeFile, fullPath, content, nodes, edges, entryPoints);
+      this.detectDotNetScheduledJobs(relativeFile, fullPath, content, nodes, edges, entryPoints);
+      this.detectAzureFunctions(relativeFile, fullPath, content, nodes, entryPoints);
+    }
+  }
+
+  private detectProgramEntryPoint(
+    relativeFile: string,
+    fullPath: string,
+    content: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[]
+  ): void {
+    const hasExplicitMain = /\bstatic\s+(?:async\s+)?(?:Task|void|int)\s+Main\s*\(/.test(content);
+    const hasTopLevelHost = /\b(?:WebApplication|Host)\.(?:CreateBuilder|CreateDefaultBuilder|CreateApplicationBuilder)\s*\(/.test(content) ||
+      /\b(?:app|host)\.(?:Run|RunAsync)\s*\(/.test(content);
+    const looksLikeProgram = path.basename(relativeFile).toLowerCase() === 'program.cs';
+    if (!hasExplicitMain && !(looksLikeProgram && hasTopLevelHost)) return;
+
+    const fileNode = this.findFileNode(nodes, fullPath);
+    const line = this.lineNumberFor(content, hasExplicitMain ? /\bstatic\s+(?:async\s+)?(?:Task|void|int)\s+Main\s*\(/ : /\b(?:WebApplication|Host)\.(?:CreateBuilder|CreateDefaultBuilder|CreateApplicationBuilder)\s*\(/);
+    const nodeId = `dotnet_program_${this.sanitizeId(relativeFile)}_${line}`;
+    if (!nodes.some(node => node.id === nodeId)) {
+      nodes.push(this.createNodeBuilder(nodeId, 'Program entry point', 'host_entry')
+        .withLevel(3, this.getLevelName(3))
+        .withSource({ file: fullPath, line })
+        .withMetadata({
+          language: 'csharp',
+          framework: hasTopLevelHost ? 'dotnet-host' : 'dotnet',
+          attributes: {
+            explicit_main: hasExplicitMain,
+            top_level_host: hasTopLevelHost,
+            file: relativeFile
+          }
+        })
+        .withAnalyzers([this.analyzerId], this.analyzerId)
+        .build());
+      if (fileNode) edges.push(this.createEdge(`${fileNode.id}_contains_${nodeId}`, fileNode.id, nodeId, 'contains'));
+    }
+
+    this.pushUniqueEntryPoint(entryPoints, {
+      id: `entry_dotnet_program_${this.sanitizeId(relativeFile)}_${line}`,
+      source_node: nodeId,
+      source_analyzer: this.analyzerId,
+      type: hasTopLevelHost ? 'lifecycle' : 'cli',
+      name: hasTopLevelHost ? '.NET host startup' : '.NET Main entry point',
+      description: 'Program.cs starts the .NET process/host for this project.',
+      trigger: { event: hasTopLevelHost ? 'host-start' : 'process-start' },
+      handler: {
+        node_id: nodeId,
+        method_name: hasExplicitMain ? 'Main' : 'top-level-statements',
+        file: fullPath,
+        line
+      },
+      metadata: {
+        language: 'csharp',
+        framework: hasTopLevelHost ? 'dotnet-host' : 'dotnet',
+        file: relativeFile
+      }
+    });
+  }
+
+  private detectHostedServices(
+    relativeFile: string,
+    fullPath: string,
+    content: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[]
+  ): void {
+    const servicePattern = /class\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*<[^>{}]+>)?\s*:\s*([^{]+)\{/g;
+    let match: RegExpExecArray | null;
+    while ((match = servicePattern.exec(content)) !== null) {
+      const serviceName = match[1];
+      const inheritance = match[2].trim();
+      const isAbstract = new RegExp(`\\babstract\\s+class\\s+${serviceName}\\b`).test(content.slice(Math.max(0, match.index - 80), match.index + 120));
+      const isHostedService = /\b(?:BackgroundService|IHostedService)\b/.test(inheritance);
+      const isMessageWorker = /\b(?:IWorker|BaseEventBusWorker|Consumer|Listener)\b/.test(inheritance) ||
+        /\bHandleEvent\s*\(/.test(content) ||
+        /\bListenToQueue(?:Sync)?\s*</.test(content);
+
+      if (!isHostedService && !isMessageWorker) continue;
+      if (isAbstract && !isHostedService) continue;
+
+      const classNode = this.findClassNode(nodes, serviceName, fullPath);
+      if (classNode) {
+        classNode.type = 'worker';
+        classNode.subcategories = [...new Set([...(classNode.subcategories || []), 'background-service'])];
+        classNode.metadata = {
+          ...classNode.metadata,
+          language: classNode.metadata?.language || 'csharp',
+          framework: classNode.metadata?.framework || 'dotnet-host',
+          attributes: {
+            ...(classNode.metadata?.attributes || {}),
+            dotnet_worker: true,
+            message_worker: isMessageWorker,
+            base_type: inheritance
+          }
+        };
+      }
+
+      const executeLine = this.lineNumberFor(content, /\bExecuteAsync\s*\(/);
+      const executeNode = this.findMethodNode(nodes, serviceName, 'ExecuteAsync', fullPath);
+      const handleEventLine = this.lineNumberFor(content, /\bHandleEvent\s*\(/);
+      const handleEventNode = this.findMethodNode(nodes, serviceName, 'HandleEvent', fullPath);
+      const startNode = this.findMethodNode(nodes, serviceName, 'StartAsync', fullPath);
+      const handlerNode = executeNode || handleEventNode || startNode;
+      const sourceNode = handlerNode?.id || classNode?.id || this.ensureSyntheticNode(nodes, edges, fullPath, relativeFile, serviceName, 'worker', match.index, content);
+      const messageType = this.extractWorkerMessageType(inheritance);
+      const queueName = this.extractQueueName(content);
+      const serviceType = isMessageWorker ? 'message-worker' : 'background-service';
+      this.pushUniqueEntryPoint(entryPoints, {
+        id: `entry_dotnet_worker_${this.sanitizeId(relativeFile)}_${this.sanitizeId(serviceName)}`,
+        source_node: sourceNode,
+        source_analyzer: this.analyzerId,
+        type: isMessageWorker ? 'message' : 'lifecycle',
+        name: isMessageWorker ? `${serviceName} message worker` : `${serviceName} background worker`,
+        description: isMessageWorker
+          ? `${serviceName} handles queue/event messages in a .NET worker service.`
+          : `${serviceName} runs as a .NET hosted background service.`,
+        trigger: isMessageWorker
+          ? { event: messageType || queueName || 'queue-message' }
+          : { event: 'hosted-service-start' },
+        handler: {
+          node_id: sourceNode,
+          method_name: executeNode ? 'ExecuteAsync' : handleEventNode ? 'HandleEvent' : startNode ? 'StartAsync' : serviceName,
+          file: fullPath,
+          line: handlerNode?.source?.line || executeLine || handleEventLine || this.lineNumberAtOffset(content, match.index)
+        },
+        input: messageType ? { type: messageType } : undefined,
+        connected_nodes: [sourceNode, classNode?.id].filter(Boolean) as string[],
+        metadata: {
+          language: 'csharp',
+          framework: 'dotnet-host',
+          service_type: serviceType,
+          message_type: messageType,
+          queue_name: queueName,
+          class_name: serviceName,
+          file: relativeFile
+        }
+      });
+
+      if (isMessageWorker && startNode && handleEventNode) {
+        const edgeId = `message_dispatch_${startNode.id}_${handleEventNode.id}`;
+        if (!edges.some(edge => edge.id === edgeId)) {
+          edges.push(this.createEdge(edgeId, startNode.id, handleEventNode.id, 'dispatches', 'behavior', {
+            message_type: messageType,
+            queue_name: queueName,
+            line: handleEventLine
+          }));
+        }
+      }
+    }
+  }
+
+  private extractWorkerMessageType(inheritance: string): string | undefined {
+    const match = inheritance.match(/BaseEventBusWorker\s*<\s*([^,\s>]+)/);
+    return match?.[1];
+  }
+
+  private extractQueueName(content: string): string | undefined {
+    return content.match(/SoonQueue\.Create\s*\(\s*["']([^"']+)["']/)?.[1];
+  }
+
+  private getCSharpAttributeList(node: CASNode): string[] {
+    const attributes = node.metadata?.attributes;
+    if (Array.isArray(attributes)) return attributes;
+    if (!attributes || typeof attributes !== 'object') return [];
+    const csharpAttributes = (attributes as Record<string, unknown>).csharpAttributes;
+    if (Array.isArray(csharpAttributes)) return csharpAttributes.filter((value): value is string => typeof value === 'string');
+    return [];
+  }
+
+  private setMetadataAttribute(node: CASNode, key: string, value: unknown): void {
+    node.metadata = node.metadata || {};
+    if (!node.metadata.attributes || Array.isArray(node.metadata.attributes)) {
+      node.metadata.attributes = { csharpAttributes: Array.isArray(node.metadata.attributes) ? node.metadata.attributes : [] };
+    }
+    (node.metadata.attributes as Record<string, unknown>)[key] = value;
+  }
+
+  private detectDotNetScheduledJobs(
+    relativeFile: string,
+    fullPath: string,
+    content: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[]
+  ): void {
+    const patterns = [
+      { regex: /\bRecurringJob\.AddOrUpdate\s*\(/g, name: 'Hangfire recurring job', schedule: 'hangfire-recurring-job' },
+      { regex: /\bAddQuartzHostedService\s*\(/g, name: 'Quartz hosted scheduler', schedule: 'quartz-hosted-service' },
+      { regex: /\bAddHostedService\s*<\s*([A-Za-z_][A-Za-z0-9_]*)\s*>\s*\(/g, name: 'Registered hosted service', schedule: 'hosted-service' },
+      { regex: /\bTimer\s*\(/g, name: 'Timer scheduled callback', schedule: 'timer' },
+    ];
+
+    const fileNode = this.findFileNode(nodes, fullPath);
+    for (const pattern of patterns) {
+      let match: RegExpExecArray | null;
+      while ((match = pattern.regex.exec(content)) !== null) {
+        const line = this.lineNumberAtOffset(content, match.index);
+        const nodeId = `schedule_${this.sanitizeId(relativeFile)}_${this.sanitizeId(pattern.schedule)}_${line}`;
+        if (!nodes.some(node => node.id === nodeId)) {
+          nodes.push(this.createNodeBuilder(nodeId, pattern.name, 'scheduler')
+            .withLevel(3, this.getLevelName(3))
+            .withSource({ file: fullPath, line })
+            .withMetadata({
+              language: 'csharp',
+              framework: 'dotnet-host',
+              attributes: {
+                schedule_type: pattern.schedule,
+                service_name: match[1]
+              }
+            })
+            .withAnalyzers([this.analyzerId], this.analyzerId)
+            .build());
+          if (fileNode) edges.push(this.createEdge(`${fileNode.id}_contains_${nodeId}`, fileNode.id, nodeId, 'contains'));
+        }
+        this.pushUniqueEntryPoint(entryPoints, {
+          id: `entry_dotnet_schedule_${this.sanitizeId(relativeFile)}_${this.sanitizeId(pattern.schedule)}_${line}`,
+          source_node: nodeId,
+          source_analyzer: this.analyzerId,
+          type: 'schedule',
+          name: pattern.name,
+          description: `${pattern.name} is registered in .NET host configuration.`,
+          trigger: { schedule: pattern.schedule },
+          handler: {
+            node_id: nodeId,
+            method_name: match[1] || pattern.schedule,
+            file: fullPath,
+            line
+          },
+          metadata: {
+            language: 'csharp',
+            framework: 'dotnet-host',
+            schedule_type: pattern.schedule,
+            file: relativeFile
+          }
+        });
+      }
+    }
+  }
+
+  private detectAzureFunctions(
+    relativeFile: string,
+    fullPath: string,
+    content: string,
+    nodes: CASNode[],
+    entryPoints: CASEntryPoint[]
+  ): void {
+    const functionPattern = /\[(?:FunctionName|Function)\s*\(\s*"([^"]+)"\s*\)\][\s\S]{0,500}?\b(?:public\s+)?(?:async\s+)?(?:Task<[^>]+>|Task|IActionResult|void|[A-Za-z0-9_<>,]+)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
+    let match: RegExpExecArray | null;
+    while ((match = functionPattern.exec(content)) !== null) {
+      const functionName = match[1];
+      const methodName = match[2];
+      const methodNode = this.findMethodNode(nodes, undefined, methodName, fullPath);
+      const sourceNode = methodNode?.id || this.findFileNode(nodes, fullPath)?.id;
+      if (!sourceNode) continue;
+      const hasHttpTrigger = /\[HttpTrigger\b/.test(match[0]);
+      this.pushUniqueEntryPoint(entryPoints, {
+        id: `entry_azure_function_${this.sanitizeId(relativeFile)}_${this.sanitizeId(functionName)}`,
+        source_node: sourceNode,
+        source_analyzer: this.analyzerId,
+        type: hasHttpTrigger ? 'http' : 'event',
+        name: `Azure Function: ${functionName}`,
+        description: `${functionName} is an Azure Functions entry point.`,
+        trigger: hasHttpTrigger ? { method: 'ANY', path: functionName } : { event: 'azure-function-trigger' },
+        handler: {
+          node_id: sourceNode,
+          method_name: methodName,
+          file: fullPath,
+          line: methodNode?.source?.line || this.lineNumberAtOffset(content, match.index)
+        },
+        metadata: {
+          language: 'csharp',
+          framework: 'azure-functions',
+          function_name: functionName,
+          file: relativeFile
+        }
+      });
+    }
+  }
+
+  private findFileNode(nodes: CASNode[], fullPath: string): CASNode | undefined {
+    const normalized = fullPath.replace(/\\/g, '/').toLowerCase();
+    return nodes.find(node => node.type === 'file' && node.source?.file?.replace(/\\/g, '/').toLowerCase() === normalized);
+  }
+
+  private findClassNode(nodes: CASNode[], className: string, fullPath: string): CASNode | undefined {
+    const normalized = fullPath.replace(/\\/g, '/').toLowerCase();
+    return nodes.find(node =>
+      node.name === className &&
+      (node.type === 'class' || node.type === 'worker') &&
+      node.source?.file?.replace(/\\/g, '/').toLowerCase() === normalized
+    );
+  }
+
+  private findMethodNode(nodes: CASNode[], className: string | undefined, methodName: string, fullPath: string): CASNode | undefined {
+    const normalized = fullPath.replace(/\\/g, '/').toLowerCase();
+    return nodes.find(node =>
+      node.type === 'method' &&
+      node.name === methodName &&
+      node.source?.file?.replace(/\\/g, '/').toLowerCase() === normalized &&
+      (!className || nodes.find(parent => parent.id === node.parent)?.name === className)
+    );
+  }
+
+  private ensureSyntheticNode(
+    nodes: CASNode[],
+    edges: CASEdge[],
+    fullPath: string,
+    relativeFile: string,
+    name: string,
+    type: string,
+    offset: number,
+    content: string
+  ): string {
+    const line = this.lineNumberAtOffset(content, offset);
+    const nodeId = `${type}_${this.sanitizeId(relativeFile)}_${this.sanitizeId(name)}_${line}`;
+    if (!nodes.some(node => node.id === nodeId)) {
+      nodes.push(this.createNodeBuilder(nodeId, name, type)
+        .withLevel(3, this.getLevelName(3))
+        .withSource({ file: fullPath, line })
+        .withMetadata({
+          language: 'csharp',
+          framework: 'dotnet-host'
+        })
+        .withAnalyzers([this.analyzerId], this.analyzerId)
+        .build());
+      const fileNode = this.findFileNode(nodes, fullPath);
+      if (fileNode) edges.push(this.createEdge(`${fileNode.id}_contains_${nodeId}`, fileNode.id, nodeId, 'contains'));
+    }
+    return nodeId;
+  }
+
+  private pushUniqueEntryPoint(entryPoints: CASEntryPoint[], entryPoint: CASEntryPoint): void {
+    if (entryPoints.some(existing => existing.id === entryPoint.id)) return;
+    entryPoints.push(entryPoint);
+  }
+
+  private lineNumberFor(content: string, pattern: RegExp): number {
+    const match = pattern.exec(content);
+    return match ? this.lineNumberAtOffset(content, match.index) : 1;
+  }
+
+  private lineNumberAtOffset(content: string, offset: number): number {
+    return content.slice(0, offset).split(/\r?\n/).length;
+  }
+
+  private offsetForLine(content: string, lineIndex: number): number {
+    if (lineIndex <= 0) return 0;
+    let offset = 0;
+    for (let i = 0; i < lineIndex; i += 1) {
+      const next = content.indexOf('\n', offset);
+      if (next === -1) return content.length;
+      offset = next + 1;
+    }
+    return offset;
+  }
+
   private buildInheritanceRelationships(nodes: CASNode[], edges: CASEdge[]): void {
-    const classNodes = nodes.filter(n => n.type === 'class');
+    const classNodes = nodes.filter(n => n.type === 'class' || n.type === 'worker');
 
     for (const classNode of classNodes) {
       if (classNode.metadata?.attributes?.baseClass) {
@@ -1604,7 +2020,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   }
 
   private buildInterfaceImplementationEdges(nodes: CASNode[], edges: CASEdge[]): void {
-    const classNodes = nodes.filter(n => n.type === 'class' || n.type === 'service' || n.type === 'viewmodel' || n.type === 'window' || n.type === 'ui_component');
+    const classNodes = nodes.filter(n => n.type === 'class' || n.type === 'worker' || n.type === 'service' || n.type === 'viewmodel' || n.type === 'window' || n.type === 'ui_component');
     const interfaceNodes = nodes.filter(n => n.type === 'interface');
 
     for (const classNode of classNodes) {
@@ -1678,7 +2094,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     });
 
     const methodNodes = nodes.filter(n => n.type === 'method');
-    const classNodes = nodes.filter(n => n.type === 'class' || n.type === 'interface' || n.type === 'struct');
+    const classNodes = nodes.filter(n => n.type === 'class' || n.type === 'worker' || n.type === 'interface' || n.type === 'struct');
 
     for (const file of csharpFiles) {
       const fullPath = path.join(projectPath, file);
@@ -1759,6 +2175,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
           }
         }
       }
+      await this.analyzeCallGraphFallback(fullPath, file, nodes, edges, exitPoints, methodNodes, classNodes, projectPath);
     }
   }
 
@@ -1778,6 +2195,84 @@ export class CSharpAnalyzer extends BaseAnalyzer {
 
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
+        const callerMethodForLine = methodNodes.find(n =>
+          n.source?.file === fullPath &&
+          n.source?.line !== undefined && n.source.line <= i + 1 &&
+          n.source?.end_line !== undefined && n.source.end_line >= i + 1
+        );
+
+        if (callerMethodForLine) {
+          const mediatorDispatches = Array.from(line.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\.Send\s*\(\s*new\s+([A-Za-z_][A-Za-z0-9_]*(?:<[^>)]+>)?)/g));
+          for (const dispatch of mediatorDispatches) {
+            const commandName = dispatch[2].replace(/\s+/g, '');
+            const targetId = this.ensureSyntheticNode(
+              nodes,
+              edges,
+              fullPath,
+              file,
+              commandName,
+              'command',
+              this.offsetForLine(content, i) + dispatch.index,
+              content
+            );
+            const edgeId = `call_${callerMethodForLine.id}_to_${targetId}_${i}`;
+            if (!edges.some(edge => edge.id === edgeId)) {
+              edges.push(this.createEdge(
+                edgeId,
+                callerMethodForLine.id,
+                targetId,
+                'calls',
+                'behavior',
+                {
+                  line: i + 1,
+                  method_name: 'Send',
+                  target_method: commandName,
+                  call_type: line.includes('await') ? 'async' : 'method',
+                  resolution_type: 'synthetic',
+                  target_type: 'message-command',
+                  dispatcher: dispatch[1]
+                }
+              ));
+            }
+          }
+
+          const bareCalls = Array.from(line.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g))
+            .filter(call => {
+              const name = call[1];
+              const previousChar = line[Math.max(0, (call.index || 0) - 1)];
+              return !['if', 'for', 'while', 'switch', 'catch', 'using', 'return', 'new', 'await', 'typeof', 'nameof'].includes(name) &&
+                previousChar !== '.' &&
+                previousChar !== '<';
+            });
+          for (const call of bareCalls) {
+            const methodName = call[1];
+            const containingClass = classNodes.find(c =>
+              edges.some(e => e.source === c.id && e.target === callerMethodForLine.id && e.type === 'has_method')
+            );
+            const targetMethod = methodNodes.find(n =>
+              n.name === methodName &&
+              n.id !== callerMethodForLine.id &&
+              (!containingClass || edges.some(e => e.source === containingClass.id && e.target === n.id && e.type === 'has_method'))
+            );
+            if (targetMethod) {
+              const callEdgeId = `call_${callerMethodForLine.id}_to_${targetMethod.id}_line_${i + 1}`;
+              if (!edges.some(edge => edge.id === callEdgeId)) {
+                edges.push(this.createEdge(
+                  callEdgeId,
+                  callerMethodForLine.id,
+                  targetMethod.id,
+                  'calls',
+                  'behavior',
+                  {
+                    line: i + 1,
+                    callType: 'static',
+                    targetMethod: methodName
+                  }
+                ));
+              }
+            }
+          }
+        }
 
         const methodCalls = [
           ...Array.from(line.matchAll(/(\w+)\.(\w+)\s*\(/g)),
@@ -1937,9 +2432,10 @@ export class CSharpAnalyzer extends BaseAnalyzer {
             if (methodAtLine && attributeType) {
               const endpointEdgeId = `http_endpoint_${methodAtLine.id}_${attributeType}_${i}`;
               if (!edges.some(e => e.id === endpointEdgeId)) {
+                const sourceNode = methodAtLine.parent || methodAtLine.id;
                 edges.push(this.createEdge(
                   endpointEdgeId,
-                  `entry_${methodAtLine.id}`,
+                  sourceNode,
                   methodAtLine.id,
                   'exposes',
                   'behavior',
@@ -1967,7 +2463,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
 
   private isMethodDeclaration(line: string): boolean {
     const trimmed = line.trim();
-    const methodPattern = /^(public|private|protected|internal|static|virtual|override|abstract|async)*(\s+\w+)*\s+(\w+)\s*\([^)]*\)\s*(\{|$)/;
+    const methodPattern = /^(?:(?:public|private|protected|internal|static|virtual|override|abstract|async|extern|unsafe|sealed|new|partial)\s+)*(?:[\w.<>,?\[\]]+\s+)?[A-Za-z_~][A-Za-z0-9_~]*\s*\([^)]*\)\s*(?:\{|=>|;|$)/;
     return methodPattern.test(trimmed) && !trimmed.startsWith('//');
   }
 

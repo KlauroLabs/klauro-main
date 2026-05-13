@@ -230,12 +230,14 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
           controllers.push(controllerInfo);
 
           const controllerId = this.generateId('controller', file, controllerName);
+          let controllerNodeId = controllerId;
 
           const existingNode = existingNodes.find(n =>
             n.name === controllerName && n.type === 'class'
           );
 
           if (existingNode) {
+            controllerNodeId = existingNode.id;
             existingNode.type = 'controller';
             if (!existingNode.metadata) existingNode.metadata = {};
             existingNode.metadata.attributes = {
@@ -278,7 +280,7 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
             const routeNode = this.createNodeBuilder(routeId, `${route.method.toUpperCase()} ${route.path}`, 'route')
               .withLevel(3, this.getLevelName(3))
               .withSource({ file: fullPath })
-              .withParent(controllerId)
+              .withParent(controllerNodeId)
               .withMetadata({
                 framework: 'aspnet-core',
                 attributes: {
@@ -295,8 +297,8 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
             newNodes.push(routeNode);
 
             edges.push(this.createEdgeBuilder(
-              this.generateEdgeId(controllerId, routeId, 'has-route'),
-              controllerId, routeId, 'has-route'
+              this.generateEdgeId(controllerNodeId, routeId, 'has-route'),
+              controllerNodeId, routeId, 'has-route'
             ).build());
 
             entryPoints.push(this.createEntryPoint(

@@ -1,7 +1,7 @@
-import { BaseAnalyzer, AnalysisContext } from '../core/base-analyzer';
+import { BaseAnalyzer, AnalysisContext, FileAnalysisContext } from '../core/base-analyzer';
 import {
   CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint,
-  CASDocumentation, CASComment, CASTodo, CASImplementationStatus
+  CASDocumentation, CASComment, CASTodo, CASImplementationStatus, FileAnalysisResult
 } from '../../types/cas.types';
 import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
@@ -150,6 +150,52 @@ export class PythonAnalyzer extends BaseAnalyzer {
     } catch {
       return false;
     }
+  }
+
+  supportsIncrementalAnalysis(): boolean {
+    return true;
+  }
+
+  async getRelevantFiles(projectPath: string): Promise<string[]> {
+    const ignorePatterns = this.getIgnorePatterns({ projectPath });
+    return glob(['**/*.py'], {
+      cwd: projectPath,
+      ignore: [...ignorePatterns, '**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**']
+    });
+  }
+
+  async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
+    const nodes: CASNode[] = [];
+    const edges: CASEdge[] = [];
+    const entryPoints: CASEntryPoint[] = [];
+    const exitPoints: CASExitPoint[] = [];
+    const modules = new Map<string, string[]>();
+    const content = await fs.readFile(context.filePath, 'utf-8');
+    const stat = await fs.stat(context.filePath);
+
+    await this.detectProjectType(context.projectPath);
+    await this.analyzePythonFile(context.filePath, context.relativePath, nodes, edges, entryPoints, exitPoints, modules);
+    this.detectFrameworkPatterns(nodes, edges, entryPoints);
+    this.buildInheritanceRelationships(nodes, edges);
+    this.buildCallGraph(nodes, edges, entryPoints, exitPoints);
+
+    const imports = this.extractImports(content).map(imp => imp.module);
+    const exports = nodes
+      .filter(node => ['class', 'function', 'method', 'variable'].includes(node.type))
+      .map(node => node.name);
+
+    return this.createFileAnalysisResult(
+      context.filePath,
+      context.relativePath,
+      context.contentHash || this.computeContentHash(content),
+      stat.mtimeMs,
+      nodes,
+      edges,
+      entryPoints,
+      exitPoints,
+      imports,
+      exports
+    );
   }
 
   async analyze(context: AnalysisContext): Promise<CASContribution> {

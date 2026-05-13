@@ -209,7 +209,7 @@ Record a human or agent review decision for a persisted cross-repository link.
 
 ### `get_agent_bootstrap`
 
-Default first payload for Codex, Claude, Cursor, and other coding agents when an analysis exists.
+High-level payload for Codex, Claude, Cursor, and other coding agents after `resolve_agent_analysis` has selected the analysis path.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -217,6 +217,29 @@ Default first payload for Codex, Claude, Cursor, and other coding agents when an
 | `task` | object | no | Optional task context with `task_type`, `target`, `related_paths`, or `runtime_event` |
 
 **Returns:** Default-use rule, agent readiness, start context, task-specific tool plan, work packet, source file read plan, and a ready-to-use prompt. This is the highest-level agent bootstrap surface.
+
+### `get_agent_project_map`
+
+List analyzed parent and subproject candidates for a repository path. Use this when an agent is handed a monorepo/root path and needs to know which stored analyses are available before broad source reads.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | no | Repository or subproject path to filter candidates. Omit to map all stored analyses |
+| `task` | object | no | Optional task context with `task_type`, `target`, `related_paths`, `runtime_event`, `instructions`, or `success_criteria` |
+| `limit` | number | no | Maximum candidates to return |
+
+**Returns:** Requested path, candidate analyses, relation to the requested path (`exact`, `descendant`, `ancestor`, or `other`), readiness/default-use status, analysis profile, graph counts, target matches, selected candidate, and routing rule.
+
+### `resolve_agent_analysis`
+
+Select the best stored CAS analysis for an agent task. This is the default first call when the handed path might be a monorepo, workspace, or repository root with stronger subproject analyses.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Repository or subproject path the agent was handed |
+| `task` | object | no | Optional task context with `task_type`, `target`, `related_paths`, `runtime_event`, `instructions`, or `success_criteria` |
+
+**Returns:** Selected path, selected candidate profile/readiness, alternatives, and a recommendation. Use `selected_path` for `get_agent_start_context`, `get_agent_tool_plan`, `get_agent_work_packet`, and follow-up tools when it differs from the requested path.
 
 ### `get_agent_start_context`
 
@@ -249,7 +272,7 @@ One-call task packet for agents. Use this after `get_agent_start_context` when a
 | `path` | string | yes | Project path |
 | `task` | object | no | Optional task context with `task_type`, `target`, `related_paths`, `runtime_event`, `instructions`, or `success_criteria` |
 
-**Returns:** Target resolution, selected node, coding context, change risk, callers, callees, tests, error contracts for debug tasks, representative entry/call-chain context, recommended MCP follow-ups, adoption gaps, a file read plan with concrete source files and reasons, and a validation plan with focused test/typecheck/build commands, tests to inspect, manual checks, environment rules, and validation gaps.
+**Returns:** Target resolution, selected node, coding context, change risk, callers, callees, tests, error contracts for debug tasks, behavioral invariant impact, representative entry/call-chain context, recommended MCP follow-ups, adoption gaps, a file read plan with concrete source files, bounded line windows, and reasons, and a validation plan with focused test/typecheck/build commands, monorepo package script routing, tests to inspect, manual checks, environment rules, and validation gaps.
 
 ### `evaluate_agent_readiness`
 
@@ -334,7 +357,7 @@ Detect deeper library and platform integrations that need richer analyzer covera
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
 
-**Returns:** Scores and evidence for jobs, brokers, auth, payments, AI SDKs, infrastructure, observability, cache, and persistence, including found surfaces, missing surfaces, and recommended analyzers.
+**Returns:** Scores and evidence for jobs, brokers, auth, payments, AI SDKs, infrastructure, observability, cache, and persistence, including found surfaces, missing extracted surfaces, unobserved optional surfaces, and recommended analyzers.
 
 ### `get_cross_repo_contracts`
 
@@ -409,9 +432,22 @@ Load persisted agentic benchmark reports.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `id` | string | no | Report id, default `latest` |
+| `benchmark_type` | string | no | Restrict `latest` or `list` to an exact benchmark type such as `agentic-suite-with-unravl-vs-without-unravl`, `deterministic-agent-quality-proxy`, `live-agent-quality-ab`, or `incremental-analysis-agent-value` |
 | `list` | boolean | no | List reports instead of loading one |
 
-**Returns:** Report list or one report with Markdown rendering.
+**Returns:** Report list or one report with Markdown rendering matched to the stored report type.
+
+### `get_agent_performance_proof`
+
+Summarize persisted benchmark reports into the current evidence that Unravl helps agents.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `benchmark_types` | string[] | no | Exact benchmark types to include; omit for all persisted benchmark types |
+| `max_reports` | number | no | Maximum persisted reports to inspect before grouping by latest benchmark type |
+| `since_days` | number | no | Only include reports generated within this many days; defaults to 7, use 0 for all persisted reports |
+
+**Returns:** Latest recent reports by benchmark type, live A/B rollups, proof claims, compact metrics, and Markdown suitable for an agent or reviewer.
 
 ### `run_agent_quality_benchmark`
 
@@ -428,11 +464,27 @@ Run the work-quality benchmark layer on top of the agentic benchmark suite.
 | `test_command` | string | no | Optional command to run inside each copied repo after the agent attempt |
 | `work_root` | string | no | Directory for copied repos, prompts, diffs, metrics, and evaluator artifacts |
 | `max_live_tasks` | number | no | Maximum task pairs to run through live agents |
+| `live_task_types` | string[] | no | Only run live pairs for these task types (`modify`, `debug`, `review`, etc.) |
+| `live_task_categories` | string[] | no | Only run live pairs for these generated categories (`modify`, `data`, `external`, `test`, etc.) |
 | `timeout_ms` | number | no | Per-agent command timeout in milliseconds |
 | `test_timeout_ms` | number | no | Per-test command timeout in milliseconds |
 | `orchestrator_timeout_ms` | number | no | Evaluator command timeout in milliseconds |
 
 **Returns:** Persisted report metadata, JSON report, Markdown report, success gates, context completeness, projected baseline quality, quality-score delta, token/time/file deltas, and optional live A/B execution results. Live results include copied repo paths, prompt/result/metric files, the with-Unravl work-packet artifact, binary diff paths, changed files, lines added/deleted, wall-clock duration, test status, provider token metrics when reported, deterministic orchestrator scores, optional external-orchestrator scores, and separated patch-quality, hidden-validation, command-completion, and timeout signals.
+
+### `run_incremental_value_benchmark`
+
+Measure whether iterative analysis is fast, correct, and useful after a codebase edit.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `paths` | string[] | no | Project paths to benchmark. Omit to use all analyzed repositories |
+| `max_targets` | number | no | Maximum repositories to benchmark |
+| `work_root` | string | no | Directory for copied repositories and isolated benchmark storage |
+| `verify_full` | boolean | no | Run a fresh full analysis after the edit and compare CAS count parity |
+| `discard_workspaces` | boolean | no | Remove copied repositories after collecting results |
+
+**Returns:** Persisted report metadata, JSON report, Markdown report, copied repo paths, edited file, full/no-change/edit-incremental timings, speedups, change summary, incremental state and file-cache counts, optional fresh-full parity, and an agent work-packet generated from the edited CAS.
 
 ### `get_patterns`
 
@@ -875,6 +927,22 @@ Behavior-level invariants inferred from CAS. Use this when a task depends on ten
 | `offset` | number | no | Skip first N results (default 0) |
 
 **Returns:** Summary counts and invariants with scope, enforcement points, evidence, related tests, related boundaries/entities, confidence, and gaps.
+
+### `validate_behavioral_invariants`
+
+Validate a working diff, explicit file list, or provided unified diff against CAS behavior-level invariants. Use this after edits and before the final answer when a task may touch tenant/org scope, auth boundaries, authorization, database constraints, migrations, test coverage, data lifecycle, or business rules.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `target` | string | no | Node id, file path, entity, field, or text target |
+| `invariant_type` | string | no | Filter by `tenant-scope`, `auth-boundary`, `authorization`, `db-constraint`, `migration-contract`, `test-coverage`, `data-lifecycle`, or `business-rule` |
+| `files` | string[] | no | Explicit changed files to validate instead of reading the working tree |
+| `diff_text` | string | no | Unified diff text to validate |
+| `include_working_tree` | boolean | no | When false, validate only `files` and `diff_text`; default true reads git working-tree and staged changes |
+| `limit` | number | no | Maximum impacted invariants to return |
+
+**Returns:** Status, diff source, changed-file summary, impacted invariants with required checks and evidence, failures, warnings, consolidated checks, and next steps. A failure means the agent should fix or report the invariant blocker before claiming the change is complete.
 
 ### `get_stability`
 

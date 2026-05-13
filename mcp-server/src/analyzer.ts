@@ -7,6 +7,7 @@ import { CSharpAnalyzer } from '../../backend/src/analyzer/languages/csharp-anal
 import { GoAnalyzer } from '../../backend/src/analyzer/languages/go-analyzer';
 import { RustAnalyzer } from '../../backend/src/analyzer/languages/rust-analyzer';
 import { PHPAnalyzer } from '../../backend/src/analyzer/languages/php-analyzer';
+import { DartAnalyzer } from '../../backend/src/analyzer/languages/dart-analyzer';
 import {
   NestJSAnalyzer,
   SpringBootAnalyzer,
@@ -129,6 +130,17 @@ export function getOrchestrator(): AnalyzerOrchestrator {
       },
       analyzer: new PHPAnalyzer(),
     },
+    {
+      id: 'dart',
+      name: 'Dart/Flutter Analyzer',
+      type: 'language',
+      version: '1.0.0',
+      detectPatterns: {
+        files: ['pubspec.yaml'],
+        content: [/\.dart$/],
+      },
+      analyzer: new DartAnalyzer(),
+    },
   ];
 
   const frameworkRegistrations: AnalyzerRegistration[] = [
@@ -191,6 +203,7 @@ export interface IncrementalAnalysisResult {
   state: IncrementalState;
   changeReport: ChangeReport;
   wasFullRebuild: boolean;
+  fullRebuildReason?: string;
 }
 
 function makeEdgeId(edge: { id?: string; source: string; target: string; type: string }): string {

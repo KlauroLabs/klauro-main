@@ -386,13 +386,13 @@ export function getCallees(cas: CASOutput, nodeId: string, maxDepth: number = 2,
 export function getCallChain(cas: CASOutput, opts: { chainId?: string; entryPointId?: string; limit?: number; offset?: number }) {
   const chains = cas.call_chains || [];
   if (opts.chainId) return chains.find(c => c.id === opts.chainId) || null;
-  if (opts.entryPointId) {
-    const filtered = chains.filter(c => c.entry_point.entry_point_id === opts.entryPointId);
-    return { total: filtered.length, chains: filtered };
-  }
-
   const limit = opts.limit || 25;
   const offset = opts.offset || 0;
+  if (opts.entryPointId) {
+    const filtered = chains.filter(c => c.entry_point.entry_point_id === opts.entryPointId);
+    return { total: filtered.length, offset, limit, chains: filtered.slice(offset, offset + limit) };
+  }
+
   const summaries = chains.map(c => ({
     id: c.id,
     chain_type: c.chain_type,
@@ -1059,13 +1059,30 @@ function uniqueSuitesForQuery(matches: Array<{ suite: CASTestSuite; score: numbe
 }
 
 function relatedTestCandidates(sourceFile: string): string[] {
+  const dir = sourceFile.includes('/') ? sourceFile.split('/').slice(0, -1).join('/') : '';
+  const base = sourceFile.split('/').pop() || sourceFile;
+  const stem = base.replace(/\.[^.]+$/, '');
   return [
     sourceFile.replace(/\.([cm]?[jt]sx?)$/, '.spec.$1'),
     sourceFile.replace(/\.([cm]?[jt]sx?)$/, '.test.$1'),
     sourceFile.replace(/\.py$/, '_test.py'),
     sourceFile.replace(/\.py$/, '.test.py'),
+    sourceFile.endsWith('.py') && dir ? `${dir}/test_${stem}.py` : '',
+    sourceFile.endsWith('.py') ? `tests/test_${stem}.py` : '',
+    ...pythonApiTestCandidatesForQuery(sourceFile),
     sourceFile.replace(/\.go$/, '_test.go'),
     sourceFile.replace(/\.rs$/, '_test.rs'),
+  ].filter(Boolean);
+}
+
+function pythonApiTestCandidatesForQuery(sourceFile: string): string[] {
+  const normalized = sourceFile.toLowerCase();
+  if (!sourceFile.endsWith('.py')) return [];
+  if (!/(^|\/)(api|routes|views|controllers)(\/|$)/.test(normalized) && !/(^|\/)(app|main)\.py$/.test(normalized)) return [];
+  return [
+    'tests/test_api.py',
+    'tests/test_app.py',
+    'tests/test_routes.py',
   ];
 }
 
@@ -1083,6 +1100,7 @@ function pathStemForQuery(file: string): string {
   const base = file.split('/').pop() || file;
   return base
     .replace(/\.(spec|test)\.([cm]?[jt]sx?)$/i, '')
+    .replace(/^test_/, '')
     .replace(/_test\.(py|go|rs)$/i, '')
     .replace(/\.test\.py$/i, '')
     .replace(/\.([cm]?[jt]sx?|py|go|rs)$/i, '')

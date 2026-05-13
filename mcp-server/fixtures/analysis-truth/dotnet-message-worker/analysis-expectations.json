@@ -1,0 +1,20 @@
+{
+  "name": "dotnet-message-worker-truth-fixture",
+  "languages": ["C#"],
+  "nodes": [
+    { "name": "InvoicePaidWorker", "type": "worker" },
+    { "name": "HandleEvent", "type": "method" },
+    { "name": "CapturePaymentCommand" }
+  ],
+  "method_calls": [
+    { "caller": "HandleEvent", "target": "CapturePaymentCommand" }
+  ],
+  "minimums": {
+    "nodes": 8,
+    "edges": 8,
+    "entry_points": 1,
+    "method_calls": 1,
+    "runtime_static_links": 1,
+    "analysis_facts": 10
+  }
+}

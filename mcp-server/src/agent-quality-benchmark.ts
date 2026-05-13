@@ -4,6 +4,7 @@ import { formatMarkdownReport as formatContextMarkdownReport, runAgenticBenchmar
 import type { AgentTask } from './agent-adoption';
 import type { AnalysisTruthExpectation } from './analysis-mastery';
 import { runLiveAgentPair, type LiveAgentArmResult, type LiveAgentCommandConfig, type LiveAgentPairResult } from './agent-live-trial';
+import { saveAgenticBenchmarkReport } from './storage';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 
@@ -110,6 +111,14 @@ function parseArgs(argv: string[]) {
       commands.workRoot = path.resolve(argv[++i]);
     } else if (arg === '--max-live-tasks') {
       commands.maxLiveTasks = Number(argv[++i]);
+    } else if (arg === '--live-task-type') {
+      const value = argv[++i];
+      if (!value) throw new Error('--live-task-type requires a value');
+      commands.liveTaskTypes = [...(commands.liveTaskTypes || []), value];
+    } else if (arg === '--live-task-category') {
+      const value = argv[++i];
+      if (!value) throw new Error('--live-task-category requires a value');
+      commands.liveTaskCategories = [...(commands.liveTaskCategories || []), value];
     } else if (arg === '--timeout-ms') {
       commands.timeoutMs = Number(argv[++i]);
     } else if (arg === '--test-timeout-ms') {
@@ -153,6 +162,8 @@ function printHelp(): void {
     '  --test-command command         Optional command to run after each live agent attempt.',
     '  --work-root /path              Directory for live repo copies and artifacts.',
     '  --max-live-tasks n             Maximum task pairs to run with live agents.',
+    '  --live-task-type type          Only run live pairs for this task type. May be repeated.',
+    '  --live-task-category category  Only run live pairs for this generated category. May be repeated.',
     '  --timeout-ms n                 Per-agent command timeout.',
     '  --test-timeout-ms n            Per-test command timeout.',
     '  --discard-workspaces           Remove copied repos after collecting diffs.',
@@ -198,7 +209,7 @@ export async function runAgentQualityBenchmark(options: {
     for (const task of target.tasks) {
       const trial = buildQualityTrial(target, task);
       const maxLiveTasks = options.commands?.maxLiveTasks;
-      if (liveEnabled && (maxLiveTasks === undefined || liveTasksStarted < maxLiveTasks)) {
+      if (liveEnabled && shouldRunLiveTask(task, options.commands) && (maxLiveTasks === undefined || liveTasksStarted < maxLiveTasks)) {
         liveTasksStarted++;
         trial.live_pair = await runLiveAgentPair({
           repo: target.name,
@@ -210,6 +221,7 @@ export async function runAgentQualityBenchmark(options: {
           expectedOutcome: task.expected_outcome,
           fileReadPlan: task.file_read_plan,
           selectedNode: task.selected_node,
+          validationPlan: task.validation_plan,
         }, options.commands!);
         trial.with_unravl.live = trial.live_pair.with_unravl;
         trial.without_unravl.live = trial.live_pair.without_unravl;
@@ -233,6 +245,14 @@ export async function runAgentQualityBenchmark(options: {
   };
 
   return report;
+}
+
+function shouldRunLiveTask(task: any, commands?: AgentCommandConfig): boolean {
+  const taskTypes = commands?.liveTaskTypes || [];
+  const taskCategories = commands?.liveTaskCategories || [];
+  const typeMatches = taskTypes.length === 0 || taskTypes.includes(String(task.task?.task_type || ''));
+  const categoryMatches = taskCategories.length === 0 || taskCategories.includes(String(task.task_category || ''));
+  return typeMatches && categoryMatches;
 }
 
 function buildQualityTrial(target: any, task: any): QualityTrialReport {
@@ -363,7 +383,7 @@ export function formatQualityMarkdownReport(report: Awaited<ReturnType<typeof ru
     `With Unravl context success rate: ${Math.round(report.summary.with_unravl_success_rate * 100)}%`,
     `Projected without-Unravl success rate: ${Math.round(report.summary.projected_without_unravl_success_rate * 100)}%`,
     `Average work quality score: ${report.summary.average_quality_score}/100`,
-    `Average quality delta: +${report.summary.average_quality_score_delta} points`,
+    `Average quality delta: ${signed(report.summary.average_quality_score_delta)} points`,
     `Average token reduction vs targeted search: ${report.summary.average_token_reduction_vs_search}%`,
     `Average time reduction vs targeted search: ${report.summary.average_time_reduction_vs_search}%`,
     `Average file reduction vs targeted search: ${report.summary.average_file_reduction_vs_search}%`,
@@ -378,7 +398,7 @@ export function formatQualityMarkdownReport(report: Awaited<ReturnType<typeof ru
       '',
       `Live with-Unravl success rate: ${Math.round((report.summary.live_with_unravl_success_rate || 0) * 100)}%`,
       `Live without-Unravl success rate: ${Math.round((report.summary.live_without_unravl_success_rate || 0) * 100)}%`,
-      `Live quality delta: +${report.summary.live_average_quality_delta} points`,
+      `Live quality delta: ${signed(report.summary.live_average_quality_delta || 0)} points`,
       `Live with-Unravl completion score: ${report.summary.live_average_with_unravl_completion_score}/100`,
       `Live without-Unravl completion score: ${report.summary.live_average_without_unravl_completion_score}/100`,
       `Live completion delta: ${report.summary.live_average_completion_delta === null ? 'n/a' : `${report.summary.live_average_completion_delta >= 0 ? '+' : ''}${report.summary.live_average_completion_delta} points`}`,
@@ -413,7 +433,7 @@ export function formatQualityMarkdownReport(report: Awaited<ReturnType<typeof ru
     lines.push(`Expected: ${trial.expected_outcome}`);
     lines.push(`With Unravl: ${trial.with_unravl.estimated_context_tokens} estimated tokens, ${trial.with_unravl.files_to_read} files, ${trial.with_unravl.context_completeness}/100 context completeness, ${trial.with_unravl.estimated_cached_solution_ms}ms cached solution.`);
     lines.push(`Without Unravl: ${trial.without_unravl.search_tokens} search tokens, ${trial.without_unravl.search_files} files, ${trial.without_unravl.estimated_solution_ms}ms projected solution.`);
-    lines.push(`Deltas: +${trial.deltas.quality_score_delta} quality points, ${trial.deltas.token_reduction_vs_search_percentage}% token reduction, ${trial.deltas.time_reduction_vs_search_percentage}% time reduction.`);
+    lines.push(`Deltas: ${signed(trial.deltas.quality_score_delta)} quality points, ${trial.deltas.token_reduction_vs_search_percentage}% token reduction, ${trial.deltas.time_reduction_vs_search_percentage}% time reduction.`);
     if (trial.live_pair) {
       lines.push(`Live with Unravl: ${trial.live_pair.with_unravl.duration_ms}ms, ${trial.live_pair.with_unravl.files_changed} files changed, provider tokens ${trial.live_pair.with_unravl.provider_total_tokens || 'not reported'}, patch quality ${trial.live_pair.evaluation.with_unravl_quality_score}/100, completion ${trial.live_pair.evaluation.with_unravl_completion_score}/100, validation ${statusWord(trial.live_pair.with_unravl.validation_passed)}, command ${statusWord(trial.live_pair.with_unravl.command_passed)}.`);
       lines.push(`Live without Unravl: ${trial.live_pair.without_unravl.duration_ms}ms, ${trial.live_pair.without_unravl.files_changed} files changed, provider tokens ${trial.live_pair.without_unravl.provider_total_tokens || 'not reported'}, patch quality ${trial.live_pair.evaluation.without_unravl_quality_score}/100, completion ${trial.live_pair.evaluation.without_unravl_completion_score}/100, validation ${statusWord(trial.live_pair.without_unravl.validation_passed)}, command ${statusWord(trial.live_pair.without_unravl.command_passed)}.`);
@@ -431,6 +451,10 @@ function statusWord(value: boolean | undefined): string {
   if (value === true) return 'pass';
   if (value === false) return 'fail';
   return 'not-run';
+}
+
+function signed(value: number): string {
+  return value > 0 ? `+${value}` : String(value);
 }
 
 function groupBy<T>(items: T[], keyFn: (item: T) => string): Record<string, T[]> {
@@ -476,13 +500,15 @@ async function main(): Promise<void> {
   await fs.writeJson(args.outputPath, report, { spaces: 2 });
   await fs.ensureDir(path.dirname(args.markdownPath));
   await fs.writeFile(args.markdownPath, formatQualityMarkdownReport(report), 'utf8');
+  const saved = await saveAgenticBenchmarkReport(report);
   console.log(`Agent work quality benchmark: ${report.status.toUpperCase()} (${report.score}/100)`);
-  console.log(`Tasks: ${report.summary.task_count} | With Unravl context success ${Math.round(report.summary.with_unravl_success_rate * 100)}% | Projected baseline success ${Math.round(report.summary.projected_without_unravl_success_rate * 100)}% | Quality delta +${report.summary.average_quality_score_delta} | Token reduction ${report.summary.average_token_reduction_vs_search}% | Time reduction ${report.summary.average_time_reduction_vs_search}%`);
+  console.log(`Tasks: ${report.summary.task_count} | With Unravl context success ${Math.round(report.summary.with_unravl_success_rate * 100)}% | Projected baseline success ${Math.round(report.summary.projected_without_unravl_success_rate * 100)}% | Quality delta ${signed(report.summary.average_quality_score_delta)} | Token reduction ${report.summary.average_token_reduction_vs_search}% | Time reduction ${report.summary.average_time_reduction_vs_search}%`);
   if (report.summary.live_trials_attempted > 0) {
-    console.log(`Live trials: ${report.summary.live_trials_attempted} | With Unravl success ${Math.round((report.summary.live_with_unravl_success_rate || 0) * 100)}% | Without Unravl success ${Math.round((report.summary.live_without_unravl_success_rate || 0) * 100)}% | Live quality delta +${report.summary.live_average_quality_delta} | Live token reduction ${report.summary.live_average_token_reduction === null ? 'not reported' : `${report.summary.live_average_token_reduction}%`}`);
+    console.log(`Live trials: ${report.summary.live_trials_attempted} | With Unravl success ${Math.round((report.summary.live_with_unravl_success_rate || 0) * 100)}% | Without Unravl success ${Math.round((report.summary.live_without_unravl_success_rate || 0) * 100)}% | Live quality delta ${signed(report.summary.live_average_quality_delta || 0)} | Live token reduction ${report.summary.live_average_token_reduction === null ? 'not reported' : `${report.summary.live_average_token_reduction}%`}`);
   }
   console.log(`Report: ${args.outputPath}`);
   console.log(`Markdown: ${args.markdownPath}`);
+  console.log(`Persisted MCP report: ${saved.file}`);
   if (report.status === 'fail') process.exitCode = 1;
 }
 

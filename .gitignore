@@ -16,7 +16,9 @@ dist/
 .unravl-agent-benchmark/
 .unravl-agent-quality-benchmark/
 .unravl-agent-live-trials/
+.unravl-agent-vision-acceptance/
 .unravl-agent-home/
+.unravl-incremental-benchmark/
 .unravl-contract-gauntlet/
 .unravl-vision-gauntlet/
 /CURRENT_STATE.md

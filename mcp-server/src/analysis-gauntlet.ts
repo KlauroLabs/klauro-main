@@ -37,6 +37,7 @@ interface TargetReport {
     method_calls: number;
   };
   gaps: string[];
+  observations: string[];
 }
 
 interface Report {
@@ -134,9 +135,15 @@ async function analyzeTarget(target: Target): Promise<TargetReport> {
     ...truth.misses.map(miss => `${miss.id}: ${miss.detail}`),
     ...frameworkDepth.uncovered_expectations,
     ...runtimePlan.gaps,
-    ...agentTaskProof.tasks.flatMap(task => task.gaps.map(gap => `agent:${task.task.task_type || 'orient'}:${gap}`)),
+    ...agentTaskProof.tasks
+      .filter(task => task.status !== 'pass')
+      .flatMap(task => task.gaps.map(gap => `agent:${task.task.task_type || 'orient'}:${gap}`)),
     ...(semanticMap.files.length === 0 ? ['semantic-map: no files resolved'] : []),
   ].slice(0, 25);
+  const observations = agentTaskProof.tasks
+    .filter(task => task.status === 'pass')
+    .flatMap(task => task.gaps.map(gap => `agent:${task.task.task_type || 'orient'}:${gap}`))
+    .slice(0, 25);
   const status: GateStatus = truth.status === 'fail' || agentTaskProof.status === 'fail' || semanticMap.files.length === 0
     ? 'fail'
     : frameworkDepth.status === 'fail' || casContract.status === 'fail' ? 'fail'
@@ -159,6 +166,7 @@ async function analyzeTarget(target: Target): Promise<TargetReport> {
       method_calls: semanticMap.method_calls.length,
     },
     gaps,
+    observations,
   };
 }
 
