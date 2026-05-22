@@ -316,9 +316,9 @@ export function getRuntimeInstrumentationPlan(cas: CASOutput, opts: { limit?: nu
   };
 }
 
-export function evaluateAgentTaskProof(cas: CASOutput, pathValue: string, tasks: AgentTask[]) {
-  const taskReports = tasks.map(task => {
-    const packet = getAgentWorkPacket(cas, pathValue, task);
+export async function evaluateAgentTaskProof(cas: CASOutput, pathValue: string, tasks: AgentTask[]) {
+  const taskReports = await Promise.all(tasks.map(async task => {
+    const packet = await getAgentWorkPacket(cas, pathValue, task);
     const checks: MasteryCheck[] = [
       simpleCheck('target-resolved', Boolean(packet.selected_node), packet.selected_node?.id || 'no selected node'),
       simpleCheck('file-read-plan', packet.file_read_plan.length > 0, `${packet.file_read_plan.length} files`),
@@ -337,7 +337,7 @@ export function evaluateAgentTaskProof(cas: CASOutput, pathValue: string, tasks:
       file_read_plan: packet.file_read_plan,
       gaps: packet.gaps,
     };
-  });
+  }));
   const score = taskReports.length
     ? Math.round(taskReports.reduce((sum, report) => sum + report.score, 0) / taskReports.length)
     : 100;

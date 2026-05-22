@@ -42,7 +42,8 @@ export class ReactRouterAnalyzer extends BaseAnalyzer {
         '**/*.test.*',
         '**/*.spec.*'
       ],
-      absolute: false
+      absolute: false,
+      nodir: true
     });
   }
 
@@ -87,7 +88,8 @@ export class ReactRouterAnalyzer extends BaseAnalyzer {
     const sourceFiles = await glob('**/*.{ts,tsx,js,jsx}', {
       cwd: projectPath,
       ignore: [...ignorePatterns, '**/*.test.*', '**/*.spec.*'],
-      absolute: false
+      absolute: false,
+      nodir: true
     });
 
     const nodes: CASNode[] = [];

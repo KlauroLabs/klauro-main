@@ -33,6 +33,8 @@ const REPORTS = {
   agenticBenchmark: '.unravl-agent-benchmark/latest-report.json',
   qualityBenchmark: '.unravl-agent-quality-benchmark/latest-report.json',
   incrementalBenchmark: '.unravl-incremental-benchmark/latest-report.json',
+  idiomBenchmark: '.unravl-agent-idiom-benchmark/latest-report.json',
+  machineProof: '.unravl-agent-proof-machine/latest-report.json',
 };
 
 async function main(): Promise<void> {
@@ -45,6 +47,8 @@ async function main(): Promise<void> {
   const agenticBenchmark = await readReport(REPORTS.agenticBenchmark);
   const qualityBenchmark = await readReport(REPORTS.qualityBenchmark);
   const incrementalBenchmark = await readReport(REPORTS.incrementalBenchmark);
+  const idiomBenchmark = await readReport(REPORTS.idiomBenchmark);
+  const machineProof = await readReport(REPORTS.machineProof);
 
   gates.push(...freshnessGates(options.maxAgeHours, {
     'analysis-gauntlet': analysis,
@@ -53,6 +57,8 @@ async function main(): Promise<void> {
     'agentic-benchmark': agenticBenchmark,
     'agent-quality-benchmark': qualityBenchmark,
     'incremental-benchmark': incrementalBenchmark,
+    'agent-idiom-benchmark': idiomBenchmark,
+    'machine-agent-proof': machineProof,
   }));
 
   gates.push(...analysisGates(analysis));
@@ -61,6 +67,8 @@ async function main(): Promise<void> {
   gates.push(...agenticBenchmarkGates(agenticBenchmark));
   gates.push(...qualityBenchmarkGates(qualityBenchmark));
   gates.push(...incrementalBenchmarkGates(incrementalBenchmark));
+  gates.push(...idiomBenchmarkGates(idiomBenchmark));
+  gates.push(...machineProofGates(machineProof));
   gates.push(...await persistedProofGates());
 
   const report = buildReport(gates, options.maxAgeHours);
@@ -205,12 +213,41 @@ function incrementalBenchmarkGates(report: JsonObject): Gate[] {
   ];
 }
 
+function idiomBenchmarkGates(report: JsonObject): Gate[] {
+  const summary = report.summary || {};
+  return [
+    gate('idiom-benchmark:status', report.status === 'pass' && report.score >= 90, `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`),
+    gate('idiom-benchmark:task-count', Number(summary.task_count) >= 6 && Number(summary.target_count) >= 3, `${summary.task_count || 0} tasks across ${summary.target_count || 0} targets`),
+    gate('idiom-benchmark:live-present', Number(summary.live_trials_attempted) > 0, `${summary.live_trials_attempted || 0} live trials`),
+    gate('idiom-benchmark:no-correctness-regression', Number(summary.live_correctness_regressions) === 0 && Number(summary.live_trials_attempted) > 0, `${summary.live_correctness_regressions || 0} correctness regressions`),
+    gate('idiom-benchmark:positive-idiom-delta', Number(summary.live_average_idiom_conformance_delta) > 0 && Number(summary.live_average_total_quality_delta) >= 0, `idiom ${summary.live_average_idiom_conformance_delta ?? 'missing'}, quality ${summary.live_average_total_quality_delta ?? 'missing'}`),
+  ];
+}
+
+function machineProofGates(report: JsonObject): Gate[] {
+  const discovery = report.discovery || {};
+  const gates = array(report.gates);
+  const failed = gates.filter(item => item.status !== 'pass');
+  const repoResults = array(report.repo_results);
+  const discovered = array(discovery.repos);
+  const eligible = discovered.filter(repo => repo.status === 'eligible');
+  const accountedEligible = eligible.filter(repo => repoResults.some(result => result.path === repo.path));
+  return [
+    gate('machine-proof:status', report.status === 'pass' && report.score === 100, `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`),
+    gate('machine-proof:discovery-accounting', Number(discovery.total_repos) === discovered.length && discovered.length > 0, `${discovered.length}/${discovery.total_repos || 0} discovered repos accounted`),
+    gate('machine-proof:eligible-accounting', accountedEligible.length === eligible.length && eligible.length > 0, `${accountedEligible.length}/${eligible.length} eligible repos accounted`),
+    gate('machine-proof:no-silent-omissions', repoResults.length >= discovered.length, `${repoResults.length}/${discovered.length} repo rows reported`),
+    gate('machine-proof:gates-pass', failed.length === 0, `${failed.length} failing machine gates`),
+  ];
+}
+
 async function persistedProofGates(): Promise<Gate[]> {
   const summaries = await listAgenticBenchmarkReports();
   const reports = (await Promise.all(summaries.map(summary => loadAgenticBenchmarkReport(summary.id))))
     .filter((report): report is JsonObject => Boolean(report));
   const proof = buildAgentPerformanceProof(reports, { sinceDays: 7 });
   const liveRollup = proof.rollups.find((rollup: JsonObject) => rollup.benchmark_type === 'live-agent-quality-ab-rollup');
+  const idiomReport = reports.find((report: JsonObject) => report.benchmark_type === 'live-agent-idiom-quality-ab');
   const claims = array(proof.claims);
 
   return [
@@ -221,6 +258,7 @@ async function persistedProofGates(): Promise<Gate[]> {
     gate('mcp-proof:live-time-reduction', metricPercent(liveRollup?.metrics?.time_reduction) >= 0.2, `${liveRollup?.metrics?.time_reduction || 'unknown'} time reduction`),
     gate('mcp-proof:live-file-reduction', metricPercent(liveRollup?.metrics?.file_read_reduction) >= 0.25, `${liveRollup?.metrics?.file_read_reduction || 'unknown'} file-read reduction`),
     gate('mcp-proof:live-quality-preserved', liveRollup?.status === 'pass' && metricPercent(liveRollup?.metrics?.with_unravl_success_rate) === 1, `${liveRollup?.status || 'unknown'}, ${liveRollup?.metrics?.with_unravl_success_rate || 'unknown'} success`),
+    gate('mcp-proof:live-idiom-quality', Boolean(idiomReport) && Number(idiomReport?.summary?.live_average_idiom_conformance_delta || 0) > 0 && Number(idiomReport?.summary?.live_correctness_regressions || 0) === 0, idiomReport ? `idiom delta ${idiomReport.summary?.live_average_idiom_conformance_delta}, correctness regressions ${idiomReport.summary?.live_correctness_regressions}` : 'missing live idiom quality report'),
   ];
 }
 

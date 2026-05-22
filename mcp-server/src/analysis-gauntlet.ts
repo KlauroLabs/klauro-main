@@ -29,7 +29,7 @@ interface TargetReport {
   truth: ReturnType<typeof evaluateAnalysisTruth>;
   framework_depth: ReturnType<typeof getFrameworkDepthReport>;
   runtime_plan: ReturnType<typeof getRuntimeInstrumentationPlan>;
-  agent_task_proof: ReturnType<typeof evaluateAgentTaskProof>;
+  agent_task_proof: Awaited<ReturnType<typeof evaluateAgentTaskProof>>;
   cas_contract: ReturnType<typeof validateCASContract>;
   semantic_map: {
     files: number;
@@ -116,7 +116,7 @@ async function analyzeTarget(target: Target): Promise<TargetReport> {
   const frameworkDepth = getFrameworkDepthReport(cas);
   const runtimePlan = getRuntimeInstrumentationPlan(cas, { limit: 20 });
   const casContract = validateCASContract(cas);
-  const agentTaskProof = evaluateAgentTaskProof(cas, target.path, [
+  const agentTaskProof = await evaluateAgentTaskProof(cas, target.path, [
     { task_type: 'orient' },
     { task_type: 'modify', target: expectation.nodes?.[0]?.name || expectation.routes?.[0]?.handler },
     { task_type: 'debug', target: expectation.nodes?.[1]?.name || expectation.routes?.[0]?.path },

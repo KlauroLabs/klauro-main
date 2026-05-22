@@ -154,6 +154,14 @@ export class CapabilityDependencyBuilder {
     dependencies: CASCapabilityDependency[]
   ): void {
     const nodeToCapability = new Map<string, CASCapability>();
+    const nodesById = new Map(nodes.map(node => [node.id, node]));
+    const operationFileHints = capabilities.map(cap => ({
+      cap,
+      fileNames: cap.operations
+        .map(op => op.trigger?.path || '')
+        .map(opPath => opPath.split('/').pop() || '')
+        .filter(Boolean)
+    })).filter(item => item.fileNames.length > 0);
 
     for (const cap of capabilities) {
       for (const service of cap.services_used) {
@@ -194,14 +202,11 @@ export class CapabilityDependencyBuilder {
       let targetCap = nodeToCapability.get(edge.target);
 
       if (!sourceCap) {
-        const sourceNode = nodes.find(n => n.id === edge.source);
+        const sourceNode = nodesById.get(edge.source);
         if (sourceNode?.source?.file) {
-          for (const cap of capabilities) {
-            if (cap.operations.some(op => {
-              const opFile = op.trigger?.path || '';
-              return sourceNode.source?.file?.includes(opFile.split('/').pop() || '');
-            })) {
-              sourceCap = cap;
+          for (const item of operationFileHints) {
+            if (item.fileNames.some(fileName => sourceNode.source?.file?.includes(fileName))) {
+              sourceCap = item.cap;
               break;
             }
           }

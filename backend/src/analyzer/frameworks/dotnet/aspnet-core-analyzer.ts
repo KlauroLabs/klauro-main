@@ -79,7 +79,8 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
     try {
       const csprojFiles = await glob(['**/*.csproj'], {
         cwd: projectPath,
-        ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**']
+        ignore: this.getIgnorePatterns({ projectPath }),
+        nodir: true
       });
 
       for (const csproj of csprojFiles) {
@@ -91,7 +92,8 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
 
       const csFiles = await glob(['**/*.cs'], {
         cwd: projectPath,
-        ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**']
+        ignore: this.getIgnorePatterns({ projectPath }),
+        nodir: true
       });
 
       for (const csFile of csFiles.slice(0, 20)) {
@@ -141,7 +143,8 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
 
       const csFiles = await glob(['**/*.cs'], {
         cwd: context.projectPath,
-        ignore: ignorePatterns
+        ignore: [...this.getIgnorePatterns(context), ...ignorePatterns],
+        nodir: true
       });
 
       const controllers = await this.analyzeControllers(csFiles, context.projectPath, existingNodes, newNodes, enhancedNodes, edges, entryPoints);

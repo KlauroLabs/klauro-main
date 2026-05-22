@@ -19,10 +19,19 @@ import * as agentDefaults from './agent-defaults';
 import * as integrationDepth from './integration-depth';
 import * as invariantValidation from './invariant-validation';
 import * as agentProjectMap from './agent-project-map';
+import * as idiomQuery from './idiom-query';
 import { formatMarkdownReport, runAgenticBenchmark } from './agent-benchmark';
 import { formatQualityMarkdownReport, runAgentQualityBenchmark } from './agent-quality-benchmark';
 import { formatIncrementalValueMarkdownReport, runIncrementalValueBenchmark } from './incremental-benchmark';
 import { buildAgentPerformanceProof, formatStoredBenchmarkReport } from './agent-performance-proof';
+import { formatIdiomBenchmarkMarkdown, runAgentIdiomBenchmark } from './agent-idiom-benchmark';
+import { runMachineAgentProof } from './machine-gauntlet';
+import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
+import { buildUploadManifest } from './remote-source';
+import { loadUnravlConfig, writeDefaultUnravlConfig } from './unravl-config';
+import { buildGithubImportPlan } from './github-import';
+import * as proposalPreview from './proposal-preview';
+import { semanticSearch } from './semantic-search';
 
 export function createServer(): McpServer {
   const server = new McpServer(
@@ -137,6 +146,159 @@ function registerTools(server: McpServer) {
   );
 
   server.registerTool(
+    'initialize_unravl_project',
+    {
+      title: 'Initialize Unravl Project',
+      description: 'Write .unravlrc and .unravlignore so teams can control analyzer mode, upload policy, source include/exclude rules, and project identity.',
+      inputSchema: {
+        path: z.string().describe('Absolute path to the project directory'),
+        mode: z.enum(['local', 'remote']).optional().describe('Analyzer mode to write into .unravlrc'),
+        server_url: z.string().optional().describe('Remote analyzer URL to write into .unravlrc'),
+        project_id: z.string().optional().describe('Stable hosted project id'),
+        organization_id: z.string().optional().describe('Hosted organization id'),
+        force: z.boolean().optional().describe('Overwrite existing .unravlrc and .unravlignore'),
+      } as any,
+    } as any,
+    async ({ path, mode, server_url, project_id, organization_id, force }: any) => withErrorHandling(async () => {
+      const result = await writeDefaultUnravlConfig(path, {
+        mode,
+        serverUrl: server_url,
+        projectId: project_id,
+        organizationId: organization_id,
+        force,
+      });
+      return json({
+        status: 'success',
+        config_file: result.configPath,
+        ignore_file: result.ignorePath,
+        analyzer_mode: result.config.analyzer.mode,
+        analyzer_url: result.config.analyzer.serverUrl,
+        project_id: result.config.project.id,
+        organization_id: result.config.project.organizationId,
+      });
+    })
+  );
+
+  server.registerTool(
+    'get_unravl_project_config',
+    {
+      title: 'Get Unravl Project Config',
+      description: 'Read effective .unravlrc, .unravlignore, analyzer mode, upload policy, and project identity for a repository.',
+      inputSchema: {
+        path: z.string().describe('Absolute path to the project directory'),
+      } as any,
+    } as any,
+    async ({ path }: any) => withErrorHandling(async () => {
+      const loaded = await loadUnravlConfig(path);
+      return json({
+        status: 'success',
+        config_file: loaded.configPath,
+        ignore_file: loaded.ignorePath,
+        ignore_patterns: loaded.ignorePatterns,
+        config: loaded.config,
+      });
+    })
+  );
+
+  server.registerTool(
+    'get_upload_manifest',
+    {
+      title: 'Get Upload Manifest',
+      description: 'Dry-run the remote analyzer upload policy and show exactly which files would be sent before full or dirty-tree sync.',
+      inputSchema: {
+        path: z.string().describe('Absolute path to the project directory'),
+        dirty_tree: z.boolean().optional().describe('Show dirty-tree incremental upload instead of full snapshot upload'),
+      } as any,
+    } as any,
+    async ({ path, dirty_tree }: any) => withErrorHandling(async () => {
+      return json(await buildUploadManifest(path, dirty_tree ? 'dirty-tree' : 'full'));
+    })
+  );
+
+  server.registerTool(
+    'get_github_import_plan',
+    {
+      title: 'Get GitHub Import Plan',
+      description: 'Describe the GitHub App permissions, webhooks, and local-agent handoff needed for hosted main-branch analysis.',
+      inputSchema: {
+        path: z.string().describe('Absolute path to the project directory'),
+      } as any,
+    } as any,
+    async ({ path }: any) => withErrorHandling(async () => {
+      const loaded = await loadUnravlConfig(path);
+      return json(buildGithubImportPlan(path, loaded.config));
+    })
+  );
+
+  server.registerTool(
+    'analyze_codebase_remote',
+    {
+      title: 'Analyze Codebase Remotely',
+      description: 'Upload a filtered local source snapshot to a remote Unravl analyzer service, then cache the returned CAS locally for fast MCP queries.',
+      inputSchema: {
+        path: z.string().describe('Absolute path to the project directory'),
+        server_url: z.string().optional().describe('Remote analyzer URL. Defaults to UNRAVL_ANALYZER_URL or http://127.0.0.1:8787'),
+        analysis_id: z.string().optional().describe('Stable remote analysis id. Defaults to a hash of the local project path'),
+      } as any,
+    } as any,
+    async ({ path, server_url, analysis_id }: any) => withErrorHandling(async () => {
+      const result = await analyzeCodebaseRemotely({ projectPath: path, serverUrl: server_url, analysisId: analysis_id });
+      return json({
+        status: result.status,
+        analysis_id: result.analysis_id,
+        analysis_revision: result.analysis_revision,
+        analysis_type: result.analysis_type,
+        files_sent: result.manifest.file_count,
+        bytes_sent: result.manifest.total_bytes,
+        path,
+        name: result.cas.system?.name || path.split('/').pop(),
+        nodes: result.cas.nodes?.length || 0,
+        edges: result.cas.edges?.length || 0,
+        entry_points: result.cas.entry_points?.length || 0,
+      });
+    })
+  );
+
+  server.registerTool(
+    'sync_codebase_remote',
+    {
+      title: 'Sync Codebase Remotely',
+      description: 'Send dirty-tree file changes to a remote Unravl analyzer service and cache the updated CAS locally. Use after local agent edits when analyzers are hosted.',
+      inputSchema: {
+        path: z.string().describe('Absolute path to the project directory'),
+        server_url: z.string().optional().describe('Remote analyzer URL. Defaults to UNRAVL_ANALYZER_URL or http://127.0.0.1:8787'),
+        analysis_id: z.string().optional().describe('Stable remote analysis id. Defaults to a hash of the local project path'),
+      } as any,
+    } as any,
+    async ({ path, server_url, analysis_id }: any) => withErrorHandling(async () => {
+      const result = await syncWorkingTreeRemotely({ projectPath: path, serverUrl: server_url, analysisId: analysis_id });
+      const summary = result.change_report?.summary;
+      return json({
+        status: result.status,
+        analysis_id: result.analysis_id,
+        analysis_revision: result.analysis_revision,
+        analysis_type: result.analysis_type,
+        files_sent: result.manifest.file_count,
+        bytes_sent: result.manifest.total_bytes,
+        path,
+        name: result.cas.system?.name || path.split('/').pop(),
+        nodes: result.cas.nodes?.length || 0,
+        edges: result.cas.edges?.length || 0,
+        entry_points: result.cas.entry_points?.length || 0,
+        change_summary: summary ? {
+          files_changed: summary.filesAdded + summary.filesModified + summary.filesDeleted,
+          nodes_added: summary.nodesAdded,
+          nodes_modified: summary.nodesModified,
+          nodes_deleted: summary.nodesDeleted,
+          edges_added: summary.edgesAdded,
+          edges_modified: summary.edgesModified,
+          edges_deleted: summary.edgesDeleted,
+        } : undefined,
+      });
+    })
+  );
+
+  server.registerTool(
     'list_analyses',
     {
       title: 'List Analyses',
@@ -177,6 +339,110 @@ function registerTools(server: McpServer) {
     } as any,
     async ({ path }: any) => withErrorHandling(async () => {
       return json(await getStorageHealth(path));
+    })
+  );
+
+  server.registerTool(
+    'preview_codebase_iteration',
+    {
+      title: 'Preview Codebase Iteration',
+      description: 'Analyze a proposed plan plus diff/files as an ephemeral iteration of an existing codebase. CAS remains proposal-agnostic; the preview references baseline and proposed analyses.',
+      inputSchema: {
+        path: z.string().describe('Absolute path to the existing project directory'),
+        plan_text: z.string().describe('Natural-language proposal or agent plan'),
+        title: z.string().optional().describe('Human-readable preview title'),
+        diff_text: z.string().optional().describe('Unified diff to apply in a temporary workspace'),
+        proposed_files: z.array(z.object({
+          path: z.string(),
+          content: z.string().optional(),
+          status: z.enum(['added', 'modified', 'deleted']).optional(),
+        })).optional().describe('Explicit proposed file writes/deletions to apply in the temporary workspace'),
+        organization_id: z.string().optional(),
+        project_id: z.string().optional(),
+        codebase_id: z.string().optional(),
+        preview_base_url: z.string().optional().describe('Hosted Unravl app base URL for generated private preview links'),
+      } as any,
+    } as any,
+    async ({ path, plan_text, title, diff_text, proposed_files, organization_id, project_id, codebase_id, preview_base_url }: any) => withErrorHandling(async () => {
+      return json(await proposalPreview.previewCodebaseIteration({
+        path,
+        planText: plan_text,
+        title,
+        diffText: diff_text,
+        proposedFiles: proposed_files,
+        organizationId: organization_id,
+        projectId: project_id,
+        codebaseId: codebase_id,
+        previewBaseUrl: preview_base_url,
+      }));
+    })
+  );
+
+  server.registerTool(
+    'preview_greenfield_codebase',
+    {
+      title: 'Preview Greenfield Codebase',
+      description: 'Analyze proposed files as a synthetic new codebase and return a normal CAS-backed preview with advisory readiness warnings.',
+      inputSchema: {
+        plan_text: z.string().describe('Natural-language proposal or agent plan'),
+        title: z.string().optional().describe('Human-readable preview title'),
+        proposed_files: z.array(z.object({
+          path: z.string(),
+          content: z.string().optional(),
+          status: z.enum(['added', 'modified', 'deleted']).optional(),
+        })).optional().describe('Proposed file bundle for the synthetic codebase'),
+        organization_id: z.string().optional(),
+        project_id: z.string().optional(),
+        preview_base_url: z.string().optional().describe('Hosted Unravl app base URL for generated private preview links'),
+      } as any,
+    } as any,
+    async ({ plan_text, title, proposed_files, organization_id, project_id, preview_base_url }: any) => withErrorHandling(async () => {
+      return json(await proposalPreview.previewGreenfieldCodebase({
+        planText: plan_text,
+        title,
+        proposedFiles: proposed_files,
+        organizationId: organization_id,
+        projectId: project_id,
+        previewBaseUrl: preview_base_url,
+      }));
+    })
+  );
+
+  server.registerTool(
+    'get_preview_analysis',
+    {
+      title: 'Get Preview Analysis',
+      description: 'Fetch stored proposal preview metadata, baseline/proposed CAS artifacts, comparison payload, and visualization payload.',
+      inputSchema: {
+        preview_id: z.string().optional().describe('Preview id. Defaults to latest.'),
+      } as any,
+    } as any,
+    async ({ preview_id }: any) => withErrorHandling(async () => {
+      return json(await proposalPreview.getPreviewAnalysis(preview_id || 'latest'));
+    })
+  );
+
+  server.registerTool(
+    'compare_analysis_iterations',
+    {
+      title: 'Compare Analysis Iterations',
+      description: 'Compare two normal CAS analyses or return the comparison payload for a proposal preview.',
+      inputSchema: {
+        preview_id: z.string().optional().describe('Existing preview id to compare'),
+        baseline_path: z.string().optional().describe('Path for baseline stored analysis'),
+        proposed_path: z.string().optional().describe('Path for proposed stored analysis'),
+        diff_text: z.string().optional().describe('Optional diff used to focus impact checks'),
+        files: z.array(z.string()).optional().describe('Optional changed files used to focus impact checks'),
+      } as any,
+    } as any,
+    async ({ preview_id, baseline_path, proposed_path, diff_text, files }: any) => withErrorHandling(async () => {
+      return json(await proposalPreview.compareAnalysisIterations({
+        previewId: preview_id,
+        baselinePath: baseline_path,
+        proposedPath: proposed_path,
+        diffText: diff_text,
+        files,
+      }));
     })
   );
 
@@ -424,7 +690,7 @@ function registerTools(server: McpServer) {
     } as any,
     async ({ path, task }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      return json(agentBootstrap.getAgentBootstrap(cas, path, task || {}));
+      return json(await agentBootstrap.getAgentBootstrap(cas, path, task || {}));
     })
   );
 
@@ -599,7 +865,34 @@ function registerTools(server: McpServer) {
     } as any,
     async ({ path, task }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      return json(agentAdoption.getAgentWorkPacket(cas, path, task || {}));
+      return json(await agentAdoption.getAgentWorkPacket(cas, path, task || {}));
+    })
+  );
+
+  server.registerTool(
+    'get_idiom_aware_work_packet',
+    {
+      title: 'Get Idiom-Aware Work Packet',
+      description: 'One-call agent work packet with compact repo-local idiom context. Use for edits where matching local naming, placement, boundaries, testing, migrations, and framework style matters.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        task: z.object({
+          task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional(),
+          target: z.string().optional(),
+          related_paths: z.array(z.string()).optional(),
+          runtime_event: z.record(z.unknown()).optional(),
+          instructions: z.string().optional(),
+          success_criteria: z.array(z.string()).optional(),
+        }).optional().describe('Task context for building the work packet'),
+      } as any,
+    } as any,
+    async ({ path, task }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      const packet = await agentAdoption.getAgentWorkPacket(cas, path, task || {});
+      return json({
+        ...packet,
+        idiom_context: (packet.work_context as any).idiom_context,
+      });
     })
   );
 
@@ -770,7 +1063,7 @@ function registerTools(server: McpServer) {
     } as any,
     async ({ path, tasks }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      return json(analysisMastery.evaluateAgentTaskProof(cas, path, tasks || [{ task_type: 'orient' }]));
+      return json(await analysisMastery.evaluateAgentTaskProof(cas, path, tasks || [{ task_type: 'orient' }]));
     })
   );
 
@@ -932,6 +1225,91 @@ function registerTools(server: McpServer) {
   );
 
   server.registerTool(
+    'run_agent_idiom_benchmark',
+    {
+      title: 'Run Agent Idiom Benchmark',
+      description: 'Run copied-repo A/B idiom quality tasks where both agents can pass correctness, but the with-Unravl arm receives CAS idiom context. Scores correctness, idiom conformance, minimality, test relevance, boundary preservation, and file targeting.',
+      inputSchema: {
+        paths: z.array(z.string()).optional().describe('Project paths to benchmark. Omit to use all analyzed repositories.'),
+        max_targets: z.number().optional().describe('Maximum repositories to benchmark'),
+        max_tasks_per_repo: z.number().optional().describe('Maximum generated idiom tasks per repository'),
+        agent_with_command: z.string().optional().describe('Live with-Unravl agent command template. Supports {workspace}, {prompt_file}, {metrics_file}, {result_file}, {arm}, and {task_id}.'),
+        agent_without_command: z.string().optional().describe('Live without-Unravl agent command template. Supports {workspace}, {prompt_file}, {metrics_file}, {result_file}, {arm}, and {task_id}.'),
+        orchestrator_command: z.string().optional().describe('Optional evaluator command template. Supports {evaluation_input}, {evaluation_file}, {with_workspace}, {without_workspace}, {with_diff}, and {without_diff}.'),
+        test_command: z.string().optional().describe('Optional command to run inside each copied repo after the agent attempt.'),
+        work_root: z.string().optional().describe('Directory for live repo copies and benchmark artifacts.'),
+        max_live_tasks: z.number().optional().describe('Maximum task pairs to run through live agents.'),
+        timeout_ms: z.number().optional().describe('Per-agent command timeout in milliseconds.'),
+        test_timeout_ms: z.number().optional().describe('Per-test command timeout in milliseconds.'),
+        orchestrator_timeout_ms: z.number().optional().describe('Evaluator command timeout in milliseconds.'),
+      } as any,
+    } as any,
+    async ({ paths, max_targets, max_tasks_per_repo, agent_with_command, agent_without_command, orchestrator_command, test_command, work_root, max_live_tasks, timeout_ms, test_timeout_ms, orchestrator_timeout_ms }: any) => withErrorHandling(async () => {
+      const selectedPaths = paths && paths.length > 0 ? paths : (await listAnalyses()).map(analysis => analysis.path);
+      const report = await runAgentIdiomBenchmark({
+        repos: selectedPaths.map((repoPath: string) => ({ path: repoPath })),
+        maxTargets: max_targets,
+        maxTasksPerRepo: max_tasks_per_repo,
+        commands: {
+          withUnravl: agent_with_command,
+          withoutUnravl: agent_without_command,
+          orchestrator: orchestrator_command,
+          testCommand: test_command,
+          workRoot: work_root,
+          maxLiveTasks: max_live_tasks,
+          timeoutMs: timeout_ms,
+          testTimeoutMs: test_timeout_ms,
+          orchestratorTimeoutMs: orchestrator_timeout_ms,
+        },
+        live: Boolean(agent_with_command || agent_without_command),
+        quiet: true,
+      });
+      const saved = await saveAgenticBenchmarkReport(report);
+      return json({ saved, report, markdown: formatIdiomBenchmarkMarkdown(report) });
+    })
+  );
+
+  server.registerTool(
+    'run_machine_agent_proof',
+    {
+      title: 'Run Machine Agent Proof',
+      description: 'Discover every real Git repo under a dev root, account for unsupported/skipped repos, run analysis/readiness/idiom/incremental checks on eligible repos, and require live idiom A/B proof when agent commands are supplied.',
+      inputSchema: {
+        dev_root: z.string().optional().describe('Root to discover real Git repos under. Defaults to ~/dev.'),
+        max_targets: z.number().optional().describe('Limit eligible repos for expensive checks while still reporting all discovered repos.'),
+        work_root: z.string().optional().describe('Directory for copied repo workspaces and benchmark artifacts.'),
+        no_live: z.boolean().optional().describe('Skip live idiom A/B execution. The live proof gate remains failed when skipped.'),
+        agent_with_command: z.string().optional().describe('Live with-Unravl agent command template.'),
+        agent_without_command: z.string().optional().describe('Live without-Unravl agent command template.'),
+        orchestrator_command: z.string().optional().describe('Optional external evaluator command template.'),
+        test_command: z.string().optional().describe('Optional command to run inside each copied repo after the agent attempt.'),
+        max_live_tasks: z.number().optional().describe('Maximum live idiom task pairs.'),
+        timeout_ms: z.number().optional().describe('Per-agent command timeout in milliseconds.'),
+        test_timeout_ms: z.number().optional().describe('Per-test command timeout in milliseconds.'),
+      } as any,
+    } as any,
+    async ({ dev_root, max_targets, work_root, no_live, agent_with_command, agent_without_command, orchestrator_command, test_command, max_live_tasks, timeout_ms, test_timeout_ms }: any) => withErrorHandling(async () => {
+      const report = await runMachineAgentProof({
+        devRoot: dev_root || `${process.env.HOME || ''}/dev`,
+        maxTargets: max_targets,
+        outputPath: '',
+        markdownPath: '',
+        workRoot: work_root,
+        runLive: !no_live,
+        agentWithCommand: agent_with_command,
+        agentWithoutCommand: agent_without_command,
+        orchestratorCommand: orchestrator_command,
+        testCommand: test_command,
+        maxLiveTasks: max_live_tasks,
+        timeoutMs: timeout_ms,
+        testTimeoutMs: test_timeout_ms,
+        discardWorkspaces: true,
+      });
+      return json(report);
+    })
+  );
+
+  server.registerTool(
     'run_incremental_value_benchmark',
     {
       title: 'Run Incremental Value Benchmark',
@@ -969,6 +1347,76 @@ function registerTools(server: McpServer) {
     async ({ path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getPatterns(cas));
+    })
+  );
+
+  server.registerTool(
+    'get_codebase_idioms',
+    {
+      title: 'Get Codebase Idioms',
+      description: 'Repo-local conventions inferred from CAS: naming, file organization, module boundaries, dependency injection, data access, errors, validation, auth/tenant scope, logging, testing, migrations, async style, and configuration.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        category: z.enum(['naming', 'file-organization', 'module-boundary', 'dependency-injection', 'data-access', 'error-handling', 'validation', 'auth-tenant-scope', 'logging', 'testing', 'migrations', 'async-style', 'configuration']).optional().describe('Filter by idiom category'),
+        target: z.string().optional().describe('Node id, file path, or text target to filter idioms'),
+        min_confidence: z.number().optional().describe('Minimum idiom confidence, 0-1'),
+        limit: z.number().optional().describe('Max results (default 25)'),
+        offset: z.number().optional().describe('Skip first N results (default 0)'),
+      } as any,
+    } as any,
+    async ({ path, category, target, min_confidence, limit, offset }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(idiomQuery.getCodebaseIdioms(cas, { category, target, minConfidence: min_confidence, limit, offset }));
+    })
+  );
+
+  server.registerTool(
+    'get_idiom_examples',
+    {
+      title: 'Get Idiom Examples',
+      description: 'Return positive local examples for codebase idioms so agents can copy the repo style before editing.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        idiom_id: z.string().optional().describe('Specific idiom id from get_codebase_idioms'),
+        category: z.enum(['naming', 'file-organization', 'module-boundary', 'dependency-injection', 'data-access', 'error-handling', 'validation', 'auth-tenant-scope', 'logging', 'testing', 'migrations', 'async-style', 'configuration']).optional().describe('Filter by idiom category'),
+        target: z.string().optional().describe('Node id, file path, or text target to filter examples'),
+        limit: z.number().optional().describe('Max results (default 25)'),
+        offset: z.number().optional().describe('Skip first N results (default 0)'),
+      } as any,
+    } as any,
+    async ({ path, idiom_id, category, target, limit, offset }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(idiomQuery.getIdiomExamples(cas, { idiomId: idiom_id, category, target, limit, offset }));
+    })
+  );
+
+  server.registerTool(
+    'validate_codebase_idioms',
+    {
+      title: 'Validate Codebase Idioms',
+      description: 'Validate a working diff, explicit file list, or provided diff text against repo-local idioms. Use after edits to catch non-idiomatic naming, placement, testing, migration, logging, error-handling, and auth/tenant-scope drift.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        target: z.string().optional().describe('Optional node id, file path, or text target'),
+        category: z.enum(['naming', 'file-organization', 'module-boundary', 'dependency-injection', 'data-access', 'error-handling', 'validation', 'auth-tenant-scope', 'logging', 'testing', 'migrations', 'async-style', 'configuration']).optional().describe('Filter by idiom category'),
+        files: z.array(z.string()).optional().describe('Explicit changed files to validate instead of reading the working tree'),
+        diff_text: z.string().optional().describe('Optional unified diff text to validate'),
+        include_working_tree: z.boolean().optional().describe('When false, validate only files/diff_text. Default true reads git working-tree and staged changes.'),
+        min_confidence: z.number().optional().describe('Minimum idiom confidence, 0-1'),
+        limit: z.number().optional().describe('Maximum impacted idioms to report'),
+      } as any,
+    } as any,
+    async ({ path, target, category, files, diff_text, include_working_tree, min_confidence, limit }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(idiomQuery.validateCodebaseIdioms(cas, path, {
+        target,
+        category,
+        files,
+        diffText: diff_text,
+        includeWorkingTree: include_working_tree,
+        minConfidence: min_confidence,
+        limit,
+      }));
     })
   );
 
@@ -1012,7 +1460,7 @@ function registerTools(server: McpServer) {
     'search_nodes',
     {
       title: 'Search Nodes',
-      description: 'Find code elements (classes, functions, modules, etc.) by name, type, category, or level.',
+      description: 'Find code elements (classes, functions, modules, etc.) by name, type, category, or level. Supports lexical, semantic, and hybrid retrieval modes.',
       inputSchema: {
         path: z.string().describe('Project path'),
         query: z.string().describe('Search query (matches name, qualified_name, description)'),
@@ -1020,11 +1468,73 @@ function registerTools(server: McpServer) {
         category: z.string().optional().describe('Filter by category'),
         level: z.number().optional().describe('Filter by hierarchy level'),
         limit: z.number().optional().describe('Max results (default 25)'),
+        mode: z.enum(['lexical', 'semantic', 'hybrid']).optional().describe('Retrieval mode. hybrid (default) and semantic blend embedding similarity with structural re-ranking; lexical matches names and descriptions only.'),
       } as any,
     } as any,
-    async ({ path, query: q, type, category, level, limit }: any) => withErrorHandling(async () => {
+    async ({ path, query: q, type, category, level, limit, mode }: any) => withErrorHandling(async () => {
+      const resolvedMode = mode || 'hybrid';
+      if (resolvedMode === 'lexical') {
+        const cas = await getAnalysis(path);
+        return json(query.searchNodes(cas, q, { type, category, level, limit }));
+      }
+      return json(await semanticSearch(path, q, { type, category, level, limit }));
+    })
+  );
+
+  server.registerTool(
+    'semantic_search',
+    {
+      title: 'Semantic Search',
+      description: 'Natural-language query that resolves to graph-anchored ranked CAS nodes. Fuses embedding similarity with lexical match via reciprocal rank fusion, then re-ranks on structural graph signals. Falls back to lexical search and reports degraded when no embedding index is available.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        query: z.string().describe('Natural-language description of the code to find'),
+        type: z.string().optional().describe('Filter by node type'),
+        category: z.string().optional().describe('Filter by category'),
+        level: z.number().optional().describe('Filter by hierarchy level'),
+        types: z.array(z.string()).optional().describe('Restrict results to these node types'),
+        files: z.array(z.string()).optional().describe('Restrict results to nodes in these files'),
+        limit: z.number().optional().describe('Max results (default 25)'),
+      } as any,
+    } as any,
+    async ({ path, query: q, type, category, level, types, files, limit }: any) => withErrorHandling(async () => {
+      return json(await semanticSearch(path, q, { type, category, level, types, files, limit }));
+    })
+  );
+
+  server.registerTool(
+    'get_embedding_status',
+    {
+      title: 'Get Embedding Status',
+      description: 'Report the embedding index for an analysis: model, dimensions, store, coverage, generation time, and whether the index is degraded, stale, or absent.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+      } as any,
+    } as any,
+    async ({ path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      return json(query.searchNodes(cas, q, { type, category, level, limit }));
+      const index = cas.embedding_index;
+      if (!index) {
+        return json({
+          status: 'no_index',
+          has_index: false,
+          message: 'This analysis has no embedding index. Semantic search falls back to lexical retrieval.',
+        });
+      }
+      return json({
+        status: index.degraded ? 'degraded' : 'ready',
+        has_index: true,
+        model: index.model,
+        provider: index.provider,
+        dimensions: index.dimensions,
+        document_version: index.document_version,
+        store: index.store,
+        generated_at: index.generated_at,
+        node_count: index.node_count,
+        coverage: index.coverage,
+        degraded: Boolean(index.degraded),
+        degraded_reason: index.degraded_reason,
+      });
     })
   );
 
@@ -2370,7 +2880,7 @@ function registerResources(server: McpServer) {
       const entry = analyses.find(a => slugify(a.name) === params.project_name);
       if (!entry) return { contents: [{ uri: uri.href, text: JSON.stringify({ error: 'Analysis not found' }) }] };
       const cas = await getAnalysis(entry.path);
-      return { contents: [{ uri: uri.href, text: JSON.stringify(agentBootstrap.getAgentBootstrap(cas, entry.path)) }] };
+      return { contents: [{ uri: uri.href, text: JSON.stringify(await agentBootstrap.getAgentBootstrap(cas, entry.path)) }] };
     }
   );
 
@@ -2631,7 +3141,7 @@ function registerPrompts(server: McpServer) {
       const resolution = await agentProjectMap.resolveAgentAnalysis({ path, task });
       const selectedPath = resolution.selected_path || path;
       const cas = await getAnalysis(selectedPath);
-      const bootstrap = agentBootstrap.getAgentBootstrap(cas, selectedPath, task);
+      const bootstrap = await agentBootstrap.getAgentBootstrap(cas, selectedPath, task);
       const prefix = resolution.selected_path && resolution.selected_path !== path
         ? `# Analysis Resolution\nRequested path: ${path}\nSelected path: ${resolution.selected_path}\nRecommendation: ${resolution.recommendation}\n\n`
         : '';
@@ -2660,6 +3170,7 @@ function registerPrompts(server: McpServer) {
       const schema = query.getDatabaseSchema(cas);
       const security = query.getSecurityOverview(cas);
       const patterns = query.getPatterns(cas);
+      const idioms = idiomQuery.getCodebaseIdioms(cas, { limit: 10 });
 
       const sections: string[] = [];
 
@@ -2732,6 +3243,13 @@ function registerPrompts(server: McpServer) {
         }
       }
 
+      if (idioms.total > 0) {
+        sections.push(`\n## Codebase Idioms`);
+        for (const idiom of idioms.idioms.slice(0, 10)) {
+          sections.push(`  ${idiom.name} (${idiom.category}, confidence: ${idiom.confidence})`);
+        }
+      }
+
       return {
         messages: [{
           role: 'user',
@@ -2763,6 +3281,11 @@ function registerPrompts(server: McpServer) {
       const tests = query.findTests(cas, { nodeId: node_id });
       const stability = query.getStability(cas, node_id);
       const invariants = query.getBehavioralInvariants(cas, { target: node_id, limit: 8 });
+      const idiomContext = idiomQuery.buildIdiomContextForAgent(cas, {
+        target: node_id,
+        files: node.source?.file ? [node.source.file] : [],
+        limit: 8,
+      });
       const invariantImpact = invariantValidation.assessBehavioralInvariantImpact(cas, {
         target: node_id,
         files: node.source?.file ? [node.source.file] : [],
@@ -2808,6 +3331,15 @@ function registerPrompts(server: McpServer) {
       }
       sections.push(`Invariant impact status: ${invariantImpact.status}, impacted=${invariantImpact.impacted_count}`);
       sections.push(`After edits, call validate_behavioral_invariants with path=${JSON.stringify(path)} and target=${JSON.stringify(node_id)} before finalizing.`);
+
+      sections.push(`\n## Codebase Idioms`);
+      sections.push(`Relevant idioms: ${idiomContext.selected_idioms.length}`);
+      for (const idiom of idiomContext.selected_idioms.slice(0, 8)) {
+        sections.push(`  [${idiom.confidence}] ${idiom.name} (${idiom.category})`);
+        if (idiom.do?.[0]) sections.push(`    Do: ${idiom.do[0]}`);
+        if (idiom.avoid?.[0]) sections.push(`    Avoid: ${idiom.avoid[0]}`);
+      }
+      sections.push(`After edits, call validate_codebase_idioms with path=${JSON.stringify(path)} and target=${JSON.stringify(node_id)} before finalizing.`);
 
       if (stability && 'stability_score' in stability) {
         sections.push(`\n## Stability`);

@@ -353,7 +353,8 @@ export class RocketAnalyzer extends BaseAnalyzer {
     return new Promise((resolve, reject) => {
       glob('**/*.rs', { 
         cwd: projectPath, 
-        ignore: ['**/target/**', '**/.git/**'] 
+        ignore: this.getIgnorePatterns({ projectPath }),
+        nodir: true
       }, (err, files) => {
         if (err) reject(err);
         else resolve(files.map(f => `${projectPath}/${f}`));

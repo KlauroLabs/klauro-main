@@ -190,7 +190,8 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
       const pythonFiles = await glob(['**/*.py'], {
         cwd: projectPath,
-        ignore: ['**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**', '**/.git/**', '**/node_modules/**', '**/dist/**', '**/build/**']
+        ignore: this.getIgnorePatterns({ projectPath }),
+        nodir: true
       });
 
       for (const file of pythonFiles) {
@@ -216,7 +217,8 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     try {
       const pythonFiles = await glob(['**/*.py'], {
         cwd: context.projectPath,
-        ignore: ['**/venv/**', '**/env/**', '**/__pycache__/**', '.git/**', '**/migrations/**']
+        ignore: [...this.getIgnorePatterns(context), '**/migrations/**'],
+        nodir: true
       });
 
       const project = await this.analyzeProject(context.projectPath, nodes);
@@ -259,7 +261,8 @@ export class DjangoAnalyzer extends BaseAnalyzer {
   private async analyzeProject(projectPath: string, nodes: CASNode[]): Promise<DjangoProject | null> {
     const settingsFiles = await glob(['**/settings.py', '**/settings/*.py'], {
       cwd: projectPath,
-      ignore: ['**/venv/**', '**/env/**']
+      ignore: this.getIgnorePatterns({ projectPath }),
+      nodir: true
     });
 
     if (settingsFiles.length === 0) return null;

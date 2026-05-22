@@ -28,7 +28,7 @@ export interface AgentDefaultConfig {
     repository_snippet: string;
   };
   doctor: Awaited<ReturnType<typeof getAgentDoctor>>;
-  bootstrap: ReturnType<typeof getAgentBootstrap>;
+  bootstrap: Awaited<ReturnType<typeof getAgentBootstrap>>;
   install?: {
     directory: string;
     json_file: string;
@@ -43,7 +43,7 @@ export async function getAgentDefaultConfig(
   options: { assumeFresh?: boolean } = {}
 ): Promise<AgentDefaultConfig> {
   const doctor = await getAgentDoctor(cas, projectPath, options);
-  const bootstrap = getAgentBootstrap(cas, projectPath, task);
+  const bootstrap = await getAgentBootstrap(cas, projectPath, task);
   const mcpServerDir = findMcpServerDir();
   const selectedPathSource = 'Use resolve_agent_analysis.selected_path when present; otherwise use this original path.';
   const firstCalls = [

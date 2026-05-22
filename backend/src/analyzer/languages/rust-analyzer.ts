@@ -312,11 +312,14 @@ export class RustAnalyzer extends BaseAnalyzer {
     try {
       const rustFiles = await glob(['**/*.rs'], {
         cwd: projectPath,
-        ignore: ['**/target/**', '**/.git/**']
+        ignore: this.getIgnorePatterns({ projectPath }),
+        nodir: true
       });
 
       const cargoFiles = await glob(['Cargo.toml', 'Cargo.lock'], {
-        cwd: projectPath
+        cwd: projectPath,
+        ignore: this.getIgnorePatterns({ projectPath }),
+        nodir: true
       });
 
       return rustFiles.length > 0 || cargoFiles.length > 0;
@@ -332,7 +335,8 @@ export class RustAnalyzer extends BaseAnalyzer {
   async getRelevantFiles(projectPath: string): Promise<string[]> {
     return glob(['**/*.rs'], {
       cwd: projectPath,
-      ignore: ['**/target/**', '**/.git/**']
+      ignore: this.getIgnorePatterns({ projectPath }),
+      nodir: true
     });
   }
 
@@ -382,7 +386,8 @@ export class RustAnalyzer extends BaseAnalyzer {
 
       const rustFiles = await glob(['**/*.rs'], {
         cwd: context.projectPath,
-        ignore: ['**/target/**', '**/.git/**']
+        ignore: this.getIgnorePatterns(context),
+        nodir: true
       });
 
       for (const file of rustFiles) {

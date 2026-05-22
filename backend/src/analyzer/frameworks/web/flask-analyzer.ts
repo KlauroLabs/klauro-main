@@ -125,7 +125,8 @@ export class FlaskAnalyzer extends BaseAnalyzer {
 
       const pythonFiles = await glob(['**/*.py'], {
         cwd: projectPath,
-        ignore: ['**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**', '**/.git/**', '**/node_modules/**', '**/dist/**', '**/build/**', '**/src/analyzer/**', '**/analyzer/**', '**/analyzers/**']
+        ignore: [...this.getIgnorePatterns({ projectPath }), '**/src/analyzer/**', '**/analyzer/**', '**/analyzers/**'],
+        nodir: true
       });
 
       for (const file of pythonFiles) {
@@ -154,7 +155,8 @@ export class FlaskAnalyzer extends BaseAnalyzer {
         '**/.venv/**',
         '**/env/**',
         '**/__pycache__/**'
-      ]
+      ],
+      nodir: true
     });
   }
 
@@ -202,11 +204,14 @@ export class FlaskAnalyzer extends BaseAnalyzer {
       const pythonIgnorePatterns = [...ignorePatterns, '**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**'];
       const pythonFiles = await glob(['**/*.py'], {
         cwd: context.projectPath,
-        ignore: pythonIgnorePatterns
+        ignore: pythonIgnorePatterns,
+        nodir: true
       });
 
       const htmlFiles = await glob(['**/templates/**/*.html'], {
-        cwd: context.projectPath
+        cwd: context.projectPath,
+        ignore: this.getIgnorePatterns(context),
+        nodir: true
       });
 
       const application = await this.analyzeApplication(pythonFiles, context.projectPath, nodes);

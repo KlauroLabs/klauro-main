@@ -19,8 +19,10 @@ import {
   searchNodes,
 } from './query';
 import { runAnswerPack } from './product';
+import { semanticSearch } from './semantic-search';
 import type { TestDiscoveryEvidence } from './test-discovery';
 import { assessBehavioralInvariantImpact } from './invariant-validation';
+import { buildIdiomContextForAgent } from './idiom-query';
 import {
   classifyAnalysisProfile,
   expectedCallChainCount,
@@ -73,6 +75,7 @@ export interface AgentReadinessReport {
     method_calls: number;
     runtime_static_links: number;
     analysis_facts: number;
+    codebase_idioms: number;
     tests: number;
     analysis_errors: number;
     behavioral_invariants?: {
@@ -144,7 +147,7 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
   return {
     path,
     generated_at: new Date().toISOString(),
-    default_rule: 'Use this CAS-backed MCP context before broad file reads. Read source files after MCP narrows the target or reports a gap. After edits, run validate_behavioral_invariants before finalizing changes.',
+    default_rule: 'Use this CAS-backed MCP context before broad file reads. Read source files after MCP narrows the target or reports a gap. After edits, run validate_behavioral_invariants and validate_codebase_idioms before finalizing changes.',
     task: normalizeTask(task),
     readiness: {
       status: readiness.status,
@@ -190,6 +193,7 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
       connected_nodes: topNodes,
       runtime_static_links: runtimeLinks.links,
     },
+    idiom_summary: cas.idiom_summary || null,
     answer_pack: {
       status: answerPack.gaps.length === 0 ? 'ready' : 'needs-review',
       answers: answerPack.answers.map(answer => ({
@@ -209,12 +213,12 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
   };
 }
 
-export function getAgentWorkPacket(cas: CASOutput, path: string, taskInput: AgentTask = {}) {
+export async function getAgentWorkPacket(cas: CASOutput, path: string, taskInput: AgentTask = {}) {
   const task = normalizeTask(taskInput);
   const readiness = evaluateAgentReadiness(cas, path);
   const plan = getAgentToolPlan(cas, { path, task });
   const targetQuery = task.target || inferTargetQueryFromTask(task);
-  const targetResolution = resolveTaskTarget(cas, targetQuery);
+  const targetResolution = await resolveTaskTarget(cas, path, targetQuery);
   const selectedNode = targetResolution.selected_node;
   const tests = selectedNode
     ? findTests(cas, { nodeId: selectedNode.id, limit: 10 })
@@ -243,6 +247,11 @@ export function getAgentWorkPacket(cas: CASOutput, path: string, taskInput: Agen
   const compactTests = summarizeTestsForAgent(tests);
   const compactBehavioralInvariants = summarizeBehavioralInvariantsForAgent(behavioralInvariants);
   const compactInvariantImpact = summarizeInvariantImpactForAgent(invariantImpact);
+  const idiomContext = buildIdiomContextForAgent(cas, {
+    target: selectedNode?.id || targetQuery || task.target,
+    files: fileReadPlan.map(item => item.file),
+    limit: 8,
+  });
   const validationPlan = buildValidationPlan(path, cas, task, selectedNode || undefined, tests, fileReadPlan, risk, behavioralInvariants);
   const gaps = [
     ...readiness.adoption_gaps,
@@ -274,13 +283,14 @@ export function getAgentWorkPacket(cas: CASOutput, path: string, taskInput: Agen
       error_contracts: errorContracts,
       behavioral_invariants: compactBehavioralInvariants,
       invariant_impact: compactInvariantImpact,
+      idiom_context: idiomContext,
       entry_context: entryContext,
     },
     file_read_plan: fileReadPlan,
     invariant_impact: compactInvariantImpact,
     validation_plan: validationPlan,
     next_mcp_calls: plan.steps,
-    source_reading_rule: 'Read only the files in file_read_plan first. Expand only when those files or MCP evidence show a concrete gap.',
+    source_reading_rule: 'Read only the files in file_read_plan first. Expand only when those files or MCP evidence show a concrete gap. Preserve idiom_context when editing.',
     gaps,
   };
 }
@@ -307,7 +317,7 @@ export function getAgentToolPlan(cas: CASOutput, input: { path: string; task?: A
   };
 }
 
-function resolveTaskTarget(cas: CASOutput, target?: string) {
+async function resolveTaskTarget(cas: CASOutput, projectPath: string, target?: string) {
   const gaps: string[] = [];
   const candidateNodes = new Map<string, CASNode>();
   let selectedNode: CASNode | undefined;
@@ -317,6 +327,11 @@ function resolveTaskTarget(cas: CASOutput, target?: string) {
     if (exactNode) {
       selectedNode = exactNode;
       candidateNodes.set(exactNode.id, exactNode);
+    }
+
+    const semanticMatches = await resolveSemanticTargetCandidates(cas, projectPath, target);
+    for (const node of semanticMatches) {
+      candidateNodes.set(node.id, node);
     }
 
     const searched = searchNodes(cas, target, { limit: 10 })
@@ -353,8 +368,16 @@ function resolveTaskTarget(cas: CASOutput, target?: string) {
       candidateNodes.set(node.id, node);
     }
 
+    const semanticRank = new Map<string, number>();
+    semanticMatches.forEach((node, index) => {
+      if (!semanticRank.has(node.id)) semanticRank.set(node.id, index);
+    });
     const scoredCandidates = [...candidateNodes.values()]
-      .map(node => ({ node, score: scoreNodeForTarget(node, target) }))
+      .map(node => {
+        const rank = semanticRank.get(node.id);
+        const semanticBonus = rank === undefined ? 0 : Math.max(20, 130 - rank * 18);
+        return { node, score: scoreNodeForTarget(node, target) + semanticBonus };
+      })
       .sort((left, right) => right.score - left.score);
     if (!selectedNode) selectedNode = scoredCandidates[0]?.node;
 
@@ -399,7 +422,23 @@ function resolveTaskTarget(cas: CASOutput, target?: string) {
   };
 }
 
-function summarizeTargetResolutionForAgent(resolution: ReturnType<typeof resolveTaskTarget>) {
+async function resolveSemanticTargetCandidates(
+  cas: CASOutput,
+  projectPath: string,
+  target: string,
+): Promise<CASNode[]> {
+  try {
+    const response = await semanticSearch(projectPath, target, { limit: 10 });
+    if (response.degraded) return [];
+    return response.results
+      .map(result => cas.nodes.find(node => node.id === result.node_id))
+      .filter((node): node is CASNode => Boolean(node));
+  } catch {
+    return [];
+  }
+}
+
+function summarizeTargetResolutionForAgent(resolution: Awaited<ReturnType<typeof resolveTaskTarget>>) {
   return {
     query: resolution.query,
     selected_node_id: resolution.selected_node_id,
@@ -957,7 +996,9 @@ function buildValidationPlan(
   const manualChecks = [
     selectedNode ? `Confirm the edit preserves the contract of ${selectedNode.name}.` : 'Confirm the edit target was resolved before changing source files.',
     selectedNode ? `After edits, call validate_behavioral_invariants for ${selectedNode.id}.` : 'After edits, call validate_behavioral_invariants with the task target or current working diff.',
+    selectedNode ? `After edits, call validate_codebase_idioms for ${selectedNode.id}.` : 'After edits, call validate_codebase_idioms with the task target or current working diff.',
     ...(task.success_criteria || []).map(criterion => `Verify success criterion: ${criterion}`),
+    ...(cas.codebase_idioms || []).slice(0, 5).map(idiom => `Preserve idiom: ${idiom.name} - ${idiom.agent_guidance.do[0] || idiom.description}`),
     ...behavioralInvariants.invariants.slice(0, 6).map((invariant: any) => `Preserve invariant: ${invariant.name} - ${invariant.description}`),
   ];
   const riskReasons = risk?.risk
@@ -981,7 +1022,7 @@ function buildValidationPlan(
       : commands.length > 0 ? 'repo-script-fallback' : 'manual-validation-required',
     commands: commands.slice(0, 4),
     tests_to_inspect: testsToInspect,
-    manual_checks: uniqueStrings(manualChecks).slice(0, 8),
+    manual_checks: uniqueStrings(manualChecks).slice(0, 10),
     environment_rule: 'Do not install dependencies or run broad environment setup unless the task explicitly asks for it. If focused validation cannot run in the existing checkout, report that as an environment blocker.',
     gaps: commands.length === 0 ? ['no runnable validation command inferred from package scripts or test files'] : [],
   };
@@ -1241,6 +1282,7 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
   const graphIntegrity = cas.validation?.graph_integrity;
   const runtimeLinks = cas.runtime_static_links?.length || 0;
   const facts = cas.analysis_facts?.length || 0;
+  const idioms = cas.codebase_idioms?.length || 0;
   const analysisErrors = cas.analysis_errors?.length || 0;
   const testGate = testReadinessGate(tests.total_suites, opts.testEvidence);
   const invariantGapCount = cas.behavioral_invariant_summary?.gaps?.length || 0;
@@ -1261,6 +1303,7 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
     relationshipDetailGate(cas, methodCalls, profile),
     gate('answer-pack', answerPack.gaps.length === 0 ? 'pass' : 'warn', answerPack.gaps.length === 0 ? 100 : 75, answerPack.gaps.length === 0 ? 'Mastery answer pack has no gaps' : answerPack.gaps.join('; ')),
     gate('evidence', facts > 0 ? 'pass' : 'warn', facts > 0 ? 100 : 75, `${facts} analysis facts`),
+    gate('codebase-idioms', idioms > 0 ? 'pass' : 'warn', idioms > 0 ? 100 : 72, `${idioms} repo-local idioms`),
     gate(
       'behavioral-invariants',
       invariantGateStatus,
@@ -1327,6 +1370,7 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
       method_calls: methodCalls,
       runtime_static_links: runtimeLinks,
       analysis_facts: facts,
+      codebase_idioms: idioms,
       tests: tests.total_suites,
       analysis_errors: analysisErrors,
       behavioral_invariants: cas.behavioral_invariant_summary ? {
@@ -1348,6 +1392,7 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
       'Call get_coding_context before code edits in a targeted area.',
       'Use assess_change_risk and find_tests before landing changes that touch connected behavior.',
       'After edits, call validate_behavioral_invariants against the working diff before finalizing.',
+      'After edits, call validate_codebase_idioms against the working diff before finalizing.',
       'Report CAS/MCP errors as blockers to default use and then fall back to direct code reading.',
     ],
     test_discovery: opts.testEvidence,
@@ -1390,10 +1435,12 @@ function stepsForTask(path: string, task: Required<Pick<AgentTask, 'task_type'>>
       step(4, 'get_coding_context', { path, target, task_type: 'modify' }, 'Load conventions, connected code, and modification checklist.', true),
       step(5, 'assess_change_risk', { path, node_id: task.target ? '<node_id from search_nodes>' : nodeId }, 'Assess blast radius before editing.', true),
       step(6, 'find_tests', { path, node_id: task.target ? '<node_id from search_nodes>' : nodeId, limit: 10 }, 'Find direct test coverage and nearby tests.', true),
-      step(7, 'get_behavioral_invariants', { path, target: task.target ? '<node_id from search_nodes>' : nodeId, limit: 12 }, 'Check tenant/auth/schema/test invariants before editing.', true),
-      step(8, 'get_callers', { path, node_id: task.target ? '<node_id from search_nodes>' : nodeId, depth: 2, limit: 25 }, 'Check upstream dependents.', false),
-      step(9, 'get_callees', { path, node_id: task.target ? '<node_id from search_nodes>' : nodeId, depth: 2, limit: 25 }, 'Check downstream dependencies.', false),
-      step(10, 'validate_behavioral_invariants', { path, target: task.target ? '<node_id from search_nodes>' : nodeId }, 'After edits, validate the working diff against behavioral invariants before finalizing.', true),
+      step(7, 'get_codebase_idioms', { path, target: task.target ? '<node_id from search_nodes>' : nodeId, limit: 10 }, 'Check repo-local naming, placement, boundary, testing, and migration idioms before editing.', true),
+      step(8, 'get_behavioral_invariants', { path, target: task.target ? '<node_id from search_nodes>' : nodeId, limit: 12 }, 'Check tenant/auth/schema/test invariants before editing.', true),
+      step(9, 'get_callers', { path, node_id: task.target ? '<node_id from search_nodes>' : nodeId, depth: 2, limit: 25 }, 'Check upstream dependents.', false),
+      step(10, 'get_callees', { path, node_id: task.target ? '<node_id from search_nodes>' : nodeId, depth: 2, limit: 25 }, 'Check downstream dependencies.', false),
+      step(11, 'validate_behavioral_invariants', { path, target: task.target ? '<node_id from search_nodes>' : nodeId }, 'After edits, validate the working diff against behavioral invariants before finalizing.', true),
+      step(12, 'validate_codebase_idioms', { path, target: task.target ? '<node_id from search_nodes>' : nodeId }, 'After edits, validate the working diff against repo-local idioms before finalizing.', true),
     ];
   }
 
@@ -1406,8 +1453,10 @@ function stepsForTask(path: string, task: Required<Pick<AgentTask, 'task_type'>>
       step(6, 'get_call_chain', { path, entry_point_id: entryPointId, limit: 10 }, 'Trace the relevant behavior from entry point to exit.', false),
       step(7, 'get_coding_context', { path, target, task_type: 'modify' }, 'Load targeted context before changing code.', true),
       step(8, 'find_tests', { path, node_id: task.target ? '<node_id from search_nodes>' : nodeId, limit: 10 }, 'Find tests that should reproduce or guard the fix.', true),
-      step(9, 'get_behavioral_invariants', { path, target: task.target ? '<node_id from search_nodes>' : nodeId, limit: 12 }, 'Check invariant rules that the bug fix must preserve.', true),
-      step(10, 'validate_behavioral_invariants', { path, target: task.target ? '<node_id from search_nodes>' : nodeId }, 'After edits, validate the working diff against behavioral invariants before finalizing.', true),
+      step(9, 'get_codebase_idioms', { path, target: task.target ? '<node_id from search_nodes>' : nodeId, limit: 10 }, 'Check repo-local idioms that the fix should preserve.', true),
+      step(10, 'get_behavioral_invariants', { path, target: task.target ? '<node_id from search_nodes>' : nodeId, limit: 12 }, 'Check invariant rules that the bug fix must preserve.', true),
+      step(11, 'validate_behavioral_invariants', { path, target: task.target ? '<node_id from search_nodes>' : nodeId }, 'After edits, validate the working diff against behavioral invariants before finalizing.', true),
+      step(12, 'validate_codebase_idioms', { path, target: task.target ? '<node_id from search_nodes>' : nodeId }, 'After edits, validate the working diff against repo-local idioms before finalizing.', true),
     ];
   }
 
@@ -1420,7 +1469,9 @@ function stepsForTask(path: string, task: Required<Pick<AgentTask, 'task_type'>>
       step(6, 'get_flow_coverage', { path }, 'Check flow-level test protection.', true),
       step(7, 'get_security_overview', { path }, 'Review security boundaries and enforcement.', true),
       step(8, 'get_behavioral_invariants', { path, limit: 25 }, 'Review behavior-level invariant gaps.', true),
-      step(9, 'validate_behavioral_invariants', { path }, 'Validate current diff against invariant rules if reviewing local changes.', false),
+      step(9, 'get_codebase_idioms', { path, limit: 25 }, 'Review repo-local idioms and known deviations.', true),
+      step(10, 'validate_behavioral_invariants', { path }, 'Validate current diff against invariant rules if reviewing local changes.', false),
+      step(11, 'validate_codebase_idioms', { path }, 'Validate current diff against repo-local idioms if reviewing local changes.', false),
     ];
   }
 
@@ -1488,6 +1539,9 @@ function relationshipDetailGate(cas: CASOutput, methodCalls: number, profile: An
   const minimumMethodCalls = expectedMethodCallCount(profile, cas);
   if (minimumMethodCalls === 0) return gate('relationship-detail', 'pass', 100, 'Not applicable for this project kind');
   if (methodCalls >= minimumMethodCalls) return gate('relationship-detail', 'pass', 100, `${methodCalls} method calls`);
+  if ((profile.kind === 'library-package' || profile.kind === 'test-package' || profile.kind === 'cli-tool') && edges > 0) {
+    return gate('relationship-detail', 'warn', 92, `${methodCalls} method calls, ${callChains} call chains, ${edges} structural edges`);
+  }
   if (callChains > 0 && edges > 0) {
     return gate('relationship-detail', 'warn', 90, `${methodCalls} method calls, ${callChains} call chains, ${edges} edges`);
   }

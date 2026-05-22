@@ -9,6 +9,11 @@ interface ConceptOccurrence {
   frequency: number;
 }
 
+interface ConceptStats {
+  maxNodeSpread: number;
+  maxFrequency: number;
+}
+
 const GENERIC_INFRASTRUCTURE_HINTS = new Set([
   'logger', 'log', 'cache', 'config',
   'util', 'utils', 'helper', 'common', 'shared', 'base',
@@ -42,7 +47,19 @@ const GENERIC_PROGRAMMING_TERMS = new Set([
   'status', 'state', 'type', 'types', 'entry', 'entries', 'exit', 'exits',
   'has', 'is', 'can', 'will', 'should', 'must', 'may',
   'time', 'timestamp', 'created', 'updated', 'deleted',
-  'new', 'old', 'temp', 'tmp', 'test', 'spec', 'mock'
+  'new', 'old', 'temp', 'tmp', 'test', 'spec', 'mock',
+  'constructor', 'error', 'errors', 'logger', 'log', 'logs',
+  'event', 'events', 'listener', 'emit', 'emitter',
+  'click', 'change', 'submit', 'keydown', 'keyup', 'escape', 'enter',
+  'pending', 'loading', 'enabled', 'disabled', 'internal', 'external',
+  'getter', 'setter', 'helper', 'helpers', 'instance', 'global',
+  'self', 'cls', 'args', 'kwargs', 'kwarg', 'arg', 'argv',
+  'dummy', 'foo', 'bar', 'baz', 'qux', 'sample', 'example', 'placeholder',
+  'mode', 'active', 'inactive', 'idle', 'unstable', 'stable',
+  'ready', 'done', 'success', 'failure', 'valid', 'invalid',
+  'empty', 'visible', 'hidden', 'selected', 'focused', 'hover',
+  'expanded', 'collapsed', 'dirty', 'clean', 'busy', 'available',
+  'flag', 'flags', 'option', 'opts', 'meta', 'misc', 'other', 'others'
 ]);
 
 const GENERIC_CROSS_CUTTING_HINTS = new Set([
@@ -50,6 +67,40 @@ const GENERIC_CROSS_CUTTING_HINTS = new Set([
   'session', 'token', 'jwt', 'oauth',
   'notification', 'email', 'queue', 'job', 'worker',
   'health', 'metrics', 'telemetry'
+]);
+
+// Framework, library, and tooling names. These show up constantly in
+// identifiers and import paths but describe the tech stack, not the
+// business domain.
+const FRAMEWORK_AND_LIBRARY_TERMS = new Set([
+  'react', 'angular', 'vue', 'svelte', 'next', 'nuxt', 'nest', 'nestjs',
+  'express', 'fastify', 'koa', 'hapi', 'django', 'flask', 'rails', 'spring',
+  'redux', 'mobx', 'zustand', 'recoil', 'rxjs', 'graphql', 'apollo',
+  'axios', 'fetch', 'lodash', 'underscore', 'ramda', 'moment', 'dayjs',
+  'jest', 'mocha', 'chai', 'jasmine', 'vitest', 'cypress', 'playwright',
+  'webpack', 'vite', 'rollup', 'babel', 'eslint', 'prettier', 'tsx', 'tsc',
+  'typescript', 'javascript', 'node', 'nodejs', 'deno', 'bun', 'npm', 'yarn',
+  'prisma', 'typeorm', 'sequelize', 'mongoose', 'knex', 'drizzle',
+  'postgres', 'postgresql', 'mysql', 'sqlite', 'mongodb', 'redis', 'mongo',
+  'docker', 'kubernetes', 'k8s', 'terraform', 'ansible',
+  'aws', 'gcp', 'azure', 'lambda', 's3', 'ec2', 'dynamodb',
+  'tailwind', 'bootstrap', 'mui', 'antd', 'chakra', 'styled',
+  'dto', 'dtos', 'entity', 'entities', 'repository', 'repo', 'orm',
+  'middleware', 'guard', 'guards', 'interceptor', 'decorator', 'provider',
+  'component', 'components', 'hook', 'hooks', 'directive', 'pipe',
+]);
+
+// Common English stopwords and structural-noise words that survive the
+// length-3 filter but carry no domain meaning.
+const ENGLISH_STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'this', 'that', 'these', 'those',
+  'are', 'was', 'were', 'been', 'being', 'have', 'had', 'does', 'did',
+  'not', 'but', 'out', 'off', 'too', 'use', 'via', 'per', 'each',
+  'into', 'onto', 'over', 'under', 'about', 'after', 'before',
+  'util', 'utils', 'utility', 'utilities', 'helper', 'helpers',
+  'base', 'abstract', 'impl', 'common', 'shared', 'core', 'lib',
+  'main', 'app', 'src', 'dist', 'common', 'global', 'local',
+  'wrapper', 'manager', 'factory', 'builder', 'registry',
 ]);
 
 export class DomainExtractor {
@@ -152,7 +203,11 @@ export class DomainExtractor {
   ): void {
     const normalized = concept.toLowerCase();
 
-    if (GENERIC_PROGRAMMING_TERMS.has(normalized)) {
+    if (
+      GENERIC_PROGRAMMING_TERMS.has(normalized) ||
+      FRAMEWORK_AND_LIBRARY_TERMS.has(normalized) ||
+      ENGLISH_STOPWORDS.has(normalized)
+    ) {
       return;
     }
 
@@ -185,13 +240,27 @@ export class DomainExtractor {
   }
 
   private buildDomainConcepts(): CASDomainConcept[] {
-    const results: CASDomainConcept[] = [];
-
+    const entries: Array<{ id: string; occurrence: ConceptOccurrence }> = [];
     for (const [id, occurrence] of this.concepts) {
       if (occurrence.frequency < 2) continue;
+      entries.push({ id, occurrence });
+    }
 
-      const classification = this.classifyConcept(occurrence);
+    // Global stats let classification scale with the codebase rather than
+    // relying on absolute thresholds that over-fire on large repos and
+    // never fire on small ones.
+    const nonInfra = entries.filter(
+      e => !GENERIC_INFRASTRUCTURE_HINTS.has(e.occurrence.normalizedName)
+    );
+    const stats: ConceptStats = {
+      maxNodeSpread: Math.max(0, ...entries.map(e => e.occurrence.nodes.size)),
+      maxFrequency: Math.max(0, ...nonInfra.map(e => e.occurrence.frequency)),
+    };
 
+    const occurrenceByName = new Map<string, ConceptOccurrence>();
+    const results: CASDomainConcept[] = [];
+    for (const { id, occurrence } of entries) {
+      occurrenceByName.set(occurrence.normalizedName, occurrence);
       results.push({
         id: `concept_${id}`,
         name: occurrence.normalizedName,
@@ -201,22 +270,37 @@ export class DomainExtractor {
           entities: Array.from(occurrence.entities),
           nodes: Array.from(occurrence.nodes)
         },
-        classification
+        classification: this.classifyConcept(occurrence, stats)
       });
     }
 
-    return results.sort((a, b) => b.frequency - a.frequency);
+    results.sort((a, b) => b.frequency - a.frequency);
+
+    // Promotion safety net. Repos with no recognized entry points or data
+    // entities (CLIs, bots, libraries, data pipelines) can end up with zero
+    // `core` concepts even when they have a perfectly clear domain. When that
+    // happens, promote the most structurally prominent non-infrastructure
+    // concepts so the domain is never left entirely unclassified.
+    this.ensureCoreConcepts(results, occurrenceByName);
+
+    return results;
   }
 
-  private classifyConcept(occurrence: ConceptOccurrence): 'core' | 'supporting' | 'infrastructure' {
+  /**
+   * Classifies a concept by structural prominence. The entry-point / data-
+   * entity anchored rules handle web services and APIs well; the relative
+   * node-dominance rule additionally catches domains that never surface at a
+   * recognized boundary (bot logic, CLI commands, library exports).
+   */
+  private classifyConcept(
+    occurrence: ConceptOccurrence,
+    stats: ConceptStats
+  ): 'core' | 'supporting' | 'infrastructure' {
     const name = occurrence.normalizedName;
 
+    // Infrastructure terms are always infrastructure.
     if (GENERIC_INFRASTRUCTURE_HINTS.has(name)) {
       return 'infrastructure';
-    }
-
-    if (GENERIC_CROSS_CUTTING_HINTS.has(name)) {
-      return 'supporting';
     }
 
     const appearsInEntryPoints = occurrence.entryPoints.size > 0;
@@ -228,23 +312,78 @@ export class DomainExtractor {
       (appearsInEntities ? 2 : 0) +
       (appearsInManyNodes ? 1 : 0);
 
-    if (presenceScore >= 3) {
-      return 'core';
-    }
+    // Boundary-anchored core (web services, APIs).
+    const boundaryCore =
+      presenceScore >= 3 ||
+      (appearsInEntryPoints && appearsInEntities) ||
+      (occurrence.frequency > 10 && appearsInEntryPoints) ||
+      (occurrence.frequency > 5 && presenceScore >= 2);
 
-    if (appearsInEntryPoints && appearsInEntities) {
-      return 'core';
-    }
+    // Prominence-anchored core (no boundary required). A concept that
+    // pervades a large share of the codebase, or recurs far more often than
+    // its peers, is core regardless of entry points or entities — this is
+    // what surfaces the domain of bots, CLIs, libraries, and pipelines.
+    const nodeDominance =
+      stats.maxNodeSpread > 0 ? occurrence.nodes.size / stats.maxNodeSpread : 0;
+    const frequencyDominance =
+      stats.maxFrequency > 0 ? occurrence.frequency / stats.maxFrequency : 0;
+    const prominenceCore =
+      (occurrence.nodes.size >= 5 && nodeDominance >= 0.5) ||
+      (occurrence.frequency >= 5 && frequencyDominance >= 0.6);
 
-    if (occurrence.frequency > 10 && appearsInEntryPoints) {
-      return 'core';
-    }
+    // Prominence overrides the cross-cutting hint: `token`/`session`/`auth`
+    // are usually supporting concerns, but in a domain that is genuinely
+    // *about* them (a token-trading bot, an auth provider) they dominate the
+    // codebase and are correctly core.
+    if (boundaryCore || prominenceCore) return 'core';
 
-    if (occurrence.frequency > 5 && presenceScore >= 2) {
-      return 'core';
-    }
+    if (GENERIC_CROSS_CUTTING_HINTS.has(name)) return 'supporting';
 
     return 'supporting';
+  }
+
+  /**
+   * Prominence score used to rank concepts for the promotion safety net.
+   * Distinct-node spread is weighted highest because a concept threaded
+   * through many code units is a stronger domain signal than one repeated
+   * inside a single file.
+   */
+  private prominenceScore(occurrence: ConceptOccurrence): number {
+    return (
+      occurrence.nodes.size * 2 +
+      occurrence.frequency +
+      occurrence.entryPoints.size * 3 +
+      occurrence.entities.size * 3
+    );
+  }
+
+  private ensureCoreConcepts(
+    results: CASDomainConcept[],
+    byName: Map<string, ConceptOccurrence>
+  ): void {
+    const TARGET_CORE = 5;
+    const coreCount = results.filter(c => c.classification === 'core').length;
+    if (coreCount >= TARGET_CORE) return;
+
+    const candidates = results
+      .filter(c => c.classification === 'supporting')
+      .filter(c => {
+        const o = byName.get(c.name);
+        // Require a minimum footprint so noise is never promoted.
+        return !!o && o.frequency >= 3 && o.nodes.size >= 2;
+      })
+      .sort((a, b) => {
+        const oa = byName.get(a.name)!;
+        const ob = byName.get(b.name)!;
+        return this.prominenceScore(ob) - this.prominenceScore(oa);
+      });
+
+    // Top up to TARGET_CORE so that a clear domain is never left with a
+    // single weak core concept (or none at all).
+    const toPromote = Math.min(TARGET_CORE - coreCount, candidates.length);
+    for (let i = 0; i < toPromote; i++) {
+      candidates[i].classification = 'core';
+    }
   }
 
   getCoreConcepts(concepts: CASDomainConcept[]): CASDomainConcept[] {

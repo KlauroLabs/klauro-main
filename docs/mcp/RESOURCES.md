@@ -40,15 +40,15 @@ List of persisted with-Unravl vs without-Unravl benchmark reports.
 
 Recent proof that Unravl improves agent token use, speed, quality, and incremental edit-loop performance.
 
-**Returns:** Current 7-day proof summary with live A/B rollups, latest report summaries by benchmark type, proof claims, compact metrics, and Markdown.
+**Returns:** Current 7-day proof summary with live A/B rollups, idiom-quality proof, latest report summaries by benchmark type, proof claims, compact metrics, and Markdown.
 
 ---
 
 ## `unravl://agentic-benchmark/{report_id}`
 
-One persisted agentic benchmark, live-quality, or incremental value report.
+One persisted agentic benchmark, live-quality, idiom-quality, or incremental value report.
 
-**Includes:** JSON report and report-type-specific Markdown rendering. Deterministic, live-quality, and incremental reports each use their own formatter.
+**Includes:** JSON report and report-type-specific Markdown rendering. Deterministic, live-quality, idiom-quality, and incremental reports each use their own formatter.
 
 ---
 
@@ -56,7 +56,7 @@ One persisted agentic benchmark, live-quality, or incremental value report.
 
 System overview combining architecture summary, tech stack, system purpose, capabilities, and progressive disclosure levels.
 
-**Includes:** `system`, `architecture_summary`, `system_purpose`, `enhanced_system_purpose`, `system_capabilities`, `progressive_levels`, `analyzer_contributions`, `analysis_errors`, `configuration`, `runtime`, `repository_links`, `disclosure`, `validation`.
+**Includes:** `system`, `architecture_summary`, `system_purpose`, `enhanced_system_purpose`, `system_capabilities`, `progressive_levels`, `analyzer_contributions`, `analysis_errors`, `configuration`, `runtime`, `repository_links`, `idiom_summary`, `disclosure`, `validation`.
 
 ---
 
@@ -64,7 +64,7 @@ System overview combining architecture summary, tech stack, system purpose, capa
 
 Default agent bootstrap payload for coding agents.
 
-**Includes:** default-use rule, readiness report, start context, task plan, work packet, file read plan, and ready-to-use prompt text.
+**Includes:** default-use rule, readiness report, start context, task plan, work packet, idiom context, file read plan, and ready-to-use prompt text.
 
 ---
 
@@ -72,7 +72,7 @@ Default agent bootstrap payload for coding agents.
 
 Default CAS-backed start context for coding agents before broad file reads.
 
-**Includes:** agent default-use rule, readiness summary, system summary, scale metrics, top entry/exit points, connected nodes, runtime links, answer-pack status, recommended first MCP tools, and file-read guidance.
+**Includes:** agent default-use rule, readiness summary, system summary, scale metrics, top entry/exit points, connected nodes, runtime links, idiom summary, answer-pack status, recommended first MCP tools, and file-read guidance.
 
 ---
 

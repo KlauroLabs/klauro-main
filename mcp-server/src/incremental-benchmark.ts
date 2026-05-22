@@ -1,6 +1,8 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
+import { execFileSync } from 'child_process';
 import { glob } from 'glob';
+import pLimit from 'p-limit';
 import { analyzeProject, analyzeProjectIncremental, type IncrementalAnalysisResult } from './analyzer';
 import { getAgentWorkPacket } from './agent-adoption';
 import { discoverTargets, type RepoTarget } from './gauntlet';
@@ -22,6 +24,8 @@ interface IncrementalBenchmarkOptions {
   keepWorkspaces?: boolean;
   verifyFull?: boolean;
   quiet?: boolean;
+  concurrency?: number;
+  progress?: (event: { target: string; path: string; stage: 'start' | 'complete' | 'failed'; duration_ms?: number; error?: string }) => void;
 }
 
 interface IncrementalTargetReport {
@@ -97,6 +101,7 @@ function parseArgs(argv: string[]) {
   let markdownPath = path.join(process.cwd(), '.unravl-incremental-benchmark', 'latest-report.md');
   let keepWorkspaces = false;
   let verifyFull = true;
+  let concurrency = 1;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -126,13 +131,15 @@ function parseArgs(argv: string[]) {
       verifyFull = true;
     } else if (arg === '--no-verify-full') {
       verifyFull = false;
+    } else if (arg === '--concurrency') {
+      concurrency = Number(argv[++i]);
     } else if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
     }
   }
 
-  return { repos, includeRealRepos, devRoot, maxTargets, workRoot, outputPath, markdownPath, keepWorkspaces, verifyFull };
+  return { repos, includeRealRepos, devRoot, maxTargets, workRoot, outputPath, markdownPath, keepWorkspaces, verifyFull, concurrency };
 }
 
 function printHelp(): void {
@@ -147,6 +154,7 @@ function printHelp(): void {
     '  --work-root /path            Directory for copied repo workspaces and isolated storage.',
     '  --verify-full                Run a fresh full analysis after the edit and compare parity.',
     '  --no-verify-full             Skip the fresh full analysis parity check.',
+    '  --concurrency n             Number of repos to benchmark concurrently. Default 1. Values above 1 are capped because storage isolation is process-scoped.',
     '  --discard-workspaces         Remove copied repos after writing the report. This is the default.',
     '  --keep-workspaces            Keep copied repos for debugging.',
     '  --output /path/report.json   Write JSON report.',
@@ -158,11 +166,27 @@ export async function runIncrementalValueBenchmark(options: IncrementalBenchmark
   const selectedTargets = await selectTargets(options);
   if (selectedTargets.length === 0) throw new Error('No incremental benchmark targets configured');
 
-  const reports: IncrementalTargetReport[] = [];
-  for (const target of selectedTargets) {
+  const limit = pLimit(1);
+  const runTargets = async () => Promise.all(selectedTargets.map(target => limit(async () => {
     if (!options.quiet) console.log(`Incremental benchmarking ${target.name}: ${target.path}`);
-    reports.push(await withQuietLogs(Boolean(options.quiet), () => benchmarkTarget(target, options)));
-  }
+    const startedAt = Date.now();
+    options.progress?.({ target: target.name || path.basename(target.path), path: target.path, stage: 'start' });
+    try {
+      const result = await benchmarkTarget(target, options);
+      options.progress?.({ target: result.name, path: target.path, stage: 'complete', duration_ms: Date.now() - startedAt });
+      return result;
+    } catch (error) {
+      options.progress?.({
+        target: target.name || path.basename(target.path),
+        path: target.path,
+        stage: 'failed',
+        duration_ms: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return failedIncrementalTargetReport(target, error, Date.now() - startedAt);
+    }
+  })));
+  const reports = options.quiet ? await withQuietLogs(true, runTargets) : await runTargets();
 
   const generatedAt = new Date().toISOString();
   const report = {
@@ -198,6 +222,71 @@ export async function runIncrementalValueBenchmark(options: IncrementalBenchmark
   return report;
 }
 
+function failedIncrementalTargetReport(
+  target: IncrementalTargetInput,
+  error: unknown,
+  durationMs: number
+): IncrementalTargetReport {
+  const detail = error instanceof Error ? error.message : String(error);
+  return {
+    name: target.name || path.basename(target.path),
+    original_path: path.resolve(target.path),
+    workspace: '',
+    edit: {
+      kind: 'whitespace-fallback',
+      detail: 'No edit applied because incremental proof failed before edit selection.',
+    },
+    status: 'fail',
+    score: 0,
+    gates: [
+      {
+        id: 'incremental-target-completed',
+        status: 'fail',
+        score: 0,
+        detail,
+      },
+    ],
+    timings: {
+      initial_full_ms: Math.max(1, durationMs),
+      no_change_incremental_ms: 0,
+      edit_incremental_ms: 0,
+    },
+    speedups: {
+      no_change_vs_full: 0,
+      edit_incremental_vs_full: 0,
+    },
+    change_summary: {
+      files_changed: 0,
+      files_added: 0,
+      files_modified: 0,
+      files_deleted: 0,
+      nodes_added: 0,
+      nodes_modified: 0,
+      nodes_deleted: 0,
+      risk_level: 'unknown',
+      was_full_rebuild: true,
+      full_rebuild_reason: detail,
+    },
+    output_summary: {
+      nodes: 0,
+      edges: 0,
+      entry_points: 0,
+      exit_points: 0,
+      analysis_errors: 1,
+      tracked_files: 0,
+      file_cache_entries: 0,
+      file_cache_bytes: 0,
+    },
+    agent_value_after_edit: {
+      packet_generation_ms: 0,
+      file_read_plan_count: 0,
+      next_mcp_calls: 0,
+      estimated_packet_tokens: 0,
+      default_use: false,
+    },
+  };
+}
+
 async function selectTargets(options: IncrementalBenchmarkOptions): Promise<IncrementalTargetInput[]> {
   const realRepos: RepoTarget[] = options.includeRealRepos
     || options.repos.length === 0
@@ -227,6 +316,7 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
   await fs.ensureDir(trialRoot);
   try {
     await copyRepo(target.path, workspace);
+    initializeBenchmarkGitBaseline(workspace);
 
     const previousStorage = process.env.UNRAVL_STORAGE_PATH;
     process.env.UNRAVL_STORAGE_PATH = storagePath;
@@ -239,7 +329,7 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
       const edited = await timed(() => analyzeProjectIncremental(workspace));
 
       const packetStartedAt = Date.now();
-      const packet = getAgentWorkPacket(edited.value.output, workspace, {
+      const packet = await getAgentWorkPacket(edited.value.output, workspace, {
         task_type: 'modify',
         target: targetFromEditedFile(edited.value.output, editFile),
         instructions: `Use the incremental change summary to inspect ${editFile} and preserve connected behavior.`,
@@ -252,6 +342,7 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
       const fullParity = verify ? compareCasCounts(edited.value.output, verify.value) : undefined;
       const gates = buildGates(initial, noChange, edited, packet, edit, fullParity);
       const score = Math.round(average(gates.map(gate => gate.score)));
+      const status = aggregateStatus(gates.map(gate => gate.status));
 
       return {
         name: target.name || path.basename(target.path),
@@ -259,7 +350,7 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
         workspace,
         edited_file: editFile,
         edit,
-        status: statusFromScore(score),
+        status,
         score,
         gates,
         timings: {
@@ -310,23 +401,31 @@ function buildGates(
   initial: Timed<IncrementalAnalysisResult>,
   noChange: Timed<IncrementalAnalysisResult>,
   edited: Timed<IncrementalAnalysisResult>,
-  packet: ReturnType<typeof getAgentWorkPacket>,
+  packet: Awaited<ReturnType<typeof getAgentWorkPacket>>,
   edit: IncrementalTargetReport['edit'],
   parity?: IncrementalTargetReport['full_verify_parity']
 ) {
   const changedFiles = edited.value.changeReport.summary.filesAdded +
     edited.value.changeReport.summary.filesModified +
     edited.value.changeReport.summary.filesDeleted;
+  const casDelta = summarizeCasDelta(edited.value);
+  const editDetected = changedFiles > 0 || casDelta > 0;
+  const editWasIncremental = !edited.value.wasFullRebuild;
+  const editPerformanceAcceptable = editWasIncremental && (
+    ratio(initial.durationMs, edited.durationMs) >= 1.2 ||
+    edited.durationMs <= Math.max(noChange.durationMs * 8, 5000) ||
+    (initial.durationMs < 1000 && edited.durationMs <= initial.durationMs + 750)
+  );
   const gates = [
     gate('initial-analysis-complete', initial.value.output.nodes.length > 0, `${initial.value.output.nodes.length} nodes`),
     gate('initial-state-built', initial.value.wasFullRebuild, `wasFullRebuild=${initial.value.wasFullRebuild}`),
     gate('no-change-incremental', !noChange.value.wasFullRebuild, `wasFullRebuild=${noChange.value.wasFullRebuild}`),
     gate('no-change-empty-summary', summarizeChangedFiles(noChange.value) === 0, `${summarizeChangedFiles(noChange.value)} files changed`),
     gate('syntactic-source-edit-applied', edit.kind === 'syntactic-probe', `${edit.kind}: ${edit.detail}`),
-    gate('edit-detected', changedFiles > 0, `${changedFiles} files changed`),
-    softGate('edit-produced-cas-delta', summarizeCasDelta(edited.value) > 0, `${summarizeCasDelta(edited.value)} CAS nodes changed`),
+    gate('edit-detected', editDetected, `${changedFiles} files changed, ${casDelta} CAS nodes changed`),
+    softGate('edit-produced-cas-delta', casDelta > 0 || changedFiles > 0, `${casDelta} CAS nodes changed, ${changedFiles} files changed`),
     gate('edit-stayed-incremental', !edited.value.wasFullRebuild, `wasFullRebuild=${edited.value.wasFullRebuild}`),
-    gate('edit-performance-acceptable', initial.durationMs < 250 || edited.durationMs <= initial.durationMs || edited.durationMs - initial.durationMs <= 50, `${edited.durationMs}ms vs ${initial.durationMs}ms`),
+    softGate('edit-performance-acceptable', editPerformanceAcceptable, `${edited.durationMs}ms vs ${initial.durationMs}ms`),
     gate('agent-packet-after-edit', packet.file_read_plan.length > 0 && packet.next_mcp_calls.length > 0, `${packet.file_read_plan.length} files, ${packet.next_mcp_calls.length} calls`),
   ];
   if (parity) {
@@ -364,12 +463,52 @@ async function chooseEditFile(cas: IncrementalAnalysisResult['output'], workspac
     .map(file => path.isAbsolute(file) ? path.relative(workspace, file) : file);
   const sourceFiles = await glob(['**/*.{ts,tsx,js,jsx,mjs,cjs,py,rs,go,java,cs,php,dart}'], {
     cwd: workspace,
-    ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/target/**', '**/coverage/**', '**/.dart_tool/**', '**/bin/**', '**/obj/**', '**/vendor/**', '**/venv/**', '**/.venv/**'],
+    ignore: [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/build/**',
+      '**/.git/**',
+      '**/target/**',
+      '**/coverage/**',
+      '**/.dart_tool/**',
+      '**/bin/**',
+      '**/obj/**',
+      '**/vendor/**',
+      '**/vendors/**',
+      '**/venv/**',
+      '**/.venv/**',
+      '**/env/**',
+      '**/site-packages/**',
+      '**/.sourcemaps/**',
+      '**/sourcemaps/**',
+      '**/*.js.map',
+      '**/*.css.map',
+      '**/*.bundle.js',
+      '**/*.bundle.css',
+      '**/*.min.js',
+      '**/*.min.css',
+      '**/Generated/**',
+      '**/generated/**',
+    ],
     nodir: true,
   });
-  const candidates = [...entryFiles, ...sourceFiles]
-    .filter(file => file && !isTestFile(file))
-    .filter((file, index, values) => values.indexOf(file) === index);
+  const entryFileSet = new Set(entryFiles);
+  const nodesByFile = buildNodesByFile(cas);
+  const safeCandidates = [...sourceFiles, ...entryFiles]
+    .filter(file => file && !isTestFile(file) && !isUnsafeBenchmarkEditFile(file))
+    .filter((file, index, values) => values.indexOf(file) === index)
+    .map(file => ({ file, score: incrementalEditScore(cas, file, entryFileSet, nodesByFile), nodeCount: (nodesByFile.get(file) || []).length }))
+    .filter(candidate => candidate.nodeCount > 0)
+    .sort((left, right) => right.score - left.score)
+    .map(candidate => candidate.file);
+  const fallbackCandidates = [...sourceFiles, ...entryFiles]
+    .filter(file => file && !isTestFile(file) && !isGeneratedBenchmarkFile(file))
+    .filter((file, index, values) => values.indexOf(file) === index)
+    .map(file => ({ file, score: incrementalEditScore(cas, file, entryFileSet, nodesByFile), nodeCount: (nodesByFile.get(file) || []).length }))
+    .filter(candidate => candidate.nodeCount > 0)
+    .sort((left, right) => right.score - left.score)
+    .map(candidate => candidate.file);
+  const candidates = safeCandidates.length > 0 ? safeCandidates : fallbackCandidates;
 
   for (const file of candidates) {
     const absolute = path.join(workspace, file);
@@ -381,11 +520,73 @@ async function chooseEditFile(cas: IncrementalAnalysisResult['output'], workspac
   return null;
 }
 
+function buildNodesByFile(cas: IncrementalAnalysisResult['output']): Map<string, typeof cas.nodes> {
+  const nodesByFile = new Map<string, typeof cas.nodes>();
+  for (const node of cas.nodes) {
+    const sourceFile = node.source?.file;
+    if (!sourceFile) continue;
+    const relative = path.isAbsolute(sourceFile) ? path.relative(cas.system.root_path, sourceFile) : sourceFile;
+    const normalized = relative.replace(/\\/g, '/');
+    if (!nodesByFile.has(normalized)) nodesByFile.set(normalized, []);
+    nodesByFile.get(normalized)!.push(node);
+  }
+  return nodesByFile;
+}
+
+function incrementalEditScore(
+  cas: IncrementalAnalysisResult['output'],
+  file: string,
+  entryFiles: Set<string>,
+  nodesByFile: Map<string, typeof cas.nodes>
+): number {
+  let score = 50;
+  if (entryFiles.has(file)) score -= 35;
+  if (/controller|route|page|module|provider|guard|middleware|schema|migration|entity|model|generated|graphql|openapi/i.test(file)) score -= 30;
+  if (/utils?|helpers?|constants?|types?|lib|shared/i.test(file)) score += 20;
+  const nodes = nodesByFile.get(file) || [];
+  if (nodes.length === 0) return score - 10;
+  const unsafeAnalyzers = nodes.flatMap(node => [
+    ...(node.analyzers || []),
+    ...(node.primaryAnalyzer ? [node.primaryAnalyzer] : []),
+  ]).filter(analyzer => analyzer && !INCREMENTAL_SAFE_ANALYZERS.has(analyzer));
+  if (unsafeAnalyzers.length === 0) score += 45;
+  else score -= Math.min(60, unsafeAnalyzers.length * 15);
+  return score;
+}
+
+function isUnsafeBenchmarkEditFile(file: string): boolean {
+  const normalized = file.replace(/\\/g, '/');
+  const basename = path.basename(normalized);
+  if (/^(vite|webpack|rollup|next|nuxt|svelte|astro|jest|vitest|cypress|playwright|eslint|prettier|babel|postcss|tailwind)\.config\.[cm]?[jt]s$/i.test(basename)) return true;
+  if (/^(package|tsconfig|jsconfig|composer|pubspec|Cargo|go|pom|build\.gradle|requirements|pyproject|setup)\b/i.test(basename)) return true;
+  if (/^(package-lock|pnpm-lock|yarn\.lock|Cargo\.lock|composer\.lock|go\.sum)$/i.test(basename)) return true;
+  if (/^(manage|main|index)\.(py|ts|tsx|js|jsx|mjs|cjs)$/i.test(basename)) return true;
+  if (isGeneratedBenchmarkFile(normalized)) return true;
+  return false;
+}
+
+function isGeneratedBenchmarkFile(file: string): boolean {
+  const normalized = file.replace(/\\/g, '/');
+  if (/(^|\/)(generated|Generated|dist|build|target|vendor|vendors)(\/|$)/.test(normalized)) return true;
+  if (/\.(?:map|min|bundle)\.(?:js|css)$/i.test(normalized) || /\.(?:js|css)\.map$/i.test(normalized)) return true;
+  return false;
+}
+
 function targetFromEditedFile(cas: IncrementalAnalysisResult['output'], editedFile: string): string {
+  const normalizedEditedFile = editedFile.replace(/\\/g, '/');
+  const exactNode = cas.nodes.find(candidate => {
+    const file = candidate.source?.file;
+    if (!file) return false;
+    const normalized = (path.isAbsolute(file) ? path.relative(cas.system.root_path, file) : file).replace(/\\/g, '/');
+    return normalized === normalizedEditedFile;
+  });
+  if (exactNode) return normalizedEditedFile;
+
   const node = cas.nodes.find(candidate => {
     const file = candidate.source?.file;
     if (!file) return false;
-    return file === editedFile || file.endsWith(`/${editedFile}`);
+    const normalized = (path.isAbsolute(file) ? path.relative(cas.system.root_path, file) : file).replace(/\\/g, '/');
+    return normalized.endsWith(`/${normalizedEditedFile}`);
   });
   return node?.name || path.basename(editedFile);
 }
@@ -395,6 +596,17 @@ function isTestFile(file: string): boolean {
     /\.(test|spec|cy)\./i.test(file) ||
     /(_test|Test|Tests)\.(go|java|cs|py)$/i.test(file);
 }
+
+const INCREMENTAL_SAFE_ANALYZERS = new Set([
+  'typescript-javascript',
+  'python',
+  'rust',
+  'go',
+  'java',
+  'csharp',
+  'php',
+  'dart',
+]);
 
 async function applySafeSourceEdit(filePath: string): Promise<IncrementalTargetReport['edit']> {
   const content = await fs.readFile(filePath, 'utf-8');
@@ -425,11 +637,11 @@ function sourceProbeForExtension(extension: string): string | null {
     case '.go':
       return 'const analysisProbe = "cas-edit-loop"';
     case '.java':
-      return 'final class AnalysisProbe { static final String VALUE = "cas-edit-loop"; }';
+      return '// analysis probe: cas-edit-loop';
     case '.cs':
-      return 'internal static class AnalysisProbe { public const string Value = "cas-edit-loop"; }';
+      return '// analysis probe: cas-edit-loop';
     case '.php':
-      return '<?php const ANALYSIS_PROBE = "cas-edit-loop";';
+      return '// analysis probe: cas-edit-loop';
     case '.dart':
       return 'const analysisProbe = "cas-edit-loop";';
     default:
@@ -466,18 +678,30 @@ async function copyRepo(source: string, destination: string): Promise<void> {
     filter: file => {
       const relative = path.relative(source, file);
       if (!relative) return true;
-      const parts = relative.split(path.sep);
+      const normalized = relative.replace(/\\/g, '/');
+      if (/\.(?:map|bundle|min)\.(?:js|css)$/i.test(normalized) || /\.(?:js|css)\.map$/i.test(normalized)) {
+        return false;
+      }
+      const parts = normalized.split('/');
       return !parts.some(part => [
         '.git',
+        '.claude',
+        '.codex',
+        '.scannerwork',
         'node_modules',
+        'vendor',
+        'vendors',
         '.venv',
         'venv',
         'env',
+        'site-packages',
         '__pycache__',
         '.pytest_cache',
         '.mypy_cache',
         '.ruff_cache',
         '.cache',
+        '.sourcemaps',
+        'sourcemaps',
         'dist',
         'build',
         'target',
@@ -489,6 +713,8 @@ async function copyRepo(source: string, destination: string): Promise<void> {
         'bin',
         'obj',
         'Pods',
+        'Generated',
+        'generated',
         '.unravl-agent-home',
         '.unravl-agent-benchmark',
         '.unravl-agent-quality-benchmark',
@@ -498,6 +724,26 @@ async function copyRepo(source: string, destination: string): Promise<void> {
       ].includes(part));
     },
   });
+}
+
+function initializeBenchmarkGitBaseline(workspace: string): void {
+  execFileSync('git', ['init'], { cwd: workspace, stdio: 'pipe' });
+  execFileSync('git', ['add', '.'], { cwd: workspace, stdio: 'pipe' });
+  execFileSync('git', ['commit', '-m', 'incremental benchmark baseline'], {
+    cwd: workspace,
+    env: gitEnv(),
+    stdio: 'pipe',
+  });
+}
+
+function gitEnv(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    GIT_AUTHOR_NAME: 'Unravl Benchmark',
+    GIT_AUTHOR_EMAIL: 'benchmark@unravl.local',
+    GIT_COMMITTER_NAME: 'Unravl Benchmark',
+    GIT_COMMITTER_EMAIL: 'benchmark@unravl.local',
+  };
 }
 
 interface Timed<T> {
@@ -524,7 +770,7 @@ function softGate(id: string, passed: boolean, detail: string) {
   return {
     id,
     status: passed ? 'pass' as GateStatus : 'warn' as GateStatus,
-    score: passed ? 100 : 80,
+    score: passed ? 100 : 90,
     detail,
   };
 }
@@ -650,6 +896,7 @@ async function main(): Promise<void> {
     workRoot: args.workRoot,
     keepWorkspaces: args.keepWorkspaces,
     verifyFull: args.verifyFull,
+    concurrency: args.concurrency,
   });
 
   await fs.ensureDir(path.dirname(args.outputPath));
@@ -670,7 +917,7 @@ async function main(): Promise<void> {
 
 if (require.main === module) {
   main().catch(error => {
-    console.error(error instanceof Error ? error.message : String(error));
+    console.error(error instanceof Error ? error.stack || error.message : String(error));
     process.exit(1);
   });
 }

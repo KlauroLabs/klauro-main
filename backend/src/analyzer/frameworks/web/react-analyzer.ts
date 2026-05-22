@@ -117,7 +117,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
       const tsFiles = await glob(['**/*.{ts,tsx,js,jsx}'], {
         cwd: projectPath,
-        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/coverage/**', '**/.nyc_output/**', '**/src/analyzer/**', '**/analyzer/**', '**/analyzers/**']
+        ignore: [...this.getIgnorePatterns({ projectPath }), '**/src/analyzer/**', '**/analyzer/**', '**/analyzers/**'],
+        nodir: true
       });
 
       for (const file of tsFiles) {
@@ -144,7 +145,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
         ...this.getIgnorePatterns({ projectPath }),
         '**/*.test.*',
         '**/*.spec.*'
-      ]
+      ],
+      nodir: true
     });
   }
 
@@ -218,7 +220,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
       const ignorePatterns = this.getIgnorePatterns(context);
       const reactFiles = await glob(['**/*.{ts,tsx,js,jsx}'], {
         cwd: context.projectPath,
-        ignore: [...ignorePatterns, '**/*.test.*', '**/*.spec.*']
+        ignore: [...ignorePatterns, '**/*.test.*', '**/*.spec.*'],
+        nodir: true
       });
       timings['glob'] = Date.now() - t;
 
@@ -377,7 +380,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
       if (this.isReactComponent(content)) {
         try {
-          const jsx = this.shouldParseJsx(file);
+          const jsx = this.shouldParseJsx(file, content);
           const ast = parse(content, {
             loc: true,
             jsx,
@@ -473,7 +476,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
       if (this.isCustomHook(content)) {
         try {
-          const jsx = this.shouldParseJsx(file);
+          const jsx = this.shouldParseJsx(file, content);
           const ast = parse(content, {
             loc: true,
             jsx,
@@ -539,7 +542,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
       if (content.includes('createContext') || content.includes('Context')) {
         try {
-          const jsx = this.shouldParseJsx(file);
+          const jsx = this.shouldParseJsx(file, content);
           const ast = parse(content, {
             loc: true,
             jsx,
@@ -792,7 +795,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
       if (!this.isReactComponent(content)) {
         try {
-          const jsx = this.shouldParseJsx(file);
+          const jsx = this.shouldParseJsx(file, content);
           const ast = parse(content, {
             loc: true,
             jsx,
@@ -2884,7 +2887,12 @@ export class ReactAnalyzer extends BaseAnalyzer {
     }
   }
 
-  private shouldParseJsx(filePath: string): boolean {
-    return /\.(jsx|tsx)$/i.test(filePath);
+  private shouldParseJsx(filePath: string, content?: string): boolean {
+    if (/\.(jsx|tsx)$/i.test(filePath)) return true;
+    if (/\.js$/i.test(filePath) && content) {
+      return /<[A-Z][A-Za-z0-9]*(?:\.[A-Z][A-Za-z0-9]*)*(?:\s|>|\/)/.test(content) ||
+        /<[a-z][A-Za-z0-9:-]*(?:\s|>|\/)/.test(content);
+    }
+    return false;
   }
 }

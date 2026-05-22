@@ -55,9 +55,6 @@ const SOURCE_EXTENSIONS = [
   '.php',
   '.dart',
   '.prisma',
-  '.rb',
-  '.swift',
-  '.c', '.cpp', '.h', '.hpp',
 ];
 
 const IGNORE_PATTERNS = [
@@ -71,8 +68,21 @@ const IGNORE_PATTERNS = [
   '**/.pytest_cache/**',
   '**/target/**',
   '**/vendor/**',
+  '**/vendors/**',
   '**/.venv/**',
   '**/venv/**',
+  '**/env/**',
+  '**/site-packages/**',
+  '**/.sourcemaps/**',
+  '**/sourcemaps/**',
+  '**/*.js.map',
+  '**/*.css.map',
+  '**/*.bundle.js',
+  '**/*.bundle.css',
+  '**/*.min.js',
+  '**/*.min.css',
+  '**/Generated/**',
+  '**/generated/**',
 ];
 
 export class ChangeDetector {
@@ -118,7 +128,13 @@ export class ChangeDetector {
     if (this.isGitRepo) {
       const gitChanges = await this.detectGitChanges(previousState.gitCommitHash);
       if (gitChanges) {
-        const enriched = await this.enrichWithDependencies(gitChanges, previousState);
+        const hashChanges = mtimeCandidates.length > 0
+          ? await this.detectByHash(mtimeCandidates, previousState)
+          : null;
+        const detectedChanges = hashChanges
+          ? this.mergeChangeSets(gitChanges, hashChanges)
+          : gitChanges;
+        const enriched = await this.enrichWithDependencies(detectedChanges, previousState);
         if (this.shouldTriggerFullRebuild(enriched, previousState)) {
           return this.createFullRebuildChangeSet(enriched.reason || 'Threshold exceeded');
         }
@@ -137,7 +153,7 @@ export class ChangeDetector {
     for (const file of files) {
       try {
         const stat = await fs.stat(file);
-        if (stat.mtimeMs > lastAnalysisTimestamp) {
+        if (stat.mtimeMs >= lastAnalysisTimestamp - 1000) {
           candidates.push(path.relative(this.projectPath, file));
         }
       } catch {
@@ -332,7 +348,9 @@ export class ChangeDetector {
 
     for (const filePath of Object.keys(previousState.files)) {
       if (!allCurrentFiles.has(filePath)) {
-        deleted.push(filePath);
+        if (!(await fs.pathExists(path.join(this.projectPath, filePath)))) {
+          deleted.push(filePath);
+        }
       }
     }
 
@@ -348,12 +366,6 @@ export class ChangeDetector {
 
       if (currentHash !== previousRecord.contentHash) {
         modified.push(filePath);
-      }
-    }
-
-    for (const filePath of allCurrentFiles) {
-      if (!previousState.files[filePath] && !added.includes(filePath)) {
-        added.push(filePath);
       }
     }
 
@@ -444,6 +456,38 @@ export class ChangeDetector {
     };
   }
 
+  private mergeChangeSets(primary: ChangeSet, secondary: ChangeSet): ChangeSet {
+    const added = this.uniquePaths([...primary.added, ...secondary.added]);
+    const deleted = this.uniquePaths([...primary.deleted, ...secondary.deleted]);
+    const modified = this.uniquePaths([...primary.modified, ...secondary.modified])
+      .filter(file => !added.includes(file) && !deleted.includes(file));
+    const affectedFiles = this.uniquePaths([
+      ...(primary.affectedFiles || []),
+      ...(secondary.affectedFiles || []),
+    ]);
+    const affectedNodeIds = new Set<string>([
+      ...(primary.affectedNodeIds || []),
+      ...(secondary.affectedNodeIds || []),
+    ]);
+
+    return {
+      added,
+      modified,
+      deleted,
+      affectedFiles,
+      affectedNodeIds,
+      requiresFullRebuild: primary.requiresFullRebuild || secondary.requiresFullRebuild,
+      reason: [primary.reason, secondary.reason].filter(Boolean).join('; ') || undefined,
+      detectionMethod: primary.detectionMethod === secondary.detectionMethod
+        ? primary.detectionMethod
+        : 'hybrid',
+    };
+  }
+
+  private uniquePaths(paths: string[]): string[] {
+    return [...new Set(paths.map(file => file.replace(/\\/g, '/')))];
+  }
+
   private buildReverseDependencyMap(state: IncrementalState): Map<string, Set<string>> {
     const dependents = new Map<string, Set<string>>();
 
@@ -473,7 +517,7 @@ export class ChangeDetector {
       changeSet.added.length + changeSet.modified.length + changeSet.deleted.length;
     const threshold = state.config?.rebuildThreshold ?? FULL_REBUILD_THRESHOLD;
 
-    if (changedCount / totalFiles > threshold) {
+    if (totalFiles >= 10 && changedCount / totalFiles > threshold) {
       changeSet.reason = `${Math.round((changedCount / totalFiles) * 100)}% of files changed (threshold: ${threshold * 100}%)`;
       return true;
     }

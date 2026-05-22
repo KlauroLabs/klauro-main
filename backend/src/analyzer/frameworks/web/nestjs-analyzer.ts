@@ -140,14 +140,12 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     return glob(['**/*.{ts,js}'], {
       cwd: projectPath,
       ignore: [
-        '**/node_modules/**',
-        '**/dist/**',
-        '**/build/**',
-        '**/.git/**',
+        ...this.getIgnorePatterns({ projectPath }),
         '**/test/**',
         '**/*.spec.ts',
         '**/*.test.ts'
-      ]
+      ],
+      nodir: true
     });
   }
 
@@ -211,15 +209,17 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     try {
       this.callGraphExtractor = new EnhancedCallGraphExtractor(context.projectPath);
 
-      const ignorePatterns = ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/test/**', '**/*.spec.ts', '**/*.test.ts'];
-
-      if (context.filters && Array.isArray(context.filters)) {
-        ignorePatterns.push(...context.filters);
-      }
+      const ignorePatterns = [
+        ...this.getIgnorePatterns(context),
+        '**/test/**',
+        '**/*.spec.ts',
+        '**/*.test.ts'
+      ];
 
       const nestFiles = await glob(['**/*.{ts,js}'], {
         cwd: context.projectPath,
-        ignore: ignorePatterns
+        ignore: ignorePatterns,
+        nodir: true
       });
       timings['glob'] = Date.now() - t;
 

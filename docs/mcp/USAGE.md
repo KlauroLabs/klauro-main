@@ -16,6 +16,47 @@ This runs the CAS pipeline: language detection, framework detection, library det
 
 Results and analysis support files are stored under `~/.unravl/analyses/` unless `UNRAVL_STORAGE_PATH` is configured.
 
+If the analyzers are hosted instead of installed locally, use the remote analyzer path:
+
+```
+Use initialize_unravl_project with path="/absolute/path/to/your/project", mode="remote", and server_url="https://analyzer.example.com"
+Use get_upload_manifest with path="/absolute/path/to/your/project"
+Use analyze_codebase_remote with path="/absolute/path/to/your/project" and server_url="https://analyzer.example.com"
+```
+
+This uploads a filtered source snapshot, receives CAS from the analyzer service, and saves that CAS into the local MCP cache. After local agent edits, use:
+
+```
+Use sync_codebase_remote with path="/absolute/path/to/your/project"
+```
+
+This sends only dirty-tree changes to the remote analyzer and updates the local CAS cache with the incremental result. The CLI equivalents are `npm run remote-analyze -- /repo --server-url http://127.0.0.1:8787` and `npm run remote-sync -- /repo --server-url http://127.0.0.1:8787`. See `docs/mcp/REMOTE-ANALYZER.md` for Docker and deployment details.
+
+### Preview Agent Proposals Before Implementation
+
+When Claude, Codex, or another agent proposes multi-file edits, refactors, removals, or a new codebase skeleton, ask Unravl to preview the proposed codebase state before implementation. CAS stays proposal-agnostic: Unravl analyzes the proposed state as a normal codebase iteration and stores proposal metadata outside CAS.
+
+For an existing codebase:
+
+```
+Use preview_codebase_iteration with path="/repo", plan_text="...", and either diff_text or proposed_files.
+```
+
+For a greenfield idea:
+
+```
+Use preview_greenfield_codebase with plan_text="..." and proposed_files=[...].
+```
+
+Agents should include the returned advisory verdict, private preview URL, changed contracts, required checks, and uncertainty in the plan output. A `needs_revision` or `high_risk` verdict is not a hard blocker in v1, but it must be surfaced before implementation.
+
+CLI equivalents:
+
+```
+npm run proposal-preview -- /repo --plan-file plan.md --diff-file changes.patch --json
+npm run greenfield-preview -- --plan-file plan.md --proposed-files files.json --json
+```
+
 ### 2. Resolve the Best Analysis
 
 For Codex, Claude, Cursor, and other coding agents, the default first call after analysis is:
@@ -155,7 +196,8 @@ From there, drill into targeted areas:
 
 - **Understand the API surface**: `get_entry_points`, `get_route_table` (paginated, use `limit`/`offset`)
 - **Explore data model**: `get_database_schema`, `get_data_entities` (paginated)
-- **Find specific code**: `search_nodes` with query text
+- **Find specific code**: `search_nodes` with query text (defaults to hybrid lexical + semantic mode; pass `mode` to force `lexical`, `semantic`, or `hybrid`)
+- **Find code by description**: `semantic_search` with a natural-language query when the symbol name is unknown; `get_embedding_status` to confirm the index exists
 - **Trace execution**: `get_callers` / `get_callees` / `get_call_chain` (use `chain_id` for full detail)
 - **Assess safety**: `assess_change_risk` before modifying code
 - **Check test coverage**: `find_tests`, `get_test_summary`, `get_flow_coverage` (use `chain_id` for per-flow detail)
@@ -171,6 +213,7 @@ From there, drill into targeted areas:
 - **Validate CAS completeness**: `validate_cas_contract`, `save_cas_golden_snapshot`, `compare_cas_golden_snapshot`
 - **Check integration analyzer depth**: `get_integration_depth_report`
 - **Inspect and validate behavior-level rules**: `get_behavioral_invariants` before edits and `validate_behavioral_invariants` after edits for tenant scope, auth, DB constraints, migrations, and test coverage
+- **Inspect and validate repo-local practices**: `get_codebase_idioms` and `get_idiom_examples` before edits, then `validate_codebase_idioms` after edits so changes match local naming, placement, testing, migration, error/logging, and boundary conventions
 - **Inspect MCP storage**: `get_storage_health`
 - **Map runtime back to code**: `get_runtime_event_contract`, `get_runtime_sdk_package`, `correlate_runtime_event`, `record_runtime_event`, `get_runtime_observations`, `get_runtime_trace`
 
@@ -203,9 +246,9 @@ This gives the AI assistant knowledge of system type, tech stack, architecture l
 3. Read the packet's file read plan first, starting with each item's `line_window` when present.
 4. Use the packet's risk, callers, callees, tests, and validation plan to decide the edit and verification path.
 5. Run the packet's validation commands. In monorepos these may route to package roots, such as `cd backend && npm test`.
-6. After edits, call `validate_behavioral_invariants` against the working diff before finalizing.
+6. After edits, call `validate_behavioral_invariants` and `validate_codebase_idioms` against the working diff before finalizing.
 
-The validation plan is part of the product surface, not a benchmark-only artifact. It gives agents focused test/typecheck/build commands when CAS can infer them, lists tests to inspect first, and tells agents to report an environment blocker instead of installing dependencies or doing broad setup unless the task explicitly asks for that. The packet also includes behavioral invariants and invariant impact so agents preserve tenant/org scope, auth boundaries, DB constraints, migration contracts, and test coverage while editing.
+The validation plan is part of the product surface, not a benchmark-only artifact. It gives agents focused test/typecheck/build commands when CAS can infer them, lists tests to inspect first, and tells agents to report an environment blocker instead of installing dependencies or doing broad setup unless the task explicitly asks for that. The packet also includes behavioral invariants, invariant impact, and `idiom_context` so agents preserve tenant/org scope, auth boundaries, DB constraints, migration contracts, test coverage, naming, file placement, module boundaries, validation style, error/logging style, async style, and configuration practices while editing.
 
 Or use the `safe_modification_guide` prompt which composes all of these into a single output.
 
@@ -216,6 +259,24 @@ Or use the `safe_modification_guide` prompt which composes all of these into a s
 3. Trace the call chain: `get_call_chain` from the entry point
 4. Check what it calls: `get_callees`
 5. See the workflow: `get_workflows`
+
+### Finding code by concept
+
+When the task describes the target conceptually -- "where do we validate user input", "the code that sends emails", "refund webhook handling" -- and no class or file is named, use semantic retrieval instead of broad file reads:
+
+```
+Use semantic_search with path="/repo" and query="where do we handle refund webhooks"
+```
+
+Each result is a graph-anchored CAS node carrying its callers, callees, test count, entry-point status, and risk, so retrieval lands directly inside the graph. `search_nodes` runs the same hybrid lexical-plus-semantic path by default; pass `mode="lexical"` for keyword-only matching or `mode="semantic"` for vector-only.
+
+To confirm semantic retrieval is available and current for an analysis:
+
+```
+Use get_embedding_status with path="/repo"
+```
+
+This reports the embedding model, coverage, and `generated_at`, or that no index exists. When no index is present, `semantic_search` and hybrid mode fall back to lexical search.
 
 ### Proving a repo is understandable
 
@@ -578,13 +639,40 @@ By default the proof query uses reports generated in the last 7 days so stale be
 
 For one report family, use `get_agentic_benchmark_report` with `benchmark_type="live-agent-quality-ab"` or `benchmark_type="incremental-analysis-agent-value"`. Markdown rendering is selected from the stored report type, so live-quality, deterministic, and incremental reports are not flattened into the wrong format.
 
+### Running the live idiom quality benchmark
+
+From `mcp-server/`:
+
+```
+npm run agent-idiom-benchmark -- --repo app=/repo --live --agent-with-cmd "agent-with --workspace {workspace} --prompt-file {prompt_file}" --agent-without-cmd "agent-without --workspace {workspace} --prompt-file {prompt_file}" --test-command "npm test"
+```
+
+This creates copied-repo A/B tasks where both agents can pass correctness, but the with-Unravl arm receives CAS `idiom_context`. The evaluator scores correctness, idiom conformance, minimality, test relevance, boundary preservation, and file targeting. Acceptance requires no with-Unravl correctness regression and a positive idiom-conformance delta.
+
+Through MCP:
+
+```
+Use run_agent_idiom_benchmark with paths=["/repo/a", "/repo/b"], max_tasks_per_repo=2, agent_with_command="agent-with --workspace {workspace} --prompt-file {prompt_file}", agent_without_command="agent-without --workspace {workspace} --prompt-file {prompt_file}", test_command="npm test", max_live_tasks=4
+```
+
+### Running the machine-wide agent proof
+
+From `mcp-server/`:
+
+```
+npm run discover-real-repos
+npm run agent-proof-machine -- --agent-with-cmd "agent-with --workspace {workspace} --prompt-file {prompt_file}" --agent-without-cmd "agent-without --workspace {workspace} --prompt-file {prompt_file}" --max-live-tasks 6
+```
+
+The machine proof discovers every real Git repo under `/Users/michaelshattuck/dev`, excludes generated benchmark/live-trial copies and dependency/cache/build directories, includes nested standalone Git repos, and reports every repo as passed, failed, unsupported, or skipped with a reason. Eligible repos must pass analysis/readiness/idiom checks, incremental edit-loop checks, and live idiom A/B proof.
+
 To enforce the complete non-UI product bar from the latest proof artifacts:
 
 ```
 npm run agent-vision-acceptance
 ```
 
-This fails if the recent CAS mastery, default-agent-readiness, real-repo vision, deterministic usefulness, deterministic quality, copied-repo live A/B proof, or incremental edit-loop reports no longer support default agent use. It is the quick acceptance gate for proving that Unravl is materially useful to agents before relying on MCP by default.
+This fails if the recent CAS mastery, default-agent-readiness, real-repo vision, deterministic usefulness, deterministic quality, copied-repo live A/B proof, live idiom-quality proof, machine-wide repo accounting, or incremental edit-loop reports no longer support default agent use. It is the quick acceptance gate for proving that Unravl is materially useful to agents before relying on MCP by default.
 
 To regenerate the proof from scratch and then enforce the same gate:
 

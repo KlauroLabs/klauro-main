@@ -89,6 +89,8 @@ export function getSystemOverview(cas: CASOutput) {
     validation: cas.validation || null,
     runtime_static_links_count: cas.runtime_static_links?.length || 0,
     analysis_facts_count: cas.analysis_facts?.length || 0,
+    codebase_idioms_count: cas.codebase_idioms?.length || 0,
+    idiom_summary: cas.idiom_summary || null,
     levels: cas.progressive_levels?.level_definitions?.map(l => ({
       level: l.level,
       name: l.name,
@@ -151,6 +153,43 @@ function matchesWordBoundary(name: string, queryWords: string[]): boolean {
   return queryWords.every(qw => nameWords.some(nw => nw.includes(qw)));
 }
 
+const SEARCH_STOPWORDS = new Set([
+  'a', 'an', 'the', 'of', 'on', 'in', 'to', 'for', 'with', 'and', 'or', 'is',
+  'are', 'that', 'this', 'where', 'do', 'we', 'from', 'into', 'until', 'by',
+  'before', 'given', 'as', 'at', 'it', 'its', 'their', 'your', 'be', 'has',
+]);
+
+function searchTokens(text: string): string[] {
+  return text
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_\-./]/g, ' ')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+}
+
+function nodeSearchableText(node: CASNode): string {
+  return [
+    node.name,
+    node.qualified_name ?? '',
+    node.description ?? '',
+    node.documentation?.raw ?? '',
+    (node.comments ?? []).map(comment => comment.text).join(' '),
+  ].join(' ');
+}
+
+const SEARCH_TYPE_PRIORITY: Record<string, number> = {
+  class: 0, service: 0, controller: 0, module: 0, gateway: 0,
+  function: 1, method: 1, custom_hook: 1, functional_component: 1, react_page: 1,
+  entity: 2, repository: 2, guard: 2, middleware: 2, interceptor: 2, dto: 2,
+  variable: 3, constant_util: 3, property: 3, function_util: 3,
+  import: 4,
+};
+
+function searchTypeRank(type: string): number {
+  return SEARCH_TYPE_PRIORITY[type] ?? 3;
+}
+
 export function searchNodes(
   cas: CASOutput,
   query: string,
@@ -160,32 +199,49 @@ export function searchNodes(
   const queryLower = query.toLowerCase();
   const queryWords = queryLower.split(/\s+/).filter(Boolean);
   const isMultiWord = queryWords.length > 1;
+  const contentWords = queryWords.filter(
+    word => word.length > 1 && !SEARCH_STOPWORDS.has(word)
+  );
 
-  let results = cas.nodes.filter(n => {
-    const directMatch = n.name.toLowerCase().includes(queryLower) ||
-      (n.qualified_name && n.qualified_name.toLowerCase().includes(queryLower)) ||
-      (n.description && n.description.toLowerCase().includes(queryLower));
+  const exact: CASNode[] = [];
+  const overlapping: Array<{ node: CASNode; overlap: number }> = [];
+
+  for (const node of cas.nodes) {
+    if (opts.type && node.type !== opts.type) continue;
+    if (opts.category && node.category !== opts.category) continue;
+    if (opts.level !== undefined && node.level !== opts.level) continue;
+
+    const directMatch = node.name.toLowerCase().includes(queryLower) ||
+      (node.qualified_name && node.qualified_name.toLowerCase().includes(queryLower)) ||
+      (node.description && node.description.toLowerCase().includes(queryLower));
     const camelMatch = isMultiWord && (
-      matchesWordBoundary(n.name, queryWords) ||
-      (n.qualified_name && matchesWordBoundary(n.qualified_name, queryWords))
+      matchesWordBoundary(node.name, queryWords) ||
+      (node.qualified_name ? matchesWordBoundary(node.qualified_name, queryWords) : false)
     );
-    if (!directMatch && !camelMatch) return false;
-    if (opts.type && n.type !== opts.type) return false;
-    if (opts.category && n.category !== opts.category) return false;
-    if (opts.level !== undefined && n.level !== opts.level) return false;
-    return true;
-  });
 
-  const TYPE_PRIORITY: Record<string, number> = {
-    class: 0, service: 0, controller: 0, module: 0, gateway: 0,
-    function: 1, method: 1, custom_hook: 1, functional_component: 1, react_page: 1,
-    entity: 2, repository: 2, guard: 2, middleware: 2, interceptor: 2, dto: 2,
-    variable: 3, constant_util: 3, property: 3, function_util: 3,
-    import: 4,
-  };
-  results.sort((a, b) => (TYPE_PRIORITY[a.type] ?? 3) - (TYPE_PRIORITY[b.type] ?? 3));
+    if (directMatch || camelMatch) {
+      exact.push(node);
+      continue;
+    }
 
-  return results.slice(0, limit).map(n => ({
+    if (contentWords.length > 0) {
+      const tokens = new Set(searchTokens(nodeSearchableText(node)));
+      let overlap = 0;
+      for (const word of contentWords) {
+        if (tokens.has(word)) overlap += 1;
+      }
+      if (overlap > 0) overlapping.push({ node, overlap });
+    }
+  }
+
+  exact.sort((a, b) => searchTypeRank(a.type) - searchTypeRank(b.type));
+  overlapping.sort(
+    (a, b) => b.overlap - a.overlap || searchTypeRank(a.node.type) - searchTypeRank(b.node.type)
+  );
+
+  const ranked = [...exact, ...overlapping.map(entry => entry.node)];
+
+  return ranked.slice(0, limit).map(n => ({
     id: n.id,
     name: n.name,
     type: n.type,

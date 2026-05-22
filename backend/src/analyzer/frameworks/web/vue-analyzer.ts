@@ -116,7 +116,8 @@ export class VueAnalyzer extends BaseAnalyzer {
 
       const vueFiles = await glob(['**/*.vue', '**/*.js', '**/*.ts'], {
         cwd: projectPath,
-        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/coverage/**', '**/.nyc_output/**', '**/src/analyzer/**', '**/analyzer/**', '**/analyzers/**']
+        ignore: [...this.getIgnorePatterns({ projectPath }), '**/src/analyzer/**', '**/analyzer/**', '**/analyzers/**'],
+        nodir: true
       });
 
       for (const file of vueFiles) {
@@ -143,7 +144,8 @@ export class VueAnalyzer extends BaseAnalyzer {
       const ignorePatterns = this.getIgnorePatterns(context);
       const vueFiles = await glob(['**/*.{vue,ts,js}'], {
         cwd: context.projectPath,
-        ignore: [...ignorePatterns, '**/*.test.*', '**/*.spec.*']
+        ignore: [...ignorePatterns, '**/*.test.*', '**/*.spec.*'],
+        nodir: true
       });
 
       const application = await this.analyzeApplication(context.projectPath, nodes);

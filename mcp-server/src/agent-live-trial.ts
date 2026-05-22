@@ -35,6 +35,7 @@ export interface LiveAgentPairInput {
   fileReadPlan: unknown[];
   selectedNode?: unknown;
   validationPlan?: unknown;
+  idiomContext?: unknown;
 }
 
 export interface LiveAgentArmResult {
@@ -480,14 +481,16 @@ function buildLiveWorkPacket(input: LiveAgentPairInput, workspace: string) {
     selected_node: input.selectedNode || null,
     file_read_plan: input.fileReadPlan,
     validation_plan: input.validationPlan || null,
+    idiom_context: input.idiomContext || null,
     source_reading_rule: 'Read only the line_window slices in file_read_plan first. Expand to whole files only when those slices show a concrete gap.',
     next_steps: [
       'Use file_read_plan to inspect the target files before broad repository search.',
+      input.idiomContext ? 'Follow idiom_context for naming, placement, boundary, testing, migration, and error/logging style.' : '',
       'Make an edit only when the task requires one.',
       'For behavior changes, inspect and update focused tests from validation_plan or file_read_plan when a relevant test file is available.',
       'Run the narrowest validation that proves the expected outcome.',
       'Record task_success, quality_score, files_read, and tests_run in the result JSON.',
-    ],
+    ].filter(Boolean),
   };
 }
 
@@ -508,6 +511,7 @@ function promptWithUnravl(input: LiveAgentPairInput, workspace: string, metricsF
       .filter(Boolean)
       .slice(0, 5)
     : [];
+  const idiomSummary = formatIdiomContextForPrompt(input.idiomContext);
   return [
     `Repository copy: ${workspace}`,
     `Task: ${input.taskLabel}`,
@@ -522,6 +526,8 @@ function promptWithUnravl(input: LiveAgentPairInput, workspace: string, metricsF
     `If MCP tools are available, call get_agent_work_packet only if the precomputed packet is missing or unreadable. Use follow-up MCP tools only when the packet names a concrete need.`,
     filePlan.length ? `Precomputed Unravl file-read plan: ${filePlan.join('; ')}` : '',
     validationCommands.length ? `Unravl validation commands: ${validationCommands.join('; ')}` : '',
+    input.idiomContext ? 'The work packet includes idiom_context. Treat it as required local style guidance: preserve naming, placement, module boundaries, validation, tests, migrations, auth/tenant scope, error handling, logging, async style, and configuration conventions.' : '',
+    idiomSummary ? `Compact idiom_context:\n${idiomSummary}` : '',
     'Read only the work packet and the planned line_window slices first. Expand beyond them only if they prove insufficient for the requested change.',
     'For behavior changes, inspect and update focused tests named by the work packet when feasible.',
     'Use the work packet to choose files, make an edit only when the task requires one, and run relevant tests when possible.',
@@ -530,6 +536,30 @@ function promptWithUnravl(input: LiveAgentPairInput, workspace: string, metricsF
     `When finished, write JSON to ${resultFile} with keys: task_success, quality_score, files_read, tests_run, provider_input_tokens, provider_output_tokens, provider_total_tokens, notes.`,
     `If your runtime exposes token metrics separately, write them to ${metricsFile}.`,
   ].join('\n');
+}
+
+function formatIdiomContextForPrompt(idiomContext: unknown): string {
+  if (!idiomContext || typeof idiomContext !== 'object') return '';
+  const context = idiomContext as any;
+  const lines: string[] = [];
+  const selected = Array.isArray(context.selected_idioms) ? context.selected_idioms.slice(0, 5) : [];
+  for (const idiom of selected) {
+    lines.push(`- ${idiom.category || 'idiom'}: ${idiom.name || idiom.id || 'local convention'}`);
+    const doItems = Array.isArray(idiom.do) ? idiom.do.slice(0, 2) : [];
+    const avoidItems = Array.isArray(idiom.avoid) ? idiom.avoid.slice(0, 2) : [];
+    const validation = Array.isArray(idiom.validation) ? idiom.validation.slice(0, 2) : [];
+    if (doItems.length) lines.push(`  Do: ${doItems.join(' | ')}`);
+    if (avoidItems.length) lines.push(`  Avoid: ${avoidItems.join(' | ')}`);
+    if (validation.length) lines.push(`  Validate: ${validation.join(' | ')}`);
+  }
+  const examples = Array.isArray(context.local_examples) ? context.local_examples.slice(0, 4) : [];
+  if (examples.length) {
+    lines.push('Local examples:');
+    for (const example of examples) {
+      lines.push(`- ${example.file}${example.line ? `:${example.line}` : ''} (${example.category || example.idiom_id || 'idiom'}): ${example.explanation || 'positive example'}`);
+    }
+  }
+  return lines.join('\n').slice(0, 3500);
 }
 
 function promptWithoutUnravl(input: LiveAgentPairInput, workspace: string, metricsFile: string, resultFile: string): string {
@@ -555,10 +585,19 @@ async function copyRepo(source: string, destination: string): Promise<void> {
     filter: file => {
       const relative = path.relative(source, file);
       if (!relative) return true;
-      const parts = relative.split(path.sep);
+      const normalized = relative.replace(/\\/g, '/');
+      if (/\.(?:map|bundle|min)\.(?:js|css)$/i.test(normalized) || /\.(?:js|css)\.map$/i.test(normalized)) {
+        return false;
+      }
+      const parts = normalized.split('/');
       return !parts.some(part => [
         '.git',
+        '.claude',
+        '.codex',
+        '.scannerwork',
         'node_modules',
+        'vendor',
+        'vendors',
         'dist',
         'build',
         'target',
@@ -568,12 +607,17 @@ async function copyRepo(source: string, destination: string): Promise<void> {
         '.venv',
         'venv',
         'env',
+        'site-packages',
         '.cache',
+        '.sourcemaps',
+        'sourcemaps',
         '__pycache__',
         '.pytest_cache',
         '.mypy_cache',
         '.ruff_cache',
         '.DS_Store',
+        'Generated',
+        'generated',
         '.unravl-cache',
         '.unravl-agent-benchmark',
         '.unravl-agent-quality-benchmark',

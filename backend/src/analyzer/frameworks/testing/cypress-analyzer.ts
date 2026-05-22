@@ -152,7 +152,8 @@ export class CypressAnalyzer extends BaseAnalyzer {
     try {
       const cypressFiles = await glob(['cypress/**/*.{js,ts}', '**/*cy.{js,ts}', '**/*.cy.{js,ts}'], {
         cwd: context.projectPath,
-        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**']
+        ignore: this.getIgnorePatterns(context),
+        nodir: true
       });
 
       const configuration = await this.analyzeCypressConfiguration(context.projectPath, nodes);
@@ -548,7 +549,9 @@ export class CypressAnalyzer extends BaseAnalyzer {
 
     if (await fs.pathExists(fixturesPath)) {
       const fixtureFiles = await glob(['**/*.json', '**/*.js', '**/*.ts'], {
-        cwd: fixturesPath
+        cwd: fixturesPath,
+        ignore: this.getIgnorePatterns({ projectPath: fixturesPath }),
+        nodir: true
       });
 
       for (const file of fixtureFiles) {

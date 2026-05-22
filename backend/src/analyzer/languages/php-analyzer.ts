@@ -157,6 +157,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
   private composerProject = false;
   private astRunner: TreeSitterParser;
   private astCache = new Map<string, PHPASTNode>();
+  private fileContentCache = new Map<string, string>();
   private todoCounter = 0;
   private commentCounter = 0;
 
@@ -172,13 +173,16 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
   async canAnalyze(projectPath: string): Promise<boolean> {
     try {
+      const ignore = this.getPHPIgnorePatterns({ projectPath });
       const phpFiles = await glob(['**/*.php'], {
         cwd: projectPath,
-        ignore: ['**/vendor/**', '**/.git/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**']
+        ignore,
+        nodir: true
       });
 
       const composerFiles = await glob(['composer.json', 'composer.lock'], {
-        cwd: projectPath
+        cwd: projectPath,
+        nodir: true
       });
 
       return phpFiles.length > 0 || composerFiles.length > 0;
@@ -194,8 +198,27 @@ export class PHPAnalyzer extends BaseAnalyzer {
   async getRelevantFiles(projectPath: string): Promise<string[]> {
     return glob(['**/*.php'], {
       cwd: projectPath,
-      ignore: ['**/vendor/**', '**/.git/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**']
+      ignore: this.getPHPIgnorePatterns({ projectPath }),
+      nodir: true
     });
+  }
+
+  private getPHPIgnorePatterns(context: AnalysisContext): string[] {
+    return [
+      ...this.getIgnorePatterns(context),
+      '**/storage/framework/**',
+      '**/storage/logs/**',
+      '**/bootstrap/cache/**',
+      '**/cache/**'
+    ];
+  }
+
+  private async readFileCached(fullPath: string): Promise<string> {
+    const cached = this.fileContentCache.get(fullPath);
+    if (cached !== undefined) return cached;
+    const content = await fs.readFile(fullPath, 'utf-8');
+    this.fileContentCache.set(fullPath, content);
+    return content;
   }
 
   async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
@@ -204,7 +227,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
     const entryPoints: CASEntryPoint[] = [];
     const exitPoints: CASExitPoint[] = [];
     const namespaces = new Map<string, string[]>();
-    const content = await fs.readFile(context.filePath, 'utf-8');
+    const content = await this.readFileCached(context.filePath);
     const stat = await fs.stat(context.filePath);
 
     await this.detectProjectType(context.projectPath);
@@ -240,12 +263,15 @@ export class PHPAnalyzer extends BaseAnalyzer {
     const libraries: any[] = [];
 
     try {
+      this.astCache.clear();
+      this.fileContentCache.clear();
       await this.detectProjectType(context.projectPath);
       await this.extractDependencies(context.projectPath, libraries);
 
       const phpFiles = await glob(['**/*.php'], {
         cwd: context.projectPath,
-        ignore: ['**/vendor/**', '**/.git/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**']
+        ignore: this.getPHPIgnorePatterns(context),
+        nodir: true
       });
 
       const namespaces = new Map<string, string[]>();
@@ -443,7 +469,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
     _context: AnalysisContext
   ): Promise<void> {
     try {
-      const content = await fs.readFile(fullPath, 'utf-8');
+      const content = await this.readFileCached(fullPath);
       const lines = content.split('\n');
 
       const namespace = this.extractNamespace(content);
@@ -534,23 +560,23 @@ export class PHPAnalyzer extends BaseAnalyzer {
       }
 
       for (const cls of classes) {
-        await this.processPHPClass(cls, fileId, fullPath, nodes, edges, entryPoints);
+        await this.processPHPClass(cls, fileId, fullPath, content, lines, fileComments, nodes, edges, entryPoints);
       }
 
       for (const intf of interfaces) {
-        await this.processPHPInterface(intf, fileId, fullPath, nodes, edges, entryPoints);
+        await this.processPHPInterface(intf, fileId, fullPath, fileComments, nodes, edges, entryPoints);
       }
 
       for (const trait of traits) {
-        await this.processPHPTrait(trait, fileId, fullPath, nodes, edges, entryPoints);
+        await this.processPHPTrait(trait, fileId, fullPath, content, lines, fileComments, nodes, edges, entryPoints);
       }
 
       for (const enm of enums) {
-        await this.processPHPEnum(enm, fileId, fullPath, nodes, edges, entryPoints);
+        await this.processPHPEnum(enm, fileId, fullPath, content, lines, fileComments, nodes, edges, entryPoints);
       }
 
       for (const func of functions) {
-        await this.processPHPFunction(func, fileId, fullPath, nodes, edges, entryPoints);
+        await this.processPHPFunction(func, fileId, fullPath, lines, fileComments, nodes, edges, entryPoints);
       }
 
       for (const variable of globalVars) {
@@ -620,13 +646,15 @@ export class PHPAnalyzer extends BaseAnalyzer {
     cls: PHPClass,
     fileId: string,
     fullPath: string,
+    _content: string,
+    lines: string[],
+    fileComments: CASComment[],
     nodes: CASNode[],
     edges: CASEdge[],
     _entryPoints: any[]
   ): Promise<void> {
     const classId = `class_${this.sanitizeId(cls.namespace)}_${this.sanitizeId(cls.name)}`;
-    const content = await fs.readFile(fullPath, 'utf-8');
-    const classComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+    const classComments = fileComments.filter(c =>
       c.location.line >= cls.lineStart - 3 && c.location.line <= cls.lineStart
     );
     const classTodos = this.extractTodosFromComments(classComments, classId);
@@ -708,11 +736,10 @@ export class PHPAnalyzer extends BaseAnalyzer {
     for (const method of cls.methods) {
       const methodId = `method_${classId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
       const methodDocs = this.extractDocumentationFromPhpDoc(method.docComment);
-      const methodComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+      const methodComments = fileComments.filter(c =>
         c.location.line >= method.lineStart && c.location.line <= method.lineEnd
       );
       const methodTodos = this.extractTodosFromComments(methodComments, methodId);
-      const lines = content.split('\n');
       const methodBody = lines.slice(method.lineStart - 1, method.lineEnd);
       const implementationStatus = this.detectImplementationStatus(method, methodBody);
 
@@ -795,13 +822,13 @@ export class PHPAnalyzer extends BaseAnalyzer {
     intf: PHPInterface,
     fileId: string,
     fullPath: string,
+    fileComments: CASComment[],
     nodes: CASNode[],
     edges: CASEdge[],
     _entryPoints: any[]
   ): Promise<void> {
     const interfaceId = `interface_${this.sanitizeId(intf.namespace)}_${this.sanitizeId(intf.name)}`;
-    const content = await fs.readFile(fullPath, 'utf-8');
-    const interfaceComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+    const interfaceComments = fileComments.filter(c =>
       c.location.line >= intf.lineStart - 3 && c.location.line <= intf.lineStart
     );
     const interfaceTodos = this.extractTodosFromComments(interfaceComments, interfaceId);
@@ -908,13 +935,15 @@ export class PHPAnalyzer extends BaseAnalyzer {
     trait: PHPTrait,
     fileId: string,
     fullPath: string,
+    _content: string,
+    lines: string[],
+    fileComments: CASComment[],
     nodes: CASNode[],
     edges: CASEdge[],
     _entryPoints: any[]
   ): Promise<void> {
     const traitId = `trait_${this.sanitizeId(trait.namespace)}_${this.sanitizeId(trait.name)}`;
-    const content = await fs.readFile(fullPath, 'utf-8');
-    const traitComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+    const traitComments = fileComments.filter(c =>
       c.location.line >= trait.lineStart - 3 && c.location.line <= trait.lineStart
     );
     const traitTodos = this.extractTodosFromComments(traitComments, traitId);
@@ -987,11 +1016,10 @@ export class PHPAnalyzer extends BaseAnalyzer {
       ));
     }
 
-    const lines = content.split('\n');
     for (const method of trait.methods) {
       const methodId = `method_${traitId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
       const methodDocs = this.extractDocumentationFromPhpDoc(method.docComment);
-      const methodComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+      const methodComments = fileComments.filter(c =>
         c.location.line >= method.lineStart && c.location.line <= method.lineEnd
       );
       const methodTodos = this.extractTodosFromComments(methodComments, methodId);
@@ -1041,13 +1069,15 @@ export class PHPAnalyzer extends BaseAnalyzer {
     enm: PHPEnum,
     fileId: string,
     fullPath: string,
+    _content: string,
+    lines: string[],
+    fileComments: CASComment[],
     nodes: CASNode[],
     edges: CASEdge[],
     _entryPoints: any[]
   ): Promise<void> {
     const enumId = `enum_${this.sanitizeId(enm.namespace)}_${this.sanitizeId(enm.name)}`;
-    const content = await fs.readFile(fullPath, 'utf-8');
-    const enumComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+    const enumComments = fileComments.filter(c =>
       c.location.line >= enm.lineStart - 3 && c.location.line <= enm.lineStart
     );
     const enumTodos = this.extractTodosFromComments(enumComments, enumId);
@@ -1115,11 +1145,10 @@ export class PHPAnalyzer extends BaseAnalyzer {
       ));
     }
 
-    const lines = content.split('\n');
     for (const method of enm.methods) {
       const methodId = `method_${enumId}_${this.sanitizeId(method.name)}_${method.lineStart}`;
       const methodDocs = this.extractDocumentationFromPhpDoc(method.docComment);
-      const methodComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+      const methodComments = fileComments.filter(c =>
         c.location.line >= method.lineStart && c.location.line <= method.lineEnd
       );
       const methodTodos = this.extractTodosFromComments(methodComments, methodId);
@@ -1167,18 +1196,18 @@ export class PHPAnalyzer extends BaseAnalyzer {
     func: PHPFunction,
     fileId: string,
     fullPath: string,
+    lines: string[],
+    fileComments: CASComment[],
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: any[]
   ): Promise<void> {
     const functionId = `function_${this.sanitizeId(func.namespace)}_${this.sanitizeId(func.name)}_${func.lineStart}`;
-    const content = await fs.readFile(fullPath, 'utf-8');
     const funcDocs = this.extractDocumentationFromPhpDoc(func.docComment);
-    const funcComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+    const funcComments = fileComments.filter(c =>
       c.location.line >= func.lineStart && c.location.line <= func.lineEnd
     );
     const funcTodos = this.extractTodosFromComments(funcComments, functionId);
-    const lines = content.split('\n');
     const funcBody = lines.slice(func.lineStart - 1, func.lineEnd);
     const implementationStatus = this.detectImplementationStatus({ name: func.name, isAbstract: false } as any, funcBody);
 
@@ -1895,6 +1924,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
   }
 
   private detectFrameworkPatterns(nodes: CASNode[], _edges: CASEdge[], entryPoints: any[]): void {
+    const seenEntryPoints = new Set(entryPoints.map(entry => entry.id));
     const frameworkPatterns = {
       laravel: ['Controller', 'Model', 'Illuminate\\', 'Route::', 'Artisan'],
       symfony: ['Symfony\\', 'Controller', 'Bundle', 'DependencyInjection'],
@@ -1910,6 +1940,14 @@ export class PHPAnalyzer extends BaseAnalyzer {
       if (node.type === 'class' || node.type === 'function') {
         const nodeName = node.name;
         const namespace = node.metadata?.attributes?.namespace as string;
+        const isLikelyEntrySurface =
+          /(?:Controller|Command|Kernel|Subscriber|Listener|Handler|Middleware|Action)$/i.test(nodeName) ||
+          nodeName === 'Kernel' ||
+          (node.type === 'function' && (!namespace || namespace === 'global'));
+
+        if (!isLikelyEntrySurface) {
+          continue;
+        }
 
         for (const [framework, patterns] of Object.entries(frameworkPatterns)) {
           if (patterns.some(pattern =>
@@ -1918,8 +1956,11 @@ export class PHPAnalyzer extends BaseAnalyzer {
             (node.metadata?.attributes?.extendsClass as string)?.includes(pattern) ||
             (node.metadata?.attributes?.implementsInterfaces as string[])?.some(i => i.includes(pattern))
           )) {
+            const entryId = `entry_${framework}_${node.id}`;
+            if (seenEntryPoints.has(entryId)) continue;
+            seenEntryPoints.add(entryId);
             entryPoints.push({
-              id: `entry_${framework}_${node.id}`,
+              id: entryId,
               name: `${framework.charAt(0).toUpperCase() + framework.slice(1)} component: ${node.name}`,
               type: `${framework}_component`,
               source_node: node.id,
@@ -2021,11 +2062,76 @@ export class PHPAnalyzer extends BaseAnalyzer {
   private async analyzeCallGraph(projectPath: string, nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[]): Promise<void> {
     const phpFiles = await glob(['**/*.php'], {
       cwd: projectPath,
-      ignore: ['**/vendor/**', '**/.git/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**']
+      ignore: this.getPHPIgnorePatterns({ projectPath }),
+      nodir: true
     });
 
     const methodNodes = nodes.filter(n => n.type === 'method' || n.type === 'function');
     const classNodes = nodes.filter(n => n.type === 'class' || n.type === 'interface' || n.type === 'trait');
+    const edgeIds = new Set(edges.map(edge => edge.id));
+    const exitIds = new Set(exitPoints.map(exit => exit.id));
+    const classIds = new Set(classNodes.map(node => node.id));
+    const methodNodesById = new Map(methodNodes.map(node => [node.id, node]));
+    const methodNodesByName = new Map<string, CASNode[]>();
+    const classNodesByName = new Map<string, CASNode[]>();
+    const methodNodesByFileAndName = new Map<string, CASNode[]>();
+    const methodNodesByFile = new Map<string, CASNode[]>();
+    const methodsByClassId = new Map<string, CASNode[]>();
+
+    for (const method of methodNodes) {
+      const byName = methodNodesByName.get(method.name) || [];
+      byName.push(method);
+      methodNodesByName.set(method.name, byName);
+      if (method.source?.file) {
+        const byFileOnly = methodNodesByFile.get(method.source.file) || [];
+        byFileOnly.push(method);
+        methodNodesByFile.set(method.source.file, byFileOnly);
+        const key = `${method.source.file}:${method.name}`;
+        const byFile = methodNodesByFileAndName.get(key) || [];
+        byFile.push(method);
+        methodNodesByFileAndName.set(key, byFile);
+      }
+    }
+
+    for (const classNode of classNodes) {
+      const byName = classNodesByName.get(classNode.name) || [];
+      byName.push(classNode);
+      classNodesByName.set(classNode.name, byName);
+    }
+
+    for (const edge of edges) {
+      if ((edge.type === 'has_method' || edge.type === 'declares') && classIds.has(edge.source)) {
+        const method = methodNodesById.get(edge.target);
+        if (method) {
+          const methods = methodsByClassId.get(edge.source) || [];
+          methods.push(method);
+          methodsByClassId.set(edge.source, methods);
+        }
+      }
+    }
+
+    if (phpFiles.length > 1000 || methodNodes.length > 12000) {
+      await this.analyzeCallGraphFastFallback(projectPath, phpFiles, nodes, edges, exitPoints, methodNodes, classNodes);
+      return;
+    }
+
+    const firstMethodByName = (name?: string) => name ? methodNodesByName.get(name)?.[0] : undefined;
+    const firstClassByName = (name?: string) => name ? classNodesByName.get(name)?.[0] : undefined;
+    const firstMethodByFileAndName = (file: string, name?: string) => name ? methodNodesByFileAndName.get(`${file}:${name}`)?.[0] : undefined;
+    const firstMethodInClass = (classId: string, name?: string) => {
+      if (!name) return undefined;
+      return (methodsByClassId.get(classId) || []).find(method => method.name === name);
+    };
+    const pushEdgeOnce = (edge: CASEdge) => {
+      if (edgeIds.has(edge.id)) return;
+      edgeIds.add(edge.id);
+      edges.push(edge);
+    };
+    const pushExitOnce = (exit: CASExitPoint) => {
+      if (exitIds.has(exit.id)) return;
+      exitIds.add(exit.id);
+      exitPoints.push(exit);
+    };
 
     for (const file of phpFiles) {
       const fullPath = path.join(projectPath, file);
@@ -2041,46 +2147,35 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
       if (ast.calls) {
         for (const call of ast.calls) {
-          const callerMethod = methodNodes.find(n => {
-            if (call.method) {
-              return n.name === call.method && n.source?.file === fullPath;
-            }
-            return n.source?.file === fullPath &&
-                   n.source?.line !== undefined && n.source.line <= call.line &&
-                   n.source?.end_line !== undefined && n.source.end_line >= call.line;
-          });
+          const callerMethod = call.method
+            ? firstMethodByFileAndName(fullPath, call.method)
+            : (methodNodesByFile.get(fullPath) || []).find(n =>
+              n.source?.file === fullPath &&
+              n.source?.line !== undefined && n.source.line <= call.line &&
+              n.source?.end_line !== undefined && n.source.end_line >= call.line
+            );
 
           if (!callerMethod) continue;
 
           let targetMethod: CASNode | undefined;
 
           if (call.class) {
-            const targetClass = classNodes.find(c => c.name === call.class);
+            const targetClass = firstClassByName(call.class);
             if (targetClass && call.method) {
-              targetMethod = methodNodes.find(n =>
-                n.name === call.method &&
-                edges.some(e => e.source === targetClass.id && e.target === n.id && e.type === 'has_method')
-              );
+              targetMethod = firstMethodInClass(targetClass.id, call.method);
             }
           } else if (call.function) {
-            targetMethod = methodNodes.find(n =>
-              n.name === call.function &&
-              n.type === 'function'
-            );
+            targetMethod = firstMethodByName(call.function);
           } else if (call.method && call.class) {
-            const containingClass = classNodes.find(c => c.name === call.class);
+            const containingClass = firstClassByName(call.class);
             if (containingClass) {
-              targetMethod = methodNodes.find(n =>
-                n.name === call.method &&
-                edges.some(e => e.source === containingClass.id && e.target === n.id && e.type === 'has_method')
-              );
+              targetMethod = firstMethodInClass(containingClass.id, call.method);
             }
           }
 
           if (targetMethod && targetMethod.id !== callerMethod.id) {
             const callEdgeId = `call_${callerMethod.id}_to_${targetMethod.id}_line_${call.line}`;
-            if (!edges.some(e => e.id === callEdgeId)) {
-              edges.push(this.createEdge(
+            pushEdgeOnce(this.createEdge(
                 callEdgeId,
                 callerMethod.id,
                 targetMethod.id,
@@ -2093,11 +2188,9 @@ export class PHPAnalyzer extends BaseAnalyzer {
                   targetMethod: call.method || call.function
                 }
               ));
-            }
           } else if (this.isExternalLibraryCall(call.class || call.function || '', call.method || '', currentNamespace)) {
             const exitId = `exit_call_${callerMethod.id}_${call.class || call.function || 'unknown'}_${call.method || ''}_${call.line}`;
-            if (!exitPoints.some(e => e.id === exitId)) {
-              exitPoints.push(this.createExitPoint(
+            pushExitOnce(this.createExitPoint(
                 exitId,
                 callerMethod.id,
                 'sdk',
@@ -2114,7 +2207,172 @@ export class PHPAnalyzer extends BaseAnalyzer {
                   library: this.identifyPHPLibrary(call.class || call.function || '')
                 }
               ));
+          }
+        }
+      }
+    }
+  }
+
+  private async analyzeCallGraphFastFallback(
+    projectPath: string,
+    phpFiles: string[],
+    nodes: CASNode[],
+    edges: CASEdge[],
+    exitPoints: CASExitPoint[],
+    methodNodes: CASNode[],
+    classNodes: CASNode[]
+  ): Promise<void> {
+    const edgeIds = new Set(edges.map(edge => edge.id));
+    const exitIds = new Set(exitPoints.map(exit => exit.id));
+    const classIds = new Set(classNodes.map(node => node.id));
+    const methodNodesById = new Map(methodNodes.map(node => [node.id, node]));
+    const classNodesById = new Map(classNodes.map(node => [node.id, node]));
+    const methodNodesByName = new Map<string, CASNode[]>();
+    const classNodesByName = new Map<string, CASNode[]>();
+    const methodsByClassId = new Map<string, CASNode[]>();
+    const classByMethodId = new Map<string, CASNode>();
+    const methodsByFile = new Map<string, CASNode[]>();
+
+    for (const method of methodNodes) {
+      const methods = methodNodesByName.get(method.name) || [];
+      methods.push(method);
+      methodNodesByName.set(method.name, methods);
+      if (method.source?.file) {
+        const fileMethods = methodsByFile.get(method.source.file) || [];
+        fileMethods.push(method);
+        methodsByFile.set(method.source.file, fileMethods);
+      }
+    }
+
+    for (const classNode of classNodes) {
+      const classes = classNodesByName.get(classNode.name) || [];
+      classes.push(classNode);
+      classNodesByName.set(classNode.name, classes);
+    }
+
+    for (const edge of edges) {
+      if ((edge.type === 'has_method' || edge.type === 'declares') && classIds.has(edge.source)) {
+        const method = methodNodesById.get(edge.target);
+        const classNode = classNodesById.get(edge.source);
+        if (!method) continue;
+        const methods = methodsByClassId.get(edge.source) || [];
+        methods.push(method);
+        methodsByClassId.set(edge.source, methods);
+        if (classNode) classByMethodId.set(method.id, classNode);
+      }
+    }
+
+    const firstMethodByName = (name?: string) => name ? methodNodesByName.get(name)?.[0] : undefined;
+    const firstClassByName = (name?: string) => name ? classNodesByName.get(name)?.[0] : undefined;
+    const firstMethodInClass = (classId: string, name?: string) => {
+      if (!name) return undefined;
+      return (methodsByClassId.get(classId) || []).find(method => method.name === name);
+    };
+    const pushEdgeOnce = (edge: CASEdge) => {
+      if (edgeIds.has(edge.id)) return;
+      edgeIds.add(edge.id);
+      edges.push(edge);
+    };
+    const pushExitOnce = (exit: CASExitPoint) => {
+      if (exitIds.has(exit.id)) return;
+      exitIds.add(exit.id);
+      exitPoints.push(exit);
+    };
+
+    for (const file of phpFiles) {
+      const fullPath = path.join(projectPath, file);
+      const methodsInFile = methodsByFile.get(fullPath) || [];
+      if (methodsInFile.length === 0) continue;
+
+      let content = '';
+      try {
+        content = await this.readFileCached(fullPath);
+      } catch {
+        continue;
+      }
+
+      const lines = content.split('\n');
+      const currentNamespace = this.extractNamespace(content) || 'global';
+      const callerForLine = (line: number) => methodsInFile.find(n =>
+        n.source?.line !== undefined && n.source.line <= line &&
+        n.source?.end_line !== undefined && n.source.end_line >= line
+      );
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line.includes('(')) continue;
+
+        const functionCalls: any[] = [
+          ...Array.from(line.matchAll(/(\$\w+)->(\w+)\s*\(/g)),
+          ...Array.from(line.matchAll(/(\w+)::(\w+)\s*\(/g)),
+          ...Array.from(line.matchAll(/new\s+(\w+)\s*\(/g)).map(m => [m[0], m[1], '__construct']),
+          ...Array.from(line.matchAll(/\$this->(\w+)\s*\(/g)).map(m => [m[0], '$this', m[1]]),
+          ...Array.from(line.matchAll(/self::(\w+)\s*\(/g)).map(m => [m[0], 'self', m[1]]),
+          ...Array.from(line.matchAll(/parent::(\w+)\s*\(/g)).map(m => [m[0], 'parent', m[1]]),
+          ...Array.from(line.matchAll(/static::(\w+)\s*\(/g)).map(m => [m[0], 'static', m[1]]),
+          ...Array.from(line.matchAll(/(\w+)\s*\(/g))
+        ];
+
+        for (const match of functionCalls) {
+          const fullMatch = match[0];
+          const objectOrClass = match[1];
+          const methodName = match[2];
+          const callerMethod = callerForLine(i + 1);
+          if (!callerMethod) continue;
+
+          let targetMethod: CASNode | undefined;
+
+          if (objectOrClass === '$this' || objectOrClass === 'self' || objectOrClass === 'static') {
+            const containingClass = classByMethodId.get(callerMethod.id);
+            if (containingClass) targetMethod = firstMethodInClass(containingClass.id, methodName);
+          } else if (objectOrClass === 'parent') {
+            const containingClass = classByMethodId.get(callerMethod.id);
+            if (containingClass && containingClass.metadata?.attributes?.extendsClass) {
+              const parentClass = firstClassByName(containingClass.metadata.attributes.extendsClass);
+              if (parentClass) targetMethod = firstMethodInClass(parentClass.id, methodName);
             }
+          } else if (fullMatch.startsWith('new ')) {
+            const targetClass = firstClassByName(objectOrClass);
+            if (targetClass) targetMethod = firstMethodInClass(targetClass.id, '__construct');
+          } else if (methodName) {
+            const targetClass = firstClassByName(objectOrClass);
+            if (targetClass) targetMethod = firstMethodInClass(targetClass.id, methodName);
+          } else {
+            targetMethod = firstMethodByName(objectOrClass);
+          }
+
+          if (targetMethod && targetMethod.id !== callerMethod.id) {
+            pushEdgeOnce(this.createEdge(
+              `call_${callerMethod.id}_to_${targetMethod.id}_${i}`,
+              callerMethod.id,
+              targetMethod.id,
+              'calls',
+              'behavior',
+              {
+                line: i + 1,
+                callType: fullMatch.startsWith('new ') ? 'constructor' :
+                  objectOrClass === 'parent' ? 'parent' :
+                    objectOrClass === 'self' || objectOrClass === 'static' ? 'static' :
+                      objectOrClass === '$this' ? 'internal' :
+                        methodName ? 'method' : 'function'
+              }
+            ));
+          } else if (this.isExternalLibraryCall(objectOrClass, methodName || objectOrClass, currentNamespace)) {
+            pushExitOnce(this.createExitPoint(
+              `exit_call_${callerMethod.id}_${objectOrClass}_${methodName || 'func'}_${i}`,
+              callerMethod.id,
+              'sdk',
+              methodName ? `External call: ${objectOrClass}::${methodName}` : `External call: ${objectOrClass}`,
+              `Library call to ${this.identifyPHPLibrary(objectOrClass)}`,
+              undefined,
+              undefined,
+              {
+                targetClass: objectOrClass,
+                targetFunction: methodName || objectOrClass,
+                line: i + 1,
+                library: this.identifyPHPLibrary(objectOrClass)
+              }
+            ));
           }
         }
       }
@@ -2131,9 +2389,65 @@ export class PHPAnalyzer extends BaseAnalyzer {
     classNodes: CASNode[],
     projectPath: string
   ): Promise<void> {
-    const content = await fs.readFile(fullPath, 'utf-8');
+    const content = await this.readFileCached(fullPath);
     const lines = content.split('\n');
     const currentNamespace = this.extractNamespace(content) || 'global';
+    const edgeIds = new Set(edges.map(edge => edge.id));
+    const exitIds = new Set(exitPoints.map(exit => exit.id));
+    const classIds = new Set(classNodes.map(node => node.id));
+    const methodsInFile = methodNodes.filter(method => method.source?.file === fullPath);
+    const methodNodesByName = new Map<string, CASNode[]>();
+    const classNodesByName = new Map<string, CASNode[]>();
+    const methodsByClassId = new Map<string, CASNode[]>();
+    const classByMethodId = new Map<string, CASNode>();
+
+    for (const method of methodNodes) {
+      const methods = methodNodesByName.get(method.name) || [];
+      methods.push(method);
+      methodNodesByName.set(method.name, methods);
+    }
+
+    for (const classNode of classNodes) {
+      const classes = classNodesByName.get(classNode.name) || [];
+      classes.push(classNode);
+      classNodesByName.set(classNode.name, classes);
+    }
+
+    for (const edge of edges) {
+      if ((edge.type === 'has_method' || edge.type === 'declares') && classIds.has(edge.source)) {
+        const method = methodNodes.find(node => node.id === edge.target);
+        const classNode = classNodes.find(node => node.id === edge.source);
+        if (method) {
+          const methods = methodsByClassId.get(edge.source) || [];
+          methods.push(method);
+          methodsByClassId.set(edge.source, methods);
+        }
+        if (method && classNode) {
+          classByMethodId.set(method.id, classNode);
+        }
+      }
+    }
+
+    const callerForLine = (line: number) => methodsInFile.find(n =>
+      n.source?.line !== undefined && n.source.line <= line &&
+      n.source?.end_line !== undefined && n.source.end_line >= line
+    );
+    const firstMethodByName = (name?: string) => name ? methodNodesByName.get(name)?.[0] : undefined;
+    const firstClassByName = (name?: string) => name ? classNodesByName.get(name)?.[0] : undefined;
+    const firstMethodInClass = (classId: string, name?: string) => {
+      if (!name) return undefined;
+      return (methodsByClassId.get(classId) || []).find(method => method.name === name);
+    };
+    const pushEdgeOnce = (edge: CASEdge) => {
+      if (edgeIds.has(edge.id)) return;
+      edgeIds.add(edge.id);
+      edges.push(edge);
+    };
+    const pushExitOnce = (exit: CASExitPoint) => {
+      if (exitIds.has(exit.id)) return;
+      exitIds.add(exit.id);
+      exitPoints.push(exit);
+    };
 
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
@@ -2154,66 +2468,45 @@ export class PHPAnalyzer extends BaseAnalyzer {
           const objectOrClass = match[1];
           const methodName = match[2];
 
-          const callerMethod = methodNodes.find(n =>
-            n.source?.file === fullPath &&
-            n.source?.line !== undefined && n.source.line <= i + 1 &&
-            n.source?.end_line !== undefined && n.source.end_line >= i + 1
-          );
+          const callerMethod = callerForLine(i + 1);
 
           if (callerMethod) {
             let targetMethod: CASNode | undefined;
 
             if (objectOrClass === '$this' || objectOrClass === 'self' || objectOrClass === 'static') {
-              const containingClass = classNodes.find(c =>
-                edges.some(e => e.source === c.id && e.target === callerMethod.id && e.type === 'has_method')
-              );
+              const containingClass = classByMethodId.get(callerMethod.id);
 
               if (containingClass) {
-                targetMethod = methodNodes.find(n =>
-                  n.name === methodName &&
-                  edges.some(e => e.source === containingClass.id && e.target === n.id && e.type === 'has_method')
-                );
+                targetMethod = firstMethodInClass(containingClass.id, methodName);
               }
             } else if (objectOrClass === 'parent') {
-              const containingClass = classNodes.find(c =>
-                edges.some(e => e.source === c.id && e.target === callerMethod.id && e.type === 'has_method')
-              );
+              const containingClass = classByMethodId.get(callerMethod.id);
 
               if (containingClass && containingClass.metadata?.attributes?.extendsClass) {
                 const parentClassName = containingClass.metadata.attributes.extendsClass;
-                const parentClass = classNodes.find(c => c.name === parentClassName);
+                const parentClass = firstClassByName(parentClassName);
 
                 if (parentClass) {
-                  targetMethod = methodNodes.find(n =>
-                    n.name === methodName &&
-                    edges.some(e => e.source === parentClass.id && e.target === n.id && e.type === 'has_method')
-                  );
+                  targetMethod = firstMethodInClass(parentClass.id, methodName);
                 }
               }
             } else if (fullMatch.startsWith('new ')) {
-              const targetClass = classNodes.find(c => c.name === objectOrClass);
+              const targetClass = firstClassByName(objectOrClass);
               if (targetClass) {
-                targetMethod = methodNodes.find(n =>
-                  n.name === '__construct' &&
-                  edges.some(e => e.source === targetClass.id && e.target === n.id && e.type === 'has_method')
-                );
+                targetMethod = firstMethodInClass(targetClass.id, '__construct');
               }
             } else if (methodName) {
-              const targetClass = classNodes.find(c => c.name === objectOrClass);
+              const targetClass = firstClassByName(objectOrClass);
               if (targetClass) {
-                targetMethod = methodNodes.find(n =>
-                  n.name === methodName &&
-                  edges.some(e => e.source === targetClass.id && e.target === n.id && e.type === 'has_method')
-                );
+                targetMethod = firstMethodInClass(targetClass.id, methodName);
               }
             } else {
-              targetMethod = methodNodes.find(n => n.name === objectOrClass && n.type === 'function');
+              targetMethod = firstMethodByName(objectOrClass);
             }
 
             if (targetMethod) {
               const callEdgeId = `call_${callerMethod.id}_to_${targetMethod.id}_${i}`;
-              if (!edges.some(e => e.id === callEdgeId)) {
-                edges.push(this.createEdge(
+              pushEdgeOnce(this.createEdge(
                   callEdgeId,
                   callerMethod.id,
                   targetMethod.id,
@@ -2228,11 +2521,9 @@ export class PHPAnalyzer extends BaseAnalyzer {
                              methodName ? 'method' : 'function'
                   }
                 ));
-              }
             } else if (this.isExternalLibraryCall(objectOrClass, methodName || objectOrClass, currentNamespace)) {
               const exitId = `exit_call_${callerMethod.id}_${objectOrClass}_${methodName || 'func'}_${i}`;
-              if (!exitPoints.some(e => e.id === exitId)) {
-                exitPoints.push(this.createExitPoint(
+              pushExitOnce(this.createExitPoint(
                   exitId,
                   callerMethod.id,
                   'sdk',
@@ -2247,7 +2538,6 @@ export class PHPAnalyzer extends BaseAnalyzer {
                     library: this.identifyPHPLibrary(objectOrClass)
                   }
                 ));
-              }
             }
           }
         }
@@ -2266,20 +2556,15 @@ export class PHPAnalyzer extends BaseAnalyzer {
             const controllerClass = controllerMatch[1];
             const actionMethod = controllerMatch[2];
 
-            const controllerNode = classNodes.find(c =>
-              c.name === controllerClass.split('\\').pop()
-            );
+            const controllerNode = firstClassByName(controllerClass.split('\\').pop());
 
             if (controllerNode) {
-              const actionNode = methodNodes.find(m =>
-                m.name === actionMethod &&
-                edges.some(e => e.source === controllerNode.id && e.target === m.id && e.type === 'has_method')
-              );
+              const actionNode = firstMethodInClass(controllerNode.id, actionMethod);
 
               if (actionNode) {
                 const endpointEdgeId = `http_endpoint_${actionNode.id}_${httpMethod}_${i}`;
-                if (!edges.some(e => e.id === endpointEdgeId)) {
-                  edges.push(this.createEdge(
+                if (!edgeIds.has(endpointEdgeId)) {
+                  pushEdgeOnce(this.createEdge(
                     endpointEdgeId,
                     `entry_${actionNode.id}`,
                     actionNode.id,
@@ -2307,15 +2592,12 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
           const nextMethodLine = this.findNextMethodDeclaration(lines, i);
           if (nextMethodLine !== -1) {
-            const methodAtLine = methodNodes.find(n =>
-              n.source?.file === fullPath &&
-              n.source?.line === nextMethodLine + 1
-            );
+            const methodAtLine = methodsInFile.find(n => n.source?.line === nextMethodLine + 1);
 
             if (methodAtLine) {
               const endpointEdgeId = `http_endpoint_${methodAtLine.id}_${httpMethod}_${i}`;
-              if (!edges.some(e => e.id === endpointEdgeId)) {
-                edges.push(this.createEdge(
+              if (!edgeIds.has(endpointEdgeId)) {
+                pushEdgeOnce(this.createEdge(
                   endpointEdgeId,
                   `entry_${methodAtLine.id}`,
                   methodAtLine.id,

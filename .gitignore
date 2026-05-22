@@ -21,6 +21,15 @@ dist/
 .unravl-incremental-benchmark/
 .unravl-contract-gauntlet/
 .unravl-vision-gauntlet/
+.unravl-agent-idiom-benchmark/
+.unravl-agent-proof-machine/
+.unravl-embedding-value-benchmark/
+.unravl-proposal-preview/
+.unravl-repo-documentation/
+.unravl-semantic-retrieval-benchmark/
+
+# Scratch / temp files
+**/src/_tmp_*.ts
 /CURRENT_STATE.md
 /MOAR_CONTEXT.md
 /PROJECT_PLAN.md

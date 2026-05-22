@@ -28,12 +28,16 @@ When you need codebase context, call `get_summary` with this project's root path
   - Connected code with risk assessment
 
 **Alternative detailed approach:**
-- `search_nodes` to locate the code element by name (supports multi-word camelCase-aware search, e.g. "react analyzer" finds `ReactAnalyzer`)
+- `search_nodes` to locate the code element (supports multi-word camelCase-aware search, e.g. "react analyzer" finds `ReactAnalyzer`; defaults to hybrid lexical + semantic mode)
 - `get_node` for full context: connections, decorators, intent, stability
 - `assess_change_risk` to understand blast radius and downstream impact
 - `get_callers` / `get_callees` to see dependencies in either direction (default limit 50)
 - `find_tests` to check existing test coverage
 - `get_intent` -- why code exists: inferred purpose, constraints, architectural decisions
+
+### Finding code by description
+- For natural-language "where is X" or "which code does Y" questions where you do not know the exact symbol name, call `semantic_search` (or `search_nodes` in its default hybrid mode) instead of broad file reads. Results are graph-anchored: each carries callers, callees, test count, entry-point status, and risk.
+- `get_embedding_status` to confirm a semantic index exists; if absent, `semantic_search` and hybrid mode fall back to lexical search.
 
 ### When writing new code
 - `get_conventions` to understand naming, import style, error handling patterns

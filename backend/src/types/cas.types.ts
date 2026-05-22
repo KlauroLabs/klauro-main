@@ -70,12 +70,38 @@ export interface CASOutput {
   runtime_static_links?: CASRuntimeStaticLink[];
   analysis_facts?: CASAnalysisFact[];
 
+  // v1.9.0+ Codebase Idiom Intelligence
+  codebase_idioms?: CASCodebaseIdiom[];
+  idiom_summary?: CASIdiomSummary;
+  idiom_examples?: CASIdiomExample[];
+  idiom_violations?: CASIdiomViolation[];
+
+  // v1.10.0+ Graph-Anchored Semantic Retrieval
+  embedding_index?: CASEmbeddingIndex;
+
   libraries?: CASLibrary[];
   progressive_levels: CASProgressiveLevels;
   configuration?: CASConfiguration;
   runtime?: CASRuntime;
   analysis_errors?: CASAnalysisError[];
   validation?: CASValidation;
+}
+
+export interface CASEmbeddingIndex {
+  model: string;
+  provider: 'api' | 'local';
+  dimensions: number;
+  document_version: string;
+  store: 'file' | 'pgvector';
+  generated_at: string;
+  node_count: number;
+  coverage: {
+    embedded: number;
+    skipped: number;
+    failed: number;
+  };
+  degraded?: boolean;
+  degraded_reason?: string;
 }
 
 export interface CASPerspective {
@@ -421,6 +447,92 @@ export interface CASPattern {
     benefits?: string[];
     drawbacks?: string[];
   };
+}
+
+export type CASIdiomCategory =
+  | 'naming'
+  | 'file-organization'
+  | 'module-boundary'
+  | 'dependency-injection'
+  | 'data-access'
+  | 'error-handling'
+  | 'validation'
+  | 'auth-tenant-scope'
+  | 'logging'
+  | 'testing'
+  | 'migrations'
+  | 'async-style'
+  | 'configuration';
+
+export interface CASIdiomScope {
+  languages?: string[];
+  frameworks?: string[];
+  node_types?: string[];
+  file_globs?: string[];
+  node_ids?: string[];
+  files?: string[];
+}
+
+export interface CASIdiomEvidence {
+  kind: 'node' | 'edge' | 'file' | 'import' | 'decorator' | 'test' | 'migration' | 'invariant' | 'pattern' | 'analysis-fact';
+  file?: string;
+  line?: number;
+  node_id?: string;
+  edge_id?: string;
+  fact_id?: string;
+  claim: string;
+  confidence: number;
+}
+
+export interface CASIdiomExample {
+  id: string;
+  idiom_id: string;
+  file: string;
+  line?: number;
+  node_id?: string;
+  name?: string;
+  excerpt?: string;
+  explanation: string;
+}
+
+export interface CASIdiomViolation {
+  id: string;
+  idiom_id: string;
+  category: CASIdiomCategory;
+  severity: 'info' | 'warning' | 'error';
+  file?: string;
+  line?: number;
+  node_id?: string;
+  description: string;
+  recommendation: string;
+  evidence?: CASIdiomEvidence[];
+}
+
+export interface CASCodebaseIdiom {
+  id: string;
+  category: CASIdiomCategory;
+  name: string;
+  description: string;
+  confidence: number;
+  prevalence: number;
+  evidence: CASIdiomEvidence[];
+  positive_examples: CASIdiomExample[];
+  affected_scopes: CASIdiomScope;
+  agent_guidance: {
+    do: string[];
+    avoid: string[];
+    validation: string[];
+  };
+  deviations?: CASIdiomViolation[];
+}
+
+export interface CASIdiomSummary {
+  total: number;
+  high_confidence: number;
+  violations: number;
+  by_category: Record<CASIdiomCategory, number>;
+  top_idioms: string[];
+  guidance_digest: string[];
 }
 
 export interface CASCategories {
@@ -2398,7 +2510,7 @@ export interface CASFlowGraph {
   };
 }
 
-export const CAS_VERSION = '1.8.0';
+export const CAS_VERSION = '1.10.0';
 
 export interface CASFlowLayer {
   layer_number: number;
@@ -2463,7 +2575,7 @@ export interface ChangeSet {
   affectedNodeIds: Set<string>;
   requiresFullRebuild: boolean;
   reason?: string;
-  detectionMethod: 'mtime' | 'git' | 'hash';
+  detectionMethod: 'mtime' | 'git' | 'hash' | 'hybrid';
 }
 
 export interface ChangeHistoryEntry {

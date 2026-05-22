@@ -1,6 +1,6 @@
 # Code Analysis Specification (CAS)
 
-> **Current Version:** [1.8.0](./SPECIFICATION.md)
+> **Current Version:** [1.10.0](./SPECIFICATION.md)
 > **Status:** Active
 > **Full Specification:** [SPECIFICATION.md](./SPECIFICATION.md)
 
@@ -115,6 +115,25 @@ CAS supports progressive disclosure through levels and targeted query surfaces. 
 - Evidence-backed analysis facts
 - Semantic change impact
 - Cross-repository link confidence
+
+### [v1.9.0](./v1.9.0-rfp.md) - Codebase Idiom Intelligence
+
+- Repo-local idioms for naming, file organization, module boundaries, dependency injection, data access, error handling, validation, auth/tenant scope, logging, testing, migrations, async style, and configuration
+- Positive examples, affected scopes, deviations, and agent guidance
+- MCP idiom queries, examples, validation, and idiom-aware work packets
+- Live copied-repo A/B proof for idiom conformance and quality
+- Machine-wide real-repo discovery and proof accounting
+
+### [v1.10.0](./v1.10.0-rfp.md) - Graph-Anchored Semantic Retrieval
+
+- Per-node vector embeddings derived from structured, graph-aware documents
+- Embedding provider abstraction with API and local implementations
+- Vector store abstraction with file-backed and pgvector-backed implementations
+- `embedding_index` CAS metadata with model, dimensions, and coverage provenance
+- Hybrid lexical, semantic, and structural-rerank query path
+- Graph-anchored semantic results that carry callers, callees, tests, and risk
+- Incremental re-embedding of only changed nodes
+- MCP `semantic_search`, `search_nodes` mode parameter, and `get_embedding_status`
 
 ## Key Principles
 

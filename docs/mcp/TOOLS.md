@@ -19,6 +19,133 @@ Run CAS analysis on a local directory. Uses incremental analysis by default when
 
 **Returns:** `{ status, analysis_type, path, name, nodes, edges, entry_points, analyzers_run, errors }`. Incremental runs also include `change_summary` with files changed, node changes, and risk level.
 
+### `initialize_unravl_project`
+
+Write `.unravlrc` and `.unravlignore` so teams can control analyzer mode, upload policy, source include/exclude rules, and project identity.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Absolute path to the project directory |
+| `mode` | string | no | `local` or `remote` analyzer mode |
+| `server_url` | string | no | Remote analyzer URL |
+| `project_id` | string | no | Stable hosted project id |
+| `organization_id` | string | no | Hosted organization id |
+| `force` | boolean | no | Overwrite existing config files |
+
+**Returns:** Written config paths, analyzer mode, analyzer URL, project id, and organization id.
+
+### `get_unravl_project_config`
+
+Read the effective `.unravlrc`, `.unravlignore`, analyzer mode, upload policy, source rules, and project identity.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Absolute path to the project directory |
+
+**Returns:** Config file path, ignore file path, ignore patterns, and merged config.
+
+### `get_upload_manifest`
+
+Dry-run the upload policy and show exactly which files would be sent before full or dirty-tree sync.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Absolute path to the project directory |
+| `dirty_tree` | boolean | no | Show dirty-tree incremental upload instead of full snapshot upload |
+
+**Returns:** Included files, byte counts, excluded sample, config path, ignore path, and upload summary.
+
+### `get_github_import_plan`
+
+Describe the GitHub App permissions, webhooks, and local-agent handoff needed for hosted main-branch analysis.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Absolute path to the project directory |
+
+**Returns:** Required GitHub App permissions, webhooks, configured owner/repositories, and note about local dirty-tree sync.
+
+### `analyze_codebase_remote`
+
+Upload a filtered local source snapshot to a remote Unravl analyzer service, cache the returned CAS locally, and make the result available to all local MCP query tools.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Absolute path to the project directory |
+| `server_url` | string | no | Analyzer service URL. Defaults to `UNRAVL_ANALYZER_URL` or `http://127.0.0.1:8787` |
+| `analysis_id` | string | no | Stable remote analysis id. Defaults to a hash of the local project path |
+
+**Returns:** Status, remote analysis id, revision, analysis type, upload size, and CAS graph counts.
+
+### `sync_codebase_remote`
+
+Send dirty-tree file changes to a remote Unravl analyzer service and cache the updated CAS locally. This is the hosted-analyzer incremental path for local AI agent edits.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Absolute path to the project directory |
+| `server_url` | string | no | Analyzer service URL. Defaults to `UNRAVL_ANALYZER_URL` or `http://127.0.0.1:8787` |
+| `analysis_id` | string | no | Stable remote analysis id. Defaults to a hash of the local project path |
+
+**Returns:** Status, remote analysis id, revision, analysis type, changed file count, upload size, graph counts, and incremental change summary.
+
+### `preview_codebase_iteration`
+
+Analyze an agent proposal as an ephemeral iteration of an existing codebase. This does not change CAS semantics: Unravl copies the codebase, applies the proposed diff/files in the copy, runs normal CAS analysis, compares baseline and proposed analyses, and stores a product-level preview artifact.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Absolute path to the existing project directory |
+| `plan_text` | string | yes | Natural-language proposal or agent plan |
+| `title` | string | no | Human-readable preview title |
+| `diff_text` | string | no | Unified diff to apply in the temporary workspace |
+| `proposed_files` | array | no | Explicit file additions/modifications/deletions |
+| `organization_id` | string | no | Hosted organization/workspace id for private preview URL |
+| `project_id` | string | no | Hosted project id |
+| `codebase_id` | string | no | Hosted codebase id |
+| `preview_base_url` | string | no | Hosted Unravl app base URL |
+
+**Returns:** Advisory status, preview id, private preview URL, baseline/proposed analysis ids, graph delta, changed contracts, idiom/invariant validation output, required checks, and visualization summary.
+
+### `preview_greenfield_codebase`
+
+Analyze proposed files as a synthetic new codebase. The output is still normal CAS; the proposal preview artifact only references the proposed analysis and visualization payload.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `plan_text` | string | yes | Natural-language proposal or agent plan |
+| `title` | string | no | Human-readable preview title |
+| `proposed_files` | array | yes | Proposed file bundle for the synthetic codebase |
+| `organization_id` | string | no | Hosted organization/workspace id for private preview URL |
+| `project_id` | string | no | Hosted project id |
+| `preview_base_url` | string | no | Hosted Unravl app base URL |
+
+**Returns:** Advisory status, preview id, private preview URL, proposed analysis id, detected graph summary, required checks, and greenfield readiness warnings.
+
+### `get_preview_analysis`
+
+Fetch a stored proposal preview artifact.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `preview_id` | string | no | Preview id. Defaults to latest |
+
+**Returns:** Preview metadata, baseline CAS when present, proposed CAS, comparison payload, and visualization payload.
+
+### `compare_analysis_iterations`
+
+Compare two ordinary CAS analyses, or return the comparison for a preview. This is useful outside proposals too: any two analyzed iterations can be compared.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `preview_id` | string | no | Existing preview id to compare |
+| `baseline_path` | string | no | Path for baseline stored analysis |
+| `proposed_path` | string | no | Path for proposed stored analysis |
+| `diff_text` | string | no | Optional diff used to focus impact checks |
+| `files` | string[] | no | Optional changed files used to focus impact checks |
+
+**Returns:** Graph delta, changed contracts, impacted files, required checks, idiom validation, and behavioral invariant validation.
+
 ### `list_analyses`
 
 List all previously analyzed codebases with metadata.
@@ -272,7 +399,18 @@ One-call task packet for agents. Use this after `get_agent_start_context` when a
 | `path` | string | yes | Project path |
 | `task` | object | no | Optional task context with `task_type`, `target`, `related_paths`, `runtime_event`, `instructions`, or `success_criteria` |
 
-**Returns:** Target resolution, selected node, coding context, change risk, callers, callees, tests, error contracts for debug tasks, behavioral invariant impact, representative entry/call-chain context, recommended MCP follow-ups, adoption gaps, a file read plan with concrete source files, bounded line windows, and reasons, and a validation plan with focused test/typecheck/build commands, monorepo package script routing, tests to inspect, manual checks, environment rules, and validation gaps.
+**Returns:** Target resolution, selected node, coding context, change risk, callers, callees, tests, error contracts for debug tasks, behavioral invariant impact, compact `idiom_context`, representative entry/call-chain context, recommended MCP follow-ups, adoption gaps, a file read plan with concrete source files, bounded line windows, and reasons, and a validation plan with focused test/typecheck/build commands, monorepo package script routing, tests to inspect, manual checks, environment rules, and validation gaps.
+
+### `get_idiom_aware_work_packet`
+
+One-call task packet that surfaces the same agent work packet with top-level idiom context for clients that want repo-local conventions first.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `task` | object | no | Optional task context with `task_type`, `target`, `related_paths`, `runtime_event`, `instructions`, or `success_criteria` |
+
+**Returns:** The normal agent work packet plus top-level `idiom_context` with selected idioms, local examples, do/avoid guidance, validation instructions, and likely violations.
 
 ### `evaluate_agent_readiness`
 
@@ -432,7 +570,7 @@ Load persisted agentic benchmark reports.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `id` | string | no | Report id, default `latest` |
-| `benchmark_type` | string | no | Restrict `latest` or `list` to an exact benchmark type such as `agentic-suite-with-unravl-vs-without-unravl`, `deterministic-agent-quality-proxy`, `live-agent-quality-ab`, or `incremental-analysis-agent-value` |
+| `benchmark_type` | string | no | Restrict `latest` or `list` to an exact benchmark type such as `agentic-suite-with-unravl-vs-without-unravl`, `deterministic-agent-quality-proxy`, `live-agent-quality-ab`, `live-agent-idiom-quality-ab`, or `incremental-analysis-agent-value` |
 | `list` | boolean | no | List reports instead of loading one |
 
 **Returns:** Report list or one report with Markdown rendering matched to the stored report type.
@@ -471,6 +609,47 @@ Run the work-quality benchmark layer on top of the agentic benchmark suite.
 | `orchestrator_timeout_ms` | number | no | Evaluator command timeout in milliseconds |
 
 **Returns:** Persisted report metadata, JSON report, Markdown report, success gates, context completeness, projected baseline quality, quality-score delta, token/time/file deltas, and optional live A/B execution results. Live results include copied repo paths, prompt/result/metric files, the with-Unravl work-packet artifact, binary diff paths, changed files, lines added/deleted, wall-clock duration, test status, provider token metrics when reported, deterministic orchestrator scores, optional external-orchestrator scores, and separated patch-quality, hidden-validation, command-completion, and timeout signals.
+
+### `run_agent_idiom_benchmark`
+
+Run copied-repo A/B idiom quality tasks. Both arms receive the same task; the with-Unravl arm receives CAS idiom context and the without-Unravl arm is prohibited from using CAS/MCP/precomputed work packets.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `paths` | string[] | no | Project paths to benchmark. Omit to use all analyzed repositories |
+| `max_targets` | number | no | Maximum repositories to benchmark |
+| `max_tasks_per_repo` | number | no | Maximum idiom tasks per repo |
+| `agent_with_command` | string | no | Live with-Unravl command template |
+| `agent_without_command` | string | no | Live without-Unravl command template |
+| `orchestrator_command` | string | no | Optional external evaluator command template |
+| `test_command` | string | no | Optional validation command inside each copied repo |
+| `work_root` | string | no | Directory for copied repos, prompts, diffs, metrics, and evaluator artifacts |
+| `max_live_tasks` | number | no | Maximum live task pairs |
+| `timeout_ms` | number | no | Per-agent timeout |
+| `test_timeout_ms` | number | no | Per-test timeout |
+| `orchestrator_timeout_ms` | number | no | Evaluator timeout |
+
+**Returns:** Persisted report metadata, JSON report, Markdown report, per-arm scores for correctness, idiom conformance, minimality, test relevance, boundary preservation, file targeting, token/time deltas when available, and live artifacts when commands are supplied.
+
+### `run_machine_agent_proof`
+
+Discover every real Git repo under a dev root, account for unsupported/skipped repos, and run analysis/readiness/idiom/incremental/live proof gates for eligible repos.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `dev_root` | string | no | Root to discover Git repos under; default `~/dev` |
+| `max_targets` | number | no | Limit eligible repos for expensive checks while still reporting all discovered repos |
+| `work_root` | string | no | Directory for copied repos and benchmark artifacts |
+| `no_live` | boolean | no | Skip live idiom A/B execution; live proof gate still fails when skipped |
+| `agent_with_command` | string | no | Live with-Unravl agent command template |
+| `agent_without_command` | string | no | Live without-Unravl agent command template |
+| `orchestrator_command` | string | no | Optional external evaluator command template |
+| `test_command` | string | no | Optional copied-repo validation command |
+| `max_live_tasks` | number | no | Maximum live idiom task pairs |
+| `timeout_ms` | number | no | Per-agent timeout |
+| `test_timeout_ms` | number | no | Per-test timeout |
+
+**Returns:** Discovery inventory, selected eligible repo proof rows, unsupported/skipped reasons, incremental benchmark output, idiom benchmark output, and final gates. Acceptance fails if eligible repos are omitted, idiom proof is missing, incremental value regresses, or live idiom quality lacks a positive delta.
 
 ### `run_incremental_value_benchmark`
 
@@ -528,16 +707,42 @@ Multi-view analysis perspectives with connection rules and layout hints.
 
 Find code elements by name, qualified name, or description. Supports filtering by type, category, and hierarchy level. Multi-word queries use camelCase-aware matching -- searching "react analyzer" will match `ReactAnalyzer`, `react-analyzer`, etc. Results are ranked by type relevance: classes, services, and controllers appear first; imports are deprioritized.
 
+The `mode` parameter selects the retrieval strategy. The default `hybrid` mode fuses lexical matching with vector similarity and a structural re-rank, so natural-language queries resolve even without lexical overlap. `lexical` is the keyword-only scan. `semantic` is vector-only. When the analysis has no embedding index, `semantic` and `hybrid` fall back to lexical.
+
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
 | `query` | string | yes | Search text (matches name, qualified_name, description). Multi-word queries also match across camelCase/kebab-case/snake_case boundaries |
+| `mode` | string | no | Retrieval strategy: `lexical`, `semantic`, or `hybrid` (default `hybrid`) |
 | `type` | string | no | Filter by node type (class, function, module, service, controller, etc.) |
 | `category` | string | no | Filter by category |
 | `level` | number | no | Filter by hierarchy level |
 | `limit` | number | no | Max results (default 25) |
 
 **Returns:** Array of `{ id, name, type, qualified_name, category, level, level_name, file, line, description, tags }`.
+
+### `semantic_search`
+
+Natural-language query that returns graph-anchored ranked nodes. Use this for "where do we validate user input" or "the code that sends emails" style questions, where the exact symbol name is unknown. The hybrid query path embeds the query, retrieves vector top-K, fuses with lexical matching via reciprocal rank fusion, and applies a structural re-rank that rewards entry points, high connectivity, and test coverage. Every result is anchored to a CAS node and carries its structural context. Requires an embedding index on the analysis; check `get_embedding_status` first if unsure.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `query` | string | yes | Natural-language description of the code you are looking for |
+| `limit` | number | no | Max results (default 25) |
+| `type` | string | no | Filter by node type |
+
+**Returns:** Array of `SemanticSearchResult` -- `{ node_id, name, qualified_name, type, framework_role, file, scores: { semantic, lexical, structural, final }, graph_context: { caller_count, callee_count, test_count, is_entry_point, risk } }`.
+
+### `get_embedding_status`
+
+Reports the analysis's semantic embedding index: model, dimensions, document version, store, coverage (embedded, skipped, failed), and `generated_at`, or that no index exists. Use this to confirm semantic retrieval is available and current before relying on `semantic_search` or `search_nodes` in `semantic`/`hybrid` mode.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+
+**Returns:** The `embedding_index` metadata (`model`, `provider`, `dimensions`, `document_version`, `store`, `generated_at`, `node_count`, `coverage`, `degraded`, `degraded_reason`), or a report that no embedding index is present.
 
 ### `get_node`
 
@@ -943,6 +1148,53 @@ Validate a working diff, explicit file list, or provided unified diff against CA
 | `limit` | number | no | Maximum impacted invariants to return |
 
 **Returns:** Status, diff source, changed-file summary, impacted invariants with required checks and evidence, failures, warnings, consolidated checks, and next steps. A failure means the agent should fix or report the invariant blocker before claiming the change is complete.
+
+### `get_codebase_idioms`
+
+Repo-local conventions inferred from CAS. Use this before edits when a task needs to match local naming, placement, framework, data, testing, migration, logging, or auth/tenant-scope practices.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `category` | string | no | Filter by `naming`, `file-organization`, `module-boundary`, `dependency-injection`, `data-access`, `error-handling`, `validation`, `auth-tenant-scope`, `logging`, `testing`, `migrations`, `async-style`, or `configuration` |
+| `target` | string | no | Node id, file path, or text target |
+| `min_confidence` | number | no | Minimum confidence from 0-1 |
+| `limit` | number | no | Max results (default 25) |
+| `offset` | number | no | Skip first N results |
+
+**Returns:** Idiom summaries with evidence, examples, affected scopes, do/avoid/validation guidance, and known deviations.
+
+### `get_idiom_examples`
+
+Positive examples for a specific idiom, category, or target.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `idiom_id` | string | no | Specific idiom id from `get_codebase_idioms` |
+| `category` | string | no | Optional idiom category filter |
+| `target` | string | no | Node id, file path, or text target |
+| `limit` | number | no | Max results |
+| `offset` | number | no | Skip first N results |
+
+**Returns:** Example files, lines, nodes, excerpts, and explanations agents can inspect before editing.
+
+### `validate_codebase_idioms`
+
+Validate a working diff, explicit file list, or provided unified diff against repo-local idioms. Use this after edits and before finalizing alongside `validate_behavioral_invariants`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `target` | string | no | Node id, file path, or text target |
+| `category` | string | no | Optional idiom category filter |
+| `files` | string[] | no | Explicit changed files to validate instead of reading the working tree |
+| `diff_text` | string | no | Unified diff text to validate |
+| `include_working_tree` | boolean | no | When false, validate only `files` and `diff_text`; default true reads git working-tree and staged changes |
+| `min_confidence` | number | no | Minimum idiom confidence |
+| `limit` | number | no | Maximum impacted idioms to return |
+
+**Returns:** Status, changed-file summary, impacted idioms, violations, required checks, and next steps. It flags non-local naming, misplaced files, schema changes without migrations, missing focused tests, generic errors, transient logging, and auth/tenant-scope drift when those idioms exist.
 
 ### `get_stability`
 

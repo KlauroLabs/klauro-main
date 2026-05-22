@@ -104,7 +104,8 @@ export class WPFAnalyzer extends BaseAnalyzer {
     try {
       const csprojFiles = await glob(['**/*.csproj'], {
         cwd: projectPath,
-        ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**']
+        ignore: this.getIgnorePatterns({ projectPath }),
+        nodir: true
       });
 
       for (const csproj of csprojFiles) {
@@ -116,7 +117,8 @@ export class WPFAnalyzer extends BaseAnalyzer {
 
       const xamlFiles = await glob(['**/*.xaml'], {
         cwd: projectPath,
-        ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**']
+        ignore: this.getIgnorePatterns({ projectPath }),
+        nodir: true
       });
 
       return xamlFiles.length > 0;
@@ -158,12 +160,14 @@ export class WPFAnalyzer extends BaseAnalyzer {
 
       const csFiles = await glob(['**/*.cs'], {
         cwd: context.projectPath,
-        ignore: ignorePatterns
+        ignore: [...this.getIgnorePatterns(context), ...ignorePatterns],
+        nodir: true
       });
 
       const xamlFiles = await glob(['**/*.xaml'], {
         cwd: context.projectPath,
-        ignore: ignorePatterns
+        ignore: [...this.getIgnorePatterns(context), ...ignorePatterns],
+        nodir: true
       });
 
       const windows = await this.analyzeWindows(csFiles, xamlFiles, context.projectPath, existingNodes, newNodes, enhancedNodes, edges);

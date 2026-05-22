@@ -37,7 +37,8 @@ export class ZustandAnalyzer extends BaseAnalyzer {
     const sourceFiles = await glob('**/*.{ts,tsx,js,jsx}', {
       cwd: projectPath,
       ignore: [...ignorePatterns, '**/*.test.*', '**/*.spec.*'],
-      absolute: false
+      absolute: false,
+      nodir: true
     });
 
     const nodes: CASNode[] = [];

@@ -113,7 +113,8 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
 
       const javaFiles = await glob(['**/*.java'], {
         cwd: projectPath,
-        ignore: ['**/target/**', '**/build/**', '**/.git/**', '**/bin/**', '**/out/**', '**/*.class']
+        ignore: [...this.getIgnorePatterns({ projectPath }), '**/*.class'],
+        nodir: true
       });
 
       for (const file of javaFiles) {
@@ -138,7 +139,8 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     try {
       const javaFiles = await glob(['**/*.java'], {
         cwd: context.projectPath,
-        ignore: ['**/target/**', '**/build/**', '**/.git/**', '**/bin/**', '**/out/**', '**/*.class', '**/test/**']
+        ignore: [...this.getIgnorePatterns(context), '**/*.class', '**/test/**'],
+        nodir: true
       });
 
       const application = await this.analyzeApplication(javaFiles, context.projectPath, nodes);

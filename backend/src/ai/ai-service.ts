@@ -2,6 +2,7 @@ import { aiConfig, AIConfig } from '../config/ai.config';
 import { OpenAIProvider } from './providers/openai-provider';
 import { ClaudeProvider } from './providers/claude-provider';
 import { FallbackProvider } from './providers/fallback-provider';
+import { LocalProvider } from './providers/local-provider';
 import { AICache } from './ai-cache';
 import { ComponentNode, ArchitectureBlueprint, RiskArea } from '../types';
 import { prompts } from './ai-prompts';
@@ -153,6 +154,19 @@ export class AIService {
       }
     } catch (error) {
       this.logger.warn('Failed to initialize Claude provider:', error);
+    }
+
+    try {
+      if (aiConfig.local.enabled) {
+        this.providers.set('local', new LocalProvider({
+          model: aiConfig.local.model,
+          maxTokens: aiConfig.local.maxTokens,
+          temperature: aiConfig.local.temperature,
+        }));
+        this.logger.info('Local provider initialized');
+      }
+    } catch (error) {
+      this.logger.warn('Failed to initialize Local provider:', error);
     }
 
     // Fallback provider is always available
@@ -378,10 +392,21 @@ export class AIService {
       context.framework || 'unknown'
     ];
 
+    const crypto = require('crypto');
+
     if (context.code) {
       // Use a hash of the code for cache key
-      const crypto = require('crypto');
       keyParts.push(crypto.createHash('md5').update(context.code).digest('hex').substring(0, 8));
+    }
+
+    // When the request is driven by structural facts rather than a component
+    // or raw code (e.g. system-level interpretation), the facts themselves
+    // are what distinguish one request from another. Without this, every
+    // system-level call collides on `description:global:unknown:unknown` and
+    // one project's description leaks into the next.
+    if (context.additionalContext && Object.keys(context.additionalContext).length > 0) {
+      const serialized = JSON.stringify(context.additionalContext);
+      keyParts.push(crypto.createHash('md5').update(serialized).digest('hex').substring(0, 12));
     }
 
     return keyParts.join(':');

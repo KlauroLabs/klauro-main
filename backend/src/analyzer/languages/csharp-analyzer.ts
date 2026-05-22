@@ -135,6 +135,19 @@ interface CSharpStruct {
   isReadonly: boolean;
 }
 
+interface CSharpFallbackCallGraphIndex {
+  edgeIds: Set<string>;
+  exitIds: Set<string>;
+  classIds: Set<string>;
+  methodsInFileByPath: Map<string, CASNode[]>;
+  methodNodesByName: Map<string, CASNode[]>;
+  classNodesByName: Map<string, CASNode[]>;
+  methodsByClassId: Map<string, CASNode[]>;
+  classByMethodId: Map<string, CASNode>;
+  methodNodesById: Map<string, CASNode>;
+  classNodesById: Map<string, CASNode>;
+}
+
 export class CSharpAnalyzer extends BaseAnalyzer {
   private aspNetCoreDetected = false;
   private entityFrameworkDetected = false;
@@ -142,6 +155,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   private dotNetFrameworkProject = false;
   private astRunner: TreeSitterParser;
   private astCache = new Map<string, CSharpASTNode>();
+  private fileCache = new Map<string, { content: string; lines: string[]; comments: CASComment[] }>();
   private todoCounter = 0;
   private commentCounter = 0;
 
@@ -157,14 +171,17 @@ export class CSharpAnalyzer extends BaseAnalyzer {
 
   async canAnalyze(projectPath: string): Promise<boolean> {
     try {
+      const ignore = this.getCSharpIgnorePatterns({ projectPath });
       const csharpFiles = await glob(['**/*.cs'], {
         cwd: projectPath,
-        ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**', '**/vendor/**']
+        ignore,
+        nodir: true
       });
 
       const projectFiles = await glob(['**/*.csproj', '**/*.sln', '**/*.vbproj'], {
         cwd: projectPath,
-        ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**', '**/vendor/**']
+        ignore,
+        nodir: true
       });
 
       return csharpFiles.length > 0 || projectFiles.length > 0;
@@ -180,8 +197,39 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   async getRelevantFiles(projectPath: string): Promise<string[]> {
     return glob(['**/*.cs'], {
       cwd: projectPath,
-      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**', '**/vendor/**', '**/Tests/**', '**/*Test.cs', '**/*Tests.cs']
+      ignore: this.getCSharpIgnorePatterns({ projectPath }, true),
+      nodir: true
     });
+  }
+
+  private getCSharpIgnorePatterns(context: AnalysisContext, excludeTests = false): string[] {
+    const generated = [
+      '**/bin/**',
+      '**/obj/**',
+      '**/*.Designer.cs',
+      '**/*.designer.cs',
+      '**/*.g.cs',
+      '**/*.g.i.cs',
+      '**/Migrations/*Snapshot.cs'
+    ];
+
+    const tests = excludeTests
+      ? ['**/Tests/**', '**/*Test.cs', '**/*Tests.cs']
+      : [];
+
+    return [...this.getIgnorePatterns(context), ...generated, ...tests];
+  }
+
+  private async getCachedFile(fullPath: string): Promise<{ content: string; lines: string[]; comments: CASComment[] }> {
+    const cached = this.fileCache.get(fullPath);
+    if (cached) return cached;
+
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const lines = content.split('\n');
+    const comments = this.extractCommentsFromFile(content, fullPath);
+    const fileData = { content, lines, comments };
+    this.fileCache.set(fullPath, fileData);
+    return fileData;
   }
 
   async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
@@ -250,12 +298,14 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     const libraries: any[] = [];
 
     try {
+      this.fileCache.clear();
       await this.detectProjectType(context.projectPath);
       await this.extractDependencies(context.projectPath, libraries);
 
       const csharpFiles = await glob(['**/*.cs'], {
         cwd: context.projectPath,
-        ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**', '**/Tests/**', '**/*Test.cs', '**/*Tests.cs']
+        ignore: this.getCSharpIgnorePatterns(context, true),
+        nodir: true
       });
 
       const namespaces = new Map<string, string[]>();
@@ -296,9 +346,11 @@ export class CSharpAnalyzer extends BaseAnalyzer {
         }
       });
       contribution.libraries = casLibraries;
+      this.fileCache.clear();
       return contribution;
 
     } catch (error) {
+      this.fileCache.clear();
       throw new AnalyzerError(
         `C# analysis failed: ${(error as Error).message}`,
         'CSHARP_ANALYSIS_ERROR'
@@ -309,7 +361,8 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   private async detectProjectType(projectPath: string): Promise<void> {
     const csprojFiles = await glob(['**/*.csproj'], {
       cwd: projectPath,
-      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**', '**/vendor/**']
+      ignore: this.getCSharpIgnorePatterns({ projectPath }),
+      nodir: true
     });
 
     for (const csprojFile of csprojFiles) {
@@ -341,7 +394,8 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   private async extractDependencies(projectPath: string, libraries: any[]): Promise<void> {
     const csprojFiles = await glob(['**/*.csproj'], {
       cwd: projectPath,
-      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**', '**/vendor/**']
+      ignore: this.getCSharpIgnorePatterns({ projectPath }),
+      nodir: true
     });
 
     for (const csprojFile of csprojFiles) {
@@ -350,7 +404,8 @@ export class CSharpAnalyzer extends BaseAnalyzer {
 
     const packagesConfigFiles = await glob(['**/packages.config'], {
       cwd: projectPath,
-      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**', '**/vendor/**']
+      ignore: this.getCSharpIgnorePatterns({ projectPath }),
+      nodir: true
     });
 
     for (const packagesFile of packagesConfigFiles) {
@@ -429,8 +484,8 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     _context: AnalysisContext
   ): Promise<void> {
     try {
-      const content = await fs.readFile(fullPath, 'utf-8');
-      const lines = content.split('\n');
+      const fileData = await this.getCachedFile(fullPath);
+      const { content, lines } = fileData;
 
       const namespace = this.extractNamespace(content);
       const usings = this.extractUsings(content);
@@ -447,7 +502,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       }
 
       const fileId = `file_${this.sanitizeId(relativePath)}`;
-      const fileComments = this.extractCommentsFromFile(content, fullPath);
+      const fileComments = fileData.comments;
       const fileTodos = this.extractTodosFromComments(fileComments, fullPath);
 
       const fileNode = this.createNodeBuilder(fileId, relativePath.split('/').pop() || 'unknown.cs', 'file')
@@ -507,11 +562,11 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       }
 
       for (const cls of classes) {
-        await this.processCSharpClass(cls, fileId, fullPath, nodes, edges, entryPoints);
+        await this.processCSharpClass(cls, fileId, fullPath, content, lines, fileComments, nodes, edges, entryPoints);
       }
 
       for (const intf of interfaces) {
-        await this.processCSharpInterface(intf, fileId, fullPath, nodes, edges, entryPoints);
+        await this.processCSharpInterface(intf, fileId, fullPath, lines, nodes, edges, entryPoints);
       }
 
       for (const enm of enums) {
@@ -531,16 +586,16 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     cls: CSharpClass,
     fileId: string,
     fullPath: string,
+    content: string,
+    lines: string[],
+    fileComments: CASComment[],
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: any[]
   ): Promise<void> {
     const classId = `class_${this.sanitizeId(cls.namespace)}_${this.sanitizeId(cls.name)}`;
-    const content = await fs.readFile(fullPath, 'utf-8');
-    const lines = content.split('\n');
 
     const documentation = this.extractDocumentationFromXmlComment(lines, cls.lineStart - 1);
-    const fileComments = this.extractCommentsFromFile(content, fullPath);
     const classComments = fileComments.filter(c =>
       c.location.line >= cls.lineStart &&
       (c.location.end_line ? c.location.end_line <= cls.lineEnd : c.location.line <= cls.lineEnd)
@@ -706,13 +761,12 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     intf: CSharpInterface,
     fileId: string,
     fullPath: string,
+    lines: string[],
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: any[]
   ): Promise<void> {
     const interfaceId = `interface_${this.sanitizeId(intf.namespace)}_${this.sanitizeId(intf.name)}`;
-    const content = await fs.readFile(fullPath, 'utf-8');
-    const lines = content.split('\n');
     const documentation = this.extractDocumentationFromXmlComment(lines, intf.lineStart - 1);
 
     const interfaceNode = this.createNodeBuilder(interfaceId, intf.name, 'interface')
@@ -1573,14 +1627,15 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   ): Promise<void> {
     const csharpFiles = await glob(['**/*.cs'], {
       cwd: projectPath,
-      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**', '**/vendor/**']
+      ignore: this.getCSharpIgnorePatterns({ projectPath }, true),
+      nodir: true
     });
 
     for (const relativeFile of csharpFiles) {
       const fullPath = path.join(projectPath, relativeFile);
       let content = '';
       try {
-        content = await fs.readFile(fullPath, 'utf8');
+        content = (await this.getCachedFile(fullPath)).content;
       } catch {
         continue;
       }
@@ -1986,7 +2041,8 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   private async buildProjectReferenceEdges(projectPath: string, nodes: CASNode[], edges: CASEdge[]): Promise<void> {
     const csprojFiles = await glob(['**/*.csproj'], {
       cwd: projectPath,
-      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**', '**/vendor/**']
+      ignore: this.getCSharpIgnorePatterns({ projectPath }),
+      nodir: true
     });
 
     for (const csprojFile of csprojFiles) {
@@ -2090,11 +2146,76 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   private async analyzeCallGraph(projectPath: string, nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[]): Promise<void> {
     const csharpFiles = await glob(['**/*.cs'], {
       cwd: projectPath,
-      ignore: ['**/bin/**', '**/obj/**', '**/.git/**', '**/packages/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**', '**/vendor/**']
+      ignore: this.getCSharpIgnorePatterns({ projectPath }, true),
+      nodir: true
     });
 
     const methodNodes = nodes.filter(n => n.type === 'method');
     const classNodes = nodes.filter(n => n.type === 'class' || n.type === 'worker' || n.type === 'interface' || n.type === 'struct');
+    const edgeIds = new Set(edges.map(edge => edge.id));
+    const exitIds = new Set(exitPoints.map(exit => exit.id));
+    const classIds = new Set(classNodes.map(node => node.id));
+    const methodNodesById = new Map(methodNodes.map(node => [node.id, node]));
+    const methodNodesByName = new Map<string, CASNode[]>();
+    const classNodesByName = new Map<string, CASNode[]>();
+    const methodNodesByFileAndName = new Map<string, CASNode[]>();
+    const methodsByClassId = new Map<string, CASNode[]>();
+
+    for (const method of methodNodes) {
+      const byName = methodNodesByName.get(method.name) || [];
+      byName.push(method);
+      methodNodesByName.set(method.name, byName);
+      if (method.source?.file) {
+        const key = `${method.source.file}:${method.name}`;
+        const byFile = methodNodesByFileAndName.get(key) || [];
+        byFile.push(method);
+        methodNodesByFileAndName.set(key, byFile);
+      }
+    }
+
+    for (const classNode of classNodes) {
+      const byName = classNodesByName.get(classNode.name) || [];
+      byName.push(classNode);
+      classNodesByName.set(classNode.name, byName);
+    }
+
+    for (const edge of edges) {
+      if ((edge.type === 'has_method' || edge.type === 'declares') && classIds.has(edge.source)) {
+        const method = methodNodesById.get(edge.target);
+        if (method) {
+          const methods = methodsByClassId.get(edge.source) || [];
+          methods.push(method);
+          methodsByClassId.set(edge.source, methods);
+        }
+      }
+    }
+
+    const firstMethodByName = (name?: string) => name ? methodNodesByName.get(name)?.[0] : undefined;
+    const firstClassByName = (name?: string) => name ? classNodesByName.get(name)?.[0] : undefined;
+    const firstMethodByFileAndName = (file: string, name?: string) => name ? methodNodesByFileAndName.get(`${file}:${name}`)?.[0] : undefined;
+    const firstMethodInClass = (classId: string, name?: string) => {
+      if (!name) return undefined;
+      return (methodsByClassId.get(classId) || []).find(method => method.name === name);
+    };
+    const pushEdgeOnce = (edge: CASEdge) => {
+      if (edgeIds.has(edge.id)) return;
+      edgeIds.add(edge.id);
+      edges.push(edge);
+    };
+    const pushExitOnce = (exit: CASExitPoint) => {
+      if (exitIds.has(exit.id)) return;
+      exitIds.add(exit.id);
+      exitPoints.push(exit);
+    };
+
+    if (csharpFiles.length > 300) {
+      const fallbackIndex = this.buildFallbackCallGraphIndex(edges, exitPoints, methodNodes, classNodes);
+      for (const file of csharpFiles) {
+        const fullPath = path.join(projectPath, file);
+        await this.analyzeCallGraphFallback(fullPath, file, nodes, edges, exitPoints, methodNodes, classNodes, projectPath, fallbackIndex);
+      }
+      return;
+    }
 
     for (const file of csharpFiles) {
       const fullPath = path.join(projectPath, file);
@@ -2110,10 +2231,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
 
       for (const child of ast.children || []) {
         if (child.kind === 'Method' && child.invocations) {
-          const callerMethod = methodNodes.find(n =>
-            n.name === child.name &&
-            n.source?.file === fullPath
-          );
+          const callerMethod = firstMethodByFileAndName(fullPath, child.name);
 
           if (!callerMethod) continue;
 
@@ -2121,24 +2239,17 @@ export class CSharpAnalyzer extends BaseAnalyzer {
             let targetMethod: CASNode | undefined;
 
             if (invocation.target) {
-              const targetClass = classNodes.find(c => c.name === invocation.target);
+              const targetClass = firstClassByName(invocation.target);
               if (targetClass) {
-                targetMethod = methodNodes.find(n =>
-                  n.name === invocation.method &&
-                  edges.some(e => e.source === targetClass.id && e.target === n.id && e.type === 'has_method')
-                );
+                targetMethod = firstMethodInClass(targetClass.id, invocation.method);
               }
             } else {
-              targetMethod = methodNodes.find(n =>
-                n.name === invocation.method &&
-                n.type === 'method'
-              );
+              targetMethod = firstMethodByName(invocation.method);
             }
 
             if (targetMethod && targetMethod.id !== callerMethod.id) {
               const callEdgeId = `call_${callerMethod.id}_to_${targetMethod.id}_line_${invocation.line}`;
-              if (!edges.some(e => e.id === callEdgeId)) {
-                edges.push(this.createEdge(
+              pushEdgeOnce(this.createEdge(
                   callEdgeId,
                   callerMethod.id,
                   targetMethod.id,
@@ -2151,11 +2262,9 @@ export class CSharpAnalyzer extends BaseAnalyzer {
                     targetMethod: invocation.method
                   }
                 ));
-              }
             } else if (this.isExternalLibraryCall(invocation.target || invocation.method, invocation.target ? invocation.method : '', currentNamespace)) {
               const exitId = `exit_call_${callerMethod.id}_${invocation.target || ''}_${invocation.method}_${invocation.line}`;
-              if (!exitPoints.some(e => e.id === exitId)) {
-                exitPoints.push(this.createExitPoint(
+              pushExitOnce(this.createExitPoint(
                   exitId,
                   callerMethod.id,
                   'sdk',
@@ -2170,13 +2279,75 @@ export class CSharpAnalyzer extends BaseAnalyzer {
                     library: this.identifyCSharpLibrary(invocation.target || invocation.method)
                   }
                 ));
-              }
             }
           }
         }
       }
       await this.analyzeCallGraphFallback(fullPath, file, nodes, edges, exitPoints, methodNodes, classNodes, projectPath);
     }
+  }
+
+  private buildFallbackCallGraphIndex(
+    edges: CASEdge[],
+    exitPoints: CASExitPoint[],
+    methodNodes: CASNode[],
+    classNodes: CASNode[]
+  ): CSharpFallbackCallGraphIndex {
+    const edgeIds = new Set(edges.map(edge => edge.id));
+    const exitIds = new Set(exitPoints.map(exit => exit.id));
+    const classIds = new Set(classNodes.map(node => node.id));
+    const methodsInFileByPath = new Map<string, CASNode[]>();
+    const methodNodesByName = new Map<string, CASNode[]>();
+    const classNodesByName = new Map<string, CASNode[]>();
+    const methodsByClassId = new Map<string, CASNode[]>();
+    const classByMethodId = new Map<string, CASNode>();
+    const methodNodesById = new Map(methodNodes.map(node => [node.id, node]));
+    const classNodesById = new Map(classNodes.map(node => [node.id, node]));
+
+    for (const method of methodNodes) {
+      if (method.source?.file) {
+        const methodsInFile = methodsInFileByPath.get(method.source.file) || [];
+        methodsInFile.push(method);
+        methodsInFileByPath.set(method.source.file, methodsInFile);
+      }
+      const methods = methodNodesByName.get(method.name) || [];
+      methods.push(method);
+      methodNodesByName.set(method.name, methods);
+    }
+
+    for (const classNode of classNodes) {
+      const classes = classNodesByName.get(classNode.name) || [];
+      classes.push(classNode);
+      classNodesByName.set(classNode.name, classes);
+    }
+
+    for (const edge of edges) {
+      if ((edge.type === 'has_method' || edge.type === 'declares') && classIds.has(edge.source)) {
+        const method = methodNodesById.get(edge.target);
+        const classNode = classNodesById.get(edge.source);
+        if (method) {
+          const methods = methodsByClassId.get(edge.source) || [];
+          methods.push(method);
+          methodsByClassId.set(edge.source, methods);
+        }
+        if (method && classNode) {
+          classByMethodId.set(method.id, classNode);
+        }
+      }
+    }
+
+    return {
+      edgeIds,
+      exitIds,
+      classIds,
+      methodsInFileByPath,
+      methodNodesByName,
+      classNodesByName,
+      methodsByClassId,
+      classByMethodId,
+      methodNodesById,
+      classNodesById
+    };
   }
 
   private async analyzeCallGraphFallback(
@@ -2187,19 +2358,48 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     exitPoints: CASExitPoint[],
     methodNodes: CASNode[],
     classNodes: CASNode[],
-    projectPath: string
+    projectPath: string,
+    sharedIndex?: CSharpFallbackCallGraphIndex
   ): Promise<void> {
-    const content = await fs.readFile(fullPath, 'utf-8');
-    const lines = content.split('\n');
+    const fileData = await this.getCachedFile(fullPath);
+    const { content, lines } = fileData;
     const currentNamespace = this.extractNamespace(content) || 'global';
+    const localIndex = sharedIndex || this.buildFallbackCallGraphIndex(edges, exitPoints, methodNodes, classNodes);
+    const {
+      edgeIds,
+      exitIds,
+      methodsInFileByPath,
+      methodNodesByName,
+      classNodesByName,
+      methodsByClassId,
+      classByMethodId
+    } = localIndex;
+    const methodsInFile = methodsInFileByPath.get(fullPath) || [];
+
+    const callerForLine = (line: number) => methodsInFile.find(n =>
+      n.source?.line !== undefined && n.source.line <= line &&
+      n.source?.end_line !== undefined && n.source.end_line >= line
+    );
+    const firstMethodByName = (name?: string) => name ? methodNodesByName.get(name)?.[0] : undefined;
+    const firstClassByName = (name?: string) => name ? classNodesByName.get(name)?.[0] : undefined;
+    const firstMethodInClass = (classId: string, name?: string) => {
+      if (!name) return undefined;
+      return (methodsByClassId.get(classId) || []).find(method => method.name === name);
+    };
+    const pushEdgeOnce = (edge: CASEdge) => {
+      if (edgeIds.has(edge.id)) return;
+      edgeIds.add(edge.id);
+      edges.push(edge);
+    };
+    const pushExitOnce = (exit: CASExitPoint) => {
+      if (exitIds.has(exit.id)) return;
+      exitIds.add(exit.id);
+      exitPoints.push(exit);
+    };
 
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
-        const callerMethodForLine = methodNodes.find(n =>
-          n.source?.file === fullPath &&
-          n.source?.line !== undefined && n.source.line <= i + 1 &&
-          n.source?.end_line !== undefined && n.source.end_line >= i + 1
-        );
+        const callerMethodForLine = callerForLine(i + 1);
 
         if (callerMethodForLine) {
           const mediatorDispatches = Array.from(line.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\.Send\s*\(\s*new\s+([A-Za-z_][A-Za-z0-9_]*(?:<[^>)]+>)?)/g));
@@ -2216,8 +2416,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
               content
             );
             const edgeId = `call_${callerMethodForLine.id}_to_${targetId}_${i}`;
-            if (!edges.some(edge => edge.id === edgeId)) {
-              edges.push(this.createEdge(
+            pushEdgeOnce(this.createEdge(
                 edgeId,
                 callerMethodForLine.id,
                 targetId,
@@ -2233,7 +2432,6 @@ export class CSharpAnalyzer extends BaseAnalyzer {
                   dispatcher: dispatch[1]
                 }
               ));
-            }
           }
 
           const bareCalls = Array.from(line.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g))
@@ -2246,18 +2444,13 @@ export class CSharpAnalyzer extends BaseAnalyzer {
             });
           for (const call of bareCalls) {
             const methodName = call[1];
-            const containingClass = classNodes.find(c =>
-              edges.some(e => e.source === c.id && e.target === callerMethodForLine.id && e.type === 'has_method')
-            );
-            const targetMethod = methodNodes.find(n =>
-              n.name === methodName &&
-              n.id !== callerMethodForLine.id &&
-              (!containingClass || edges.some(e => e.source === containingClass.id && e.target === n.id && e.type === 'has_method'))
-            );
-            if (targetMethod) {
+            const containingClass = classByMethodId.get(callerMethodForLine.id);
+            const targetMethod = containingClass
+              ? firstMethodInClass(containingClass.id, methodName)
+              : firstMethodByName(methodName);
+            if (targetMethod && targetMethod.id !== callerMethodForLine.id) {
               const callEdgeId = `call_${callerMethodForLine.id}_to_${targetMethod.id}_line_${i + 1}`;
-              if (!edges.some(edge => edge.id === callEdgeId)) {
-                edges.push(this.createEdge(
+              pushEdgeOnce(this.createEdge(
                   callEdgeId,
                   callerMethodForLine.id,
                   targetMethod.id,
@@ -2269,7 +2462,6 @@ export class CSharpAnalyzer extends BaseAnalyzer {
                     targetMethod: methodName
                   }
                 ));
-              }
             }
           }
         }
@@ -2293,59 +2485,41 @@ export class CSharpAnalyzer extends BaseAnalyzer {
           const objectOrClass = match[1];
           const methodName = match[2];
 
-          const callerMethod = methodNodes.find(n =>
-            n.source?.file === fullPath &&
-            n.source?.line !== undefined && n.source.line <= i + 1 &&
-            n.source?.end_line !== undefined && n.source.end_line >= i + 1
-          );
+          const callerMethod = callerMethodForLine;
 
           if (callerMethod) {
             let targetMethod: CASNode | undefined;
 
             if (objectOrClass === 'this' || objectOrClass === 'base') {
-              const containingClass = classNodes.find(c =>
-                edges.some(e => e.source === c.id && e.target === callerMethod.id && e.type === 'has_method')
-              );
+              const containingClass = classByMethodId.get(callerMethod.id);
 
               if (containingClass) {
                 const className = objectOrClass === 'base' && containingClass.metadata?.attributes?.baseClass
                   ? containingClass.metadata.attributes.baseClass
                   : containingClass.name;
 
-                targetMethod = methodNodes.find(n => {
-                  const parentClass = classNodes.find(c =>
-                    c.name === className &&
-                    edges.some(e => e.source === c.id && e.target === n.id && e.type === 'has_method')
-                  );
-                  return parentClass && n.name === methodName;
-                });
+                const targetClass = firstClassByName(className);
+                targetMethod = targetClass ? firstMethodInClass(targetClass.id, methodName) : undefined;
               }
             } else if (fullMatch.startsWith('new ')) {
-              const targetClass = classNodes.find(c => c.name === objectOrClass);
+              const targetClass = firstClassByName(objectOrClass);
               if (targetClass) {
-                targetMethod = methodNodes.find(n =>
-                  n.metadata?.attributes?.isConstructor &&
-                  edges.some(e => e.source === targetClass.id && e.target === n.id && e.type === 'has_method')
-                );
+                targetMethod = (methodsByClassId.get(targetClass.id) || []).find(n => n.metadata?.attributes?.isConstructor);
               }
             } else {
-              targetMethod = methodNodes.find(n => n.name === methodName);
+              targetMethod = firstMethodByName(methodName);
 
               if (!targetMethod) {
-                const targetClass = classNodes.find(c => c.name === objectOrClass);
+                const targetClass = firstClassByName(objectOrClass);
                 if (targetClass) {
-                  targetMethod = methodNodes.find(n =>
-                    n.name === methodName &&
-                    edges.some(e => e.source === targetClass.id && e.target === n.id && e.type === 'has_method')
-                  );
+                  targetMethod = firstMethodInClass(targetClass.id, methodName);
                 }
               }
             }
 
             if (targetMethod) {
               const callEdgeId = `call_${callerMethod.id}_to_${targetMethod.id}_${i}`;
-              if (!edges.some(e => e.id === callEdgeId)) {
-                edges.push(this.createEdge(
+              pushEdgeOnce(this.createEdge(
                   callEdgeId,
                   callerMethod.id,
                   targetMethod.id,
@@ -2360,11 +2534,9 @@ export class CSharpAnalyzer extends BaseAnalyzer {
                              fullMatch.includes('?.') ? 'null-conditional' : 'method'
                   }
                 ));
-              }
             } else if (this.isExternalLibraryCall(objectOrClass, methodName, currentNamespace)) {
               const exitId = `exit_call_${callerMethod.id}_${objectOrClass}_${methodName}_${i}`;
-              if (!exitPoints.some(e => e.id === exitId)) {
-                exitPoints.push(this.createExitPoint(
+              pushExitOnce(this.createExitPoint(
                   exitId,
                   callerMethod.id,
                   'sdk',
@@ -2380,23 +2552,17 @@ export class CSharpAnalyzer extends BaseAnalyzer {
                     isAsync: fullMatch.includes('await')
                   }
                 ));
-              }
             }
           }
         }
 
         for (const linqOp of linqOperations) {
           const operation = linqOp[0].slice(1).replace(/\s*\(/, '');
-          const callerMethod = methodNodes.find(n =>
-            n.source?.file === fullPath &&
-            n.source?.line !== undefined && n.source.line <= i + 1 &&
-            n.source?.end_line !== undefined && n.source.end_line >= i + 1
-          );
+          const callerMethod = callerMethodForLine;
 
           if (callerMethod) {
             const exitId = `exit_linq_${callerMethod.id}_${operation}_${i}`;
-            if (!exitPoints.some(e => e.id === exitId)) {
-              exitPoints.push(this.createExitPoint(
+            pushExitOnce(this.createExitPoint(
                 exitId,
                 callerMethod.id,
                 'sdk',
@@ -2410,7 +2576,6 @@ export class CSharpAnalyzer extends BaseAnalyzer {
                   library: 'System.Linq'
                 }
               ));
-            }
           }
         }
 
@@ -2424,16 +2589,13 @@ export class CSharpAnalyzer extends BaseAnalyzer {
 
           const nextMethodLine = this.findNextMethodDeclaration(lines, i);
           if (nextMethodLine !== -1) {
-            const methodAtLine = methodNodes.find(n =>
-              n.source?.file === fullPath &&
-              n.source?.line === nextMethodLine + 1
-            );
+            const methodAtLine = methodsInFile.find(n => n.source?.line === nextMethodLine + 1);
 
             if (methodAtLine && attributeType) {
               const endpointEdgeId = `http_endpoint_${methodAtLine.id}_${attributeType}_${i}`;
-              if (!edges.some(e => e.id === endpointEdgeId)) {
+              if (!edgeIds.has(endpointEdgeId)) {
                 const sourceNode = methodAtLine.parent || methodAtLine.id;
-                edges.push(this.createEdge(
+                pushEdgeOnce(this.createEdge(
                   endpointEdgeId,
                   sourceNode,
                   methodAtLine.id,

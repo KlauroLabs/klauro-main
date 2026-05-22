@@ -210,7 +210,30 @@ async function sourceFileStats(projectPath: string): Promise<SourceFileStat[]> {
     '**/{package.json,tsconfig.json,jsconfig.json,pyproject.toml,requirements.txt,go.mod,Cargo.toml,composer.json,pubspec.yaml,*.csproj,*.sln,README.md,readme.md}',
   ], {
     cwd: projectPath,
-    ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/target/**', '**/coverage/**', '**/.dart_tool/**', '**/bin/**', '**/obj/**'],
+    ignore: [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/build/**',
+      '**/.git/**',
+      '**/target/**',
+      '**/coverage/**',
+      '**/.dart_tool/**',
+      '**/bin/**',
+      '**/obj/**',
+      '**/vendor/**',
+      '**/vendors/**',
+      '**/site-packages/**',
+      '**/.sourcemaps/**',
+      '**/sourcemaps/**',
+      '**/*.js.map',
+      '**/*.css.map',
+      '**/*.bundle.js',
+      '**/*.bundle.css',
+      '**/*.min.js',
+      '**/*.min.css',
+      '**/Generated/**',
+      '**/generated/**',
+    ],
     nodir: true,
   });
   const stats: SourceFileStat[] = [];
@@ -298,10 +321,10 @@ function taskCard(id: string, label: string, category: BenchmarkTask['category']
   return { id, label, category, task, expected_outcome: expectedOutcome };
 }
 
-function scoreTask(cas: CASOutput, projectPath: string, benchmarkTask: BenchmarkTask, sourceFiles: SourceFileStat[], analysisDurationMs: number, taskCount: number): TaskScore {
+async function scoreTask(cas: CASOutput, projectPath: string, benchmarkTask: BenchmarkTask, sourceFiles: SourceFileStat[], analysisDurationMs: number, taskCount: number): Promise<TaskScore> {
   const task = benchmarkTask.task;
   const packetStartedAt = Date.now();
-  const packet = getAgentWorkPacket(cas, projectPath, task);
+  const packet = await getAgentWorkPacket(cas, projectPath, task);
   const packetGenerationMs = Math.max(1, Date.now() - packetStartedAt);
   const filesInRepo = sourceFiles.length;
   const planFiles = packet.file_read_plan.map(item => String(item.file)).filter(Boolean);
@@ -361,7 +384,7 @@ function beatsColdRepoRead(filesInRepo: number, plannedFiles: number, reduction:
 function buildAgenticComparison(
   projectPath: string,
   task: AgentTask,
-  packet: ReturnType<typeof getAgentWorkPacket>,
+  packet: Awaited<ReturnType<typeof getAgentWorkPacket>>,
   sourceFiles: SourceFileStat[],
   packetGenerationMs: number,
   amortizedAnalysisMs = 0
@@ -688,7 +711,7 @@ async function analyzeTarget(target: BenchmarkTarget, options: { requestedTask?:
     : options.suite
       ? taskSuiteForCas(cas, target.expectation, options.maxTasksPerRepo || 8)
       : tasksForExpectation(target.expectation);
-  const taskScores = tasks.map(task => scoreTask(cas, target.path, task, sourceFiles, analysisDurationMs, tasks.length));
+  const taskScores = await Promise.all(tasks.map(task => scoreTask(cas, target.path, task, sourceFiles, analysisDurationMs, tasks.length)));
   const score = Math.round(average(taskScores.map(task => task.score)));
   const averageReduction = Math.round(average(taskScores.map(task => task.baseline.file_reduction_percentage)));
   const withSuccessRate = average(taskScores.map(task => task.solution.with_unravl.success ? 100 : 0));

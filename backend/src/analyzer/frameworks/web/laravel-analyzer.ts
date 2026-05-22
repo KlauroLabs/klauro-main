@@ -144,7 +144,8 @@ export class LaravelAnalyzer extends BaseAnalyzer {
 
       const phpFiles = await glob(['**/*.php'], {
         cwd: projectPath,
-        ignore: ['**/vendor/**', '**/node_modules/**', '**/.git/**', '**/storage/framework/**', '**/bootstrap/cache/**']
+        ignore: [...this.getIgnorePatterns({ projectPath }), '**/storage/framework/**', '**/bootstrap/cache/**'],
+        nodir: true
       });
 
       for (const file of phpFiles) {
@@ -169,7 +170,8 @@ export class LaravelAnalyzer extends BaseAnalyzer {
     try {
       const phpFiles = await glob(['**/*.php'], {
         cwd: context.projectPath,
-        ignore: ['**/vendor/**', '**/node_modules/**', '**/.git/**', '**/storage/framework/**', '**/bootstrap/cache/**', '**/tests/**', '**/test/**']
+        ignore: [...this.getIgnorePatterns(context), '**/storage/framework/**', '**/bootstrap/cache/**', '**/tests/**', '**/test/**'],
+        nodir: true
       });
 
       const application = await this.analyzeApplication(context.projectPath, nodes);
@@ -842,7 +844,8 @@ export class LaravelAnalyzer extends BaseAnalyzer {
   ): Promise<string[]> {
     const bladeFiles = await glob(['resources/views/**/*.blade.php'], {
       cwd: projectPath,
-      ignore: ['**/vendor/**', '**/node_modules/**']
+      ignore: this.getIgnorePatterns({ projectPath }),
+      nodir: true
     });
 
     for (const file of bladeFiles) {

@@ -138,12 +138,14 @@ export class PythonAnalyzer extends BaseAnalyzer {
     try {
       const pythonFiles = await glob(['**/*.py'], {
         cwd: projectPath,
-        ignore: ['**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**', '**/.git/**', '**/src/analyzer/**', '**/analyzer/**', '**/analyzers/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**']
+        ignore: [...this.getIgnorePatterns({ projectPath }), '**/src/analyzer/**', '**/analyzer/**', '**/analyzers/**'],
+        nodir: true
       });
 
       const configFiles = await glob(['requirements.txt', 'setup.py', 'pyproject.toml', 'Pipfile'], {
         cwd: projectPath,
-        ignore: ['**/src/analyzer/**', '**/analyzer/**', '**/analyzers/**', '**/node_modules/**']
+        ignore: [...this.getIgnorePatterns({ projectPath }), '**/src/analyzer/**', '**/analyzer/**', '**/analyzers/**'],
+        nodir: true
       });
 
       return pythonFiles.length > 0 || configFiles.length > 0;
@@ -160,7 +162,8 @@ export class PythonAnalyzer extends BaseAnalyzer {
     const ignorePatterns = this.getIgnorePatterns({ projectPath });
     return glob(['**/*.py'], {
       cwd: projectPath,
-      ignore: [...ignorePatterns, '**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**']
+      ignore: [...ignorePatterns, '**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**'],
+      nodir: true
     });
   }
 
@@ -213,7 +216,8 @@ export class PythonAnalyzer extends BaseAnalyzer {
       const pythonIgnorePatterns = [...ignorePatterns, '**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**'];
       const pythonFiles = await glob(['**/*.py'], {
         cwd: context.projectPath,
-        ignore: pythonIgnorePatterns
+        ignore: pythonIgnorePatterns,
+        nodir: true
       });
 
       const modules = new Map<string, string[]>();

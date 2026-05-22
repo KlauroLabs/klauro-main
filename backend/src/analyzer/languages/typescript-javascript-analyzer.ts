@@ -103,6 +103,9 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private nodeById = new Map<string, CASNode>();
   private nodesByName = new Map<string, CASNode[]>();
   private methodsByParent = new Map<string, CASNode[]>();
+  private callEdgeIds = new Set<string>();
+  private exitPointIds = new Set<string>();
+  private callTargetResolutionCache = new Map<string, string | undefined>();
 
   constructor() {
     super(
@@ -117,7 +120,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     try {
       const files = await glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
         cwd: projectPath,
-        ignore: this.getIgnorePatterns({ projectPath })
+        ignore: this.getIgnorePatterns({ projectPath }),
+        nodir: true
       });
       return files.length > 0;
     } catch {
@@ -132,7 +136,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   async getRelevantFiles(projectPath: string): Promise<string[]> {
     return glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
       cwd: projectPath,
-      ignore: this.getIgnorePatterns({ projectPath })
+      ignore: this.getIgnorePatterns({ projectPath }),
+      nodir: true
     });
   }
 
@@ -338,7 +343,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
       const sourceFiles = await glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
         cwd: context.projectPath,
-        ignore: this.getIgnorePatterns(context)
+        ignore: this.getIgnorePatterns(context),
+        nodir: true
       });
       tsTimings['glob'] = Date.now() - tsStart;
 
@@ -370,6 +376,9 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
       tsStart = Date.now();
       this.buildNodeIndexes(nodes);
+      this.callEdgeIds = new Set(edges.map(edge => edge.id));
+      this.exitPointIds = new Set(exitPoints.map(exitPoint => exitPoint.id));
+      this.callTargetResolutionCache.clear();
       tsTimings['buildIndexes'] = Date.now() - tsStart;
 
       tsStart = Date.now();
@@ -460,7 +469,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
             const stat = await fs.stat(fullPath);
             if (!stat.isFile()) return null;
             const content = await fs.readFile(fullPath, 'utf-8');
-            const jsx = this.shouldParseJsx(file);
+            const jsx = this.shouldParseJsx(file, content);
             const ast = parse(content, {
               loc: true,
               range: false,
@@ -1153,9 +1162,15 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   }
 
   private addCallEdge(edges: CASEdge[], edge: CASEdge): void {
-    if (!edges.some(existing => existing.id === edge.id)) {
-      edges.push(edge);
-    }
+    if (this.callEdgeIds.has(edge.id)) return;
+    this.callEdgeIds.add(edge.id);
+    edges.push(edge);
+  }
+
+  private addExitPoint(exitPoints: CASExitPoint[], exitPoint: CASExitPoint): void {
+    if (this.exitPointIds.has(exitPoint.id)) return;
+    this.exitPointIds.add(exitPoint.id);
+    exitPoints.push(exitPoint);
   }
 
   private isRepositoryLikeType(typeName: string): boolean {
@@ -1169,6 +1184,15 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   }
 
   private findNodeIdByNameIndexed(targetName: string): string | undefined {
+    if (this.callTargetResolutionCache.has(targetName)) {
+      return this.callTargetResolutionCache.get(targetName);
+    }
+    const resolved = this.findNodeIdByNameIndexedUncached(targetName);
+    this.callTargetResolutionCache.set(targetName, resolved);
+    return resolved;
+  }
+
+  private findNodeIdByNameIndexedUncached(targetName: string): string | undefined {
     if (this.isRepositoryCall(targetName)) {
       const parts = targetName.split('.');
       if (parts.length >= 3 && parts[0] === 'this') {
@@ -1319,9 +1343,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   ): void {
     let t = Date.now();
     extractedFunctions.forEach(func => {
+      const sourceNodeId = this.resolveSourceNodeIdIndexed(filePath, func);
       func.calls.forEach((call: any) => {
-        const sourceNodeId = this.resolveSourceNodeIdIndexed(filePath, func);
-
         if (call.httpMethod && call.httpPath) {
           if (sourceNodeId) {
             entryPoints.push({
@@ -1410,8 +1433,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
                 || this.getLibraryForType('PrismaClient')
                 || this.getLibraryForType('Model');
               const exitPointId = `exit_db_${func.name}_${repoInfo.method}_${call.line}`;
-              if (!exitPoints.some(exitPoint => exitPoint.id === exitPointId)) {
-                exitPoints.push({
+              this.addExitPoint(exitPoints, {
                   id: exitPointId,
                   source_node: sourceNodeId,
                   type: 'database',
@@ -1432,7 +1454,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
                     library
                   }
                 });
-              }
               this.addCallEdge(edges, {
                 id: `call_${sourceNodeId}_${exitPointId}`,
                 source: sourceNodeId,
@@ -1460,8 +1481,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
             const apiInfo = this.parseApiCall(call.target, call.callExpression);
             if (apiInfo) {
               const exitPointId = `exit_api_${func.name}_${apiInfo.method}_${call.line}`;
-              if (!exitPoints.some(exitPoint => exitPoint.id === exitPointId)) {
-                exitPoints.push({
+              this.addExitPoint(exitPoints, {
                   id: exitPointId,
                   source_node: sourceNodeId,
                   type: 'api',
@@ -1481,7 +1501,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
                     endpoint: apiInfo.endpoint
                   }
                 });
-              }
               this.addCallEdge(edges, {
                 id: `call_${sourceNodeId}_${exitPointId}`,
                 source: sourceNodeId,
@@ -1508,8 +1527,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         } else if (sourceNodeId && (call.targetType === 'external' || call.targetType === 'library')) {
           const library = this.getLibraryForType(call.target) || this.importSourceMap.get(call.target) || call.target;
           const exitPointId = `exit_sdk_${func.name}_${call.target}_${call.line}`.replace(/[^a-zA-Z0-9_]/g, '_');
-          if (!exitPoints.some(exitPoint => exitPoint.id === exitPointId)) {
-            exitPoints.push({
+          this.addExitPoint(exitPoints, {
               id: exitPointId,
               source_node: sourceNodeId,
               type: 'sdk',
@@ -1528,7 +1546,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
                 call_expression: call.callExpression
               }
             } as CASExitPoint);
-          }
           this.addCallEdge(edges, {
             id: `call_${sourceNodeId}_${exitPointId}`,
             source: sourceNodeId,
@@ -3965,7 +3982,12 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     });
   }
 
-  private shouldParseJsx(filePath: string): boolean {
-    return /\.(jsx|tsx)$/i.test(filePath);
+  private shouldParseJsx(filePath: string, content?: string): boolean {
+    if (/\.(jsx|tsx)$/i.test(filePath)) return true;
+    if (/\.[cm]?js$/i.test(filePath) && content) {
+      return /<[A-Z][A-Za-z0-9]*(?:\.[A-Z][A-Za-z0-9]*)*(?:\s|>|\/)/.test(content) ||
+        /<[a-z][A-Za-z0-9:-]*(?:\s|>|\/)/.test(content);
+    }
+    return false;
   }
 }

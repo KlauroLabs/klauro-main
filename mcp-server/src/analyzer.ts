@@ -42,8 +42,16 @@ import {
   saveChangeHistoryEntry,
   saveAnalysisSnapshot,
   saveFileCache,
-  loadFileCache
+  loadFileCache,
+  getProjectStorageDir
 } from './storage';
+import { loadUnravlConfig, validateEmbeddingConfig } from './unravl-config';
+import { createEmbeddingProvider } from '../../backend/src/analyzer/embedding/embedding-provider-factory';
+import { createVectorStore } from '../../backend/src/analyzer/embedding/vector-store-factory';
+import type { VectorStoreSetting } from '../../backend/src/analyzer/embedding/vector-store-factory';
+import type { VectorStore } from '../../backend/src/analyzer/embedding/types';
+import type { EmbeddingPhaseConfig } from '../../backend/src/analyzer/embedding/embedding-phase';
+import { getPgPool, resolvePgConnectionString } from './pg-pool';
 
 let orchestrator: AnalyzerOrchestrator | null = null;
 
@@ -178,12 +186,97 @@ export function getOrchestrator(): AnalyzerOrchestrator {
   return orchestrator;
 }
 
+async function buildEmbeddingPhaseConfig(projectPath: string): Promise<EmbeddingPhaseConfig | null> {
+  const loaded = await loadUnravlConfig(projectPath);
+  const embedding = loaded.config.embedding;
+  if (!embedding.enabled) return null;
+
+  const validation = validateEmbeddingConfig(loaded.config);
+  for (const warning of validation.warnings) {
+    console.warn(`[Unravl] embedding config: ${warning}`);
+  }
+  if (validation.errors.length > 0) {
+    console.warn(`[Unravl] embedding disabled: ${validation.errors.join('; ')}`);
+    return null;
+  }
+
+  try {
+    const provider = createEmbeddingProvider(embedding.provider, {
+      model: embedding.model,
+      dimensions: embedding.dimensions,
+      maxBatch: 64,
+      maxConcurrency: embedding.maxConcurrency,
+      apiKeyEnv: embedding.apiKeyEnv,
+    });
+
+    const store = buildVectorStore(
+      projectPath,
+      embedding.store,
+      embedding.databaseUrlEnv,
+      embedding.dimensions,
+      loaded.config.analyzer.mode,
+    );
+
+    return {
+      provider,
+      store,
+      maxDocumentChars: embedding.maxDocumentChars,
+      phaseBudgetMs: embedding.phaseBudgetMs,
+    };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(`[Unravl] embedding disabled: ${reason}`);
+    return null;
+  }
+}
+
+function buildVectorStore(
+  projectPath: string,
+  setting: 'auto' | 'file' | 'pgvector',
+  databaseUrlEnv: string,
+  dimensions: number,
+  analyzerMode: 'local' | 'remote',
+): VectorStore {
+  const fileBaseDir = getProjectStorageDir(projectPath);
+  const fileStore = (): VectorStore =>
+    createVectorStore({ store: 'file', fileBaseDir, expectedDimensions: dimensions });
+
+  let resolved: VectorStoreSetting;
+  if (setting === 'auto') {
+    resolved = analyzerMode === 'remote' ? 'pgvector' : 'file';
+  } else {
+    resolved = setting;
+  }
+
+  if (resolved !== 'pgvector') {
+    return fileStore();
+  }
+
+  const pgPool = getPgPool(resolvePgConnectionString(databaseUrlEnv));
+  if (!pgPool) {
+    if (setting === 'pgvector') {
+      console.warn(
+        '[Unravl] embedding store "pgvector" requested but no Postgres connection is available; falling back to the file store',
+      );
+    }
+    return fileStore();
+  }
+
+  return createVectorStore({
+    store: 'pgvector',
+    fileBaseDir,
+    pgPool,
+    expectedDimensions: dimensions,
+  });
+}
+
 export async function analyzeProject(projectPath: string): Promise<CASOutput> {
   if (!(await fs.pathExists(projectPath))) {
     throw new Error(`Project path does not exist: ${projectPath}`);
   }
 
   const orch = getOrchestrator();
+  orch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
   const result = await orch.orchestrateAnalysis(projectPath);
 
   await saveAnalysis(projectPath, result);
@@ -216,6 +309,21 @@ function hasReportChanges(report: ChangeReport): boolean {
     summary.filesModified > 0 ||
     summary.filesDeleted > 0 ||
     summary.nodesAdded > 0 ||
+    summary.nodesModified > 0 ||
+    summary.nodesDeleted > 0 ||
+    summary.edgesAdded > 0 ||
+    summary.edgesModified > 0 ||
+    summary.edgesDeleted > 0 ||
+    (report.details.addedEntryPoints?.length || 0) > 0 ||
+    (report.details.modifiedEntryPoints?.length || 0) > 0 ||
+    (report.details.deletedEntryPoints?.length || 0) > 0 ||
+    (report.details.addedExitPoints?.length || 0) > 0 ||
+    (report.details.deletedExitPoints?.length || 0) > 0;
+}
+
+function hasCasReportChanges(report: ChangeReport): boolean {
+  const summary = report.summary;
+  return summary.nodesAdded > 0 ||
     summary.nodesModified > 0 ||
     summary.nodesDeleted > 0 ||
     summary.edgesAdded > 0 ||
@@ -331,6 +439,7 @@ export async function analyzeProjectIncremental(projectPath: string): Promise<In
   }
 
   const orch = getOrchestrator();
+  orch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
 
   const previousOutput = await loadAnalysis(projectPath);
   const previousState = await loadIncrementalState(projectPath);
@@ -365,12 +474,18 @@ export async function analyzeProjectIncremental(projectPath: string): Promise<In
     }
   );
 
-  await saveAnalysis(projectPath, result.output);
+  const casChanged = hasCasReportChanges(result.changeReport);
+  const outputChanged = result.output !== previousOutput || casChanged;
+  if (outputChanged) {
+    await saveAnalysis(projectPath, result.output);
+  }
   await saveIncrementalState(projectPath, result.state);
 
   if (hasReportChanges(result.changeReport)) {
     await saveChangeHistoryEntry(projectPath, buildChangeHistoryEntry(result));
-    await saveAnalysisSnapshot(projectPath, result.output);
+    if (outputChanged) {
+      await saveAnalysisSnapshot(projectPath, result.output);
+    }
   }
 
   return result;

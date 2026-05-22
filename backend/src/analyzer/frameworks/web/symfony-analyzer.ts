@@ -101,6 +101,7 @@ interface SymfonyVoter {
 }
 
 export class SymfonyAnalyzer extends BaseAnalyzer {
+  private fileContentCache = new Map<string, string>();
   private todoCounter = 0;
   private commentCounter = 0;
 
@@ -138,6 +139,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
   }
 
   async analyze(context: AnalysisContext): Promise<CASContribution> {
+    this.fileContentCache.clear();
     const nodes: CASNode[] = [];
     const edges: CASEdge[] = [];
     const entryPoints: CASEntryPoint[] = [];
@@ -146,12 +148,14 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
     try {
       const phpFiles = await glob(['**/*.php'], {
         cwd: context.projectPath,
-        ignore: ['**/vendor/**', '**/node_modules/**', '**/.git/**', '**/var/**', '**/tests/**', '**/test/**']
+        ignore: [...this.getIgnorePatterns(context), '**/var/**', '**/tests/**', '**/test/**'],
+        nodir: true
       });
 
       const twigFiles = await glob(['**/*.twig'], {
         cwd: context.projectPath,
-        ignore: ['**/vendor/**', '**/node_modules/**', '**/.git/**', '**/var/**']
+        ignore: [...this.getIgnorePatterns(context), '**/var/**'],
+        nodir: true
       });
 
       const controllers = await this.analyzeControllers(phpFiles, context.projectPath, nodes, edges, entryPoints);
@@ -223,6 +227,15 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
     ];
   }
 
+  private async readProjectFile(projectPath: string, file: string): Promise<string> {
+    const fullPath = path.join(projectPath, file);
+    const cached = this.fileContentCache.get(fullPath);
+    if (cached !== undefined) return cached;
+    const content = await fs.readFile(fullPath, 'utf-8');
+    this.fileContentCache.set(fullPath, content);
+    return content;
+  }
+
   private async analyzeControllers(
     phpFiles: string[],
     projectPath: string,
@@ -238,7 +251,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
 
     for (const file of controllerFiles) {
       try {
-        const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
+        const content = await this.readProjectFile(projectPath, file);
 
         if (!this.isSymfonyController(content)) continue;
 
@@ -373,7 +386,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
 
     for (const file of entityFiles) {
       try {
-        const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
+        const content = await this.readProjectFile(projectPath, file);
 
         if (!this.isDoctrineEntity(content)) continue;
 
@@ -502,7 +515,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
 
     for (const file of repoFiles) {
       try {
-        const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
+        const content = await this.readProjectFile(projectPath, file);
 
         if (!this.isDoctrineRepository(content)) continue;
 
@@ -608,7 +621,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
 
     for (const file of serviceFiles) {
       try {
-        const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
+        const content = await this.readProjectFile(projectPath, file);
 
         const nameMatch = content.match(/class\s+(\w+)/);
         if (!nameMatch) continue;
@@ -716,7 +729,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
 
     for (const file of commandFiles) {
       try {
-        const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
+        const content = await this.readProjectFile(projectPath, file);
 
         if (!this.isSymfonyCommand(content)) continue;
 
@@ -804,7 +817,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
 
     for (const file of subscriberFiles) {
       try {
-        const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
+        const content = await this.readProjectFile(projectPath, file);
 
         const isSubscriber = content.includes('EventSubscriberInterface') || content.includes('#[AsEventListener');
         if (!isSubscriber) continue;
@@ -888,7 +901,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
 
     for (const file of formFiles) {
       try {
-        const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
+        const content = await this.readProjectFile(projectPath, file);
 
         if (!content.includes('AbstractType') && !content.includes('FormTypeInterface')) continue;
 
@@ -963,7 +976,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
 
     for (const file of twigFiles) {
       try {
-        const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
+        const content = await this.readProjectFile(projectPath, file);
         const name = path.basename(file, '.html.twig') || path.basename(file, '.twig');
         const extendsMatch = content.match(/\{%\s*extends\s+['"]([^'"]+)['"]\s*%\}/);
         const includePattern = /\{[%{]\s*(?:include|embed)\s+['"]([^'"]+)['"]/g;
@@ -1045,7 +1058,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
 
     for (const file of migrationFiles) {
       try {
-        const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
+        const content = await this.readProjectFile(projectPath, file);
 
         if (!content.includes('AbstractMigration') && !content.includes('Migration')) continue;
 
@@ -1106,7 +1119,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
 
     for (const file of handlerFiles) {
       try {
-        const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
+        const content = await this.readProjectFile(projectPath, file);
 
         const isHandler = content.includes('#[AsMessageHandler') || content.includes('MessageHandlerInterface');
         if (!isHandler) continue;
@@ -1185,7 +1198,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
 
     for (const file of voterFiles) {
       try {
-        const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
+        const content = await this.readProjectFile(projectPath, file);
 
         if (!content.includes('extends Voter') && !content.includes('VoterInterface')) continue;
 
@@ -1240,12 +1253,14 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
     entryPoints: CASEntryPoint[]
   ): Promise<void> {
     const yamlRouteFiles = await glob(['config/routes*.yaml', 'config/routes*.yml', 'config/routes/**/*.yaml', 'config/routes/**/*.yml'], {
-      cwd: projectPath
+      cwd: projectPath,
+      ignore: this.getIgnorePatterns({ projectPath }),
+      nodir: true
     });
 
     for (const file of yamlRouteFiles) {
       try {
-        const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
+        const content = await this.readProjectFile(projectPath, file);
         const routePattern = /^(\w+):\s*\n\s+path:\s*(.+)\s*\n(?:\s+controller:\s*(.+))?\s*\n?(?:\s+methods:\s*\[?([^\]\n]+)\]?)?/gm;
 
         let match;
@@ -2029,7 +2044,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
 
     for (const file of phpFiles) {
       try {
-        const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
+        const content = await this.readProjectFile(projectPath, file);
 
         if (content.includes('HttpClientInterface') || content.includes('Symfony\\Component\\HttpClient')) {
           hasHttpClient = true;

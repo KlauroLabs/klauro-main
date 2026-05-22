@@ -50,7 +50,8 @@ export class PrismaAnalyzer extends BaseAnalyzer {
     const schemaFiles = await glob('**/prisma/schema.prisma', {
       cwd: context.projectPath,
       ignore: ignorePatterns,
-      absolute: true
+      absolute: true,
+      nodir: true
     });
 
     for (const schemaFile of schemaFiles) {

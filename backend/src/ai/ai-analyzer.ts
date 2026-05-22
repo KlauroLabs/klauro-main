@@ -1,5 +1,4 @@
 import { aiService, AIAnalysisContext } from './ai-service';
-import { BaseAnalyzer } from '../analyzer/core/base-analyzer';
 import { ComponentNode, ArchitectureBlueprint, RiskArea } from '../types';
 import * as winston from 'winston';
 import * as fs from 'fs-extra';

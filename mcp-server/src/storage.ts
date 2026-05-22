@@ -10,6 +10,7 @@ import type {
   INCREMENTAL_STATE_VERSION,
 } from '../../backend/src/types/cas.types';
 import type { RuntimeObservation } from './product';
+import { mirrorArtifactsToS3 } from './s3-artifacts';
 
 const DEFAULT_STORAGE_PATH = path.join(
   process.env.HOME || process.env.USERPROFILE || '~',
@@ -32,6 +33,34 @@ export interface AnalysisEntry {
   frameworks: string[];
   node_count: number;
   edge_count: number;
+}
+
+export interface ProposalPreviewArtifact {
+  id: string;
+  type: 'existing_codebase_iteration' | 'greenfield_codebase';
+  title: string;
+  plan_text: string;
+  organization_id?: string;
+  project_id?: string;
+  codebase_id?: string;
+  baseline_analysis_id?: string;
+  baseline_path?: string;
+  proposed_analysis_id: string;
+  proposed_path: string;
+  verdict: unknown;
+  preview_url: string;
+  created_by: string;
+  created_at: string;
+  artifacts: {
+    plan_file: string;
+    diff_file?: string;
+    proposed_files_file?: string;
+    baseline_cas_file?: string;
+    proposed_cas_file: string;
+    comparison_file: string;
+    visualization_file: string;
+  };
+  s3_artifacts?: Record<string, string>;
 }
 
 function getStoragePath(): string {
@@ -327,12 +356,97 @@ export async function loadGoldenSnapshot(projectPath: string): Promise<{
 }
 
 // =============================================================================
+// PROPOSAL PREVIEW STORAGE
+// =============================================================================
+
+export async function saveProposalPreviewArtifact(input: {
+  preview: Omit<ProposalPreviewArtifact, 'artifacts'>;
+  planText: string;
+  diffText?: string;
+  proposedFiles?: unknown;
+  baselineCas?: CASOutput;
+  proposedCas: CASOutput;
+  comparison: unknown;
+  visualization: unknown;
+}): Promise<ProposalPreviewArtifact> {
+  const storagePath = await ensureStorageDir();
+  const directory = path.join(storagePath, 'proposal-previews', slugify(input.preview.id) || input.preview.id);
+  await fs.ensureDir(directory);
+
+  const artifacts: ProposalPreviewArtifact['artifacts'] = {
+    plan_file: path.join(directory, 'plan.md'),
+    diff_file: input.diffText ? path.join(directory, 'proposal.diff') : undefined,
+    proposed_files_file: input.proposedFiles ? path.join(directory, 'proposed-files.json') : undefined,
+    baseline_cas_file: input.baselineCas ? path.join(directory, 'baseline-cas.json') : undefined,
+    proposed_cas_file: path.join(directory, 'proposed-cas.json'),
+    comparison_file: path.join(directory, 'comparison.json'),
+    visualization_file: path.join(directory, 'visualization.json'),
+  };
+
+  await fs.writeFile(artifacts.plan_file, input.planText, 'utf8');
+  if (input.diffText && artifacts.diff_file) await fs.writeFile(artifacts.diff_file, input.diffText, 'utf8');
+  if (input.proposedFiles && artifacts.proposed_files_file) await writeJsonAtomic(artifacts.proposed_files_file, input.proposedFiles);
+  if (input.baselineCas && artifacts.baseline_cas_file) await writeJsonAtomic(artifacts.baseline_cas_file, input.baselineCas);
+  await writeJsonAtomic(artifacts.proposed_cas_file, input.proposedCas);
+  await writeJsonAtomic(artifacts.comparison_file, input.comparison);
+  await writeJsonAtomic(artifacts.visualization_file, input.visualization);
+
+  const s3Artifacts = await mirrorArtifactsToS3([
+    { localPath: artifacts.plan_file, key: `proposal-previews/${input.preview.id}/plan.md`, contentType: 'text/markdown; charset=utf-8' },
+    ...(artifacts.diff_file ? [{ localPath: artifacts.diff_file, key: `proposal-previews/${input.preview.id}/proposal.diff`, contentType: 'text/x-diff; charset=utf-8' }] : []),
+    ...(artifacts.proposed_files_file ? [{ localPath: artifacts.proposed_files_file, key: `proposal-previews/${input.preview.id}/proposed-files.json`, contentType: 'application/json' }] : []),
+    ...(artifacts.baseline_cas_file ? [{ localPath: artifacts.baseline_cas_file, key: `proposal-previews/${input.preview.id}/baseline-cas.json`, contentType: 'application/json' }] : []),
+    { localPath: artifacts.proposed_cas_file, key: `proposal-previews/${input.preview.id}/proposed-cas.json`, contentType: 'application/json' },
+    { localPath: artifacts.comparison_file, key: `proposal-previews/${input.preview.id}/comparison.json`, contentType: 'application/json' },
+    { localPath: artifacts.visualization_file, key: `proposal-previews/${input.preview.id}/visualization.json`, contentType: 'application/json' },
+  ]);
+
+  const preview: ProposalPreviewArtifact = {
+    ...input.preview,
+    artifacts,
+    s3_artifacts: Object.keys(s3Artifacts).length > 0 ? s3Artifacts : undefined,
+  };
+  await writeJsonAtomic(path.join(directory, 'preview.json'), preview);
+  await writeJsonAtomic(path.join(storagePath, 'proposal-previews', 'latest.json'), preview);
+  return preview;
+}
+
+export async function loadProposalPreviewArtifact(id = 'latest'): Promise<ProposalPreviewArtifact | null> {
+  const storagePath = await ensureStorageDir();
+  const directPath = id === 'latest'
+    ? path.join(storagePath, 'proposal-previews', 'latest.json')
+    : path.join(storagePath, 'proposal-previews', slugify(id) || id, 'preview.json');
+  if (!(await fs.pathExists(directPath))) return null;
+  return fs.readJson(directPath);
+}
+
+export async function loadProposalPreviewPayload(id = 'latest'): Promise<{
+  preview: ProposalPreviewArtifact;
+  baseline_cas?: CASOutput;
+  proposed_cas: CASOutput;
+  comparison: unknown;
+  visualization: unknown;
+} | null> {
+  const preview = await loadProposalPreviewArtifact(id);
+  if (!preview) return null;
+  return {
+    preview,
+    baseline_cas: preview.artifacts.baseline_cas_file && await fs.pathExists(preview.artifacts.baseline_cas_file)
+      ? await fs.readJson(preview.artifacts.baseline_cas_file)
+      : undefined,
+    proposed_cas: await fs.readJson(preview.artifacts.proposed_cas_file),
+    comparison: await fs.readJson(preview.artifacts.comparison_file),
+    visualization: await fs.readJson(preview.artifacts.visualization_file),
+  };
+}
+
+// =============================================================================
 // INCREMENTAL ANALYSIS STORAGE
 // =============================================================================
 
 const INCREMENTAL_STATE_VERSION_CURRENT = '1.0.0';
 
-function getProjectStorageDir(projectPath: string): string {
+export function getProjectStorageDir(projectPath: string): string {
   const storagePath = getStoragePath();
   const slug = projectSlug(projectPath);
   return path.join(storagePath, slug);

@@ -26,6 +26,27 @@ npx tsx src/index.ts
 
 The server uses stdio transport and waits for JSON-RPC messages on stdin.
 
+## Remote Analyzer Mode
+
+For commercial deployments where the analyzers should run off the developer machine, keep the MCP server local and point it at a remote analyzer service:
+
+```bash
+docker build -f mcp-server/Dockerfile.analyzer -t unravl-remote-analyzer .
+docker run --rm -p 8787:8787 unravl-remote-analyzer
+```
+
+Then analyze or sync through the hosted analyzer while caching returned CAS locally:
+
+```bash
+cd mcp-server
+npm run init -- /absolute/path/to/repo --mode remote --server-url http://127.0.0.1:8787
+npm run upload-manifest -- /absolute/path/to/repo
+npm run remote-analyze -- /absolute/path/to/repo --server-url http://127.0.0.1:8787
+npm run remote-sync -- /absolute/path/to/repo --server-url http://127.0.0.1:8787
+```
+
+MCP clients can call `initialize_unravl_project`, `get_upload_manifest`, `analyze_codebase_remote`, and `sync_codebase_remote` directly. Set `UNRAVL_ANALYZER_URL` and optional `UNRAVL_ANALYZER_TOKEN` in the MCP server environment to avoid passing the URL each time. See `REMOTE-ANALYZER.md` for the deployment model and source-transfer rules.
+
 ## Claude Code Configuration
 
 Add the server to your project-level `.mcp.json` (recommended) or global `~/.claude.json`:
@@ -109,6 +130,8 @@ mcp-server/
     analyzer.ts     # CAS analyzer orchestrator wrapper
     storage.ts      # JSON file storage/retrieval
     query.ts        # Query helpers for slicing CAS data
+    remote-analyzer-service.ts # HTTP analyzer service for hosted/self-hosted analyzer deployments
+    remote-sync-client.ts      # Local source snapshot and dirty-tree sync client
 ```
 
 The MCP server imports directly from the backend analyzer code via relative paths. No NestJS runtime is involved - the `AnalyzerOrchestrator` and all language/framework/library analyzers are instantiated directly.

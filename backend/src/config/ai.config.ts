@@ -35,7 +35,14 @@ const AIConfigSchema = z.object({
     timeout: z.number().default(30000),
     maxRetries: z.number().default(3),
   }),
-  
+
+  local: z.object({
+    enabled: z.boolean().default(true),
+    model: z.string().default('onnx-community/Qwen2.5-0.5B-Instruct'),
+    maxTokens: z.number().default(512),
+    temperature: z.number().default(0.3),
+  }),
+
   cache: z.object({
     enabled: z.boolean().default(true),
     ttl: z.number().default(86400), // 24 hours in seconds
@@ -104,7 +111,7 @@ const AIConfigSchema = z.object({
   fallback: z.object({
     enabled: z.boolean().default(true),
     strategy: z.enum(['cascade', 'loadbalance', 'failover']).default('cascade'),
-    providers: z.array(z.enum(['openai', 'anthropic', 'huggingface', 'local'])).default(['openai', 'anthropic', 'huggingface']),
+    providers: z.array(z.enum(['openai', 'claude', 'local', 'fallback'])).default(['openai', 'claude', 'local', 'fallback']),
   }),
   
   prompts: z.object({
@@ -153,7 +160,14 @@ export function getAIConfig(): AIConfig {
       timeout: parseInt(process.env.AI_TIMEOUT || '30000'),
       maxRetries: parseInt(process.env.AI_MAX_RETRIES || '3'),
     },
-    
+
+    local: {
+      enabled: process.env.AI_LOCAL_ENABLED !== 'false',
+      model: process.env.AI_LOCAL_MODEL || 'onnx-community/Qwen2.5-0.5B-Instruct',
+      maxTokens: parseInt(process.env.AI_LOCAL_MAX_TOKENS || '512'),
+      temperature: parseFloat(process.env.AI_LOCAL_TEMPERATURE || '0.3'),
+    },
+
     cache: {
       enabled: process.env.AI_CACHE_ENABLED !== 'false',
       ttl: parseInt(process.env.AI_CACHE_TTL || '86400'),
@@ -222,7 +236,7 @@ export function getAIConfig(): AIConfig {
     fallback: {
       enabled: process.env.AI_FALLBACK_ENABLED !== 'false',
       strategy: (process.env.AI_FALLBACK_STRATEGY as any) || 'cascade',
-      providers: (process.env.AI_FALLBACK_PROVIDERS?.split(',') as any[]) || ['openai', 'anthropic', 'huggingface'],
+      providers: (process.env.AI_FALLBACK_PROVIDERS?.split(',') as any[]) || ['openai', 'claude', 'local', 'fallback'],
     },
     
     prompts: {

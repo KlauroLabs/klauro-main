@@ -30,6 +30,7 @@
     "@babel/traverse": "^7.28.4",
     "@babel/types": "^7.28.4",
     "@huggingface/inference": "^4.8.0",
+    "@huggingface/transformers": "^4.2.0",
     "@mikro-orm/cli": "^6.3.10",
     "@mikro-orm/core": "^6.3.10",
     "@mikro-orm/migrations": "^6.3.10",

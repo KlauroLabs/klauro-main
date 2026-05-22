@@ -100,6 +100,7 @@ export function expectedCallChainCount(profile: AnalysisProfile, cas: CASOutput)
   if (profile.expectations.call_chains === 'not-applicable') return 0;
   const entryPoints = cas.entry_points?.length || 0;
   if (entryPoints === 0) return 0;
+  if ((cas.entry_points || []).every(entry => entry.type === 'file' && entry.metadata?.inferred_orientation_only)) return 0;
   if (profile.expectations.call_chains === 'optional') return Math.min(1, entryPoints);
   return Math.max(1, Math.ceil(entryPoints * 0.35));
 }

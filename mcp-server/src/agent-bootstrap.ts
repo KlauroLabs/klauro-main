@@ -7,11 +7,11 @@ import {
   type AgentTask,
 } from './agent-adoption';
 
-export function getAgentBootstrap(cas: CASOutput, path: string, task: AgentTask = {}) {
+export async function getAgentBootstrap(cas: CASOutput, path: string, task: AgentTask = {}) {
   const normalizedTask = { task_type: task.task_type || 'orient', target: task.target, related_paths: task.related_paths, runtime_event: task.runtime_event };
   const start = getAgentStartContext(cas, path, normalizedTask);
   const plan = getAgentToolPlan(cas, { path, task: normalizedTask });
-  const packet = getAgentWorkPacket(cas, path, normalizedTask);
+  const packet = await getAgentWorkPacket(cas, path, normalizedTask);
   const readiness = evaluateAgentReadiness(cas, path);
 
   return {
@@ -30,7 +30,7 @@ export function buildAgentBootstrapPrompt(
   cas: CASOutput,
   start: ReturnType<typeof getAgentStartContext>,
   plan: ReturnType<typeof getAgentToolPlan>,
-  packet: ReturnType<typeof getAgentWorkPacket>,
+  packet: Awaited<ReturnType<typeof getAgentWorkPacket>>,
   readiness: ReturnType<typeof evaluateAgentReadiness>
 ): string {
   const sections: string[] = [];

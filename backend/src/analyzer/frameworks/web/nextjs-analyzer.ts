@@ -53,7 +53,8 @@ export class NextJSAnalyzer extends BaseAnalyzer {
 
     const sourceFiles = await glob(['**/*.{ts,js,tsx,jsx}'], {
       cwd: context.projectPath,
-      ignore: ignorePatterns
+      ignore: ignorePatterns,
+      nodir: true
     });
 
     await this.detectAppRouterApiRoutes(sourceFiles, context, nodes, edges, entryPoints, seenEntryPointIds);

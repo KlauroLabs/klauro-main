@@ -89,11 +89,14 @@ export class JavaAnalyzer extends BaseAnalyzer {
     try {
       const javaFiles = await glob(['**/*.java'], {
         cwd: projectPath,
-        ignore: ['**/target/**', '**/build/**', '**/.git/**']
+        ignore: this.getIgnorePatterns({ projectPath }),
+        nodir: true
       });
 
       const buildFiles = await glob(['pom.xml', 'build.gradle', 'gradle.build'], {
-        cwd: projectPath
+        cwd: projectPath,
+        ignore: this.getIgnorePatterns({ projectPath }),
+        nodir: true
       });
 
       return javaFiles.length > 0 || buildFiles.length > 0;
@@ -109,7 +112,8 @@ export class JavaAnalyzer extends BaseAnalyzer {
   async getRelevantFiles(projectPath: string): Promise<string[]> {
     return glob(['**/*.java'], {
       cwd: projectPath,
-      ignore: ['**/target/**', '**/build/**', '**/.git/**', '**/test/**', '**/*Test.java']
+      ignore: [...this.getIgnorePatterns({ projectPath }), '**/test/**', '**/*Test.java'],
+      nodir: true
     });
   }
 
@@ -160,7 +164,8 @@ export class JavaAnalyzer extends BaseAnalyzer {
 
       const javaFiles = await glob(['**/*.java'], {
         cwd: context.projectPath,
-        ignore: ['**/target/**', '**/build/**', '**/.git/**', '**/test/**', '**/*Test.java']
+        ignore: [...this.getIgnorePatterns(context), '**/test/**', '**/*Test.java'],
+        nodir: true
       });
 
       const packages = new Map<string, string[]>();
@@ -1723,7 +1728,8 @@ export class JavaAnalyzer extends BaseAnalyzer {
   private async analyzeCallGraph(projectPath: string, nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[]): Promise<void> {
     const javaFiles = await glob(['**/*.java'], {
       cwd: projectPath,
-      ignore: ['**/target/**', '**/build/**', '**/.git/**']
+      ignore: this.getIgnorePatterns({ projectPath }),
+      nodir: true
     });
 
     const methodNodes = nodes.filter(n => n.type === 'method' || n.type === 'interface_method');

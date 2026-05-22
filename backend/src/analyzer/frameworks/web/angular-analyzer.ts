@@ -143,7 +143,8 @@ export class AngularAnalyzer extends BaseAnalyzer {
       // As a last resort, check file contents but be more specific about Angular imports
       const tsFiles = await glob(['**/*.ts'], {
         cwd: projectPath,
-        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/coverage/**', '**/.nyc_output/**']
+        ignore: this.getIgnorePatterns({ projectPath }),
+        nodir: true
       });
 
       for (const file of tsFiles) {
@@ -172,7 +173,8 @@ export class AngularAnalyzer extends BaseAnalyzer {
     try {
       const angularFiles = await glob(['**/*.ts'], {
         cwd: context.projectPath,
-        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/coverage/**', '**/.nyc_output/**', '**/*.spec.ts', '**/*.test.ts']
+        ignore: [...this.getIgnorePatterns(context), '**/*.spec.ts', '**/*.test.ts'],
+        nodir: true
       });
 
       const application = await this.analyzeApplication(context.projectPath, nodes);

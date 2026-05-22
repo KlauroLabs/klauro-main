@@ -91,9 +91,14 @@ export class FlowGraphBuilder {
   ): string[] {
     const chain: string[] = [];
     const visited = new Set<string>();
+    const incomingByCapability = new Map<string, CASCapabilityDependency[]>();
+    for (const dep of dependencies) {
+      const incoming = incomingByCapability.get(dep.to_capability) || [];
+      incoming.push(dep);
+      incomingByCapability.set(dep.to_capability, incoming);
+    }
 
-    const incomingDeps = dependencies.filter(d =>
-      d.to_capability === coreCapability.id &&
+    const incomingDeps = (incomingByCapability.get(coreCapability.id) || []).filter(d =>
       (d.dependency_type === 'requires' || d.strength === 'required')
     );
 
@@ -101,8 +106,7 @@ export class FlowGraphBuilder {
       if (visited.has(capId) || depth > 10) return;
       visited.add(capId);
 
-      const incoming = dependencies.filter(d =>
-        d.to_capability === capId &&
+      const incoming = (incomingByCapability.get(capId) || []).filter(d =>
         (d.dependency_type === 'requires' || d.strength === 'required')
       );
 
@@ -164,15 +168,20 @@ export class FlowGraphBuilder {
     const criticalCap = primaryCaps.reduce((best, curr) =>
       curr.signals.total_score > best.signals.total_score ? curr : best
     );
+    const capabilitiesById = new Map(capabilities.map(cap => [cap.id, cap]));
+    const outgoingByCapability = new Map<string, CASCapabilityDependency[]>();
+    for (const dep of dependencies) {
+      const outgoing = outgoingByCapability.get(dep.from_capability) || [];
+      outgoing.push(dep);
+      outgoingByCapability.set(dep.from_capability, outgoing);
+    }
 
     const path = [criticalCap.id];
     const visited = new Set<string>([criticalCap.id]);
 
     let currentId = criticalCap.id;
     while (true) {
-      const outgoing = dependencies.filter(d =>
-        d.from_capability === currentId && !visited.has(d.to_capability)
-      );
+      const outgoing = (outgoingByCapability.get(currentId) || []).filter(d => !visited.has(d.to_capability));
 
       if (outgoing.length === 0) break;
 
@@ -181,7 +190,7 @@ export class FlowGraphBuilder {
       );
 
       const nextDep = requiredDep || outgoing[0];
-      const nextCap = capabilities.find(c => c.id === nextDep.to_capability);
+      const nextCap = capabilitiesById.get(nextDep.to_capability);
 
       if (!nextCap) break;
 
@@ -198,10 +207,14 @@ export class FlowGraphBuilder {
     dependencies: CASCapabilityDependency[]
   ): number {
     const depths = new Map<string, number>();
+    const outgoingByCapability = new Map<string, CASCapabilityDependency[]>();
 
     const hasIncoming = new Set<string>();
     for (const dep of dependencies) {
       hasIncoming.add(dep.to_capability);
+      const outgoing = outgoingByCapability.get(dep.from_capability) || [];
+      outgoing.push(dep);
+      outgoingByCapability.set(dep.from_capability, outgoing);
     }
 
     const roots = capabilities.filter(c => !hasIncoming.has(c.id));
@@ -209,24 +222,28 @@ export class FlowGraphBuilder {
       depths.set(root.id, 0);
     }
 
-    let changed = true;
-    let iterations = 0;
-    const maxIterations = capabilities.length * 2;
+    const queue = roots.map(root => root.id);
+    const queued = new Set(queue);
+    let updates = 0;
+    const maxUpdates = Math.max(dependencies.length * 2, capabilities.length);
 
-    while (changed && iterations < maxIterations) {
-      changed = false;
-      iterations++;
+    while (queue.length > 0 && updates < maxUpdates) {
+      const currentId = queue.shift()!;
+      queued.delete(currentId);
+      const fromDepth = depths.get(currentId);
+      if (fromDepth === undefined) continue;
 
-      for (const dep of dependencies) {
-        const fromDepth = depths.get(dep.from_capability);
-        if (fromDepth === undefined) continue;
-
+      for (const dep of outgoingByCapability.get(currentId) || []) {
         const currentToDepth = depths.get(dep.to_capability) ?? -1;
         const newToDepth = fromDepth + 1;
 
         if (newToDepth > currentToDepth) {
           depths.set(dep.to_capability, newToDepth);
-          changed = true;
+          updates++;
+          if (!queued.has(dep.to_capability)) {
+            queue.push(dep.to_capability);
+            queued.add(dep.to_capability);
+          }
         }
       }
     }

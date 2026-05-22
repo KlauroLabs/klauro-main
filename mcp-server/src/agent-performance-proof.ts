@@ -1,6 +1,7 @@
 import { formatMarkdownReport as formatAgenticMarkdownReport } from './agent-benchmark';
 import { formatQualityMarkdownReport } from './agent-quality-benchmark';
 import { formatIncrementalValueMarkdownReport } from './incremental-benchmark';
+import { formatIdiomBenchmarkMarkdown } from './agent-idiom-benchmark';
 
 type StoredBenchmarkReport = Record<string, any>;
 
@@ -19,6 +20,7 @@ interface AgentPerformanceProofOptions {
 }
 
 export function formatStoredBenchmarkReport(report: StoredBenchmarkReport): string {
+  if (isIdiomReport(report)) return formatIdiomBenchmarkMarkdown(report as any);
   if (isQualityReport(report)) return formatQualityMarkdownReport(report as any);
   if (isIncrementalReport(report)) return formatIncrementalValueMarkdownReport(report as any);
   return formatAgenticMarkdownReport(report as any);
@@ -69,6 +71,12 @@ function isIncrementalReport(report: StoredBenchmarkReport): boolean {
     || Number.isFinite(report.summary?.average_edit_incremental_ms);
 }
 
+function isIdiomReport(report: StoredBenchmarkReport): boolean {
+  return report.benchmark_type === 'live-agent-idiom-quality-ab'
+    || report.benchmark_type === 'deterministic-agent-idiom-quality-proxy'
+    || Number.isFinite(report.summary?.average_idiom_conformance_delta);
+}
+
 function latestReportsByType(reports: StoredBenchmarkReport[]): StoredBenchmarkReport[] {
   const byType = new Map<string, StoredBenchmarkReport>();
   for (const report of reports) {
@@ -95,6 +103,21 @@ function summarizeReport(report: StoredBenchmarkReport): ProofSummary {
       average_file_read_plan_after_edit: summary.average_file_read_plan_after_edit,
       average_packet_tokens_after_edit: summary.average_packet_tokens_after_edit,
       average_full_verify_count_similarity: asPercent(summary.average_full_verify_count_similarity),
+    });
+  } else if (isIdiomReport(report)) {
+    Object.assign(metrics, {
+      targets: summary.target_count,
+      tasks: summary.task_count,
+      average_with_unravl_score: summary.average_with_unravl_score,
+      average_without_unravl_score: summary.average_without_unravl_score,
+      average_idiom_conformance_delta: signed(summary.average_idiom_conformance_delta),
+      average_total_quality_delta: signed(summary.average_total_quality_delta),
+      live_trials_attempted: summary.live_trials_attempted,
+      live_correctness_regressions: summary.live_correctness_regressions,
+      live_average_idiom_conformance_delta: signed(summary.live_average_idiom_conformance_delta),
+      live_average_total_quality_delta: signed(summary.live_average_total_quality_delta),
+      live_average_token_reduction: asPercentNumber(summary.live_average_token_reduction),
+      live_average_time_reduction: asPercentNumber(summary.live_average_time_reduction),
     });
   } else if (isQualityReport(report)) {
     Object.assign(metrics, {
@@ -187,6 +210,8 @@ function buildClaims(summaries: ProofSummary[], rollups: ProofSummary[]) {
   const deterministic = summaries.find(summary => summary.benchmark_type === 'agentic-suite-with-unravl-vs-without-unravl')
     || summaries.find(summary => summary.benchmark_type === 'agentic-with-unravl-vs-without-unravl');
   const incremental = summaries.find(summary => summary.benchmark_type === 'incremental-analysis-agent-value');
+  const idiom = summaries.find(summary => summary.benchmark_type === 'live-agent-idiom-quality-ab')
+    || summaries.find(summary => summary.benchmark_type === 'deterministic-agent-idiom-quality-proxy');
 
   if (quality) {
     claims.push({
@@ -207,6 +232,13 @@ function buildClaims(summaries: ProofSummary[], rollups: ProofSummary[]) {
       claim: 'Incremental analysis stays fast after edits and immediately produces focused agent context.',
       evidence: incremental.metrics,
       report_id: incremental.id,
+    });
+  }
+  if (idiom) {
+    claims.push({
+      claim: 'Unravl improves agent idiom conformance, helping patches match repo-specific practices instead of only passing correctness.',
+      evidence: idiom.metrics,
+      report_id: idiom.id,
     });
   }
 

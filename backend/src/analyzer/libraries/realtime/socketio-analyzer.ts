@@ -41,7 +41,8 @@ export class SocketIOAnalyzer extends BaseAnalyzer {
     const sourceFiles = await glob('**/*.{ts,js,tsx,jsx}', {
       cwd: projectPath,
       ignore: [...ignorePatterns, '**/*.test.*', '**/*.spec.*'],
-      absolute: false
+      absolute: false,
+      nodir: true
     });
 
     const entryPoints: CASEntryPoint[] = [];

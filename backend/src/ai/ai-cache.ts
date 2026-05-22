@@ -2,7 +2,9 @@ import Redis from 'ioredis';
 import { aiConfig } from '../config/ai.config';
 import * as winston from 'winston';
 import * as crypto from 'crypto';
-import { promisify } from 'util';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 export interface CacheEntry<T = any> {
   data: T;
@@ -29,6 +31,9 @@ export class AICache {
   private stats: CacheStats;
   private readonly CACHE_VERSION = '1.0.0';
   private readonly MAX_FALLBACK_SIZE = 1000;
+  private readonly diskCacheDir: string =
+    path.join(os.homedir() || os.tmpdir(), '.unravl', 'ai-cache');
+  private diskCacheEnabled = true;
 
   constructor() {
     this.logger = winston.createLogger({
@@ -60,6 +65,21 @@ export class AICache {
     };
 
     this.initializeRedis();
+    this.initializeDiskCache();
+  }
+
+  private initializeDiskCache(): void {
+    if (!aiConfig.cache.enabled) {
+      this.diskCacheEnabled = false;
+      return;
+    }
+    try {
+      fs.mkdirSync(this.diskCacheDir, { recursive: true });
+    } catch (error) {
+      this.diskCacheEnabled = false;
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Disk cache unavailable (${message})`);
+    }
   }
 
   private initializeRedis(): void {
@@ -75,30 +95,50 @@ export class AICache {
         password: aiConfig.cache.redis.password,
         db: aiConfig.cache.redis.db,
         keyPrefix: aiConfig.cache.redis.keyPrefix,
-        maxRetriesPerRequest: 3,
-        lazyConnect: true
+        maxRetriesPerRequest: 1,
+        lazyConnect: true,
+        enableOfflineQueue: false,
+        // Give up after 2 attempts instead of reconnecting forever. When
+        // Redis is absent (the common case for CLI analysis runs) this
+        // keeps the in-memory fallback quiet rather than spamming logs.
+        retryStrategy: (times: number) => (times > 2 ? null : 200),
       });
 
       this.redis.on('connect', () => {
         this.logger.info('Connected to Redis for AI caching');
       });
 
+      // Log the failure exactly once, then permanently fall back to the
+      // in-memory cache so we don't emit an error per reconnection attempt.
       this.redis.on('error', (error) => {
-        this.logger.error('Redis connection error:', error);
-        this.logger.warn('Falling back to in-memory cache');
+        this.disableRedis(error);
       });
 
-      this.redis.on('close', () => {
-        this.logger.warn('Redis connection closed');
-      });
-
-      this.redis.on('reconnecting', () => {
-        this.logger.info('Reconnecting to Redis...');
+      this.redis.on('end', () => {
+        this.disableRedis();
       });
 
     } catch (error) {
       this.logger.error('Failed to initialize Redis:', error);
       this.logger.warn('Using in-memory fallback cache only');
+      this.redis = undefined;
+    }
+  }
+
+  private disableRedis(error?: unknown): void {
+    if (!this.redis) return;
+    const client = this.redis;
+    this.redis = undefined;
+    if (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Redis unavailable (${message}); using in-memory cache`);
+    } else {
+      this.logger.warn('Redis connection ended; using in-memory cache');
+    }
+    try {
+      client.disconnect();
+    } catch {
+      // already disconnected
     }
   }
 
@@ -126,6 +166,17 @@ export class AICache {
         this.updateHitRate();
         this.logger.debug(`Fallback cache hit for key: ${key}`);
         return fallbackResult;
+      }
+
+      // Disk cache — persists across processes when Redis is unavailable.
+      const diskResult = this.getFromDisk<T>(fullKey);
+      if (diskResult !== null) {
+        // Promote into the in-memory tier for fast subsequent access.
+        this.setInFallback(fullKey, diskResult.entry);
+        this.stats.hits++;
+        this.updateHitRate();
+        this.logger.debug(`Disk cache hit for key: ${key}`);
+        return diskResult.value;
       }
 
       this.stats.misses++;
@@ -157,8 +208,9 @@ export class AICache {
       if (this.redis && await this.isRedisAvailable()) {
         await this.setInRedis(fullKey, entry, cacheTtl);
       } else {
-        // Fallback to in-memory cache
+        // Fallback to in-memory cache, plus disk for cross-process persistence.
         this.setInFallback(fullKey, entry);
+        this.setOnDisk(fullKey, entry);
       }
 
       this.stats.sets++;
@@ -378,6 +430,44 @@ export class AICache {
     this.fallbackCache.set(key, entry);
   }
 
+  private diskPath(fullKey: string): string {
+    // Hash the key so the filename is always filesystem-safe and bounded.
+    const hash = crypto.createHash('sha1').update(fullKey).digest('hex');
+    return path.join(this.diskCacheDir, `${hash}.json`);
+  }
+
+  private getFromDisk<T>(fullKey: string): { value: T; entry: CacheEntry<T> } | null {
+    if (!this.diskCacheEnabled) return null;
+    const file = this.diskPath(fullKey);
+    try {
+      if (!fs.existsSync(file)) return null;
+      const entry: CacheEntry<T> = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (this.isExpired(entry) || entry.version !== this.CACHE_VERSION) {
+        try { fs.unlinkSync(file); } catch { /* ignore */ }
+        return null;
+      }
+      return { value: entry.data, entry };
+    } catch (error) {
+      // Corrupt or unreadable entry — drop it and miss.
+      try { fs.unlinkSync(file); } catch { /* ignore */ }
+      return null;
+    }
+  }
+
+  private setOnDisk<T>(fullKey: string, entry: CacheEntry<T>): void {
+    if (!this.diskCacheEnabled) return;
+    const file = this.diskPath(fullKey);
+    try {
+      // Atomic write: write to a temp file then rename.
+      const tmp = `${file}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(entry), 'utf8');
+      fs.renameSync(tmp, file);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.debug(`Disk cache write failed: ${message}`);
+    }
+  }
+
   private generateKey(key: string): string {
     // Ensure key is safe for Redis and consistent
     const safeKey = key.replace(/[^a-zA-Z0-9:_-]/g, '_');
@@ -477,14 +567,18 @@ export class AICache {
   }
 
   async close(): Promise<void> {
-    try {
-      if (this.redis) {
-        await this.redis.quit();
+    if (this.redis) {
+      const client = this.redis;
+      this.redis = undefined;
+      try {
+        // disconnect() tears down the socket without sending a QUIT command,
+        // so it works even when the connection was never established.
+        client.disconnect();
         this.logger.info('Redis connection closed');
+      } catch (error) {
+        this.logger.debug('Redis already disconnected');
       }
-      this.fallbackCache.clear();
-    } catch (error) {
-      this.logger.error('Error closing cache:', error);
     }
+    this.fallbackCache.clear();
   }
 }

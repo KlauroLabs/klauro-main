@@ -77,6 +77,10 @@ import { CapabilityDependencyBuilder } from './capability-dependency-builder';
 import { FlowScorer } from './flow-scorer';
 import { FlowGraphBuilder } from './flow-graph-builder';
 import { GitAnalyzer } from './git-analyzer';
+import { detectCodebaseIdioms } from './idiom-detector';
+import { EmbeddingPhase, type EmbeddingPhaseConfig } from '../embedding/embedding-phase';
+import { aiService } from '../../ai/ai-service';
+import { aiConfig } from '../../config/ai.config';
 
 export type { CASOutput } from '../../types/cas.types';
 import * as fs from 'fs-extra';
@@ -104,63 +108,181 @@ export interface IncrementalAnalysisOptions {
   saveCache?: (contentHash: string, result: FileAnalysisResult) => Promise<void>;
 }
 
+interface DiscoveredEntryPointCandidate {
+  file: string;
+  type: CASEntryPoint['type'];
+  name: string;
+  description: string;
+  trigger?: CASEntryPoint['trigger'];
+}
+
 export class AnalyzerOrchestrator {
   private analyzers: Map<string, AnalyzerRegistration> = new Map();
   private projectRoots: string[] = [];
   private analyzerRootMap: Map<string, string> = new Map();
+  private manifestFileCache: Map<string, string[]> = new Map();
+  private nestedRepoIgnoreCache: Map<string, string[]> = new Map();
+  private nodeLookupSource: CASNode[] | null = null;
+  private nodeLookupById: Map<string, CASNode> = new Map();
+  private embeddingPhaseConfig: EmbeddingPhaseConfig | null = null;
 
   registerAnalyzer(registration: AnalyzerRegistration): void {
     this.analyzers.set(registration.id, registration);
   }
 
+  configureEmbedding(config: EmbeddingPhaseConfig | null): void {
+    this.embeddingPhaseConfig = config;
+  }
+
+  private async applyEmbeddingPhase(output: CASOutput, projectPath: string): Promise<void> {
+    if (!this.embeddingPhaseConfig) return;
+    const phase = new EmbeddingPhase(this.embeddingPhaseConfig);
+    await phase.run(output, projectPath);
+  }
+
   private async discoverProjectRoots(projectPath: string): Promise<string[]> {
-    const manifestPatterns = [
+    const rootSet = new Set<string>();
+    rootSet.add(projectPath);
+
+    try {
+      const matches = await this.getManifestFiles(projectPath);
+      for (const match of matches) {
+        const absolutePath = path.join(projectPath, path.dirname(match));
+        rootSet.add(absolutePath);
+      }
+    } catch {
+    }
+
+    return Array.from(rootSet).sort((a, b) => a.length - b.length);
+  }
+
+  private getManifestPatterns(): string[] {
+    return [
       '**/package.json',
-      '**/requirements.txt',
+      '**/requirements*.txt',
+      '**/setup.py',
+      '**/pyproject.toml',
+      '**/Pipfile',
       '**/pom.xml',
+      '**/build.gradle',
+      '**/build.gradle.kts',
       '**/Cargo.toml',
       '**/composer.json',
       '**/*.csproj',
+      '**/*.fsproj',
+      '**/*.vbproj',
       '**/*.sln',
       '**/go.mod',
       '**/pubspec.yaml'
     ];
+  }
 
-    const ignorePatterns = [
+  private async getManifestFiles(projectPath: string): Promise<string[]> {
+    const cached = this.manifestFileCache.get(projectPath);
+    if (cached) return cached;
+    const nestedRepoIgnores = await this.getNestedRepoIgnorePatterns(projectPath);
+
+    const matches = await glob(this.getManifestPatterns(), {
+      cwd: projectPath,
+      ignore: [...this.getProjectDiscoveryIgnorePatterns(), ...nestedRepoIgnores],
+      nodir: true
+    });
+    this.manifestFileCache.set(projectPath, matches);
+    return matches;
+  }
+
+  private async getNestedRepoIgnorePatterns(projectPath: string): Promise<string[]> {
+    const cached = this.nestedRepoIgnoreCache.get(projectPath);
+    if (cached) return cached;
+
+    try {
+      const discoveryIgnores = this.getProjectDiscoveryIgnorePatterns()
+        .filter(pattern => !pattern.includes('.git'));
+      const gitEntries = await glob('**/.git', {
+        cwd: projectPath,
+        dot: true,
+        ignore: discoveryIgnores
+      });
+      const patterns = Array.from(new Set(gitEntries
+        .map(entry => path.dirname(entry).replace(/\\/g, '/'))
+        .filter(directory => directory && directory !== '.')
+        .map(directory => `${directory}/**`)));
+      this.nestedRepoIgnoreCache.set(projectPath, patterns);
+      return patterns;
+    } catch {
+      this.nestedRepoIgnoreCache.set(projectPath, []);
+      return [];
+    }
+  }
+
+  private getProjectDiscoveryIgnorePatterns(): string[] {
+    return [
       '**/node_modules/**',
       '**/dist/**',
       '**/build/**',
+      '.git/**',
       '**/.git/**',
+      '.claude/**',
+      '**/.claude/**',
+      '.codex/**',
+      '**/.codex/**',
+      '.scannerwork/**',
+      '**/.scannerwork/**',
       '**/target/**',
+      'vendor/**',
       '**/vendor/**',
+      'vendors/**',
+      '**/vendors/**',
+      'site-packages/**',
+      '**/site-packages/**',
       '**/__pycache__/**',
+      '.venv/**',
       '**/.venv/**',
+      '.venv*/**',
+      '**/.venv*/**',
+      'venv/**',
       '**/venv/**',
+      'venv*/**',
+      '**/venv*/**',
+      'env/**',
+      '**/env/**',
+      'env*/**',
+      '**/env*/**',
+      '.tox/**',
+      '**/.tox/**',
+      '.pytest_cache/**',
+      '**/.pytest_cache/**',
+      '.mypy_cache/**',
+      '**/.mypy_cache/**',
+      '.ruff_cache/**',
+      '**/.ruff_cache/**',
       '**/.dart_tool/**',
       '**/.gradle/**',
-      '**/Pods/**'
+      '**/Pods/**',
+      '**/bin/**',
+      '**/obj/**',
+      '**/.next/**',
+      '**/.turbo/**',
+      '**/.cache/**',
+      '**/.unravl*/**',
+      '**/.vite/**',
+      '**/.sourcemaps/**',
+      '**/out/**',
+      '**/storybook-static/**',
+      '**/storybook-build/**',
+      '**/www/build/**',
+      '**/www/assets/**',
+      '**/public/assets/**',
+      '**/static/assets/**',
+      '**/Downloads/**',
+      '**/Generated/**',
+      '**/generated/**'
     ];
-
-    const rootSet = new Set<string>();
-
-    for (const pattern of manifestPatterns) {
-      try {
-        const matches = await glob(pattern, {
-          cwd: projectPath,
-          ignore: ignorePatterns
-        });
-        for (const match of matches) {
-          const absolutePath = path.join(projectPath, path.dirname(match));
-          rootSet.add(absolutePath);
-        }
-      } catch {
-      }
-    }
-
-    return Array.from(rootSet);
   }
 
   async detectAnalyzers(projectPath: string): Promise<AnalyzerRegistration[]> {
+    this.manifestFileCache.clear();
+    this.nestedRepoIgnoreCache.clear();
     this.projectRoots = await this.discoverProjectRoots(projectPath);
     this.analyzerRootMap.clear();
 
@@ -187,7 +309,8 @@ export class AnalyzerOrchestrator {
     const detectedAnalyzers = await this.detectAnalyzers(projectPath);
     logTiming('detectAnalyzers', phaseStart);
     const context: AnalysisContext = {
-      projectPath
+      projectPath,
+      filters: await this.getNestedRepoIgnorePatterns(projectPath)
     };
 
     const allNodes: CASNode[] = [];
@@ -257,9 +380,14 @@ export class AnalyzerOrchestrator {
           const analyzerStartTime = Date.now();
           const matchedRoot = this.analyzerRootMap.get(registration.id) || projectPath;
 
+          const scopedFilters = this.getAnalyzerScopeFilters(projectPath, matchedRoot, registration);
           const analyzerContext: AnalysisContext = {
             ...context,
             projectPath: matchedRoot,
+            filters: [
+              ...(context.filters || []),
+              ...scopedFilters
+            ],
             existingAnalysis: [languageSnapshot]
           };
 
@@ -353,6 +481,8 @@ export class AnalyzerOrchestrator {
 
     phaseStart = Date.now();
     this.linkRouteHandlers(allNodes, allEdges, allEntryPoints);
+    this.addDiscoveredEntryPoints(projectPath, allNodes, allEntryPoints);
+    this.normalizeNodeMetrics(allNodes);
     logTiming('pp_linkRouteHandlers', phaseStart);
 
     phaseStart = Date.now();
@@ -484,6 +614,19 @@ export class AnalyzerOrchestrator {
     logTiming('pp_enhancedPurpose', phaseStart);
 
     phaseStart = Date.now();
+    await this.applyAIInterpretation(
+      enhancedSystemPurpose,
+      systemName,
+      frameworkNames,
+      entryPointSummary,
+      dbEntityNames,
+      externalServiceNames,
+      flowGraph,
+      domainConcepts
+    );
+    logTiming('pp_aiInterpretation', phaseStart);
+
+    phaseStart = Date.now();
     const methodCalls = this.buildMethodCalls(allNodes, allEdges);
     logTiming('pp_methodCalls', phaseStart);
 
@@ -521,13 +664,28 @@ export class AnalyzerOrchestrator {
       repositoryLinks,
       contributions
     );
+    const idiomDetection = detectCodebaseIdioms({
+      projectPath,
+      nodes: allNodes,
+      edges: allEdges,
+      entryPoints: allEntryPoints,
+      exitPoints: allExitPoints,
+      databaseSchema,
+      testSuites,
+      behavioralInvariants,
+      decorators: allDecorators,
+      patterns: allPatterns,
+      libraries: allLibraries,
+      configuration,
+      analysisFacts,
+    });
     const validation = this.buildValidation(allNodes, allEdges, allEntryPoints, allExitPoints, runtimeStaticLinks, analysisFacts);
     logTiming('pp_traceability', phaseStart);
 
     const totalTime = Date.now() - startTime;
     console.log(`[Unravl] Analysis completed in ${totalTime}ms. Breakdown:`, JSON.stringify(timings, null, 2));
 
-    return {
+    const output = {
       cas_version: CAS_VERSION,
       analysis_timestamp: new Date().toISOString(),
       analysis_id: analysisId,
@@ -590,6 +748,10 @@ export class AnalyzerOrchestrator {
       runtime,
       runtime_static_links: runtimeStaticLinks.length > 0 ? runtimeStaticLinks : undefined,
       analysis_facts: analysisFacts.length > 0 ? analysisFacts : undefined,
+      codebase_idioms: idiomDetection.idioms.length > 0 ? idiomDetection.idioms : undefined,
+      idiom_summary: idiomDetection.idioms.length > 0 ? idiomDetection.summary : undefined,
+      idiom_examples: idiomDetection.examples.length > 0 ? idiomDetection.examples : undefined,
+      idiom_violations: idiomDetection.violations.length > 0 ? idiomDetection.violations : undefined,
       analysis_errors: analysisErrors,
       validation,
       test_suites: testSuites,
@@ -597,6 +759,9 @@ export class AnalyzerOrchestrator {
       fixtures: fixtures,
       test_summary: testSummary
     } as CASOutput;
+
+    await this.applyEmbeddingPhase(output, projectPath);
+    return output;
   }
 
   async orchestrateIncrementalAnalysis(
@@ -697,6 +862,8 @@ export class AnalyzerOrchestrator {
       changeSet
     );
 
+    await this.applyEmbeddingPhase(incrementalResult.output, projectPath);
+
     return {
       output: incrementalResult.output,
       state: updatedState,
@@ -752,16 +919,45 @@ export class AnalyzerOrchestrator {
     const candidateIncrementalAnalyzers = incrementalAnalyzers.filter(registration =>
       filesToAnalyze.some(filePath => this.analyzerCanHandleFile(registration.id, filePath))
     );
+    const previousNodesById = new Map(previousOutput.nodes.map(node => [node.id, node]));
+    const matchingAnalyzerPlansByFile = new Map<string, Array<{ registration: AnalyzerRegistration; relevantFiles: Set<string> }>>();
+    const filesNeedingRelevanceScan: string[] = [];
 
-    const analyzerPlans = await Promise.all(
-      candidateIncrementalAnalyzers.map(async registration => ({
-        registration,
-        relevantFiles: new Set(await registration.analyzer.getRelevantFiles?.(projectPath) || [])
-      }))
-    );
+    for (const relativePath of filesToAnalyze) {
+      const expectedAnalyzerIds = this.expectedIncrementalAnalyzerIdsForFile(
+        relativePath,
+        previousState,
+        previousNodesById
+      );
+      const directMatches = expectedAnalyzerIds.size > 0
+        ? candidateIncrementalAnalyzers.filter(registration =>
+          expectedAnalyzerIds.has(registration.id) && this.analyzerCanHandleFile(registration.id, relativePath)
+        )
+        : [];
 
-    const matchingAnalyzerPlansByFile = new Map<string, typeof analyzerPlans>();
+      if (directMatches.length > 0) {
+        matchingAnalyzerPlansByFile.set(relativePath, directMatches.map(registration => ({
+          registration,
+          relevantFiles: new Set([relativePath])
+        })));
+      } else {
+        filesNeedingRelevanceScan.push(relativePath);
+      }
+    }
+
+    const analyzerPlans = filesNeedingRelevanceScan.length > 0
+      ? await Promise.all(
+        candidateIncrementalAnalyzers.map(async registration => ({
+          registration,
+          relevantFiles: new Set(await registration.analyzer.getRelevantFiles?.(projectPath) || [])
+        }))
+      )
+      : [];
+
     const unsupportedFiles = filesToAnalyze.filter(relativePath => {
+      const existingPlans = matchingAnalyzerPlansByFile.get(relativePath);
+      if (existingPlans?.length) return false;
+
       const matchingPlans = analyzerPlans.filter(plan => plan.relevantFiles.has(relativePath));
       matchingAnalyzerPlansByFile.set(relativePath, matchingPlans);
       return matchingPlans.length === 0;
@@ -776,7 +972,6 @@ export class AnalyzerOrchestrator {
       };
     }
 
-    const previousNodesById = new Map(previousOutput.nodes.map(node => [node.id, node]));
     const filesWithUnsupportedDerivedFacts = filesToAnalyze.filter(relativePath => {
       const record = previousState.files[relativePath];
       if (!record) return false;
@@ -803,16 +998,6 @@ export class AnalyzerOrchestrator {
 
       return false;
     });
-    if (filesWithUnsupportedDerivedFacts.length > 0) {
-      const output = await this.orchestrateAnalysis(projectPath);
-      return {
-        output,
-        fileResults: new Map(),
-        wasFullRebuild: true,
-        fullRebuildReason: `Changed files have derived analyzer facts without single-file support: ${filesWithUnsupportedDerivedFacts.slice(0, 5).join(', ')}`
-      };
-    }
-
     const allNodes = [...previousOutput.nodes];
     const allEdges = [...previousOutput.edges];
     const allEntryPoints = [...(previousOutput.entry_points || [])];
@@ -949,11 +1134,31 @@ export class AnalyzerOrchestrator {
       };
     }
 
+    const localizedOutput = this.tryBuildLocalizedIncrementalOutput(
+      previousOutput,
+      previousState,
+      changeSet,
+      fileResults
+    );
+    if (localizedOutput) {
+      return { output: localizedOutput, fileResults };
+    }
+
+    if (filesWithUnsupportedDerivedFacts.length > 0) {
+      const output = await this.orchestrateAnalysis(projectPath);
+      return {
+        output,
+        fileResults: new Map(),
+        wasFullRebuild: true,
+        fullRebuildReason: `Changed files have derived analyzer facts without single-file support: ${filesWithUnsupportedDerivedFacts.slice(0, 5).join(', ')}`
+      };
+    }
+
     if (this.isStructuralNoopIncremental(previousOutput, previousState, changeSet, fileResults)) {
       return { output: previousOutput, fileResults };
     }
 
-    const rebuiltOutput = this.rebuildDerivedData(
+    const rebuiltOutput = await this.rebuildDerivedData(
       projectPath,
       filteredNodes,
       filteredEdges,
@@ -965,19 +1170,21 @@ export class AnalyzerOrchestrator {
     return { output: rebuiltOutput, fileResults };
   }
 
-  private rebuildDerivedData(
+  private async rebuildDerivedData(
     projectPath: string,
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: CASEntryPoint[],
     exitPoints: CASExitPoint[],
     previousOutput: CASOutput
-  ): CASOutput {
+  ): Promise<CASOutput> {
     const gitAnalyzer = new GitAnalyzer(projectPath);
     const filePathsForGit = nodes
       .filter((n): n is CASNode & { source: { file: string } } => !!n.source?.file)
       .map(n => n.source.file);
     gitAnalyzer.preloadAllFileMetrics(filePathsForGit);
+    this.addDiscoveredEntryPoints(projectPath, nodes, entryPoints);
+    this.normalizeNodeMetrics(nodes);
 
     const categories = previousOutput.categories || {};
     const progressiveLevels = this.buildProgressiveLevels(nodes, categories);
@@ -1056,15 +1263,69 @@ export class AnalyzerOrchestrator {
       repositoryLinks,
       previousOutput.analyzer_contributions
     );
+    const decorators = this.buildAllDecorators(nodes);
+    const idiomDetection = detectCodebaseIdioms({
+      projectPath,
+      nodes,
+      edges,
+      entryPoints,
+      exitPoints,
+      databaseSchema,
+      testSuites,
+      behavioralInvariants,
+      decorators,
+      patterns: detectedPatterns,
+      libraries,
+      configuration,
+      analysisFacts,
+    });
     const validation = this.buildValidation(nodes, edges, entryPoints, exitPoints, runtimeStaticLinks, analysisFacts);
 
     const systemName = path.basename(projectPath);
     const analysisId = `analysis_incr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
+    // Rebuild the enhanced system purpose so it stays consistent with the
+    // freshly recomputed domain concepts, workflows, and flow graph. Without
+    // this it would be carried forward verbatim from previousOutput and drift
+    // out of sync with the rest of the analysis on every incremental run.
+    const incrFrameworkNames = (previousOutput.analyzer_contributions || [])
+      .filter(c => c.analyzer_type === 'framework')
+      .map(c => c.analyzer_name.replace(' Analyzer', ''));
+    const incrDbEntityNames = databaseSchema.entities.map(e => e.name);
+    const incrExternalServiceNames = externalServices.map(svc => svc.name);
+    const incrEntryPointSummary = this.summarizeEntryPoints(entryPoints);
+    const enhancedSystemPurpose = this.buildEnhancedSystemPurpose(
+      systemPurpose,
+      domainConcepts,
+      workflows,
+      workflowGraph,
+      domainExtractor,
+      incrDbEntityNames,
+      incrEntryPointSummary,
+      incrFrameworkNames,
+      incrExternalServiceNames,
+      flowGraph
+    );
+    // Re-run the AI interpretation pass. The disk-backed AI cache keys on the
+    // structural facts, so this is a no-op (instant cache hit) unless those
+    // facts actually changed — incremental runs only pay the model cost when
+    // the description would genuinely differ.
+    await this.applyAIInterpretation(
+      enhancedSystemPurpose,
+      systemName,
+      incrFrameworkNames,
+      incrEntryPointSummary,
+      incrDbEntityNames,
+      incrExternalServiceNames,
+      flowGraph,
+      domainConcepts
+    );
+
     return {
       ...previousOutput,
       analysis_timestamp: new Date().toISOString(),
       analysis_id: analysisId,
+      enhanced_system_purpose: enhancedSystemPurpose,
       nodes,
       edges,
       entry_points: entryPoints,
@@ -1103,6 +1364,11 @@ export class AnalyzerOrchestrator {
       runtime,
       runtime_static_links: runtimeStaticLinks.length > 0 ? runtimeStaticLinks : undefined,
       analysis_facts: analysisFacts.length > 0 ? analysisFacts : undefined,
+      decorators: decorators.length > 0 ? decorators : undefined,
+      codebase_idioms: idiomDetection.idioms.length > 0 ? idiomDetection.idioms : undefined,
+      idiom_summary: idiomDetection.idioms.length > 0 ? idiomDetection.summary : undefined,
+      idiom_examples: idiomDetection.examples.length > 0 ? idiomDetection.examples : undefined,
+      idiom_violations: idiomDetection.violations.length > 0 ? idiomDetection.violations : undefined,
       validation,
       test_suites: testSuites
     };
@@ -1119,6 +1385,7 @@ export class AnalyzerOrchestrator {
     const edgesByFile = new Map<string, CASEdge[]>();
     const entryPointsByFile = new Map<string, CASEntryPoint[]>();
     const exitPointsByFile = new Map<string, CASExitPoint[]>();
+    const nodesById = new Map(output.nodes.map(node => [node.id, node]));
 
     for (const node of output.nodes) {
       if (node.source?.file) {
@@ -1133,7 +1400,7 @@ export class AnalyzerOrchestrator {
     }
 
     for (const edge of output.edges) {
-      const sourceNode = output.nodes.find(n => n.id === edge.source);
+      const sourceNode = nodesById.get(edge.source);
       if (sourceNode?.source?.file) {
         const relativePath = path.isAbsolute(sourceNode.source.file)
           ? path.relative(projectPath, sourceNode.source.file)
@@ -1146,7 +1413,7 @@ export class AnalyzerOrchestrator {
     }
 
     for (const ep of output.entry_points || []) {
-      const sourceNode = output.nodes.find(n => n.id === ep.source_node);
+      const sourceNode = nodesById.get(ep.source_node);
       if (sourceNode?.source?.file) {
         const relativePath = path.isAbsolute(sourceNode.source.file)
           ? path.relative(projectPath, sourceNode.source.file)
@@ -1159,7 +1426,7 @@ export class AnalyzerOrchestrator {
     }
 
     for (const ex of output.exit_points || []) {
-      const sourceNode = output.nodes.find(n => n.id === ex.source_node);
+      const sourceNode = nodesById.get(ex.source_node);
       if (sourceNode?.source?.file) {
         const relativePath = path.isAbsolute(sourceNode.source.file)
           ? path.relative(projectPath, sourceNode.source.file)
@@ -1354,6 +1621,199 @@ export class AnalyzerOrchestrator {
     target.exports.push(...source.exports);
   }
 
+  private tryBuildLocalizedIncrementalOutput(
+    previousOutput: CASOutput,
+    previousState: IncrementalState,
+    changeSet: ChangeSet,
+    fileResults: Map<string, FileAnalysisResult>
+  ): CASOutput | null {
+    if (changeSet.added.length > 0 || changeSet.deleted.length > 0 || changeSet.modified.length === 0) {
+      return null;
+    }
+
+    if (!this.canUseLocalizedIncrementalMerge(previousOutput, previousState, changeSet, fileResults)) {
+      return null;
+    }
+
+    const nodeById = new Map(previousOutput.nodes.map(node => [node.id, node]));
+    const edgeById = new Map(previousOutput.edges.map(edge => [edge.id, edge]));
+    const entryPointById = new Map((previousOutput.entry_points || []).map(entryPoint => [entryPoint.id, entryPoint]));
+    const exitPointById = new Map((previousOutput.exit_points || []).map(exitPoint => [exitPoint.id, exitPoint]));
+
+    for (const filePath of changeSet.modified) {
+      const record = previousState.files[filePath];
+      if (!record) continue;
+      for (const nodeId of record.nodeIds) nodeById.delete(nodeId);
+      for (const edgeId of record.edgeIds) edgeById.delete(edgeId);
+      for (const entryPointId of record.entryPointIds) entryPointById.delete(entryPointId);
+      for (const exitPointId of record.exitPointIds) exitPointById.delete(exitPointId);
+    }
+
+    for (const result of fileResults.values()) {
+      for (const node of result.nodes) nodeById.set(node.id, node);
+      for (const edge of result.edges) edgeById.set(edge.id, edge);
+      for (const entryPoint of result.entryPoints) entryPointById.set(entryPoint.id, entryPoint);
+      for (const exitPoint of result.exitPoints) exitPointById.set(exitPoint.id, exitPoint);
+    }
+
+    const nodes = [...nodeById.values()];
+    const edges = [...edgeById.values()];
+    const entryPoints = [...entryPointById.values()];
+    const exitPoints = [...exitPointById.values()];
+    const index = this.buildIndex(nodes, entryPoints, exitPoints, previousOutput.perspectives || []);
+    const progressiveLevels = this.buildProgressiveLevels(nodes, previousOutput.categories || {});
+    const validation = this.buildValidation(
+      nodes,
+      edges,
+      entryPoints,
+      exitPoints,
+      previousOutput.runtime_static_links || [],
+      previousOutput.analysis_facts || []
+    );
+
+    return {
+      ...previousOutput,
+      analysis_timestamp: new Date().toISOString(),
+      analysis_id: `analysis_incr_local_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      nodes,
+      edges,
+      entry_points: entryPoints,
+      exit_points: exitPoints,
+      progressive_levels: progressiveLevels,
+      index,
+      validation
+    };
+  }
+
+  private canUseLocalizedIncrementalMerge(
+    previousOutput: CASOutput,
+    previousState: IncrementalState,
+    changeSet: ChangeSet,
+    fileResults: Map<string, FileAnalysisResult>
+  ): boolean {
+    const previousNodesById = new Map(previousOutput.nodes.map(node => [node.id, node]));
+    const previousEdgesById = new Map(previousOutput.edges.map(edge => [edge.id, edge]));
+    const previousEntryPointsById = new Map((previousOutput.entry_points || []).map(entryPoint => [entryPoint.id, entryPoint]));
+    const previousExitPointsById = new Map((previousOutput.exit_points || []).map(exitPoint => [exitPoint.id, exitPoint]));
+
+    for (const filePath of changeSet.modified) {
+      const record = previousState.files[filePath];
+      const result = fileResults.get(filePath);
+      if (!record || !result) return false;
+
+      if (!this.sameLocalImportSet(record.importedFiles || [], result.imports || [])) return false;
+
+      const previousNodes = record.nodeIds
+        .map(id => previousNodesById.get(id))
+        .filter((node): node is CASNode => Boolean(node));
+      const previousNodeIds = new Set(previousNodes.map(node => node.id));
+      const currentNodeIds = new Set(result.nodes.map(node => node.id));
+      const missingPreviousNodes = previousNodes.filter(node => !currentNodeIds.has(node.id));
+      if (missingPreviousNodes.some(node => this.isBehavioralIncrementalNode(node))) return false;
+
+      const addedNodes = result.nodes.filter(node => !previousNodeIds.has(node.id));
+      if (addedNodes.some(node => this.isBehavioralIncrementalNode(node))) return false;
+      const addedBehavioralNodeNames = new Set(addedNodes
+        .filter(node => this.isBehavioralIncrementalNode(node))
+        .map(node => node.name));
+      if (!this.sameStringSet(record.exportedSymbols || [], result.exports || [])) {
+        const exportTouchesAddedNode = (result.exports || []).some(exported => addedBehavioralNodeNames.has(exported));
+        if (exportTouchesAddedNode) return false;
+      }
+      const canPreserveDerivedFacts = true;
+
+      const previousEntryPoints = record.entryPointIds
+        .map(id => previousEntryPointsById.get(id))
+        .filter((entryPoint): entryPoint is CASEntryPoint => Boolean(entryPoint));
+      if (!this.sameFingerprint(previousEntryPoints, result.entryPoints, entryPoint => this.entryPointFingerprint(entryPoint))) {
+        const entryPointsStayOnExistingNodes = result.entryPoints.every(entryPoint =>
+          previousNodeIds.has(entryPoint.source_node) ||
+          Boolean(entryPoint.handler?.node_id && previousNodeIds.has(entryPoint.handler.node_id))
+        );
+        if (!(canPreserveDerivedFacts && entryPointsStayOnExistingNodes)) return false;
+      }
+
+      const previousExitPoints = record.exitPointIds
+        .map(id => previousExitPointsById.get(id))
+        .filter((exitPoint): exitPoint is CASExitPoint => Boolean(exitPoint));
+      if (!this.sameFingerprint(previousExitPoints, result.exitPoints, exitPoint => this.exitPointFingerprint(exitPoint))) {
+        const exitPointsStayOnExistingNodes = result.exitPoints.every(exitPoint => previousNodeIds.has(exitPoint.source_node));
+        if (!(canPreserveDerivedFacts && exitPointsStayOnExistingNodes)) return false;
+      }
+
+      const previousBehavioralEdges = record.edgeIds
+        .map(id => previousEdgesById.get(id))
+        .filter((edge): edge is CASEdge => Boolean(edge))
+        .filter(edge => this.isBehavioralIncrementalEdge(edge));
+      const currentBehavioralEdges = result.edges.filter(edge => this.isBehavioralIncrementalEdge(edge));
+      if (!this.sameFingerprint(previousBehavioralEdges, currentBehavioralEdges, edge => this.edgeFingerprint(edge))) {
+        const behavioralEdgesStayOnExistingNodes = currentBehavioralEdges.every(edge =>
+          previousNodeIds.has(edge.source) && previousNodeIds.has(edge.target)
+        );
+        if (!(canPreserveDerivedFacts && behavioralEdgesStayOnExistingNodes)) return false;
+      }
+    }
+
+    return true;
+  }
+
+  private sameStringSet(previous: string[], current: string[]): boolean {
+    if (previous.length !== current.length) return false;
+    const left = [...previous].sort();
+    const right = [...current].sort();
+    return left.every((value, index) => value === right[index]);
+  }
+
+  private sameLocalImportSet(previous: string[], current: string[]): boolean {
+    return this.sameStringSet(
+      previous.filter(imported => this.isLocalImportSpecifier(imported)).map(imported => imported.replace(/\\/g, '/')),
+      current.filter(imported => this.isLocalImportSpecifier(imported)).map(imported => imported.replace(/\\/g, '/'))
+    );
+  }
+
+  private isLocalImportSpecifier(imported: string): boolean {
+    return imported.startsWith('.') || imported.startsWith('/') || /\.(ts|tsx|js|jsx|mjs|cjs|py|cs|java|go|rs|php|dart)$/i.test(imported);
+  }
+
+  private isBehavioralIncrementalNode(node: CASNode): boolean {
+    return [
+      'controller',
+      'route',
+      'handler',
+      'service',
+      'repository',
+      'entity',
+      'model',
+      'serializer',
+      'resolver',
+      'mutation',
+      'function',
+      'method',
+      'class',
+      'component',
+      'hook',
+      'middleware',
+      'guard',
+      'module'
+    ].includes(node.type);
+  }
+
+  private isBehavioralIncrementalEdge(edge: CASEdge): boolean {
+    return [
+      'calls',
+      'uses',
+      'depends_on',
+      'imports',
+      'exports',
+      'data_access',
+      'external_call',
+      'authenticates',
+      'authorizes',
+      'validates',
+      'handles'
+    ].includes(edge.type) || edge.category === 'external' || edge.category === 'data' || edge.category === 'security';
+  }
+
   private isStructuralNoopIncremental(
     previousOutput: CASOutput,
     previousState: IncrementalState,
@@ -1512,6 +1972,35 @@ export class AnalyzerOrchestrator {
     return true;
   }
 
+  private expectedIncrementalAnalyzerIdsForFile(
+    filePath: string,
+    previousState: IncrementalState,
+    previousNodesById: Map<string, CASNode>
+  ): Set<string> {
+    const analyzerIds = new Set<string>();
+    const record = previousState.files[filePath];
+
+    if (record?.analyzerId && record.analyzerId !== 'unknown') {
+      analyzerIds.add(record.analyzerId);
+    }
+
+    for (const nodeId of record?.nodeIds || []) {
+      const node = previousNodesById.get(nodeId);
+      if (!node) continue;
+      for (const analyzerId of node.analyzers || []) {
+        if (analyzerId) analyzerIds.add(analyzerId);
+      }
+      if (node.primaryAnalyzer) analyzerIds.add(node.primaryAnalyzer);
+    }
+
+    if (record && analyzerIds.size === 0) {
+      const analyzerId = this.analyzerIdForFilePath(filePath);
+      if (analyzerId !== 'unknown') analyzerIds.add(analyzerId);
+    }
+
+    return analyzerIds;
+  }
+
   private getIncrementalSourceFiles(projectPath: string): string[] {
     const coreConfigPatterns = [
       'package.json',
@@ -1566,9 +2055,28 @@ export class AnalyzerOrchestrator {
         '**/__pycache__/**',
         '**/.pytest_cache/**',
         '**/target/**',
+        'vendor/**',
         '**/vendor/**',
+        'vendors/**',
+        '**/vendors/**',
+        'site-packages/**',
+        '**/site-packages/**',
+        '.venv/**',
         '**/.venv/**',
+        '.venv*/**',
+        '**/.venv*/**',
+        'venv/**',
         '**/venv/**',
+        'venv*/**',
+        '**/venv*/**',
+        'env/**',
+        '**/env/**',
+        '.tox/**',
+        '**/.tox/**',
+        '.mypy_cache/**',
+        '**/.mypy_cache/**',
+        '.ruff_cache/**',
+        '**/.ruff_cache/**',
         '**/.dart_tool/**',
         '**/bin/**',
         '**/obj/**'
@@ -1916,17 +2424,30 @@ export class AnalyzerOrchestrator {
   }
 
   private extractImportedFiles(nodes: CASNode[]): string[] {
-    const imports: string[] = [];
+    const imports = new Set<string>();
     for (const node of nodes) {
+      const attributes = node.metadata?.attributes as Record<string, any> | undefined;
+      if (Array.isArray(attributes?.imports)) {
+        for (const imported of attributes.imports) {
+          if (typeof imported === 'string' && imported) imports.add(imported);
+        }
+      }
+
       if (node.type === 'import' && node.metadata) {
         const metadata = node.metadata as Record<string, any>;
+        const moduleName = metadata.module;
+        if (typeof moduleName === 'string' && moduleName) {
+          imports.add(moduleName);
+          continue;
+        }
+
         const source = metadata.source;
-        if (typeof source === 'string' && (source.startsWith('.') || source.startsWith('/'))) {
-          imports.push(source);
+        if (typeof source === 'string' && source) {
+          imports.add(source);
         }
       }
     }
-    return imports;
+    return [...imports];
   }
 
   private extractExportedSymbols(nodes: CASNode[]): string[] {
@@ -1984,7 +2505,26 @@ export class AnalyzerOrchestrator {
     registration: AnalyzerRegistration
   ): Promise<boolean> {
     try {
-      if (await registration.analyzer.canAnalyze(projectPath)) {
+      if (registration.type === 'framework' || registration.type === 'library') {
+        const nestedRoots = this.projectRoots
+          .filter(root => root !== projectPath)
+          .sort((a, b) => b.length - a.length);
+
+        for (const root of nestedRoots) {
+          try {
+            if (await this.hasAnalyzerSignal(root, registration) && await registration.analyzer.canAnalyze(root)) {
+              this.analyzerRootMap.set(registration.id, root);
+              return true;
+            }
+          } catch {
+          }
+        }
+      }
+
+      if (
+        (registration.type === 'language' || await this.hasAnalyzerSignal(projectPath, registration)) &&
+        await registration.analyzer.canAnalyze(projectPath)
+      ) {
         this.analyzerRootMap.set(registration.id, projectPath);
         return true;
       }
@@ -1992,7 +2532,7 @@ export class AnalyzerOrchestrator {
       for (const root of this.projectRoots) {
         if (root === projectPath) continue;
         try {
-          if (await registration.analyzer.canAnalyze(root)) {
+          if (await this.hasAnalyzerSignal(root, registration) && await registration.analyzer.canAnalyze(root)) {
             this.analyzerRootMap.set(registration.id, root);
             return true;
           }
@@ -2004,6 +2544,163 @@ export class AnalyzerOrchestrator {
     } catch (error) {
       return false;
     }
+  }
+
+  private async hasAnalyzerSignal(projectPath: string, registration: AnalyzerRegistration): Promise<boolean> {
+    if (registration.type === 'language') {
+      return true;
+    }
+
+    const patterns = registration.detectPatterns || {};
+    if (patterns.dependencies?.length && await this.manifestContainsAny(projectPath, patterns.dependencies)) {
+      return true;
+    }
+
+    if (patterns.files?.length) {
+      const fileSignal = await this.hasFileSignal(projectPath, patterns.files, patterns.content || [], Boolean(patterns.dependencies?.length));
+      if (fileSignal) return true;
+    }
+
+    if (patterns.content?.length) {
+      return this.hasContentPathSignal(projectPath, patterns.content);
+    }
+
+    return false;
+  }
+
+  private async manifestContainsAny(projectPath: string, needles: string[]): Promise<boolean> {
+    const loweredNeedles = needles.map(needle => needle.toLowerCase());
+    const matches = await this.getManifestFiles(projectPath);
+
+    for (const match of matches.slice(0, 160)) {
+        const fullPath = path.join(projectPath, match);
+        try {
+          if (path.basename(match) === 'package.json') {
+            const packageJson = await fs.readJson(fullPath);
+            const deps = {
+              ...packageJson.dependencies,
+              ...packageJson.devDependencies,
+              ...packageJson.peerDependencies,
+              ...packageJson.optionalDependencies
+            };
+            const dependencyNames = Object.keys(deps).map(dep => dep.toLowerCase());
+            if (loweredNeedles.some(needle => dependencyNames.some(dep => dep.includes(needle) || needle.includes(dep)))) {
+              return true;
+            }
+          }
+
+          const content = await fs.readFile(fullPath, 'utf8');
+          const lowerContent = content.toLowerCase();
+          if (loweredNeedles.some(needle => lowerContent.includes(needle))) {
+            return true;
+          }
+        } catch {
+        }
+    }
+
+    return false;
+  }
+
+  private async hasFileSignal(
+    projectPath: string,
+    files: string[],
+    contentPatterns: RegExp[],
+    hasDependencyPatterns: boolean
+  ): Promise<boolean> {
+    const genericManifests = new Set([
+      'package.json',
+      'requirements.txt',
+      'composer.json',
+      'pom.xml',
+      'build.gradle',
+      'build.gradle.kts'
+    ]);
+
+    for (const filePattern of files) {
+      const isGenericManifest = genericManifests.has(filePattern) || /\*\.(?:csproj|sln|vbproj|fsproj)$/.test(filePattern);
+      if (isGenericManifest && hasDependencyPatterns && contentPatterns.length === 0) {
+        continue;
+      }
+
+      const matches = await glob(filePattern, {
+        cwd: projectPath,
+        ignore: this.getProjectDiscoveryIgnorePatterns(),
+        nodir: true
+      });
+
+      if (matches.length === 0) continue;
+      if (contentPatterns.length === 0) {
+        return true;
+      }
+
+      for (const match of matches.slice(0, 80)) {
+        if (contentPatterns.some(pattern => pattern.test(match))) {
+          return true;
+        }
+
+        try {
+          const content = await fs.readFile(path.join(projectPath, match), 'utf8');
+          if (contentPatterns.some(pattern => pattern.test(content))) {
+            return true;
+          }
+        } catch {
+        }
+      }
+    }
+
+    return false;
+  }
+
+  private async hasContentPathSignal(projectPath: string, patterns: RegExp[]): Promise<boolean> {
+    const candidatePatterns = Array.from(new Set(patterns.flatMap(pattern => this.contentPatternToGlob(pattern)).filter(Boolean)));
+    if (candidatePatterns.length === 0) {
+      return false;
+    }
+
+    for (const candidatePattern of candidatePatterns) {
+      const matches = await glob(candidatePattern, {
+        cwd: projectPath,
+        ignore: this.getProjectDiscoveryIgnorePatterns(),
+        nodir: true
+      });
+      if (matches.length > 0) return true;
+    }
+
+    return false;
+  }
+
+  private contentPatternToGlob(pattern: RegExp): string[] {
+    const source = pattern.source;
+    const globs: string[] = [];
+    if (source.includes('\\.tsx') || source.includes('tsx')) globs.push('**/*.tsx');
+    if (source.includes('\\.jsx') || source.includes('jsx')) globs.push('**/*.jsx');
+    if (source.includes('\\.vue') || source.includes('vue')) globs.push('**/*.vue');
+    if (source.includes('\\.component\\.ts') || source.includes('component')) globs.push('**/*.component.ts');
+    if (source.includes('\\.test') || source.includes('\\.spec') || source.includes('test') || source.includes('spec')) {
+      globs.push('**/*.test.{js,ts,jsx,tsx}', '**/*.spec.{js,ts,jsx,tsx}');
+    }
+    return globs;
+  }
+
+  private getAnalyzerScopeFilters(
+    projectPath: string,
+    matchedRoot: string,
+    registration: AnalyzerRegistration
+  ): string[] {
+    if (registration.type !== 'framework' && registration.type !== 'library') {
+      return [];
+    }
+
+    return this.projectRoots
+      .filter(root => root !== matchedRoot)
+      .map(root => path.relative(matchedRoot, root).replace(/\\/g, '/'))
+      .filter(relativeRoot =>
+        relativeRoot &&
+        relativeRoot !== '.' &&
+        !relativeRoot.startsWith('..') &&
+        !path.isAbsolute(relativeRoot)
+      )
+      .map(relativeRoot => `${relativeRoot}/**`);
   }
 
   private async detectPrimaryProjectType(projectPath: string): Promise<string> {
@@ -2020,12 +2717,12 @@ export class AnalyzerOrchestrator {
         { type: 'dart', files: ['**/pubspec.yaml'], content: ['flutter:', 'sdk: flutter'] }
       ];
 
-      const ignorePatterns = ['**/node_modules/**', '**/vendor/**', '**/.git/**', '**/dist/**', '**/build/**', '**/target/**', '**/__pycache__/**', '**/.venv/**', '**/venv/**', '**/.dart_tool/**', '**/.gradle/**', '**/Pods/**'];
+      const ignorePatterns = this.getProjectDiscoveryIgnorePatterns();
 
       for (const indicator of indicators) {
         for (const filePattern of indicator.files) {
           try {
-            const files = await glob(filePattern, { cwd: projectPath, ignore: ignorePatterns });
+            const files = await glob(filePattern, { cwd: projectPath, ignore: ignorePatterns, nodir: true });
             if (files.length > 0) {
               if (indicator.content && indicator.content.length > 0) {
                 for (const f of files) {
@@ -2278,7 +2975,90 @@ export class AnalyzerOrchestrator {
       'file', 'email', 'sms', 'external_api', 'sdk',
       'api', 'navigation', 'client_storage', 'analytics', 'message', 'webhook'
     ]);
-    return validTypes.has(ep.type);
+    if (!validTypes.has(ep.type)) return false;
+    if (this.isNoiseExitPoint(ep)) return false;
+    return true;
+  }
+
+  /**
+   * Exit points are meant to capture genuine external boundaries (real
+   * databases, third-party APIs, queues, SDKs). Two sources inflate them:
+   *
+   *  1. Standard-library calls (Node `path`/`fs`/`os`, Python `os`/`pathlib`/
+   *     `sys`) tagged as "file" exit points — path manipulation performs no
+   *     I/O at all.
+   *  2. Calls into the project's own modules (relative or absolute local
+   *     imports) tagged as "sdk" exit points — these are internal function
+   *     calls, not an external dependency boundary.
+   *
+   * Both are filtered here so the external-interactions view stays meaningful.
+   */
+  private isNoiseExitPoint(ep: CASExitPoint): boolean {
+    // (2) "sdk" exit point that is not actually an external dependency.
+    if (ep.type === 'sdk') {
+      const moduleRefs = [ep.target?.sdk, (ep.metadata as any)?.library]
+        .filter((v): v is string => typeof v === 'string' && v.length > 0);
+
+      // 2a. Targets a local module (relative/absolute import path).
+      if (moduleRefs.length > 0 && moduleRefs.every(m => this.isLocalModuleSpecifier(m))) {
+        return true;
+      }
+
+      // 2b. Library resolution failed and fell back to the call target
+      // itself (sdk === endpoint). This happens for calls on local objects
+      // (`skillRepository.findByName`, `permissionQueue.on`) that were never
+      // imported from a package — they are internal calls, not SDK usage.
+      const sdk = ep.target?.sdk;
+      const endpoint = ep.target?.endpoint;
+      if (sdk && endpoint && sdk === endpoint) {
+        return true;
+      }
+    }
+
+    // (1) Stdlib noise.
+    const candidates = [
+      ep.name,
+      ep.target?.resource,
+      ep.target?.endpoint,
+      ep.target?.sdk,
+      ep.operation?.method,
+    ]
+      .filter((v): v is string => typeof v === 'string' && v.length > 0)
+      .map(v => v.toLowerCase().replace(/^node:/, ''));
+
+    if (candidates.length === 0) return false;
+
+    // Pure-computation / process-introspection stdlib modules. These are not
+    // external boundaries. Network-capable builtins (http, https, net, dns,
+    // tls, dgram) are intentionally NOT listed — those are real exit points.
+    const noiseModules = [
+      'path', 'fs', 'fs/promises', 'os', 'crypto', 'url', 'util',
+      'events', 'stream', 'buffer', 'querystring', 'assert',
+      'string_decoder', 'zlib', 'perf_hooks',
+      'pathlib', 'sys', 'os.path',
+    ];
+    const noiseExact = new Set(noiseModules);
+    const noisePrefixes = noiseModules.map(m => m + '.');
+
+    return candidates.some(c =>
+      noiseExact.has(c) || noisePrefixes.some(p => c.startsWith(p))
+    );
+  }
+
+  /**
+   * True when a module specifier refers to code inside this repository
+   * rather than an external package. Relative imports (`./x`, `../x`),
+   * absolute filesystem paths, and bare local file names with a source
+   * extension are all local; bare package specifiers (`express`,
+   * `@scope/pkg`) are external.
+   */
+  private isLocalModuleSpecifier(specifier: string): boolean {
+    const s = specifier.trim();
+    if (!s) return false;
+    if (s.startsWith('./') || s.startsWith('../') || s === '.' || s === '..') return true;
+    if (s.startsWith('/')) return true;
+    if (/^[a-zA-Z]:[\\/]/.test(s)) return true; // Windows absolute path
+    return false;
   }
 
   private determineSystemType(nodes: CASNode[]): string {
@@ -2559,6 +3339,45 @@ export class AnalyzerOrchestrator {
     processObject(spec);
   }
 
+  /**
+   * Consolidates size/complexity metrics into the canonical CAS fields.
+   * Language analyzers stash these in inconsistent places (or omit them):
+   * complexity may live in `metadata.attributes.complexity` or as a bare
+   * number, and lines-of-code is often absent entirely. This single pass
+   * backfills `metadata.complexity.cyclomatic` and `metadata.metrics.
+   * lines_of_code` so every downstream consumer — quality metrics, the
+   * maintainability index, stability/hotspot tooling — sees real numbers.
+   */
+  private normalizeNodeMetrics(nodes: CASNode[]): void {
+    for (const node of nodes) {
+      if (!node.metadata) continue;
+      const md = node.metadata as any;
+
+      // Lines of code: derive from the source span when not already set.
+      if (!md.metrics?.lines_of_code) {
+        const start = node.source?.line;
+        const end = node.source?.end_line;
+        if (typeof start === 'number' && typeof end === 'number' && end >= start) {
+          md.metrics = md.metrics || {};
+          md.metrics.lines_of_code = end - start + 1;
+        }
+      }
+
+      // Cyclomatic complexity: consolidate from wherever the analyzer left it.
+      const complexityIsObject = md.complexity && typeof md.complexity === 'object';
+      const hasCyclomatic = complexityIsObject && typeof md.complexity.cyclomatic === 'number';
+      if (!hasCyclomatic) {
+        const raw =
+          (typeof md.attributes?.complexity === 'number' ? md.attributes.complexity : undefined) ??
+          (typeof md.complexity === 'number' ? md.complexity : undefined);
+        if (typeof raw === 'number' && raw >= 0) {
+          const existing = complexityIsObject ? md.complexity : {};
+          md.complexity = { ...existing, cyclomatic: raw };
+        }
+      }
+    }
+  }
+
   private calculateQualityMetrics(nodes: CASNode[]): any {
     const totalNodes = nodes.length;
     const documentedNodes = nodes.filter(n => n.description || n.metadata?.documentation).length;
@@ -2572,8 +3391,43 @@ export class AnalyzerOrchestrator {
       documentation_coverage: totalNodes > 0 ? (documentedNodes / totalNodes) * 100 : 0,
       test_coverage: totalNodes > 0 ? (testedNodes / totalNodes) * 100 : 0,
       complexity_score: totalNodes > 0 ? complexitySum / totalNodes : 0,
-      maintainability_index: 100
+      maintainability_index: this.computeMaintainabilityIndex(nodes)
     };
+  }
+
+  /**
+   * Maintainability index derived from a simplified SEI formula, averaged
+   * over the nodes that actually carry size/complexity metrics. Returns
+   * undefined when no node has the required data rather than fabricating a
+   * value. Halstead volume is used when available; otherwise the volume term
+   * is approximated from lines of code.
+   */
+  private computeMaintainabilityIndex(nodes: CASNode[]): number | undefined {
+    const scores: number[] = [];
+    // The maintainability index is a per-unit metric; average it over code
+    // units (functions/methods/classes), not files or modules whose line
+    // spans would dominate and skew the result.
+    const unitTypes = new Set(['function', 'method', 'class']);
+
+    for (const node of nodes) {
+      if (!unitTypes.has(node.type)) continue;
+      const loc = node.metadata?.metrics?.lines_of_code;
+      if (!loc || loc <= 0) continue;
+
+      const cc = node.metadata?.complexity?.cyclomatic ?? 1;
+      const halsteadVolume = node.metadata?.complexity?.halstead?.volume;
+      const volume = halsteadVolume && halsteadVolume > 0
+        ? halsteadVolume
+        : loc * 4; // rough proxy when Halstead is unavailable
+
+      // SEI maintainability index, normalized to 0-100.
+      const raw = 171 - 5.2 * Math.log(volume) - 0.23 * cc - 16.2 * Math.log(loc);
+      const normalized = Math.max(0, Math.min(100, (raw * 100) / 171));
+      scores.push(normalized);
+    }
+
+    if (scores.length === 0) return undefined;
+    return scores.reduce((sum, s) => sum + s, 0) / scores.length;
   }
 
   private buildArchitectureSummary(
@@ -3813,6 +4667,101 @@ export class AnalyzerOrchestrator {
     });
   }
 
+  /**
+   * Budgeted, non-fatal AI interpretation pass. Replaces the heuristic
+   * `inferred_description` with a model-generated narrative when the AI
+   * subsystem is enabled and responds within the wall-clock budget.
+   * On timeout, failure, or a low-quality result the heuristic description
+   * produced by buildEnhancedSystemPurpose is left untouched.
+   */
+  private async applyAIInterpretation(
+    enhancedSystemPurpose: EnhancedSystemPurpose,
+    systemName: string,
+    frameworks: string[],
+    entryPointSummary: { type: string; count: number }[],
+    databaseEntities: string[],
+    externalServices: string[],
+    flowGraph: CASFlowGraph,
+    domainConcepts: CASDomainConcept[]
+  ): Promise<void> {
+    if (!aiConfig.features.naturalLanguageDescriptions) {
+      return;
+    }
+
+    const budgetMs = 45000;
+
+    const topCapabilities = [...flowGraph.capabilities]
+      .sort((a, b) => b.signals.total_score - a.signals.total_score)
+      .slice(0, 8)
+      .map(c => c.name.replace(/_/g, ' '));
+
+    // Rank concepts core-first, then by frequency. Supporting concepts still
+    // fill the list, so the model always receives real domain signal even
+    // when few or no concepts reached `core` — without this a thin repo
+    // hands the model an empty list and it hallucinates a system identity
+    // from the project name alone.
+    const conceptPool = domainConcepts
+      .filter(c => c.classification !== 'infrastructure')
+      .sort((a, b) => {
+        const ac = a.classification === 'core' ? 0 : 1;
+        const bc = b.classification === 'core' ? 0 : 1;
+        if (ac !== bc) return ac - bc;
+        return b.frequency - a.frequency;
+      })
+      .slice(0, 12)
+      .map(c => c.name);
+
+    // Test harnesses are not part of what the system *is* — drop `test`
+    // entry points so they do not pollute the narrative.
+    const meaningfulEntryPoints = entryPointSummary.filter(
+      e => e.type !== 'test' && e.count > 0
+    );
+
+    // Only raw, observed structural facts are passed to the model. The
+    // heuristic's own conclusions (primary_type, primary_domain, the
+    // templated summary) are deliberately withheld so the model produces an
+    // independent interpretation rather than echoing a possibly-wrong label.
+    const structuralFacts = {
+      systemName,
+      frameworks: frameworks.slice(0, 6),
+      entryPoints: meaningfulEntryPoints,
+      capabilities: topCapabilities,
+      domainConcepts: conceptPool,
+      databaseEntities: databaseEntities.slice(0, 15),
+      externalServices: externalServices.slice(0, 10),
+    };
+
+    try {
+      const description = await Promise.race([
+        aiService.generateComponentDescription({
+          additionalContext: {
+            task: 'Based only on the structural facts below, describe what this software system is and what it does in 2-4 sentences. Infer the kind of system from its frameworks, entry points, and capabilities. Do not invent features that are not implied by the facts.',
+            ...structuralFacts,
+          },
+        }),
+        new Promise<string>((_, reject) =>
+          setTimeout(() => reject(new Error('AI interpretation budget exceeded')), budgetMs)
+        ),
+      ]);
+
+      const cleaned = (description || '').trim();
+      const isUsable =
+        cleaned.length >= 40 &&
+        cleaned.length <= 2000 &&
+        !/AI description generation is disabled/i.test(cleaned);
+
+      if (isUsable) {
+        enhancedSystemPurpose.inferred_description = cleaned;
+        console.log('[Unravl] AI interpretation applied to system description');
+      } else {
+        console.log('[Unravl] AI interpretation result unusable; keeping heuristic description');
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.log(`[Unravl] AI interpretation skipped (${message}); keeping heuristic description`);
+    }
+  }
+
   private buildEnhancedSystemPurpose(
     basePurpose: SystemPurpose,
     domainConcepts: CASDomainConcept[],
@@ -3937,13 +4886,14 @@ export class AnalyzerOrchestrator {
       databaseSchema
     );
 
+    const capabilitiesById = new Map(capabilities.map(cap => [cap.id, cap]));
     for (const dep of dependencies) {
-      const fromCap = capabilities.find(c => c.id === dep.from_capability);
+      const fromCap = capabilitiesById.get(dep.from_capability);
       if (fromCap) {
         fromCap.depends_on.push(dep);
       }
 
-      const toCap = capabilities.find(c => c.id === dep.to_capability);
+      const toCap = capabilitiesById.get(dep.to_capability);
       if (toCap) {
         toCap.depended_by.push(dep.from_capability);
       }
@@ -3960,6 +4910,7 @@ export class AnalyzerOrchestrator {
     const changeRisks: CASChangeRisk[] = [];
     const callerCounts = new Map<string, string[]>();
     const gitAvailable = gitAnalyzer.isAvailable();
+    const externalDependencySources = new Set<string>();
 
     for (const edge of edges) {
       if (edge.type === 'calls' || edge.type === 'uses' || edge.type === 'depends_on') {
@@ -3967,6 +4918,9 @@ export class AnalyzerOrchestrator {
           callerCounts.set(edge.target, []);
         }
         callerCounts.get(edge.target)!.push(edge.source);
+      }
+      if (edge.type === 'external_call' || edge.category === 'external') {
+        externalDependencySources.add(edge.source);
       }
     }
 
@@ -4026,9 +4980,7 @@ export class AnalyzerOrchestrator {
         });
       }
 
-      const hasExternalDep = edges.some(e =>
-        e.source === node.id && (e.type === 'external_call' || e.category === 'external')
-      );
+      const hasExternalDep = externalDependencySources.has(node.id);
       if (hasExternalDep) {
         riskFactors.push({
           factor: 'external-dependency',
@@ -5814,12 +6766,17 @@ export class AnalyzerOrchestrator {
         type: 'devtools-platform',
         description: 'Developer tools, code analysis, or visualization platform',
         indicators: {
-          pathPatterns: ['analyzer', 'parser', 'ast', 'visualiz', 'blueprint', 'diagram', 'graph', 'node', 'edge', 'render', 'canvas', 'viewport', 'zoom', 'pan', 'layout', 'telemetry', 'instrument', 'sdk', 'plugin'],
-          verbPatterns: ['analyze', 'parse', 'render', 'visualize', 'instrument', 'inspect', 'transform', 'compile', 'lint', 'format', 'detect', 'trace', 'profile'],
-          entityPatterns: ['node', 'edge', 'graph', 'ast', 'token', 'analyzer', 'parser', 'blueprint', 'diagram', 'canvas', 'viewport', 'layer', 'component', 'manifest', 'telemetry'],
-          capabilityPatterns: ['analysis', 'parsing', 'visualization', 'rendering', 'instrumentation', 'detection', 'inspection'],
+          // Substring-matched, so only genuinely distinctive tokens are
+          // listed. Generic terms (node, edge, graph, component, token,
+          // render, layout, plugin, sdk) were removed: they appear in almost
+          // every codebase and previously caused systems like a Claude-agent
+          // manager or any React app to be mislabeled a devtools platform.
+          pathPatterns: ['analyzer', 'sourcemap', 'transpil', 'linter', 'codegen', 'blueprint'],
+          verbPatterns: ['transpile', 'instrument', 'profile'],
+          entityPatterns: ['analyzer', 'sourcemap', 'blueprint', 'diagnostic', 'codemod'],
+          capabilityPatterns: ['static analysis', 'code analysis', 'transpilation', 'instrumentation', 'profiling'],
         },
-        distinctiveness: 5,
+        distinctiveness: 3,
         weight: 0
       },
       {
@@ -6097,31 +7054,268 @@ export class AnalyzerOrchestrator {
     }
   }
 
+  private addDiscoveredEntryPoints(
+    projectPath: string,
+    nodes: CASNode[],
+    entryPoints: CASEntryPoint[]
+  ): void {
+    if (nodes.length === 0) return;
+
+    const existingIds = new Set(entryPoints.map(entryPoint => entryPoint.id));
+    const existingSourceNodes = new Set(entryPoints.map(entryPoint => entryPoint.source_node));
+    const candidates = this.collectEntryPointCandidates(projectPath);
+    const startingCount = entryPoints.length;
+
+    for (const candidate of candidates) {
+      const sourceNode = this.findNodeForEntryFile(nodes, projectPath, candidate.file);
+      if (!sourceNode || existingSourceNodes.has(sourceNode.id)) continue;
+
+      const entryId = `entry_discovered_${candidate.file.replace(/[^a-zA-Z0-9]/g, '_')}`;
+      if (existingIds.has(entryId)) continue;
+
+      entryPoints.push({
+        id: entryId,
+        source_node: sourceNode.id,
+        source_analyzer: 'orchestrator',
+        type: candidate.type,
+        name: candidate.name,
+        description: candidate.description,
+        trigger: candidate.trigger,
+        handler: {
+          node_id: sourceNode.id,
+          method_name: sourceNode.name || path.basename(candidate.file),
+          file: sourceNode.source?.file || candidate.file,
+          line: sourceNode.source?.line || 1,
+        },
+        metadata: {
+          discovered: true,
+          discovery_source: 'manifest-or-common-entry-file',
+          file: candidate.file,
+        },
+      });
+      existingIds.add(entryId);
+      existingSourceNodes.add(sourceNode.id);
+    }
+
+    if (startingCount === 0 && entryPoints.length === 0) {
+      const fallbackNode = this.selectFallbackEntryNode(nodes);
+      if (fallbackNode) {
+        const file = fallbackNode.source?.file;
+        const relativeFile = file && path.isAbsolute(file) ? path.relative(projectPath, file).replace(/\\/g, '/') : file;
+        entryPoints.push({
+          id: `entry_orientation_${fallbackNode.id.replace(/[^a-zA-Z0-9]/g, '_')}`,
+          source_node: fallbackNode.id,
+          source_analyzer: 'orchestrator',
+          type: 'file',
+          name: `Orientation entry ${relativeFile || fallbackNode.name}`,
+          description: 'No formal framework, route, CLI, or runtime entry point was detected; this file entry gives agents a concrete CAS starting point for repository orientation.',
+          trigger: relativeFile ? { pattern: relativeFile } : undefined,
+          handler: {
+            node_id: fallbackNode.id,
+            method_name: fallbackNode.name,
+            file,
+            line: fallbackNode.source?.line || 1,
+          },
+          metadata: {
+            discovered: true,
+            inferred_orientation_only: true,
+            discovery_source: 'representative-source-node',
+            file: relativeFile,
+          },
+        });
+      }
+    }
+  }
+
+  private collectEntryPointCandidates(projectPath: string): DiscoveredEntryPointCandidate[] {
+    const candidates: DiscoveredEntryPointCandidate[] = [];
+    const add = (candidate: DiscoveredEntryPointCandidate) => {
+      const normalized = candidate.file.replace(/\\/g, '/').replace(/^\.\//, '');
+      if (!normalized || candidates.some(existing => existing.file === normalized)) return;
+      if (fs.existsSync(path.join(projectPath, normalized))) {
+        candidates.push({ ...candidate, file: normalized });
+      }
+    };
+
+    const packageJson = this.readJsonManifest(path.join(projectPath, 'package.json'));
+    if (packageJson) {
+      const bin = packageJson.bin;
+      if (typeof bin === 'string') {
+        add({
+          file: bin,
+          type: 'cli',
+          name: `CLI ${packageJson.name || path.basename(projectPath)}`,
+          description: `Package bin entry point declared in package.json.`,
+          trigger: { pattern: bin },
+        });
+      } else if (bin && typeof bin === 'object') {
+        for (const [command, file] of Object.entries(bin)) {
+          if (typeof file !== 'string') continue;
+          add({
+            file,
+            type: 'cli',
+            name: `CLI ${command}`,
+            description: `Package bin entry point declared in package.json.`,
+            trigger: { pattern: command },
+          });
+        }
+      }
+
+      for (const field of ['main', 'module', 'exports']) {
+        const value = packageJson[field];
+        if (typeof value === 'string') {
+          add({
+            file: value,
+            type: this.packageEntryType(packageJson, value),
+            name: `${packageJson.name || path.basename(projectPath)} ${field}`,
+            description: `Package ${field} entry declared in package.json.`,
+            trigger: { pattern: field },
+          });
+        }
+      }
+    }
+
+    const commonEntries: Array<[string, CASEntryPoint['type'], string]> = [
+      ['src/main.tsx', 'page', 'React application root'],
+      ['src/main.jsx', 'page', 'React application root'],
+      ['src/index.tsx', 'page', 'React application root'],
+      ['src/index.jsx', 'page', 'React application root'],
+      ['src/main.ts', 'lifecycle', 'Application bootstrap'],
+      ['src/main.js', 'lifecycle', 'Application bootstrap'],
+      ['src/index.ts', 'lifecycle', 'Package entry'],
+      ['src/index.js', 'lifecycle', 'Package entry'],
+      ['index.ts', 'lifecycle', 'Package entry'],
+      ['index.js', 'lifecycle', 'Package entry'],
+      ['main.py', 'cli', 'Python application entry'],
+      ['app.py', 'lifecycle', 'Python application entry'],
+      ['manage.py', 'cli', 'Python management entry'],
+      ['__main__.py', 'cli', 'Python module entry'],
+      ['src/main.py', 'cli', 'Python application entry'],
+      ['src/main.rs', 'cli', 'Rust application entry'],
+      ['main.go', 'cli', 'Go application entry'],
+      ['cmd/main.go', 'cli', 'Go application entry'],
+      ['Program.cs', 'lifecycle', '.NET application entry'],
+      ['src/Program.cs', 'lifecycle', '.NET application entry'],
+      ['Startup.cs', 'lifecycle', '.NET startup entry'],
+      ['lib/main.dart', 'lifecycle', 'Dart application entry'],
+    ];
+
+    for (const [file, type, name] of commonEntries) {
+      add({
+        file,
+        type,
+        name,
+        description: `${name} discovered from conventional entry file location.`,
+        trigger: { pattern: file },
+      });
+    }
+
+    const goCommandEntries = globSync('cmd/*/main.go', {
+      cwd: projectPath,
+      nodir: true,
+      ignore: ['**/.git/**', '**/node_modules/**', '**/dist/**', '**/build/**', '**/target/**', '**/vendor/**'],
+    }).slice(0, 10);
+    for (const file of goCommandEntries) {
+      add({
+        file,
+        type: 'cli',
+        name: `Go command ${path.basename(path.dirname(file))}`,
+        description: `Go command entry discovered under cmd/.`,
+        trigger: { pattern: file },
+      });
+    }
+
+    return candidates;
+  }
+
+  private readJsonManifest(file: string): any | null {
+    try {
+      if (!fs.existsSync(file)) return null;
+      return fs.readJsonSync(file);
+    } catch {
+      return null;
+    }
+  }
+
+  private packageEntryType(packageJson: any, file: string): CASEntryPoint['type'] {
+    const deps = JSON.stringify({ ...(packageJson.dependencies || {}), ...(packageJson.devDependencies || {}) }).toLowerCase();
+    if (/\.(tsx|jsx)$/i.test(file) || /\b(react|vite|next|vue|angular|svelte)\b/.test(deps)) return 'page';
+    if (packageJson.bin) return 'cli';
+    return 'lifecycle';
+  }
+
+  private findNodeForEntryFile(nodes: CASNode[], projectPath: string, entryFile: string): CASNode | undefined {
+    const normalizedEntry = entryFile.replace(/\\/g, '/').replace(/^\.\//, '');
+    const candidates = nodes.filter(node => {
+      const sourceFile = node.source?.file;
+      return Boolean(sourceFile && this.sourcePathMatches(projectPath, sourceFile, normalizedEntry));
+    });
+    return candidates.find(node => node.type === 'file') ||
+      candidates.find(node => /function|method|class|component|module|react_app/i.test(node.type)) ||
+      candidates[0];
+  }
+
+  private sourcePathMatches(projectPath: string, sourceFile: string, expectedRelativeFile: string): boolean {
+    const normalizedSource = sourceFile.replace(/\\/g, '/').replace(/^\.\//, '');
+    const relative = path.isAbsolute(sourceFile)
+      ? path.relative(projectPath, sourceFile).replace(/\\/g, '/')
+      : normalizedSource;
+    return relative === expectedRelativeFile || normalizedSource.endsWith(`/${expectedRelativeFile}`);
+  }
+
+  private selectFallbackEntryNode(nodes: CASNode[]): CASNode | undefined {
+    const candidates = nodes.filter(node =>
+      Boolean(node.source?.file) &&
+      !/(^|\/)(__tests__|tests?|spec|e2e|cypress)(\/|$)|(\.|_|-)(test|spec|cy)\./i.test(node.source?.file || '') &&
+      !['import', 'dependency'].includes(node.type)
+    );
+    if (candidates.length === 0) return undefined;
+    return [...candidates].sort((left, right) => this.fallbackEntryScore(right) - this.fallbackEntryScore(left))[0];
+  }
+
+  private fallbackEntryScore(node: CASNode): number {
+    const file = (node.source?.file || '').replace(/\\/g, '/');
+    let score = 0;
+    if (/\/?(main|index|app|program|startup)\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|cs|dart)$/i.test(file)) score += 80;
+    if (/\/src\//i.test(`/${file}`)) score += 25;
+    if (/function|method|class|component|module|service|react_app|file/i.test(node.type)) score += 20;
+    if (node.level) score += Math.max(0, 10 - node.level);
+    if (/config|migration|generated|schema|model|entity/i.test(file)) score -= 35;
+    return score;
+  }
+
   private buildTestSuites(nodes: CASNode[], entryPoints: CASEntryPoint[], projectPath: string): CASTestSuite[] {
     const testSuites: CASTestSuite[] = [];
     const addedSuiteIds = new Set<string>();
+    const childrenByParent = new Map<string, CASNode[]>();
+    const nodesByFile = new Map<string, CASNode[]>();
+
+    for (const node of nodes) {
+      if (node.parent) {
+        if (!childrenByParent.has(node.parent)) childrenByParent.set(node.parent, []);
+        childrenByParent.get(node.parent)!.push(node);
+      }
+      const file = node.source?.file;
+      if (file) {
+        if (!nodesByFile.has(file)) nodesByFile.set(file, []);
+        nodesByFile.get(file)!.push(node);
+      }
+    }
 
     const suiteNodes = nodes.filter(n =>
       n.type === 'test' && n.subcategories?.includes('suite')
     );
 
     if (suiteNodes.length > 0) {
-      const fileToSuites = new Map<string, CASNode[]>();
-      for (const suite of suiteNodes) {
-        const file = suite.source?.file || '';
-        if (!fileToSuites.has(file)) fileToSuites.set(file, []);
-        fileToSuites.get(file)!.push(suite);
-      }
-
-      const individualTests = nodes.filter(n =>
-        n.type === 'test' && !n.subcategories?.includes('suite')
-      );
-
       for (const suite of suiteNodes) {
         const suiteFile = suite.source?.file || '';
-        const testsInSuite = individualTests.filter(t =>
-          t.source?.file === suiteFile &&
-          (t.parent === suite.id || (!t.parent && suiteFile))
+        const fileNodes = nodesByFile.get(suiteFile) || [];
+        const suiteChildren = childrenByParent.get(suite.id) || [];
+        const testsInSuite = [...suiteChildren, ...fileNodes.filter(t => !t.parent)]
+          .filter((t, index, values) => values.findIndex(candidate => candidate.id === t.id) === index)
+          .filter(t =>
+            t.type === 'test' &&
+            !t.subcategories?.includes('suite')
         );
 
         if (testsInSuite.length > 0) {
@@ -6162,9 +7356,12 @@ export class AnalyzerOrchestrator {
 
     for (const testModule of testModules) {
       const moduleFile = testModule.source?.file || '';
-      const childFunctions = nodes.filter(n =>
+      const moduleChildren = childrenByParent.get(testModule.id) || [];
+      const fileNodes = moduleFile ? nodesByFile.get(moduleFile) || [] : [];
+      const childFunctions = [...moduleChildren, ...fileNodes.filter(n => !n.parent)]
+        .filter((n, index, values) => values.findIndex(candidate => candidate.id === n.id) === index)
+        .filter(n =>
         (n.type === 'function' || n.type === 'method') &&
-        (n.parent === testModule.id || (moduleFile && n.source?.file === moduleFile && !n.parent)) &&
         (n.name.startsWith('test_') || n.name.startsWith('test') || n.metadata?.is_test)
       );
 
@@ -6206,9 +7403,8 @@ export class AnalyzerOrchestrator {
     );
 
     for (const testClass of testClasses) {
-      const testMethods = nodes.filter(n =>
+      const testMethods = (childrenByParent.get(testClass.id) || []).filter(n =>
         n.type === 'method' &&
-        n.parent === testClass.id &&
         (n.name.startsWith('test_') || n.name.startsWith('test'))
       );
 
@@ -6248,8 +7444,7 @@ export class AnalyzerOrchestrator {
     );
 
     for (const describe of describeBlocks) {
-      const itBlocks = nodes.filter(n =>
-        n.parent === describe.id &&
+      const itBlocks = (childrenByParent.get(describe.id) || []).filter(n =>
         (n.name.startsWith('it') || n.name.startsWith('test') || n.name.startsWith('specify'))
       );
 
@@ -6291,8 +7486,11 @@ export class AnalyzerOrchestrator {
       const fileId = `suite_file_${testFile.id}`;
       if (addedSuiteIds.has(fileId)) continue;
 
-      const childTests = nodes.filter(n =>
-        (n.parent === testFile.id || n.source?.file === testFile.source?.file) &&
+      const fileNodes = testFile.source?.file ? nodesByFile.get(testFile.source.file) || [] : [];
+      const fileChildren = childrenByParent.get(testFile.id) || [];
+      const childTests = [...fileChildren, ...fileNodes]
+        .filter((n, index, values) => values.findIndex(candidate => candidate.id === n.id) === index)
+        .filter(n =>
         (n.type === 'function' || n.type === 'method') &&
         (n.name.startsWith('test') || n.name.startsWith('it') ||
          n.name.startsWith('should') || n.name.startsWith('Test'))
@@ -7359,15 +8557,18 @@ export class AnalyzerOrchestrator {
   ): CASAnalysisFact[] {
     const analyzerName = contributions[0]?.analyzer_name || 'AnalyzerOrchestrator';
     const facts: CASAnalysisFact[] = [];
+    const exhaustiveFacts = nodes.length + edges.length <= 50_000;
+    const nodesForFacts = exhaustiveFacts ? nodes : this.selectRepresentativeFactNodes(nodes, entryPoints, exitPoints, 10_000);
+    const edgesForFacts = exhaustiveFacts ? edges : this.selectRepresentativeFactEdges(edges, nodesForFacts, 10_000);
 
-    for (const node of nodes) {
+    for (const node of nodesForFacts) {
       if (!node.source?.file) continue;
       facts.push({
         id: `fact_node_${node.id}`,
         subject_type: 'node',
         subject_id: node.id,
         fact_type: 'definition',
-        claim: `${node.name} is a ${node.type}`,
+        claim: this.truncateFactText(`${node.name} is a ${node.type}`, 500),
         confidence: 0.9,
         produced_by: node.primaryAnalyzer || analyzerName,
         evidence: [{
@@ -7375,20 +8576,20 @@ export class AnalyzerOrchestrator {
           source: node.name,
           file: node.source.file,
           line: node.source.line,
-          excerpt: node.source.raw,
+          excerpt: this.truncateFactText(node.source.raw, 500),
           confidence: 0.9
         }]
       });
     }
 
-    for (const edge of edges) {
+    for (const edge of edgesForFacts) {
       const location = edge.metadata?.locations?.[0];
       facts.push({
         id: `fact_edge_${edge.id}`,
         subject_type: 'edge',
         subject_id: edge.id,
         fact_type: 'relationship',
-        claim: `${edge.source} ${edge.type} ${edge.target}`,
+        claim: this.truncateFactText(`${edge.source} ${edge.type} ${edge.target}`, 500),
         confidence: edge.metadata?.confidence || 0.75,
         produced_by: analyzerName,
         evidence: [{
@@ -7544,6 +8745,63 @@ export class AnalyzerOrchestrator {
     return facts;
   }
 
+  private selectRepresentativeFactNodes(
+    nodes: CASNode[],
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[],
+    limit: number
+  ): CASNode[] {
+    const byId = this.getNodeLookup(nodes);
+    const selected = new Map<string, CASNode>();
+    const add = (node?: CASNode) => {
+      if (node && !selected.has(node.id) && selected.size < limit) selected.set(node.id, node);
+    };
+
+    for (const entryPoint of entryPoints) add(byId.get(entryPoint.source_node));
+    for (const exitPoint of exitPoints) add(byId.get(exitPoint.source_node || ''));
+
+    const highSignalType = /(controller|route|handler|service|provider|repository|entity|model|schema|guard|middleware|resolver|component|hook|context|module|class|interface|function|method|api|endpoint|command|job|queue|event|migration|test|spec)/i;
+    for (const node of nodes) {
+      if (selected.size >= limit) break;
+      if (highSignalType.test(node.type) || highSignalType.test(node.name) || node.tags?.length || node.subcategories?.length) {
+        add(node);
+      }
+    }
+
+    for (const node of nodes) {
+      if (selected.size >= limit) break;
+      add(node);
+    }
+
+    return [...selected.values()];
+  }
+
+  private selectRepresentativeFactEdges(edges: CASEdge[], nodesForFacts: CASNode[], limit: number): CASEdge[] {
+    const selectedNodeIds = new Set(nodesForFacts.map(node => node.id));
+    const selected = new Map<string, CASEdge>();
+    const add = (edge: CASEdge) => {
+      if (!selected.has(edge.id) && selected.size < limit) selected.set(edge.id, edge);
+    };
+
+    for (const edge of edges) {
+      if (selected.size >= limit) break;
+      if (selectedNodeIds.has(edge.source) || selectedNodeIds.has(edge.target)) add(edge);
+    }
+
+    for (const edge of edges) {
+      if (selected.size >= limit) break;
+      add(edge);
+    }
+
+    return [...selected.values()];
+  }
+
+  private truncateFactText(value: unknown, maxLength: number): string {
+    if (value === undefined || value === null) return '';
+    const text = String(value);
+    return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+  }
+
   private readGitRemote(projectPath: string): string | undefined {
     const gitConfigPath = path.join(projectPath, '.git', 'config');
     if (!fs.existsSync(gitConfigPath)) return undefined;
@@ -7559,12 +8817,20 @@ export class AnalyzerOrchestrator {
 
   private nodeFile(nodes: CASNode[], nodeId?: string): string | undefined {
     if (!nodeId) return undefined;
-    return nodes.find(node => node.id === nodeId)?.source?.file;
+    return this.getNodeLookup(nodes).get(nodeId)?.source?.file;
   }
 
   private nodeLine(nodes: CASNode[], nodeId?: string): number | undefined {
     if (!nodeId) return undefined;
-    return nodes.find(node => node.id === nodeId)?.source?.line;
+    return this.getNodeLookup(nodes).get(nodeId)?.source?.line;
+  }
+
+  private getNodeLookup(nodes: CASNode[]): Map<string, CASNode> {
+    if (this.nodeLookupSource !== nodes) {
+      this.nodeLookupSource = nodes;
+      this.nodeLookupById = new Map(nodes.map(node => [node.id, node]));
+    }
+    return this.nodeLookupById;
   }
 
   private buildMethodCalls(nodes: CASNode[], edges: CASEdge[]): CASMethodCall[] {

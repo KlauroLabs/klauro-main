@@ -123,7 +123,8 @@ export class ExpressAnalyzer extends BaseAnalyzer {
 
       const jsFiles = await glob(['**/*.{js,ts}'], {
         cwd: projectPath,
-        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/coverage/**', '**/.nyc_output/**']
+        ignore: this.getIgnorePatterns({ projectPath }),
+        nodir: true
       });
 
       for (const file of jsFiles) {
@@ -151,11 +152,14 @@ export class ExpressAnalyzer extends BaseAnalyzer {
     try {
       const jsFiles = await glob(['**/*.{js,ts}'], {
         cwd: context.projectPath,
-        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/coverage/**', '**/.nyc_output/**', '**/*.test.*', '**/*.spec.*']
+        ignore: [...this.getIgnorePatterns(context), '**/*.test.*', '**/*.spec.*'],
+        nodir: true
       });
 
       const viewFiles = await glob(['**/views/**/*.{ejs,pug,hbs,handlebars,html}'], {
-        cwd: context.projectPath
+        cwd: context.projectPath,
+        ignore: this.getIgnorePatterns(context),
+        nodir: true
       });
 
       const application = await this.analyzeApplication(jsFiles, context.projectPath, nodes);

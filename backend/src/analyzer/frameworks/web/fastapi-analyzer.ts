@@ -132,7 +132,8 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
 
       const pythonFiles = await glob(['**/*.py'], {
         cwd: projectPath,
-        ignore: ['**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**', '**/.git/**', '**/node_modules/**', '**/dist/**', '**/build/**']
+        ignore: this.getIgnorePatterns({ projectPath }),
+        nodir: true
       });
 
       for (const file of pythonFiles) {
@@ -161,7 +162,8 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
         '**/.venv/**',
         '**/env/**',
         '**/__pycache__/**'
-      ]
+      ],
+      nodir: true
     });
   }
 
@@ -209,7 +211,8 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
     try {
       const pythonFiles = await glob(['**/*.py'], {
         cwd: context.projectPath,
-        ignore: ['**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**', '**/.git/**', '**/node_modules/**', '**/dist/**', '**/build/**']
+        ignore: this.getIgnorePatterns(context),
+        nodir: true
       });
 
       const application = await this.analyzeApplication(pythonFiles, context.projectPath, nodes);

@@ -143,11 +143,14 @@ export class GoAnalyzer extends BaseAnalyzer {
     try {
       const goFiles = await glob(['**/*.go'], {
         cwd: projectPath,
-        ignore: ['**/vendor/**', '**/.git/**', '**/target/**', '**/node_modules/**', '**/dist/**', '**/build/**']
+        ignore: this.getIgnorePatterns({ projectPath }),
+        nodir: true
       });
 
       const projectFiles = await glob(['go.mod', 'go.sum', 'Gopkg.toml'], {
-        cwd: projectPath
+        cwd: projectPath,
+        ignore: this.getIgnorePatterns({ projectPath }),
+        nodir: true
       });
 
       return goFiles.length > 0 || projectFiles.length > 0;
@@ -163,7 +166,8 @@ export class GoAnalyzer extends BaseAnalyzer {
   async getRelevantFiles(projectPath: string): Promise<string[]> {
     return glob(['**/*.go'], {
       cwd: projectPath,
-      ignore: this.getIgnorePatterns({ projectPath })
+      ignore: this.getIgnorePatterns({ projectPath }),
+      nodir: true
     });
   }
 
@@ -214,7 +218,8 @@ export class GoAnalyzer extends BaseAnalyzer {
 
       const goFiles = await glob(['**/*.go'], {
         cwd: context.projectPath,
-        ignore: this.getIgnorePatterns(context)
+        ignore: this.getIgnorePatterns(context),
+        nodir: true
       });
 
       const packages = new Map<string, string[]>();
@@ -1649,7 +1654,8 @@ export class GoAnalyzer extends BaseAnalyzer {
   private async analyzeCallGraph(projectPath: string, nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[]): Promise<void> {
     const goFiles = await glob(['**/*.go'], {
       cwd: projectPath,
-      ignore: ['**/vendor/**', '**/.git/**', '**/target/**', '**/node_modules/**', '**/dist/**', '**/build/**']
+      ignore: this.getIgnorePatterns({ projectPath }),
+      nodir: true
     });
 
     const functionNodes = nodes.filter(n => n.type === 'function' || n.type === 'method');

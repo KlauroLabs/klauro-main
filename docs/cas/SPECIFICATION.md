@@ -1,6 +1,6 @@
 # Code Analysis Specification (CAS)
 
-**Version:** 1.8.0
+**Version:** 1.9.0
 **Status:** Active
 **Last Updated:** 2026-02-05
 
@@ -23,7 +23,7 @@ The Code Analysis Specification (CAS) defines a universal, language-agnostic for
 
 ## Version History
 
-This document specifies version 1.8.0 of the Code Analysis Specification. The evolution of CAS includes:
+This document specifies version 1.9.0 of the Code Analysis Specification. The evolution of CAS includes:
 
 - **[Version 1.0.0](./v1.0.0.md)** (2024-01-01) - Initial release with core nodes, edges, and basic metadata
 - **[Version 1.1.0](./v1.1.0.md)** (2024-06-01) - Added progressive levels, entry/exit points, and extended metadata
@@ -33,7 +33,8 @@ This document specifies version 1.8.0 of the Code Analysis Specification. The ev
 - **[Version 1.5.0](./v1.5.0-rfp.md)** (2026-01-09) - Added class-level relationships, pattern variations, and enhanced entry points
 - **[Version 1.6.0](./v1.6.0-rfp.md)** (2026-01-23) - Added test architecture, test categorization, BDD support, and test-to-code relationships
 - **[Version 1.7.0](./v1.7.0-rfp.md)** (2026-01-25) - Added inference-based intelligence: intent, critical flows, change risk, data lifecycle, security boundaries, flow coverage, temporal stability
-- **[Version 1.8.0](./v1.8.0-rfp.md)** (2026-02-05) - Current version - Added incremental analysis: change detection, change reporting, change history, impact analysis
+- **[Version 1.8.0](./v1.8.0-rfp.md)** (2026-02-05) - Added incremental analysis: change detection, change reporting, change history, impact analysis
+- **[Version 1.9.0](./v1.9.0-rfp.md)** (2026-05-13) - Current version - Added Codebase Idiom Intelligence for repo-local conventions, examples, violations, and agent validation
 
 ## 1. Introduction
 
@@ -91,7 +92,7 @@ The root structure containing complete analysis results:
 
 ```typescript
 interface CASOutput {
-  cas_version: "1.8.0";
+  cas_version: "1.9.0";
   analysis_timestamp: string;  // ISO 8601
   analysis_id: string;          // Unique identifier
 
@@ -156,6 +157,12 @@ interface CASOutput {
   runtime?: CASRuntime;                          // Deployment, monitoring, and instrumentation readiness
   runtime_static_links?: CASRuntimeStaticLink[]; // Static objects mapped to runtime signals
   analysis_facts?: CASAnalysisFact[];            // Evidence-backed claims behind CAS objects
+
+  // v1.9.0 Codebase Idiom Intelligence
+  codebase_idioms?: CASCodebaseIdiom[];           // Repo-local conventions with evidence and guidance
+  idiom_summary?: CASIdiomSummary;                // Aggregate idiom counts and guidance digest
+  idiom_examples?: CASIdiomExample[];             // Positive examples agents can copy
+  idiom_violations?: CASIdiomViolation[];         // Known deviations and validation findings
 
   metadata?: SystemMetadata;
 }
@@ -987,7 +994,130 @@ Deviation severity SHOULD be assigned consistently:
 
 Analyzers MAY emit additional framework- or language-specific pattern IDs, but SHOULD map common concepts back to the catalog above when possible.
 
-### 4.9 Test Structures (v1.6.0)
+### 4.9 Codebase Idiom Intelligence (v1.9.0)
+
+Codebase idioms describe repository-local practices that agents and humans should preserve when changing code. Idioms are not generic best practices; they are evidence-backed conventions derived from the analyzed codebase.
+
+```typescript
+type CASIdiomCategory =
+  | 'naming'
+  | 'file-organization'
+  | 'module-boundary'
+  | 'dependency-injection'
+  | 'data-access'
+  | 'error-handling'
+  | 'validation'
+  | 'auth-tenant-scope'
+  | 'logging'
+  | 'testing'
+  | 'migrations'
+  | 'async-style'
+  | 'configuration';
+
+interface CASCodebaseIdiom {
+  id: string;
+  category: CASIdiomCategory;
+  name: string;
+  description: string;
+  confidence: number;   // 0-1 confidence score
+  prevalence: number;   // 0-1 observed adoption within the relevant scope
+  evidence: CASIdiomEvidence[];
+  positive_examples: CASIdiomExample[];
+  affected_scopes: CASIdiomScope;
+  agent_guidance: {
+    do: string[];
+    avoid: string[];
+    validation: string[];
+  };
+  deviations?: CASIdiomViolation[];
+}
+
+interface CASIdiomScope {
+  languages?: string[];
+  frameworks?: string[];
+  node_types?: string[];
+  file_globs?: string[];
+  node_ids?: string[];
+  files?: string[];
+}
+
+interface CASIdiomEvidence {
+  kind: 'node' | 'edge' | 'file' | 'import' | 'decorator' |
+        'test' | 'migration' | 'invariant' | 'pattern' |
+        'analysis-fact';
+  file?: string;
+  line?: number;
+  node_id?: string;
+  edge_id?: string;
+  fact_id?: string;
+  claim: string;
+  confidence: number;
+}
+
+interface CASIdiomExample {
+  id: string;
+  idiom_id: string;
+  file: string;
+  line?: number;
+  node_id?: string;
+  name?: string;
+  excerpt?: string;
+  explanation: string;
+}
+
+interface CASIdiomViolation {
+  id: string;
+  idiom_id: string;
+  category: CASIdiomCategory;
+  severity: 'info' | 'warning' | 'error';
+  file?: string;
+  line?: number;
+  node_id?: string;
+  description: string;
+  recommendation: string;
+  evidence?: CASIdiomEvidence[];
+}
+
+interface CASIdiomSummary {
+  total: number;
+  high_confidence: number;
+  violations: number;
+  by_category: Record<CASIdiomCategory, number>;
+  top_idioms: string[];
+  guidance_digest: string[];
+}
+```
+
+Idiom categories are intentionally agent-facing:
+
+| Category | Meaning |
+|----------|---------|
+| `naming` | Local symbol, suffix, casing, and test-name conventions |
+| `file-organization` | Source roots, feature folders, collocation, package boundaries |
+| `module-boundary` | Module/package/export/import ownership rules |
+| `dependency-injection` | Provider, constructor injection, container, and decorator styles |
+| `data-access` | Repository, ORM, schema, entity, and database boundary conventions |
+| `error-handling` | Framework exceptions, typed results, domain errors, and retry conventions |
+| `validation` | DTO, schema, validator, form, and input validation placement |
+| `auth-tenant-scope` | Auth, authorization, tenant/org scope, and guard conventions |
+| `logging` | Logger abstraction and diagnostic output conventions |
+| `testing` | Test placement, naming, fixture, mock, and focused validation conventions |
+| `migrations` | Migration location and schema-change contract conventions |
+| `async-style` | async/await, task/future/result, callback, or stream style |
+| `configuration` | Config files, environment variables, settings, defaults, and secrets handling |
+
+**Semantic Rules:**
+
+1. An idiom MUST include evidence and at least one positive example unless it represents an inferred absence with explicit evidence.
+2. Idioms MUST be repository-local. Generic language rules SHOULD only be emitted when the repository demonstrates them.
+3. `confidence` SHOULD combine evidence strength, analyzer reliability, and sample count.
+4. `prevalence` SHOULD measure observed adoption inside `affected_scopes`, not across the whole repository.
+5. `agent_guidance` MUST be actionable enough for an agent to apply before editing and validate after editing.
+6. `deviations` SHOULD identify nonconforming examples without treating every deviation as a defect; local exceptions can be valid.
+7. Idioms that intersect behavioral invariants, security boundaries, data entities, migrations, or tests SHOULD reference those CAS facts through evidence.
+8. Agents SHOULD validate both behavioral invariants and codebase idioms before finalizing edits.
+
+### 4.10 Test Structures (v1.6.0)
 
 #### TestMetadata
 Test-specific metadata for categorization and analysis:
@@ -1197,7 +1327,7 @@ interface CASTestSummary {
 4. Mock nodes MUST have `target_node` pointing to what they replace
 5. Test-to-code edges (`tests`, `covers`) MUST link tests to tested code
 
-### 4.10 Inference-Based Intelligence Structures (v1.7.0)
+### 4.11 Inference-Based Intelligence Structures (v1.7.0)
 
 #### CASIntent
 Inferred purpose and architectural intent:
@@ -1514,7 +1644,7 @@ interface CASStabilitySummary {
 }
 ```
 
-### 4.11 Summary and Health Structures (v1.4.0)
+### 4.12 Summary and Health Structures (v1.4.0)
 
 #### CASDocumentationSummary
 System-wide documentation metrics:
@@ -1620,7 +1750,7 @@ interface CASImplementationHealth {
 }
 ```
 
-### 4.12 Incremental Analysis Structures (v1.8.0)
+### 4.13 Incremental Analysis Structures (v1.8.0)
 
 #### ChangeReport
 Semantic and structural summary of an incremental analysis run:
@@ -1669,7 +1799,7 @@ interface ChangeSemanticImpact {
 }
 ```
 
-### 4.13 Core Supporting Types
+### 4.14 Core Supporting Types
 
 #### SourceLocation
 File location information:
@@ -1980,6 +2110,18 @@ Capability detection strategies MUST vary based on the detected system type:
 - Added, modified, or deleted entry points, exit points, and repository links SHOULD be listed as changed contracts.
 - `risk_reasons` SHOULD explain why the change matters beyond raw node or file counts.
 
+### 5.27 Codebase Idiom Derivation and Validation (v1.9.0+)
+
+- Idioms SHOULD be derived after core graph, framework, test, invariant, migration, and analysis-fact passes have completed.
+- Idiom extraction SHOULD use nodes, edges, file paths, imports, decorators, tests, migrations, behavioral invariants, patterns, configuration, runtime facts, and analysis facts as evidence.
+- An analyzer SHOULD emit an idiom only when the relevant scope has enough examples to distinguish a local convention from a single occurrence.
+- Each idiom SHOULD include positive examples that are safe for agents to inspect before editing.
+- Each idiom SHOULD include agent guidance with explicit do, avoid, and validation instructions.
+- Validation SHOULD score changed files and diffs against idioms for correctness-adjacent drift: non-local naming, misplaced files, boundary bypasses, missing tests, schema changes without migrations, generic errors, transient logging, and auth/tenant-scope mistakes.
+- Agent-facing MCP work packets SHOULD include compact idiom context for modify, debug, and review tasks.
+- Agents SHOULD call both `validate_behavioral_invariants` and `validate_codebase_idioms` before finalizing edits.
+- Live agent proof SHOULD include copied-repo A/B tasks where both arms can pass correctness and the with-CAS arm receives idiom context; acceptance SHOULD require positive idiom-conformance delta without correctness regression.
+
 ## 6. Query Interface
 
 ### 6.1 Tag-Based Queries
@@ -2011,6 +2153,14 @@ Implementations SHOULD support:
 - Retrieving change history by time range, file, node, entry point, grouping, and hot spots
 - Retrieving historical analysis snapshots by timestamp or snapshot ID
 - Returning semantic impact for incremental changes when workflow, capability, data, or runtime context is available
+
+### 6.5 Idiom Queries
+
+Implementations SHOULD support:
+- Retrieving codebase idioms by category, target node, file path, confidence, limit, and offset.
+- Retrieving idiom examples for a specific idiom, category, target node, or file path.
+- Validating explicit file lists, provided diff text, staged changes, and working-tree changes against idioms.
+- Returning idiom-aware work packets that combine target resolution, risk, tests, behavioral invariants, and local idiom guidance.
 
 ## 7. Extensions
 
@@ -2498,7 +2648,24 @@ interface BaseAnalyzer {
 **Breaking changes:**
 - None. All new fields and features are optional.
 
-### 11.9 Backward Compatibility
+### 11.9 Upgrading from v1.8.0 to v1.9.0
+
+**Required changes:**
+- Update `cas_version` to "1.9.0"
+
+**Optional enhancements:**
+- Emit `codebase_idioms` with confidence, prevalence, evidence, positive examples, affected scopes, agent guidance, and deviations.
+- Emit `idiom_summary`, `idiom_examples`, and `idiom_violations` for compact UI and MCP consumption.
+- Add a post-analysis idiom detector that derives local conventions from nodes, edges, file paths, imports, decorators, tests, migrations, behavioral invariants, patterns, configuration, and analysis facts.
+- Add MCP queries for codebase idioms, idiom examples, idiom validation, and idiom-aware agent work packets.
+- Extend agent work packets so modify/debug/review workflows validate both behavioral invariants and codebase idioms after edits.
+- Add live A/B idiom quality proof that measures correctness, idiom conformance, minimality, test relevance, boundary preservation, and file targeting.
+- Account for every real repository in machine-wide proof runs, including unsupported and skipped repositories with explicit reasons.
+
+**Breaking changes:**
+- None. All new fields and features are optional.
+
+### 11.10 Backward Compatibility
 
 All versions maintain backward compatibility:
 - New fields are optional
@@ -2580,6 +2747,14 @@ All versions maintain backward compatibility:
   - Evidence-backed analysis facts with confidence
   - Semantic impact reporting for workflows, capabilities, data entities, and contracts
   - Cross-repository link confidence and evidence
+
+- **v1.9.0** (2026-05-13): Codebase Idiom Intelligence
+  - Repo-local idioms for naming, file organization, module boundaries, dependency injection, data access, error handling, validation, auth/tenant scope, logging, testing, migrations, async style, and configuration
+  - Evidence-backed positive examples and deviations
+  - Agent guidance with do, avoid, and validation instructions
+  - MCP idiom queries, examples, validation, and idiom-aware work packets
+  - Live copied-repo A/B idiom quality proof
+  - Machine-wide real-repo discovery and accounting
 
 ### Appendix B: Language Support
 

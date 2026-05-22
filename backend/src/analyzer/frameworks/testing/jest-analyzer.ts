@@ -129,7 +129,8 @@ export class JestAnalyzer extends BaseAnalyzer {
 
       const testFiles = await glob(['**/*.{test,spec}.{js,ts,jsx,tsx}'], {
         cwd: projectPath,
-        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/coverage/**', '**/.nyc_output/**', '**/src/analyzer/**', '**/analyzer/**', '**/analyzers/**', '**/compliance/**']
+        ignore: [...this.getIgnorePatterns({ projectPath }), '**/src/analyzer/**', '**/analyzer/**', '**/analyzers/**', '**/compliance/**'],
+        nodir: true
       });
 
       if (testFiles.length > 0) {
@@ -154,29 +155,26 @@ export class JestAnalyzer extends BaseAnalyzer {
     const exitPoints: any[] = [];
 
     try {
-      const baseIgnorePatterns = ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**', '**/coverage/**', '**/.nyc_output/**'];
-
-      // Add context filters if they exist
-      const ignorePatterns = [...baseIgnorePatterns];
-      if (context.filters && Array.isArray(context.filters)) {
-        ignorePatterns.push(...context.filters);
-      }
+      const ignorePatterns = this.getIgnorePatterns(context);
       // Skip compliance test files that contain non-JS/TS code
       ignorePatterns.push('**/compliance/**');
 
       const testFiles = await glob(['**/*.{test,spec}.{js,ts,jsx,tsx}'], {
         cwd: context.projectPath,
-        ignore: ignorePatterns
+        ignore: ignorePatterns,
+        nodir: true
       });
 
       const setupFiles = await glob(['**/setupTests.{js,ts}', '**/jest.setup.{js,ts}', '**/test-setup.{js,ts}'], {
         cwd: context.projectPath,
-        ignore: ignorePatterns
+        ignore: ignorePatterns,
+        nodir: true
       });
 
       const utilityFiles = await glob(['**/__tests__/helpers/**/*.{js,ts}', '**/test-utils/**/*.{js,ts}', '**/__mocks__/**/*.{js,ts}'], {
         cwd: context.projectPath,
-        ignore: ignorePatterns
+        ignore: ignorePatterns,
+        nodir: true
       });
 
       const configuration = await this.analyzeConfiguration(context.projectPath, nodes);
@@ -300,7 +298,7 @@ export class JestAnalyzer extends BaseAnalyzer {
       const content = await fs.readFile(fullPath, 'utf-8');
 
         try {
-          const jsx = this.shouldParseJsx(file);
+          const jsx = this.shouldParseJsx(file, content);
           const ast = parse(content, {
             loc: true,
             jsx,
@@ -492,7 +490,8 @@ export class JestAnalyzer extends BaseAnalyzer {
 
     const snapshotFiles = await glob(['**/__snapshots__/**/*.snap'], {
       cwd: projectPath,
-      ignore: ['**/node_modules/**']
+      ignore: this.getIgnorePatterns({ projectPath }),
+      nodir: true
     });
 
     for (const file of snapshotFiles) {
@@ -1148,8 +1147,13 @@ export class JestAnalyzer extends BaseAnalyzer {
     return name.replace(/[^a-zA-Z0-9]/g, '_');
   }
 
-  private shouldParseJsx(filePath: string): boolean {
-    return /\.(jsx|tsx)$/i.test(filePath);
+  private shouldParseJsx(filePath: string, content?: string): boolean {
+    if (/\.(jsx|tsx)$/i.test(filePath)) return true;
+    if (/\.js$/i.test(filePath) && content) {
+      return /<[A-Z][A-Za-z0-9]*(?:\.[A-Z][A-Za-z0-9]*)*(?:\s|>|\/)/.test(content) ||
+        /<[a-z][A-Za-z0-9:-]*(?:\s|>|\/)/.test(content);
+    }
+    return false;
   }
 
 
