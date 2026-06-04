@@ -1,12 +1,12 @@
-# Unravl - Product Context
+# Klauro - Product Context
 
 ## The Thesis
 
-Unravl is the visibility layer for AI-built software.
+Klauro is the visibility layer for AI-built software.
 
 AI can now produce large codebases quickly, but humans still need to understand what was actually built. A working demo only proves the visible input/output path. It does not prove the internal behavior: dependencies, security assumptions, data movement, duplicate logic, untested paths, or change risk.
 
-Unravl solves that by turning codebases into a complete, queryable relationship graph.
+Klauro solves that by turning codebases into a complete, queryable relationship graph.
 
 ## Source of Truth
 
@@ -48,11 +48,11 @@ Telemetry should eventually connect production behavior back to the same graph. 
 
 ## What Good Looks Like
 
-For a NestJS application, Unravl should expose controllers, routes, guards, middleware, services, repositories, entities, decorators, method calls, tests, database access, and external calls. A user should be able to start at a route and follow the behavior through every connected function and dependency.
+For a NestJS application, Klauro should expose controllers, routes, guards, middleware, services, repositories, entities, decorators, method calls, tests, database access, and external calls. A user should be able to start at a route and follow the behavior through every connected function and dependency.
 
-For a React application, Unravl should expose routes, pages, components, hooks, contexts, state, data fetching, protected areas, events, tests, and component relationships.
+For a React application, Klauro should expose routes, pages, components, hooks, contexts, state, data fetching, protected areas, events, tests, and component relationships.
 
-For a multi-repo system, Unravl should link services through APIs, shared databases, messages, queues, SDK calls, and other integration points.
+For a multi-repo system, Klauro should link services through APIs, shared databases, messages, queues, SDK calls, and other integration points.
 
 ## Core User Questions
 
@@ -77,12 +77,12 @@ In 30 minutes, a user should be able to reason about a real change with enough c
 
 Search tells you where text appears. Static diagrams tell you a partial structure. Runtime traces tell you what happened once.
 
-Unravl should combine the parts that matter: framework-aware static analysis, relationship graph quality, UI inspection for humans, MCP access for agents, and runtime correlation when available.
+Klauro should combine the parts that matter: framework-aware static analysis, relationship graph quality, UI inspection for humans, MCP access for agents, and runtime correlation when available.
 
 ## Value Proposition
 
-Without Unravl, humans and agents discover a codebase file by file.
+Without Klauro, humans and agents discover a codebase file by file.
 
-With Unravl, they start with a complete system map and drill down only where needed.
+With Klauro, they start with a complete system map and drill down only where needed.
 
 That means faster onboarding, safer AI-generated changes, clearer leadership visibility, lower token waste, and fewer hidden behavior surprises.

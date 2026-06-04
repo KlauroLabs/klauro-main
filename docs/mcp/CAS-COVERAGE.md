@@ -1,4 +1,4 @@
-# Unravl MCP Server - CAS Output Coverage
+# Klauro MCP Server - CAS Output Coverage
 
 This document maps public CAS concepts and related v1.9 analysis storage to the MCP tools/resources that expose them. It is a human-maintained coverage guide, not a generated conformance report.
 
@@ -71,7 +71,7 @@ This document maps public CAS concepts and related v1.9 analysis storage to the 
 | `libraries` | `get_libraries`, `get_integration_depth_report` | `integration-depth` |
 | `tags` | `search_nodes` | |
 | `index` | Internal (search optimization) | |
-| Remote analyzer sync and customer upload policy | `initialize_unravl_project`, `get_unravl_project_config`, `get_upload_manifest`, `analyze_codebase_remote`, `sync_codebase_remote`, `get_github_import_plan` | |
+| Remote analyzer sync and customer upload policy | `initialize_klauro_project`, `get_klauro_project_config`, `get_upload_manifest`, `analyze_codebase_remote`, `sync_codebase_remote`, `get_github_import_plan` | |
 | `change_history` storage | `get_changes_since`, `get_changes_between`, `get_changes_for_node`, `get_changes_for_file`, `get_changes_for_entry_point`, `get_change_summary`, `get_hot_spots` | |
 | `analysis_snapshots` storage | `get_analysis_at`, `get_analysis_snapshots` | |
 | `runtime_observations` storage | `record_runtime_event`, `get_runtime_observations`, `get_runtime_trace`, `validate_cas_contract` | `cas-contract` |
@@ -97,6 +97,6 @@ This document maps public CAS concepts and related v1.9 analysis storage to the 
 
 ## Coverage Status
 
-The MCP server exposes the public CAS concepts needed by UI and agent workflows, plus v1.8 change-history/snapshot queries and v1.9 codebase-idiom queries/validation. It also exposes product-level answer packs, persisted workspace graphs, cross-repository linking, contract views, behavioral invariants, invariant-aware and idiom-aware diff validation, runtime observation correlation and trace replay, instrumentation plans, runtime SDK package generation, truth evaluation, semantic maps, integration depth reports, source test discovery evidence, analysis freshness, CAS contract validation, saved golden-shape comparisons, storage health, agent default-use readiness, monorepo/subproject analysis resolution, installable agent defaults, customer upload manifests, GitHub import planning, remote analyzer full/incremental sync, with-Unravl vs without-Unravl benchmark reports, machine-wide proof, and live copied-repo agent trial artifacts on top of CAS. Internal implementation artifacts such as `index`, `incremental_state`, and `file_cache` are intentionally not exposed directly beyond aggregate storage health and freshness checks.
+The MCP server exposes the public CAS concepts needed by UI and agent workflows, plus v1.8 change-history/snapshot queries and v1.9 codebase-idiom queries/validation. It also exposes product-level answer packs, persisted workspace graphs, cross-repository linking, contract views, behavioral invariants, invariant-aware and idiom-aware diff validation, runtime observation correlation and trace replay, instrumentation plans, runtime SDK package generation, truth evaluation, semantic maps, integration depth reports, source test discovery evidence, analysis freshness, CAS contract validation, saved golden-shape comparisons, storage health, agent default-use readiness, monorepo/subproject analysis resolution, installable agent defaults, customer upload manifests, GitHub import planning, remote analyzer full/incremental sync, with-Klauro vs without-Klauro benchmark reports, machine-wide proof, and live copied-repo agent trial artifacts on top of CAS. Internal implementation artifacts such as `index`, `incremental_state`, and `file_cache` are intentionally not exposed directly beyond aggregate storage health and freshness checks.
 
 When adding a new public CAS field, update this matrix and add a tool/resource entry if humans or agents need to query it.

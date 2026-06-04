@@ -1,4 +1,4 @@
-# Unravl MCP Server - Usage Guide
+# Klauro MCP Server - Usage Guide
 
 The MCP server is the agent-facing surface over CAS. It gives AI coding assistants the same source-of-truth graph the UI uses for human inspection.
 
@@ -14,12 +14,12 @@ Use the analyze_codebase tool with path="/absolute/path/to/your/project"
 
 This runs the CAS pipeline: language detection, framework detection, library detection, AST parsing, relationship extraction, flow analysis, and intelligence generation. When prior incremental state exists, the analyzer reuses it; set `force_full=true` to force a full rebuild.
 
-Results and analysis support files are stored under `~/.unravl/analyses/` unless `UNRAVL_STORAGE_PATH` is configured.
+Results and analysis support files are stored under `~/.klauro/analyses/` unless `KLAURO_STORAGE_PATH` is configured.
 
 If the analyzers are hosted instead of installed locally, use the remote analyzer path:
 
 ```
-Use initialize_unravl_project with path="/absolute/path/to/your/project", mode="remote", and server_url="https://analyzer.example.com"
+Use initialize_klauro_project with path="/absolute/path/to/your/project", mode="remote", and server_url="https://analyzer.example.com"
 Use get_upload_manifest with path="/absolute/path/to/your/project"
 Use analyze_codebase_remote with path="/absolute/path/to/your/project" and server_url="https://analyzer.example.com"
 ```
@@ -34,7 +34,7 @@ This sends only dirty-tree changes to the remote analyzer and updates the local 
 
 ### Preview Agent Proposals Before Implementation
 
-When Claude, Codex, or another agent proposes multi-file edits, refactors, removals, or a new codebase skeleton, ask Unravl to preview the proposed codebase state before implementation. CAS stays proposal-agnostic: Unravl analyzes the proposed state as a normal codebase iteration and stores proposal metadata outside CAS.
+When Claude, Codex, or another agent proposes multi-file edits, refactors, removals, or a new codebase skeleton, ask Klauro to preview the proposed codebase state before implementation. CAS stays proposal-agnostic: Klauro analyzes the proposed state as a normal codebase iteration and stores proposal metadata outside CAS.
 
 For an existing codebase:
 
@@ -88,7 +88,7 @@ The prompt runs the same analysis-resolution step internally and prepends the se
 MCP clients that prefer resources can read:
 
 ```
-unravl://{project_name}/agent-bootstrap
+klauro://{project_name}/agent-bootstrap
 ```
 
 For a specific task, include task context:
@@ -121,7 +121,51 @@ The work packet resolves the target, includes coding context, risk, callers, cal
 
 The CLI mirrors this behavior. `npm --silent run agent-work-packet -- /repo --json --compact` includes each file plan's `line_window`, and the plain-text output prints the same line range so CLI-first agents can avoid reading whole files by default. Use `npm --silent` for JSON output so npm's command banner does not pollute stdout.
 
-### 6. Validate Behavioral Invariants After Edits
+### 6. Use The Agent Workbench And Change Lifecycle
+
+For product-level agent work, prefer the composed workflow tools. They turn CAS into a concrete before/during/after loop instead of requiring the agent to manually combine lower-level tools.
+
+Open the workbench before source exploration:
+
+```
+Use open_agent_workbench with path="/repo" and task={ "task_type": "modify", "target": "billing webhook", "instructions": "..." }
+```
+
+This returns orientation, target resolution, file-read plan, validation plan, repo-local rules, `signal_quality`, evidence policy, and stop conditions. `signal_quality` calls out thin or missing signals such as unmapped tests, patterns, idioms, invariants, low purpose confidence, and analyzer errors.
+
+Before presenting a multi-file plan or editing, run preflight:
+
+```
+Use preflight_agent_change with path="/repo", target="billing webhook", plan_text="...", and files=["..."]
+```
+
+Agents should include the returned `plan_output_block` in their plan when there are warnings, unknowns, affected invariants, missing tests, or migration/auth concerns. Findings include `evidence_source` so agents can tell CAS-backed facts apart from plan-text heuristics.
+
+To retrieve the living “how to work in this repo” packet:
+
+```
+Use get_codebase_agent_rules with path="/repo"
+```
+
+This returns architecture, idiom, invariant, testing, source-reading, confidence, and signal-quality rules derived from CAS.
+
+To explain the shape of a proposed or actual diff:
+
+```
+Use explain_change_shape with path="/repo" and diff_text="..."
+```
+
+This maps changed files to CAS nodes, tests, idioms, invariants, signal-quality warnings, and an inferred scope such as `localized`, `api-contract`, `security-boundary`, or `schema-contract`.
+
+After edits, use the combined final gate:
+
+```
+Use validate_agent_change with path="/repo"
+```
+
+This validates the working tree against repo-local idioms and behavioral invariants, then returns an advisory finalization rule. Treat `does_not_fit_yet` as a strong review signal that should be resolved or explicitly explained before finalizing.
+
+### 7. Validate Behavioral Invariants After Edits
 
 Before claiming a code change is complete, validate the working diff against CAS behavior-level invariants:
 
@@ -131,7 +175,7 @@ Use validate_behavioral_invariants with path="/repo" and target="auth"
 
 The validator reads working-tree and staged changes by default. It can also validate an explicit `files` list or supplied `diff_text`. Treat `status="fail"` as a blocker and `status="warn"` as evidence that focused tests, migration coverage, or direct invariant review is still needed.
 
-### 7. Check Default-Use Readiness
+### 8. Check Default-Use Readiness
 
 Use this when deciding whether an agent should rely on MCP by default:
 
@@ -142,7 +186,7 @@ Use evaluate_agent_readiness with path="/repo"
 Or read:
 
 ```
-unravl://{project_name}/agent-readiness
+klauro://{project_name}/agent-readiness
 ```
 
 This checks analysis errors, graph integrity, entry and exit coverage, call chains, method calls, answer-pack gaps, evidence, tests, security surfaces, runtime links, and flow coverage. `default_use=true` means CAS/MCP is strong enough to be the first path for the repository.
@@ -156,7 +200,7 @@ Use get_agent_doctor with path="/repo"
 Or read:
 
 ```
-unravl://{project_name}/agent-doctor
+klauro://{project_name}/agent-doctor
 ```
 
 To install default-use instructions into the repository for future agents:
@@ -165,11 +209,11 @@ To install default-use instructions into the repository for future agents:
 Use install_agent_default_config with path="/repo"
 ```
 
-This writes `.unravl/agent-defaults.json` and `.unravl/agent-defaults.md`. Agents can read those files to know the required first MCP calls before broad file reads.
+This writes `.klauro/agent-defaults.json` and `.klauro/agent-defaults.md`. Agents can read those files to know the required first MCP calls before broad file reads.
 
 The installed defaults intentionally use a selected-path placeholder for follow-up calls. Agents should call `resolve_agent_analysis` first and then use the returned `selected_path` for doctor, start-context, work-packet, invariant validation, and benchmark proof calls when it differs from the original path.
 
-### 8. Orient with get_summary
+### 9. Orient with get_summary
 
 After analysis, call `get_summary` to understand the system at a high level:
 
@@ -206,6 +250,7 @@ From there, drill into targeted areas:
 - **Explore concepts**: `get_domain_concepts` (filterable, paginated)
 - **Understand recent changes**: `get_changes_since`, `get_change_summary`, `get_hot_spots`, `get_analysis_snapshots`
 - **Resolve monorepos/subprojects**: `resolve_agent_analysis`, `get_agent_project_map`
+- **Use product-level agent workflows**: `open_agent_workbench` before broad source reads, `preflight_agent_change` before plans/edits, `explain_change_shape` for proposed diffs, and `validate_agent_change` before finalizing; inspect `signal_quality` and finding `evidence_source` before relying on the packet
 - **Check freshness and test discovery**: `get_analysis_freshness`, `get_test_discovery_evidence`
 - **Prove answerability**: `run_answer_pack` with `pack="mastery"`
 - **Connect repos**: `get_cross_repo_links` with related analyzed paths
@@ -245,7 +290,7 @@ This gives the AI assistant knowledge of system type, tech stack, architecture l
 2. Call `get_agent_work_packet` with the same task.
 3. Read the packet's file read plan first, starting with each item's `line_window` when present.
 4. Use the packet's risk, callers, callees, tests, and validation plan to decide the edit and verification path.
-5. Run the packet's validation commands. In monorepos these may route to package roots, such as `cd backend && npm test`.
+5. Run the packet's validation commands. In monorepos these may route to package roots, such as `cd packages/analyzer-core && npm test`.
 6. After edits, call `validate_behavioral_invariants` and `validate_codebase_idioms` against the working diff before finalizing.
 
 The validation plan is part of the product surface, not a benchmark-only artifact. It gives agents focused test/typecheck/build commands when CAS can infer them, lists tests to inspect first, and tells agents to report an environment blocker instead of installing dependencies or doing broad setup unless the task explicitly asks for that. The packet also includes behavioral invariants, invariant impact, and `idiom_context` so agents preserve tenant/org scope, auth boundaries, DB constraints, migration contracts, test coverage, naming, file placement, module boundaries, validation style, error/logging style, async style, and configuration practices while editing.
@@ -330,7 +375,7 @@ Use explicit expectations when you know what the analyzer should find:
 Use evaluate_analysis_truth with path="/repo" and expectation={ "frameworks": ["NestJS"], "routes": [{ "method": "GET", "path": "/users/:id" }] }
 ```
 
-Repos can also provide `.unravl/analysis-expectations.json`, `unravl.analysis.json`, or `analysis-expectations.json`; then call `evaluate_analysis_truth` without an inline expectation.
+Repos can also provide `.klauro/analysis-expectations.json`, `klauro.analysis.json`, or `analysis-expectations.json`; then call `evaluate_analysis_truth` without an inline expectation.
 
 For source-level semantics before reading files:
 
@@ -474,7 +519,7 @@ Later, compare the current analysis against that saved shape:
 Use compare_cas_golden_snapshot with path="/absolute/path/to/project"
 ```
 
-The command-line equivalents from `mcp-server/` are:
+The command-line equivalents from `apps/mcp-server/` are:
 
 ```
 npm run save-golden -- /absolute/path/to/project
@@ -498,17 +543,17 @@ npm run doctor -- /absolute/path/to/project
 
 ### Running the agent adoption gauntlet
 
-From `mcp-server/`:
+From `apps/mcp-server/`:
 
 ```
 npm run agent-gauntlet
 ```
 
-This analyzes the configured repositories and runs `evaluate_agent_readiness` against each one. The report is written to `.unravl-agent-gauntlet/latest-report.json` unless `--output` is provided. A passing target has `default_use=true`, meaning agents should use MCP as the first path for that repo.
+This analyzes the configured repositories and runs `evaluate_agent_readiness` against each one. The report is written to `.klauro-agent-gauntlet/latest-report.json` unless `--output` is provided. A passing target has `default_use=true`, meaning agents should use MCP as the first path for that repo.
 
 ### Running the agent usefulness benchmark
 
-From `mcp-server/`:
+From `apps/mcp-server/`:
 
 ```
 npm run agent-benchmark
@@ -516,10 +561,10 @@ npm run agent-benchmark
 
 This checks whether task work packets resolve targets, produce a focused file read plan, include the selected target file, return follow-up MCP calls, and beat a cold repo read. The report includes file-reduction percentages so agent adoption is measured against the baseline of reading broad source files.
 
-For the with-Unravl vs without-Unravl benchmark:
+For the with-Klauro vs without-Klauro benchmark:
 
 ```
-npm run agentic-benchmark -- --repo unravl=/absolute/path/to/repo --task-type modify --target auth
+npm run agentic-benchmark -- --repo klauro=/absolute/path/to/repo --task-type modify --target auth
 ```
 
 or through MCP:
@@ -528,7 +573,7 @@ or through MCP:
 Use run_agentic_benchmark with paths=["/absolute/path/to/repo"] and task={ "task_type": "modify", "target": "auth" }
 ```
 
-The JSON and Markdown reports include estimated file counts, estimated context tokens, estimated work time, speedup ratios, and a two-agent run sheet. The run sheet is designed for live trials where Agent A receives the task without Unravl and Agent B receives the same task with Unravl, then records wall time, provider-reported input/output tokens, tool calls, files read, tests, and task result.
+The JSON and Markdown reports include estimated file counts, estimated context tokens, estimated work time, speedup ratios, and a two-agent run sheet. The run sheet is designed for live trials where Agent A receives the task without Klauro and Agent B receives the same task with Klauro, then records wall time, provider-reported input/output tokens, tool calls, files read, tests, and task result.
 
 For a larger proof suite across discovered real repositories:
 
@@ -536,7 +581,7 @@ For a larger proof suite across discovered real repositories:
 npm run agentic-benchmark-suite
 ```
 
-This runs up to six discovered repositories by default and generates up to eight task cards per repository. Task cards include orientation, modification, debugging, tracing, runtime correlation, data-flow, external-boundary, and test-focused work when the CAS contains those surfaces. The report includes per-task success gates, projected baseline success, cached with-Unravl solution time, first-run with-Unravl solution time including amortized analysis, targeted-search solution time without Unravl, token deltas, and file-read deltas.
+This runs up to six discovered repositories by default and generates up to eight task cards per repository. Task cards include orientation, modification, debugging, tracing, runtime correlation, data-flow, external-boundary, and test-focused work when the CAS contains those surfaces. The report includes per-task success gates, projected baseline success, cached with-Klauro solution time, first-run with-Klauro solution time including amortized analysis, targeted-search solution time without Klauro, token deltas, and file-read deltas.
 
 To tune the suite:
 
@@ -564,9 +609,9 @@ npm run agent-live-benchmark -- --repo app=/repo --task-type modify --target aut
 
 For generated suites, use `--live-task-type` or `--live-task-category` to keep live runs focused on harder edit/debug/review tasks instead of spending live-agent budget on easy orientation tasks.
 
-When live commands are supplied, the harness creates paired repository copies under `.unravl-agent-live-trials/`, writes separate with-Unravl and without-Unravl prompts, initializes each copy as a clean git baseline, runs each command, records duration, changed files, added/deleted lines, test status, provider token metrics when reported, and writes binary diffs. The with-Unravl arm also receives a real CAS-derived work-packet artifact for the copied repo; if MCP tools are unavailable in the trial runtime, the agent reads that artifact instead of generating analysis inside its own turn. A deterministic orchestrator compares both diffs and reports patch quality, hidden-validation pass/fail, command completion, changed-file precision, time reduction, token reduction, and confidence as separate signals.
+When live commands are supplied, the harness creates paired repository copies under `.klauro-agent-live-trials/`, writes separate with-Klauro and without-Klauro prompts, initializes each copy as a clean git baseline, runs each command, records duration, changed files, added/deleted lines, test status, provider token metrics when reported, and writes binary diffs. The with-Klauro arm also receives a real CAS-derived work-packet artifact for the copied repo; if MCP tools are unavailable in the trial runtime, the agent reads that artifact instead of generating analysis inside its own turn. A deterministic orchestrator compares both diffs and reports patch quality, hidden-validation pass/fail, command completion, changed-file precision, time reduction, token reduction, and confidence as separate signals.
 
-For fair live proof, write tasks in behavioral terms and keep implementation paths out of the agent prompt. Hidden validation can still assert exact files, strings, tests, or diffs through `--test-command`; the no-Unravl arm should not receive the path that Unravl is supposed to discover.
+For fair live proof, write tasks in behavioral terms and keep implementation paths out of the agent prompt. Hidden validation can still assert exact files, strings, tests, or diffs through `--test-command`; the no-Klauro arm should not receive the path that Klauro is supposed to discover.
 
 Patch quality answers whether the resulting diff solved the requested behavior. Completion score answers whether the agent process ended cleanly without timeout or environment churn. Keep those separate: a correct patch that passes hidden validation but times out while trying to run a broken broad test environment should show high patch quality and lower completion, not a failed fix.
 
@@ -578,7 +623,7 @@ Agent command templates may use:
 - `{prompt_file}` - prompt file path
 - `{metrics_file}` - optional JSON metrics file the agent can write
 - `{result_file}` - optional JSON result file the agent can write
-- `{arm}` - `with-unravl` or `without-unravl`
+- `{arm}` - `with-klauro` or `without-klauro`
 - `{task_id}` - benchmark task id
 
 Agents should write JSON to `{result_file}` or `{metrics_file}` when their runtime exposes provider usage:
@@ -601,7 +646,7 @@ To add an external evaluator agent, pass an orchestrator command:
 npm run agent-live-benchmark -- --repo app=/repo --agent-with-cmd "agent-with --workspace {workspace} --prompt-file {prompt_file}" --agent-without-cmd "agent-without --workspace {workspace} --prompt-file {prompt_file}" --orchestrator-cmd "judge-agent --input {evaluation_input} --output {evaluation_file}" --test-command "npm test"
 ```
 
-The orchestrator command receives `{evaluation_input}`, `{evaluation_file}`, `{with_workspace}`, `{without_workspace}`, `{with_diff}`, and `{without_diff}`. If it writes JSON with `with_unravl_quality_score`, `without_unravl_quality_score`, `with_unravl_success`, `without_unravl_success`, `confidence`, and `reasons`, those scores override the deterministic evaluator while preserving all raw artifacts.
+The orchestrator command receives `{evaluation_input}`, `{evaluation_file}`, `{with_workspace}`, `{without_workspace}`, `{with_diff}`, and `{without_diff}`. If it writes JSON with `with_klauro_quality_score`, `without_klauro_quality_score`, `with_klauro_success`, `without_klauro_success`, `confidence`, and `reasons`, those scores override the deterministic evaluator while preserving all raw artifacts.
 
 Through MCP:
 
@@ -611,7 +656,7 @@ Use run_agent_quality_benchmark with paths=["/repo/a", "/repo/b"], max_tasks_per
 
 ### Running the incremental value benchmark
 
-From `mcp-server/`:
+From `apps/mcp-server/`:
 
 ```
 npm run incremental-benchmark
@@ -641,13 +686,13 @@ For one report family, use `get_agentic_benchmark_report` with `benchmark_type="
 
 ### Running the live idiom quality benchmark
 
-From `mcp-server/`:
+From `apps/mcp-server/`:
 
 ```
 npm run agent-idiom-benchmark -- --repo app=/repo --live --agent-with-cmd "agent-with --workspace {workspace} --prompt-file {prompt_file}" --agent-without-cmd "agent-without --workspace {workspace} --prompt-file {prompt_file}" --test-command "npm test"
 ```
 
-This creates copied-repo A/B tasks where both agents can pass correctness, but the with-Unravl arm receives CAS `idiom_context`. The evaluator scores correctness, idiom conformance, minimality, test relevance, boundary preservation, and file targeting. Acceptance requires no with-Unravl correctness regression and a positive idiom-conformance delta.
+This creates copied-repo A/B tasks where both agents can pass correctness, but the with-Klauro arm receives CAS `idiom_context`. The evaluator scores correctness, idiom conformance, minimality, test relevance, boundary preservation, and file targeting. Acceptance requires no with-Klauro correctness regression and a positive idiom-conformance delta.
 
 Through MCP:
 
@@ -657,7 +702,7 @@ Use run_agent_idiom_benchmark with paths=["/repo/a", "/repo/b"], max_tasks_per_r
 
 ### Running the machine-wide agent proof
 
-From `mcp-server/`:
+From `apps/mcp-server/`:
 
 ```
 npm run discover-real-repos
@@ -672,7 +717,7 @@ To enforce the complete non-UI product bar from the latest proof artifacts:
 npm run agent-vision-acceptance
 ```
 
-This fails if the recent CAS mastery, default-agent-readiness, real-repo vision, deterministic usefulness, deterministic quality, copied-repo live A/B proof, live idiom-quality proof, machine-wide repo accounting, or incremental edit-loop reports no longer support default agent use. It is the quick acceptance gate for proving that Unravl is materially useful to agents before relying on MCP by default.
+This fails if the recent CAS mastery, default-agent-readiness, real-repo vision, deterministic usefulness, deterministic quality, copied-repo live A/B proof, live idiom-quality proof, machine-wide repo accounting, or incremental edit-loop reports no longer support default agent use. It is the quick acceptance gate for proving that Klauro is materially useful to agents before relying on MCP by default.
 
 To regenerate the proof from scratch and then enforce the same gate:
 
@@ -684,17 +729,17 @@ This runs MCP typecheck/tests, the analysis mastery gauntlet, default-agent-read
 
 ### Running the vision gauntlet
 
-From `mcp-server/`:
+From `apps/mcp-server/`:
 
 ```
 npm run vision-gauntlet
 ```
 
-This runs the full technical proof across discovered real repos: CAS contract validation, answer-pack readiness, agent default-use readiness, runtime event contract coverage, runtime SDK generation, test discovery evidence, and cross-repo links. Default discovery includes Unravl, Kadra, Money, Zerac, Soon, and SoundSyft when those repos exist under `~/dev`. Use `--repo name=/path/to/repo` to add or override targets. The report is written to `.unravl-vision-gauntlet/latest-report.json` unless `--output` is provided.
+This runs the full technical proof across discovered real repos: CAS contract validation, answer-pack readiness, agent default-use readiness, runtime event contract coverage, runtime SDK generation, test discovery evidence, and cross-repo links. Default discovery includes Klauro, Kadra, Money, Zerac, Soon, and SoundSyft when those repos exist under `~/dev`. Use `--repo name=/path/to/repo` to add or override targets. The report is written to `.klauro-vision-gauntlet/latest-report.json` unless `--output` is provided.
 
 ### Running the cross-repo contract gauntlet
 
-From `mcp-server/`:
+From `apps/mcp-server/`:
 
 ```
 npm run contract-gauntlet
@@ -704,13 +749,13 @@ This analyzes paired fixture repositories and verifies that CAS-derived consumed
 
 ### Running the analysis mastery gauntlet
 
-From `mcp-server/`:
+From `apps/mcp-server/`:
 
 ```
 npm run analysis-gauntlet
 ```
 
-This runs the built-in ground-truth fixture and any repos passed with `--repo`. It checks truth expectations, framework depth, runtime instrumentation readiness, semantic map availability, and agent task proof. The report is written to `.unravl-analysis-gauntlet/latest-report.json` unless `--output` is provided.
+This runs the built-in ground-truth fixture and any repos passed with `--repo`. It checks truth expectations, framework depth, runtime instrumentation readiness, semantic map availability, and agent task proof. The report is written to `.klauro-analysis-gauntlet/latest-report.json` unless `--output` is provided.
 
 ---
 
@@ -722,7 +767,7 @@ Storage behavior:
 
 - The main `{slugified-project-name}.json` analysis file is replaced with the latest CAS output.
 - `index.json` continues to map project paths to the latest analysis file.
-- Per-project incremental state is stored under a project directory inside `~/.unravl/analyses/`.
+- Per-project incremental state is stored under a project directory inside `~/.klauro/analyses/`.
 - File-level cache entries are stored under that project directory's `file-cache/`.
 - Change history is stored as `change-history.json`.
 - Analysis snapshots are stored under `snapshots/` and capped by the MCP storage layer.

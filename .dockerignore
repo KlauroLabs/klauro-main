@@ -4,12 +4,11 @@
 **/.next
 **/.turbo
 **/.cache
-**/.unravl*
+**/.klauro*
 **/coverage
 **/*.log
 .git
-frontend
-database
+legacy
 docs
 **/temp
 **/tmp

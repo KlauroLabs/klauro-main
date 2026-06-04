@@ -1,9 +1,9 @@
-import { analyzeProjectIncremental } from './mcp-server/src/analyzer';
+import { analyzeProjectIncremental } from './apps/mcp-server/src/analyzer';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 
-const projectPath = '/Users/michaelshattuck/dev/unravl/proof-of-concept';
-const testFile = path.join(projectPath, 'backend/src/analyzer/core/base-analyzer.ts');
+const projectPath = process.cwd();
+const testFile = path.join(projectPath, 'packages/analyzer-core/src/analyzer/core/base-analyzer.ts');
 
 async function test() {
   console.log('Starting incremental analysis test...');

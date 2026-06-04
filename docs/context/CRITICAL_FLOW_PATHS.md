@@ -1,4 +1,4 @@
-# Unravl - Critical User Flow Paths
+# Klauro - Critical User Flow Paths
 
 **Purpose:** Page-to-page user journey reference for designers
 

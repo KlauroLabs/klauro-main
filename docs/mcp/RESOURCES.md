@@ -1,10 +1,10 @@
-# Unravl MCP Server - Resources Reference
+# Klauro MCP Server - Resources Reference
 
 Resources provide stable, pre-composed views of analysis data. They are read-only and accessed by URI. Templated resources use `{project_name}` which is the slugified project name (lowercase, alphanumeric, hyphens).
 
 ---
 
-## `unravl://analyses`
+## `klauro://analyses`
 
 List of all analyzed codebases with metadata.
 
@@ -12,7 +12,7 @@ List of all analyzed codebases with metadata.
 
 ---
 
-## `unravl://workspaces`
+## `klauro://workspaces`
 
 List of persisted multi-repository workspace graphs.
 
@@ -20,7 +20,7 @@ List of persisted multi-repository workspace graphs.
 
 ---
 
-## `unravl://workspace/{workspace_id_or_name}/graph`
+## `klauro://workspace/{workspace_id_or_name}/graph`
 
 Persisted cross-repository workspace graph.
 
@@ -28,23 +28,23 @@ Persisted cross-repository workspace graph.
 
 ---
 
-## `unravl://agentic-benchmarks`
+## `klauro://agentic-benchmarks`
 
-List of persisted with-Unravl vs without-Unravl benchmark reports.
+List of persisted with-Klauro vs without-Klauro benchmark reports.
 
 **Returns:** Array of report entries with id, timestamps, status, score, target count, and storage file.
 
 ---
 
-## `unravl://agent-performance-proof`
+## `klauro://agent-performance-proof`
 
-Recent proof that Unravl improves agent token use, speed, quality, and incremental edit-loop performance.
+Recent proof that Klauro improves agent token use, speed, quality, and incremental edit-loop performance.
 
 **Returns:** Current 7-day proof summary with live A/B rollups, idiom-quality proof, latest report summaries by benchmark type, proof claims, compact metrics, and Markdown.
 
 ---
 
-## `unravl://agentic-benchmark/{report_id}`
+## `klauro://agentic-benchmark/{report_id}`
 
 One persisted agentic benchmark, live-quality, idiom-quality, or incremental value report.
 
@@ -52,7 +52,7 @@ One persisted agentic benchmark, live-quality, idiom-quality, or incremental val
 
 ---
 
-## `unravl://{project_name}/overview`
+## `klauro://{project_name}/overview`
 
 System overview combining architecture summary, tech stack, system purpose, capabilities, and progressive disclosure levels.
 
@@ -60,15 +60,15 @@ System overview combining architecture summary, tech stack, system purpose, capa
 
 ---
 
-## `unravl://{project_name}/agent-bootstrap`
+## `klauro://{project_name}/agent-bootstrap`
 
 Default agent bootstrap payload for coding agents.
 
-**Includes:** default-use rule, readiness report, start context, task plan, work packet, idiom context, file read plan, and ready-to-use prompt text.
+**Includes:** default-use rule, readiness report, start context, task plan, work packet, idiom context, file read plan, agent workbench guidance, and ready-to-use prompt text.
 
 ---
 
-## `unravl://{project_name}/agent-start`
+## `klauro://{project_name}/agent-start`
 
 Default CAS-backed start context for coding agents before broad file reads.
 
@@ -76,7 +76,7 @@ Default CAS-backed start context for coding agents before broad file reads.
 
 ---
 
-## `unravl://{project_name}/agent-readiness`
+## `klauro://{project_name}/agent-readiness`
 
 Default-use readiness score and gaps for agent adoption.
 
@@ -84,7 +84,7 @@ Default-use readiness score and gaps for agent adoption.
 
 ---
 
-## `unravl://{project_name}/agent-doctor`
+## `klauro://{project_name}/agent-doctor`
 
 One-shot default-use health report for coding agents.
 
@@ -92,7 +92,7 @@ One-shot default-use health report for coding agents.
 
 ---
 
-## `unravl://{project_name}/agent-defaults`
+## `klauro://{project_name}/agent-defaults`
 
 Install-ready default-use instructions for coding agents.
 
@@ -100,7 +100,7 @@ Install-ready default-use instructions for coding agents.
 
 ---
 
-## `unravl://{project_name}/freshness`
+## `klauro://{project_name}/freshness`
 
 Stored analysis freshness against the current source tree.
 
@@ -108,7 +108,7 @@ Stored analysis freshness against the current source tree.
 
 ---
 
-## `unravl://{project_name}/test-discovery`
+## `klauro://{project_name}/test-discovery`
 
 Source test evidence compared to the CAS test surface.
 
@@ -116,7 +116,7 @@ Source test evidence compared to the CAS test surface.
 
 ---
 
-## `unravl://{project_name}/runtime-event-contract`
+## `klauro://{project_name}/runtime-event-contract`
 
 SDK-facing runtime event schema for CAS correlation.
 
@@ -124,7 +124,7 @@ SDK-facing runtime event schema for CAS correlation.
 
 ---
 
-## `unravl://{project_name}/runtime-sdk`
+## `klauro://{project_name}/runtime-sdk`
 
 Deterministic TypeScript runtime SDK package generated from the CAS runtime contract.
 
@@ -132,7 +132,7 @@ Deterministic TypeScript runtime SDK package generated from the CAS runtime cont
 
 ---
 
-## `unravl://{project_name}/integration-depth`
+## `klauro://{project_name}/integration-depth`
 
 Library and platform integration depth report.
 
@@ -140,7 +140,7 @@ Library and platform integration depth report.
 
 ---
 
-## `unravl://{project_name}/cas-contract`
+## `klauro://{project_name}/cas-contract`
 
 Executable CAS completeness report.
 
@@ -148,7 +148,7 @@ Executable CAS completeness report.
 
 ---
 
-## `unravl://{project_name}/endpoints`
+## `klauro://{project_name}/endpoints`
 
 All entry points and the HTTP route table.
 
@@ -156,7 +156,7 @@ All entry points and the HTTP route table.
 
 ---
 
-## `unravl://{project_name}/schema`
+## `klauro://{project_name}/schema`
 
 Database schema and data entity lifecycle.
 
@@ -164,7 +164,7 @@ Database schema and data entity lifecycle.
 
 ---
 
-## `unravl://{project_name}/security`
+## `klauro://{project_name}/security`
 
 Security posture of the system.
 
@@ -172,7 +172,7 @@ Security posture of the system.
 
 ---
 
-## `unravl://{project_name}/health`
+## `klauro://{project_name}/health`
 
 Code health metrics.
 
@@ -180,7 +180,7 @@ Code health metrics.
 
 ---
 
-## `unravl://{project_name}/flows`
+## `klauro://{project_name}/flows`
 
 Workflow and flow analysis.
 
@@ -188,7 +188,7 @@ Workflow and flow analysis.
 
 ---
 
-## `unravl://{project_name}/risks`
+## `klauro://{project_name}/risks`
 
 Risk and stability analysis.
 
@@ -202,21 +202,21 @@ Resources are best for loading a complete view of a domain in a single read. Too
 
 | Need | Use |
 |------|-----|
-| Start an agent session | Resource: `unravl://{name}/agent-bootstrap` or Prompt: `agent_coding_session` |
-| Check whether agents should default to MCP | Resource: `unravl://{name}/agent-readiness` or Tool: `evaluate_agent_readiness` |
-| Run the full agent default-use doctor | Resource: `unravl://{name}/agent-doctor` or Tool: `get_agent_doctor` |
-| Install default-use agent instructions | Resource: `unravl://{name}/agent-defaults` or Tool: `install_agent_default_config` |
-| Check whether stored analysis is stale | Resource: `unravl://{name}/freshness` or Tool: `get_analysis_freshness` |
-| Verify whether tests were found or missed | Resource: `unravl://{name}/test-discovery` or Tool: `get_test_discovery_evidence` |
-| Get SDK runtime event payloads | Resource: `unravl://{name}/runtime-event-contract` or Tool: `get_runtime_event_contract` |
-| Generate a runtime SDK package | Resource: `unravl://{name}/runtime-sdk` or Tool: `get_runtime_sdk_package` |
-| Check integration analyzer depth | Resource: `unravl://{name}/integration-depth` or Tool: `get_integration_depth_report` |
-| Load a multi-repo graph | Resource: `unravl://workspace/{id}/graph` or Tool: `get_workspace_graph` |
-| Load benchmark proof | Resource: `unravl://agent-performance-proof` or Tool: `get_agent_performance_proof` |
-| Validate CAS completeness | Resource: `unravl://{name}/cas-contract` or Tool: `validate_cas_contract` |
-| Load all endpoints at once | Resource: `unravl://{name}/endpoints` |
+| Start an agent session | Resource: `klauro://{name}/agent-bootstrap` or Prompt: `agent_coding_session` |
+| Check whether agents should default to MCP | Resource: `klauro://{name}/agent-readiness` or Tool: `evaluate_agent_readiness` |
+| Run the full agent default-use doctor | Resource: `klauro://{name}/agent-doctor` or Tool: `get_agent_doctor` |
+| Install default-use agent instructions | Resource: `klauro://{name}/agent-defaults` or Tool: `install_agent_default_config` |
+| Check whether stored analysis is stale | Resource: `klauro://{name}/freshness` or Tool: `get_analysis_freshness` |
+| Verify whether tests were found or missed | Resource: `klauro://{name}/test-discovery` or Tool: `get_test_discovery_evidence` |
+| Get SDK runtime event payloads | Resource: `klauro://{name}/runtime-event-contract` or Tool: `get_runtime_event_contract` |
+| Generate a runtime SDK package | Resource: `klauro://{name}/runtime-sdk` or Tool: `get_runtime_sdk_package` |
+| Check integration analyzer depth | Resource: `klauro://{name}/integration-depth` or Tool: `get_integration_depth_report` |
+| Load a multi-repo graph | Resource: `klauro://workspace/{id}/graph` or Tool: `get_workspace_graph` |
+| Load benchmark proof | Resource: `klauro://agent-performance-proof` or Tool: `get_agent_performance_proof` |
+| Validate CAS completeness | Resource: `klauro://{name}/cas-contract` or Tool: `validate_cas_contract` |
+| Load all endpoints at once | Resource: `klauro://{name}/endpoints` |
 | Filter entry points by type | Tool: `get_entry_points` with `type` param |
-| Get full security posture | Resource: `unravl://{name}/security` |
+| Get full security posture | Resource: `klauro://{name}/security` |
 | Assess risk for one node | Tool: `assess_change_risk` with `node_id` |
-| List all analyses | Resource: `unravl://analyses` |
+| List all analyses | Resource: `klauro://analyses` |
 | Analyze a new codebase | Tool: `analyze_codebase` |

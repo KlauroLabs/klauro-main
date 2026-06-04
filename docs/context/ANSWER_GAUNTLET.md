@@ -1,6 +1,6 @@
 # Answer Gauntlet
 
-The answer gauntlet is Unravl's truth-quality loop. The golden repo gauntlet proves the analyzer can build a connected CAS graph. The answer gauntlet proves MCP-style product questions can be answered from that graph with evidence.
+The answer gauntlet is Klauro's truth-quality loop. The golden repo gauntlet proves the analyzer can build a connected CAS graph. The answer gauntlet proves MCP-style product questions can be answered from that graph with evidence.
 
 It asks the same core questions a human reviewer or AI coding agent needs answered:
 
@@ -18,25 +18,25 @@ Each answer must include structured evidence: node IDs, entry point IDs, exit po
 ## Run It
 
 ```bash
-cd mcp-server
+cd apps/mcp-server
 npm run answer-gauntlet
 ```
 
 Run one repo:
 
 ```bash
-cd mcp-server
-npm run answer-gauntlet -- --repo unravl=/Users/michaelshattuck/dev/unravl/proof-of-concept
+cd apps/mcp-server
+npm run answer-gauntlet -- --repo klauro=/Users/michaelshattuck/dev/klauro/proof-of-concept
 ```
 
 Run discovery without analysis:
 
 ```bash
-cd mcp-server
+cd apps/mcp-server
 npm run answer-gauntlet -- --dry-run
 ```
 
-The default report is written to `.unravl-answer-gauntlet/latest-report.json`.
+The default report is written to `.klauro-answer-gauntlet/latest-report.json`.
 
 ## How It Scores
 
@@ -55,7 +55,7 @@ The report status is:
 
 ## Product Bar
 
-A repo is not mastered just because it has many nodes and edges. It is mastered when Unravl can explain it:
+A repo is not mastered just because it has many nodes and edges. It is mastered when Klauro can explain it:
 
 - Overview answers describe the system with detected technologies and evidence.
 - Entry answers expose real entry points, not guessed routes.

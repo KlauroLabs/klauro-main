@@ -1,4 +1,4 @@
-# Unravl MCP Server - Prompts Reference
+# Klauro MCP Server - Prompts Reference
 
 Prompts generate structured context for injection into AI assistant conversations. They compose data from multiple CAS sections into a single coherent narrative.
 
@@ -30,7 +30,7 @@ Default prompt for Codex, Claude, Cursor, and other agents. It resolves the best
 10. **Invariant Impact** - Behavior-level invariants likely affected by the task
 11. **When To Read Files** - Concrete conditions for targeted source inspection
 
-**Proposal preview rule:** When the agent is still in planning mode and has a concrete multi-file diff, refactor, removal, or proposed file bundle, call `preview_codebase_iteration` or `preview_greenfield_codebase` before finalizing the plan. Include the Unravl advisory verdict, private preview URL, changed contracts, required checks, and known uncertainty in the plan text. CAS remains a codebase analysis output; proposal metadata is stored separately.
+**Proposal preview rule:** When the agent is still in planning mode and has a concrete multi-file diff, refactor, removal, or proposed file bundle, call `preview_codebase_iteration` or `preview_greenfield_codebase` before finalizing the plan. Include the Klauro advisory verdict, private preview URL, changed contracts, required checks, and known uncertainty in the plan text. CAS remains a codebase analysis output; proposal metadata is stored separately.
 
 ---
 
@@ -73,8 +73,9 @@ Generates guidance for safely modifying a specific code element. Useful before m
 4. **Test Coverage** - Test suites covering the node, or warning if uncovered
 5. **Behavioral Invariants** - Relevant tenant/auth/schema/test invariants and the `validate_behavioral_invariants` call to run after edits
 6. **Codebase Idioms** - Relevant local naming, placement, testing, migration, error/logging, boundary, and configuration practices plus the `validate_codebase_idioms` call to run after edits
-7. **Stability** - Stability score/class, commit metrics (30d), author count
-8. **Connected Components** - Incoming/outgoing edge counts, entry/exit point counts
+7. **Agent Workflow** - Prefer `open_agent_workbench` before broad source reads, `preflight_agent_change` before multi-file plans or edits, and `validate_agent_change` before finalizing
+8. **Stability** - Stability score/class, commit metrics (30d), author count
+9. **Connected Components** - Incoming/outgoing edge counts, entry/exit point counts
 
 ---
 

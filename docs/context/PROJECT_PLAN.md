@@ -1,8 +1,8 @@
-# Unravl Platform Plan
+# Klauro Platform Plan
 
 ## Product Direction
 
-Unravl is the visibility layer for AI-built software. The platform exists to make CAS analyses durable, shareable, inspectable, and governed by teams.
+Klauro is the visibility layer for AI-built software. The platform exists to make CAS analyses durable, shareable, inspectable, and governed by teams.
 
 The full product is coherent when each layer supports the same truth:
 
@@ -19,7 +19,7 @@ The full product is coherent when each layer supports the same truth:
 - NestJS API.
 - MikroORM with PostgreSQL.
 - Existing entities for users, organizations, memberships, projects, workspaces, and workspace access.
-- Workspace restructure migration exists at `backend/src/database/migrations/Migration20250920000000_phase1-workspace-codebase-restructure.ts`.
+- Workspace restructure migration exists at `packages/analyzer-core/src/legacy/database/migrations/Migration20250920000000_phase1-workspace-codebase-restructure.ts`.
 - Auth currently exposes register/login only.
 
 ### Frontend
@@ -29,7 +29,7 @@ The full product is coherent when each layer supports the same truth:
 
 ### MCP
 
-- `mcp-server/` exposes local CAS analysis and query tools.
+- `apps/mcp-server/` exposes local CAS analysis and query tools.
 - MCP is the agent-facing product surface and should stay consistent with the UI's interpretation of CAS.
 
 ## Platform Model
@@ -59,13 +59,13 @@ Do not document or run direct table changes as operational instructions. If a sc
 
 ## Implemented Workspace Pieces
 
-- `backend/src/database/entities/workspace.entity.ts`
-- `backend/src/database/entities/workspace-access.entity.ts`
-- `backend/src/workspaces/workspaces.controller.ts`
-- `backend/src/workspaces/workspaces.service.ts`
-- `backend/src/workspaces/workspaces.module.ts`
-- Workspace DTOs under `backend/src/workspaces/dto/`
-- Workspace/codebase restructure migration under `backend/src/database/migrations/`
+- `packages/analyzer-core/src/legacy/database/entities/workspace.entity.ts`
+- `packages/analyzer-core/src/legacy/database/entities/workspace-access.entity.ts`
+- `packages/analyzer-core/src/workspaces/workspaces.controller.ts`
+- `packages/analyzer-core/src/workspaces/workspaces.service.ts`
+- `packages/analyzer-core/src/workspaces/workspaces.module.ts`
+- Workspace DTOs under `packages/analyzer-core/src/workspaces/dto/`
+- Workspace/codebase restructure migration under `packages/analyzer-core/src/legacy/database/migrations/`
 
 ## Near-Term Implementation Priorities
 
@@ -128,5 +128,5 @@ Do not document or run direct table changes as operational instructions. If a sc
 1. Verify workspace endpoints against current auth behavior.
 2. Connect saved CAS analyses to workspace/project records.
 3. Add UI states for analysis errors, stale analysis, and missing relationships.
-4. Keep MCP docs synchronized with `mcp-server/src/server.ts`.
+4. Keep MCP docs synchronized with `apps/mcp-server/src/server.ts`.
 5. Add tests for workspace access and auth-protected analysis workflows.

@@ -2788,7 +2788,7 @@ Framework-specific features supported:
 
 Known implementations of this specification:
 
-- **Unravl Analyzer Framework** (Reference Implementation)
+- **Klauro Analyzer Framework** (Reference Implementation)
   - Full v1.4.0 support
   - Multi-language analyzers
   - Framework-specific analyzers
@@ -2805,10 +2805,10 @@ Known implementations of this specification:
 
 ## Copyright Notice
 
-Copyright (c) 2024-2025 Unravl Team. This specification is released under the MIT License.
+Copyright (c) 2024-2025 Klauro Team. This specification is released under the MIT License.
 
 ## Contact
 
-- Specification repository: https://github.com/unravl/cas-specification
-- Issue tracker: https://github.com/unravl/cas-specification/issues
-- Discussion forum: https://github.com/unravl/cas-specification/discussions
+- Specification repository: https://github.com/klauro/cas-specification
+- Issue tracker: https://github.com/klauro/cas-specification/issues
+- Discussion forum: https://github.com/klauro/cas-specification/discussions

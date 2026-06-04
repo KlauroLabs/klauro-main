@@ -1,4 +1,4 @@
-# Unravl MCP Server - Tools Reference
+# Klauro MCP Server - Tools Reference
 
 All tools that query analysis data require a `path` parameter - the absolute filesystem path of a previously analyzed project. Run `analyze_codebase` first to generate the analysis, then query it with any other tool.
 
@@ -19,9 +19,9 @@ Run CAS analysis on a local directory. Uses incremental analysis by default when
 
 **Returns:** `{ status, analysis_type, path, name, nodes, edges, entry_points, analyzers_run, errors }`. Incremental runs also include `change_summary` with files changed, node changes, and risk level.
 
-### `initialize_unravl_project`
+### `initialize_klauro_project`
 
-Write `.unravlrc` and `.unravlignore` so teams can control analyzer mode, upload policy, source include/exclude rules, and project identity.
+Write `.klaurorc` and `.klauroignore` so teams can control analyzer mode, upload policy, source include/exclude rules, and project identity.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -34,9 +34,9 @@ Write `.unravlrc` and `.unravlignore` so teams can control analyzer mode, upload
 
 **Returns:** Written config paths, analyzer mode, analyzer URL, project id, and organization id.
 
-### `get_unravl_project_config`
+### `get_klauro_project_config`
 
-Read the effective `.unravlrc`, `.unravlignore`, analyzer mode, upload policy, source rules, and project identity.
+Read the effective `.klaurorc`, `.klauroignore`, analyzer mode, upload policy, source rules, and project identity.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -67,31 +67,31 @@ Describe the GitHub App permissions, webhooks, and local-agent handoff needed fo
 
 ### `analyze_codebase_remote`
 
-Upload a filtered local source snapshot to a remote Unravl analyzer service, cache the returned CAS locally, and make the result available to all local MCP query tools.
+Upload a filtered local source snapshot to a remote Klauro analyzer service, cache the returned CAS locally, and make the result available to all local MCP query tools.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Absolute path to the project directory |
-| `server_url` | string | no | Analyzer service URL. Defaults to `UNRAVL_ANALYZER_URL` or `http://127.0.0.1:8787` |
+| `server_url` | string | no | Analyzer service URL. Defaults to `KLAURO_ANALYZER_URL` or `http://127.0.0.1:8787` |
 | `analysis_id` | string | no | Stable remote analysis id. Defaults to a hash of the local project path |
 
 **Returns:** Status, remote analysis id, revision, analysis type, upload size, and CAS graph counts.
 
 ### `sync_codebase_remote`
 
-Send dirty-tree file changes to a remote Unravl analyzer service and cache the updated CAS locally. This is the hosted-analyzer incremental path for local AI agent edits.
+Send dirty-tree file changes to a remote Klauro analyzer service and cache the updated CAS locally. This is the hosted-analyzer incremental path for local AI agent edits.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Absolute path to the project directory |
-| `server_url` | string | no | Analyzer service URL. Defaults to `UNRAVL_ANALYZER_URL` or `http://127.0.0.1:8787` |
+| `server_url` | string | no | Analyzer service URL. Defaults to `KLAURO_ANALYZER_URL` or `http://127.0.0.1:8787` |
 | `analysis_id` | string | no | Stable remote analysis id. Defaults to a hash of the local project path |
 
 **Returns:** Status, remote analysis id, revision, analysis type, changed file count, upload size, graph counts, and incremental change summary.
 
 ### `preview_codebase_iteration`
 
-Analyze an agent proposal as an ephemeral iteration of an existing codebase. This does not change CAS semantics: Unravl copies the codebase, applies the proposed diff/files in the copy, runs normal CAS analysis, compares baseline and proposed analyses, and stores a product-level preview artifact.
+Analyze an agent proposal as an ephemeral iteration of an existing codebase. This does not change CAS semantics: Klauro copies the codebase, applies the proposed diff/files in the copy, runs normal CAS analysis, compares baseline and proposed analyses, and stores a product-level preview artifact.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -103,7 +103,7 @@ Analyze an agent proposal as an ephemeral iteration of an existing codebase. Thi
 | `organization_id` | string | no | Hosted organization/workspace id for private preview URL |
 | `project_id` | string | no | Hosted project id |
 | `codebase_id` | string | no | Hosted codebase id |
-| `preview_base_url` | string | no | Hosted Unravl app base URL |
+| `preview_base_url` | string | no | Hosted Klauro app base URL |
 
 **Returns:** Advisory status, preview id, private preview URL, baseline/proposed analysis ids, graph delta, changed contracts, idiom/invariant validation output, required checks, and visualization summary.
 
@@ -118,7 +118,7 @@ Analyze proposed files as a synthetic new codebase. The output is still normal C
 | `proposed_files` | array | yes | Proposed file bundle for the synthetic codebase |
 | `organization_id` | string | no | Hosted organization/workspace id for private preview URL |
 | `project_id` | string | no | Hosted project id |
-| `preview_base_url` | string | no | Hosted Unravl app base URL |
+| `preview_base_url` | string | no | Hosted Klauro app base URL |
 
 **Returns:** Advisory status, preview id, private preview URL, proposed analysis id, detected graph summary, required checks, and greenfield readiness warnings.
 
@@ -412,6 +412,74 @@ One-call task packet that surfaces the same agent work packet with top-level idi
 
 **Returns:** The normal agent work packet plus top-level `idiom_context` with selected idioms, local examples, do/avoid guidance, validation instructions, and likely violations.
 
+### `open_agent_workbench`
+
+Product-level agent workspace for a task. Use this before broad source exploration when an agent needs one actionable packet instead of stitching together many lower-level calls.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `task` | object | no | Optional task context with `task_type`, `target`, `instructions`, `success_criteria`, `change_type`, `files`, `diff_text`, or `plan_text` |
+
+**Returns:** Orientation, target resolution, file-read plan, validation plan, repo-local agent rules, `signal_quality`, evidence policy, stop conditions, and next MCP calls. `signal_quality` tells the agent when tests, patterns, idioms, invariants, purpose confidence, or analyzer coverage are thin so the packet is treated as guidance instead of complete truth.
+
+### `preflight_agent_change`
+
+Before an agent edits or presents a plan, evaluate whether the proposed change fits the current codebase model.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `target` | string | no | Node id, file path, or natural language target |
+| `plan_text` | string | no | Agent plan text to evaluate |
+| `diff_text` | string | no | Unified diff to evaluate |
+| `files` | string[] | no | Changed or proposed files |
+| `task` | object | no | Optional task context |
+
+**Returns:** Advisory verdict, change shape, target resolution, likely risk/idiom/invariant/test impacts, findings, `signal_quality`, required checks, and a `plan_output_block` agents can include in user-facing plans. Findings include `evidence_source` so clients can distinguish CAS-backed facts from plan-text heuristics.
+
+### `get_codebase_agent_rules`
+
+Generate a living, CAS-backed guide for how agents should work in this repository.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `target` | string | no | Optional node id, file path, or natural language target |
+| `files` | string[] | no | Optional files to focus the rules |
+| `limit` | number | no | Max idioms/invariants to include |
+
+**Returns:** Architecture rules, idiom rules, invariant rules, testing rules, source-reading rules, evidence counts, `signal_quality`, and confidence notes.
+
+### `explain_change_shape`
+
+Explain what a proposed or actual diff means in graph terms.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `target` | string | no | Optional target node id, file path, or natural language target |
+| `plan_text` | string | no | Optional plan text |
+| `diff_text` | string | no | Optional unified diff |
+| `files` | string[] | no | Changed or proposed files |
+
+**Returns:** Changed source/test/migration/schema files, inferred change scope, touched CAS nodes, affected tests, affected idioms, affected invariants, `signal_quality`, confidence notes, and a compact narrative explanation.
+
+### `validate_agent_change`
+
+Post-edit validation for agents. Use before finalizing a change.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `target` | string | no | Optional node id, file path, or natural language target |
+| `diff_text` | string | no | Optional unified diff to validate |
+| `files` | string[] | no | Optional changed files; when omitted, the working tree is used |
+| `include_working_tree` | boolean | no | Validate git working tree when no explicit files/diff are supplied |
+| `plan_text` | string | no | Optional original plan text |
+
+**Returns:** Combined idiom and behavioral-invariant validation, change shape, findings with `evidence_source`, `signal_quality`, required checks, advisory verdict, and an advisory finalization rule. Treat `does_not_fit_yet` as a strong “review before finalizing” signal, not as a replacement for tests or human/agent judgment.
+
 ### `evaluate_agent_readiness`
 
 Score whether this repository's CAS/MCP surface is good enough for agents to use by default.
@@ -445,14 +513,14 @@ Return install-ready default-use instructions for an agent without writing files
 
 ### `install_agent_default_config`
 
-Write `.unravl/agent-defaults.json` and `.unravl/agent-defaults.md` into a repository.
+Write `.klauro/agent-defaults.json` and `.klauro/agent-defaults.md` into a repository.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
 | `task` | object | no | Optional task context |
 
-**Returns:** The installed config and file paths. Agents can read these files to use Unravl as the default first context path.
+**Returns:** The installed config and file paths. Agents can read these files to use Klauro as the default first context path.
 
 ### `evaluate_analysis_truth`
 
@@ -552,7 +620,7 @@ Run agent work packets for representative tasks and score whether CAS gives enou
 
 ### `run_agentic_benchmark`
 
-Benchmark the same task with Unravl vs without Unravl.
+Benchmark the same task with Klauro vs without Klauro.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -570,14 +638,14 @@ Load persisted agentic benchmark reports.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `id` | string | no | Report id, default `latest` |
-| `benchmark_type` | string | no | Restrict `latest` or `list` to an exact benchmark type such as `agentic-suite-with-unravl-vs-without-unravl`, `deterministic-agent-quality-proxy`, `live-agent-quality-ab`, `live-agent-idiom-quality-ab`, or `incremental-analysis-agent-value` |
+| `benchmark_type` | string | no | Restrict `latest` or `list` to an exact benchmark type such as `agentic-suite-with-klauro-vs-without-klauro`, `deterministic-agent-quality-proxy`, `live-agent-quality-ab`, `live-agent-idiom-quality-ab`, or `incremental-analysis-agent-value` |
 | `list` | boolean | no | List reports instead of loading one |
 
 **Returns:** Report list or one report with Markdown rendering matched to the stored report type.
 
 ### `get_agent_performance_proof`
 
-Summarize persisted benchmark reports into the current evidence that Unravl helps agents.
+Summarize persisted benchmark reports into the current evidence that Klauro helps agents.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -596,8 +664,8 @@ Run the work-quality benchmark layer on top of the agentic benchmark suite.
 | `paths` | string[] | no | Project paths to benchmark. Omit to use all analyzed repositories |
 | `task` | object | no | Single task to hand to both agents. Supports `task_type`, `target`, `instructions`, `success_criteria`, `related_paths`, and `runtime_event`; omit to generate a task suite |
 | `max_tasks_per_repo` | number | no | Maximum generated suite tasks per repository |
-| `agent_with_command` | string | no | Live with-Unravl command template. Supports `{workspace}`, `{prompt_file}`, `{metrics_file}`, `{result_file}`, `{arm}`, and `{task_id}` |
-| `agent_without_command` | string | no | Live without-Unravl command template. Supports the same arm placeholders |
+| `agent_with_command` | string | no | Live with-Klauro command template. Supports `{workspace}`, `{prompt_file}`, `{metrics_file}`, `{result_file}`, `{arm}`, and `{task_id}` |
+| `agent_without_command` | string | no | Live without-Klauro command template. Supports the same arm placeholders |
 | `orchestrator_command` | string | no | Optional evaluator command template. Supports `{evaluation_input}`, `{evaluation_file}`, `{with_workspace}`, `{without_workspace}`, `{with_diff}`, and `{without_diff}` |
 | `test_command` | string | no | Optional command to run inside each copied repo after the agent attempt |
 | `work_root` | string | no | Directory for copied repos, prompts, diffs, metrics, and evaluator artifacts |
@@ -608,19 +676,19 @@ Run the work-quality benchmark layer on top of the agentic benchmark suite.
 | `test_timeout_ms` | number | no | Per-test command timeout in milliseconds |
 | `orchestrator_timeout_ms` | number | no | Evaluator command timeout in milliseconds |
 
-**Returns:** Persisted report metadata, JSON report, Markdown report, success gates, context completeness, projected baseline quality, quality-score delta, token/time/file deltas, and optional live A/B execution results. Live results include copied repo paths, prompt/result/metric files, the with-Unravl work-packet artifact, binary diff paths, changed files, lines added/deleted, wall-clock duration, test status, provider token metrics when reported, deterministic orchestrator scores, optional external-orchestrator scores, and separated patch-quality, hidden-validation, command-completion, and timeout signals.
+**Returns:** Persisted report metadata, JSON report, Markdown report, success gates, context completeness, projected baseline quality, quality-score delta, token/time/file deltas, and optional live A/B execution results. Live results include copied repo paths, prompt/result/metric files, the with-Klauro work-packet artifact, binary diff paths, changed files, lines added/deleted, wall-clock duration, test status, provider token metrics when reported, deterministic orchestrator scores, optional external-orchestrator scores, and separated patch-quality, hidden-validation, command-completion, and timeout signals.
 
 ### `run_agent_idiom_benchmark`
 
-Run copied-repo A/B idiom quality tasks. Both arms receive the same task; the with-Unravl arm receives CAS idiom context and the without-Unravl arm is prohibited from using CAS/MCP/precomputed work packets.
+Run copied-repo A/B idiom quality tasks. Both arms receive the same task; the with-Klauro arm receives CAS idiom context and the without-Klauro arm is prohibited from using CAS/MCP/precomputed work packets.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `paths` | string[] | no | Project paths to benchmark. Omit to use all analyzed repositories |
 | `max_targets` | number | no | Maximum repositories to benchmark |
 | `max_tasks_per_repo` | number | no | Maximum idiom tasks per repo |
-| `agent_with_command` | string | no | Live with-Unravl command template |
-| `agent_without_command` | string | no | Live without-Unravl command template |
+| `agent_with_command` | string | no | Live with-Klauro command template |
+| `agent_without_command` | string | no | Live without-Klauro command template |
 | `orchestrator_command` | string | no | Optional external evaluator command template |
 | `test_command` | string | no | Optional validation command inside each copied repo |
 | `work_root` | string | no | Directory for copied repos, prompts, diffs, metrics, and evaluator artifacts |
@@ -641,8 +709,8 @@ Discover every real Git repo under a dev root, account for unsupported/skipped r
 | `max_targets` | number | no | Limit eligible repos for expensive checks while still reporting all discovered repos |
 | `work_root` | string | no | Directory for copied repos and benchmark artifacts |
 | `no_live` | boolean | no | Skip live idiom A/B execution; live proof gate still fails when skipped |
-| `agent_with_command` | string | no | Live with-Unravl agent command template |
-| `agent_without_command` | string | no | Live without-Unravl agent command template |
+| `agent_with_command` | string | no | Live with-Klauro agent command template |
+| `agent_without_command` | string | no | Live without-Klauro agent command template |
 | `orchestrator_command` | string | no | Optional external evaluator command template |
 | `test_command` | string | no | Optional copied-repo validation command |
 | `max_live_tasks` | number | no | Maximum live idiom task pairs |

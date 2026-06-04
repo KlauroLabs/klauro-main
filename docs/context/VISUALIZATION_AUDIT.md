@@ -211,7 +211,7 @@ The visualization system is fragmented across 15+ files with significant code du
 ## Recommended Architecture
 
 ```
-frontend/src/
+legacy/web/src/
   features/
     visualization/
       components/

@@ -1,10 +1,10 @@
-# Unravl Competitive Analysis
+# Klauro Competitive Analysis
 
 ## Executive Summary
 
-This analysis compares Unravl's vision and capabilities against CodeSee and other code visualization tools. **Unravl is pursuing a fundamentally more ambitious goal** - semantic, framework-aware architecture extraction with runtime telemetry and AI integration - while competitors focus on file-level dependency mapping.
+This analysis compares Klauro's vision and capabilities against CodeSee and other code visualization tools. **Klauro is pursuing a fundamentally more ambitious goal** - semantic, framework-aware architecture extraction with runtime telemetry and AI integration - while competitors focus on file-level dependency mapping.
 
-**Verdict: Unravl's vision definitively beats the competition.**
+**Verdict: Klauro's vision definitively beats the competition.**
 
 ---
 
@@ -18,7 +18,7 @@ This analysis compares Unravl's vision and capabilities against CodeSee and othe
 | **Sourcegraph** | Code search and navigation | Cross-repo search, code intelligence |
 | **CodeScene** | Behavioral analysis, tech debt | Git history analysis, hotspots |
 | **Understand (SciTools)** | Deep static analysis | Compliance-focused, legacy systems |
-| **Unravl** | Living architecture blueprints | Semantic analysis + runtime telemetry + AI |
+| **Klauro** | Living architecture blueprints | Semantic analysis + runtime telemetry + AI |
 
 ---
 
@@ -72,7 +72,7 @@ GitKraken acquired CodeSee in May 2024. The acquisition signals:
 
 ---
 
-## Unravl: What We Offer
+## Klauro: What We Offer
 
 ### Semantic Understanding
 
@@ -84,7 +84,7 @@ src/users/
   └── users.module.ts
 ```
 
-**Unravl sees:**
+**Klauro sees:**
 ```
 NestJS Application
   └── UsersModule (DI container)
@@ -102,9 +102,9 @@ NestJS Application
 
 ### Framework Intelligence
 
-Unravl understands 12+ frameworks with dedicated analyzers:
+Klauro understands 12+ frameworks with dedicated analyzers:
 
-| Framework | What Unravl Extracts |
+| Framework | What Klauro Extracts |
 |-----------|---------------------|
 | **NestJS** | Modules, controllers, services, guards, interceptors, middleware, DI scopes, routes with HTTP methods |
 | **Django** | Apps, models with fields/relationships, views (FBV/CBV), URL routing, admin config, forms, serializers |
@@ -125,7 +125,7 @@ CodeSee has **zero** framework-specific understanding.
 
 **CAS Principle**: The frontend renders what's there, not computes it.
 
-Unravl's CAS output contains:
+Klauro's CAS output contains:
 - All nodes with semantic types
 - All edges with relationship types
 - Full call graphs with execution context (async, conditional, try-catch)
@@ -218,14 +218,14 @@ Native SDK instrumentation:
 - Error tracking with architectural context
 - Live animation of static blueprints
 
-CodeSee requires Datadog/OpenTelemetry and just renders their data. Unravl generates its own telemetry.
+CodeSee requires Datadog/OpenTelemetry and just renders their data. Klauro generates its own telemetry.
 
 ### AI Integration (MCP)
 
 **Vision**: Package entire codebase into context for AI coding assistants.
 
 ```
-MCP Server: unravl-codebase-context
+MCP Server: klauro-codebase-context
     |
     ├── Resources
     │     ├── architecture://overview
@@ -262,7 +262,7 @@ No competitor offers this. This is the difference between giving AI a phone book
 
 ### Analysis Depth
 
-| Capability | CodeSee | Sourcegraph | CodeScene | Unravl |
+| Capability | CodeSee | Sourcegraph | CodeScene | Klauro |
 |------------|---------|-------------|-----------|--------|
 | File dependencies | Full | Partial | Via git | Full |
 | Function-level analysis | Basic | Cross-ref | No | Deep (AST) |
@@ -275,7 +275,7 @@ No competitor offers this. This is the difference between giving AI a phone book
 
 ### Semantic Understanding
 
-| Capability | CodeSee | Sourcegraph | CodeScene | Unravl |
+| Capability | CodeSee | Sourcegraph | CodeScene | Klauro |
 |------------|---------|-------------|-----------|--------|
 | Knows "this is a controller" | No | No | No | Yes |
 | Knows "this is a service" | No | No | No | Yes |
@@ -287,7 +287,7 @@ No competitor offers this. This is the difference between giving AI a phone book
 
 ### Intelligence Layer
 
-| Capability | CodeSee | Sourcegraph | CodeScene | Unravl |
+| Capability | CodeSee | Sourcegraph | CodeScene | Klauro |
 |------------|---------|-------------|-----------|--------|
 | Intent inference | No | No | Partial | Yes (AI-powered) |
 | Change risk scoring | No | No | Hotspots only | Comprehensive |
@@ -299,7 +299,7 @@ No competitor offers this. This is the difference between giving AI a phone book
 
 ### Runtime & AI Integration
 
-| Capability | CodeSee | Sourcegraph | CodeScene | Unravl |
+| Capability | CodeSee | Sourcegraph | CodeScene | Klauro |
 |------------|---------|-------------|-----------|--------|
 | Native telemetry SDK | No | No | No | Yes |
 | Live traffic visualization | Via external APM | No | No | Native |
@@ -309,50 +309,50 @@ No competitor offers this. This is the difference between giving AI a phone book
 
 ---
 
-## Does Unravl's Vision Beat the Competition?
+## Does Klauro's Vision Beat the Competition?
 
 ### Yes. Definitively.
 
 **1. Depth of Understanding**
 
 CodeSee: "Here are your files and which files import which."
-Unravl: "Here's your NestJS app with 12 controllers, 47 endpoints, 3 critical payment flows, 2 untested auth paths, and a god-object anti-pattern in UserService."
+Klauro: "Here's your NestJS app with 12 controllers, 47 endpoints, 3 critical payment flows, 2 untested auth paths, and a god-object anti-pattern in UserService."
 
 **2. Framework Awareness**
 
 CodeSee: Treats all code the same regardless of framework.
-Unravl: Knows NestJS guards from Django middleware from React hooks. Extracts framework-specific semantics.
+Klauro: Knows NestJS guards from Django middleware from React hooks. Extracts framework-specific semantics.
 
 **3. Runtime Integration**
 
 CodeSee: Borrows data from Datadog/OpenTelemetry and displays it.
-Unravl: Generates its own telemetry, animates its own blueprints, owns the full stack.
+Klauro: Generates its own telemetry, animates its own blueprints, owns the full stack.
 
 **4. AI-Era Positioning**
 
 CodeSee: No AI integration beyond basic Q&A.
-Unravl: MCP server gives AI coding assistants complete architectural context. This is the future of development tooling.
+Klauro: MCP server gives AI coding assistants complete architectural context. This is the future of development tooling.
 
 **5. Complete Graph Generation**
 
 CodeSee: Frontend infers relationships from file imports.
-Unravl: CAS contains the complete relationship graph. Frontend renders, doesn't compute.
+Klauro: CAS contains the complete relationship graph. Frontend renders, doesn't compute.
 
 **6. Intelligence Layer**
 
 CodeSee: None.
-Unravl: Intent inference, change risk, critical flows, security boundaries, data lifecycle, temporal stability.
+Klauro: Intent inference, change risk, critical flows, security boundaries, data lifecycle, temporal stability.
 
 ### The Core Difference
 
 CodeSee asks: "What files exist and what imports what?"
-Unravl asks: "What is this system, what does it do, how does it work, what's risky, what's critical, and how can AI help you work with it?"
+Klauro asks: "What is this system, what does it do, how does it work, what's risky, what's critical, and how can AI help you work with it?"
 
 ---
 
 ## Competitive Moat
 
-### What Makes Unravl Defensible
+### What Makes Klauro Defensible
 
 1. **Semantic Understanding**: Competitors can't easily add framework awareness - it requires deep domain knowledge and per-framework development
 
@@ -373,7 +373,7 @@ CodeSee proved:
 2. File-level mapping isn't enough to sustain a standalone business
 3. Deeper semantic understanding is the gap
 
-Unravl fills exactly that gap.
+Klauro fills exactly that gap.
 
 ---
 
@@ -432,9 +432,9 @@ CAS Output (semantic graph)
 | **CodeSee** | Basic AI Q&A over file structure |
 | **Sourcegraph Cody** | Code search + generation, no architectural understanding |
 | **GitHub Copilot** | Code completion, no system-level awareness |
-| **Unravl AI Layer** | Full semantic graph + LLM = architectural intelligence |
+| **Klauro AI Layer** | Full semantic graph + LLM = architectural intelligence |
 
-The key difference: competitors give AI access to code text. Unravl gives AI access to **semantic understanding** - what the code means, not just what it says.
+The key difference: competitors give AI access to code text. Klauro gives AI access to **semantic understanding** - what the code means, not just what it says.
 
 ---
 
@@ -501,7 +501,7 @@ No other tool offers this:
 |----------|---------------|
 | **Raw file access** | Text of files, must infer structure |
 | **Sourcegraph** | Search results, cross-references |
-| **Unravl MCP** | Complete semantic graph, framework understanding, call chains, risk data |
+| **Klauro MCP** | Complete semantic graph, framework understanding, call chains, risk data |
 
 ---
 
@@ -567,15 +567,15 @@ No other tool offers this:
 
 ## Conclusion
 
-**Unravl's vision definitively beats the competition.**
+**Klauro's vision definitively beats the competition.**
 
-CodeSee mapped files. Unravl maps architecture.
-CodeSee borrowed runtime data. Unravl generates its own.
-CodeSee had no AI integration. Unravl is AI-native.
+CodeSee mapped files. Klauro maps architecture.
+CodeSee borrowed runtime data. Klauro generates its own.
+CodeSee had no AI integration. Klauro is AI-native.
 
 The vision of a "living blueprint" that makes any system instantly understandable - with semantic depth, runtime animation, and AI integration - is beyond what any competitor offers or is positioned to offer.
 
-CodeSee's acquisition proves the market exists. Unravl's vision proves what the market actually needs.
+CodeSee's acquisition proves the market exists. Klauro's vision proves what the market actually needs.
 
 ---
 

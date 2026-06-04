@@ -7,7 +7,7 @@ This plan consolidates 15+ fragmented visualization files into a single, coheren
 ## Current Architecture (Before)
 
 ```
-frontend/src/
+legacy/web/src/
   pages/
     visualization.tsx                    # DEPRECATED - hardcoded path, no auth
     workspace/[id]/codebase/[codebaseId]/
@@ -39,7 +39,7 @@ frontend/src/
 ## Target Architecture (After)
 
 ```
-frontend/src/
+legacy/web/src/
   features/
     visualization/
       index.ts                           # Public exports

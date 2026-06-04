@@ -18,7 +18,7 @@ This is the minimum security and privacy material needed before onboarding custo
 
 ## What Leaves The Machine
 
-Full remote analysis sends filtered file contents selected by `.unravlrc`, `.unravlignore`, and safe defaults.
+Full remote analysis sends filtered file contents selected by `.klaurorc`, `.klauroignore`, and safe defaults.
 
 Dirty-tree sync sends:
 
@@ -30,18 +30,18 @@ Dirty-tree sync sends:
 Customers can inspect this before upload:
 
 ```bash
-unravl upload-manifest .
-unravl upload-manifest . --dirty-tree
+klauro upload-manifest .
+klauro upload-manifest . --dirty-tree
 ```
 
 ## Default Exclusions
 
-Unravl excludes dependency trees, generated outputs, caches, Git internals, local agent state, common virtual environments, and common secret files.
+Klauro excludes dependency trees, generated outputs, caches, Git internals, local agent state, common virtual environments, and common secret files.
 
 Examples:
 
 - `.git`
-- `.unravl`
+- `.klauro`
 - `.claude`
 - `.codex`
 - `node_modules`
@@ -55,16 +55,16 @@ Examples:
 - `*.key`
 - `secrets/**`
 
-Teams can add exclusions in `.unravlignore`.
+Teams can add exclusions in `.klauroignore`.
 
 ## Credentials
 
-Do not store analyzer tokens in `.unravlrc`.
+Do not store analyzer tokens in `.klaurorc`.
 
 Use:
 
 - Login-managed credential storage for packaged CLI.
-- `UNRAVL_ANALYZER_TOKEN` for CI and local development.
+- `KLAURO_ANALYZER_TOKEN` for CI and local development.
 - Short-lived tokens for hosted analyzer sessions.
 
 ## Retention
@@ -86,7 +86,7 @@ The analyzer service writes JSONL audit events for full analysis, incremental sy
 The service also supports a per-token/IP request limit through:
 
 ```bash
-UNRAVL_ANALYZER_RATE_LIMIT_PER_MINUTE=120
+KLAURO_ANALYZER_RATE_LIMIT_PER_MINUTE=120
 ```
 
 ## Data Use
@@ -95,7 +95,7 @@ Customer code must not be used to train models.
 
 If AI summarization is added to the analyzer service, the customer must be able to choose:
 
-- Unravl-hosted model.
+- Klauro-hosted model.
 - Customer-provided hosted model.
 - Self-hosted model.
 - Static-analysis-only mode.

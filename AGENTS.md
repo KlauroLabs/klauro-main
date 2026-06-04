@@ -1,8 +1,8 @@
-# Unravl - Visibility Layer for AI-Built Software
+# Klauro - Visibility Layer for AI-Built Software
 
 ## What This Project Is
 
-Unravl helps humans and AI agents understand what a codebase actually does. The core product is a trustworthy Code Analysis Specification (CAS) graph that captures code elements, relationships, entry points, exit points, tests, risks, and framework semantics.
+Klauro helps humans and AI agents understand what a codebase actually does. The core product is a trustworthy Code Analysis Specification (CAS) graph that captures code elements, relationships, entry points, exit points, tests, risks, and framework semantics.
 
 The product has two first-class surfaces over the same CAS truth layer:
 
@@ -15,11 +15,11 @@ Runtime telemetry completes the loop later by comparing static structure against
 
 AI-built software is often judged by inputs and outputs: prompt in, app out, demo works. That is not enough. Humans still need behavior-level visibility into the internals: which paths exist, which components depend on each other, what data crosses boundaries, what security assumptions exist, what tests cover the behavior, and what breaks when something changes.
 
-Unravl is the visibility layer for that world.
+Klauro is the visibility layer for that world.
 
-## Using Unravl MCP By Default
+## Using Klauro MCP By Default
 
-The product bar is that Codex, Claude, Cursor, and other coding agents should use Unravl MCP before broad source-file exploration whenever an analysis exists.
+The product bar is that Codex, Claude, Cursor, and other coding agents should use Klauro MCP before broad source-file exploration whenever an analysis exists.
 
 Agent operating loop:
 
@@ -40,9 +40,9 @@ Planning loop:
 - Include the advisory verdict, private preview URL, changed contracts, required checks, and uncertainty in the plan output.
 - CAS remains proposal-agnostic; proposal previews are stored as product/MCP artifacts that reference normal baseline and proposed CAS analyses.
 
-When an MCP client starts from prompts or resources instead of tools, use the `agent_coding_session` prompt or read `unravl://{project_name}/agent-start`.
+When an MCP client starts from prompts or resources instead of tools, use the `agent_coding_session` prompt or read `klauro://{project_name}/agent-start`.
 
-Use `evaluate_agent_readiness` to decide whether a repository is ready for default agent use. Use `evaluate_analysis_truth`, `get_semantic_map`, `get_codebase_idioms`, `validate_codebase_idioms`, `get_framework_depth_report`, `get_cross_repo_contracts`, `get_runtime_instrumentation_plan`, and `evaluate_agent_task_proof` when judging whether the analysis is accurate enough for real work. Use `npm run agent-gauntlet`, `npm run analysis-gauntlet`, `npm run agent-idiom-benchmark`, and `npm run agent-proof-machine` from `mcp-server/` to verify this across the configured repo set, the ground-truth fixture, live idiom proof, and every real repo under `~/dev`.
+Use `evaluate_agent_readiness` to decide whether a repository is ready for default agent use. Use `evaluate_analysis_truth`, `get_semantic_map`, `get_codebase_idioms`, `validate_codebase_idioms`, `get_framework_depth_report`, `get_cross_repo_contracts`, `get_runtime_instrumentation_plan`, and `evaluate_agent_task_proof` when judging whether the analysis is accurate enough for real work. Use `npm run agent-gauntlet`, `npm run analysis-gauntlet`, `npm run agent-idiom-benchmark`, and `npm run agent-proof-machine` from `apps/mcp-server/` to verify this across the configured repo set, the ground-truth fixture, live idiom proof, and every real repo under `~/dev`.
 
 ## Non-Negotiable Rules
 
@@ -62,7 +62,15 @@ Use `evaluate_agent_readiness` to decide whether a repository is ready for defau
 
 ## Architecture
 
-### CAS Analyzer (`backend/src/analyzer/`)
+### Active Monorepo Layout
+
+- `apps/mcp-server/`: the agent-facing MCP server, CLI, hosted analyzer service entrypoint, proof gauntlets, proposal previews, and remote sync.
+- `packages/analyzer-core/`: the CAS analyzer engine, CAS types, idiom/invariant extraction, incremental analysis, embeddings, and SDK source. Some legacy Nest API files remain here only because analyzer tests and dependency wiring still share the old package boundary.
+- `legacy/web/`: old Next.js prototype surface. Treat as reference until the new designed UI is rebuilt.
+- `legacy/database/`: old SQL/database reference material. Do not treat as current production schema unless a current migration explicitly points at it.
+- `docs/`: CAS, MCP, customer, and architecture documentation.
+
+### CAS Analyzer (`packages/analyzer-core/src/analyzer/`)
 
 - TypeScript/NestJS analyzer engine.
 - Multi-language analysis for TypeScript/JavaScript, Python, Java, C#, Dart, Go, Rust, and PHP.
@@ -70,17 +78,17 @@ Use `evaluate_agent_readiness` to decide whether a repository is ready for defau
 - Library analyzers for package-specific semantics such as ORMs, routing, state, realtime, and data fetching.
 - Generates CAS output for UI rendering, MCP querying, change-risk analysis, and future telemetry correlation.
 
-### MCP Server (`mcp-server/`)
+### MCP Server (`apps/mcp-server/`)
 
 - TypeScript stdio MCP server.
 - Exposes CAS resources, prompts, and tools for AI coding assistants.
-- Stores local analyses under `~/.unravl/analyses/` unless `UNRAVL_STORAGE_PATH` is set.
+- Stores local analyses under `~/.klauro/analyses/` unless `KLAURO_STORAGE_PATH` is set.
 
-### Web Application
+### Legacy Web/API Reference
 
-- Backend: NestJS, MikroORM, PostgreSQL.
-- Frontend: Next.js, React, TypeScript.
-- Product surface: visual codebase inspection, drilldown, saved analyses, teams, permissions, and collaboration.
+- The previous NestJS API, database shell, and Next.js UI are not the current product center.
+- Reuse useful analyzer, SDK, telemetry, and schema ideas, but do not describe stale auth/API/database routes as implemented customer surface.
+- New product work should attach to CAS, MCP, hosted analyzer, SDK/local client, or the future designed UI.
 
 ### Telemetry and SDKs
 
@@ -92,25 +100,25 @@ Use `evaluate_agent_readiness` to decide whether a repository is ready for defau
 There is no top-level all-in-one command. Run commands from the relevant package.
 
 ```bash
-# Backend API
-cd backend
+# Analyzer core package (legacy API shell retained for compatibility)
+cd packages/analyzer-core
 npm run dev
 npm run build
 npm run test
 
-# Frontend
-cd frontend
+# Legacy web prototype
+cd legacy/web
 npm run dev
 npm run build
 npm run lint
 
 # MCP server
-cd mcp-server
+cd apps/mcp-server
 npm run start
 npm run typecheck
 
 # Database migrations
-cd backend
+cd packages/analyzer-core
 npm run migrate
 npm run migrate:up
 npm run migrate:down
@@ -126,7 +134,7 @@ npm run migrate:down
 
 ## Vision
 
-Unravl makes software visible. It turns a codebase into a complete, queryable relationship graph that can be inspected visually by humans and queried directly by AI agents.
+Klauro makes software visible. It turns a codebase into a complete, queryable relationship graph that can be inspected visually by humans and queried directly by AI agents.
 
 For a NestJS app, CAS should expose controllers, routes, guards, services, repositories, entities, function calls, tests, data access, external services, and the links between them. For a React app, CAS should expose routes, pages, components, hooks, contexts, state, data fetching, tests, and their relationships. For a multi-repo system, CAS should help link services through APIs, messages, shared databases, and external dependencies.
 

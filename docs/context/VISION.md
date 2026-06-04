@@ -1,4 +1,4 @@
-# Unravl Vision
+# Klauro Vision
 
 ## The Problem
 
@@ -8,7 +8,7 @@ Codebases were already hard to see. AI-built code makes that gap bigger.
 
 ## The Product
 
-Unravl is the visibility layer for AI-built software. It turns a codebase into a complete relationship graph that both humans and AI agents can inspect.
+Klauro is the visibility layer for AI-built software. It turns a codebase into a complete relationship graph that both humans and AI agents can inspect.
 
 The CAS is the source of truth. It captures the system as code elements and relationships: entry points, exits, controllers, services, repositories, components, hooks, tests, data entities, security boundaries, external services, call chains, and change risk.
 
@@ -23,7 +23,7 @@ Runtime telemetry later closes the loop by showing whether the system behaves in
 
 ### 1. Semantic Understanding
 
-Unravl does not map files for their own sake. It maps meaning.
+Klauro does not map files for their own sake. It maps meaning.
 
 A NestJS controller is not just a TypeScript file. It is a request entry point with routes, guards, validation, service dependencies, data access, tests, and downstream exits. A React page is not just JSX. It is a user-facing route with components, state, hooks, data fetching, permissions, and behavior.
 
@@ -33,7 +33,7 @@ CAS must contain the complete relationship graph. The frontend and MCP clients r
 
 ### 3. Framework Intelligence
 
-Unravl understands frameworks and libraries, not only language syntax.
+Klauro understands frameworks and libraries, not only language syntax.
 
 | Area | What CAS Should See |
 | --- | --- |
@@ -48,7 +48,7 @@ Unravl understands frameworks and libraries, not only language syntax.
 
 ### 4. Behavior-Level Verification
 
-Input/output checks tell you whether a visible path seems to work. Unravl shows the behavior inside: what was called, what data moved, what boundary was crossed, what test covers it, and what else depends on it.
+Input/output checks tell you whether a visible path seems to work. Klauro shows the behavior inside: what was called, what data moved, what boundary was crossed, what test covers it, and what else depends on it.
 
 That is why the UI matters. It gives humans a way to verify and understand what AI-generated code actually contains.
 
@@ -120,4 +120,4 @@ Make any system understandable. Turn the lights on. Give humans and AI agents a 
 
 ## Tagline
 
-Unravl: see what the code actually built.
+Klauro: see what the code actually built.

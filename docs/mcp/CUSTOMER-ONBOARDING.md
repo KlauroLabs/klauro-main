@@ -5,17 +5,17 @@ The first customer experience should prove value without asking the customer to 
 ## First Ten Minutes
 
 ```bash
-npx @unravl/cli init
-npx @unravl/cli upload-manifest
-npx @unravl/cli analyze
-npx @unravl/cli doctor
-npx @unravl/cli install-agent
+npx @klauro/cli init
+npx @klauro/cli upload-manifest
+npx @klauro/cli analyze
+npx @klauro/cli doctor
+npx @klauro/cli install-agent
 ```
 
 In this repository today, the equivalent development commands are:
 
 ```bash
-cd mcp-server
+cd apps/mcp-server
 npm run init -- /absolute/path/to/repo
 npm run upload-manifest -- /absolute/path/to/repo
 npm run analyze -- /absolute/path/to/repo
@@ -25,11 +25,11 @@ npm run install-agent -- /absolute/path/to/repo
 
 Expected customer-visible outputs:
 
-- `.unravlrc` with analyzer mode, analyzer URL, project identity, upload policy, and source rules.
-- `.unravlignore` with repo-specific privacy exclusions.
+- `.klaurorc` with analyzer mode, analyzer URL, project identity, upload policy, and source rules.
+- `.klauroignore` with repo-specific privacy exclusions.
 - Upload manifest showing exactly which files would be sent.
 - CAS stored locally in the MCP cache.
-- Agent defaults installed under `.unravl/`.
+- Agent defaults installed under `.klauro/`.
 - Agent Readiness output from `doctor`.
 
 ## Hosted Analyzer
@@ -37,15 +37,15 @@ Expected customer-visible outputs:
 Hosted mode keeps the analyzer implementation off the customer machine:
 
 ```bash
-npx @unravl/cli init --mode remote --server-url https://analyzer.unravl.dev
-npx @unravl/cli upload-manifest
-npx @unravl/cli analyze
+npx @klauro/cli init --mode remote --server-url https://analyzer.klauro.dev
+npx @klauro/cli upload-manifest
+npx @klauro/cli analyze
 ```
 
-Tokens are not stored in `.unravlrc`. Customers should authenticate through login-managed credential storage or environment variables:
+Tokens are not stored in `.klaurorc`. Customers should authenticate through login-managed credential storage or environment variables:
 
 ```bash
-export UNRAVL_ANALYZER_TOKEN=...
+export KLAURO_ANALYZER_TOKEN=...
 ```
 
 ## Self-Hosted Analyzer
@@ -53,25 +53,25 @@ export UNRAVL_ANALYZER_TOKEN=...
 Enterprise customers can run the analyzer container in their own network:
 
 ```bash
-docker build -f mcp-server/Dockerfile.analyzer -t unravl-remote-analyzer .
+docker build -f apps/mcp-server/Dockerfile.analyzer -t klauro-remote-analyzer .
 docker run --rm -p 8787:8787 \
-  -e UNRAVL_ANALYZER_TOKEN=... \
-  unravl-remote-analyzer
+  -e KLAURO_ANALYZER_TOKEN=... \
+  klauro-remote-analyzer
 ```
 
 Then:
 
 ```bash
-npx @unravl/cli init --mode remote --server-url https://unravl.internal
+npx @klauro/cli init --mode remote --server-url https://klauro.internal
 ```
 
-Set `.unravlrc` policy gates:
+Set `.klaurorc` policy gates:
 
 ```json
 {
   "policy": {
     "allowRemoteAnalyzer": true,
-    "allowedAnalyzerHosts": ["https://unravl.internal"],
+    "allowedAnalyzerHosts": ["https://klauro.internal"],
     "requireSelfHosted": true,
     "blockUntrackedFiles": false
   }
@@ -83,7 +83,7 @@ Set `.unravlrc` policy gates:
 GitHub import is for hosted main-branch truth. It does not replace dirty-tree sync for local agents.
 
 ```bash
-npx @unravl/cli github-import-plan
+npx @klauro/cli github-import-plan
 ```
 
 The GitHub App should request:
@@ -107,7 +107,7 @@ Each design partner should receive:
 
 - Upload manifest.
 - Agent Readiness report.
-- With-Unravl vs without-Unravl benchmark report.
+- With-Klauro vs without-Klauro benchmark report.
 - Incremental sync timing.
 - Idiom-conformance delta.
 - Security packet.

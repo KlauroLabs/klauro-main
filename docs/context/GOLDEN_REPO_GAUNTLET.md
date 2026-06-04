@@ -1,6 +1,6 @@
 # Golden Repo Gauntlet
 
-The golden repo gauntlet is the product proof loop for Unravl. It runs the same CAS analyzer path used by MCP against real local repositories and scores whether the output is useful enough for humans and agents to trust.
+The golden repo gauntlet is the product proof loop for Klauro. It runs the same CAS analyzer path used by MCP against real local repositories and scores whether the output is useful enough for humans and agents to trust.
 
 The goal is not just "analysis completed." The goal is: can someone see what was built, drill from product surface to implementation, and ask an agent precise questions without rereading the repo from scratch?
 
@@ -8,7 +8,7 @@ The goal is not just "analysis completed." The goal is: can someone see what was
 
 The gauntlet discovers these repos under `~/dev` when present:
 
-- `unravl/proof-of-concept`
+- `klauro/proof-of-concept`
 - `personal/kadra.ai`
 - `personal/money`
 - `zerac/zerac-ui`
@@ -20,25 +20,25 @@ The gauntlet discovers these repos under `~/dev` when present:
 Run discovery without analysis:
 
 ```bash
-cd mcp-server
+cd apps/mcp-server
 npm run gauntlet -- --dry-run
 ```
 
 Run one repo:
 
 ```bash
-cd mcp-server
-npm run gauntlet -- --repo unravl=/Users/michaelshattuck/dev/unravl/proof-of-concept
+cd apps/mcp-server
+npm run gauntlet -- --repo klauro=/Users/michaelshattuck/dev/klauro/proof-of-concept
 ```
 
 Run discovered repos and write the default report:
 
 ```bash
-cd mcp-server
+cd apps/mcp-server
 npm run gauntlet
 ```
 
-The default report is written to `.unravl-gauntlet/latest-report.json`.
+The default report is written to `.klauro-gauntlet/latest-report.json`.
 
 ## What It Scores
 
@@ -85,7 +85,7 @@ The gauntlet is the loop that turns "this is cool" into "this is dependable."
 After this structural gauntlet passes, run the answer gauntlet:
 
 ```bash
-cd mcp-server
+cd apps/mcp-server
 npm run answer-gauntlet
 ```
 

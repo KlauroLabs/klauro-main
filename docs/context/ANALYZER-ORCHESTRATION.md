@@ -2,11 +2,11 @@
 
 ## Overview
 
-This document describes how Unravl determines which analyzers to run on a codebase and how multiple analyzers work together to produce a unified Code Analysis Specification (CAS) output.
+This document describes how Klauro determines which analyzers to run on a codebase and how multiple analyzers work together to produce a unified Code Analysis Specification (CAS) output.
 
 ## Analyzer Types
 
-Unravl uses a multi-layered analyzer system where each layer provides increasingly specific insights:
+Klauro uses a multi-layered analyzer system where each layer provides increasingly specific insights:
 
 ### 1. Language Analyzers (Base Layer)
 - **Purpose**: Parse and understand language-specific syntax and constructs
@@ -239,7 +239,7 @@ interface AnalyzerRegistration {
 
 ## Configuration
 
-Analyzer behavior can be configured via `.unravl.yml`:
+Analyzer behavior can be configured via `.klauro.yml`:
 
 ```yaml
 analyzers:
@@ -340,4 +340,4 @@ Analyzer integration tests verify:
 
 ---
 
-This orchestration ensures that Unravl can understand any codebase by combining the insights of multiple specialized analyzers into a single, comprehensive CAS output.
+This orchestration ensures that Klauro can understand any codebase by combining the insights of multiple specialized analyzers into a single, comprehensive CAS output.

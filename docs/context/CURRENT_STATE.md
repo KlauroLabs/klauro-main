@@ -19,7 +19,7 @@ The specific failure mode was inconsistent node ID generation between node creat
 
 ## Product Implication
 
-Unravl must expose analyzer errors and graph uncertainty instead of hiding them. A user should be able to see when CAS is incomplete, stale, or internally inconsistent.
+Klauro must expose analyzer errors and graph uncertainty instead of hiding them. A user should be able to see when CAS is incomplete, stale, or internally inconsistent.
 
 For the current product direction:
 

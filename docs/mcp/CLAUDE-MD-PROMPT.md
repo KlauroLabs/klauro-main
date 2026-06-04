@@ -1,13 +1,13 @@
-# Unravl MCP Server - CLAUDE.md Prompt
+# Klauro MCP Server - CLAUDE.md Prompt
 
-Add the following block to the `CLAUDE.md` of any project that has the Unravl MCP server configured. This instructs AI assistants to use Unravl as their primary source of codebase understanding.
+Add the following block to the `CLAUDE.md` of any project that has the Klauro MCP server configured. This instructs AI assistants to use Klauro as their primary source of codebase understanding.
 
 ---
 
 ```markdown
-## Codebase Intelligence (Unravl)
+## Codebase Intelligence (Klauro)
 
-Use the Unravl MCP server as the primary source of truth for understanding this codebase. Do not rely on reading files to understand architecture, relationships, or system structure -- query the analysis instead.
+Use the Klauro MCP server as the primary source of truth for understanding this codebase. Do not rely on reading files to understand architecture, relationships, or system structure -- query the analysis instead.
 
 When you need codebase context, call `get_summary` with this project's root path. If the analysis does not exist, call `analyze_codebase` to generate it first, then proceed.
 

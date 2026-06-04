@@ -1,15 +1,15 @@
-# Unravl MCP Server - Configuration
+# Klauro MCP Server - Configuration
 
 ## Prerequisites
 
 - Node.js 18+
 - npm
-- The Unravl proof-of-concept repository cloned locally
+- The Klauro proof-of-concept repository cloned locally
 
 ## Installation
 
 ```bash
-cd mcp-server
+cd apps/mcp-server
 npm install --legacy-peer-deps
 ```
 
@@ -20,7 +20,7 @@ The `--legacy-peer-deps` flag is required due to tree-sitter native module peer 
 The server runs directly via tsx with no build step:
 
 ```bash
-cd mcp-server
+cd apps/mcp-server
 npx tsx src/index.ts
 ```
 
@@ -31,21 +31,21 @@ The server uses stdio transport and waits for JSON-RPC messages on stdin.
 For commercial deployments where the analyzers should run off the developer machine, keep the MCP server local and point it at a remote analyzer service:
 
 ```bash
-docker build -f mcp-server/Dockerfile.analyzer -t unravl-remote-analyzer .
-docker run --rm -p 8787:8787 unravl-remote-analyzer
+docker build -f apps/mcp-server/Dockerfile.analyzer -t klauro-remote-analyzer .
+docker run --rm -p 8787:8787 klauro-remote-analyzer
 ```
 
 Then analyze or sync through the hosted analyzer while caching returned CAS locally:
 
 ```bash
-cd mcp-server
+cd apps/mcp-server
 npm run init -- /absolute/path/to/repo --mode remote --server-url http://127.0.0.1:8787
 npm run upload-manifest -- /absolute/path/to/repo
 npm run remote-analyze -- /absolute/path/to/repo --server-url http://127.0.0.1:8787
 npm run remote-sync -- /absolute/path/to/repo --server-url http://127.0.0.1:8787
 ```
 
-MCP clients can call `initialize_unravl_project`, `get_upload_manifest`, `analyze_codebase_remote`, and `sync_codebase_remote` directly. Set `UNRAVL_ANALYZER_URL` and optional `UNRAVL_ANALYZER_TOKEN` in the MCP server environment to avoid passing the URL each time. See `REMOTE-ANALYZER.md` for the deployment model and source-transfer rules.
+MCP clients can call `initialize_klauro_project`, `get_upload_manifest`, `analyze_codebase_remote`, and `sync_codebase_remote` directly. Set `KLAURO_ANALYZER_URL` and optional `KLAURO_ANALYZER_TOKEN` in the MCP server environment to avoid passing the URL each time. See `REMOTE-ANALYZER.md` for the deployment model and source-transfer rules.
 
 ## Claude Code Configuration
 
@@ -56,10 +56,10 @@ Add the server to your project-level `.mcp.json` (recommended) or global `~/.cla
 ```json
 {
   "mcpServers": {
-    "unravl": {
+    "klauro": {
       "command": "npx",
-      "args": ["tsx", "/absolute/path/to/proof-of-concept/mcp-server/src/index.ts"],
-      "cwd": "/absolute/path/to/proof-of-concept/mcp-server"
+      "args": ["tsx", "/absolute/path/to/proof-of-concept/apps/mcp-server/src/index.ts"],
+      "cwd": "/absolute/path/to/proof-of-concept/apps/mcp-server"
     }
   }
 }
@@ -70,10 +70,10 @@ Add the server to your project-level `.mcp.json` (recommended) or global `~/.cla
 ```json
 {
   "mcpServers": {
-    "unravl": {
+    "klauro": {
       "command": "npx",
-      "args": ["tsx", "/absolute/path/to/proof-of-concept/mcp-server/src/index.ts"],
-      "cwd": "/absolute/path/to/proof-of-concept/mcp-server"
+      "args": ["tsx", "/absolute/path/to/proof-of-concept/apps/mcp-server/src/index.ts"],
+      "cwd": "/absolute/path/to/proof-of-concept/apps/mcp-server"
     }
   }
 }
@@ -83,14 +83,14 @@ Replace `/absolute/path/to/proof-of-concept` with the actual path on your machin
 
 ## Verification
 
-After configuring, restart Claude Code and run `/mcp` to verify the `unravl` server appears with its tools, resources, and prompts.
+After configuring, restart Claude Code and run `/mcp` to verify the `klauro` server appears with its tools, resources, and prompts.
 
 ## Storage
 
 Analysis results are stored as JSON files at:
 
 ```
-~/.unravl/analyses/
+~/.klauro/analyses/
 ```
 
 Each analysis produces:
@@ -103,17 +103,17 @@ Each analysis produces:
 
 ### Custom Storage Path
 
-Set the `UNRAVL_STORAGE_PATH` environment variable to use a different location:
+Set the `KLAURO_STORAGE_PATH` environment variable to use a different location:
 
 ```json
 {
   "mcpServers": {
-    "unravl": {
+    "klauro": {
       "command": "npx",
-      "args": ["tsx", "/absolute/path/to/proof-of-concept/mcp-server/src/index.ts"],
-      "cwd": "/absolute/path/to/proof-of-concept/mcp-server",
+      "args": ["tsx", "/absolute/path/to/proof-of-concept/apps/mcp-server/src/index.ts"],
+      "cwd": "/absolute/path/to/proof-of-concept/apps/mcp-server",
       "env": {
-        "UNRAVL_STORAGE_PATH": "/custom/path/to/analyses"
+        "KLAURO_STORAGE_PATH": "/custom/path/to/analyses"
       }
     }
   }
@@ -123,7 +123,7 @@ Set the `UNRAVL_STORAGE_PATH` environment variable to use a different location:
 ## Architecture
 
 ```
-mcp-server/
+apps/mcp-server/
   src/
     index.ts        # Entry point - stdio transport
     server.ts       # MCP server (tools, resources, prompts)

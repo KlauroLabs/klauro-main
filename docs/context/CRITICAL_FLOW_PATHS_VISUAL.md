@@ -1,9 +1,9 @@
-# Unravl Platform - Critical Flow Paths (Visual)
+# Klauro Platform - Critical Flow Paths (Visual)
 
 **Version:** 1.0
 **Last Updated:** 2026-01-24
 
-This document provides visual flowcharts for all critical user journeys through the Unravl platform.
+This document provides visual flowcharts for all critical user journeys through the Klauro platform.
 
 ---
 
@@ -855,7 +855,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[Discover Unravl] --> B[Landing Page]
+    A[Discover Klauro] --> B[Landing Page]
     B --> C[Sign Up]
     C --> D[Verify Email]
     D --> E[Onboarding Wizard]

@@ -6,9 +6,9 @@
 
 ## Overview
 
-The Code Analysis Specification (CAS) is Unravl's source-of-truth format for understanding software systems. CAS represents a codebase as a complete relationship graph that can be inspected by humans in the UI and queried by AI agents through MCP.
+The Code Analysis Specification (CAS) is Klauro's source-of-truth format for understanding software systems. CAS represents a codebase as a complete relationship graph that can be inspected by humans in the UI and queried by AI agents through MCP.
 
-CAS exists so Unravl can answer behavior-level questions:
+CAS exists so Klauro can answer behavior-level questions:
 
 - What did this codebase actually build?
 - How does a feature flow from entry point to exit point?
@@ -157,7 +157,7 @@ The CAS is implemented through analyzers that work together:
 
 The CAS enables:
 
-- **Unravl UI:** visual inspection, drilldown, and behavior verification.
+- **Klauro UI:** visual inspection, drilldown, and behavior verification.
 - **MCP server:** AI agents that query codebase context directly.
 - **Analysis APIs:** programmatic access to system structure, flow, risk, tests, and history.
 

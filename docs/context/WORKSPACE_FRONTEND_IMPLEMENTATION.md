@@ -1,6 +1,6 @@
 # Workspace Frontend Implementation Notes
 
-This document summarizes an earlier Phase 1 frontend implementation pass for the workspace/codebase structure in Unravl.
+This document summarizes an earlier Phase 1 frontend implementation pass for the workspace/codebase structure in Klauro.
 
 Treat this as implementation context, not a current-state guarantee. Before relying on any item here, verify the referenced frontend files, backend endpoints, and authentication flow against the current code.
 

@@ -1,10 +1,10 @@
-# Unravl Platform - Design Flow Paths
+# Klauro Platform - Design Flow Paths
 
 **Purpose:** Designer reference for creating UI prototypes
 **Version:** 1.0
 **Last Updated:** 2026-01-24
 
-This document maps all user journeys through the Unravl platform, focused on UI screens, interactions, and user experience - not technical implementation details.
+This document maps all user journeys through the Klauro platform, focused on UI screens, interactions, and user experience - not technical implementation details.
 
 ---
 
@@ -43,7 +43,7 @@ This document maps all user journeys through the Unravl platform, focused on UI 
 - Gradient button (purple to blue)
 
 **Elements:**
-- Heading: "Login to Unravl"
+- Heading: "Login to Klauro"
 - Email input field
 - Password input field
 - "Login" button (primary action)
@@ -101,7 +101,7 @@ This document maps all user journeys through the Unravl platform, focused on UI 
 
 **Elements:**
 - Large icon (Business/Workspace icon)
-- Heading: "Welcome to Unravl"
+- Heading: "Welcome to Klauro"
 - Subtext: "Create your first workspace to start visualizing and analyzing your codebase architecture"
 - "Create Your First Workspace" button (prominent)
 

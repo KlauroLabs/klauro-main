@@ -4,7 +4,7 @@ This document captures product context that should inform CAS, analyzers, the UI
 
 ## Core Idea
 
-Unravl should not treat a codebase as one flat hierarchy. A useful analysis has multiple perspectives that overlap:
+Klauro should not treat a codebase as one flat hierarchy. A useful analysis has multiple perspectives that overlap:
 
 - Language perspective: functions, classes, interfaces, variables, imports, decorators, type references, inheritance, call sites, and exports.
 - Framework perspective: controllers, routes, services, repositories, pages, hooks, providers, middleware, validators, modules, jobs, and framework-specific entry points.
@@ -101,7 +101,7 @@ The user should be able to start at the route and traverse to every connected fu
 
 ## Product Model Notes
 
-Unravl is a B2B SaaS product as well as a local analysis and MCP surface.
+Klauro is a B2B SaaS product as well as a local analysis and MCP surface.
 
 - Users can belong to organizations.
 - Organizations can contain workspaces.
