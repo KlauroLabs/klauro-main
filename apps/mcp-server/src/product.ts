@@ -402,6 +402,9 @@ export function buildCrossRepositoryLinks(repositories: Array<{ path: string; na
       links.push(...detectEnvironmentContractLinks(right, left));
       links.push(...detectSharedSchemaLinks(left, right));
       links.push(...detectSharedLibraryLinks(left, right));
+      links.push(...detectSharedEntityLinks(left, right));
+      links.push(...detectNamespaceImportLinks(left, right));
+      links.push(...detectNamespaceImportLinks(right, left));
     }
   }
 
@@ -440,6 +443,7 @@ function detectApiLinks(
 
   for (const exitPoint of apiExits) {
     const rawExitTarget = exitPoint.target?.endpoint || exitPoint.target?.resource || exitPoint.name;
+    if (!looksLikeHttpPath(rawExitTarget)) continue;
     const exitRoute = normalizeRoute(rawExitTarget);
     if (!exitRoute || exitRoute === '/' || isExternalAbsoluteEndpoint(rawExitTarget)) continue;
     const exitMethod = normalizeHttpMethod(exitPoint.operation?.method || exitPoint.operation?.action);
@@ -829,6 +833,390 @@ function detectSharedLibraryLinks(
   }
 
   return links;
+}
+
+const GENERIC_ENTITY_NAMES = new Set([
+  'user',
+  'account',
+  'profile',
+  'status',
+  'config',
+  'configuration',
+  'base',
+  'item',
+  'data',
+  'error',
+  'event',
+  'test',
+  'model',
+  'type',
+  'entity',
+  'result',
+  'response',
+  'request',
+  'client',
+  'service',
+]);
+
+const ENTITY_NODE_TYPES = new Set(['class', 'interface', 'type', 'enum', 'model', 'entity', 'dto']);
+
+function entityVocabulary(cas: CASOutput): Array<{ name: string; nodeIds: string[] }> {
+  const names = new Map<string, string>();
+  for (const entity of cas.data_entities || []) {
+    if (isGenericEntityName(entity.name)) continue;
+    names.set(entity.name.toLowerCase(), entity.name);
+  }
+  for (const entity of cas.database_schema?.entities || []) {
+    if (isGenericEntityName(entity.name)) continue;
+    if (!names.has(entity.name.toLowerCase())) names.set(entity.name.toLowerCase(), entity.name);
+  }
+
+  return [...names.entries()]
+    .map(([key, name]) => ({
+      name,
+      nodeIds: cas.nodes
+        .filter(node => ENTITY_NODE_TYPES.has(node.type) && node.name.toLowerCase() === key)
+        .map(node => node.id)
+        .slice(0, 5),
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function isGenericEntityName(name: string): boolean {
+  const normalized = name.toLowerCase();
+  return normalized.length < 4 || GENERIC_ENTITY_NAMES.has(normalized);
+}
+
+function entityTypeNodes(cas: CASOutput, name: string): CASNode[] {
+  const key = name.toLowerCase();
+  return cas.nodes
+    .filter(node => ENTITY_NODE_TYPES.has(node.type) && node.name.toLowerCase() === key && !isNonRuntimeSourceFile(node.source?.file?.toLowerCase() || ''))
+    .slice(0, 5);
+}
+
+function detectSharedEntityLinks(
+  left: { path: string; name: string; cas: CASOutput },
+  right: { path: string; name: string; cas: CASOutput }
+): CASCrossRepositoryLink[] {
+  const links: CASCrossRepositoryLink[] = [];
+  const leftEntities = entityVocabulary(left.cas);
+  const rightEntities = entityVocabulary(right.cas);
+  const rightEntityNames = new Set(rightEntities.map(entity => entity.name.toLowerCase()));
+  const seen = new Set<string>();
+
+  const addLink = (
+    entityName: string,
+    source: { path: string; name: string; cas: CASOutput },
+    sourceNodeIds: string[],
+    target: { path: string; name: string; cas: CASOutput },
+    targetNodes: CASNode[],
+    bothSidesEntities: boolean
+  ) => {
+    const key = entityName.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    const confidenceValue = bothSidesEntities ? 0.88 : 0.8;
+    links.push({
+      id: crossRepoId('shared-schema', source.name, `entity-${entityName}`, target.name, `entity-${entityName}`),
+      type: 'shared-schema',
+      source_repository: { path: source.path, node_ids: sourceNodeIds },
+      target_repository: { path: target.path, node_ids: targetNodes.map(node => node.id) },
+      connection: {
+        contract: entityName,
+        protocol: 'entity',
+      },
+      metadata: {
+        verified: false,
+        last_sync: new Date().toISOString(),
+        confidence: confidenceValue,
+        evidence: [
+          { kind: 'naming', source: `${source.name}:${entityName}`, confidence: confidenceValue },
+          {
+            kind: 'naming',
+            source: `${target.name}:${entityName}`,
+            file: targetNodes[0]?.source?.file,
+            line: targetNodes[0]?.source?.line,
+            confidence: confidenceValue,
+          },
+        ],
+      },
+    });
+  };
+
+  for (const entity of leftEntities) {
+    const targetNodes = entityTypeNodes(right.cas, entity.name);
+    if (targetNodes.length === 0) continue;
+    addLink(entity.name, left, entity.nodeIds, right, targetNodes, rightEntityNames.has(entity.name.toLowerCase()));
+  }
+
+  for (const entity of rightEntities) {
+    if (seen.has(entity.name.toLowerCase())) continue;
+    const targetNodes = entityTypeNodes(left.cas, entity.name);
+    if (targetNodes.length === 0) continue;
+    addLink(entity.name, right, entity.nodeIds, left, targetNodes, false);
+  }
+
+  return links;
+}
+
+function qualifiedImportName(node: CASNode): string | undefined {
+  const metadata = node.metadata as Record<string, any> | undefined;
+  const candidates = [node.name, metadata?.source, metadata?.attributes?.source, node.qualified_name];
+  for (const candidate of candidates) {
+    const value = String(candidate || '');
+    if (value.includes('\\') && value.split('\\').filter(Boolean).length >= 3) return value;
+  }
+  return undefined;
+}
+
+function detectNamespaceImportLinks(
+  consumer: { path: string; name: string; cas: CASOutput },
+  producer: { path: string; name: string; cas: CASOutput }
+): CASCrossRepositoryLink[] {
+  const links: CASCrossRepositoryLink[] = [];
+  const importNodes = consumer.cas.nodes.filter(node => node.type === 'use' || node.type === 'import');
+  if (importNodes.length === 0) return links;
+
+  const producerClassesByName = new Map<string, CASNode[]>();
+  for (const node of producer.cas.nodes) {
+    if (node.type !== 'class' && node.type !== 'interface') continue;
+    if (!node.source?.file) continue;
+    const key = node.name.toLowerCase();
+    producerClassesByName.set(key, [...(producerClassesByName.get(key) || []), node]);
+  }
+  if (producerClassesByName.size === 0) return links;
+
+  const seen = new Set<string>();
+  for (const importNode of importNodes) {
+    const qualified = qualifiedImportName(importNode);
+    if (!qualified) continue;
+    const segments = qualified.split('\\').filter(Boolean);
+    const className = segments[segments.length - 1];
+    const parentSegment = segments[segments.length - 2];
+    if (!className || !parentSegment) continue;
+    if (seen.has(qualified.toLowerCase())) continue;
+
+    const candidates = producerClassesByName.get(className.toLowerCase()) || [];
+    const match = candidates.find(candidate => {
+      const file = (candidate.source?.file || '').replace(/\\/g, '/');
+      return file.toLowerCase().endsWith(`/${parentSegment.toLowerCase()}/${className.toLowerCase()}.php`);
+    });
+    if (!match) continue;
+    seen.add(qualified.toLowerCase());
+
+    links.push({
+      id: crossRepoId('library', consumer.name, qualified, producer.name, match.id),
+      type: 'library',
+      source_repository: { path: consumer.path, node_ids: [importNode.id] },
+      target_repository: { path: producer.path, node_ids: [match.id] },
+      connection: {
+        package_name: producer.name,
+        contract: qualified,
+      },
+      metadata: {
+        verified: false,
+        last_sync: new Date().toISOString(),
+        confidence: 0.85,
+        evidence: [
+          {
+            kind: 'dependency',
+            source: `${consumer.name}:${qualified}`,
+            file: importNode.source?.file,
+            line: importNode.source?.line,
+            confidence: 0.85,
+          },
+          {
+            kind: 'source-location',
+            source: `${producer.name}:${match.name}`,
+            file: match.source?.file,
+            line: match.source?.line,
+            confidence: 0.85,
+          },
+        ],
+      },
+    });
+  }
+
+  return links;
+}
+
+export interface CrossRepoJourney {
+  id: string;
+  consumer: {
+    repository: string;
+    action_files: string[];
+    call_file?: string;
+    call_symbol?: string;
+    url?: string;
+  };
+  http: {
+    method?: string;
+    route?: string;
+  };
+  provider: {
+    repository: string;
+    route?: string;
+    handler?: string;
+    handler_file?: string;
+    handler_line?: number;
+    services: string[];
+    terminal_entities: string[];
+  };
+  confidence: number;
+}
+
+export function buildCrossRepoJourneys(
+  repositories: Array<{ path: string; name: string; cas: CASOutput }>,
+  links: CASCrossRepositoryLink[],
+  options: { limit?: number } = {}
+): CrossRepoJourney[] {
+  const limit = options.limit ?? 25;
+  const byPath = new Map(repositories.map(repository => [repository.path, repository]));
+  const journeys: CrossRepoJourney[] = [];
+
+  const apiLinks = links
+    .filter(link => link.type === 'api' && link.source_repository?.path && link.target_repository?.path)
+    .sort((left, right) => {
+      const routeOrder = String(left.connection?.endpoint || '').localeCompare(String(right.connection?.endpoint || ''));
+      if (routeOrder !== 0) return routeOrder;
+      return String(left.connection?.method || '').localeCompare(String(right.connection?.method || ''));
+    });
+
+  const seen = new Set<string>();
+  for (const link of apiLinks) {
+    const consumer = byPath.get(link.source_repository!.path!);
+    const provider = byPath.get(link.target_repository!.path!);
+    if (!consumer || !provider) continue;
+
+    const consumerNodeId = link.source_repository?.node_ids?.[0];
+    const consumerNode = consumerNodeId ? consumer.cas.nodes.find(node => node.id === consumerNodeId) : undefined;
+    const providerEntry = (provider.cas.entry_points || []).find(entry =>
+      (link.target_repository?.node_ids || []).includes(entry.source_node) &&
+      normalizeRoute(entry.trigger?.path || entry.name) === normalizeRoute(String(link.connection?.endpoint || ''))
+    ) || (provider.cas.entry_points || []).find(entry => (link.target_repository?.node_ids || []).includes(entry.source_node));
+    if (!providerEntry) continue;
+
+    const journeyKey = `${providerEntry.trigger?.method || ''} ${providerEntry.trigger?.path || providerEntry.name}:${consumerNode?.source?.file || consumerNodeId || ''}`;
+    if (seen.has(journeyKey)) continue;
+    seen.add(journeyKey);
+
+    const handlerFile = providerEntry.handler?.file || provider.cas.nodes.find(node => node.id === providerEntry.handler?.node_id)?.source?.file;
+    const handlerImports = handlerFile
+      ? provider.cas.nodes.filter(node =>
+        (node.type === 'use' || node.type === 'import') &&
+        node.source?.file &&
+        pathsCompatible(node.source.file, handlerFile)
+      )
+      : [];
+
+    const serviceCandidates = [...new Set(handlerImports
+      .map(node => qualifiedImportName(node) || node.name)
+      .filter(name => name.includes('\\') && /\\service\\|\\manager\\/i.test(name))
+      .map(name => name.split('\\').filter(Boolean).pop()!))]
+      .sort();
+    const strongServices = serviceCandidates.filter(name => /(service|manager|provider|handler)(interface)?$/i.test(name));
+    const services = (strongServices.length > 0 ? strongServices : serviceCandidates).slice(0, 5);
+
+    const entityNames = new Set((provider.cas.data_entities || []).map(entity => entity.name.toLowerCase()));
+    const importedEntities = [...new Set(handlerImports
+      .map(node => qualifiedImportName(node) || node.name)
+      .filter(name => /\\entity\\|\\model\\/i.test(name))
+      .map(name => name.split('\\').filter(Boolean).pop()!)
+      .filter(name => entityNames.size === 0 || entityNames.has(name.toLowerCase())))]
+      .sort();
+    const terminalEntities = importedEntities.length > 0
+      ? importedEntities.slice(0, 5)
+      : routeResourceEntities(providerEntry.trigger?.path || '', provider.cas);
+
+    const consumerFile = consumerNode?.source?.file;
+    const actionFiles = consumerFile ? consumerActionFiles(consumer.cas, consumerFile) : [];
+    const handlerOwner = provider.cas.nodes.find(node =>
+      (node.type === 'controller' || node.type === 'class') &&
+      node.source?.file &&
+      handlerFile &&
+      pathsCompatible(node.source.file, handlerFile)
+    );
+    const handlerLabel = providerEntry.handler?.method_name
+      ? `${handlerOwner?.name || handlerFileBase(handlerFile)}::${providerEntry.handler.method_name}`
+      : handlerOwner?.name;
+
+    journeys.push({
+      id: `journey:${normalizeTopic(`${providerEntry.trigger?.method || 'any'}-${providerEntry.trigger?.path || providerEntry.name}`)}`,
+      consumer: {
+        repository: consumer.name,
+        action_files: actionFiles,
+        call_file: consumerFile,
+        call_symbol: consumerNode?.name,
+        url: String(link.connection?.endpoint || ''),
+      },
+      http: {
+        method: providerEntry.trigger?.method || link.connection?.method,
+        route: providerEntry.trigger?.path || link.connection?.endpoint,
+      },
+      provider: {
+        repository: provider.name,
+        route: providerEntry.trigger?.path,
+        handler: handlerLabel,
+        handler_file: handlerFile,
+        handler_line: providerEntry.handler?.line,
+        services,
+        terminal_entities: terminalEntities,
+      },
+      confidence: link.metadata?.confidence || 0,
+    });
+
+    if (journeys.length >= limit) break;
+  }
+
+  return journeys;
+}
+
+function handlerFileBase(file?: string): string | undefined {
+  if (!file) return undefined;
+  const base = file.split('/').pop() || file;
+  return base.replace(/\.(php|ts|js|py|java|cs|go|rb)$/i, '');
+}
+
+function routeResourceEntities(routePath: string, cas: CASOutput): string[] {
+  const entityByKey = new Map((cas.data_entities || []).map(entity => [entity.name.toLowerCase(), entity.name]));
+  if (entityByKey.size === 0) return [];
+  const segments = routePath.toLowerCase().split('/')
+    .filter(segment => segment && !segment.startsWith(':') && !segment.startsWith('{') && !segment.startsWith('$'));
+
+  const matches: string[] = [];
+  for (const segment of segments.reverse()) {
+    const candidates = [segment, segment.replace(/ies$/, 'y'), segment.replace(/es$/, ''), segment.replace(/s$/, ''), segment.replace(/-/g, '')];
+    for (const candidate of candidates) {
+      const match = entityByKey.get(candidate);
+      if (match && !matches.includes(match)) {
+        matches.push(match);
+        break;
+      }
+    }
+    if (matches.length > 0) break;
+  }
+  return matches;
+}
+
+function consumerActionFiles(cas: CASOutput, consumerFile: string): string[] {
+  const base = (consumerFile.split('/').pop() || consumerFile).replace(/\.(ts|js|tsx|jsx)$/i, '');
+  if (!base) return [];
+  const files = new Set<string>();
+
+  for (const node of cas.nodes) {
+    if (node.type !== 'import') continue;
+    const metadata = node.metadata as Record<string, any> | undefined;
+    const specifier = String(metadata?.source || metadata?.attributes?.source || '');
+    if (!specifier) continue;
+    const specifierBase = specifier.split('/').pop() || specifier;
+    if (specifierBase !== base) continue;
+    const file = node.source?.file;
+    if (!file || file === consumerFile) continue;
+    if (isNonRuntimeSourceFile(file.toLowerCase())) continue;
+    files.add(file);
+  }
+
+  return [...files].sort().slice(0, 5);
 }
 
 export function correlateRuntimeEvent(cas: CASOutput, event: RuntimeEventInput): RuntimeCorrelationResult {
@@ -1383,11 +1771,18 @@ function normalizeServiceKey(value: string): string {
     .replace(/^-|-$/g, '');
 }
 
+function looksLikeHttpPath(value: string): boolean {
+  if (!value) return false;
+  if (/\s/.test(value.trim().replace(/\$\{[^}]*\}/g, ':param'))) return false;
+  return value.includes('/');
+}
+
 function normalizeRoute(value: string): string {
   return value
     .toLowerCase()
     .replace(/^https?:\/\/[^/]+/, '')
     .replace(/\?.*$/, '')
+    .replace(/\$\{[^}]*\}/g, ':param')
     .replace(/:[a-z0-9_]+/g, ':param')
     .replace(/\{[^}]+\}/g, ':param')
     .replace(/\/+/g, '/')
@@ -1397,24 +1792,44 @@ function normalizeRoute(value: string): string {
 function routesCompatible(left: string, right: string): boolean {
   if (left === right) return true;
   if (left.includes(':param') || right.includes(':param')) {
-    const leftParts = left.split('/');
-    const rightParts = right.split('/');
-    if (leftParts.length !== rightParts.length) return false;
-    return leftParts.every((part, index) => part === rightParts[index] || part === ':param' || rightParts[index] === ':param');
+    const leftParts = routeSegments(left);
+    const rightParts = routeSegments(right);
+    if (leftParts.length === rightParts.length) {
+      return leftParts.every((part, index) => part === rightParts[index] || part === ':param' || rightParts[index] === ':param');
+    }
+    return dynamicPrefixSuffixMatch(leftParts, rightParts) || dynamicPrefixSuffixMatch(rightParts, leftParts);
   }
   return left.endsWith(right) || right.endsWith(left);
 }
 
+function routeSegments(route: string): string[] {
+  return route.split('/').filter(Boolean);
+}
+
+function dynamicPrefixSuffixMatch(wildcardParts: string[], fullParts: string[]): boolean {
+  if (wildcardParts[0] !== ':param') return false;
+  const suffix = wildcardParts.slice(1);
+  if (suffix.length === 0 || suffix.length >= fullParts.length) return false;
+  if (!suffix.some(part => part !== ':param')) return false;
+  const tail = fullParts.slice(fullParts.length - suffix.length);
+  return suffix.every((part, index) => part === tail[index] || part === ':param');
+}
+
 function routeMatchScore(left: string, right: string): number {
   if (left === right) return 0.98;
-  const leftParts = left.split('/').filter(Boolean);
-  const rightParts = right.split('/').filter(Boolean);
+  const leftParts = routeSegments(left);
+  const rightParts = routeSegments(right);
   if (leftParts.length === 0 && rightParts.length === 0) return 0.98;
   if (leftParts.length === rightParts.length) {
     const matches = leftParts.filter((part, index) =>
       part === rightParts[index] || part === ':param' || rightParts[index] === ':param'
     ).length;
     return Math.max(0.65, Math.round((matches / leftParts.length) * 100) / 100);
+  }
+  if (dynamicPrefixSuffixMatch(leftParts, rightParts) || dynamicPrefixSuffixMatch(rightParts, leftParts)) {
+    const wildcardParts = leftParts[0] === ':param' && leftParts.length < rightParts.length ? leftParts : rightParts;
+    const literalSuffix = wildcardParts.slice(1).filter(part => part !== ':param').length;
+    return literalSuffix >= 2 ? 0.82 : 0.74;
   }
   if (left.endsWith(right) || right.endsWith(left)) return 0.78;
   return 0.55;

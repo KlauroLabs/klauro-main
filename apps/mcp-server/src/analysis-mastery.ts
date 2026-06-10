@@ -1,7 +1,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import type { CASOutput, CASEntryPoint, CASExitPoint, CASNode } from '../../../packages/analyzer-core/src/types/cas.types';
-import { buildCrossRepositoryLinks } from './product';
+import { buildCrossRepositoryLinks, buildCrossRepoJourneys, pathsCompatible } from './product';
 import { getAgentWorkPacket, type AgentTask } from './agent-adoption';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
@@ -244,7 +244,10 @@ export function getFrameworkDepthReport(cas: CASOutput) {
   };
 }
 
-export function getCrossRepoContracts(repositories: Array<{ path: string; name: string; cas: CASOutput }>) {
+export function getCrossRepoContracts(
+  repositories: Array<{ path: string; name: string; cas: CASOutput }>,
+  options: { journey_limit?: number } = {}
+) {
   const repoContracts = repositories.map(repository => ({
     path: repository.path,
     name: repository.name,
@@ -270,14 +273,62 @@ export function getCrossRepoContracts(repositories: Array<{ path: string; name: 
     },
   }));
   const links = buildCrossRepositoryLinks(repositories);
+  const journeys = buildCrossRepoJourneys(repositories, links.links, { limit: options.journey_limit });
 
   return {
     generated_at: new Date().toISOString(),
     repository_count: repositories.length,
     repositories: repoContracts,
     links,
+    contract_table: buildContractTable(repositories, links.links),
+    journeys,
     contract_gaps: findContractGaps(repoContracts, links.links.length),
   };
+}
+
+function buildContractTable(
+  repositories: Array<{ path: string; name: string; cas: CASOutput }>,
+  links: Array<NonNullable<CASOutput['cross_repository_links']>[number]>
+) {
+  const byPath = new Map(repositories.map(repository => [repository.path, repository]));
+
+  return links
+    .filter(link => link.type === 'api' && link.source_repository?.path && link.target_repository?.path)
+    .map(link => {
+      const consumer = byPath.get(link.source_repository!.path!);
+      const provider = byPath.get(link.target_repository!.path!);
+      const consumerNode = consumer?.cas.nodes.find(node => (link.source_repository?.node_ids || []).includes(node.id));
+      const providerEntry = (provider?.cas.entry_points || []).find(entry =>
+        (link.target_repository?.node_ids || []).includes(entry.source_node)
+      );
+      const handlerOwner = provider?.cas.nodes.find(node =>
+        (node.type === 'controller' || node.type === 'class') &&
+        node.source?.file &&
+        providerEntry?.handler?.file &&
+        pathsCompatible(node.source.file, providerEntry.handler.file)
+      );
+
+      return {
+        method: link.connection?.method || providerEntry?.trigger?.method,
+        route: providerEntry?.trigger?.path || link.connection?.endpoint,
+        consumer_repository: consumer?.name || link.source_repository?.path,
+        consumer_file: consumerNode?.source?.file,
+        consumer_symbol: consumerNode?.name,
+        provider_repository: provider?.name || link.target_repository?.path,
+        provider_handler: providerEntry?.handler?.method_name
+          ? `${handlerOwner?.name || ''}${handlerOwner ? '::' : ''}${providerEntry.handler.method_name}`
+          : undefined,
+        provider_file: providerEntry?.handler?.file,
+        provider_line: providerEntry?.handler?.line,
+        confidence: link.metadata?.confidence,
+      };
+    })
+    .sort((left, right) => {
+      const routeOrder = String(left.route || '').localeCompare(String(right.route || ''));
+      if (routeOrder !== 0) return routeOrder;
+      return String(left.method || '').localeCompare(String(right.method || ''));
+    })
+    .slice(0, 500);
 }
 
 export function getRuntimeInstrumentationPlan(cas: CASOutput, opts: { limit?: number } = {}) {

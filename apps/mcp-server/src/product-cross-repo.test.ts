@@ -1,0 +1,354 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { buildCrossRepositoryLinks, buildCrossRepoJourneys } from './product';
+import { getCrossRepoContracts } from './analysis-mastery';
+import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+
+function makeCas(name: string, overrides: Record<string, unknown> = {}): CASOutput {
+  return {
+    cas_version: '1.10.0',
+    analysis_timestamp: new Date().toISOString(),
+    analysis_id: `analysis-${name}`,
+    system: { id: name, name, type: 'service', root_path: `/tmp/${name}` },
+    nodes: [],
+    edges: [],
+    analyzer_contributions: [],
+    ...overrides,
+  } as unknown as CASOutput;
+}
+
+function repo(name: string, cas: CASOutput) {
+  return { path: `/tmp/${name}`, name, cas };
+}
+
+function frontendCas(overrides: Record<string, unknown> = {}): CASOutput {
+  return makeCas('frontend', {
+    nodes: [
+      {
+        id: 'node-things-service-method',
+        type: 'method',
+        name: 'getThing',
+        source: { file: 'src/app/services/things.service.ts', line: 12 },
+      },
+      {
+        id: 'node-things-component-import',
+        type: 'import',
+        name: 'ThingsService',
+        source: { file: 'src/app/things/things-page.component.ts', line: 2 },
+        metadata: { source: '../services/things.service' },
+      },
+    ],
+    exit_points: [
+      {
+        id: 'exit-get-thing',
+        type: 'api',
+        name: 'getThing',
+        source_node: 'node-things-service-method',
+        target: { endpoint: '/api/things/${ id }' },
+        operation: { method: 'GET' },
+      },
+    ],
+    ...overrides,
+  });
+}
+
+function backendCas(overrides: Record<string, unknown> = {}): CASOutput {
+  return makeCas('backend', {
+    nodes: [
+      {
+        id: 'node-things-controller',
+        type: 'controller',
+        name: 'ThingController',
+        source: { file: 'src/Controller/Api/ThingController.php', line: 10 },
+      },
+      {
+        id: 'node-things-handler',
+        type: 'method',
+        name: 'detail',
+        source: { file: 'src/Controller/Api/ThingController.php', line: 30 },
+      },
+      {
+        id: 'node-things-use-service',
+        type: 'use',
+        name: 'App\\Service\\Thing\\ThingManager',
+        source: { file: 'src/Controller/Api/ThingController.php', line: 5 },
+      },
+      {
+        id: 'node-things-use-entity',
+        type: 'use',
+        name: 'App\\Entity\\Thing',
+        source: { file: 'src/Controller/Api/ThingController.php', line: 6 },
+      },
+    ],
+    entry_points: [
+      {
+        id: 'entry-get-thing',
+        type: 'http',
+        name: 'GET /api/things/{thingId}',
+        source_node: 'node-things-handler',
+        trigger: { method: 'GET', path: '/api/things/{thingId}' },
+        handler: {
+          node_id: 'node-things-handler',
+          method_name: 'detail',
+          file: 'src/Controller/Api/ThingController.php',
+          line: 30,
+        },
+      },
+    ],
+    data_entities: [
+      { id: 'entity-thing', name: 'Thing', lifecycle: {} },
+    ],
+    ...overrides,
+  });
+}
+
+test('frontend template-literal HTTP call links to backend route with path-parameter normalization', () => {
+  const result = buildCrossRepositoryLinks([repo('frontend', frontendCas()), repo('backend', backendCas())]);
+  const apiLinks = result.links.filter(link => link.type === 'api');
+
+  assert.equal(apiLinks.length, 1);
+  const link = apiLinks[0];
+  assert.equal(link.source_repository?.path, '/tmp/frontend');
+  assert.equal(link.target_repository?.path, '/tmp/backend');
+  assert.equal(link.connection?.endpoint, '/api/things/{thingId}');
+  assert.equal(link.connection?.method, 'GET');
+  assert.ok((link.metadata?.confidence || 0) >= 0.9);
+});
+
+test('unrelated frontend paths do not link to backend routes', () => {
+  const frontend = frontendCas({
+    exit_points: [
+      {
+        id: 'exit-get-widget',
+        type: 'api',
+        name: 'getWidget',
+        source_node: 'node-things-service-method',
+        target: { endpoint: '/api/widgets/${ id }' },
+        operation: { method: 'GET' },
+      },
+    ],
+  });
+  const result = buildCrossRepositoryLinks([repo('frontend', frontend), repo('backend', backendCas())]);
+
+  assert.equal(result.links.filter(link => link.type === 'api').length, 0);
+});
+
+test('unresolved dynamic prefix matches backend route by literal suffix', () => {
+  const frontend = frontendCas({
+    exit_points: [
+      {
+        id: 'exit-get-companies',
+        type: 'api',
+        name: 'getCompanies',
+        source_node: 'node-things-service-method',
+        target: { endpoint: '${ this.pathPrefixWeb }/companies' },
+        operation: { method: 'GET' },
+      },
+    ],
+  });
+  const backend = backendCas({
+    entry_points: [
+      {
+        id: 'entry-get-companies',
+        type: 'http',
+        name: 'GET /api/web/companies',
+        source_node: 'node-things-handler',
+        trigger: { method: 'GET', path: '/api/web/companies' },
+        handler: {
+          node_id: 'node-things-handler',
+          method_name: 'list',
+          file: 'src/Controller/Api/ThingController.php',
+          line: 30,
+        },
+      },
+    ],
+  });
+  const result = buildCrossRepositoryLinks([repo('frontend', frontend), repo('backend', backend)]);
+  const apiLinks = result.links.filter(link => link.type === 'api');
+
+  assert.equal(apiLinks.length, 1);
+  assert.equal(apiLinks[0].connection?.endpoint, '/api/web/companies');
+  assert.ok((apiLinks[0].metadata?.confidence || 0) < 0.9);
+});
+
+test('dynamic prefix does not match a route with a different literal suffix', () => {
+  const frontend = frontendCas({
+    exit_points: [
+      {
+        id: 'exit-get-companies',
+        type: 'api',
+        name: 'getCompanies',
+        source_node: 'node-things-service-method',
+        target: { endpoint: '${ this.pathPrefixWeb }/companies' },
+        operation: { method: 'GET' },
+      },
+    ],
+  });
+  const result = buildCrossRepositoryLinks([repo('frontend', frontend), repo('backend', backendCas())]);
+
+  assert.equal(result.links.filter(link => link.type === 'api').length, 0);
+});
+
+test('non-path exit targets are ignored', () => {
+  const frontend = frontendCas({
+    exit_points: [
+      {
+        id: 'exit-noise-1',
+        type: 'api',
+        name: 'GET external',
+        source_node: 'node-things-service-method',
+        target: { endpoint: 'GET external' },
+        operation: { method: 'GET' },
+      },
+      {
+        id: 'exit-noise-2',
+        type: 'api',
+        name: 'LINK',
+        source_node: 'node-things-service-method',
+        target: { endpoint: 'LINK' },
+        operation: { method: 'REQUEST' },
+      },
+    ],
+  });
+  const result = buildCrossRepositoryLinks([repo('frontend', frontend), repo('backend', backendCas())]);
+
+  assert.equal(result.links.filter(link => link.type === 'api').length, 0);
+});
+
+test('shared entity vocabulary links repositories through shared-schema links', () => {
+  const frontend = frontendCas({
+    nodes: [
+      {
+        id: 'node-frontend-thing-model',
+        type: 'class',
+        name: 'Thing',
+        source: { file: 'src/app/models/thing.model.ts', line: 1 },
+      },
+      {
+        id: 'node-frontend-user-model',
+        type: 'class',
+        name: 'User',
+        source: { file: 'src/app/models/user.model.ts', line: 1 },
+      },
+    ],
+    exit_points: [],
+  });
+  const backend = backendCas({
+    nodes: [
+      {
+        id: 'node-backend-thing-entity',
+        type: 'class',
+        name: 'Thing',
+        source: { file: 'src/Entity/Thing.php', line: 8 },
+      },
+      {
+        id: 'node-backend-user-entity',
+        type: 'class',
+        name: 'User',
+        source: { file: 'src/Entity/User.php', line: 8 },
+      },
+    ],
+    data_entities: [
+      { id: 'entity-thing', name: 'Thing', lifecycle: {} },
+      { id: 'entity-user', name: 'User', lifecycle: {} },
+    ],
+  });
+  const result = buildCrossRepositoryLinks([repo('frontend', frontend), repo('backend', backend)]);
+  const sharedSchema = result.links.filter(link => link.type === 'shared-schema');
+
+  assert.equal(sharedSchema.length, 1);
+  assert.equal(sharedSchema[0].connection?.contract, 'Thing');
+  assert.ok(sharedSchema[0].source_repository?.node_ids?.includes('node-backend-thing-entity'));
+  assert.ok(sharedSchema[0].target_repository?.node_ids?.includes('node-frontend-thing-model'));
+});
+
+test('namespace imports link a consumer to the repository that defines the class', () => {
+  const consumer = makeCas('consumer', {
+    nodes: [
+      {
+        id: 'node-use-cardmanagement',
+        type: 'use',
+        name: 'TruckSpy\\Wex\\Client\\Soap\\CardManagement\\CardManagementWS',
+        source: { file: 'src/Service/WexProvider.php', line: 4 },
+      },
+    ],
+  });
+  const producer = makeCas('wex-client', {
+    nodes: [
+      {
+        id: 'node-cardmanagement-class',
+        type: 'class',
+        name: 'CardManagementWS',
+        source: { file: 'src/Client/Soap/CardManagement/CardManagementWS.php', line: 10 },
+      },
+    ],
+  });
+  const result = buildCrossRepositoryLinks([repo('consumer', consumer), repo('wex-client', producer)]);
+  const libraryLinks = result.links.filter(link => link.type === 'library');
+
+  assert.equal(libraryLinks.length, 1);
+  assert.equal(libraryLinks[0].connection?.contract, 'TruckSpy\\Wex\\Client\\Soap\\CardManagement\\CardManagementWS');
+  assert.equal(libraryLinks[0].target_repository?.node_ids?.[0], 'node-cardmanagement-class');
+});
+
+test('namespace imports do not link when the file path does not mirror the namespace', () => {
+  const consumer = makeCas('consumer', {
+    nodes: [
+      {
+        id: 'node-use-cardmanagement',
+        type: 'use',
+        name: 'TruckSpy\\Wex\\Client\\Soap\\CardManagement\\CardManagementWS',
+        source: { file: 'src/Service/WexProvider.php', line: 4 },
+      },
+    ],
+  });
+  const producer = makeCas('other-lib', {
+    nodes: [
+      {
+        id: 'node-unrelated-class',
+        type: 'class',
+        name: 'CardManagementWS',
+        source: { file: 'src/Totally/Different/CardManagementWS.php', line: 10 },
+      },
+    ],
+  });
+  const result = buildCrossRepositoryLinks([repo('consumer', consumer), repo('other-lib', producer)]);
+
+  assert.equal(result.links.filter(link => link.type === 'library').length, 0);
+});
+
+test('cross-repo journeys compose UI action file, HTTP call, backend handler, service, and terminal entity', () => {
+  const repositories = [repo('frontend', frontendCas()), repo('backend', backendCas())];
+  const result = buildCrossRepositoryLinks(repositories);
+  const journeys = buildCrossRepoJourneys(repositories, result.links);
+
+  assert.equal(journeys.length, 1);
+  const journey = journeys[0];
+  assert.equal(journey.consumer.repository, 'frontend');
+  assert.deepEqual(journey.consumer.action_files, ['src/app/things/things-page.component.ts']);
+  assert.equal(journey.consumer.call_file, 'src/app/services/things.service.ts');
+  assert.equal(journey.consumer.call_symbol, 'getThing');
+  assert.equal(journey.http.method, 'GET');
+  assert.equal(journey.http.route, '/api/things/{thingId}');
+  assert.equal(journey.provider.repository, 'backend');
+  assert.equal(journey.provider.handler, 'ThingController::detail');
+  assert.equal(journey.provider.handler_file, 'src/Controller/Api/ThingController.php');
+  assert.deepEqual(journey.provider.services, ['ThingManager']);
+  assert.deepEqual(journey.provider.terminal_entities, ['Thing']);
+});
+
+test('getCrossRepoContracts returns a usable contract table and journeys', () => {
+  const repositories = [repo('frontend', frontendCas()), repo('backend', backendCas())];
+  const contracts = getCrossRepoContracts(repositories, { journey_limit: 5 });
+
+  assert.equal(contracts.contract_table.length, 1);
+  const row = contracts.contract_table[0];
+  assert.equal(row.method, 'GET');
+  assert.equal(row.route, '/api/things/{thingId}');
+  assert.equal(row.consumer_repository, 'frontend');
+  assert.equal(row.consumer_file, 'src/app/services/things.service.ts');
+  assert.equal(row.provider_repository, 'backend');
+  assert.equal(row.provider_handler, 'ThingController::detail');
+  assert.equal(row.provider_file, 'src/Controller/Api/ThingController.php');
+  assert.equal(contracts.journeys.length, 1);
+});

@@ -1514,14 +1514,15 @@ function registerTools(server: McpServer) {
     'get_cross_repo_contracts',
     {
       title: 'Get Cross Repo Contracts',
-      description: 'Build contract-level views across repositories: provided HTTP/message/database contracts, consumed APIs/messages/databases, deterministic links, and contract gaps.',
+      description: 'Build contract-level views across repositories: provided HTTP/message/database contracts, consumed APIs/messages/databases, deterministic links, a contract table (route, consumer file, provider handler), cross-repo journeys (UI action file -> HTTP call -> backend route -> service -> terminal entity), and contract gaps.',
       inputSchema: {
         paths: z.array(z.string()).optional().describe('Project paths to include. Omit to use all analyzed repositories.'),
+        journey_limit: z.number().optional().describe('Max cross-repo journeys to compose (default 25).'),
       } as any,
     } as any,
-    async ({ paths }: any) => withErrorHandling(async () => {
+    async ({ paths, journey_limit }: any) => withErrorHandling(async () => {
       const repositories = await loadRepositoryAnalyses(paths);
-      return json(analysisMastery.getCrossRepoContracts(repositories));
+      return json(analysisMastery.getCrossRepoContracts(repositories, { journey_limit }));
     })
   );
 
