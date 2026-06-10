@@ -3,6 +3,7 @@ import * as path from 'path';
 import { glob } from 'glob';
 import { getOrchestrator } from './analyzer';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import { isDirectCliInvocation } from './cli-invocation';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 
@@ -562,7 +563,7 @@ async function main(): Promise<void> {
   }
 }
 
-if (require.main === module) {
+if (isDirectCliInvocation('gauntlet')) {
   main().catch(error => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

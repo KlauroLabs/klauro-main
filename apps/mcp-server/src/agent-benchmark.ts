@@ -7,6 +7,7 @@ import { loadTruthExpectation, type AnalysisTruthExpectation } from './analysis-
 import { discoverTargets } from './gauntlet';
 import { saveAgenticBenchmarkReport } from './storage';
 import type { CASEntryPoint, CASNode, CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import { isDirectCliInvocation } from './cli-invocation';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 
@@ -958,7 +959,7 @@ async function main(): Promise<void> {
   if (report.status === 'fail') process.exitCode = 1;
 }
 
-if (require.main === module) {
+if (isDirectCliInvocation('agent-benchmark')) {
   main().catch(error => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

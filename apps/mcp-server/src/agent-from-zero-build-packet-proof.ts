@@ -6,6 +6,7 @@ import * as path from 'path';
 import { analyzeProjectIncremental } from './analyzer';
 import { buildGreenfieldBuildPacket } from './greenfield-build-session';
 import { saveAgenticBenchmarkReport } from './storage';
+import { isDirectCliInvocation } from './cli-invocation';
 
 const execFileAsync = promisify(execFile);
 
@@ -1405,7 +1406,7 @@ function parseArgs(argv: string[]): Args {
   return parsed;
 }
 
-if (require.main === module) {
+if (isDirectCliInvocation('agent-from-zero-build-packet-proof')) {
   const args = parseArgs(process.argv.slice(2));
   runFromZeroBuildPacketProof(args).then(report => {
     process.stdout.write(`Status: ${String(report.status).toUpperCase()} (${report.score}/100)\n`);

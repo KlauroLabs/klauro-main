@@ -1,5 +1,6 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
+import { isDirectCliInvocation } from './cli-invocation';
 
 export type RepoDiscoveryStatus = 'eligible' | 'unsupported' | 'skipped';
 
@@ -314,7 +315,7 @@ async function main(): Promise<void> {
   }
 }
 
-if (require.main === module) {
+if (isDirectCliInvocation('repo-discovery')) {
   main().catch(error => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

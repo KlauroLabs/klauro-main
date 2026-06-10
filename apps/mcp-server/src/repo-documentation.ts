@@ -1,3 +1,4 @@
+import { isDirectCliInvocation } from './cli-invocation';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { discoverRealRepos, type RealRepoTarget } from './repo-discovery';
@@ -471,7 +472,7 @@ async function main(): Promise<void> {
   await generateDocumentation(options);
 }
 
-if (require.main === module) {
+if (isDirectCliInvocation('repo-documentation')) {
   main().catch(error => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

@@ -2,6 +2,7 @@ import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { isDirectCliInvocation } from './cli-invocation';
 
 export interface StoragePruneOptions {
   root?: string;
@@ -556,7 +557,7 @@ async function main(): Promise<void> {
   }
 }
 
-if (require.main === module) {
+if (isDirectCliInvocation('storage-maintenance')) {
   main().catch(error => {
     console.error(error instanceof Error ? error.stack || error.message : String(error));
     process.exit(1);

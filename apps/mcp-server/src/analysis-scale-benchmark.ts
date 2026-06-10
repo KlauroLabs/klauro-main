@@ -1,6 +1,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { execFileSync, spawn } from 'child_process';
+import { isDirectCliInvocation } from './cli-invocation';
 
 const OUTPUT_ROOT = '/tmp/klauro-scale-curve';
 const STORAGE_ROOT = path.join(OUTPUT_ROOT, 'storage');
@@ -933,7 +934,7 @@ async function main(): Promise<void> {
   await runOrchestrator(argv);
 }
 
-if (require.main === module) {
+if (isDirectCliInvocation('analysis-scale-benchmark')) {
   main().catch(error => {
     console.error(error);
     process.exit(1);

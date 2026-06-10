@@ -6,6 +6,7 @@ import { analyzeProjectIncremental } from './analyzer';
 import type { RemoteAnalyzeRequest, RemoteAnalyzeResponse, RemoteGreenfieldPreviewRequest, RemoteProposalPreviewRequest, RemoteSyncRequest } from './remote-analyzer-protocol';
 import type { RemoteFileChange, SourceManifest } from './remote-source';
 import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-preview';
+import { isDirectCliInvocation } from './cli-invocation';
 
 const DEFAULT_PORT = 8787;
 const MAX_BODY_BYTES = 100 * 1024 * 1024;
@@ -294,7 +295,7 @@ function buildChangeManifest(workspace: string, changes: RemoteFileChange[]): So
   };
 }
 
-if (require.main === module) {
+if (isDirectCliInvocation('remote-analyzer-service')) {
   const port = Number(process.env.PORT || process.env.KLAURO_ANALYZER_PORT || DEFAULT_PORT);
   const server = createRemoteAnalyzerHttpServer();
   server.listen(port, () => {

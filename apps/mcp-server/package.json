@@ -8,6 +8,8 @@
   },
   "scripts": {
     "start": "tsx src/index.ts",
+    "build": "node scripts/build-bundle.mjs",
+    "smoke:bundle": "npm run build && node scripts/smoke-bundle.mjs",
     "analyzer-server": "tsx src/remote-analyzer-service.ts",
     "dev": "tsx watch src/index.ts",
     "init": "tsx src/cli.ts init",
@@ -61,6 +63,7 @@
     "agent-vision-acceptance": "tsx src/agent-vision-acceptance.ts",
     "agent-proof-full": "npm run typecheck && npm test && npm run analysis-gauntlet && npm run agent-gauntlet && npm run vision-gauntlet && npm run agentic-benchmark-suite && npm run agent-quality-benchmark && npm run incremental-benchmark && npm run agent-vision-acceptance",
     "incremental-benchmark": "tsx src/incremental-benchmark.ts",
+    "analysis-scale-benchmark": "tsx src/analysis-scale-benchmark.ts",
     "analysis-gauntlet": "tsx src/analysis-gauntlet.ts",
     "contract-gauntlet": "tsx src/contract-gauntlet.ts",
     "vision-gauntlet": "tsx src/vision-gauntlet.ts",
@@ -94,6 +97,7 @@
   "devDependencies": {
     "@types/fs-extra": "^11.0.4",
     "@types/node": "^24.3.1",
+    "esbuild": "^0.27.2",
     "tsx": "^4.19.0",
     "typescript": "^5.9.2"
   }

@@ -7,8 +7,11 @@ From zero to a first agent work packet in under two minutes on a mid-size reposi
 - Node.js 20+
 - A local checkout of this repository (`proof-of-concept`)
 - Dependencies installed once: `npm install` inside `apps/mcp-server/`
+- Bundled server built once: `npm run build` inside `apps/mcp-server/`
 
 ## 1. Install: register the MCP server with Claude Code
+
+The bundled entry (`dist/index.cjs`) starts in well under a second, so the server connects inside the Claude Code init window and its tools are visible to the agent from the first turn. The `src/index.ts` + tsx entry remains the development path (`npm run dev`), but registering it with clients is not recommended: its slower startup can leave the server pending at session init.
 
 Add Klauro to the target project's `.mcp.json` (or `~/.claude.json` for global use):
 
@@ -16,8 +19,8 @@ Add Klauro to the target project's `.mcp.json` (or `~/.claude.json` for global u
 {
   "mcpServers": {
     "klauro": {
-      "command": "npx",
-      "args": ["tsx", "/absolute/path/to/proof-of-concept/apps/mcp-server/src/index.ts"],
+      "command": "node",
+      "args": ["/absolute/path/to/proof-of-concept/apps/mcp-server/dist/index.cjs"],
       "cwd": "/absolute/path/to/proof-of-concept/apps/mcp-server"
     }
   }
@@ -27,7 +30,7 @@ Add Klauro to the target project's `.mcp.json` (or `~/.claude.json` for global u
 Equivalent one-liner:
 
 ```bash
-claude mcp add klauro -- npx tsx /absolute/path/to/proof-of-concept/apps/mcp-server/src/index.ts
+claude mcp add klauro -- node /absolute/path/to/proof-of-concept/apps/mcp-server/dist/index.cjs
 ```
 
 Restart Claude Code and confirm with `/mcp` that the `klauro` server is listed.

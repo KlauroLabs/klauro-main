@@ -7,6 +7,7 @@ import { analyzeProjectIncremental } from './analyzer';
 import { buildGreenfieldArchitectureGuidance, type GreenfieldReferenceAnalysis } from './greenfield-guidance';
 import { getPreviewAnalysis, previewGreenfieldCodebase, type ProposedFileInput } from './proposal-preview';
 import { renderProposalPreviewHtml } from './proposal-preview-html';
+import { isDirectCliInvocation } from './cli-invocation';
 
 const execFileAsync = promisify(execFile);
 
@@ -1013,7 +1014,7 @@ function parseArgs(argv: string[]): Args {
   return args;
 }
 
-if (require.main === module) {
+if (isDirectCliInvocation('agent-scratch-dogfood-build')) {
   runAgentScratchDogfoodBuild()
     .then(report => {
       process.stdout.write(`Scratch dogfood build: ${report.status.toUpperCase()} (${report.score}/100)\n`);

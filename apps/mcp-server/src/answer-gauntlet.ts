@@ -1,3 +1,4 @@
+import { isDirectCliInvocation } from './cli-invocation';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { getOrchestrator } from './analyzer';
@@ -659,7 +660,7 @@ async function main(): Promise<void> {
   }
 }
 
-if (require.main === module) {
+if (isDirectCliInvocation('answer-gauntlet')) {
   main().catch(error => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

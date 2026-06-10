@@ -12,6 +12,7 @@ import { runFromZeroBuildPacketProof } from './agent-from-zero-build-packet-proo
 import { reviewAnalysisUsefulness } from './analysis-usefulness-review';
 import { runIncrementalValueBenchmark } from './incremental-benchmark';
 import { discoverRealRepos, type RealRepoTarget } from './repo-discovery';
+import { isDirectCliInvocation } from './cli-invocation';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 export type MachineProofMode = 'fast' | 'full';
@@ -1321,7 +1322,7 @@ function pathContains(parent: string, child: string): boolean {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-if (require.main === module) {
+if (isDirectCliInvocation('machine-gauntlet')) {
   main().catch(error => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

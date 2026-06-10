@@ -2,6 +2,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { saveAgenticBenchmarkReport } from './storage';
+import { isDirectCliInvocation } from './cli-invocation';
 
 type CoverageStatus = 'strong' | 'partial' | 'gap';
 type ReportStatus = 'pass' | 'warn' | 'fail';
@@ -977,7 +978,7 @@ function array(value: unknown): JsonObject[] {
   return Array.isArray(value) ? value as JsonObject[] : [];
 }
 
-if (require.main === module) {
+if (isDirectCliInvocation('agent-task-family-coverage')) {
   main().catch(error => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

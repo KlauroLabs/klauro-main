@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { analyzeProjectIncremental } from './analyzer';
 import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-preview';
 import { saveAgenticBenchmarkReport } from './storage';
+import { isDirectCliInvocation } from './cli-invocation';
 
 interface Gate {
   name: string;
@@ -130,7 +131,7 @@ async function walk(root: string, visit: (file: string) => Promise<void>): Promi
   }
 }
 
-if (require.main === module) {
+if (isDirectCliInvocation('proposal-preview-gauntlet')) {
   runProposalPreviewGauntlet()
     .then(report => {
       process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);

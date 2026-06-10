@@ -90,13 +90,15 @@ function parseArgs(argv: string[]): { targetRepo: string; outputDir: string; con
 }
 
 function writeMcpConfig(outputDir: string, klauroLogPath: string, toolProfile: 'core' | 'full'): string {
-  const serverEntry = path.join(repoRoot(), 'src', 'index.ts');
-  const tsxBin = path.join(repoRoot(), 'node_modules', '.bin', 'tsx');
+  const serverEntry = path.join(repoRoot(), 'dist', 'index.cjs');
+  if (!fs.existsSync(serverEntry)) {
+    throw new Error(`Bundled server entry missing at ${serverEntry}. Run npm run build in apps/mcp-server first.`);
+  }
   const configPath = path.join(outputDir, `mcp-config-${path.basename(klauroLogPath, '.jsonl')}.json`);
   fs.writeFileSync(configPath, JSON.stringify({
     mcpServers: {
       klauro: {
-        command: tsxBin,
+        command: process.execPath,
         args: [serverEntry],
         env: { KLAURO_TOOL_CALL_LOG: klauroLogPath, KLAURO_TOOL_PROFILE: toolProfile },
       },

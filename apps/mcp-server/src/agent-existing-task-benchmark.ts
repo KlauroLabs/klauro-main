@@ -7,6 +7,7 @@ import { getAgentWorkPacket } from './agent-adoption';
 import { validateAgentChange } from './agent-workflow';
 import { runLiveAgentPair, type LiveAgentCommandConfig, type LiveAgentPairResult } from './agent-live-trial';
 import { saveAgenticBenchmarkReport } from './storage';
+import { isDirectCliInvocation } from './cli-invocation';
 
 type BenchmarkStatus = 'pass' | 'warn' | 'fail';
 type TaskFamily =
@@ -1853,7 +1854,7 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-if (require.main === module) {
+if (isDirectCliInvocation('agent-existing-task-benchmark')) {
   main().catch(error => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

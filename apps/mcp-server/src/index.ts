@@ -1,3 +1,4 @@
+import type { Readable, Writable } from 'stream';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createServer } from './server.js';
 
@@ -15,13 +16,18 @@ process.stdin.on('close', () => process.exit(0));
 process.on('SIGTERM', () => process.exit(0));
 process.on('SIGHUP', () => process.exit(0));
 
-async function main() {
+export async function startServer(
+  input: Readable = process.stdin,
+  output: Writable = process.stdout
+): Promise<void> {
   const server = createServer();
-  const transport = new StdioServerTransport();
+  const transport = new StdioServerTransport(input, output);
   await server.connect(transport);
 }
 
-main().catch((error) => {
-  process.stderr.write(`Klauro MCP server failed to start: ${error}\n`);
-  process.exit(1);
-});
+if (!process.env.KLAURO_DEFER_START) {
+  startServer().catch((error) => {
+    process.stderr.write(`Klauro MCP server failed to start: ${error}\n`);
+    process.exit(1);
+  });
+}

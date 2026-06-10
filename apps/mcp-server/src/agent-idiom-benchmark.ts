@@ -7,6 +7,7 @@ import { buildIdiomContextForAgent, validateCodebaseIdioms } from './idiom-query
 import { runLiveAgentPair, type LiveAgentCommandConfig, type LiveAgentPairResult } from './agent-live-trial';
 import { discoverRealRepos } from './repo-discovery';
 import { saveAgenticBenchmarkReport } from './storage';
+import { isDirectCliInvocation } from './cli-invocation';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 
@@ -876,7 +877,7 @@ async function main(): Promise<void> {
   if (report.status === 'fail') process.exitCode = 1;
 }
 
-if (require.main === module) {
+if (isDirectCliInvocation('agent-idiom-benchmark')) {
   main().catch(error => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

@@ -12,6 +12,7 @@ import { getAgentDefaultConfig } from './agent-defaults';
 import { getIntegrationDepthReport } from './integration-depth';
 import { buildWorkspaceGraph, summarizeWorkspaceGraph } from './workspace-graph';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import { isDirectCliInvocation } from './cli-invocation';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 
@@ -225,7 +226,7 @@ function printReport(report: {
   console.log(`Workspace graph: ${report.workspace_graph.link_count} links, ${report.workspace_graph.linked_repositories} linked repositories, ${report.workspace_graph.conflicts} conflicts`);
 }
 
-if (require.main === module) {
+if (isDirectCliInvocation('vision-gauntlet')) {
   main().catch(error => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

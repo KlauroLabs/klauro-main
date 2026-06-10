@@ -6,6 +6,7 @@ import { buildGreenfieldArchitectureGuidance, type GreenfieldReferenceAnalysis }
 import { runLiveAgentPair, type LiveAgentCommandConfig, type LiveAgentPairResult } from './agent-live-trial';
 import { previewGreenfieldCodebase, getPreviewAnalysis, type ProposedFileInput } from './proposal-preview';
 import { saveAgenticBenchmarkReport } from './storage';
+import { isDirectCliInvocation } from './cli-invocation';
 
 interface Scenario {
   id: string;
@@ -1166,7 +1167,7 @@ function parseArgs(argv: string[]): Args {
   return args;
 }
 
-if (require.main === module) {
+if (isDirectCliInvocation('agent-greenfield-benchmark')) {
   runAgentGreenfieldBenchmark(parseArgs(process.argv.slice(2)))
     .then(report => {
       process.stdout.write(`Greenfield benchmark: ${report.status.toUpperCase()} (${report.score}/100)\n`);

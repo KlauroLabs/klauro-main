@@ -2,6 +2,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'node:path';
 import { getPreviewAnalysis } from './proposal-preview';
+import { isDirectCliInvocation } from './cli-invocation';
 
 interface Args {
   previewId: string;
@@ -528,7 +529,7 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-if (require.main === module) {
+if (isDirectCliInvocation('proposal-preview-html')) {
   renderProposalPreviewHtml(parseArgs(process.argv.slice(2)))
     .then(result => {
       process.stdout.write(`Wrote proposal preview HTML: ${result.output}\n`);

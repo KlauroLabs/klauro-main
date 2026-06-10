@@ -5,6 +5,7 @@ import { buildGreenfieldArchitectureGuidance, type GreenfieldReferenceAnalysis }
 import { buildGreenfieldBuildPacket } from './greenfield-build-session';
 import { getPreviewAnalysis, previewGreenfieldCodebase, type ProposedFileInput } from './proposal-preview';
 import { evaluateLivePairDeterministically, runLiveAgentPair, runLiveAgentPairFromWorkspaces, type LiveAgentCommandConfig, type LiveAgentPairResult, type WithoutArmPromptOverrides } from './agent-live-trial';
+import { isDirectCliInvocation } from './cli-invocation';
 
 interface ScratchBuildReport {
   generated_at: string;
@@ -2240,7 +2241,7 @@ function parseArgs(argv: string[]): Args {
   return args;
 }
 
-if (require.main === module) {
+if (isDirectCliInvocation('agent-scratch-build-benchmark')) {
   runAgentScratchBuildBenchmark()
     .then(report => {
       process.stdout.write(`Scratch build benchmark: ${report.status.toUpperCase()} (${report.score}/100)\n`);

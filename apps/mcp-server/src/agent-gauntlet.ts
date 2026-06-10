@@ -4,6 +4,7 @@ import { getOrchestrator } from './analyzer';
 import { discoverTargets, type RepoTarget } from './gauntlet';
 import { evaluateAgentReadiness, type AgentReadinessReport } from './agent-adoption';
 import { getTestDiscoveryEvidence } from './test-discovery';
+import { isDirectCliInvocation } from './cli-invocation';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 
@@ -154,7 +155,7 @@ async function main(): Promise<void> {
   }
 }
 
-if (require.main === module) {
+if (isDirectCliInvocation('agent-gauntlet')) {
   main().catch(error => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
