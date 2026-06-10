@@ -1,5 +1,6 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { appendFileSync } from 'fs';
 import { analyzeProject, getAnalysis, analyzeProjectIncremental } from './analyzer';
 import { getStorageHealth, listAgenticBenchmarkReports, listAnalyses, listWorkspaceGraphs, loadAgenticBenchmarkReport, loadGoldenSnapshot, loadLatestAgenticBenchmarkReportByType, loadRuntimeObservations, loadWorkspaceGraph, saveAgenticBenchmarkReport, saveGoldenSnapshot, saveRuntimeObservation, saveWorkspaceGraph } from './storage';
 import * as query from './query';
@@ -52,11 +53,28 @@ export function createServer(): McpServer {
     }
   );
 
+  enableToolCallLogging(server);
   registerTools(server);
   registerResources(server);
   registerPrompts(server);
 
   return server;
+}
+
+function enableToolCallLogging(server: McpServer): void {
+  const logPath = process.env.KLAURO_TOOL_CALL_LOG;
+  if (!logPath) return;
+
+  const originalRegisterTool = server.registerTool.bind(server);
+  (server as any).registerTool = (name: string, config: unknown, handler: (...args: any[]) => any) =>
+    originalRegisterTool(name as any, config as any, (async (...args: any[]) => {
+      try {
+        appendFileSync(logPath, `${JSON.stringify({ tool: name, at: new Date().toISOString() })}\n`);
+      } catch {
+        // Logging must never break tool execution.
+      }
+      return handler(...args);
+    }) as any);
 }
 
 function json(data: unknown): { content: Array<{ type: 'text'; text: string }> } {

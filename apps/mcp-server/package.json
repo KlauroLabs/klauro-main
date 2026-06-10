@@ -55,6 +55,7 @@
     "agent-proof-fast": "tsx src/machine-gauntlet.ts --dev-root /Users/michaelshattuck/dev --mode fast --output .klauro-agent-proof-fast/latest-report.json --markdown .klauro-agent-proof-fast/latest-report.md",
     "agent-proof-machine": "tsx src/machine-gauntlet.ts --dev-root /Users/michaelshattuck/dev --mode full --analysis-concurrency 1 --incremental-concurrency 1",
     "analysis-perfection-gauntlet": "tsx src/machine-gauntlet.ts --dev-root /Users/michaelshattuck/dev --mode full --analysis-concurrency 1 --incremental-concurrency 1",
+    "agent-adoption-measurement": "tsx src/agent-adoption-measurement.ts",
     "storage-prune": "tsx src/storage-maintenance.ts",
     "storage-report": "tsx src/storage-maintenance.ts --repo-root ../.. --include-local-artifacts --max-bytes 5368709120",
     "agent-vision-acceptance": "tsx src/agent-vision-acceptance.ts",
