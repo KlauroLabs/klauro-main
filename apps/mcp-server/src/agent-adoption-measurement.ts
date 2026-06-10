@@ -68,26 +68,28 @@ function repoRoot(): string {
   return path.resolve(__dirname, '..');
 }
 
-function parseArgs(argv: string[]): { targetRepo: string; outputDir: string; conditions: Set<string>; repetitions: number } {
+function parseArgs(argv: string[]): { targetRepo: string; outputDir: string; conditions: Set<string>; repetitions: number; toolProfile: 'core' | 'full' } {
   let targetRepo = '/Users/michaelshattuck/dev/clients/outcode/truckspy/truckspyui';
   let outputDir = '/tmp/klauro-adoption-measurement';
   let repetitions = REPETITIONS;
+  let toolProfile: 'core' | 'full' = 'full';
   const conditions = new Set<string>(CONDITIONS.map(condition => condition.id));
 
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--target-repo' && argv[i + 1]) targetRepo = argv[++i];
     else if (argv[i] === '--output-dir' && argv[i + 1]) outputDir = argv[++i];
     else if (argv[i] === '--repetitions' && argv[i + 1]) repetitions = Number(argv[++i]);
+    else if (argv[i] === '--tool-profile' && argv[i + 1]) toolProfile = argv[++i] === 'core' ? 'core' : 'full';
     else if (argv[i] === '--conditions' && argv[i + 1]) {
       conditions.clear();
       for (const id of argv[++i].split(',')) conditions.add(id.trim());
     }
   }
 
-  return { targetRepo, outputDir, conditions, repetitions };
+  return { targetRepo, outputDir, conditions, repetitions, toolProfile };
 }
 
-function writeMcpConfig(outputDir: string, klauroLogPath: string): string {
+function writeMcpConfig(outputDir: string, klauroLogPath: string, toolProfile: 'core' | 'full'): string {
   const serverEntry = path.join(repoRoot(), 'src', 'index.ts');
   const tsxBin = path.join(repoRoot(), 'node_modules', '.bin', 'tsx');
   const configPath = path.join(outputDir, `mcp-config-${path.basename(klauroLogPath, '.jsonl')}.json`);
@@ -96,7 +98,7 @@ function writeMcpConfig(outputDir: string, klauroLogPath: string): string {
       klauro: {
         command: tsxBin,
         args: [serverEntry],
-        env: { KLAURO_TOOL_CALL_LOG: klauroLogPath },
+        env: { KLAURO_TOOL_CALL_LOG: klauroLogPath, KLAURO_TOOL_PROFILE: toolProfile },
       },
     },
   }, null, 2));
@@ -128,7 +130,8 @@ async function runCondition(
   condition: MeasurementCondition,
   repetition: number,
   targetRepo: string,
-  outputDir: string
+  outputDir: string,
+  toolProfile: 'core' | 'full'
 ): Promise<RunResult> {
   const runId = `${condition.id}-rep${repetition}`;
   const klauroLogPath = path.join(outputDir, `${runId}.jsonl`);
@@ -144,7 +147,7 @@ async function runCondition(
 
   const allowedTools = ['Read', 'Grep', 'Glob'];
   if (condition.mcpEnabled) {
-    const configPath = writeMcpConfig(outputDir, klauroLogPath);
+    const configPath = writeMcpConfig(outputDir, klauroLogPath, toolProfile);
     args.push('--mcp-config', configPath, '--strict-mcp-config');
     allowedTools.push('mcp__klauro');
   }
@@ -274,7 +277,7 @@ function formatTable(results: RunResult[]): string {
 }
 
 async function main(): Promise<void> {
-  const { targetRepo, outputDir, conditions, repetitions } = parseArgs(process.argv.slice(2));
+  const { targetRepo, outputDir, conditions, repetitions, toolProfile } = parseArgs(process.argv.slice(2));
   fs.mkdirSync(outputDir, { recursive: true });
 
   const results: RunResult[] = [];
@@ -284,10 +287,10 @@ async function main(): Promise<void> {
     for (let repetition = 1; repetition <= repetitions; repetition += 1) {
       if (condition.workspaceInstructions) {
         repetitionRuns.push(repetitionRuns.length === 0
-          ? runCondition(condition, repetition, targetRepo, outputDir)
-          : repetitionRuns[repetitionRuns.length - 1].then(() => runCondition(condition, repetition, targetRepo, outputDir)));
+          ? runCondition(condition, repetition, targetRepo, outputDir, toolProfile)
+          : repetitionRuns[repetitionRuns.length - 1].then(() => runCondition(condition, repetition, targetRepo, outputDir, toolProfile)));
       } else {
-        repetitionRuns.push(runCondition(condition, repetition, targetRepo, outputDir));
+        repetitionRuns.push(runCondition(condition, repetition, targetRepo, outputDir, toolProfile));
       }
     }
     try {

@@ -41,7 +41,45 @@ import * as telemetryIngestion from './telemetry-ingestion';
 import { semanticSearch } from './semantic-search';
 import { pruneKlauroStorage } from './storage-maintenance';
 
+const SERVER_INSTRUCTIONS = [
+  'Klauro serves a precomputed code analysis (CAS) for analyzed repositories.',
+  'In analyzed repositories, call resolve_agent_analysis before reading files;',
+  'it reports whether an analysis exists for the path.',
+  'When an analysis exists, get_agent_start_context replaces exploratory reading.',
+  'Call get_agent_work_packet before edits and validate_agent_change after.',
+  'If no analysis exists or a tool errors, fall back to direct file reading.',
+].join(' ');
+
+export type ToolProfile = 'core' | 'full';
+
+export function resolveToolProfile(): ToolProfile {
+  return (process.env.KLAURO_TOOL_PROFILE || '').trim().toLowerCase() === 'core' ? 'core' : 'full';
+}
+
+export const CORE_TOOL_NAMES = [
+  'resolve_agent_analysis',
+  'get_agent_start_context',
+  'get_agent_tool_plan',
+  'get_agent_work_packet',
+  'search_nodes',
+  'get_coding_context',
+  'assess_change_risk',
+  'find_tests',
+  'validate_agent_change',
+  'get_product_map',
+  'get_user_journeys',
+  'run_answer_pack',
+];
+
+const GATEWAY_TOOL_NAME = 'klauro_query';
+
+interface RegisteredToolEntry {
+  config: { description?: string; inputSchema?: Record<string, z.ZodTypeAny> };
+  handler: (...args: any[]) => any;
+}
+
 export function createServer(): McpServer {
+  const toolProfile = resolveToolProfile();
   const server = new McpServer(
     { name: 'klauro', version: '1.0.0' },
     {
@@ -50,15 +88,97 @@ export function createServer(): McpServer {
         tools: {},
         prompts: {},
       },
+      instructions: SERVER_INSTRUCTIONS,
     }
   );
 
+  const toolRegistry = recordToolRegistrations(server, toolProfile);
   enableToolCallLogging(server);
   registerTools(server);
+  if (toolProfile === 'core') registerToolGateway(server, toolRegistry);
   registerResources(server);
   registerPrompts(server);
 
   return server;
+}
+
+function recordToolRegistrations(server: McpServer, profile: ToolProfile): Map<string, RegisteredToolEntry> {
+  const registry = new Map<string, RegisteredToolEntry>();
+  const originalRegisterTool = server.registerTool.bind(server);
+  (server as any).registerTool = (name: string, config: any, handler: (...args: any[]) => any) => {
+    registry.set(name, { config, handler });
+    if (profile === 'core' && !CORE_TOOL_NAMES.includes(name) && name !== GATEWAY_TOOL_NAME) return undefined;
+    return originalRegisterTool(name as any, config as any, handler as any);
+  };
+  return registry;
+}
+
+const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
+  { label: 'Analysis management', tools: ['analyze_codebase', 'generate_element_description', 'get_element_description', 'get_analysis_phases', 'run_analysis_layer', 'initialize_klauro_project', 'get_klauro_project_config', 'get_upload_manifest', 'get_github_import_plan', 'analyze_codebase_remote', 'sync_codebase_remote', 'list_analyses', 'validate_cas_contract', 'get_storage_health', 'get_storage_maintenance_report', 'prune_storage_artifacts', 'preview_codebase_iteration', 'get_greenfield_architecture_guidance', 'get_greenfield_build_packet', 'preview_greenfield_codebase', 'get_preview_analysis', 'compare_analysis_iterations', 'get_analysis_freshness', 'get_test_discovery_evidence', 'save_cas_golden_snapshot', 'compare_cas_golden_snapshot'] },
+  { label: 'System understanding and agent workflow', tools: ['get_summary', 'get_system_overview', 'get_architecture_context', 'list_answer_packs', 'get_mcp_demo_flow', 'get_cross_repo_links', 'save_workspace_graph', 'get_workspace_graph', 'list_workspace_graphs', 'verify_workspace_link', 'get_agent_bootstrap', 'get_agent_project_map', 'get_agent_doctor', 'get_agent_default_config', 'install_agent_default_config', 'get_capability_memory', 'get_idiom_aware_work_packet', 'open_agent_workbench', 'preflight_agent_change', 'get_codebase_agent_rules', 'explain_change_shape', 'evaluate_analysis_truth', 'get_semantic_map', 'get_framework_depth_report', 'get_integration_depth_report', 'get_cross_repo_contracts', 'get_runtime_instrumentation_plan', 'get_runtime_event_contract', 'get_runtime_sdk_package', 'evaluate_agent_task_proof', 'evaluate_agent_readiness', 'run_agentic_benchmark', 'get_agentic_benchmark_report', 'get_agent_performance_proof', 'run_agent_quality_benchmark', 'run_agent_idiom_benchmark', 'run_machine_agent_proof', 'run_incremental_value_benchmark', 'get_patterns', 'get_codebase_idioms', 'get_idiom_examples', 'validate_codebase_idioms', 'get_pattern_instances', 'get_perspectives'] },
+  { label: 'Navigation and search', tools: ['semantic_search', 'get_embedding_status', 'get_node', 'get_file_nodes', 'get_level'] },
+  { label: 'Entry points, routes, and call graph', tools: ['get_entry_points', 'get_exit_points', 'get_route_table', 'get_external_services', 'get_callers', 'get_callees', 'get_call_chain', 'get_method_calls'] },
+  { label: 'Component hierarchy', tools: ['get_component_parents', 'get_component_children', 'get_component_metrics', 'get_shared_components'] },
+  { label: 'Coding context and conventions', tools: ['get_conventions', 'get_modification_guide', 'get_pattern_examples', 'find_similar_code', 'get_comments', 'get_error_contracts', 'get_framework_guidance', 'get_usage_examples', 'get_configuration'] },
+  { label: 'Intent, data, and risk', tools: ['get_intent', 'get_data_entities', 'get_security_overview', 'get_behavioral_invariants', 'validate_behavioral_invariants', 'get_stability', 'get_flow_coverage'] },
+  { label: 'Workflows, capabilities, and runtime', tools: ['get_workflows', 'get_paradigm_conformance', 'get_data_lineage', 'diff_behavior', 'get_flow_graph', 'get_runtime_static_links', 'simulate_runtime_telemetry', 'correlate_runtime_event', 'record_runtime_event', 'ingest_telemetry', 'get_runtime_observations', 'get_operational_priorities', 'get_runtime_trace', 'get_analysis_facts', 'get_domain_concepts'] },
+  { label: 'Behaviors, testing, data, and health', tools: ['get_behaviors', 'get_lifecycle_hooks', 'get_test_summary', 'get_database_schema', 'get_implementation_health', 'get_system_health', 'get_documentation_coverage', 'get_todos'] },
+  { label: 'Dependencies', tools: ['get_dependencies', 'get_libraries'] },
+  { label: 'Change history', tools: ['get_changes_since', 'get_changes_between', 'get_changes_for_node', 'get_changes_for_file', 'get_changes_for_entry_point', 'get_change_summary', 'get_hot_spots', 'get_analysis_at', 'get_analysis_snapshots'] },
+  { label: 'Watch mode', tools: ['start_watch', 'stop_watch', 'get_watch_status', 'list_watches', 'poll_watch_changes'] },
+];
+
+function buildGatewayDescription(registry: Map<string, RegisteredToolEntry>): string {
+  const available = new Set(
+    [...registry.keys()].filter(name => !CORE_TOOL_NAMES.includes(name) && name !== GATEWAY_TOOL_NAME)
+  );
+  const lines: string[] = [];
+  for (const group of GATEWAY_TOOL_GROUPS) {
+    const names = group.tools.filter(name => available.has(name));
+    for (const name of names) available.delete(name);
+    if (names.length > 0) lines.push(`${group.label}: ${names.join(', ')}`);
+  }
+  if (available.size > 0) lines.push(`Other: ${[...available].join(', ')}`);
+  return [
+    'Run any Klauro analysis tool that is not exposed directly in this core profile.',
+    'Pass the tool name and its arguments object; the call dispatches to the same handler as the full tool.',
+    'Available tools by purpose:',
+    ...lines,
+  ].join('\n');
+}
+
+function registerToolGateway(server: McpServer, registry: Map<string, RegisteredToolEntry>): void {
+  server.registerTool(
+    GATEWAY_TOOL_NAME,
+    {
+      title: 'Klauro Query Gateway',
+      description: buildGatewayDescription(registry),
+      inputSchema: {
+        tool: z.string().describe('Name of the Klauro tool to run'),
+        args: z.record(z.unknown()).optional().describe('Arguments object for the tool, matching its documented input schema'),
+      } as any,
+    } as any,
+    async ({ tool, args }: any) => withErrorHandling(async () => {
+      const entry = registry.get(tool);
+      if (!entry || tool === GATEWAY_TOOL_NAME) {
+        const names = [...registry.keys()].filter(name => name !== GATEWAY_TOOL_NAME).sort();
+        throw new Error(`Unknown Klauro tool '${tool}'. Available tools: ${names.join(', ')}`);
+      }
+      return await entry.handler(parseGatewayArgs(tool, entry, args ?? {}));
+    })
+  );
+}
+
+function parseGatewayArgs(tool: string, entry: RegisteredToolEntry, args: Record<string, unknown>): Record<string, unknown> {
+  const shape = entry.config?.inputSchema;
+  if (!shape) return args;
+  const schema = typeof (shape as any).safeParse === 'function' ? (shape as unknown as z.ZodTypeAny) : z.object(shape);
+  const parsed = schema.safeParse(args);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map(issue => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ');
+    throw new Error(`Invalid arguments for '${tool}': ${issues}`);
+  }
+  return parsed.data as Record<string, unknown>;
 }
 
 function enableToolCallLogging(server: McpServer): void {
