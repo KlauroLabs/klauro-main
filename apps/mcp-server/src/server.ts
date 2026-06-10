@@ -1514,7 +1514,7 @@ function registerTools(server: McpServer) {
     'get_cross_repo_contracts',
     {
       title: 'Get Cross Repo Contracts',
-      description: 'Build contract-level views across repositories: provided HTTP/message/database contracts, consumed APIs/messages/databases, deterministic links, a contract table (route, consumer file, provider handler), cross-repo journeys (UI action file -> HTTP call -> backend route -> service -> terminal entity), and contract gaps.',
+      description: 'Build contract-level views across repositories: provided HTTP/message/database contracts, consumed APIs/messages/databases, deterministic links, a contract table (route, consumer file, provider handler), cross-repo journeys (UI action file -> HTTP call -> backend route -> service -> terminal entity), route drift findings (repo-relative API calls with no matching backend route, classified missing-route vs near-miss with the nearest backend route; summary count plus top 10), and contract gaps.',
       inputSchema: {
         paths: z.array(z.string()).optional().describe('Project paths to include. Omit to use all analyzed repositories.'),
         journey_limit: z.number().optional().describe('Max cross-repo journeys to compose (default 25).'),

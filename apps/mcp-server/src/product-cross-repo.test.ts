@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildCrossRepositoryLinks, buildCrossRepoJourneys } from './product';
+import { buildCrossRepositoryLinks, buildCrossRepoJourneys, buildCrossRepoRouteDrift } from './product';
 import { getCrossRepoContracts } from './analysis-mastery';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
@@ -351,4 +351,126 @@ test('getCrossRepoContracts returns a usable contract table and journeys', () =>
   assert.equal(row.provider_handler, 'ThingController::detail');
   assert.equal(row.provider_file, 'src/Controller/Api/ThingController.php');
   assert.equal(contracts.journeys.length, 1);
+});
+
+test('UI call with no backend route surfaces as missing-route drift with consumer evidence', () => {
+  const frontend = frontendCas({
+    exit_points: [
+      {
+        id: 'exit-ack-notifications',
+        type: 'api',
+        name: 'ackNotifications',
+        source_node: 'node-things-service-method',
+        target: { endpoint: '/api/common/notifications/ack' },
+        operation: { method: 'PATCH' },
+      },
+    ],
+  });
+  const drift = buildCrossRepoRouteDrift([repo('frontend', frontend), repo('backend', backendCas())]);
+
+  assert.equal(drift.length, 1);
+  const finding = drift[0];
+  assert.equal(finding.kind, 'missing-route');
+  assert.equal(finding.method, 'PATCH');
+  assert.equal(finding.path, '/api/common/notifications/ack');
+  assert.equal(finding.consumer_repo, 'frontend');
+  assert.equal(finding.consumer_file, 'src/app/services/things.service.ts');
+  assert.equal(finding.consumer_symbol, 'getThing');
+  assert.ok(finding.confidence >= 0.8);
+});
+
+test('UI call to a renamed route surfaces as near-miss drift with the nearest backend route', () => {
+  const frontend = frontendCas({
+    exit_points: [
+      {
+        id: 'exit-list-thing',
+        type: 'api',
+        name: 'listThing',
+        source_node: 'node-things-service-method',
+        target: { endpoint: '/api/thing' },
+        operation: { method: 'GET' },
+      },
+    ],
+  });
+  const backend = backendCas({
+    entry_points: [
+      {
+        id: 'entry-list-things',
+        type: 'http',
+        name: 'GET /api/things',
+        source_node: 'node-things-handler',
+        trigger: { method: 'GET', path: '/api/things' },
+        handler: {
+          node_id: 'node-things-handler',
+          method_name: 'list',
+          file: 'src/Controller/Api/ThingController.php',
+          line: 30,
+        },
+      },
+    ],
+  });
+  const drift = buildCrossRepoRouteDrift([repo('frontend', frontend), repo('backend', backend)]);
+
+  assert.equal(drift.length, 1);
+  const finding = drift[0];
+  assert.equal(finding.kind, 'near-miss');
+  assert.equal(finding.path, '/api/thing');
+  assert.equal(finding.nearest_backend_route?.path, '/api/things');
+  assert.equal(finding.nearest_backend_route?.provider_repo, 'backend');
+  assert.ok((finding.nearest_backend_route?.similarity || 0) >= 0.7);
+});
+
+test('external full-origin URLs are not route drift candidates', () => {
+  const frontend = frontendCas({
+    exit_points: [
+      {
+        id: 'exit-mapbox',
+        type: 'api',
+        name: 'geocode',
+        source_node: 'node-things-service-method',
+        target: { endpoint: 'https://api.mapbox.com/geocoding/v5/mapbox.places/austin.json' },
+        operation: { method: 'GET' },
+      },
+      {
+        id: 'exit-weather',
+        type: 'api',
+        name: 'forecast',
+        source_node: 'node-things-service-method',
+        target: { endpoint: 'https://api.weather.gov/points/30.26,-97.74' },
+        operation: { method: 'GET' },
+      },
+    ],
+  });
+  const drift = buildCrossRepoRouteDrift([repo('frontend', frontend), repo('backend', backendCas())]);
+
+  assert.equal(drift.length, 0);
+});
+
+test('matched UI calls do not appear as route drift', () => {
+  const drift = buildCrossRepoRouteDrift([repo('frontend', frontendCas()), repo('backend', backendCas())]);
+
+  assert.equal(drift.length, 0);
+});
+
+test('getCrossRepoContracts reports route drift with summary-first discipline', () => {
+  const frontend = frontendCas({
+    exit_points: [
+      {
+        id: 'exit-ack-notifications',
+        type: 'api',
+        name: 'ackNotifications',
+        source_node: 'node-things-service-method',
+        target: { endpoint: '/api/common/notifications/ack' },
+        operation: { method: 'PATCH' },
+      },
+    ],
+  });
+  const contracts = getCrossRepoContracts([repo('frontend', frontend), repo('backend', backendCas())]);
+
+  assert.equal(contracts.route_drift_summary.total, 1);
+  assert.equal(contracts.route_drift_summary.missing_route, 1);
+  assert.equal(contracts.route_drift_summary.near_miss, 0);
+  assert.equal(contracts.route_drift.length, 1);
+  assert.equal(contracts.route_drift[0].path, '/api/common/notifications/ack');
+  assert.ok(contracts.route_drift.length <= 10);
 });

@@ -433,6 +433,156 @@ export function buildCrossRepositoryLinks(repositories: Array<{ path: string; na
   };
 }
 
+export interface CrossRepoRouteDrift {
+  kind: 'missing-route' | 'near-miss';
+  method?: string;
+  path: string;
+  consumer_repo: string;
+  consumer_file?: string;
+  consumer_symbol?: string;
+  nearest_backend_route?: {
+    method?: string;
+    path: string;
+    provider_repo: string;
+    similarity: number;
+  };
+  confidence: number;
+}
+
+export function buildCrossRepoRouteDrift(
+  repositories: Array<{ path: string; name: string; cas: CASOutput }>
+): CrossRepoRouteDrift[] {
+  const findings: CrossRepoRouteDrift[] = [];
+
+  for (const consumer of repositories) {
+    const producerRoutes = repositories
+      .filter(repository => repository.path !== consumer.path)
+      .flatMap(producer =>
+        (producer.cas.entry_points || [])
+          .filter(entryPoint => isApiProviderEntry(producer.cas, entryPoint))
+          .map(entryPoint => ({
+            provider_repo: producer.name,
+            method: normalizeHttpMethod(entryPoint.trigger?.method),
+            path: entryPoint.trigger?.path || entryPoint.name,
+            route: normalizeRoute(entryPoint.trigger?.path || entryPoint.name),
+          }))
+          .filter(route => route.route && route.route !== '/')
+      );
+    if (producerRoutes.length === 0) continue;
+
+    const seen = new Set<string>();
+    const apiExits = (consumer.cas.exit_points || []).filter(exitPoint =>
+      exitPoint.type === 'api' || exitPoint.type === 'webhook'
+    );
+
+    for (const exitPoint of apiExits) {
+      const rawTarget = exitPoint.target?.endpoint || exitPoint.target?.resource || exitPoint.name;
+      if (!isRouteDriftCandidate(rawTarget)) continue;
+      const exitRoute = normalizeRoute(rawTarget);
+      const exitMethod = normalizeHttpMethod(exitPoint.operation?.method || exitPoint.operation?.action);
+
+      const matched = producerRoutes.some(route =>
+        routesCompatible(exitRoute, route.route) &&
+        (!exitMethod || !route.method || exitMethod === 'FETCH' || route.method === 'ALL' || exitMethod === route.method)
+      );
+      if (matched) continue;
+
+      const consumerNode = consumer.cas.nodes.find(node => node.id === exitPoint.source_node);
+      const dedupeKey = `${exitMethod || '*'} ${exitRoute} ${consumerNode?.source?.file || ''}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+
+      let nearest: typeof producerRoutes[number] | undefined;
+      let bestSimilarity = 0;
+      for (const route of producerRoutes) {
+        const similarity = routeSegmentSimilarity(exitRoute, route.route);
+        if (similarity > bestSimilarity) {
+          bestSimilarity = similarity;
+          nearest = route;
+        }
+      }
+
+      const kind: CrossRepoRouteDrift['kind'] = bestSimilarity >= 0.7 ? 'near-miss' : 'missing-route';
+      const unresolvedPrefix = exitRoute.startsWith('/:param');
+      const confidence = Math.round(((kind === 'missing-route' ? 0.85 : 0.7) - (unresolvedPrefix ? 0.15 : 0)) * 100) / 100;
+
+      findings.push({
+        kind,
+        method: exitMethod,
+        path: rawTarget,
+        consumer_repo: consumer.name,
+        consumer_file: consumerNode?.source?.file,
+        consumer_symbol: consumerNode?.name,
+        nearest_backend_route: nearest && bestSimilarity >= 0.4
+          ? {
+            method: nearest.method,
+            path: nearest.path,
+            provider_repo: nearest.provider_repo,
+            similarity: Math.round(bestSimilarity * 100) / 100,
+          }
+          : undefined,
+        confidence,
+      });
+    }
+  }
+
+  return findings.sort((left, right) => {
+    if (right.confidence !== left.confidence) return right.confidence - left.confidence;
+    return left.path.localeCompare(right.path);
+  });
+}
+
+function isRouteDriftCandidate(value: string): boolean {
+  if (!value || !looksLikeHttpPath(value)) return false;
+  if (/^https?:\/\//i.test(value)) {
+    try {
+      const host = new URL(value).hostname.toLowerCase();
+      if (host !== 'localhost' && host !== '127.0.0.1' && !host.endsWith('.local')) return false;
+    } catch {
+      return false;
+    }
+  }
+  const route = normalizeRoute(value);
+  if (!route || route === '/') return false;
+  return routeSegments(route).some(segment => segment === 'api' || /^v\d+$/.test(segment));
+}
+
+function routeSegmentSimilarity(left: string, right: string): number {
+  const leftParts = routeSegments(left);
+  const rightParts = routeSegments(right);
+  if (leftParts.length === 0 || rightParts.length === 0) return 0;
+  if (leftParts.length === rightParts.length) {
+    const total = leftParts.reduce((sum, part, index) => sum + segmentSimilarity(part, rightParts[index]), 0);
+    return total / leftParts.length;
+  }
+  const matches = fuzzySegmentLcs(leftParts, rightParts);
+  return matches / Math.max(leftParts.length, rightParts.length);
+}
+
+function segmentSimilarity(left: string, right: string): number {
+  if (left === right) return 1;
+  if (left === ':param' || right === ':param') return 0.35;
+  const shorter = left.length <= right.length ? left : right;
+  const longer = left.length <= right.length ? right : left;
+  if (longer.startsWith(shorter) && longer.length - shorter.length <= 2) return 0.85;
+  return 0;
+}
+
+function fuzzySegmentLcs(leftParts: string[], rightParts: string[]): number {
+  const table: number[][] = Array.from({ length: leftParts.length + 1 }, () => new Array(rightParts.length + 1).fill(0));
+  for (let leftIndex = 1; leftIndex <= leftParts.length; leftIndex++) {
+    for (let rightIndex = 1; rightIndex <= rightParts.length; rightIndex++) {
+      const score = segmentSimilarity(leftParts[leftIndex - 1], rightParts[rightIndex - 1]);
+      table[leftIndex][rightIndex] = Math.max(
+        table[leftIndex - 1][rightIndex],
+        table[leftIndex][rightIndex - 1],
+        score > 0 ? table[leftIndex - 1][rightIndex - 1] + score : 0
+      );
+    }
+  }
+  return table[leftParts.length][rightParts.length];
+}
+
 function detectApiLinks(
   consumer: { path: string; name: string; cas: CASOutput },
   producer: { path: string; name: string; cas: CASOutput }

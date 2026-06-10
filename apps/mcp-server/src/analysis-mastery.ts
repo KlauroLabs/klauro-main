@@ -1,7 +1,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import type { CASOutput, CASEntryPoint, CASExitPoint, CASNode } from '../../../packages/analyzer-core/src/types/cas.types';
-import { buildCrossRepositoryLinks, buildCrossRepoJourneys, pathsCompatible } from './product';
+import { buildCrossRepositoryLinks, buildCrossRepoJourneys, buildCrossRepoRouteDrift, pathsCompatible } from './product';
 import { getAgentWorkPacket, type AgentTask } from './agent-adoption';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
@@ -274,6 +274,7 @@ export function getCrossRepoContracts(
   }));
   const links = buildCrossRepositoryLinks(repositories);
   const journeys = buildCrossRepoJourneys(repositories, links.links, { limit: options.journey_limit });
+  const routeDrift = buildCrossRepoRouteDrift(repositories);
 
   return {
     generated_at: new Date().toISOString(),
@@ -282,6 +283,12 @@ export function getCrossRepoContracts(
     links,
     contract_table: buildContractTable(repositories, links.links),
     journeys,
+    route_drift_summary: {
+      total: routeDrift.length,
+      missing_route: routeDrift.filter(finding => finding.kind === 'missing-route').length,
+      near_miss: routeDrift.filter(finding => finding.kind === 'near-miss').length,
+    },
+    route_drift: routeDrift.slice(0, 10),
     contract_gaps: findContractGaps(repoContracts, links.links.length),
   };
 }
