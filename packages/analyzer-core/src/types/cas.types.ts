@@ -2793,6 +2793,7 @@ export interface CASDomainConcept {
 export interface EnhancedSystemPurpose extends SystemPurpose {
   primary_domain: string;
   domain_source?: 'deterministic' | 'ai' | 'reused';
+  secondary_domains?: Array<{ domain: string; areas: string[]; node_share: number }>;
   core_concepts: string[];
   inferred_description: string;
   description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';

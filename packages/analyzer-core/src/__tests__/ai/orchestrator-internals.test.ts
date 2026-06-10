@@ -1227,10 +1227,171 @@ describe('architecture and capability inference', () => {
     }
   });
 
+  it('lets a grounded structural domain beat the text-keyword catalog', () => {
+    const capabilities = [
+      {
+        name: 'Fleet Management',
+        description: 'Coordinates fleet operations',
+        category: 'core',
+        related_domains: ['fleet'],
+        related_entities: ['Vehicle', 'Driver', 'Dispatch'],
+        operations: [],
+      },
+      {
+        name: 'Vehicle Management',
+        description: 'Tracks vehicles',
+        category: 'core',
+        related_domains: ['vehicle'],
+        related_entities: ['Vehicle'],
+        operations: [],
+      },
+    ];
+    const coreConcepts = [{ name: 'Vehicle' }, { name: 'Driver' }, { name: 'Dispatch' }];
+    const signal = {
+      primaryDomain: 'billing-payments',
+      concepts: ['invoice', 'billing'],
+      evidence: ['README.md'],
+    };
+
+    expect(orch.refinePrimaryDomain('unknown', 'some-app', capabilities, coreConcepts, signal)).toBe('fleet-management');
+  });
+
+  it('does not let an ungrounded structural domain beat a specific text domain', () => {
+    const capabilities = [
+      {
+        name: 'Fleet Management',
+        description: '',
+        category: 'core',
+        related_domains: [],
+        related_entities: [],
+        operations: [],
+      },
+    ];
+    const signal = {
+      primaryDomain: 'clinical-testing',
+      concepts: ['patient', 'measurement'],
+      evidence: ['README.md'],
+    };
+
+    expect(orch.refinePrimaryDomain('unknown', 'some-app', capabilities, [], signal)).toBe('clinical-testing');
+  });
+
+  it('classifies zero-trust style structure from gateway/access/policy entities without name checks', () => {
+    const capabilities = [
+      {
+        name: 'Gateway Management',
+        description: 'Provision and pause gateways',
+        category: 'core',
+        related_domains: ['gateway'],
+        related_entities: ['Gateway', 'InlineGateway'],
+        operations: [],
+      },
+      {
+        name: 'Access Request Management',
+        description: 'Review access requests against policies',
+        category: 'core',
+        related_domains: ['access'],
+        related_entities: ['AccessRequest', 'AccessBinding', 'Policy'],
+        operations: [],
+      },
+      {
+        name: 'Network Management',
+        description: 'Manage networks and posture checks',
+        category: 'core',
+        related_domains: ['network'],
+        related_entities: ['Network', 'PostureCheck'],
+        operations: [],
+      },
+    ];
+    const coreConcepts = [{ name: 'Gateway' }, { name: 'AccessRequest' }, { name: 'Policy' }, { name: 'Network' }];
+
+    expect(orch.inferPrimaryDomainFromCapabilities(capabilities, coreConcepts)).toBe('network-access-management');
+    expect(orch.refinePrimaryDomain('unknown', 'some-platform', capabilities, coreConcepts, { concepts: [], evidence: [] }))
+      .toBe('network-access-management');
+  });
+
+  it('classifies codebase-analysis structure from analyzer/cas/mcp vocabulary without name checks', () => {
+    const capabilities = [
+      {
+        name: 'Codebase Analysis',
+        description: 'Analyze repositories into a graph',
+        category: 'core',
+        related_domains: ['analysis'],
+        related_entities: ['Analysis', 'AnalysisSnapshot'],
+        operations: [],
+      },
+      {
+        name: 'Agent Context',
+        description: 'Serve MCP work packets from the CAS graph',
+        category: 'core',
+        related_domains: ['mcp'],
+        related_entities: ['WorkPacket'],
+        operations: [],
+      },
+    ];
+    const coreConcepts = [{ name: 'Analyzer' }, { name: 'Codebase' }, { name: 'CAS' }];
+
+    expect(orch.inferPrimaryDomainFromCapabilities(capabilities, coreConcepts)).toBe('codebase-analysis');
+  });
+
+  it('classifies conflicting top-level areas separately and surfaces secondary domains', () => {
+    const nodes: CASNode[] = [
+      node({ id: 'order-model', name: 'Order', type: 'entity', source: { file: 'app/models/order.rb' } }),
+      node({ id: 'invoice-model', name: 'Invoice', type: 'entity', source: { file: 'app/models/invoice.rb' } }),
+      node({ id: 'payment-model', name: 'Payment', type: 'entity', source: { file: 'app/models/payment.rb' } }),
+      node({ id: 'orders-controller', name: 'OrdersController', type: 'controller', source: { file: 'app/controllers/orders_controller.rb' } }),
+      node({ id: 'invoices-controller', name: 'InvoicesController', type: 'controller', source: { file: 'app/controllers/invoices_controller.rb' } }),
+      node({ id: 'payments-service', name: 'PaymentCaptureService', type: 'service', source: { file: 'app/services/payment_capture_service.rb' } }),
+      node({ id: 'tf-vpc', name: 'aws_vpc.main', type: 'resource', source: { file: 'terraform/vpc.tf' } }),
+      node({ id: 'tf-ecs', name: 'aws_ecs_cluster.app', type: 'resource', source: { file: 'terraform/ecs.tf' } }),
+      node({ id: 'tf-rds', name: 'aws_db_instance.primary', type: 'resource', source: { file: 'terraform/rds.tf' } }),
+    ];
+
+    const areas = orch.classifyTopLevelAreaDomains(nodes, '/tmp/shop-app');
+    expect(areas.map((area: any) => area.area)).toEqual(expect.arrayContaining(['app', 'terraform']));
+    expect(areas.find((area: any) => area.area === 'terraform')?.domain).toBe('cloud-infrastructure');
+    expect(areas.find((area: any) => area.area === 'app')?.domain).toBe('order-invoice-management');
+
+    const resolution = orch.reconcilePrimaryDomainWithAreas('order-invoice-management', areas);
+    expect(resolution.primaryDomain).toBe('order-invoice-management');
+    expect(resolution.secondaryDomains).toEqual([
+      { domain: 'cloud-infrastructure', areas: ['terraform'], node_share: expect.any(Number) },
+    ]);
+  });
+
+  it('picks the primary domain by product-node weight when the catalog claims a minority area', () => {
+    const nodes: CASNode[] = [
+      node({ id: 'order-model', name: 'Order', type: 'entity', source: { file: 'app/models/order.rb' } }),
+      node({ id: 'invoice-model', name: 'Invoice', type: 'entity', source: { file: 'app/models/invoice.rb' } }),
+      node({ id: 'payment-model', name: 'Payment', type: 'entity', source: { file: 'app/models/payment.rb' } }),
+      node({ id: 'orders-controller', name: 'OrdersController', type: 'controller', source: { file: 'app/controllers/orders_controller.rb' } }),
+      node({ id: 'invoices-controller', name: 'InvoicesController', type: 'controller', source: { file: 'app/controllers/invoices_controller.rb' } }),
+      node({ id: 'payments-service', name: 'PaymentCaptureService', type: 'service', source: { file: 'app/services/payment_capture_service.rb' } }),
+      node({ id: 'tf-vpc', name: 'aws_vpc.main', type: 'resource', source: { file: 'terraform/vpc.tf' } }),
+      node({ id: 'tf-ecs', name: 'aws_ecs_cluster.app', type: 'resource', source: { file: 'terraform/ecs.tf' } }),
+      node({ id: 'tf-rds', name: 'aws_db_instance.primary', type: 'resource', source: { file: 'terraform/rds.tf' } }),
+    ];
+
+    const areas = orch.classifyTopLevelAreaDomains(nodes, '/tmp/shop-app');
+    const resolution = orch.reconcilePrimaryDomainWithAreas('cloud-infrastructure', areas);
+
+    expect(resolution.primaryDomain).toBe('order-invoice-management');
+    expect(resolution.secondaryDomains.map((entry: any) => entry.domain)).toContain('cloud-infrastructure');
+  });
+
+  it('does not report secondary domains when a single area disagrees with the primary', () => {
+    const resolution = orch.reconcilePrimaryDomainWithAreas('fleet-management', [
+      { area: 'src', domain: 'billing-payments', nodeCount: 50, share: 1 },
+    ]);
+
+    expect(resolution.primaryDomain).toBe('fleet-management');
+    expect(resolution.secondaryDomains).toEqual([]);
+  });
+
   it('does not let infrastructure libraries override explicit zero-trust product domains', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-zerac-domain-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-zero-trust-domain-'));
     try {
-      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: '@zerac-api/source' }));
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: '@secure-access/source' }));
       fs.mkdirSync(path.join(root, 'libs/infrastructure/database/src/entities'), { recursive: true });
       fs.mkdirSync(path.join(root, 'apps/admin-api/src/app/gateway'), { recursive: true });
       fs.writeFileSync(path.join(root, 'libs/infrastructure/database/src/entities/accessRequest.entity.ts'), [
@@ -1258,12 +1419,12 @@ describe('architecture and capability inference', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-project-text-fixture-'));
     try {
       fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
-        name: '@klauro/monorepo',
-        description: 'Klauro monorepo for CAS analysis, MCP agent context, hosted analyzers, and incremental analysis.',
+        name: '@acme/code-graph',
+        description: 'Monorepo for CAS analysis, MCP agent context, hosted analyzers, and incremental codebase analysis.',
       }));
-      fs.writeFileSync(path.join(root, 'README.md'), '# Klauro\n\nCAS analysis and MCP agent context for codebase intelligence.');
-      fs.mkdirSync(path.join(root, 'packages/analyzer-core/src/__tests__/fixtures/zerac'), { recursive: true });
-      fs.writeFileSync(path.join(root, 'packages/analyzer-core/src/__tests__/fixtures/zerac/page.tsx'), [
+      fs.writeFileSync(path.join(root, 'README.md'), '# Code Graph\n\nCAS analysis and MCP agent context for codebase intelligence.');
+      fs.mkdirSync(path.join(root, 'packages/analyzer-core/src/__tests__/fixtures/zero-trust'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'packages/analyzer-core/src/__tests__/fixtures/zero-trust/page.tsx'), [
         'export default function Fixture() {',
         '  return <main>Zero trust security for secure network access and continuous verification.</main>;',
         '}',
@@ -1585,9 +1746,16 @@ describe('architecture and capability inference', () => {
     )).toBeUndefined();
 
     expect(orch.inferDomainFromProjectText(
-      'Zerac provides zero trust access requests, continuous verification, identity provider integration, and protected resource gateways.',
-      '/tmp/zerac'
+      'The platform provides zero trust access requests, continuous verification, identity provider integration, and protected resource gateways.',
+      '/tmp/secure-access-platform'
     )).toBe('zero-trust-security');
+  });
+
+  it('classifies codebase analysis from cas/mcp/analyzer vocabulary without product-name hints', () => {
+    expect(orch.inferDomainFromProjectText(
+      'A codebase analysis engine that turns repositories into a CAS relationship graph, exposes the analysis through an MCP server, and tracks entry points and call graph data with hosted analyzers.',
+      '/tmp/some-monorepo'
+    )).toBe('codebase-analysis');
   });
 
   it('uses Hoggan and patient measurement signals as clinical testing domain text', () => {

@@ -917,7 +917,9 @@ export class AnalyzerOrchestrator {
       systemCapabilities,
       flowGraph,
       systemName,
-      projectTextSignal
+      projectTextSignal,
+      allNodes,
+      projectPath
     );
     logTiming('pp_enhancedPurpose', phaseStart);
 
@@ -1716,7 +1718,9 @@ export class AnalyzerOrchestrator {
       systemCapabilities,
       flowGraph,
       previousOutput.system?.name || path.basename(projectPath),
-      incrProjectTextSignal
+      incrProjectTextSignal,
+      nodes,
+      projectPath
     );
     if (this.shouldRefreshAIInterpretation(
       previousOutput,
@@ -7627,7 +7631,9 @@ export class AnalyzerOrchestrator {
     systemCapabilities: SystemCapability[],
     flowGraph: CASFlowGraph,
     systemName?: string,
-    projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] }
+    projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] },
+    nodes: CASNode[] = [],
+    projectPath = ''
   ): EnhancedSystemPurpose {
     const coreConcepts = domainExtractor.getCoreConcepts(domainConcepts);
     const inferredPrimaryDomain = this.refinePrimaryDomain(
@@ -7637,7 +7643,9 @@ export class AnalyzerOrchestrator {
       coreConcepts,
       projectTextSignal
     );
-    const primaryDomain = this.refinePrimaryDomainForPurpose(inferredPrimaryDomain, basePurpose);
+    const areaDomains = this.classifyTopLevelAreaDomains(nodes, projectPath);
+    const areaResolution = this.reconcilePrimaryDomainWithAreas(inferredPrimaryDomain, areaDomains);
+    const primaryDomain = this.refinePrimaryDomainForPurpose(areaResolution.primaryDomain, basePurpose);
 
     const coreConceptNames = [
       ...projectTextSignal.concepts,
@@ -7675,6 +7683,7 @@ export class AnalyzerOrchestrator {
       primary_type: primaryType,
       evidence: [...basePurpose.evidence, ...projectTextSignal.evidence].slice(0, 20),
       primary_domain: primaryDomain,
+      ...(areaResolution.secondaryDomains.length > 0 ? { secondary_domains: areaResolution.secondaryDomains } : {}),
       core_concepts: Array.from(new Set(coreConceptNames)).slice(0, 10),
       inferred_description: description,
       description_source: 'deterministic',
@@ -7760,6 +7769,9 @@ export class AnalyzerOrchestrator {
     projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] }
   ): string {
     const capabilityDomain = this.inferPrimaryDomainFromCapabilities(systemCapabilities, coreConcepts);
+    if (capabilityDomain && this.isSpecificStructuralDomain(capabilityDomain, systemCapabilities, coreConcepts, systemName)) {
+      return capabilityDomain.toLowerCase().replace(/\s+/g, '-');
+    }
     if (projectTextSignal.primaryDomain && !this.isGenericDomainToken(projectTextSignal.primaryDomain)) {
       if ((this.isBroadProjectTextDomain(projectTextSignal.primaryDomain) ||
         this.isNonSemanticDomainLabel(projectTextSignal.primaryDomain, systemName)) && capabilityDomain) {
@@ -7791,6 +7803,138 @@ export class AnalyzerOrchestrator {
     return this.domainFromSystemName(systemName) || inferredDomain || 'unknown';
   }
 
+  private classifyTopLevelAreaDomains(
+    nodes: CASNode[],
+    projectPath: string
+  ): Array<{ area: string; domain: string | null; nodeCount: number; share: number }> {
+    const excludedPath = /(^|\/)(node_modules|dist|build|out|coverage|vendor|vendors|generated|fixtures?|__fixtures__|__tests__|__mocks__|tests?|spec|e2e|\.git|\.next|\.turbo|\.cache|\.terraform)(\/|$)/;
+    const testFile = /\.(test|spec|stories|story)\./;
+    const areas = new Map<string, { nodeCount: number; terraformNodes: number; names: string[] }>();
+    const root = projectPath.replace(/\\/g, '/').replace(/\/+$/, '');
+    let productNodeCount = 0;
+    for (const node of nodes) {
+      const rawFile = node.source?.file;
+      if (!rawFile) continue;
+      let file = rawFile.replace(/\\/g, '/');
+      if (root && file.startsWith(`${root}/`)) file = file.slice(root.length + 1);
+      if (file.startsWith('/')) continue;
+      if (excludedPath.test(file) || testFile.test(file)) continue;
+      productNodeCount += 1;
+      const segments = file.split('/');
+      if (segments.length < 2) continue;
+      const area = segments[0];
+      const entry = areas.get(area) || { nodeCount: 0, terraformNodes: 0, names: [] };
+      entry.nodeCount += 1;
+      if (/\.(tf|tfvars)$/i.test(file)) entry.terraformNodes += 1;
+      if (entry.names.length < 400 && node.name) entry.names.push(node.name);
+      areas.set(area, entry);
+    }
+    if (productNodeCount === 0) return [];
+    const results: Array<{ area: string; domain: string | null; nodeCount: number; share: number }> = [];
+    for (const [area, entry] of areas) {
+      const share = entry.nodeCount / productNodeCount;
+      if (share < 0.1 || entry.nodeCount < 3) continue;
+      results.push({
+        area,
+        domain: this.classifyAreaDomain(area, entry),
+        nodeCount: entry.nodeCount,
+        share,
+      });
+    }
+    return results.sort((a, b) => b.nodeCount - a.nodeCount);
+  }
+
+  private classifyAreaDomain(
+    area: string,
+    entry: { nodeCount: number; terraformNodes: number; names: string[] }
+  ): string | null {
+    const infrastructureArea = /^(infra|infrastructure|terraform|opentofu|deploy|deployment|ops|devops|ansible|helm|charts?|k8s|kubernetes)$/i.test(area);
+    if (infrastructureArea || entry.terraformNodes >= entry.nodeCount * 0.5) {
+      return 'cloud-infrastructure';
+    }
+    const text = entry.names
+      .join(' ')
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[_\-./]/g, ' ')
+      .toLowerCase();
+    const ruleDomain = this.structuralDomainFromText(text);
+    if (ruleDomain) return ruleDomain;
+    const scores = new Map<string, number>();
+    for (const token of text.split(/[^a-z0-9]+/)) {
+      const normalized = this.normalizeDomainToken(token);
+      if (normalized.length <= 2) continue;
+      if (this.isGenericDomainToken(normalized) || this.isGenericCapabilityToken(normalized)) continue;
+      if (this.isCrossCuttingDomainToken(normalized)) continue;
+      scores.set(normalized, (scores.get(normalized) || 0) + 1);
+    }
+    const [top] = Array.from(scores.entries()).sort((a, b) => b[1] - a[1]);
+    if (!top || top[1] < 3) return null;
+    return top[0];
+  }
+
+  private reconcilePrimaryDomainWithAreas(
+    primaryDomain: string,
+    areaDomains: Array<{ area: string; domain: string | null; nodeCount: number; share: number }>
+  ): { primaryDomain: string; secondaryDomains: Array<{ domain: string; areas: string[]; node_share: number }> } {
+    const classified = areaDomains.filter(area => area.domain);
+    if (classified.length === 0) return { primaryDomain, secondaryDomains: [] };
+
+    const groups = new Map<string, { areas: string[]; nodeCount: number; share: number }>();
+    for (const area of classified) {
+      const group = groups.get(area.domain!) || { areas: [], nodeCount: 0, share: 0 };
+      group.areas.push(area.area);
+      group.nodeCount += area.nodeCount;
+      group.share += area.share;
+      groups.set(area.domain!, group);
+    }
+    const ordered = Array.from(groups.entries()).sort((a, b) => b[1].nodeCount - a[1].nodeCount);
+
+    let resolved = primaryDomain;
+    const primaryIsUseful = Boolean(primaryDomain) &&
+      primaryDomain !== 'unknown' &&
+      !this.isGenericDomainToken(primaryDomain);
+    const heaviest = ordered[0];
+    if (!primaryIsUseful) {
+      resolved = heaviest[0];
+    } else if (!this.areDomainsCompatible(primaryDomain, heaviest[0]) && this.isComposedDomainLabel(heaviest[0])) {
+      const primaryGroup = ordered.find(([domain]) => this.areDomainsCompatible(primaryDomain, domain));
+      if (primaryGroup) resolved = heaviest[0];
+    }
+
+    const secondaryDomains = groups.size < 2
+      ? []
+      : ordered
+        .filter(([domain]) => domain !== resolved && !this.areDomainsCompatible(domain, resolved))
+        .filter(([domain]) => this.isComposedDomainLabel(domain))
+        .map(([domain, group]) => ({
+          domain,
+          areas: [...group.areas].sort(),
+          node_share: Math.round(group.share * 100) / 100,
+        }));
+    return { primaryDomain: resolved, secondaryDomains };
+  }
+
+  private isComposedDomainLabel(domain: string): boolean {
+    return domain.includes('-');
+  }
+
+  private areDomainsCompatible(a: string, b: string): boolean {
+    if (!a || !b) return false;
+    if (a === b) return true;
+    const tokensOf = (domain: string) => new Set(
+      [
+        ...domain.toLowerCase().split('-'),
+        ...this.structuralDomainVocabulary(domain.toLowerCase()),
+      ].filter(token => token.length > 2 && token !== 'management' && !this.isGenericDomainToken(token))
+    );
+    const tokensA = tokensOf(a);
+    const tokensB = tokensOf(b);
+    for (const token of tokensA) {
+      if (tokensB.has(token)) return true;
+    }
+    return false;
+  }
+
   private inferPrimaryDomainFromCapabilities(systemCapabilities: SystemCapability[], coreConcepts: CASDomainConcept[]): string | null {
     const text = [
       ...systemCapabilities.map(capability => [
@@ -7803,7 +7947,34 @@ export class AnalyzerOrchestrator {
       ...coreConcepts.map(concept => concept.name),
     ].join(' ').toLowerCase();
 
+    const ruleDomain = this.structuralDomainFromText(text);
+    if (ruleDomain) return ruleDomain;
+
+    const dominantBusinessDomain = this.inferDominantBusinessDomainFromCapabilities(systemCapabilities, coreConcepts);
+    if (dominantBusinessDomain) return dominantBusinessDomain;
+
+    const capabilityDomain = systemCapabilities
+      .flatMap(capability => capability.related_domains || [])
+      .find(domain => domain && !this.isGenericDomainToken(domain));
+    return capabilityDomain ? capabilityDomain.toLowerCase().replace(/\s+/g, '-') : null;
+  }
+
+  private structuralDomainFromText(text: string): string | null {
     const has = (pattern: RegExp) => pattern.test(text);
+    if (has(/\b(cas|mcp|ast|parser|call graph|static analysis)\b/) && has(/\b(codebase|analysis|analyzer|analyses)\b/)) {
+      return 'codebase-analysis';
+    }
+    if (has(/\bcodebase\b/) && has(/\b(analysis|analyzer|analyses)\b/)) {
+      return 'codebase-analysis';
+    }
+    if (has(/\b(fleet|telematics)\b/) && has(/\b(vehicle|vehicles|driver|drivers|dispatch|dispatching|trip|trips)\b/)) {
+      return 'fleet-management';
+    }
+    const networkAccessAnchors = [/\baccess\b/, /\bpolicy|policies\b/, /\bnetwork|networks\b/, /\bposture\b/]
+      .filter(pattern => pattern.test(text)).length;
+    if (has(/\b(gateway|gateways)\b/) && !has(/\bpayment gateway\b/) && networkAccessAnchors >= 2) {
+      return 'network-access-management';
+    }
     if (has(/\border|orders|salesorder|sales order\b/) && has(/\binvoice|invoices|payment|payments\b/)) {
       return 'order-invoice-management';
     }
@@ -7825,14 +7996,55 @@ export class AnalyzerOrchestrator {
     ) {
       return 'user-identity-management';
     }
+    return null;
+  }
 
-    const dominantBusinessDomain = this.inferDominantBusinessDomainFromCapabilities(systemCapabilities, coreConcepts);
-    if (dominantBusinessDomain) return dominantBusinessDomain;
+  private structuralDomainVocabulary(domain: string): string[] {
+    const vocabulary: Record<string, string[]> = {
+      'codebase-analysis': ['analysis', 'analyzer', 'analyses', 'codebase', 'cas', 'mcp', 'parser', 'ast'],
+      'fleet-management': ['fleet', 'vehicle', 'driver', 'dispatch', 'telematics', 'trip'],
+      'network-access-management': ['gateway', 'access', 'policy', 'network', 'posture', 'resource'],
+      'order-invoice-management': ['order', 'invoice', 'payment'],
+      'billing-payments': ['invoice', 'payment', 'billing'],
+      'order-management': ['order', 'fulfillment'],
+      'document-reporting': ['document', 'report', 'pdf'],
+      'member-document-portal': ['company', 'member', 'organization', 'workspace', 'document', 'report'],
+    };
+    return vocabulary[domain] || domain.split('-').filter(token => token.length > 2);
+  }
 
-    const capabilityDomain = systemCapabilities
-      .flatMap(capability => capability.related_domains || [])
-      .find(domain => domain && !this.isGenericDomainToken(domain));
-    return capabilityDomain ? capabilityDomain.toLowerCase().replace(/\s+/g, '-') : null;
+  private isSpecificStructuralDomain(
+    domain: string,
+    systemCapabilities: SystemCapability[],
+    coreConcepts: CASDomainConcept[],
+    systemName?: string
+  ): boolean {
+    const normalized = domain.toLowerCase();
+    if (!normalized.includes('-')) return false;
+    if (this.isGenericDomainToken(normalized)) return false;
+    if (this.isNarrowCrossCuttingDomain(normalized)) return false;
+    if (this.isNonSemanticDomainLabel(normalized, systemName)) return false;
+    const meaningfulTokens = normalized
+      .split('-')
+      .filter(token => token.length > 2 && !this.isGenericDomainToken(token) && token !== 'management');
+    if (meaningfulTokens.length === 0) return false;
+    if (meaningfulTokens.every(token => this.isCrossCuttingDomainToken(token) || this.isNarrowCrossCuttingDomain(token))) {
+      return false;
+    }
+    const vocabulary = this.structuralDomainVocabulary(normalized);
+    const sources = [
+      ...systemCapabilities.map(capability => [
+        capability.name,
+        ...(capability.related_domains || []),
+        ...(capability.related_entities || []),
+      ].join(' ')),
+      ...coreConcepts.map(concept => concept.name),
+    ];
+    const supporting = sources.filter(source => {
+      const flattened = source.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase();
+      return vocabulary.some(token => flattened.includes(token));
+    });
+    return supporting.length >= 2;
   }
 
   private isNarrowCrossCuttingDomain(domain: string): boolean {
@@ -7902,7 +8114,6 @@ export class AnalyzerOrchestrator {
     if (tokens.length === 0) return null;
     if (tokens.includes('pumpfun')) return 'pumpfun';
     if (tokens.includes('solana')) return 'solana';
-    if (tokens.includes('zerac')) return 'zerac';
     return tokens[0];
   }
 
@@ -7923,7 +8134,7 @@ export class AnalyzerOrchestrator {
   private stripAgentToolingInstructionText(text: string): string {
     return text
       .split(/\r?\n/)
-      .filter(line => !/\b(klauro|mcp|claude(?:\s+code)?|codex|anthropic|cursor|copilot|coding agents?|agent operating loop|work packets?|analysis-focus|cas graph|analyze_codebase|get_agent_|run_answer_pack|assess_change_risk|get_coding_context)\b/i.test(line))
+      .filter(line => !/\b(klauro|unravl|mcp|claude(?:\s+code)?|codex|anthropic|cursor|copilot|coding agents?|agent operating loop|work packets?|analysis-focus|cas graph|codebase intelligence|query the analysis|analyze_codebase|get_summary|get_level|get_node|get_callers|get_callees|find_tests|search_nodes|get_agent_|run_answer_pack|assess_change_risk|get_coding_context)\b/i.test(line))
       .join('\n');
   }
 
@@ -8106,14 +8317,7 @@ export class AnalyzerOrchestrator {
     const isInfrastructureRepo =
       /\b(infra|infrastructure|terraform|opentofu|aws-infra|system-infra)\b/.test(locationText) ||
       pathSegments.some(segment => /^(infra|infrastructure|terraform|aws-infra|system-infra)$/.test(segment));
-    const isExplicitZeroTrustProduct =
-      /\bzero[-\s]?trust\b/.test(text) && !isInfrastructureRepo ||
-      repoName.includes('zerac') ||
-      (pathSegments.includes('zerac') && !isInfrastructureRepo);
-    const isExplicitCodebaseAnalysisProduct =
-      /\b(klauro|unravl)\b/.test(text) ||
-      repoName === 'klauro' ||
-      repoName === 'unravl';
+    const isExplicitZeroTrustProduct = /\bzero[-\s]?trust\b/.test(text) && !isInfrastructureRepo;
     if (isInfrastructureRepo) {
       return 'cloud-infrastructure';
     }
@@ -8153,11 +8357,9 @@ export class AnalyzerOrchestrator {
       this.phraseScore(searchableText, ['network', 'access']) +
       this.phraseScore(searchableText, ['gateway']) +
       this.phraseScore(searchableText, ['verification', 'secure']);
-    const zeroTrustScore = isExplicitCodebaseAnalysisProduct
-      ? 0
-      : explicitZeroTrustLanguage
-        ? zeroTrustRawScore
-        : Math.min(zeroTrustRawScore, 3);
+    const zeroTrustScore = explicitZeroTrustLanguage
+      ? zeroTrustRawScore
+      : Math.min(zeroTrustRawScore, 3);
     const hasApplicationFrameworkSignal =
       /\b(rails|django|react|angular|vue|express|nestjs|fastapi|laravel|symfony|spring|flutter|flask|next\.?js)\b/i.test(searchableText);
     const effectiveCloudInfrastructureScore = isExplicitZeroTrustProduct || (hasApplicationFrameworkSignal && !isInfrastructureRepo)
@@ -8182,7 +8384,21 @@ export class AnalyzerOrchestrator {
       strongCommerceAnchorScore +
       this.phraseScore(searchableText, ['invoice']) +
       this.phraseScore(searchableText, ['billing']);
-    const nicheDomainSignal = fleetManagementScore >= 2 || clinicalAnchorScore >= 2;
+    const codebaseAnalysisAnchorScore =
+      this.phraseScore(searchableText, ['codebase analysis', 'code analysis', 'static analysis', 'call graph']) +
+      this.phraseScore(searchableText, ['analyzer', 'analyzers']) +
+      (/\bcodebase\b/.test(searchableText) && /\banaly(sis|ses|ze|zes)\b/.test(searchableText) ? 1 : 0);
+    const codebaseAnalysisScore = codebaseAnalysisAnchorScore === 0
+      ? 0
+      : this.phraseScore(searchableText, ['codebase analysis', 'code analysis', 'static analysis']) * 3 +
+      this.phraseScore(searchableText, ['codebase', 'analysis', 'analyzer', 'analyzers']) +
+      this.phraseScore(searchableText, ['cas', 'mcp', 'call graph', 'entry points']) * 2;
+    const networkAccessAnchorScore =
+      this.phraseScore(searchableText, ['gateway']) +
+      this.phraseScore(searchableText, ['posture']) +
+      this.phraseScore(searchableText, ['access request']) +
+      this.phraseScore(searchableText, ['protected resource']);
+    const nicheDomainSignal = fleetManagementScore >= 2 || clinicalAnchorScore >= 2 || networkAccessAnchorScore >= 2;
     const commerceOperationsScore = commerceAnchorScore === 0 || (strongCommerceAnchorScore === 0 && nicheDomainSignal)
       ? 0
       : this.phraseScore(searchableText, ['cart']) * 2 +
@@ -8205,8 +8421,10 @@ export class AnalyzerOrchestrator {
       this.phraseScore(searchableText, ['assessment']) +
       this.phraseScore(searchableText, ['scientific']);
     const phraseScores: Array<[string, number]> = [
-      ['codebase-analysis', (isExplicitCodebaseAnalysisProduct ? 8 : 0) + this.phraseScore(searchableText, ['klauro']) * 4 + this.phraseScore(searchableText, ['codebase', 'analysis']) + this.phraseScore(searchableText, ['cas', 'mcp'])],
-      ['personal-ai-assistant', this.phraseScore(searchableText, ['personal ai assistant']) * 3 + this.phraseScore(searchableText, ['multi-channel', 'assistant']) + this.phraseScore(searchableText, ['channels', 'gateway'])],
+      ['codebase-analysis', codebaseAnalysisScore],
+      ['personal-ai-assistant', this.phraseScore(searchableText, ['assistant']) === 0
+        ? 0
+        : this.phraseScore(searchableText, ['personal ai assistant']) * 3 + this.phraseScore(searchableText, ['multi-channel', 'assistant']) + this.phraseScore(searchableText, ['channels', 'gateway'])],
       ['ecommerce-storefront', this.phraseScore(searchableText, ['shopify', 'theme']) * 2 + this.phraseScore(searchableText, ['online store']) + this.phraseScore(searchableText, ['storefront', 'merchant'])],
       ['commerce-operations-portal', commerceOperationsScore],
       ['clinical-testing', clinicalTestingScore],
@@ -8287,7 +8505,7 @@ export class AnalyzerOrchestrator {
       'assessment',
       'portfolio',
       'codebase analysis',
-      'klauro',
+      'analyzer',
       'cas',
       'mcp',
       'billing',
