@@ -151,10 +151,16 @@ async function runCondition(
   args.push('--allowedTools', ...allowedTools);
 
   const claudeMdPath = path.join(targetRepo, 'CLAUDE.md');
+  const claudeMdBackupPath = `${claudeMdPath}.adoption-measurement-backup`;
   let wroteClaudeMd = false;
+  let backedUpClaudeMd = false;
   if (condition.workspaceInstructions) {
     if (fs.existsSync(claudeMdPath)) {
-      throw new Error(`${claudeMdPath} already exists; refusing to overwrite for measurement`);
+      const existing = fs.readFileSync(claudeMdPath, 'utf8');
+      if (existing !== OPERATING_LOOP_INSTRUCTIONS) {
+        fs.copyFileSync(claudeMdPath, claudeMdBackupPath);
+        backedUpClaudeMd = true;
+      }
     }
     fs.writeFileSync(claudeMdPath, OPERATING_LOOP_INSTRUCTIONS);
     wroteClaudeMd = true;
@@ -242,6 +248,10 @@ async function runCondition(
     };
   } finally {
     if (wroteClaudeMd) fs.rmSync(claudeMdPath, { force: true });
+    if (backedUpClaudeMd) {
+      fs.copyFileSync(claudeMdBackupPath, claudeMdPath);
+      fs.rmSync(claudeMdBackupPath, { force: true });
+    }
   }
 }
 
@@ -280,9 +290,13 @@ async function main(): Promise<void> {
         repetitionRuns.push(runCondition(condition, repetition, targetRepo, outputDir));
       }
     }
-    const conditionResults = await Promise.all(repetitionRuns);
-    results.push(...conditionResults);
-    process.stdout.write(`Completed condition ${condition.id}\n`);
+    try {
+      const conditionResults = await Promise.all(repetitionRuns);
+      results.push(...conditionResults);
+      process.stdout.write(`Completed condition ${condition.id}\n`);
+    } catch (error) {
+      process.stderr.write(`Condition ${condition.id} failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    }
   }
 
   fs.writeFileSync(path.join(outputDir, 'results.json'), JSON.stringify(results, null, 2));

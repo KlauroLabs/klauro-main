@@ -1109,7 +1109,7 @@ function registerTools(server: McpServer) {
     'resolve_agent_analysis',
     {
       title: 'Resolve Agent Analysis',
-      description: 'Select the best stored CAS analysis for an agent task, especially when the requested path is a monorepo/root and a subproject analysis is more accurate.',
+      description: 'Call this FIRST, before any Read/Grep/Glob exploration of a repository: one call tells you whether a pre-built code analysis (architecture graph, entry points, risks, tests) exists for this path and selects the best one, including routing monorepo roots to the right analyzed subproject. If an analysis exists, the follow-up tools replace dozens of exploratory file reads; if none exists, this reports that honestly so you can fall back to reading files. Costs one cheap call either way.',
       inputSchema: {
         path: z.string().describe('Repository or subproject path the agent was handed'),
         task: z.object({
@@ -1192,7 +1192,7 @@ function registerTools(server: McpServer) {
     'get_agent_start_context',
     {
       title: 'Get Agent Start Context',
-      description: 'Default first-call context for Codex, Claude, and other coding agents. Returns CAS-backed orientation, readiness, top graph anchors, answer-pack status, and recommended first MCP calls before broad file reads.',
+      description: 'Call this BEFORE reading or grepping files in an analyzed repository — it replaces the first 20-40 exploratory Read/Grep/Glob calls with one response: the architecture map, entry points, key risks, top graph anchors, analysis readiness, and the recommended next calls for your task. This is the fastest way to orient in a codebase you have not seen before. Use after resolve_agent_analysis confirms an analysis exists.',
       inputSchema: {
         path: z.string().describe('Project path'),
         task: z.object({
@@ -1215,7 +1215,7 @@ function registerTools(server: McpServer) {
     'get_agent_tool_plan',
     {
       title: 'Get Agent Tool Plan',
-      description: 'Task-specific MCP call plan for agents. Use before deciding whether to read files so the CAS graph narrows the work area first.',
+      description: 'Returns the exact sequence of analysis calls for your task type (orient, modify, debug, review, trace, cross-repo, runtime) so you do not have to guess which files to grep or which tools to chain. Call this instead of planning a manual file-exploration strategy; the pre-built code graph narrows the work area before you open a single file.',
       inputSchema: {
         path: z.string().describe('Project path'),
         task: z.object({
@@ -1238,7 +1238,7 @@ function registerTools(server: McpServer) {
     'get_agent_work_packet',
     {
       title: 'Get Agent Work Packet',
-      description: 'One-call task packet for agents. Resolves the target, returns coding context, capability memory, risk, callers, callees, tests, entry context, MCP follow-ups, and the first source files to inspect.',
+      description: 'One call that does the work of an entire exploratory session: describe your task ("add an audit trail for driver status changes") and it resolves the target code, change risk, callers and callees, covering tests, behavioral invariants, and the exact source files to read first. Use this instead of grepping for symbols and tracing imports by hand — it turns a 40-call investigation into one call plus a handful of targeted reads. Requires an existing analysis (check with resolve_agent_analysis).',
       inputSchema: {
         path: z.string().describe('Project path'),
         task: z.object({
@@ -2014,7 +2014,7 @@ function registerTools(server: McpServer) {
     'search_nodes',
     {
       title: 'Search Nodes',
-      description: 'Find code elements (classes, functions, modules, etc.) by name, type, category, or level. Supports lexical, semantic, and hybrid retrieval modes.',
+      description: 'Use this instead of Grep to find where a class, function, route, service, or concept lives: it searches the pre-built code graph and returns ranked nodes with file locations, types, and relationships rather than raw text matches, so "driver status" finds the handler even when the literal string never appears. Supports lexical, semantic, and hybrid retrieval modes.',
       inputSchema: {
         path: z.string().describe('Project path'),
         query: z.string().describe('Search query (matches name, qualified_name, description)'),
@@ -2039,7 +2039,7 @@ function registerTools(server: McpServer) {
     'semantic_search',
     {
       title: 'Semantic Search',
-      description: 'Natural-language query that resolves to graph-anchored ranked CAS nodes. Fuses embedding similarity with lexical match via reciprocal rank fusion, then re-ranks on structural graph signals. Falls back to lexical search and reports degraded when no embedding index is available.',
+      description: 'Ask in plain English where code lives ("where are driver status updates handled?") and get ranked code nodes with file paths — use this instead of guessing grep keywords when you do not know the codebase vocabulary. Fuses embedding similarity with lexical match, then re-ranks on structural graph signals. Falls back to lexical search and reports degraded when no embedding index is available.',
       inputSchema: {
         path: z.string().describe('Project path'),
         query: z.string().describe('Natural-language description of the code to find'),
@@ -2783,7 +2783,7 @@ function registerTools(server: McpServer) {
     'get_product_map',
     {
       title: 'Get Product Map',
-      description: 'One composed product map of what was actually built: system identity with provenance-tagged descriptions, capabilities ordered by criticality and linked to the user journeys and entities they serve, journey counts with the top journeys by criticality, sensitive data and exposure highlights, paradigm adoption with open deviations, health (tests, implementation gaps, top risks), and coverage caveats. Use section to fetch one part token-efficiently, or format markdown for a compact onboarding brief.',
+      description: 'What this codebase actually does, in one call — read this instead of skimming READMEs and directory trees to orient: system identity, capabilities ordered by criticality and linked to the user journeys and entities they serve, sensitive data and exposure highlights, conventions with open deviations, and health (tests, implementation gaps, top risks), each with coverage caveats so you know what the analysis is sure about. Use section to fetch one part token-efficiently, or format markdown for a compact onboarding brief.',
       inputSchema: {
         path: z.string().describe('Project path'),
         section: z.enum(['identity', 'capabilities', 'journeys', 'data', 'conventions', 'health', 'coverage_caveats']).optional().describe('Return only one section of the map'),
