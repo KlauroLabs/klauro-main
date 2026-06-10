@@ -19,7 +19,8 @@ Guidelines:
 - Mention key technologies, patterns, or frameworks when relevant
 - Keep descriptions concise but comprehensive (2-3 sentences)
 - Be objective and factual, avoiding speculation
-- Consider the business context and user impact when applicable`,
+- Avoid vague labels such as functionality, module, area, or system piece when a concrete behavior or relationship is available
+- Do not add business, compliance, security, scale, or user-impact claims unless the provided facts explicitly support them`,
 
     riskAssessment: `You are a security and quality expert specializing in code risk assessment. Your job is to identify potential risks, vulnerabilities, and quality issues in software components.
 
@@ -191,7 +192,12 @@ Component Details:
       prompt += `\n\nAdditional Context:\n${JSON.stringify(additionalContext, null, 2)}`;
     }
 
-    prompt += `\n\nPlease provide a clear, concise description of this component that explains its purpose, functionality, and role in the system. Focus on what business value it provides and how it contributes to the overall architecture.`;
+    const taskText = typeof additionalContext?.task === 'string' ? additionalContext.task : '';
+    if (/return only valid json/i.test(taskText)) {
+      prompt += `\n\nReturn exactly the requested JSON object. Do not add markdown, commentary, or prose outside the JSON.`;
+    } else {
+      prompt += `\n\nPlease provide a clear, concise description of this component that explains its purpose, behavior, and role in the system. Use only the provided facts; avoid promotional phrasing, vague words like "functionality", and inferred business outcomes unless they are explicit in the context.`;
+    }
 
     return prompt;
   }

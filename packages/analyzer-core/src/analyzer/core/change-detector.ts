@@ -55,6 +55,8 @@ const SOURCE_EXTENSIONS = [
   '.php',
   '.dart',
   '.prisma',
+  '.tf',
+  '.tfvars',
 ];
 
 const IGNORE_PATTERNS = [
@@ -62,6 +64,7 @@ const IGNORE_PATTERNS = [
   '**/dist/**',
   '**/build/**',
   '**/.git/**',
+  '**/.terraform/**',
   '**/coverage/**',
   '**/.nyc_output/**',
   '**/__pycache__/**',
@@ -69,12 +72,19 @@ const IGNORE_PATTERNS = [
   '**/target/**',
   '**/vendor/**',
   '**/vendors/**',
+  '**/examples/**',
+  '**/Examples/**',
+  '**/samples/**',
+  '**/Samples/**',
   '**/.venv/**',
   '**/venv/**',
   '**/env/**',
   '**/site-packages/**',
   '**/.sourcemaps/**',
   '**/sourcemaps/**',
+  '**/.dart_tool/**',
+  '**/.flutter-plugins',
+  '**/.flutter-plugins-dependencies',
   '**/*.js.map',
   '**/*.css.map',
   '**/*.bundle.js',
@@ -87,6 +97,7 @@ const IGNORE_PATTERNS = [
 
 export class ChangeDetector {
   private projectPath: string;
+  private gitRoot: string | null = null;
   private isGitRepo: boolean;
   private lastSourceFileScan: string[] | null = null;
 
@@ -101,8 +112,13 @@ export class ChangeDetector {
         cwd: this.projectPath,
         stdio: 'pipe',
       });
+      this.gitRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+        cwd: this.projectPath,
+        stdio: 'pipe',
+      }).toString().trim();
       return true;
     } catch {
+      this.gitRoot = null;
       return false;
     }
   }
@@ -128,12 +144,24 @@ export class ChangeDetector {
     if (this.isGitRepo) {
       const gitChanges = await this.detectGitChanges(previousState.gitCommitHash);
       if (gitChanges) {
+        const contentFilteredGitChanges = await this.filterUnchangedGitChanges(gitChanges, previousState);
+        if (this.isEmptyChangeSet(contentFilteredGitChanges)) {
+          return this.createEmptyChangeSet();
+        }
         const hashChanges = mtimeCandidates.length > 0
           ? await this.detectByHash(mtimeCandidates, previousState)
           : null;
         const detectedChanges = hashChanges
-          ? this.mergeChangeSets(gitChanges, hashChanges)
-          : gitChanges;
+          ? this.mergeChangeSets(contentFilteredGitChanges, hashChanges)
+          : contentFilteredGitChanges;
+        const coreConfigChanged = this.checkCoreConfigChanges([
+          ...detectedChanges.added,
+          ...detectedChanges.modified,
+          ...detectedChanges.deleted,
+        ]);
+        if (coreConfigChanged) {
+          return this.createFullRebuildChangeSet(`Core configuration changed: ${coreConfigChanged}`);
+        }
         const enriched = await this.enrichWithDependencies(detectedChanges, previousState);
         if (this.shouldTriggerFullRebuild(enriched, previousState)) {
           return this.createFullRebuildChangeSet(enriched.reason || 'Threshold exceeded');
@@ -193,7 +221,9 @@ export class ChangeDetector {
       const modified: string[] = [];
       const deleted: string[] = [];
 
-      const processChange = (file: string, status: string) => {
+      const processChange = (rawFile: string, status: string) => {
+        const file = this.toProjectRelativeGitPath(rawFile);
+        if (!file) return;
         if (status === 'A' || status === '?') {
           if (!added.includes(file)) added.push(file);
         } else if (status === 'D') {
@@ -210,24 +240,10 @@ export class ChangeDetector {
         processChange(file, status);
       }
 
-      const coreConfigChanged = this.checkCoreConfigChanges([...added, ...modified, ...deleted]);
-      if (coreConfigChanged) {
-        return {
-          added,
-          modified,
-          deleted,
-          affectedFiles: [],
-          affectedNodeIds: new Set<string>(),
-          requiresFullRebuild: true,
-          reason: `Core configuration changed: ${coreConfigChanged}`,
-          detectionMethod: 'git',
-        };
-      }
-
       return {
-        added: added.filter(f => this.isSourceFile(f)),
-        modified: modified.filter(f => this.isSourceFile(f)),
-        deleted: deleted.filter(f => this.isSourceFile(f)),
+        added: added.filter(f => this.isTrackedAnalysisFile(f)),
+        modified: modified.filter(f => this.isTrackedAnalysisFile(f)),
+        deleted: deleted.filter(f => this.isTrackedAnalysisFile(f)),
         affectedFiles: [],
         affectedNodeIds: new Set<string>(),
         requiresFullRebuild: false,
@@ -248,11 +264,11 @@ export class ChangeDetector {
 
       const output = execFileSync(
         'git',
-        ['diff', '--name-status', `${previousCommit}..HEAD`],
-        { cwd: this.projectPath, stdio: 'pipe' }
+        ['diff', '--name-status', '-z', `${previousCommit}..HEAD`],
+        { cwd: this.projectPath, stdio: 'pipe', maxBuffer: 1024 * 1024 * 50 }
       ).toString();
 
-      return this.parseGitDiff(output);
+      return this.parseGitDiffZ(output);
     } catch {
       return [];
     }
@@ -270,13 +286,67 @@ export class ChangeDetector {
     }
   }
 
+  private async filterUnchangedGitChanges(changeSet: ChangeSet, previousState: IncrementalState): Promise<ChangeSet> {
+    const added: string[] = [];
+    const modified: string[] = [];
+    const deleted: string[] = [];
+
+    for (const file of changeSet.added) {
+      const previousRecord = previousState.files[file];
+      if (!previousRecord) {
+        added.push(file);
+        continue;
+      }
+      if (await this.fileHashChanged(file, previousRecord)) {
+        modified.push(file);
+      }
+    }
+
+    for (const file of changeSet.modified) {
+      const previousRecord = previousState.files[file];
+      if (!previousRecord) {
+        added.push(file);
+        continue;
+      }
+      if (await this.fileHashChanged(file, previousRecord)) {
+        modified.push(file);
+      }
+    }
+
+    for (const file of changeSet.deleted) {
+      if (!(await fs.pathExists(path.join(this.projectPath, file)))) {
+        deleted.push(file);
+      }
+    }
+
+    return {
+      ...changeSet,
+      added: this.uniquePaths(added),
+      modified: this.uniquePaths(modified).filter(file => !added.includes(file) && !deleted.includes(file)),
+      deleted: this.uniquePaths(deleted),
+      affectedFiles: [],
+      affectedNodeIds: new Set<string>(),
+      requiresFullRebuild: false,
+      reason: undefined,
+      detectionMethod: 'hybrid',
+    };
+  }
+
+  private async fileHashChanged(file: string, previousRecord: FileAnalysisRecord): Promise<boolean> {
+    const fullPath = path.join(this.projectPath, file);
+    if (!(await fs.pathExists(fullPath))) return true;
+    const currentHash = await this.computeFileHash(fullPath);
+    return currentHash !== previousRecord.contentHash;
+  }
+
   private getUncommittedChanges(): Array<{ file: string; status: string }> {
-    const output = execFileSync('git', ['status', '--porcelain'], {
+    const output = execFileSync('git', ['status', '--porcelain=v1', '-z'], {
       cwd: this.projectPath,
       stdio: 'pipe',
+      maxBuffer: 1024 * 1024 * 50,
     }).toString();
 
-    return this.parseGitStatus(output);
+    return this.parseGitStatusZ(output);
   }
 
   private getGitStatus(): Array<{ file: string; status: string }> {
@@ -306,6 +376,28 @@ export class ChangeDetector {
     return changes;
   }
 
+  private parseGitDiffZ(output: string): Array<{ file: string; status: string }> {
+    const changes: Array<{ file: string; status: string }> = [];
+    const parts = output.split('\0').filter(Boolean);
+
+    for (let index = 0; index < parts.length;) {
+      const status = parts[index++];
+      const code = status[0];
+      if (!code) continue;
+      if (code === 'R' || code === 'C') {
+        const oldFile = parts[index++];
+        const newFile = parts[index++];
+        if (oldFile) changes.push({ status: 'D', file: oldFile });
+        if (newFile) changes.push({ status: 'A', file: newFile });
+        continue;
+      }
+      const file = parts[index++];
+      if (file) changes.push({ status: code, file });
+    }
+
+    return changes;
+  }
+
   private parseGitStatus(output: string): Array<{ file: string; status: string }> {
     const changes: Array<{ file: string; status: string }> = [];
     const lines = output.split('\n').filter(Boolean);
@@ -319,6 +411,36 @@ export class ChangeDetector {
         const [oldFile, newFile] = file.split(' -> ');
         changes.push({ status: 'D', file: oldFile });
         changes.push({ status: 'A', file: newFile });
+        continue;
+      }
+
+      if (staged === '?' || unstaged === '?') {
+        changes.push({ status: '?', file });
+      } else if (staged !== ' ') {
+        changes.push({ status: staged, file });
+      } else if (unstaged !== ' ') {
+        changes.push({ status: unstaged, file });
+      }
+    }
+
+    return changes;
+  }
+
+  private parseGitStatusZ(output: string): Array<{ file: string; status: string }> {
+    const changes: Array<{ file: string; status: string }> = [];
+    const parts = output.split('\0').filter(Boolean);
+
+    for (let index = 0; index < parts.length;) {
+      const entry = parts[index++];
+      if (!entry || entry.length < 4) continue;
+      const staged = entry[0];
+      const unstaged = entry[1];
+      const file = entry.substring(3);
+
+      if (staged === 'R' || staged === 'C') {
+        const oldFile = parts[index++];
+        if (oldFile) changes.push({ status: 'D', file: oldFile });
+        if (file) changes.push({ status: 'A', file });
         continue;
       }
 
@@ -484,8 +606,29 @@ export class ChangeDetector {
     };
   }
 
+  private isEmptyChangeSet(changeSet: ChangeSet): boolean {
+    return !changeSet.requiresFullRebuild &&
+      changeSet.added.length === 0 &&
+      changeSet.modified.length === 0 &&
+      changeSet.deleted.length === 0;
+  }
+
   private uniquePaths(paths: string[]): string[] {
     return [...new Set(paths.map(file => file.replace(/\\/g, '/')))];
+  }
+
+  private toProjectRelativeGitPath(file: string): string | null {
+    const normalizedFile = file.replace(/\\/g, '/');
+    if (!this.gitRoot) {
+      return normalizedFile;
+    }
+
+    const absolute = path.resolve(this.gitRoot, normalizedFile);
+    const relativeToProject = path.relative(this.projectPath, absolute).replace(/\\/g, '/');
+    if (!relativeToProject || relativeToProject.startsWith('../') || path.isAbsolute(relativeToProject)) {
+      return null;
+    }
+    return relativeToProject;
   }
 
   private buildReverseDependencyMap(state: IncrementalState): Map<string, Set<string>> {
@@ -546,6 +689,10 @@ export class ChangeDetector {
   private isSourceFile(file: string): boolean {
     const ext = path.extname(file).toLowerCase();
     return SOURCE_EXTENSIONS.includes(ext);
+  }
+
+  private isTrackedAnalysisFile(file: string): boolean {
+    return this.isSourceFile(file) || this.checkCoreConfigChanges([file]) !== null;
   }
 
   private async computeFileHash(filePath: string): Promise<string> {

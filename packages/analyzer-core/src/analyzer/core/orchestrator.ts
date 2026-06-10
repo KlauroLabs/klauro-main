@@ -1,6 +1,7 @@
 import { BaseAnalyzer, CASAnalysisResult, CASNode, CASEdge, AnalysisContext, FileAnalysisContext } from './base-analyzer';
 import {
   CASOutput,
+  CASAnalysisPhase,
   CASContribution,
   CASProgressiveLevels,
   CASCategories,
@@ -19,8 +20,10 @@ import {
   CASIntent,
   CASFlowSummary,
   CASChangeRisk,
+  ChangeRiskFactor,
   CASChangeRiskSummary,
   CASDataEntity,
+  CASDescriptionGeneration,
   CASDataSummary,
   CASBehavioralInvariant,
   CASBehavioralInvariantSummary,
@@ -55,6 +58,7 @@ import {
   CASDocumentationSummary,
   CASTodoSummary,
   CASImplementationHealth,
+  CASSystemHealth,
   CASSecurityContext,
   CASCallGraph,
   CASNodePerspective,
@@ -63,11 +67,16 @@ import {
   ChangeSet,
   FileAnalysisRecord,
   ChangeReport,
+  ChangeSemanticImpact,
   FileAnalysisResult,
   CAS_VERSION,
   INCREMENTAL_STATE_VERSION
 } from '../../types/cas.types';
 import { ChangeDetector } from './change-detector';
+import { buildUserJourneys } from './journey-builder';
+import { buildParadigmConformance } from './paradigm-conformance';
+import { buildDataLineage } from './data-lineage';
+import { buildProductMap } from './product-map';
 import { CallGraphBuilder } from './call-graph-builder';
 import { DomainExtractor } from './domain-extractor';
 import { WorkflowDetector } from './workflow-detector';
@@ -80,7 +89,7 @@ import { GitAnalyzer } from './git-analyzer';
 import { detectCodebaseIdioms } from './idiom-detector';
 import { EmbeddingPhase, type EmbeddingPhaseConfig } from '../embedding/embedding-phase';
 import { aiService } from '../../ai/ai-service';
-import { aiConfig } from '../../config/ai.config';
+import { aiConfig, getAIConfig } from '../../config/ai.config';
 
 export type { CASOutput } from '../../types/cas.types';
 import * as fs from 'fs-extra';
@@ -108,6 +117,48 @@ export interface IncrementalAnalysisOptions {
   saveCache?: (contentHash: string, result: FileAnalysisResult) => Promise<void>;
 }
 
+interface DetectedAnalyzerCacheEntry {
+  expiresAt: number;
+  projectRoots: string[];
+  analyzerRootEntries: Array<[string, string]>;
+  analyzers: AnalyzerRegistration[];
+}
+
+interface SourceFileInventory {
+  expiresAt: number;
+  files: string[];
+  basenames: Map<string, string[]>;
+  extensions: Map<string, string[]>;
+}
+
+interface ProjectTextSignal {
+  primaryDomain?: string;
+  concepts: string[];
+  summary?: string;
+  evidence: string[];
+}
+
+type DescriptionTargetKind = 'capability' | 'entity';
+
+interface DescriptionTarget {
+  id: string;
+  name: string;
+  kind: DescriptionTargetKind;
+  currentDescription?: string;
+  category?: string;
+  source?: string;
+  fields?: string[];
+  operations?: string[];
+  relatedEntities?: string[];
+  relatedDomains?: string[];
+  lifecycle?: {
+    creates: number;
+    reads: number;
+    updates: number;
+    deletes: number;
+  };
+}
+
 interface DiscoveredEntryPointCandidate {
   file: string;
   type: CASEntryPoint['type'];
@@ -122,12 +173,17 @@ export class AnalyzerOrchestrator {
   private analyzerRootMap: Map<string, string> = new Map();
   private manifestFileCache: Map<string, string[]> = new Map();
   private nestedRepoIgnoreCache: Map<string, string[]> = new Map();
+  private detectedAnalyzerCache: Map<string, DetectedAnalyzerCacheEntry> = new Map();
+  private sourceFileInventoryCache: Map<string, SourceFileInventory> = new Map();
   private nodeLookupSource: CASNode[] | null = null;
   private nodeLookupById: Map<string, CASNode> = new Map();
   private embeddingPhaseConfig: EmbeddingPhaseConfig | null = null;
+  private static aiInterpretationTimeouts = 0;
+  private static aiInterpretationDisabledUntil = 0;
 
   registerAnalyzer(registration: AnalyzerRegistration): void {
     this.analyzers.set(registration.id, registration);
+    this.detectedAnalyzerCache.clear();
   }
 
   configureEmbedding(config: EmbeddingPhaseConfig | null): void {
@@ -135,9 +191,29 @@ export class AnalyzerOrchestrator {
   }
 
   private async applyEmbeddingPhase(output: CASOutput, projectPath: string): Promise<void> {
-    if (!this.embeddingPhaseConfig) return;
-    const phase = new EmbeddingPhase(this.embeddingPhaseConfig);
-    await phase.run(output, projectPath);
+    if (this.embeddingPhaseConfig) {
+      const phase = new EmbeddingPhase(this.embeddingPhaseConfig);
+      await phase.run(output, projectPath);
+    }
+    this.compactSourceRaw(output);
+  }
+
+  private compactSourceRaw(output: CASOutput): void {
+    const omitRaw = output.nodes.length > 10_000;
+    const maxRawChars = 2_000;
+    for (const node of output.nodes) {
+      if (!node.source?.raw) continue;
+      if (omitRaw) {
+        const { raw: _raw, ...source } = node.source;
+        node.source = source;
+        continue;
+      }
+      if (node.source.raw.length <= maxRawChars) continue;
+      node.source = {
+        ...node.source,
+        raw: `${node.source.raw.slice(0, maxRawChars)}\n...`,
+      };
+    }
   }
 
   private async discoverProjectRoots(projectPath: string): Promise<string[]> {
@@ -180,15 +256,182 @@ export class AnalyzerOrchestrator {
   private async getManifestFiles(projectPath: string): Promise<string[]> {
     const cached = this.manifestFileCache.get(projectPath);
     if (cached) return cached;
-    const nestedRepoIgnores = await this.getNestedRepoIgnorePatterns(projectPath);
-
-    const matches = await glob(this.getManifestPatterns(), {
-      cwd: projectPath,
-      ignore: [...this.getProjectDiscoveryIgnorePatterns(), ...nestedRepoIgnores],
-      nodir: true
-    });
+    const inventory = await this.getSourceFileInventory(projectPath);
+    const matches = inventory.files.filter(file => this.isManifestFile(file));
     this.manifestFileCache.set(projectPath, matches);
     return matches;
+  }
+
+  private async getSourceFileInventory(projectPath: string): Promise<SourceFileInventory> {
+    const cacheKey = path.resolve(projectPath);
+    const cached = this.sourceFileInventoryCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached;
+
+    const nestedRepoIgnores = await this.getNestedRepoIgnorePatterns(projectPath);
+    const nestedIgnoredDirectories = new Set(nestedRepoIgnores
+      .map(pattern => pattern.replace(/\/\*\*$/, ''))
+      .filter(Boolean));
+    const normalized = this.collectSourceInventoryFiles(projectPath, nestedIgnoredDirectories);
+    const basenames = new Map<string, string[]>();
+    const extensions = new Map<string, string[]>();
+
+    for (const file of normalized) {
+      const basename = path.basename(file).toLowerCase();
+      const extension = path.extname(file).toLowerCase();
+      const basenameMatches = basenames.get(basename) || [];
+      basenameMatches.push(file);
+      basenames.set(basename, basenameMatches);
+
+      if (extension) {
+        const extensionMatches = extensions.get(extension) || [];
+        extensionMatches.push(file);
+        extensions.set(extension, extensionMatches);
+      }
+    }
+
+    const inventory = {
+      expiresAt: Date.now() + 60_000,
+      files: normalized,
+      basenames,
+      extensions
+    };
+    this.sourceFileInventoryCache.set(cacheKey, inventory);
+    return inventory;
+  }
+
+  private collectSourceInventoryFiles(projectPath: string, nestedIgnoredDirectories: Set<string>): string[] {
+    const files: string[] = [];
+    const walk = (absoluteDirectory: string, relativeDirectory: string) => {
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(absoluteDirectory, { withFileTypes: true });
+      } catch {
+        return;
+      }
+
+      for (const entry of entries) {
+        const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+        const normalizedRelativePath = relativePath.replace(/\\/g, '/');
+
+        if (entry.isDirectory()) {
+          if (this.isIgnoredInventoryDirectory(entry.name, normalizedRelativePath, nestedIgnoredDirectories)) {
+            continue;
+          }
+          walk(path.join(absoluteDirectory, entry.name), normalizedRelativePath);
+          continue;
+        }
+
+        if (
+          entry.isFile() &&
+          !this.isIgnoredInventoryFile(normalizedRelativePath) &&
+          this.isSourceInventoryCandidate(normalizedRelativePath)
+        ) {
+          files.push(normalizedRelativePath);
+        }
+      }
+    };
+
+    walk(projectPath, '');
+    return Array.from(new Set(files)).sort();
+  }
+
+  private isIgnoredInventoryDirectory(
+    directoryName: string,
+    relativePath: string,
+    nestedIgnoredDirectories: Set<string>
+  ): boolean {
+    if (nestedIgnoredDirectories.has(relativePath)) return true;
+    if (relativePath === 'bin') return false;
+    return new Set([
+      'node_modules',
+      'dist',
+      'build',
+      '.git',
+      '.claude',
+      '.codex',
+      '.scannerwork',
+      'target',
+      'vendor',
+      'vendors',
+      'site-packages',
+      '__pycache__',
+      '.venv',
+      'venv',
+      'env',
+      '.tox',
+      '.terraform',
+      '.pytest_cache',
+      '.mypy_cache',
+      '.ruff_cache',
+      '.dart_tool',
+      '.gradle',
+      'Pods',
+      'bin',
+      'obj',
+      '.next',
+      '.turbo',
+      '.cache',
+      '.vite',
+      '.sourcemaps',
+      'out',
+      'storybook-static',
+      'storybook-build',
+      'Generated',
+      'generated'
+    ]).has(directoryName) || directoryName.startsWith('.klauro');
+  }
+
+  private isIgnoredInventoryFile(filePath: string): boolean {
+    const normalized = filePath.replace(/\\/g, '/').toLowerCase();
+    if (normalized.endsWith('.min.js') || normalized.endsWith('.min.css')) return true;
+    return [
+      '/lib/waypoints/',
+      '/lib/owlcarousel/',
+      '/lib/chart/',
+      '/lib/easing/',
+      '/lib/tempusdominus/',
+      '/lib/bootstrap/',
+      '/lib/jquery/',
+      '/www/build/',
+      '/www/assets/',
+      '/public/assets/',
+      '/static/assets/',
+      '/downloads/'
+    ].some(fragment => `/${normalized}`.includes(fragment));
+  }
+
+  private isSourceInventoryCandidate(filePath: string): boolean {
+    const basename = path.basename(filePath).toLowerCase();
+    if (this.isManifestFile(filePath)) return true;
+    if ([
+      'artisan',
+      'manage.py',
+      'console',
+      'angular.json',
+      'cypress.json'
+    ].includes(basename)) return true;
+    if (/^(next|jest|cypress)\.config\.(js|ts|mjs|cjs)$/.test(basename)) return true;
+    if (filePath.toLowerCase().endsWith('prisma/schema.prisma')) return true;
+    return /\.(js|jsx|ts|tsx|mjs|cjs|py|java|cs|go|rs|php|dart|tf|tfvars|xaml)$/i.test(filePath);
+  }
+
+  private isManifestFile(filePath: string): boolean {
+    const basename = path.basename(filePath).toLowerCase();
+    if (basename === 'package.json') return true;
+    if (/^requirements.*\.txt$/.test(basename)) return true;
+    if (basename === 'setup.py') return true;
+    if (basename === 'pyproject.toml') return true;
+    if (basename === 'pipfile') return true;
+    if (basename === 'pom.xml') return true;
+    if (basename === 'build.gradle') return true;
+    if (basename === 'build.gradle.kts') return true;
+    if (basename === 'cargo.toml') return true;
+    if (basename === 'composer.json') return true;
+    if (basename === 'gemfile') return true;
+    if (basename === 'gemfile.lock') return true;
+    if (basename === 'go.mod') return true;
+    if (basename === 'pubspec.yaml') return true;
+    return /\.(csproj|fsproj|vbproj|sln)$/i.test(filePath);
   }
 
   private async getNestedRepoIgnorePatterns(projectPath: string): Promise<string[]> {
@@ -233,6 +476,15 @@ export class AnalyzerOrchestrator {
       '**/vendor/**',
       'vendors/**',
       '**/vendors/**',
+      '**/*.min.js',
+      '**/*.min.css',
+      '**/lib/waypoints/**',
+      '**/lib/owlcarousel/**',
+      '**/lib/chart/**',
+      '**/lib/easing/**',
+      '**/lib/tempusdominus/**',
+      '**/lib/bootstrap/**',
+      '**/lib/jquery/**',
       'site-packages/**',
       '**/site-packages/**',
       '**/__pycache__/**',
@@ -281,8 +533,14 @@ export class AnalyzerOrchestrator {
   }
 
   async detectAnalyzers(projectPath: string): Promise<AnalyzerRegistration[]> {
-    this.manifestFileCache.clear();
-    this.nestedRepoIgnoreCache.clear();
+    const cacheKey = path.resolve(projectPath);
+    const cached = this.detectedAnalyzerCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      this.projectRoots = [...cached.projectRoots];
+      this.analyzerRootMap = new Map(cached.analyzerRootEntries);
+      return [...cached.analyzers];
+    }
+
     this.projectRoots = await this.discoverProjectRoots(projectPath);
     this.analyzerRootMap.clear();
 
@@ -294,7 +552,22 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    return this.orderAnalyzers(detected);
+    const ordered = this.orderAnalyzers(detected);
+    this.detectedAnalyzerCache.set(cacheKey, {
+      expiresAt: Date.now() + 60_000,
+      projectRoots: [...this.projectRoots],
+      analyzerRootEntries: [...this.analyzerRootMap.entries()],
+      analyzers: [...ordered],
+    });
+    return ordered;
+  }
+
+  private invalidateProjectDiscovery(projectPath: string): void {
+    const cacheKey = path.resolve(projectPath);
+    this.detectedAnalyzerCache.delete(cacheKey);
+    this.manifestFileCache.delete(projectPath);
+    this.nestedRepoIgnoreCache.delete(projectPath);
+    this.sourceFileInventoryCache.delete(cacheKey);
   }
 
   async orchestrateAnalysis(projectPath: string): Promise<CASOutput> {
@@ -480,9 +753,11 @@ export class AnalyzerOrchestrator {
     logTiming('frameworkAnalyzers', phaseStart);
 
     phaseStart = Date.now();
+    this.applyCanonicalOrdering(allNodes, allEdges, allEntryPoints, allExitPoints, allLibraries);
     this.linkRouteHandlers(allNodes, allEdges, allEntryPoints);
-    this.addDiscoveredEntryPoints(projectPath, allNodes, allEntryPoints);
+    this.addDiscoveredEntryPoints(projectPath, allNodes, allEntryPoints, allEdges);
     this.normalizeNodeMetrics(allNodes);
+    this.applyCanonicalOrdering(allNodes, allEdges, allEntryPoints, allExitPoints, allLibraries);
     logTiming('pp_linkRouteHandlers', phaseStart);
 
     phaseStart = Date.now();
@@ -514,7 +789,7 @@ export class AnalyzerOrchestrator {
 
     phaseStart = Date.now();
     const flowSummary = this.buildFlowSummary(allNodes, allEntryPoints);
-    const dataEntities = this.buildDataEntities(allNodes, allEdges);
+    const dataEntities = this.buildDataEntities(allNodes, allEdges, projectPath);
     const dataSummary = this.buildDataSummary(dataEntities, allNodes);
     const securityBoundaries = this.buildSecurityBoundaries(allNodes, allEntryPoints);
     const securitySummary = this.buildSecuritySummary(securityBoundaries, allNodes);
@@ -534,14 +809,18 @@ export class AnalyzerOrchestrator {
         gitAnalyzer.preloadAllFileMetrics(filePathsForGit);
         changeRisks = this.buildChangeRisks(allNodes, allEdges, allEntryPoints, gitAnalyzer);
         temporalStability = this.buildTemporalStability(allNodes, gitAnalyzer);
+      } else {
+        changeRisks = this.buildChangeRisks(allNodes, allEdges, allEntryPoints);
       }
+    } else {
+      changeRisks = this.buildChangeRisks(allNodes, allEdges, allEntryPoints);
     }
     logTiming('pp_gitAnalysis', phaseStart);
 
     phaseStart = Date.now();
     const changeRiskSummary = this.buildChangeRiskSummary(changeRisks);
     const stabilitySummary = this.buildStabilitySummary(temporalStability);
-    const systemCapabilities = this.buildSystemCapabilities(allEntryPoints, dataEntities, allNodes, allEdges);
+    const systemCapabilities = this.buildSystemCapabilities(allEntryPoints, dataEntities, allNodes, allEdges, projectPath);
     const systemPurpose = this.inferSystemPurpose(allEntryPoints, dataEntities, systemCapabilities, allNodes);
     logTiming('pp_capabilities', phaseStart);
 
@@ -563,7 +842,7 @@ export class AnalyzerOrchestrator {
 
     phaseStart = Date.now();
     const domainExtractor = new DomainExtractor();
-    const domainConcepts = domainExtractor.extract(allNodes, allEntryPoints, dataEntities);
+    const domainConcepts = domainExtractor.extract(allNodes, allEntryPoints, dataEntities, allEdges);
     logTiming('pp_domainConcepts', phaseStart);
 
     phaseStart = Date.now();
@@ -592,10 +871,36 @@ export class AnalyzerOrchestrator {
     logTiming('pp_enhanceRisks', phaseStart);
 
     phaseStart = Date.now();
-    const entryPointSummary = this.summarizeEntryPoints(allEntryPoints);
-    const frameworkNames = contributions
-      .filter(c => c.analyzer_type === 'framework')
-      .map(c => c.analyzer_name.replace(' Analyzer', ''));
+    const userJourneyResult = buildUserJourneys({
+      nodes: allNodes,
+      edges: allEdges,
+      entryPoints: allEntryPoints,
+      exitPoints: allExitPoints,
+      callChains,
+      dataEntities,
+      changeRisks: enhancedChangeRisks,
+    });
+    const paradigmConformance = buildParadigmConformance({
+      nodes: allNodes,
+      edges: allEdges,
+      entryPoints: allEntryPoints,
+      exitPoints: allExitPoints,
+    });
+    const dataLineage = buildDataLineage({
+      nodes: allNodes,
+      edges: allEdges,
+      dataEntities,
+      exitPoints: allExitPoints,
+      entryPoints: allEntryPoints,
+      userJourneys: userJourneyResult.journeys,
+    });
+    logTiming('pp_userJourneys', phaseStart);
+
+    phaseStart = Date.now();
+    const productEntryPointsForPurpose = this.filterPrimaryProductEntryPoints(allEntryPoints, allNodes, projectPath);
+    const entryPointSummary = this.summarizeEntryPoints(productEntryPointsForPurpose);
+    const projectTextSignal = this.extractProjectTextSignal(projectPath);
+    const frameworkNames = this.frameworkNamesForPurpose(contributions, allNodes, projectPath);
     const dbEntityNames = databaseSchema.entities.map(e => e.name);
     const externalServiceNames = externalServices.map(svc => svc.name);
 
@@ -609,11 +914,15 @@ export class AnalyzerOrchestrator {
       entryPointSummary,
       frameworkNames,
       externalServiceNames,
-      flowGraph
+      systemCapabilities,
+      flowGraph,
+      systemName,
+      projectTextSignal
     );
     logTiming('pp_enhancedPurpose', phaseStart);
 
     phaseStart = Date.now();
+    const unanalyzedLanguages = this.scanUnanalyzedLanguages(projectPath);
     await this.applyAIInterpretation(
       enhancedSystemPurpose,
       systemName,
@@ -622,7 +931,9 @@ export class AnalyzerOrchestrator {
       dbEntityNames,
       externalServiceNames,
       flowGraph,
-      domainConcepts
+      domainConcepts,
+      systemCapabilities,
+      unanalyzedLanguages
     );
     logTiming('pp_aiInterpretation', phaseStart);
 
@@ -679,11 +990,22 @@ export class AnalyzerOrchestrator {
       configuration,
       analysisFacts,
     });
+    const systemHealth = this.buildSystemHealth(
+      architectureSummary,
+      implementationHealth,
+      changeRiskSummary,
+      idiomDetection,
+      allNodes,
+      callChains,
+      runtime
+    );
     const validation = this.buildValidation(allNodes, allEdges, allEntryPoints, allExitPoints, runtimeStaticLinks, analysisFacts);
     logTiming('pp_traceability', phaseStart);
 
     const totalTime = Date.now() - startTime;
-    console.error(`[Klauro] Analysis completed in ${totalTime}ms. Breakdown:`, JSON.stringify(timings, null, 2));
+    if (process.env.KLAURO_DEBUG_ANALYSIS_TIMINGS === '1') {
+      console.error(`[Klauro] Analysis completed in ${totalTime}ms. Breakdown:`, JSON.stringify(timings, null, 2));
+    }
 
     const output = {
       cas_version: CAS_VERSION,
@@ -694,9 +1016,19 @@ export class AnalyzerOrchestrator {
         name: systemName,
         type: this.determineSystemType(allNodes) as 'monorepo' | 'application' | 'library' | 'service' | 'package',
         root_path: projectPath,
-        technologies: this.extractTechnologies(contributions, allLibraries),
+        technologies: {
+          ...this.extractTechnologies(contributions, allLibraries),
+          unanalyzed_languages: unanalyzedLanguages,
+        },
         quality: this.calculateQualityMetrics(allNodes)
       },
+      analysis_phases: this.buildAnalysisPhases({
+        hasAIProvider: this.hasAIInterpretationProviderConfigured(),
+        systemDescriptionSource: enhancedSystemPurpose.description_source,
+        capabilityDescriptionSource: systemCapabilities.some(capability => capability.description_source === 'ai') ? 'ai' : 'deterministic',
+        embeddingEnabled: Boolean(this.embeddingPhaseConfig),
+        runtimeSignals: runtimeStaticLinks.length,
+      }),
       architecture_summary: architectureSummary,
       route_table: routeTable.length > 0 ? routeTable : undefined,
       database_schema: databaseSchema.entities.length > 0 ? databaseSchema : undefined,
@@ -733,6 +1065,10 @@ export class AnalyzerOrchestrator {
       call_chains: callChains.length > 0 ? callChains : undefined,
       workflows: workflows.length > 0 ? workflows : undefined,
       workflow_graph: workflowGraph,
+      user_journeys: userJourneyResult.journeys.length > 0 ? userJourneyResult.journeys : undefined,
+      user_journey_summary: userJourneyResult.journeys.length > 0 ? userJourneyResult.summary : undefined,
+      paradigm_conformance: paradigmConformance.length > 0 ? paradigmConformance : undefined,
+      data_lineage: dataLineage.length > 0 ? dataLineage : undefined,
       domain_concepts: domainConcepts.length > 0 ? domainConcepts : undefined,
       enhanced_system_purpose: enhancedSystemPurpose,
       flow_graph: flowGraph,
@@ -743,6 +1079,7 @@ export class AnalyzerOrchestrator {
       documentation_summary: documentationSummary,
       todos_summary: todosSummary,
       implementation_health: implementationHealth,
+      system_health: systemHealth,
       security_contexts: securityContexts.length > 0 ? securityContexts : undefined,
       configuration,
       runtime,
@@ -759,6 +1096,8 @@ export class AnalyzerOrchestrator {
       fixtures: fixtures,
       test_summary: testSummary
     } as CASOutput;
+
+    output.product_map = buildProductMap(output);
 
     await this.applyEmbeddingPhase(output, projectPath);
     return output;
@@ -781,6 +1120,7 @@ export class AnalyzerOrchestrator {
     const schemaRebuildReason = this.fullRebuildReasonForPreviousOutput(previousOutput);
 
     if (schemaRebuildReason) {
+      this.invalidateProjectDiscovery(projectPath);
       const output = await this.orchestrateAnalysis(projectPath);
       const state = this.buildIncrementalState(projectPath, output, changeDetector);
       const changeReport = this.buildChangeReport(
@@ -803,6 +1143,7 @@ export class AnalyzerOrchestrator {
     }
 
     if (changeSet.requiresFullRebuild) {
+      this.invalidateProjectDiscovery(projectPath);
       const output = await this.orchestrateAnalysis(projectPath);
       const state = this.buildIncrementalState(projectPath, output, changeDetector);
       const changeReport = this.buildChangeReport(previousOutput, output, changeSet);
@@ -829,6 +1170,7 @@ export class AnalyzerOrchestrator {
     );
 
     if (incrementalResult.wasFullRebuild) {
+      this.invalidateProjectDiscovery(projectPath);
       const updatedState = this.buildIncrementalState(projectPath, incrementalResult.output, changeDetector);
       const changeReport = this.buildChangeReport(
         previousOutput,
@@ -849,20 +1191,32 @@ export class AnalyzerOrchestrator {
       };
     }
 
+    let finalIncrementalPhaseStartedAt = Date.now();
+    const debugFinalIncrementalPhase = (label: string) => {
+      if (process.env.KLAURO_DEBUG_INCREMENTAL_PHASES !== '1') return;
+      console.error(`[Klauro] incremental final phase ${label}: ${Date.now() - finalIncrementalPhaseStartedAt}ms`);
+      finalIncrementalPhaseStartedAt = Date.now();
+    };
+
     const updatedState = this.updateIncrementalState(
       previousState,
       incrementalResult,
       changeSet,
       changeDetector
     );
+    debugFinalIncrementalPhase('update-state');
 
-    const changeReport = this.buildChangeReport(
+    const changeReport = this.buildIncrementalChangeReport(
       previousOutput,
       incrementalResult.output,
-      changeSet
+      previousState,
+      changeSet,
+      incrementalResult.fileResults
     );
+    debugFinalIncrementalPhase('build-change-report');
 
     await this.applyEmbeddingPhase(incrementalResult.output, projectPath);
+    debugFinalIncrementalPhase('apply-embedding-phase');
 
     return {
       output: incrementalResult.output,
@@ -900,7 +1254,14 @@ export class AnalyzerOrchestrator {
     wasFullRebuild?: boolean;
     fullRebuildReason?: string;
   }> {
+    let incrementalPhaseStartedAt = Date.now();
+    const debugIncrementalPhase = (label: string) => {
+      if (process.env.KLAURO_DEBUG_INCREMENTAL_PHASES !== '1') return;
+      console.error(`[Klauro] incremental phase ${label}: ${Date.now() - incrementalPhaseStartedAt}ms`);
+      incrementalPhaseStartedAt = Date.now();
+    };
     const detectedAnalyzers = await this.detectAnalyzers(projectPath);
+    debugIncrementalPhase('detect-analyzers');
     const incrementalAnalyzers = detectedAnalyzers.filter(
       r => r.analyzer.supportsIncrementalAnalysis?.() && r.analyzer.analyzeFileSingle
     );
@@ -919,6 +1280,7 @@ export class AnalyzerOrchestrator {
     const candidateIncrementalAnalyzers = incrementalAnalyzers.filter(registration =>
       filesToAnalyze.some(filePath => this.analyzerCanHandleFile(registration.id, filePath))
     );
+    debugIncrementalPhase('select-candidate-analyzers');
     const previousNodesById = new Map(previousOutput.nodes.map(node => [node.id, node]));
     const matchingAnalyzerPlansByFile = new Map<string, Array<{ registration: AnalyzerRegistration; relevantFiles: Set<string> }>>();
     const filesNeedingRelevanceScan: string[] = [];
@@ -944,6 +1306,7 @@ export class AnalyzerOrchestrator {
         filesNeedingRelevanceScan.push(relativePath);
       }
     }
+    debugIncrementalPhase('plan-direct-matches');
 
     const analyzerPlans = filesNeedingRelevanceScan.length > 0
       ? await Promise.all(
@@ -953,6 +1316,7 @@ export class AnalyzerOrchestrator {
         }))
       )
       : [];
+    debugIncrementalPhase('relevance-scan');
 
     const unsupportedFiles = filesToAnalyze.filter(relativePath => {
       const existingPlans = matchingAnalyzerPlansByFile.get(relativePath);
@@ -998,6 +1362,7 @@ export class AnalyzerOrchestrator {
 
       return false;
     });
+    debugIncrementalPhase('unsupported-derived-fact-check');
     const allNodes = [...previousOutput.nodes];
     const allEdges = [...previousOutput.edges];
     const allEntryPoints = [...(previousOutput.entry_points || [])];
@@ -1032,6 +1397,7 @@ export class AnalyzerOrchestrator {
     const filteredEdges = allEdges.filter(e => !deletedEdgeIds.has(e.id));
     const filteredEntryPoints = allEntryPoints.filter(ep => !deletedEntryPointIds.has(ep.id));
     const filteredExitPoints = allExitPoints.filter(ex => !deletedExitPointIds.has(ex.id));
+    debugIncrementalPhase('filter-previous-graph');
 
     const fileResults = new Map<string, FileAnalysisResult>();
     const failedFiles: string[] = [];
@@ -1122,6 +1488,7 @@ export class AnalyzerOrchestrator {
         }
       }
     }
+    debugIncrementalPhase('analyze-changed-files');
 
     if (failedFiles.length > 0 || fileResults.size !== filesToAnalyze.length) {
       const output = await this.orchestrateAnalysis(projectPath);
@@ -1134,12 +1501,22 @@ export class AnalyzerOrchestrator {
       };
     }
 
+    this.retainStableMissingFileFacts(
+      projectPath,
+      previousOutput,
+      previousState,
+      changeSet,
+      fileResults
+    );
+    debugIncrementalPhase('retain-stable-missing-facts');
+
     const localizedOutput = this.tryBuildLocalizedIncrementalOutput(
       previousOutput,
       previousState,
       changeSet,
       fileResults
     );
+    debugIncrementalPhase('try-localized-output');
     if (localizedOutput) {
       return { output: localizedOutput, fileResults };
     }
@@ -1183,7 +1560,7 @@ export class AnalyzerOrchestrator {
       .filter((n): n is CASNode & { source: { file: string } } => !!n.source?.file)
       .map(n => n.source.file);
     gitAnalyzer.preloadAllFileMetrics(filePathsForGit);
-    this.addDiscoveredEntryPoints(projectPath, nodes, entryPoints);
+    this.addDiscoveredEntryPoints(projectPath, nodes, entryPoints, edges);
     this.normalizeNodeMetrics(nodes);
 
     const categories = previousOutput.categories || {};
@@ -1203,7 +1580,7 @@ export class AnalyzerOrchestrator {
     const flowSummary = this.buildFlowSummary(nodes, entryPoints);
     const changeRisks = this.buildChangeRisks(nodes, edges, entryPoints, gitAnalyzer);
     const changeRiskSummary = this.buildChangeRiskSummary(changeRisks);
-    const dataEntities = this.buildDataEntities(nodes, edges);
+    const dataEntities = this.buildDataEntities(nodes, edges, projectPath);
     const dataSummary = this.buildDataSummary(dataEntities, nodes);
     const securityBoundaries = this.buildSecurityBoundaries(nodes, entryPoints);
     const securitySummary = this.buildSecuritySummary(securityBoundaries, nodes);
@@ -1213,7 +1590,7 @@ export class AnalyzerOrchestrator {
     const behavioralInvariants = this.buildBehavioralInvariants(nodes, edges, entryPoints, databaseSchema, dataEntities, securityBoundaries, testSuites, projectPath);
     const behavioralInvariantSummary = this.buildBehavioralInvariantSummary(behavioralInvariants);
 
-    const systemCapabilities = this.buildSystemCapabilities(entryPoints, dataEntities, nodes, edges);
+    const systemCapabilities = this.buildSystemCapabilities(entryPoints, dataEntities, nodes, edges, projectPath);
     const systemPurpose = this.inferSystemPurpose(entryPoints, dataEntities, systemCapabilities, nodes);
 
     const callGraphBuilder = new CallGraphBuilder(nodes, edges, exitPoints);
@@ -1227,7 +1604,7 @@ export class AnalyzerOrchestrator {
     const testGaps = this.buildTestGaps(flowCoverage, nodes);
 
     const domainExtractor = new DomainExtractor();
-    const domainConcepts = domainExtractor.extract(nodes, entryPoints, dataEntities);
+    const domainConcepts = domainExtractor.extract(nodes, entryPoints, dataEntities, edges);
 
     const workflowDetector = new WorkflowDetector();
     const workflows = workflowDetector.detectWorkflows(entryPoints, callChains, nodes, edges, exitPoints);
@@ -1246,7 +1623,31 @@ export class AnalyzerOrchestrator {
     );
 
     const enhancedChangeRisks = this.enhanceChangeRisks(changeRisks, callGraphBuilder, callChains, entryPoints);
+    const userJourneyResult = buildUserJourneys({
+      nodes,
+      edges,
+      entryPoints,
+      exitPoints,
+      callChains,
+      dataEntities,
+      changeRisks: enhancedChangeRisks,
+    });
+    const paradigmConformance = buildParadigmConformance({
+      nodes,
+      edges,
+      entryPoints,
+      exitPoints,
+    });
+    const dataLineage = buildDataLineage({
+      nodes,
+      edges,
+      dataEntities,
+      exitPoints,
+      entryPoints,
+      userJourneys: userJourneyResult.journeys,
+    });
     const enhancedFlowSummary = this.buildEnhancedFlowSummary(callChains, entryPoints);
+    const implementationHealth = this.buildImplementationHealth(nodes);
     const configuration = this.buildAllConfiguration(nodes, exitPoints, externalServices, projectPath);
     const runtime = this.buildRuntime(projectPath, entryPoints, exitPoints, externalServices, configuration, callChains);
     const repositoryLinks = this.buildRepositoryLinks(projectPath, nodes, entryPoints, exitPoints, externalServices, libraries, databaseSchema, configuration);
@@ -1279,6 +1680,15 @@ export class AnalyzerOrchestrator {
       configuration,
       analysisFacts,
     });
+    const systemHealth = this.buildSystemHealth(
+      architectureSummary,
+      implementationHealth,
+      changeRiskSummary,
+      idiomDetection,
+      nodes,
+      callChains,
+      runtime
+    );
     const validation = this.buildValidation(nodes, edges, entryPoints, exitPoints, runtimeStaticLinks, analysisFacts);
 
     const systemName = path.basename(projectPath);
@@ -1288,12 +1698,11 @@ export class AnalyzerOrchestrator {
     // freshly recomputed domain concepts, workflows, and flow graph. Without
     // this it would be carried forward verbatim from previousOutput and drift
     // out of sync with the rest of the analysis on every incremental run.
-    const incrFrameworkNames = (previousOutput.analyzer_contributions || [])
-      .filter(c => c.analyzer_type === 'framework')
-      .map(c => c.analyzer_name.replace(' Analyzer', ''));
+    const incrFrameworkNames = this.frameworkNamesForPurpose(previousOutput.analyzer_contributions || [], nodes, projectPath);
     const incrDbEntityNames = databaseSchema.entities.map(e => e.name);
     const incrExternalServiceNames = externalServices.map(svc => svc.name);
-    const incrEntryPointSummary = this.summarizeEntryPoints(entryPoints);
+    const incrEntryPointSummary = this.summarizeEntryPoints(this.filterPrimaryProductEntryPoints(entryPoints, nodes, projectPath));
+    const incrProjectTextSignal = this.extractProjectTextSignal(projectPath);
     const enhancedSystemPurpose = this.buildEnhancedSystemPurpose(
       systemPurpose,
       domainConcepts,
@@ -1304,7 +1713,10 @@ export class AnalyzerOrchestrator {
       incrEntryPointSummary,
       incrFrameworkNames,
       incrExternalServiceNames,
-      flowGraph
+      systemCapabilities,
+      flowGraph,
+      previousOutput.system?.name || path.basename(projectPath),
+      incrProjectTextSignal
     );
     if (this.shouldRefreshAIInterpretation(
       previousOutput,
@@ -1314,7 +1726,8 @@ export class AnalyzerOrchestrator {
       incrDbEntityNames,
       incrExternalServiceNames,
       flowGraph,
-      domainConcepts
+      domainConcepts,
+      systemCapabilities
     )) {
       await this.applyAIInterpretation(
         enhancedSystemPurpose,
@@ -1324,17 +1737,51 @@ export class AnalyzerOrchestrator {
         incrDbEntityNames,
         incrExternalServiceNames,
         flowGraph,
-        domainConcepts
+        domainConcepts,
+        systemCapabilities,
+        previousOutput.system?.technologies?.unanalyzed_languages || []
       );
     } else if (previousOutput.enhanced_system_purpose?.inferred_description) {
       enhancedSystemPurpose.inferred_description = previousOutput.enhanced_system_purpose.inferred_description;
+      enhancedSystemPurpose.description_source = 'reused';
+      enhancedSystemPurpose.description_generation = {
+        status: 'reused_previous',
+        attempted: false,
+        reason: previousOutput.enhanced_system_purpose.description_generation?.status,
+        generated_at: new Date().toISOString(),
+      };
+      if (previousOutput.enhanced_system_purpose.domain_source === 'ai' && previousOutput.enhanced_system_purpose.primary_domain) {
+        enhancedSystemPurpose.primary_domain = previousOutput.enhanced_system_purpose.primary_domain;
+        enhancedSystemPurpose.domain_source = 'reused';
+      }
+      const previousCapabilities = new Map((previousOutput.system_capabilities || []).map(capability => [capability.id, capability]));
+      for (const capability of systemCapabilities) {
+        const previous = previousCapabilities.get(capability.id);
+        if (previous?.description && (previous.description_source === 'ai' || previous.description_source === 'manual' || previous.description_source === 'reused')) {
+          capability.description = previous.description;
+          capability.description_source = 'reused';
+          capability.description_generation = {
+            status: 'reused_previous',
+            attempted: false,
+            reason: previous.description_generation?.status,
+            generated_at: new Date().toISOString(),
+          };
+        }
+      }
     }
 
-    return {
+    const rebuiltOutput: CASOutput = {
       ...previousOutput,
       analysis_timestamp: new Date().toISOString(),
       analysis_id: analysisId,
       enhanced_system_purpose: enhancedSystemPurpose,
+      analysis_phases: this.buildAnalysisPhases({
+        hasAIProvider: this.hasAIInterpretationProviderConfigured(),
+        systemDescriptionSource: enhancedSystemPurpose.description_source,
+        capabilityDescriptionSource: systemCapabilities.some(capability => capability.description_source === 'ai') ? 'ai' : 'deterministic',
+        embeddingEnabled: Boolean(this.embeddingPhaseConfig),
+        runtimeSignals: runtimeStaticLinks.length,
+      }),
       nodes,
       edges,
       entry_points: entryPoints,
@@ -1367,6 +1814,10 @@ export class AnalyzerOrchestrator {
       test_gaps: testGaps.length > 0 ? testGaps : undefined,
       workflows: workflows.length > 0 ? workflows : undefined,
       workflow_graph: workflowGraph,
+      user_journeys: userJourneyResult.journeys.length > 0 ? userJourneyResult.journeys : undefined,
+      user_journey_summary: userJourneyResult.journeys.length > 0 ? userJourneyResult.summary : undefined,
+      paradigm_conformance: paradigmConformance.length > 0 ? paradigmConformance : undefined,
+      data_lineage: dataLineage.length > 0 ? dataLineage : undefined,
       domain_concepts: domainConcepts.length > 0 ? domainConcepts : undefined,
       flow_graph: flowGraph,
       configuration,
@@ -1374,6 +1825,8 @@ export class AnalyzerOrchestrator {
       runtime_static_links: runtimeStaticLinks.length > 0 ? runtimeStaticLinks : undefined,
       analysis_facts: analysisFacts.length > 0 ? analysisFacts : undefined,
       decorators: decorators.length > 0 ? decorators : undefined,
+      implementation_health: implementationHealth,
+      system_health: systemHealth,
       codebase_idioms: idiomDetection.idioms.length > 0 ? idiomDetection.idioms : undefined,
       idiom_summary: idiomDetection.idioms.length > 0 ? idiomDetection.summary : undefined,
       idiom_examples: idiomDetection.examples.length > 0 ? idiomDetection.examples : undefined,
@@ -1381,6 +1834,9 @@ export class AnalyzerOrchestrator {
       validation,
       test_suites: testSuites
     };
+
+    rebuiltOutput.product_map = buildProductMap(rebuiltOutput);
+    return rebuiltOutput;
   }
 
   private buildIncrementalState(
@@ -1630,6 +2086,88 @@ export class AnalyzerOrchestrator {
     target.exports.push(...source.exports);
   }
 
+  private retainStableMissingFileFacts(
+    projectPath: string,
+    previousOutput: CASOutput,
+    previousState: IncrementalState,
+    changeSet: ChangeSet,
+    fileResults: Map<string, FileAnalysisResult>
+  ): void {
+    if (changeSet.added.length > 0 || changeSet.deleted.length > 0) return;
+
+    const previousNodesById = new Map(previousOutput.nodes.map(node => [node.id, node]));
+    const previousEdgesById = new Map(previousOutput.edges.map(edge => [edge.id, edge]));
+    const previousEntryPointsById = new Map((previousOutput.entry_points || []).map(entryPoint => [entryPoint.id, entryPoint]));
+    const previousExitPointsById = new Map((previousOutput.exit_points || []).map(exitPoint => [exitPoint.id, exitPoint]));
+
+    for (const filePath of changeSet.modified) {
+      const record = previousState.files[filePath];
+      const result = fileResults.get(filePath);
+      if (!record || !result) continue;
+
+      let content = '';
+      try {
+        content = fs.readFileSync(path.join(projectPath, filePath), 'utf8');
+      } catch {
+        continue;
+      }
+
+      const currentNodeIds = new Set(result.nodes.map(node => node.id));
+      const retainedNodeIds = new Set<string>();
+
+      for (const nodeId of record.nodeIds) {
+        if (currentNodeIds.has(nodeId)) continue;
+        const previousNode = previousNodesById.get(nodeId);
+        if (!previousNode || !this.canRetainStableMissingNode(previousNode, content)) continue;
+        result.nodes.push(previousNode);
+        currentNodeIds.add(nodeId);
+        retainedNodeIds.add(nodeId);
+      }
+
+      if (retainedNodeIds.size === 0) continue;
+
+      const edgeIds = new Set(result.edges.map(edge => edge.id));
+      for (const edgeId of record.edgeIds) {
+        if (edgeIds.has(edgeId)) continue;
+        const edge = previousEdgesById.get(edgeId);
+        if (!edge) continue;
+        if (currentNodeIds.has(edge.source) || currentNodeIds.has(edge.target)) {
+          result.edges.push(edge);
+          edgeIds.add(edgeId);
+        }
+      }
+
+      const entryPointIds = new Set(result.entryPoints.map(entryPoint => entryPoint.id));
+      for (const entryPointId of record.entryPointIds) {
+        if (entryPointIds.has(entryPointId)) continue;
+        const entryPoint = previousEntryPointsById.get(entryPointId);
+        if (!entryPoint) continue;
+        if (currentNodeIds.has(entryPoint.source_node) || Boolean(entryPoint.handler?.node_id && currentNodeIds.has(entryPoint.handler.node_id))) {
+          result.entryPoints.push(entryPoint);
+          entryPointIds.add(entryPointId);
+        }
+      }
+
+      const exitPointIds = new Set(result.exitPoints.map(exitPoint => exitPoint.id));
+      for (const exitPointId of record.exitPointIds) {
+        if (exitPointIds.has(exitPointId)) continue;
+        const exitPoint = previousExitPointsById.get(exitPointId);
+        if (!exitPoint) continue;
+        if (currentNodeIds.has(exitPoint.source_node)) {
+          result.exitPoints.push(exitPoint);
+          exitPointIds.add(exitPointId);
+        }
+      }
+    }
+  }
+
+  private canRetainStableMissingNode(node: CASNode, currentFileContent: string): boolean {
+    const raw = node.source?.raw?.trim();
+    if (!raw || raw.includes('\n...')) return false;
+    if (raw.length < 20 && this.isBehavioralIncrementalNode(node)) return false;
+    return currentFileContent.includes(raw);
+  }
+
   private tryBuildLocalizedIncrementalOutput(
     previousOutput: CASOutput,
     previousState: IncrementalState,
@@ -1640,14 +2178,25 @@ export class AnalyzerOrchestrator {
       return null;
     }
 
-    if (!this.canUseLocalizedIncrementalMerge(previousOutput, previousState, changeSet, fileResults)) {
+    const localizedEligibility = this.getLocalizedIncrementalMergeEligibility(previousOutput, previousState, changeSet, fileResults);
+    if (!localizedEligibility.allowed) {
+      this.debugLocalizedIncremental('skipped', localizedEligibility.reason, changeSet, fileResults);
       return null;
     }
+
+    const localizedStartedAt = Date.now();
+    let localizedPhaseStartedAt = localizedStartedAt;
+    const debugPhase = (label: string) => {
+      if (process.env.KLAURO_DEBUG_LOCALIZED_INCREMENTAL !== '1') return;
+      console.error(`[Klauro] localized incremental timing ${label}: ${Date.now() - localizedPhaseStartedAt}ms`);
+      localizedPhaseStartedAt = Date.now();
+    };
 
     const nodeById = new Map(previousOutput.nodes.map(node => [node.id, node]));
     const edgeById = new Map(previousOutput.edges.map(edge => [edge.id, edge]));
     const entryPointById = new Map((previousOutput.entry_points || []).map(entryPoint => [entryPoint.id, entryPoint]));
     const exitPointById = new Map((previousOutput.exit_points || []).map(exitPoint => [exitPoint.id, exitPoint]));
+    debugPhase('build-id-maps');
 
     for (const filePath of changeSet.modified) {
       const record = previousState.files[filePath];
@@ -1657,6 +2206,7 @@ export class AnalyzerOrchestrator {
       for (const entryPointId of record.entryPointIds) entryPointById.delete(entryPointId);
       for (const exitPointId of record.exitPointIds) exitPointById.delete(exitPointId);
     }
+    debugPhase('remove-modified-file-facts');
 
     for (const result of fileResults.values()) {
       for (const node of result.nodes) nodeById.set(node.id, node);
@@ -1664,13 +2214,17 @@ export class AnalyzerOrchestrator {
       for (const entryPoint of result.entryPoints) entryPointById.set(entryPoint.id, entryPoint);
       for (const exitPoint of result.exitPoints) exitPointById.set(exitPoint.id, exitPoint);
     }
+    debugPhase('merge-file-results');
 
     const nodes = [...nodeById.values()];
     const edges = [...edgeById.values()];
     const entryPoints = [...entryPointById.values()];
     const exitPoints = [...exitPointById.values()];
+    debugPhase('materialize-arrays');
     const index = this.buildIndex(nodes, entryPoints, exitPoints, previousOutput.perspectives || []);
+    debugPhase('build-index');
     const progressiveLevels = this.buildProgressiveLevels(nodes, previousOutput.categories || {});
+    debugPhase('build-progressive-levels');
     const validation = this.buildValidation(
       nodes,
       edges,
@@ -1679,6 +2233,10 @@ export class AnalyzerOrchestrator {
       previousOutput.runtime_static_links || [],
       previousOutput.analysis_facts || []
     );
+    debugPhase('build-validation');
+    if (process.env.KLAURO_DEBUG_LOCALIZED_INCREMENTAL === '1') {
+      console.error(`[Klauro] localized incremental timing total: ${Date.now() - localizedStartedAt}ms`);
+    }
 
     return {
       ...previousOutput,
@@ -1694,12 +2252,12 @@ export class AnalyzerOrchestrator {
     };
   }
 
-  private canUseLocalizedIncrementalMerge(
+  private getLocalizedIncrementalMergeEligibility(
     previousOutput: CASOutput,
     previousState: IncrementalState,
     changeSet: ChangeSet,
     fileResults: Map<string, FileAnalysisResult>
-  ): boolean {
+  ): { allowed: boolean; reason: string } {
     const previousNodesById = new Map(previousOutput.nodes.map(node => [node.id, node]));
     const previousEdgesById = new Map(previousOutput.edges.map(edge => [edge.id, edge]));
     const previousEntryPointsById = new Map((previousOutput.entry_points || []).map(entryPoint => [entryPoint.id, entryPoint]));
@@ -1708,9 +2266,11 @@ export class AnalyzerOrchestrator {
     for (const filePath of changeSet.modified) {
       const record = previousState.files[filePath];
       const result = fileResults.get(filePath);
-      if (!record || !result) return false;
+      if (!record || !result) return { allowed: false, reason: `missing record or file result for ${filePath}` };
 
-      if (!this.sameLocalImportSet(record.importedFiles || [], result.imports || [])) return false;
+      if (!this.sameLocalImportSet(record.importedFiles || [], result.imports || [])) {
+        return { allowed: false, reason: `local import set changed for ${filePath}` };
+      }
 
       const previousNodes = record.nodeIds
         .map(id => previousNodesById.get(id))
@@ -1718,7 +2278,9 @@ export class AnalyzerOrchestrator {
       const previousNodeIds = new Set(previousNodes.map(node => node.id));
       const currentNodeIds = new Set(result.nodes.map(node => node.id));
       const missingPreviousNodes = previousNodes.filter(node => !currentNodeIds.has(node.id));
-      if (missingPreviousNodes.some(node => this.isBehavioralIncrementalNode(node))) return false;
+      if (missingPreviousNodes.some(node => this.isBehavioralIncrementalNode(node))) {
+        return { allowed: false, reason: `behavioral nodes disappeared for ${filePath}: ${missingPreviousNodes.slice(0, 5).map(node => `${node.type}:${node.name}`).join(', ')}` };
+      }
 
       const addedNodes = result.nodes.filter(node => !previousNodeIds.has(node.id));
       const addedBehavioralNodeNames = new Set(addedNodes
@@ -1726,7 +2288,9 @@ export class AnalyzerOrchestrator {
         .map(node => node.name));
       if (!this.sameStringSet(record.exportedSymbols || [], result.exports || [])) {
         const exportTouchesAddedNode = (result.exports || []).some(exported => addedBehavioralNodeNames.has(exported));
-        if (exportTouchesAddedNode) return false;
+        if (exportTouchesAddedNode) {
+          return { allowed: false, reason: `export set changed with added behavioral node for ${filePath}` };
+        }
       }
       const canPreserveDerivedFacts = true;
 
@@ -1738,7 +2302,9 @@ export class AnalyzerOrchestrator {
           previousNodeIds.has(entryPoint.source_node) ||
           Boolean(entryPoint.handler?.node_id && previousNodeIds.has(entryPoint.handler.node_id))
         );
-        if (!(canPreserveDerivedFacts && entryPointsStayOnExistingNodes)) return false;
+        if (!(canPreserveDerivedFacts && entryPointsStayOnExistingNodes)) {
+          return { allowed: false, reason: `entry point fingerprint changed for ${filePath}` };
+        }
       }
 
       const previousExitPoints = record.exitPointIds
@@ -1746,7 +2312,9 @@ export class AnalyzerOrchestrator {
         .filter((exitPoint): exitPoint is CASExitPoint => Boolean(exitPoint));
       if (!this.sameFingerprint(previousExitPoints, result.exitPoints, exitPoint => this.exitPointFingerprint(exitPoint))) {
         const exitPointsStayOnExistingNodes = result.exitPoints.every(exitPoint => previousNodeIds.has(exitPoint.source_node));
-        if (!(canPreserveDerivedFacts && exitPointsStayOnExistingNodes)) return false;
+        if (!(canPreserveDerivedFacts && exitPointsStayOnExistingNodes)) {
+          return { allowed: false, reason: `exit point fingerprint changed for ${filePath}` };
+        }
       }
 
       const previousBehavioralEdges = record.edgeIds
@@ -1758,11 +2326,27 @@ export class AnalyzerOrchestrator {
         const behavioralEdgesStayOnExistingNodes = currentBehavioralEdges.every(edge =>
           previousNodeIds.has(edge.source) && previousNodeIds.has(edge.target)
         );
-        if (!(canPreserveDerivedFacts && behavioralEdgesStayOnExistingNodes)) return false;
+        if (!(canPreserveDerivedFacts && behavioralEdgesStayOnExistingNodes)) {
+          return { allowed: false, reason: `behavioral edge fingerprint changed for ${filePath}` };
+        }
       }
     }
 
-    return true;
+    return { allowed: true, reason: 'eligible' };
+  }
+
+  private debugLocalizedIncremental(
+    status: string,
+    reason: string,
+    changeSet: ChangeSet,
+    fileResults: Map<string, FileAnalysisResult>
+  ): void {
+    if (process.env.KLAURO_DEBUG_LOCALIZED_INCREMENTAL !== '1') return;
+    const files = [...changeSet.modified, ...changeSet.added, ...changeSet.deleted].join(', ');
+    const resultSummary = [...fileResults.entries()].map(([file, result]) =>
+      `${file}: ${result.nodes.length} nodes, ${result.edges.length} edges, ${result.entryPoints.length} entries, ${result.exitPoints.length} exits`
+    ).join('; ');
+    console.error(`[Klauro] localized incremental ${status}: ${reason}; files=${files}; results=${resultSummary}`);
   }
 
   private sameStringSet(previous: string[], current: string[]): boolean {
@@ -1952,6 +2536,7 @@ export class AnalyzerOrchestrator {
     if (['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'].includes(extension)) return 'typescript-javascript';
     if (['.py', '.pyw'].includes(extension)) return 'python';
     if (extension === '.java') return 'java';
+    if (['.kt', '.kts'].includes(extension)) return 'kotlin';
     if (['.cs', '.vb', '.fs'].includes(extension)) return 'csharp';
     if (extension === '.go') return 'go';
     if (extension === '.rs') return 'rust';
@@ -2043,6 +2628,7 @@ export class AnalyzerOrchestrator {
       '**/*.{ts,tsx,js,jsx,mjs,cjs}',
       '**/*.{py,pyw}',
       '**/*.java',
+      '**/*.{kt,kts}',
       '**/*.{cs,vb,fs}',
       '**/*.go',
       '**/*.rs',
@@ -2067,6 +2653,16 @@ export class AnalyzerOrchestrator {
         '**/vendor/**',
         'vendors/**',
         '**/vendors/**',
+        'third_party/**',
+        '**/third_party/**',
+        'third-party/**',
+        '**/third-party/**',
+        '**/*_extracted/**',
+        '**/*-extracted/**',
+        'examples/**',
+        '**/examples/**',
+        'samples/**',
+        '**/samples/**',
         'site-packages/**',
         '**/site-packages/**',
         '.venv/**',
@@ -2411,6 +3007,370 @@ export class AnalyzerOrchestrator {
     };
   }
 
+  private buildIncrementalChangeReport(
+    previousOutput: CASOutput,
+    currentOutput: CASOutput,
+    previousState: IncrementalState,
+    changeSet: ChangeSet,
+    fileResults: Map<string, FileAnalysisResult>
+  ): ChangeReport {
+    const previousNodesById = new Map(previousOutput.nodes.map(node => [node.id, node]));
+    const previousEdgesById = new Map(previousOutput.edges.map(edge => [edge.id, edge]));
+    const previousEntryPointsById = new Map((previousOutput.entry_points || []).map(entryPoint => [entryPoint.id, entryPoint]));
+    const previousExitPointsById = new Map((previousOutput.exit_points || []).map(exitPoint => [exitPoint.id, exitPoint]));
+
+    const addedNodes: CASNode[] = [];
+    const deletedNodes: CASNode[] = [];
+    const modifiedNodes: Array<{ id: string; name: string; type?: string; file?: string; changes: string[] }> = [];
+    const addedEdges: CASEdge[] = [];
+    const deletedEdges: CASEdge[] = [];
+    const addedEntryPoints: CASEntryPoint[] = [];
+    const deletedEntryPoints: CASEntryPoint[] = [];
+    const addedExitPoints: CASExitPoint[] = [];
+    const deletedExitPoints: CASExitPoint[] = [];
+
+    for (const filePath of changeSet.added) {
+      const result = fileResults.get(filePath);
+      if (!result) continue;
+      addedNodes.push(...result.nodes);
+      addedEdges.push(...result.edges);
+      addedEntryPoints.push(...result.entryPoints);
+      addedExitPoints.push(...result.exitPoints);
+    }
+
+    for (const filePath of changeSet.deleted) {
+      const record = previousState.files[filePath];
+      if (!record) continue;
+      deletedNodes.push(...record.nodeIds.map(id => previousNodesById.get(id)).filter((node): node is CASNode => Boolean(node)));
+      deletedEdges.push(...record.edgeIds.map(id => previousEdgesById.get(id)).filter((edge): edge is CASEdge => Boolean(edge)));
+      deletedEntryPoints.push(...record.entryPointIds.map(id => previousEntryPointsById.get(id)).filter((entryPoint): entryPoint is CASEntryPoint => Boolean(entryPoint)));
+      deletedExitPoints.push(...record.exitPointIds.map(id => previousExitPointsById.get(id)).filter((exitPoint): exitPoint is CASExitPoint => Boolean(exitPoint)));
+    }
+
+    for (const filePath of changeSet.modified) {
+      const record = previousState.files[filePath];
+      const result = fileResults.get(filePath);
+      if (!record || !result) continue;
+
+      const previousNodeIds = new Set(record.nodeIds);
+      const currentNodeIds = new Set(result.nodes.map(node => node.id));
+      for (const node of result.nodes) {
+        if (!previousNodeIds.has(node.id)) {
+          addedNodes.push(node);
+          continue;
+        }
+        const previousNode = previousNodesById.get(node.id);
+        if (!previousNode || previousNode === node) continue;
+        const changes = this.nodeChangeFields(previousNode, node);
+        if (changes.length > 0) {
+          modifiedNodes.push({
+            id: node.id,
+            name: node.name,
+            type: node.type,
+            file: node.source?.file,
+            changes,
+          });
+        }
+      }
+      for (const nodeId of record.nodeIds) {
+        if (!currentNodeIds.has(nodeId)) {
+          const node = previousNodesById.get(nodeId);
+          if (node) deletedNodes.push(node);
+        }
+      }
+
+      const previousEdgeIds = new Set(record.edgeIds);
+      const currentEdgeIds = new Set(result.edges.map(edge => edge.id));
+      addedEdges.push(...result.edges.filter(edge => !previousEdgeIds.has(edge.id)));
+      deletedEdges.push(...record.edgeIds
+        .map(id => previousEdgesById.get(id))
+        .filter((edge): edge is CASEdge => Boolean(edge))
+        .filter(edge => !currentEdgeIds.has(edge.id)));
+
+      const previousEntryPointIds = new Set(record.entryPointIds);
+      const currentEntryPointIds = new Set(result.entryPoints.map(entryPoint => entryPoint.id));
+      addedEntryPoints.push(...result.entryPoints.filter(entryPoint => !previousEntryPointIds.has(entryPoint.id)));
+      deletedEntryPoints.push(...record.entryPointIds
+        .map(id => previousEntryPointsById.get(id))
+        .filter((entryPoint): entryPoint is CASEntryPoint => Boolean(entryPoint))
+        .filter(entryPoint => !currentEntryPointIds.has(entryPoint.id)));
+
+      const previousExitPointIds = new Set(record.exitPointIds);
+      const currentExitPointIds = new Set(result.exitPoints.map(exitPoint => exitPoint.id));
+      addedExitPoints.push(...result.exitPoints.filter(exitPoint => !previousExitPointIds.has(exitPoint.id)));
+      deletedExitPoints.push(...record.exitPointIds
+        .map(id => previousExitPointsById.get(id))
+        .filter((exitPoint): exitPoint is CASExitPoint => Boolean(exitPoint))
+        .filter(exitPoint => !currentExitPointIds.has(exitPoint.id)));
+    }
+
+    const files = [
+      ...changeSet.added.map(filePath => ({
+        path: filePath,
+        type: 'added' as const,
+        linesAdded: 0,
+        linesRemoved: 0
+      })),
+      ...changeSet.modified.map(filePath => ({
+        path: filePath,
+        type: 'modified' as const,
+        linesAdded: 0,
+        linesRemoved: 0
+      })),
+      ...changeSet.deleted.map(filePath => ({
+        path: filePath,
+        type: 'deleted' as const,
+        linesAdded: 0,
+        linesRemoved: 0
+      }))
+    ];
+
+    const changedNodeIds = new Set([
+      ...addedNodes.map(node => node.id),
+      ...modifiedNodes.map(node => node.id),
+      ...deletedNodes.map(node => node.id),
+    ]);
+    const affectedEntryPoints = this.scopedAffectedEntryPoints(currentOutput, changeSet, changedNodeIds);
+    const affectedEntryPointIds = new Set(affectedEntryPoints.map(entryPoint => entryPoint.id));
+    const affectedCallChains = (currentOutput.call_chains || [])
+      .filter(chain =>
+        affectedEntryPointIds.has(chain.entry_point?.entry_point_id || '') ||
+        chain.call_path.some(step => changedNodeIds.has(step.node_id))
+      )
+      .slice(0, 20)
+      .map(chain => ({
+        id: chain.id,
+        name: chain.business_context?.business_process || chain.business_context?.feature_area || chain.entry_point?.method_name,
+        criticality: chain.criticality,
+        affectedNodes: chain.call_path
+          .map(step => step.node_id)
+          .filter(nodeId => changedNodeIds.has(nodeId))
+      }));
+    const semanticImpact = this.buildScopedSemanticChangeImpact(
+      currentOutput,
+      changedNodeIds,
+      affectedEntryPointIds,
+      new Set(affectedCallChains.map(chain => chain.id)),
+      [...addedEntryPoints, ...deletedEntryPoints],
+      [...addedExitPoints, ...deletedExitPoints]
+    );
+    const riskLevel = this.calculateChangeRiskLevel(
+      addedNodes.length,
+      modifiedNodes.length,
+      deletedNodes.length,
+      affectedEntryPoints.length + semanticImpact.affected_workflows.length
+    );
+
+    return {
+      timestamp: new Date().toISOString(),
+      previousAnalysis: previousOutput.analysis_timestamp,
+      currentAnalysis: currentOutput.analysis_timestamp,
+      summary: {
+        filesAdded: changeSet.added.length,
+        filesModified: changeSet.modified.length,
+        filesDeleted: changeSet.deleted.length,
+        nodesAdded: addedNodes.length,
+        nodesModified: modifiedNodes.length,
+        nodesDeleted: deletedNodes.length,
+        edgesAdded: addedEdges.length,
+        edgesModified: 0,
+        edgesDeleted: deletedEdges.length
+      },
+      impact: {
+        riskLevel,
+        confidence: 0.82,
+        affectedEntryPoints,
+        affectedCallChains,
+        affectedConsumers: [],
+        criticalPathsAffected: affectedEntryPoints.length > 0 || affectedCallChains.some(chain => chain.criticality === 'critical' || chain.criticality === 'high'),
+        securitySensitive: currentOutput.security_boundaries?.some(boundary =>
+          boundary.enforcement_points.some(point => changedNodeIds.has(point.node_id))
+        ) || false,
+        dataFlowAffected: semanticImpact.affected_data_entities.length > 0,
+        testCoverage: {
+          directTests: [],
+          integrationTests: [],
+          uncoveredChanges: [],
+          suggestedTests: []
+        },
+        documentation: {
+          affectedDocs: [],
+          outdatedComments: []
+        }
+      },
+      semantic_impact: semanticImpact,
+      details: {
+        files,
+        addedNodes: addedNodes.map(node => ({
+          id: node.id,
+          name: node.name,
+          type: node.type,
+          file: node.source?.file || ''
+        })),
+        modifiedNodes,
+        deletedNodes: deletedNodes.map(node => ({
+          id: node.id,
+          name: node.name,
+          type: node.type,
+          file: node.source?.file
+        })),
+        addedEdges: addedEdges.map(edge => ({
+          id: edge.id,
+          source: edge.source,
+          target: edge.target,
+          type: edge.type
+        })),
+        deletedEdges: deletedEdges.map(edge => ({
+          id: edge.id,
+          source: edge.source,
+          target: edge.target,
+          type: edge.type
+        })),
+        addedEntryPoints: addedEntryPoints.map(entryPoint => ({
+          id: entryPoint.id,
+          name: entryPoint.name
+        })),
+        modifiedEntryPoints: affectedEntryPoints.map(entryPoint => ({
+          id: entryPoint.id,
+          name: entryPoint.name,
+          details: entryPoint.path
+        })),
+        deletedEntryPoints: deletedEntryPoints.map(entryPoint => ({
+          id: entryPoint.id,
+          name: entryPoint.name
+        })),
+        addedExitPoints: addedExitPoints.map(exitPoint => ({
+          id: exitPoint.id,
+          name: exitPoint.name
+        })),
+        deletedExitPoints: deletedExitPoints.map(exitPoint => ({
+          id: exitPoint.id,
+          name: exitPoint.name
+        }))
+      }
+    };
+  }
+
+  private nodeChangeFields(previousNode: CASNode, currentNode: CASNode): string[] {
+    const changes: string[] = [];
+    if (JSON.stringify(previousNode.metadata) !== JSON.stringify(currentNode.metadata)) {
+      changes.push('metadata');
+    }
+    if (JSON.stringify(previousNode.signature) !== JSON.stringify(currentNode.signature)) {
+      changes.push('signature');
+    }
+    if (previousNode.source?.line !== currentNode.source?.line) {
+      changes.push('location');
+    }
+    return changes;
+  }
+
+  private scopedAffectedEntryPoints(
+    currentOutput: CASOutput,
+    changeSet: ChangeSet,
+    changedNodeIds: Set<string>
+  ): Array<{ id: string; name: string; path?: string; impactType: 'direct'; distance: number }> {
+    const changedFiles = new Set([...changeSet.added, ...changeSet.modified]);
+    const nodesById = new Map(currentOutput.nodes.map(node => [node.id, node]));
+    return (currentOutput.entry_points || [])
+      .filter(entryPoint => {
+        if (changedNodeIds.has(entryPoint.source_node) || Boolean(entryPoint.handler?.node_id && changedNodeIds.has(entryPoint.handler.node_id))) {
+          return true;
+        }
+        const sourceNode = nodesById.get(entryPoint.source_node);
+        if (!sourceNode?.source?.file) return false;
+        const relativePath = path.isAbsolute(sourceNode.source.file)
+          ? path.relative(currentOutput.system.root_path, sourceNode.source.file)
+          : sourceNode.source.file;
+        return changedFiles.has(relativePath);
+      })
+      .slice(0, 50)
+      .map(entryPoint => ({
+        id: entryPoint.id,
+        name: entryPoint.name,
+        path: (entryPoint.trigger as any)?.path,
+        impactType: 'direct' as const,
+        distance: 0
+      }));
+  }
+
+  private buildScopedSemanticChangeImpact(
+    currentOutput: CASOutput,
+    changedNodeIds: Set<string>,
+    affectedEntryPointIds: Set<string>,
+    affectedCallChainIds: Set<string>,
+    changedEntryPoints: CASEntryPoint[],
+    changedExitPoints: CASExitPoint[]
+  ): ChangeSemanticImpact {
+    const affected_workflows = (currentOutput.workflows || [])
+      .filter(workflow =>
+        affectedCallChainIds.has(workflow.id) ||
+        workflow.entry_points.some(entryPointId => affectedEntryPointIds.has(entryPointId))
+      )
+      .slice(0, 20)
+      .map(workflow => ({
+        id: workflow.id,
+        name: workflow.name,
+        reason: 'Workflow is connected to a changed file or entry point'
+      }));
+    const affected_capabilities = (currentOutput.system_capabilities || [])
+      .filter(capability =>
+        capability.operations.some(operation => changedNodeIds.has(operation.entry_point_id.replace(/^node:/, ''))) ||
+        capability.related_entities.some(entityId => changedNodeIds.has(entityId))
+      )
+      .slice(0, 20)
+      .map(capability => ({
+        id: capability.id,
+        name: capability.name,
+        reason: 'Capability references changed graph facts'
+      }));
+    const affected_data_entities = (currentOutput.data_entities || [])
+      .filter(entity => [
+        ...entity.lifecycle.created_by,
+        ...entity.lifecycle.read_by,
+        ...entity.lifecycle.updated_by,
+        ...entity.lifecycle.deleted_by,
+      ].some(nodeId => changedNodeIds.has(nodeId)))
+      .slice(0, 20)
+      .map(entity => ({
+        id: entity.id,
+        name: entity.name,
+        reason: 'Entity lifecycle references changed node'
+      }));
+    const affected_runtime_links = (currentOutput.runtime_static_links || [])
+      .filter(link => changedNodeIds.has(link.static_id))
+      .slice(0, 20)
+      .map(link => ({
+        id: link.id,
+        runtime_signal: link.runtime_signal,
+        reason: 'Runtime link is attached to changed node'
+      }));
+    const changed_contracts = [
+      ...changedEntryPoints.map(entryPoint => ({
+        id: entryPoint.id,
+        type: 'entry-point' as const,
+        name: entryPoint.name
+      })),
+      ...changedExitPoints.map(exitPoint => ({
+        id: exitPoint.id,
+        type: 'exit-point' as const,
+        name: exitPoint.name
+      })),
+    ];
+    const risk_reasons: string[] = [];
+    if (affected_workflows.length > 0) risk_reasons.push('Changed nodes are connected to workflow paths');
+    if (affected_data_entities.length > 0) risk_reasons.push('Changed nodes participate in data entity lifecycle');
+    if (changed_contracts.length > 0) risk_reasons.push('Entry or exit contracts changed');
+    return {
+      affected_workflows,
+      affected_capabilities,
+      affected_data_entities,
+      affected_runtime_links,
+      changed_contracts,
+      risk_reasons
+    };
+  }
+
   private calculateChangeRiskLevel(
     nodesAdded: number,
     nodesModified: number,
@@ -2513,6 +3473,14 @@ export class AnalyzerOrchestrator {
     registration: AnalyzerRegistration
   ): Promise<boolean> {
     try {
+      if (registration.type === 'language') {
+        if (await this.hasLanguageSignal(projectPath, registration.id)) {
+          this.analyzerRootMap.set(registration.id, projectPath);
+          return true;
+        }
+        return false;
+      }
+
       if (registration.type === 'framework' || registration.type === 'library') {
         const nestedRoots = this.projectRoots
           .filter(root => root !== projectPath)
@@ -2530,7 +3498,7 @@ export class AnalyzerOrchestrator {
       }
 
       if (
-        (registration.type === 'language' || await this.hasAnalyzerSignal(projectPath, registration)) &&
+        await this.hasAnalyzerSignal(projectPath, registration) &&
         await registration.analyzer.canAnalyze(projectPath)
       ) {
         this.analyzerRootMap.set(registration.id, projectPath);
@@ -2551,6 +3519,43 @@ export class AnalyzerOrchestrator {
       return false;
     } catch (error) {
       return false;
+    }
+  }
+
+  private async hasLanguageSignal(projectPath: string, analyzerId: string): Promise<boolean> {
+    const inventory = await this.getSourceFileInventory(projectPath);
+    const hasExtension = (...extensions: string[]) => extensions.some(extension =>
+      (inventory.extensions.get(extension.toLowerCase()) || []).length > 0
+    );
+    const hasBasename = (...basenames: string[]) => basenames.some(basename =>
+      (inventory.basenames.get(basename.toLowerCase()) || []).length > 0
+    );
+
+    switch (analyzerId) {
+      case 'typescript-javascript':
+        return hasExtension('.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs');
+      case 'python':
+        return hasExtension('.py') || hasBasename('requirements.txt', 'setup.py', 'pyproject.toml', 'pipfile');
+      case 'java':
+        return hasExtension('.java') || hasBasename('pom.xml', 'build.gradle', 'build.gradle.kts');
+      case 'csharp':
+        return hasExtension('.cs', '.csproj', '.fsproj', '.vbproj', '.sln');
+      case 'go':
+        return hasExtension('.go') || hasBasename('go.mod', 'go.sum', 'gopkg.toml');
+      case 'rust':
+        return hasExtension('.rs') || hasBasename('cargo.toml', 'cargo.lock');
+      case 'php':
+        return hasExtension('.php') || hasBasename('composer.json', 'composer.lock');
+      case 'ruby':
+        return hasExtension('.rb', '.rake') || hasBasename('gemfile', 'gemfile.lock', 'rakefile');
+      case 'dart':
+        return hasExtension('.dart') || hasBasename('pubspec.yaml');
+      case 'terraform':
+        return hasExtension('.tf', '.tfvars');
+      default: {
+        const registration = this.analyzers.get(analyzerId);
+        return registration ? registration.analyzer.canAnalyze(projectPath) : false;
+      }
     }
   }
 
@@ -2630,11 +3635,7 @@ export class AnalyzerOrchestrator {
         continue;
       }
 
-      const matches = await glob(filePattern, {
-        cwd: projectPath,
-        ignore: this.getProjectDiscoveryIgnorePatterns(),
-        nodir: true
-      });
+      const matches = await this.findInventoryMatches(projectPath, filePattern);
 
       if (matches.length === 0) continue;
       if (contentPatterns.length === 0) {
@@ -2666,15 +3667,59 @@ export class AnalyzerOrchestrator {
     }
 
     for (const candidatePattern of candidatePatterns) {
-      const matches = await glob(candidatePattern, {
-        cwd: projectPath,
-        ignore: this.getProjectDiscoveryIgnorePatterns(),
-        nodir: true
-      });
+      const matches = await this.findInventoryMatches(projectPath, candidatePattern);
       if (matches.length > 0) return true;
     }
 
     return false;
+  }
+
+  private async findInventoryMatches(projectPath: string, pattern: string): Promise<string[]> {
+    const normalizedPattern = pattern.replace(/\\/g, '/');
+    const inventory = await this.getSourceFileInventory(projectPath);
+
+    if (!/[{[*?]/.test(normalizedPattern)) {
+      const exact = normalizedPattern.toLowerCase();
+      return inventory.files.filter(file =>
+        file.toLowerCase() === exact || file.toLowerCase().endsWith(`/${exact}`)
+      );
+    }
+
+    const basenameOnly = normalizedPattern.match(/^(?:\*\*\/)?([^/*?{}]+)$/);
+    if (basenameOnly) {
+      return inventory.basenames.get(basenameOnly[1].toLowerCase()) || [];
+    }
+
+    const extensionOnly = normalizedPattern.match(/^\*\*\/\*\.([a-z0-9]+)$/i);
+    if (extensionOnly) {
+      return inventory.extensions.get(`.${extensionOnly[1].toLowerCase()}`) || [];
+    }
+
+    const braceExtensions = normalizedPattern.match(/^\*\*\/\*\.{([^}]+)}$/);
+    if (braceExtensions) {
+      return braceExtensions[1]
+        .split(',')
+        .flatMap(extension => inventory.extensions.get(`.${extension.trim().toLowerCase()}`) || []);
+    }
+
+    const basenameBrace = normalizedPattern.match(/^(?:\*\*\/)?([^/{}]+)\.{([^}]+)}$/);
+    if (basenameBrace) {
+      const [_, prefix, extensions] = basenameBrace;
+      return extensions
+        .split(',')
+        .flatMap(extension => inventory.basenames.get(`${prefix}.${extension.trim()}`.toLowerCase()) || []);
+    }
+
+    const suffix = normalizedPattern.replace(/^\*\*\//, '').toLowerCase();
+    if (!suffix.includes('*') && !suffix.includes('?') && !suffix.includes('{')) {
+      return inventory.files.filter(file => file.toLowerCase().endsWith(suffix));
+    }
+
+    return glob(pattern, {
+      cwd: projectPath,
+      ignore: this.getProjectDiscoveryIgnorePatterns(),
+      nodir: true
+    });
   }
 
   private contentPatternToGlob(pattern: RegExp): string[] {
@@ -2900,6 +3945,39 @@ export class AnalyzerOrchestrator {
         ep.source.file = normalizePath(ep.source.file);
       }
     }
+  }
+
+  private applyCanonicalOrdering(
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: any[],
+    exitPoints: any[],
+    libraries: any[]
+  ): void {
+    const compareStrings = (a: string | undefined, b: string | undefined): number => {
+      if (a === b) return 0;
+      if (a === undefined) return 1;
+      if (b === undefined) return -1;
+      return a < b ? -1 : a > b ? 1 : 0;
+    };
+
+    nodes.sort((a, b) =>
+      compareStrings(a.source?.file, b.source?.file) ||
+      ((a.source?.line ?? 0) - (b.source?.line ?? 0)) ||
+      compareStrings(a.id, b.id)
+    );
+    edges.sort((a, b) =>
+      compareStrings(a.source, b.source) ||
+      compareStrings(a.target, b.target) ||
+      compareStrings(a.type, b.type) ||
+      compareStrings(a.id, b.id)
+    );
+    entryPoints.sort((a, b) => compareStrings(a.id, b.id));
+    exitPoints.sort((a, b) => compareStrings(a.id, b.id));
+    libraries.sort((a, b) =>
+      compareStrings(a.name, b.name) ||
+      compareStrings(a.version, b.version)
+    );
   }
 
   private mergeAnalysisResult(
@@ -3293,6 +4371,47 @@ export class AnalyzerOrchestrator {
     }
   }
 
+  private scanUnanalyzedLanguages(projectPath: string): Array<{ name: string; files: number; share_of_source: number }> {
+    const supported = new Set(['ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'py', 'java', 'cs', 'dart', 'go', 'rs', 'php', 'rb', 'erb', 'rake']);
+    const unanalyzedNames: Record<string, string> = {
+      ex: 'Elixir', exs: 'Elixir',
+      scala: 'Scala', kt: 'Kotlin', kts: 'Kotlin', swift: 'Swift',
+      lua: 'Lua', r: 'R', jl: 'Julia', erl: 'Erlang', clj: 'Clojure',
+      hs: 'Haskell', ml: 'OCaml', vb: 'Visual Basic', fs: 'F#',
+      pl: 'Perl', pm: 'Perl', groovy: 'Groovy',
+    };
+    const counts = new Map<string, number>();
+    let supportedCount = 0;
+    const stack: Array<{ directory: string; depth: number }> = [{ directory: projectPath, depth: 0 }];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (current.depth > 6) continue;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(current.directory, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (entry.name.startsWith('.')) continue;
+        if (entry.isDirectory()) {
+          if (['node_modules', 'dist', 'build', 'coverage', 'vendor', 'vendors', 'tmp', 'log', 'public', 'target', '.git'].includes(entry.name)) continue;
+          stack.push({ directory: path.join(current.directory, entry.name), depth: current.depth + 1 });
+          continue;
+        }
+        const extension = entry.name.split('.').pop()?.toLowerCase() || '';
+        if (supported.has(extension)) supportedCount += 1;
+        else if (unanalyzedNames[extension]) counts.set(unanalyzedNames[extension], (counts.get(unanalyzedNames[extension]) || 0) + 1);
+      }
+    }
+    const totalSource = supportedCount + [...counts.values()].reduce((sum, value) => sum + value, 0);
+    if (totalSource === 0) return [];
+    return [...counts.entries()]
+      .map(([name, files]) => ({ name, files, share_of_source: Math.round((files / totalSource) * 100) }))
+      .filter(item => item.files >= 5 || item.share_of_source >= 10)
+      .sort((a, b) => b.files - a.files);
+  }
+
   private extractTechnologies(contributions: any[], libraries: any[]): any {
     const languages = new Map<string, { count: number; percentage?: number }>();
     const frameworks = new Map<string, { version?: string; confidence: number }>();
@@ -3448,27 +4567,46 @@ export class AnalyzerOrchestrator {
     exitPoints: CASExitPoint[],
     contributions: any[]
   ): CASArchitectureSummary {
-    const fileNodes = nodes.filter(n => n.type === 'file');
-    const httpEntryPoints = entryPoints.filter(ep => ep.type === 'http');
-
-    const frameworkContribution = contributions.find(c =>
-      c.analyzer_type === 'framework' && !this.isTestingFrameworkContribution(c)
+    const productNodes = nodes.filter(node => this.isPrimaryProductNode(node));
+    const productNodeIds = new Set(productNodes.map(node => node.id));
+    const productEntryPoints = entryPoints.filter(ep =>
+      (!ep.source_node || productNodeIds.has(ep.source_node)) &&
+      (!ep.handler?.file || this.isPrimaryProductPath(ep.handler.file))
     );
-    const languageContribution = contributions.find(c => c.analyzer_type === 'language' && c.application_type);
-    const systemType = frameworkContribution?.analyzer_name?.replace(' Analyzer', '') ||
-      languageContribution?.application_type ||
-      'Application';
+    const fileNodes = productNodes.filter(n => n.type === 'file');
+    const httpEntryPoints = productEntryPoints.filter(ep => ep.type === 'http');
 
-    const controllers = nodes.filter(n => n.type === 'controller' || n.subcategories?.includes('controller'));
-    const services = nodes.filter(n => n.type === 'service' || n.subcategories?.includes('service'));
-    const entities = nodes.filter(n => n.type === 'entity' || n.subcategories?.includes('entity'));
-    const repositories = nodes.filter(n => n.type === 'repository' || n.subcategories?.includes('repository'));
-    const guards = nodes.filter(n => n.type === 'guard' || n.subcategories?.includes('guard'));
-    const middleware = nodes.filter(n => n.type === 'middleware' || n.subcategories?.includes('middleware'));
-    const modules = nodes.filter(n => n.type === 'module');
-    const components = nodes.filter(n => n.type === 'component');
-    const pages = nodes.filter(n => n.type === 'page' || n.subcategories?.includes('page'));
-    const migrations = nodes.filter(n => n.type === 'migration' || n.source?.file?.includes('migration'));
+    const controllers = productNodes.filter(n => n.type === 'controller' || n.subcategories?.includes('controller'));
+    const services = productNodes.filter(n => n.type === 'service' || n.subcategories?.includes('service'));
+    const entities = productNodes.filter(n => n.type === 'entity' || n.subcategories?.includes('entity'));
+    const repositories = productNodes.filter(n => n.type === 'repository' || n.subcategories?.includes('repository'));
+    const guards = productNodes.filter(n => n.type === 'guard' || n.subcategories?.includes('guard'));
+    const middleware = productNodes.filter(n => n.type === 'middleware' || n.subcategories?.includes('middleware'));
+    const modules = productNodes.filter(n => n.type === 'module');
+    const components = productNodes.filter(n => n.type === 'component');
+    const pages = productNodes.filter(n => n.type === 'page' || n.subcategories?.includes('page'));
+    const migrations = productNodes.filter(n => n.type === 'migration' || n.source?.file?.includes('migration'));
+    const architecturalInventory = this.buildArchitecturalInventory(productNodes);
+    const architecturalPatterns = this.detectArchitecturalPatterns(productNodes, architecturalInventory, {
+      controllers,
+      services,
+      repositories,
+      entities,
+      components,
+      pages,
+      modules,
+    });
+    const patternBalance = this.assessPatternBalance(architecturalPatterns, productNodes);
+    const systemType = this.inferArchitectureSystemType(productNodes, productEntryPoints, contributions, {
+      controllers,
+      services,
+      repositories,
+      entities,
+      components,
+      pages,
+      modules,
+      architecturalInventory,
+    });
 
     const authenticatedEndpoints = httpEntryPoints.filter(ep => ep.security?.authenticated);
     const publicEndpoints = httpEntryPoints.filter(ep => !ep.security?.authenticated);
@@ -3499,6 +4637,9 @@ export class AnalyzerOrchestrator {
     return {
       system_type: systemType,
       total_files: fileNodes.length,
+      architectural_patterns: architecturalPatterns.length > 0 ? architecturalPatterns : undefined,
+      architectural_inventory: architecturalInventory,
+      pattern_balance: patternBalance,
       layers: {
         presentation: {
           controllers: controllers.length > 0 ? controllers.length : undefined,
@@ -3533,6 +4674,547 @@ export class AnalyzerOrchestrator {
         protected_endpoints: authenticatedEndpoints.length,
         guards: Array.from(uniqueGuards)
       } : undefined
+    };
+  }
+
+  private inferArchitectureSystemType(
+    productNodes: CASNode[],
+    productEntryPoints: CASEntryPoint[],
+    contributions: any[],
+    counts: {
+      controllers: CASNode[];
+      services: CASNode[];
+      repositories: CASNode[];
+      entities: CASNode[];
+      components: CASNode[];
+      pages: CASNode[];
+      modules: CASNode[];
+      architecturalInventory: NonNullable<CASArchitectureSummary['architectural_inventory']>;
+    }
+  ): string {
+    const productFiles = productNodes
+      .map(node => node.source?.file || '')
+      .filter(Boolean)
+      .map(file => file.replace(/\\/g, '/').toLowerCase());
+    const uniqueFiles = new Set(productFiles);
+    const pathText = [...uniqueFiles].join('\n');
+    const httpEntryPoints = productEntryPoints.filter(entryPoint => entryPoint.type === 'http');
+    const pageEntryPoints = productEntryPoints.filter(entryPoint => entryPoint.type === 'page');
+    const cliEntryPoints = productEntryPoints.filter(entryPoint => entryPoint.type === 'cli');
+    const frameworkNames = contributions
+      .filter(contribution => contribution.analyzer_type === 'framework')
+      .map(contribution => String(contribution.analyzer_name || '').toLowerCase());
+    const hasAppsAndPackages = productFiles.some(file => /(^|\/)apps\//.test(file)) &&
+      productFiles.some(file => /(^|\/)(packages|libs)\//.test(file));
+    const hasInfrastructureSurface = productFiles.some(file => /\.(tf|tfvars|hcl)$/i.test(file) || /(^|\/)(terraform|opentofu|pulumi|helm|k8s|charts)\//.test(file)) ||
+      frameworkNames.some(name => /\b(terraform|opentofu|pulumi|helm|kubernetes|cloudformation)\b/.test(name));
+    const hasDesktopSurface = frameworkNames.some(name => /\b(wpf|winforms|electron|tauri|desktop)\b/.test(name)) ||
+      productFiles.some(file =>
+        /\.(xaml|csproj)$/i.test(file) ||
+        /(^|\/)(views|windows|viewmodels)\//.test(file) ||
+        /(^|\/)(electron\.vite\.config\.[jt]s|src\/(main|preload|renderer)\/|main\/index\.[jt]s|preload\/index\.[jt]s|renderer\/index\.html)/.test(file)
+      );
+    const hasMobileSurface = frameworkNames.some(name => /\b(flutter|react native|ios|android)\b/.test(name)) ||
+      productFiles.some(file => /\.(dart|swift|kt)$/i.test(file) || /(^|\/)(android|ios|lib\/screens)\//.test(file));
+    const hasBackendFramework = frameworkNames.some(name =>
+      /\b(symfony|laravel|django|fastapi|spring|asp\.?net|nestjs)\b/.test(name)
+    );
+    const hasMcpSurface = /\bmcp-server\b|modelcontextprotocol|(^|\/)mcp(\/|-)/.test(pathText);
+    const hasAnalyzerSurface = /\banalyzer-core\b|(^|\/)analyzers?\//.test(pathText) ||
+      productNodes.some(node => /analy[sz]er/i.test(`${node.name} ${node.type}`));
+    const hasFrontendFileSurface = productFiles.some(file =>
+      /\.(tsx|jsx|vue|svelte)$/.test(file) ||
+      /(^|\/)(pages?|components?|views?)\//.test(file) ||
+      /(^|\/)(src\/main|src\/app|src\/index)\.(tsx|jsx)$/.test(file)
+    );
+    const hasFrontendSurface = counts.components.length + counts.pages.length + pageEntryPoints.length > 0 || hasFrontendFileSurface;
+    const hasApiSurface = counts.controllers.length + httpEntryPoints.length > 0;
+    const hasDataSurface = counts.repositories.length + counts.entities.length > 0;
+    const hasScriptEntrySurface = productFiles.some(file =>
+      /(^|\/)(main|index|cli|script|bot|runner)\.(cjs|mjs|js|jsx|ts|tsx|py|rb|php|rs|go)$/.test(file) ||
+      /(^|\/)(bin|cli|cmd|commands|scripts?|jobs|workers)\//.test(file)
+    );
+
+    if (hasMcpSurface && hasAnalyzerSurface && hasAppsAndPackages) {
+      return 'MCP analyzer monorepo';
+    }
+    if (hasMcpSurface && hasAnalyzerSurface) {
+      return 'MCP analyzer service';
+    }
+    if (hasInfrastructureSurface && !hasApiSurface && !hasFrontendSurface) {
+      return 'Cloud infrastructure';
+    }
+    if (hasMobileSurface && hasApiSurface) {
+      return 'Mobile + API application';
+    }
+    if (hasMobileSurface) {
+      return 'Mobile application';
+    }
+    if (hasAppsAndPackages && hasFrontendSurface && hasApiSurface) {
+      return 'Full-stack monorepo';
+    }
+    if (hasAppsAndPackages && hasApiSurface) {
+      return 'API monorepo';
+    }
+    if (hasAppsAndPackages) {
+      return 'Monorepo';
+    }
+    if (hasBackendFramework && hasApiSurface) {
+      return hasDataSurface ? 'Backend service' : 'HTTP service';
+    }
+    if (hasDesktopSurface) {
+      return 'Desktop application';
+    }
+    if (hasMcpSurface) {
+      return 'MCP server';
+    }
+    if (hasFrontendSurface && hasApiSurface && hasDataSurface) {
+      return 'Full-stack application';
+    }
+    if (hasFrontendSurface && !hasApiSurface) {
+      return pageEntryPoints.length > 0 || hasFrontendFileSurface ? 'Frontend application' : 'UI application';
+    }
+    if (hasApiSurface) {
+      return hasDataSurface ? 'API service' : 'HTTP service';
+    }
+    if ((cliEntryPoints.length > 0 || hasScriptEntrySurface) && !hasApiSurface) {
+      return 'CLI application';
+    }
+
+    const frameworkType = this.inferDominantFrameworkSystemType(contributions);
+    if (frameworkType) return frameworkType;
+
+    const languageContribution = contributions.find(c => c.analyzer_type === 'language' && c.application_type);
+    return languageContribution?.application_type || 'Application';
+  }
+
+  private inferDominantFrameworkSystemType(contributions: any[]): string | undefined {
+    const frameworkContributions = contributions
+      .filter(contribution => contribution.analyzer_type === 'framework' && !this.isTestingFrameworkContribution(contribution))
+      .map(contribution => ({
+        name: String(contribution.analyzer_name || '').replace(' Analyzer', ''),
+        nodes: Number(contribution.nodes_created || 0),
+        confidence: Number(contribution.confidence || 1),
+      }))
+      .filter(contribution => contribution.name && contribution.nodes > 0)
+      .sort((a, b) => (b.nodes * b.confidence) - (a.nodes * a.confidence));
+
+    const [top, second] = frameworkContributions;
+    if (!top) return undefined;
+    if (top.nodes < 4 && second) return undefined;
+    if (second && top.nodes < second.nodes * 1.25 && top.nodes < 10) return undefined;
+    return top.name;
+  }
+
+  private buildArchitecturalInventory(nodes: CASNode[]): NonNullable<CASArchitectureSummary['architectural_inventory']> {
+    const byPredicate = (predicate: (node: CASNode, text: string, file: string) => boolean) => nodes
+      .filter(node => !node.metadata?.is_test && !node.metadata?.is_generated)
+      .filter(node => this.isArchitecturalInventoryNode(node))
+      .filter(node => {
+        const text = `${node.type} ${node.name} ${(node.subcategories || []).join(' ')}`.toLowerCase();
+        const file = node.source?.file?.toLowerCase() || '';
+        return predicate(node, text, file);
+      })
+      .map(node => node.id);
+
+    return {
+      models: byPredicate((node, text, file) =>
+        /\b(entity|model|schema)\b/.test(text) || /(^|\/)(models?|entities|schema)(\/|$)/.test(file)
+      ),
+      views: byPredicate((node, text, file) =>
+        /\b(view|page|component|template|screen|window)\b/.test(text) || /(^|\/)(views?|pages?|components?|screens?|templates?)(\/|$)/.test(file)
+      ),
+      controllers: byPredicate((node, text, file) =>
+        /\b(controller|resolver|route|handler)\b/.test(text) || /controller|resolver|routes?\./.test(file)
+      ),
+      view_models: byPredicate((node, text, file) =>
+        /\b(viewmodel|view_model|view-model)\b/.test(text) || /view[-_]?models?/.test(file)
+      ),
+      services: byPredicate((node, text, file) =>
+        /\b(service|usecase|use_case|use-case|interactor|manager)\b/.test(text) || /(^|\/)(services?|use-cases?|use_cases|interactors?)(\/|$)/.test(file)
+      ),
+      repositories: byPredicate((node, text, file) =>
+        /\b(repository|repo|dao|gateway|store)\b/.test(text) || /(^|\/)(repositories?|repos?|dao|gateways?|stores?)(\/|$)/.test(file)
+      ),
+      clients: byPredicate((node, text, file) =>
+        /\b(client|sdk|connector|adapter|integration|apiwrapper|api_wrapper|api-wrapper)\b/.test(text) ||
+        /(^|\/)(clients?|sdk|connectors?|adapters?|integrations?)(\/|$)/.test(file) ||
+        /(^|\/)[a-z0-9_-]*client\.[a-z0-9]+$/.test(file)
+      ),
+      mediators: byPredicate((node, text, file) =>
+        /\b(mediator|commandhandler|queryhandler|eventhandler|handler|bus|dispatcher)\b/.test(text) || /mediator|command[-_]?handler|query[-_]?handler|event[-_]?handler|dispatcher|\/handlers?\//.test(file)
+      ),
+      unit_of_work: byPredicate((node, text, file) =>
+        /\b(unitofwork|unit_of_work|transactionmanager|transactional)\b/.test(text) || /unit[-_]?of[-_]?work|transaction[-_]?manager/.test(file)
+      ),
+      singletons: byPredicate((node, text, file) =>
+        /\b(singleton|registry)\b/.test(text) || /singleton|registry/.test(file) || node.runtime?.scalability?.singleton === true
+      ),
+      scripts: byPredicate((node, text, file) =>
+        /\b(main|cli|command|job|worker|script|bot|runner)\b/.test(text) ||
+        /(^|\/)(bin|cli|cmd|commands|jobs|workers|scripts?)(\/|$)/.test(file) ||
+        /(^|\/)(main|index|app|server|worker|bot)\.[a-z0-9]+$/.test(file)
+      ),
+      packages: byPredicate((node, text, file) =>
+        /\b(package|library|module|namespace|export)\b/.test(text) ||
+        /(^|\/)(src|lib|include|packages?)(\/|$)/.test(file)
+      ),
+    };
+  }
+
+  private isArchitecturalInventoryNode(node: CASNode): boolean {
+    const type = String(node.type || '').toLowerCase();
+    if ([
+      'import',
+      'use',
+      'variable',
+      'constant',
+      'parameter',
+      'property',
+      'field',
+      'attribute',
+      'enum_member',
+      'literal',
+      'comment',
+      'using',
+    ].includes(type)) {
+      return false;
+    }
+
+    if (type === 'method') {
+      const name = String(node.name || '').toLowerCase();
+      return /(handle|execute|process|dispatch|render|validate|authorize|route|action|command|query|event)/.test(name);
+    }
+
+    return true;
+  }
+
+  private isPrimaryProductNode(node: CASNode): boolean {
+    if (node.metadata?.is_test || node.metadata?.is_generated) return false;
+    return this.isPrimaryProductPath(node.source?.file || node.name || '');
+  }
+
+  private isPrimaryProductNodeForProject(node: CASNode, projectPath: string): boolean {
+    if (node.metadata?.is_test || node.metadata?.is_generated) return false;
+    return this.isPrimaryProductPathForProject(node.source?.file || node.name || '', projectPath);
+  }
+
+  private filterPrimaryProductEntryPoints(entryPoints: CASEntryPoint[], nodes: CASNode[], projectPath: string): CASEntryPoint[] {
+    const productNodeIds = new Set(nodes
+      .filter(node => this.isPrimaryProductNodeForProject(node, projectPath))
+      .map(node => node.id));
+    return entryPoints.filter(entryPoint =>
+      (!entryPoint.source_node || productNodeIds.has(entryPoint.source_node)) &&
+      (!entryPoint.handler?.file || this.isPrimaryProductPathForProject(entryPoint.handler.file, projectPath))
+    );
+  }
+
+  private frameworkNamesForPurpose(contributions: any[], nodes: CASNode[], projectPath: string): string[] {
+    const productFrameworks = new Set<string>();
+    for (const node of nodes) {
+      if (!node.source?.file) continue;
+      if (!this.isPrimaryProductNodeForProject(node, projectPath)) continue;
+      const metadata = (node.metadata || {}) as Record<string, unknown>;
+      const candidates = [
+        metadata.framework,
+        metadata.library,
+        ...(Array.isArray(metadata.frameworks) ? metadata.frameworks : []),
+      ];
+      for (const candidate of candidates) {
+        const name = String(candidate || '').trim();
+        if (name) productFrameworks.add(name.replace(' Analyzer', ''));
+      }
+    }
+
+    if (productFrameworks.size > 0) {
+      return [...productFrameworks]
+        .filter(name => !/\b(language|ast|analyzer)\b/i.test(name))
+        .slice(0, 8);
+    }
+    return [];
+  }
+
+  private isPrimaryProductPathForProject(filePath: string, projectPath: string): boolean {
+    const normalized = filePath.replace(/\\/g, '/');
+    if (!normalized) return true;
+    if (path.isAbsolute(normalized)) {
+      const relative = path.relative(projectPath, normalized).replace(/\\/g, '/');
+      if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
+        return this.isPrimaryProductPath(relative);
+      }
+      return false;
+    }
+    return this.isPrimaryProductPath(normalized);
+  }
+
+  private isPrimaryProductPath(filePath: string): boolean {
+    const normalized = filePath.replace(/\\/g, '/').toLowerCase();
+    if (!normalized) return true;
+    if (/^(fixtures?|__fixtures__|tests?|__tests__|spec|e2e|cypress|playwright)[./]/.test(normalized)) return false;
+    if (/[./](fixtures?|__fixtures__|tests?|__tests__|spec|e2e|cypress|playwright)[./]/.test(normalized)) return false;
+    if (/(^|\/)(node_modules|dist|build|coverage|vendor|vendors|generated|fixtures?|__fixtures__|__mocks__)(\/|$)/.test(normalized)) return false;
+    if (/\.(min|bundle)\.(js|css)$/.test(normalized)) return false;
+    if (/\/lib\/(waypoints|owlcarousel|chart|easing|tempusdominus|bootstrap|jquery)\//.test(normalized)) return false;
+    if (/(^|\/)(__tests__|tests?|spec|e2e|cypress|playwright)(\/|$)/.test(normalized)) return false;
+    if (/\.(test|spec|stories|story)\.[a-z0-9]+$/.test(normalized)) return false;
+    if (/^legacy\//.test(normalized)) return false;
+    return true;
+  }
+
+  private detectArchitecturalPatterns(
+    nodes: CASNode[],
+    inventory: NonNullable<CASArchitectureSummary['architectural_inventory']>,
+    counts: {
+      controllers: CASNode[];
+      services: CASNode[];
+      repositories: CASNode[];
+      entities: CASNode[];
+      components: CASNode[];
+      pages: CASNode[];
+      modules: CASNode[];
+    }
+  ): NonNullable<CASArchitectureSummary['architectural_patterns']> {
+    const patterns: NonNullable<CASArchitectureSummary['architectural_patterns']> = [];
+    const add = (
+      name: string,
+      category: NonNullable<CASArchitectureSummary['architectural_patterns']>[number]['category'],
+      confidence: number,
+      evidence: string[],
+      nodeIds: string[],
+      guidance: string
+    ) => {
+      if (nodeIds.length === 0 || confidence < 0.35) return;
+      patterns.push({
+        name,
+        category,
+        confidence: Number(confidence.toFixed(2)),
+        evidence,
+        node_ids: Array.from(new Set(nodeIds)).slice(0, 80),
+        guidance,
+      });
+    };
+
+    const mvcEvidence: string[] = [];
+    if (inventory.models.length > 0) mvcEvidence.push(`${inventory.models.length} model/entity nodes`);
+    if (inventory.views.length > 0) mvcEvidence.push(`${inventory.views.length} view/page/component nodes`);
+    if (inventory.controllers.length > 0) mvcEvidence.push(`${inventory.controllers.length} controller/route/handler nodes`);
+    const hasMvcInventory = inventory.models.length > 0 && inventory.views.length > 0 && inventory.controllers.length > 0;
+    add(
+      'MVC',
+      'application-architecture',
+      hasMvcInventory ? 0.75 + Math.min(0.2, Math.log10(inventory.models.length + inventory.views.length + inventory.controllers.length) / 10) : 0,
+      mvcEvidence,
+      [...inventory.models, ...inventory.views, ...inventory.controllers],
+      'When adding features, keep request handling in controllers/routes, state/data shape in models/entities, and rendering in views/components.'
+    );
+
+    add(
+      'MVVM',
+      'presentation',
+      inventory.view_models.length > 0 && inventory.views.length > 0
+        ? Math.min(0.95, 0.55 + inventory.view_models.length / Math.max(8, inventory.views.length))
+        : 0,
+      [`${inventory.view_models.length} view-model nodes`, `${inventory.views.length} view nodes`],
+      [...inventory.view_models, ...inventory.views],
+      'When adding UI behavior, prefer existing view-model binding/state patterns instead of putting orchestration directly into views.'
+    );
+
+    add(
+      'Service Layer',
+      'business-logic',
+      counts.services.length > 0 ? Math.min(0.95, 0.45 + counts.services.length / Math.max(10, nodes.length / 20)) : 0,
+      [`${counts.services.length} service/use-case nodes`],
+      inventory.services,
+      'Put business rules in services/use-cases and keep entry points thin.'
+    );
+
+    add(
+      'Repository',
+      'data-access',
+      counts.repositories.length > 0 ? Math.min(0.95, 0.5 + counts.repositories.length / Math.max(8, counts.entities.length || 1)) : 0,
+      [`${counts.repositories.length} repository/store nodes`, `${counts.entities.length} model/entity nodes`],
+      inventory.repositories,
+      'Use the repository/store layer for persistence access instead of reaching into storage from controllers or UI code.'
+    );
+
+    add(
+      'Mediator / Handler',
+      'business-logic',
+      inventory.mediators.length > 0 ? Math.min(0.95, 0.45 + inventory.mediators.length / Math.max(10, nodes.length / 30)) : 0,
+      [`${inventory.mediators.length} mediator/handler/bus nodes`],
+      inventory.mediators,
+      'Route commands, queries, and events through the existing handler or bus style when present.'
+    );
+
+    add(
+      'Unit of Work',
+      'data-access',
+      inventory.unit_of_work.length > 0 ? 0.8 : 0,
+      [`${inventory.unit_of_work.length} unit-of-work/transaction manager nodes`],
+      inventory.unit_of_work,
+      'Keep multi-entity persistence changes inside the transaction/unit-of-work boundary.'
+    );
+
+    add(
+      'Singleton / Registry',
+      'object-lifecycle',
+      inventory.singletons.length > 0 ? Math.min(0.85, 0.45 + inventory.singletons.length / 10) : 0,
+      [`${inventory.singletons.length} singleton/registry nodes`],
+      inventory.singletons,
+      'Reuse existing singleton/registry lifecycle patterns carefully; avoid adding hidden global state without matching local practice.'
+    );
+
+    add(
+      'Feature Modules',
+      'application-architecture',
+      counts.modules.length > 1 ? Math.min(0.9, 0.45 + counts.modules.length / 20) : 0,
+      [`${counts.modules.length} module nodes`],
+      counts.modules.map(node => node.id),
+      'Place new behavior in the closest feature module instead of widening root modules.'
+    );
+
+    add(
+      'Layered Architecture',
+      'application-architecture',
+      this.layeredArchitectureConfidence(inventory, counts, nodes),
+      [
+        `${counts.controllers.length} controller/entry nodes`,
+        `${counts.services.length} service/use-case nodes`,
+        `${counts.repositories.length} repository/store nodes`,
+        `${counts.entities.length} model/entity nodes`,
+      ],
+      [
+        ...inventory.controllers,
+        ...inventory.services,
+        ...inventory.repositories,
+        ...inventory.models,
+      ],
+      'Preserve the existing layer direction: entry/presentation calls business services, business code calls data/integration boundaries, and lower layers do not reach back up.'
+    );
+
+    add(
+      'Component/Page UI',
+      'presentation',
+      inventory.views.length > 0
+        ? Math.min(0.9, 0.42 + inventory.views.length / Math.max(20, nodes.length / 8))
+        : 0,
+      [`${inventory.views.length} page/component/template nodes`],
+      inventory.views,
+      'Place UI changes beside the nearest page/component/template examples and preserve local state, routing, and styling conventions.'
+    );
+
+    add(
+      'Client SDK / API Wrapper',
+      'integration',
+      inventory.clients.length > 0
+        ? Math.min(0.92, 0.48 + inventory.clients.length / Math.max(10, nodes.length / 25))
+        : 0,
+      [`${inventory.clients.length} client/sdk/adapter nodes`],
+      inventory.clients,
+      'Treat client/SDK/adapter classes as integration boundaries; keep protocol concerns there instead of spreading remote-call details into business code.'
+    );
+
+    add(
+      'Command Script / Automation',
+      'application-architecture',
+      inventory.scripts.length > 0
+        ? Math.min(0.88, 0.43 + inventory.scripts.length / Math.max(8, nodes.length / 20))
+        : 0,
+      [`${inventory.scripts.length} CLI/script/worker/bot nodes`],
+      inventory.scripts,
+      'For automation or bot-style repos, preserve the entry script, orchestration loop, and helper-module split instead of introducing unrelated web/service structure.'
+    );
+
+    add(
+      'Library / Module Package',
+      'application-architecture',
+      inventory.packages.length >= 8 && inventory.controllers.length === 0 && inventory.views.length === 0
+        ? Math.min(0.86, 0.38 + inventory.packages.length / Math.max(30, nodes.length / 8))
+        : 0,
+      [`${inventory.packages.length} package/library/module nodes`],
+      inventory.packages,
+      'Treat exported modules and library namespaces as the primary architecture; preserve public API shape and colocate helpers under the existing package layout.'
+    );
+
+    const staticSiteNodes = nodes.filter(node => {
+      const file = node.source?.file?.replace(/\\/g, '/').toLowerCase() || '';
+      return /(^|\/)(public|static|assets|images|styles|css)(\/|$)/.test(file) ||
+        /\.(html|css|scss|sass|less|png|jpg|jpeg|webp|svg)$/.test(file);
+    });
+    add(
+      'Static Site / Asset Pipeline',
+      'presentation',
+      staticSiteNodes.length >= 8 ? Math.min(0.9, 0.45 + staticSiteNodes.length / Math.max(30, nodes.length)) : 0,
+      [`${staticSiteNodes.length} static page/asset/style nodes`],
+      staticSiteNodes.map(node => node.id),
+      'Treat content, styling, and assets as the primary architecture; preserve placement, naming, and build conventions around public/static/assets directories.'
+    );
+
+    return patterns.sort((a, b) => b.confidence - a.confidence);
+  }
+
+  private layeredArchitectureConfidence(
+    inventory: NonNullable<CASArchitectureSummary['architectural_inventory']>,
+    counts: {
+      controllers: CASNode[];
+      services: CASNode[];
+      repositories: CASNode[];
+      entities: CASNode[];
+    },
+    nodes: CASNode[]
+  ): number {
+    const layeredPathSignals = nodes.filter(node => {
+      const file = node.source?.file?.replace(/\\/g, '/').toLowerCase() || '';
+      return /(^|\/)(domain|application|app|services?|business|infrastructure|infra|presentation|ui|web|data|persistence)(\/|$)/.test(file) ||
+        /(^|\/)[1-5]\.(domain|infrastructure|services?|presentation|tests?)(\/|$)/.test(file);
+    }).length;
+
+    const presentationLayer = counts.controllers.length > 0 || inventory.controllers.length > 0 || inventory.views.length > 0;
+    const businessLayer = counts.services.length > 0 || inventory.services.length > 0 || inventory.mediators.length > 0;
+    const dataLayer = counts.repositories.length > 0 || inventory.repositories.length > 0 || counts.entities.length > 0 || inventory.models.length > 0;
+    const integrationLayer = inventory.clients.length > 0;
+    const explicitLayerCount = [presentationLayer, businessLayer, dataLayer || integrationLayer].filter(Boolean).length;
+
+    if (explicitLayerCount < 2) return 0;
+    if (!businessLayer && layeredPathSignals < Math.max(8, nodes.length / 80)) return 0;
+
+    const present = explicitLayerCount;
+    return Math.min(0.94, 0.35 + present * 0.16 + layeredPathSignals / Math.max(30, nodes.length / 8));
+  }
+
+  private assessPatternBalance(
+    patterns: NonNullable<CASArchitectureSummary['architectural_patterns']>,
+    nodes: CASNode[]
+  ): NonNullable<CASArchitectureSummary['pattern_balance']> {
+    const risks: string[] = [];
+    const recommendations: string[] = [];
+    const highConfidence = patterns.filter(pattern => pattern.confidence >= 0.65);
+    const antiPatternCount = patterns.filter(pattern => pattern.category === 'anti-pattern').length;
+
+    let status: NonNullable<CASArchitectureSummary['pattern_balance']>['status'] = 'balanced';
+    if (highConfidence.length === 0 && nodes.length > 50) {
+      status = 'under-patterned';
+      risks.push('Few architectural patterns are visible for the size of the codebase.');
+      recommendations.push('Before adding major features, identify the local placement and boundary convention from nearby files.');
+    } else if (highConfidence.length > 8) {
+      status = 'over-patterned';
+      risks.push('Many architectural patterns appear simultaneously; agents may overfit to pattern names without local examples.');
+      recommendations.push('Prefer the highest-confidence patterns and concrete examples from the target area.');
+    }
+    if (antiPatternCount > 0) {
+      status = status === 'balanced' ? 'mixed' : status;
+      risks.push(`${antiPatternCount} anti-pattern signal(s) appear in the architecture inventory.`);
+    }
+
+    if (recommendations.length === 0) {
+      recommendations.push('Use detected patterns as placement guidance, then verify against local examples and tests.');
+    }
+
+    return {
+      status,
+      detected_count: patterns.length,
+      risks,
+      recommendations,
     };
   }
 
@@ -3585,11 +5267,14 @@ export class AnalyzerOrchestrator {
     }
 
     const entityNodes = nodes.filter(n =>
-      n.type === 'entity' ||
-      n.type === 'model' ||
-      n.subcategories?.includes('entity') ||
-      n.metadata?.annotations?.some(a => a.includes('Entity')) ||
-      (n.type === 'class' && n.source?.file?.includes('/entities/'))
+      (!projectPath || this.isPrimaryProductNodeForProject(n, projectPath)) &&
+      (
+        n.type === 'entity' ||
+        n.type === 'model' ||
+        n.subcategories?.includes('entity') ||
+        n.metadata?.annotations?.some(a => a.includes('Entity')) ||
+        (n.type === 'class' && n.source?.file?.includes('/entities/'))
+      )
     );
 
     entityNodes.forEach(entityNode => {
@@ -3777,14 +5462,24 @@ export class AnalyzerOrchestrator {
       'ErrorKind', 'Formatter', 'Arguments', 'Pin', 'Waker', 'Context', 'Poll',
       'Future', 'CStr', 'CString', 'ipaddr', 'RateLimiter'
     ]);
+    for (const builtin of [
+      'System', 'Console', 'Task', 'Thread', 'Timer', 'File', 'Directory',
+      'Path', 'Stream', 'MemoryStream', 'FileStream', 'String', 'Math',
+      'DateTime', 'TimeSpan', 'Guid', 'Uri', 'Regex', 'Enumerable',
+      'File.Exists', 'String.IsNullOrEmpty', 'String.IsNullOrWhiteSpace',
+      'Math.Abs', 'Math.Max', 'Math.Min'
+    ]) {
+      stdBuiltins.add(builtin);
+    }
 
     exitPoints.forEach(ep => {
       if (ep.type === 'database') {
         const dbKey = ep.target?.service_id || 'primary_database';
         if (!serviceMap.has(dbKey)) {
+          const databaseName = this.isMeaningfulExternalServiceName(ep.name) ? ep.name : 'Database';
           serviceMap.set(dbKey, {
             id: `ext_${dbKey}`,
-            name: ep.name || 'Database',
+            name: databaseName || 'Database',
             type: 'database',
             purpose: 'bidirectional',
             connected_nodes: [],
@@ -3819,7 +5514,7 @@ export class AnalyzerOrchestrator {
       } else if (ep.type === 'api' || ep.type === 'sdk') {
         const sdkName = ep.target?.sdk || ep.name || 'External API';
 
-        if (stdBuiltins.has(sdkName)) {
+        if (stdBuiltins.has(sdkName) || !this.isMeaningfulExternalServiceName(sdkName)) {
           return;
         }
 
@@ -3868,6 +5563,27 @@ export class AnalyzerOrchestrator {
     serviceMap.forEach(svc => services.push(svc));
 
     return services;
+  }
+
+  private isMeaningfulExternalServiceName(name: string | undefined): boolean {
+    if (/^(external call|linq operation):/i.test(name || '')) return false;
+    const value = (name || '').replace(/^call to\s*/i, '').trim();
+    if (!value) return false;
+    const lower = value.toLowerCase();
+    if (/^(database|request external|shutil|subprocess|re|pathlib|os|sys|typing|datetime|uuid)$/.test(lower)) return false;
+    if (value.includes('${')) return false;
+    if (/[()[\]{}]|=>/.test(value) || /^_?\w+\./.test(value) && /^_?(ctx|context|db|repository|repo|service|client)\./i.test(value)) return false;
+    if (/^(get|post|put|patch|delete|fetch)\s+/i.test(value) && !/^https?:\/\//i.test(value)) return false;
+    if (/^(file|directory|path|string|math|console|task|timer|thread|datetime|timespan|guid|uri|regex|stream|streamwriter|streamreader|enumerable|linq)(\.|$)/i.test(value)) return false;
+    if (/\.ctor$/i.test(value)) return false;
+    if (/^system(\.|$)/i.test(value)) return false;
+    if (/^(?:db|[A-Z][A-Za-z0-9_]*(?:Service|Controller|Repository|Repo|Model|Store|Client|DbContext|Context)?)\.[A-Za-z_]\w*$/.test(value)) return false;
+    if (/^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$/.test(value) && !value.includes('/') && !value.startsWith('@')) return false;
+    if (/^\w+\.\w+\(/.test(value)) return false;
+    if (/^\.?\//.test(value) || lower.startsWith('route') || lower.includes('window.location')) return false;
+    if (/^(node:|rxjs(?:\/|$)|protractor(?:\/|$)|@angular(?:\/|$)|@app(?:\/|$)|@shared(?:\/|$)|openclaw\/plugin-sdk(?:\/|$))/.test(lower)) return false;
+    if (/^(object|array|string|number|boolean|date|math|json|promise|map|set|error|regexp|function|process|global)(\.|$)/.test(lower)) return false;
+    return true;
   }
 
   private detectPatterns(nodes: CASNode[], edges: CASEdge[]): CASPattern[] {
@@ -4696,13 +6412,39 @@ export class AnalyzerOrchestrator {
     databaseEntities: string[],
     externalServices: string[],
     flowGraph: CASFlowGraph,
-    domainConcepts: CASDomainConcept[]
+    domainConcepts: CASDomainConcept[],
+    systemCapabilities: SystemCapability[] = [],
+    unanalyzedLanguages: Array<{ name: string; files: number; share_of_source: number }> = []
   ): Promise<void> {
+    if (process.env.KLAURO_AI_INTERPRETATION === 'false' || process.env.KLAURO_AI_INTERPRETATION === '0') {
+      this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'ai_skipped', false, 'disabled-by-env');
+      return;
+    }
     if (!aiConfig.features.naturalLanguageDescriptions) {
+      this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'ai_skipped', false, 'feature-disabled');
+      return;
+    }
+    if (!this.hasAIInterpretationProviderConfigured()) {
+      this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'ai_skipped', false, 'no-ai-provider-configured');
+      return;
+    }
+    if (AnalyzerOrchestrator.aiInterpretationDisabledUntil > Date.now()) {
+      this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'ai_skipped', false, 'cooldown-active');
+      return;
+    }
+    if (this.shouldKeepDeterministicSystemDescription(enhancedSystemPurpose)) {
+      this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'deterministic_kept', false, 'deterministic-description-is-useful');
       return;
     }
 
-    const budgetMs = 45000;
+    const configuredBudget = Number(process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS || '');
+    const budgetMs = Number.isFinite(configuredBudget) && configuredBudget > 0
+      ? configuredBudget
+      : 20000;
+    if (budgetMs <= 0) {
+      this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'ai_skipped', false, 'budget-disabled', budgetMs);
+      return;
+    }
 
     const structuralFacts = this.buildAIInterpretationFacts(
       systemName,
@@ -4711,38 +6453,1042 @@ export class AnalyzerOrchestrator {
       databaseEntities,
       externalServices,
       flowGraph,
-      domainConcepts
+      domainConcepts,
+      systemCapabilities
     );
 
+    const elementsEnabled = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS !== 'false' && process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS !== '0';
+    const configuredElementLimit = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT || '');
+    const elementLimit = Number.isFinite(configuredElementLimit) && configuredElementLimit > 0 ? configuredElementLimit : 8;
+    const capabilityTargets = elementsEnabled
+      ? systemCapabilities.slice(0, elementLimit).map(capability => this.capabilityDescriptionTarget(capability))
+      : [];
+
     try {
-      const description = await Promise.race([
+      const aiStartedAt = Date.now();
+      let timeoutHandle: NodeJS.Timeout | undefined;
+      const raw = await Promise.race([
         aiService.generateComponentDescription({
           additionalContext: {
-            task: 'Based only on the structural facts below, describe what this software system is and what it does in 2-4 sentences. Infer the kind of system from its frameworks, entry points, and capabilities. Do not invent features that are not implied by the facts.',
+            task: 'Based only on the structural facts below, return ONLY valid JSON with this shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. system_description: describe what this software system is and what it does in 2-4 full sentences (at least 150 characters); infer the kind of system from its frameworks, entry points, and capabilities; do not invent features, expand acronyms, or add company names or business domains that are not implied by the facts; mention integrations or external services only by the exact names listed in externalServices, never as unnamed providers. domain: one lowercase kebab-case label of 2 to 4 words naming the primary business domain with concrete product nouns from the facts, never technology or framework names (for example "wedding-venue-booking" or "fleet-compliance-tracking"). descriptions: one entry per item in items, each one grounded sentence answering what that area lets an engineer, operator, user, or AI agent do; translate source areas and operation names into human purpose.',
+            style: 'Return only the JSON object. system_description must be a short paragraph, not a list or colon-prefixed facts such as "Key capabilities:", "Data model:", "Entry points:", or "Integrations:"; avoid vague phrases like "interact with data" or "designed to be integrated" and avoid promotional language. Capability descriptions: prefer concrete verbs like centralizes, maintains, tracks, prepares, identifies, evaluates, records, links, validates, or preserves; do not use "operations for", "supports", "coordinates", "handles", "reads", "processes", "internal files", "spans", "insights", "efficient", "compliant", "productivity", "business value", or "streamline"; do not mention files unless the item is literally file storage.',
+            primaryDomain: enhancedSystemPurpose.primary_domain,
+            coreConcepts: enhancedSystemPurpose.core_concepts,
+            deterministicOverview: enhancedSystemPurpose.inferred_description,
+            items: capabilityTargets,
             ...structuralFacts,
+            ...(unanalyzedLanguages.length > 0 ? {
+              unanalyzedLanguages,
+              languageCoverageInstruction: `This static analysis covers only the analyzed languages; ${unanalyzedLanguages[0].name} (${unanalyzedLanguages[0].share_of_source}% of source files) was not analyzed. system_description must state that this analysis covers only the analyzed languages and must name ${unanalyzedLanguages[0].name} as the dominant unanalyzed language.`,
+            } : {}),
           },
         }),
-        new Promise<string>((_, reject) =>
-          setTimeout(() => reject(new Error('AI interpretation budget exceeded')), budgetMs)
-        ),
+        new Promise<string>((_, reject) => {
+          timeoutHandle = setTimeout(() => reject(new Error('AI interpretation budget exceeded')), budgetMs);
+        }),
       ]);
+      if (timeoutHandle) clearTimeout(timeoutHandle);
 
-      const cleaned = (description || '').trim();
-      const isUsable =
-        cleaned.length >= 40 &&
-        cleaned.length <= 2000 &&
-        !/AI description generation is disabled/i.test(cleaned);
+      const combined = this.parseCombinedInterpretation(raw);
+      const interpretationFacts = {
+        frameworks,
+        databaseEntities,
+        externalServices,
+        structuralTokens: this.structuralGroundingTokens(systemName, structuralFacts, databaseEntities),
+      };
+      const domainCandidates: string[] = [];
+      if (combined.domain) domainCandidates.push(combined.domain);
 
-      if (isUsable) {
+      let cleaned = this.cleanGeneratedDescriptionText(combined.systemDescription || '');
+      let validation = this.validateAIInterpretation(cleaned, enhancedSystemPurpose, interpretationFacts);
+      if (!validation.ok) {
+        const sanitized = this.sanitizeAIInterpretation(cleaned, enhancedSystemPurpose, interpretationFacts);
+        const sanitizedValidation = this.validateAIInterpretation(sanitized, enhancedSystemPurpose, interpretationFacts);
+        if (sanitizedValidation.ok) {
+          cleaned = sanitized;
+          validation = sanitizedValidation;
+        }
+      }
+
+      const acceptedElements = new Map<string, string>();
+      const rejectedElements = new Map<string, string>();
+      for (const target of capabilityTargets) {
+        const candidate = combined.elements.get(target.id);
+        const elementValidation = candidate
+          ? this.validateElementDescription(candidate, target)
+          : { ok: false as const, reason: 'missing-description' };
+        if (elementValidation.ok && candidate) acceptedElements.set(target.id, candidate);
+        else rejectedElements.set(target.id, elementValidation.reason || 'generated-description-failed-quality-gate');
+      }
+
+      if ((!validation.ok || rejectedElements.size > 0) && Date.now() - aiStartedAt < budgetMs) {
+        try {
+        const remainingMs = Math.max(1, budgetMs - (Date.now() - aiStartedAt));
+        let repairTimeoutHandle: NodeJS.Timeout | undefined;
+        const repairRaw = await Promise.race([
+          aiService.generateComponentDescription({
+            additionalContext: {
+              task: 'Repair the rejected parts of the previous answer. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Fix only what was rejected: write a grounded 2-3 full-sentence system_description (at least 150 characters) if it was rejected, and one grounded sentence per rejected item. Mention integrations or external services only by the exact names listed in externalServices; if none are listed, do not mention integrations at all.',
+              style: 'No markdown. No marketing language. No raw labels like "Key capabilities:" or "Data model:". Do not invent features, company names, domains, compliance, scale, productivity, or user-experience claims beyond the facts.',
+              rejected_system_description: validation.ok ? undefined : cleaned,
+              system_description_rejection_reason: validation.ok ? undefined : validation.reason,
+              rejected_items: capabilityTargets
+                .filter(target => rejectedElements.has(target.id))
+                .map(target => ({ ...target, rejection_reason: rejectedElements.get(target.id) })),
+              primaryDomain: enhancedSystemPurpose.primary_domain,
+              coreConcepts: enhancedSystemPurpose.core_concepts,
+              deterministicOverview: enhancedSystemPurpose.inferred_description,
+              ...structuralFacts,
+            },
+          }),
+          new Promise<string>((_, reject) => {
+            repairTimeoutHandle = setTimeout(() => reject(new Error('AI interpretation repair budget exceeded')), remainingMs);
+          }),
+        ]);
+        if (repairTimeoutHandle) clearTimeout(repairTimeoutHandle);
+        const repaired = this.parseCombinedInterpretation(repairRaw);
+        if (repaired.domain) domainCandidates.push(repaired.domain);
+        if (!validation.ok) {
+          let repairedDescription = this.cleanGeneratedDescriptionText(repaired.systemDescription || '');
+          let repairedValidation = this.validateAIInterpretation(repairedDescription, enhancedSystemPurpose, interpretationFacts);
+          if (!repairedValidation.ok) {
+            const sanitizedRepair = this.sanitizeAIInterpretation(repairedDescription, enhancedSystemPurpose, interpretationFacts);
+            const sanitizedRepairValidation = this.validateAIInterpretation(sanitizedRepair, enhancedSystemPurpose, interpretationFacts);
+            if (sanitizedRepairValidation.ok) {
+              repairedDescription = sanitizedRepair;
+              repairedValidation = sanitizedRepairValidation;
+            }
+          }
+          if (repairedValidation.ok) {
+            cleaned = repairedDescription;
+            validation = repairedValidation;
+          }
+        }
+        for (const target of capabilityTargets) {
+          if (acceptedElements.has(target.id)) continue;
+          const candidate = repaired.elements.get(target.id);
+          if (candidate && this.validateElementDescription(candidate, target).ok) {
+            acceptedElements.set(target.id, candidate);
+            rejectedElements.delete(target.id);
+          }
+        }
+        } catch (repairError) {
+          const repairMessage = repairError instanceof Error ? repairError.message : String(repairError);
+          console.error(`[Klauro] AI interpretation repair skipped (${repairMessage}); keeping first-pass results`);
+        }
+      }
+
+      if (validation.ok) {
         enhancedSystemPurpose.inferred_description = cleaned;
+        this.recordDescriptionGeneration(enhancedSystemPurpose, 'ai', 'ai_applied', true, undefined, budgetMs);
+        AnalyzerOrchestrator.aiInterpretationTimeouts = 0;
         console.error('[Klauro] AI interpretation applied to system description');
       } else {
+        this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'ai_rejected', true, validation.reason || 'generated-description-failed-quality-gate', budgetMs);
         console.error('[Klauro] AI interpretation result unusable; keeping heuristic description');
+      }
+
+      for (const candidate of domainCandidates) {
+        const label = this.normalizeAIDomainLabel(candidate);
+        if (label && label !== enhancedSystemPurpose.primary_domain && this.isGroundedAIDomainLabel(label, enhancedSystemPurpose)) {
+          enhancedSystemPurpose.primary_domain = label;
+          enhancedSystemPurpose.domain_source = 'ai';
+          console.error(`[Klauro] AI domain label applied: ${label}`);
+          break;
+        }
+      }
+
+      for (const target of capabilityTargets) {
+        const accepted = acceptedElements.get(target.id);
+        if (accepted) {
+          this.applyElementDescription(target.id, accepted, systemCapabilities, [], 'ai', 'ai_applied', true, undefined, budgetMs);
+          continue;
+        }
+        const curated = this.curatedElementDescription(target);
+        if (curated) {
+          this.applyElementDescription(target.id, curated, systemCapabilities, [], 'manual', 'deterministic_kept', true, 'curated-product-capability-description', budgetMs);
+        } else {
+          this.applyElementDescription(target.id, undefined, systemCapabilities, [], 'deterministic', 'ai_rejected', true, rejectedElements.get(target.id) || 'generated-description-failed-quality-gate', budgetMs);
+        }
+      }
+      if (elementsEnabled && systemCapabilities.length > capabilityTargets.length) {
+        this.recordElementDescriptionGenerationByIds(
+          systemCapabilities.slice(elementLimit).map(capability => capability.id),
+          systemCapabilities,
+          [],
+          'deterministic',
+          'ai_skipped',
+          false,
+          'manual-trigger-only',
+          budgetMs
+        );
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (/budget exceeded|timed out|timeout/i.test(message)) {
+        AnalyzerOrchestrator.aiInterpretationTimeouts += 1;
+        const threshold = Number(process.env.KLAURO_AI_INTERPRETATION_TIMEOUT_THRESHOLD || '3');
+        const cooldownMs = Number(process.env.KLAURO_AI_INTERPRETATION_COOLDOWN_MS || '60000');
+        if (AnalyzerOrchestrator.aiInterpretationTimeouts >= Math.max(1, threshold)) {
+          AnalyzerOrchestrator.aiInterpretationDisabledUntil = Date.now() + Math.max(0, cooldownMs);
+          console.error(`[Klauro] AI interpretation cooldown enabled after ${AnalyzerOrchestrator.aiInterpretationTimeouts} timeouts`);
+        }
+      }
+      this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'ai_failed', true, message, budgetMs);
+      if (capabilityTargets.length > 0) {
+        this.recordElementDescriptionGenerationByIds(capabilityTargets.map(target => target.id), systemCapabilities, [], 'deterministic', 'ai_failed', true, message, budgetMs);
+      }
       console.error(`[Klauro] AI interpretation skipped (${message}); keeping heuristic description`);
     }
+  }
+
+  private structuralGroundingTokens(
+    systemName: string,
+    structuralFacts: Record<string, unknown>,
+    databaseEntities: string[]
+  ): string[] {
+    const tokens = new Set<string>();
+    const sources = [
+      systemName,
+      ...((structuralFacts.capabilities as string[]) || []),
+      ...((structuralFacts.domainConcepts as string[]) || []),
+      ...databaseEntities,
+    ];
+    for (const value of sources) {
+      for (const token of String(value || '')
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)) {
+        if (token.length >= 4 && !this.isGenericCapabilityToken(token)) tokens.add(token);
+      }
+    }
+    return [...tokens];
+  }
+
+  private parseCombinedInterpretation(raw: string): { systemDescription?: string; domain?: string; elements: Map<string, string> } {
+    const elements = this.parseDescriptionBatch(raw) || new Map<string, string>();
+    const text = (raw || '').trim();
+    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1] || text;
+    const first = fenced.indexOf('{');
+    const last = fenced.lastIndexOf('}');
+    if (first >= 0 && last > first) {
+      try {
+        const parsed = JSON.parse(fenced.slice(first, last + 1));
+        return {
+          systemDescription: typeof parsed?.system_description === 'string' ? parsed.system_description : undefined,
+          domain: typeof parsed?.domain === 'string' ? parsed.domain : undefined,
+          elements,
+        };
+      } catch {
+        return { systemDescription: text || undefined, domain: undefined, elements };
+      }
+    }
+    return { systemDescription: text || undefined, domain: undefined, elements };
+  }
+
+  private normalizeAIDomainLabel(raw: string): string | undefined {
+    const cleaned = this.cleanGeneratedDescriptionText(raw)
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, ' ')
+      .trim();
+    const tokens = cleaned.split(/[\s-]+/).filter(Boolean);
+    if (tokens.length < 2 || tokens.length > 4) return undefined;
+    if (tokens.some(token => token.length < 3 || token.length > 24)) return undefined;
+    return tokens.join('-');
+  }
+
+  private isGroundedAIDomainLabel(label: string, enhancedSystemPurpose: EnhancedSystemPurpose): boolean {
+    const genericTokens = new Set([
+      'system', 'software', 'application', 'app', 'platform', 'service', 'services', 'tool', 'tools',
+      'portal', 'web', 'site', 'management', 'operations', 'solution', 'solutions', 'product',
+      'business', 'data', 'digital', 'online', 'general', 'misc', 'unknown',
+    ]);
+    const tokens = label.split('-');
+    const meaningful = tokens.filter(token => !genericTokens.has(token));
+    if (meaningful.length === 0) return false;
+    const groundingText = [
+      enhancedSystemPurpose.inferred_description,
+      enhancedSystemPurpose.primary_domain,
+      ...(enhancedSystemPurpose.core_concepts || []),
+    ].join(' ').toLowerCase();
+    return meaningful.every(token => groundingText.includes(token.slice(0, Math.min(6, token.length))));
+  }
+
+  private hasAIInterpretationProviderConfigured(): boolean {
+    const freshConfig = getAIConfig();
+    return Boolean(
+      freshConfig.openai.apiKey ||
+      freshConfig.anthropic.apiKey ||
+      process.env.AI_LOCAL_ENABLED === 'true'
+    );
+  }
+
+  private async applyAIElementDescriptions(
+    capabilities: SystemCapability[],
+    entities: CASDataEntity[],
+    context: {
+      systemName: string;
+      enhancedSystemPurpose?: EnhancedSystemPurpose;
+      projectTextSignal?: ProjectTextSignal;
+      frameworks?: string[];
+      includeEntities?: boolean;
+    }
+  ): Promise<void> {
+    const allTargets = [
+      ...capabilities.map(capability => this.capabilityDescriptionTarget(capability)),
+      ...(context.includeEntities ? entities.map(entity => this.entityDescriptionTarget(entity)) : []),
+    ];
+    const configuredLimit = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT || '');
+    const targets = Number.isFinite(configuredLimit) && configuredLimit > 0
+      ? allTargets.slice(0, configuredLimit)
+      : allTargets;
+
+    if (targets.length === 0) return;
+
+    if (process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS === 'false' || process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS === '0') {
+      this.recordElementDescriptionGeneration(capabilities, entities, 'deterministic', 'ai_skipped', false, 'disabled-by-env');
+      return;
+    }
+    if (!aiConfig.features.naturalLanguageDescriptions) {
+      this.recordElementDescriptionGeneration(capabilities, entities, 'deterministic', 'ai_skipped', false, 'feature-disabled');
+      return;
+    }
+    if (!this.hasAIInterpretationProviderConfigured()) {
+      this.recordElementDescriptionGeneration(capabilities, entities, 'deterministic', 'ai_skipped', false, 'no-ai-provider-configured');
+      return;
+    }
+
+    const configuredBudget = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS || '');
+    const budgetMs = Number.isFinite(configuredBudget) && configuredBudget > 0
+      ? configuredBudget
+      : 15000;
+    if (budgetMs <= 0) {
+      this.recordElementDescriptionGeneration(capabilities, entities, 'deterministic', 'ai_skipped', false, 'budget-disabled', budgetMs);
+      return;
+    }
+
+    const startedAt = Date.now();
+    const batchSize = Math.max(1, Math.min(12, Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE || '4')));
+    const byId = new Map<string, DescriptionTarget>(targets.map(target => [target.id, target]));
+
+    for (let i = 0; i < targets.length; i += batchSize) {
+      if (Date.now() - startedAt >= budgetMs) {
+        this.recordElementDescriptionGenerationByIds(targets.slice(i).map(target => target.id), capabilities, entities, 'deterministic', 'ai_skipped', false, 'budget-exhausted', budgetMs);
+        break;
+      }
+
+      const batch = targets.slice(i, i + batchSize);
+      let timeoutHandle: NodeJS.Timeout | undefined;
+      try {
+        const timeoutPromise = new Promise<string>((_, reject) => {
+          timeoutHandle = setTimeout(
+            () => reject(new Error('AI element description budget exceeded')),
+            Math.max(1, budgetMs - (Date.now() - startedAt))
+          );
+        });
+        const raw = await Promise.race([
+          aiService.generateComponentDescription({
+            additionalContext: {
+              task: 'Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. Write one grounded, useful sentence per item. For capabilities, answer: "What does this area let an engineer, operator, user, or AI agent do?" For entities, answer what concept the entity represents in this codebase. Translate source areas and operation names into human purpose; do not restate source areas, command verbs, or file mechanics. For names like Contact Management, Ticket Management, Provider Management, Partner Management, or Patient Management, use the subject noun and explain the record/workflow it owns. Good examples: Contact Management centralizes contact records and communication details used by customer or account workflows. Ticket Management tracks service requests, status, assignment, and follow-up work across support flows. Provider Management maintains provider records and relationships used by protocol, member, or service coordination. Codebase Analysis builds a CAS relationship graph from repository structure so agents can understand entry points, data, tests, risks, and dependencies before editing. Architecture Mapping identifies local patterns, ownership layers, and inventories so agents can place changes in the right architectural boundary. Greenfield Planning compares a proposed product slice against existing capability memory so new projects avoid duplicate concepts and start with coherent architecture. Agent Work Packets turns CAS graph matches, risks, idioms, and tests into a compact coding brief for an AI agent before it edits a repository. Codebase Idiom Guidance extracts local conventions and validates proposed changes against the patterns already used in the repository. Analysis Storage persists CAS outputs, snapshots, incremental state, and compressed artifacts so later MCP calls can reuse prior analysis.',
+              style: 'No markdown. Prefer concrete verbs like centralizes, maintains, tracks, prepares, identifies, evaluates, records, links, validates, or preserves. Do not use the words/phrases "capability", "operations for", "supports", "coordinates", "coordinating operations", "handles", "reads", "processes", "reading", "processing", "internal files", "read behavior", "analyze behavior", "read paths", "process paths", "spans", "insights", "Key capabilities", "Data model", "Entry points", "efficient", "compliant", "productivity", "business value", or "streamline". Do not mention files unless the item is literally file storage/upload. Stay factual and do not invent behavior beyond evidence.',
+              system: {
+                name: context.systemName,
+                domain: context.enhancedSystemPurpose?.primary_domain || context.projectTextSignal?.primaryDomain,
+                concepts: context.enhancedSystemPurpose?.core_concepts || context.projectTextSignal?.concepts || [],
+                description: context.enhancedSystemPurpose?.inferred_description || context.projectTextSignal?.summary,
+                frameworks: context.frameworks || [],
+              },
+              items: batch,
+            },
+          }),
+          timeoutPromise,
+        ]);
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+
+        const parsed = this.parseDescriptionBatch(raw);
+        if (!parsed || parsed.size === 0) {
+          this.recordElementDescriptionGenerationByIds(batch.map(target => target.id), capabilities, entities, 'deterministic', 'ai_rejected', true, 'invalid-json-or-empty', budgetMs);
+          continue;
+        }
+
+        const failedTargets = batch.filter(target => {
+          const description = parsed.get(target.id);
+          return !description || !this.validateElementDescription(description, byId.get(target.id) || target).ok;
+        });
+        let repaired: Map<string, string> | null = null;
+        if (failedTargets.length > 0 && Date.now() - startedAt < budgetMs) {
+          const remainingMs = Math.max(1, budgetMs - (Date.now() - startedAt));
+          let repairTimeoutHandle: NodeJS.Timeout | undefined;
+          try {
+            const repairTimeoutPromise = new Promise<string>((_, reject) => {
+              repairTimeoutHandle = setTimeout(
+                () => reject(new Error('AI element description repair budget exceeded')),
+                remainingMs
+              );
+            });
+            const repairRaw = await Promise.race([
+              aiService.generateComponentDescription({
+                additionalContext: {
+                  task: 'Repair rejected descriptions. Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. Rewrite each item as one grounded sentence using only the supplied system and item facts. Translate source areas and operation names into human purpose; do not restate source areas, command verbs, or file mechanics. For names like Contact Management, Ticket Management, Provider Management, Partner Management, or Patient Management, use the subject noun and explain the record/workflow it owns. Good examples: Contact Management centralizes contact records and communication details used by customer or account workflows. Ticket Management tracks service requests, status, assignment, and follow-up work across support flows. Provider Management maintains provider records and relationships used by protocol, member, or service coordination. Codebase Analysis builds a CAS relationship graph from repository structure so agents can understand entry points, data, tests, risks, and dependencies before editing. Architecture Mapping identifies local patterns, ownership layers, and inventories so agents can place changes in the right architectural boundary. Greenfield Planning compares a proposed product slice against existing capability memory so new projects avoid duplicate concepts and start with coherent architecture. Agent Work Packets turns CAS graph matches, risks, idioms, and tests into a compact coding brief for an AI agent before it edits a repository. Codebase Idiom Guidance extracts local conventions and validates proposed changes against the patterns already used in the repository. Analysis Storage persists CAS outputs, snapshots, incremental state, and compressed artifacts so later MCP calls can reuse prior analysis.',
+                  style: 'No markdown. Prefer concrete verbs like centralizes, maintains, tracks, prepares, identifies, evaluates, records, links, validates, or preserves. Avoid vague words like "functionality", "module", "component", "various", "robust", "efficient", "business value", "compliant", "insights", or "streamline". Do not use "supports", "coordinates", "coordinating operations", "handles", "reads", "processes", "reading", "processing", "read behavior", "analyze behavior", "read paths", "process paths", "spans", "coordinates internal files", or "supports tasks". Do not invent outcomes or behavior beyond evidence. Name the concrete responsibility implied by the item name, domains, entities, source areas, and operations.',
+                  system: {
+                    name: context.systemName,
+                    domain: context.enhancedSystemPurpose?.primary_domain || context.projectTextSignal?.primaryDomain,
+                    concepts: context.enhancedSystemPurpose?.core_concepts || context.projectTextSignal?.concepts || [],
+                    description: context.enhancedSystemPurpose?.inferred_description || context.projectTextSignal?.summary,
+                    frameworks: context.frameworks || [],
+                  },
+                  items: failedTargets.map(target => ({
+                    ...target,
+                    rejected_description: parsed.get(target.id),
+                    rejection_reason: this.validateElementDescription(parsed.get(target.id) || '', byId.get(target.id) || target).reason,
+                  })),
+                },
+              }),
+              repairTimeoutPromise,
+            ]);
+            repaired = this.parseDescriptionBatch(repairRaw);
+          } catch {
+            repaired = null;
+          } finally {
+            if (repairTimeoutHandle) clearTimeout(repairTimeoutHandle);
+          }
+        }
+
+        const individualRepairs = new Map<string, string>();
+        for (const target of failedTargets) {
+          const originalDescription = parsed.get(target.id);
+          const repairedDescription = repaired?.get(target.id);
+          const repairedValidation = repairedDescription
+            ? this.validateElementDescription(repairedDescription, byId.get(target.id) || target)
+            : { ok: false, reason: 'no-batch-repair' };
+          if (repairedValidation.ok || Date.now() - startedAt >= budgetMs) continue;
+
+          let individualTimeoutHandle: NodeJS.Timeout | undefined;
+          try {
+            const remainingMs = Math.max(1, budgetMs - (Date.now() - startedAt));
+            const individualRaw = await Promise.race([
+              aiService.generateComponentDescription({
+                additionalContext: {
+                  task: 'Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. Rewrite this one rejected item as a grounded sentence. Say what the named area lets an engineer, operator, user, or AI agent do. If the name ends in Management, use the subject noun and describe the record, lifecycle, workflow, or relationship it owns. Do not list operations, source files, command verbs, or implementation mechanics.',
+                  style: 'No markdown. Prefer concrete verbs like centralizes, maintains, tracks, prepares, identifies, evaluates, records, links, validates, or preserves. Do not use "supports", "coordinates", "coordinating", "handles", "reads", "processes", "reading", "processing", "spans", "paths", "operations", "functionality", "insights", or marketing language. Use only the supplied facts.',
+                  system: {
+                    name: context.systemName,
+                    domain: context.enhancedSystemPurpose?.primary_domain || context.projectTextSignal?.primaryDomain,
+                    concepts: context.enhancedSystemPurpose?.core_concepts || context.projectTextSignal?.concepts || [],
+                    description: context.enhancedSystemPurpose?.inferred_description || context.projectTextSignal?.summary,
+                    frameworks: context.frameworks || [],
+                  },
+                  item: target,
+                  rejected_description: originalDescription,
+                  rejection_reason: this.validateElementDescription(originalDescription || '', byId.get(target.id) || target).reason,
+                  bad_examples: [
+                    `${target.name} covers read, analyze paths; spans source files.`,
+                    `${target.name} handles operations for internal files.`,
+                  ],
+                  good_examples: [
+                    'Contact Management centralizes contact records and communication details used by customer or account workflows.',
+                    'Ticket Management tracks service requests, status, assignment, and follow-up work across support flows.',
+                    'Provider Management maintains provider records and relationships used by protocol, member, or service coordination.',
+                    'Codebase Analysis builds a CAS relationship graph from repository structure so agents can understand entry points, data, tests, risks, and dependencies before editing.',
+                    'Architecture Mapping identifies local patterns, ownership layers, and inventories so agents can place changes in the right architectural boundary.',
+                    'Greenfield Planning compares a proposed product slice against existing capability memory so new projects avoid duplicate concepts and start with coherent architecture.',
+                    'Agent Work Packets turns CAS graph matches, risks, idioms, and tests into a compact coding brief before an AI agent edits a repository.',
+                    'Codebase Idiom Guidance identifies local conventions and validates proposed changes against the patterns already used in the repository.',
+                  ],
+                },
+              }),
+              new Promise<string>((_, reject) => {
+                individualTimeoutHandle = setTimeout(
+                  () => reject(new Error('AI element description individual repair budget exceeded')),
+                  remainingMs
+                );
+              }),
+            ]);
+            const individualParsed = this.parseDescriptionBatch(individualRaw);
+            const individualDescription = individualParsed?.get(target.id);
+            if (individualDescription && this.validateElementDescription(individualDescription, byId.get(target.id) || target).ok) {
+              individualRepairs.set(target.id, individualDescription);
+            }
+          } catch {
+            // Fall through to deterministic retention with the existing rejection reason.
+          } finally {
+            if (individualTimeoutHandle) clearTimeout(individualTimeoutHandle);
+          }
+        }
+
+        for (const target of batch) {
+          const originalDescription = parsed.get(target.id);
+          const originalValidation = originalDescription
+            ? this.validateElementDescription(originalDescription, byId.get(target.id) || target)
+            : { ok: false, reason: 'missing-description' };
+          const repairedDescription = originalValidation.ok ? undefined : repaired?.get(target.id);
+          const repairedValidation = repairedDescription
+            ? this.validateElementDescription(repairedDescription, byId.get(target.id) || target)
+            : { ok: false, reason: originalValidation.reason || 'generated-description-failed-quality-gate' };
+          const individualDescription = originalValidation.ok || repairedValidation.ok ? undefined : individualRepairs.get(target.id);
+          const curatedDescription = originalValidation.ok || repairedValidation.ok || individualDescription
+            ? undefined
+            : this.curatedElementDescription(target);
+          const description = originalValidation.ok ? originalDescription : repairedValidation.ok ? repairedDescription : individualDescription || curatedDescription;
+          if (description) {
+            this.applyElementDescription(
+              target.id,
+              description,
+              capabilities,
+              entities,
+              curatedDescription && description === curatedDescription ? 'manual' : 'ai',
+              curatedDescription && description === curatedDescription ? 'deterministic_kept' : 'ai_applied',
+              true,
+              curatedDescription && description === curatedDescription ? 'curated-product-capability-description' : undefined,
+              budgetMs
+            );
+          } else {
+            this.applyElementDescription(target.id, undefined, capabilities, entities, 'deterministic', 'ai_rejected', true, repairedValidation.reason || 'generated-description-failed-quality-gate', budgetMs);
+          }
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.recordElementDescriptionGenerationByIds(batch.map(target => target.id), capabilities, entities, 'deterministic', 'ai_failed', true, message, budgetMs);
+      } finally {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+      }
+    }
+  }
+
+  private capabilityDescriptionTarget(capability: SystemCapability): DescriptionTarget {
+    return {
+      id: capability.id,
+      name: capability.name,
+      kind: 'capability',
+      currentDescription: capability.description,
+      category: capability.category,
+      operations: capability.operations.slice(0, 8).map(operation =>
+        [operation.action, operation.entry_point_type, operation.path_or_command].filter(Boolean).join(' ')
+      ),
+      relatedEntities: capability.related_entities,
+      relatedDomains: capability.related_domains,
+    };
+  }
+
+  private curatedElementDescription(target: DescriptionTarget): string | undefined {
+    if (target.kind !== 'capability') return undefined;
+    const key = target.name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const descriptions: Record<string, string> = {
+      'codebase analysis': 'Codebase Analysis builds a CAS relationship graph from repository structure so agents can understand entry points, data, tests, risks, and dependencies before editing.',
+      'architecture mapping': 'Architecture Mapping identifies local patterns, ownership layers, and inventories so agents can place changes in the right architectural boundary.',
+      'greenfield planning': 'Greenfield Planning compares a proposed product slice against existing capability memory so new projects avoid duplicate concepts and start with coherent architecture.',
+      'file workflow': 'Infrastructure Definition captures resource files, variables, modules, and provider relationships so agents can understand what cloud resources the stack manages.',
+      'proposal preview': 'Proposal Preview analyzes a proposed codebase iteration as a temporary CAS graph so reviewers can inspect changed contracts, risks, idioms, and test impact before the real repo changes.',
+      'agent work packets': 'Agent Work Packets turns CAS graph matches, risks, idioms, and tests into a compact coding brief before an AI agent edits a repository.',
+      'codebase idiom guidance': 'Codebase Idiom Guidance identifies local conventions and validates proposed changes against the patterns already used in the repository.',
+      'analysis storage': 'Analysis Storage persists CAS outputs, snapshots, incremental state, and compressed artifacts so later MCP calls can reuse prior analysis.',
+    };
+    if (descriptions[key]) return descriptions[key];
+
+    const managementSubject = key.replace(/\bmanagement\b/g, ' ').replace(/\s+/g, ' ').trim();
+    if (managementSubject) {
+      const subjectTokens = managementSubject
+        .split(/\s+/)
+        .map(token => this.normalizeDomainToken(token))
+        .filter(token => token && !this.isGenericCapabilityToken(token));
+      if (subjectTokens.length > 0) {
+        const subject = this.humanizeDomainKey(subjectTokens.join(' ')).toLowerCase();
+        const domain = target.relatedDomains?.[0] && !this.isGenericCapabilityToken(target.relatedDomains[0])
+          ? this.humanizeDomainKey(target.relatedDomains[0]).toLowerCase()
+          : 'the surrounding product';
+        return `${this.humanizeDomainKey(subjectTokens.join(' '))} Management maintains ${subject} records, workflows, and relationships used by ${domain} behavior.`;
+      }
+    }
+    return undefined;
+  }
+
+  private entityDescriptionTarget(entity: CASDataEntity): DescriptionTarget {
+    return {
+      id: entity.id,
+      name: entity.name,
+      kind: 'entity',
+      currentDescription: entity.description,
+      source: entity.schema_source,
+      fields: (entity.fields || []).slice(0, 12).map(field => `${field.name}:${field.type}${field.is_sensitive ? ':sensitive' : ''}`),
+      lifecycle: {
+        creates: entity.lifecycle.created_by.length,
+        reads: entity.lifecycle.read_by.length,
+        updates: entity.lifecycle.updated_by.length,
+        deletes: entity.lifecycle.deleted_by.length,
+      },
+    };
+  }
+
+  private parseDescriptionBatch(raw: string): Map<string, string> | null {
+    const text = (raw || '').trim();
+    if (!text) return null;
+    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1] || text;
+    const first = fenced.indexOf('{');
+    const last = fenced.lastIndexOf('}');
+    if (first < 0 || last <= first) return null;
+
+    try {
+      const parsed = JSON.parse(fenced.slice(first, last + 1));
+      const descriptions = Array.isArray(parsed?.descriptions) ? parsed.descriptions : [];
+      const result = new Map<string, string>();
+      for (const item of descriptions) {
+        if (typeof item?.id === 'string' && typeof item?.description === 'string') {
+          result.set(item.id, this.cleanGeneratedDescriptionText(item.description));
+        }
+      }
+      return result;
+    } catch {
+      return null;
+    }
+  }
+
+  private isUsefulElementDescription(description: string, target: DescriptionTarget): boolean {
+    return this.validateElementDescription(description, target).ok;
+  }
+
+  private validateElementDescription(description: string, target: DescriptionTarget): { ok: boolean; reason?: string } {
+    const cleaned = this.cleanGeneratedDescriptionText(description);
+    if (cleaned.length < 50) return { ok: false, reason: 'too-short' };
+    if (cleaned.length > 420) return { ok: false, reason: 'too-long' };
+    if (/\*\*|`|^#+\s/m.test(cleaned)) return { ok: false, reason: 'markdown-formatting' };
+    if (/\b(operations for|functionality|centers on|graph endpoint|graph structure|coordinat(?:e|es|ing) operations|(?:read|process|coordinate|analyze|delete) behavior|(?:read|process|analyze|delete) paths?|coordinates? internal files|internal files|supports? tasks|agent-driven operations|operations and insights|quality of description analysis|review and understanding|Key capabilities|Data model|Entry points|Integrations):?\b/i.test(cleaned) ||
+      /\b(?:supports?|coordinates?|reads?|processes?|handles?|spans)\b/i.test(cleaned) ||
+      /\bby\s+(?:reading|processing|coordinating|handling)\b/i.test(cleaned)) {
+      return { ok: false, reason: 'generic-structural-phrase' };
+    }
+    if (/\b(seamless(?:ly)?|robust|comprehensive|various|crucial role|plays a key role|efficient(?:ly)?|efficiency|productivity|compliant|compliance|advanced|streamline(?:s|d|ing)?|user-friendly|business value|improving operational|enhanc(?:e|es|ing)|better understanding|insights(?: into)?|structured data and insights|reduces? costs?|best practices|scalable|secure by design|user experience)\b/i.test(cleaned)) {
+      return { ok: false, reason: 'unsupported-marketing-language' };
+    }
+    const groundedTokens = [
+      ...target.name.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/),
+      ...(target.relatedDomains || []),
+      ...(target.fields || []).map(field => field.split(':')[0]),
+    ]
+      .map(token => this.normalizeDomainToken(token.toLowerCase()))
+      .filter(token => token.length > 2 && !this.isGenericCapabilityToken(token));
+    if (groundedTokens.length === 0) return { ok: true };
+    const lower = description.toLowerCase();
+    if (!groundedTokens.some(token => lower.includes(token))) return { ok: false, reason: 'target-not-grounded' };
+    return { ok: true };
+  }
+
+  private cleanGeneratedDescriptionText(description: string): string {
+    return (description || '')
+      .replace(/^```(?:text|markdown|json)?/i, '')
+      .replace(/```$/i, '')
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/^#+\s*/gm, '')
+      .replace(/^\s*[-*]\s+/gm, '')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/`/g, '')
+      .replace(/\banaly[sz]e and interact with (?:the )?data\b/gi, 'analyze and query the resulting graph')
+      .replace(/\binteract with (?:the )?data\b/gi, 'query the resulting graph')
+      .replace(/\bdesigned to be integrated with\b/gi, 'exposed through')
+      .replace(/\s*\n+\s*/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/^["']|["']$/g, '')
+      .trim();
+  }
+
+  private recordElementDescriptionGeneration(
+    capabilities: SystemCapability[],
+    entities: CASDataEntity[],
+    source: 'deterministic' | 'ai' | 'manual' | 'reused',
+    status: CASDescriptionGeneration['status'],
+    attempted: boolean,
+    reason?: string,
+    budgetMs?: number
+  ): void {
+    this.recordElementDescriptionGenerationByIds(
+      [...capabilities.map(capability => capability.id), ...entities.map(entity => entity.id)],
+      capabilities,
+      entities,
+      source,
+      status,
+      attempted,
+      reason,
+      budgetMs
+    );
+  }
+
+  private recordElementDescriptionGenerationByIds(
+    ids: string[],
+    capabilities: SystemCapability[],
+    entities: CASDataEntity[],
+    source: 'deterministic' | 'ai' | 'manual' | 'reused',
+    status: CASDescriptionGeneration['status'],
+    attempted: boolean,
+    reason?: string,
+    budgetMs?: number
+  ): void {
+    for (const id of ids) {
+      this.applyElementDescription(id, undefined, capabilities, entities, source, status, attempted, reason, budgetMs);
+    }
+  }
+
+  private applyElementDescription(
+    id: string,
+    description: string | undefined,
+    capabilities: SystemCapability[],
+    entities: CASDataEntity[],
+    source: 'deterministic' | 'ai' | 'manual' | 'reused',
+    status: CASDescriptionGeneration['status'],
+    attempted: boolean,
+    reason?: string,
+    budgetMs?: number
+  ): void {
+    const target = capabilities.find(capability => capability.id === id) || entities.find(entity => entity.id === id);
+    if (!target) return;
+    if (description) {
+      target.description = description;
+    }
+    target.description_source = source;
+    target.description_generation = {
+      status,
+      attempted,
+      reason,
+      budget_ms: Number.isFinite(budgetMs) ? budgetMs : undefined,
+      generated_at: new Date().toISOString(),
+    };
+  }
+
+  private recordDescriptionGeneration(
+    enhancedSystemPurpose: EnhancedSystemPurpose,
+    source: NonNullable<EnhancedSystemPurpose['description_source']>,
+    status: NonNullable<EnhancedSystemPurpose['description_generation']>['status'],
+    attempted: boolean,
+    reason?: string,
+    budgetMs?: number
+  ): void {
+    enhancedSystemPurpose.description_source = source;
+    enhancedSystemPurpose.description_generation = {
+      status,
+      attempted,
+      reason,
+      budget_ms: Number.isFinite(budgetMs) ? budgetMs : undefined,
+      generated_at: new Date().toISOString(),
+    };
+  }
+
+  private buildAnalysisPhases(input: {
+    hasAIProvider: boolean;
+    systemDescriptionSource?: string;
+    capabilityDescriptionSource?: string;
+    embeddingEnabled: boolean;
+    runtimeSignals: number;
+  }): CASAnalysisPhase[] {
+    const generatedAt = new Date().toISOString();
+    return [
+      {
+        id: 'core-graph',
+        name: 'Core relationship graph',
+        priority: 1,
+        status: 'complete',
+        purpose: 'visualization',
+        default_phase: true,
+        description: 'Builds the nodes, edges, entry points, exit points, layers, inventory, and system shape needed to see the codebase.',
+        outputs: ['nodes', 'edges', 'entry_points', 'exit_points', 'architecture_summary', 'progressive_levels'],
+        agent_value: 'Lets agents orient through the graph before reading files.',
+        visualization_value: 'Provides the first usable codebase map and drilldown structure.',
+        can_run_later: false,
+        generated_at: generatedAt,
+      },
+      {
+        id: 'agent-context',
+        name: 'Agent work context',
+        priority: 2,
+        status: 'complete',
+        purpose: 'agent-development',
+        default_phase: true,
+        description: 'Adds capabilities, domains, flows, tests, risks, idioms, and behavioral invariants used to plan and validate edits.',
+        outputs: ['system_capabilities', 'domain_concepts', 'flow_graph', 'call_chains', 'test_suites', 'change_risks', 'codebase_idioms', 'behavioral_invariants'],
+        agent_value: 'Supplies work packets, risk checks, idiom guidance, and test targeting.',
+        visualization_value: 'Shows what the system does and which areas are risky or important.',
+        can_run_later: false,
+        generated_at: generatedAt,
+      },
+      {
+        id: 'ai-system-narrative',
+        name: 'AI system and capability descriptions',
+        priority: 3,
+        status: input.hasAIProvider
+          ? (input.systemDescriptionSource === 'ai' || input.capabilityDescriptionSource === 'ai' ? 'complete' : 'partial')
+          : 'deferred',
+        purpose: 'ai-enrichment',
+        default_phase: true,
+        description: 'Uses AI to turn the structural CAS facts into the system overview and primary capability descriptions.',
+        outputs: ['enhanced_system_purpose.inferred_description', 'system_capabilities.description'],
+        agent_value: 'Gives agents a compact, human-readable summary of what matters without scanning raw graph facts.',
+        visualization_value: 'Turns the overview and primary capability cards into explanations rather than labels.',
+        can_run_later: true,
+        requires_ai: true,
+        generated_at: generatedAt,
+        notes: input.hasAIProvider ? undefined : ['No AI provider is configured; deterministic descriptions were retained.'],
+      },
+      {
+        id: 'deferred-element-descriptions',
+        name: 'Manual element descriptions',
+        priority: 4,
+        status: 'deferred',
+        purpose: 'ai-enrichment',
+        default_phase: false,
+        description: 'Generates AI descriptions for individual nodes, services, entities, capabilities, entry points, or exit points only when explicitly requested.',
+        outputs: ['nodes.description', 'data_entities.description', 'entry_points.description', 'exit_points.description'],
+        agent_value: 'Lets agents ask for focused explanations of a target without paying token cost for the whole graph.',
+        visualization_value: 'Populates drilldown pages on demand and invalidates stale text when source fingerprints change.',
+        can_run_later: true,
+        requires_ai: true,
+        generated_at: generatedAt,
+      },
+      {
+        id: 'semantic-runtime-context',
+        name: 'Semantic and runtime context',
+        priority: 5,
+        status: input.embeddingEnabled || input.runtimeSignals > 0 ? 'partial' : 'deferred',
+        purpose: 'deep-context',
+        default_phase: false,
+        description: 'Adds heavier retrieval and runtime correlation data after the core graph is already usable.',
+        outputs: ['embedding_index', 'runtime', 'runtime_static_links'],
+        agent_value: 'Improves retrieval, bug triage, and production-informed prioritization when available.',
+        visualization_value: 'Adds runtime heat, traces, and semantic search to deeper views.',
+        can_run_later: true,
+        generated_at: generatedAt,
+      },
+    ];
+  }
+
+  private shouldKeepDeterministicSystemDescription(enhancedSystemPurpose: EnhancedSystemPurpose): boolean {
+    if (process.env.KLAURO_AI_INTERPRETATION_FORCE === 'true' || process.env.KLAURO_AI_INTERPRETATION_FORCE === '1') {
+      return false;
+    }
+    if (process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP !== 'true' &&
+      process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP !== '1') {
+      return false;
+    }
+    const description = (enhancedSystemPurpose.inferred_description || '').trim();
+    if (description.length < 80 || description.length > 900) return false;
+    if (!this.isUsefulAIInterpretation(description, enhancedSystemPurpose)) return false;
+    const lower = description.toLowerCase();
+    const domain = enhancedSystemPurpose.primary_domain?.toLowerCase();
+    const concepts = (enhancedSystemPurpose.core_concepts || [])
+      .map(concept => concept.toLowerCase())
+      .filter(concept => concept && !this.isGenericDomainToken(concept));
+    const mentionedConcepts = concepts.filter(concept => lower.includes(concept)).length;
+    const hasDomain = Boolean(domain && domain !== 'unknown' && !this.isGenericDomainToken(domain) &&
+      (lower.includes(domain.replace(/-/g, ' ')) || lower.includes(domain)));
+    return hasDomain || mentionedConcepts >= 1;
+  }
+
+  private isUsefulAIInterpretation(description: string, enhancedSystemPurpose: EnhancedSystemPurpose): boolean {
+    return this.validateAIInterpretation(description, enhancedSystemPurpose).ok;
+  }
+
+  private validateAIInterpretation(
+    description: string,
+    enhancedSystemPurpose: EnhancedSystemPurpose,
+    facts: { frameworks?: string[]; databaseEntities?: string[]; externalServices?: string[]; structuralTokens?: string[] } = {},
+  ): { ok: boolean; reason?: string } {
+    const cleaned = this.cleanGeneratedDescriptionText(description);
+    if (cleaned.length < 120) return { ok: false, reason: 'too-short' };
+    if (cleaned.length > 2000) return { ok: false, reason: 'too-long' };
+    if (/AI description generation is disabled/i.test(cleaned)) return { ok: false, reason: 'ai-disabled-message' };
+    const lower = cleaned.toLowerCase();
+    const domain = enhancedSystemPurpose.primary_domain?.toLowerCase();
+    const concepts = (enhancedSystemPurpose.core_concepts || []).map(concept => concept.toLowerCase());
+    const groundedTerms = [domain, ...concepts].filter((term): term is string => Boolean(term && term !== 'unknown'));
+    if (groundedTerms.length > 0 && !groundedTerms.some(term => lower.includes(term))) {
+      const structuralMatches = (facts.structuralTokens || []).filter(token => lower.includes(token)).length;
+      if (structuralMatches < 2) {
+        return { ok: false, reason: 'not-grounded-in-domain-or-concepts' };
+      }
+    }
+    const marketingLanguagePattern = /\b(seamless(?:ly)?|user experience|entry point for an application|gateway between the frontend and backend|reducing complexity|ecosystem|wide range of clients|robust api|crucial role|scalability|usability|underlying platform|indispensable|unified experience|complex queries|large datasets|high-quality [a-z ]+ experience|regulatory requirements?|best practices|designed for managing|facilitates|various applications|robust [a-z ]*framework|enhanc(?:e|es|ing) (?:the )?[a-z ]*(?:analysis process|security|efficiency|navigation|insights)|allowing developers to focus|complex tasks|structured data and insights|insights(?: into)?|efficient(?:ly)?|efficiency|productivity|compliant|compliance|advanced|streamline(?:s|d|ing)?|user-friendly|business value|improving operational|reduces? costs?|secure by design)\b/gi;
+    const marketingMatches = Array.from(new Set(
+      (description.match(marketingLanguagePattern) || []).map(match => match.toLowerCase().trim())
+    ));
+    if (marketingMatches.length > 0) {
+      const deterministicOverview = (enhancedSystemPurpose.inferred_description || '').toLowerCase();
+      const groundedTokenStems = new Set(
+        [...groundedTerms, ...deterministicOverview.split(/[^a-z0-9]+/)]
+          .flatMap(term => term.split(/[^a-z0-9]+/))
+          .filter(token => token.length >= 4)
+          .map(token => token.slice(0, 8))
+      );
+      const ungroundedMarketing = marketingMatches.filter(match => {
+        const tokens = match.split(/\s+/);
+        if (tokens.length > 1) {
+          return !groundedTerms.some(term => term.includes(match)) && !deterministicOverview.includes(match);
+        }
+        return !groundedTokenStems.has(tokens[0].slice(0, 8));
+      });
+      if (ungroundedMarketing.length > 0) {
+        return { ok: false, reason: `unsupported-marketing-language: ${ungroundedMarketing.join(', ')}` };
+      }
+    }
+    if (/\*\*|^#+\s/m.test(description)) {
+      return { ok: false, reason: 'markdown-formatting' };
+    }
+    if (/\bprimary interface for interacting with (?:the )?(?:application'?s )?database\b/i.test(description) ||
+      /\bintermediary between the frontend ui and the server-side logic\b/i.test(description) ||
+      /\binteract(?:s|ing)? with (?:the )?data\b/i.test(description) ||
+      /\bdesigned to be integrated with\b/i.test(description)) {
+      return { ok: false, reason: 'generic-architecture-cliche' };
+    }
+    if (/\b(command-line interface|coupons?|discounts?|user data)\b/i.test(description) &&
+      !groundedTerms.some(term => /\b(command|cli|coupon|discount|user)\b/i.test(term))) {
+      return { ok: false, reason: 'unsupported-domain-claim' };
+    }
+    if (/\b[A-Z]{2,}\s*\([A-Z][^)]+\)/.test(description)) {
+      return { ok: false, reason: 'unsupported-acronym-expansion' };
+    }
+    if (/\btesting\b/i.test(description) && !groundedTerms.some(term => /test|quality|coverage/.test(term))) {
+      return { ok: false, reason: 'unsupported-testing-claim' };
+    }
+    if (/\b(dapp|decentralized application|miner|mining|mine tokens?)\b/i.test(description) &&
+      !groundedTerms.some(term => /\b(dapp|decentralized|miner|mining)\b/i.test(term))) {
+      return { ok: false, reason: 'unsupported-crypto-claim' };
+    }
+    if (/\bwpf\b[^.]{0,140}\bcross[- ]platform\b/i.test(description)) {
+      return { ok: false, reason: 'unsupported-runtime-claim' };
+    }
+    if (/\b(file\.exists|string\.isnullorempty|math\.abs|console\.|system\.)\b/i.test(description)) {
+      return { ok: false, reason: 'low-level-api-pollution' };
+    }
+    if (/\b(Key capabilities|Data model|Entry points|Integrations):/i.test(description)) {
+      return { ok: false, reason: 'raw-fact-list-format' };
+    }
+    const allowedFrameworks = (facts.frameworks || []).map(framework => framework.toLowerCase().replace(/[^a-z0-9]+/g, ''));
+    const mentionedFrameworks = [
+      ['nestjs', /\bnest\s*js\b|\bnestjs\b/i],
+      ['fastapi', /\bfastapi\b/i],
+      ['react', /\breact\b/i],
+      ['expressjs', /\bexpress(?:\.js|js)?\b/i],
+      ['nextjs', /\bnext(?:\.js|js)?\b/i],
+      ['django', /\bdjango\b/i],
+      ['flask', /\bflask\b/i],
+      ['laravel', /\blaravel\b/i],
+      ['symfony', /\bsymfony\b/i],
+      ['springboot', /\bspring boot\b|\bspringboot\b/i],
+      ['aspnetcore', /\basp\.?net(?: core)?\b/i],
+      ['wpf', /\bwpf\b/i],
+      ['flutter', /\bflutter\b/i],
+      ['electron', /\belectron\b/i],
+      ['vue', /\bvue\b/i],
+      ['angular', /\bangular\b/i],
+    ].filter(([, pattern]) => (pattern as RegExp).test(cleaned));
+    if (mentionedFrameworks.some(([key]) => !allowedFrameworks.includes(String(key)))) {
+      return { ok: false, reason: 'unsupported-framework-claim' };
+    }
+    const integrationsPattern = /\b(external services?|integrations?|integrates with)\b/i;
+    const overviewClaimsIntegrations = integrationsPattern.test(enhancedSystemPurpose.inferred_description || '');
+    if ((facts.externalServices || []).length === 0 && integrationsPattern.test(cleaned) && !overviewClaimsIntegrations) {
+      return { ok: false, reason: 'unsupported-external-service-claim' };
+    }
+    if (integrationsPattern.test(cleaned) &&
+      !this.mentionsKnownExternalService(cleaned, facts.externalServices || []) &&
+      !overviewClaimsIntegrations) {
+      return { ok: false, reason: 'unnamed-external-service-claim' };
+    }
+    if ((facts.databaseEntities || []).length === 0 && /\b(relational database|database|data store|stores entities)\b/i.test(cleaned)) {
+      return { ok: false, reason: 'unsupported-database-claim' };
+    }
+    return { ok: true };
+  }
+
+  private sanitizeAIInterpretation(
+    description: string,
+    enhancedSystemPurpose: EnhancedSystemPurpose,
+    facts: { frameworks?: string[]; databaseEntities?: string[]; externalServices?: string[] } = {},
+  ): string {
+    const cleaned = this.cleanGeneratedDescriptionText(description)
+      .replace(/\bfacilitates\b/gi, 'links')
+      .replace(/\buser experience\b/gi, 'interface behavior')
+      .replace(/\bgateway between the frontend and backend\b/gi, 'interface between users and backend workflows')
+      .replace(/\breducing complexity\b/gi, 'organizing code relationships')
+      .replace(/\bwide range of clients\b/gi, 'client workflows')
+      .replace(/\brobust api\b/gi, 'API')
+      .replace(/\bcrucial role\b/gi, 'role')
+      .replace(/\bscalability\b/gi, 'runtime growth')
+      .replace(/\busability\b/gi, 'operator use')
+      .replace(/\bunderlying platform\b/gi, 'system')
+      .replace(/\bindispensable\b/gi, 'important')
+      .replace(/\bunified experience\b/gi, 'shared workflow')
+      .replace(/\bcomplex queries\b/gi, 'queries')
+      .replace(/\blarge datasets\b/gi, 'data sets')
+      .replace(/\bhigh-quality [a-z ]+ experience\b/gi, 'interface behavior')
+      .replace(/\bregulatory requirements?\b/gi, 'rules')
+      .replace(/\bbest practices\b/gi, 'local patterns')
+      .replace(/\bdesigned for managing\b/gi, 'manages')
+      .replace(/\bvarious applications\b/gi, 'the application')
+      .replace(/\benhanc(?:e|es|ing) (?:the )?analysis process\b/gi, 'adds analysis')
+      .replace(/\benhanc(?:e|es|ing) (?:the )?navigation\b/gi, 'adds navigation')
+      .replace(/\benhanc(?:e|es|ing) (?:the )?insights\b/gi, 'adds graph evidence')
+      .replace(/\bstructured data and insights\b/gi, 'structured CAS graph data')
+      .replace(/\binsights(?: into)?\b/gi, 'graph evidence for')
+      .replace(/\bcomplex tasks\b/gi, 'codebase tasks')
+      .replace(/\befficient(?:ly)?\b/gi, '')
+      .replace(/\befficiency\b/gi, 'speed')
+      .replace(/\badvanced\b/gi, '')
+      .replace(/\bstreamline(?:s|d|ing)?\b/gi, 'organizes')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const sentences = cleaned
+      .split(/(?<=[.!?])\s+/)
+      .map(sentence => sentence.trim())
+      .filter(Boolean);
+    if (sentences.length <= 1) return cleaned;
+
+    const allowedFrameworks = (facts.frameworks || []).map(framework => framework.toLowerCase().replace(/[^a-z0-9]+/g, ''));
+    const groundedTerms = [
+      enhancedSystemPurpose.primary_domain,
+      ...(enhancedSystemPurpose.core_concepts || []),
+    ]
+      .filter((term): term is string => Boolean(term && term !== 'unknown'))
+      .map(term => term.toLowerCase());
+
+    const unsupportedFrameworkPatterns: RegExp[] = [
+      ['nestjs', /\bnest\s*js\b|\bnestjs\b/i],
+      ['fastapi', /\bfastapi\b/i],
+      ['react', /\breact\b/i],
+      ['expressjs', /\bexpress(?:\.js|js)?\b/i],
+      ['nextjs', /\bnext(?:\.js|js)?\b/i],
+      ['django', /\bdjango\b/i],
+      ['flask', /\bflask\b/i],
+      ['laravel', /\blaravel\b/i],
+      ['symfony', /\bsymfony\b/i],
+      ['springboot', /\bspring boot\b|\bspringboot\b/i],
+      ['aspnetcore', /\basp\.?net(?: core)?\b/i],
+      ['wpf', /\bwpf\b/i],
+      ['flutter', /\bflutter\b/i],
+      ['electron', /\belectron\b/i],
+      ['vue', /\bvue\b/i],
+      ['angular', /\bangular\b/i],
+    ]
+      .filter(([key]) => !allowedFrameworks.includes(String(key)))
+      .map(([, pattern]) => pattern as RegExp);
+
+    const keep = sentences.filter(sentence => {
+      if (unsupportedFrameworkPatterns.some(pattern => pattern.test(sentence))) return false;
+      if (/\b(external services?|integrations?|integrates with)\b/i.test(sentence) &&
+        !this.mentionsKnownExternalService(sentence, facts.externalServices || [])) return false;
+      if ((facts.databaseEntities || []).length === 0 && /\b(relational database|database|data store|stores entities)\b/i.test(sentence)) return false;
+      if (/\buser data\b/i.test(sentence) && !groundedTerms.some(term => /\buser\b/.test(term))) return false;
+      if (/\bdesigned to be integrated with\b/i.test(sentence)) return false;
+      if (/\binteract(?:s|ing)? with (?:the )?data\b/i.test(sentence)) return false;
+      return true;
+    });
+
+    return keep.length === sentences.length ? cleaned : keep.join(' ').trim();
+  }
+
+  private mentionsKnownExternalService(text: string, externalServices: string[]): boolean {
+    const normalizedText = text.toLowerCase();
+    return externalServices
+      .map(service => service.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim())
+      .filter(service => service.length > 2 && !/^(external service|integration|api|sdk|http|database)$/.test(service))
+      .some(service => normalizedText.includes(service) || normalizedText.includes(service.replace(/\s+/g, '')));
   }
 
   private shouldRefreshAIInterpretation(
@@ -4753,7 +7499,8 @@ export class AnalyzerOrchestrator {
     databaseEntities: string[],
     externalServices: string[],
     flowGraph: CASFlowGraph,
-    domainConcepts: CASDomainConcept[]
+    domainConcepts: CASDomainConcept[],
+    systemCapabilities: SystemCapability[] = []
   ): boolean {
     if (!previousOutput.enhanced_system_purpose?.inferred_description) {
       return true;
@@ -4768,7 +7515,8 @@ export class AnalyzerOrchestrator {
       (previousOutput.database_schema?.entities || []).map(entity => entity.name),
       (previousOutput.external_services || []).map(service => service.name),
       previousOutput.flow_graph || this.emptyFlowGraph(),
-      previousOutput.domain_concepts || []
+      previousOutput.domain_concepts || [],
+      previousOutput.system_capabilities || []
     );
     const nextFacts = this.buildAIInterpretationFacts(
       systemName,
@@ -4777,7 +7525,8 @@ export class AnalyzerOrchestrator {
       databaseEntities,
       externalServices,
       flowGraph,
-      domainConcepts
+      domainConcepts,
+      systemCapabilities
     );
 
     return JSON.stringify(previousFacts) !== JSON.stringify(nextFacts);
@@ -4790,12 +7539,18 @@ export class AnalyzerOrchestrator {
     databaseEntities: string[],
     externalServices: string[],
     flowGraph: CASFlowGraph,
-    domainConcepts: CASDomainConcept[]
+    domainConcepts: CASDomainConcept[],
+    systemCapabilities: SystemCapability[] = []
   ): Record<string, unknown> {
-    const topCapabilities = [...flowGraph.capabilities]
-      .sort((a, b) => b.signals.total_score - a.signals.total_score)
-      .slice(0, 8)
-      .map(c => c.name.replace(/_/g, ' '));
+    const topCapabilities = (systemCapabilities.length > 0
+      ? systemCapabilities
+        .slice(0, 8)
+        .map(c => c.name.replace(/_/g, ' '))
+      : [...flowGraph.capabilities]
+        .sort((a, b) => b.signals.total_score - a.signals.total_score)
+        .slice(0, 8)
+        .map(c => c.name.replace(/_/g, ' ')))
+      .filter(name => !this.isGenericCapabilityToken(name.toLowerCase()));
 
     // Rank concepts core-first, then by frequency. Supporting concepts still
     // fill the list, so the model always receives real domain signal even
@@ -4822,6 +7577,10 @@ export class AnalyzerOrchestrator {
     return {
       systemName,
       frameworks: frameworks.slice(0, 6),
+      allowedFrameworks: frameworks.length > 0 ? frameworks.slice(0, 6) : ['none detected'],
+      forbiddenFrameworkInstruction: frameworks.length > 0
+        ? 'Mention only frameworks in allowedFrameworks.'
+        : 'No framework was detected in product code; do not mention any framework.',
       entryPoints: [...meaningfulEntryPoints].sort((a, b) => a.type.localeCompare(b.type)),
       capabilities: topCapabilities,
       domainConcepts: conceptPool,
@@ -4865,30 +7624,769 @@ export class AnalyzerOrchestrator {
     entryPointSummary: { type: string; count: number }[],
     frameworks: string[],
     externalServices: string[],
-    flowGraph: CASFlowGraph
+    systemCapabilities: SystemCapability[],
+    flowGraph: CASFlowGraph,
+    systemName?: string,
+    projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] }
   ): EnhancedSystemPurpose {
     const coreConcepts = domainExtractor.getCoreConcepts(domainConcepts);
-    const primaryDomain = domainExtractor.inferPrimaryDomain(domainConcepts);
+    const inferredPrimaryDomain = this.refinePrimaryDomain(
+      domainExtractor.inferPrimaryDomain(domainConcepts),
+      systemName,
+      systemCapabilities,
+      coreConcepts,
+      projectTextSignal
+    );
+    const primaryDomain = this.refinePrimaryDomainForPurpose(inferredPrimaryDomain, basePurpose);
 
-    const description = this.buildQuickDescription(
+    const coreConceptNames = [
+      ...projectTextSignal.concepts,
+      ...coreConcepts.map(c => c.name),
+      ...domainConcepts.slice(0, 25).map(c => c.name),
+    ];
+
+    const description = projectTextSignal.summary && (
+      projectTextSignal.primaryDomain === primaryDomain ||
+      this.shouldPreferProjectTextSummary(primaryDomain, systemCapabilities, flowGraph)
+    )
+      ? projectTextSignal.summary
+      : this.buildQuickDescription(
       basePurpose,
       flowGraph,
       databaseEntities,
       entryPointSummary,
       frameworks,
-      externalServices
+      externalServices,
+      systemCapabilities,
+      primaryDomain,
+      coreConceptNames
     );
 
     const supportingWorkflows = workflows.filter(w => w.classification === 'supporting');
+    const primaryType = this.refinePurposeTypeForDomain(
+      basePurpose.primary_type,
+      primaryDomain,
+      frameworks,
+      entryPointSummary
+    );
 
     return {
       ...basePurpose,
+      primary_type: primaryType,
+      evidence: [...basePurpose.evidence, ...projectTextSignal.evidence].slice(0, 20),
       primary_domain: primaryDomain,
-      core_concepts: coreConcepts.slice(0, 10).map(c => c.name),
+      core_concepts: Array.from(new Set(coreConceptNames)).slice(0, 10),
       inferred_description: description,
+      description_source: 'deterministic',
+      description_generation: {
+        status: 'deterministic_initial',
+        attempted: false,
+        generated_at: new Date().toISOString(),
+      },
       primary_workflow_id: workflowGraph.primary_workflow_id,
       supporting_workflow_ids: supportingWorkflows.map(w => w.id)
     };
+  }
+
+  private refinePurposeTypeForDomain(
+    primaryType: string,
+    primaryDomain: string,
+    frameworks: string[],
+    entryPointSummary: { type: string; count: number }[]
+  ): string {
+    const frameworkText = frameworks.join(' ').toLowerCase();
+    const hasServerFramework = /\b(symfony|laravel|django|fastapi|spring|asp\.?net|nestjs|express)\b/.test(frameworkText);
+    const hasBackendEntry = entryPointSummary.some(entry =>
+      entry.count > 0 && /^(http|message|event|cli|schedule|websocket)$/.test(entry.type)
+    );
+
+    if (primaryDomain === 'fleet-management' && (hasServerFramework || hasBackendEntry)) {
+      return 'backend-service';
+    }
+    if (primaryDomain === 'codebase-analysis' && /^(multiplayer-application|gaming-platform|web-application)$/.test(primaryType)) {
+      return 'devtools-platform';
+    }
+    if (primaryDomain === 'cloud-infrastructure') {
+      return 'infrastructure-codebase';
+    }
+    return primaryType;
+  }
+
+  private refinePrimaryDomainForPurpose(domain: string, systemPurpose: SystemPurpose): string {
+    const normalizedDomain = (domain || '').toLowerCase();
+    if (systemPurpose.primary_type === 'clinical-testing-platform') {
+      return this.isGenericDomainToken(normalizedDomain) || this.isClinicalOrDeviceDomain(normalizedDomain)
+        ? 'clinical-testing'
+        : domain;
+    }
+    if (systemPurpose.primary_type === 'medical-device-software') {
+      return this.isGenericDomainToken(normalizedDomain) || this.isClinicalOrDeviceDomain(normalizedDomain)
+        ? 'medical-device'
+        : domain;
+    }
+    if (systemPurpose.primary_type === 'hardware-device-software') {
+      return this.isGenericDomainToken(normalizedDomain) || this.isHardwareDeviceDomain(normalizedDomain)
+        ? 'hardware-device'
+        : domain;
+    }
+    return domain;
+  }
+
+  private isClinicalOrDeviceDomain(domain: string): boolean {
+    return /\b(clinical|medical|patient|muscle|rehab|device|measurement|protocol|hoggan)\b/.test(domain);
+  }
+
+  private isHardwareDeviceDomain(domain: string): boolean {
+    return /\b(hardware|device|sensor|firmware|serial|bluetooth|calibration|iot)\b/.test(domain);
+  }
+
+  private isNonSemanticDomainLabel(label: string, systemName?: string): boolean {
+    const normalized = label.toLowerCase().trim();
+    const technologyNames = new Set([
+      'jenkins', 'terraform', 'opentofu', 'docker', 'kubernetes', 'k8s', 'helm', 'ansible',
+      'gradle', 'maven', 'npm', 'yarn', 'pnpm', 'vite', 'webpack', 'babel', 'eslint', 'prettier',
+      'jest', 'pytest', 'github', 'gitlab', 'circleci', 'bitbucket', 'nodejs', 'typescript', 'javascript',
+    ]);
+    if (technologyNames.has(normalized)) return true;
+    const nameTokens = (systemName || '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    return nameTokens.includes(normalized);
+  }
+
+  private refinePrimaryDomain(
+    inferredDomain: string,
+    systemName: string | undefined,
+    systemCapabilities: SystemCapability[],
+    coreConcepts: CASDomainConcept[],
+    projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] }
+  ): string {
+    const capabilityDomain = this.inferPrimaryDomainFromCapabilities(systemCapabilities, coreConcepts);
+    if (projectTextSignal.primaryDomain && !this.isGenericDomainToken(projectTextSignal.primaryDomain)) {
+      if ((this.isBroadProjectTextDomain(projectTextSignal.primaryDomain) ||
+        this.isNonSemanticDomainLabel(projectTextSignal.primaryDomain, systemName)) && capabilityDomain) {
+        return capabilityDomain;
+      }
+      if (!this.isNonSemanticDomainLabel(projectTextSignal.primaryDomain, systemName)) {
+        return projectTextSignal.primaryDomain;
+      }
+    }
+
+    if (inferredDomain && inferredDomain !== 'unknown' && !this.isGenericDomainToken(inferredDomain)) {
+      if ((this.isBroadProjectTextDomain(inferredDomain) ||
+        this.isNarrowCrossCuttingDomain(inferredDomain) ||
+        this.isNonSemanticDomainLabel(inferredDomain, systemName)) && capabilityDomain) {
+        return capabilityDomain;
+      }
+      if (!this.isNonSemanticDomainLabel(inferredDomain, systemName)) {
+        return inferredDomain;
+      }
+    }
+
+    const concept = coreConcepts.find(candidate =>
+      !this.isGenericDomainToken(candidate.name) &&
+      !this.isNonSemanticDomainLabel(candidate.name, systemName));
+    if (concept) return concept.name.toLowerCase().replace(/\s+/g, '-');
+
+    if (capabilityDomain) return capabilityDomain.toLowerCase().replace(/\s+/g, '-');
+
+    return this.domainFromSystemName(systemName) || inferredDomain || 'unknown';
+  }
+
+  private inferPrimaryDomainFromCapabilities(systemCapabilities: SystemCapability[], coreConcepts: CASDomainConcept[]): string | null {
+    const text = [
+      ...systemCapabilities.map(capability => [
+        capability.name,
+        capability.description,
+        ...(capability.related_domains || []),
+        ...(capability.related_entities || []),
+        ...(capability.operations || []).map(operation => `${operation.action || ''} ${operation.path_or_command || ''}`),
+      ].join(' ')),
+      ...coreConcepts.map(concept => concept.name),
+    ].join(' ').toLowerCase();
+
+    const has = (pattern: RegExp) => pattern.test(text);
+    if (has(/\border|orders|salesorder|sales order\b/) && has(/\binvoice|invoices|payment|payments\b/)) {
+      return 'order-invoice-management';
+    }
+    if (has(/\binvoice|invoices|payment|payments|billing\b/)) {
+      return 'billing-payments';
+    }
+    if (has(/\border|orders|fulfillment|salesorder|sales order\b/)) {
+      return 'order-management';
+    }
+    if (has(/\bdocument|documents|file|files\b/) && has(/\breport|reports|pdf|download|print\b/)) {
+      return 'document-reporting';
+    }
+    if (has(/\bcompany|member|members|organization|workspace\b/) && has(/\bdocument|documents|report|reports\b/)) {
+      return 'member-document-portal';
+    }
+    if (
+      has(/\bidentity|auth|authentication|authorization\b/) &&
+      has(/\buser|users|register|login|password|token|email|claims?\b/)
+    ) {
+      return 'user-identity-management';
+    }
+
+    const dominantBusinessDomain = this.inferDominantBusinessDomainFromCapabilities(systemCapabilities, coreConcepts);
+    if (dominantBusinessDomain) return dominantBusinessDomain;
+
+    const capabilityDomain = systemCapabilities
+      .flatMap(capability => capability.related_domains || [])
+      .find(domain => domain && !this.isGenericDomainToken(domain));
+    return capabilityDomain ? capabilityDomain.toLowerCase().replace(/\s+/g, '-') : null;
+  }
+
+  private isNarrowCrossCuttingDomain(domain: string): boolean {
+    return /^(auth|authentication|authorization|login|user|users|session|sessions|identity|account|accounts)$/i.test(domain);
+  }
+
+  private inferDominantBusinessDomainFromCapabilities(
+    systemCapabilities: SystemCapability[],
+    coreConcepts: CASDomainConcept[]
+  ): string | null {
+    const scores = new Map<string, number>();
+    const addToken = (token: string, weight: number) => {
+      const normalized = this.normalizeDomainToken(token.toLowerCase());
+      if (!normalized || normalized.length <= 2) return;
+      if (this.isGenericDomainToken(normalized) || this.isGenericCapabilityToken(normalized)) return;
+      if (this.isCrossCuttingDomainToken(normalized)) return;
+      scores.set(normalized, (scores.get(normalized) || 0) + weight);
+    };
+    const addText = (text: string, weight: number) => {
+      const tokens = text
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .replace(/[_\-./]/g, ' ')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter(Boolean);
+      for (const token of tokens) addToken(token, weight);
+    };
+
+    for (const concept of coreConcepts) addText(concept.name, 4);
+    for (const capability of systemCapabilities) {
+      for (const domain of capability.related_domains || []) addText(domain, 3);
+      for (const entity of capability.related_entities || []) addText(entity, 3);
+      addText(capability.name, 1);
+      for (const operation of capability.operations || []) addText(operation.path_or_command || operation.action || '', 0.5);
+    }
+
+    if (scores.size === 0) return null;
+    const score = (token: string) => scores.get(token) || 0;
+    if (score('product') > 0 && (score('company') > 0 || score('source') > 0 || score('connection') > 0 || score('record') > 0)) {
+      return 'product-data-management';
+    }
+    if (score('company') > 0 && score('source') > 0) return 'company-source-management';
+    if (score('post') > 0 || score('content') > 0) return 'content-management';
+    if (score('product') > 0) return 'product-management';
+
+    const [top] = Array.from(scores.entries())
+      .sort((a, b) => b[1] - a[1]);
+    if (!top || top[1] < 2) return null;
+    return top[0];
+  }
+
+  private isCrossCuttingDomainToken(token: string): boolean {
+    return /^(auth|authentication|authorization|login|logout|session|sessions|token|tokens|jwt|oauth|user|users|account|accounts|admin|permission|permissions|role|roles|serializer|serializers|has)$/.test(token);
+  }
+
+  private isBroadProjectTextDomain(domain: string): boolean {
+    return /^(customer-relationship-management|business|portal|web-application|frontend|backend|hercules)$/i.test(domain);
+  }
+
+  private domainFromSystemName(systemName?: string): string | null {
+    if (!systemName) return null;
+    const tokens = systemName
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .split(/[^a-zA-Z0-9]+/)
+      .map(token => token.toLowerCase())
+      .filter(token => token && !this.isGenericDomainToken(token));
+    if (tokens.length === 0) return null;
+    if (tokens.includes('pumpfun')) return 'pumpfun';
+    if (tokens.includes('solana')) return 'solana';
+    if (tokens.includes('zerac')) return 'zerac';
+    return tokens[0];
+  }
+
+  private shouldPreferProjectTextSummary(
+    primaryDomain: string,
+    systemCapabilities: SystemCapability[],
+    flowGraph: CASFlowGraph
+  ): boolean {
+    const usefulCapabilities = systemCapabilities.filter(capability => !this.isGenericCapabilityDisplayName(capability.name));
+    const flowCapabilities = [...(flowGraph.capabilities || [])].filter(capability => !this.isGenericCapabilityDisplayName(capability.name));
+    return !primaryDomain ||
+      primaryDomain === 'unknown' ||
+      this.isGenericDomainToken(primaryDomain) ||
+      usefulCapabilities.length <= 2 ||
+      flowCapabilities.length <= 2;
+  }
+
+  private stripAgentToolingInstructionText(text: string): string {
+    return text
+      .split(/\r?\n/)
+      .filter(line => !/\b(klauro|mcp|claude(?:\s+code)?|codex|anthropic|cursor|copilot|coding agents?|agent operating loop|work packets?|analysis-focus|cas graph|analyze_codebase|get_agent_|run_answer_pack|assess_change_risk|get_coding_context)\b/i.test(line))
+      .join('\n');
+  }
+
+  private extractProjectTextSignal(projectPath: string): ProjectTextSignal {
+    const textParts: string[] = [];
+    const evidence: string[] = [];
+
+    const packageJson = this.safeReadJson(path.join(projectPath, 'package.json'));
+    if (packageJson?.description) {
+      textParts.push(String(packageJson.description));
+      evidence.push('package.json description');
+    }
+    if (packageJson?.name) textParts.push(String(packageJson.name));
+
+    for (const readmeName of ['README.md', 'README.mdx', 'readme.md']) {
+      const readmePath = path.join(projectPath, readmeName);
+      const content = this.safeReadText(readmePath, 12000);
+      if (!content) continue;
+      const useful = this.stripBoilerplateProjectText(content);
+      if (useful.length > 80) {
+        textParts.push(useful);
+        evidence.push(readmeName);
+      }
+      break;
+    }
+
+    for (const guideName of ['CLAUDE.md', 'AGENTS.md', 'KLAURO.md']) {
+      const guidePath = path.join(projectPath, guideName);
+      const content = this.safeReadText(guidePath, 30000);
+      if (!content) continue;
+      const useful = this.stripAgentToolingInstructionText(this.stripBoilerplateProjectText(content));
+      if (useful.length > 80) {
+        textParts.push(useful);
+        evidence.push(guideName);
+      }
+    }
+
+    let sourceTextFound = false;
+    const sourceFiles = (this.safeGlobSync('**/*.{ts,tsx,js,jsx,mjs,cjs,py,rs,go,java,cs,php,dart}', {
+      cwd: projectPath,
+      nodir: true,
+      ignore: this.getProjectTextSourceIgnorePatterns(),
+    }).length > 0
+      ? this.safeGlobSync('**/*.{ts,tsx,js,jsx,mjs,cjs,py,rs,go,java,cs,php,dart}', {
+        cwd: projectPath,
+        nodir: true,
+        ignore: this.getProjectTextSourceIgnorePatterns(),
+      })
+      : this.scanProjectTextSourceFiles(projectPath)
+    ).slice(0, 80);
+    for (const file of sourceFiles) {
+      const content = this.safeReadText(path.join(projectPath, file), 20000);
+      const extracted = this.extractHumanTextFromSource(content);
+      if (extracted) {
+        sourceTextFound = true;
+        textParts.push(extracted);
+      }
+    }
+    if (sourceTextFound) evidence.push('source text');
+
+    const text = textParts.join('\n').toLowerCase();
+    const primaryDomain = this.inferDomainFromProjectText(text, projectPath);
+    const concepts = this.inferConceptsFromProjectText(text);
+    const summary = this.summaryFromProjectText(primaryDomain, concepts, text, evidence);
+
+    return { primaryDomain, concepts, summary, evidence };
+  }
+
+  private safeReadJson(filePath: string): any | null {
+    try {
+      if (!fs.existsSync(filePath)) return null;
+      return fs.readJsonSync(filePath);
+    } catch {
+      return null;
+    }
+  }
+
+  private safeGlobSync(pattern: string | string[], options: Record<string, any>): string[] {
+    try {
+      const globModule = require('glob');
+      const sync = globSync || globModule.globSync || globModule.sync;
+      return typeof sync === 'function' ? sync(pattern as any, options as any) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private scanProjectTextSourceFiles(projectPath: string): string[] {
+    const results: string[] = [];
+    const sourceExtension = /\.(ts|tsx|js|jsx|mjs|cjs|py|rs|go|java|cs|php|dart|tf|tfvars)$/i;
+    const ignoredDir = /^(node_modules|dist|build|coverage|vendor|vendors|generated|fixtures?|__fixtures__|__tests__|tests?|spec|e2e|\.git|\.next|\.turbo|\.cache|\.terraform)$/;
+    const visit = (directory: string) => {
+      if (results.length >= 80) return;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(directory, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (results.length >= 80) break;
+        const absolute = path.join(directory, entry.name);
+        if (entry.isDirectory()) {
+          if (!ignoredDir.test(entry.name)) visit(absolute);
+        } else if (entry.isFile() && sourceExtension.test(entry.name)) {
+          results.push(path.relative(projectPath, absolute).replace(/\\/g, '/'));
+        }
+      }
+    };
+    visit(projectPath);
+    return results;
+  }
+
+  private getProjectTextSourceIgnorePatterns(): string[] {
+    return [
+      ...this.getProjectDiscoveryIgnorePatterns(),
+      '**/__tests__/**',
+      '**/test/**',
+      '**/tests/**',
+      '**/spec/**',
+      '**/e2e/**',
+      '**/fixtures/**',
+      '**/__fixtures__/**',
+      '**/__mocks__/**',
+      '**/*.test.*',
+      '**/*.spec.*',
+      '**/*.stories.*',
+      '**/*.story.*',
+    ];
+  }
+
+  private safeReadText(filePath: string, maxBytes: number): string {
+    try {
+      if (!fs.existsSync(filePath)) return '';
+      const stat = fs.statSync(filePath);
+      if (!stat.isFile() || stat.size > maxBytes * 5) return '';
+      return fs.readFileSync(filePath, 'utf8').slice(0, maxBytes);
+    } catch {
+      return '';
+    }
+  }
+
+  private stripBoilerplateProjectText(content: string): string {
+    const lines = content
+      .split(/\r?\n/)
+      .filter(line => !/next\.js|create-next-app|vercel platform|learn next|getting started|npm run dev|yarn dev|pnpm dev|bun dev/i.test(line));
+    return lines.join('\n');
+  }
+
+  private extractHumanTextFromSource(content: string): string {
+    if (!content) return '';
+    const snippets: string[] = [];
+    const stringPattern = /(["'`])((?:\\\1|(?:(?!\1).)){8,160})\1/g;
+    let match: RegExpExecArray | null;
+    while ((match = stringPattern.exec(content)) && snippets.length < 80) {
+      const value = match[2]
+        .replace(/\\n/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (!/[a-zA-Z]{3,}/.test(value)) continue;
+      if (/^https?:|^\/|^[a-z0-9_-]+\.(png|jpg|jpeg|svg|mp4|webm|css)$/i.test(value)) continue;
+      if (/^(className|metadata|import|export|const|return)$/i.test(value)) continue;
+      snippets.push(value);
+    }
+    const jsxTextPattern = />\s*([^<>{}][^<>{}]{8,180})\s*</g;
+    while ((match = jsxTextPattern.exec(content)) && snippets.length < 120) {
+      const value = match[1].replace(/\s+/g, ' ').trim();
+      if (!/[a-zA-Z]{3,}/.test(value)) continue;
+      if (/^[);,\s]+$/.test(value)) continue;
+      snippets.push(value);
+    }
+    return snippets.join(' ');
+  }
+
+  private inferDomainFromProjectText(text: string, projectPath: string): string | undefined {
+    const repoName = path.basename(projectPath).toLowerCase();
+    const pathSegments = projectPath.toLowerCase().split(/[\\/]+/);
+    const locationText = [repoName, ...pathSegments.slice(-4)].join(' ');
+    const searchableText = `${text}\n${locationText}`;
+    const isInfrastructureRepo =
+      /\b(infra|infrastructure|terraform|opentofu|aws-infra|system-infra)\b/.test(locationText) ||
+      pathSegments.some(segment => /^(infra|infrastructure|terraform|aws-infra|system-infra)$/.test(segment));
+    const isExplicitZeroTrustProduct =
+      /\bzero[-\s]?trust\b/.test(text) && !isInfrastructureRepo ||
+      repoName.includes('zerac') ||
+      (pathSegments.includes('zerac') && !isInfrastructureRepo);
+    const isExplicitCodebaseAnalysisProduct =
+      /\b(klauro|unravl)\b/.test(text) ||
+      repoName === 'klauro' ||
+      repoName === 'unravl';
+    if (isInfrastructureRepo) {
+      return 'cloud-infrastructure';
+    }
+    const cryptoTradingScore =
+      this.phraseScore(searchableText, ['solana']) * 3 +
+      this.phraseScore(searchableText, ['pumpfun']) * 3 +
+      this.phraseScore(searchableText, ['jito']) * 3 +
+      this.phraseScore(searchableText, ['mev']) * 2 +
+      this.phraseScore(searchableText, ['arbitrage']) * 2 +
+      this.phraseScore(searchableText, ['sniper']) +
+      this.phraseScore(searchableText, ['bundler']) +
+      this.phraseScore(searchableText, ['dex']) +
+      this.phraseScore(searchableText, ['trading']);
+    const cloudInfrastructureScore =
+      this.phraseScore(searchableText, ['terraform']) * 3 +
+      this.phraseScore(searchableText, ['opentofu']) * 3 +
+      this.phraseScore(searchableText, ['aws']) * 2 +
+      this.phraseScore(searchableText, ['infrastructure']) * 2 +
+      this.phraseScore(searchableText, ['infra']) * 2 +
+      this.phraseScore(searchableText, ['ecs']) +
+      this.phraseScore(searchableText, ['vpc']) +
+      this.phraseScore(searchableText, ['rds']) +
+      this.phraseScore(searchableText, ['cloudfront']) +
+      this.phraseScore(searchableText, ['route53']);
+    const explicitZeroTrustLanguage =
+      /\bzero[-\s]?trust\b/.test(text) ||
+      /\bcontinuous verification\b/.test(text) ||
+      /\bidentity provider\b/.test(text) ||
+      /\bprotected resources?\b/.test(text) ||
+      /\baccess requests?\b/.test(text);
+    const zeroTrustRawScore = (isExplicitZeroTrustProduct ? 8 : 0) +
+      this.phraseScore(searchableText, ['zero trust', 'security']) * 3 +
+      this.phraseScore(searchableText, ['access request']) * 2 +
+      this.phraseScore(searchableText, ['identity provider']) * 2 +
+      this.phraseScore(searchableText, ['continuous verification']) * 2 +
+      this.phraseScore(searchableText, ['protected resource']) * 2 +
+      this.phraseScore(searchableText, ['network', 'access']) +
+      this.phraseScore(searchableText, ['gateway']) +
+      this.phraseScore(searchableText, ['verification', 'secure']);
+    const zeroTrustScore = isExplicitCodebaseAnalysisProduct
+      ? 0
+      : explicitZeroTrustLanguage
+        ? zeroTrustRawScore
+        : Math.min(zeroTrustRawScore, 3);
+    const hasApplicationFrameworkSignal =
+      /\b(rails|django|react|angular|vue|express|nestjs|fastapi|laravel|symfony|spring|flutter|flask|next\.?js)\b/i.test(searchableText);
+    const effectiveCloudInfrastructureScore = isExplicitZeroTrustProduct || (hasApplicationFrameworkSignal && !isInfrastructureRepo)
+      ? Math.min(cloudInfrastructureScore, 3)
+      : cloudInfrastructureScore;
+    const fleetManagementScore =
+      this.phraseScore(searchableText, ['fleet management']) * 4 +
+      this.phraseScore(searchableText, ['commercial vehicle']) * 3 +
+      this.phraseScore(searchableText, ['telematics']) * 3 +
+      this.phraseScore(searchableText, ['vehicle fleet']) * 3 +
+      this.phraseScore(searchableText, ['eld compliance', 'fmcsa']) * 2 +
+      this.phraseScore(searchableText, ['driver', 'vehicle', 'fuel', 'maintenance']) +
+      this.phraseScore(searchableText, ['safety monitoring', 'drive alerts', 'dispatching', 'ifta']);
+    const clinicalAnchorScore =
+      this.phraseScore(searchableText, ['patient']) +
+      this.phraseScore(searchableText, ['muscle']) +
+      this.phraseScore(searchableText, ['clinical']);
+    const strongCommerceAnchorScore =
+      this.phraseScore(searchableText, ['cart']) +
+      this.phraseScore(searchableText, ['checkout']);
+    const commerceAnchorScore =
+      strongCommerceAnchorScore +
+      this.phraseScore(searchableText, ['invoice']) +
+      this.phraseScore(searchableText, ['billing']);
+    const nicheDomainSignal = fleetManagementScore >= 2 || clinicalAnchorScore >= 2;
+    const commerceOperationsScore = commerceAnchorScore === 0 || (strongCommerceAnchorScore === 0 && nicheDomainSignal)
+      ? 0
+      : this.phraseScore(searchableText, ['cart']) * 2 +
+      this.phraseScore(searchableText, ['checkout']) * 3 +
+      this.phraseScore(searchableText, ['order', 'invoice']) * 3 +
+      this.phraseScore(searchableText, ['orders']) * 2 +
+      this.phraseScore(searchableText, ['invoice']) * 2 +
+      this.phraseScore(searchableText, ['billing']) * 2 +
+      this.phraseScore(searchableText, ['account', 'cart']) +
+      this.phraseScore(searchableText, ['search', 'checkout']) +
+      this.phraseScore(searchableText, ['location', 'order']);
+    const clinicalTestingScore = clinicalAnchorScore === 0
+      ? 0
+      : this.phraseScore(searchableText, ['patient']) * 3 +
+      this.phraseScore(searchableText, ['muscle']) * 3 +
+      this.phraseScore(searchableText, ['measurement']) * 2 +
+      this.phraseScore(searchableText, ['force']) +
+      this.phraseScore(searchableText, ['device']) +
+      this.phraseScore(searchableText, ['protocol']) +
+      this.phraseScore(searchableText, ['assessment']) +
+      this.phraseScore(searchableText, ['scientific']);
+    const phraseScores: Array<[string, number]> = [
+      ['codebase-analysis', (isExplicitCodebaseAnalysisProduct ? 8 : 0) + this.phraseScore(searchableText, ['klauro']) * 4 + this.phraseScore(searchableText, ['codebase', 'analysis']) + this.phraseScore(searchableText, ['cas', 'mcp'])],
+      ['personal-ai-assistant', this.phraseScore(searchableText, ['personal ai assistant']) * 3 + this.phraseScore(searchableText, ['multi-channel', 'assistant']) + this.phraseScore(searchableText, ['channels', 'gateway'])],
+      ['ecommerce-storefront', this.phraseScore(searchableText, ['shopify', 'theme']) * 2 + this.phraseScore(searchableText, ['online store']) + this.phraseScore(searchableText, ['storefront', 'merchant'])],
+      ['commerce-operations-portal', commerceOperationsScore],
+      ['clinical-testing', clinicalTestingScore],
+      ['cloud-infrastructure', effectiveCloudInfrastructureScore + (isInfrastructureRepo ? 12 : 0)],
+      ['zero-trust-security', zeroTrustScore],
+      ['fleet-management', fleetManagementScore],
+      ['solana-arbitrage', cryptoTradingScore],
+      ['portfolio-management', this.phraseScore(searchableText, ['portfolio', 'asset']) + this.phraseScore(searchableText, ['investment', 'holding'])],
+      ['billing-payments', this.phraseScore(searchableText, ['billing', 'payment']) + this.phraseScore(searchableText, ['invoice', 'subscription'])],
+      ['customer-relationship-management', this.phraseScore(searchableText, ['customer', 'contact']) + this.phraseScore(searchableText, ['pipeline', 'lead'])],
+    ];
+    const [domain, score] = phraseScores.sort((a, b) => b[1] - a[1])[0] || [];
+    return score >= 4 ? domain : undefined;
+  }
+
+  private phraseScore(text: string, terms: string[]): number {
+    return terms.reduce((score, term) => {
+      const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const count = (text.match(new RegExp(`\\b${escaped}\\b`, 'gi')) || []).length;
+      return score + Math.min(count, 6);
+    }, 0);
+  }
+
+  private inferConceptsFromProjectText(text: string): string[] {
+    const candidates = [
+      'zero trust',
+      'security',
+      'network',
+      'access',
+      'access request',
+      'identity provider',
+      'verification',
+      'gateway',
+      'resource',
+      'agent',
+      'arbitrage',
+      'solana',
+      'market data',
+      'dex',
+      'terraform',
+      'opentofu',
+      'aws',
+      'infrastructure',
+      'vpc',
+      'ecs',
+      'rds',
+      'cloudfront',
+      'route53',
+      'risk',
+      'commerce operations',
+      'cart',
+      'checkout',
+      'order',
+      'orders',
+      'invoice',
+      'billing',
+      'fleet management',
+      'commercial vehicle',
+      'telematics',
+      'vehicle fleet',
+      'eld compliance',
+      'fmcsa',
+      'driver',
+      'vehicle',
+      'fuel',
+      'maintenance',
+      'safety monitoring',
+      'drive alerts',
+      'dispatching',
+      'ifta',
+      'routing',
+      'clinical testing',
+      'patient',
+      'muscle',
+      'measurement',
+      'force',
+      'device',
+      'assessment',
+      'portfolio',
+      'codebase analysis',
+      'klauro',
+      'cas',
+      'mcp',
+      'billing',
+      'payment',
+      'customer',
+      'assistant',
+      'gateway',
+      'channels',
+      'messaging',
+      'shopify',
+      'theme',
+      'storefront',
+      'merchant',
+    ];
+    return candidates
+      .map(candidate => ({ candidate, score: this.phraseScore(text, [candidate]) }))
+      .filter(item => item.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .map(item => item.candidate)
+      .map(candidate => candidate.replace(/\s+/g, '-'))
+      .slice(0, 8);
+  }
+
+  private summaryFromProjectText(
+    primaryDomain: string | undefined,
+    concepts: string[],
+    text: string,
+    evidence: string[]
+  ): string | undefined {
+    if (!primaryDomain) return undefined;
+    if (primaryDomain === 'fleet-management') {
+      return 'A fleet management system for commercial vehicle operations. Project documentation describes real-time tracking, compliance management, safety monitoring, dispatch and trip operations, fuel and maintenance reporting, and integrations with telematics and business-service providers.';
+    }
+    if (primaryDomain === 'zero-trust-security') {
+      return 'A zero-trust security codebase for controlling protected access and network trust decisions. Project text and source copy describe continuous verification, secure access gateways, request workflows, infrastructure policy, and operator-facing controls for reviewing and enforcing policy decisions.';
+    }
+    if (primaryDomain === 'commerce-operations-portal') {
+      return 'A commerce operations portal for account, cart, checkout, order, invoice, billing, search, and location workflows. Project text and source copy describe user-facing commerce screens and operational customer flows.';
+    }
+    if (primaryDomain === 'clinical-testing') {
+      return 'A clinical testing and scientific measurement application for patient, protocol, device, muscle, force, and assessment workflows. Project text and source copy describe desktop or service-side support for clinical evaluation and reporting.';
+    }
+    if (primaryDomain === 'solana-arbitrage') {
+      return 'A Solana arbitrage codebase for monitoring decentralized exchanges, computing profitable routes, applying risk controls, and submitting atomic transactions.';
+    }
+    if (primaryDomain === 'codebase-analysis') {
+      return 'A codebase analysis system that turns source repositories into a relationship graph for humans and AI agents. Project text describes CAS/MCP analysis, graph extraction, agent work packets, and proposal or iteration previews.';
+    }
+    if (primaryDomain === 'cloud-infrastructure') {
+      return 'A cloud infrastructure codebase for managing deployment resources and operational boundaries. Project text and infrastructure files describe Terraform/OpenTofu-managed cloud resources, modules, providers, variables, and outputs.';
+    }
+    if (primaryDomain === 'personal-ai-assistant') {
+      return 'A personal AI assistant platform for coordinating local tools, multi-channel messaging, gateway control, and companion apps.';
+    }
+    if (primaryDomain === 'ecommerce-storefront') {
+      return 'An ecommerce storefront theme for merchant-facing online shopping experiences. Project text describes Shopify theme development, server-rendered Liquid, storefront performance, and online store features.';
+    }
+    if (primaryDomain === 'portfolio-management') {
+      return 'A portfolio management codebase for tracking assets, investment holdings, risk, and portfolio reporting workflows.';
+    }
+    if (!this.hasDistinctiveProjectTextConcepts(concepts)) {
+      return undefined;
+    }
+    const topConcepts = concepts.length ? concepts.slice(0, 5).join(', ') : primaryDomain.replace(/-/g, ' ');
+    return `A ${primaryDomain.replace(/-/g, ' ')} codebase. Project text identifies the main concepts as ${topConcepts}. Evidence: ${evidence.slice(0, 3).join(', ') || 'source text'}.`;
+  }
+
+  private hasDistinctiveProjectTextConcepts(concepts: string[]): boolean {
+    const generic = new Set([
+      'access', 'network', 'data', 'user', 'users', 'page', 'pages', 'component',
+      'components', 'route', 'routes', 'service', 'services', 'app', 'application',
+    ]);
+    return concepts.filter(concept => {
+      const tokens = concept.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+      return tokens.some(token => token.length > 3 && !generic.has(token));
+    }).length >= 3;
+  }
+
+  private focusProjectTextConcepts(concepts: string[], preferred: string[]): string[] {
+    const selected = preferred.filter(concept => concepts.includes(concept));
+    const filled = [...selected, ...preferred.filter(concept => !selected.includes(concept))];
+    return filled.slice(0, 5);
+  }
+
+  private isGenericDomainToken(token: string): boolean {
+    return new Set([
+      'app', 'application', 'api', 'service', 'server', 'client', 'web', 'ui',
+      'services', 'controllers', 'handlers', 'modules', 'frontend', 'backend',
+      'bot', 'worker', 'script', 'test', 'demo', 'poc', 'search',
+      'old', 'new', 'main', 'index', 'metadata', 'data', 'core', 'lib', 'library',
+      'libs', 'package', 'portal', 'dashboard', 'admin', 'business', 'apps',
+      'users', 'michaelshattuck', 'dev', 'clients', 'outcode', 'personal',
+      'page', 'pages', 'route', 'routes', 'component', 'components', 'layout',
+      'layouts', 'section', 'sections', 'navbar', 'nav', 'footer', 'button',
+      'arrow', 'padding', 'total', 'home', 'submit', 'rewrite', 'rewrites',
+      'asset', 'assets', 'generated', 'gql', 'graphql', 'document', 'documents',
+      'render', 'close', 'focus', 'normalize', 'ensure', 'path', 'clamp', 'install',
+      'modal', 'dialog', 'popup', 'screen', 'window',
+    ]).has(token.toLowerCase());
   }
 
   private buildQuickDescription(
@@ -4897,41 +8395,278 @@ export class AnalyzerOrchestrator {
     databaseEntities: string[],
     entryPoints: { type: string; count: number }[],
     frameworks: string[],
-    externalServices: string[]
+    externalServices: string[],
+    systemCapabilities: SystemCapability[] = [],
+    primaryDomain?: string,
+    conceptNames: string[] = []
   ): string {
-    const parts: string[] = [];
-
     const typeLabel = systemPurpose.primary_type.replace(/-/g, ' ');
-    parts.push(`A ${typeLabel} system`);
+    const domainLabel = primaryDomain && primaryDomain !== 'unknown'
+      ? primaryDomain.replace(/-/g, ' ')
+      : '';
+    const systemLabel = domainLabel || typeLabel;
 
-    if (frameworks.length > 0) {
-      parts.push(`built with ${frameworks.slice(0, 3).join(', ')}`);
+    const productFrameworks = frameworks.filter(framework => !/\b(jest|vitest|mocha|cypress|playwright)\b/i.test(framework));
+
+    let capabilitySource = systemCapabilities.length > 0
+      ? systemCapabilities
+        .filter(capability => capability.category !== 'internal')
+        .filter(capability => !this.isGenericCapabilityDisplayName(capability.name))
+      : [];
+
+    if (primaryDomain && !/^(auth|authentication|login|identity|session|account|accounts|user|users)$/i.test(primaryDomain)) {
+      const productCapabilities = capabilitySource.filter(capability => !this.isCrossCuttingCapabilityName(capability.name));
+      if (productCapabilities.length >= 2) capabilitySource = productCapabilities;
     }
 
-    const details: string[] = [];
+    const coreCapabilitySource = capabilitySource.filter(capability =>
+      capability.category === 'core' ||
+      capability.criticality === 'critical' ||
+      capability.criticality === 'high'
+    );
+    if (coreCapabilitySource.length >= 2) capabilitySource = coreCapabilitySource;
 
-    if (flowGraph.capabilities.length > 0) {
-      const topCaps = [...flowGraph.capabilities]
-        .sort((a, b) => b.signals.total_score - a.signals.total_score)
+    let capabilityNames = capabilitySource.length > 0
+      ? capabilitySource
+        .sort((a, b) => {
+          const order = { critical: 0, high: 1, medium: 2, low: 3 };
+          const purposeBias = (capability: SystemCapability) => this.capabilityPurposeBias(primaryDomain, capability);
+          const domainBias = (capability: SystemCapability) =>
+            primaryDomain && capability.related_domains?.some(domain => domain.includes(primaryDomain) || primaryDomain.includes(domain))
+              ? 0
+              : 1;
+          return purposeBias(a) - purposeBias(b) ||
+            domainBias(a) - domainBias(b) ||
+            order[a.criticality] - order[b.criticality] ||
+            b.operations.length - a.operations.length;
+        })
+        .map(capability => this.descriptionSafeCapabilityName(capability.name))
+        .filter((name): name is string => Boolean(name))
+        .filter((name, index, names) => this.isFirstCapabilitySummaryVariant(name, index, names))
         .slice(0, 5)
-        .map(c => c.name.toLowerCase().replace(/_/g, ' '));
-      details.push(`Key capabilities: ${topCaps.join(', ')}`);
+      : [...flowGraph.capabilities]
+        .sort((a, b) => b.signals.total_score - a.signals.total_score)
+        .map(c => this.descriptionSafeCapabilityName(c.name))
+        .filter((name): name is string => Boolean(name))
+        .filter((name, index, names) => this.isFirstCapabilitySummaryVariant(name, index, names))
+        .slice(0, 5);
+    const purposeCapabilityNames = this.purposeCapabilitySummary(primaryDomain, systemCapabilities, conceptNames);
+    if (purposeCapabilityNames.length >= 2) {
+      capabilityNames = purposeCapabilityNames;
     }
 
-    if (databaseEntities.length > 0) {
-      details.push(`Data model: ${databaseEntities.slice(0, 5).join(', ')}${databaseEntities.length > 5 ? ` (+${databaseEntities.length - 5} more)` : ''}`);
-    }
+    const frameworkPhrase = productFrameworks.length > 0
+      ? ` built with ${this.joinHumanList(productFrameworks.slice(0, 3))}`
+      : '';
+    const capabilityPhrase = this.describeCapabilitiesForNarrative(capabilityNames);
+    const entityPhrase = this.describeEntitiesForNarrative(databaseEntities);
+    const entryPointPhrase = this.describeEntryPointsForNarrative(entryPoints);
+    const integrationPhrase = this.describeIntegrationsForNarrative(externalServices);
 
-    if (entryPoints.length > 0) {
-      const epSummary = entryPoints.map(ep => `${ep.count} ${ep.type}`).join(', ');
-      details.push(`Entry points: ${epSummary}`);
-    }
+    const firstSentence = capabilityPhrase
+      ? `${this.articleFor(systemLabel)} ${systemLabel} system${frameworkPhrase} that ${capabilityPhrase}.`
+      : `${this.articleFor(systemLabel)} ${systemLabel} system${frameworkPhrase} that organizes the codebase around its detected domain workflows and runtime boundaries.`;
 
-    if (externalServices.length > 0) {
-      details.push(`Integrations: ${externalServices.slice(0, 3).join(', ')}`);
-    }
+    const secondParts = [
+      entityPhrase ? `Its model centers on ${entityPhrase}` : '',
+      entryPointPhrase,
+      integrationPhrase,
+    ].filter(Boolean);
+    const secondSentence = secondParts.length > 0
+      ? `${secondParts.join(', ')}.`
+      : 'The CAS graph maps the system structure, relationships, and change surfaces for deeper inspection.';
 
-    return parts.join(' ') + '. ' + details.join('. ') + '.';
+    return `${firstSentence} ${secondSentence}`;
+  }
+
+  private describeCapabilitiesForNarrative(capabilityNames: string[]): string {
+    const normalized = capabilityNames
+      .map(name => name.toLowerCase().replace(/\bmanagement\b/g, '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+      .slice(0, 4);
+    if (normalized.length === 0) return '';
+    if (normalized.length === 1) return `supports ${normalized[0]} workflows`;
+    return `coordinates ${this.joinHumanList(normalized)} workflows`;
+  }
+
+  private describeEntitiesForNarrative(databaseEntities: string[]): string {
+    const entityNames = databaseEntities
+      .map(entity => this.humanizePascalName(entity).toLowerCase())
+      .filter(entity => entity && !this.isGenericDomainToken(entity))
+      .slice(0, 4);
+    return this.joinHumanList(entityNames);
+  }
+
+  private describeEntryPointsForNarrative(entryPoints: { type: string; count: number }[]): string {
+    const meaningfulEntryPoints = entryPoints
+      .filter(ep => ep.type !== 'test' && ep.count > 0)
+      .sort((a, b) => b.count - a.count);
+    if (meaningfulEntryPoints.length === 0) return '';
+    const types = meaningfulEntryPoints.slice(0, 3).map(ep => this.entryPointTypeLabel(ep.type));
+    return `it is exercised through ${this.joinHumanList(types)}`;
+  }
+
+  private describeIntegrationsForNarrative(externalServices: string[]): string {
+    const meaningfulExternalServices = externalServices
+      .filter(service => this.isMeaningfulExternalServiceName(service))
+      .slice(0, 3);
+    if (meaningfulExternalServices.length === 0) return '';
+    return `and it connects to ${this.joinHumanList(meaningfulExternalServices)}`;
+  }
+
+  private entryPointTypeLabel(type: string): string {
+    switch (type.toLowerCase()) {
+      case 'http':
+        return 'HTTP endpoints';
+      case 'cli':
+        return 'CLI commands';
+      case 'message':
+        return 'message handlers';
+      case 'event':
+        return 'event handlers';
+      case 'page':
+        return 'page routes';
+      case 'websocket':
+        return 'WebSocket channels';
+      default:
+        return `${type} entry points`;
+    }
+  }
+
+  private joinHumanList(values: string[]): string {
+    const items = values.map(value => value.trim()).filter(Boolean);
+    if (items.length === 0) return '';
+    if (items.length === 1) return items[0];
+    if (items.length === 2) return `${items[0]} and ${items[1]}`;
+    return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
+  }
+
+  private humanizePascalName(value: string): string {
+    return (value || '')
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[_\-./]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private humanizeDisplayName(value: string): string {
+    return this.humanizePascalName(value)
+      .split(/\s+/)
+      .filter(Boolean)
+      .map(word => /^[A-Z0-9]+$/.test(word) ? word : word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ');
+  }
+
+  private articleFor(phrase: string): string {
+    const normalized = (phrase || '').trim().toLowerCase();
+    if (/^u([bcfhjkqrstn]|ni|se|ser|til|nit|nit of|ser )/.test(normalized)) return 'A';
+    return /^[aeiou]/i.test(normalized) ? 'An' : 'A';
+  }
+
+  private purposeCapabilitySummary(primaryDomain: string | undefined, capabilities: SystemCapability[], conceptNames: string[] = []): string[] {
+    if (primaryDomain !== 'clinical-testing') return [];
+    const text = capabilities
+      .map(capability => [
+        capability.name,
+        ...(capability.related_domains || []),
+        ...(capability.related_entities || []),
+        ...(capability.operations || []).map(operation => operation.path_or_command || operation.action || ''),
+      ].join(' '))
+      .join(' ')
+      .toLowerCase() + ' ' + conceptNames.join(' ').toLowerCase();
+    const summary: string[] = [];
+    if (/\bpatient/.test(text)) summary.push('patient records');
+    if (/\b(muscle|force|grip|pinch|inclinometry|measurement|assessment)\b/.test(text)) summary.push('clinical measurements');
+    if (/\b(device|connection|sensor|calibration)\b/.test(text)) summary.push('device connectivity');
+    if (/\b(report|print|cover\s*letter)\b/.test(text)) summary.push('clinical reporting');
+    return summary.slice(0, 5);
+  }
+
+  private capabilityPurposeBias(primaryDomain: string | undefined, capability: SystemCapability): number {
+    const text = [
+      capability.name,
+      ...(capability.related_domains || []),
+      ...(capability.related_entities || []),
+    ].join(' ').toLowerCase();
+    if (primaryDomain === 'clinical-testing') {
+      if (/\b(patient|muscle|measurement|device|force|grip|pinch|inclinometry|report|assessment|test)\b/.test(text)) return 0;
+      return 1;
+    }
+    return 0;
+  }
+
+  private descriptionSafeCapabilityName(name: string): string | undefined {
+    if (this.isGenericCapabilityDisplayName(name)) return undefined;
+    const normalized = name
+      .toLowerCase()
+      .replace(/_/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!normalized || /[()[\]{}<>'"`:]|\.with\b/i.test(normalized)) return undefined;
+    if (/\b(management|capability|commands|handlers|tasks)\b/.test(normalized)) {
+      const suffix = normalized.match(/\b(commands|handlers|tasks)\b/)?.[1] || 'management';
+      const subject = normalized
+        .replace(/\b(management|capability|commands|handlers|tasks)\b/g, ' ')
+        .split(/\s+/)
+        .map(token => this.normalizeDomainToken(token))
+        .filter(token => token && !this.isGenericCapabilityToken(token))
+        .join(' ')
+        .trim();
+      if (!subject || subject.split(/\s+/).every(token => this.isGenericCapabilityToken(this.normalizeDomainToken(token)))) {
+        return undefined;
+      }
+      if (suffix === 'handlers') return `${this.singularizeSummarySubject(subject)} handling`;
+      if (suffix === 'tasks') return `${this.singularizeSummarySubject(subject)} tasks`;
+      if (suffix === 'commands') return `${this.singularizeSummarySubject(subject)} commands`;
+      return `${this.singularizeSummarySubject(subject)} ${suffix}`;
+    }
+    return normalized;
+  }
+
+  private singularizeSummarySubject(subject: string): string {
+    return subject
+      .split(/\s+/)
+      .map(token => {
+        if (token.endsWith('ies') && token.length > 5) return token.replace(/ies$/, 'y');
+        if (token.length > 4 && !/(ss|ics|us|rs)$/.test(token) && token.endsWith('s')) return token.slice(0, -1);
+        return token;
+      })
+      .join(' ');
+  }
+
+  private isFirstCapabilitySummaryVariant(name: string, index: number, names: string[]): boolean {
+    const key = name
+      .replace(/\b(management|capability|commands|handlers|tasks)\b/g, ' ')
+      .replace(/\b([a-z]+)ies\b/g, '$1y')
+      .replace(/\b([a-z]+)s\b/g, '$1')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return names.findIndex(candidate => candidate
+      .replace(/\b(management|capability|commands|handlers|tasks)\b/g, ' ')
+      .replace(/\b([a-z]+)ies\b/g, '$1y')
+      .replace(/\b([a-z]+)s\b/g, '$1')
+      .replace(/\s+/g, ' ')
+      .trim() === key) === index;
+  }
+
+  private isCrossCuttingCapabilityName(name: string): boolean {
+    return /\b(auth|authenticate|authentication|authorization|login|logout|session|token|jwt|oauth|permission|role|superuser|admin|user|users)\b/i.test(name);
+  }
+
+  private isGenericCapabilityDisplayName(name: string): boolean {
+    if (/\b(bin\/console|console commands?|event(s)? handlers?|message handlers?|route handlers?)\b/i.test(name)) return true;
+    if (/^(help management|report reporting)$/i.test(name)) return true;
+    if (/[()[\]{}<>'"`:]|\.with\b/i.test(name)) return true;
+    const subject = name
+      .toLowerCase()
+      .replace(/\b(management|capability|authentication|reporting|commands|handlers|tasks)\b/g, ' ')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
+    if (!subject) return true;
+    return subject
+      .split(/\s+/)
+      .map(token => this.normalizeDomainToken(token))
+      .every(token => token.length <= 2 || this.isGenericCapabilityToken(token) || /^(toggle|success|failure|misc|root|read|write|use|used|using)$/.test(token));
   }
 
 
@@ -4999,11 +8734,18 @@ export class AnalyzerOrchestrator {
     return graphBuilder.buildFlowGraph(capabilities, dependencies, systemPurpose);
   }
 
-  private buildChangeRisks(nodes: CASNode[], edges: CASEdge[], entryPoints: CASEntryPoint[], gitAnalyzer: GitAnalyzer): CASChangeRisk[] {
+  private buildChangeRisks(nodes: CASNode[], edges: CASEdge[], entryPoints: CASEntryPoint[], gitAnalyzer?: GitAnalyzer): CASChangeRisk[] {
     const changeRisks: CASChangeRisk[] = [];
     const callerCounts = new Map<string, string[]>();
-    const gitAvailable = gitAnalyzer.isAvailable();
+    const gitAvailable = gitAnalyzer?.isAvailable() || false;
     const externalDependencySources = new Set<string>();
+    const entryNodeIds = new Set<string>();
+    const entryFiles = new Set<string>();
+    for (const entryPoint of entryPoints) {
+      if (entryPoint.source_node) entryNodeIds.add(entryPoint.source_node);
+      if (entryPoint.handler?.node_id) entryNodeIds.add(entryPoint.handler.node_id);
+      if (entryPoint.handler?.file) entryFiles.add(entryPoint.handler.file.replace(/\\/g, '/').toLowerCase());
+    }
 
     for (const edge of edges) {
       if (edge.type === 'calls' || edge.type === 'uses' || edge.type === 'depends_on') {
@@ -5019,24 +8761,42 @@ export class AnalyzerOrchestrator {
 
     const riskableNodeTypes = [
       'function', 'method', 'service', 'controller', 'serializer',
-      'entity', 'model', 'route', 'handler', 'resolver', 'mutation'
+      'entity', 'model', 'route', 'handler', 'resolver', 'mutation', 'repository'
     ];
 
-    for (const node of nodes) {
+    for (const node of nodes.filter(node => this.isPrimaryProductNode(node))) {
       if (!riskableNodeTypes.includes(node.type)) {
         continue;
       }
 
       const directCallers = callerCounts.get(node.id) || [];
-      const isEntryRelated = node.type === 'controller' || node.type === 'route' || node.type === 'handler';
+      const file = node.source?.file?.replace(/\\/g, '/').toLowerCase() || '';
+      const nameLower = node.name.toLowerCase();
+      const isEntryRelated = node.type === 'controller' ||
+        node.type === 'route' ||
+        node.type === 'handler' ||
+        entryNodeIds.has(node.id) ||
+        (file && entryFiles.has(file));
       const isDataRelated = node.type === 'entity' || node.type === 'model' || node.type === 'serializer';
+      const isRepository = node.type === 'repository' || /repository|repo|dao|gateway|store/.test(`${node.type} ${node.name} ${file}`.toLowerCase());
+      const isDomainService = node.type === 'service' || /service|manager|usecase|processor|workflow/.test(`${node.type} ${node.name} ${file}`.toLowerCase());
+      const isCriticalDomain = /\b(auth|oauth|token|password|permission|role|security|invoice|billing|payment|charge|subscription|fuel|vehicle|driver|trip|dispatch|maintenance|customer|partner)\b/i.test(`${node.name} ${file}`);
+      const isSecuritySensitiveName = /\b(auth|oauth|token|password|permission|role|security|credential)\b/i.test(`${node.name} ${file}`);
+      const isDataMutationName = /\b(create|update|delete|remove|save|persist|flush|store|charge|refund|sync|dispatch|send|process|generate|validate)\b/i.test(node.name);
+      const isAccessorLikeMethod = node.type === 'method' && /^(get|set|is|has|can|count|add)[A-Z_]/.test(node.name);
+      const nodeComplexity = node.metadata?.complexity?.cyclomatic || 0;
+      const hasExternalDep = externalDependencySources.has(node.id);
 
-      if (directCallers.length < 2 && !node.metadata?.is_exported && !isEntryRelated && !isDataRelated) {
+      if (isAccessorLikeMethod && !isSecuritySensitiveName && !isDataMutationName && !hasExternalDep && nodeComplexity < 10) {
+        continue;
+      }
+
+      if (directCallers.length < 2 && !node.metadata?.is_exported && !isEntryRelated && !isDataRelated && !isRepository && !isDomainService && !isCriticalDomain) {
         continue;
       }
 
       const filePath = node.source?.file;
-      const gitMetrics = filePath && gitAvailable ? gitAnalyzer.getFileMetrics(filePath) : null;
+      const gitMetrics = filePath && gitAvailable ? gitAnalyzer?.getFileMetrics(filePath) : null;
 
       const riskFactors: Array<{
         factor: 'many-callers' | 'critical-path' | 'high-traffic' | 'no-tests' | 'recent-bugs' | 'complex-logic' | 'external-dependency' | 'security-sensitive';
@@ -5058,7 +8818,23 @@ export class AnalyzerOrchestrator {
         });
       }
 
-      const complexity = node.metadata?.complexity?.cyclomatic || 0;
+      if (isEntryRelated) {
+        riskFactors.push({
+          factor: 'critical-path',
+          severity: isCriticalDomain ? 'high' : 'medium',
+          details: 'Entry-point or handler surface; changes can affect externally visible behavior'
+        });
+      }
+
+      if (isDataRelated || isRepository) {
+        riskFactors.push({
+          factor: 'critical-path',
+          severity: isCriticalDomain ? 'high' : 'medium',
+          details: 'Data model or data access surface; changes can affect persistence and downstream consumers'
+        });
+      }
+
+      const complexity = nodeComplexity;
       if (complexity > 20) {
         riskFactors.push({
           factor: 'complex-logic',
@@ -5073,7 +8849,6 @@ export class AnalyzerOrchestrator {
         });
       }
 
-      const hasExternalDep = externalDependencySources.has(node.id);
       if (hasExternalDep) {
         riskFactors.push({
           factor: 'external-dependency',
@@ -5082,11 +8857,21 @@ export class AnalyzerOrchestrator {
         });
       }
 
-      if (node.security?.authentication_required || node.security?.authorization_roles) {
+      if (node.security?.authentication_required ||
+        node.security?.authorization_roles ||
+        isSecuritySensitiveName) {
         riskFactors.push({
           factor: 'security-sensitive',
           severity: 'high',
           details: 'Handles security-sensitive operations'
+        });
+      }
+
+      if (isCriticalDomain && !riskFactors.some(factor => factor.factor === 'critical-path')) {
+        riskFactors.push({
+          factor: 'critical-path',
+          severity: 'medium',
+          details: 'Domain name suggests business-critical fleet, billing, identity, or operational behavior'
         });
       }
 
@@ -5106,18 +8891,19 @@ export class AnalyzerOrchestrator {
         });
       }
 
-      if (riskFactors.length === 0) continue;
+      const dedupedRiskFactors = this.dedupeChangeRiskFactors(riskFactors as any);
+      if (dedupedRiskFactors.length === 0) continue;
 
-      const highSeverityCount = riskFactors.filter(f => f.severity === 'high').length;
+      const highSeverityCount = dedupedRiskFactors.filter(f => f.severity === 'high').length;
       const riskLevel: 'critical' | 'high' | 'medium' | 'low' =
         highSeverityCount >= 2 ? 'critical' :
         highSeverityCount === 1 ? 'high' :
-        riskFactors.length >= 2 ? 'medium' : 'low';
+        dedupedRiskFactors.length >= 2 ? 'medium' : 'low';
 
       changeRisks.push({
         node_id: node.id,
         risk_level: riskLevel,
-        risk_factors: riskFactors as any,
+        risk_factors: dedupedRiskFactors,
         downstream_impact: {
           direct_callers: directCallers,
           transitive_callers: [],
@@ -5134,11 +8920,112 @@ export class AnalyzerOrchestrator {
           commit_count_30d: gitMetrics?.commits30d || 0,
           bug_fix_density: gitMetrics?.bugFixRate || 0,
           last_refactor: gitMetrics?.lastMajorChange || undefined
-        }
+        },
+        recommendations: this.recommendationsForChangeRisk(node, dedupedRiskFactors)
       });
     }
 
-    return changeRisks;
+    return this.collapseChangeRisksByOwner(changeRisks, nodes)
+      .sort((a, b) => {
+        const order = { critical: 0, high: 1, medium: 2, low: 3 };
+        const factorWeight = (risk: CASChangeRisk) => risk.risk_factors.reduce((total, factor) => total + (factor.severity === 'high' ? 3 : factor.severity === 'medium' ? 2 : 1), 0);
+        return order[a.risk_level] - order[b.risk_level] ||
+          factorWeight(b) - factorWeight(a) ||
+          b.downstream_impact.direct_callers.length - a.downstream_impact.direct_callers.length;
+      })
+      .slice(0, 100);
+  }
+
+  private collapseChangeRisksByOwner(changeRisks: CASChangeRisk[], nodes: CASNode[]): CASChangeRisk[] {
+    const nodesById = new Map(nodes.map(node => [node.id, node]));
+    const grouped = new Map<string, CASChangeRisk[]>();
+    for (const risk of changeRisks) {
+      const node = nodesById.get(risk.node_id);
+      const ownerId = node?.type === 'method' && node.parent ? node.parent : risk.node_id;
+      if (!grouped.has(ownerId)) grouped.set(ownerId, []);
+      grouped.get(ownerId)!.push(risk);
+    }
+
+    const collapsed: CASChangeRisk[] = [];
+    for (const [ownerId, risks] of grouped) {
+      if (risks.length === 1 && risks[0].node_id === ownerId) {
+        collapsed.push(risks[0]);
+        continue;
+      }
+
+      const ownerNode = nodesById.get(ownerId);
+      const riskFactors = this.dedupeChangeRiskFactors(risks.flatMap(risk => risk.risk_factors));
+      const directCallers = Array.from(new Set(risks.flatMap(risk => risk.downstream_impact.direct_callers)));
+      const transitiveCallers = Array.from(new Set(risks.flatMap(risk => risk.downstream_impact.transitive_callers)));
+      const affectedChains = Array.from(new Set(risks.flatMap(risk => risk.downstream_impact.affected_call_chains)));
+      const affectedEntries = Array.from(new Set(risks.flatMap(risk => risk.downstream_impact.affected_entry_points)));
+      const testIds = Array.from(new Set(risks.flatMap(risk => risk.test_protection.test_ids || [])));
+      const highSeverityCount = riskFactors.filter(factor => factor.severity === 'high').length;
+      const riskLevel: CASChangeRisk['risk_level'] =
+        highSeverityCount >= 2 ? 'critical' :
+        highSeverityCount === 1 ? 'high' :
+        riskFactors.length >= 2 ? 'medium' : 'low';
+
+      collapsed.push({
+        node_id: ownerId,
+        risk_level: riskLevel,
+        risk_factors: riskFactors,
+        downstream_impact: {
+          direct_callers: directCallers,
+          transitive_callers: transitiveCallers,
+          affected_call_chains: affectedChains,
+          affected_entry_points: affectedEntries,
+        },
+        test_protection: {
+          has_direct_tests: risks.some(risk => risk.test_protection.has_direct_tests),
+          has_integration_tests: risks.some(risk => risk.test_protection.has_integration_tests),
+          test_ids: testIds.length > 0 ? testIds : undefined,
+        },
+        stability_context: {
+          recent_churn: risks.some(risk => risk.stability_context.recent_churn),
+          commit_count_30d: Math.max(...risks.map(risk => risk.stability_context.commit_count_30d)),
+          bug_fix_density: Math.max(...risks.map(risk => risk.stability_context.bug_fix_density)),
+          last_refactor: risks.find(risk => risk.stability_context.last_refactor)?.stability_context.last_refactor,
+        },
+        recommendations: this.recommendationsForChangeRisk(ownerNode || nodesById.get(risks[0].node_id) || ({ id: ownerId, name: ownerId, type: 'node' } as CASNode), riskFactors),
+      });
+    }
+    return collapsed;
+  }
+
+  private dedupeChangeRiskFactors(riskFactors: ChangeRiskFactor[]): ChangeRiskFactor[] {
+    const severityScore = { high: 3, medium: 2, low: 1 };
+    const byFactor = new Map<ChangeRiskFactor['factor'], ChangeRiskFactor>();
+    for (const factor of riskFactors) {
+      const existing = byFactor.get(factor.factor);
+      if (!existing || severityScore[factor.severity] > severityScore[existing.severity]) {
+        byFactor.set(factor.factor, factor);
+      }
+    }
+    return Array.from(byFactor.values());
+  }
+
+  private recommendationsForChangeRisk(
+    node: CASNode,
+    riskFactors: Array<{ factor: ChangeRiskFactor['factor']; severity: ChangeRiskFactor['severity']; details: string }>
+  ): string[] {
+    const recommendations = new Set<string>();
+    if (riskFactors.some(factor => factor.factor === 'no-tests')) {
+      recommendations.add(`Find or add focused tests around ${node.name} before changing it.`);
+    }
+    if (riskFactors.some(factor => factor.factor === 'critical-path')) {
+      recommendations.add('Inspect entry points, data lifecycle, and downstream callers before editing this node.');
+    }
+    if (riskFactors.some(factor => factor.factor === 'security-sensitive')) {
+      recommendations.add('Preserve authentication, authorization, tenant, and token handling invariants.');
+    }
+    if (riskFactors.some(factor => factor.factor === 'external-dependency')) {
+      recommendations.add('Check integration contracts and failure handling for external calls.');
+    }
+    if (riskFactors.some(factor => factor.factor === 'complex-logic')) {
+      recommendations.add('Prefer small behavior-preserving changes and add regression coverage for branch-heavy paths.');
+    }
+    return Array.from(recommendations).slice(0, 5);
   }
 
   private buildChangeRiskSummary(changeRisks: CASChangeRisk[]): CASChangeRiskSummary {
@@ -5155,14 +9042,17 @@ export class AnalyzerOrchestrator {
     };
   }
 
-  private buildDataEntities(nodes: CASNode[], edges: CASEdge[]): CASDataEntity[] {
+  private buildDataEntities(nodes: CASNode[], edges: CASEdge[], projectPath?: string): CASDataEntity[] {
     const entities: CASDataEntity[] = [];
 
     const entityNodes = nodes.filter(n =>
-      n.type === 'entity' ||
-      n.type === 'model' ||
-      n.subcategories?.includes('entity') ||
-      (n.type === 'class' && n.source?.file?.includes('/entities/'))
+      (!projectPath || this.isPrimaryProductNodeForProject(n, projectPath)) &&
+      (
+        n.type === 'entity' ||
+        n.type === 'model' ||
+        n.subcategories?.includes('entity') ||
+        (n.type === 'class' && n.source?.file?.includes('/entities/'))
+      )
     );
 
     for (const entityNode of entityNodes) {
@@ -5184,7 +9074,8 @@ export class AnalyzerOrchestrator {
 
       for (const prop of propertyNodes) {
         const nameLower = prop.name.toLowerCase();
-        const isSensitive = sensitivePatterns.some(p => nameLower.includes(p));
+        const analyzerFlag = (prop.metadata?.attributes as Record<string, unknown> | undefined)?.sensitive;
+        const isSensitive = analyzerFlag === true || sensitivePatterns.some(p => nameLower.includes(p));
 
         fields.push({
           name: prop.name,
@@ -5198,8 +9089,27 @@ export class AnalyzerOrchestrator {
       const updatedBy: string[] = [];
       const deletedBy: string[] = [];
 
+      const lifecycleBucketForEdgeType = (edgeType: string): string[] | undefined => {
+        if (edgeType === 'creates') return createdBy;
+        if (edgeType === 'updates' || edgeType === 'writes' || edgeType === 'persists' || edgeType === 'saves' || edgeType === 'mutates') return updatedBy;
+        if (edgeType === 'deletes') return deletedBy;
+        if (edgeType === 'reads' || edgeType === 'queries') return readBy;
+        return undefined;
+      };
+      const structuralEdgeTypes = new Set([
+        'has_field', 'has_attribute', 'imports', 'inherits', 'exposes', 'maps_to', 'wraps'
+      ]);
+
       for (const edge of edges) {
         if (edge.target === entityNode.id || edge.source === entityNode.id) {
+          if (edge.target === entityNode.id) {
+            const bucket = lifecycleBucketForEdgeType(edge.type);
+            if (bucket) {
+              bucket.push(edge.source);
+              continue;
+            }
+          }
+          if (structuralEdgeTypes.has(edge.type)) continue;
           const relatedNode = nodes.find(n =>
             n.id === (edge.target === entityNode.id ? edge.source : edge.target)
           );
@@ -5435,6 +9345,121 @@ export class AnalyzerOrchestrator {
         })),
         related_tests: relatedTests,
         gaps: relatedTests.length === 0 ? ['No tests found that mention message-handler queue/event contracts.'] : undefined,
+        confidence: relatedTests.length > 0 ? 'medium' : 'low',
+      });
+    }
+
+    const cliEntryPoints = entryPoints.filter(entry => entry.type === 'cli');
+    const scriptEntryNodes = cliEntryPoints.length > 0 ? [] : nodes.filter(node => {
+      const file = (node.source?.file || '').replace(/\\/g, '/').toLowerCase();
+      return !node.metadata?.is_test &&
+        !node.metadata?.is_generated &&
+        (/(\b|\/)(main|index|cli|script|bot|runner)\.(cjs|mjs|js|jsx|ts|tsx|py|rb|php|rs|go)$/.test(file) ||
+          /(^|\/)(bin|cli|cmd|commands|scripts?|jobs|workers)\//.test(file));
+    });
+    if (cliEntryPoints.length > 0 || scriptEntryNodes.length > 0) {
+      const cliNodeIds = [...new Set(cliEntryPoints.map(entry => entry.source_node).filter(Boolean))];
+      const cliFiles = [...new Set([
+        ...cliNodeIds.map(nodeId => this.nodeFile(nodes, nodeId)),
+        ...scriptEntryNodes.map(node => node.source?.file),
+      ].filter((file): file is string => Boolean(file)))];
+      const cliNames = cliEntryPoints.flatMap(entry => [
+        entry.name,
+        (entry.trigger as any)?.command,
+        entry.input?.type,
+      ]).filter((value): value is string => Boolean(value));
+      const relatedTests = this.testsRelatedToInvariant(testSuites, cliNames);
+
+      invariants.push({
+        id: 'invariant_cli_entrypoint_contracts',
+        name: 'CLI entry points preserve command contracts',
+        invariant_type: 'business-rule',
+        description: 'CLI entry points should keep command names, accepted inputs, orchestration semantics, side effects, and validation behavior aligned.',
+        scope: {
+          node_ids: [...new Set([...cliNodeIds, ...scriptEntryNodes.map(node => node.id)])].slice(0, 50),
+          entry_point_ids: cliEntryPoints.map(entry => entry.id).slice(0, 50),
+          file_paths: cliFiles.slice(0, 50),
+        },
+        enforcement: [
+          ...cliEntryPoints.slice(0, 30).map(entry => ({
+            source: 'code' as const,
+            mechanism: `${entry.name} handles ${(entry.trigger as any)?.command || entry.input?.type || 'CLI invocation'}`,
+            confidence: 'inferred' as const,
+            node_id: entry.source_node,
+            file: this.nodeFile(nodes, entry.source_node),
+            line: this.nodeLine(nodes, entry.source_node),
+          })),
+          ...scriptEntryNodes.slice(0, 30).map(node => ({
+            source: 'code' as const,
+            mechanism: `${node.source?.file || node.name} appears to be an executable script entry file`,
+            confidence: 'inferred' as const,
+            node_id: node.id,
+            file: node.source?.file,
+            line: node.source?.line,
+          })),
+        ],
+        evidence: [
+          ...cliEntryPoints.slice(0, 30).map(entry => ({
+            source: 'entry_point' as const,
+            id: entry.id,
+            file: this.nodeFile(nodes, entry.source_node),
+            line: this.nodeLine(nodes, entry.source_node),
+          })),
+          ...scriptEntryNodes.slice(0, 30).map(node => ({
+            source: 'node' as const,
+            id: node.id,
+            file: node.source?.file,
+            line: node.source?.line,
+          })),
+        ],
+        related_tests: relatedTests,
+        gaps: relatedTests.length === 0 ? ['No tests found that mention CLI command contracts.'] : undefined,
+        confidence: relatedTests.length > 0 ? 'medium' : 'low',
+      });
+    }
+
+    const pageEntryPoints = entryPoints.filter(entry => entry.type === 'page' || entry.type === 'route');
+    if (pageEntryPoints.length > 0) {
+      const pageNodeIds = [...new Set(pageEntryPoints.map(entry => entry.source_node).filter(Boolean))];
+      const pageFiles = [...new Set(pageEntryPoints.flatMap(entry => [
+        this.nodeFile(nodes, entry.source_node),
+        entry.handler?.file,
+        (entry.metadata as any)?.pageFile,
+        (entry.metadata as any)?.routeFile,
+      ]).filter((file): file is string => Boolean(file)))];
+      const pageNames = pageEntryPoints.flatMap(entry => [
+        entry.name,
+        entry.trigger?.path,
+        entry.handler?.method_name,
+      ]).filter((value): value is string => Boolean(value));
+      const relatedTests = this.testsRelatedToInvariant(testSuites, pageNames);
+
+      invariants.push({
+        id: 'invariant_ui_entrypoint_contracts',
+        name: 'UI entry points preserve route and rendering contracts',
+        invariant_type: 'business-rule',
+        description: 'Page and route entry points should preserve route paths, render ownership, data-loading behavior, and user-visible interaction contracts.',
+        scope: {
+          node_ids: pageNodeIds.slice(0, 50),
+          entry_point_ids: pageEntryPoints.map(entry => entry.id).slice(0, 50),
+          file_paths: pageFiles.slice(0, 50),
+        },
+        enforcement: pageEntryPoints.slice(0, 30).map(entry => ({
+          source: 'code' as const,
+          mechanism: `${entry.name} handles ${entry.trigger?.path || entry.handler?.method_name || 'UI route rendering'}`,
+          confidence: 'inferred' as const,
+          node_id: entry.source_node,
+          file: this.nodeFile(nodes, entry.source_node) || entry.handler?.file || (entry.metadata as any)?.pageFile,
+          line: this.nodeLine(nodes, entry.source_node) || entry.handler?.line,
+        })),
+        evidence: pageEntryPoints.slice(0, 30).map(entry => ({
+          source: 'entry_point' as const,
+          id: entry.id,
+          file: this.nodeFile(nodes, entry.source_node) || entry.handler?.file || (entry.metadata as any)?.pageFile,
+          line: this.nodeLine(nodes, entry.source_node) || entry.handler?.line,
+        })),
+        related_tests: relatedTests,
+        gaps: relatedTests.length === 0 ? ['No tests found that mention UI route/page contracts.'] : undefined,
         confidence: relatedTests.length > 0 ? 'medium' : 'low',
       });
     }
@@ -6037,8 +10062,11 @@ export class AnalyzerOrchestrator {
         fn.type === 'controller' || fn.type === 'endpoint' ? 'high' :
         'medium';
 
+      const displayName = this.humanizeDisplayName(fn.name);
       gaps.push({
         gap_type: 'untested-flow',
+        title: `Missing tests for ${displayName}`,
+        description: `${displayName} is a public ${fn.type} without detected direct test coverage.`,
         location: {
           node_id: fn.id
         },
@@ -6182,16 +10210,40 @@ export class AnalyzerOrchestrator {
     entryPoints: CASEntryPoint[],
     dataEntities: CASDataEntity[],
     nodes: CASNode[],
-    edges: CASEdge[]
+    edges: CASEdge[],
+    projectPath?: string
   ): SystemCapability[] {
     const capabilities: SystemCapability[] = [];
+    const isProductNode = (node: CASNode) => projectPath
+      ? this.isPrimaryProductNodeForProject(node, projectPath)
+      : this.isPrimaryProductNode(node);
+    const isProductPath = (filePath: string) => projectPath
+      ? this.isPrimaryProductPathForProject(filePath, projectPath)
+      : this.isPrimaryProductPath(filePath);
+    const productNodes = nodes.filter(node => isProductNode(node));
+    const productNodeIds = new Set(productNodes.map(node => node.id));
+    const productEntryPoints = entryPoints.filter(ep =>
+      (!ep.source_node || productNodeIds.has(ep.source_node)) &&
+      (!ep.handler?.file || isProductPath(ep.handler.file))
+    );
+    const productDataEntities = dataEntities.filter(entity => {
+      if (entity.schema_source && !isProductPath(entity.schema_source)) return false;
+      const lifecycleIds = [
+        ...entity.lifecycle.created_by,
+        ...entity.lifecycle.read_by,
+        ...entity.lifecycle.updated_by,
+        ...entity.lifecycle.deleted_by,
+      ];
+      return lifecycleIds.length === 0 || lifecycleIds.some(id => productNodeIds.has(id));
+    });
+    const productEdges = edges.filter(edge => productNodeIds.has(edge.source) || productNodeIds.has(edge.target));
 
     const resourceGroups = new Map<string, {
       entryPoints: CASEntryPoint[];
       name: string;
     }>();
 
-    for (const ep of entryPoints) {
+    for (const ep of productEntryPoints) {
       if (ep.type === 'test') continue;
 
       const resourceKey = this.inferResourceKey(ep);
@@ -6219,7 +10271,7 @@ export class AnalyzerOrchestrator {
         if (epAny.handler?.node_id) relatedNodeIds.add(epAny.handler.node_id);
       });
 
-      const relatedEntities = dataEntities.filter(de => {
+      const relatedEntities = productDataEntities.filter(de => {
         const entityNodeIds = [
           ...de.lifecycle.created_by,
           ...de.lifecycle.read_by,
@@ -6232,16 +10284,24 @@ export class AnalyzerOrchestrator {
       const { criticality, factors } = this.calculateCriticalityFromSignals(
         group.entryPoints,
         relatedEntities,
-        nodes,
-        edges
+        productNodes,
+        productEdges
       );
 
       const category = this.inferCapabilityCategory(group.entryPoints, resourceKey);
 
+      const capabilityName = this.formatDomainCapabilityName(resourceKey, group.name, operations, relatedEntities.length);
+
       capabilities.push({
         id: `cap_${capIndex++}`,
-        name: group.name,
-        description: this.generateCapabilityDescription(group.name, operations),
+        name: capabilityName,
+        description: this.generateCapabilityDescription(capabilityName, operations),
+        description_source: 'deterministic',
+        description_generation: {
+          status: 'deterministic_initial',
+          attempted: false,
+          generated_at: new Date().toISOString(),
+        },
         category,
         operations,
         related_entities: relatedEntities.map(e => e.id),
@@ -6251,10 +10311,443 @@ export class AnalyzerOrchestrator {
       });
     });
 
-    return capabilities.sort((a, b) => {
+    const terminalCapabilities = this.buildTerminalCapabilities(
+      productDataEntities,
+      productNodes,
+      productEdges,
+      new Set(capabilities.flatMap(capability => capability.related_domains))
+    );
+    for (const capability of terminalCapabilities) {
+      capabilities.push({
+        ...capability,
+        id: `cap_${capIndex++}`,
+      });
+    }
+
+    const usefulCapabilities = capabilities.filter(capability => !this.isGenericCapabilityDisplayName(capability.name));
+    const capabilitiesForAgents = usefulCapabilities.length > 0 ? usefulCapabilities : capabilities;
+
+    return capabilitiesForAgents.sort((a, b) => {
       const critOrder = { critical: 0, high: 1, medium: 2, low: 3 };
       return critOrder[a.criticality] - critOrder[b.criticality];
     });
+  }
+
+  private buildTerminalCapabilities(
+    dataEntities: CASDataEntity[],
+    nodes: CASNode[],
+    edges: CASEdge[],
+    existingDomains: Set<string>
+  ): SystemCapability[] {
+    const nodesById = new Map(nodes.map(node => [node.id, node]));
+    const incoming = new Map<string, number>();
+    const outgoing = new Map<string, number>();
+    for (const edge of edges) {
+      outgoing.set(edge.source, (outgoing.get(edge.source) || 0) + 1);
+      incoming.set(edge.target, (incoming.get(edge.target) || 0) + 1);
+    }
+
+    const groups = new Map<string, {
+      label: string;
+      nodes: CASNode[];
+      entities: CASDataEntity[];
+      operations: SystemCapability['operations'];
+    }>();
+
+    const ensureGroup = (key: string, label: string) => {
+      if (!groups.has(key)) {
+        groups.set(key, { label, nodes: [], entities: [], operations: [] });
+      }
+      return groups.get(key)!;
+    };
+
+    for (const entity of dataEntities) {
+      const key = this.domainKeyFromText(entity.name);
+      if (!key || existingDomains.has(key)) continue;
+      const group = ensureGroup(key, this.humanizeDomainKey(key));
+      group.entities.push(entity);
+      const lifecycleNodes = [
+        ...entity.lifecycle.created_by,
+        ...entity.lifecycle.read_by,
+        ...entity.lifecycle.updated_by,
+        ...entity.lifecycle.deleted_by,
+      ]
+        .map(id => nodesById.get(id))
+        .filter((node): node is CASNode => Boolean(node));
+      group.nodes.push(...lifecycleNodes);
+    }
+
+    for (const node of nodes) {
+      if (!this.isCapabilityCandidateNode(node)) continue;
+      const hasChildren = (node.children?.length || 0) > 0;
+      const isTerminal = !hasChildren && (incoming.get(node.id) || 0) > 0 && (outgoing.get(node.id) || 0) <= 1;
+      const isBusinessParent = hasChildren && this.isBusinessOrDomainNode(node);
+      const isStandaloneBusinessOwner =
+        !hasChildren &&
+        (incoming.get(node.id) || 0) === 0 &&
+        (outgoing.get(node.id) || 0) === 0 &&
+        this.isBusinessOwnerNode(node);
+      if (!isTerminal && !isBusinessParent && !isStandaloneBusinessOwner) continue;
+
+      const key = this.domainKeyFromNode(node);
+      if (!key || existingDomains.has(key)) continue;
+      const group = ensureGroup(key, this.humanizeDomainKey(key));
+      group.nodes.push(node);
+      group.operations.push({
+        entry_point_id: `node:${node.id}`,
+        entry_point_type: 'internal',
+        action: this.inferActionFromNodeName(node.name),
+        path_or_command: node.source?.file,
+      });
+    }
+
+    const capabilities: SystemCapability[] = [];
+    for (const [key, group] of groups) {
+      const uniqueNodes = Array.from(new Map(group.nodes.map(node => [node.id, node])).values());
+      const uniqueEntities = Array.from(new Map(group.entities.map(entity => [entity.id, entity])).values());
+      if (uniqueNodes.length + uniqueEntities.length === 0) continue;
+
+      const operations = group.operations.length > 0
+        ? group.operations
+        : uniqueNodes.slice(0, 6).map(node => ({
+          entry_point_id: `node:${node.id}`,
+          entry_point_type: 'internal',
+          action: this.inferActionFromNodeName(node.name),
+          path_or_command: node.source?.file,
+        }));
+
+      const category = this.inferTerminalCapabilityCategory(key, uniqueNodes, uniqueEntities);
+      const capabilityName = this.formatTerminalCapabilityName(key, group.label, operations, uniqueEntities);
+      capabilities.push({
+        id: 'cap_pending',
+        name: capabilityName,
+        description: this.generateTerminalCapabilityDescription(capabilityName, uniqueNodes, uniqueEntities, operations),
+        description_source: 'deterministic',
+        description_generation: {
+          status: 'deterministic_initial',
+          attempted: false,
+          generated_at: new Date().toISOString(),
+        },
+        category,
+        operations: operations.slice(0, 12),
+        related_entities: uniqueEntities.map(entity => entity.id),
+        related_domains: [key],
+        criticality: this.inferTerminalCriticality(key, uniqueNodes, uniqueEntities),
+        criticality_factors: this.terminalCriticalityFactors(key, uniqueNodes, uniqueEntities),
+      });
+    }
+
+    return capabilities
+      .filter(capability => capability.category !== 'internal' || capability.operations.length > 0)
+      .sort((a, b) =>
+        b.related_entities.length - a.related_entities.length ||
+        b.operations.length - a.operations.length
+      )
+      .slice(0, 24);
+  }
+
+  private isCapabilityCandidateNode(node: CASNode): boolean {
+    if (node.metadata?.is_test || node.metadata?.is_generated) return false;
+    const file = node.source?.file?.toLowerCase() || '';
+    if (/(^|\/)(node_modules|dist|build|coverage|vendor|vendors|generated|fixtures?)(\/|$)/.test(file)) return false;
+    if (/\.(min|bundle)\.(js|css)$/.test(file)) return false;
+    if (/\/lib\/(waypoints|owlcarousel|chart|easing|tempusdominus|bootstrap|jquery)\//.test(file)) return false;
+    if (/\.(test|spec|stories|story)\.[a-z0-9]+$/i.test(file)) return false;
+    return this.isBusinessOrDomainNode(node);
+  }
+
+  private isBusinessOrDomainNode(node: CASNode): boolean {
+    const text = `${node.type} ${node.name} ${(node.subcategories || []).join(' ')}`.toLowerCase();
+    return /\b(entity|model|schema|service|usecase|use_case|use-case|interactor|handler|processor|workflow|flow|function|method|repository|store|controller|resolver)\b/.test(text);
+  }
+
+  private isBusinessOwnerNode(node: CASNode): boolean {
+    const text = `${node.type} ${node.name} ${(node.subcategories || []).join(' ')}`.toLowerCase();
+    return /\b(entity|model|schema|service|usecase|use_case|use-case|interactor|handler|processor|workflow|flow|repository|store|controller|resolver)\b/.test(text);
+  }
+
+  private domainKeyFromNode(node: CASNode): string | undefined {
+    const nameKey = this.domainKeyFromText(node.name);
+    if (nameKey) return nameKey;
+
+    const pathParts = (node.source?.file || '')
+      .replace(/\\/g, '/')
+      .split('/')
+      .filter(Boolean)
+      .filter(part => !/^(src|app|apps|packages|lib|libs|server|client|clients|components|controllers|services|repositories|models|entities|routes|pages|api|test|tests|spec|users|michaelshattuck|dev|outcode|personal|backend|frontend|vendor|generated)$/.test(part.toLowerCase()));
+    for (const part of pathParts.reverse()) {
+      const key = this.domainKeyFromText(part.replace(/\.[^.]+$/, ''));
+      if (key) return key;
+    }
+    return undefined;
+  }
+
+  private domainKeyFromText(text: string): string | undefined {
+    const tokens = text
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[_\-./]/g, ' ')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .map(token => this.normalizeDomainToken(token))
+      .filter(token => token.length > 2)
+      .filter(token => !this.isGenericCapabilityToken(token));
+    return tokens[0];
+  }
+
+  private normalizeDomainToken(token: string): string {
+    if (/^ws[a-z]{4,}$/.test(token)) return token.slice(2);
+    if (token === 'trans' || token === 'mctrans') return 'transaction';
+    if (/^check[a-z]{5,}$/.test(token)) return token.replace(/^check/, '');
+    return token;
+  }
+
+  private isGenericCapabilityToken(token: string): boolean {
+    return new Set([
+      'controller', 'service', 'services', 'repository', 'repo', 'model', 'models', 'entity', 'schema', 'module',
+      'handler', 'manager', 'processor', 'provider', 'component', 'page', 'view', 'route',
+      'pages', 'views', 'routes', 'layout', 'layouts', 'metadata', 'section', 'sections',
+      'navbar', 'nav', 'footer', 'button', 'arrow', 'padding', 'total', 'home',
+      'index', 'main', 'app', 'application', 'base', 'common', 'shared', 'core', 'file', 'files', 'util',
+      'utils', 'helper', 'helpers', 'config', 'client', 'server', 'data', 'store',
+      'constructor', 'import', 'export', 'create', 'update', 'delete', 'remove', 'get',
+      'set', 'find', 'list', 'validate', 'verify', 'format', 'parse', 'build', 'make', 'run',
+      'construct', 'submit', 'initialize', 'init', 'start', 'stop', 'catch', 'try',
+      'generate', 'generator', 'generators', 'analyze', 'analyse', 'evaluate', 'calculate', 'compute', 'rebalance',
+      'settle', 'settlement', 'sync', 'publish', 'send', 'receive', 'approve', 'reject',
+      'schedule', 'cancel', 'resolve', 'assign',
+      'major', 'minor', 'next', 'last', 'new', 'check', 'options', 'property', 'point', 'select',
+      'window', 'modal', 'dialog', 'popup', 'screen', 'xaml', 'step', 'convert', 'show', 'display',
+      'back', 'snack', 'setting', 'load', 'search', 'render', 'close', 'focus',
+      'open', 'special', 'toast', 'date', 'dates', 'datepicker', 'ngrx', 'redux',
+      'form', 'forms', 'input', 'inputs', 'slide', 'slides',
+      'sort', 'sorting', 'sorted', 'filter', 'filters', 'filtering', 'children', 'child',
+      'icon', 'icons', 'header', 'headers', 'effects', 'effect', 'provide', 'provides', 'providers',
+      'object', 'objects', 'keys', 'toggle', 'tooltip', 'dropdown', 'checkbox', 'pagination',
+      'paginator', 'scroll', 'subscribe', 'subscription', 'subscriptions', 'observable', 'observables',
+      'dispatch', 'selector', 'selectors', 'reducer', 'reducers',
+      'column', 'columns', 'row', 'rows', 'cell', 'cells', 'grid', 'grids', 'table', 'tables',
+      'state', 'states', 'status', 'statuses',
+      'normalize', 'ensure', 'path', 'clamp', 'install', 'setup', 'configure',
+      'execute', 'process', 'handle', 'test', 'spec', 'orchestrator', 'workflow',
+      'workflows', 'operation', 'operations', 'command', 'commands', 'cli',
+      'bin', 'console', 'event', 'events', 'handler', 'handlers',
+      'rewrite', 'rewrites', 'has', 'serializer', 'serializers', 'admin',
+      'manage', 'lookup', 'superuser', 'permission', 'permissions', 'queryset', 'querysets',
+      'for', 'allow', 'allows', 'domain', 'domains', 'request', 'requests', 'generated',
+      'graphql', 'fetch', 'pull', 'authenticated', 'authenticate', 'method', 'methods',
+      'put', 'patch', 'connectivity', 'quick', 'external', 'account', 'accounts',
+      'str', 'autenticacion', 'authentication', 'authorization', 'link', 'links',
+      'foreach', 'all', 'response', 'down', 'apply', 'one', 'add',
+      'should', 'when', 'then', 'given', 'describe', 'context', 'before', 'after', 'mock', 'stub',
+      'php', 'python', 'java', 'csharp', 'rust', 'dart', 'users', 'michaelshattuck',
+      'flutter', 'lifecycle',
+      'summarize', 'summary', 'args', 'argument', 'arguments', 'print', 'aggregate', 'average',
+      'status', 'file', 'files', 'default', 'target', 'targets', 'unique', 'compact', 'score',
+      'estimate', 'live', 'source', 'node', 'nodes',
+      'help', 'from', 'count', 'counts', 'slugify', 'with', 'match', 'matches',
+      'dev', 'clients', 'outcode', 'personal', 'business', 'apps', 'libs',
+      'entry', 'entries', 'first', 'path', 'paths', 'percent', 'percentage',
+      'minimal', 'gate', 'gates', 'compatible',
+    ]).has(token);
+  }
+
+  private humanizeDomainKey(key: string): string {
+    return key
+      .replace(/[-_]/g, ' ')
+      .replace(/\b\w/g, char => char.toUpperCase());
+  }
+
+  private formatTerminalCapabilityName(
+    key: string,
+    label: string,
+    operations: SystemCapability['operations'],
+    entities: CASDataEntity[]
+  ): string {
+    const namedDomain = this.namedSystemCapabilityForDomain(key);
+    if (namedDomain) return namedDomain;
+
+    const lower = label.toLowerCase();
+    const operationText = operations.map(operation => operation.action).join(' ').toLowerCase();
+    if (lower === 'auth') return 'Authentication';
+    if (lower === 'login') return 'Login';
+    if (/\b(auth|login|session|token|oauth)\b/.test(`${lower} ${operationText}`)) {
+      return `${label} Authentication`;
+    }
+    if (/\b(settle|settlement)\b/.test(operationText)) {
+      return `${label} Settlement`;
+    }
+    if (/\b(rebalance|allocation|allocate|optimize|optimise)\b/.test(operationText)) {
+      return `${label} Rebalancing`;
+    }
+    if (/\b(generate|generation|export)\b/.test(operationText) && /\b(report|document|file|feed)\b/.test(lower)) {
+      return `${label} Generation`;
+    }
+    if (/\b(report|analytics|analysis|metric|insight)\b/.test(`${lower} ${operationText}`)) {
+      return `${label} Reporting`;
+    }
+    if (/\b(payment|billing|invoice|transaction|card|employee|profile|organization|resource)\b/.test(lower) || entities.length > 0 || operations.length > 1) {
+      return `${label} Management`;
+    }
+    return `${label} Capability`;
+  }
+
+  private formatDomainCapabilityName(
+    key: string,
+    fallbackLabel: string,
+    operations: SystemCapability['operations'],
+    entityCount = 0
+  ): string {
+    const namedDomain = this.namedSystemCapabilityForDomain(key);
+    if (namedDomain) return namedDomain;
+
+    const operationText = [
+      key,
+      fallbackLabel,
+      ...operations.map(operation => `${operation.action} ${operation.path_or_command || ''}`),
+    ].join(' ').toLowerCase();
+    const label = fallbackLabel
+      .replace(/\b(Commands|Handlers|Tasks|Management|Capability)\b/g, '')
+      .replace(/\s+/g, ' ')
+      .trim() || this.humanizeDomainKey(key);
+
+    if (/\b(auth|login|session|token|oauth)\b/.test(operationText)) return `${label} Authentication`;
+    if (/\b(settle|settlement)\b/.test(operationText)) return `${label} Settlement`;
+    if (/\b(rebalance|allocation|allocate|optimi[sz]e)\b/.test(operationText)) return `${label} Rebalancing`;
+    if (/\b(report|analytics|analysis|metric|insight)\b/.test(operationText)) return `${label} Reporting`;
+    if (/\b(generate|export|render)\b/.test(operationText)) return `${label} Generation`;
+    if (/\b(sync|replicate|mirror)\b/.test(operationText)) return `${label} Synchronization`;
+    if (/\b(validate|verify|check)\b/.test(operationText)) return `${label} Validation`;
+    if (/\b(send|publish|notify|message|event)\b/.test(operationText)) return `${label} Messaging`;
+    if (entityCount > 0 || operations.length > 1) return `${label} Management`;
+    return `${label} Workflow`;
+  }
+
+  private namedSystemCapabilityForDomain(key: string): string | undefined {
+    const normalized = this.normalizeDomainToken((key || '').toLowerCase());
+    const names: Record<string, string> = {
+      agent: 'Agent Work Packets',
+      analysis: 'Codebase Analysis',
+      architecture: 'Architecture Mapping',
+      answer: 'Answer Packs',
+      cas: 'CAS Contract Validation',
+      change: 'Change Impact Analysis',
+      continuation: 'Agent Continuation',
+      contract: 'Contract Impact Analysis',
+      description: 'AI Description Enrichment',
+      evidence: 'Evidence Validation',
+      greenfield: 'Greenfield Planning',
+      idiom: 'Codebase Idiom Guidance',
+      incremental: 'Incremental Analysis',
+      invariant: 'Behavioral Invariant Validation',
+      klauro: 'Klauro CLI',
+      machine: 'Machine Repo Gauntlet',
+      project: 'Project Resolution',
+      proposal: 'Proposal Preview',
+      runtime: 'Runtime Telemetry',
+      storage: 'Analysis Storage',
+      task: 'Agent Task Proof',
+      workspace: 'Workspace Mapping',
+    };
+    return names[normalized];
+  }
+
+  private inferActionFromNodeName(name: string): string {
+    const lower = name
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[_\-./]/g, ' ')
+      .toLowerCase();
+    if (/\b(create|add|insert|register)\b/.test(lower)) return 'Create';
+    if (/\b(update|edit|patch|save)\b/.test(lower)) return 'Update';
+    if (/\b(delete|remove|destroy)\b/.test(lower)) return 'Delete';
+    if (/\b(get|find|list|search|load|fetch|query)\b/.test(lower)) return 'Read';
+    if (/\b(generate|export|render)\b/.test(lower)) return 'Generate';
+    if (/\b(analyze|analyse|evaluate|calculate|compute|score)\b/.test(lower)) return 'Analyze';
+    if (/\b(rebalance|allocate|optimize|optimise)\b/.test(lower)) return 'Rebalance';
+    if (/\b(settle|settlement|capture|charge|refund)\b/.test(lower)) return 'Settle';
+    if (/\b(validate|verify|authorize|authenticate)\b/.test(lower)) return 'Validate';
+    if (/\b(send|publish|emit|notify)\b/.test(lower)) return 'Send';
+    if (/\b(sync|process|run|execute|handle)\b/.test(lower)) return 'Process';
+    return 'Coordinate';
+  }
+
+  private inferTerminalCapabilityCategory(
+    key: string,
+    nodes: CASNode[],
+    entities: CASDataEntity[]
+  ): 'core' | 'supporting' | 'admin' | 'internal' {
+    if (/(admin|setting|config|system|manage)/.test(key)) return 'admin';
+    if (/(health|metric|telemetry|log|debug|cache|queue|worker|infra)/.test(key)) return 'internal';
+    if (entities.length > 0 || nodes.some(node => /\b(service|usecase|workflow|entity|model)\b/i.test(`${node.type} ${node.name}`))) {
+      return 'core';
+    }
+    return 'supporting';
+  }
+
+  private inferTerminalCriticality(
+    key: string,
+    nodes: CASNode[],
+    entities: CASDataEntity[]
+  ): 'critical' | 'high' | 'medium' | 'low' {
+    if (/(auth|tenant|permission|payment|billing|invoice|order|security|user|account)/.test(key)) return 'high';
+    if (entities.some(entity => entity.fields?.some(field => field.is_sensitive))) return 'high';
+    if (entities.length > 0 && nodes.length >= 3) return 'medium';
+    return nodes.length >= 5 ? 'medium' : 'low';
+  }
+
+  private terminalCriticalityFactors(key: string, nodes: CASNode[], entities: CASDataEntity[]): string[] {
+    const factors: string[] = [];
+    if (entities.length > 0) factors.push(`Backed by ${entities.length} data entity node(s)`);
+    if (nodes.length > 0) factors.push(`Inferred from ${nodes.length} terminal or parent business node(s)`);
+    if (/(auth|tenant|permission|payment|billing|invoice|order|security|user|account)/.test(key)) {
+      factors.push('Domain name suggests security, identity, financial, or account impact');
+    }
+    if (factors.length === 0) factors.push('Inferred from graph terminality');
+    return factors;
+  }
+
+  private generateTerminalCapabilityDescription(
+    label: string,
+    nodes: CASNode[],
+    entities: CASDataEntity[],
+    operations: SystemCapability['operations']
+  ): string {
+    const parts: string[] = [];
+    if (entities.length > 0) parts.push(`centers on ${entities.slice(0, 3).map(entity => entity.name).join(', ')}`);
+    if (operations.length > 0) {
+      const actions = Array.from(new Set(operations.map(operation => operation.action.toLowerCase()).filter(action => action !== 'coordinate'))).slice(0, 4);
+      if (actions.length > 0) parts.push(`covers ${actions.join(', ')} paths`);
+    }
+    const sourceAreas = this.capabilitySourceAreas(nodes, operations);
+    if (sourceAreas.length > 0) {
+      parts.push(`spans ${this.joinHumanList(sourceAreas)}`);
+    }
+    return `${label} ${parts.length ? parts.join('; ') : 'is inferred from connected source elements'}.`;
+  }
+
+  private capabilitySourceAreas(
+    nodes: CASNode[],
+    operations: SystemCapability['operations']
+  ): string[] {
+    const files = [
+      ...nodes.map(node => node.source?.file),
+      ...operations.map(operation => operation.path_or_command),
+    ]
+      .filter((file): file is string => Boolean(file))
+      .map(file => file.replace(/\\/g, '/'))
+      .filter(file => !/\b(test|spec|fixtures?|generated|node_modules|dist|build|coverage)\b/i.test(file));
+
+    const areas = files.map(file => {
+      const parts = file.split('/').filter(Boolean);
+      const srcIndex = parts.lastIndexOf('src');
+      if (srcIndex >= 0 && parts[srcIndex + 1]) {
+        return parts[srcIndex + 1].replace(/\.[^.]+$/, '');
+      }
+      return (parts[parts.length - 2] || parts[parts.length - 1] || '').replace(/\.[^.]+$/, '');
+    })
+      .map(area => area.replace(/[-_]/g, ' ').trim().toLowerCase())
+      .filter(area => area && !area.split(/\s+/).every(token => this.isGenericCapabilityToken(this.normalizeDomainToken(token))));
+
+    return Array.from(new Set(areas)).slice(0, 3);
   }
 
   private inferResourceKey(ep: CASEntryPoint): string {
@@ -6269,12 +10762,18 @@ export class AnalyzerOrchestrator {
     }
 
     if (ep.type === 'cli') {
-      const parts = ep.name.split(/[\s:]+/);
-      return parts[0]?.toLowerCase() || 'commands';
+      return this.domainKeyFromEntryPointText(ep.name) ||
+        this.domainKeyFromEntryPointText(ep.handler?.method_name || '') ||
+        this.domainKeyFromEntryPointText(ep.handler?.file || '') ||
+        'commands';
     }
 
     if (ep.type === 'event' || ep.type === 'message') {
-      return 'events';
+      return this.domainKeyFromEntryPointText(ep.name) ||
+        this.domainKeyFromEntryPointText(ep.trigger?.event || '') ||
+        this.domainKeyFromEntryPointText(ep.handler?.method_name || '') ||
+        this.domainKeyFromEntryPointText(ep.handler?.file || '') ||
+        'events';
     }
 
     if (ep.type === 'schedule') {
@@ -6282,10 +10781,34 @@ export class AnalyzerOrchestrator {
     }
 
     if (ep.type === 'page' || ep.type === 'route') {
+      const file = ep.handler?.file || '';
+      const normalized = file.replace(/\\/g, '/');
+      const appMatch = normalized.match(/(?:^|\/)(?:app|pages)\/(.+?)\/page\.[tj]sx?$/i);
+      if (appMatch?.[1]) {
+        const routeSegment = appMatch[1].split('/').filter(Boolean).pop();
+        const key = this.domainKeyFromText(routeSegment || '');
+        if (key && !this.isGenericCapabilityToken(key)) return key;
+      }
+      const nameKey = this.domainKeyFromText(ep.name.replace(/Page$/i, ''));
+      if (nameKey && !this.isGenericCapabilityToken(nameKey)) return nameKey;
       return 'pages';
     }
 
     return ep.type;
+  }
+
+  private domainKeyFromEntryPointText(text: string): string | undefined {
+    const tokens = text
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[_\-./:]/g, ' ')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .map(token => this.normalizeDomainToken(token))
+      .filter(token => token.length > 2)
+      .filter(token => !this.isGenericCapabilityToken(token));
+
+    if (tokens.length === 0) return undefined;
+    return tokens.find(token => !/^(app|bin|console|command|event|message|handler|handlers)$/.test(token)) || tokens[0];
   }
 
   private inferResourceName(ep: CASEntryPoint, resourceKey: string): string {
@@ -6487,11 +11010,15 @@ export class AnalyzerOrchestrator {
   }
 
   private generateCapabilityDescription(name: string, operations: Array<{ action: string }>): string {
-    const uniqueActions = [...new Set(operations.map(o => o.action.toLowerCase()))];
+    const uniqueActions = [...new Set(operations.map(o => o.action.toLowerCase()).filter(action => action !== 'coordinate'))];
+    const entryTypes = [...new Set(operations.map(operation => (operation as any).entry_point_type).filter(Boolean))];
+    const entryPhrase = entryTypes.length > 0
+      ? ` through ${this.joinHumanList(entryTypes.slice(0, 3).map(type => this.entryPointTypeLabel(String(type)).toLowerCase()))}`
+      : '';
     if (uniqueActions.length === 0) {
-      return `Manages ${name.toLowerCase()} functionality`;
+      return `${name} is represented by ${operations.length} discovered entry point${operations.length === 1 ? '' : 's'}${entryPhrase}.`;
     }
-    return `${uniqueActions.join(', ')} operations for ${name.toLowerCase()}`;
+    return `${name} covers ${this.joinHumanList(uniqueActions.slice(0, 4))} paths${entryPhrase}.`;
   }
 
   private inferSystemPurpose(
@@ -6745,10 +11272,10 @@ export class AnalyzerOrchestrator {
         type: 'medical-device-software',
         description: 'Medical device and clinical measurement software',
         indicators: {
-          pathPatterns: ['patient', 'test', 'device', 'muscle', 'force', 'measurement', 'evaluator', 'protocol'],
-          entityPatterns: ['patient', 'test', 'evaluator', 'protocol', 'muscle', 'device', 'measurement', 'normvalues', 'sequence'],
+          pathPatterns: ['patient', 'device', 'muscle', 'force', 'measurement', 'evaluator', 'protocol'],
+          entityPatterns: ['patient', 'evaluator', 'protocol', 'muscle', 'device', 'measurement', 'normvalues', 'sequence'],
           nodeTypePatterns: ['window', 'viewmodel', 'service', 'database_context'],
-          capabilityPatterns: ['patient', 'test', 'device', 'measurement', 'protocol', 'evaluator', 'report'],
+          capabilityPatterns: ['patient', 'device', 'measurement', 'protocol', 'evaluator', 'report'],
         },
         distinctiveness: 4,
         weight: 0
@@ -6768,10 +11295,10 @@ export class AnalyzerOrchestrator {
         type: 'hardware-device-software',
         description: 'Hardware device communication and control software',
         indicators: {
-          pathPatterns: ['device', 'connection', 'sensor', 'serial', 'usb', 'bluetooth', 'port', 'calibrate'],
-          entityPatterns: ['device', 'connection', 'sensor', 'reading', 'calibration', 'firmware'],
+          pathPatterns: ['device', 'sensor', 'serial', 'usb', 'bluetooth', 'calibrate'],
+          entityPatterns: ['device', 'sensor', 'reading', 'calibration', 'firmware'],
           nodeTypePatterns: ['service'],
-          capabilityPatterns: ['device', 'connect', 'calibrate', 'sensor', 'reading'],
+          capabilityPatterns: ['device', 'calibrate', 'sensor', 'reading'],
         },
         distinctiveness: 3.5,
         weight: 0
@@ -6886,15 +11413,31 @@ export class AnalyzerOrchestrator {
       }
     ];
 
+    const productNodes = nodes.filter(node => this.isPrimaryProductNode(node));
+    const productNodeIds = new Set(productNodes.map(node => node.id));
+    const productEntryPoints = entryPoints.filter(ep =>
+      (!ep.source_node || productNodeIds.has(ep.source_node)) &&
+      (!ep.handler?.file || this.isPrimaryProductPath(ep.handler.file))
+    );
+    const productDataEntities = dataEntities.filter(entity => {
+      const lifecycleIds = [
+        ...entity.lifecycle.created_by,
+        ...entity.lifecycle.read_by,
+        ...entity.lifecycle.updated_by,
+        ...entity.lifecycle.deleted_by,
+      ];
+      return lifecycleIds.length === 0 || lifecycleIds.some(id => productNodeIds.has(id));
+    });
+    const productCapabilities = capabilities.filter(capability => capability.category !== 'internal');
     const evidence: string[] = [];
     const signatureEvidence = new Map<string, string[]>();
 
-    const paths = entryPoints.map(ep => (ep.trigger?.path || ep.name).toLowerCase());
-    const nodeNames = nodes.map(n => n.name.toLowerCase());
-    const namespaceNames = nodes.filter(n => n.type === 'namespace').map(n => n.name.toLowerCase());
-    const entityNames = dataEntities.map(de => de.name.toLowerCase());
-    const capabilityNames = capabilities.map(c => c.name.toLowerCase());
-    const nodeTypeList = nodes.map(n => n.type.toLowerCase());
+    const paths = productEntryPoints.map(ep => (ep.trigger?.path || ep.name).toLowerCase());
+    const nodeNames = productNodes.map(n => n.name.toLowerCase());
+    const namespaceNames = productNodes.filter(n => n.type === 'namespace').map(n => n.name.toLowerCase());
+    const entityNames = productDataEntities.map(de => de.name.toLowerCase());
+    const capabilityNames = productCapabilities.map(c => c.name.toLowerCase());
+    const nodeTypeList = productNodes.map(n => n.type.toLowerCase());
 
     const countMatches = (items: string[], patterns: string[]): { count: number; matched: string[] } => {
       const matched: string[] = [];
@@ -6967,6 +11510,15 @@ export class AnalyzerOrchestrator {
         }
       }
 
+      if (sig.type === 'gaming-platform' && score > 0) {
+        const gameText = [...paths, ...nodeNames, ...entityNames, ...capabilityNames].join(' ');
+        const strongGameSignals = Array.from(new Set(gameText.match(/\b(game|deck|match|lobby|turn|mana|mulligan)\b/g) || []));
+        if (strongGameSignals.length < 1) {
+          score = 0;
+          typeEvidence.length = 0;
+        }
+      }
+
       sig.weight = score;
       if (typeEvidence.length > 0) {
         signatureEvidence.set(sig.type, typeEvidence);
@@ -7000,10 +11552,42 @@ export class AnalyzerOrchestrator {
       .filter(s => s.weight > topMatch.weight * 0.3)
       .map(s => s.type);
 
-    const cliEntryPoints = entryPoints.filter(ep => ep.type === 'cli');
-    const httpEntryPoints = entryPoints.filter(ep => ep.type === 'http');
+    const cliEntryPoints = productEntryPoints.filter(ep => ep.type === 'cli');
+    const httpEntryPoints = productEntryPoints.filter(ep => ep.type === 'http');
+    const pageEntryPoints = productEntryPoints.filter(ep => ep.type === 'page' || ep.type === 'route');
+    const desktopUiSignals = countMatches([...nodeNames, ...paths], ['window', 'viewmodel', 'xaml', 'modal']);
+    const hasDominantDesktopUi =
+      ['desktop-application', 'medical-device-software', 'clinical-testing-platform', 'hardware-device-software'].includes(topMatch.type) ||
+      desktopUiSignals.count >= 5;
+    const clinicalSignals = countMatches(
+      [...nodeNames, ...entityNames, ...capabilityNames, ...paths],
+      ['patient', 'muscle', 'device', 'measurement', 'force', 'inclinometry', 'grip', 'pinch', 'rehabilitation']
+    );
+    const devtoolsSignals = countMatches(
+      [...nodeNames, ...entityNames, ...capabilityNames, ...paths],
+      ['analyzer', 'static analysis', 'code analysis', 'codebase analysis', 'codebase graph', 'codemod']
+    );
+    if (devtoolsSignals.count >= 3 && devtoolsSignals.matched.some(signal => /analyzer|analysis|codebase/.test(signal)) && topMatch.type !== 'medical-device-software' && topMatch.type !== 'clinical-testing-platform') {
+      return {
+        primary_type: 'devtools-platform',
+        confidence: Math.max(0.82, Math.round(confidence * 100) / 100),
+        evidence: [`Developer-tool/code-analysis signals: ${devtoolsSignals.matched.join(', ')}`],
+        secondary_types: topMatch.type !== 'devtools-platform' ? [topMatch.type, ...secondaryTypes].slice(0, 3) : secondaryTypes,
+      };
+    }
 
-    if (cliEntryPoints.length > httpEntryPoints.length && cliEntryPoints.length > 0) {
+    if (hasDominantDesktopUi && clinicalSignals.matched.length >= 3) {
+      return {
+        primary_type: 'clinical-testing-platform',
+        confidence: Math.max(0.86, Math.round(confidence * 100) / 100),
+        evidence: [`Clinical desktop signals: ${clinicalSignals.matched.join(', ')}`],
+        secondary_types: [topMatch.type, ...secondaryTypes]
+          .filter(type => type !== 'clinical-testing-platform')
+          .slice(0, 3),
+      };
+    }
+
+    if (cliEntryPoints.length > httpEntryPoints.length && cliEntryPoints.length > 0 && !hasDominantDesktopUi) {
       return {
         primary_type: 'cli-tool',
         confidence: 0.9,
@@ -7012,15 +11596,24 @@ export class AnalyzerOrchestrator {
       };
     }
 
+    if (pageEntryPoints.length > 0 && httpEntryPoints.length === 0) {
+      return {
+        primary_type: 'frontend-application',
+        confidence: 0.86,
+        evidence: [`${pageEntryPoints.length} page/route entry points`],
+        secondary_types: topMatch.type !== 'web-application' && topMatch.weight > 0 ? [topMatch.type, ...secondaryTypes].slice(0, 3) : secondaryTypes,
+      };
+    }
+
     if (topMatch.weight === 0) {
       const hasHttpEndpoints = httpEntryPoints.length > 0;
-      const hasEntities = dataEntities.length > 0;
+      const hasEntities = productDataEntities.length > 0;
 
       if (hasHttpEndpoints && hasEntities) {
         return {
           primary_type: 'api-service',
           confidence: 0.4,
-          evidence: [`${httpEntryPoints.length} HTTP endpoints`, `${dataEntities.length} data entities`],
+          evidence: [`${httpEntryPoints.length} HTTP endpoints`, `${productDataEntities.length} data entities`],
           secondary_types: undefined
         };
       }
@@ -7150,7 +11743,8 @@ export class AnalyzerOrchestrator {
   private addDiscoveredEntryPoints(
     projectPath: string,
     nodes: CASNode[],
-    entryPoints: CASEntryPoint[]
+    entryPoints: CASEntryPoint[],
+    edges: CASEdge[] = []
   ): void {
     if (nodes.length === 0) return;
 
@@ -7191,7 +11785,7 @@ export class AnalyzerOrchestrator {
     }
 
     if (startingCount === 0 && entryPoints.length === 0) {
-      const fallbackNode = this.selectFallbackEntryNode(nodes);
+      const fallbackNode = this.selectFallbackEntryNode(nodes, edges);
       if (fallbackNode) {
         const file = fallbackNode.source?.file;
         const relativeFile = file && path.isAbsolute(file) ? path.relative(projectPath, file).replace(/\\/g, '/') : file;
@@ -7356,14 +11950,25 @@ export class AnalyzerOrchestrator {
     return relative === expectedRelativeFile || normalizedSource.endsWith(`/${expectedRelativeFile}`);
   }
 
-  private selectFallbackEntryNode(nodes: CASNode[]): CASNode | undefined {
+  private selectFallbackEntryNode(nodes: CASNode[], edges: CASEdge[] = []): CASNode | undefined {
     const candidates = nodes.filter(node =>
       Boolean(node.source?.file) &&
       !/(^|\/)(__tests__|tests?|spec|e2e|cypress)(\/|$)|(\.|_|-)(test|spec|cy)\./i.test(node.source?.file || '') &&
       !['import', 'dependency'].includes(node.type)
     );
     if (candidates.length === 0) return undefined;
-    return [...candidates].sort((left, right) => this.fallbackEntryScore(right) - this.fallbackEntryScore(left))[0];
+    const degree = new Map<string, number>();
+    for (const edge of edges) {
+      degree.set(edge.source, (degree.get(edge.source) || 0) + 1);
+      degree.set(edge.target, (degree.get(edge.target) || 0) + 1);
+    }
+    return [...candidates].sort((left, right) =>
+      this.fallbackEntryScore(right) - this.fallbackEntryScore(left) ||
+      (degree.get(right.id) || 0) - (degree.get(left.id) || 0) ||
+      (left.source?.file || '').localeCompare(right.source?.file || '') ||
+      ((left.source?.line ?? 0) - (right.source?.line ?? 0)) ||
+      left.id.localeCompare(right.id)
+    )[0];
   }
 
   private fallbackEntryScore(node: CASNode): number {
@@ -8316,6 +12921,283 @@ export class AnalyzerOrchestrator {
     };
   }
 
+  private buildSystemHealth(
+    architectureSummary: CASArchitectureSummary,
+    implementationHealth: CASImplementationHealth,
+    changeRiskSummary: CASChangeRiskSummary,
+    idiomDetection: ReturnType<typeof detectCodebaseIdioms>,
+    nodes: CASNode[],
+    callChains: CASCallChain[],
+    runtime: CASRuntime
+  ): CASSystemHealth {
+    const riskAreas: CASSystemHealth['risk_areas'] = [];
+    const patternBalance = architectureSummary.pattern_balance;
+    const patterns = architectureSummary.architectural_patterns || [];
+    const primaryParadigms = patterns
+      .filter(pattern => pattern.confidence >= 0.65 && pattern.category !== 'anti-pattern')
+      .map(pattern => pattern.name)
+      .slice(0, 8);
+    const conflictingParadigms = patterns
+      .filter(pattern => pattern.category === 'anti-pattern' || /mixed|legacy|god object|circular/i.test(pattern.name))
+      .map(pattern => pattern.name)
+      .slice(0, 8);
+    const idiomViolations = idiomDetection.violations || [];
+    const namingViolations = idiomViolations.filter(v => v.category === 'naming').length;
+    const diViolations = idiomViolations.filter(v => v.category === 'dependency-injection').length;
+    const boundaryViolations = idiomViolations.filter(v => v.category === 'module-boundary').length;
+    const duplicateNodes = this.detectDuplicateConceptSignals(nodes);
+    const complexNodes = nodes
+      .filter(node => (node.metadata?.complexity?.cyclomatic || 0) >= 20)
+      .sort((a, b) => (b.metadata?.complexity?.cyclomatic || 0) - (a.metadata?.complexity?.cyclomatic || 0))
+      .slice(0, 10);
+    const untestedCritical = changeRiskSummary.untested_critical_paths || [];
+    const runtimeMissing = runtime.instrumentation?.missing_runtime_coverage || [];
+
+    if (patternBalance && patternBalance.status !== 'balanced') {
+      riskAreas.push({
+        id: 'pattern-balance',
+        type: 'pattern-balance',
+        severity: patternBalance.status === 'mixed' ? 'medium' : 'high',
+        title: `Architecture pattern balance is ${patternBalance.status}`,
+        description: patternBalance.risks.join(' ') || 'Architecture patterns are not evenly represented across the codebase.',
+        evidence: patternBalance.risks,
+        recommendation: patternBalance.recommendations[0] || 'Prefer the dominant local pattern and use nearby files as examples.',
+        agent_guidance: 'Before introducing new architecture, retrieve architecture_summary and codebase_idioms, then extend the dominant local pattern.'
+      });
+    }
+
+    if (conflictingParadigms.length > 0 || primaryParadigms.length > 6) {
+      riskAreas.push({
+        id: 'paradigm-drift',
+        type: 'paradigm-drift',
+        severity: conflictingParadigms.length > 2 ? 'high' : 'medium',
+        title: 'Multiple architectural paradigms need explicit alignment',
+        description: 'CAS detected several architecture patterns or anti-patterns that can cause agents to mix paradigms across features.',
+        evidence: [...primaryParadigms, ...conflictingParadigms].slice(0, 12),
+        recommendation: 'Choose the target-area paradigm before editing and avoid copying patterns from unrelated subsystems.',
+        agent_guidance: 'Use get_system_health, get_codebase_idioms, and get_agent_work_packet before multi-file work; keep new files inside the selected subsystem paradigm.'
+      });
+    }
+
+    if (duplicateNodes.length > 0) {
+      riskAreas.push({
+        id: 'duplication-signals',
+        type: 'duplication',
+        severity: duplicateNodes.length >= 5 ? 'high' : 'medium',
+        title: 'Possible duplicate domain or service concepts',
+        description: 'Similar concept names appear in the same architectural role, which can lead agents to create parallel implementations instead of extending the owner.',
+        affected_files: this.uniqueHealthStrings(duplicateNodes.flatMap(item => item.files)).slice(0, 20),
+        affected_nodes: duplicateNodes.map(item => item.node_ids).flat().slice(0, 20),
+        evidence: duplicateNodes.map(item => `${item.concept} (${item.role}): ${item.count} nodes`).slice(0, 10),
+        recommendation: 'Merge duplicate concepts or document a clear owner before adding adjacent behavior.',
+        agent_guidance: 'Search capability memory and existing domain concepts before creating a new model, service, repository, or capability.'
+      });
+    }
+
+    if (complexNodes.length > 0) {
+      riskAreas.push({
+        id: 'complexity-hotspots',
+        type: 'complexity',
+        severity: complexNodes.some(node => (node.metadata?.complexity?.cyclomatic || 0) >= 50) ? 'high' : 'medium',
+        title: 'Complexity hotspots need targeted tests before changes',
+        description: 'Several nodes have high cyclomatic complexity and are risky to modify without flow-level tests.',
+        affected_files: this.uniqueHealthStrings(complexNodes.map(node => node.source?.file).filter(Boolean) as string[]).slice(0, 10),
+        affected_nodes: complexNodes.map(node => node.id),
+        evidence: complexNodes.map(node => `${node.name}: cyclomatic ${node.metadata?.complexity?.cyclomatic}`),
+        recommendation: 'Refactor behind tests or split complex behavior into existing service/use-case boundaries.',
+        agent_guidance: 'Call assess_change_risk and find_tests for complexity hotspots before edits; prefer small behavior-preserving refactors.'
+      });
+    }
+
+    for (const [category, count, type, title] of [
+      ['naming', namingViolations, 'naming-drift', 'Naming convention drift'],
+      ['dependency-injection', diViolations, 'dependency-injection-drift', 'Dependency injection convention drift'],
+      ['module-boundary', boundaryViolations, 'module-boundary-drift', 'Module boundary convention drift'],
+    ] as const) {
+      if (count === 0) continue;
+      const examples = idiomViolations.filter(v => v.category === category).slice(0, 8);
+      riskAreas.push({
+        id: type,
+        type,
+        severity: count >= 5 ? 'high' : 'medium',
+        title,
+        description: `${count} repo-local idiom violation(s) were detected.`,
+        affected_files: this.uniqueHealthStrings(examples.map(v => v.file).filter(Boolean) as string[]),
+        affected_nodes: examples.map(v => v.node_id).filter(Boolean) as string[],
+        evidence: examples.map(v => v.description),
+        recommendation: examples[0]?.recommendation || 'Align new work with the high-confidence local idiom examples.',
+        agent_guidance: 'Run validate_codebase_idioms after edits and fix convention drift before finalizing.'
+      });
+    }
+
+    if (implementationHealth.risk_areas.length > 0) {
+      riskAreas.push({
+        id: 'implementation-gaps',
+        type: 'implementation-gap',
+        severity: implementationHealth.risk_areas.some(area => area.risk_level === 'high') ? 'high' : 'medium',
+        title: 'Incomplete or unstable implementation areas',
+        description: `${implementationHealth.risk_areas.length} implementation health risk(s) were detected.`,
+        affected_nodes: implementationHealth.risk_areas.map(area => area.node_id).slice(0, 20),
+        evidence: implementationHealth.risk_areas.slice(0, 8).map(area => `${area.node_name}: ${area.risk_type}`),
+        recommendation: 'Complete or isolate incomplete behavior before building dependent features.',
+        agent_guidance: 'Do not build new features on stubbed or deprecated nodes unless the task explicitly replaces them.'
+      });
+    }
+
+    if (untestedCritical.length > 0) {
+      riskAreas.push({
+        id: 'untested-critical-paths',
+        type: 'test-gap',
+        severity: 'high',
+        title: 'Critical paths lack mapped tests',
+        description: `${untestedCritical.length} critical path(s) do not have mapped test protection.`,
+        affected_nodes: untestedCritical.slice(0, 20),
+        evidence: untestedCritical.slice(0, 10),
+        recommendation: 'Add or run focused tests before changing these paths.',
+        agent_guidance: 'Use find_tests and get_flow_coverage before edits; add regression tests when coverage is missing.'
+      });
+    }
+
+    if (runtimeMissing.length > 0) {
+      riskAreas.push({
+        id: 'runtime-coverage-gaps',
+        type: 'runtime-coverage-gap',
+        severity: runtimeMissing.length >= 10 ? 'medium' : 'low',
+        title: 'Runtime telemetry coverage is incomplete',
+        description: 'Static CAS can identify instrumentable paths that do not yet have runtime observations.',
+        affected_nodes: runtimeMissing.slice(0, 20),
+        evidence: runtimeMissing.slice(0, 10),
+        recommendation: 'Install or configure the runtime SDK on high-volume entry points and external exits.',
+        agent_guidance: 'For production bug triage, combine get_runtime_observations with get_operational_priorities and static risk.'
+      });
+    }
+
+    const penalty = riskAreas.reduce((total, area) => total + (
+      area.severity === 'critical' ? 30 :
+      area.severity === 'high' ? 18 :
+      area.severity === 'medium' ? 10 : 4
+    ), 0);
+    const score = Math.max(0, Math.min(100, Math.round(100 - penalty)));
+    const status: CASSystemHealth['status'] =
+      score < 40 ? 'critical' :
+      score < 65 ? 'at-risk' :
+      score < 85 ? 'watch' : 'healthy';
+    const coherenceStatus: CASSystemHealth['coherence']['status'] =
+      conflictingParadigms.length > 3 || duplicateNodes.length > 6 ? 'fragmented' :
+      conflictingParadigms.length > 0 || patternBalance?.status === 'mixed' ? 'drifting' :
+      namingViolations + diViolations + boundaryViolations > 0 ? 'mixed' : 'coherent';
+
+    return {
+      score,
+      status,
+      summary: riskAreas.length === 0
+        ? 'No major coherence, complexity, duplication, implementation, test, or runtime-coverage risks were detected.'
+        : `${riskAreas.length} system health risk area(s) detected across architecture coherence, implementation health, tests, idioms, and runtime coverage.`,
+      risk_areas: riskAreas.slice(0, 25),
+      coherence: {
+        status: coherenceStatus,
+        paradigm_count: primaryParadigms.length,
+        primary_paradigms: primaryParadigms,
+        conflicting_paradigms: conflictingParadigms,
+        naming_convention_violations: namingViolations,
+        dependency_injection_violations: diViolations,
+        module_boundary_violations: boundaryViolations,
+        duplication_signals: duplicateNodes.length
+      },
+      remediation: {
+        immediate: riskAreas.slice(0, 6).map(area => area.recommendation),
+        agent_rules: this.uniqueHealthStrings(riskAreas.map(area => area.agent_guidance)).slice(0, 8),
+        validation_tools: [
+          'get_system_health',
+          'get_codebase_idioms',
+          'validate_codebase_idioms',
+          'assess_change_risk',
+          'find_tests',
+          'get_runtime_observations',
+          'get_operational_priorities'
+        ]
+      }
+    };
+  }
+
+  private detectDuplicateConceptSignals(nodes: CASNode[]): Array<{ concept: string; role: string; count: number; node_ids: string[]; files: string[] }> {
+    const conceptMap = new Map<string, Map<string, Array<{ id: string; file?: string }>>>();
+    for (const node of nodes) {
+      if (!['class', 'interface', 'service', 'repository', 'entity', 'model', 'component', 'function'].includes(node.type)) continue;
+      const concept = this.normalizedDuplicateConceptName(node);
+      if (concept.length < 4) continue;
+      if (this.isGenericDuplicateConcept(concept)) continue;
+      const role = this.duplicateConceptRole(node);
+      const byRole = conceptMap.get(concept) || new Map<string, Array<{ id: string; file?: string }>>();
+      const current = byRole.get(role) || [];
+      current.push({ id: node.id, file: node.source?.file });
+      byRole.set(role, current);
+      conceptMap.set(concept, byRole);
+    }
+
+    const duplicateSignals: Array<{ concept: string; role: string; count: number; node_ids: string[]; files: string[] }> = [];
+    for (const [concept, byRole] of conceptMap.entries()) {
+      for (const [role, entries] of byRole.entries()) {
+        const uniqueFiles = this.uniqueHealthStrings(entries.map(entry => entry.file).filter(Boolean) as string[]);
+        if (entries.length <= 1) continue;
+        if (uniqueFiles.length <= 1 && role !== 'business-logic') continue;
+        duplicateSignals.push({
+          concept,
+          role,
+          count: entries.length,
+          node_ids: entries.map(entry => entry.id),
+          files: uniqueFiles
+        });
+      }
+    }
+
+    return duplicateSignals
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 20);
+  }
+
+  private normalizedDuplicateConceptName(node: CASNode): string {
+    return node.name
+      .replace(/(controller|handler|resolver|route|service|manager|usecase|use_case|repository|repo|dao|gateway|model|entity|component|viewmodel|view|page|dto|schema|module|provider|store|hook)$/i, '')
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .toLowerCase();
+  }
+
+  private duplicateConceptRole(node: CASNode): string {
+    const type = node.type.toLowerCase();
+    const name = node.name.toLowerCase();
+    const file = (node.source?.file || '').toLowerCase();
+    if (type === 'controller' || /controller|resolver|route|handler/.test(name) || /controller|routes?|handlers?/.test(file)) return 'entry-adapter';
+    if (type === 'repository' || /repository|repo|dao|gateway/.test(name) || /repositories?|repos?|dao|gateways?/.test(file)) return 'data-access';
+    if (type === 'entity' || type === 'model' || /entity|model|schema|dto/.test(name) || /entities|models|schemas|dto/.test(file)) return 'data-model';
+    if (type === 'component' || /component|page|view|screen/.test(name) || /components?|pages?|views?|screens?/.test(file)) return 'view';
+    if (type === 'service' || /service|manager|usecase|use_case/.test(name) || /services?|use-cases?|use_cases?/.test(file)) return 'business-logic';
+    if (type === 'function') return 'function';
+    return type || 'unknown';
+  }
+
+  private isGenericDuplicateConcept(concept: string): boolean {
+    return new Set([
+      'base',
+      'common',
+      'config',
+      'default',
+      'error',
+      'handler',
+      'helper',
+      'index',
+      'main',
+      'shared',
+      'test',
+      'types',
+      'utils'
+    ]).has(concept);
+  }
+
+  private uniqueHealthStrings(values: string[]): string[] {
+    return [...new Set(values.filter(Boolean))];
+  }
+
   private buildRuntime(
     projectPath: string,
     entryPoints: CASEntryPoint[],
@@ -8931,6 +13813,8 @@ export class AnalyzerOrchestrator {
     return this.nodeLookupById;
   }
 
+  private readonly maxNodeCallGraphReferences = 50;
+
   private buildMethodCalls(nodes: CASNode[], edges: CASEdge[]): CASMethodCall[] {
     const methodCalls: CASMethodCall[] = [];
     const nodeMap = new Map(nodes.map(n => [n.id, n]));
@@ -9210,7 +14094,7 @@ export class AnalyzerOrchestrator {
 
       const existingCallGraph = node.call_graph || {} as CASCallGraph;
 
-      const calls: CASCallGraph['calls'] = callees.map(targetId => {
+      const calls: CASCallGraph['calls'] = callees.slice(0, this.maxNodeCallGraphReferences).map(targetId => {
         const target = nodeMap.get(targetId);
         const targetType: 'function' | 'method' | 'constructor' | 'api' | 'external' =
           exitNodeIds.has(targetId) ? 'external' :
@@ -9228,7 +14112,7 @@ export class AnalyzerOrchestrator {
         };
       });
 
-      const calledBy: CASCallGraph['called_by'] = callers.map(sourceId => {
+      const calledBy: CASCallGraph['called_by'] = callers.slice(0, this.maxNodeCallGraphReferences).map(sourceId => {
         const source = nodeMap.get(sourceId);
         return {
           source_id: sourceId,

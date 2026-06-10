@@ -1,4 +1,4 @@
-import { CASNode, CASEntryPoint, CASDataEntity, CASDomainConcept } from '../../types/cas.types';
+import { CASNode, CASEntryPoint, CASDataEntity, CASDomainConcept, CASEdge } from '../../types/cas.types';
 
 interface ConceptOccurrence {
   name: string;
@@ -14,6 +14,10 @@ interface ConceptStats {
   maxFrequency: number;
 }
 
+const MAX_DOMAIN_CONCEPT_NODE_REFERENCES = 200;
+const MAX_DOMAIN_CONCEPT_ENTRY_REFERENCES = 100;
+const MAX_DOMAIN_CONCEPT_ENTITY_REFERENCES = 100;
+
 const GENERIC_INFRASTRUCTURE_HINTS = new Set([
   'logger', 'log', 'cache', 'config',
   'util', 'utils', 'helper', 'common', 'shared', 'base',
@@ -28,9 +32,11 @@ const GENERIC_PROGRAMMING_TERMS = new Set([
   'all', 'one', 'many', 'list', 'item', 'items', 'data', 'result',
   'name', 'id', 'value', 'key', 'index', 'count', 'size', 'length',
   'path', 'file', 'dir', 'line', 'column', 'start', 'end',
+  'document', 'documents',
   'source', 'target', 'from', 'to', 'input', 'output',
-  'method', 'methods', 'function', 'class', 'module', 'service', 'controller',
-  'handler', 'callback', 'promise', 'async', 'await',
+  'method', 'methods', 'function', 'class', 'module', 'modules',
+  'service', 'services', 'controller', 'controllers',
+  'handler', 'handlers', 'callback', 'callbacks', 'promise', 'async', 'await',
   'request', 'response', 'body', 'params', 'query', 'headers',
   'options', 'context', 'config', 'settings', 'props',
   'parse', 'stringify', 'format', 'transform', 'convert', 'map', 'reduce',
@@ -59,7 +65,14 @@ const GENERIC_PROGRAMMING_TERMS = new Set([
   'ready', 'done', 'success', 'failure', 'valid', 'invalid',
   'empty', 'visible', 'hidden', 'selected', 'focused', 'hover',
   'expanded', 'collapsed', 'dirty', 'clean', 'busy', 'available',
-  'flag', 'flags', 'option', 'opts', 'meta', 'misc', 'other', 'others'
+  'option', 'opts', 'meta', 'misc', 'other', 'others',
+  'api', 'apis', 'app', 'apps', 'lib', 'libs', 'client', 'clients',
+  'backend', 'frontend', 'business', 'portal', 'portals',
+  'users', 'michaelshattuck', 'dev', 'outcode', 'personal',
+  'page', 'pages', 'layout', 'layouts', 'metadata', 'section', 'sections',
+  'navbar', 'nav', 'footer', 'button', 'arrow', 'padding', 'total',
+  'home', 'submit', 'rewrites', 'rewrite', 'asset', 'assets', 'generated',
+  'gql'
 ]);
 
 const GENERIC_CROSS_CUTTING_HINTS = new Set([
@@ -80,6 +93,7 @@ const FRAMEWORK_AND_LIBRARY_TERMS = new Set([
   'jest', 'mocha', 'chai', 'jasmine', 'vitest', 'cypress', 'playwright',
   'webpack', 'vite', 'rollup', 'babel', 'eslint', 'prettier', 'tsx', 'tsc',
   'typescript', 'javascript', 'node', 'nodejs', 'deno', 'bun', 'npm', 'yarn',
+  'php', 'python', 'ruby', 'java', 'csharp', 'golang', 'rust', 'dart',
   'prisma', 'typeorm', 'sequelize', 'mongoose', 'knex', 'drizzle',
   'postgres', 'postgresql', 'mysql', 'sqlite', 'mongodb', 'redis', 'mongo',
   'docker', 'kubernetes', 'k8s', 'terraform', 'ansible',
@@ -100,6 +114,9 @@ const ENGLISH_STOPWORDS = new Set([
   'util', 'utils', 'utility', 'utilities', 'helper', 'helpers',
   'base', 'abstract', 'impl', 'common', 'shared', 'core', 'lib',
   'main', 'app', 'src', 'dist', 'common', 'global', 'local',
+  'api', 'apis', 'apps', 'libs', 'client', 'clients',
+  'backend', 'frontend', 'business', 'portal', 'portals',
+  'users', 'michaelshattuck', 'dev', 'outcode', 'personal',
   'wrapper', 'manager', 'factory', 'builder', 'registry',
 ]);
 
@@ -109,20 +126,73 @@ export class DomainExtractor {
   extract(
     nodes: CASNode[],
     entryPoints: CASEntryPoint[],
-    dataEntities: CASDataEntity[]
+    dataEntities: CASDataEntity[],
+    edges: CASEdge[] = []
   ): CASDomainConcept[] {
     this.concepts.clear();
 
     this.extractFromNodes(nodes);
     this.extractFromEntryPoints(entryPoints);
     this.extractFromEntities(dataEntities);
+    this.extractFromGraphRoles(nodes, edges);
 
     return this.buildDomainConcepts();
+  }
+
+  private extractFromGraphRoles(nodes: CASNode[], edges: CASEdge[]): void {
+    const outgoing = new Map<string, number>();
+    const incoming = new Map<string, number>();
+    for (const edge of edges) {
+      outgoing.set(edge.source, (outgoing.get(edge.source) || 0) + 1);
+      incoming.set(edge.target, (incoming.get(edge.target) || 0) + 1);
+    }
+
+    for (const node of nodes) {
+      if (node.metadata?.is_test || node.metadata?.is_generated) continue;
+      if (this.isInfrastructureNode(node)) continue;
+
+      const hasChildren = (node.children || []).length > 0;
+      const isTerminal = (outgoing.get(node.id) || 0) === 0 && (incoming.get(node.id) || 0) > 0;
+      const isDomainCarrier = this.isLikelyDomainCarrier(node);
+
+      if (!hasChildren && !isTerminal && !isDomainCarrier) continue;
+
+      const concepts = [
+        ...this.extractConceptsFromName(node.name),
+        ...this.extractConceptsFromPath(node.source?.file || ''),
+      ];
+      const weight = isDomainCarrier ? 3 : hasChildren ? 2 : 1;
+
+      for (const concept of concepts) {
+        for (let i = 0; i < weight; i++) {
+          this.recordOccurrence(concept, 'node', node.id);
+        }
+      }
+    }
+  }
+
+  private isLikelyDomainCarrier(node: CASNode): boolean {
+    const text = `${node.type} ${node.name} ${(node.subcategories || []).join(' ')}`.toLowerCase();
+    return /\b(class|entity|model|schema|aggregate|valueobject|viewmodel|controller|service|repository|usecase|handler|command|query)\b/.test(text);
+  }
+
+  private isInfrastructureNode(node: CASNode): boolean {
+    const file = node.source?.file?.toLowerCase() || '';
+    const text = `${node.type} ${node.name} ${(node.subcategories || []).join(' ')}`.toLowerCase();
+    return node.type === 'import' ||
+      node.type === 'file' ||
+      /(^|\/)(test|tests|spec|__tests__|fixtures?|__fixtures__|mocks?|__mocks__|examples?|samples?|docs?|documentation|snippets?|dist|build|node_modules|coverage|vendor|generated)(\/|$)/.test(file) ||
+      /\.(min|bundle)\.(js|css)$/.test(file) ||
+      /\/lib\/(waypoints|owlcarousel|chart|easing|tempusdominus|bootstrap|jquery)\//.test(file) ||
+      /^legacy\//.test(file) ||
+      /\.(test|spec|stories|story)\.[a-z0-9]+$/i.test(file) ||
+      /\b(config|logger|middleware|guard|interceptor|decorator|provider|factory|builder|util|helper|mock|fixture|test|spec)\b/.test(text);
   }
 
   private extractFromNodes(nodes: CASNode[]): void {
     for (const node of nodes) {
       if (node.metadata?.is_test) continue;
+      if (this.isInfrastructureNode(node)) continue;
       if (node.type === 'import' || node.type === 'module') continue;
 
       const concepts = this.extractConceptsFromName(node.name);
@@ -146,6 +216,7 @@ export class DomainExtractor {
     for (const ep of entryPoints) {
       if (ep.type === 'test') continue;
       if (!this.isApplicationEntryPoint(ep)) continue;
+      if (this.isInfrastructurePath(ep.handler?.file || '')) continue;
 
       const pathConcepts = this.extractConceptsFromPath(ep.trigger?.path || '');
       const nameConcepts = this.extractConceptsFromName(ep.name);
@@ -185,7 +256,8 @@ export class DomainExtractor {
     const concepts: string[] = [];
 
     for (const segment of segments) {
-      const words = this.splitCamelCase(segment).split(/[\s_\-]+/).filter(w => w.length > 2);
+      const base = segment.replace(/\.[a-z0-9]+$/i, '');
+      const words = this.splitCamelCase(base).split(/[\s_\-.]+/).filter(w => w.length > 2);
       concepts.push(...words.map(w => w.toLowerCase()));
     }
 
@@ -266,9 +338,9 @@ export class DomainExtractor {
         name: occurrence.normalizedName,
         frequency: occurrence.frequency,
         appears_in: {
-          entry_points: Array.from(occurrence.entryPoints),
-          entities: Array.from(occurrence.entities),
-          nodes: Array.from(occurrence.nodes)
+          entry_points: Array.from(occurrence.entryPoints).slice(0, MAX_DOMAIN_CONCEPT_ENTRY_REFERENCES),
+          entities: Array.from(occurrence.entities).slice(0, MAX_DOMAIN_CONCEPT_ENTITY_REFERENCES),
+          nodes: Array.from(occurrence.nodes).slice(0, MAX_DOMAIN_CONCEPT_NODE_REFERENCES)
         },
         classification: this.classifyConcept(occurrence, stats)
       });
@@ -370,7 +442,7 @@ export class DomainExtractor {
       .filter(c => {
         const o = byName.get(c.name);
         // Require a minimum footprint so noise is never promoted.
-        return !!o && o.frequency >= 3 && o.nodes.size >= 2;
+        return !!o && o.frequency >= 3 && (o.nodes.size >= 2 || o.frequency >= 5);
       })
       .sort((a, b) => {
         const oa = byName.get(a.name)!;
@@ -384,6 +456,15 @@ export class DomainExtractor {
     for (let i = 0; i < toPromote; i++) {
       candidates[i].classification = 'core';
     }
+  }
+
+  private isInfrastructurePath(path: string): boolean {
+    const file = path.replace(/\\/g, '/').toLowerCase();
+    return /(^|\/)(test|tests|spec|__tests__|fixtures?|__fixtures__|mocks?|__mocks__|examples?|samples?|docs?|documentation|snippets?|dist|build|node_modules|coverage|vendor|generated)(\/|$)/.test(file) ||
+      /\.(min|bundle)\.(js|css)$/.test(file) ||
+      /\/lib\/(waypoints|owlcarousel|chart|easing|tempusdominus|bootstrap|jquery)\//.test(file) ||
+      /^legacy\//.test(file) ||
+      /\.(test|spec|stories|story)\.[a-z0-9]+$/i.test(file);
   }
 
   getCoreConcepts(concepts: CASDomainConcept[]): CASDomainConcept[] {

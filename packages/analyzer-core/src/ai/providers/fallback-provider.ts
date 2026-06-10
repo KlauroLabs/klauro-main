@@ -18,7 +18,7 @@ export class FallbackProvider implements AIProvider {
     }
 
     this.logger = winston.createLogger({
-      level: 'info',
+      level: process.env.KLAURO_LOG_LEVEL || 'warn',
       format: winston.format.combine(
         winston.format.timestamp(),
         winston.format.errors({ stack: true }),

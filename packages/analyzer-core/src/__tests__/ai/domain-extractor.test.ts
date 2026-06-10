@@ -112,6 +112,48 @@ describe('DomainExtractor', () => {
     expect(core.length).toBeGreaterThan(0);
   });
 
+  it('ignores embedded SDK examples and docs snippets when inferring product domain', () => {
+    const concepts = extractor.extract(
+      [
+        node('src_flag_client', 'FeatureFlagClient', {
+          type: 'class',
+          source: { file: 'src/feature-flags/feature-flag-client.ts' },
+        }),
+        node('src_rollout_engine', 'RolloutEngine', {
+          type: 'class',
+          source: { file: 'src/rollouts/rollout-engine.ts' },
+        }),
+        node('src_segment_rules', 'SegmentRuleEvaluator', {
+          type: 'class',
+          source: { file: 'src/segments/segment-rule-evaluator.ts' },
+        }),
+        node('src_flag_eval', 'FeatureFlagEvaluator', {
+          type: 'class',
+          source: { file: 'src/feature-flags/feature-flag-evaluator.ts' },
+        }),
+        ...nodesNamed('PetstoreOrderClient', 8, 'example').map((n, index) => ({
+          ...n,
+          source: { file: `examples/petstore/order-example-${index}.ts` },
+        }) as CASNode),
+        ...nodesNamed('InvoicePaymentSnippet', 6, 'doc').map((n, index) => ({
+          ...n,
+          source: { file: `docs/snippets/payment-snippet-${index}.ts` },
+        }) as CASNode),
+      ],
+      [],
+      [],
+    );
+
+    const coreNames = concepts.filter(c => c.classification === 'core').map(c => c.name);
+    expect(coreNames).toContain('feature');
+    expect(coreNames).toContain('flag');
+    expect(coreNames).toContain('rollout');
+    expect(coreNames).not.toContain('petstore');
+    expect(coreNames).not.toContain('invoice');
+    expect(concepts.find(c => c.name === 'petstore')).toBeUndefined();
+    expect(concepts.find(c => c.name === 'invoice')).toBeUndefined();
+  });
+
   it('returns concepts sorted by frequency descending', () => {
     const concepts = extractor.extract(
       [...nodesNamed('payment', 9, 'p'), ...nodesNamed('refund', 3, 'r')],

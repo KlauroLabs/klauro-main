@@ -3,6 +3,7 @@ export interface CASOutput {
   analysis_timestamp: string;
   analysis_id: string;
   system: CASSystem;
+  analysis_phases?: CASAnalysisPhase[];
   architecture_summary?: CASArchitectureSummary;
   route_table?: CASRouteTableEntry[];
   database_schema?: CASDatabaseSchema;
@@ -26,6 +27,7 @@ export interface CASOutput {
   documentation_summary?: CASDocumentationSummary;
   todos_summary?: CASTodoSummary;
   implementation_health?: CASImplementationHealth;
+  system_health?: CASSystemHealth;
 
   // Legacy structures for backward compatibility
   behaviors?: CASBehavior[];
@@ -63,6 +65,9 @@ export interface CASOutput {
 
   workflows?: CASWorkflow[];
   workflow_graph?: CASWorkflowGraph;
+  user_journeys?: CASUserJourney[];
+  user_journey_summary?: CASUserJourneySummary;
+  data_lineage?: CASEntityLineage[];
   domain_concepts?: CASDomainConcept[];
   enhanced_system_purpose?: EnhancedSystemPurpose;
 
@@ -75,6 +80,8 @@ export interface CASOutput {
   idiom_summary?: CASIdiomSummary;
   idiom_examples?: CASIdiomExample[];
   idiom_violations?: CASIdiomViolation[];
+  paradigm_conformance?: CASParadigmConformance[];
+  product_map?: CASProductMap;
 
   // v1.10.0+ Graph-Anchored Semantic Retrieval
   embedding_index?: CASEmbeddingIndex;
@@ -151,6 +158,11 @@ export interface CASSystem {
       percentage?: number;
       files?: number;
     }>;
+    unanalyzed_languages?: Array<{
+      name: string;
+      files: number;
+      share_of_source: number;
+    }>;
     frameworks?: Array<{
       name: string;
       version?: string;
@@ -197,6 +209,8 @@ export interface CASNode {
   level?: number;
   level_name?: string;
   description?: string;
+  description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
+  description_generation?: CASDescriptionGeneration;
   tags?: string[];
   documentation?: CASDocumentation; // New in v1.4.0
   comments?: CASComment[]; // New in v1.4.0
@@ -327,6 +341,8 @@ export interface CASEntryPoint {
   type: 'http' | 'websocket' | 'cli' | 'event' | 'schedule' | 'page' | 'route' | 'message' | 'file' | 'test' | 'lifecycle';
   name: string;
   description?: string;
+  description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
+  description_generation?: CASDescriptionGeneration;
   trigger?: {
     method?: string;
     path?: string;
@@ -377,6 +393,8 @@ export interface CASExitPoint {
   type: 'database' | 'api' | 'file' | 'message' | 'event' | 'cache' | 'sdk' | 'webhook' | 'navigation' | 'client_storage' | 'analytics';
   name: string;
   description?: string;
+  description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
+  description_generation?: CASDescriptionGeneration;
   target?: {
     service_id?: string;
     endpoint?: string;
@@ -533,6 +551,108 @@ export interface CASIdiomSummary {
   by_category: Record<CASIdiomCategory, number>;
   top_idioms: string[];
   guidance_digest: string[];
+}
+
+export type CASParadigmDeviationKind =
+  | 'direct-data-access'
+  | 'layer-skipping-call'
+  | 'unguarded-entry-point'
+  | 'parallel-implementation';
+
+export interface CASParadigmDeviation {
+  file: string;
+  node_id: string;
+  kind: CASParadigmDeviationKind;
+  detail: string;
+  severity: 'info' | 'warning' | 'error';
+}
+
+export interface CASParadigmConformance {
+  paradigm: string;
+  description: string;
+  adoption: {
+    following_count: number;
+    comparable_count: number;
+    adoption_rate: number;
+    evidence_files: string[];
+  };
+  deviations: CASParadigmDeviation[];
+}
+
+export interface CASProductMapCapability {
+  name: string;
+  description: string;
+  description_source: 'deterministic' | 'ai' | 'manual' | 'reused';
+  category: 'core' | 'supporting' | 'admin' | 'internal';
+  criticality: 'critical' | 'high' | 'medium' | 'low';
+  journeys: Array<{ id: string; name: string }>;
+  entities: string[];
+  tests_present: boolean;
+  risk_level: 'low' | 'medium' | 'high';
+}
+
+export interface CASProductMapJourney {
+  id: string;
+  name: string;
+  kind: 'user-facing' | 'system' | 'scheduled';
+  criticality: 'critical' | 'high' | 'medium' | 'low';
+  boundaries: string[];
+  tests: number;
+}
+
+export interface CASProductMap {
+  identity: {
+    name: string;
+    domain: string;
+    domain_source: 'deterministic' | 'ai' | 'reused';
+    description: string;
+    description_source: 'deterministic' | 'ai' | 'manual' | 'reused';
+    unanalyzed_languages: Array<{ name: string; files: number; share_of_source: number }>;
+  };
+  capabilities: CASProductMapCapability[];
+  journeys: {
+    total: number;
+    user_facing: number;
+    system: number;
+    scheduled: number;
+    top: CASProductMapJourney[];
+  };
+  data: {
+    entities: number;
+    sensitive: string[];
+    exposure_highlights: Array<{
+      entity: string;
+      sensitive_fields: string[];
+      unguarded_paths: number;
+      external_transfer: boolean;
+      external_recipients: string[];
+    }>;
+  };
+  conventions: {
+    paradigms: Array<{
+      paradigm: string;
+      description: string;
+      adoption_rate: number;
+      following_count: number;
+      comparable_count: number;
+    }>;
+    open_deviations: { error: number; warning: number; info: number };
+  };
+  health: {
+    status?: 'healthy' | 'watch' | 'at-risk' | 'critical';
+    score?: number;
+    tests: { total: number; passing: number; failing: number; coverage_percentage?: number };
+    implementation: {
+      complete: number;
+      partial: number;
+      stubs: number;
+      not_implemented: number;
+      deprecated: number;
+      health_score?: number;
+    };
+    top_risks: Array<{ name: string; level: 'low' | 'medium' | 'high'; type: string; recommendation: string }>;
+  };
+  coverage_caveats: string[];
 }
 
 export interface CASCategories {
@@ -1576,6 +1696,9 @@ export interface CASArchitectureSummary {
   system_type: string;
   total_files: number;
   total_lines?: number;
+  architectural_patterns?: CASArchitecturalPatternSummary[];
+  architectural_inventory?: CASArchitecturalInventory;
+  pattern_balance?: CASPatternBalance;
   layers: {
     presentation?: {
       controllers?: number;
@@ -1636,6 +1759,82 @@ export interface CASArchitectureSummary {
     oauth_providers?: string[];
     guards?: string[];
   };
+}
+
+export interface CASArchitecturalPatternSummary {
+  name: string;
+  category: 'application-architecture' | 'presentation' | 'business-logic' | 'data-access' | 'integration' | 'object-lifecycle' | 'anti-pattern';
+  confidence: number;
+  evidence: string[];
+  node_ids: string[];
+  guidance: string;
+}
+
+export interface CASArchitecturalInventory {
+  models: string[];
+  views: string[];
+  controllers: string[];
+  view_models: string[];
+  services: string[];
+  repositories: string[];
+  clients: string[];
+  mediators: string[];
+  unit_of_work: string[];
+  singletons: string[];
+  scripts: string[];
+  packages: string[];
+}
+
+export interface CASPatternBalance {
+  status: 'balanced' | 'under-patterned' | 'over-patterned' | 'mixed';
+  detected_count: number;
+  risks: string[];
+  recommendations: string[];
+}
+
+export interface CASSystemHealth {
+  score: number;
+  status: 'healthy' | 'watch' | 'at-risk' | 'critical';
+  summary: string;
+  risk_areas: CASSystemHealthRiskArea[];
+  coherence: {
+    status: 'coherent' | 'mixed' | 'drifting' | 'fragmented';
+    paradigm_count: number;
+    primary_paradigms: string[];
+    conflicting_paradigms: string[];
+    naming_convention_violations: number;
+    dependency_injection_violations: number;
+    module_boundary_violations: number;
+    duplication_signals: number;
+  };
+  remediation: {
+    immediate: string[];
+    agent_rules: string[];
+    validation_tools: string[];
+  };
+}
+
+export interface CASSystemHealthRiskArea {
+  id: string;
+  type:
+    | 'complexity'
+    | 'duplication'
+    | 'paradigm-drift'
+    | 'naming-drift'
+    | 'dependency-injection-drift'
+    | 'module-boundary-drift'
+    | 'implementation-gap'
+    | 'test-gap'
+    | 'runtime-coverage-gap'
+    | 'pattern-balance';
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  title: string;
+  description: string;
+  affected_files?: string[];
+  affected_nodes?: string[];
+  evidence: string[];
+  recommendation: string;
+  agent_guidance: string;
 }
 
 export interface CASRouteTableEntry {
@@ -2103,10 +2302,45 @@ export interface CASChangeRiskSummary {
 
 // v1.7.0 Data Lifecycle
 
+export interface CASDescriptionGeneration {
+  status:
+    | 'deterministic_initial'
+    | 'deterministic_kept'
+    | 'ai_applied'
+    | 'ai_rejected'
+    | 'ai_skipped'
+    | 'ai_failed'
+    | 'reused_previous';
+  attempted: boolean;
+  reason?: string;
+  budget_ms?: number;
+  generated_at?: string;
+}
+
+export interface CASAnalysisPhase {
+  id: string;
+  name: string;
+  priority: number;
+  status: 'complete' | 'partial' | 'skipped' | 'deferred';
+  purpose: 'visualization' | 'agent-development' | 'deep-context' | 'ai-enrichment' | 'runtime';
+  default_phase: boolean;
+  description: string;
+  outputs: string[];
+  agent_value: string;
+  visualization_value: string;
+  can_run_later: boolean;
+  requires_ai?: boolean;
+  generated_at?: string;
+  notes?: string[];
+}
+
 export interface CASDataEntity {
   id: string;
   name: string;
   schema_source?: string;
+  description?: string;
+  description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
+  description_generation?: CASDescriptionGeneration;
 
   fields?: Array<{
     name: string;
@@ -2265,6 +2499,8 @@ export interface CASFlowCoverage {
 
 export interface CASTestGap {
   gap_type: 'untested-flow' | 'untested-branch' | 'mock-only' | 'no-assertions';
+  title?: string;
+  description?: string;
   location: {
     node_id?: string;
     call_chain_id?: string;
@@ -2322,6 +2558,8 @@ export interface SystemCapability {
   id: string;
   name: string;
   description: string;
+  description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
+  description_generation?: CASDescriptionGeneration;
   category: 'core' | 'supporting' | 'admin' | 'internal';
 
   operations: Array<{
@@ -2364,6 +2602,162 @@ export interface CASWorkflow {
   dependents: string[];
 }
 
+export interface CASUserJourneyStep {
+  node_id: string;
+  name: string;
+  layer: 'entry' | 'business' | 'data' | 'infrastructure';
+  depth: number;
+}
+
+export interface CASUserJourneyTerminalEntity {
+  entity_id?: string;
+  name: string;
+  access: 'created' | 'updated' | 'deleted' | 'read';
+  node_id?: string;
+  terminal_kind: 'entity' | 'node';
+}
+
+export interface CASUserJourney {
+  id: string;
+  name: string;
+  journey_kind: 'user-facing' | 'system' | 'scheduled';
+  entry_point_id: string;
+  entry: {
+    type: string;
+    name: string;
+    method?: string;
+    path_or_trigger?: string;
+    handler_node_id?: string;
+  };
+  steps: CASUserJourneyStep[];
+  terminal_effects: {
+    entities_written: string[];
+    entities_read: string[];
+    external_services: string[];
+    messages_emitted: string[];
+  };
+  terminal_entities: CASUserJourneyTerminalEntity[];
+  security_boundaries: Array<{
+    node_id?: string;
+    name: string;
+    mechanism: string;
+  }>;
+  tests_covering: string[];
+  risk?: 'low' | 'medium' | 'high' | 'critical';
+  criticality: 'critical' | 'high' | 'medium' | 'low';
+  call_chain_ids: string[];
+  exit_point_ids: string[];
+}
+
+export interface CASUserJourneySummary {
+  total_discovered: number;
+  included: number;
+  by_kind: {
+    'user-facing': number;
+    system: number;
+    scheduled: number;
+  };
+}
+
+export interface CASEntityLineageAccessor {
+  node_id: string;
+  file?: string;
+  via: string;
+}
+
+export interface CASEntityLineageExternalRecipient {
+  exit_point_id: string;
+  service: string;
+  via_node?: string;
+}
+
+export interface CASEntityLineageBoundary {
+  boundary: string;
+  guarded: boolean;
+}
+
+export interface CASEntityLineage {
+  entity_id: string;
+  entity_name: string;
+  sensitive_fields: string[];
+  writers: CASEntityLineageAccessor[];
+  readers: CASEntityLineageAccessor[];
+  external_recipients: CASEntityLineageExternalRecipient[];
+  boundaries_crossed: CASEntityLineageBoundary[];
+  journeys_carrying: string[];
+  exposure: {
+    unguarded_paths: number;
+    external_transfer: boolean;
+    sensitive: boolean;
+  };
+}
+
+export interface CASBehaviorDiffJourney {
+  id: string;
+  name: string;
+  entry: string;
+  entities_written: string[];
+  guarded: boolean;
+}
+
+export interface CASBehaviorDiffJourneyChange {
+  id: string;
+  name: string;
+  what: string[];
+}
+
+export interface CASBehaviorDiffUnguardedEntry {
+  journey_id: string;
+  name: string;
+  entry: string;
+  entities_written: string[];
+  reason: 'lost-guard' | 'new-unguarded';
+}
+
+export interface CASBehaviorDiffCapabilityOverlap {
+  new_capability: string;
+  overlaps_with: string;
+  shared_entities: string[];
+  shared_name_tokens: string[];
+}
+
+export interface CASBehaviorDiffParadigmDeviation {
+  paradigm: string;
+  file: string;
+  kind: string;
+  detail: string;
+  severity: 'info' | 'warning' | 'error';
+}
+
+export interface CASBehaviorDiff {
+  journeys: {
+    added: CASBehaviorDiffJourney[];
+    removed: CASBehaviorDiffJourney[];
+    changed: CASBehaviorDiffJourneyChange[];
+  };
+  security: {
+    boundaries_added: string[];
+    boundaries_removed: string[];
+    newly_unguarded_entries: CASBehaviorDiffUnguardedEntry[];
+  };
+  capabilities: {
+    added: Array<{ id: string; name: string }>;
+    removed: Array<{ id: string; name: string }>;
+    possibly_duplicated: CASBehaviorDiffCapabilityOverlap[];
+  };
+  lineage: {
+    entities_with_new_writers: Array<{ entity_name: string; new_writers: string[] }>;
+    sensitive_exposure_changes: Array<{ entity_name: string; change: string }>;
+  };
+  paradigms: {
+    new_deviations: CASBehaviorDiffParadigmDeviation[];
+    resolved_deviations: Array<{ paradigm: string; file: string; kind: string }>;
+  };
+  summary: {
+    risk_flags: string[];
+  };
+}
+
 export interface CASWorkflowDependency {
   from_workflow: string;
   to_workflow: string;
@@ -2398,8 +2792,11 @@ export interface CASDomainConcept {
 
 export interface EnhancedSystemPurpose extends SystemPurpose {
   primary_domain: string;
+  domain_source?: 'deterministic' | 'ai' | 'reused';
   core_concepts: string[];
   inferred_description: string;
+  description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
+  description_generation?: CASDescriptionGeneration;
   primary_workflow_id?: string;
   supporting_workflow_ids: string[];
 }

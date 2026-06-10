@@ -189,40 +189,31 @@ export class FileVectorStore implements VectorStore {
   }
 
   async listHashes(analysisId: string): Promise<Map<string, string>> {
-    const loaded = await this.load();
+    const manifest = await this.loadManifest();
     const hashes = new Map<string, string>();
-    for (const entry of loaded.manifest.nodes) {
+    for (const entry of manifest.nodes) {
       hashes.set(entry.nodeId, entry.embeddingDocHash);
     }
     return hashes;
   }
 
   async getMeta(analysisId: string): Promise<VectorStoreMeta | null> {
-    const loaded = await this.load();
-    return loaded.manifest.meta;
+    const manifest = await this.loadManifest();
+    return manifest.meta;
   }
 
   async putMeta(analysisId: string, meta: VectorStoreMeta): Promise<void> {
-    const loaded = await this.load();
-    loaded.manifest.meta = meta;
-    const rows: Int8Array[] = [];
-    for (let row = 0; row < loaded.manifest.nodes.length; row += 1) {
-      rows.push(
-        loaded.matrix.slice(
-          row * loaded.manifest.dimensions,
-          (row + 1) * loaded.manifest.dimensions,
-        ),
-      );
-    }
-    await this.persist(loaded.manifest, rows);
+    const manifest = await this.loadManifest();
+    manifest.meta = meta;
+    await this.persistManifest(manifest);
   }
 
   async stats(analysisId: string): Promise<VectorStoreStats> {
-    const loaded = await this.load();
+    const manifest = await this.loadManifest();
     return {
-      count: loaded.manifest.nodes.length,
-      model: loaded.manifest.model,
-      dimensions: loaded.manifest.dimensions,
+      count: manifest.nodes.length,
+      model: manifest.model,
+      dimensions: manifest.dimensions,
     };
   }
 
@@ -285,18 +276,25 @@ export class FileVectorStore implements VectorStore {
   }
 
   private async load(): Promise<LoadedIndex> {
-    const manifestExists = await fs.pathExists(this.manifestPath);
-    if (!manifestExists) {
-      return { manifest: emptyManifest(), matrix: new Int8Array(0) };
+    const manifest = await this.loadManifest();
+    if (manifest.nodes.length === 0) {
+      return { manifest, matrix: new Int8Array(0) };
     }
-    const manifest: FileVectorManifest = await fs.readJson(this.manifestPath);
     const indexExists = await fs.pathExists(this.indexPath);
-    if (!indexExists || manifest.nodes.length === 0) {
+    if (!indexExists) {
       return { manifest, matrix: new Int8Array(0) };
     }
     const buffer = await fs.readFile(this.indexPath);
     const matrix = new Int8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
     return { manifest, matrix };
+  }
+
+  private async loadManifest(): Promise<FileVectorManifest> {
+    const manifestExists = await fs.pathExists(this.manifestPath);
+    if (!manifestExists) {
+      return emptyManifest();
+    }
+    return fs.readJson(this.manifestPath);
   }
 
   private async persist(manifest: FileVectorManifest, rows: Int8Array[]): Promise<void> {
@@ -315,6 +313,13 @@ export class FileVectorStore implements VectorStore {
     await fs.writeJson(tmpManifest, manifest, { spaces: 2 });
 
     await fs.move(tmpIndex, this.indexPath, { overwrite: true });
+    await fs.move(tmpManifest, this.manifestPath, { overwrite: true });
+  }
+
+  private async persistManifest(manifest: FileVectorManifest): Promise<void> {
+    await fs.ensureDir(this.embeddingsDir);
+    const tmpManifest = `${this.manifestPath}.${process.pid}.${Date.now()}.tmp`;
+    await fs.writeJson(tmpManifest, manifest, { spaces: 2 });
     await fs.move(tmpManifest, this.manifestPath, { overwrite: true });
   }
 }

@@ -1,4 +1,4 @@
-import { aiConfig, AIConfig } from '../config/ai.config';
+import { aiConfig, AIConfig, getAIConfig } from '../config/ai.config';
 import { OpenAIProvider } from './providers/openai-provider';
 import { ClaudeProvider } from './providers/claude-provider';
 import { FallbackProvider } from './providers/fallback-provider';
@@ -114,7 +114,7 @@ export class AIService {
 
   constructor() {
     this.logger = winston.createLogger({
-      level: 'info',
+      level: process.env.KLAURO_LOG_LEVEL || 'warn',
       format: winston.format.combine(
         winston.format.timestamp(),
         winston.format.errors({ stack: true }),
@@ -208,6 +208,9 @@ export class AIService {
       await this.rateLimiter.waitForCapacity('description');
 
       const provider = await this.selectBestProvider();
+      if (provider.name === 'fallback' && process.env.AI_DESCRIPTION_ALLOW_RULE_BASED_FALLBACK !== 'true') {
+        throw new Error('No generative AI provider is available for description generation');
+      }
       const startTime = Date.now();
       
       this.logger.info(`Generating description using ${provider.name} provider`);
@@ -225,6 +228,9 @@ export class AIService {
     } catch (error) {
       this.logger.error('Failed to generate description:', error);
       this.updateUsageStats('unknown', false, 0);
+      if (process.env.AI_DESCRIPTION_ALLOW_RULE_BASED_FALLBACK !== 'true') {
+        throw error;
+      }
       return this.generateFallbackDescription(context);
     }
   }
@@ -350,6 +356,7 @@ export class AIService {
   }
 
   private async selectBestProvider(): Promise<AIProvider> {
+    this.refreshEnvironmentProviders();
     const providers = Array.from(this.providers.values()).filter(p => p.available);
     
     if (providers.length === 0) {
@@ -383,6 +390,18 @@ export class AIService {
 
     // Default to fallback
     return this.providers.get('fallback')!;
+  }
+
+  private refreshEnvironmentProviders(): void {
+    if (this.providers.has('openai')) return;
+    const freshConfig = getAIConfig();
+    if (!freshConfig.openai.apiKey) return;
+    try {
+      this.providers.set('openai', new OpenAIProvider(freshConfig));
+      this.logger.info('OpenAI-compatible provider initialized from refreshed environment');
+    } catch (error) {
+      this.logger.warn('Failed to initialize refreshed OpenAI-compatible provider:', error);
+    }
   }
 
   private generateCacheKey(operation: string, context: AIAnalysisContext): string {

@@ -1,4 +1,5 @@
 import { globSync } from 'glob';
+import * as nodePath from 'path';
 import type {
   CASAnalysisFact,
   CASBehavioralInvariant,
@@ -111,7 +112,7 @@ export function detectCodebaseIdioms(input: IdiomDetectionInput): IdiomDetection
 
   const idioms = drafts
     .filter(draft => draft.evidence.length > 0 && draft.confidence >= 0.45)
-    .map((draft, index) => toIdiom(draft, index));
+    .map((draft, index) => toIdiom(normalizeDraftPaths(input.projectPath, draft), index));
   const examples = idioms.flatMap(idiom => idiom.positive_examples);
   const violations = idioms.flatMap(idiom => idiom.deviations || []);
   return {
@@ -682,7 +683,9 @@ function buildFileInventory(input: IdiomDetectionInput): FileInventory {
     ...input.exitPoints.flatMap(exitPoint => exitPoint.metadata?.file ? [String(exitPoint.metadata.file)] : []),
   ];
   const fromFilesystem = safeGlob(input.projectPath);
-  const all = unique([...fromNodes, ...fromTests, ...fromEntryExit, ...fromFilesystem].map(normalizePath));
+  const all = unique([...fromNodes, ...fromTests, ...fromEntryExit, ...fromFilesystem]
+    .map(file => normalizeProjectPath(input.projectPath, file))
+    .map(normalizePath));
   return {
     all,
     source: all.filter(file => SOURCE_EXTENSIONS.test(file) && !isTestPath(file) && !isMigrationPath(file)),
@@ -921,6 +924,37 @@ function isConfigPath(file: string): boolean {
 
 function normalizePath(file: string): string {
   return file.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+function normalizeProjectPath(projectPath: string, file: string): string {
+  const normalizedFile = file.replace(/\\/g, '/');
+  if (!nodePath.isAbsolute(normalizedFile)) return normalizedFile;
+  const relative = nodePath.relative(projectPath, normalizedFile).replace(/\\/g, '/');
+  if (!relative || relative.startsWith('..') || nodePath.isAbsolute(relative)) return normalizedFile;
+  return relative;
+}
+
+function normalizeDraftPaths(projectPath: string, draft: IdiomDraft): IdiomDraft {
+  return {
+    ...draft,
+    evidence: draft.evidence.map(evidence => evidence.file
+      ? { ...evidence, file: normalizeProjectPath(projectPath, evidence.file) }
+      : evidence),
+    positive_examples: draft.positive_examples.map(example => example.file
+      ? { ...example, file: normalizeProjectPath(projectPath, example.file) }
+      : example),
+    affected_scopes: draft.affected_scopes ? {
+      ...draft.affected_scopes,
+      files: draft.affected_scopes.files?.map(file => normalizeProjectPath(projectPath, file)),
+    } : draft.affected_scopes,
+    deviations: draft.deviations?.map(deviation => ({
+      ...deviation,
+      file: deviation.file ? normalizeProjectPath(projectPath, deviation.file) : deviation.file,
+      evidence: deviation.evidence?.map(evidence => evidence.file
+        ? { ...evidence, file: normalizeProjectPath(projectPath, evidence.file) }
+        : evidence),
+    })),
+  };
 }
 
 function countBy(values: string[]): Map<string, number> {

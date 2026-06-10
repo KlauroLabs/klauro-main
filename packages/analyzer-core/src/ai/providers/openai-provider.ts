@@ -5,28 +5,71 @@ import { prompts } from '../ai-prompts';
 import * as winston from 'winston';
 import pRetry from 'p-retry';
 
+function resolveOllamaBaseURL(openAIBaseURL?: string): string | undefined {
+  const explicit = process.env.OLLAMA_BASE_URL;
+  if (explicit) return explicit.replace(/\/$/, '');
+  if (!openAIBaseURL) return undefined;
+
+  try {
+    const url = new URL(openAIBaseURL);
+    if (url.port === '11434' || /(^|\.)ollama($|\.)/i.test(url.hostname)) {
+      url.pathname = url.pathname.replace(/\/v1\/?$/, '') || '/';
+      url.search = '';
+      url.hash = '';
+      return url.toString().replace(/\/$/, '');
+    }
+  } catch {
+    return undefined;
+  }
+
+  return undefined;
+}
+
 export class OpenAIProvider implements AIProvider {
   public readonly name = 'openai';
   private client: OpenAI;
   private logger: winston.Logger;
   private config: AIConfig;
+  private ollamaBaseURL?: string;
 
   constructor(config: AIConfig) {
     this.config = config;
+    this.ollamaBaseURL = resolveOllamaBaseURL(config.openai.baseURL);
     
     if (!config.openai.apiKey) {
       throw new Error('OpenAI API key is required');
     }
 
-    this.client = new OpenAI({
-      apiKey: config.openai.apiKey,
-      organization: config.openai.organization,
-      timeout: config.openai.timeout,
-      maxRetries: config.openai.maxRetries,
-    });
+    const azureEndpoint = process.env.AZURE_OPENAI_ENDPOINT;
+    const azureDeployment = process.env.AZURE_OPENAI_DEPLOYMENT || process.env.AZURE_OPENAI_MODEL;
+    const azureApiVersion = process.env.AZURE_OPENAI_API_VERSION || '2024-10-21';
+    const azureEnabled = Boolean(process.env.AZURE_OPENAI_API_KEY && azureEndpoint && azureDeployment && config.openai.apiKey === process.env.AZURE_OPENAI_API_KEY);
+
+    this.client = new OpenAI(azureEnabled
+      ? {
+        apiKey: config.openai.apiKey,
+        baseURL: `${azureEndpoint!.replace(/\/$/, '')}/openai/deployments/${azureDeployment}`,
+        defaultQuery: { 'api-version': azureApiVersion },
+        defaultHeaders: { 'api-key': config.openai.apiKey },
+        timeout: config.openai.timeout,
+        maxRetries: config.openai.maxRetries,
+      }
+      : config.openai.baseURL
+        ? {
+          apiKey: config.openai.apiKey,
+          baseURL: config.openai.baseURL,
+          timeout: config.openai.timeout,
+          maxRetries: config.openai.maxRetries,
+        }
+        : {
+        apiKey: config.openai.apiKey,
+        organization: config.openai.organization,
+        timeout: config.openai.timeout,
+        maxRetries: config.openai.maxRetries,
+      });
 
     this.logger = winston.createLogger({
-      level: 'info',
+      level: process.env.KLAURO_LOG_LEVEL || 'warn',
       format: winston.format.combine(
         winston.format.timestamp(),
         winston.format.errors({ stack: true }),
@@ -168,6 +211,10 @@ export class OpenAIProvider implements AIProvider {
       requestParams.response_format = { type: 'json_object' };
     }
 
+    if (this.ollamaBaseURL) {
+      return await this.makeOllamaRequest(messages, requestParams, responseFormat);
+    }
+
     return await pRetry(
       async () => {
         this.logger.debug(`Making OpenAI request with model ${this.config.openai.model}`);
@@ -193,6 +240,95 @@ export class OpenAIProvider implements AIProvider {
         retries: this.config.openai.maxRetries,
         onFailedAttempt: (error) => {
           this.logger.warn(`OpenAI request attempt ${error.attemptNumber} failed:`, error.message);
+        },
+        factor: 2,
+        minTimeout: 1000,
+        maxTimeout: 30000,
+      }
+    );
+  }
+
+  private async makeOllamaRequest(
+    messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+    requestParams: OpenAI.Chat.Completions.ChatCompletionCreateParams,
+    responseFormat: 'text' | 'json',
+  ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
+    const timeoutMs = Math.max(
+      1,
+      Number(process.env.KLAURO_OLLAMA_TIMEOUT_MS || this.config.openai.timeout || 60000)
+    );
+
+    return await pRetry(
+      async () => {
+        this.logger.debug(`Making Ollama request with model ${this.config.openai.model}`);
+        const start = Date.now();
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+        timeout.unref?.();
+
+        let response: Response;
+        try {
+          response = await fetch(`${this.ollamaBaseURL}/api/chat`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            signal: controller.signal,
+            body: JSON.stringify({
+              model: this.config.openai.model,
+              messages: messages.map(message => ({
+                role: message.role,
+                content: typeof message.content === 'string' ? message.content : JSON.stringify(message.content),
+              })),
+              stream: false,
+              think: process.env.OLLAMA_THINK === 'true' || process.env.OLLAMA_THINK === '1',
+              format: responseFormat === 'json' ? 'json' : undefined,
+              options: {
+                temperature: requestParams.temperature ?? this.config.openai.temperature,
+                num_predict: requestParams.max_tokens ?? this.config.openai.maxTokens,
+              },
+            }),
+          });
+        } catch (error) {
+          if (typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError') {
+            throw new Error(`Ollama request timed out after ${timeoutMs}ms`);
+          }
+          throw error;
+        } finally {
+          clearTimeout(timeout);
+        }
+
+        const body = await response.json().catch(() => ({})) as Record<string, any>;
+        if (!response.ok) {
+          throw new Error(`Ollama returned ${response.status}: ${JSON.stringify(body)}`);
+        }
+
+        const content = typeof body.message?.content === 'string' ? body.message.content : '';
+        const duration = Date.now() - start;
+        this.logger.debug(`Ollama request completed in ${duration}ms`);
+
+        return {
+          id: `ollama-${Date.now()}`,
+          object: 'chat.completion',
+          created: Math.floor(Date.now() / 1000),
+          model: this.config.openai.model,
+          choices: [{
+            index: 0,
+            message: {
+              role: 'assistant',
+              content,
+            },
+            finish_reason: body.done_reason || 'stop',
+          }],
+          usage: {
+            prompt_tokens: body.prompt_eval_count || 0,
+            completion_tokens: body.eval_count || 0,
+            total_tokens: (body.prompt_eval_count || 0) + (body.eval_count || 0),
+          },
+        } as OpenAI.Chat.Completions.ChatCompletion;
+      },
+      {
+        retries: this.config.openai.maxRetries,
+        onFailedAttempt: (error) => {
+          this.logger.warn(`Ollama request attempt ${error.attemptNumber} failed:`, error.message);
         },
         factor: 2,
         minTimeout: 1000,

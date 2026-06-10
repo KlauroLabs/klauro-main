@@ -176,7 +176,7 @@ export class TreeSitterTSExtractor {
       comments: this.extractComments(root)
     };
 
-    const functions = this.extractFunctions(root);
+    const functions = this.extractStandaloneFunctions(root);
     const classes = this.extractClasses(root);
 
     for (const cls of classes) {
@@ -273,6 +273,27 @@ export class TreeSitterTSExtractor {
     for (const func of funcNodes) {
       const extracted = this.extractFunction(func, root);
       if (extracted) {
+        functions.push(extracted);
+      }
+    }
+
+    return functions;
+  }
+
+  private extractStandaloneFunctions(root: any): TSExtractedFunction[] {
+    const functions: TSExtractedFunction[] = [];
+    const funcTypes = new Set([
+      'function_declaration',
+      'arrow_function',
+      'function_expression',
+      'generator_function_declaration'
+    ]);
+
+    const funcNodes = this.collectByTypesOutsideClasses(root, funcTypes);
+
+    for (const func of funcNodes) {
+      const extracted = this.extractFunction(func, root);
+      if (extracted && !extracted.className) {
         functions.push(extracted);
       }
     }
@@ -973,6 +994,24 @@ export class TreeSitterTSExtractor {
     const stack = [node];
     while (stack.length > 0) {
       const current = stack.pop()!;
+      if (types.has(current.type)) {
+        results.push(current);
+      }
+      for (let i = current.namedChildCount - 1; i >= 0; i--) {
+        stack.push(current.namedChild(i));
+      }
+    }
+    return results;
+  }
+
+  private collectByTypesOutsideClasses(node: any, types: Set<string>): any[] {
+    const results: any[] = [];
+    const stack = [node];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (current !== node && (current.type === 'class_declaration' || current.type === 'class')) {
+        continue;
+      }
       if (types.has(current.type)) {
         results.push(current);
       }

@@ -4,6 +4,7 @@ const AIConfigSchema = z.object({
   openai: z.object({
     apiKey: z.string().optional(),
     organization: z.string().optional(),
+    baseURL: z.string().optional(),
     model: z.string().default('gpt-4o-mini'),
     maxTokens: z.number().default(2000),
     temperature: z.number().default(0.3),
@@ -124,12 +125,38 @@ const AIConfigSchema = z.object({
 
 export type AIConfig = z.infer<typeof AIConfigSchema>;
 
+function hasAzureOpenAIConfig(): boolean {
+  return Boolean(
+    process.env.AZURE_OPENAI_API_KEY &&
+    process.env.AZURE_OPENAI_ENDPOINT &&
+    (process.env.AZURE_OPENAI_DEPLOYMENT || process.env.AZURE_OPENAI_MODEL)
+  );
+}
+
+function localOpenAIBaseURL(): string | undefined {
+  const explicit = process.env.OPENAI_BASE_URL || process.env.LOCAL_OPENAI_BASE_URL;
+  if (explicit) return explicit;
+  const ollama = process.env.OLLAMA_BASE_URL;
+  if (ollama) return `${ollama.replace(/\/$/, '')}/v1`;
+  if (process.env.KLAURO_OLLAMA_AUTO === 'true' || process.env.KLAURO_OLLAMA_AUTO === '1') return 'http://127.0.0.1:11434/v1';
+  return undefined;
+}
+
 export function getAIConfig(): AIConfig {
+  const openAICompatibleBaseURL = localOpenAIBaseURL();
   const config = {
     openai: {
-      apiKey: process.env.OPENAI_API_KEY,
+      apiKey: process.env.OPENAI_API_KEY ||
+        (openAICompatibleBaseURL ? process.env.LOCAL_OPENAI_API_KEY || process.env.OLLAMA_API_KEY || 'local-openai-compatible' : undefined) ||
+        (hasAzureOpenAIConfig() ? process.env.AZURE_OPENAI_API_KEY : undefined),
       organization: process.env.OPENAI_ORGANIZATION,
-      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      baseURL: openAICompatibleBaseURL,
+      model: process.env.OPENAI_MODEL ||
+        process.env.LOCAL_OPENAI_MODEL ||
+        process.env.OLLAMA_MODEL ||
+        process.env.AZURE_OPENAI_DEPLOYMENT ||
+        process.env.AZURE_OPENAI_MODEL ||
+        (openAICompatibleBaseURL?.includes('127.0.0.1:11434') || openAICompatibleBaseURL?.includes('localhost:11434') ? 'qwen3:8b' : 'gpt-4o-mini'),
       maxTokens: parseInt(process.env.OPENAI_MAX_TOKENS || '2000'),
       temperature: parseFloat(process.env.OPENAI_TEMPERATURE || '0.3'),
       timeout: parseInt(process.env.AI_TIMEOUT || '30000'),

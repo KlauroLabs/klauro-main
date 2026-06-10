@@ -51,6 +51,7 @@ export class EmbeddingPhase {
       let degraded = false;
       let degradedReason: string | undefined;
       const batchSize = Math.max(1, provider.maxBatch);
+      const recordsToUpsert: NodeEmbeddingRecord[] = [];
 
       for (let offset = 0; offset < stale.length; offset += batchSize) {
         if (Date.now() - startedAt > this.config.phaseBudgetMs) {
@@ -71,13 +72,17 @@ export class EmbeddingPhase {
             documentVersion: EMBEDDING_DOCUMENT_VERSION,
             createdAt,
           }));
-          await store.upsert(analysisId, records);
+          recordsToUpsert.push(...records);
           embedded += records.length;
         } catch (error) {
           failed += batch.length;
           degraded = true;
           degradedReason = error instanceof Error ? error.message : String(error);
         }
+      }
+
+      if (recordsToUpsert.length > 0) {
+        await store.upsert(analysisId, recordsToUpsert);
       }
 
       const generatedAt = new Date().toISOString();
