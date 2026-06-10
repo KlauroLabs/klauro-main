@@ -1,7 +1,7 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { analyzeProject, getAnalysis, analyzeProjectIncremental } from './analyzer';
-import { getStorageHealth, listAgenticBenchmarkReports, listAnalyses, listWorkspaceGraphs, loadAgenticBenchmarkReport, loadGoldenSnapshot, loadLatestAgenticBenchmarkReportByType, loadRuntimeObservations, loadRuntimeTrace, loadWorkspaceGraph, saveAgenticBenchmarkReport, saveGoldenSnapshot, saveRuntimeObservation, saveWorkspaceGraph } from './storage';
+import { getStorageHealth, listAgenticBenchmarkReports, listAnalyses, listWorkspaceGraphs, loadAgenticBenchmarkReport, loadGoldenSnapshot, loadLatestAgenticBenchmarkReportByType, loadRuntimeObservations, loadWorkspaceGraph, saveAgenticBenchmarkReport, saveGoldenSnapshot, saveRuntimeObservation, saveWorkspaceGraph } from './storage';
 import * as query from './query';
 import * as watcher from './watcher';
 import * as product from './product';
@@ -32,7 +32,13 @@ import { buildUploadManifest } from './remote-source';
 import { loadKlauroConfig, writeDefaultKlauroConfig } from './klauro-config';
 import { buildGithubImportPlan } from './github-import';
 import * as proposalPreview from './proposal-preview';
+import * as greenfieldGuidance from './greenfield-guidance';
+import * as greenfieldBuildSession from './greenfield-build-session';
+import * as descriptionEnrichment from './description-enrichment';
+import * as runtimeSimulation from './runtime-simulation';
+import * as telemetryIngestion from './telemetry-ingestion';
 import { semanticSearch } from './semantic-search';
+import { pruneKlauroStorage } from './storage-maintenance';
 
 export function createServer(): McpServer {
   const server = new McpServer(
@@ -92,6 +98,57 @@ function runtimeObservationId(): string {
   return `runtime_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+type AnalysisFocus = 'agent-fast' | 'ui-overview' | 'deep-context' | 'full';
+
+async function withAnalysisFocus<T>(focus: AnalysisFocus | undefined, fn: () => Promise<T>): Promise<T> {
+  const previous = {
+    interpretation: process.env.KLAURO_AI_INTERPRETATION,
+    interpretationForce: process.env.KLAURO_AI_INTERPRETATION_FORCE,
+    deterministicKeep: process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP,
+    interpretationBudget: process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS,
+    elementBudget: process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS,
+    elementBatchSize: process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE,
+    elements: process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS,
+    embeddings: process.env.KLAURO_EMBEDDING_ENABLED,
+  };
+
+  try {
+    if (focus === 'agent-fast') {
+      process.env.KLAURO_AI_INTERPRETATION = 'false';
+      process.env.KLAURO_AI_INTERPRETATION_FORCE = 'false';
+      process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = 'false';
+      process.env.KLAURO_EMBEDDING_ENABLED = 'false';
+    } else if (focus === 'ui-overview') {
+      process.env.KLAURO_AI_INTERPRETATION = process.env.KLAURO_AI_INTERPRETATION || 'true';
+      process.env.KLAURO_AI_INTERPRETATION_FORCE = process.env.KLAURO_AI_INTERPRETATION_FORCE || 'true';
+      process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP = 'false';
+      process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS = process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS || '45000';
+      process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS || '90000';
+      process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE || '4';
+      process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS || 'true';
+      process.env.KLAURO_EMBEDDING_ENABLED = 'false';
+    } else if (focus === 'deep-context') {
+      process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS || 'false';
+    }
+
+    return await fn();
+  } finally {
+    restoreEnv('KLAURO_AI_INTERPRETATION', previous.interpretation);
+    restoreEnv('KLAURO_AI_INTERPRETATION_FORCE', previous.interpretationForce);
+    restoreEnv('KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP', previous.deterministicKeep);
+    restoreEnv('KLAURO_AI_INTERPRETATION_BUDGET_MS', previous.interpretationBudget);
+    restoreEnv('KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS', previous.elementBudget);
+    restoreEnv('KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE', previous.elementBatchSize);
+    restoreEnv('KLAURO_AI_ELEMENT_DESCRIPTIONS', previous.elements);
+    restoreEnv('KLAURO_EMBEDDING_ENABLED', previous.embeddings);
+  }
+}
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
 function registerTools(server: McpServer) {
 
   // -- Analysis Management --
@@ -104,14 +161,16 @@ function registerTools(server: McpServer) {
       inputSchema: {
         path: z.string().describe('Absolute path to the project directory'),
         force_full: z.boolean().optional().describe('Force full rebuild even if incremental is possible'),
+        analysis_focus: z.enum(['agent-fast', 'ui-overview', 'deep-context', 'full']).optional().describe('Optional layered analysis profile. agent-fast prioritizes MCP context speed, ui-overview prioritizes AI narrative and visualization, deep-context enables deeper semantic layers, full uses default configured behavior.'),
       } as any,
     } as any,
-    async ({ path, force_full }: any) => withErrorHandling(async () => {
+    async ({ path, force_full, analysis_focus }: any) => withErrorHandling(async () => withAnalysisFocus(analysis_focus, async () => {
       if (force_full) {
         const result = await analyzeProject(path);
         return json({
           status: 'success',
           analysis_type: 'full',
+          analysis_focus: analysis_focus || 'full',
           path,
           name: result.system?.name || path.split('/').pop(),
           nodes: result.nodes?.length || 0,
@@ -119,6 +178,7 @@ function registerTools(server: McpServer) {
           entry_points: result.entry_points?.length || 0,
           analyzers_run: result.analyzer_contributions?.length || 0,
           errors: result.analysis_errors?.length || 0,
+          phases: result.analysis_phases || [],
         });
       }
 
@@ -126,6 +186,7 @@ function registerTools(server: McpServer) {
       return json({
         status: 'success',
         analysis_type: result.wasFullRebuild ? 'full' : 'incremental',
+        analysis_focus: analysis_focus || 'full',
         path,
         name: result.output.system?.name || path.split('/').pop(),
         nodes: result.output.nodes?.length || 0,
@@ -133,6 +194,7 @@ function registerTools(server: McpServer) {
         entry_points: result.output.entry_points?.length || 0,
         analyzers_run: result.output.analyzer_contributions?.length || 0,
         errors: result.output.analysis_errors?.length || 0,
+        phases: result.output.analysis_phases || [],
         change_summary: result.wasFullRebuild ? undefined : {
           files_changed: result.changeReport.summary.filesAdded +
                         result.changeReport.summary.filesModified +
@@ -143,6 +205,162 @@ function registerTools(server: McpServer) {
           risk_level: result.changeReport.impact.riskLevel,
         },
       });
+    }))
+  );
+
+  server.registerTool(
+    'generate_element_description',
+    {
+      title: 'Generate Element Description',
+      description: 'Manually generate and store an AI description for one CAS element. Use this for drilldown descriptions of nodes, services, entities, capabilities, entry points, or exit points after the fast default analysis has completed.',
+      inputSchema: {
+        path: z.string().describe('Absolute path to the analyzed project directory'),
+        target: z.string().describe('Element id or name to describe'),
+        target_kind: z.enum(['node', 'service', 'entity', 'capability', 'entry_point', 'exit_point']).optional().describe('Optional target kind to disambiguate ids/names'),
+        instructions: z.string().optional().describe('Optional guidance for the description, such as audience or what to emphasize'),
+      } as any,
+    } as any,
+    async ({ path, target, target_kind, instructions }: any) => withErrorHandling(async () => {
+      return json(await descriptionEnrichment.generateElementDescription({
+        projectPath: path,
+        target,
+        targetKind: target_kind,
+        instructions,
+      }));
+    })
+  );
+
+  server.registerTool(
+    'get_element_description',
+    {
+      title: 'Get Element Description',
+      description: 'Fetch a stored manual AI description for one CAS element and report whether it is still valid or invalidated by source/fingerprint changes.',
+      inputSchema: {
+        path: z.string().describe('Absolute path to the analyzed project directory'),
+        target: z.string().describe('Element id or name to fetch'),
+        target_kind: z.enum(['node', 'service', 'entity', 'capability', 'entry_point', 'exit_point']).optional().describe('Optional target kind to disambiguate ids/names'),
+      } as any,
+    } as any,
+    async ({ path, target, target_kind }: any) => withErrorHandling(async () => {
+      return json(await descriptionEnrichment.getElementDescription({
+        projectPath: path,
+        target,
+        targetKind: target_kind,
+      }));
+    })
+  );
+
+  server.registerTool(
+    'get_analysis_phases',
+    {
+      title: 'Get Analysis Phases',
+      description: 'Inspect which Klauro analysis layers have completed, which were deferred, and what each layer contributes to UI visualization and AI-agent development.',
+      inputSchema: {
+        path: z.string().describe('Absolute path to the analyzed project directory'),
+      } as any,
+    } as any,
+    async ({ path }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json({
+        analysis_id: cas.analysis_id,
+        analysis_timestamp: cas.analysis_timestamp,
+        phases: cas.analysis_phases || [],
+        ai_description_status: {
+          system: cas.enhanced_system_purpose?.description_generation || null,
+          capabilities: (cas.system_capabilities || []).slice(0, 25).map(capability => ({
+            id: capability.id,
+            name: capability.name,
+            source: capability.description_source || null,
+            generation: capability.description_generation || null,
+          })),
+        },
+      });
+    })
+  );
+
+  server.registerTool(
+    'run_analysis_layer',
+    {
+      title: 'Run Analysis Layer',
+      description: 'Manually trigger a focused Klauro analysis layer without making agents run a full default workflow. Use for fast agent refreshes, UI overview refreshes, deep context refreshes, manual element descriptions, or simulated telemetry.',
+      inputSchema: {
+        path: z.string().describe('Absolute path to the analyzed project directory'),
+        layer: z.enum(['agent-fast-refresh', 'ui-overview-refresh', 'deep-context-refresh', 'manual-element-description', 'runtime-simulation']).describe('Layer to run'),
+        target: z.string().optional().describe('Element id/name for manual-element-description'),
+        target_kind: z.enum(['node', 'service', 'entity', 'capability', 'entry_point', 'exit_point']).optional().describe('Element kind for manual-element-description'),
+        instructions: z.string().optional().describe('Description instructions for manual-element-description'),
+        scenario: z.enum(['balanced', 'bug-hunt', 'traffic-spike', 'slow-dependencies']).optional().describe('Runtime simulation scenario'),
+        event_count: z.number().optional().describe('Runtime simulation event count'),
+        seed: z.string().optional().describe('Runtime simulation seed'),
+        persist: z.boolean().optional().describe('Whether runtime simulation observations should be stored'),
+        force_full: z.boolean().optional().describe('Force full rebuild for refresh layers'),
+      } as any,
+    } as any,
+    async ({ path, layer, target, target_kind, instructions, scenario, event_count, seed, persist, force_full }: any) => withErrorHandling(async () => {
+      if (layer === 'manual-element-description') {
+        if (!target) throw new Error('manual-element-description requires target');
+        return json(await descriptionEnrichment.generateElementDescription({
+          projectPath: path,
+          target,
+          targetKind: target_kind,
+          instructions,
+        }));
+      }
+
+      if (layer === 'runtime-simulation') {
+        const cas = await getAnalysis(path);
+        return json(await runtimeSimulation.simulateRuntimeTelemetry(cas, path, {
+          scenario,
+          eventCount: event_count,
+          seed,
+          persist,
+        }));
+      }
+
+      const focus: AnalysisFocus = layer === 'agent-fast-refresh'
+        ? 'agent-fast'
+        : layer === 'ui-overview-refresh'
+          ? 'ui-overview'
+          : 'deep-context';
+
+      return json(await withAnalysisFocus(focus, async () => {
+        if (force_full) {
+          const result = await analyzeProject(path);
+          return {
+            status: 'success',
+            layer,
+            analysis_type: 'full',
+            analysis_focus: focus,
+            path,
+            nodes: result.nodes?.length || 0,
+            edges: result.edges?.length || 0,
+            entry_points: result.entry_points?.length || 0,
+            phases: result.analysis_phases || [],
+          };
+        }
+
+        const result = await analyzeProjectIncremental(path);
+        return {
+          status: 'success',
+          layer,
+          analysis_type: result.wasFullRebuild ? 'full' : 'incremental',
+          analysis_focus: focus,
+          path,
+          nodes: result.output.nodes?.length || 0,
+          edges: result.output.edges?.length || 0,
+          entry_points: result.output.entry_points?.length || 0,
+          phases: result.output.analysis_phases || [],
+          change_summary: result.wasFullRebuild ? undefined : {
+            files_changed: result.changeReport.summary.filesAdded +
+              result.changeReport.summary.filesModified +
+              result.changeReport.summary.filesDeleted,
+            nodes_added: result.changeReport.summary.nodesAdded,
+            nodes_modified: result.changeReport.summary.nodesModified,
+            nodes_deleted: result.changeReport.summary.nodesDeleted,
+            risk_level: result.changeReport.impact.riskLevel,
+          },
+        };
+      }));
     })
   );
 
@@ -344,6 +562,75 @@ function registerTools(server: McpServer) {
   );
 
   server.registerTool(
+    'get_storage_maintenance_report',
+    {
+      title: 'Get Storage Maintenance Report',
+      description: 'Dry-run report for generated Klauro storage and allowlisted temp proof/preview/live-trial artifacts. Does not delete anything.',
+      inputSchema: {
+        root: z.string().optional().describe('Klauro home root. Defaults to ~/.klauro.'),
+        repo_root: z.string().optional().describe('Repository root when include_local_artifacts is true.'),
+        temp_root: z.string().optional().describe('Temp root when include_temp_artifacts is true. Defaults to os.tmpdir().'),
+        older_than_days: z.number().optional().describe('Select generated artifacts older than this many days.'),
+        max_bytes: z.number().optional().describe('Also select oldest/largest artifacts until generated storage is under this byte limit.'),
+        include_local_artifacts: z.boolean().optional().describe('Include repo-local .klauro-* benchmark artifacts under repo_root.'),
+        include_temp_artifacts: z.boolean().optional().describe('Include allowlisted Klauro-generated temp proof/preview/live-trial workspaces.'),
+        include_analyses: z.boolean().optional().describe('Include analysis snapshot files. Off by default.'),
+      } as any,
+    } as any,
+    async ({ root, repo_root, temp_root, older_than_days, max_bytes, include_local_artifacts, include_temp_artifacts, include_analyses }: any) => withErrorHandling(async () => {
+      return json(await pruneKlauroStorage({
+        root,
+        repoRoot: repo_root,
+        tempRoot: temp_root,
+        olderThanDays: older_than_days,
+        maxBytes: max_bytes,
+        includeLocalArtifacts: include_local_artifacts,
+        includeTempArtifacts: include_temp_artifacts,
+        includeAnalyses: include_analyses,
+        confirm: false,
+      }));
+    })
+  );
+
+  server.registerTool(
+    'prune_storage_artifacts',
+    {
+      title: 'Prune Storage Artifacts',
+      description: 'Delete selected generated Klauro artifacts. Requires confirm_delete=true and only deletes allowlisted generated artifacts selected by the provided filters.',
+      inputSchema: {
+        confirm_delete: z.boolean().describe('Must be true to delete selected generated artifacts.'),
+        root: z.string().optional().describe('Klauro home root. Defaults to ~/.klauro.'),
+        repo_root: z.string().optional().describe('Repository root when include_local_artifacts is true.'),
+        temp_root: z.string().optional().describe('Temp root when include_temp_artifacts is true. Defaults to os.tmpdir().'),
+        older_than_days: z.number().optional().describe('Select generated artifacts older than this many days.'),
+        max_bytes: z.number().optional().describe('Also select oldest/largest artifacts until generated storage is under this byte limit.'),
+        include_local_artifacts: z.boolean().optional().describe('Include repo-local .klauro-* benchmark artifacts under repo_root.'),
+        include_temp_artifacts: z.boolean().optional().describe('Include allowlisted Klauro-generated temp proof/preview/live-trial workspaces.'),
+        include_analyses: z.boolean().optional().describe('Include analysis snapshot files. Off by default.'),
+      } as any,
+    } as any,
+    async ({ confirm_delete, root, repo_root, temp_root, older_than_days, max_bytes, include_local_artifacts, include_temp_artifacts, include_analyses }: any) => withErrorHandling(async () => {
+      if (confirm_delete !== true) {
+        return json({
+          status: 'needs-confirmation',
+          message: 'Set confirm_delete=true to delete selected generated artifacts. Call get_storage_maintenance_report first to inspect the candidate list.',
+        });
+      }
+      return json(await pruneKlauroStorage({
+        root,
+        repoRoot: repo_root,
+        tempRoot: temp_root,
+        olderThanDays: older_than_days,
+        maxBytes: max_bytes,
+        includeLocalArtifacts: include_local_artifacts,
+        includeTempArtifacts: include_temp_artifacts,
+        includeAnalyses: include_analyses,
+        confirm: true,
+      }));
+    })
+  );
+
+  server.registerTool(
     'preview_codebase_iteration',
     {
       title: 'Preview Codebase Iteration',
@@ -375,6 +662,70 @@ function registerTools(server: McpServer) {
         projectId: project_id,
         codebaseId: codebase_id,
         previewBaseUrl: preview_base_url,
+      }));
+    })
+  );
+
+  server.registerTool(
+    'get_greenfield_architecture_guidance',
+    {
+      title: 'Get Greenfield Architecture Guidance',
+      description: 'Use existing analyzed repositories as memory before creating a new codebase. Returns architecture options, duplicate-capability warnings, first-file guidance, tests, and next MCP preview steps.',
+      inputSchema: {
+        plan_text: z.string().describe('Natural-language new-project goal or agent plan'),
+        proposed_files: z.array(z.object({
+          path: z.string(),
+          content: z.string().optional(),
+          status: z.enum(['added', 'modified', 'deleted']).optional(),
+        })).optional().describe('Optional proposed file bundle to review before preview_greenfield_codebase'),
+        reference_paths: z.array(z.string()).optional().describe('Existing analyzed repositories to use as memory. Omit to use all stored analyses.'),
+        limit: z.number().optional().describe('Maximum overlap matches to return'),
+      } as any,
+    } as any,
+    async ({ plan_text, proposed_files, reference_paths, limit }: any) => withErrorHandling(async () => {
+      const references = await loadRepositoryAnalyses(reference_paths);
+      return json(greenfieldGuidance.buildGreenfieldArchitectureGuidance({
+        planText: plan_text,
+        proposedFiles: proposed_files,
+        references: references.map(reference => ({
+          path: reference.path,
+          name: reference.name,
+          cas: reference.cas,
+        })),
+        limit,
+      }));
+    })
+  );
+
+  server.registerTool(
+    'get_greenfield_build_packet',
+    {
+      title: 'Get Greenfield Build Packet',
+      description: 'Guide a zero-repo or growing greenfield build. For an empty folder it returns first-slice architecture guidance; after files exist it analyzes the folder and returns CAS-backed memory, duplicate-prevention rules, focused files to read, and next-slice validation steps.',
+      inputSchema: {
+        workspace_path: z.string().describe('Absolute path to the empty or growing project folder'),
+        plan_text: z.string().describe('Current product requirement or next-slice plan'),
+        proposed_files: z.array(z.object({
+          path: z.string(),
+          content: z.string().optional(),
+          status: z.enum(['added', 'modified', 'deleted']).optional(),
+        })).optional().describe('Optional proposed file bundle for the next slice'),
+        reference_paths: z.array(z.string()).optional().describe('Existing analyzed repositories to use as external memory. Omit to use all stored analyses.'),
+        limit: z.number().optional().describe('Maximum overlap matches to return'),
+      } as any,
+    } as any,
+    async ({ workspace_path, plan_text, proposed_files, reference_paths, limit }: any) => withErrorHandling(async () => {
+      const references = await loadRepositoryAnalyses(reference_paths);
+      return json(await greenfieldBuildSession.buildGreenfieldBuildPacket({
+        workspacePath: workspace_path,
+        planText: plan_text,
+        proposedFiles: proposed_files,
+        references: references.map(reference => ({
+          path: reference.path,
+          name: reference.name,
+          cas: reference.cas,
+        })),
+        limit,
       }));
     })
   );
@@ -540,6 +891,24 @@ function registerTools(server: McpServer) {
     async ({ path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getSystemOverview(cas));
+    })
+  );
+
+  server.registerTool(
+    'get_architecture_context',
+    {
+      title: 'Get Architecture Context',
+      description: 'Compact architecture guidance for agents. Returns detected architecture patterns, MVC/MVVM/repository/mediator/unit-of-work/singleton inventory counts and examples, target-relevant owners, a pattern decision matrix, pattern-balance risks, and rules to preserve local architecture.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        target: z.string().optional().describe('Optional node, file, or feature target to focus architecture owners'),
+        files: z.array(z.string()).optional().describe('Optional changed or planned files to focus architecture owners'),
+        limit: z.number().optional().describe('Maximum patterns to include'),
+      } as any,
+    } as any,
+    async ({ path, target, files, limit }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(agentAdoption.buildArchitectureContextForAgent(cas, { target, files, limit }));
     })
   );
 
@@ -851,7 +1220,7 @@ function registerTools(server: McpServer) {
     'get_agent_work_packet',
     {
       title: 'Get Agent Work Packet',
-      description: 'One-call task packet for agents. Resolves the target, returns coding context, risk, callers, callees, tests, entry context, MCP follow-ups, and the first source files to inspect.',
+      description: 'One-call task packet for agents. Resolves the target, returns coding context, capability memory, risk, callers, callees, tests, entry context, MCP follow-ups, and the first source files to inspect.',
       inputSchema: {
         path: z.string().describe('Project path'),
         task: z.object({
@@ -867,6 +1236,32 @@ function registerTools(server: McpServer) {
     async ({ path, task }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(await agentAdoption.getAgentWorkPacket(cas, path, task || {}));
+    })
+  );
+
+  server.registerTool(
+    'get_capability_memory',
+    {
+      title: 'Get Capability Memory',
+      description: 'Find existing analyzed capabilities that overlap the requested work so agents avoid rebuilding behavior that already exists. Use before adding new services, routes, workers, models, packages, or greenfield-adjacent features in an existing codebase.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        target: z.string().optional().describe('Capability, file, node, route, domain, or user-requested feature to compare against existing CAS capabilities'),
+        instructions: z.string().optional().describe('Task or plan text to match against existing capabilities'),
+        success_criteria: z.array(z.string()).optional().describe('Expected outcomes to include in overlap matching'),
+        files: z.array(z.string()).optional().describe('Known files involved in the work'),
+        limit: z.number().optional().describe('Maximum capabilities to return'),
+      } as any,
+    } as any,
+    async ({ path, target, instructions, success_criteria, files, limit }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(agentAdoption.buildCapabilityMemoryForAgent(cas, {
+        target,
+        instructions,
+        success_criteria,
+        files,
+        limit,
+      }));
     })
   );
 
@@ -1408,7 +1803,9 @@ function registerTools(server: McpServer) {
       description: 'Discover every real Git repo under a dev root, account for unsupported/skipped repos, run analysis/readiness/idiom/incremental checks on eligible repos, and require live idiom A/B proof when agent commands are supplied.',
       inputSchema: {
         dev_root: z.string().optional().describe('Root to discover real Git repos under. Defaults to ~/dev.'),
+        mode: z.enum(['fast', 'full']).optional().describe('fast samples eligible repos with resource budgets; full analyzes every eligible repo.'),
         max_targets: z.number().optional().describe('Limit eligible repos for expensive checks while still reporting all discovered repos.'),
+        max_source_files: z.number().optional().describe('Skip eligible repos above this source-file count for expensive checks while still reporting them.'),
         work_root: z.string().optional().describe('Directory for copied repo workspaces and benchmark artifacts.'),
         no_live: z.boolean().optional().describe('Skip live idiom A/B execution. The live proof gate remains failed when skipped.'),
         agent_with_command: z.string().optional().describe('Live with-Klauro agent command template.'),
@@ -1418,12 +1815,16 @@ function registerTools(server: McpServer) {
         max_live_tasks: z.number().optional().describe('Maximum live idiom task pairs.'),
         timeout_ms: z.number().optional().describe('Per-agent command timeout in milliseconds.'),
         test_timeout_ms: z.number().optional().describe('Per-test command timeout in milliseconds.'),
+        analysis_budget_ms: z.number().optional().describe('Per-selected-repo analysis budget gate.'),
+        incremental_budget_ms: z.number().optional().describe('Per-selected-repo incremental edit budget gate.'),
       } as any,
     } as any,
-    async ({ dev_root, max_targets, work_root, no_live, agent_with_command, agent_without_command, orchestrator_command, test_command, max_live_tasks, timeout_ms, test_timeout_ms }: any) => withErrorHandling(async () => {
+    async ({ dev_root, mode, max_targets, max_source_files, work_root, no_live, agent_with_command, agent_without_command, orchestrator_command, test_command, max_live_tasks, timeout_ms, test_timeout_ms, analysis_budget_ms, incremental_budget_ms }: any) => withErrorHandling(async () => {
       const report = await runMachineAgentProof({
         devRoot: dev_root || `${process.env.HOME || ''}/dev`,
+        mode,
         maxTargets: max_targets,
+        maxSourceFiles: max_source_files,
         outputPath: '',
         markdownPath: '',
         workRoot: work_root,
@@ -1436,6 +1837,8 @@ function registerTools(server: McpServer) {
         timeoutMs: timeout_ms,
         testTimeoutMs: test_timeout_ms,
         discardWorkspaces: true,
+        analysisBudgetMs: analysis_budget_ms,
+        incrementalBudgetMs: incremental_budget_ms,
       });
       return json(report);
     })
@@ -2288,6 +2691,93 @@ function registerTools(server: McpServer) {
   );
 
   server.registerTool(
+    'get_user_journeys',
+    {
+      title: 'Get User Journeys',
+      description: 'Deterministic end-to-end user journeys composed from entry points, call chains, and terminal effects. Each journey shows why a path exists via its terminal entities (e.g. "Create work order -> WorkOrder created"). With journey_id: returns full journey detail with steps, security boundaries, and covering tests. Without: returns paginated journey summaries.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        journey_id: z.string().optional().describe('Specific journey ID for full detail'),
+        kind: z.enum(['user-facing', 'system', 'scheduled']).optional().describe('Filter by journey kind'),
+        limit: z.number().optional().describe('Max results when listing (default 25)'),
+        offset: z.number().optional().describe('Skip first N results (default 0)'),
+      } as any,
+    } as any,
+    async ({ path, journey_id, kind, limit, offset }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(query.getUserJourneys(cas, { journeyId: journey_id, kind, limit, offset }));
+    })
+  );
+
+  server.registerTool(
+    'get_paradigm_conformance',
+    {
+      title: 'Get Paradigm Conformance',
+      description: 'Statistically detected codebase paradigms (service-mediated data access, entry-service-repository layering, guarded HTTP entry points, single-owner entity writes) with adoption rates, evidence files, and file-level deviations. Norms only emerge when at least 70 percent of comparable code follows the shape, so repos without a norm produce no noise. With paradigm: returns full detail including every deviation. Without: returns per-paradigm summaries with up to 3 sample deviations.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        paradigm: z.string().optional().describe('Specific paradigm name for full detail (e.g. guarded-http-entry-points)'),
+      } as any,
+    } as any,
+    async ({ path, paradigm }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(query.getParadigmConformance(cas, { paradigm }));
+    })
+  );
+
+  server.registerTool(
+    'get_data_lineage',
+    {
+      title: 'Get Data Lineage',
+      description: 'Deterministic per-entity data lineage: which code writes and reads each data entity, which external services receive it, which security boundaries the data crosses and whether they are guarded, and which user journeys carry it. Entities are ranked by exposure (sensitive fields + unguarded paths + external transfer first). With entity_id: returns full lineage detail for one entity. Without: returns ranked summaries.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        entity_id: z.string().optional().describe('Specific data entity ID for full lineage detail'),
+        sensitive_only: z.boolean().optional().describe('Only return entities with sensitive fields'),
+        limit: z.number().optional().describe('Max results when listing (default 25)'),
+        offset: z.number().optional().describe('Skip first N results (default 0)'),
+      } as any,
+    } as any,
+    async ({ path, entity_id, sensitive_only, limit, offset }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(query.getDataLineage(cas, { entityId: entity_id, sensitiveOnly: sensitive_only, limit, offset }));
+    })
+  );
+
+  server.registerTool(
+    'diff_behavior',
+    {
+      title: 'Diff Behavior',
+      description: 'Behavior-level diff between the current analysis and a prior snapshot: journeys added/removed/changed (matched by entry signature plus terminal entities, not ids), security boundary changes and newly unguarded entries, capability additions and possible duplicates, data lineage exposure changes for sensitive entities, and paradigm deviations introduced or resolved. Risk flags appear first, e.g. a new journey that writes an entity without crossing the auth boundary.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        snapshot: z.string().optional().describe("Snapshot id to diff against, or 'previous' for the most recent prior snapshot (default)"),
+      } as any,
+    } as any,
+    async ({ path, snapshot }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(await query.diffBehaviorAgainstSnapshot(path, cas, snapshot));
+    })
+  );
+
+  server.registerTool(
+    'get_product_map',
+    {
+      title: 'Get Product Map',
+      description: 'One composed product map of what was actually built: system identity with provenance-tagged descriptions, capabilities ordered by criticality and linked to the user journeys and entities they serve, journey counts with the top journeys by criticality, sensitive data and exposure highlights, paradigm adoption with open deviations, health (tests, implementation gaps, top risks), and coverage caveats. Use section to fetch one part token-efficiently, or format markdown for a compact onboarding brief.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        section: z.enum(['identity', 'capabilities', 'journeys', 'data', 'conventions', 'health', 'coverage_caveats']).optional().describe('Return only one section of the map'),
+        format: z.enum(['json', 'markdown']).optional().describe("Output format: 'json' (default) or 'markdown' for a compact product brief"),
+      } as any,
+    } as any,
+    async ({ path, section, format }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(query.getProductMap(cas, { section, format }));
+    })
+  );
+
+  server.registerTool(
     'get_flow_graph',
     {
       title: 'Get Flow Graph',
@@ -2316,6 +2806,30 @@ function registerTools(server: McpServer) {
     async ({ path, telemetry_status, kind, limit, offset }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getRuntimeStaticLinks(cas, { telemetryStatus: telemetry_status, kind, limit, offset }));
+    })
+  );
+
+  server.registerTool(
+    'simulate_runtime_telemetry',
+    {
+      title: 'Simulate Runtime Telemetry',
+      description: 'Generate deterministic simulated traffic, errors, latency, and traces mapped onto CAS objects, then feed them into runtime observations and operational priorities. Use this to preview how telemetry would affect active development before SDK data exists.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        scenario: z.enum(['balanced', 'bug-hunt', 'traffic-spike', 'slow-dependencies']).optional().describe('Simulation shape'),
+        event_count: z.number().optional().describe('Number of synthetic observations to generate, max 500'),
+        seed: z.string().optional().describe('Stable seed for repeatable simulations'),
+        persist: z.boolean().optional().describe('Store generated observations. Defaults to true; set false for dry-run planning.'),
+      } as any,
+    } as any,
+    async ({ path, scenario, event_count, seed, persist }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(await runtimeSimulation.simulateRuntimeTelemetry(cas, path, {
+        scenario,
+        eventCount: event_count,
+        seed,
+        persist,
+      }));
     })
   );
 
@@ -2401,6 +2915,7 @@ function registerTools(server: McpServer) {
         id: runtimeObservationId(),
         project_path: path,
         recorded_at: new Date().toISOString(),
+        source: 'ingested',
         event: eventWithTimestamp,
         correlation: product.correlateRuntimeEvent(cas, eventWithTimestamp),
       };
@@ -2410,10 +2925,53 @@ function registerTools(server: McpServer) {
   );
 
   server.registerTool(
+    'ingest_telemetry',
+    {
+      title: 'Ingest Telemetry',
+      description: 'Ingest a batch of real runtime telemetry events in an OTEL-compatible shape, correlate each event onto CAS static structure via routes, file/function hints, and stack frames, and persist them with source "ingested". Returns matched/partial/unmatched counts and the top unmatched hints. Ingested telemetry drives get_runtime_observations and get_operational_priorities by default.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        events: z.array(z.object({
+          kind: z.enum(['request', 'error', 'log', 'metric']).describe('Event kind'),
+          timestamp: z.string().optional().describe('ISO timestamp of the runtime event'),
+          name: z.string().optional().describe('Span, signal, or metric name, such as http:POST:/work_orders'),
+          service_name: z.string().optional(),
+          environment: z.string().optional().describe('Deployment environment, such as production or staging'),
+          trace_id: z.string().optional(),
+          span_id: z.string().optional(),
+          parent_span_id: z.string().optional(),
+          method: z.string().optional().describe('HTTP method'),
+          route: z.string().optional().describe('Route pattern, such as /work_orders/:id'),
+          path: z.string().optional().describe('Raw request path'),
+          status: z.number().optional().describe('HTTP status code'),
+          duration_ms: z.number().optional(),
+          function_hint: z.string().optional().describe('Function or method name the event originated from'),
+          file_hint: z.string().optional().describe('Source file the event originated from'),
+          error: z.object({
+            type: z.string().optional(),
+            message: z.string().optional(),
+            stack_top_frames: z.array(z.union([
+              z.string(),
+              z.object({ file: z.string(), line: z.number().optional(), function: z.string().optional() }),
+            ])).optional().describe('Top stack frames, most specific first'),
+          }).optional(),
+          volume: z.number().optional().describe('Pre-aggregated event count this entry represents'),
+          attributes: z.record(z.unknown()).optional(),
+        })).describe('Batch of runtime events, max 1000 per call'),
+        persist: z.boolean().optional().describe('Store ingested observations. Defaults to true; set false for dry-run correlation.'),
+      } as any,
+    } as any,
+    async ({ path, events, persist }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(await telemetryIngestion.ingestTelemetryBatch(cas, path, events, { persist }));
+    })
+  );
+
+  server.registerTool(
     'get_runtime_observations',
     {
       title: 'Get Runtime Observations',
-      description: 'Query stored runtime observations and their CAS correlations. Filter by type, timestamp, or static CAS id.',
+      description: 'Query stored runtime observations and their CAS correlations. Filter by type, timestamp, or static CAS id. Returns ingested telemetry by default; simulated observations are only included when source is set to "simulated" or "all" and are always labeled with their provenance.',
       inputSchema: {
         path: z.string().describe('Project path'),
         type: z.enum(['request', 'error', 'exit', 'log', 'custom']).optional().describe('Runtime event type'),
@@ -2421,18 +2979,52 @@ function registerTools(server: McpServer) {
         static_id: z.string().optional().describe('CAS node, entry point, exit point, call chain, or runtime link id'),
         trace_id: z.string().optional().describe('Runtime trace id'),
         span_id: z.string().optional().describe('Runtime span id or parent span id'),
+        source: z.enum(['ingested', 'simulated', 'all']).optional().describe('Observation provenance to return (default ingested)'),
         limit: z.number().optional().describe('Max results (default storage order, newest first)'),
       } as any,
     } as any,
-    async ({ path, type, since, static_id, trace_id, span_id, limit }: any) => withErrorHandling(async () => {
-      return json(await loadRuntimeObservations(path, {
+    async ({ path, type, since, static_id, trace_id, span_id, source, limit }: any) => withErrorHandling(async () => {
+      return json(await telemetryIngestion.loadTelemetryObservations(path, {
         type,
         since,
         staticId: static_id,
         traceId: trace_id,
         spanId: span_id,
+        source,
         limit,
       }));
+    })
+  );
+
+  server.registerTool(
+    'get_operational_priorities',
+    {
+      title: 'Get Operational Priorities',
+      description: 'Rank bugs, bottlenecks, problematic areas, and telemetry-backed work by combining stored runtime observations with CAS system health, change risk, tests, idioms, and static/runtime correlations. Uses ingested telemetry only by default; pass include_simulated to mix in simulated observations, which are always labeled per priority.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        since: z.string().optional().describe('ISO timestamp lower bound for runtime observations'),
+        include_simulated: z.boolean().optional().describe('Also include simulated observations (default false)'),
+        limit: z.number().optional().describe('Max priorities to return'),
+      } as any,
+    } as any,
+    async ({ path, since, include_simulated, limit }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      const set = await telemetryIngestion.loadTelemetryObservations(path, {
+        since,
+        source: include_simulated ? 'all' : 'ingested',
+        limit: 5000,
+      });
+      const result = product.buildOperationalPriorities(cas, set.observations, { limit });
+      const notes: string[] = [];
+      if (set.ingested_count === 0 && set.simulated_count > 0 && !include_simulated) {
+        notes.push(`No ingested telemetry found, but ${set.simulated_count} simulated observations exist. Pass include_simulated: true to rank with simulated data; simulated priorities never represent production truth.`);
+      }
+      return json({
+        source: include_simulated ? 'all' : 'ingested',
+        ...result,
+        ...(notes.length > 0 ? { notes } : {}),
+      });
     })
   );
 
@@ -2440,14 +3032,15 @@ function registerTools(server: McpServer) {
     'get_runtime_trace',
     {
       title: 'Get Runtime Trace',
-      description: 'Replay stored runtime observations for a trace id with matched CAS static ids.',
+      description: 'Replay stored runtime observations for a trace id with matched CAS static ids. Reads ingested telemetry by default; set source to "simulated" or "all" to include simulated observations.',
       inputSchema: {
         path: z.string().describe('Project path'),
         trace_id: z.string().describe('Runtime trace id'),
+        source: z.enum(['ingested', 'simulated', 'all']).optional().describe('Observation provenance to read (default ingested)'),
       } as any,
     } as any,
-    async ({ path, trace_id }: any) => withErrorHandling(async () => {
-      return json(await loadRuntimeTrace(path, trace_id));
+    async ({ path, trace_id, source }: any) => withErrorHandling(async () => {
+      return json(await telemetryIngestion.loadTelemetryTrace(path, trace_id, { source }));
     })
   );
 
@@ -2594,6 +3187,19 @@ function registerTools(server: McpServer) {
     async ({ path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getImplementationHealth(cas));
+    })
+  );
+
+  server.registerTool(
+    'get_system_health',
+    {
+      title: 'Get System Health',
+      description: 'CAS-backed coherence and risk analysis: complexity, duplication, paradigm drift, naming/DI/module convention drift, implementation gaps, test gaps, and runtime coverage gaps. Use before broad refactors and after analysis to decide what to fix or align.',
+      inputSchema: { path: z.string().describe('Project path') } as any,
+    } as any,
+    async ({ path }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(query.getSystemHealth(cas));
     })
   );
 
@@ -3200,6 +3806,7 @@ function registerResources(server: McpServer) {
           uri: uri.href,
           text: JSON.stringify({
             implementation_health: query.getImplementationHealth(cas),
+            system_health: query.getSystemHealth(cas),
             documentation_coverage: query.getDocumentationCoverage(cas),
             todos: query.getTodos(cas),
             analysis_errors: cas.analysis_errors,
@@ -3327,6 +3934,15 @@ function registerPrompts(server: McpServer) {
         if (layers?.business) sections.push(`Business: ${JSON.stringify(layers.business)}`);
         if (layers?.data) sections.push(`Data: ${JSON.stringify(layers.data)}`);
         if (layers?.infrastructure) sections.push(`Infrastructure: ${JSON.stringify(layers.infrastructure)}`);
+      }
+
+      if (overview.system_health) {
+        sections.push(`\n## System Health`);
+        sections.push(`Status: ${overview.system_health.status}, score: ${overview.system_health.score}`);
+        sections.push(`Coherence: ${overview.system_health.coherence?.status || 'unknown'}`);
+        for (const area of (overview.system_health.risk_areas || []).slice(0, 5)) {
+          sections.push(`  ${area.severity}: ${area.title} - ${area.recommendation}`);
+        }
       }
 
       sections.push(`\n## Scale`);

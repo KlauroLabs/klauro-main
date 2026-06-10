@@ -7,7 +7,9 @@ import { CSharpAnalyzer } from '../../../packages/analyzer-core/src/analyzer/lan
 import { GoAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/go-analyzer';
 import { RustAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/rust-analyzer';
 import { PHPAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/php-analyzer';
+import { RubyAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/ruby-analyzer';
 import { DartAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/dart-analyzer';
+import { TerraformAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/terraform-analyzer';
 import {
   NestJSAnalyzer,
   SpringBootAnalyzer,
@@ -20,6 +22,7 @@ import {
   AngularAnalyzer,
   LaravelAnalyzer,
   SymfonyAnalyzer,
+  RailsAnalyzer,
   NextJSAnalyzer,
 } from '../../../packages/analyzer-core/src/analyzer/frameworks/web';
 import { JestAnalyzer, CypressAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/testing';
@@ -41,6 +44,7 @@ import {
   loadIncrementalState,
   saveChangeHistoryEntry,
   saveAnalysisSnapshot,
+  listAnalysisSnapshots,
   saveFileCache,
   loadFileCache,
   getProjectStorageDir
@@ -52,13 +56,12 @@ import type { VectorStoreSetting } from '../../../packages/analyzer-core/src/ana
 import type { VectorStore } from '../../../packages/analyzer-core/src/analyzer/embedding/types';
 import type { EmbeddingPhaseConfig } from '../../../packages/analyzer-core/src/analyzer/embedding/embedding-phase';
 import { getPgPool, resolvePgConnectionString } from './pg-pool';
+import { applyStoredElementDescriptions } from './description-enrichment';
 
 let orchestrator: AnalyzerOrchestrator | null = null;
 
-export function getOrchestrator(): AnalyzerOrchestrator {
-  if (orchestrator) return orchestrator;
-
-  orchestrator = new AnalyzerOrchestrator();
+export function createOrchestrator(): AnalyzerOrchestrator {
+  const created = new AnalyzerOrchestrator();
 
   const languageRegistrations: AnalyzerRegistration[] = [
     {
@@ -139,6 +142,17 @@ export function getOrchestrator(): AnalyzerOrchestrator {
       analyzer: new PHPAnalyzer(),
     },
     {
+      id: 'ruby',
+      name: 'Ruby Analyzer',
+      type: 'language',
+      version: '1.0.0',
+      detectPatterns: {
+        files: ['Gemfile', 'Gemfile.lock', 'Rakefile'],
+        content: [/\.rb$/],
+      },
+      analyzer: new RubyAnalyzer(),
+    },
+    {
       id: 'dart',
       name: 'Dart/Flutter Analyzer',
       type: 'language',
@@ -148,6 +162,17 @@ export function getOrchestrator(): AnalyzerOrchestrator {
         content: [/\.dart$/],
       },
       analyzer: new DartAnalyzer(),
+    },
+    {
+      id: 'terraform',
+      name: 'Terraform/HCL Analyzer',
+      type: 'language',
+      version: '1.0.0',
+      detectPatterns: {
+        files: ['*.tf', '*.tfvars'],
+        content: [/\.tf$/, /\.tfvars$/],
+      },
+      analyzer: new TerraformAnalyzer(),
     },
   ];
 
@@ -159,6 +184,7 @@ export function getOrchestrator(): AnalyzerOrchestrator {
     { id: 'fastapi', name: 'FastAPI Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['fastapi', 'FastAPI'], files: ['requirements.txt'] }, requires: ['python'], analyzer: new FastAPIAnalyzer() },
     { id: 'laravel', name: 'Laravel Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['artisan', 'composer.json'], dependencies: ['laravel/framework'] }, requires: ['php'], analyzer: new LaravelAnalyzer() },
     { id: 'symfony', name: 'Symfony Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['bin/console', 'composer.json'], dependencies: ['symfony/framework-bundle'] }, requires: ['php'], analyzer: new SymfonyAnalyzer() },
+    { id: 'rails', name: 'Rails Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['Gemfile', 'config/routes.rb'], dependencies: ['rails'] }, requires: ['ruby'], analyzer: new RailsAnalyzer() },
     { id: 'express', name: 'Express.js Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['express'], files: ['package.json'] }, requires: ['typescript-javascript'], analyzer: new ExpressAnalyzer() },
     { id: 'react', name: 'React Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['react', 'react-dom'], files: ['package.json'], content: [/\.jsx$/, /\.tsx$/] }, requires: ['typescript-javascript'], analyzer: new ReactAnalyzer() },
     { id: 'angular', name: 'Angular Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['@angular/core', '@angular/common'], files: ['angular.json', 'package.json'], content: [/\.component\.ts$/] }, requires: ['typescript-javascript'], analyzer: new AngularAnalyzer() },
@@ -180,13 +206,28 @@ export function getOrchestrator(): AnalyzerOrchestrator {
   ];
 
   for (const reg of [...languageRegistrations, ...frameworkRegistrations, ...libraryRegistrations]) {
-    orchestrator.registerAnalyzer(reg);
+    created.registerAnalyzer(reg);
   }
 
+  return created;
+}
+
+export function getOrchestrator(): AnalyzerOrchestrator {
+  if (process.env.KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS === '1') {
+    return createOrchestrator();
+  }
+
+  if (orchestrator) return orchestrator;
+
+  orchestrator = createOrchestrator();
   return orchestrator;
 }
 
 async function buildEmbeddingPhaseConfig(projectPath: string): Promise<EmbeddingPhaseConfig | null> {
+  if (process.env.KLAURO_EMBEDDING_ENABLED === 'false' || process.env.KLAURO_EMBEDDING_ENABLED === '0') {
+    return null;
+  }
+
   const loaded = await loadKlauroConfig(projectPath);
   const embedding = loaded.config.embedding;
   if (!embedding.enabled) return null;
@@ -287,7 +328,7 @@ export async function analyzeProject(projectPath: string): Promise<CASOutput> {
 
 export async function getAnalysis(projectPath: string): Promise<CASOutput> {
   const cached = await loadAnalysis(projectPath);
-  if (cached) return cached;
+  if (cached) return applyStoredElementDescriptions(projectPath, cached);
   throw new Error(`No analysis found for: ${projectPath}. Run analyze_codebase first.`);
 }
 
@@ -297,6 +338,30 @@ export interface IncrementalAnalysisResult {
   changeReport: ChangeReport;
   wasFullRebuild: boolean;
   fullRebuildReason?: string;
+}
+
+const DEFAULT_INCREMENTAL_SNAPSHOT_INTERVAL_MS = 60_000;
+
+function getIncrementalSnapshotIntervalMs(): number {
+  const raw = process.env.KLAURO_INCREMENTAL_SNAPSHOT_INTERVAL_MS;
+  if (raw === undefined || raw === '') return DEFAULT_INCREMENTAL_SNAPSHOT_INTERVAL_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : DEFAULT_INCREMENTAL_SNAPSHOT_INTERVAL_MS;
+}
+
+async function shouldSaveIncrementalSnapshot(projectPath: string, result: IncrementalAnalysisResult): Promise<boolean> {
+  if (result.wasFullRebuild) return true;
+  const intervalMs = getIncrementalSnapshotIntervalMs();
+  if (intervalMs === 0) return true;
+
+  try {
+    const snapshots = await listAnalysisSnapshots(projectPath);
+    const latest = snapshots[0]?.timestamp ? new Date(snapshots[0].timestamp).getTime() : 0;
+    if (!latest || Number.isNaN(latest)) return true;
+    return Date.now() - latest >= intervalMs;
+  } catch {
+    return true;
+  }
 }
 
 function makeEdgeId(edge: { id?: string; source: string; target: string; type: string }): string {
@@ -434,6 +499,12 @@ function buildChangeHistoryEntry(result: IncrementalAnalysisResult): ChangeHisto
 }
 
 export async function analyzeProjectIncremental(projectPath: string): Promise<IncrementalAnalysisResult> {
+  const debugTimings = process.env.KLAURO_DEBUG_INCREMENTAL_TIMINGS === '1';
+  const debug = (label: string, startedAt: number) => {
+    if (debugTimings) {
+      console.error(`[Klauro] incremental timing ${label}: ${Date.now() - startedAt}ms`);
+    }
+  };
   if (!(await fs.pathExists(projectPath))) {
     throw new Error(`Project path does not exist: ${projectPath}`);
   }
@@ -445,9 +516,14 @@ export async function analyzeProjectIncremental(projectPath: string): Promise<In
   const previousState = await loadIncrementalState(projectPath);
 
   if (!previousOutput) {
+    let phaseStartedAt = Date.now();
     const result = await orch.orchestrateAnalysis(projectPath);
+    debug('initial-orchestrate-full', phaseStartedAt);
+    phaseStartedAt = Date.now();
     await saveAnalysis(projectPath, result);
+    debug('initial-save-analysis', phaseStartedAt);
 
+    phaseStartedAt = Date.now();
     const freshResult = await orch.orchestrateIncrementalAnalysis(
       projectPath,
       result,
@@ -457,13 +533,19 @@ export async function analyzeProjectIncremental(projectPath: string): Promise<In
         saveCache: (hash, fileResult) => saveFileCache(projectPath, hash, fileResult)
       }
     );
+    debug('initial-build-state', phaseStartedAt);
 
+    phaseStartedAt = Date.now();
     await saveIncrementalState(projectPath, freshResult.state);
+    debug('initial-save-state', phaseStartedAt);
+    phaseStartedAt = Date.now();
     await saveAnalysisSnapshot(projectPath, freshResult.output);
+    debug('initial-save-snapshot', phaseStartedAt);
 
     return freshResult;
   }
 
+  let phaseStartedAt = Date.now();
   const result = await orch.orchestrateIncrementalAnalysis(
     projectPath,
     previousOutput,
@@ -473,18 +555,29 @@ export async function analyzeProjectIncremental(projectPath: string): Promise<In
       saveCache: (hash, fileResult) => saveFileCache(projectPath, hash, fileResult)
     }
   );
+  debug('orchestrate-incremental', phaseStartedAt);
 
   const casChanged = hasCasReportChanges(result.changeReport);
   const outputChanged = result.output !== previousOutput || casChanged;
   if (outputChanged) {
+    phaseStartedAt = Date.now();
     await saveAnalysis(projectPath, result.output);
+    debug('save-analysis', phaseStartedAt);
   }
+  phaseStartedAt = Date.now();
   await saveIncrementalState(projectPath, result.state);
+  debug('save-state', phaseStartedAt);
 
   if (hasReportChanges(result.changeReport)) {
+    phaseStartedAt = Date.now();
     await saveChangeHistoryEntry(projectPath, buildChangeHistoryEntry(result));
-    if (outputChanged) {
+    debug('save-change-history', phaseStartedAt);
+    if (outputChanged && await shouldSaveIncrementalSnapshot(projectPath, result)) {
+      phaseStartedAt = Date.now();
       await saveAnalysisSnapshot(projectPath, result.output);
+      debug('save-snapshot', phaseStartedAt);
+    } else if (outputChanged) {
+      debug('skip-snapshot-throttled', Date.now());
     }
   }
 

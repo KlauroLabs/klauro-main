@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 import * as path from 'path';
-import { analyzeProjectIncremental, getAnalysis } from './analyzer';
+import { analyzeProject, analyzeProjectIncremental, getAnalysis } from './analyzer';
 import { getAgentBootstrap } from './agent-bootstrap';
 import { writeAgentDefaultConfig } from './agent-defaults';
 import { getAgentDoctor } from './agent-doctor';
@@ -13,6 +13,8 @@ import { buildUploadManifest } from './remote-source';
 import { loadKlauroConfig, writeDefaultKlauroConfig } from './klauro-config';
 import { buildGithubImportPlan } from './github-import';
 import { compareAnalysisIterations, getPreviewAnalysis, previewCodebaseIteration, previewGreenfieldCodebase, type ProposedFileInput } from './proposal-preview';
+import { buildGreenfieldArchitectureGuidance, type GreenfieldReferenceAnalysis } from './greenfield-guidance';
+import { buildGreenfieldBuildPacket } from './greenfield-build-session';
 import * as fs from 'fs-extra';
 
 interface ParsedArgs {
@@ -28,6 +30,7 @@ interface ParsedArgs {
   force: boolean;
   mode?: 'local' | 'remote';
   dirtyTree: boolean;
+  analysisFocus?: 'agent-fast' | 'ui-overview' | 'deep-context' | 'full';
   projectId?: string;
   organizationId?: string;
   planText?: string;
@@ -35,6 +38,7 @@ interface ParsedArgs {
   diffText?: string;
   diffFile?: string;
   proposedFilesFile?: string;
+  referencePaths: string[];
   previewId?: string;
   baselinePath?: string;
   proposedPath?: string;
@@ -62,6 +66,8 @@ async function main(): Promise<void> {
     'remote-sync',
     'proposal-preview',
     'greenfield-preview',
+    'greenfield-guidance',
+    'greenfield-build-packet',
     'preview-get',
     'compare-iterations',
   ].includes(args.command)) {
@@ -70,7 +76,7 @@ async function main(): Promise<void> {
   if (!args.path && ['init', 'analyze', 'upload-manifest', 'install-agent', 'github-import-plan'].includes(args.command)) {
     args.path = '.';
   }
-  if (!args.path && !['greenfield-preview', 'preview-get', 'compare-iterations'].includes(args.command)) {
+  if (!args.path && !['greenfield-preview', 'greenfield-guidance', 'greenfield-build-packet', 'preview-get', 'compare-iterations'].includes(args.command)) {
     throw new Error(`${args.command} requires a project path`);
   }
 
@@ -103,7 +109,8 @@ async function main(): Promise<void> {
 
   if (args.command === 'analyze') {
     const loaded = await loadKlauroConfig(projectPath);
-    if (loaded.config.analyzer.mode === 'remote') {
+    const analyzerMode = args.mode || loaded.config.analyzer.mode;
+    if (analyzerMode === 'remote') {
       const result = await withLogHandling(args.json, args.quiet, () => analyzeCodebaseRemotely({
         projectPath,
         serverUrl: args.serverUrl,
@@ -111,8 +118,22 @@ async function main(): Promise<void> {
       }));
       process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatRemoteResult(result));
     } else {
-      const result = await withLogHandling(args.json, args.quiet, () => analyzeProjectIncremental(projectPath));
-      process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatLocalAnalyzeResult(result));
+      const result = await withAnalysisFocus(args.analysisFocus, async () => {
+        if (args.force) {
+          const output = await withLogHandling(args.json, args.quiet, () => analyzeProject(projectPath));
+          return {
+            output,
+            state: undefined,
+            changeReport: undefined,
+            wasFullRebuild: true,
+            fullRebuildReason: 'forced-by-cli',
+          } as unknown as Awaited<ReturnType<typeof analyzeProjectIncremental>>;
+        }
+        return withLogHandling(args.json, args.quiet, () => analyzeProjectIncremental(projectPath));
+      });
+      process.stdout.write(args.json
+        ? `${JSON.stringify({ ...result, analysis_focus: args.analysisFocus || 'full' }, null, 2)}\n`
+        : formatLocalAnalyzeResult(result, args.analysisFocus));
     }
     return;
   }
@@ -163,6 +184,47 @@ async function main(): Promise<void> {
       previewBaseUrl: args.serverUrl,
     }));
     process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatProposalPreviewResult(result));
+    return;
+  }
+
+  if (args.command === 'greenfield-guidance') {
+    const references: GreenfieldReferenceAnalysis[] = [];
+    for (const referencePath of args.referencePaths) {
+      const absolute = path.resolve(referencePath);
+      const cas = await withLogHandling(args.json, args.quiet, () => loadOrAnalyze(absolute, false));
+      references.push({
+        path: absolute,
+        name: cas.system?.name || path.basename(absolute),
+        cas,
+      });
+    }
+    const result = buildGreenfieldArchitectureGuidance({
+      planText: loadTextArg(args.planText, args.planFile, 'greenfield-guidance requires --plan or --plan-file'),
+      proposedFiles: loadProposedFiles(args.proposedFilesFile),
+      references,
+    });
+    process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatGreenfieldGuidance(result));
+    return;
+  }
+
+  if (args.command === 'greenfield-build-packet') {
+    const references: GreenfieldReferenceAnalysis[] = [];
+    for (const referencePath of args.referencePaths) {
+      const absolute = path.resolve(referencePath);
+      const cas = await withLogHandling(args.json, args.quiet, () => loadOrAnalyze(absolute, false));
+      references.push({
+        path: absolute,
+        name: cas.system?.name || path.basename(absolute),
+        cas,
+      });
+    }
+    const result = await withLogHandling(args.json, args.quiet, () => buildGreenfieldBuildPacket({
+      workspacePath: args.path ? path.resolve(args.path) : process.cwd(),
+      planText: loadTextArg(args.planText, args.planFile, 'greenfield-build-packet requires --plan or --plan-file'),
+      proposedFiles: loadProposedFiles(args.proposedFilesFile),
+      references,
+    }));
+    process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatGreenfieldBuildPacket(result));
     return;
   }
 
@@ -235,12 +297,69 @@ async function loadOrAnalyze(projectPath: string, refresh: boolean) {
 async function withLogHandling<T>(json: boolean, quiet: boolean, fn: () => Promise<T>): Promise<T> {
   if (!json && !quiet) return fn();
   const originalLog = console.log;
-  console.log = quiet ? () => undefined : (...args: unknown[]) => console.error(...args);
+  const originalWarn = console.warn;
+  const originalError = console.error;
+  const redirectToStderr = (...args: unknown[]) => originalError(...args);
+  const silence = () => undefined;
+  console.log = quiet ? silence : redirectToStderr;
+  console.warn = quiet ? silence : redirectToStderr;
+  console.error = quiet ? silence : redirectToStderr;
   try {
     return await fn();
   } finally {
     console.log = originalLog;
+    console.warn = originalWarn;
+    console.error = originalError;
   }
+}
+
+async function withAnalysisFocus<T>(focus: ParsedArgs['analysisFocus'], fn: () => Promise<T>): Promise<T> {
+  const previous = {
+    interpretation: process.env.KLAURO_AI_INTERPRETATION,
+    interpretationForce: process.env.KLAURO_AI_INTERPRETATION_FORCE,
+    deterministicKeep: process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP,
+    interpretationBudget: process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS,
+    elementBudget: process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS,
+    elementBatchSize: process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE,
+    elements: process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS,
+    embeddings: process.env.KLAURO_EMBEDDING_ENABLED,
+  };
+
+  try {
+    if (focus === 'agent-fast') {
+      process.env.KLAURO_AI_INTERPRETATION = 'false';
+      process.env.KLAURO_AI_INTERPRETATION_FORCE = 'false';
+      process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = 'false';
+      process.env.KLAURO_EMBEDDING_ENABLED = 'false';
+    } else if (focus === 'ui-overview') {
+      process.env.KLAURO_AI_INTERPRETATION = process.env.KLAURO_AI_INTERPRETATION || 'true';
+      process.env.KLAURO_AI_INTERPRETATION_FORCE = process.env.KLAURO_AI_INTERPRETATION_FORCE || 'true';
+      process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP = 'false';
+      process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS = process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS || '45000';
+      process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS || '90000';
+      process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE || '4';
+      process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS || 'true';
+      process.env.KLAURO_EMBEDDING_ENABLED = 'false';
+    } else if (focus === 'deep-context') {
+      process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS || 'false';
+    }
+
+    return await fn();
+  } finally {
+    restoreEnv('KLAURO_AI_INTERPRETATION', previous.interpretation);
+    restoreEnv('KLAURO_AI_INTERPRETATION_FORCE', previous.interpretationForce);
+    restoreEnv('KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP', previous.deterministicKeep);
+    restoreEnv('KLAURO_AI_INTERPRETATION_BUDGET_MS', previous.interpretationBudget);
+    restoreEnv('KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS', previous.elementBudget);
+    restoreEnv('KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE', previous.elementBatchSize);
+    restoreEnv('KLAURO_AI_ELEMENT_DESCRIPTIONS', previous.elements);
+    restoreEnv('KLAURO_EMBEDDING_ENABLED', previous.embeddings);
+  }
+}
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -257,6 +376,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     force: false,
     mode: undefined,
     dirtyTree: false,
+    analysisFocus: undefined,
     projectId: undefined,
     organizationId: undefined,
     planText: undefined,
@@ -264,6 +384,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     diffText: undefined,
     diffFile: undefined,
     proposedFilesFile: undefined,
+    referencePaths: [],
     previewId: undefined,
     baselinePath: undefined,
     proposedPath: undefined,
@@ -271,7 +392,10 @@ function parseArgs(argv: string[]): ParsedArgs {
 
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === '--json') {
+    if (arg === '--help' || arg === '-h' || arg === 'help') {
+      parsed.command = 'help';
+      continue;
+    } else if (arg === '--json') {
       parsed.json = true;
     } else if (arg === '--refresh') {
       parsed.refresh = true;
@@ -281,6 +405,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       parsed.quiet = true;
     } else if (arg === '--server-url') {
       parsed.serverUrl = argv[++i];
+    } else if (arg === '--path') {
+      parsed.path = argv[++i];
     } else if (arg === '--analysis-id') {
       parsed.analysisId = argv[++i];
     } else if (arg === '--project-id') {
@@ -297,6 +423,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       parsed.diffFile = argv[++i];
     } else if (arg === '--proposed-files') {
       parsed.proposedFilesFile = argv[++i];
+    } else if (arg === '--reference-path') {
+      parsed.referencePaths.push(path.resolve(argv[++i]));
     } else if (arg === '--preview-id') {
       parsed.previewId = argv[++i];
     } else if (arg === '--baseline-path') {
@@ -305,6 +433,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       parsed.proposedPath = path.resolve(argv[++i]);
     } else if (arg === '--mode') {
       parsed.mode = argv[++i] as 'local' | 'remote';
+    } else if (arg === '--analysis-focus') {
+      parsed.analysisFocus = argv[++i] as ParsedArgs['analysisFocus'];
     } else if (arg === '--force') {
       parsed.force = true;
     } else if (arg === '--dirty-tree') {
@@ -332,7 +462,7 @@ function printHelp(): void {
     'Usage:',
     '  klauro init [/path/to/repo] [--mode local|remote] [--server-url url] [--project-id id] [--organization-id id] [--force] [--json]',
     '  klauro upload-manifest [/path/to/repo] [--dirty-tree] [--json]',
-    '  klauro analyze [/path/to/repo] [--server-url http://127.0.0.1:8787] [--analysis-id id] [--json]',
+    '  klauro analyze [/path/to/repo] [--server-url http://127.0.0.1:8787] [--analysis-id id] [--analysis-focus agent-fast|ui-overview|deep-context|full] [--force] [--json]',
     '  klauro install-agent [/path/to/repo] [--json]',
     '  klauro github-import-plan [/path/to/repo] [--json]',
     '  klauro agent-start /path/to/repo [--task-type orient|modify|debug|review|trace|cross-repo|runtime] [--target query] [--json] [--refresh]',
@@ -343,6 +473,8 @@ function printHelp(): void {
     '  klauro remote-analyze /path/to/repo [--server-url http://127.0.0.1:8787] [--analysis-id id] [--json]',
     '  klauro remote-sync /path/to/repo [--server-url http://127.0.0.1:8787] [--analysis-id id] [--json]',
     '  klauro proposal-preview /path/to/repo --plan-file plan.md [--diff-file changes.patch] [--proposed-files files.json] [--server-url app-url] [--json]',
+    '  klauro greenfield-guidance --plan-file plan.md [--reference-path /existing/repo] [--proposed-files files.json] [--json]',
+    '  klauro greenfield-build-packet [/empty/or/current/project] --plan-file plan.md [--reference-path /existing/repo] [--proposed-files files.json] [--json]',
     '  klauro greenfield-preview --plan-file plan.md --proposed-files files.json [--server-url app-url] [--json]',
     '  klauro preview-get [--preview-id id] [--json]',
     '  klauro compare-iterations [--preview-id id] [--baseline-path /repo] [--proposed-path /repo-copy] [--json]',
@@ -360,6 +492,8 @@ function printHelp(): void {
     '  klauro remote-analyze . --server-url http://127.0.0.1:8787',
     '  klauro remote-sync . --server-url http://127.0.0.1:8787',
     '  klauro proposal-preview . --plan "Add a health endpoint" --proposed-files proposed-files.json',
+    '  klauro greenfield-guidance --plan "Create a portfolio reporting service" --reference-path ~/dev/zerac/zerac-api',
+    '  klauro greenfield-build-packet /tmp/new-app --plan "Build an operations command center" --json',
     '  klauro greenfield-preview --plan-file plan.md --proposed-files proposed-files.json',
     '  klauro agent-start ~/dev/klauro/proof-of-concept --task-type debug --target auth',
     '  npm --silent run agent-start -- . --json',
@@ -404,10 +538,11 @@ function formatUploadManifest(manifest: Awaited<ReturnType<typeof buildUploadMan
   ].filter(Boolean).join('\n');
 }
 
-function formatLocalAnalyzeResult(result: Awaited<ReturnType<typeof analyzeProjectIncremental>>): string {
+function formatLocalAnalyzeResult(result: Awaited<ReturnType<typeof analyzeProjectIncremental>>, focus?: ParsedArgs['analysisFocus']): string {
   return [
     `Klauro local analysis: SUCCESS`,
     `Type: ${result.wasFullRebuild ? 'full' : 'incremental'}`,
+    `Focus: ${focus || 'full'}`,
     `Nodes: ${result.output.nodes.length}`,
     `Edges: ${result.output.edges.length}`,
     `Entry points: ${result.output.entry_points?.length || 0}`,
@@ -488,6 +623,76 @@ function formatProposalPreviewResult(result: any): string {
   ].filter(Boolean).join('\n');
 }
 
+function formatGreenfieldGuidance(result: ReturnType<typeof buildGreenfieldArchitectureGuidance>): string {
+  const overlap = result.existing_overlap.matches.slice(0, 5).map(match =>
+    `- ${match.repository}: ${match.reused_or_integrated_capabilities.map(capability => capability.name).join(', ') || match.related_entities.join(', ')}`
+  );
+  const patterns = result.recommended_architecture.patterns.slice(0, 6).map(pattern =>
+    `- ${pattern.name}: ${pattern.guidance}`
+  );
+  const risks = result.risks.map(risk => `- ${risk.severity}: ${risk.risk} - ${risk.recommendation}`);
+  return [
+    `Klauro greenfield guidance: ${String(result.status).toUpperCase()}`,
+    `Intent: ${result.plan_intent.summary}`,
+    `References: ${result.reference_scope.count}`,
+    `Overlap: ${result.existing_overlap.status}`,
+    '',
+    'Existing overlap:',
+    ...(overlap.length ? overlap : ['- none']),
+    '',
+    'Recommended patterns:',
+    ...(patterns.length ? patterns : ['- none']),
+    '',
+    'First file plan:',
+    ...result.recommended_architecture.file_plan.slice(0, 8).map(file => `- ${file.path} (${file.role})`),
+    '',
+    'Risks:',
+    ...(risks.length ? risks : ['- none']),
+    '',
+    'Next:',
+    '- Create the smallest proposed file bundle.',
+    '- Run klauro greenfield-preview --plan-file plan.md --proposed-files files.json.',
+    '',
+  ].join('\n');
+}
+
+function formatGreenfieldBuildPacket(result: Awaited<ReturnType<typeof buildGreenfieldBuildPacket>>): string {
+  const current = result.current_analysis;
+  const readFirst = result.context_budget.read_first.slice(0, 8).map((item: any) => `- ${item.file}: ${item.reason}`);
+  const nextFiles = result.context_budget.create_or_update_next.slice(0, 8).map((item: any) => `- ${item.file}: ${item.reason}`);
+  const concepts = result.duplicate_prevention.likely_reused_concepts_for_this_slice.slice(0, 10).map((concept: string) => `- ${concept}`);
+  const growth = (result as any).growth_control_plane;
+  const productBehaviors = growth?.product_slice?.requested_behaviors?.slice(0, 6).map((behavior: string) => `- ${behavior}`) || [];
+  const ownerFiles = growth?.concept_ownership_contract?.owner_files?.slice(0, 6).map((item: any) => `- ${item.file}: ${item.reason}`) || [];
+  const stopRule = growth?.context_budget?.stop_rule;
+  return [
+    `Klauro greenfield build packet: ${String(result.status).toUpperCase()}`,
+    `Stage: ${result.stage}`,
+    `Workspace: ${result.workspace_path}`,
+    current ? `Current graph: ${current.graph.nodes} nodes, ${current.graph.edges} edges, ${current.graph.capabilities} capabilities, ${current.graph.files} files` : 'Current graph: none yet',
+    '',
+    'Product slice focus:',
+    ...(productBehaviors.length ? productBehaviors : ['- one coherent tested vertical slice']),
+    stopRule ? `Stop rule: ${stopRule}` : '',
+    '',
+    'Concepts to reuse for this slice:',
+    ...(concepts.length ? concepts : ['- none detected yet']),
+    '',
+    'Owner files:',
+    ...(ownerFiles.length ? ownerFiles : ['- none yet']),
+    '',
+    'Read first:',
+    ...(readFirst.length ? readFirst : ['- empty workspace; no source files to read']),
+    '',
+    'Create or update next:',
+    ...(nextFiles.length ? nextFiles : ['- no file plan inferred']),
+    '',
+    'Next:',
+    ...result.next_agent_steps.map((step: string) => `- ${step}`),
+    '',
+  ].join('\n');
+}
+
 function formatPreviewPayload(payload: Awaited<ReturnType<typeof getPreviewAnalysis>>): string {
   return [
     `Klauro preview: ${payload.preview.id}`,
@@ -521,12 +726,20 @@ function compactWorkPacket(packet: Awaited<ReturnType<typeof getAgentWorkPacket>
       line_window: item.line_window,
       node_ids: Array.isArray(item.node_ids) ? item.node_ids.slice(0, 8) : item.node_ids,
     })),
-    risk: context.risk ? {
-      level: context.risk.level,
-      score: context.risk.score,
-      reasons: context.risk.reasons || context.risk.factors || context.risk.details,
-    } : null,
+    risk: summarizeRiskForCli(context.risk),
+    risk_context: summarizeRiskContextForCli(context.risk_context),
     tests: summarizeTests(context.tests),
+    architecture_context: context.architecture_context ? {
+      system_type: context.architecture_context.system_type,
+      architecture_budget: context.architecture_context.architecture_budget?.slice(0, 5),
+      patterns: context.architecture_context.patterns?.slice(0, 5),
+      inventory_counts: context.architecture_context.inventory_counts,
+      inventory_examples: context.architecture_context.inventory_examples,
+      relevant_inventory: context.architecture_context.relevant_inventory,
+      pattern_decision_matrix: context.architecture_context.pattern_decision_matrix?.slice(0, 5),
+      pattern_balance: context.architecture_context.pattern_balance,
+      agent_rules: context.architecture_context.agent_rules?.slice(0, 5),
+    } : null,
     behavioral_invariants: context.behavioral_invariants ? {
       total: context.behavioral_invariants.total,
       invariants: context.behavioral_invariants.invariants?.slice(0, 8),
@@ -565,6 +778,31 @@ function summarizeTests(tests: any) {
   };
 }
 
+function summarizeRiskForCli(risk: any) {
+  if (!risk) return null;
+  const selectedRisk = risk.risk || risk;
+  return {
+    level: selectedRisk.risk_level || selectedRisk.level || null,
+    score: selectedRisk.score || selectedRisk.impact_score || null,
+    reasons: selectedRisk.reasons || selectedRisk.factors || selectedRisk.risk_factors || selectedRisk.details || [],
+    recommendations: selectedRisk.recommendations || [],
+    summary: risk.change_risk_summary || null,
+  };
+}
+
+function summarizeRiskContextForCli(context: any) {
+  if (!context) return null;
+  return {
+    status: context.status,
+    target_risk: context.target_risk || null,
+    scope: context.scope,
+    summary: context.summary || null,
+    top_risks: Array.isArray(context.top_risks) ? context.top_risks.slice(0, 8) : [],
+    repo_top_risks: Array.isArray(context.repo_top_risks) ? context.repo_top_risks.slice(0, 5) : [],
+    agent_rules: Array.isArray(context.agent_rules) ? context.agent_rules.slice(0, 6) : [],
+  };
+}
+
 function formatWorkPacket(packet: Awaited<ReturnType<typeof getAgentWorkPacket>>): string {
   const selected = packet.selected_node
     ? `${packet.selected_node.name || packet.selected_node.id} (${packet.selected_node.file || 'unknown file'})`
@@ -574,6 +812,7 @@ function formatWorkPacket(packet: Awaited<ReturnType<typeof getAgentWorkPacket>>
   const validateCall = packet.next_mcp_calls.find(step => step.tool === 'validate_behavioral_invariants');
   const validateIdiomCall = packet.next_mcp_calls.find(step => step.tool === 'validate_codebase_idioms');
   const idiomContext = (packet.work_context as any).idiom_context;
+  const riskContext = (packet.work_context as any).risk_context;
   const validationCommands = ((packet as any).validation_plan?.commands || []).slice(0, 5);
   const validationLines = validationCommands.length > 0
     ? validationCommands.map((command: any) => `- ${command.command}: ${command.purpose}`)
@@ -593,6 +832,15 @@ function formatWorkPacket(packet: Awaited<ReturnType<typeof getAgentWorkPacket>>
     `Path: ${packet.path}`,
     `Task: ${packet.task.task_type || 'orient'}${packet.task.target ? ` -> ${packet.task.target}` : ''}`,
     `Selected node: ${selected}`,
+    '',
+    'Risk context:',
+    ...(riskContext?.top_risks?.length
+      ? riskContext.top_risks.slice(0, 5).map((risk: any) => `- ${risk.name || risk.node_id}: ${risk.risk_level}${risk.file ? ` (${risk.file})` : ''}`)
+      : ['- no direct risk matched the selected target/files']),
+    ...(riskContext?.repo_top_risks?.length
+      ? riskContext.repo_top_risks.slice(0, 3).map((risk: any) => `- repo background: ${risk.name || risk.node_id}: ${risk.risk_level}${risk.file ? ` (${risk.file})` : ''}`)
+      : []),
+    ...(riskContext?.agent_rules?.length ? riskContext.agent_rules.slice(0, 3).map((rule: string) => `- ${rule}`) : []),
     '',
     'First files:',
     ...packet.file_read_plan.slice(0, 10).map(item => {

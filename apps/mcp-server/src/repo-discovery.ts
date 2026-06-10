@@ -37,6 +37,7 @@ const EXCLUDED_DIRS = new Set([
   '.next',
   '.turbo',
   '.cache',
+  '.terraform',
   '.sourcemaps',
   'sourcemaps',
   '.npm',
@@ -88,6 +89,8 @@ const MANIFESTS = [
   'pubspec.yaml',
   '*.csproj',
   '*.sln',
+  '*.tf',
+  '*.tfvars',
 ];
 
 const SOURCE_EXTENSIONS: Record<string, string> = {
@@ -104,6 +107,8 @@ const SOURCE_EXTENSIONS: Record<string, string> = {
   '.cs': 'C#',
   '.php': 'PHP',
   '.dart': 'Dart',
+  '.tf': 'Terraform',
+  '.tfvars': 'Terraform',
 };
 
 export async function discoverRealRepos(devRoot = path.join(process.env.HOME || '', 'dev')): Promise<RepoDiscoveryReport> {
@@ -145,7 +150,7 @@ async function walk(directory: string, repos: RealRepoTarget[], devRoot: string)
 }
 
 async function classifyRepo(repoPath: string): Promise<RealRepoTarget> {
-  const files = await scanRepoFiles(repoPath, 2500);
+  const files = await scanRepoFiles(repoPath, 25000);
   const manifests = files.filter(file => matchesManifest(file));
   const languageCounts = new Map<string, number>();
   let sourceFiles = 0;
@@ -168,8 +173,49 @@ async function classifyRepo(repoPath: string): Promise<RealRepoTarget> {
   if (languages.length === 0 && manifests.length > 0) {
     return baseTarget(repoPath, 'unsupported', 'Manifest-only repository without supported source files', languages, manifests, sourceFiles);
   }
+  const incompleteReason = detectIncompleteSourceRepo(repoPath, files, manifests, sourceFiles);
+  if (incompleteReason) {
+    return baseTarget(repoPath, 'unsupported', incompleteReason, languages, manifests, sourceFiles);
+  }
 
   return baseTarget(repoPath, 'eligible', undefined, languages, manifests, sourceFiles);
+}
+
+function detectIncompleteSourceRepo(
+  repoPath: string,
+  files: string[],
+  manifests: string[],
+  sourceFiles: number
+): string | undefined {
+  if (!manifests.some(file => path.basename(file) === 'package.json')) return undefined;
+  if (sourceFiles > 3) return undefined;
+
+  const packagePath = path.join(repoPath, 'package.json');
+  let pkg: any;
+  try {
+    pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+  } catch {
+    return undefined;
+  }
+
+  const fileSet = new Set(files.map(file => file.replace(/\\/g, '/')));
+  const scriptTargets = Object.values(pkg.scripts || {})
+    .flatMap(script => extractScriptSourceTargets(String(script)));
+  if (scriptTargets.length < 2) return undefined;
+
+  const missingTargets = scriptTargets.filter(target => !fileSet.has(target));
+  if (missingTargets.length >= Math.max(2, Math.ceil(scriptTargets.length * 0.6))) {
+    return `Package scripts reference missing source files (${missingTargets.slice(0, 4).join(', ')}); repository appears incomplete`;
+  }
+
+  return undefined;
+}
+
+function extractScriptSourceTargets(script: string): string[] {
+  const matches = script.match(/[A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|mjs|cjs)/g) || [];
+  return Array.from(new Set(matches
+    .map(match => match.replace(/^\.\//, '').replace(/\\/g, '/'))
+    .filter(match => !/(^|\/)(node_modules|dist|build|coverage)\//.test(match))));
 }
 
 function baseTarget(

@@ -1,6 +1,9 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import * as zlib from 'zlib';
+import { execFile, spawnSync } from 'child_process';
+import { promisify } from 'util';
 import type {
   CASOutput,
   IncrementalState,
@@ -11,6 +14,12 @@ import type {
 } from '../../../packages/analyzer-core/src/types/cas.types';
 import type { RuntimeObservation } from './product';
 import { mirrorArtifactsToS3 } from './s3-artifacts';
+
+const execFileAsync = promisify(execFile);
+const brotliCompressAsync = promisify(zlib.brotliCompress);
+const brotliDecompressAsync = promisify(zlib.brotliDecompress);
+const ZSTD_MAX_BUFFER = 1024 * 1024 * 1024;
+type JsonStorageCodec = 'none' | 'brotli' | 'zstd';
 
 const DEFAULT_STORAGE_PATH = path.join(
   process.env.HOME || process.env.USERPROFILE || '~',
@@ -110,16 +119,239 @@ async function saveIndex(index: AnalysisIndex): Promise<void> {
 async function writeJsonAtomic(filePath: string, value: unknown, options: { spaces?: number } = { spaces: 2 }): Promise<void> {
   await fs.ensureDir(path.dirname(filePath));
   const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeJson(tmpPath, value, options);
+  try {
+    if (shouldStreamJson(value)) {
+      await writeJsonStreamed(tmpPath, value);
+    } else {
+      await fs.writeJson(tmpPath, value, options);
+    }
+  } catch (error) {
+    if (!isJsonStringTooLargeError(error)) throw error;
+    await writeJsonStreamed(tmpPath, value);
+  }
   await fs.move(tmpPath, filePath, { overwrite: true });
+}
+
+async function writeCompressedJsonAtomic(filePath: string, value: unknown, options: { spaces?: number } = { spaces: 0 }): Promise<void> {
+  const codec = compressionCodecForPath(filePath);
+  if (codec === 'none') {
+    await writeJsonAtomic(filePath, value, options);
+    return;
+  }
+
+  await fs.ensureDir(path.dirname(filePath));
+  const jsonTmpPath = `${filePath}.${process.pid}.${Date.now()}.json.tmp`;
+  const compressedTmpPath = `${filePath}.${process.pid}.${Date.now()}.compressed.tmp`;
+  try {
+    await writeJsonAtomic(jsonTmpPath, value, options);
+    await compressJsonFile(jsonTmpPath, compressedTmpPath, codec);
+    await fs.move(compressedTmpPath, filePath, { overwrite: true });
+  } finally {
+    await fs.remove(jsonTmpPath).catch(() => undefined);
+    await fs.remove(compressedTmpPath).catch(() => undefined);
+  }
+}
+
+async function readJsonMaybeCompressed(filePath: string): Promise<any> {
+  const resolved = await resolveJsonStoragePath(filePath);
+  if (!resolved) {
+    throw new Error(`JSON file not found: ${filePath}`);
+  }
+
+  if (resolved.endsWith('.json.zst')) {
+    const { stdout } = await execFileAsync('zstd', ['-q', '-d', '-c', resolved], {
+      encoding: 'buffer',
+      maxBuffer: ZSTD_MAX_BUFFER,
+    });
+    return JSON.parse(stdout.toString('utf8'));
+  }
+
+  if (resolved.endsWith('.json.br')) {
+    const compressed = await fs.readFile(resolved);
+    const json = await brotliDecompressAsync(compressed);
+    return JSON.parse(json.toString('utf8'));
+  }
+
+  return fs.readJson(resolved);
+}
+
+async function resolveJsonStoragePath(filePath: string): Promise<string | null> {
+  if (await fs.pathExists(filePath)) return filePath;
+  const candidates = jsonStoragePathCandidates(filePath);
+  for (const candidate of candidates) {
+    if (await fs.pathExists(candidate)) return candidate;
+  }
+  return null;
+}
+
+function jsonStoragePathCandidates(filePath: string): string[] {
+  if (filePath.endsWith('.json')) return [`${filePath}.zst`, `${filePath}.br`];
+  if (filePath.endsWith('.json.zst')) return [filePath.replace(/\.zst$/, ''), filePath.replace(/\.zst$/, '.br')];
+  if (filePath.endsWith('.json.br')) return [filePath.replace(/\.br$/, ''), filePath.replace(/\.br$/, '.zst')];
+  return [];
+}
+
+function compressedJsonExtension(): '' | '.zst' | '.br' {
+  const codec = selectedAnalysisCompressionCodec();
+  if (codec === 'zstd') return '.zst';
+  if (codec === 'brotli') return '.br';
+  return '';
+}
+
+function compressionCodecForPath(filePath: string): JsonStorageCodec {
+  if (filePath.endsWith('.json.zst')) return 'zstd';
+  if (filePath.endsWith('.json.br')) return 'brotli';
+  return 'none';
+}
+
+function selectedAnalysisCompressionCodec(): JsonStorageCodec {
+  const requested = String(process.env.KLAURO_ANALYSIS_COMPRESSION || 'auto').toLowerCase();
+  if (requested === 'none' || requested === 'off' || requested === 'false') return 'none';
+  if (requested === 'brotli' || requested === 'br') return 'brotli';
+  if (requested === 'zstd' || requested === 'zst') return hasZstdCommand() ? 'zstd' : 'brotli';
+  return hasZstdCommand() ? 'zstd' : 'brotli';
+}
+
+let zstdCommandAvailable: boolean | undefined;
+
+function hasZstdCommand(): boolean {
+  if (zstdCommandAvailable !== undefined) return zstdCommandAvailable;
+  const result = spawnSync('zstd', ['--version'], { stdio: 'ignore' });
+  zstdCommandAvailable = result.status === 0;
+  return zstdCommandAvailable;
+}
+
+async function compressJsonFile(sourcePath: string, targetPath: string, codec: JsonStorageCodec): Promise<void> {
+  if (codec === 'zstd') {
+    await execFileAsync('zstd', ['-q', '-10', '-T0', '-f', sourcePath, '-o', targetPath], {
+      maxBuffer: 1024 * 1024,
+    });
+    return;
+  }
+
+  if (codec === 'brotli') {
+    const json = await fs.readFile(sourcePath);
+    const compressed = await brotliCompressAsync(json, {
+      params: {
+        [zlib.constants.BROTLI_PARAM_QUALITY]: 6,
+      },
+    });
+    await fs.writeFile(targetPath, compressed);
+    return;
+  }
+
+  await fs.copy(sourcePath, targetPath, { overwrite: true });
+}
+
+function shouldStreamJson(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as {
+    nodes?: unknown[];
+    edges?: unknown[];
+    domain_concepts?: unknown[];
+    method_calls?: unknown[];
+    analysis_facts?: unknown[];
+    test_gaps?: unknown[];
+    fileCache?: unknown;
+  };
+  const graphItems =
+    (candidate.nodes?.length || 0) +
+    (candidate.edges?.length || 0) +
+    (candidate.domain_concepts?.length || 0) +
+    (candidate.method_calls?.length || 0) +
+    (candidate.analysis_facts?.length || 0) +
+    (candidate.test_gaps?.length || 0);
+  return graphItems > 100_000;
+}
+
+function isJsonStringTooLargeError(error: unknown): boolean {
+  return error instanceof RangeError && /invalid string length/i.test(error.message);
+}
+
+async function writeJsonStreamed(filePath: string, value: unknown): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const stream = fs.createWriteStream(filePath, { encoding: 'utf8' });
+    stream.on('error', reject);
+    stream.on('finish', resolve);
+
+    const write = (chunk: string) => {
+      if (!stream.write(chunk)) {
+        return new Promise<void>(resume => stream.once('drain', resume));
+      }
+      return undefined;
+    };
+
+    const writeValue = async (current: unknown, inArray = false): Promise<void> => {
+      if (current === undefined || typeof current === 'function' || typeof current === 'symbol') {
+        await write(inArray ? 'null' : 'null');
+        return;
+      }
+      if (current === null || typeof current !== 'object') {
+        await write(JSON.stringify(current));
+        return;
+      }
+      const jsonValue = typeof (current as { toJSON?: unknown }).toJSON === 'function'
+        ? (current as { toJSON: () => unknown }).toJSON()
+        : current;
+      if (jsonValue !== current) {
+        await writeValue(jsonValue, inArray);
+        return;
+      }
+      if (Array.isArray(current)) {
+        await write('[');
+        for (let index = 0; index < current.length; index++) {
+          if (index > 0) await write(',');
+          if (canStringifyStreamArrayItem(current[index])) {
+            await write(JSON.stringify(current[index]));
+          } else {
+            await writeValue(current[index], true);
+          }
+        }
+        await write(']');
+        return;
+      }
+      await write('{');
+      let first = true;
+      for (const [key, child] of Object.entries(current as Record<string, unknown>)) {
+        if (child === undefined || typeof child === 'function' || typeof child === 'symbol') continue;
+        if (!first) await write(',');
+        first = false;
+        await write(JSON.stringify(key));
+        await write(':');
+        await writeValue(child);
+      }
+      await write('}');
+    };
+
+    writeValue(value)
+      .then(() => {
+        stream.write('\n');
+        stream.end();
+      })
+      .catch(error => {
+        stream.destroy();
+        reject(error);
+      });
+  });
+}
+
+function canStringifyStreamArrayItem(value: unknown): boolean {
+  if (value === null) return true;
+  if (typeof value !== 'object') return true;
+  if (Array.isArray(value)) return false;
+  return !hasCustomJsonShape(value);
+}
+
+function hasCustomJsonShape(value: object): boolean {
+  return typeof (value as { toJSON?: unknown }).toJSON === 'function';
 }
 
 export async function saveAnalysis(projectPath: string, output: CASOutput): Promise<AnalysisEntry> {
   const storagePath = await ensureStorageDir();
-  const fileName = `${projectSlug(projectPath)}.json`;
+  const fileName = `${projectSlug(projectPath)}.json${compressedJsonExtension()}`;
   const filePath = path.join(storagePath, fileName);
 
-  await writeJsonAtomic(filePath, output);
+  await writeCompressedJsonAtomic(filePath, output, { spaces: 0 });
 
   const frameworks = output.system.technologies?.frameworks?.map(f => f.name) || [];
 
@@ -148,9 +380,10 @@ export async function loadAnalysis(projectPath: string): Promise<CASOutput | nul
 
   const storagePath = getStoragePath();
   const filePath = path.join(storagePath, entry.file);
-  if (!(await fs.pathExists(filePath))) return null;
+  const resolved = await resolveJsonStoragePath(filePath);
+  if (!resolved) return null;
 
-  return fs.readJson(filePath);
+  return readJsonMaybeCompressed(resolved);
 }
 
 export async function listAnalyses(): Promise<AnalysisEntry[]> {
@@ -247,7 +480,47 @@ export async function saveAgenticBenchmarkReport(report: { id?: string; generate
   };
   await writeJsonAtomic(file, payload);
   await writeJsonAtomic(latestFile, payload);
+  await pruneAgenticBenchmarkReports(directory);
   return { id, saved_at: savedAt, file };
+}
+
+const DEFAULT_MAX_AGENTIC_BENCHMARK_REPORTS = 50;
+const DEFAULT_MAX_AGENTIC_BENCHMARK_BYTES = 256 * 1024 * 1024;
+
+async function pruneAgenticBenchmarkReports(directory: string): Promise<void> {
+  try {
+    const files = (await fs.readdir(directory))
+      .filter(file => file.endsWith('.json') && file !== 'latest.json');
+    const reports = [];
+    for (const file of files) {
+      const filePath = path.join(directory, file);
+      const stat = await fs.stat(filePath).catch(() => null);
+      if (!stat?.isFile()) continue;
+      let savedAt = stat.mtime.toISOString();
+      try {
+        const report = await fs.readJson(filePath);
+        savedAt = report.saved_at || report.generated_at || report.generatedAt || savedAt;
+      } catch {
+      }
+      reports.push({ file, filePath, savedAt, size: stat.size });
+    }
+
+    reports.sort((left, right) => String(right.savedAt).localeCompare(String(left.savedAt)));
+    const maxReports = parsePositiveIntegerEnv('KLAURO_MAX_AGENTIC_BENCHMARK_REPORTS', DEFAULT_MAX_AGENTIC_BENCHMARK_REPORTS);
+    const maxBytes = parsePositiveIntegerEnv('KLAURO_MAX_AGENTIC_BENCHMARK_BYTES', DEFAULT_MAX_AGENTIC_BENCHMARK_BYTES);
+    let retainedBytes = 0;
+
+    for (const [index, report] of reports.entries()) {
+      retainedBytes += report.size;
+      const exceedsCount = index >= maxReports;
+      const exceedsSize = index > 0 && retainedBytes > maxBytes;
+      if (exceedsCount || exceedsSize) {
+        await fs.remove(report.filePath);
+      }
+    }
+  } catch {
+    // Ignore pruning errors; benchmarks are proof artifacts, not the primary data path.
+  }
 }
 
 export async function loadAgenticBenchmarkReport(id = 'latest'): Promise<any | null> {
@@ -485,7 +758,7 @@ export async function loadIncrementalState(
     const state = await fs.readJson(statePath);
 
     if (state.version !== INCREMENTAL_STATE_VERSION_CURRENT) {
-      console.log(
+      console.warn(
         `Incremental state version mismatch (${state.version} vs ${INCREMENTAL_STATE_VERSION_CURRENT}), discarding`
       );
       await deleteIncrementalState(projectPath);
@@ -682,7 +955,23 @@ export async function clearChangeHistory(projectPath: string): Promise<void> {
 // ANALYSIS SNAPSHOTS (for time travel)
 // =============================================================================
 
-const MAX_SNAPSHOTS = 50;
+const DEFAULT_MAX_SNAPSHOTS = 10;
+const DEFAULT_MAX_SNAPSHOT_BYTES_PER_PROJECT = 512 * 1024 * 1024;
+
+function parsePositiveIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+function getMaxSnapshots(): number {
+  return parsePositiveIntegerEnv('KLAURO_MAX_SNAPSHOTS', DEFAULT_MAX_SNAPSHOTS);
+}
+
+function getMaxSnapshotBytesPerProject(): number {
+  return parsePositiveIntegerEnv('KLAURO_MAX_SNAPSHOT_BYTES', DEFAULT_MAX_SNAPSHOT_BYTES_PER_PROJECT);
+}
 
 function isValidTimestamp(value: string): boolean {
   return !Number.isNaN(new Date(value).getTime());
@@ -714,6 +1003,21 @@ function decodeSnapshotTimestamp(snapshotId: string): string | null {
   return null;
 }
 
+function isAnalysisSnapshotFile(file: string): boolean {
+  return file.startsWith('snapshot-') && (
+    file.endsWith('.json') ||
+    file.endsWith('.json.br') ||
+    file.endsWith('.json.zst')
+  );
+}
+
+function stripJsonStorageExtension(file: string): string {
+  return file
+    .replace(/\.json\.zst$/, '')
+    .replace(/\.json\.br$/, '')
+    .replace(/\.json$/, '');
+}
+
 export async function saveAnalysisSnapshot(
   projectPath: string,
   output: CASOutput
@@ -724,9 +1028,9 @@ export async function saveAnalysisSnapshot(
 
   const timestamp = output.analysis_timestamp;
   const snapshotId = `snapshot-${encodeSnapshotTimestamp(timestamp)}`;
-  const snapshotPath = path.join(snapshotsDir, `${snapshotId}.json`);
+  const snapshotPath = path.join(snapshotsDir, `${snapshotId}.json${compressedJsonExtension()}`);
 
-  await writeJsonAtomic(snapshotPath, output);
+  await writeCompressedJsonAtomic(snapshotPath, output, { spaces: 0 });
 
   await pruneOldSnapshots(snapshotsDir);
 
@@ -736,17 +1040,29 @@ export async function saveAnalysisSnapshot(
 async function pruneOldSnapshots(snapshotsDir: string): Promise<void> {
   try {
     const files = await fs.readdir(snapshotsDir);
-    const snapshots = files
-      .filter(f => f.startsWith('snapshot-') && f.endsWith('.json'))
-      .map(file => ({
+    const snapshots: Array<{ file: string; timestamp: string; size: number }> = [];
+    for (const file of files) {
+      if (!isAnalysisSnapshotFile(file)) continue;
+      const filePath = path.join(snapshotsDir, file);
+      const stat = await fs.stat(filePath).catch(() => null);
+      snapshots.push({
         file,
-        timestamp: decodeSnapshotTimestamp(file.replace('.json', '')) || '',
-      }))
-      .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+        timestamp: decodeSnapshotTimestamp(stripJsonStorageExtension(file)) || '',
+        size: stat?.size || 0,
+      });
+    }
 
-    if (snapshots.length > MAX_SNAPSHOTS) {
-      const toDelete = snapshots.slice(MAX_SNAPSHOTS);
-      for (const snapshot of toDelete) {
+    snapshots.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+
+    const maxSnapshots = getMaxSnapshots();
+    const maxBytes = getMaxSnapshotBytesPerProject();
+    let retainedBytes = 0;
+
+    for (const [index, snapshot] of snapshots.entries()) {
+      retainedBytes += snapshot.size;
+      const exceedsCount = index >= maxSnapshots;
+      const exceedsSize = index > 0 && retainedBytes > maxBytes;
+      if (exceedsCount || exceedsSize) {
         await fs.remove(path.join(snapshotsDir, snapshot.file));
       }
     }
@@ -762,12 +1078,13 @@ export async function loadAnalysisSnapshot(
   try {
     const projectDir = getProjectStorageDir(projectPath);
     const snapshotPath = path.join(projectDir, 'snapshots', `${snapshotId}.json`);
+    const resolved = await resolveJsonStoragePath(snapshotPath);
 
-    if (!(await fs.pathExists(snapshotPath))) {
+    if (!resolved) {
       return null;
     }
 
-    return await fs.readJson(snapshotPath);
+    return await readJsonMaybeCompressed(resolved);
   } catch {
     return null;
   }
@@ -788,11 +1105,11 @@ export async function listAnalysisSnapshots(
     const snapshots: Array<{ id: string; timestamp: string }> = [];
 
     for (const file of files) {
-      if (!file.startsWith('snapshot-') || !file.endsWith('.json')) {
+      if (!isAnalysisSnapshotFile(file)) {
         continue;
       }
 
-      const id = file.replace('.json', '');
+      const id = stripJsonStorageExtension(file);
       const timestamp = decodeSnapshotTimestamp(id);
       if (timestamp) {
         snapshots.push({ id, timestamp });
@@ -959,10 +1276,15 @@ export async function loadRuntimeTrace(projectPath: string, traceId: string): Pr
 
 export async function getStorageHealth(projectPath?: string): Promise<{
   storage_path: string;
+  generated_storage_root: string;
   index_version?: string;
   analyses: number;
   workspace_graphs: number;
   agentic_benchmark_reports: number;
+  generated_artifacts: {
+    total_bytes: number;
+    categories: Array<{ category: string; path: string; bytes: number; exists: boolean }>;
+  };
   projects: Array<{
     path: string;
     name: string;
@@ -982,6 +1304,7 @@ export async function getStorageHealth(projectPath?: string): Promise<{
     listWorkspaceGraphs(),
     listAgenticBenchmarkReports(),
   ]);
+  const generatedArtifacts = await getGeneratedArtifactStorageHealth(storagePath);
   const entries = Object.entries(index.analyses)
     .filter(([entryPath]) => !projectPath || path.resolve(entryPath) === path.resolve(projectPath));
   const projects = [];
@@ -1011,10 +1334,54 @@ export async function getStorageHealth(projectPath?: string): Promise<{
 
   return {
     storage_path: storagePath,
+    generated_storage_root: generatedArtifacts.root,
     index_version: index.version,
     analyses: Object.keys(index.analyses).length,
     workspace_graphs: workspaceGraphs.length,
     agentic_benchmark_reports: agenticBenchmarkReports.length,
+    generated_artifacts: {
+      total_bytes: generatedArtifacts.categories.reduce((sum, item) => sum + item.bytes, 0),
+      categories: generatedArtifacts.categories,
+    },
     projects,
   };
+}
+
+async function getGeneratedArtifactStorageHealth(storagePath: string): Promise<{
+  root: string;
+  categories: Array<{ category: string; path: string; bytes: number; exists: boolean }>;
+}> {
+  const root = path.basename(storagePath) === 'analyses' ? path.dirname(storagePath) : storagePath;
+  const categories = await Promise.all([
+    'incremental-benchmark-workspaces',
+    'agent-live-trials',
+    'machine-proof-workspaces',
+    'scratch-build-benchmark',
+    'greenfield-live-continuity',
+    'from-zero-build-packet-proof',
+    'from-zero-dogfood',
+  ].map(async category => {
+    const artifactPath = path.join(root, category);
+    const exists = await fs.pathExists(artifactPath);
+    return {
+      category,
+      path: artifactPath,
+      exists,
+      bytes: exists ? await storageDirectorySize(artifactPath) : 0,
+    };
+  }));
+  return { root, categories };
+}
+
+async function storageDirectorySize(targetPath: string): Promise<number> {
+  const stat = await fs.stat(targetPath).catch(() => null);
+  if (!stat) return 0;
+  if (stat.isFile()) return stat.size;
+  if (!stat.isDirectory()) return 0;
+  const entries = await fs.readdir(targetPath).catch(() => []);
+  let total = 0;
+  for (const entry of entries) {
+    total += await storageDirectorySize(path.join(targetPath, entry));
+  }
+  return total;
 }

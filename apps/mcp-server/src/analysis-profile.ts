@@ -5,6 +5,7 @@ import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.ty
 export type AnalysisKind =
   | 'backend-service'
   | 'frontend-app'
+  | 'desktop-app'
   | 'mobile-app'
   | 'worker-service'
   | 'cli-tool'
@@ -32,18 +33,44 @@ const APP_ENTRY_TYPES = new Set(['http', 'websocket', 'page', 'route', 'message'
 
 export function classifyAnalysisProfile(cas: CASOutput, projectPath: string): AnalysisProfile {
   const text = profileText(cas, projectPath);
-  const entryTypes = new Set((cas.entry_points || []).map(entry => entry.type));
-  const nodeTypes = new Set((cas.nodes || []).map(node => node.type));
-  const frameworks = (cas.system?.technologies?.frameworks || []).map(framework => framework.name.toLowerCase());
-  const languages = (cas.system?.technologies?.languages || []).map(language => language.name.toLowerCase());
+  const productNodes = (cas.nodes || []).filter(isPrimaryProductNode);
+  const productNodeIds = new Set(productNodes.map(node => node.id));
+  const productEntryPoints = (cas.entry_points || []).filter(entry =>
+    (!entry.source_node || productNodeIds.has(entry.source_node)) &&
+    (!entry.handler?.file || isPrimaryProductPath(entry.handler.file))
+  );
+  const entryTypes = new Set(productEntryPoints.map(entry => entry.type));
+  const nodeTypes = new Set(productNodes.map(node => node.type));
+  const systemFrameworks = (cas.system?.technologies?.frameworks || []).map(framework => framework.name.toLowerCase());
+  const productFrameworks = productNodes.map(node => String(node.metadata?.framework || '').toLowerCase()).filter(Boolean);
+  const frameworks = [...systemFrameworks, ...productFrameworks];
+  const languages = [
+    ...(cas.system?.technologies?.languages || []).map(language => language.name.toLowerCase()),
+    ...productNodes.map(node => String(node.metadata?.language || '').toLowerCase()).filter(Boolean),
+  ];
   const manifests = readManifestHints(projectPath);
   const evidence: string[] = [];
 
-  const hasHttp = entryTypes.has('http') || hasFramework(frameworks, ['nestjs', 'express', 'fastapi', 'django', 'flask', 'asp.net', 'aspnet', 'spring', 'laravel', 'symfony']);
-  const hasFrontend = entryTypes.has('page') || entryTypes.has('route') || hasFramework(frameworks, ['react', 'next', 'vue', 'angular']) || manifests.hasFrontend;
-  const hasMobile = languages.includes('dart') || hasFramework(frameworks, ['flutter']) || nodeTypes.has('mobile_screen') || manifests.hasFlutter || /\/(android|ios|macos)\b/i.test(projectPath);
-  const hasWorker = entryTypes.has('schedule') || entryTypes.has('message') || nodeTypes.has('worker') || nodeTypes.has('scheduler') || /\b(worker|scheduler|job|queue|consumer|listener)\b/i.test(text);
+  const hasProductHttpFramework = hasFramework(productFrameworks, ['nestjs', 'express', 'fastapi', 'django', 'flask', 'asp.net', 'aspnet', 'spring', 'laravel', 'symfony']);
+  const hasSystemHttpFramework = hasFramework(systemFrameworks, ['nestjs', 'express', 'fastapi', 'django', 'flask', 'asp.net', 'aspnet', 'spring', 'laravel', 'symfony']);
+  const hasProductFrontendFramework = hasFramework(productFrameworks, ['react', 'next', 'vue', 'angular']);
+  const hasSystemFrontendFramework = hasFramework(systemFrameworks, ['react', 'next', 'vue', 'angular']);
+  const hasProductDesktopFramework = hasFramework(productFrameworks, ['electron', 'tauri']);
+  const hasSystemDesktopFramework = hasFramework(systemFrameworks, ['electron', 'tauri']);
+  const hasWpfDesktopShape = productNodes.some(node => {
+    const file = String(node.source?.file || '').replace(/\\/g, '/').toLowerCase();
+    const name = String(node.name || '').toLowerCase();
+    const language = String(node.metadata?.language || '').toLowerCase();
+    return /\.(xaml|xaml\.cs)$/.test(file) ||
+      (/\b(c#|csharp|\.net)\b/.test(language) && /\b(window|viewmodel|view model|wpf)\b/.test(`${name} ${file}`));
+  });
   const hasCli = entryTypes.has('cli') || /\b(command|cli|bin|commander|yargs|click|cobra)\b/i.test(text) || manifests.hasBin;
+  const hasFrontend = entryTypes.has('page') || entryTypes.has('route') || hasProductFrontendFramework || manifests.hasFrontend || (hasSystemFrontendFramework && !hasCli);
+  const hasHttp = entryTypes.has('http') || hasProductHttpFramework || (hasSystemHttpFramework && !hasCli && !hasFrontend);
+  const hasDesktop = manifests.hasDesktop || hasWpfDesktopShape || hasProductDesktopFramework || (hasSystemDesktopFramework && !hasCli) || /\belectron\b/i.test(text);
+  const hasProductDart = productNodes.some(node => String(node.metadata?.language || '').toLowerCase().includes('dart') || (node.source?.file || '').endsWith('.dart'));
+  const hasMobile = hasProductDart || nodeTypes.has('mobile_screen') || manifests.hasFlutter || /\/(android|ios|macos)\b/i.test(projectPath);
+  const hasWorker = entryTypes.has('schedule') || entryTypes.has('message') || nodeTypes.has('worker') || nodeTypes.has('scheduler') || /\b(worker|scheduler|job|queue|consumer|listener)\b/i.test(text);
   const hasInfrastructure = manifests.hasInfrastructure || /(?:^|\/)(infra|infrastructure|terraform|pulumi|helm|k8s|charts)(?:\/|$)/i.test(projectPath);
   const hasTestsOnly = isTestOnly(cas, projectPath);
   const hasAppEntry = [...entryTypes].some(type => APP_ENTRY_TYPES.has(type));
@@ -63,6 +90,10 @@ export function classifyAnalysisProfile(cas: CASOutput, projectPath: string): An
   if (hasMobile) {
     evidence.push('Flutter/Dart/mobile project signals');
     return profile('mobile-app', 0.9, evidence);
+  }
+  if (hasDesktop) {
+    evidence.push('Electron/Tauri/desktop project signals');
+    return profile('desktop-app', 0.9, evidence);
   }
   if (hasHttp) {
     evidence.push('HTTP/API framework or entry points');
@@ -155,7 +186,7 @@ function profile(kind: AnalysisKind, confidence: number, evidence: string[]): An
     evidence,
     expectations: { ...required, security: 'required', runtime_correlation: 'optional' },
   };
-  if (kind === 'frontend-app' || kind === 'mobile-app') return {
+  if (kind === 'frontend-app' || kind === 'mobile-app' || kind === 'desktop-app') return {
     kind,
     confidence,
     evidence,
@@ -220,8 +251,8 @@ function profileText(cas: CASOutput, projectPath: string): string {
     projectPath,
     cas.system?.name,
     cas.system?.type,
-    ...(cas.nodes || []).slice(0, 200).map(node => `${node.name} ${node.type} ${node.source?.file || ''}`),
-    ...(cas.entry_points || []).map(entry => `${entry.name} ${entry.type}`),
+    ...(cas.nodes || []).filter(isPrimaryProductNode).slice(0, 200).map(node => `${node.name} ${node.type} ${node.source?.file || ''}`),
+    ...(cas.entry_points || []).filter(entry => !entry.handler?.file || isPrimaryProductPath(entry.handler.file)).map(entry => `${entry.name} ${entry.type}`),
   ].filter(Boolean).join(' ').toLowerCase();
 }
 
@@ -233,14 +264,41 @@ function readManifestHints(projectPath: string) {
   const packageJson = readJson(path.join(projectPath, 'package.json'));
   const packageText = packageJson ? JSON.stringify(packageJson).toLowerCase() : '';
   const pubspec = readText(path.join(projectPath, 'pubspec.yaml')).toLowerCase();
-  const terraform = fs.existsSync(path.join(projectPath, 'main.tf')) || fs.existsSync(path.join(projectPath, 'variables.tf'));
+  const terraform = hasTerraformSurface(projectPath);
   return {
     hasFrontend: /\b(react|next|vue|angular|vite|svelte)\b/.test(packageText),
+    hasDesktop: /\b(electron|electron-vite|electron-builder|tauri|@tauri-apps\/api)\b/.test(packageText) ||
+      fs.existsSync(path.join(projectPath, 'electron.vite.config.ts')) ||
+      fs.existsSync(path.join(projectPath, 'electron.vite.config.js')),
     hasFlutter: Boolean(pubspec && /\bflutter\s*:|sdk:\s*flutter/.test(pubspec)),
     hasPackage: Boolean(packageJson || pubspec || fs.existsSync(path.join(projectPath, 'Cargo.toml')) || fs.existsSync(path.join(projectPath, 'go.mod'))),
     hasBin: Boolean(packageJson?.bin || packageJson?.scripts?.start || packageJson?.scripts?.cli),
-    hasInfrastructure: terraform || fs.existsSync(path.join(projectPath, 'Chart.yaml')) || fs.existsSync(path.join(projectPath, 'Pulumi.yaml')),
+    hasInfrastructure: terraform || fs.existsSync(path.join(projectPath, '.terraform-version')) || fs.existsSync(path.join(projectPath, 'Chart.yaml')) || fs.existsSync(path.join(projectPath, 'Pulumi.yaml')),
   };
+}
+
+function hasTerraformSurface(projectPath: string): boolean {
+  if (fs.existsSync(path.join(projectPath, 'main.tf')) || fs.existsSync(path.join(projectPath, 'variables.tf'))) return true;
+  const stack: Array<{ directory: string; depth: number }> = [{ directory: projectPath, depth: 0 }];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (current.depth > 3) continue;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current.directory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.name.startsWith('.') && entry.name !== '.terraform-version') continue;
+      const fullPath = path.join(current.directory, entry.name);
+      if (entry.isFile() && /\.(tf|tfvars|hcl)$/i.test(entry.name)) return true;
+      if (entry.isDirectory() && !['node_modules', 'dist', 'build', 'coverage', 'vendor', 'target'].includes(entry.name)) {
+        stack.push({ directory: fullPath, depth: current.depth + 1 });
+      }
+    }
+  }
+  return false;
 }
 
 function readJson(file: string): any | null {
@@ -275,4 +333,19 @@ function isTestOnly(cas: CASOutput, projectPath: string): boolean {
       /(\.test\.|\.spec\.|_test\.|test[s]?\.(java|kt|cs|php)$)/i.test(file);
   });
   return testish.length / sourceNodes.length >= 0.8;
+}
+
+function isPrimaryProductNode(node: any): boolean {
+  if (node.metadata?.is_test || node.metadata?.is_generated) return false;
+  return isPrimaryProductPath(node.source?.file || node.name || '');
+}
+
+function isPrimaryProductPath(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, '/').toLowerCase();
+  if (!normalized) return true;
+  if (/(^|\/)(\.klauro[^/]*|\.agents|\.claude|\.codex|node_modules|dist|build|coverage|vendor|vendors|generated|fixtures?|__fixtures__|__mocks__)(\/|$)/.test(normalized)) return false;
+  if (/(^|\/)(__tests__|tests?|spec|e2e|cypress|playwright)(\/|$)/.test(normalized)) return false;
+  if (/\.(test|spec|stories|story)\.[a-z0-9]+$/.test(normalized)) return false;
+  if (/^legacy\//.test(normalized)) return false;
+  return true;
 }

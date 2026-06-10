@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as nodePath from 'path';
-import type { CASEntryPoint, CASOutput, CASNode } from '../../../packages/analyzer-core/src/types/cas.types';
+import type { CASEntryPoint, CASOutput, CASNode, SystemCapability } from '../../../packages/analyzer-core/src/types/cas.types';
 import {
   assessChangeRisk,
   buildSummary,
@@ -125,6 +125,7 @@ interface AgentValidationPlan {
   commands: AgentValidationCommand[];
   tests_to_inspect: Array<{ file: string; name?: string; reason: string }>;
   manual_checks: string[];
+  run_policy: string;
   environment_rule: string;
   gaps: string[];
 }
@@ -133,6 +134,10 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
   const summary = buildSummary(cas);
   const answerPack = runAnswerPack(cas, path);
   const readiness = evaluateAgentReadiness(cas, path);
+  const architectureContext = buildArchitectureContextForAgent(cas, {
+    target: task.target,
+    limit: 6,
+  });
   const topNodes = mostConnectedNodes(cas).slice(0, 8).map(node => ({
     id: node.id,
     name: node.name,
@@ -155,6 +160,7 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
       default_use: readiness.default_use,
       profile: readiness.profile,
       gaps: readiness.adoption_gaps,
+      language_coverage_note: unanalyzedLanguageNote(cas),
     },
     system: {
       name: summary.name,
@@ -194,6 +200,13 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
       runtime_static_links: runtimeLinks.links,
     },
     idiom_summary: cas.idiom_summary || null,
+    architecture_context: architectureContext,
+    capability_memory: buildCapabilityMemoryForAgent(cas, {
+      target: task.target,
+      instructions: task.instructions,
+      success_criteria: task.success_criteria,
+      limit: 6,
+    }),
     answer_pack: {
       status: answerPack.gaps.length === 0 ? 'ready' : 'needs-review',
       answers: answerPack.answers.map(answer => ({
@@ -217,8 +230,12 @@ export async function getAgentWorkPacket(cas: CASOutput, path: string, taskInput
   const task = normalizeTask(taskInput);
   const readiness = evaluateAgentReadiness(cas, path);
   const plan = getAgentToolPlan(cas, { path, task });
-  const targetQuery = task.target || inferTargetQueryFromTask(task);
-  const targetResolution = await resolveTaskTarget(cas, path, targetQuery);
+  const baseTargetQuery = task.target || inferTargetQueryFromTask(task);
+  const targetQuery = enrichTargetQueryWithCapabilityEvidence(cas, baseTargetQuery);
+  let targetResolution = await resolveTaskTarget(cas, path, targetQuery);
+  if (!targetResolution.selected_node && baseTargetQuery && targetQuery && baseTargetQuery !== targetQuery) {
+    targetResolution = await resolveTaskTarget(cas, path, baseTargetQuery);
+  }
   const selectedNode = targetResolution.selected_node;
   const tests = selectedNode
     ? findTests(cas, { nodeId: selectedNode.id, limit: 10 })
@@ -238,7 +255,12 @@ export async function getAgentWorkPacket(cas: CASOutput, path: string, taskInput
     limit: 12,
   });
   const entryContext = buildEntryContext(cas, task, selectedNode?.id);
-  const fileReadPlan = buildFileReadPlan(cas, selectedNode || undefined, callers, callees, tests, entryContext);
+  let fileReadPlan = buildFileReadPlan(cas, selectedNode || undefined, callers, callees, tests, entryContext);
+  const requestedTargetFile = targetQuery ? normalizeTargetFileForAgent(path, cas.system?.root_path, targetQuery) : null;
+  if (requestedTargetFile && !fileReadPlan.some(item => item.file === requestedTargetFile)) {
+    fileReadPlan = [targetFileReadPlanItem(requestedTargetFile), ...fileReadPlan].slice(0, 12);
+  }
+  fileReadPlan = augmentFileReadPlanWithTaskHints(cas, fileReadPlan, task).slice(0, 12);
   const invariantImpact = assessBehavioralInvariantImpact(cas, {
     target: selectedNode?.id || targetQuery || task.target,
     files: fileReadPlan.map(item => item.file),
@@ -252,6 +274,28 @@ export async function getAgentWorkPacket(cas: CASOutput, path: string, taskInput
     files: fileReadPlan.map(item => item.file),
     limit: 8,
   });
+  const architectureTarget = targetQuery || task.target || selectedNode?.name || selectedNode?.id;
+  const architectureFiles = fileReadPlan
+    .filter(isArchitecturePlacementFileReadPlanItem)
+    .map(item => item.file);
+  const architectureContext = buildArchitectureContextForAgent(cas, {
+    target: architectureTarget,
+    files: architectureFiles.length > 0 ? architectureFiles : fileReadPlan.map(item => item.file),
+    limit: 6,
+  });
+  const capabilityMemory = buildCapabilityMemoryForAgent(cas, {
+    target: targetQuery || task.target || selectedNode?.name || selectedNode?.id,
+    instructions: task.instructions,
+    success_criteria: task.success_criteria,
+    files: fileReadPlan.map(item => item.file),
+    limit: 8,
+  });
+  const riskContext = buildRiskContextForAgent(cas, {
+    targetNode: selectedNode || undefined,
+    target: selectedNode?.id || targetQuery || task.target,
+    files: fileReadPlan.map(item => item.file),
+    limit: 6,
+  });
   const validationPlan = buildValidationPlan(path, cas, task, selectedNode || undefined, tests, fileReadPlan, risk, behavioralInvariants);
   const gaps = [
     ...readiness.adoption_gaps,
@@ -260,7 +304,7 @@ export async function getAgentWorkPacket(cas: CASOutput, path: string, taskInput
     ...validationPlan.gaps.map(gap => `validation-plan: ${gap}`),
   ];
 
-  return {
+  const packet = {
     path,
     generated_at: new Date().toISOString(),
     task,
@@ -271,28 +315,1468 @@ export async function getAgentWorkPacket(cas: CASOutput, path: string, taskInput
       score: readiness.score,
       profile: readiness.profile,
       gaps: readiness.adoption_gaps,
+      language_coverage_note: unanalyzedLanguageNote(cas),
     },
     target_resolution: summarizeTargetResolutionForAgent(targetResolution),
     selected_node: selectedNode ? summarizeNodeForAgent(selectedNode) : null,
     work_context: {
       coding_context: codingContext,
       risk: riskForAgent,
+      risk_context: riskContext,
       callers,
       callees,
       tests: compactTests,
       error_contracts: errorContracts,
       behavioral_invariants: compactBehavioralInvariants,
       invariant_impact: compactInvariantImpact,
+      architecture_context: architectureContext,
       idiom_context: idiomContext,
+      system_health: summarizeSystemHealthForAgent(cas),
+      capability_memory: capabilityMemory,
       entry_context: entryContext,
     },
     file_read_plan: fileReadPlan,
     invariant_impact: compactInvariantImpact,
     validation_plan: validationPlan,
     next_mcp_calls: plan.steps,
-    source_reading_rule: 'Read only the files in file_read_plan first. Expand only when those files or MCP evidence show a concrete gap. Preserve idiom_context when editing.',
+    source_reading_rule: 'Read only the files in file_read_plan first. Expand only when those files or MCP evidence show a concrete gap. Preserve idiom_context and system_health remediation rules when editing.',
     gaps,
   };
+
+  return adaptWorkPacketForRepoScale(packet, cas);
+}
+
+function isArchitecturePlacementFileReadPlanItem(item: FileReadPlanItem): boolean {
+  const reason = String(item.reason || '').toLowerCase();
+  if (!reason) return false;
+  if (/task hint|representative entry point|test coverage|focused test|validation/i.test(reason)) return false;
+  return /selected target|explicit target|caller via|callee via/i.test(reason);
+}
+
+export function buildArchitectureContextForAgent(
+  cas: CASOutput,
+  opts: { target?: string; files?: string[]; limit?: number } = {},
+) {
+  const summary = cas.architecture_summary;
+  const inventory = summary?.architectural_inventory;
+  const patterns = summary?.architectural_patterns || [];
+  const limit = opts.limit || 6;
+  const nodeById = new Map((cas.nodes || []).map(node => [node.id, node]));
+  const target = String(opts.target || '').toLowerCase();
+  const targetTokens = architectureTargetTokens(target);
+  const files = uniqueStrings((opts.files || []).map(file => normalizeSourceFile(file, cas.system?.root_path)));
+  const fileSet = new Set(files.map((file: string) => file.toLowerCase()));
+
+  const targetRelevantNodeIds = new Set<string>();
+  if (target) {
+    for (const node of cas.nodes || []) {
+      const haystack = [
+        node.id,
+        node.name,
+        node.qualified_name,
+        node.type,
+        node.source?.file,
+      ].filter(Boolean).join(' ').toLowerCase();
+      if (haystack.includes(target) || targetTokens.some(token => haystack.includes(token))) {
+        targetRelevantNodeIds.add(node.id);
+      }
+    }
+  }
+  const fileRelevantNodeIds = new Set<string>();
+  if (fileSet.size > 0) {
+    for (const node of cas.nodes || []) {
+      const file = normalizeSourceFile(node.source?.file || '', cas.system?.root_path).toLowerCase();
+      if (!file) continue;
+      if ([...fileSet].some((item: string) => projectPathsMatch(file, item))) fileRelevantNodeIds.add(node.id);
+    }
+  }
+  const directRelevantNodeIds = new Set([...targetRelevantNodeIds, ...fileRelevantNodeIds]);
+  const relevantNodeIds = new Set(directRelevantNodeIds);
+  expandRelevantArchitectureNodeIds(relevantNodeIds, cas);
+
+  const hasSpecificContext = Boolean(target || fileSet.size > 0 || relevantNodeIds.size > 0);
+  const fileScopedDirectNodeIds = fileRelevantNodeIds.size > 0 ? fileRelevantNodeIds : directRelevantNodeIds;
+  const fileScopedExpandedNodeIds = new Set(fileScopedDirectNodeIds);
+  expandRelevantArchitectureNodeIds(fileScopedExpandedNodeIds, cas);
+  const patternScopeNodeIds = fileSet.size > 0
+    ? architectureFileScopedNodeIds(fileScopedDirectNodeIds, fileScopedExpandedNodeIds, nodeById, files, cas.system?.root_path)
+    : relevantNodeIds;
+  const inventoryScopeNodeIds = fileSet.size > 0
+    ? architectureFileScopedNodeIds(fileScopedDirectNodeIds, fileScopedExpandedNodeIds, nodeById, files, cas.system?.root_path)
+    : relevantNodeIds;
+  const scopedFallbackPatterns = fileSet.size > 0
+    ? synthesizeScopedArchitecturePatterns(inventory, inventoryScopeNodeIds, nodeById)
+    : [];
+  const relevantPatterns = patterns.filter(pattern => pattern.node_ids?.some(id => patternScopeNodeIds.has(id)));
+  const selectedPatterns = uniqueByName(
+    fileSet.size > 0
+      ? [
+        ...relevantPatterns,
+        ...scopedFallbackPatterns,
+      ]
+      : hasSpecificContext
+        ? [
+          ...relevantPatterns,
+          ...patterns.filter(pattern => pattern.confidence >= 0.65),
+          ...patterns,
+        ]
+        : [
+          ...patterns.filter(pattern => pattern.confidence >= 0.65),
+          ...patterns,
+        ],
+  ).slice(0, limit);
+  const relevantInventory = inventory
+    ? Object.fromEntries(Object.entries(inventory)
+      .map(([kind, ids]) => [
+        kind,
+        (Array.isArray(ids) ? ids as string[] : [])
+          .filter(id => inventoryScopeNodeIds.size === 0 || inventoryScopeNodeIds.has(id))
+          .filter(id => isUsefulArchitectureExampleNode(nodeById.get(id)))
+          .slice(0, 8)
+          .filter(id => fileSet.size === 0 || architectureNodeMatchesAnyScopeFile(nodeById.get(id), files, cas.system?.root_path))
+          .map(id => compactArchitectureNode(nodeById.get(id), id))
+          .filter(Boolean),
+      ])
+      .filter(([, nodes]) => Array.isArray(nodes) && nodes.length > 0))
+    : {};
+  const hasRelevantInventory = Object.keys(relevantInventory).length > 0;
+  const scopedInventoryFallback = fileSet.size > 0
+    ? synthesizeScopedArchitectureInventory(inventoryScopeNodeIds, nodeById, files, cas.system?.root_path)
+    : {};
+  const localInventory = fileSet.size > 0
+    ? mergeArchitectureInventory(scopedInventoryFallback, relevantInventory)
+    : relevantInventory;
+  const inventoryExamples = hasSpecificContext && fileSet.size > 0
+    ? localInventory
+    : hasSpecificContext && hasRelevantInventory
+    ? relevantInventory
+    : hasSpecificContext && fileSet.size > 0
+    ? scopedInventoryFallback
+    : inventory
+    ? Object.fromEntries(Object.entries(inventory)
+      .map(([kind, ids]) => [
+        kind,
+        (Array.isArray(ids) ? ids as string[] : [])
+          .filter(id => isUsefulArchitectureExampleNode(nodeById.get(id)))
+          .slice(0, 6)
+          .map(id => compactArchitectureNode(nodeById.get(id), id))
+          .filter(Boolean),
+      ])
+      .filter(([, nodes]) => Array.isArray(nodes) && nodes.length > 0))
+    : {};
+  const patternDecisionMatrix = selectedPatterns
+    .filter(pattern => pattern.category !== 'anti-pattern')
+    .map(pattern => {
+      const exampleIds = fileSet.size > 0
+        ? (pattern.node_ids || []).filter(id => patternScopeNodeIds.has(id))
+        : (pattern.node_ids || []);
+      return {
+        pattern: pattern.name,
+        use_when: patternUseWhen(pattern.name, pattern.category),
+        owner_categories: ownerCategoriesForPattern(pattern.name, pattern.category, inventory || undefined),
+        examples: exampleIds
+          .filter(id => isUsefulArchitectureExampleNode(nodeById.get(id)))
+          .filter(id => fileSet.size === 0 || architectureNodeMatchesAnyScopeFile(nodeById.get(id), files, cas.system?.root_path))
+          .slice(0, 5)
+          .map(id => compactArchitectureNode(nodeById.get(id), id))
+          .filter(Boolean),
+        guidance: pattern.guidance,
+      };
+    });
+
+  return {
+    system_type: summary?.system_type || cas.system?.type || 'unknown',
+    architecture_budget: selectedPatterns
+      .filter(pattern => pattern.category !== 'anti-pattern')
+      .slice(0, 5)
+      .map(pattern => pattern.name),
+    patterns: selectedPatterns.map(pattern => ({
+      name: pattern.name,
+      category: pattern.category,
+      confidence: pattern.confidence,
+      evidence: (pattern.evidence || []).slice(0, 3),
+      guidance: pattern.guidance,
+    })),
+    inventory_counts: inventory ? Object.fromEntries(
+      Object.entries(inventory).map(([kind, ids]) => [kind, Array.isArray(ids) ? ids.length : 0])
+    ) : {},
+    inventory_examples: inventoryExamples,
+    relevant_inventory: localInventory,
+    pattern_decision_matrix: patternDecisionMatrix,
+    pattern_balance: summary?.pattern_balance || null,
+    global_architecture_budget: hasSpecificContext ? patterns
+      .filter(pattern => pattern.category !== 'anti-pattern' && pattern.confidence >= 0.65)
+      .slice(0, 5)
+      .map(pattern => pattern.name) : undefined,
+    agent_rules: uniqueStrings([
+      'Before adding a new architectural style, check whether an existing pattern and owner category already covers the feature.',
+      ...selectedPatterns.map(pattern => pattern.guidance).filter(Boolean),
+      ...(summary?.pattern_balance?.recommendations || []),
+    ]).slice(0, 8),
+  };
+}
+
+function synthesizeScopedArchitecturePatterns(
+  inventory: NonNullable<CASOutput['architecture_summary']>['architectural_inventory'] | undefined,
+  scopedNodeIds: Set<string>,
+  nodeById: Map<string, CASNode>,
+): NonNullable<NonNullable<CASOutput['architecture_summary']>['architectural_patterns']> {
+  if (scopedNodeIds.size === 0) return [];
+
+  const byKind = new Map<string, string[]>();
+  for (const [kind, ids] of Object.entries(inventory || {})) {
+    const scopedIds = (Array.isArray(ids) ? ids as string[] : [])
+      .filter(id => scopedNodeIds.has(id))
+      .filter(id => isUsefulArchitectureExampleNode(nodeById.get(id)));
+    if (scopedIds.length > 0) byKind.set(kind, scopedIds);
+  }
+
+  if (byKind.size === 0) {
+    const sourceIds = [...scopedNodeIds].filter(id => nodeById.has(id)).slice(0, 24);
+    if (sourceIds.length === 0) return [];
+    return [{
+      name: 'Library / Module Package',
+      category: 'application-architecture',
+      confidence: 0.55,
+      evidence: [`${sourceIds.length} selected local source nodes`],
+      node_ids: sourceIds,
+      guidance: 'Treat the selected local files as the architecture boundary; extend nearby modules instead of introducing a parallel structure.',
+    }];
+  }
+
+  const patterns: NonNullable<NonNullable<CASOutput['architecture_summary']>['architectural_patterns']> = [];
+  const idsFor = (...kinds: string[]) => uniqueStrings(kinds.flatMap(kind => byKind.get(kind) || []));
+  const countFor = (...kinds: string[]) => idsFor(...kinds).length;
+  const add = (
+    name: string,
+    category: NonNullable<NonNullable<CASOutput['architecture_summary']>['architectural_patterns']>[number]['category'],
+    ids: string[],
+    guidance: string,
+  ) => {
+    const uniqueIds = uniqueStrings(ids).slice(0, 40);
+    if (uniqueIds.length === 0) return;
+    patterns.push({
+      name,
+      category,
+      confidence: Math.min(0.72, 0.5 + uniqueIds.length / 40),
+      evidence: [`${uniqueIds.length} selected local ${name.toLowerCase()} owner nodes`],
+      node_ids: uniqueIds,
+      guidance,
+    });
+  };
+
+  const presentationIds = idsFor('views', 'view_models');
+  const serviceIds = idsFor('services');
+  const controllerIds = idsFor('controllers');
+  const modelIds = idsFor('models');
+  const repositoryIds = idsFor('repositories');
+  const clientIds = idsFor('clients');
+  const scriptIds = idsFor('scripts');
+  const packageIds = idsFor('packages');
+  const mediatorIds = idsFor('mediators');
+  const unitIds = idsFor('unit_of_work');
+  const singletonIds = idsFor('singletons');
+
+  add('Component/Page UI', 'presentation', presentationIds,
+    'Place UI changes beside the nearest selected page/component/template owner and preserve local routing, state, and styling conventions.');
+  add('Service Layer', 'business-logic', serviceIds,
+    'Put orchestration and business rules in the selected service/use-case owners; keep entry points and UI owners thin.');
+  add('Repository', 'data-access', repositoryIds,
+    'Use the selected repository/store owners for persistence access instead of spreading storage details into callers.');
+  add('Client SDK / API Wrapper', 'integration', clientIds,
+    'Keep protocol, SDK, and adapter concerns inside the selected client/API wrapper owners.');
+  add('Command Script / Automation', 'application-architecture', scriptIds,
+    'Preserve the selected script/worker/bot entrypoint and helper-module split.');
+  add('Mediator / Handler', 'business-logic', mediatorIds,
+    'Route commands, queries, and events through the selected handler or dispatcher style.');
+  add('Unit of Work', 'data-access', unitIds,
+    'Keep transaction-scoped persistence inside the selected unit-of-work boundary.');
+  add('Singleton / Registry', 'object-lifecycle', singletonIds,
+    'Reuse the selected registry/configuration lifetime pattern; avoid adding unrelated global state.');
+
+  const layeredIds = idsFor('controllers', 'views', 'services', 'repositories', 'models', 'clients');
+  const layerCount = [
+    controllerIds.length > 0 || presentationIds.length > 0,
+    serviceIds.length > 0 || mediatorIds.length > 0,
+    repositoryIds.length > 0 || modelIds.length > 0 || clientIds.length > 0,
+  ].filter(Boolean).length;
+  if (layerCount >= 2) {
+    add('Layered Architecture', 'application-architecture', layeredIds,
+      'Preserve local layer direction: entry/presentation owners call service or integration owners, and lower-level owners do not reach back up.');
+  }
+
+  const mvcCount = countFor('controllers') + countFor('views') + countFor('models');
+  if (controllerIds.length > 0 && presentationIds.length > 0 && modelIds.length > 0 && mvcCount >= 3) {
+    add('MVC', 'application-architecture', idsFor('controllers', 'views', 'models'),
+      'Keep request handling, data shape, and rendering responsibilities separated across the selected local owners.');
+  }
+
+  if (patterns.length === 0 && packageIds.length > 0) {
+    add('Library / Module Package', 'application-architecture', packageIds,
+      'Treat selected modules/packages as the architecture boundary and extend the nearest existing package instead of creating a parallel structure.');
+  }
+
+  return patterns;
+}
+
+function synthesizeScopedArchitectureInventory(
+  scopedNodeIds: Set<string>,
+  nodeById: Map<string, CASNode>,
+  files: string[],
+  rootPath?: string,
+): Record<string, ReturnType<typeof compactArchitectureNode>[]> {
+  if (scopedNodeIds.size === 0) return {};
+
+  const grouped = new Map<string, ReturnType<typeof compactArchitectureNode>[]>();
+  const add = (kind: string, node: CASNode) => {
+    const values = grouped.get(kind) || [];
+    if (values.some(item => item.id === node.id)) return;
+    values.push(compactArchitectureNode(node, node.id));
+    grouped.set(kind, values);
+  };
+
+  for (const id of scopedNodeIds) {
+    const node = nodeById.get(id);
+    if (!node) continue;
+    if (!isUsefulArchitectureExampleNode(node)) continue;
+    if (!architectureNodeMatchesAnyScopeFile(node, files, rootPath)) continue;
+    add(categoryForArchitectureInventoryNode(node), node);
+  }
+
+  return Object.fromEntries(Array.from(grouped.entries())
+    .map(([kind, nodes]) => [kind, nodes.slice(0, 8)])
+    .filter(([, nodes]) => Array.isArray(nodes) && nodes.length > 0));
+}
+
+function mergeArchitectureInventory(
+  primary: Record<string, ReturnType<typeof compactArchitectureNode>[]>,
+  secondary: Record<string, any>,
+): Record<string, any[]> {
+  const merged = new Map<string, any[]>();
+  const addGroup = (inventory: Record<string, any> | undefined) => {
+    for (const [kind, nodes] of Object.entries(inventory || {})) {
+      if (!Array.isArray(nodes)) continue;
+      const values = merged.get(kind) || [];
+      for (const node of nodes) {
+        const key = String(node?.id || `${node?.name || ''}:${node?.file || ''}`);
+        if (values.some(existing => String(existing?.id || `${existing?.name || ''}:${existing?.file || ''}`) === key)) continue;
+        values.push(node);
+      }
+      if (values.length > 0) merged.set(kind, values.slice(0, 8));
+    }
+  };
+  addGroup(primary);
+  addGroup(secondary);
+  return Object.fromEntries(merged.entries());
+}
+
+function categoryForArchitectureInventoryNode(node: CASNode): string {
+  const value = `${node.type || ''} ${node.name || ''} ${node.source?.file || ''}`.toLowerCase();
+  if (/\b(controller|route|resolver|endpoint)\b/.test(value)) return 'controllers';
+  if (/\b(component|page|view|template|screen)\b/.test(value)) return 'views';
+  if (/\b(view.?model)\b/.test(value)) return 'view_models';
+  if (/\b(repository|repo|dao)\b/.test(value)) return 'repositories';
+  if (/\b(entity|model|schema|dto|type)\b/.test(value)) return 'models';
+  if (/\b(client|sdk|adapter|gateway)\b/.test(value)) return 'clients';
+  if (/\b(handler|command|query|mediator)\b/.test(value)) return 'mediators';
+  if (/\b(unit.?of.?work|transaction)\b/.test(value)) return 'unit_of_work';
+  if (/\b(singleton|registry)\b/.test(value)) return 'singletons';
+  if (/\b(service|manager|orchestrator|processor|dominator|engine)\b/.test(value)) return 'services';
+  if (/\b(script|cli|command|job|worker)\b/.test(value)) return 'scripts';
+  return 'packages';
+}
+
+function isUsefulArchitectureExampleNode(node: CASNode | undefined): node is CASNode {
+  if (!node) return false;
+  const type = String(node.type || '').toLowerCase();
+  if (['import', 'export', 'property', 'variable', 'mock', 'using'].includes(type)) return false;
+  const name = String(node.name || '').trim();
+  if (/^import\s+/i.test(name) || /^export\s+/i.test(name) || /^using\s+/i.test(name)) return false;
+  return true;
+}
+
+function architectureTargetTokens(target: string): string[] {
+  return uniqueStrings(target
+    .split(/[^a-z0-9]+/i)
+    .map(token => token.trim().toLowerCase())
+    .filter(token => token.length >= 4 && !new Set([
+      'with',
+      'from',
+      'into',
+      'this',
+      'that',
+      'code',
+      'file',
+      'files',
+      'using',
+      'imports',
+      'pattern',
+      'patterns',
+      'architecture',
+      'inventory',
+      'balance',
+      'signal',
+      'signals',
+      'review',
+      'modify',
+      'change',
+      'update',
+      'manage',
+      'managed',
+      'manager',
+      'managers',
+      'management',
+      'analysis',
+      'analyzer',
+      'usefulness',
+      'quality',
+      'context',
+    ]).has(token)));
+}
+
+function architectureNodeMatchesAnyScopeFile(node: any, files: string[], rootPath?: string): boolean {
+  const nodeFile = normalizeSourceFile(node?.source?.file || '', rootPath);
+  if (!nodeFile) return false;
+  return files.some(file => sameArchitectureFileScope(file, nodeFile));
+}
+
+function architectureFileScopedNodeIds(
+  directNodeIds: Set<string>,
+  expandedNodeIds: Set<string>,
+  nodeById: Map<string, any>,
+  files: string[],
+  rootPath?: string,
+): Set<string> {
+  const scoped = new Set(directNodeIds);
+  for (const id of expandedNodeIds) {
+    if (scoped.has(id)) continue;
+    const nodeFile = normalizeSourceFile(nodeById.get(id)?.source?.file || '', rootPath);
+    if (!nodeFile) continue;
+    if (files.some(file => sameArchitectureFileScope(file, nodeFile))) scoped.add(id);
+  }
+  return scoped;
+}
+
+function sameArchitectureFileScope(a: string, b: string): boolean {
+  const left = normalizeArchitectureScopePath(a).split('/').filter(Boolean);
+  const right = normalizeArchitectureScopePath(b).split('/').filter(Boolean);
+  if (left.length === 0 || right.length === 0) return false;
+  if (sameTrailingArchitecturePath(left, right)) return true;
+  if (left[0] !== right[0]) return false;
+  const shared = Math.min(left.length, right.length);
+  if (left[0] === 'features') return shared >= 3 && left[1] === right[1] && left[2] === right[2];
+  if (left[0] === 'defs-api') return shared >= 1;
+  if (left[0] === 'assets' && left[1] === 'javascript' && right[1] === 'javascript') return shared >= 3 && left[2] === right[2];
+  if (left[0] === 'src') return sameSrcArchitectureScope(left, right, shared);
+  if ((left[0] === 'apps' || left[0] === 'packages') && left[2] === 'src' && right[2] === 'src') {
+    return shared >= 4 && left[1] === right[1] && left[3] === right[3];
+  }
+  if (left[0] === 'apps' || left[0] === 'packages') return shared >= 3 && left[1] === right[1] && left[2] === right[2];
+  if (left[0] === 'legacy') return shared >= 3 && left[1] === right[1] && left[2] === right[2];
+  return shared >= 2 && left[1] === right[1];
+}
+
+function normalizeArchitectureScopePath(value: string): string {
+  let normalized = normalizeSourceFile(value).toLowerCase().replace(/^\/+/, '');
+  normalized = normalized.replace(/(^|\/)src\/app\/features\//, 'features/');
+  normalized = normalized.replace(/(^|\/)app\/features\//, 'features/');
+  normalized = normalized.replace(/(^|\/)src\/app\/defs-api\//, 'defs-api/');
+  normalized = normalized.replace(/(^|\/)app\/defs-api\//, 'defs-api/');
+  normalized = normalized.replace(/(^|\/)app\/assets\//, 'assets/');
+  normalized = normalized.replace(/(^|\/)app\/javascript\//, 'javascript/');
+  normalized = normalized.replace(/(^|\/)vrs_system\/apps\//, 'apps/');
+  normalized = normalized.replace(/(^|\/)modules\//, 'modules/');
+  for (const marker of ['packages', 'apps', 'legacy', 'src', 'features', 'defs-api', 'modules', 'components', 'core', 'assets', 'javascript']) {
+    const index = normalized.indexOf(`${marker}/`);
+    if (index > 0) {
+      normalized = normalized.slice(index);
+      break;
+    }
+  }
+  if (normalized.startsWith('modules/')) normalized = normalized.slice('modules/'.length);
+  return normalized;
+}
+
+function sameSrcArchitectureScope(left: string[], right: string[], shared: number): boolean {
+  if (left[1] !== right[1]) return false;
+  const featureScopedBuckets = new Set([
+    'business',
+    'components',
+    'controllers',
+    'features',
+    'modules',
+    'pages',
+    'routes',
+    'services',
+    'stores',
+  ]);
+  if (!featureScopedBuckets.has(left[1])) return shared >= 2;
+  if (shared < 3 || left[2] !== right[2]) return false;
+  if (left[1] === 'services' && /^(?:adapter|adapters|external|external-sources|integrations?)$/.test(left[2])) {
+    return shared >= 4 && left[3] === right[3];
+  }
+  return true;
+}
+
+function sameTrailingArchitecturePath(left: string[], right: string[]): boolean {
+  const shared = Math.min(left.length, right.length);
+  if (shared === 1) return left[left.length - 1] === right[right.length - 1];
+  if (shared < 2) return false;
+  return left[left.length - 1] === right[right.length - 1] &&
+    left[left.length - 2] === right[right.length - 2];
+}
+
+function expandRelevantArchitectureNodeIds(relevantNodeIds: Set<string>, cas: CASOutput): void {
+  if (relevantNodeIds.size === 0) return;
+  for (const edge of cas.edges || []) {
+    if (relevantNodeIds.has(edge.source)) relevantNodeIds.add(edge.target);
+    if (relevantNodeIds.has(edge.target)) relevantNodeIds.add(edge.source);
+  }
+}
+
+function patternUseWhen(patternName: string, category = ''): string {
+  const value = `${patternName} ${category}`.toLowerCase();
+  if (/mvc/.test(value)) return 'Use for request/page flows that already separate controllers, models, and views/components.';
+  if (/mvvm|view.?model/.test(value)) return 'Use for UI state/interaction behavior where views bind to view-model owners.';
+  if (/component|page|ui|presentation|template/.test(value)) return 'Use for page, component, layout, styling, and interaction changes; place behavior beside the closest local UI owner.';
+  if (/repository|data/.test(value)) return 'Use for persistence access and query boundaries; keep callers out of raw storage details.';
+  if (/unit.?of.?work|transaction/.test(value)) return 'Use when a change coordinates multiple repository writes or transaction-scoped persistence.';
+  if (/command script|automation|script/.test(value)) return 'Use for command-line or build automation behavior; preserve the entry script and helper-module split.';
+  if (/mediator|handler|command|query/.test(value)) return 'Use when the codebase routes use-cases through command/query handlers or mediator dispatch.';
+  if (/client|sdk|api wrapper|adapter/.test(value)) return 'Use for remote API/client integration boundaries; keep protocol and adapter details in client owners.';
+  if (/static|asset|theme|pipeline/.test(value)) return 'Use for content, styling, theme, or asset behavior; preserve asset/template placement and build conventions.';
+  if (/service|business/.test(value)) return 'Use for business rules and orchestration behind thin entry points.';
+  if (/singleton|registry/.test(value)) return 'Use only for established registry/configuration lifetimes; avoid adding global state casually.';
+  return 'Use only when the requested behavior matches the local examples and owner categories.';
+}
+
+function ownerCategoriesForPattern(
+  patternName: string,
+  category = '',
+  _inventory?: NonNullable<CASOutput['architecture_summary']>['architectural_inventory']
+): string[] {
+  const value = `${patternName} ${category}`.toLowerCase();
+  const categories: string[] = [];
+  const add = (kind: string) => {
+    categories.push(kind);
+  };
+
+  if (/mvc/.test(value)) {
+    add('controllers');
+    add('models');
+    add('views');
+  }
+  if (/mvvm|view.?model/.test(value)) {
+    add('views');
+    add('view_models');
+    add('models');
+  }
+  if (/component|page|ui|presentation|template/.test(value)) {
+    add('views');
+    add('packages');
+    add('clients');
+  }
+  if (/repository|data/.test(value)) add('repositories');
+  if (/unit.?of.?work|transaction/.test(value)) add('unit_of_work');
+  if (/command script|automation|script/.test(value)) add('scripts');
+  if (/mediator|handler|command|query/.test(value)) add('mediators');
+  if (/client|sdk|api wrapper|adapter/.test(value)) add('clients');
+  if (/static|asset|theme|pipeline/.test(value)) {
+    add('clients');
+    add('views');
+    add('scripts');
+  }
+  if (/service|business/.test(value)) add('services');
+  if (/singleton|registry/.test(value)) add('singletons');
+  if (/library|module|package/.test(value)) add('packages');
+  if (/layer/.test(value)) {
+    add('controllers');
+    add('services');
+    add('repositories');
+    add('clients');
+  }
+  if (/feature/.test(value)) {
+    add('packages');
+    add('services');
+    add('controllers');
+    add('views');
+  }
+
+  return uniqueStrings(categories);
+}
+
+function adaptWorkPacketForRepoScale<T extends Record<string, any>>(packet: T, cas: CASOutput): T {
+  const profile = workPacketScaleProfile(cas, packet);
+  if (profile === 'standard') return packet;
+  if (profile === 'small-repo-minimal') return compactSmallRepoMinimalWorkPacket(packet);
+  if (profile === 'token-minimal') return compactTokenMinimalWorkPacket(packet);
+  if (profile === 'tiny') return compactTinyWorkPacket(packet);
+
+  return {
+    ...packet,
+    packet_profile: 'micro-repo',
+    work_context: compactMicroWorkContext(packet.work_context),
+    file_read_plan: compactMicroFileReadPlan(packet.file_read_plan),
+    invariant_impact: compactMicroInvariantImpact(packet.invariant_impact),
+    validation_plan: compactMicroValidationPlan(packet.validation_plan),
+    next_mcp_calls: compactMicroToolPlan(packet.next_mcp_calls),
+    source_reading_rule: 'This is a small repository. Use the file_read_plan first, then read whole files only when the listed line windows are insufficient. Keep idiom and invariant checks lightweight but still run them before finalizing edits.',
+  } as unknown as T;
+}
+
+function compactSmallRepoMinimalWorkPacket<T extends Record<string, any>>(packet: T): T {
+  const context = packet.work_context || {};
+  const task = compactPacketTask(packet.task);
+  return {
+    path: packet.path,
+    generated_at: packet.generated_at,
+    task,
+    status: packet.status,
+    default_use: packet.default_use,
+    packet_profile: 'small-repo-minimal',
+    selected_node: packet.selected_node,
+    work_context: {
+      coding_context: compactCodingContextForMicroRepo(context.coding_context),
+      architecture_context: compactSmallRepoArchitectureContext(context.architecture_context),
+      risk: compactRiskForMicroRepo(context.risk),
+      risk_context: compactMinimalRiskContext(context.risk_context),
+      tests: compactMinimalTests(context.tests),
+      behavioral_invariants: compactMinimalInvariants(context.behavioral_invariants),
+      idiom_context: compactMinimalIdioms(context.idiom_context),
+      capability_memory: compactSmallRepoCapabilityMemory(context.capability_memory),
+    },
+    file_read_plan: compactMinimalFileReadPlan(packet.file_read_plan).slice(0, 3),
+    validation_plan: compactMinimalValidationPlan(packet.validation_plan),
+    next_mcp_calls: compactMinimalToolPlan(packet.next_mcp_calls, task).slice(0, 2),
+    source_reading_rule: 'Small repo: read the listed files first, preserve idioms, avoid duplicate capability work, then validate.',
+    gaps: Array.isArray(packet.gaps) ? packet.gaps.slice(0, 2) : packet.gaps,
+  } as unknown as T;
+}
+
+function compactTinyWorkPacket<T extends Record<string, any>>(packet: T): T {
+  const selected = packet.selected_node;
+  const context = packet.work_context || {};
+  const idioms = compactIdiomContextForMicroRepo(context.idiom_context);
+  const invariants = compactInvariantsForMicroRepo(context.behavioral_invariants);
+  return {
+    path: packet.path,
+    generated_at: packet.generated_at,
+    task: packet.task,
+    status: packet.status,
+    default_use: packet.default_use,
+    packet_profile: 'ultra-small-repo',
+    readiness: {
+      status: packet.readiness?.status,
+      score: packet.readiness?.score,
+      profile: packet.readiness?.profile,
+      gaps: Array.isArray(packet.readiness?.gaps) ? packet.readiness.gaps.slice(0, 3) : packet.readiness?.gaps,
+    },
+    target_resolution: {
+      query: packet.target_resolution?.query,
+      selected_node_id: packet.target_resolution?.selected_node_id,
+      selected_node: packet.target_resolution?.selected_node,
+      gaps: Array.isArray(packet.target_resolution?.gaps) ? packet.target_resolution.gaps.slice(0, 3) : packet.target_resolution?.gaps,
+    },
+    selected_node: selected,
+    work_context: {
+      coding_context: compactCodingContextForMicroRepo(context.coding_context),
+      architecture_context: compactArchitectureContextForMicroRepo(context.architecture_context),
+      risk: compactRiskForMicroRepo(context.risk),
+      risk_context: compactRiskContextForMicroRepo(context.risk_context),
+      tests: compactTestsForMicroRepo(context.tests),
+      idiom_context: idioms ? {
+        total_idioms: idioms.total_idioms,
+        selected_idioms: Array.isArray(idioms.selected_idioms) ? idioms.selected_idioms.slice(0, 2) : idioms.selected_idioms,
+        do: Array.isArray(idioms.do) ? idioms.do.slice(0, 3) : idioms.do,
+        avoid: Array.isArray(idioms.avoid) ? idioms.avoid.slice(0, 3) : idioms.avoid,
+      } : null,
+      system_health: compactSystemHealthForAgent(context.system_health),
+      capability_memory: compactCapabilityMemoryForMicroRepo(context.capability_memory),
+      behavioral_invariants: invariants ? {
+        total: invariants.total,
+        invariants: Array.isArray(invariants.invariants) ? invariants.invariants.slice(0, 2) : invariants.invariants,
+      } : null,
+    },
+    file_read_plan: compactMicroFileReadPlan(packet.file_read_plan).slice(0, 5),
+    validation_plan: {
+      strategy: packet.validation_plan?.strategy,
+      commands: Array.isArray(packet.validation_plan?.commands) ? packet.validation_plan.commands.slice(0, 2) : packet.validation_plan?.commands,
+      manual_checks: Array.isArray(packet.validation_plan?.manual_checks) ? packet.validation_plan.manual_checks.slice(0, 4) : packet.validation_plan?.manual_checks,
+      gaps: Array.isArray(packet.validation_plan?.gaps) ? packet.validation_plan.gaps.slice(0, 2) : packet.validation_plan?.gaps,
+    },
+    next_mcp_calls: compactMicroToolPlan(packet.next_mcp_calls).slice(0, 4),
+    source_reading_rule: 'This repo is small enough that Klauro should narrow the first read, then the agent may read the listed files fully if needed. Preserve the listed idioms and invariants before finalizing.',
+    gaps: Array.isArray(packet.gaps) ? packet.gaps.slice(0, 4) : packet.gaps,
+  } as unknown as T;
+}
+
+function compactTokenMinimalWorkPacket<T extends Record<string, any>>(packet: T): T {
+  const context = packet.work_context || {};
+  const task = compactPacketTask(packet.task);
+  const fileReadPlan = compactMinimalFileReadPlan(packet.file_read_plan);
+  const architectureContext = filterArchitectureContextToFilePlan(
+    compactMinimalArchitectureContext(context.architecture_context),
+    fileReadPlan,
+  );
+  return {
+    path: packet.path,
+    generated_at: packet.generated_at,
+    task,
+    status: packet.status,
+    default_use: packet.default_use,
+    packet_profile: 'token-minimal',
+    readiness: {
+      status: packet.readiness?.status,
+      score: packet.readiness?.score,
+      gaps: Array.isArray(packet.readiness?.gaps) ? packet.readiness.gaps.slice(0, 2) : packet.readiness?.gaps,
+    },
+    target_resolution: {
+      query: packet.target_resolution?.query,
+      selected_node_id: packet.target_resolution?.selected_node_id,
+      selected_node: packet.target_resolution?.selected_node,
+      gaps: Array.isArray(packet.target_resolution?.gaps) ? packet.target_resolution.gaps.slice(0, 2) : packet.target_resolution?.gaps,
+    },
+    selected_node: packet.selected_node,
+    work_context: {
+      architecture_context: architectureContext,
+      risk: compactMinimalRisk(context.risk),
+      risk_context: compactMinimalRiskContext(context.risk_context),
+      tests: compactMinimalTests(context.tests),
+      behavioral_invariants: compactMinimalInvariants(context.behavioral_invariants),
+      idiom_context: compactMinimalIdioms(context.idiom_context),
+      system_health: compactMinimalSystemHealth(context.system_health),
+      capability_memory: compactMinimalCapabilityMemory(context.capability_memory),
+    },
+    file_read_plan: fileReadPlan,
+    validation_plan: compactMinimalValidationPlan(packet.validation_plan),
+    next_mcp_calls: compactMinimalToolPlan(packet.next_mcp_calls, task),
+    source_reading_rule: 'Token-minimal packet: read only these line windows first. Expand with the listed MCP calls only when the edit proves the local context is insufficient.',
+    gaps: Array.isArray(packet.gaps) ? packet.gaps.slice(0, 3) : packet.gaps,
+  } as unknown as T;
+}
+
+function workPacketScaleProfile(cas: CASOutput, packet?: Record<string, any>): 'small-repo-minimal' | 'token-minimal' | 'tiny' | 'micro' | 'standard' {
+  const forcedProfile = process.env.KLAURO_AGENT_PACKET_PROFILE;
+  if (forcedProfile === 'standard' || forcedProfile === 'micro' || forcedProfile === 'tiny' || forcedProfile === 'token-minimal' || forcedProfile === 'small-repo-minimal') {
+    return forcedProfile;
+  }
+  const sourceFiles = uniqueStrings((cas.nodes || [])
+    .map(node => node.source?.file || '')
+    .filter(file => Boolean(file) && !isNonProductSourceText(file)));
+  const productNodes = (cas.nodes || []).filter(node => !node.metadata?.is_test && !node.metadata?.is_generated && !isNonProductAgentTarget(node));
+  const sourceTokens = estimateCasSourceTokens(cas, sourceFiles);
+  const filePlanCount = Array.isArray(packet?.file_read_plan) ? packet.file_read_plan.length : undefined;
+  const selectedType = String(packet?.selected_node?.type || '').toLowerCase();
+  const targetText = [
+    packet?.task?.target,
+    packet?.task?.instructions,
+  ].filter(Boolean).join(' ');
+  const explicitTarget = Boolean(packet?.task?.target || /inspect\s+\S+\.\w+|preserve connected behavior/i.test(targetText));
+  const narrowTarget = Boolean(explicitTarget && ['file', 'module', 'function', 'method', 'variable', 'class', 'handler', 'route', 'api_route'].includes(selectedType));
+  if (sourceTokens > 0 && sourceTokens <= 40000) return 'small-repo-minimal';
+  if (narrowTarget && productNodes.length <= 220) return 'small-repo-minimal';
+  if (narrowTarget || (sourceTokens > 0 && sourceTokens <= 60000)) return 'token-minimal';
+  if (sourceFiles.length <= 18 || productNodes.length <= 160) return 'micro';
+  return 'token-minimal';
+}
+
+function compactSmallRepoArchitectureContext(context: any) {
+  if (!context || typeof context !== 'object') return context || null;
+  return {
+    system_type: context.system_type,
+    architecture_budget: Array.isArray(context.architecture_budget) ? context.architecture_budget.slice(0, 2) : [],
+    patterns: Array.isArray(context.patterns) ? context.patterns.slice(0, 3).map((pattern: any) => ({
+      name: pattern.name,
+      confidence: pattern.confidence,
+    })) : [],
+    inventory_counts: compactNonZeroCounts(context.inventory_counts, 6),
+    inventory_examples: compactSmallArchitectureInventory(context.inventory_examples, 1),
+    relevant_inventory: compactSmallArchitectureInventory(context.relevant_inventory, 1),
+    pattern_decision_matrix: Array.isArray(context.pattern_decision_matrix) ? context.pattern_decision_matrix.slice(0, 3).map((item: any) => ({
+      pattern: item.pattern,
+      use_when: item.use_when,
+      owner_categories: Array.isArray(item.owner_categories) ? item.owner_categories.slice(0, 3) : item.owner_categories,
+    })) : [],
+    pattern_balance: context.pattern_balance ? {
+      status: context.pattern_balance.status,
+      risks: Array.isArray(context.pattern_balance.risks) ? context.pattern_balance.risks.slice(0, 1) : [],
+    } : null,
+    agent_rules: Array.isArray(context.agent_rules) ? context.agent_rules.slice(0, 2) : [],
+  };
+}
+
+function compactMinimalRisk(risk: any) {
+  if (!risk || typeof risk !== 'object') return risk || null;
+  return {
+    risk_level: risk.risk?.risk_level || risk.risk_level || null,
+    factors: Array.isArray(risk.risk?.risk_factors) ? risk.risk.risk_factors.slice(0, 2) : [],
+    recommendations: Array.isArray(risk.risk?.recommendations) ? risk.risk.recommendations.slice(0, 2) : [],
+    summary: risk.change_risk_summary ? {
+      high: risk.change_risk_summary.total_high_risk_nodes,
+      medium: risk.change_risk_summary.total_medium_risk_nodes,
+      top_factors: Array.isArray(risk.change_risk_summary.top_risk_factors)
+        ? risk.change_risk_summary.top_risk_factors.slice(0, 2)
+        : [],
+    } : null,
+  };
+}
+
+function compactMinimalArchitectureContext(context: any) {
+  if (!context || typeof context !== 'object') return context || null;
+  return {
+    system_type: context.system_type,
+    architecture_budget: Array.isArray(context.architecture_budget) ? context.architecture_budget.slice(0, 4) : [],
+    patterns: Array.isArray(context.patterns) ? context.patterns.slice(0, 4).map((pattern: any) => ({
+      name: pattern.name,
+      confidence: pattern.confidence,
+      guidance: pattern.guidance,
+    })) : [],
+    inventory_counts: context.inventory_counts || {},
+    inventory_examples: compactSmallArchitectureInventory(context.inventory_examples, 2),
+    relevant_inventory: compactSmallArchitectureInventory(context.relevant_inventory, 2),
+    pattern_decision_matrix: Array.isArray(context.pattern_decision_matrix) ? context.pattern_decision_matrix.slice(0, 4).map((item: any) => ({
+      pattern: item.pattern,
+      use_when: item.use_when,
+      owner_categories: Array.isArray(item.owner_categories) ? item.owner_categories.slice(0, 4) : item.owner_categories,
+      examples: Array.isArray(item.examples) ? item.examples.slice(0, 2).map((node: any) => ({
+        name: node?.name || node?.id,
+        type: node?.type,
+        file: compactArchitectureFile(node?.file),
+      })).filter((node: any) => node.name || node.file) : item.examples,
+    })) : [],
+    pattern_balance: context.pattern_balance ? {
+      status: context.pattern_balance.status,
+      risks: Array.isArray(context.pattern_balance.risks) ? context.pattern_balance.risks.slice(0, 2) : [],
+    } : null,
+    agent_rules: Array.isArray(context.agent_rules) ? context.agent_rules.slice(0, 3) : [],
+  };
+}
+
+function filterArchitectureContextToFilePlan(context: any, fileReadPlan: any[]): any {
+  if (!context || typeof context !== 'object') return context || null;
+  const files = Array.isArray(fileReadPlan)
+    ? fileReadPlan.map(item => String(item?.file || '')).filter(Boolean)
+    : [];
+  if (files.length === 0) return context;
+  const nodeMatchesPlan = (node: any) => {
+    const file = String(node?.file || '').trim();
+    return !file || files.some(planFile => sameArchitectureFileScope(planFile, file));
+  };
+  const filterInventory = (inventory: any) => {
+    if (!inventory || typeof inventory !== 'object') return {};
+    return Object.fromEntries(Object.entries(inventory)
+      .map(([kind, nodes]) => [
+        kind,
+        Array.isArray(nodes) ? nodes.filter(nodeMatchesPlan) : nodes,
+      ])
+      .filter(([, nodes]) => Array.isArray(nodes) ? nodes.length > 0 : Boolean(nodes)));
+  };
+
+  return {
+    ...context,
+    inventory_examples: filterInventory(context.inventory_examples),
+    relevant_inventory: filterInventory(context.relevant_inventory),
+    pattern_decision_matrix: Array.isArray(context.pattern_decision_matrix)
+      ? context.pattern_decision_matrix.map((row: any) => ({
+        ...row,
+        examples: Array.isArray(row.examples) ? row.examples.filter(nodeMatchesPlan) : row.examples,
+      }))
+      : context.pattern_decision_matrix,
+  };
+}
+
+function compactMinimalTests(tests: any) {
+  if (!tests || typeof tests !== 'object') return tests || null;
+  return {
+    total_suites: tests.total_suites,
+    suites: Array.isArray(tests.suites) ? tests.suites.slice(0, 2).map((suite: any) => ({
+      file_path: suite.file_path,
+      name: suite.name,
+      test_count: suite.test_count,
+    })) : [],
+    recommendation: tests.recommendation,
+  };
+}
+
+function compactMinimalInvariants(invariants: any) {
+  if (!invariants || typeof invariants !== 'object') return invariants || null;
+  return {
+    total: invariants.total,
+    invariants: Array.isArray(invariants.invariants) ? invariants.invariants.slice(0, 2).map((invariant: any) => ({
+      name: invariant.name,
+      type: invariant.invariant_type,
+      checks: Array.isArray(invariant.required_checks) ? invariant.required_checks.slice(0, 2) : undefined,
+    })) : [],
+  };
+}
+
+function compactMinimalIdioms(idioms: any) {
+  if (!idioms || typeof idioms !== 'object') return idioms || null;
+  return {
+    total_idioms: idioms.total_idioms,
+    selected: Array.isArray(idioms.selected_idioms) ? idioms.selected_idioms.slice(0, 1).map((idiom: any) => ({
+      category: idiom.category,
+      name: idiom.name,
+    })) : [],
+    do: Array.isArray(idioms.do) ? idioms.do.slice(0, 2) : [],
+    avoid: Array.isArray(idioms.avoid) ? idioms.avoid.slice(0, 2) : [],
+  };
+}
+
+function compactMinimalSystemHealth(health: any) {
+  if (!health || typeof health !== 'object') return health || null;
+  return {
+    score: health.score,
+    status: health.status,
+    coherence: health.coherence?.status,
+    risks: Array.isArray(health.top_risks) ? health.top_risks.slice(0, 2).map((risk: any) => ({
+      type: risk.type,
+      severity: risk.severity,
+      title: risk.title,
+    })) : [],
+    agent_rules: Array.isArray(health.remediation?.agent_rules) ? health.remediation.agent_rules.slice(0, 2) : [],
+  };
+}
+
+function compactMinimalCapabilityMemory(memory: any) {
+  if (!memory || typeof memory !== 'object') return memory || null;
+  return {
+    status: memory.status,
+    matched_capabilities: Array.isArray(memory.matched_capabilities) ? memory.matched_capabilities.slice(0, 2).map((capability: any) => ({
+      name: capability.name,
+      score: capability.score,
+      paths: Array.isArray(capability.operation_paths) ? capability.operation_paths.slice(0, 2) : [],
+    })) : [],
+    decisions: Array.isArray(memory.reuse_decisions_required) ? memory.reuse_decisions_required.slice(0, 2).map((decision: any) => ({
+      existing_capability: decision.existing_capability,
+      decision_required: Array.isArray(decision.decision_required) ? decision.decision_required.slice(0, 2) : decision.decision_required,
+    })) : [],
+  };
+}
+
+function compactSmallRepoCapabilityMemory(memory: any) {
+  if (!memory || typeof memory !== 'object') return memory || null;
+  return {
+    status: memory.status,
+    matched: Array.isArray(memory.matched_capabilities) ? memory.matched_capabilities.slice(0, 1).map((capability: any) => ({
+      name: capability.name,
+      paths: Array.isArray(capability.operation_paths) ? capability.operation_paths.slice(0, 1) : [],
+    })) : [],
+    decision: Array.isArray(memory.reuse_decisions_required) && memory.reuse_decisions_required[0]
+      ? {
+          existing_capability: memory.reuse_decisions_required[0].existing_capability,
+          decision_required: Array.isArray(memory.reuse_decisions_required[0].decision_required)
+            ? memory.reuse_decisions_required[0].decision_required.slice(0, 1)
+            : memory.reuse_decisions_required[0].decision_required,
+        }
+      : null,
+  };
+}
+
+function compactMinimalFileReadPlan(plan: any) {
+  if (!Array.isArray(plan)) return [];
+  return plan.slice(0, 5).map((item: any) => {
+    const lineWindow = compactLineWindow(item.line_window, item.line);
+    return {
+      file: item.file,
+      reason: item.reason,
+      line: item.line,
+      line_window: lineWindow,
+    };
+  });
+}
+
+function compactLineWindow(lineWindow: any, line?: number) {
+  const center = Number(line || lineWindow?.start || 1);
+  const start = Math.max(1, center - 12);
+  const end = Math.max(start + 24, Math.min(Number(lineWindow?.end || center + 36), start + 48));
+  return {
+    start,
+    end,
+    instruction: `Read ${start}-${end}; expand only if needed.`,
+  };
+}
+
+function compactMinimalValidationPlan(plan: any) {
+  if (!plan || typeof plan !== 'object') return plan || null;
+  return {
+    strategy: plan.strategy,
+    commands: Array.isArray(plan.commands) ? plan.commands.slice(0, 1) : [],
+    manual_checks: compactManualChecks(plan.manual_checks, 3),
+    gaps: Array.isArray(plan.gaps) ? plan.gaps.slice(0, 2) : [],
+  };
+}
+
+function compactMinimalToolPlan(steps: any, task?: any) {
+  if (!Array.isArray(steps)) return [];
+  return steps
+    .filter(step => step.required)
+    .slice(0, 3)
+    .map(step => ({
+      order: step.order,
+      tool: step.tool,
+      args: compactToolArgs(step.args, task),
+      required: step.required,
+    }));
+}
+
+function compactPacketTask(task: any) {
+  if (!task || typeof task !== 'object') return task;
+  return {
+    task_type: task.task_type,
+    target: task.target,
+    instructions: task.instructions,
+  };
+}
+
+function compactToolArgs(args: any, task?: any) {
+  if (!args || typeof args !== 'object') return args;
+  const compact: Record<string, unknown> = {};
+  if (args.path) compact.path = args.path;
+  if (args.task || task) compact.task = compactPacketTask(args.task || task);
+  if (args.target) compact.target = args.target;
+  if (args.node_id) compact.node_id = args.node_id;
+  if (args.files) compact.files = Array.isArray(args.files) ? args.files.slice(0, 3) : args.files;
+  if (args.changed_files) compact.changed_files = Array.isArray(args.changed_files) ? args.changed_files.slice(0, 3) : args.changed_files;
+  return compact;
+}
+
+function compactManualChecks(checks: any, limit: number): string[] {
+  if (!Array.isArray(checks)) return [];
+  const compacted = checks.slice(0, limit).map(check => {
+    const text = String(check || '');
+    if (/validate_behavioral_invariants/i.test(text)) return 'Run validate_behavioral_invariants after edits.';
+    if (/validate_codebase_idioms/i.test(text)) return 'Run validate_codebase_idioms after edits.';
+    return text.replace(/\s+/g, ' ').replace(/ for [A-Za-z0-9_./:-]+\.?$/, '.');
+  });
+  return uniqueStrings(compacted);
+}
+
+function estimateCasSourceTokens(cas: CASOutput, sourceFiles: string[]): number {
+  const rootPath = cas.system?.root_path;
+  if (!rootPath) return 0;
+  let bytes = 0;
+  for (const file of sourceFiles.slice(0, 2000)) {
+    const absolute = nodePath.isAbsolute(file) ? file : nodePath.join(rootPath, file);
+    try {
+      if (!fs.existsSync(absolute)) continue;
+      const stat = fs.statSync(absolute);
+      if (!stat.isFile() || stat.size > 1_000_000) continue;
+      bytes += stat.size;
+      if (bytes > 1_200_000) break;
+    } catch {
+      continue;
+    }
+  }
+  return Math.ceil(bytes / 4);
+}
+
+function compactMicroWorkContext(context: any) {
+  if (!context || typeof context !== 'object') return context || null;
+  return {
+    coding_context: compactCodingContextForMicroRepo(context.coding_context),
+    architecture_context: compactArchitectureContextForMicroRepo(context.architecture_context),
+    risk: compactRiskForMicroRepo(context.risk),
+    risk_context: compactRiskContextForMicroRepo(context.risk_context),
+    tests: compactTestsForMicroRepo(context.tests),
+    behavioral_invariants: compactInvariantsForMicroRepo(context.behavioral_invariants),
+    idiom_context: compactIdiomContextForMicroRepo(context.idiom_context),
+    system_health: compactSystemHealthForAgent(context.system_health),
+    capability_memory: compactCapabilityMemoryForMicroRepo(context.capability_memory),
+    entry_context: compactEntryContextForMicroRepo(context.entry_context),
+  };
+}
+
+function compactArchitectureContextForMicroRepo(context: any) {
+  if (!context || typeof context !== 'object') return context || null;
+  return {
+    system_type: context.system_type,
+    architecture_budget: Array.isArray(context.architecture_budget) ? context.architecture_budget.slice(0, 5) : context.architecture_budget,
+    patterns: Array.isArray(context.patterns) ? context.patterns.slice(0, 5) : context.patterns,
+    inventory_counts: context.inventory_counts,
+    inventory_examples: compactRelevantArchitectureInventory(context.inventory_examples, 4),
+    relevant_inventory: compactRelevantArchitectureInventory(context.relevant_inventory, 5),
+    pattern_decision_matrix: Array.isArray(context.pattern_decision_matrix) ? context.pattern_decision_matrix.slice(0, 5) : context.pattern_decision_matrix,
+    pattern_balance: context.pattern_balance,
+    agent_rules: Array.isArray(context.agent_rules) ? context.agent_rules.slice(0, 5) : context.agent_rules,
+  };
+}
+
+function compactCodingContextForMicroRepo(context: any) {
+  if (!context || typeof context !== 'object') return context || null;
+  const checklist = context.checklist ?? context.modification_checklist;
+  const relatedFiles = context.related_files ?? context.connected_code;
+  return {
+    target: context.target ?? context.target_node,
+    summary: context.summary,
+    conventions: Array.isArray(context.conventions) ? context.conventions.slice(0, 4) : context.conventions,
+    related_files: Array.isArray(relatedFiles) ? relatedFiles.slice(0, 5) : relatedFiles,
+    checklist: Array.isArray(checklist) ? checklist.slice(0, 5) : checklist,
+  };
+}
+
+function compactRiskForMicroRepo(risk: any) {
+  if (!risk || typeof risk !== 'object') return risk || null;
+  const summary = risk.change_risk_summary;
+  return {
+    risk: risk.risk ? {
+      risk_level: risk.risk.risk_level,
+      risk_factors: Array.isArray(risk.risk.risk_factors) ? risk.risk.risk_factors.slice(0, 3) : risk.risk.risk_factors,
+      recommendations: Array.isArray(risk.risk.recommendations) ? risk.risk.recommendations.slice(0, 3) : risk.risk.recommendations,
+    } : null,
+    change_risk_summary: summary && typeof summary === 'object' ? {
+      total_high_risk_nodes: summary.total_high_risk_nodes,
+      total_medium_risk_nodes: summary.total_medium_risk_nodes,
+      top_high_risk_nodes: Array.isArray(summary.top_high_risk_nodes) ? summary.top_high_risk_nodes.slice(0, 3) : summary.top_high_risk_nodes,
+      top_risk_factors: Array.isArray(summary.top_risk_factors) ? summary.top_risk_factors.slice(0, 4) : summary.top_risk_factors,
+    } : summary || null,
+  };
+}
+
+function compactTestsForMicroRepo(tests: any) {
+  if (!tests || typeof tests !== 'object') return tests || null;
+  return {
+    total_suites: tests.total_suites,
+    total_mocks: tests.total_mocks,
+    total_fixtures: tests.total_fixtures,
+    suites: Array.isArray(tests.suites) ? tests.suites.slice(0, 3).map((suite: any) => ({
+      name: suite.name,
+      file_path: suite.file_path,
+      test_type: suite.test_type,
+      framework: suite.framework,
+      test_count: suite.test_count,
+    })) : tests.suites,
+    recommendation: tests.recommendation,
+  };
+}
+
+function compactInvariantsForMicroRepo(invariants: any) {
+  if (!invariants || typeof invariants !== 'object') return invariants || null;
+  return {
+    total: invariants.total,
+    summary: invariants.summary,
+    invariants: Array.isArray(invariants.invariants) ? invariants.invariants.slice(0, 4).map((invariant: any) => ({
+      id: invariant.id,
+      name: invariant.name,
+      invariant_type: invariant.invariant_type,
+      confidence: invariant.confidence,
+      enforcement_summary: invariant.enforcement_summary,
+      related_tests: Array.isArray(invariant.related_tests) ? invariant.related_tests.slice(0, 3) : invariant.related_tests,
+      gaps: Array.isArray(invariant.gaps) ? invariant.gaps.slice(0, 3) : invariant.gaps,
+    })) : invariants.invariants,
+    recommendation: invariants.recommendation,
+  };
+}
+
+function compactIdiomContextForMicroRepo(idioms: any) {
+  if (!idioms || typeof idioms !== 'object') return idioms || null;
+  return {
+    total_idioms: idioms.total_idioms,
+    selected_idioms: Array.isArray(idioms.selected_idioms) ? idioms.selected_idioms.slice(0, 4).map((idiom: any) => ({
+      id: idiom.id,
+      category: idiom.category,
+      name: idiom.name,
+      confidence: idiom.confidence,
+      do: Array.isArray(idiom.do) ? idiom.do.slice(0, 2) : idiom.do,
+      avoid: Array.isArray(idiom.avoid) ? idiom.avoid.slice(0, 2) : idiom.avoid,
+    })) : idioms.selected_idioms,
+    local_examples: Array.isArray(idioms.local_examples) ? idioms.local_examples.slice(0, 4) : idioms.local_examples,
+    do: Array.isArray(idioms.do) ? idioms.do.slice(0, 6) : idioms.do,
+    avoid: Array.isArray(idioms.avoid) ? idioms.avoid.slice(0, 6) : idioms.avoid,
+    validation: Array.isArray(idioms.validation) ? idioms.validation.slice(0, 5) : idioms.validation,
+  };
+}
+
+function compactCapabilityMemoryForMicroRepo(memory: any) {
+  if (!memory || typeof memory !== 'object') return memory || null;
+  return {
+    status: memory.status,
+    task_signal: memory.task_signal,
+    matched_capabilities: Array.isArray(memory.matched_capabilities)
+      ? memory.matched_capabilities.slice(0, 4).map((capability: any) => ({
+        id: capability.id,
+        name: capability.name,
+        score: capability.score,
+        category: capability.category,
+        criticality: capability.criticality,
+        matched_terms: Array.isArray(capability.matched_terms) ? capability.matched_terms.slice(0, 6) : capability.matched_terms,
+        operation_paths: Array.isArray(capability.operation_paths) ? capability.operation_paths.slice(0, 4) : capability.operation_paths,
+        related_entities: Array.isArray(capability.related_entities) ? capability.related_entities.slice(0, 4) : capability.related_entities,
+      }))
+      : memory.matched_capabilities,
+    reuse_decisions_required: Array.isArray(memory.reuse_decisions_required)
+      ? memory.reuse_decisions_required.slice(0, 4)
+      : memory.reuse_decisions_required,
+    agent_guidance: Array.isArray(memory.agent_guidance)
+      ? memory.agent_guidance.slice(0, 5)
+      : memory.agent_guidance,
+  };
+}
+
+function compactEntryContextForMicroRepo(entry: any) {
+  if (!entry || typeof entry !== 'object') return entry || null;
+  return {
+    task_type: entry.task_type,
+    representative_entry_point: entry.representative_entry_point,
+    related_entry_points: Array.isArray(entry.related_entry_points) ? entry.related_entry_points.slice(0, 3) : entry.related_entry_points,
+  };
+}
+
+function compactRelevantArchitectureInventory(inventory: any, perKindLimit: number) {
+  if (!inventory || typeof inventory !== 'object') return {};
+  return Object.fromEntries(Object.entries(inventory)
+    .map(([kind, nodes]) => [
+      kind,
+      Array.isArray(nodes) ? nodes.slice(0, perKindLimit) : nodes,
+    ])
+    .filter(([, nodes]) => Array.isArray(nodes) ? nodes.length > 0 : Boolean(nodes)));
+}
+
+function compactSmallArchitectureInventory(inventory: any, perKindLimit: number) {
+  if (!inventory || typeof inventory !== 'object') return {};
+  return Object.fromEntries(Object.entries(inventory)
+    .map(([kind, nodes]) => [
+      kind,
+      Array.isArray(nodes)
+        ? nodes.slice(0, perKindLimit).map((node: any) => ({
+            name: node?.name || node?.id,
+            type: node?.type,
+            file: compactArchitectureFile(node?.file),
+          })).filter((node: any) => node.name || node.file)
+        : nodes,
+    ])
+    .filter(([, nodes]) => Array.isArray(nodes) ? nodes.length > 0 : Boolean(nodes)));
+}
+
+function compactNonZeroCounts(counts: any, limit: number) {
+  if (!counts || typeof counts !== 'object') return {};
+  return Object.fromEntries(Object.entries(counts)
+    .filter(([, value]) => Number(value || 0) > 0)
+    .slice(0, limit));
+}
+
+function compactArchitectureFile(file: any): string | undefined {
+  const value = String(file || '').replace(/\\/g, '/');
+  if (!value) return undefined;
+  const srcIndex = value.lastIndexOf('/src/');
+  if (srcIndex >= 0) return value.slice(srcIndex + 1);
+  return value.split('/').slice(-3).join('/');
+}
+
+function compactArchitectureNode(node: CASNode | undefined, fallbackId: string) {
+  if (!node) return { id: fallbackId };
+  return {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    file: node.source?.file,
+    line: node.source?.line,
+  };
+}
+
+function uniqueByName<T extends { name?: string }>(values: T[]): T[] {
+  const seen = new Set<string>();
+  const unique: T[] = [];
+  for (const value of values) {
+    const key = String(value.name || '').toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(value);
+  }
+  return unique;
+}
+
+function compactMicroFileReadPlan(plan: any) {
+  if (!Array.isArray(plan)) return plan || [];
+  return plan.slice(0, 5).map((item: any) => ({
+    file: item.file,
+    reason: item.reason,
+    line: item.line,
+    line_window: item.line_window,
+  }));
+}
+
+function compactMicroInvariantImpact(impact: any) {
+  if (!impact || typeof impact !== 'object') return impact || null;
+  return {
+    status: impact.status,
+    target: impact.target,
+    changed_files: Array.isArray(impact.changed_files) ? impact.changed_files.slice(0, 5) : impact.changed_files,
+    impacted_count: impact.impacted_count,
+    impacted_invariants: Array.isArray(impact.impacted_invariants) ? impact.impacted_invariants.slice(0, 4).map((invariant: any) => ({
+      invariant_id: invariant.invariant_id,
+      name: invariant.name,
+      invariant_type: invariant.invariant_type,
+      impact_score: invariant.impact_score,
+      required_checks: Array.isArray(invariant.required_checks) ? invariant.required_checks.slice(0, 4) : invariant.required_checks,
+    })) : impact.impacted_invariants,
+    required_checks: Array.isArray(impact.required_checks) ? impact.required_checks.slice(0, 6) : impact.required_checks,
+  };
+}
+
+function compactMicroValidationPlan(plan: any) {
+  if (!plan || typeof plan !== 'object') return plan || null;
+  return {
+    strategy: plan.strategy,
+    commands: Array.isArray(plan.commands) ? plan.commands.slice(0, 3) : plan.commands,
+    tests_to_inspect: Array.isArray(plan.tests_to_inspect) ? plan.tests_to_inspect.slice(0, 4) : plan.tests_to_inspect,
+    manual_checks: Array.isArray(plan.manual_checks) ? plan.manual_checks.slice(0, 6) : plan.manual_checks,
+    environment_rule: plan.environment_rule,
+    gaps: Array.isArray(plan.gaps) ? plan.gaps.slice(0, 3) : plan.gaps,
+  };
+}
+
+function compactMicroToolPlan(steps: any) {
+  if (!Array.isArray(steps)) return steps || [];
+  const required = steps.filter(step => step.required).slice(0, 6);
+  const optional = steps.filter(step => !step.required).slice(0, 2);
+  return [...required, ...optional].map(step => ({
+    order: step.order,
+    tool: step.tool,
+    args: step.args,
+    required: step.required,
+  }));
+}
+
+export function buildCapabilityMemoryForAgent(
+  cas: CASOutput,
+  options: {
+    target?: string;
+    instructions?: string;
+    success_criteria?: string[];
+    files?: string[];
+    limit?: number;
+  } = {}
+) {
+  const capabilities = cas.system_capabilities || [];
+  const limit = Math.max(1, Math.min(options.limit || 8, 20));
+  const taskText = [
+    options.target || '',
+    options.instructions || '',
+    ...(options.success_criteria || []),
+    ...(options.files || []),
+  ].join(' ');
+  const taskTokens = new Set(meaningfulTokens(taskText));
+  const scored = capabilities
+    .map(capability => scoreCapabilityForTask(capability, taskTokens, options.files || []))
+    .filter(item => item.score > 0 || item.capability.category === 'core' || item.capability.criticality === 'critical')
+    .sort((left, right) =>
+      right.score - left.score ||
+      capabilityRank(right.capability) - capabilityRank(left.capability) ||
+      right.capability.operations.length - left.capability.operations.length
+    )
+    .slice(0, limit);
+
+  const matched = scored.map(({ capability, score, matchedTerms }) => ({
+    id: capability.id,
+    name: capability.name,
+    description: capability.description,
+    category: capability.category,
+    criticality: capability.criticality,
+    score,
+    matched_terms: matchedTerms.slice(0, 10),
+    related_domains: (capability.related_domains || []).slice(0, 6),
+    related_entities: (capability.related_entities || []).slice(0, 6),
+    operation_paths: uniqueStrings((capability.operations || [])
+      .map(operation => operation.path_or_command || operation.action || '')
+      .filter(Boolean))
+      .slice(0, 8),
+    first_checks: firstCapabilityChecks(capability),
+  }));
+
+  const likelyOverlap = matched.filter(capability => capability.score >= 25);
+  const reuseDecisions = likelyOverlap.map(capability => ({
+    requested_need: capability.matched_terms.length ? capability.matched_terms.join(', ') : capability.name,
+    existing_capability: capability.name,
+    score: capability.score,
+    decision_required: [
+      'reuse existing capability',
+      'extend existing capability',
+      'extract shared behavior',
+      'create a new capability only with an explicit distinction',
+    ],
+    evidence: [
+      ...(capability.operation_paths || []).slice(0, 3).map(file => `operation path: ${file}`),
+      ...(capability.related_entities || []).slice(0, 3).map(entity => `related entity: ${entity}`),
+    ],
+  }));
+
+  return {
+    product: 'codebase_capability_memory',
+    status: likelyOverlap.length > 0
+      ? 'possible-existing-capability'
+      : capabilities.length > 0 ? 'capability-led-navigation' : 'no-capability-memory',
+    task_signal: {
+      target: options.target,
+      token_count: taskTokens.size,
+      matched_capability_count: likelyOverlap.length,
+    },
+    matched_capabilities: matched,
+    reuse_decisions_required: reuseDecisions,
+    do_not_rebuild: reuseDecisions.map(decision => ({
+      capability: decision.existing_capability,
+      rule: 'Do not create parallel behavior until the existing capability has been inspected and the distinction is explicit.',
+    })),
+    agent_guidance: [
+      'Before adding a new service, route, worker, model, or package, compare the requested behavior against matched_capabilities.',
+      'Prefer extending the listed operation_paths when the requested behavior belongs to an existing capability.',
+      'If a new capability is still needed, name the distinction in the plan and add tests at the existing boundary.',
+      'Use the file_read_plan for immediate edits, and use capability_memory to avoid duplicate work across nearby behavior.',
+    ],
+  };
+}
+
+function scoreCapabilityForTask(
+  capability: SystemCapability,
+  taskTokens: Set<string>,
+  files: string[]
+): { capability: SystemCapability; score: number; matchedTerms: string[] } {
+  const operationPaths = (capability.operations || []).map(operation => operation.path_or_command || operation.action || '');
+  const haystack = [
+    capability.name,
+    capability.description,
+    ...(capability.related_domains || []),
+    ...(capability.related_entities || []),
+    ...operationPaths,
+  ].join(' ');
+  const capabilityTokens = new Set(meaningfulTokens(haystack));
+  const matchedTerms = [...taskTokens].filter(token =>
+    capabilityTokens.has(token) ||
+    [...capabilityTokens].some(capabilityToken =>
+      token.length >= 5 && (capabilityToken.includes(token) || token.includes(capabilityToken))
+    )
+  );
+  const fileHits = files.filter(file => operationPaths.some(operationPath => projectPathsMatch(operationPath, file))).length;
+  const lexicalScore = taskTokens.size > 0
+    ? Math.round((matchedTerms.length / Math.max(1, Math.min(taskTokens.size, capabilityTokens.size))) * 100)
+    : 0;
+  const score = Math.min(100,
+    lexicalScore +
+    fileHits * 20 +
+    (capability.category === 'core' ? 8 : 0) +
+    (capability.criticality === 'critical' ? 8 : capability.criticality === 'high' ? 4 : 0)
+  );
+  return { capability, score, matchedTerms };
+}
+
+function firstCapabilityChecks(capability: SystemCapability): string[] {
+  const checks = [
+    ...(capability.operations || []).slice(0, 3).map(operation =>
+      operation.path_or_command
+        ? `Inspect ${operation.path_or_command} before adding overlapping behavior.`
+        : `Inspect ${operation.action} before adding overlapping behavior.`
+    ),
+  ];
+  if ((capability.related_entities || []).length > 0) {
+    checks.push(`Check related entities: ${capability.related_entities.slice(0, 4).join(', ')}.`);
+  }
+  return checks.slice(0, 5);
+}
+
+function capabilityRank(capability: SystemCapability): number {
+  const category = capability.category === 'core' ? 4 : capability.category === 'supporting' ? 3 : capability.category === 'admin' ? 2 : 1;
+  const criticality = capability.criticality === 'critical' ? 4 : capability.criticality === 'high' ? 3 : capability.criticality === 'medium' ? 2 : 1;
+  return category + criticality;
 }
 
 export function getAgentToolPlan(cas: CASOutput, input: { path: string; task?: AgentTask }) {
@@ -300,7 +1784,7 @@ export function getAgentToolPlan(cas: CASOutput, input: { path: string; task?: A
   const representativeNodeId = representativeTarget(cas)?.id;
   const target = task.target || inferTargetQueryFromTask(task) || representativeNodeId || 'target-query';
   const nodeId = representativeNodeId || '<node_id from search_nodes>';
-  const entryPoint = (cas.entry_points || [])[0];
+  const entryPoint = representativeEntryPoint(cas);
   const chain = (cas.call_chains || [])[0];
   const steps = stepsForTask(input.path, task, target, nodeId, entryPoint?.id, chain?.id);
 
@@ -323,49 +1807,65 @@ async function resolveTaskTarget(cas: CASOutput, projectPath: string, target?: s
   let selectedNode: CASNode | undefined;
 
   if (target) {
+    const targetFile = normalizeTargetFileForAgent(projectPath, cas.system?.root_path, target);
+    const pathLikeTarget = Boolean(targetFile);
     const exactNode = cas.nodes.find(node => node.id === target);
     if (exactNode) {
       selectedNode = exactNode;
       candidateNodes.set(exactNode.id, exactNode);
     }
 
-    const semanticMatches = await resolveSemanticTargetCandidates(cas, projectPath, target);
+    const fileMatches = targetFile
+      ? cas.nodes.filter(node => nodeMatchesTargetFile(node, targetFile, cas.system?.root_path)).slice(0, 25)
+      : [];
+    for (const node of fileMatches) {
+      candidateNodes.set(node.id, node);
+    }
+    if (!selectedNode && fileMatches.length > 0) {
+      selectedNode = chooseBestFileTargetNode(fileMatches);
+    }
+
+    if (!targetFile && targetLooksLikeDocumentationFirstWork(target)) {
+      return {
+        query: target,
+        selected_node_id: null,
+        selected_node: null,
+        candidates: [],
+        gaps,
+      };
+    }
+
+    const semanticMatches = pathLikeTarget ? [] : await resolveSemanticTargetCandidates(cas, projectPath, target);
     for (const node of semanticMatches) {
       candidateNodes.set(node.id, node);
     }
 
-    const searched = searchNodes(cas, target, { limit: 10 })
-      .map(result => cas.nodes.find(node => node.id === result.id))
-      .filter((node): node is CASNode => Boolean(node));
-    for (const node of searched) {
-      candidateNodes.set(node.id, node);
-    }
+    if (!pathLikeTarget) {
+      const searched = searchNodes(cas, target, { limit: 10 })
+        .map(result => cas.nodes.find(node => node.id === result.id))
+        .filter((node): node is CASNode => Boolean(node));
+      for (const node of searched) {
+        candidateNodes.set(node.id, node);
+      }
 
-    const fileMatches = cas.nodes.filter(node =>
-      node.source?.file &&
-      (node.source.file.endsWith(target) || target.endsWith(node.source.file))
-    ).slice(0, 10);
-    for (const node of fileMatches) {
-      candidateNodes.set(node.id, node);
-    }
+      const naturalMatches = cas.nodes
+        .map(node => ({ node, score: scoreNodeForTarget(node, target) }))
+        .filter(candidate => candidate.score >= 55)
+        .sort((left, right) => right.score - left.score)
+        .slice(0, 10)
+        .map(candidate => candidate.node);
+      for (const node of naturalMatches) {
+        candidateNodes.set(node.id, node);
+      }
 
-    const naturalMatches = cas.nodes
-      .map(node => ({ node, score: scoreNodeForTarget(node, target) }))
-      .filter(candidate => candidate.score >= 55)
-      .sort((left, right) => right.score - left.score)
-      .slice(0, 10)
-      .map(candidate => candidate.node);
-    for (const node of naturalMatches) {
-      candidateNodes.set(node.id, node);
-    }
-
-    const routeMatches = (cas.entry_points || [])
-      .filter(entry => entryPointMatchesTarget(entry, target))
-      .flatMap(entry => [entry.source_node, entry.handler?.node_id].filter(Boolean) as string[])
-      .map(nodeId => cas.nodes.find(node => node.id === nodeId))
-      .filter((node): node is CASNode => Boolean(node));
-    for (const node of routeMatches) {
-      candidateNodes.set(node.id, node);
+      const routeMatches = (cas.entry_points || [])
+        .filter(entry => entryPointMatchesTarget(entry, target))
+        .flatMap(entry => [entry.source_node, entry.handler?.node_id].filter(Boolean) as string[])
+        .map(nodeId => cas.nodes.find(node => node.id === nodeId))
+        .filter((node): node is CASNode => Boolean(node));
+      for (const node of routeMatches) {
+        candidateNodes.set(node.id, node);
+      }
     }
 
     const semanticRank = new Map<string, number>();
@@ -376,10 +1876,14 @@ async function resolveTaskTarget(cas: CASOutput, projectPath: string, target?: s
       .map(node => {
         const rank = semanticRank.get(node.id);
         const semanticBonus = rank === undefined ? 0 : Math.max(20, 130 - rank * 18);
-        return { node, score: scoreNodeForTarget(node, target) + semanticBonus };
+        const fileBonus = targetFile && nodeMatchesTargetFile(node, targetFile, cas.system?.root_path) ? 500 : 0;
+        const pathPenalty = pathLikeTarget && !fileBonus ? -250 : 0;
+        return { node, score: scoreNodeForTarget(node, target) + semanticBonus + fileBonus + pathPenalty };
       })
       .sort((left, right) => right.score - left.score);
-    if (!selectedNode) selectedNode = scoredCandidates[0]?.node;
+    if (!selectedNode || (pathLikeTarget && targetFile && !nodeMatchesTargetFile(selectedNode, targetFile, cas.system?.root_path))) {
+      selectedNode = scoredCandidates[0]?.node;
+    }
 
     if (!selectedNode) gaps.push(`target: no CAS node resolved for "${target}"`);
     const topCandidate = scoredCandidates[0];
@@ -448,6 +1952,47 @@ function summarizeTargetResolutionForAgent(resolution: Awaited<ReturnType<typeof
   };
 }
 
+function normalizeTargetFileForAgent(projectPath: string, rootPath: string | undefined, target: string): string | null {
+  const normalizedTarget = String(target || '').replace(/\\/g, '/').trim();
+  if (!isPathLikeAgentTarget(normalizedTarget)) return null;
+  const root = (rootPath || projectPath).replace(/\\/g, '/').replace(/\/$/, '');
+  if (nodePath.isAbsolute(normalizedTarget)) {
+    return normalizeSourceFile(normalizedTarget, root);
+  }
+  if (normalizedTarget.startsWith(`${root}/`)) {
+    return normalizeSourceFile(normalizedTarget, root);
+  }
+  return normalizedTarget.replace(/^\.\//, '');
+}
+
+function isPathLikeAgentTarget(target: string): boolean {
+  return /[/.][a-z0-9]+$/i.test(target) && (target.includes('/') || target.includes('\\'));
+}
+
+function nodeMatchesTargetFile(node: CASNode, targetFile: string, rootPath?: string): boolean {
+  if (!node.source?.file) return false;
+  const nodeFile = normalizeSourceFile(node.source.file, rootPath);
+  return nodeFile === targetFile || nodeFile.endsWith(`/${targetFile}`) || targetFile.endsWith(`/${nodeFile}`);
+}
+
+function chooseBestFileTargetNode(nodes: CASNode[]): CASNode | undefined {
+  return [...nodes]
+    .sort((left, right) =>
+      fileTargetNodeScore(right) - fileTargetNodeScore(left) ||
+      (left.source?.line || Number.MAX_SAFE_INTEGER) - (right.source?.line || Number.MAX_SAFE_INTEGER)
+    )[0];
+}
+
+function fileTargetNodeScore(node: CASNode): number {
+  let score = 0;
+  if (['class', 'function', 'method', 'service', 'controller', 'handler', 'route', 'api_route'].includes(node.type)) score += 40;
+  if (node.category === 'test' || isNonProductAgentTarget(node)) score -= 80;
+  if (node.type === 'file') score -= 40;
+  if (node.type === 'import' || node.type === 'property' || node.type === 'variable') score -= 30;
+  if ((node.metadata as any)?.exported === true) score += 15;
+  return score;
+}
+
 function sameImplementationTarget(left: CASNode, right: CASNode): boolean {
   return Boolean(left.source?.file && right.source?.file &&
     left.source.file === right.source.file &&
@@ -481,6 +2026,223 @@ function summarizeRiskForAgent(risk: ReturnType<typeof assessChangeRisk> | null)
   return {
     risk: null,
     change_risk_summary: compactSummary,
+  };
+}
+
+function buildRiskContextForAgent(
+  cas: CASOutput,
+  options: { targetNode?: CASNode; target?: string; files?: string[]; limit?: number } = {},
+) {
+  const risks = Array.isArray(cas.change_risks) ? cas.change_risks : [];
+  const summary = cas.change_risk_summary as any;
+  const nodeById = new Map((cas.nodes || []).map(node => [node.id, node]));
+  const riskByNode = new Map(risks.map(risk => [risk.node_id, risk]));
+  const targetText = String(options.target || '').toLowerCase();
+  const targetRisk = options.targetNode
+    ? riskByNode.get(options.targetNode.id) || null
+    : risks.find(risk => {
+      const node = nodeById.get(risk.node_id);
+      const haystack = [risk.node_id, node?.name, node?.qualified_name, node?.source?.file].filter(Boolean).join(' ').toLowerCase();
+      return Boolean(targetText && haystack.includes(targetText));
+    }) || null;
+  const files = uniqueStrings((options.files || [])
+    .map(file => normalizeSourceFile(file, cas.system?.root_path))
+    .filter(Boolean));
+  const fileRisks = risks.filter(risk => {
+    const node = nodeById.get(risk.node_id);
+    const file = normalizeSourceFile(node?.source?.file || '', cas.system?.root_path);
+    return Boolean(file && files.some(targetFile => projectPathsMatch(file, targetFile)));
+  });
+  const summaryHighRiskIds = Array.isArray(summary?.high_risk_nodes) ? summary.high_risk_nodes : [];
+  const summaryUntestedIds = Array.isArray(summary?.untested_critical_paths) ? summary.untested_critical_paths : [];
+  const summaryRiskIds = [...summaryHighRiskIds, ...summaryUntestedIds]
+    .map((item: any) => typeof item === 'string' ? item : item?.node_id || item?.id)
+    .filter(Boolean);
+  const scopedRisks = uniqueRisks([
+    ...(targetRisk ? [targetRisk] : []),
+    ...fileRisks,
+  ])
+    .sort((left, right) => changeRiskRank(right) - changeRiskRank(left))
+    .slice(0, options.limit || 6)
+    .map(risk => compactChangeRiskForAgent(risk, nodeById.get(risk.node_id)));
+
+  const repoTopRisks = uniqueRisks([
+    ...summaryRiskIds.map((id: string) => riskByNode.get(id)).filter(Boolean),
+    ...risks,
+  ])
+    .sort((left, right) => changeRiskRank(right) - changeRiskRank(left))
+    .slice(0, options.limit || 6)
+    .map(risk => compactChangeRiskForAgent(risk, nodeById.get(risk.node_id)));
+
+  const topFactors = riskFactorSummary(scopedRisks.length ? scopedRisks : repoTopRisks);
+  return {
+    status: risks.length > 0 ? 'ready' : 'unavailable',
+    target_risk: targetRisk ? compactChangeRiskForAgent(targetRisk, nodeById.get(targetRisk.node_id)) : null,
+    scope: targetRisk ? 'target' : fileRisks.length > 0 ? 'files' : 'repo',
+    summary: {
+      total_high_risk_nodes: summaryHighRiskIds.length || risks.filter(risk => risk.risk_level === 'critical' || risk.risk_level === 'high').length,
+      total_untested_critical_paths: summaryUntestedIds.length,
+      top_risk_factors: topFactors,
+    },
+    top_risks: scopedRisks,
+    repo_top_risks: repoTopRisks,
+    agent_rules: [
+      scopedRisks.length
+        ? 'Before editing any scoped risk surface, inspect its callers, callees, tests, and behavioral invariants.'
+        : 'No direct risk matched the selected target or first-read files; use repo_top_risks only as background, not as the edit target.',
+      'Use assess_change_risk for the selected node before changes that touch high-risk files or entry points.',
+      'When risk_context names no direct tests, inspect adjacent tests or add focused coverage before finalizing behavior changes.',
+    ],
+  };
+}
+
+function compactChangeRiskForAgent(risk: any, node?: CASNode) {
+  const factors = Array.isArray(risk.risk_factors) ? risk.risk_factors : [];
+  return {
+    node_id: risk.node_id,
+    name: node?.name || risk.node_id,
+    type: node?.type || null,
+    file: node?.source?.file || null,
+    line: node?.source?.line || null,
+    risk_level: risk.risk_level,
+    factors: factors.slice(0, 4).map((factor: any) => ({
+      factor: factor.factor,
+      severity: factor.severity,
+      details: factor.details,
+    })),
+    direct_callers: Array.isArray(risk.downstream_impact?.direct_callers) ? risk.downstream_impact.direct_callers.slice(0, 4) : [],
+    affected_entry_points: Array.isArray(risk.downstream_impact?.affected_entry_points) ? risk.downstream_impact.affected_entry_points.slice(0, 4) : [],
+    test_protection: risk.test_protection ? {
+      has_direct_tests: Boolean(risk.test_protection.has_direct_tests),
+      has_integration_tests: Boolean(risk.test_protection.has_integration_tests),
+      test_ids: Array.isArray(risk.test_protection.test_ids) ? risk.test_protection.test_ids.slice(0, 4) : [],
+    } : null,
+    recommendations: Array.isArray(risk.recommendations) ? risk.recommendations.slice(0, 3) : [],
+  };
+}
+
+function compactMinimalRiskContext(context: any) {
+  if (!context || typeof context !== 'object') return context || null;
+  return {
+    status: context.status,
+    target_risk: context.target_risk ? compactRiskContextItem(context.target_risk, 2) : null,
+    scope: context.scope,
+    summary: context.summary ? {
+      total_high_risk_nodes: context.summary.total_high_risk_nodes,
+      total_untested_critical_paths: context.summary.total_untested_critical_paths,
+      top_risk_factors: Array.isArray(context.summary.top_risk_factors) ? context.summary.top_risk_factors.slice(0, 3) : [],
+    } : null,
+    top_risks: Array.isArray(context.top_risks) ? context.top_risks.slice(0, 4).map((risk: any) => compactRiskContextItem(risk, 2)) : [],
+    repo_top_risks: Array.isArray(context.repo_top_risks) ? context.repo_top_risks.slice(0, 3).map((risk: any) => compactRiskContextItem(risk, 2)) : [],
+    agent_rules: Array.isArray(context.agent_rules) ? context.agent_rules.slice(0, 3) : [],
+  };
+}
+
+function compactRiskContextForMicroRepo(context: any) {
+  if (!context || typeof context !== 'object') return context || null;
+  return {
+    status: context.status,
+    target_risk: context.target_risk ? compactRiskContextItem(context.target_risk, 3) : null,
+    scope: context.scope,
+    summary: context.summary,
+    top_risks: Array.isArray(context.top_risks) ? context.top_risks.slice(0, 5).map((risk: any) => compactRiskContextItem(risk, 3)) : [],
+    repo_top_risks: Array.isArray(context.repo_top_risks) ? context.repo_top_risks.slice(0, 4).map((risk: any) => compactRiskContextItem(risk, 2)) : [],
+    agent_rules: Array.isArray(context.agent_rules) ? context.agent_rules.slice(0, 3) : [],
+  };
+}
+
+function compactRiskContextItem(item: any, limit: number) {
+  if (!item || typeof item !== 'object') return item || null;
+  return {
+    node_id: item.node_id,
+    name: item.name,
+    type: item.type,
+    file: item.file,
+    risk_level: item.risk_level,
+    factors: Array.isArray(item.factors) ? item.factors.slice(0, limit) : [],
+    has_direct_tests: item.test_protection?.has_direct_tests,
+    affected_entry_points: Array.isArray(item.affected_entry_points) ? item.affected_entry_points.slice(0, limit) : [],
+    recommendations: Array.isArray(item.recommendations) ? item.recommendations.slice(0, limit) : [],
+  };
+}
+
+function uniqueRisks(risks: any[]): any[] {
+  const seen = new Set<string>();
+  const result = [];
+  for (const risk of risks) {
+    if (!risk?.node_id || seen.has(risk.node_id)) continue;
+    seen.add(risk.node_id);
+    result.push(risk);
+  }
+  return result;
+}
+
+function changeRiskRank(risk: any): number {
+  const level = String(risk?.risk_level || '').toLowerCase();
+  const levelScore = level === 'critical' ? 400 : level === 'high' ? 300 : level === 'medium' ? 200 : level === 'low' ? 100 : 0;
+  const factors = Array.isArray(risk?.risk_factors) ? risk.risk_factors : [];
+  const factorScore = factors.reduce((score: number, factor: any) => {
+    const severity = String(factor?.severity || '').toLowerCase();
+    return score + (severity === 'high' ? 10 : severity === 'medium' ? 5 : severity === 'low' ? 2 : 0);
+  }, 0);
+  const untested = risk?.test_protection?.has_direct_tests === false ? 15 : 0;
+  return levelScore + factorScore + untested;
+}
+
+function riskFactorSummary(risks: any[]): string[] {
+  const counts = new Map<string, number>();
+  for (const risk of risks) {
+    for (const factor of risk.factors || []) {
+      if (!factor?.factor) continue;
+      counts.set(factor.factor, (counts.get(factor.factor) || 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, 6)
+    .map(([factor, count]) => `${factor} (${count})`);
+}
+
+function summarizeSystemHealthForAgent(cas: CASOutput) {
+  const health = cas.system_health;
+  if (!health) return null;
+  return {
+    score: health.score,
+    status: health.status,
+    coherence: health.coherence,
+    top_risks: health.risk_areas.slice(0, 6).map(area => ({
+      type: area.type,
+      severity: area.severity,
+      title: area.title,
+      affected_files: area.affected_files?.slice(0, 5),
+      recommendation: area.recommendation,
+      agent_guidance: area.agent_guidance,
+    })),
+    remediation: {
+      immediate: health.remediation.immediate.slice(0, 6),
+      agent_rules: health.remediation.agent_rules.slice(0, 6),
+      validation_tools: health.remediation.validation_tools,
+    },
+  };
+}
+
+function compactSystemHealthForAgent(health: any) {
+  if (!health || typeof health !== 'object') return health || null;
+  return {
+    score: health.score,
+    status: health.status,
+    coherence: health.coherence ? {
+      status: health.coherence.status,
+      primary_paradigms: Array.isArray(health.coherence.primary_paradigms) ? health.coherence.primary_paradigms.slice(0, 4) : health.coherence.primary_paradigms,
+      conflicting_paradigms: Array.isArray(health.coherence.conflicting_paradigms) ? health.coherence.conflicting_paradigms.slice(0, 4) : health.coherence.conflicting_paradigms,
+      duplication_signals: health.coherence.duplication_signals,
+    } : null,
+    top_risks: Array.isArray(health.top_risks) ? health.top_risks.slice(0, 4) : health.top_risks,
+    remediation: health.remediation ? {
+      immediate: Array.isArray(health.remediation.immediate) ? health.remediation.immediate.slice(0, 4) : health.remediation.immediate,
+      agent_rules: Array.isArray(health.remediation.agent_rules) ? health.remediation.agent_rules.slice(0, 4) : health.remediation.agent_rules,
+      validation_tools: health.remediation.validation_tools,
+    } : null,
   };
 }
 
@@ -635,6 +2397,67 @@ function inferTargetQueryFromTask(task: AgentTask): string | undefined {
   return compact || undefined;
 }
 
+function enrichTargetQueryWithCapabilityEvidence(cas: CASOutput, target?: string): string | undefined {
+  if (!target) return target;
+  if (looksLikeFileTarget(target)) return target;
+  const targetTokens = meaningfulTokens(target);
+  if (targetTokens.length === 0) return target;
+  const matchingCapability = (cas.system_capabilities || [])
+    .filter(capability => targetLooksLikeCapabilityName(target, capability.name))
+    .map(capability => ({
+      capability,
+      overlap: meaningfulTokens([
+        capability.name,
+        capability.description,
+        ...(capability.related_entities || []),
+        ...(capability.related_domains || []),
+      ].filter(Boolean).join(' ')).filter(token => targetTokens.includes(token)).length,
+    }))
+    .filter(item => item.overlap > 0)
+    .sort((left, right) => right.overlap - left.overlap || String(left.capability.name || '').length - String(right.capability.name || '').length)[0]?.capability;
+  if (!matchingCapability) return target;
+
+  const operationHints = (matchingCapability.operations || [])
+    .flatMap(operation => [
+      operation.path_or_command,
+      operation.action,
+      operation.entry_point_id,
+    ])
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .slice(0, 6);
+  const entryPointHints = (cas.entry_points || [])
+    .filter(entry => operationHints.includes(entry.id) || operationHints.includes(entry.name) || operationHints.includes(entry.trigger?.path || ''))
+    .flatMap(entry => [
+      entry.name,
+      entry.trigger?.path,
+      entry.handler?.method_name,
+    ])
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .slice(0, 6);
+  const entityHints = (matchingCapability.related_entities || []).slice(0, 4);
+  const enriched = uniqueStrings([
+    target,
+    matchingCapability.name,
+    ...operationHints,
+    ...entryPointHints,
+    ...entityHints,
+  ]).join(' ');
+  return enriched.slice(0, 500);
+}
+
+function targetLooksLikeCapabilityName(target: string, capabilityName?: string): boolean {
+  const normalizedTarget = meaningfulTokens(target).join(' ');
+  const normalizedCapability = meaningfulTokens(capabilityName || '').join(' ');
+  if (!normalizedTarget || !normalizedCapability) return false;
+  if (normalizedTarget === normalizedCapability) return true;
+  if (!/\bmanagement\b/i.test(target) || meaningfulTokens(target).length > 3) return false;
+  return normalizedCapability.includes(normalizedTarget) || normalizedTarget.includes(normalizedCapability);
+}
+
+function looksLikeFileTarget(target: string): boolean {
+  return /[\\/]/.test(target) || /\.(?:[cm]?[tj]sx?|py|rs|go|php|cs|java|dart|rb|sql|tf|hcl|json|yaml|yml|md)$/i.test(target);
+}
+
 function scoreNodeForTarget(node: CASNode, target?: string): number {
   if (!target) return 50;
   const query = target.toLowerCase();
@@ -691,11 +2514,48 @@ function scoreNodeForTarget(node: CASNode, target?: string): number {
   if (node.type === 'file' || node.type === 'import') score -= 100;
   if (node.type === 'mock') score -= 90;
   if (node.type === 'test' || node.category === 'test' || node.source?.file?.toLowerCase().includes('.spec.')) score -= 85;
+  if (isNonProductAgentTarget(node)) score -= 180;
   if (node.type === 'property' || node.type === 'variable') score -= 70;
   if (node.type.toLowerCase().includes('dto')) score -= 35;
   if (node.name.toLowerCase().includes('dto')) score -= 35;
+  if (file.startsWith('legacy/') && !targetTokens.includes('legacy')) score -= 140;
+  if (hasAnalyzerMaintenanceIntent(targetTokens)) {
+    if (/packages\/analyzer-core\/src\/analyzer\//.test(file)) score += 110;
+    if (/apps\/mcp-server\/src\/(analysis|agent|idiom|query|server|cli|machine|storage)/.test(file)) score += 80;
+    if (targetTokens.some(token => ['capability', 'capabilities', 'summary', 'summaries'].includes(token)) &&
+      /orchestrator|capability|domain|analysis-usefulness-review/.test(file)) {
+      score += 150;
+    }
+    if (/buildquickdescription|descriptionsafecapabilityname|buildsystemcapabilities|buildterminalcapabilities/i.test(normalizedName)) {
+      score += 180;
+    }
+    if (/legacy\//.test(file)) score -= 120;
+  }
 
   return score;
+}
+
+function hasAnalyzerMaintenanceIntent(tokens: string[]): boolean {
+  return tokens.some(token => ['analyzer', 'analysis', 'cas', 'capability', 'capabilities', 'summary', 'summaries', 'idiom', 'idioms', 'mcp', 'usefulness', 'review'].includes(token));
+}
+
+function isNonProductAgentTarget(node: CASNode): boolean {
+  const text = [
+    node.id,
+    node.name,
+    node.qualified_name,
+    node.source?.file,
+  ].filter(Boolean).join('/');
+  return isNonProductSourceText(text);
+}
+
+function isNonProductSourceText(value: string): boolean {
+  const text = value.replace(/\\/g, '/').toLowerCase();
+  return /(^|[/.])(fixtures?|__fixtures__|__mocks__|mocks?|samples?|examples?|generated|dist|build|coverage)([/.]|$)/.test(text) ||
+    /(^|[/.])(\.klauro[^/]*|\.claude|\.codex|\.agents|worktrees?|agent-worktrees?)([/.]|$)/.test(text) ||
+    /(^|[/.])legacy([/.]|$)/.test(text) ||
+    /(^|[/.])(tests?|__tests__|spec|e2e|cypress|playwright)([/.]|$)/.test(text) ||
+    /\.(test|spec|stories|story)\.[a-z0-9]+$/.test(text);
 }
 
 function targetHasRouteIntent(target: string, targetTokens: string[]): boolean {
@@ -719,7 +2579,35 @@ function targetHasRouteIntent(target: string, targetTokens: string[]): boolean {
 }
 
 function meaningfulTokens(value: string): string[] {
-  const stopwords = new Set(['the', 'a', 'an', 'and', 'or', 'to', 'for', 'of', 'in', 'on', 'by', 'with', 'when', 'from', 'into', 'must', 'should', 'only', 'same', 'different', 'uniqueness', 'unique']);
+  const stopwords = new Set([
+    'the',
+    'a',
+    'an',
+    'and',
+    'or',
+    'to',
+    'for',
+    'of',
+    'in',
+    'on',
+    'by',
+    'with',
+    'when',
+    'from',
+    'into',
+    'must',
+    'should',
+    'only',
+    'same',
+    'different',
+    'uniqueness',
+    'unique',
+    'manage',
+    'managed',
+    'manager',
+    'managers',
+    'management',
+  ]);
   return value
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
@@ -773,12 +2661,13 @@ function normalizeRouteForAgent(value: string): string {
 function buildEntryContext(cas: CASOutput, task: Required<Pick<AgentTask, 'task_type'>> & AgentTask, nodeId?: string) {
   const relatedEntries = nodeId
     ? (cas.entry_points || []).filter(entry =>
-        entry.source_node === nodeId ||
-        entry.handler?.node_id === nodeId ||
-        entry.connected_nodes?.includes(nodeId)
+        !isNonProductEntryPoint(cas, entry) &&
+        (entry.source_node === nodeId ||
+          entry.handler?.node_id === nodeId ||
+          entry.connected_nodes?.includes(nodeId))
       )
     : [];
-  const selectedEntry = relatedEntries[0] || (cas.entry_points || [])[0];
+  const selectedEntry = relatedEntries[0] || representativeEntryPoint(cas);
   const chains = selectedEntry
     ? getCallChain(cas, { entryPointId: selectedEntry.id, limit: 5 })
     : getCallChain(cas, { limit: 5 });
@@ -799,7 +2688,44 @@ function buildEntryContext(cas: CASOutput, task: Required<Pick<AgentTask, 'task_
       trigger: selectedEntry.trigger,
       handler: selectedEntry.handler,
     } : null,
-    call_chains: chains,
+    call_chains: summarizeCallChainsForAgent(chains),
+  };
+}
+
+function summarizeCallChainsForAgent(chains: unknown) {
+  if (!chains || typeof chains !== 'object') return chains;
+  const payload = chains as any;
+  const chainItems = Array.isArray(payload.chains) ? payload.chains : [];
+  return {
+    total: payload.total ?? chainItems.length,
+    offset: payload.offset,
+    limit: payload.limit,
+    chains: chainItems.slice(0, 5).map((chain: any) => ({
+      id: chain.id,
+      chain_type: chain.chain_type,
+      entry_point: chain.entry_point ? {
+        entry_point_id: chain.entry_point.entry_point_id,
+        method_name: chain.entry_point.method_name,
+        route_pattern: chain.entry_point.route_pattern,
+        http_method: chain.entry_point.http_method,
+      } : undefined,
+      exit_point: chain.exit_point ? {
+        exit_point_id: chain.exit_point.exit_point_id,
+        exit_type: chain.exit_point.exit_type,
+        service_name: chain.exit_point.service_name,
+      } : undefined,
+      call_path_length: Array.isArray(chain.call_path) ? chain.call_path.length : 0,
+      call_path_sample: Array.isArray(chain.call_path)
+        ? chain.call_path.slice(0, 8).map((step: any) => ({
+          node_id: step.node_id,
+          name: step.name,
+          type: step.type,
+          depth: step.depth,
+        }))
+        : [],
+      criticality: chain.criticality,
+      risk_level: chain.risk_analysis?.risk_level,
+    })),
   };
 }
 
@@ -833,13 +2759,11 @@ function buildFileReadPlan(
 
   addNode(selectedNode, 'selected target');
 
-  for (const caller of callers?.callers.slice(0, 5) || []) {
-    if (!isBehavioralReadPlanLink(caller.via)) continue;
+  for (const caller of (callers?.callers || []).filter(caller => isBehavioralReadPlanLink(caller.via)).slice(0, 5)) {
     addNode(cas.nodes.find(node => node.id === caller.node_id), `caller via ${caller.via}`);
   }
 
-  for (const callee of callees?.callees.slice(0, 5) || []) {
-    if (!isBehavioralReadPlanLink(callee.via)) continue;
+  for (const callee of (callees?.callees || []).filter(callee => isBehavioralReadPlanLink(callee.via)).slice(0, 5)) {
     addNode(cas.nodes.find(node => node.id === callee.node_id), `callee via ${callee.via}`);
   }
 
@@ -865,7 +2789,7 @@ function buildFileReadPlan(
   }
 
   const representativeEntry = entryContext.representative_entry_point;
-  if (representativeEntry?.handler?.file) {
+  if (representativeEntry?.handler?.file && !isNonProductSourceText(representativeEntry.handler.file)) {
     const file = normalizeSourceFile(representativeEntry.handler.file, rootPath);
     const existing = items.get(file);
     if (existing) {
@@ -883,6 +2807,246 @@ function buildFileReadPlan(
 
   return [...items.values()].slice(0, 12);
 }
+
+function targetFileReadPlanItem(file: string): FileReadPlanItem {
+  return {
+    file,
+    reason: 'explicit file path target; CAS node mapping may be stale or missing',
+    node_ids: [],
+    line_window: {
+      start: 1,
+      end: 220,
+      instruction: `Read ${file} lines 1-220 first; expand only if the local context or tests require it.`,
+    },
+  };
+}
+
+function augmentFileReadPlanWithTaskHints(
+  cas: CASOutput,
+  plan: FileReadPlanItem[],
+  task: AgentTask,
+): FileReadPlanItem[] {
+  const taskText = [
+    task.task_type,
+    task.target,
+    task.instructions,
+    ...(task.success_criteria || []),
+  ].filter(Boolean).join(' ');
+  const tokens = tokenizeTaskHint(taskText);
+  if (tokens.size === 0) return plan;
+
+  const rootPath = cas.system?.root_path;
+  const existing = new Set(plan.map(item => item.file));
+  const likelyFocusedTests = shouldSuggestFocusedRegressionTest(tokens)
+    ? inferLikelyNewTestPlanItems(plan, existing)
+    : [];
+  for (const item of likelyFocusedTests) existing.add(item.file);
+  const candidates = collectTaskHintCandidateFiles(cas, rootPath)
+    .filter(file => !existing.has(file) && shouldIncludeTaskHintCandidate(file, tokens))
+    .map(file => ({ file, score: taskHintFileScore(file, tokens) }))
+    .filter(candidate => candidate.score >= 18)
+    .sort((left, right) => right.score - left.score || left.file.localeCompare(right.file))
+    .slice(0, 5);
+
+  if (candidates.length === 0 && likelyFocusedTests.length === 0) return plan;
+  const sourceItems = plan.filter(item => !isTestPath(item.file));
+  const testItems = plan.filter(item => isTestPath(item.file));
+  const hintItems = candidates.map(candidate => taskHintReadPlanItem(candidate.file, candidate.score));
+  if (targetLooksLikeDocumentationFirstWork(taskText)) {
+    const documentationItems = hintItems.filter(item => isDocumentationPath(item.file));
+    const nonDocumentationItems = hintItems.filter(item => !isDocumentationPath(item.file));
+    return [
+      ...documentationItems,
+      ...sourceItems,
+      ...likelyFocusedTests,
+      ...testItems,
+      ...nonDocumentationItems,
+    ];
+  }
+  return [
+    ...sourceItems,
+    ...likelyFocusedTests,
+    ...testItems,
+    ...hintItems,
+  ];
+}
+
+function shouldSuggestFocusedRegressionTest(tokens: Set<string>): boolean {
+  return hasAny(tokens, ['test', 'tests', 'coverage', 'regression', 'contract', 'assert']);
+}
+
+function inferLikelyNewTestPlanItems(plan: FileReadPlanItem[], existing: Set<string>): FileReadPlanItem[] {
+  return plan
+    .filter(item => !isTestPath(item.file) && /\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(item.file))
+    .slice(0, 2)
+    .flatMap(item => focusedTestPathCandidates(item.file))
+    .filter(file => !existing.has(file))
+    .slice(0, 2)
+    .map(file => ({
+      file,
+      reason: 'likely focused regression test path; create it if missing',
+      node_ids: [],
+      line_window: {
+        start: 1,
+        end: 220,
+        instruction: `Create or inspect ${file} for focused regression coverage.`,
+      },
+    }));
+}
+
+function focusedTestPathCandidates(sourceFile: string): string[] {
+  const normalized = sourceFile.replace(/\\/g, '/').replace(/^\.\//, '');
+  const base = normalized.split('/').pop() || normalized;
+  const extension = base.match(/\.(tsx?|jsx?|mjs|cjs)$/i)?.[1] || 'ts';
+  const stem = base.replace(/\.(tsx?|jsx?|mjs|cjs)$/i, '');
+  const normalizedExtension = extension === 'tsx' ? 'tsx' : extension === 'jsx' ? 'jsx' : extension.includes('js') ? 'js' : 'ts';
+  return uniqueStrings([
+    `tests/${stem}.test.${normalizedExtension}`,
+    `tests/${stem}.spec.${normalizedExtension}`,
+  ]);
+}
+
+function collectTaskHintCandidateFiles(cas: CASOutput, rootPath?: string): string[] {
+  const fromCas = uniqueStrings((cas.nodes || [])
+    .map(node => node.source?.file)
+    .filter((file): file is string => Boolean(file))
+    .map(file => normalizeSourceFile(file, rootPath)));
+  const fromDisk = rootPath ? scanTaskHintFiles(rootPath) : [];
+  return uniqueStrings([...fromCas, ...fromDisk]);
+}
+
+function scanTaskHintFiles(rootPath: string): string[] {
+  if (!rootPath || !fs.existsSync(rootPath)) return [];
+  const ignored = new Set(['.git', '.klauro', '.agents', '.claude', '.codex', 'node_modules', 'dist', 'build', 'target', 'coverage', '.next', '.turbo', '.cache', '.venv', 'venv', 'env']);
+  const results: string[] = [];
+  const visit = (directory: string) => {
+    if (results.length >= 500) return;
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (results.length >= 500) return;
+      const absolute = nodePath.join(directory, entry.name);
+      const relative = nodePath.relative(rootPath, absolute).replace(/\\/g, '/');
+      if (entry.isDirectory()) {
+        if (!ignored.has(entry.name) && !entry.name.startsWith('.klauro')) visit(absolute);
+      } else if (entry.isFile() && /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|cs|sql|md|mdx)$/.test(relative)) {
+        results.push(relative);
+      }
+    }
+  };
+  visit(rootPath);
+  return results;
+}
+
+function shouldIncludeTaskHintCandidate(file: string, tokens: Set<string>): boolean {
+  const normalized = file.toLowerCase();
+  if (isDocumentationPath(file)) {
+    return targetLooksLikeDocumentationFirstWork([...tokens].join(' '));
+  }
+  if (/test|spec|__tests__/.test(normalized)) {
+    return hasAny(tokens, ['test', 'tests', 'coverage', 'assert', 'regression', 'blank', 'visibility', 'archive']);
+  }
+  if (/migrations?\//.test(normalized)) {
+    return hasAny(tokens, ['migration', 'schema', 'database', 'persisted', 'persistence', 'column', 'index']);
+  }
+  return !isNonProductSourceText(file);
+}
+
+function taskHintReadPlanItem(file: string, score: number): FileReadPlanItem {
+  return {
+    file,
+    reason: `task hint related file (${score})`,
+    node_ids: [],
+    line_window: {
+      start: 1,
+      end: 220,
+      instruction: `Read ${file} lines 1-220 if the selected target depends on this task-specific boundary.`,
+    },
+  };
+}
+
+function taskHintFileScore(file: string, tokens: Set<string>): number {
+  const normalizedFile = file.toLowerCase();
+  const fileTokens = tokenizeTaskHint(file);
+  let score = 0;
+  for (const token of tokens) {
+    if (fileTokens.has(token)) score += token.length > 5 ? 8 : 4;
+  }
+  if (hasAny(tokens, ['tenant', 'workspace', 'scope', 'visibility', 'auth', 'role', 'authorization', 'authenticated']) && /policy|auth|guard|scope|session/.test(normalizedFile)) score += 20;
+  if (hasAny(tokens, ['oidc', 'login', 'identity', 'token', 'session', 'password']) && /auth|oidc|identity|session|password|policy/.test(normalizedFile)) score += 24;
+  if (hasAny(tokens, ['mfa', 'totp', 'challenge', 'step', 'login']) && /mfa|auth|session|challenge/.test(normalizedFile)) score += 26;
+  if (hasAny(tokens, ['repository', 'data', 'persistence', 'batch', 'performance', 'n+1', 'slow']) && /repositor|dao|store|persistence/.test(normalizedFile)) score += 18;
+  if (hasAny(tokens, ['controller', 'route', 'entry', 'refactor']) && /controller|route|handler/.test(normalizedFile)) score += 18;
+  if (hasAny(tokens, ['service', 'validation', 'boundary', 'summary', 'performance', 'workflow']) && /service|usecase|workflow/.test(normalizedFile)) score += 14;
+  if (hasAny(tokens, ['monolith', 'decompose', 'decomposition', 'split', 'extract']) && /module|controller|service|repositor|policy/.test(normalizedFile)) score += 24;
+  if (hasAny(tokens, ['contract', 'dto', 'producer', 'consumer', 'client']) && /contract|dto|schema|client/.test(normalizedFile)) score += 24;
+  if (hasAny(tokens, ['producer', 'route', 'api']) && /route|controller|handler|api/.test(normalizedFile)) score += 12;
+  if (hasAny(tokens, ['consumer', 'client', 'render']) && /client|consumer|adapter/.test(normalizedFile)) score += 16;
+  if (hasAny(tokens, ['test', 'tests', 'coverage', 'assert', 'regression']) && /test|spec|__tests__/.test(normalizedFile)) score += 18;
+  if (hasAny(tokens, ['label', 'labels', 'task', 'due', 'archive', 'model', 'domain']) && /domain|model|entity|entities|schema|type/.test(normalizedFile)) score += 14;
+  if (hasAny(tokens, ['audit', 'event', 'events']) && /audit|event|service|repositor|workflow/.test(normalizedFile)) score += 24;
+  if (hasAny(tokens, ['migration', 'schema', 'database', 'persisted', 'persistence', 'column', 'index']) && /migrations?\//.test(normalizedFile)) score += 24;
+  if (targetLooksLikeDocumentationFirstWork([...tokens].join(' ')) && isDocumentationPath(file)) score += 30;
+  if (isDocumentationPath(file) && /docs?|readme|usage|guide|audit|proof|report|evidence/.test(normalizedFile)) score += 16;
+  return score;
+}
+
+function targetLooksLikeDocumentationWork(text?: string): boolean {
+  const tokens = tokenizeTaskHint(String(text || ''));
+  return hasAny(tokens, ['doc', 'docs', 'documentation', 'readme', 'guide', 'usage', 'audit', 'proof', 'evidence', 'report']);
+}
+
+function targetLooksLikeDocumentationFirstWork(text?: string): boolean {
+  const tokens = tokenizeTaskHint(String(text || ''));
+  if (
+    hasAny(tokens, ['inference', 'profile', 'domain', 'capability', 'entity', 'architecture', 'pattern', 'sdk', 'embedded', 'examples', 'monorepo', 'product', 'summary']) &&
+    !hasAny(tokens, ['documentation', 'readme', 'guide', 'usage'])
+  ) {
+    return false;
+  }
+  return hasAny(tokens, ['doc', 'docs', 'documentation', 'readme', 'guide', 'usage', 'audit', 'proof', 'report']);
+}
+
+function isDocumentationPath(file: string): boolean {
+  return /\.(md|mdx)$/i.test(file) || /(^|\/)(docs?|readme|guides?|reports?)(\/|$)/i.test(file);
+}
+
+function tokenizeTaskHint(text: string): Set<string> {
+  return new Set(String(text || '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9+]+/)
+    .filter(token => token.length >= 3 && !TASK_HINT_STOP_WORDS.has(token)));
+}
+
+function hasAny(tokens: Set<string>, expected: string[]): boolean {
+  return expected.some(token => tokens.has(token));
+}
+
+const TASK_HINT_STOP_WORDS = new Set([
+  'the',
+  'and',
+  'for',
+  'with',
+  'without',
+  'that',
+  'this',
+  'into',
+  'from',
+  'before',
+  'after',
+  'while',
+  'local',
+  'existing',
+  'minimal',
+  'preserve',
+  'change',
+  'changes',
+]);
 
 function buildLineWindow(node: CASNode): FileReadPlanItem['line_window'] {
   const startLine = Math.max(1, node.source?.line || 1);
@@ -943,6 +3107,7 @@ function buildValidationPlan(
     ...fileReadPlan
       .filter(item => isTestPath(item.file))
       .map(item => item.file),
+    ...inferLikelyFocusedTestFiles(projectPath, selectedNode, fileReadPlan),
   ].map(file => normalizeValidationFile(projectPath, file))).slice(0, 8);
   const commands: AgentValidationCommand[] = [];
   const scriptContexts = buildScriptContexts(projectPath, fileReadPlan, testFiles);
@@ -1023,9 +3188,152 @@ function buildValidationPlan(
     commands: commands.slice(0, 4),
     tests_to_inspect: testsToInspect,
     manual_checks: uniqueStrings(manualChecks).slice(0, 10),
+    run_policy: risk?.risk?.risk_level === 'high' || risk?.risk?.risk_level === 'critical'
+      ? 'Run the focused validation once after all edits are complete, and rerun only the failing command after each fix. Change risk is elevated, so a final full focused pass is required before finishing.'
+      : 'Run the focused validation once after all edits are complete; rerun only the failing command after a fix. Do not re-run passing suites between intermediate edits.',
     environment_rule: 'Do not install dependencies or run broad environment setup unless the task explicitly asks for it. If focused validation cannot run in the existing checkout, report that as an environment blocker.',
     gaps: commands.length === 0 ? ['no runnable validation command inferred from package scripts or test files'] : [],
   };
+}
+
+function inferLikelyFocusedTestFiles(projectPath: string, selectedNode: CASNode | undefined, fileReadPlan: FileReadPlanItem[]): string[] {
+  const sourceFiles = uniqueStrings([
+    selectedNode?.source?.file,
+    ...fileReadPlan.map(item => item.file),
+  ].filter((file): file is string => typeof file === 'string' && file.length > 0 && !isTestPath(file)));
+  if (sourceFiles.length === 0) return [];
+
+  const projectRoot = nodePath.resolve(projectPath);
+  const roots = uniqueStrings(sourceFiles
+    .map(file => findNearestPackageRoot(projectPath, file) || projectRoot)
+    .filter(Boolean));
+  const sourceProfiles = sourceFiles.map(file => sourceTestProfile(projectRoot, file, selectedNode?.name));
+  const candidates = roots.flatMap(root => collectTestFileCandidates(root, projectRoot));
+  const ranked = candidates
+    .map(file => ({
+      file,
+      score: Math.max(...sourceProfiles.map(profile => scoreTestCandidate(projectRoot, file, profile))),
+    }))
+    .filter(item => item.score >= 5)
+    .sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));
+  return uniqueStrings(ranked.map(item => item.file)).slice(0, 6);
+}
+
+interface SourceTestProfile {
+  absolute: string;
+  relative: string;
+  stem: string;
+  directory: string;
+  symbols: string[];
+  importNeedles: string[];
+}
+
+function sourceTestProfile(projectRoot: string, file: string, symbol?: string): SourceTestProfile {
+  const absolute = nodePath.resolve(projectRoot, file);
+  const relative = nodePath.relative(projectRoot, absolute).replace(/\\/g, '/');
+  const stem = nodePath.basename(relative).replace(/\.(spec|test)\.[^.]+$/i, '').replace(/\.[^.]+$/i, '');
+  const directory = nodePath.dirname(relative).replace(/\\/g, '/');
+  const withoutExtension = relative.replace(/\.[^.]+$/i, '');
+  return {
+    absolute,
+    relative,
+    stem: stem.toLowerCase(),
+    directory,
+    symbols: uniqueStrings([symbol, pascalCaseFromStem(stem)].filter(Boolean) as string[]),
+    importNeedles: uniqueStrings([
+      withoutExtension,
+      `/${withoutExtension}`,
+      stem,
+    ]),
+  };
+}
+
+function scoreTestCandidate(projectRoot: string, testFile: string, source: SourceTestProfile): number {
+  const absoluteTest = nodePath.resolve(projectRoot, testFile);
+  const normalizedTest = testFile.replace(/\\/g, '/');
+  const testDir = nodePath.dirname(normalizedTest).replace(/\\/g, '/');
+  const testBase = nodePath.basename(normalizedTest).toLowerCase();
+  let score = 0;
+  if (testDir === source.directory && testBase.includes(source.stem)) score += 8;
+  if (testBase.includes(source.stem)) score += 4;
+  if (normalizedTest.toLowerCase().includes(`/${source.stem}.`)) score += 2;
+
+  const content = readSmallTextFile(absoluteTest);
+  if (content) {
+    const lower = content.toLowerCase();
+    if (lower.includes(source.stem)) score += 3;
+    for (const symbol of source.symbols) {
+      if (symbol && content.includes(symbol)) score += 6;
+    }
+    const relativeImport = nodePath.relative(nodePath.dirname(absoluteTest), source.absolute)
+      .replace(/\\/g, '/')
+      .replace(/\.[^.]+$/i, '');
+    const importNeedles = uniqueStrings([
+      relativeImport.startsWith('.') ? relativeImport : `./${relativeImport}`,
+      ...source.importNeedles,
+    ]);
+    if (importNeedles.some(needle => needle && lower.includes(needle.toLowerCase()))) score += 7;
+  }
+  return score;
+}
+
+function collectTestFileCandidates(root: string, projectRoot: string): string[] {
+  const candidates: string[] = [];
+  const stack = [root];
+  const maxCandidates = 800;
+  while (stack.length > 0 && candidates.length < maxCandidates) {
+    const current = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const absolute = nodePath.join(current, entry.name);
+      if (entry.isDirectory()) {
+        if (isValidationSearchIgnoredDirectory(entry.name)) continue;
+        stack.push(absolute);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const relative = nodePath.relative(projectRoot, absolute).replace(/\\/g, '/');
+      if (isTestPath(relative)) candidates.push(relative);
+    }
+  }
+  return candidates;
+}
+
+function isValidationSearchIgnoredDirectory(name: string): boolean {
+  return [
+    '.git',
+    '.klauro',
+    '.next',
+    '.turbo',
+    'build',
+    'coverage',
+    'dist',
+    'node_modules',
+    'target',
+  ].includes(name);
+}
+
+function readSmallTextFile(file: string): string {
+  try {
+    const stat = fs.statSync(file);
+    if (!stat.isFile() || stat.size > 200_000) return '';
+    return fs.readFileSync(file, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+function pascalCaseFromStem(stem: string): string {
+  return stem
+    .split(/[^a-zA-Z0-9]+/)
+    .filter(Boolean)
+    .map(part => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join('');
 }
 
 function readPackageScripts(projectPath: string): Record<string, string> {
@@ -1318,6 +3626,16 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
     gate('flow-coverage', hasFlowCoverage(flowCoverage) ? 'pass' : 'warn', hasFlowCoverage(flowCoverage) ? 100 : 80, flowCoverageDetail(flowCoverage)),
   ];
 
+  const dominantUnanalyzed = dominantUnanalyzedLanguage(cas);
+  if (dominantUnanalyzed) {
+    rawGates.push(gate(
+      'language-coverage',
+      dominantUnanalyzed.share_of_source >= 50 ? 'fail' : 'warn',
+      Math.max(0, 100 - dominantUnanalyzed.share_of_source),
+      `${dominantUnanalyzed.name} is ${dominantUnanalyzed.share_of_source}% of source but not analyzed; CAS covers only the analyzed remainder`
+    ));
+  }
+
   if (graphIntegrity) {
     const graphScore = normalizeScore(graphIntegrity.relationship_coverage_score);
     const danglingCoverage = graphIntegrity.total_edges <= 0 ? 100 : ((graphIntegrity.total_edges - graphIntegrity.dangling_edges) / graphIntegrity.total_edges) * 100;
@@ -1439,14 +3757,15 @@ function stepsForTask(path: string, task: Required<Pick<AgentTask, 'task_type'>>
       ...base,
       step(4, 'search_nodes', { path, query: task.target || target, limit: 10 }, 'Resolve the target to a concrete CAS node.', true),
       step(5, 'preflight_agent_change', { path, target: task.target || target, task }, 'Check whether the proposed edit fits repo rules before editing or presenting a plan.', true),
-      step(6, 'get_coding_context', { path, target, task_type: 'modify' }, 'Load conventions, connected code, and modification checklist.', true),
-      step(7, 'assess_change_risk', { path, node_id: task.target ? '<node_id from search_nodes>' : nodeId }, 'Assess blast radius before editing.', true),
-      step(8, 'find_tests', { path, node_id: task.target ? '<node_id from search_nodes>' : nodeId, limit: 10 }, 'Find direct test coverage and nearby tests.', true),
-      step(9, 'get_codebase_idioms', { path, target: task.target ? '<node_id from search_nodes>' : nodeId, limit: 10 }, 'Check repo-local naming, placement, boundary, testing, and migration idioms before editing.', true),
-      step(10, 'get_behavioral_invariants', { path, target: task.target ? '<node_id from search_nodes>' : nodeId, limit: 12 }, 'Check tenant/auth/schema/test invariants before editing.', true),
-      step(11, 'get_callers', { path, node_id: task.target ? '<node_id from search_nodes>' : nodeId, depth: 2, limit: 25 }, 'Check upstream dependents.', false),
-      step(12, 'get_callees', { path, node_id: task.target ? '<node_id from search_nodes>' : nodeId, depth: 2, limit: 25 }, 'Check downstream dependencies.', false),
-      step(13, 'validate_agent_change', { path, target: task.target ? '<node_id from search_nodes>' : nodeId }, 'After edits, validate idioms, invariants, change shape, and finalization rules before finalizing.', true),
+      step(6, 'get_capability_memory', { path, target: task.target || target, instructions: task.instructions, success_criteria: task.success_criteria }, 'Check whether the requested behavior already exists before adding parallel code.', true),
+      step(7, 'get_coding_context', { path, target, task_type: 'modify' }, 'Load conventions, connected code, and modification checklist.', true),
+      step(8, 'assess_change_risk', { path, node_id: task.target ? '<node_id from search_nodes>' : nodeId }, 'Assess blast radius before editing.', true),
+      step(9, 'find_tests', { path, node_id: task.target ? '<node_id from search_nodes>' : nodeId, limit: 10 }, 'Find direct test coverage and nearby tests.', true),
+      step(10, 'get_codebase_idioms', { path, target: task.target ? '<node_id from search_nodes>' : nodeId, limit: 10 }, 'Check repo-local naming, placement, boundary, testing, and migration idioms before editing.', true),
+      step(11, 'get_behavioral_invariants', { path, target: task.target ? '<node_id from search_nodes>' : nodeId, limit: 12 }, 'Check tenant/auth/schema/test invariants before editing.', true),
+      step(12, 'get_callers', { path, node_id: task.target ? '<node_id from search_nodes>' : nodeId, depth: 2, limit: 25 }, 'Check upstream dependents.', false),
+      step(13, 'get_callees', { path, node_id: task.target ? '<node_id from search_nodes>' : nodeId, depth: 2, limit: 25 }, 'Check downstream dependencies.', false),
+      step(14, 'validate_agent_change', { path, target: task.target ? '<node_id from search_nodes>' : nodeId }, 'After edits, validate idioms, invariants, change shape, and finalization rules before finalizing.', true),
     ];
   }
 
@@ -1458,11 +3777,12 @@ function stepsForTask(path: string, task: Required<Pick<AgentTask, 'task_type'>>
       step(6, 'get_error_contracts', { path, node_id: task.target ? '<node_id from search_nodes>' : nodeId, direction: 'both' }, 'Inspect error behavior and propagation.', false),
       step(7, 'get_call_chain', { path, entry_point_id: entryPointId, limit: 10 }, 'Trace the relevant behavior from entry point to exit.', false),
       step(8, 'preflight_agent_change', { path, target: task.target || target, task }, 'Check fix shape against repo rules before editing.', true),
-      step(9, 'get_coding_context', { path, target, task_type: 'modify' }, 'Load targeted context before changing code.', true),
-      step(10, 'find_tests', { path, node_id: task.target ? '<node_id from search_nodes>' : nodeId, limit: 10 }, 'Find tests that should reproduce or guard the fix.', true),
-      step(11, 'get_codebase_idioms', { path, target: task.target ? '<node_id from search_nodes>' : nodeId, limit: 10 }, 'Check repo-local idioms that the fix should preserve.', true),
-      step(12, 'get_behavioral_invariants', { path, target: task.target ? '<node_id from search_nodes>' : nodeId, limit: 12 }, 'Check invariant rules that the bug fix must preserve.', true),
-      step(13, 'validate_agent_change', { path, target: task.target ? '<node_id from search_nodes>' : nodeId }, 'After edits, validate idioms, invariants, change shape, and finalization rules before finalizing.', true),
+      step(9, 'get_capability_memory', { path, target: task.target || target, instructions: task.instructions, success_criteria: task.success_criteria }, 'Check whether the bug overlaps existing behavior before adding another path.', true),
+      step(10, 'get_coding_context', { path, target, task_type: 'modify' }, 'Load targeted context before changing code.', true),
+      step(11, 'find_tests', { path, node_id: task.target ? '<node_id from search_nodes>' : nodeId, limit: 10 }, 'Find tests that should reproduce or guard the fix.', true),
+      step(12, 'get_codebase_idioms', { path, target: task.target ? '<node_id from search_nodes>' : nodeId, limit: 10 }, 'Check repo-local idioms that the fix should preserve.', true),
+      step(13, 'get_behavioral_invariants', { path, target: task.target ? '<node_id from search_nodes>' : nodeId, limit: 12 }, 'Check invariant rules that the bug fix must preserve.', true),
+      step(14, 'validate_agent_change', { path, target: task.target ? '<node_id from search_nodes>' : nodeId }, 'After edits, validate idioms, invariants, change shape, and finalization rules before finalizing.', true),
     ];
   }
 
@@ -1532,6 +3852,20 @@ function severityCounts(gaps: Array<{ severity: 'high' | 'medium' | 'low' }>): R
 
 function gate(id: string, status: GateStatus, score: number, detail: string): AgentReadinessGate {
   return { id, status, score: Math.round(Math.max(0, Math.min(100, score))), detail };
+}
+
+export function dominantUnanalyzedLanguage(cas: CASOutput): { name: string; files: number; share_of_source: number } | null {
+  const languages = cas.system?.technologies?.unanalyzed_languages || [];
+  const dominant = [...languages]
+    .filter(language => language.share_of_source >= 30)
+    .sort((left, right) => right.share_of_source - left.share_of_source)[0];
+  return dominant || null;
+}
+
+export function unanalyzedLanguageNote(cas: CASOutput): string | undefined {
+  const dominant = dominantUnanalyzedLanguage(cas);
+  if (!dominant) return undefined;
+  return `${dominant.name} is ${dominant.share_of_source}% of source (${dominant.files} files) but not analyzed; CAS covers only the analyzed remainder. Fall back to direct file reading for the ${dominant.name} portion.`;
 }
 
 function coverageGate(id: string, actual: number, minimum: number): AgentReadinessGate {
@@ -1613,7 +3947,25 @@ function mostConnectedNodes(cas: CASOutput): CASNode[] {
 }
 
 function representativeTarget(cas: CASOutput): CASNode | undefined {
-  return mostConnectedNodes(cas)[0] || cas.nodes[0];
+  return mostConnectedNodes(cas).find(node => !isNonProductAgentTarget(node)) ||
+    cas.nodes.find(node => !isNonProductAgentTarget(node)) ||
+    cas.nodes[0];
+}
+
+function representativeEntryPoint(cas: CASOutput): CASEntryPoint | undefined {
+  const entries = cas.entry_points || [];
+  return entries.find(entry => !isNonProductEntryPoint(cas, entry)) || entries[0];
+}
+
+function isNonProductEntryPoint(cas: CASOutput, entry: CASEntryPoint): boolean {
+  if (entry.type === 'test') return true;
+  if (isNonProductSourceText([entry.id, entry.name, entry.handler?.file].filter(Boolean).join('/'))) return true;
+  const sourceNode = cas.nodes.find(node => node.id === entry.source_node);
+  const handlerNode = entry.handler?.node_id
+    ? cas.nodes.find(node => node.id === entry.handler?.node_id)
+    : undefined;
+  return Boolean(sourceNode && isNonProductAgentTarget(sourceNode)) ||
+    Boolean(handlerNode && isNonProductAgentTarget(handlerNode));
 }
 
 function hasFlowCoverage(flowCoverage: Record<string, unknown>): boolean {

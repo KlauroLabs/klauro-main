@@ -4,10 +4,14 @@ import type {
   CASChangeRisk, CASTemporalStability, CASFlowCoverage,
   CASTestSuite, ChangeHistoryEntry, ChangeAggregate, HeatMapData, ImpactAnalysis,
 } from '../../../packages/analyzer-core/src/types/cas.types';
+import { diffBehavior } from '../../../packages/analyzer-core/src/analyzer/core/behavior-diff';
+import { buildProductMap } from '../../../packages/analyzer-core/src/analyzer/core/product-map';
+import type { CASProductMap } from '../../../packages/analyzer-core/src/types/cas.types';
 import {
   loadChangeHistory,
   getChangeHistoryEntry,
   listAnalysisSnapshots,
+  loadAnalysisSnapshot,
   getAnalysisAt as getStorageAnalysisAt,
 } from './storage';
 
@@ -23,26 +27,56 @@ export function buildSummary(cas: CASOutput) {
   }
 
   const techs = cas.system?.technologies;
+  const inventory = cas.architecture_summary?.architectural_inventory;
+  const primaryDomain = cas.enhanced_system_purpose?.primary_domain || null;
+  const productTech = productTechSignals(cas);
 
   return {
     name: cas.system?.name,
     type: cas.system?.type,
-    languages: techs?.languages?.map(l => l.name) || [],
-    frameworks: techs?.frameworks?.map(f => f.name) || [],
-    primary_domain: cas.enhanced_system_purpose?.primary_domain || null,
+    languages: productTech.languages.length ? productTech.languages : techs?.languages?.map(l => l.name) || [],
+    frameworks: productTech.frameworks.length ? productTech.frameworks : techs?.frameworks?.map(f => f.name) || [],
+    primary_domain: primaryDomain,
     description: cas.enhanced_system_purpose?.inferred_description || null,
+    description_source: cas.enhanced_system_purpose?.description_source || null,
+    analysis_phases: cas.analysis_phases || [],
     architecture_type: cas.architecture_summary?.system_type || null,
+    architectural_patterns: cas.architecture_summary?.architectural_patterns?.slice(0, 12).map(pattern => ({
+      name: pattern.name,
+      confidence: pattern.confidence,
+      category: pattern.category,
+      guidance: pattern.guidance,
+    })) || [],
+    pattern_balance: cas.architecture_summary?.pattern_balance || null,
+    architectural_inventory_counts: inventory ? Object.fromEntries(
+      Object.entries(inventory).map(([key, values]) => [key, Array.isArray(values) ? values.length : 0])
+    ) : {},
     nodes: cas.nodes.length,
     nodes_by_type: nodesByType,
     edges: cas.edges.length,
     entry_points: cas.entry_points?.length || 0,
     entry_points_by_type: entryPointsByType,
     database_entities: cas.database_schema?.entities.map(e => e.name) || [],
-    capabilities: cas.flow_graph?.capabilities.length || 0,
-    top_capabilities: cas.flow_graph ? [...cas.flow_graph.capabilities]
-      .sort((a, b) => b.signals.total_score - a.signals.total_score)
-      .slice(0, 10)
-      .map(c => c.name) : [],
+    capabilities: cas.system_capabilities?.length || cas.flow_graph?.capabilities.length || 0,
+    top_capabilities: cas.system_capabilities?.length
+      ? [...cas.system_capabilities]
+        .filter(c => c.category !== 'internal')
+        .sort((a, b) => {
+          const order = { critical: 0, high: 1, medium: 2, low: 3 };
+          const domainBias = (capability: any) =>
+            primaryDomain && capability.related_domains?.some((domain: string) => domain.includes(primaryDomain) || primaryDomain.includes(domain))
+              ? 0
+              : 1;
+          return domainBias(a) - domainBias(b) ||
+            order[a.criticality] - order[b.criticality] ||
+            b.operations.length - a.operations.length;
+        })
+        .slice(0, 10)
+        .map(c => c.name)
+      : cas.flow_graph ? [...cas.flow_graph.capabilities]
+        .sort((a, b) => b.signals.total_score - a.signals.total_score)
+        .slice(0, 10)
+        .map(c => c.name) : [],
     analyzers: cas.analyzer_contributions.map(c => c.analyzer_name),
     errors: cas.analysis_errors?.length || 0,
   };
@@ -50,12 +84,17 @@ export function buildSummary(cas: CASOutput) {
 
 export function getSystemOverview(cas: CASOutput) {
   const techs = cas.system?.technologies;
+  const productTech = productTechSignals(cas);
   return {
     name: cas.system?.name,
     type: cas.system?.type,
     description: cas.system?.description,
-    languages: techs?.languages?.map(l => ({ name: l.name, percentage: l.percentage })) || [],
-    frameworks: techs?.frameworks?.map(f => ({ name: f.name, version: f.version })) || [],
+    languages: productTech.languages.length
+      ? productTech.languages.map(name => ({ name }))
+      : techs?.languages?.map(l => ({ name: l.name, percentage: l.percentage })) || [],
+    frameworks: productTech.frameworks.length
+      ? productTech.frameworks.map(name => ({ name }))
+      : techs?.frameworks?.map(f => ({ name: f.name, version: f.version })) || [],
     databases: techs?.databases || [],
     system_purpose: cas.system_purpose ? {
       primary_type: cas.system_purpose.primary_type,
@@ -65,17 +104,27 @@ export function getSystemOverview(cas: CASOutput) {
     enhanced_system_purpose: cas.enhanced_system_purpose ? {
       primary_domain: cas.enhanced_system_purpose.primary_domain,
       inferred_description: cas.enhanced_system_purpose.inferred_description,
+      description_source: cas.enhanced_system_purpose.description_source,
+      description_generation: cas.enhanced_system_purpose.description_generation,
       core_concepts: cas.enhanced_system_purpose.core_concepts?.slice(0, 10),
     } : null,
+    analysis_phases: cas.analysis_phases || [],
     architecture_summary: cas.architecture_summary ? {
       system_type: cas.architecture_summary.system_type,
       total_files: cas.architecture_summary.total_files,
       layers: cas.architecture_summary.layers,
+      architectural_patterns: cas.architecture_summary.architectural_patterns?.slice(0, 20),
+      architectural_inventory: cas.architecture_summary.architectural_inventory,
+      pattern_balance: cas.architecture_summary.pattern_balance,
     } : null,
+    system_health: cas.system_health || null,
     capabilities_count: cas.system_capabilities?.length || 0,
     system_capabilities: cas.system_capabilities?.slice(0, 25).map(capability => ({
       id: capability.id,
       name: capability.name,
+      description: capability.description,
+      description_source: capability.description_source,
+      description_generation: capability.description_generation,
       category: capability.category,
       criticality: capability.criticality,
       operation_count: capability.operations?.length || 0,
@@ -188,6 +237,45 @@ const SEARCH_TYPE_PRIORITY: Record<string, number> = {
 
 function searchTypeRank(type: string): number {
   return SEARCH_TYPE_PRIORITY[type] ?? 3;
+}
+
+function productTechSignals(cas: CASOutput): { languages: string[]; frameworks: string[] } {
+  const languages = new Set<string>();
+  const frameworks = new Set<string>();
+  for (const node of cas.nodes || []) {
+    if (!isPrimaryProductNodeForQuery(node)) continue;
+    const language = String(node.metadata?.language || '').trim();
+    const framework = String(node.metadata?.framework || '').trim();
+    if (language) languages.add(normalizeTechLabel(language));
+    if (framework && !isTestFramework(framework)) frameworks.add(normalizeTechLabel(framework));
+  }
+  return {
+    languages: Array.from(languages).filter(Boolean).slice(0, 8),
+    frameworks: Array.from(frameworks).filter(Boolean).slice(0, 10),
+  };
+}
+
+function normalizeTechLabel(value: string): string {
+  const lower = value.toLowerCase();
+  if (lower === 'typescript' || lower === 'javascript') return 'TypeScript/JavaScript';
+  if (lower === 'dart') return 'Dart/Flutter';
+  if (lower === 'csharp' || lower === 'c#') return 'C#';
+  return value;
+}
+
+function isTestFramework(value: string): boolean {
+  return /\b(jest|vitest|mocha|cypress|playwright|pytest|xunit|junit)\b/i.test(value);
+}
+
+function isPrimaryProductNodeForQuery(node: CASNode): boolean {
+  if (node.metadata?.is_test || node.metadata?.is_generated) return false;
+  const normalized = (node.source?.file || node.name || '').replace(/\\/g, '/').toLowerCase();
+  if (!normalized) return true;
+  if (/(^|\/)(node_modules|dist|build|coverage|vendor|vendors|generated|fixtures?|__fixtures__|__mocks__)(\/|$)/.test(normalized)) return false;
+  if (/(^|\/)(__tests__|tests?|spec|e2e|cypress|playwright)(\/|$)/.test(normalized)) return false;
+  if (/\.(test|spec|stories|story)\.[a-z0-9]+$/.test(normalized)) return false;
+  if (/^legacy\//.test(normalized)) return false;
+  return true;
 }
 
 export function searchNodes(
@@ -348,15 +436,27 @@ export function getExternalServices(cas: CASOutput) {
 export function getCallers(cas: CASOutput, nodeId: string, maxDepth: number = 2, limit: number = 50) {
   const visited = new Set<string>();
   const callers: Array<{ node_id: string; name: string; type: string; depth: number; via: string }> = [];
+  const nodesById = new Map(cas.nodes.map(node => [node.id, node]));
+  const incomingEdges = new Map<string, typeof cas.edges>();
+  for (const edge of cas.edges) {
+    if (!incomingEdges.has(edge.target)) incomingEdges.set(edge.target, []);
+    incomingEdges.get(edge.target)!.push(edge);
+  }
+  const incomingMethodCalls = new Map<string, NonNullable<CASOutput['method_calls']>>();
+  for (const methodCall of cas.method_calls || []) {
+    if (!methodCall.target_node) continue;
+    if (!incomingMethodCalls.has(methodCall.target_node)) incomingMethodCalls.set(methodCall.target_node, []);
+    incomingMethodCalls.get(methodCall.target_node)!.push(methodCall);
+  }
 
   function traverse(currentId: string, depth: number) {
     if (depth > maxDepth || visited.has(currentId) || callers.length >= limit) return;
     visited.add(currentId);
 
-    for (const edge of cas.edges) {
+    for (const edge of incomingEdges.get(currentId) || []) {
       if (callers.length >= limit) break;
-      if (edge.target === currentId && !visited.has(edge.source)) {
-        const sourceNode = cas.nodes.find(n => n.id === edge.source);
+      if (!visited.has(edge.source)) {
+        const sourceNode = nodesById.get(edge.source);
         if (sourceNode) {
           callers.push({
             node_id: sourceNode.id,
@@ -370,10 +470,10 @@ export function getCallers(cas: CASOutput, nodeId: string, maxDepth: number = 2,
       }
     }
 
-    for (const mc of cas.method_calls || []) {
+    for (const mc of incomingMethodCalls.get(currentId) || []) {
       if (callers.length >= limit) break;
-      if (mc.target_node === currentId && mc.caller_node && !visited.has(mc.caller_node)) {
-        const callerNode = cas.nodes.find(n => n.id === mc.caller_node);
+      if (mc.caller_node && !visited.has(mc.caller_node)) {
+        const callerNode = nodesById.get(mc.caller_node);
         if (callerNode) {
           callers.push({
             node_id: callerNode.id,
@@ -395,15 +495,27 @@ export function getCallers(cas: CASOutput, nodeId: string, maxDepth: number = 2,
 export function getCallees(cas: CASOutput, nodeId: string, maxDepth: number = 2, limit: number = 50) {
   const visited = new Set<string>();
   const callees: Array<{ node_id: string; name: string; type: string; depth: number; via: string }> = [];
+  const nodesById = new Map(cas.nodes.map(node => [node.id, node]));
+  const outgoingEdges = new Map<string, typeof cas.edges>();
+  for (const edge of cas.edges) {
+    if (!outgoingEdges.has(edge.source)) outgoingEdges.set(edge.source, []);
+    outgoingEdges.get(edge.source)!.push(edge);
+  }
+  const outgoingMethodCalls = new Map<string, NonNullable<CASOutput['method_calls']>>();
+  for (const methodCall of cas.method_calls || []) {
+    if (!methodCall.caller_node) continue;
+    if (!outgoingMethodCalls.has(methodCall.caller_node)) outgoingMethodCalls.set(methodCall.caller_node, []);
+    outgoingMethodCalls.get(methodCall.caller_node)!.push(methodCall);
+  }
 
   function traverse(currentId: string, depth: number) {
     if (depth > maxDepth || visited.has(currentId) || callees.length >= limit) return;
     visited.add(currentId);
 
-    for (const edge of cas.edges) {
+    for (const edge of outgoingEdges.get(currentId) || []) {
       if (callees.length >= limit) break;
-      if (edge.source === currentId && !visited.has(edge.target)) {
-        const targetNode = cas.nodes.find(n => n.id === edge.target);
+      if (!visited.has(edge.target)) {
+        const targetNode = nodesById.get(edge.target);
         if (targetNode) {
           callees.push({
             node_id: targetNode.id,
@@ -417,10 +529,10 @@ export function getCallees(cas: CASOutput, nodeId: string, maxDepth: number = 2,
       }
     }
 
-    for (const mc of cas.method_calls || []) {
+    for (const mc of outgoingMethodCalls.get(currentId) || []) {
       if (callees.length >= limit) break;
-      if (mc.caller_node === currentId && mc.target_node && !visited.has(mc.target_node)) {
-        const targetNode = cas.nodes.find(n => n.id === mc.target_node);
+      if (mc.target_node && !visited.has(mc.target_node)) {
+        const targetNode = nodesById.get(mc.target_node);
         if (targetNode) {
           callees.push({
             node_id: targetNode.id,
@@ -673,6 +785,308 @@ export function getWorkflows(cas: CASOutput, workflowId?: string) {
     })),
     workflow_graph: cas.workflow_graph || null,
   };
+}
+
+export function getUserJourneys(
+  cas: CASOutput,
+  opts: { journeyId?: string; kind?: string; limit?: number; offset?: number } = {}
+) {
+  const journeys = cas.user_journeys || [];
+  if (opts.journeyId) {
+    return { journey: journeys.find(journey => journey.id === opts.journeyId) || null };
+  }
+
+  let filtered = journeys;
+  if (opts.kind) {
+    filtered = filtered.filter(journey => journey.journey_kind === opts.kind);
+  }
+
+  const limit = opts.limit || 25;
+  const offset = opts.offset || 0;
+
+  return {
+    total: filtered.length,
+    offset,
+    limit,
+    summary: cas.user_journey_summary || null,
+    journeys: filtered.slice(offset, offset + limit).map(journey => ({
+      id: journey.id,
+      name: journey.name,
+      journey_kind: journey.journey_kind,
+      criticality: journey.criticality,
+      risk: journey.risk,
+      entry: journey.entry,
+      terminal_entities: journey.terminal_entities,
+      entities_written: journey.terminal_effects?.entities_written || [],
+      external_services: journey.terminal_effects?.external_services || [],
+      step_count: journey.steps?.length || 0,
+      security_boundary_count: journey.security_boundaries?.length || 0,
+      test_count: journey.tests_covering?.length || 0,
+    })),
+  };
+}
+
+export function getParadigmConformance(
+  cas: CASOutput,
+  opts: { paradigm?: string } = {}
+) {
+  const paradigms = cas.paradigm_conformance || [];
+
+  if (opts.paradigm) {
+    const match = paradigms.find(item => item.paradigm === opts.paradigm) || null;
+    return { paradigm: match };
+  }
+
+  const severityCounts = (deviations: { severity: string }[]) => {
+    const counts: Record<string, number> = {};
+    for (const deviation of deviations) {
+      counts[deviation.severity] = (counts[deviation.severity] || 0) + 1;
+    }
+    return counts;
+  };
+
+  return {
+    total: paradigms.length,
+    total_deviations: paradigms.reduce((sum, item) => sum + item.deviations.length, 0),
+    paradigms: paradigms.map(item => ({
+      paradigm: item.paradigm,
+      description: item.description,
+      adoption: item.adoption,
+      deviation_count: item.deviations.length,
+      deviations_by_severity: severityCounts(item.deviations),
+      sample_deviations: item.deviations.slice(0, 3),
+    })),
+  };
+}
+
+export function getDataLineage(
+  cas: CASOutput,
+  opts: { entityId?: string; sensitiveOnly?: boolean; limit?: number; offset?: number } = {}
+) {
+  const lineage = cas.data_lineage || [];
+
+  if (opts.entityId) {
+    const entity = lineage.find(item => item.entity_id === opts.entityId) || null;
+    return { entity };
+  }
+
+  const exposureScore = (item: typeof lineage[number]) => {
+    let score = 0;
+    if (item.exposure.sensitive) score += 4;
+    if (item.exposure.unguarded_paths > 0) score += 2;
+    if (item.exposure.external_transfer) score += 1;
+    return score;
+  };
+
+  let filtered = lineage;
+  if (opts.sensitiveOnly) {
+    filtered = filtered.filter(item => item.exposure.sensitive);
+  }
+  filtered = [...filtered].sort((a, b) =>
+    exposureScore(b) - exposureScore(a) ||
+    b.exposure.unguarded_paths - a.exposure.unguarded_paths ||
+    (b.writers.length + b.readers.length) - (a.writers.length + a.readers.length) ||
+    a.entity_name.localeCompare(b.entity_name)
+  );
+
+  const limit = opts.limit || 25;
+  const offset = opts.offset || 0;
+
+  return {
+    total: filtered.length,
+    offset,
+    limit,
+    sensitive_entities: lineage.filter(item => item.exposure.sensitive).length,
+    entities_with_external_transfer: lineage.filter(item => item.exposure.external_transfer).length,
+    entities_with_unguarded_paths: lineage.filter(item => item.exposure.unguarded_paths > 0).length,
+    entities: filtered.slice(offset, offset + limit).map(item => ({
+      entity_id: item.entity_id,
+      entity_name: item.entity_name,
+      sensitive_fields: item.sensitive_fields,
+      writer_count: item.writers.length,
+      reader_count: item.readers.length,
+      external_recipients: item.external_recipients.map(recipient => recipient.service),
+      boundaries_crossed: item.boundaries_crossed,
+      journey_count: item.journeys_carrying.length,
+      exposure: item.exposure,
+    })),
+  };
+}
+
+export async function diffBehaviorAgainstSnapshot(
+  projectPath: string,
+  currentCas: CASOutput,
+  snapshotId?: string
+) {
+  const snapshots = await listAnalysisSnapshots(projectPath);
+  const requested = snapshotId && snapshotId !== 'previous' ? snapshotId : null;
+
+  let resolvedId: string | null = null;
+  if (requested) {
+    if (!snapshots.some(snapshot => snapshot.id === requested)) {
+      return {
+        applicable: false,
+        reason: `Snapshot '${requested}' not found. Available snapshots: ${snapshots.map(s => s.id).join(', ') || 'none'}.`,
+      };
+    }
+    resolvedId = requested;
+  } else {
+    if (snapshots.length < 2) {
+      return {
+        applicable: false,
+        reason: snapshots.length === 0
+          ? 'No analysis snapshots exist for this project. Run analyze_codebase at least twice to enable behavior diffing.'
+          : 'Only the current analysis snapshot exists. Run analyze_codebase again after changes to create a comparison baseline.',
+      };
+    }
+    resolvedId = snapshots[1].id;
+  }
+
+  const before = await loadAnalysisSnapshot(projectPath, resolvedId);
+  if (!before) {
+    return { applicable: false, reason: `Snapshot '${resolvedId}' could not be loaded.` };
+  }
+
+  const diff = diffBehavior(before, currentCas);
+
+  return {
+    applicable: true,
+    compared_to_snapshot: resolvedId,
+    risk_flags: diff.summary.risk_flags,
+    counts: {
+      journeys_added: diff.journeys.added.length,
+      journeys_removed: diff.journeys.removed.length,
+      journeys_changed: diff.journeys.changed.length,
+      newly_unguarded_entries: diff.security.newly_unguarded_entries.length,
+      capabilities_added: diff.capabilities.added.length,
+      capabilities_removed: diff.capabilities.removed.length,
+      capabilities_possibly_duplicated: diff.capabilities.possibly_duplicated.length,
+      entities_with_new_writers: diff.lineage.entities_with_new_writers.length,
+      sensitive_exposure_changes: diff.lineage.sensitive_exposure_changes.length,
+      new_paradigm_deviations: diff.paradigms.new_deviations.length,
+      resolved_paradigm_deviations: diff.paradigms.resolved_deviations.length,
+    },
+    diff,
+  };
+}
+
+const PRODUCT_MAP_SECTIONS = ['identity', 'capabilities', 'journeys', 'data', 'conventions', 'health', 'coverage_caveats'] as const;
+
+export function getProductMap(
+  cas: CASOutput,
+  opts: { section?: string; format?: 'json' | 'markdown' } = {}
+) {
+  const map = cas.product_map || buildProductMap(cas);
+
+  if (opts.format === 'markdown') {
+    return { markdown: productMapToMarkdown(map) };
+  }
+
+  if (opts.section) {
+    if (!PRODUCT_MAP_SECTIONS.includes(opts.section as typeof PRODUCT_MAP_SECTIONS[number])) {
+      return {
+        error: `Unknown section '${opts.section}'. Available sections: ${PRODUCT_MAP_SECTIONS.join(', ')}.`,
+      };
+    }
+    return { [opts.section]: map[opts.section as keyof CASProductMap] };
+  }
+
+  return map;
+}
+
+export function productMapToMarkdown(map: CASProductMap): string {
+  const lines: string[] = [];
+  const percent = (rate: number) => `${Math.round(rate * 100)}%`;
+
+  lines.push(`# ${map.identity.name} - Product Map`);
+  lines.push('');
+  lines.push(`**Domain:** ${map.identity.domain} (${map.identity.domain_source})`);
+  if (map.identity.description) {
+    lines.push('');
+    lines.push(`${map.identity.description} _(description: ${map.identity.description_source})_`);
+  }
+
+  lines.push('');
+  lines.push(`## Capabilities (${map.capabilities.length})`);
+  for (const capability of map.capabilities.slice(0, 12)) {
+    lines.push(`- **${capability.name}** [${capability.criticality}, ${capability.category}] ${capability.description}`);
+    const facts: string[] = [];
+    if (capability.journeys.length > 0) {
+      facts.push(`journeys: ${capability.journeys.map(journey => journey.name).join('; ')}`);
+    }
+    if (capability.entities.length > 0) {
+      facts.push(`entities: ${capability.entities.join(', ')}`);
+    }
+    facts.push(`tests: ${capability.tests_present ? 'yes' : 'no'}`);
+    facts.push(`risk: ${capability.risk_level}`);
+    lines.push(`  - ${facts.join(' | ')}`);
+  }
+  if (map.capabilities.length > 12) {
+    lines.push(`- plus ${map.capabilities.length - 12} more capabilities`);
+  }
+
+  lines.push('');
+  lines.push('## Journeys');
+  const mappedJourneys = map.journeys.user_facing + map.journeys.system + map.journeys.scheduled;
+  const kindBreakdown = `${map.journeys.user_facing} user-facing, ${map.journeys.system} system, ${map.journeys.scheduled} scheduled`;
+  if (mappedJourneys < map.journeys.total) {
+    lines.push(`${map.journeys.total} discovered, ${mappedJourneys} mapped in detail: ${kindBreakdown}.`);
+  } else {
+    lines.push(`${map.journeys.total} total: ${kindBreakdown}.`);
+  }
+  for (const journey of map.journeys.top) {
+    const boundaries = journey.boundaries.length > 0 ? journey.boundaries.join(', ') : 'none';
+    lines.push(`- ${journey.name} (${journey.kind}, ${journey.criticality}) | boundaries: ${boundaries} | tests: ${journey.tests}`);
+  }
+
+  lines.push('');
+  lines.push('## Data');
+  const sensitiveText = map.data.sensitive.length > 0 ? map.data.sensitive.join(', ') : 'none detected';
+  lines.push(`${map.data.entities} entities tracked. Sensitive: ${sensitiveText}.`);
+  for (const highlight of map.data.exposure_highlights) {
+    const details: string[] = [];
+    if (highlight.sensitive_fields.length > 0) details.push(`sensitive fields: ${highlight.sensitive_fields.join(', ')}`);
+    if (highlight.unguarded_paths > 0) details.push(`${highlight.unguarded_paths} unguarded path${highlight.unguarded_paths === 1 ? '' : 's'}`);
+    if (highlight.external_transfer) details.push(`external transfer to ${highlight.external_recipients.join(', ') || 'unknown service'}`);
+    lines.push(`- ${highlight.entity}: ${details.join('; ')}`);
+  }
+
+  lines.push('');
+  lines.push('## Conventions');
+  if (map.conventions.paradigms.length === 0) {
+    lines.push('No codebase paradigms detected.');
+  }
+  for (const paradigm of map.conventions.paradigms) {
+    lines.push(`- ${paradigm.paradigm}: ${percent(paradigm.adoption_rate)} adoption (${paradigm.following_count}/${paradigm.comparable_count})`);
+  }
+  const dev = map.conventions.open_deviations;
+  if (dev.error + dev.warning + dev.info > 0) {
+    lines.push(`Open deviations: ${dev.error} error, ${dev.warning} warning, ${dev.info} info.`);
+  }
+
+  lines.push('');
+  lines.push('## Health');
+  if (map.health.status) {
+    lines.push(`Status: ${map.health.status}${map.health.score !== undefined ? ` (score ${map.health.score})` : ''}.`);
+  }
+  const tests = map.health.tests;
+  const coverageText = tests.coverage_percentage !== undefined ? `, ${Math.round(tests.coverage_percentage)}% coverage` : '';
+  lines.push(`Tests: ${tests.total} total (${tests.passing} passing, ${tests.failing} failing${coverageText}).`);
+  const impl = map.health.implementation;
+  lines.push(`Implementation: ${impl.complete} complete, ${impl.partial} partial, ${impl.stubs} stubs, ${impl.not_implemented} not implemented, ${impl.deprecated} deprecated.`);
+  for (const risk of map.health.top_risks) {
+    lines.push(`- Risk [${risk.level}] ${risk.name} (${risk.type}): ${risk.recommendation}`);
+  }
+
+  if (map.coverage_caveats.length > 0) {
+    lines.push('');
+    lines.push('## Coverage Caveats');
+    for (const caveat of map.coverage_caveats) {
+      lines.push(`- ${caveat}`);
+    }
+  }
+
+  return lines.join('\n');
 }
 
 export function getRuntimeStaticLinks(
@@ -1177,6 +1591,10 @@ export function getDatabaseSchema(cas: CASOutput) {
 
 export function getImplementationHealth(cas: CASOutput) {
   return cas.implementation_health || null;
+}
+
+export function getSystemHealth(cas: CASOutput) {
+  return cas.system_health || null;
 }
 
 export function getDocumentationCoverage(cas: CASOutput) {

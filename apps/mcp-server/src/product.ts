@@ -84,12 +84,24 @@ export interface RuntimeEventInput {
   attributes?: Record<string, unknown>;
 }
 
+export type RuntimeObservationSource = 'ingested' | 'simulated';
+
 export interface RuntimeObservation {
   id: string;
   project_path: string;
   recorded_at: string;
+  source?: RuntimeObservationSource;
   event: RuntimeEventInput & { timestamp: string };
   correlation: RuntimeCorrelationResult;
+}
+
+export function runtimeObservationSource(observation: RuntimeObservation): RuntimeObservationSource {
+  if (observation.source) return observation.source;
+  const event = observation.event;
+  const simulated = event.attributes?.simulated === true ||
+    event.environment === 'simulation' ||
+    String(event.schema_version || '').startsWith('simulated');
+  return simulated ? 'simulated' : 'ingested';
 }
 
 export interface RuntimeCorrelationResult {
@@ -98,6 +110,29 @@ export interface RuntimeCorrelationResult {
   matches: EvidenceRef[];
   runtime_links: CASRuntimeStaticLink[];
   suggested_instrumentation: string[];
+}
+
+export interface OperationalPriority {
+  id: string;
+  title: string;
+  priority_score: number;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  source: RuntimeObservationSource | 'mixed';
+  static_target?: EvidenceRef;
+  runtime: {
+    observations: number;
+    errors: number;
+    slow_events: number;
+    estimated_volume: number;
+    traces: number;
+  };
+  static_risk: {
+    system_health_risk?: string;
+    change_risk?: string;
+    untested?: boolean;
+  };
+  recommendation: string;
+  agent_guidance: string[];
 }
 
 export function getAnswerPackCatalog(): Array<{
@@ -832,6 +867,100 @@ export function correlateRuntimeEvent(cas: CASOutput, event: RuntimeEventInput):
   };
 }
 
+export function buildOperationalPriorities(cas: CASOutput, observations: RuntimeObservation[], options: { limit?: number } = {}): {
+  generated_at: string;
+  observation_count: number;
+  sources: { ingested: number; simulated: number };
+  priorities: OperationalPriority[];
+  guidance: string[];
+} {
+  const groups = new Map<string, RuntimeObservation[]>();
+  for (const observation of observations) {
+    const key = observation.correlation.best_match?.id
+      || observation.event.static_id
+      || observation.event.node_id
+      || observation.event.entry_point_id
+      || observation.event.route
+      || observation.event.path
+      || observation.event.signal
+      || 'unmatched-runtime';
+    const current = groups.get(key) || [];
+    current.push(observation);
+    groups.set(key, current);
+  }
+
+  const priorities = [...groups.entries()].map(([key, items]) => {
+    const best = pickStaticTarget(cas, items);
+    const errors = items.filter(item => item.event.type === 'error' || Number(item.event.status_code || 0) >= 500 || item.event.error_message).length;
+    const slowEvents = items.filter(item => Number(item.event.duration_ms || 0) >= 1000).length;
+    const traces = new Set(items.map(item => item.event.trace_id).filter(Boolean)).size;
+    const estimatedVolume = items.reduce((total, item) => total + Number(item.event.attributes?.volume || item.event.attributes?.count || 1), 0);
+    const staticRiskId = runtimeStaticTargetId(cas, best?.id) || best?.id || key;
+    const healthRisk = matchingSystemHealthRisk(cas, staticRiskId);
+    const changeRisk = matchingChangeRisk(cas, staticRiskId);
+    const untested = Boolean(changeRisk && (cas.change_risk_summary?.untested_critical_paths || []).includes(staticRiskId));
+    const staticWeight = healthRisk?.severity === 'critical' ? 35 :
+      healthRisk?.severity === 'high' ? 25 :
+      healthRisk?.severity === 'medium' ? 15 : 0;
+    const score = Math.min(100, Math.round(
+      errors * 18 +
+      slowEvents * 8 +
+      Math.log10(Math.max(1, estimatedVolume)) * 12 +
+      traces * 3 +
+      staticWeight +
+      (untested ? 12 : 0)
+    ));
+    const severity: OperationalPriority['severity'] =
+      score >= 85 || errors >= 5 ? 'critical' :
+      score >= 60 || errors >= 2 ? 'high' :
+      score >= 30 || slowEvents > 0 ? 'medium' : 'low';
+    const itemSources = new Set(items.map(runtimeObservationSource));
+    const source: OperationalPriority['source'] = itemSources.size > 1 ? 'mixed' : [...itemSources][0] || 'ingested';
+
+    return {
+      id: `priority_${normalizePriorityId(key)}`,
+      title: best ? `${best.label} has runtime impact` : `${key} needs runtime triage`,
+      priority_score: score,
+      severity,
+      source,
+      static_target: best,
+      runtime: {
+        observations: items.length,
+        errors,
+        slow_events: slowEvents,
+        estimated_volume: estimatedVolume,
+        traces,
+      },
+      static_risk: {
+        system_health_risk: healthRisk?.title,
+        change_risk: changeRisk?.risk_level,
+        untested,
+      },
+      recommendation: operationalRecommendation(errors, slowEvents, healthRisk?.type),
+      agent_guidance: [
+        'Use get_runtime_trace for representative traces before editing.',
+        'Use get_agent_work_packet with static_target.file (preferred) or static_target.id as the target so fixes preserve local idioms and behavior.',
+        'Use assess_change_risk, find_tests, validate_behavioral_invariants, and validate_codebase_idioms before finalizing.',
+      ],
+    } satisfies OperationalPriority;
+  });
+
+  priorities.sort((left, right) => right.priority_score - left.priority_score);
+  return {
+    generated_at: new Date().toISOString(),
+    observation_count: observations.length,
+    sources: {
+      ingested: observations.filter(observation => runtimeObservationSource(observation) === 'ingested').length,
+      simulated: observations.filter(observation => runtimeObservationSource(observation) === 'simulated').length,
+    },
+    priorities: priorities.slice(0, options.limit || 20),
+    guidance: [
+      'Prioritize issues where runtime volume or errors overlap static criticality, missing tests, complexity, or idiom drift.',
+      'Use Klauro runtime correlation as a triage map; source edits still need the normal CAS work packet and validation loop.',
+    ],
+  };
+}
+
 export function buildMcpDemoFlow(cas: CASOutput, path: string, relatedPaths: string[] = []) {
   const answerPack = runAnswerPack(cas, path);
   const entryPoint = (cas.entry_points || [])[0];
@@ -864,6 +993,48 @@ export function buildMcpDemoFlow(cas: CASOutput, path: string, relatedPaths: str
       })),
     },
   };
+}
+
+function matchingSystemHealthRisk(cas: CASOutput, staticId: string) {
+  return (cas.system_health?.risk_areas || []).find(area =>
+    area.affected_nodes?.includes(staticId) ||
+    area.affected_files?.some(file => staticId.includes(file) || file.includes(staticId)) ||
+    area.id === staticId
+  );
+}
+
+function matchingChangeRisk(cas: CASOutput, staticId: string) {
+  return (cas.change_risks || []).find(risk => risk.node_id === staticId);
+}
+
+function pickStaticTarget(cas: CASOutput, items: RuntimeObservation[]): EvidenceRef | undefined {
+  for (const item of items) {
+    const best = item.correlation.best_match;
+    if (!best) continue;
+    if (best.file) return best;
+    const withFile = item.correlation.matches.find(match => match.file);
+    if (withFile) return withFile;
+    const staticId = runtimeStaticTargetId(cas, best.id);
+    const resolved = staticId ? staticRefForId(cas, staticId) : undefined;
+    return resolved || best;
+  }
+  return undefined;
+}
+
+function runtimeStaticTargetId(cas: CASOutput, runtimeLinkId?: string): string | undefined {
+  if (!runtimeLinkId) return undefined;
+  return (cas.runtime_static_links || []).find(link => link.id === runtimeLinkId)?.static_id;
+}
+
+function operationalRecommendation(errors: number, slowEvents: number, riskType?: string): string {
+  if (errors > 0 && riskType) return `Fix the runtime error path while addressing static ${riskType} risk.`;
+  if (errors > 0) return 'Fix the highest-volume runtime errors first and add regression coverage around the matched CAS target.';
+  if (slowEvents > 0) return 'Investigate latency bottlenecks on the matched flow and verify the static call chain before optimizing.';
+  return 'Review the matched static risk and add telemetry or tests if impact remains uncertain.';
+}
+
+function normalizePriorityId(value: string): string {
+  return value.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase().slice(0, 80) || 'runtime';
 }
 
 function matchingRuntimeLinks(cas: CASOutput, event: RuntimeEventInput): CASRuntimeStaticLink[] {
@@ -1007,9 +1178,25 @@ function runtimeLinkRef(link: CASRuntimeStaticLink): EvidenceRef {
   return {
     type: 'runtime_link',
     id: link.id,
-    label: link.runtime_signal,
+    label: runtimeLinkOwnerLabel(link),
+    file: String((link as any).evidence?.[0]?.file || '') || undefined,
     confidence: link.confidence,
   };
+}
+
+function runtimeLinkOwnerLabel(link: CASRuntimeStaticLink): string {
+  const signal = link.runtime_signal || link.id;
+  const file = String((link as any).evidence?.[0]?.file || '').replace(/\\/g, '/');
+  const segments = file
+    .split('/')
+    .filter(segment => segment && !/^(src|app|apps|lib|libs|packages|node_modules|dist|build)$/i.test(segment))
+    .map(segment => segment.replace(/\.[^.]+$/, ''))
+    .filter(Boolean);
+  const owner = segments.slice(-2).join('/');
+  if (owner && owner.toLowerCase() !== signal.toLowerCase()) {
+    return `${signal} in ${owner}`;
+  }
+  return signal;
 }
 
 function summaryEvidence(id: string, label: string): EvidenceRef {
@@ -1316,7 +1503,7 @@ function normalizeSignal(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9:./_-]+/g, '');
 }
 
-function pathsCompatible(left: string, right: string): boolean {
+export function pathsCompatible(left: string, right: string): boolean {
   const normalizedLeft = left.replace(/\\/g, '/');
   const normalizedRight = right.replace(/\\/g, '/');
   return normalizedLeft === normalizedRight ||

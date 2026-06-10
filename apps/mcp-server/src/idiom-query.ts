@@ -77,7 +77,11 @@ export function buildIdiomContextForAgent(
   cas: CASOutput,
   opts: IdiomQueryOptions & { files?: string[]; maxTokens?: number } = {}
 ) {
-  const idioms = selectIdioms(cas, opts)
+  const selectedByTarget = selectIdioms(cas, opts);
+  const idiomPool = selectedByTarget.length > 0 || !opts.target
+    ? selectedByTarget
+    : selectIdioms(cas, { ...opts, target: undefined });
+  const idioms = idiomPool
     .sort((left, right) => right.confidence - left.confidence || right.prevalence - left.prevalence)
     .slice(0, opts.limit || 8);
   const files = (opts.files || []).map(normalizePath);
@@ -92,28 +96,150 @@ export function buildIdiomContextForAgent(
     line: example.line,
     explanation: example.explanation,
   }))).slice(0, 10);
+  const guidanceById = new Map(selected.map(idiom => [idiom.id, guidanceForIdiom(idiom)]));
 
   return {
     total_idioms: cas.codebase_idioms?.length || 0,
+    target_resolution_note: selectedByTarget.length === 0 && opts.target && idioms.length > 0
+      ? `No idioms matched target "${opts.target}" directly; returned file/global idioms instead.`
+      : undefined,
     selected_idioms: selected.map(idiom => ({
       id: idiom.id,
       category: idiom.category,
       name: idiom.name,
       confidence: idiom.confidence,
       prevalence: idiom.prevalence,
-      do: idiom.agent_guidance.do.slice(0, 3),
-      avoid: idiom.agent_guidance.avoid.slice(0, 3),
-      validation: idiom.agent_guidance.validation.slice(0, 3),
+      do: guidanceById.get(idiom.id)!.do.slice(0, 3),
+      avoid: guidanceById.get(idiom.id)!.avoid.slice(0, 3),
+      validation: guidanceById.get(idiom.id)!.validation.slice(0, 3),
     })),
     local_examples: examples,
-    do: unique(selected.flatMap(idiom => idiom.agent_guidance.do)).slice(0, 12),
-    avoid: unique(selected.flatMap(idiom => idiom.agent_guidance.avoid)).slice(0, 12),
+    do: unique(selected.flatMap(idiom => guidanceById.get(idiom.id)!.do)).slice(0, 12),
+    avoid: unique(selected.flatMap(idiom => guidanceById.get(idiom.id)!.avoid)).slice(0, 12),
     validation: unique([
-      ...selected.flatMap(idiom => idiom.agent_guidance.validation),
+      ...selected.flatMap(idiom => guidanceById.get(idiom.id)!.validation),
       'After edits, call validate_codebase_idioms for changed files or the working diff.',
     ]).slice(0, 12),
     likely_violations: selected.flatMap(idiom => (idiom.deviations || []).slice(0, 2)).slice(0, 8),
   };
+}
+
+function guidanceForIdiom(idiom: CASCodebaseIdiom): { do: string[]; avoid: string[]; validation: string[] } {
+  const localFiles = [
+    ...(idiom.affected_scopes.files || []),
+    ...idiom.positive_examples.map(example => example.file).filter(Boolean) as string[],
+  ];
+  const exampleHint = localFiles.length > 0
+    ? ` Use local example ${compactPathTail(localFiles[0])} first.`
+    : '';
+  const fallback = fallbackGuidanceForCategory(idiom.category, idiom.name, exampleHint);
+  return {
+    do: unique([...(idiom.agent_guidance?.do || []), fallback.do]).filter(Boolean),
+    avoid: unique([...(idiom.agent_guidance?.avoid || []), fallback.avoid]).filter(Boolean),
+    validation: unique([...(idiom.agent_guidance?.validation || []), fallback.validation]).filter(Boolean),
+  };
+}
+
+function compactPathTail(file: string): string {
+  return normalizePath(file)
+    .split('/')
+    .filter(Boolean)
+    .slice(-5)
+    .join('/');
+}
+
+function fallbackGuidanceForCategory(
+  category: CASIdiomCategory,
+  name: string,
+  exampleHint: string
+): { do: string; avoid: string; validation: string } {
+  const label = name || `${category} idiom`;
+  switch (category) {
+    case 'naming':
+      return {
+        do: `Match the local naming idiom: ${label}.${exampleHint}`,
+        avoid: 'Do not introduce alternate names for the same role when local suffix/prefix examples exist.',
+        validation: 'Check changed declarations against nearby naming examples.',
+      };
+    case 'file-organization':
+      return {
+        do: `Place new code beside related feature/module files in the existing source layout.${exampleHint}`,
+        avoid: 'Do not create a parallel folder structure for adjacent behavior.',
+        validation: 'Check changed files against affected idiom scopes.',
+      };
+    case 'module-boundary':
+      return {
+        do: `Keep imports and ownership inside the local boundary implied by ${label}.${exampleHint}`,
+        avoid: 'Do not reach across module boundaries when a local export/owner exists.',
+        validation: 'Review imports and changed files for boundary drift.',
+      };
+    case 'dependency-injection':
+      return {
+        do: `Construct collaborators the way the local dependency-injection idiom does.${exampleHint}`,
+        avoid: 'Do not new-up services or repositories inside handlers when local code injects them.',
+        validation: 'Check constructor/provider/module wiring after edits.',
+      };
+    case 'data-access':
+      return {
+        do: `Use the local data-access boundary for persistence changes.${exampleHint}`,
+        avoid: 'Do not add direct database calls from unrelated presentation or controller layers.',
+        validation: 'Check repository/ORM usage and related tests.',
+      };
+    case 'error-handling':
+      return {
+        do: `Use the local error-handling style for failures.${exampleHint}`,
+        avoid: 'Do not introduce generic thrown errors when local framework/domain errors exist.',
+        validation: 'Review new error paths and tests for local error contracts.',
+      };
+    case 'validation':
+      return {
+        do: `Put input validation where this repo normally validates data.${exampleHint}`,
+        avoid: 'Do not scatter ad hoc validation into unrelated business logic.',
+        validation: 'Check DTO/schema/request validation and focused tests.',
+      };
+    case 'auth-tenant-scope':
+      return {
+        do: `Preserve auth, permission, and tenant/org scope boundaries.${exampleHint}`,
+        avoid: 'Do not add bypass paths around guards, scoped repositories, or tenant filters.',
+        validation: 'Run or add focused auth/tenant-scope checks for touched behavior.',
+      };
+    case 'logging':
+      return {
+        do: `Use the local logging abstraction and event shape.${exampleHint}`,
+        avoid: 'Do not commit console/print debugging where logger usage exists.',
+        validation: 'Check new logs for local logger usage and useful context.',
+      };
+    case 'testing':
+      return {
+        do: `Use the local test placement and style for behavior changes.${exampleHint}`,
+        avoid: 'Do not skip focused tests when matching test files or patterns exist.',
+        validation: 'Run the nearest focused tests before finalizing.',
+      };
+    case 'migrations':
+      return {
+        do: `Use the repo-local migration path for schema/model changes.${exampleHint}`,
+        avoid: 'Do not edit persisted schema/model files without migration review.',
+        validation: 'Check migration files whenever schema/entity/model files change.',
+      };
+    case 'async-style':
+      return {
+        do: `Follow the local async/concurrency style.${exampleHint}`,
+        avoid: 'Do not mix callbacks, unawaited promises, or blocking calls into async paths without local precedent.',
+        validation: 'Check async error handling and completion semantics.',
+      };
+    case 'configuration':
+      return {
+        do: `Use the repo-local configuration surface for runtime settings.${exampleHint}`,
+        avoid: 'Do not hard-code runtime settings inside feature logic.',
+        validation: 'Check config files, env parsing, and defaults after edits.',
+      };
+    default:
+      return {
+        do: `Follow the local idiom: ${label}.${exampleHint}`,
+        avoid: 'Do not introduce an alternate convention without a local example or explicit reason.',
+        validation: 'Run validate_codebase_idioms after edits.',
+      };
+  }
 }
 
 export function validateCodebaseIdioms(

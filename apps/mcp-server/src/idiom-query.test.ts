@@ -94,6 +94,74 @@ test('idiom MCP helpers return compact, target-filterable context with examples'
   assert.ok(context.validation.some(item => item.includes('validate_codebase_idioms')));
 });
 
+test('idiom detection normalizes absolute analyzer paths into project-relative examples', () => {
+  const input = buildDetectionInput('rust-service');
+  input.nodes = input.nodes.map(item => ({
+    ...item,
+    source: item.source?.file
+      ? { ...item.source, file: path.join(input.projectPath, item.source.file) }
+      : item.source,
+  }));
+
+  const result = detectCodebaseIdioms(input);
+  const serialized = JSON.stringify(result.idioms);
+
+  assert.doesNotMatch(serialized, new RegExp(input.projectPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.ok(result.idioms.some(idiom =>
+    idiom.category === 'file-organization' &&
+    idiom.name.includes('src/') &&
+    idiom.positive_examples.some(example => example.file?.startsWith('src/'))
+  ));
+});
+
+test('idiom agent context synthesizes compact guidance when stored idiom guidance is empty', () => {
+  const cas = {
+    codebase_idioms: [
+      {
+        id: 'idiom-empty-di',
+        category: 'dependency-injection',
+        name: 'Constructor injection for services',
+        description: 'Services receive collaborators through constructors.',
+        confidence: 0.91,
+        prevalence: 0.8,
+        evidence: [{ type: 'file', file: 'src/users/users.service.ts', description: 'constructor injection' }],
+        positive_examples: [{ idiom_id: 'idiom-empty-di', name: 'UsersService', file: 'src/users/users.service.ts', line: 3, explanation: 'Constructor receives repository.' }],
+        affected_scopes: { files: ['src/users/users.service.ts'], file_globs: ['src/**/*.service.ts'], node_ids: ['users-service'], node_types: ['service'] },
+        agent_guidance: { do: [], avoid: [], validation: [] },
+        deviations: [],
+      },
+    ],
+    nodes: [{ id: 'users-service', name: 'UsersService', type: 'service', source: { file: 'src/users/users.service.ts' } }],
+  } as unknown as CASOutput;
+
+  const context = buildIdiomContextForAgent(cas, {
+    target: 'users-service',
+    files: ['src/users/users.service.ts'],
+    limit: 4,
+  });
+
+  assert.equal(context.selected_idioms.length, 1);
+  assert.ok(context.do.some(item => item.includes('dependency-injection') || item.includes('dependency-injection') || item.includes('Constructor')));
+  assert.ok(context.avoid.some(item => item.includes('new-up services')));
+  assert.ok(context.validation.some(item => item.includes('constructor') || item.includes('provider')));
+});
+
+test('idiom agent context falls back to file/global idioms when target id has no direct idiom match', () => {
+  const input = buildDetectionInput('nestjs-api');
+  const result = detectCodebaseIdioms(input);
+  const cas = casFromDetection('nestjs-api', input, result);
+
+  const context = buildIdiomContextForAgent(cas, {
+    target: 'class_packages/analyzer-core/src/analyzer/core/domain-extractor.ts_DomainExtractor_0',
+    files: ['src/users/users.service.ts'],
+    limit: 6,
+  });
+
+  assert.ok(context.selected_idioms.length > 0);
+  assert.ok(context.do.length > 0);
+  assert.ok(context.avoid.length > 0);
+});
+
 test('validateCodebaseIdioms flags non-idiomatic diffs that still could be functionally correct', () => {
   const input = buildDetectionInput('nestjs-api');
   const result = detectCodebaseIdioms(input);
