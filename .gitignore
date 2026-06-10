@@ -8,6 +8,7 @@ node_modules/
 dist/
 .next/
 .klauro-cache/
+.klauro-*/
 .klauro-gauntlet/
 .klauro-answer-gauntlet/
 .klauro-agent-gauntlet/
