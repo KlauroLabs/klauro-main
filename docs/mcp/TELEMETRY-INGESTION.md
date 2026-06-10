@@ -151,6 +151,49 @@ The shape is deliberately span-like so an exporter is a thin transform:
 
 A custom SDK does the same: wrap request handlers, emit one event per request or error, and batch them to `ingest_telemetry`. `get_runtime_event_contract` and `get_runtime_sdk_package` generate CAS-specific signal names and a TypeScript client whose `runtime_signal` values (`name`) correlate exactly.
 
+## Drop-in middleware
+
+Two dependency-free middlewares live in `packages/analyzer-core/src/sdk/` and emit this event shape directly from real traffic. Both batch in memory (default: flush at 20 events or every 5 seconds, whichever comes first) and support two transports: append NDJSON to a file (one event JSON per line) or POST `{ "events": [...] }` to an HTTP endpoint. File transport is the working path today: read the NDJSON lines and pass them as the `events` argument of `ingest_telemetry`. The HTTP transport targets the planned hosted ingestion endpoint.
+
+### Express (`sdk/javascript/klauro-express-middleware.ts`)
+
+```ts
+import { createKlauroExpressTelemetry } from './sdk/javascript/klauro-express-middleware';
+
+const telemetry = createKlauroExpressTelemetry({
+  serviceName: 'inventory-api',
+  environment: 'production',
+  filePath: '/var/log/inventory-api/klauro-telemetry.ndjson',
+  // endpoint: 'https://ingest.example.com/telemetry',
+  batchSize: 20,
+  flushIntervalMs: 5000,
+});
+
+app.use(telemetry.requestHandler);   // before routes
+// ...routes...
+app.use(telemetry.errorHandler);     // after routes, before the error renderer
+process.on('SIGTERM', () => telemetry.shutdown());
+```
+
+Captured per request on response finish: `method`, `route` (the matched Express pattern from `req.route.path` prefixed with `req.baseUrl`, such as `POST /items/:id/reserve`, never the raw URL), `path`, `status`, `duration_ms`, `timestamp`, `service_name`, `environment`. Thrown handler errors (recorded by `errorHandler`) and 5xx responses become `kind: "error"`; thrown errors carry `error.type`, `error.message`, and the top 5 raw stack frame strings, which the ingestion side parses into file/line/function for CAS node correlation.
+
+### Rails / Rack (`sdk/ruby/klauro_rack_middleware.rb`)
+
+```ruby
+require_relative "klauro_rack_middleware"
+
+# config/application.rb
+config.middleware.insert_before 0, KlauroRackMiddleware,
+  service_name: "work-orders-api",
+  environment: Rails.env,
+  file_path: Rails.root.join("log", "klauro-telemetry.ndjson").to_s,
+  # endpoint: "https://ingest.example.com/telemetry",
+  batch_size: 20,
+  flush_interval: 5
+```
+
+Captured per request: the same fields, with `route` from `action_dispatch.route_uri_pattern` (Rails 7.1+) or `sinatra.route`, format suffix stripped. When Rails routing params are present it also emits `file_hint` (`app/controllers/<controller>_controller.rb`) and `function_hint` (the action), so events correlate to controller nodes even without a stack. Raised exceptions become `kind: "error"` with `error.type`, `error.message`, and the top 5 backtrace frames parsed into `{ file, line, function }` objects, then re-raise. A background thread flushes on the interval; call `shutdown` at exit for a final flush.
+
 ## Verifying end to end
 
 `npm run telemetry-ingestion-proof` from `apps/mcp-server/` analyzes the `fixtures/analysis-truth/rails-work-orders` fixture with AI features disabled, ingests a realistic 50-event batch (POST `/work_orders` errors with controller stack frames plus healthy traffic), and asserts that the top operational priority has `source: "ingested"`, at least 30 errors, and a `static_target.file` that resolves on disk.
@@ -163,10 +206,12 @@ Implemented:
 - Correlation onto CAS via runtime signals, route patterns, explicit static ids, file/function hints, and stack frame paths, shared with `simulate_runtime_telemetry` and `correlate_runtime_event`.
 - Per-day rolling persistence under the analysis storage directory with 14-day retention.
 - Provenance (`source: "ingested" | "simulated"`) on observations, runtime tool responses, and operational priorities; simulated data is opt-in everywhere.
+- Express middleware (`packages/analyzer-core/src/sdk/javascript/klauro-express-middleware.ts`) and Rack middleware (`packages/analyzer-core/src/sdk/ruby/klauro_rack_middleware.rb`) that capture real traffic in this event shape with batching and NDJSON file or HTTP POST transport.
 
 Planned:
 
-- A hosted HTTP ingestion endpoint so exporters can POST without an MCP client.
-- A packaged OTEL collector exporter and language SDKs that emit this shape directly.
+- A hosted HTTP ingestion endpoint so exporters can POST without an MCP client (the middlewares' `endpoint` transport targets it; until then, feed the NDJSON file to `ingest_telemetry`).
+- Publishing the middlewares as installable packages (npm, gem) instead of vendored single files.
+- A packaged OTEL collector exporter and SDKs for additional languages and frameworks.
 - Aggregation beyond per-day files (rollups, percentile latency, error-rate baselines).
 - Telemetry-versus-static drift reports that flag routes and flows static analysis inferred but production never exercises, and vice versa.
