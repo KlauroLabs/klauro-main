@@ -1,0 +1,20 @@
+{
+  "name": "rails-work-orders-truth-fixture",
+  "frameworks": ["Rails"],
+  "languages": ["Ruby"],
+  "routes": [
+    { "method": "GET", "path": "/work_orders", "handler": "index" },
+    { "method": "POST", "path": "/work_orders", "handler": "create" }
+  ],
+  "nodes": [
+    { "name": "WorkOrder" },
+    { "name": "Customer" },
+    { "name": "WorkOrdersController" }
+  ],
+  "data_entities": ["WorkOrder", "Customer"],
+  "minimums": {
+    "entry_points": 2,
+    "nodes": 10,
+    "edges": 5
+  }
+}
