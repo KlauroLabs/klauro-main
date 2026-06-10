@@ -16,8 +16,70 @@ Run CAS analysis on a local directory. Uses incremental analysis by default when
 |-----------|------|----------|-------------|
 | `path` | string | yes | Absolute path to the project directory |
 | `force_full` | boolean | no | Force full rebuild even if incremental analysis is possible |
+| `analysis_focus` | string | no | Layered profile: `agent-fast`, `ui-overview`, `deep-context`, or `full` |
 
-**Returns:** `{ status, analysis_type, path, name, nodes, edges, entry_points, analyzers_run, errors }`. Incremental runs also include `change_summary` with files changed, node changes, and risk level.
+**Returns:** `{ status, analysis_type, analysis_focus, path, name, nodes, edges, entry_points, analyzers_run, errors, phases }`. Incremental runs also include `change_summary` with files changed, node changes, and risk level.
+
+Focus profiles let agents and UI flows pay for the context they need:
+
+- `agent-fast`: prioritizes graph, entry points, risks, idioms, tests, and work packets; defers AI narrative and embedding-heavy layers.
+- `ui-overview`: prioritizes visualization and AI-written system/capability descriptions; defers embedding-heavy layers.
+- `deep-context`: keeps the core graph and enables deeper semantic/context layers where configured.
+- `full`: uses repository and environment defaults.
+
+### `generate_element_description`
+
+Manually generate and store an AI description for one CAS element. Use this for drilldown descriptions after the fast default analysis has completed.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Absolute path to the analyzed project directory |
+| `target` | string | yes | Element id or name |
+| `target_kind` | string | no | `node`, `service`, `entity`, `capability`, `entry_point`, or `exit_point` |
+| `instructions` | string | no | Optional audience/emphasis guidance |
+
+**Returns:** Target metadata, AI description, generation timestamp, and storage status. The description is written back into the local analysis and to the per-project description store.
+
+### `get_element_description`
+
+Fetch a stored manual AI description and report whether source changes invalidated it.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Absolute path to the analyzed project directory |
+| `target` | string | yes | Element id or name |
+| `target_kind` | string | no | Optional target kind to disambiguate |
+
+**Returns:** `valid`, `missing`, or `invalidated` plus the stored description and invalidation reason when applicable.
+
+### `get_analysis_phases`
+
+Inspect which analysis layers completed, which were deferred, and what each layer contributes to UI visualization and AI-agent development.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Absolute path to the analyzed project directory |
+
+**Returns:** Analysis id/timestamp, phase status records, and AI description status for the system narrative and top capabilities.
+
+### `run_analysis_layer`
+
+Manually trigger one focused Klauro layer without running the whole default agent workflow.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Absolute path to the analyzed project directory |
+| `layer` | string | yes | `agent-fast-refresh`, `ui-overview-refresh`, `deep-context-refresh`, `manual-element-description`, or `runtime-simulation` |
+| `target` | string | for descriptions | Element id/name for `manual-element-description` |
+| `target_kind` | string | no | Element kind for `manual-element-description` |
+| `instructions` | string | no | Description guidance |
+| `scenario` | string | no | Runtime simulation scenario |
+| `event_count` | number | no | Runtime simulation event count |
+| `seed` | string | no | Stable runtime simulation seed |
+| `persist` | boolean | no | Store runtime simulation observations |
+| `force_full` | boolean | no | Force full rebuild for refresh layers |
+
+**Returns:** The layer-specific result. Refresh layers return analysis counts and phase records; manual descriptions return stored AI description metadata; runtime simulation returns mapped observations and operational priorities.
 
 ### `initialize_klauro_project`
 
@@ -122,6 +184,20 @@ Analyze proposed files as a synthetic new codebase. The output is still normal C
 
 **Returns:** Advisory status, preview id, private preview URL, proposed analysis id, detected graph summary, required checks, and greenfield readiness warnings.
 
+### `get_greenfield_build_packet`
+
+Guide a zero-repo or growing greenfield build. This is the MCP surface agents should use when the user asks for a new project that does not have a repository yet, or when a new project already has an initial slice and the agent needs to continue without duplicating architecture or domain concepts.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `workspace_path` | string | yes | Absolute path to the empty or growing project folder |
+| `plan_text` | string | yes | Current product requirement or next-slice plan |
+| `proposed_files` | array | no | Optional proposed file bundle for the next slice |
+| `reference_paths` | string[] | no | Existing analyzed repositories to use as external memory |
+| `limit` | number | no | Maximum overlap matches to return |
+
+**Returns:** Stage (`empty_workspace_first_slice` or `continuation_iteration`), current CAS-backed graph memory when files exist, architecture memory with model/boundary/test ownership, `product_focus` guidance for what the agent can now concentrate on, a `growth_control_plane` with product-slice stop rules, architecture budget, concept ownership contract, duplication gate, and next Klauro loop, concepts/capabilities to reuse, duplicate-prevention rules, focused files to read, next files to create/update, validation checks, risks, and the next MCP calls.
+
 ### `get_preview_analysis`
 
 Fetch a stored proposal preview artifact.
@@ -207,6 +283,41 @@ Inspect MCP analysis storage.
 
 **Returns:** Storage path, index version, analysis count, workspace graph count, agentic benchmark report count, and per-project snapshot, golden-snapshot, change-history, runtime-observation, and file-cache totals.
 
+### `get_storage_maintenance_report`
+
+Dry-run report for generated Klauro storage and allowlisted temp proof/preview/live-trial artifacts. This tool never deletes files.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `root` | string | no | Klauro home root. Defaults to `~/.klauro` |
+| `repo_root` | string | no | Repository root when `include_local_artifacts` is true |
+| `temp_root` | string | no | Temp root when `include_temp_artifacts` is true. Defaults to the OS temp directory |
+| `older_than_days` | number | no | Select generated artifacts older than this many days |
+| `max_bytes` | number | no | Also select oldest/largest artifacts until generated storage is under this byte limit |
+| `include_local_artifacts` | boolean | no | Include repo-local `.klauro-*` benchmark artifacts under `repo_root` |
+| `include_temp_artifacts` | boolean | no | Include allowlisted Klauro-generated temp proof/preview/live-trial workspaces |
+| `include_analyses` | boolean | no | Include analysis snapshot files. Off by default |
+
+**Returns:** Dry-run prune report with scanned categories, candidate count, reclaimable bytes, candidate paths, and delete status set to dry-run.
+
+### `prune_storage_artifacts`
+
+Delete selected generated Klauro artifacts. This is guarded: it requires `confirm_delete=true`, and it only deletes allowlisted generated artifacts selected by the provided filters. Call `get_storage_maintenance_report` first.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `confirm_delete` | boolean | yes | Must be true to delete selected generated artifacts |
+| `root` | string | no | Klauro home root. Defaults to `~/.klauro` |
+| `repo_root` | string | no | Repository root when `include_local_artifacts` is true |
+| `temp_root` | string | no | Temp root when `include_temp_artifacts` is true. Defaults to the OS temp directory |
+| `older_than_days` | number | no | Select generated artifacts older than this many days |
+| `max_bytes` | number | no | Also select oldest/largest artifacts until generated storage is under this byte limit |
+| `include_local_artifacts` | boolean | no | Include repo-local `.klauro-*` benchmark artifacts under `repo_root` |
+| `include_temp_artifacts` | boolean | no | Include allowlisted Klauro-generated temp proof/preview/live-trial workspaces |
+| `include_analyses` | boolean | no | Include analysis snapshot files. Off by default |
+
+**Returns:** Prune report with deleted paths, reclaimed bytes, scanned categories, and remaining dry-run status false.
+
 ---
 
 ## System-Level Understanding
@@ -241,7 +352,29 @@ Full system metadata without condensation.
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
 
-**Returns:** `system`, `architecture_summary`, `system_purpose`, `enhanced_system_purpose`, `system_capabilities`, `progressive_levels`, `analyzer_contributions`, `analysis_errors`, `configuration`, `runtime`, `repository_links`, `runtime_static_links_count`, `analysis_facts_count`, `disclosure`, `validation`.
+**Returns:** `system`, `architecture_summary`, `system_health`, `system_purpose`, `enhanced_system_purpose`, `analysis_phases`, `system_capabilities`, `progressive_levels`, `analyzer_contributions`, `analysis_errors`, `configuration`, `runtime`, `repository_links`, `runtime_static_links_count`, `analysis_facts_count`, `disclosure`, `validation`.
+
+### `get_architecture_context`
+
+Compact architecture guidance for agents before planning or editing. Use this
+when the task may touch placement, boundaries, new files, refactors, or pattern
+choice.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `target` | string | no | Optional node, file, or feature target |
+| `files` | string[] | no | Optional changed/planned files |
+| `limit` | number | no | Maximum patterns to include |
+
+**Returns:** `system_type`, compact `architecture_budget`, detected
+`patterns` with confidence and guidance, inventory counts and examples for
+models, views, controllers, view models, services, repositories, clients,
+mediators, unit-of-work, singletons, scripts, and packages, target-relevant
+inventory nodes, `pattern_decision_matrix` entries that tell agents when to use
+MVC/MVVM/repository/service/mediator/unit-of-work/singleton patterns and which
+owner categories/examples to follow, `pattern_balance`, and agent rules for
+preserving local architecture.
 
 ---
 
@@ -399,7 +532,22 @@ One-call task packet for agents. Use this after `get_agent_start_context` when a
 | `path` | string | yes | Project path |
 | `task` | object | no | Optional task context with `task_type`, `target`, `related_paths`, `runtime_event`, `instructions`, or `success_criteria` |
 
-**Returns:** Target resolution, selected node, coding context, change risk, callers, callees, tests, error contracts for debug tasks, behavioral invariant impact, compact `idiom_context`, representative entry/call-chain context, recommended MCP follow-ups, adoption gaps, a file read plan with concrete source files, bounded line windows, and reasons, and a validation plan with focused test/typecheck/build commands, monorepo package script routing, tests to inspect, manual checks, environment rules, and validation gaps.
+**Returns:** Target resolution, selected node, coding context, `capability_memory` for avoiding duplicate/rebuilt behavior, change risk, callers, callees, tests, error contracts for debug tasks, behavioral invariant impact, compact `idiom_context`, representative entry/call-chain context, recommended MCP follow-ups, adoption gaps, a file read plan with concrete source files, bounded line windows, and reasons, and a validation plan with focused test/typecheck/build commands, monorepo package script routing, tests to inspect, manual checks, environment rules, and validation gaps.
+
+### `get_capability_memory`
+
+Find existing analyzed capabilities that overlap the requested work so agents avoid rebuilding behavior that already exists.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `target` | string | no | Capability, file, node, route, domain, or user-requested feature to compare against existing CAS capabilities |
+| `instructions` | string | no | Task or plan text to match against existing capabilities |
+| `success_criteria` | string[] | no | Expected outcomes to include in overlap matching |
+| `files` | string[] | no | Known files involved in the work |
+| `limit` | number | no | Maximum capabilities to return |
+
+**Returns:** A compact capability-memory packet with matched capabilities, overlap scores, operation paths, related entities/domains, reuse decisions, do-not-rebuild guidance, and first checks for agents before adding new services, routes, workers, models, packages, or duplicated behavior.
 
 ### `get_idiom_aware_work_packet`
 
@@ -701,12 +849,14 @@ Run copied-repo A/B idiom quality tasks. Both arms receive the same task; the wi
 
 ### `run_machine_agent_proof`
 
-Discover every real Git repo under a dev root, account for unsupported/skipped repos, and run analysis/readiness/idiom/incremental/live proof gates for eligible repos.
+Discover every real Git repo under a dev root, account for unsupported/skipped repos, and run analysis/readiness/idiom/incremental/live proof gates for eligible repos. Use `mode="fast"` for normal local development and `mode="full"` for release/perfection proof. Fast mode still reports every discovered repo, but analyzes only a bounded eligible sample with resource budgets.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `dev_root` | string | no | Root to discover Git repos under; default `~/dev` |
+| `mode` | `fast` \| `full` | no | `fast` samples eligible repos with source-file and timing budgets; `full` analyzes every eligible repo. Default `fast` |
 | `max_targets` | number | no | Limit eligible repos for expensive checks while still reporting all discovered repos |
+| `max_source_files` | number | no | Skip eligible repos above this source-file count for expensive checks while still reporting them |
 | `work_root` | string | no | Directory for copied repos and benchmark artifacts |
 | `no_live` | boolean | no | Skip live idiom A/B execution; live proof gate still fails when skipped |
 | `agent_with_command` | string | no | Live with-Klauro agent command template |
@@ -716,8 +866,10 @@ Discover every real Git repo under a dev root, account for unsupported/skipped r
 | `max_live_tasks` | number | no | Maximum live idiom task pairs |
 | `timeout_ms` | number | no | Per-agent timeout |
 | `test_timeout_ms` | number | no | Per-test timeout |
+| `analysis_budget_ms` | number | no | Per-selected-repo analysis budget gate; default 30s in fast mode, 120s in full mode |
+| `incremental_budget_ms` | number | no | Per-selected-repo edit-incremental budget gate; default 30s in fast mode, 120s in full mode |
 
-**Returns:** Discovery inventory, selected eligible repo proof rows, unsupported/skipped reasons, incremental benchmark output, idiom benchmark output, and final gates. Acceptance fails if eligible repos are omitted, idiom proof is missing, incremental value regresses, or live idiom quality lacks a positive delta.
+**Returns:** Discovery inventory, proof mode and resource policy, selected eligible repo proof rows, unsupported/skipped reasons, incremental benchmark output, idiom benchmark output, and final gates. Acceptance fails if selected repos are omitted, idiom proof is missing, incremental value regresses, resource budgets are exceeded, or live idiom quality lacks a positive delta when live mode is configured.
 
 ### `run_incremental_value_benchmark`
 
@@ -1339,6 +1491,20 @@ Runtime-to-static correlation for entry points, exit points, call chains, and ex
 
 **Returns:** `runtime`, status counts, and links with `runtime_signal`, `telemetry_status`, `instrumentation_points`, confidence, and evidence.
 
+### `simulate_runtime_telemetry`
+
+Generate deterministic simulated traffic, errors, latency, and traces mapped onto CAS objects, then feed those observations into operational priorities.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `scenario` | string | no | `balanced`, `bug-hunt`, `traffic-spike`, or `slow-dependencies` |
+| `event_count` | number | no | Synthetic observations to generate, max 500 |
+| `seed` | string | no | Stable seed for repeatable simulations |
+| `persist` | boolean | no | Store generated observations. Defaults to true; set false for dry-run planning |
+
+**Returns:** Simulation id, correlation summary, mapped targets, sample observations, updated operational priorities, and agent guidance. Simulated telemetry is marked in event attributes and should be used for planning and product evaluation until SDK/runtime data exists.
+
 ### `correlate_runtime_event`
 
 Map a runtime request, error, exit, log, or custom event back to CAS without storing it.
@@ -1361,7 +1527,21 @@ Store a runtime event after correlating it to CAS.
 | `path` | string | yes | Project path |
 | `event` | object | yes | Runtime event payload |
 
-**Returns:** Stored runtime observation with generated ID, original event, and correlation result.
+**Returns:** Stored runtime observation with generated ID, original event, correlation result, and `source: "ingested"`.
+
+### `ingest_telemetry`
+
+Ingest a batch of real runtime telemetry events in an OTEL-compatible shape. Each event is correlated onto CAS static structure via runtime signals, route matching, file/function hints, and stack frame paths, then stored under the analysis storage directory with `source: "ingested"` in rolling per-day files. See `docs/mcp/TELEMETRY-INGESTION.md` for the full event shape and SDK mapping.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `events` | array | yes | Batch of telemetry events, max 1000 per call |
+| `persist` | boolean | no | Store ingested observations. Defaults to true; set false for dry-run correlation |
+
+Each event carries `kind` (`request`, `error`, `log`, `metric`) plus optional `timestamp`, `name`, `service_name`, `environment`, `trace_id`, `span_id`, `parent_span_id`, `method`, `route`, `path`, `status`, `duration_ms`, `function_hint`, `file_hint`, `error` (`type`, `message`, `stack_top_frames`), `volume`, and `attributes`.
+
+**Returns:** Ingestion ID, matched/partial/unmatched correlation counts, matched targets with files and error/volume rollups, top unmatched hints (unmatched events are stored, not dropped), sample observations, and guidance.
 
 ### `get_runtime_observations`
 
@@ -1375,9 +1555,23 @@ Query stored runtime observations.
 | `static_id` | string | no | CAS node, entry point, exit point, call chain, or runtime link ID |
 | `trace_id` | string | no | Runtime trace ID |
 | `span_id` | string | no | Runtime span ID or parent span ID |
+| `source` | string | no | `ingested` (default), `simulated`, or `all` |
 | `limit` | number | no | Max results |
 
-**Returns:** Stored observations with runtime payloads and CAS correlations.
+**Returns:** Requested source, ingested/simulated counts, and observations with runtime payloads, CAS correlations, and per-observation `source` provenance. Simulated observations are only returned when explicitly requested.
+
+### `get_operational_priorities`
+
+Rank bugs, bottlenecks, problematic areas, and telemetry-backed work by combining runtime observations with CAS system health, change risk, test gaps, idioms, and static/runtime correlations.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `since` | string | no | ISO timestamp lower bound |
+| `include_simulated` | boolean | no | Also include simulated observations (default false) |
+| `limit` | number | no | Max priorities |
+
+**Returns:** Prioritized areas with score, severity, per-priority `source` provenance (`ingested`, `simulated`, or `mixed`), matched CAS target, runtime error/latency/volume counts, static risk context, recommendation, and agent guidance. Uses ingested telemetry only by default; when only simulated data exists a note explains how to opt in.
 
 ### `get_runtime_trace`
 
@@ -1387,8 +1581,9 @@ Replay stored runtime observations for a trace ID.
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
 | `trace_id` | string | yes | Runtime trace ID |
+| `source` | string | no | `ingested` (default), `simulated`, or `all` |
 
-**Returns:** Ordered observations for the trace, matched/unmatched counts, and CAS static IDs touched by the trace.
+**Returns:** Ordered observations for the trace, ingested/simulated counts, matched/unmatched counts, and CAS static IDs touched by the trace.
 
 ### `get_analysis_facts`
 
@@ -1526,6 +1721,16 @@ Implementation completeness across the codebase.
 | `path` | string | yes | Project path |
 
 **Returns:** `health_score`, counts (complete/partial/stub/deprecated/experimental), risk areas with risk level and recommendations, deprecation timeline.
+
+### `get_system_health`
+
+Codebase coherence and risk analysis across architecture, idioms, tests, runtime readiness, and implementation health.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+
+**Returns:** Overall health score/status, coherence status, primary/conflicting paradigms, duplication signals, naming/DI/module-boundary drift counts, risk areas, remediation steps, agent rules, and validation tools.
 
 ### `get_documentation_coverage`
 

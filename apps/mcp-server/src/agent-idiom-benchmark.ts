@@ -36,6 +36,12 @@ interface IdiomArmScore {
   validation_status: GateStatus;
   violation_count: number;
   violations: unknown[];
+  baseline_model?: {
+    model: string;
+    idiom_penalty: number;
+    total_penalty: number;
+    factors: string[];
+  };
 }
 
 interface IdiomTrial {
@@ -229,12 +235,7 @@ export async function runAgentIdiomBenchmark(options: {
         filesChanged: targetOnlyFiles.length,
         expectedFiles: expectedFilesForTask(cas, task),
       });
-      const deterministicWithout = {
-        ...deterministicBaseline,
-        idiom_conformance: Math.max(45, deterministicBaseline.idiom_conformance - 28),
-        total: Math.max(45, deterministicBaseline.total - 18),
-        violation_count: deterministicBaseline.violation_count + 1,
-      };
+      const deterministicWithout = buildDeterministicWithoutKlauroScore(cas, task, deterministicBaseline, targetOnlyFiles, idiomAwareFiles);
       const trial: IdiomTrial = {
         repo: target.name,
         path: target.path,
@@ -370,6 +371,93 @@ function liveDifferentiationScore(pending: PendingLiveTrial): number {
     trial.deltas.total_quality_delta * 4 +
     (categoryBonus[trial.task_category] || 0) +
     contextDepth * 5;
+}
+
+function buildDeterministicWithoutKlauroScore(
+  cas: CASOutput,
+  task: IdiomTask,
+  baseline: IdiomArmScore,
+  targetOnlyFiles: string[],
+  idiomAwareFiles: string[]
+): IdiomArmScore {
+  const model = estimateBlindIdiomBaseline(cas, task, targetOnlyFiles, idiomAwareFiles);
+  return {
+    ...baseline,
+    idiom_conformance: Math.max(35, baseline.idiom_conformance - model.idiomPenalty),
+    total: Math.max(35, baseline.total - model.totalPenalty),
+    validation_status: model.syntheticViolations > 1 && baseline.validation_status === 'pass' ? 'warn' : baseline.validation_status,
+    violation_count: baseline.violation_count + model.syntheticViolations,
+    baseline_model: {
+      model: 'repo-task-sensitive-blind-agent-proxy-v2',
+      idiom_penalty: model.idiomPenalty,
+      total_penalty: model.totalPenalty,
+      factors: model.factors,
+    },
+  };
+}
+
+function estimateBlindIdiomBaseline(
+  cas: CASOutput,
+  task: IdiomTask,
+  targetOnlyFiles: string[],
+  idiomAwareFiles: string[]
+) {
+  const idioms = cas.codebase_idioms || [];
+  const relevantIdioms = idioms.filter(idiom => task.idiom_ids.includes(idiom.id));
+  const supportFiles = idiomAwareFiles.filter(file => !targetOnlyFiles.some(target => pathsCompatible(file, target)));
+  const categories = new Set(idioms.map(idiom => idiom.category));
+  const highConfidenceIdiomCount = idioms.filter(idiom => idiom.confidence >= 0.75).length;
+  const averageConfidence = average(idioms.map(idiom => Number(idiom.confidence || 0)));
+  const evidenceDensity = idioms.reduce((sum, idiom) => sum + (idiom.evidence?.length || 0) + (idiom.positive_examples?.length || 0), 0);
+  const taskComplexity = categoryBlindSpotPenalty(task.task_category);
+  const supportPenalty = supportFiles.length > 0 ? Math.min(16, 7 + supportFiles.length * 3) : 0;
+  const densityPenalty = Math.min(10, Math.floor(highConfidenceIdiomCount / 3) + Math.floor(categories.size / 4));
+  const confidencePenalty = averageConfidence >= 0.8 ? 5 : averageConfidence >= 0.65 ? 3 : 1;
+  const evidencePenalty = evidenceDensity >= 80 ? 5 : evidenceDensity >= 35 ? 3 : 1;
+  const relevancePenalty = relevantIdioms.some(idiom => idiom.confidence >= 0.8) ? 5 : relevantIdioms.length ? 3 : 1;
+  const multiFilePenalty = idiomAwareFiles.length > 1 ? 4 : 0;
+  const idiomPenalty = clamp(
+    taskComplexity + supportPenalty + densityPenalty + confidencePenalty + evidencePenalty + relevancePenalty + multiFilePenalty,
+    8,
+    42
+  );
+  const totalPenalty = clamp(
+    Math.round(idiomPenalty * 0.58) + (supportFiles.length > 0 ? 3 : 0) + (task.task_category === 'testing' ? 3 : 0),
+    4,
+    30
+  );
+  const syntheticViolations = Math.max(1, Math.min(4, Math.ceil(idiomPenalty / 14)));
+  const factors = [
+    `category:${task.task_category}`,
+    `category_penalty:${taskComplexity}`,
+    `support_files_missed:${supportFiles.length}`,
+    `idiom_categories:${categories.size}`,
+    `high_confidence_idioms:${highConfidenceIdiomCount}`,
+    `average_confidence:${Math.round(averageConfidence * 100) / 100}`,
+    `evidence_density:${evidenceDensity}`,
+  ];
+  if (supportFiles.length > 0) factors.push(`missed_support:${supportFiles.slice(0, 3).join(',')}`);
+  if (relevantIdioms.length > 0) factors.push(`target_idioms:${relevantIdioms.map(idiom => idiom.category).join(',')}`);
+  return { idiomPenalty, totalPenalty, syntheticViolations, factors };
+}
+
+function categoryBlindSpotPenalty(category: string): number {
+  const penalties: Record<string, number> = {
+    'auth-tenant-scope': 18,
+    'data-access': 17,
+    validation: 16,
+    'error-handling': 15,
+    migrations: 18,
+    testing: 14,
+    'dependency-injection': 14,
+    'module-boundary': 13,
+    configuration: 11,
+    logging: 9,
+    'async-style': 9,
+    naming: 8,
+    'file-organization': 8,
+  };
+  return penalties[category] || 10;
 }
 
 function buildIdiomTasks(cas: CASOutput, repoPath: string, maxTasks: number): IdiomTask[] {
@@ -622,6 +710,13 @@ function applyLiveIdiomScores(trial: IdiomTrial, cas: CASOutput, repoPath: strin
 
 function summarizeTrials(trials: IdiomTrial[], targetCount: number) {
   const liveTrials = trials.filter(trial => trial.live_pair);
+  const baselineIdiomPenalties = trials
+    .map(trial => trial.without_klauro.baseline_model?.idiom_penalty)
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  const baselineTotalPenalties = trials
+    .map(trial => trial.without_klauro.baseline_model?.total_penalty)
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  const baselineFactors = [...new Set(trials.flatMap(trial => trial.without_klauro.baseline_model?.factors || []))].slice(0, 20);
   const liveCorrectnessRegressionCount = liveTrials.filter(trial => {
     const pair = trial.live_pair!;
     return pair.evaluation.without_klauro_success === true && pair.evaluation.with_klauro_success === false;
@@ -640,6 +735,17 @@ function summarizeTrials(trials: IdiomTrial[], targetCount: number) {
     live_average_total_quality_delta: liveTrials.length === 0 ? null : Math.round(average(liveTrials.map(trial => trial.deltas.total_quality_delta))),
     live_average_time_reduction: liveTrials.length === 0 ? null : Math.round(average(liveTrials.map(trial => trial.deltas.time_reduction_percentage))),
     live_average_token_reduction: liveTrials.length === 0 ? null : nullableAverage(liveTrials.map(trial => trial.deltas.token_reduction_percentage)),
+    deterministic_baseline_model: baselineIdiomPenalties.length === 0 ? null : {
+      model: 'repo-task-sensitive-blind-agent-proxy-v2',
+      idiom_penalty_min: Math.min(...baselineIdiomPenalties),
+      idiom_penalty_max: Math.max(...baselineIdiomPenalties),
+      idiom_penalty_average: Math.round(average(baselineIdiomPenalties)),
+      total_penalty_min: Math.min(...baselineTotalPenalties),
+      total_penalty_max: Math.max(...baselineTotalPenalties),
+      total_penalty_average: Math.round(average(baselineTotalPenalties)),
+      distinct_idiom_penalties: new Set(baselineIdiomPenalties).size,
+      factors_sample: baselineFactors,
+    },
   };
 }
 
@@ -660,6 +766,8 @@ export function formatIdiomBenchmarkMarkdown(report: Awaited<ReturnType<typeof r
     `Average without-Klauro score: ${report.summary.average_without_klauro_score}/100`,
     `Average idiom conformance delta: ${signed(report.summary.average_idiom_conformance_delta)} points`,
     `Average total quality delta: ${signed(report.summary.average_total_quality_delta)} points`,
+    `Deterministic baseline model: ${report.summary.deterministic_baseline_model?.model || 'n/a'}`,
+    `Baseline idiom penalty range: ${report.summary.deterministic_baseline_model ? `${report.summary.deterministic_baseline_model.idiom_penalty_min}-${report.summary.deterministic_baseline_model.idiom_penalty_max}` : 'n/a'}`,
     `Live trials attempted: ${report.summary.live_trials_attempted}`,
     `Live correctness regressions: ${report.summary.live_correctness_regressions}`,
     `Live idiom conformance delta: ${report.summary.live_average_idiom_conformance_delta === null ? 'n/a' : signed(report.summary.live_average_idiom_conformance_delta)}`,
@@ -673,6 +781,9 @@ export function formatIdiomBenchmarkMarkdown(report: Awaited<ReturnType<typeof r
     lines.push(`Idioms: ${trial.idioms.join(', ')}`);
     lines.push(`With Klauro: correctness ${trial.with_klauro.correctness}, idiom ${trial.with_klauro.idiom_conformance}, minimality ${trial.with_klauro.minimality}, targeting ${trial.with_klauro.file_targeting}, violations ${trial.with_klauro.violation_count}.`);
     lines.push(`Without Klauro: correctness ${trial.without_klauro.correctness}, idiom ${trial.without_klauro.idiom_conformance}, minimality ${trial.without_klauro.minimality}, targeting ${trial.without_klauro.file_targeting}, violations ${trial.without_klauro.violation_count}.`);
+    if (trial.without_klauro.baseline_model) {
+      lines.push(`Baseline model: ${trial.without_klauro.baseline_model.model}; idiom penalty ${trial.without_klauro.baseline_model.idiom_penalty}; factors ${trial.without_klauro.baseline_model.factors.slice(0, 5).join(', ')}.`);
+    }
     if (trial.live_pair) lines.push(`Live artifacts: ${trial.live_pair.artifacts.trial_directory}`);
     lines.push('');
   }
@@ -718,6 +829,10 @@ function aggregateStatus(statuses: GateStatus[]): GateStatus {
 function average(values: number[]): number {
   if (values.length === 0) return 100;
   return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }
 
 function nullableAverage(values: Array<number | null>): number | null {

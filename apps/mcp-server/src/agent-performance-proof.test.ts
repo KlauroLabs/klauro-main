@@ -39,6 +39,75 @@ test('buildAgentPerformanceProof can intentionally include all persisted history
   assert.equal(liveRollup?.metrics.live_trials, 2);
 });
 
+test('buildAgentPerformanceProof rolls real engineering task proof into quality and token claims', () => {
+  const now = new Date();
+  const proof = buildAgentPerformanceProof([
+    existingTaskReport(now, 'producer-consumer-contract-change', 'cross-repo-contract-changes', {
+      status: 'pass',
+      with_score: 100,
+      without_score: 96,
+      quality_delta: 4,
+      token_reduction_percentage: 56,
+      time_reduction_percentage: 28,
+    }),
+    taskFamilyCoverageReport(now),
+    deterministicReport(now),
+    incrementalReport(now),
+  ], { sinceDays: 7 });
+
+  const engineeringRollup = proof.rollups.find(summary => summary.benchmark_type === 'existing-project-live-task-rollup');
+  const familyRollup = proof.rollups.find(summary => summary.benchmark_type === 'agent-task-family-coverage-rollup');
+  const qualityClaim = proof.claims.find(claim => claim.claim.includes('patch quality'));
+  const familyClaim = proof.claims.find(claim => claim.claim.includes('task-family gauntlet'));
+
+  assert.equal(engineeringRollup?.status, 'pass');
+  assert.equal(engineeringRollup?.metrics.average_quality_delta, '+4');
+  assert.equal(engineeringRollup?.metrics.average_token_reduction, '56%');
+  assert.equal(engineeringRollup?.metrics.token_regressions, 0);
+  assert.equal(familyRollup?.status, 'pass');
+  assert.equal(familyRollup?.metrics.coverage, '17/17');
+  assert.equal(qualityClaim?.report_id, 'existing-project-live-task-rollup');
+  assert.ok(familyClaim);
+});
+
+test('buildAgentPerformanceProof fails live quality rollups when Klauro uses materially more total tokens', () => {
+  const now = new Date();
+  const proof = buildAgentPerformanceProof([
+    existingTaskReport(now, 'mfa', 'mfa-security-enhancement', {
+      status: 'pass',
+      with_score: 100,
+      without_score: 95,
+      quality_delta: 5,
+      token_reduction_percentage: -12,
+      time_reduction_percentage: 10,
+    }),
+  ], { sinceDays: 7 });
+
+  const engineeringRollup = proof.rollups.find(summary => summary.benchmark_type === 'existing-project-live-task-rollup');
+  assert.equal(engineeringRollup?.status, 'fail');
+  assert.equal(engineeringRollup?.metrics.token_regressions, 1);
+  assert.equal(engineeringRollup?.metrics.average_token_reduction, '-12%');
+});
+
+test('buildAgentPerformanceProof accepts only tiny token overhead for clear quality wins', () => {
+  const now = new Date();
+  const proof = buildAgentPerformanceProof([
+    existingTaskReport(now, 'auth-replacement', 'auth-system-replacement', {
+      status: 'pass',
+      with_score: 100,
+      without_score: 84,
+      quality_delta: 16,
+      token_reduction_percentage: -3,
+      time_reduction_percentage: 2,
+    }),
+  ], { sinceDays: 7 });
+
+  const engineeringRollup = proof.rollups.find(summary => summary.benchmark_type === 'existing-project-live-task-rollup');
+  assert.equal(engineeringRollup?.status, 'pass');
+  assert.equal(engineeringRollup?.metrics.accepted_token_tradeoffs, 1);
+  assert.equal(engineeringRollup?.metrics.token_regressions, 0);
+});
+
 function liveReport(
   repo: string,
   generatedAt: Date,
@@ -91,6 +160,49 @@ function liveReport(
         },
       },
     }],
+  };
+}
+
+function existingTaskReport(generatedAt: Date, id: string, family: string, liveSummary: Record<string, unknown>) {
+  return {
+    benchmark_type: 'seeded-existing-project-task-proof',
+    generated_at: generatedAt.toISOString(),
+    status: 'pass',
+    score: 100,
+    summary: {
+      scenario_count: 1,
+      family_count: 1,
+      passing_scenarios: 1,
+      average_score_delta: Number(liveSummary.quality_delta || 0),
+      average_file_reduction_percentage: 25,
+      average_token_reduction_percentage: Number(liveSummary.token_reduction_percentage || 0),
+      live_scenarios: 1,
+      live_passing_scenarios: liveSummary.status === 'pass' ? 1 : 0,
+      average_live_quality_delta: Number(liveSummary.quality_delta || 0),
+      average_live_token_reduction_percentage: Number(liveSummary.token_reduction_percentage || 0),
+    },
+    scenarios: [{
+      id,
+      family,
+      status: 'pass',
+      score: liveSummary.with_score,
+      live_summary: liveSummary,
+    }],
+  };
+}
+
+function taskFamilyCoverageReport(generatedAt: Date) {
+  return {
+    benchmark_type: 'agent-task-family-coverage',
+    generated_at: generatedAt.toISOString(),
+    status: 'pass',
+    score: 100,
+    summary: {
+      strong: 17,
+      partial: 0,
+      gaps: 0,
+      families: 17,
+    },
   };
 }
 

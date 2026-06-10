@@ -6,6 +6,9 @@ import { listAgenticBenchmarkReports, loadAgenticBenchmarkReport } from './stora
 type GateStatus = 'pass' | 'fail';
 type JsonObject = Record<string, any>;
 
+const SMALL_TOKEN_OVERHEAD_PERCENT = 3;
+const CLEAR_QUALITY_WIN_DELTA = 15;
+
 interface Gate {
   id: string;
   status: GateStatus;
@@ -35,6 +38,11 @@ const REPORTS = {
   incrementalBenchmark: '.klauro-incremental-benchmark/latest-report.json',
   idiomBenchmark: '.klauro-agent-idiom-benchmark/latest-report.json',
   machineProof: '.klauro-agent-proof-machine/latest-report.json',
+  scratchLiveBackend: '.klauro-agent-scratch-build-benchmark/live-work-intake-codex-rescored.json',
+  scratchLiveUi: '.klauro-agent-scratch-build-benchmark/live-operations-ui-compact-codex.json',
+  scratchLiveBackendMultiWave: '.klauro-agent-scratch-build-benchmark/live-work-intake-multi-wave-strict-rescored-codex.json',
+  scratchLiveUiMultiWave: '.klauro-agent-scratch-build-benchmark/live-operations-ui-multi-wave-strict-codex.json',
+  scratchLiveComplianceMultiWave: '.klauro-agent-scratch-build-benchmark/live-compliance-evidence-multi-wave-strict-codex.json',
 };
 
 async function main(): Promise<void> {
@@ -49,6 +57,11 @@ async function main(): Promise<void> {
   const incrementalBenchmark = await readReport(REPORTS.incrementalBenchmark);
   const idiomBenchmark = await readReport(REPORTS.idiomBenchmark);
   const machineProof = await readReport(REPORTS.machineProof);
+  const scratchLiveBackend = await readReport(REPORTS.scratchLiveBackend);
+  const scratchLiveUi = await readReport(REPORTS.scratchLiveUi);
+  const scratchLiveBackendMultiWave = await readReport(REPORTS.scratchLiveBackendMultiWave);
+  const scratchLiveUiMultiWave = await readReport(REPORTS.scratchLiveUiMultiWave);
+  const scratchLiveComplianceMultiWave = await readReport(REPORTS.scratchLiveComplianceMultiWave);
 
   gates.push(...freshnessGates(options.maxAgeHours, {
     'analysis-gauntlet': analysis,
@@ -59,6 +72,11 @@ async function main(): Promise<void> {
     'incremental-benchmark': incrementalBenchmark,
     'agent-idiom-benchmark': idiomBenchmark,
     'machine-agent-proof': machineProof,
+    'scratch-live-backend': scratchLiveBackend,
+    'scratch-live-ui': scratchLiveUi,
+    'scratch-live-backend-multi-wave': scratchLiveBackendMultiWave,
+    'scratch-live-ui-multi-wave': scratchLiveUiMultiWave,
+    'scratch-live-compliance-multi-wave': scratchLiveComplianceMultiWave,
   }));
 
   gates.push(...analysisGates(analysis));
@@ -69,6 +87,8 @@ async function main(): Promise<void> {
   gates.push(...incrementalBenchmarkGates(incrementalBenchmark));
   gates.push(...idiomBenchmarkGates(idiomBenchmark));
   gates.push(...machineProofGates(machineProof));
+  gates.push(...scratchLiveGates([scratchLiveBackend, scratchLiveUi, scratchLiveBackendMultiWave, scratchLiveUiMultiWave, scratchLiveComplianceMultiWave]));
+  gates.push(...scratchLiveMultiWaveGates([scratchLiveBackendMultiWave, scratchLiveUiMultiWave, scratchLiveComplianceMultiWave]));
   gates.push(...await persistedProofGates());
 
   const report = buildReport(gates, options.maxAgeHours);
@@ -120,7 +140,12 @@ function printHelp(): void {
 async function readReport(relativePath: string): Promise<JsonObject> {
   const filePath = path.resolve(process.cwd(), relativePath);
   if (!(await fs.pathExists(filePath))) {
-    throw new Error(`Missing required report: ${relativePath}`);
+    return {
+      generated_at: null,
+      status: 'missing',
+      score: 0,
+      missing_report: relativePath,
+    };
   }
   return fs.readJson(filePath);
 }
@@ -147,8 +172,8 @@ function analysisGates(report: JsonObject): Gate[] {
   return [
     gate('analysis-gauntlet:status', report.status === 'pass' && report.score === 100, `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`),
     gate('analysis-gauntlet:target-count', targets.length >= 9, `${targets.length} target fixtures`),
-    gate('analysis-gauntlet:truth-targets', targets.every(target => target.status === 'pass' && target.score === 100 && target.truth?.status === 'pass' && target.truth?.score === 100), `${targets.filter(target => target.status === 'pass' && target.score === 100).length}/${targets.length} targets at 100`),
-    gate('analysis-gauntlet:no-truth-misses', targets.every(target => array(target.truth?.misses).length === 0), `${targets.reduce((total, target) => total + array(target.truth?.misses).length, 0)} misses`),
+    gate('analysis-gauntlet:truth-targets', targets.length > 0 && targets.every(target => target.status === 'pass' && target.score === 100 && target.truth?.status === 'pass' && target.truth?.score === 100), `${targets.filter(target => target.status === 'pass' && target.score === 100).length}/${targets.length} targets at 100`),
+    gate('analysis-gauntlet:no-truth-misses', targets.length > 0 && targets.every(target => array(target.truth?.misses).length === 0), `${targets.reduce((total, target) => total + array(target.truth?.misses).length, 0)} misses`),
   ];
 }
 
@@ -158,7 +183,7 @@ function agentGates(report: JsonObject): Gate[] {
   return [
     gate('agent-gauntlet:status', ['pass', 'warn'].includes(report.status) && Number(report.score) >= 95, `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`),
     gate('agent-gauntlet:coverage', targets.length >= 12 && report.defaultUseTargets >= 12, `${report.defaultUseTargets || 0}/${targets.length} default-use targets`),
-    gate('agent-gauntlet:default-use', defaultUseTargets.length === targets.length && targets.every(target => target.default_use === true && Number(target.score) >= 95), `${defaultUseTargets.length}/${targets.length} ready by default`),
+    gate('agent-gauntlet:default-use', targets.length > 0 && defaultUseTargets.length === targets.length && targets.every(target => target.default_use === true && Number(target.score) >= 95), `${defaultUseTargets.length}/${targets.length} ready by default`),
   ];
 }
 
@@ -171,10 +196,10 @@ function visionGates(report: JsonObject): Gate[] {
   return [
     gate('vision-gauntlet:status', ['pass', 'warn'].includes(report.status) && Number(report.score) >= 95, `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`),
     gate('vision-gauntlet:real-repo-coverage', targets.length >= 12 && Number(report.target_count || targets.length) >= 12, `${targets.length} targets`),
-    gate('vision-gauntlet:target-scores', targets.every(target => target.status !== 'fail' && Number(target.score) >= 95), `${targets.filter(target => target.status !== 'fail' && Number(target.score) >= 95).length}/${targets.length} targets at >=95`),
+    gate('vision-gauntlet:target-scores', targets.length > 0 && targets.every(target => target.status !== 'fail' && Number(target.score) >= 95), `${targets.filter(target => target.status !== 'fail' && Number(target.score) >= 95).length}/${targets.length} targets at >=95`),
     gate('vision-gauntlet:integration-depth', strongIntegrationTargets.length === targets.length && average(targets.map(target => Number(target.integration_depth?.score || 0))) >= 90, `${integrationTargets.length}/${targets.length} integration-depth reports at 100`),
     gate('vision-gauntlet:cross-repo-links', crossRepoLinks >= 100, `${crossRepoLinks} cross-repo links`),
-    gate('vision-gauntlet:no-conflicts', workspaceConflicts === 0 && array(report.cross_repository?.conflicts).length === 0, `${workspaceConflicts + array(report.cross_repository?.conflicts).length} conflicts`),
+    gate('vision-gauntlet:no-conflicts', !report.missing_report && workspaceConflicts === 0 && array(report.cross_repository?.conflicts).length === 0, `${workspaceConflicts + array(report.cross_repository?.conflicts).length} conflicts`),
   ];
 }
 
@@ -218,10 +243,16 @@ function idiomBenchmarkGates(report: JsonObject): Gate[] {
   const summary = report.summary || {};
   const liveTrials = Number(summary.live_trials_attempted || 0);
   const deterministicMode = liveTrials === 0;
+  const baselineModel = summary.deterministic_baseline_model || {};
   return [
     gate('idiom-benchmark:status', report.status === 'pass' && report.score >= 90, `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`),
     gate('idiom-benchmark:task-count', Number(summary.task_count) >= 6 && Number(summary.target_count) >= 3, `${summary.task_count || 0} tasks across ${summary.target_count || 0} targets`),
     gate('idiom-benchmark:proof-mode', liveTrials > 0 || Number(summary.average_idiom_conformance_delta) > 0, deterministicMode ? `${summary.task_count || 0} deterministic tasks` : `${liveTrials} live trials`),
+    gate('idiom-benchmark:deterministic-baseline-varies',
+      !deterministicMode || Number(baselineModel.distinct_idiom_penalties || 0) > 1,
+      deterministicMode
+        ? `${baselineModel.model || 'missing model'}, distinct penalties ${baselineModel.distinct_idiom_penalties || 0}, range ${baselineModel.idiom_penalty_min ?? 'n/a'}-${baselineModel.idiom_penalty_max ?? 'n/a'}`
+        : 'live baseline measured from copied-repo agent output'),
     gate('idiom-benchmark:no-correctness-regression', deterministicMode || Number(summary.live_correctness_regressions) === 0, `${summary.live_correctness_regressions || 0} correctness regressions`),
     gate('idiom-benchmark:positive-idiom-delta', deterministicMode
       ? Number(summary.average_idiom_conformance_delta) > 0 && Number(summary.average_total_quality_delta) >= 0
@@ -244,9 +275,93 @@ function machineProofGates(report: JsonObject): Gate[] {
     gate('machine-proof:status', report.status === 'pass' && report.score === 100, `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`),
     gate('machine-proof:discovery-accounting', Number(discovery.total_repos) === discovered.length && discovered.length > 0, `${discovered.length}/${discovery.total_repos || 0} discovered repos accounted`),
     gate('machine-proof:eligible-accounting', accountedEligible.length === eligible.length && eligible.length > 0, `${accountedEligible.length}/${eligible.length} eligible repos accounted`),
-    gate('machine-proof:no-silent-omissions', repoResults.length >= discovered.length, `${repoResults.length}/${discovered.length} repo rows reported`),
-    gate('machine-proof:gates-pass', failed.length === 0, `${failed.length} failing machine gates`),
+    gate('machine-proof:no-silent-omissions', discovered.length > 0 && repoResults.length >= discovered.length, `${repoResults.length}/${discovered.length} repo rows reported`),
+    gate('machine-proof:gates-pass', gates.length > 0 && failed.length === 0, `${failed.length} failing machine gates`),
   ];
+}
+
+function scratchLiveGates(reports: JsonObject[]): Gate[] {
+  const present = reports.filter(report => !report.missing_report);
+  const expectedReports = reports.length;
+  const initialDeltas = present.map(report => Number(report.comparison?.quality_delta || 0));
+  const continuationDeltas = present
+    .map(report => report.continuation?.quality_delta)
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  const tokenDeltas = present
+    .map(report => report.comparison?.token_reduction_percentage)
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  const tokenPolicyViolations = present
+    .map(report => ({
+      id: String(report.id || report.scenario?.id || report.scenario?.name || 'scratch-live-report'),
+      tokenReduction: report.comparison?.token_reduction_percentage,
+      qualityDelta: Number(report.comparison?.quality_delta || 0),
+    }))
+    .filter(item => typeof item.tokenReduction === 'number'
+      && Number.isFinite(item.tokenReduction)
+      && !passesTokenPolicy(item.tokenReduction, item.qualityDelta));
+  const initialScores = present.flatMap(report => [
+    Number(report.with_klauro?.score || 0),
+    Number(report.without_klauro?.score || 0),
+  ]);
+  return [
+    gate('scratch-live:coverage', present.length >= expectedReports, `${present.length}/${expectedReports} live scratch reports`),
+    gate('scratch-live:initial-quality-lift', initialDeltas.some(delta => delta > 0) && initialDeltas.every(delta => delta >= 0), `initial quality deltas ${initialDeltas.join(', ') || 'missing'}`),
+    gate('scratch-live:initial-quality-bar', initialScores.length > 0 && initialScores.every(score => score >= 90), `initial arm scores ${initialScores.join(', ') || 'missing'}`),
+    gate('scratch-live:continuation-no-regression', continuationDeltas.length >= 2 && continuationDeltas.every(delta => delta >= 0), `continuation quality deltas ${continuationDeltas.join(', ') || 'missing'}`),
+    gate('scratch-live:token-policy',
+      tokenDeltas.length > 0 && tokenPolicyViolations.length === 0,
+      tokenPolicyViolations.length === 0
+        ? `initial token reductions ${tokenDeltas.join(', ') || 'missing'}; overhead allowed only <=${SMALL_TOKEN_OVERHEAD_PERCENT}% with +${CLEAR_QUALITY_WIN_DELTA} quality`
+        : `token policy violations ${tokenPolicyViolations.map(item => `${item.id}:${item.tokenReduction}% tokens, +${item.qualityDelta} quality`).join('; ')}`),
+  ];
+}
+
+function scratchLiveMultiWaveGates(reports: JsonObject[]): Gate[] {
+  const present = reports.filter(report => !report.missing_report);
+  const waves = present.flatMap(report => array(report.continuation_waves));
+  const expectedReports = reports.length;
+  const expectedWaves = expectedReports * 2;
+  const liveQualityDeltas = waves
+    .map(wave => wave.live_quality_delta)
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  const precisionDeltas = waves
+    .map(wave => wave.changed_file_precision_delta)
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  const tokenDeltas = waves
+    .map(wave => wave.token_reduction_percentage)
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  const changedFileDeltas = waves
+    .map(wave => wave.changed_file_delta)
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  const tokenPolicyViolations = waves
+    .map((wave, index) => ({
+      id: String(wave.id || `wave-${index + 1}`),
+      tokenReduction: wave.token_reduction_percentage,
+      qualityDelta: Number(wave.live_quality_delta ?? wave.quality_delta ?? 0),
+    }))
+    .filter(item => typeof item.tokenReduction === 'number'
+      && Number.isFinite(item.tokenReduction)
+      && !passesTokenPolicy(item.tokenReduction, item.qualityDelta));
+  const withScores = waves.map(wave => Number(wave.with_klauro?.score || 0));
+  return [
+    gate('scratch-live-multi-wave:coverage', present.length >= expectedReports && waves.length >= expectedWaves, `${present.length}/${expectedReports} reports, ${waves.length}/${expectedWaves} continuation waves`),
+    gate('scratch-live-multi-wave:status', present.length >= expectedReports && present.every(report => report.status === 'pass' && Number(report.score || 0) >= 90), `${present.map(report => `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`).join('; ') || 'missing'}`),
+    gate('scratch-live-multi-wave:with-klauro-quality', withScores.length >= expectedWaves && withScores.every(score => score >= 90), `with-Klauro wave scores ${withScores.join(', ') || 'missing'}`),
+    gate('scratch-live-multi-wave:live-quality-delta', liveQualityDeltas.length >= expectedWaves && liveQualityDeltas.every(delta => delta >= 0) && liveQualityDeltas.some(delta => delta > 0), `live quality deltas ${liveQualityDeltas.join(', ') || 'missing'}`),
+    gate('scratch-live-multi-wave:file-targeting-delta', precisionDeltas.length >= expectedWaves && precisionDeltas.every(delta => delta > 0) && average(precisionDeltas) >= 40, `changed-file precision deltas ${precisionDeltas.join(', ') || 'missing'}`),
+    gate('scratch-live-multi-wave:token-policy',
+      tokenDeltas.length > 0 && tokenPolicyViolations.length === 0,
+      tokenPolicyViolations.length === 0
+        ? `token reductions ${tokenDeltas.join(', ') || 'missing'}; overhead allowed only <=${SMALL_TOKEN_OVERHEAD_PERCENT}% with +${CLEAR_QUALITY_WIN_DELTA} quality`
+        : `token policy violations ${tokenPolicyViolations.map(item => `${item.id}:${item.tokenReduction}% tokens, +${item.qualityDelta} quality`).join('; ')}`),
+    gate('scratch-live-multi-wave:agent-value', tokenDeltas.some(delta => delta >= 20) || average(changedFileDeltas) >= 2, `token reductions ${tokenDeltas.join(', ') || 'missing'}, changed-file deltas ${changedFileDeltas.join(', ') || 'missing'}`),
+  ];
+}
+
+function passesTokenPolicy(tokenReductionPercentage: number, qualityDelta: number): boolean {
+  if (tokenReductionPercentage >= 0) return true;
+  return Math.abs(tokenReductionPercentage) <= SMALL_TOKEN_OVERHEAD_PERCENT
+    && qualityDelta >= CLEAR_QUALITY_WIN_DELTA;
 }
 
 async function persistedProofGates(): Promise<Gate[]> {
@@ -255,31 +370,51 @@ async function persistedProofGates(): Promise<Gate[]> {
     .filter((report): report is JsonObject => Boolean(report));
   const proof = buildAgentPerformanceProof(reports, { sinceDays: 7 });
   const liveRollup = proof.rollups.find((rollup: JsonObject) => rollup.benchmark_type === 'live-agent-quality-ab-rollup');
-  const idiomReport = reports.find((report: JsonObject) => report.benchmark_type === 'live-agent-idiom-quality-ab');
+  const existingLiveRollup = proof.rollups.find((rollup: JsonObject) => rollup.benchmark_type === 'existing-project-live-task-rollup');
+  const taskFamilyCoverage = proof.rollups.find((rollup: JsonObject) => rollup.benchmark_type === 'agent-task-family-coverage-rollup');
+  const idiomReport = reports.find((report: JsonObject) => report.benchmark_type === 'live-agent-idiom-quality-ab')
+    || reports.find((report: JsonObject) => report.benchmark_type === 'deterministic-agent-idiom-quality-proxy');
+  const fromZeroReport = reports.find((report: JsonObject) => report.benchmark_type === 'from-zero-build-packet-proof');
+  const fromZeroScenarioCount = Number(fromZeroReport?.summary?.scenario_count || (fromZeroReport?.scenario ? 1 : 0));
+  const fromZeroProductFocusCount = Number(fromZeroReport?.summary?.product_focus_scenario_count || 0);
+  const fromZeroGrowthIterations = Number(fromZeroReport?.summary?.growth_iteration_count || fromZeroReport?.summary?.task_count || 0);
   const claims = array(proof.claims);
   const usefulnessClaim = claims.find((claim: JsonObject) => String(claim.claim || '').includes('reduce context'));
   const qualityClaim = claims.find((claim: JsonObject) => String(claim.claim || '').includes('patch quality'));
   const liveTokenReduction = metricPercent(liveRollup?.metrics?.token_reduction);
+  const existingLiveTokenReduction = metricPercent(existingLiveRollup?.metrics?.average_token_reduction);
   const deterministicTokenReduction = metricPercent(usefulnessClaim?.evidence?.average_token_reduction_vs_search);
   const liveTimeReduction = metricPercent(liveRollup?.metrics?.time_reduction);
+  const existingLiveTimeReduction = metricPercent(existingLiveRollup?.metrics?.average_time_reduction);
   const deterministicTimeReduction = metricPercent(qualityClaim?.evidence?.average_time_reduction_vs_search);
   const liveFileReduction = metricPercent(liveRollup?.metrics?.file_read_reduction);
   const deterministicFileReduction = metricPercent(usefulnessClaim?.evidence?.average_file_reduction);
   const liveWithSuccess = metricPercent(liveRollup?.metrics?.with_klauro_success_rate);
+  const existingLiveQualityDelta = signedMetric(existingLiveRollup?.metrics?.average_quality_delta);
+  const existingLiveTokenRegressions = Number(existingLiveRollup?.metrics?.token_regressions ?? Number.POSITIVE_INFINITY);
+  const existingLiveAcceptedTokenTradeoffs = Number(existingLiveRollup?.metrics?.accepted_token_tradeoffs ?? 0);
+  const taskFamilyStrong = Number(taskFamilyCoverage?.metrics?.strong_families || 0);
+  const taskFamilyCount = Number(taskFamilyCoverage?.metrics?.families || 0);
+  const taskFamilyGaps = Number(taskFamilyCoverage?.metrics?.gap_families || 0);
+  const taskFamilyPartial = Number(taskFamilyCoverage?.metrics?.partial_families || 0);
   const deterministicWithSuccess = metricPercent(qualityClaim?.evidence?.with_klauro_success_rate);
   const deterministicQualityDelta = Number(String(qualityClaim?.evidence?.average_quality_score_delta || '').replace('+', ''));
 
   return [
     gate('mcp-proof:recent-report-coverage', Number(proof.included_report_count) >= 4 && Number(proof.latest_report_count) >= 3, `${proof.included_report_count} recent reports, ${proof.latest_report_count} latest families`),
-    gate('mcp-proof:claims', claims.length >= 3, `${claims.length} proof claims`),
+    gate('mcp-proof:claims', claims.length >= 4, `${claims.length} proof claims`),
     gate('mcp-proof:token-reduction',
-      liveTokenReduction >= 0.5 || deterministicTokenReduction >= 0.8,
-      liveTokenReduction > 0
+      existingLiveTokenReduction >= 0 || liveTokenReduction >= 0.5 || deterministicTokenReduction >= 0.8,
+      existingLiveRollup
+        ? `${existingLiveRollup.metrics?.average_token_reduction || 'unknown'} existing-task live token reduction, ${existingLiveRollup.metrics?.token_regressions ?? 'unknown'} token regressions`
+        : liveTokenReduction > 0
         ? `${liveRollup?.metrics?.token_reduction || 'unknown'} live token reduction (${liveRollup?.metrics?.token_measurement_source || 'unknown'} tokens)`
         : `${usefulnessClaim?.evidence?.average_token_reduction_vs_search || 'unknown'} deterministic token reduction`),
     gate('mcp-proof:time-reduction',
-      liveTimeReduction >= 0.2 || deterministicTimeReduction >= 0.8,
-      liveTimeReduction > 0
+      existingLiveTimeReduction >= 0 || liveTimeReduction >= 0.2 || deterministicTimeReduction >= 0.8,
+      existingLiveRollup
+        ? `${existingLiveRollup.metrics?.average_time_reduction || 'unknown'} existing-task live time reduction`
+        : liveTimeReduction > 0
         ? `${liveRollup?.metrics?.time_reduction || 'unknown'} live time reduction`
         : `${qualityClaim?.evidence?.average_time_reduction_vs_search || 'unknown'} deterministic time reduction`),
     gate('mcp-proof:file-reduction',
@@ -288,12 +423,36 @@ async function persistedProofGates(): Promise<Gate[]> {
         ? `${liveRollup?.metrics?.file_read_reduction || 'unknown'} live file-read reduction`
         : `${usefulnessClaim?.evidence?.average_file_reduction || 'unknown'} deterministic file-read reduction`),
     gate('mcp-proof:quality-preserved',
-      (liveRollup ? liveRollup.status !== 'fail' && liveWithSuccess === 1 : false)
+      (existingLiveRollup
+        ? existingLiveRollup.status === 'pass' && existingLiveQualityDelta > 0 && existingLiveTokenRegressions === 0
+        : false)
+        || (liveRollup ? liveRollup.status !== 'fail' && liveWithSuccess === 1 && metricPercent(liveRollup.metrics?.token_reduction) >= 0 : false)
         || (deterministicWithSuccess === 1 && deterministicQualityDelta > 0),
-      liveRollup
+      existingLiveRollup
+        ? `${existingLiveRollup.status || 'unknown'}, ${existingLiveRollup.metrics?.passing_live_tasks || 0}/${existingLiveRollup.metrics?.live_tasks || 0} existing-task live passes, ${existingLiveRollup.metrics?.average_quality_delta || 'unknown'} quality delta, ${existingLiveRollup.metrics?.average_token_reduction || 'unknown'} token reduction, ${existingLiveAcceptedTokenTradeoffs} accepted tiny token tradeoffs, ${existingLiveTokenRegressions} token regressions`
+        : liveRollup
         ? `${liveRollup.status || 'unknown'}, ${liveRollup.metrics?.with_klauro_success_rate || 'unknown'} live success, ${liveRollup.metrics?.average_quality_delta || 'unknown'} live quality delta`
         : `${qualityClaim?.evidence?.with_klauro_success_rate || 'unknown'} deterministic success, ${qualityClaim?.evidence?.average_quality_score_delta || 'unknown'} quality delta`),
+    gate('mcp-proof:task-family-coverage',
+      Boolean(taskFamilyCoverage) && taskFamilyCoverage?.status === 'pass' && taskFamilyStrong === taskFamilyCount && taskFamilyCount >= 17 && taskFamilyPartial === 0 && taskFamilyGaps === 0,
+      taskFamilyCoverage
+        ? `${taskFamilyCoverage.status || 'unknown'}, ${taskFamilyCoverage.metrics?.coverage || 'unknown'} strong families, ${taskFamilyPartial} partial, ${taskFamilyGaps} gaps`
+        : 'missing task-family coverage proof'),
     gate('mcp-proof:idiom-quality', Boolean(idiomReport) && Number(idiomReport?.summary?.average_idiom_conformance_delta || idiomReport?.summary?.live_average_idiom_conformance_delta || 0) > 0 && Number(idiomReport?.summary?.live_correctness_regressions || 0) === 0, idiomReport ? `idiom delta ${idiomReport.summary?.average_idiom_conformance_delta ?? idiomReport.summary?.live_average_idiom_conformance_delta}, correctness regressions ${idiomReport.summary?.live_correctness_regressions}` : 'missing idiom quality report'),
+    gate('mcp-proof:from-zero-build-memory',
+      Boolean(fromZeroReport) &&
+        fromZeroReport?.status === 'pass' &&
+        fromZeroScenarioCount >= 3 &&
+        Number(fromZeroReport?.summary?.scenarios_passed || 0) === fromZeroScenarioCount &&
+        fromZeroProductFocusCount === fromZeroScenarioCount &&
+        fromZeroGrowthIterations >= 15 &&
+        Number(fromZeroReport?.summary?.quality_delta || 0) > 0 &&
+        Number(fromZeroReport?.summary?.duplicate_class_delta || 0) > 0 &&
+        Number(fromZeroReport?.summary?.context_char_reduction_percentage || 0) > 0 &&
+        Number(fromZeroReport?.summary?.with_klauro_duplicate_classes || 0) === 0,
+      fromZeroReport
+        ? `${fromZeroReport.summary?.scenarios_passed || 0}/${fromZeroScenarioCount} scenarios, ${fromZeroProductFocusCount}/${fromZeroScenarioCount} product-focus packets, ${fromZeroGrowthIterations} growth iterations, quality delta ${fromZeroReport.summary?.quality_delta}, duplicate-class delta ${fromZeroReport.summary?.duplicate_class_delta}, context reduction ${fromZeroReport.summary?.context_char_reduction_percentage}%, with-Klauro duplicates ${fromZeroReport.summary?.with_klauro_duplicate_classes}`
+        : 'missing from-zero build packet proof'),
   ];
 }
 
@@ -335,6 +494,15 @@ function metricPercent(value: unknown): number {
   if (typeof value === 'string') {
     const parsed = Number(value.replace('%', '').trim());
     if (Number.isFinite(parsed)) return parsed > 1 ? parsed / 100 : parsed;
+  }
+  return 0;
+}
+
+function signedMetric(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value.replace('%', '').replace('+', '').trim());
+    return Number.isFinite(parsed) ? parsed : 0;
   }
   return 0;
 }

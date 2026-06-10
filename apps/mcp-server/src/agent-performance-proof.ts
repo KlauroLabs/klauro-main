@@ -5,6 +5,9 @@ import { formatIdiomBenchmarkMarkdown } from './agent-idiom-benchmark';
 
 type StoredBenchmarkReport = Record<string, any>;
 
+const SMALL_TOKEN_OVERHEAD_PERCENT = 3;
+const CLEAR_QUALITY_WIN_DELTA = 15;
+
 interface ProofSummary {
   benchmark_type: string;
   id?: string;
@@ -20,6 +23,7 @@ interface AgentPerformanceProofOptions {
 }
 
 export function formatStoredBenchmarkReport(report: StoredBenchmarkReport): string {
+  if (isFromZeroBuildPacketReport(report)) return formatFromZeroBuildPacketMarkdown(report);
   if (isIdiomReport(report)) return formatIdiomBenchmarkMarkdown(report as any);
   if (isQualityReport(report)) return formatQualityMarkdownReport(report as any);
   if (isIncrementalReport(report)) return formatIncrementalValueMarkdownReport(report as any);
@@ -33,6 +37,8 @@ export function buildAgentPerformanceProof(reports: StoredBenchmarkReport[], opt
   const summaries = latestByType.map(summarizeReport);
   const rollups = [
     buildLiveRollup(sortedReports),
+    buildExistingTaskLiveRollup(sortedReports),
+    buildTaskFamilyCoverageRollup(sortedReports),
   ].filter((summary): summary is ProofSummary => Boolean(summary));
   const generatedAt = new Date().toISOString();
   const claims = buildClaims(summaries, rollups);
@@ -77,6 +83,18 @@ function isIdiomReport(report: StoredBenchmarkReport): boolean {
     || Number.isFinite(report.summary?.average_idiom_conformance_delta);
 }
 
+function isFromZeroBuildPacketReport(report: StoredBenchmarkReport): boolean {
+  return report.benchmark_type === 'from-zero-build-packet-proof';
+}
+
+function isExistingTaskReport(report: StoredBenchmarkReport): boolean {
+  return report.benchmark_type === 'seeded-existing-project-task-proof';
+}
+
+function isTaskFamilyCoverageReport(report: StoredBenchmarkReport): boolean {
+  return report.benchmark_type === 'agent-task-family-coverage';
+}
+
 function latestReportsByType(reports: StoredBenchmarkReport[]): StoredBenchmarkReport[] {
   const byType = new Map<string, StoredBenchmarkReport>();
   for (const report of reports) {
@@ -90,7 +108,41 @@ function summarizeReport(report: StoredBenchmarkReport): ProofSummary {
   const summary = report.summary || {};
   const metrics: Record<string, unknown> = {};
 
-  if (isIncrementalReport(report)) {
+  if (isTaskFamilyCoverageReport(report)) {
+    Object.assign(metrics, {
+      families: summary.families,
+      strong_families: summary.strong,
+      partial_families: summary.partial,
+      gap_families: summary.gaps,
+      coverage: coverage(summary.strong, summary.families),
+    });
+  } else if (isExistingTaskReport(report)) {
+    Object.assign(metrics, {
+      scenarios: summary.scenario_count,
+      families: summary.family_count,
+      passing_scenarios: summary.passing_scenarios,
+      average_score_delta: signed(summary.average_score_delta),
+      average_file_reduction: asPercentNumber(summary.average_file_reduction_percentage),
+      average_token_reduction: asPercentNumber(summary.average_token_reduction_percentage),
+      live_scenarios: summary.live_scenarios,
+      live_passing_scenarios: summary.live_passing_scenarios,
+      live_average_quality_delta: signed(summary.average_live_quality_delta),
+      live_average_token_reduction: asPercentNumber(summary.average_live_token_reduction_percentage),
+    });
+  } else if (isFromZeroBuildPacketReport(report)) {
+    Object.assign(metrics, {
+      scenarios: summary.scenario_count,
+      scenarios_passed: summary.scenarios_passed,
+      tasks: summary.task_count,
+      product_focus_scenarios: summary.product_focus_scenario_count,
+      quality_delta: signed(summary.quality_delta),
+      duplicate_class_delta: signed(summary.duplicate_class_delta),
+      with_klauro_duplicate_classes: summary.with_klauro_duplicate_classes,
+      without_klauro_duplicate_classes: summary.without_klauro_duplicate_classes,
+      focused_context_file_reduction: summary.focused_context_file_reduction,
+      context_char_reduction: asPercentNumber(summary.context_char_reduction_percentage),
+    });
+  } else if (isIncrementalReport(report)) {
     Object.assign(metrics, {
       targets: summary.target_count,
       incremental_success_rate: asPercent(summary.incremental_success_rate),
@@ -102,6 +154,10 @@ function summarizeReport(report: StoredBenchmarkReport): ProofSummary {
       average_packet_generation_ms_after_edit: summary.average_packet_generation_ms_after_edit,
       average_file_read_plan_after_edit: summary.average_file_read_plan_after_edit,
       average_packet_tokens_after_edit: summary.average_packet_tokens_after_edit,
+      average_total_context_tokens_after_edit: summary.average_total_context_tokens_after_edit,
+      average_search_baseline_tokens_after_edit: summary.average_search_baseline_tokens_after_edit,
+      average_search_token_reduction_after_edit: asPercentNumber(summary.average_search_token_reduction_after_edit),
+      average_cold_scan_token_reduction_after_edit: asPercentNumber(summary.average_cold_scan_token_reduction_after_edit),
       average_full_verify_count_similarity: asPercent(summary.average_full_verify_count_similarity),
     });
   } else if (isIdiomReport(report)) {
@@ -163,6 +219,27 @@ function summarizeReport(report: StoredBenchmarkReport): ProofSummary {
   };
 }
 
+function formatFromZeroBuildPacketMarkdown(report: StoredBenchmarkReport): string {
+  const summary = report.summary || {};
+  return [
+    '# From-Zero Build Packet Proof',
+    '',
+    `Generated: ${report.generated_at || report.generatedAt || ''}`,
+    `Status: ${report.status || 'unknown'}`,
+    `Score: ${report.score ?? 'unknown'}/100`,
+    '',
+    '## Summary',
+    '',
+    `- Quality delta: ${signed(summary.quality_delta)}`,
+    `- Duplicate-class delta avoided: ${signed(summary.duplicate_class_delta)}`,
+    `- With-Klauro duplicate classes: ${summary.with_klauro_duplicate_classes ?? 'unknown'}`,
+    `- Without-Klauro duplicate classes: ${summary.without_klauro_duplicate_classes ?? 'unknown'}`,
+    `- Focused context file reduction: ${summary.focused_context_file_reduction ?? 'unknown'}`,
+    `- Context char reduction: ${asPercentNumber(summary.context_char_reduction_percentage) || 'unknown'}`,
+    '',
+  ].join('\n');
+}
+
 function buildLiveRollup(reports: StoredBenchmarkReport[]): ProofSummary | null {
   const liveReports = reports.filter(report => report.benchmark_type === 'live-agent-quality-ab');
   const pairs = liveReports.flatMap(report => (report.trials || [])
@@ -182,20 +259,34 @@ function buildLiveRollup(reports: StoredBenchmarkReport[]): ProofSummary | null 
   const withFilesRead = sum(pairs.map(pair => numberValue(pair.with_klauro?.files_read)));
   const withoutFilesRead = sum(pairs.map(pair => numberValue(pair.without_klauro?.files_read)));
   const repos = new Set(liveReports.flatMap(report => (report.trials || []).map((trial: StoredBenchmarkReport) => trial.repo).filter(Boolean)));
+  const tokenReduction = withTokens && withoutTokens ? 1 - (withTokens / withoutTokens) : undefined;
+  const qualityDeltas = pairs
+    .map(pair => numberValue(pair.evaluation?.quality_score_delta))
+    .filter((value): value is number => value !== undefined);
+  const averageQualityDelta = average(qualityDeltas);
+  const tokenRegressed = typeof tokenReduction === 'number' && tokenReduction < 0;
+  const qualityRegressed = qualityDeltas.some(delta => delta < 0);
+  const allWithSucceeded = pairs.every(pair => pair.evaluation?.with_klauro_success);
+  const tokenTradeoffAccepted = tokenRegressed
+    && Math.abs(tokenReduction * 100) <= SMALL_TOKEN_OVERHEAD_PERCENT
+    && averageQualityDelta >= CLEAR_QUALITY_WIN_DELTA;
 
   return {
     benchmark_type: 'live-agent-quality-ab-rollup',
     id: 'live-agent-quality-ab-rollup',
-    status: pairs.every(pair => pair.evaluation?.with_klauro_success) ? 'pass' : 'warn',
+    status: !allWithSucceeded || (tokenRegressed && !tokenTradeoffAccepted) || qualityRegressed ? 'fail' : 'pass',
     score: Math.round(average(pairs.map(pair => numberValue(pair.evaluation?.with_klauro_quality_score)).filter((value): value is number => value !== undefined))),
     metrics: removeEmpty({
       live_trials: pairs.length,
       codebases: repos.size,
       with_klauro_success_rate: asPercent(average(pairs.map(pair => pair.evaluation?.with_klauro_success ? 1 : 0))),
       without_klauro_success_rate: asPercent(average(pairs.map(pair => pair.evaluation?.without_klauro_success ? 1 : 0))),
-      average_quality_delta: signed(average(pairs.map(pair => numberValue(pair.evaluation?.quality_score_delta)).filter((value): value is number => value !== undefined))),
-      token_reduction: withTokens && withoutTokens ? asPercent(1 - (withTokens / withoutTokens)) : undefined,
+      average_quality_delta: signed(averageQualityDelta),
+      token_reduction: typeof tokenReduction === 'number' ? asPercent(tokenReduction) : undefined,
       token_measurement_source: withTokens && withoutTokens ? tokenSource : undefined,
+      token_tradeoff_policy: `Token overhead is only acceptable when <=${SMALL_TOKEN_OVERHEAD_PERCENT}% and quality delta >=+${CLEAR_QUALITY_WIN_DELTA}.`,
+      accepted_token_tradeoffs: tokenTradeoffAccepted ? 1 : 0,
+      token_regressions: tokenRegressed && !tokenTradeoffAccepted ? 1 : 0,
       time_reduction: withDuration && withoutDuration ? asPercent(1 - (withDuration / withoutDuration)) : undefined,
       file_read_reduction: withFilesRead && withoutFilesRead ? asPercent(1 - (withFilesRead / withoutFilesRead)) : undefined,
       with_klauro_provider_tokens: withProviderTokens || undefined,
@@ -210,9 +301,111 @@ function buildLiveRollup(reports: StoredBenchmarkReport[]): ProofSummary | null 
   };
 }
 
+function buildExistingTaskLiveRollup(reports: StoredBenchmarkReport[]): ProofSummary | null {
+  const latestByScenario = new Map<string, { report: StoredBenchmarkReport; scenario: StoredBenchmarkReport }>();
+  for (const report of reports.filter(isExistingTaskReport)) {
+    for (const scenario of report.scenarios || []) {
+      if (!scenario.live_summary) continue;
+      const key = String(scenario.id || scenario.family || latestByScenario.size);
+      if (!latestByScenario.has(key)) latestByScenario.set(key, { report, scenario });
+    }
+  }
+
+  const entries = [...latestByScenario.values()];
+  if (entries.length === 0) return null;
+
+  const summaries = entries.map(entry => entry.scenario.live_summary || {});
+  const families = new Set(entries.map(entry => entry.scenario.family).filter(Boolean));
+  const qualityDeltas = summaries
+    .map(summary => numberValue(summary.quality_delta))
+    .filter((value): value is number => value !== undefined);
+  const tokenReductions = summaries
+    .map(summary => numberValue(summary.token_reduction_percentage))
+    .filter((value): value is number => value !== undefined);
+  const timeReductions = summaries
+    .map(summary => numberValue(summary.time_reduction_percentage))
+    .filter((value): value is number => value !== undefined);
+  const withScores = summaries
+    .map(summary => numberValue(summary.with_score))
+    .filter((value): value is number => value !== undefined);
+  const withoutScores = summaries
+    .map(summary => numberValue(summary.without_score))
+    .filter((value): value is number => value !== undefined);
+  const passCount = summaries.filter(summary => summary.status === 'pass').length;
+  const acceptedTokenTradeoffs = summaries.filter(summary => {
+    const tokenReduction = numberValue(summary.token_reduction_percentage);
+    const qualityDelta = numberValue(summary.quality_delta);
+    return tokenReduction !== undefined
+      && qualityDelta !== undefined
+      && tokenReduction < 0
+      && Math.abs(tokenReduction) <= SMALL_TOKEN_OVERHEAD_PERCENT
+      && qualityDelta >= CLEAR_QUALITY_WIN_DELTA;
+  }).length;
+  const tokenRegressions = summaries.filter(summary => {
+    const tokenReduction = numberValue(summary.token_reduction_percentage);
+    const qualityDelta = numberValue(summary.quality_delta);
+    if (tokenReduction === undefined || tokenReduction >= 0) return false;
+    return !(qualityDelta !== undefined
+      && Math.abs(tokenReduction) <= SMALL_TOKEN_OVERHEAD_PERCENT
+      && qualityDelta >= CLEAR_QUALITY_WIN_DELTA);
+  }).length;
+  const qualityRegressions = qualityDeltas.filter(value => value < 0).length;
+  const hasQualityLift = qualityDeltas.some(value => value > 0);
+
+  return {
+    benchmark_type: 'existing-project-live-task-rollup',
+    id: 'existing-project-live-task-rollup',
+    status: passCount === summaries.length && tokenRegressions === 0 && qualityRegressions === 0 && hasQualityLift ? 'pass' : 'fail',
+    score: Math.round(average(withScores)),
+    metrics: removeEmpty({
+      live_tasks: summaries.length,
+      families: families.size,
+      passing_live_tasks: passCount,
+      with_klauro_average_score: Math.round(average(withScores)),
+      without_klauro_average_score: Math.round(average(withoutScores)),
+      average_quality_delta: signed(average(qualityDeltas)),
+      average_token_reduction: asPercentNumber(average(tokenReductions)),
+      average_time_reduction: asPercentNumber(average(timeReductions)),
+      token_tradeoff_policy: `Token overhead is only acceptable when <=${SMALL_TOKEN_OVERHEAD_PERCENT}% and quality delta >=+${CLEAR_QUALITY_WIN_DELTA}.`,
+      accepted_token_tradeoffs: acceptedTokenTradeoffs,
+      token_regressions: tokenRegressions,
+      quality_regressions: qualityRegressions,
+    }),
+  };
+}
+
+function buildTaskFamilyCoverageRollup(reports: StoredBenchmarkReport[]): ProofSummary | null {
+  const report = reports.find(isTaskFamilyCoverageReport);
+  if (!report) return null;
+  const summary = report.summary || {};
+  const families = numberValue(summary.families) || 0;
+  const strong = numberValue(summary.strong) || 0;
+  const partial = numberValue(summary.partial) || 0;
+  const gaps = numberValue(summary.gaps) || 0;
+
+  return {
+    benchmark_type: 'agent-task-family-coverage-rollup',
+    id: 'agent-task-family-coverage-rollup',
+    generated_at: report.generated_at || report.generatedAt,
+    status: report.status === 'pass' && families > 0 && strong === families && partial === 0 && gaps === 0 ? 'pass' : 'fail',
+    score: report.score,
+    metrics: removeEmpty({
+      families,
+      strong_families: strong,
+      partial_families: partial,
+      gap_families: gaps,
+      coverage: coverage(strong, families),
+    }),
+  };
+}
+
 function buildClaims(summaries: ProofSummary[], rollups: ProofSummary[]) {
   const claims = [];
-  const quality = rollups.find(summary => summary.benchmark_type === 'live-agent-quality-ab-rollup')
+  const existingLive = rollups.find(summary => summary.benchmark_type === 'existing-project-live-task-rollup');
+  const taskFamilyCoverage = rollups.find(summary => summary.benchmark_type === 'agent-task-family-coverage-rollup')
+    || summaries.find(summary => summary.benchmark_type === 'agent-task-family-coverage');
+  const quality = existingLive
+    || rollups.find(summary => summary.benchmark_type === 'live-agent-quality-ab-rollup')
     || summaries.find(summary => summary.benchmark_type === 'live-agent-quality-ab')
     || summaries.find(summary => summary.benchmark_type === 'deterministic-agent-quality-proxy');
   const deterministic = summaries.find(summary => summary.benchmark_type === 'agentic-suite-with-klauro-vs-without-klauro')
@@ -220,12 +413,20 @@ function buildClaims(summaries: ProofSummary[], rollups: ProofSummary[]) {
   const incremental = summaries.find(summary => summary.benchmark_type === 'incremental-analysis-agent-value');
   const idiom = summaries.find(summary => summary.benchmark_type === 'live-agent-idiom-quality-ab')
     || summaries.find(summary => summary.benchmark_type === 'deterministic-agent-idiom-quality-proxy');
+  const fromZero = summaries.find(summary => summary.benchmark_type === 'from-zero-build-packet-proof');
 
   if (quality) {
     claims.push({
-      claim: 'Klauro preserves or improves agent patch quality while reducing discovery work.',
+      claim: 'Klauro preserves or improves agent patch quality while reducing total token usage and discovery work.',
       evidence: quality.metrics,
       report_id: quality.id,
+    });
+  }
+  if (taskFamilyCoverage) {
+    claims.push({
+      claim: 'Klauro covers the full engineering task-family gauntlet with no partial or missing families.',
+      evidence: taskFamilyCoverage.metrics,
+      report_id: taskFamilyCoverage.id,
     });
   }
   if (deterministic) {
@@ -247,6 +448,13 @@ function buildClaims(summaries: ProofSummary[], rollups: ProofSummary[]) {
       claim: 'Klauro improves agent idiom conformance, helping patches match repo-specific practices instead of only passing correctness.',
       evidence: idiom.metrics,
       report_id: idiom.id,
+    });
+  }
+  if (fromZero) {
+    claims.push({
+      claim: 'Klauro build packets help greenfield projects grow without duplicate domain concepts, even when an unguided continuation can still pass tests.',
+      evidence: fromZero.metrics,
+      report_id: fromZero.id,
     });
   }
 
@@ -326,6 +534,13 @@ function asMultiplier(value: unknown): string | undefined {
 function signed(value: unknown): string | undefined {
   if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
   return value >= 0 ? `+${Math.round(value)}` : String(Math.round(value));
+}
+
+function coverage(numerator: unknown, denominator: unknown): string | undefined {
+  const left = numberValue(numerator);
+  const right = numberValue(denominator);
+  if (left === undefined || right === undefined || right <= 0) return undefined;
+  return `${left}/${right}`;
 }
 
 function removeEmpty(metrics: Record<string, unknown>): Record<string, unknown> {

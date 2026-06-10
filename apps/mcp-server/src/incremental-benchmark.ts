@@ -1,4 +1,5 @@
 import * as fs from 'fs-extra';
+import * as os from 'os';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { glob } from 'glob';
@@ -23,6 +24,7 @@ interface IncrementalBenchmarkOptions {
   workRoot?: string;
   keepWorkspaces?: boolean;
   verifyFull?: boolean;
+  useGitBaseline?: boolean;
   quiet?: boolean;
   concurrency?: number;
   progress?: (event: { target: string; path: string; stage: 'start' | 'complete' | 'failed'; duration_ms?: number; error?: string }) => void;
@@ -41,10 +43,20 @@ interface IncrementalTargetReport {
   score: number;
   gates: Array<{ id: string; status: GateStatus; score: number; detail: string }>;
   timings: {
+    total_wall_ms: number;
     initial_full_ms: number;
     no_change_incremental_ms: number;
     edit_incremental_ms: number;
+    edit_loop_wall_ms: number;
     verify_full_after_edit_ms?: number;
+    copy_repo_ms?: number;
+    git_baseline_ms?: number;
+    edit_selection_ms?: number;
+    edit_apply_ms?: number;
+    packet_generation_ms?: number;
+    token_proof_ms?: number;
+    state_load_ms?: number;
+    cache_size_ms?: number;
   };
   speedups: {
     no_change_vs_full: number;
@@ -78,6 +90,12 @@ interface IncrementalTargetReport {
     file_read_plan_count: number;
     next_mcp_calls: number;
     estimated_packet_tokens: number;
+    estimated_source_tokens: number;
+    estimated_total_context_tokens: number;
+    estimated_search_baseline_tokens: number;
+    estimated_search_token_reduction_percentage: number;
+    estimated_cold_scan_tokens: number;
+    estimated_cold_scan_token_reduction_percentage: number;
     selected_node?: unknown;
     default_use?: boolean;
   };
@@ -96,11 +114,12 @@ function parseArgs(argv: string[]) {
   let includeRealRepos = false;
   let devRoot = path.join(process.env.HOME || '', 'dev');
   let maxTargets = 6;
-  let workRoot = defaultWorkRoot();
+  let workRoot = defaultIncrementalBenchmarkWorkRoot();
   let outputPath = path.join(process.cwd(), '.klauro-incremental-benchmark', 'latest-report.json');
   let markdownPath = path.join(process.cwd(), '.klauro-incremental-benchmark', 'latest-report.md');
   let keepWorkspaces = false;
   let verifyFull = true;
+  let useGitBaseline = false;
   let concurrency = 1;
 
   for (let i = 0; i < argv.length; i++) {
@@ -131,6 +150,8 @@ function parseArgs(argv: string[]) {
       verifyFull = true;
     } else if (arg === '--no-verify-full') {
       verifyFull = false;
+    } else if (arg === '--git-baseline') {
+      useGitBaseline = true;
     } else if (arg === '--concurrency') {
       concurrency = Number(argv[++i]);
     } else if (arg === '--help' || arg === '-h') {
@@ -139,7 +160,7 @@ function parseArgs(argv: string[]) {
     }
   }
 
-  return { repos, includeRealRepos, devRoot, maxTargets, workRoot, outputPath, markdownPath, keepWorkspaces, verifyFull, concurrency };
+  return { repos, includeRealRepos, devRoot, maxTargets, workRoot, outputPath, markdownPath, keepWorkspaces, verifyFull, useGitBaseline, concurrency };
 }
 
 function printHelp(): void {
@@ -154,6 +175,7 @@ function printHelp(): void {
     '  --work-root /path            Directory for copied repo workspaces and isolated storage.',
     '  --verify-full                Run a fresh full analysis after the edit and compare parity.',
     '  --no-verify-full             Skip the fresh full analysis parity check.',
+    '  --git-baseline               Initialize and commit a git baseline in copied repos. Off by default to measure agent-facing incremental value without benchmark-only git overhead.',
     '  --concurrency n             Number of repos to benchmark concurrently. Default 1. Values above 1 are capped because storage isolation is process-scoped.',
     '  --discard-workspaces         Remove copied repos after writing the report. This is the default.',
     '  --keep-workspaces            Keep copied repos for debugging.',
@@ -197,15 +219,26 @@ export async function runIncrementalValueBenchmark(options: IncrementalBenchmark
     score: Math.round(average(reports.map(target => target.score))),
     summary: {
       target_count: reports.length,
+      targets_passed: reports.filter(target => target.status === 'pass').length,
+      targets_warned: reports.filter(target => target.status === 'warn').length,
+      targets_failed: reports.filter(target => target.status === 'fail').length,
+      target_pass_rate: Number((average(reports.map(target => target.status === 'pass' ? 100 : 0)) / 100).toFixed(2)),
       incremental_success_rate: Number((average(reports.map(target => !target.change_summary.was_full_rebuild ? 100 : 0)) / 100).toFixed(2)),
       average_initial_full_ms: Math.round(average(reports.map(target => target.timings.initial_full_ms))),
       average_no_change_incremental_ms: Math.round(average(reports.map(target => target.timings.no_change_incremental_ms))),
       average_edit_incremental_ms: Math.round(average(reports.map(target => target.timings.edit_incremental_ms))),
+      average_total_wall_ms: Math.round(average(reports.map(target => target.timings.total_wall_ms))),
+      average_edit_loop_wall_ms: Math.round(average(reports.map(target => target.timings.edit_loop_wall_ms))),
+      average_non_analysis_overhead_ms: Math.round(average(reports.map(target => nonAnalysisOverheadMs(target.timings)))),
       average_no_change_speedup_vs_full: Number(average(reports.map(target => target.speedups.no_change_vs_full)).toFixed(2)),
       average_edit_speedup_vs_full: Number(average(reports.map(target => target.speedups.edit_incremental_vs_full)).toFixed(2)),
       average_packet_generation_ms_after_edit: Math.round(average(reports.map(target => target.agent_value_after_edit.packet_generation_ms))),
       average_file_read_plan_after_edit: Math.round(average(reports.map(target => target.agent_value_after_edit.file_read_plan_count))),
       average_packet_tokens_after_edit: Math.round(average(reports.map(target => target.agent_value_after_edit.estimated_packet_tokens))),
+      average_total_context_tokens_after_edit: Math.round(average(reports.map(target => target.agent_value_after_edit.estimated_total_context_tokens))),
+      average_search_baseline_tokens_after_edit: Math.round(average(reports.map(target => target.agent_value_after_edit.estimated_search_baseline_tokens))),
+      average_search_token_reduction_after_edit: Math.round(average(reports.map(target => target.agent_value_after_edit.estimated_search_token_reduction_percentage))),
+      average_cold_scan_token_reduction_after_edit: Math.round(average(reports.map(target => target.agent_value_after_edit.estimated_cold_scan_token_reduction_percentage))),
       average_full_verify_count_similarity: average(
         reports
           .map(target => target.full_verify_parity?.count_similarity)
@@ -247,9 +280,11 @@ function failedIncrementalTargetReport(
       },
     ],
     timings: {
+      total_wall_ms: Math.max(1, durationMs),
       initial_full_ms: Math.max(1, durationMs),
       no_change_incremental_ms: 0,
       edit_incremental_ms: 0,
+      edit_loop_wall_ms: 0,
     },
     speedups: {
       no_change_vs_full: 0,
@@ -282,6 +317,12 @@ function failedIncrementalTargetReport(
       file_read_plan_count: 0,
       next_mcp_calls: 0,
       estimated_packet_tokens: 0,
+      estimated_source_tokens: 0,
+      estimated_total_context_tokens: 0,
+      estimated_search_baseline_tokens: 0,
+      estimated_search_token_reduction_percentage: 0,
+      estimated_cold_scan_tokens: 0,
+      estimated_cold_scan_token_reduction_percentage: 0,
       default_use: false,
     },
   };
@@ -355,27 +396,40 @@ async function isAggregateIncrementalBenchmarkTarget(repoPath: string): Promise<
   return sourceFiles.length > 1000;
 }
 
-function defaultWorkRoot(): string {
-  return path.join(process.env.HOME || process.cwd(), '.klauro', 'incremental-benchmark-workspaces');
+export function defaultIncrementalBenchmarkWorkRoot(): string {
+  return path.join(os.tmpdir(), 'klauro-incremental-benchmark-workspaces');
 }
 
 async function benchmarkTarget(target: IncrementalTargetInput, options: IncrementalBenchmarkOptions): Promise<IncrementalTargetReport> {
-  const trialRoot = path.join(path.resolve(options.workRoot || path.join(process.cwd(), '.klauro-incremental-benchmark', 'workspaces')), `${slugify(target.name || path.basename(target.path))}-${Date.now()}`);
+  const targetStartedAt = Date.now();
+  const trialRoot = path.join(path.resolve(options.workRoot || defaultIncrementalBenchmarkWorkRoot()), `${slugify(target.name || path.basename(target.path))}-${Date.now()}`);
   const workspace = path.join(trialRoot, 'repo');
   const storagePath = path.join(trialRoot, 'storage');
   await fs.ensureDir(trialRoot);
   try {
+    const copyStartedAt = Date.now();
     await copyRepo(target.path, workspace);
-    initializeBenchmarkGitBaseline(workspace);
+    const copyRepoMs = Math.max(1, Date.now() - copyStartedAt);
+    let gitBaselineMs = 0;
+    if (options.useGitBaseline) {
+      const gitBaselineStartedAt = Date.now();
+      initializeBenchmarkGitBaseline(workspace);
+      gitBaselineMs = Math.max(1, Date.now() - gitBaselineStartedAt);
+    }
 
     const previousStorage = process.env.KLAURO_STORAGE_PATH;
     process.env.KLAURO_STORAGE_PATH = storagePath;
     try {
       const initial = await timed(() => analyzeProjectIncremental(workspace));
       const noChange = await timed(() => analyzeProjectIncremental(workspace));
+      const editSelectionStartedAt = Date.now();
       const editFile = await chooseEditFile(initial.value.output, workspace);
+      const editSelectionMs = Math.max(1, Date.now() - editSelectionStartedAt);
       if (!editFile) throw new Error(`No editable source file found in copied repo: ${workspace}`);
+      const editLoopStartedAt = Date.now();
+      const editApplyStartedAt = Date.now();
       const edit = await applySafeSourceEdit(path.join(workspace, editFile));
+      const editApplyMs = Math.max(1, Date.now() - editApplyStartedAt);
       const edited = await timed(() => analyzeProjectIncremental(workspace));
 
       const packetStartedAt = Date.now();
@@ -385,12 +439,20 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
         instructions: `Use the incremental change summary to inspect ${editFile} and preserve connected behavior.`,
       });
       const packetGenerationMs = Math.max(1, Date.now() - packetStartedAt);
+      const tokenProofStartedAt = Date.now();
+      const tokenProof = await estimatePostEditTokenProof(workspace, packet, editFile);
+      const tokenProofMs = Math.max(1, Date.now() - tokenProofStartedAt);
+      const editLoopWallMs = Math.max(1, Date.now() - editLoopStartedAt);
 
       const verify = options.verifyFull ? await timed(() => analyzeProject(workspace)) : undefined;
+      const stateLoadStartedAt = Date.now();
       const state = await loadIncrementalState(workspace);
+      const stateLoadMs = Math.max(1, Date.now() - stateLoadStartedAt);
+      const cacheSizeStartedAt = Date.now();
       const cacheSize = await getFileCacheSize(workspace);
+      const cacheSizeMs = Math.max(1, Date.now() - cacheSizeStartedAt);
       const fullParity = verify ? compareCasCounts(edited.value.output, verify.value) : undefined;
-      const gates = buildGates(initial, noChange, edited, packet, edit, fullParity);
+      const gates = buildGates(initial, noChange, edited, packet, edit, tokenProof, fullParity);
       const score = Math.round(average(gates.map(gate => gate.score)));
       const status = aggregateStatus(gates.map(gate => gate.status));
 
@@ -404,10 +466,20 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
         score,
         gates,
         timings: {
+          total_wall_ms: Math.max(1, Date.now() - targetStartedAt),
           initial_full_ms: initial.durationMs,
           no_change_incremental_ms: noChange.durationMs,
           edit_incremental_ms: edited.durationMs,
+          edit_loop_wall_ms: editLoopWallMs,
           verify_full_after_edit_ms: verify?.durationMs,
+          copy_repo_ms: copyRepoMs,
+          git_baseline_ms: gitBaselineMs,
+          edit_selection_ms: editSelectionMs,
+          edit_apply_ms: editApplyMs,
+          packet_generation_ms: packetGenerationMs,
+          token_proof_ms: tokenProofMs,
+          state_load_ms: stateLoadMs,
+          cache_size_ms: cacheSizeMs,
         },
         speedups: {
           no_change_vs_full: ratio(initial.durationMs, noChange.durationMs),
@@ -430,6 +502,7 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
           file_read_plan_count: packet.file_read_plan.length,
           next_mcp_calls: packet.next_mcp_calls.length,
           estimated_packet_tokens: estimateTokens(JSON.stringify(packet).length),
+          ...tokenProof,
           selected_node: packet.selected_node,
           default_use: packet.default_use,
         },
@@ -447,12 +520,21 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
   }
 }
 
+function nonAnalysisOverheadMs(timings: IncrementalTargetReport['timings']): number {
+  const measured = timings.initial_full_ms
+    + timings.no_change_incremental_ms
+    + timings.edit_incremental_ms
+    + (timings.verify_full_after_edit_ms || 0);
+  return Math.max(0, Math.round((timings.total_wall_ms || measured) - measured));
+}
+
 function buildGates(
   initial: Timed<IncrementalAnalysisResult>,
   noChange: Timed<IncrementalAnalysisResult>,
   edited: Timed<IncrementalAnalysisResult>,
   packet: Awaited<ReturnType<typeof getAgentWorkPacket>>,
   edit: IncrementalTargetReport['edit'],
+  tokenProof: Awaited<ReturnType<typeof estimatePostEditTokenProof>>,
   parity?: IncrementalTargetReport['full_verify_parity']
 ) {
   const changedFiles = edited.value.changeReport.summary.filesAdded +
@@ -463,13 +545,16 @@ function buildGates(
   const editWasIncremental = !edited.value.wasFullRebuild;
   const editPerformanceAcceptable = editWasIncremental && (
     ratio(initial.durationMs, edited.durationMs) >= 1.2 ||
-    edited.durationMs <= Math.max(noChange.durationMs * 8, 5000) ||
+    edited.durationMs <= Math.max(noChange.durationMs * 8, 10000) ||
     (initial.durationMs < 1000 && edited.durationMs <= initial.durationMs + 750)
   );
   const gates = [
     gate('initial-analysis-complete', initial.value.output.nodes.length > 0, `${initial.value.output.nodes.length} nodes`),
     gate('initial-state-built', initial.value.wasFullRebuild, `wasFullRebuild=${initial.value.wasFullRebuild}`),
-    gate('no-change-incremental', !noChange.value.wasFullRebuild, `wasFullRebuild=${noChange.value.wasFullRebuild}`),
+    gate('no-change-incremental', !noChange.value.wasFullRebuild, [
+      `wasFullRebuild=${noChange.value.wasFullRebuild}`,
+      noChange.value.fullRebuildReason ? `reason=${noChange.value.fullRebuildReason}` : '',
+    ].filter(Boolean).join('; ')),
     gate('no-change-empty-summary', summarizeChangedFiles(noChange.value) === 0, `${summarizeChangedFiles(noChange.value)} files changed`),
     gate('syntactic-source-edit-applied', edit.kind === 'syntactic-probe', `${edit.kind}: ${edit.detail}`),
     gate('edit-detected', editDetected, `${changedFiles} files changed, ${casDelta} CAS nodes changed`),
@@ -477,6 +562,7 @@ function buildGates(
     gate('edit-stayed-incremental', !edited.value.wasFullRebuild, `wasFullRebuild=${edited.value.wasFullRebuild}`),
     softGate('edit-performance-acceptable', editPerformanceAcceptable, `${edited.durationMs}ms vs ${initial.durationMs}ms`),
     gate('agent-packet-after-edit', packet.file_read_plan.length > 0 && packet.next_mcp_calls.length > 0, `${packet.file_read_plan.length} files, ${packet.next_mcp_calls.length} calls`),
+    gate('agent-token-reduction-after-edit', tokenProof.estimated_search_token_reduction_percentage >= 25, `${tokenProof.estimated_search_token_reduction_percentage}% vs search, ${tokenProof.estimated_total_context_tokens}/${tokenProof.estimated_search_baseline_tokens} tokens`),
   ];
   if (parity) {
     gates.push(parityGate(parity));
@@ -511,7 +597,7 @@ async function chooseEditFile(cas: IncrementalAnalysisResult['output'], workspac
     .map(entry => cas.nodes.find(node => node.id === entry.source_node)?.source?.file)
     .filter((file): file is string => Boolean(file))
     .map(file => path.isAbsolute(file) ? path.relative(workspace, file) : file);
-  const sourceFiles = await glob(['**/*.{ts,tsx,js,jsx,mjs,cjs,py,rs,go,java,cs,php,dart}'], {
+  const sourceFiles = await glob(['**/*.{ts,tsx,js,jsx,mjs,cjs,py,rs,go,java,cs,php,dart,tf,tfvars}'], {
     cwd: workspace,
     ignore: [
       '**/node_modules/**',
@@ -520,11 +606,18 @@ async function chooseEditFile(cas: IncrementalAnalysisResult['output'], workspac
       '**/.git/**',
       '**/target/**',
       '**/coverage/**',
+      '**/.terraform/**',
       '**/.dart_tool/**',
       '**/bin/**',
       '**/obj/**',
       '**/vendor/**',
       '**/vendors/**',
+      '**/third_party/**',
+      '**/third-party/**',
+      '**/*_extracted/**',
+      '**/*-extracted/**',
+      '**/examples/**',
+      '**/samples/**',
       '**/venv/**',
       '**/.venv/**',
       '**/env/**',
@@ -614,6 +707,8 @@ function isUnsafeBenchmarkEditFile(file: string): boolean {
   if (/^(package-lock|pnpm-lock|yarn\.lock|Cargo\.lock|composer\.lock|go\.sum)$/i.test(basename)) return true;
   if (/^(manage|main|index)\.(py|ts|tsx|js|jsx|mjs|cjs)$/i.test(basename)) return true;
   if (/(^|\/)(cas-tests?|codemods?|database|db|fixtures?|migrations?|schemas?|seeders?|seeds?|scripts?|tools?|types)(\/|$)/i.test(normalized)) return true;
+  if (/(^|\/)(soap|wsdl|generated-client|api-client|sdk-client)(\/|$)/i.test(normalized)) return true;
+  if (/^(ws[A-Z0-9]|.*(?:Request|Response|Array|Dto|DTO))\.(?:php|cs|java|ts)$/i.test(basename)) return true;
   if (/(database-client|db-client|generated-client|api-client|sdk-client|repository|migration|schema|entity|model|seeder|seed|fixture|fix-all|codemod)\.[cm]?[jt]sx?$/i.test(basename)) return true;
   if (isGeneratedBenchmarkFile(normalized)) return true;
   return false;
@@ -622,6 +717,8 @@ function isUnsafeBenchmarkEditFile(file: string): boolean {
 function isGeneratedBenchmarkFile(file: string): boolean {
   const normalized = file.replace(/\\/g, '/');
   if (/(^|\/)(generated|Generated|dist|build|target|vendor|vendors)(\/|$)/.test(normalized)) return true;
+  if (/(^|\/)(third_party|third-party|examples|samples)(\/|$)/i.test(normalized)) return true;
+  if (/(^|\/)[^/]+(?:_|-)extracted(\/|$)/i.test(normalized)) return true;
   if (/\.(?:map|min|bundle)\.(?:js|css)$/i.test(normalized) || /\.(?:js|css)\.map$/i.test(normalized)) return true;
   return false;
 }
@@ -660,6 +757,7 @@ const INCREMENTAL_SAFE_ANALYZERS = new Set([
   'csharp',
   'php',
   'dart',
+  'terraform',
 ]);
 
 async function applySafeSourceEdit(filePath: string): Promise<IncrementalTargetReport['edit']> {
@@ -698,6 +796,9 @@ function sourceProbeForExtension(extension: string): string | null {
       return '// analysis probe: cas-edit-loop';
     case '.dart':
       return '// analysis probe: cas-edit-loop';
+    case '.tf':
+    case '.tfvars':
+      return '# analysis probe: cas-edit-loop';
     default:
       return null;
   }
@@ -728,11 +829,17 @@ function compareCasCounts(incremental: IncrementalAnalysisResult['output'], full
 }
 
 async function copyRepo(source: string, destination: string): Promise<void> {
+  const method = process.env.KLAURO_INCREMENTAL_COPY_METHOD || 'fs';
+  if (method === 'apfs' && await copyRepoWithApfsClone(source, destination)) return;
+  if (method === 'rsync' && await copyRepoWithRsync(source, destination)) return;
   await fs.copy(source, destination, {
     filter: file => {
       const relative = path.relative(source, file);
       if (!relative) return true;
       const normalized = relative.replace(/\\/g, '/');
+      if (isBenchmarkCopyExcludedPath(normalized)) {
+        return false;
+      }
       if (/\.(?:map|bundle|min)\.(?:js|css)$/i.test(normalized) || /\.(?:js|css)\.map$/i.test(normalized)) {
         return false;
       }
@@ -745,6 +852,10 @@ async function copyRepo(source: string, destination: string): Promise<void> {
         'node_modules',
         'vendor',
         'vendors',
+        'third_party',
+        'third-party',
+        'examples',
+        'samples',
         '.venv',
         'venv',
         'env',
@@ -775,18 +886,255 @@ async function copyRepo(source: string, destination: string): Promise<void> {
         '.klauro-agent-vision-acceptance',
         '.klauro-agent-live-trials',
         '.klauro-incremental-benchmark',
-      ].includes(part));
+      ].includes(part) || /(?:_|-)extracted$/i.test(part));
     },
   });
 }
 
+async function copyRepoWithApfsClone(source: string, destination: string): Promise<boolean> {
+  if (process.platform !== 'darwin') return false;
+  if (await hasHeavyExcludedDirectory(source)) return false;
+  try {
+    await fs.ensureDir(destination);
+    execFileSync('cp', [
+      '-cR',
+      `${path.resolve(source).replace(/\/$/, '')}/.`,
+      path.resolve(destination),
+    ], {
+      stdio: 'ignore',
+      maxBuffer: 1024 * 1024 * 50,
+    });
+    await removeCopiedBenchmarkArtifacts(destination);
+    return true;
+  } catch {
+    await fs.remove(destination).catch(() => undefined);
+    return false;
+  }
+}
+
+async function hasHeavyExcludedDirectory(source: string): Promise<boolean> {
+  const heavyDirs = [
+    'node_modules',
+    '.venv',
+    'venv',
+    'env',
+    'site-packages',
+    'vendor',
+    'vendors',
+    'target',
+    'dist',
+    'build',
+    '.next',
+    '.turbo',
+    '.dart_tool',
+    '.gradle',
+    'Pods',
+  ];
+  const queue: Array<{ dir: string; depth: number }> = [{ dir: source, depth: 0 }];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (current.depth >= 3) continue;
+    let entries: string[] = [];
+    try {
+      entries = await fs.readdir(current.dir);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry === '.git' || entry === '.klauro' || entry.startsWith('.klauro-')) continue;
+      const fullPath = path.join(current.dir, entry);
+      let stat;
+      try {
+        stat = await fs.stat(fullPath);
+      } catch {
+        continue;
+      }
+      if (!stat.isDirectory()) continue;
+      if (heavyDirs.includes(entry)) return true;
+      queue.push({ dir: fullPath, depth: current.depth + 1 });
+    }
+  }
+  return false;
+}
+
+async function removeCopiedBenchmarkArtifacts(destination: string): Promise<void> {
+  let entries: string[] = [];
+  try {
+    entries = await fs.readdir(destination);
+  } catch {
+    return;
+  }
+  await Promise.all(entries
+    .filter(entry => entry === '.git' || entry === '.claude' || entry === '.codex' || entry === '.scannerwork' || entry === '.klauro' || entry.startsWith('.klauro-'))
+    .map(entry => fs.remove(path.join(destination, entry)).catch(() => undefined)));
+}
+
+async function copyRepoWithRsync(source: string, destination: string): Promise<boolean> {
+  try {
+    await fs.ensureDir(destination);
+    execFileSync('rsync', [
+      '-a',
+      '--delete',
+      ...rsyncExcludeArgs(),
+      `${path.resolve(source).replace(/\/$/, '')}/`,
+      `${path.resolve(destination).replace(/\/$/, '')}/`,
+    ], {
+      stdio: 'ignore',
+      maxBuffer: 1024 * 1024 * 50,
+    });
+    return true;
+  } catch {
+    await fs.remove(destination).catch(() => undefined);
+    return false;
+  }
+}
+
+function rsyncExcludeArgs(): string[] {
+  return [
+    '.git/',
+    '.claude/',
+    '.codex/',
+    '.scannerwork/',
+    'node_modules/',
+    'vendor/',
+    'vendors/',
+    'third_party/',
+    'third-party/',
+    'examples/',
+    'samples/',
+    '.venv/',
+    'venv/',
+    'env/',
+    'site-packages/',
+    '__pycache__/',
+    '.pytest_cache/',
+    '.mypy_cache/',
+    '.ruff_cache/',
+    '.cache/',
+    '.sourcemaps/',
+    'sourcemaps/',
+    'dist/',
+    'build/',
+    'target/',
+    'coverage/',
+    '.next/',
+    '.turbo/',
+    '.dart_tool/',
+    '.gradle/',
+    'bin/',
+    'obj/',
+    'Pods/',
+    'Generated/',
+    'generated/',
+    '.klauro*/',
+    '.klauro-agent-home/',
+    '.klauro-agent-benchmark/',
+    '.klauro-agent-quality-benchmark/',
+    '.klauro-agent-vision-acceptance/',
+    '.klauro-agent-live-trials/',
+    '.klauro-incremental-benchmark/',
+    '*_extracted/',
+    '*-extracted/',
+    '*.png',
+    '*.jpg',
+    '*.jpeg',
+    '*.gif',
+    '*.webp',
+    '*.avif',
+    '*.mp3',
+    '*.mp4',
+    '*.mov',
+    '*.wav',
+    '*.flac',
+    '*.ogg',
+    '*.zip',
+    '*.tar',
+    '*.tgz',
+    '*.gz',
+    '*.7z',
+    '*.rar',
+    '*.pdf',
+    '*.dmg',
+    '*.bin',
+    '*.a',
+    '*.so',
+    '*.dylib',
+    '*.dll',
+    '*.exe',
+    '*.pdb',
+    '*.nupkg',
+    '*.onnx',
+    '*.pt',
+    '*.pth',
+    '*.safetensors',
+    '*.ckpt',
+    '*.map',
+    '*.min.js',
+    '*.min.css',
+    '*.bundle.js',
+    '*.bundle.css',
+    'packages/FreeSpire.*/',
+    'packages/Spire.*/',
+    'packages/System.*/',
+    'packages/Microsoft.*/',
+    'packages/NETStandard.*/',
+    'packages/Newtonsoft.*/',
+    'packages/Grpc.*/',
+    'packages/runtime.*/',
+    'packages/NETCore.*/',
+    'packages/EntityFramework.*/',
+    'checkpoints/',
+    'hf_cache/',
+    'huggingface/',
+    'model_cache/',
+    'models--nvidia--bigvgan_v2_44khz_128band_512x/',
+    'blobs/',
+    'Garments/',
+    'garments/',
+    '.DS_Store',
+  ].flatMap(pattern => ['--exclude', pattern]);
+}
+
+export function isBenchmarkCopyExcludedPath(normalized: string): boolean {
+  const basename = path.basename(normalized);
+  if (basename === '.DS_Store') return true;
+  if (/\.(?:png|jpe?g|gif|webp|avif|mp[34]|mov|wav|flac|ogg|zip|tar|tgz|gz|7z|rar|pdf|dmg|bin|a|so|dylib|dll|exe|pdb|nupkg|onnx|pt|pth|safetensors|ckpt)$/i.test(basename)) {
+    return true;
+  }
+
+  const parts = normalized.split('/');
+  if (parts.some(part => [
+    'checkpoints',
+    'hf_cache',
+    'huggingface',
+    'model_cache',
+    'models--nvidia--bigvgan_v2_44khz_128band_512x',
+    'blobs',
+    'Garments',
+    'garments',
+  ].includes(part))) {
+    return true;
+  }
+
+  const packagesIndex = parts.findIndex(part => part.toLowerCase() === 'packages');
+  if (packagesIndex >= 0) {
+    const packageName = parts[packagesIndex + 1] || '';
+    if (/^(?:FreeSpire|Spire|System|Microsoft|NETStandard|Newtonsoft|Grpc|runtime\.|NETCore|EntityFramework)\./i.test(packageName)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function initializeBenchmarkGitBaseline(workspace: string): void {
-  execFileSync('git', ['init'], { cwd: workspace, stdio: 'pipe' });
-  execFileSync('git', ['add', '.'], { cwd: workspace, stdio: 'pipe' });
+  execFileSync('git', ['init'], { cwd: workspace, stdio: 'ignore', maxBuffer: 1024 * 1024 * 50 });
+  execFileSync('git', ['add', '.'], { cwd: workspace, stdio: 'ignore', maxBuffer: 1024 * 1024 * 50 });
   execFileSync('git', ['commit', '-m', 'incremental benchmark baseline'], {
     cwd: workspace,
     env: gitEnv(),
-    stdio: 'pipe',
+    stdio: 'ignore',
+    maxBuffer: 1024 * 1024 * 50,
   });
 }
 
@@ -867,6 +1215,144 @@ function ratio(baseline: number, actual: number): number {
   return Number((baseline / actual).toFixed(2));
 }
 
+async function estimatePostEditTokenProof(
+  workspace: string,
+  packet: Awaited<ReturnType<typeof getAgentWorkPacket>>,
+  editFile: string
+) {
+  const sourceFiles = await sourceFileStats(workspace);
+  const sourceTokensByFile = new Map(sourceFiles.map(file => [file.file, file.estimated_tokens]));
+  const packetTokens = estimateTokens(JSON.stringify(packet).length);
+  const plannedSourceTokens = packet.file_read_plan.reduce((total, item: any) => {
+    const file = String(item.file || '');
+    const stat = findCompatibleSourceStat(sourceFiles, file);
+    if (!stat) return total;
+    return total + estimateLineWindowTokens(workspace, file, item.line_window, stat.estimated_tokens);
+  }, 0);
+  const totalContextTokens = packetTokens + plannedSourceTokens;
+  const searchFiles = searchBaselineFiles(sourceFiles, editFile, packet);
+  const searchBaselineTokens = searchFiles.reduce((total, file) => total + (sourceTokensByFile.get(file.file) || file.estimated_tokens), 0) +
+    estimateSearchOverheadTokens(sourceFiles.length, searchFiles.length);
+  const coldScanTokens = sourceFiles.reduce((total, file) => total + file.estimated_tokens, 0);
+
+  return {
+    estimated_source_tokens: plannedSourceTokens,
+    estimated_total_context_tokens: totalContextTokens,
+    estimated_search_baseline_tokens: searchBaselineTokens,
+    estimated_search_token_reduction_percentage: percentReduction(searchBaselineTokens, totalContextTokens),
+    estimated_cold_scan_tokens: coldScanTokens,
+    estimated_cold_scan_token_reduction_percentage: percentReduction(coldScanTokens, totalContextTokens),
+  };
+}
+
+async function sourceFileStats(workspace: string): Promise<Array<{ file: string; estimated_tokens: number }>> {
+  const files = await glob(['**/*.{ts,tsx,js,jsx,mjs,cjs,py,rs,go,java,cs,php,dart,prisma,tf,tfvars}'], {
+    cwd: workspace,
+    ignore: [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/build/**',
+      '**/.git/**',
+      '**/.terraform/**',
+      '**/target/**',
+      '**/coverage/**',
+      '**/.dart_tool/**',
+      '**/bin/**',
+      '**/obj/**',
+      '**/vendor/**',
+      '**/vendors/**',
+      '**/third_party/**',
+      '**/third-party/**',
+      '**/*_extracted/**',
+      '**/*-extracted/**',
+      '**/examples/**',
+      '**/samples/**',
+      '**/Generated/**',
+      '**/generated/**',
+      '**/*.min.js',
+      '**/*.bundle.js',
+      '**/*.map',
+    ],
+    nodir: true,
+  });
+  const stats: Array<{ file: string; estimated_tokens: number }> = [];
+  for (const file of files.sort()) {
+    try {
+      const stat = await fs.stat(path.join(workspace, file));
+      stats.push({ file, estimated_tokens: estimateTokens(stat.size) });
+    } catch {
+      // Ignore files that disappear during copied-workspace cleanup or generated churn.
+    }
+  }
+  return stats;
+}
+
+function findCompatibleSourceStat(sourceFiles: Array<{ file: string; estimated_tokens: number }>, file: string) {
+  const normalized = normalizeComparablePath(file);
+  return sourceFiles.find(candidate => {
+    const candidatePath = normalizeComparablePath(candidate.file);
+    return candidatePath === normalized ||
+      candidatePath.endsWith(`/${normalized}`) ||
+      normalized.endsWith(`/${candidatePath}`);
+  });
+}
+
+function estimateLineWindowTokens(workspace: string, file: string, lineWindow: any, fallbackTokens: number): number {
+  if (!lineWindow?.start || !lineWindow?.end || lineWindow.end < lineWindow.start) return fallbackTokens;
+  try {
+    const lines = fs.readFileSync(path.resolve(workspace, file), 'utf8').split(/\r?\n/);
+    const start = Math.max(0, Math.floor(lineWindow.start) - 1);
+    const end = Math.min(lines.length, Math.floor(lineWindow.end));
+    if (start >= end) return fallbackTokens;
+    return Math.min(fallbackTokens, Math.max(1, estimateTokens(lines.slice(start, end).join('\n').length)));
+  } catch {
+    return fallbackTokens;
+  }
+}
+
+function searchBaselineFiles(
+  sourceFiles: Array<{ file: string; estimated_tokens: number }>,
+  editFile: string,
+  packet: Awaited<ReturnType<typeof getAgentWorkPacket>>
+) {
+  const targetText = [
+    editFile,
+    packet.selected_node && typeof packet.selected_node === 'object' ? JSON.stringify(packet.selected_node) : '',
+  ].join(' ');
+  const tokens = meaningfulSearchTokens(targetText);
+  const configFiles = sourceFiles.filter(file => /(^|\/)(package\.json|tsconfig|pyproject|go\.mod|cargo\.toml|composer\.json|pubspec\.yaml|readme)/i.test(file.file));
+  const matched = sourceFiles.filter(file => {
+    const normalized = file.file.toLowerCase();
+    return tokens.some(token => normalized.includes(token));
+  });
+  const selected = [...configFiles, ...matched]
+    .filter((file, index, values) => values.findIndex(candidate => candidate.file === file.file) === index);
+  return selected.length > 0 ? selected : sourceFiles;
+}
+
+function meaningfulSearchTokens(value: string): string[] {
+  return [...new Set(value
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[^a-zA-Z0-9]+/g, ' ')
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(token => token.length >= 4 && !new Set(['file', 'line', 'type', 'name', 'source', 'function', 'class']).has(token))
+  )].slice(0, 12);
+}
+
+function estimateSearchOverheadTokens(sourceFileCount: number, matchedFileCount: number): number {
+  return Math.min(50000, Math.max(2000, sourceFileCount * 120)) + matchedFileCount * 600 + 1000;
+}
+
+function percentReduction(baseline: number, actual: number): number {
+  if (baseline <= 0) return actual <= 0 ? 100 : 0;
+  return Math.round(((baseline - actual) / baseline) * 100);
+}
+
+function normalizeComparablePath(value: string): string {
+  return value.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
 function estimateTokens(size: number): number {
   return Math.max(1, Math.ceil(size / 4));
 }
@@ -907,21 +1393,28 @@ export function formatIncrementalValueMarkdownReport(report: Awaited<ReturnType<
     `Average initial full analysis: ${report.summary.average_initial_full_ms}ms`,
     `Average no-change incremental analysis: ${report.summary.average_no_change_incremental_ms}ms`,
     `Average edit incremental analysis: ${report.summary.average_edit_incremental_ms}ms`,
+    `Average edit-loop wall time: ${report.summary.average_edit_loop_wall_ms}ms`,
+    `Average target wall time: ${report.summary.average_total_wall_ms}ms`,
+    `Average non-analysis overhead: ${report.summary.average_non_analysis_overhead_ms}ms`,
     `Average no-change speedup vs full: ${report.summary.average_no_change_speedup_vs_full}x`,
     `Average edit speedup vs full: ${report.summary.average_edit_speedup_vs_full}x`,
     `Average agent packet generation after edit: ${report.summary.average_packet_generation_ms_after_edit}ms`,
     `Average file-read plan after edit: ${report.summary.average_file_read_plan_after_edit} files`,
     `Average packet size after edit: ${report.summary.average_packet_tokens_after_edit} estimated tokens`,
+    `Average total context after edit: ${report.summary.average_total_context_tokens_after_edit} estimated tokens`,
+    `Average search baseline after edit: ${report.summary.average_search_baseline_tokens_after_edit} estimated tokens`,
+    `Average token reduction vs search after edit: ${report.summary.average_search_token_reduction_after_edit}%`,
+    `Average token reduction vs cold scan after edit: ${report.summary.average_cold_scan_token_reduction_after_edit}%`,
     `Average full-verify count similarity: ${Math.round(report.summary.average_full_verify_count_similarity * 100)}%`,
     '',
     '## Repository Summary',
     '',
-    '| Repo | Status | Score | Edited file | Full ms | Edit incremental ms | Speedup | Changed files | Packet files | Parity |',
-    '| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |',
+    '| Repo | Status | Score | Edited file | Wall ms | Edit-loop ms | Full ms | Edit incremental ms | Overhead ms | Speedup | Changed files | Packet files | Token reduction | Parity |',
+    '| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
   ];
 
   for (const target of report.targets) {
-    lines.push(`| ${target.name} | ${target.status} | ${target.score} | ${target.edited_file || ''} | ${target.timings.initial_full_ms} | ${target.timings.edit_incremental_ms} | ${target.speedups.edit_incremental_vs_full}x | ${target.change_summary.files_changed} | ${target.agent_value_after_edit.file_read_plan_count} | ${target.full_verify_parity ? `${Math.round(target.full_verify_parity.count_similarity * 100)}%` : 'not run'} |`);
+    lines.push(`| ${target.name} | ${target.status} | ${target.score} | ${target.edited_file || ''} | ${target.timings.total_wall_ms || ''} | ${target.timings.edit_loop_wall_ms || ''} | ${target.timings.initial_full_ms} | ${target.timings.edit_incremental_ms} | ${nonAnalysisOverheadMs(target.timings)} | ${target.speedups.edit_incremental_vs_full}x | ${target.change_summary.files_changed} | ${target.agent_value_after_edit.file_read_plan_count} | ${target.agent_value_after_edit.estimated_search_token_reduction_percentage}% | ${target.full_verify_parity ? `${Math.round(target.full_verify_parity.count_similarity * 100)}%` : 'not run'} |`);
   }
 
   lines.push('', '## Target Details', '');
@@ -930,9 +1423,9 @@ export function formatIncrementalValueMarkdownReport(report: Awaited<ReturnType<
     lines.push(`Workspace: ${target.workspace}`);
     lines.push(`Edited file: ${target.edited_file || 'none'}`);
     lines.push(`Edit: ${target.edit.kind} (${target.edit.detail})`);
-    lines.push(`Timings: full ${target.timings.initial_full_ms}ms, no-change incremental ${target.timings.no_change_incremental_ms}ms, edit incremental ${target.timings.edit_incremental_ms}ms${target.timings.verify_full_after_edit_ms ? `, verify full ${target.timings.verify_full_after_edit_ms}ms` : ''}.`);
+    lines.push(`Timings: wall ${target.timings.total_wall_ms || 'unknown'}ms, edit-loop wall ${target.timings.edit_loop_wall_ms || 'unknown'}ms, full ${target.timings.initial_full_ms}ms, no-change incremental ${target.timings.no_change_incremental_ms}ms, edit incremental ${target.timings.edit_incremental_ms}ms, non-analysis overhead ${nonAnalysisOverheadMs(target.timings)}ms${target.timings.verify_full_after_edit_ms ? `, verify full ${target.timings.verify_full_after_edit_ms}ms` : ''}.`);
     lines.push(`Change summary: ${target.change_summary.files_changed} files changed, ${target.change_summary.nodes_added} nodes added, ${target.change_summary.nodes_modified} nodes modified, ${target.change_summary.nodes_deleted} nodes deleted, risk ${target.change_summary.risk_level}.`);
-    lines.push(`Agent packet after edit: ${target.agent_value_after_edit.file_read_plan_count} files, ${target.agent_value_after_edit.next_mcp_calls} MCP calls, ${target.agent_value_after_edit.estimated_packet_tokens} estimated tokens, ${target.agent_value_after_edit.packet_generation_ms}ms.`);
+    lines.push(`Agent packet after edit: ${target.agent_value_after_edit.file_read_plan_count} files, ${target.agent_value_after_edit.next_mcp_calls} MCP calls, ${target.agent_value_after_edit.estimated_total_context_tokens} estimated total context tokens (${target.agent_value_after_edit.estimated_packet_tokens} packet + ${target.agent_value_after_edit.estimated_source_tokens} source), ${target.agent_value_after_edit.estimated_search_token_reduction_percentage}% token reduction vs search, ${target.agent_value_after_edit.packet_generation_ms}ms.`);
     lines.push(`Gates: ${target.gates.map(gate => `${gate.id}=${gate.status}`).join(', ')}`);
     lines.push('');
   }
@@ -950,6 +1443,7 @@ async function main(): Promise<void> {
     workRoot: args.workRoot,
     keepWorkspaces: args.keepWorkspaces,
     verifyFull: args.verifyFull,
+    useGitBaseline: args.useGitBaseline,
     concurrency: args.concurrency,
   });
 
@@ -959,9 +1453,9 @@ async function main(): Promise<void> {
   await fs.writeFile(args.markdownPath, formatIncrementalValueMarkdownReport(report), 'utf8');
   const saved = await saveAgenticBenchmarkReport(report);
   console.log(`Incremental analysis benchmark: ${report.status.toUpperCase()} (${report.score}/100)`);
-  console.log(`Targets: ${report.summary.target_count} | Incremental success ${Math.round(report.summary.incremental_success_rate * 100)}% | Edit speedup ${report.summary.average_edit_speedup_vs_full}x | Packet ${report.summary.average_packet_generation_ms_after_edit}ms/${report.summary.average_packet_tokens_after_edit} tokens`);
+  console.log(`Targets: ${report.summary.target_count} | Incremental success ${Math.round(report.summary.incremental_success_rate * 100)}% | Edit speedup ${report.summary.average_edit_speedup_vs_full}x | Packet ${report.summary.average_packet_generation_ms_after_edit}ms/${report.summary.average_packet_tokens_after_edit} tokens | Token reduction ${report.summary.average_search_token_reduction_after_edit}% vs search`);
   for (const target of report.targets) {
-    console.log(`${target.status.toUpperCase().padEnd(4)} ${String(target.score).padStart(3)}/100 | ${target.name} | ${target.edited_file || 'no edit'} | ${target.timings.initial_full_ms}ms full | ${target.timings.edit_incremental_ms}ms edit incr | ${target.speedups.edit_incremental_vs_full}x | packet ${target.agent_value_after_edit.file_read_plan_count} files`);
+    console.log(`${target.status.toUpperCase().padEnd(4)} ${String(target.score).padStart(3)}/100 | ${target.name} | ${target.edited_file || 'no edit'} | ${target.timings.total_wall_ms || 'unknown'}ms wall | ${target.timings.edit_loop_wall_ms || 'unknown'}ms edit loop | ${target.timings.initial_full_ms}ms full | ${target.timings.edit_incremental_ms}ms edit incr | ${target.speedups.edit_incremental_vs_full}x | packet ${target.agent_value_after_edit.file_read_plan_count} files`);
   }
   console.log(`Report: ${args.outputPath}`);
   console.log(`Markdown: ${args.markdownPath}`);

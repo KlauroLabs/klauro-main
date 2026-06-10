@@ -11,6 +11,7 @@ import {
   preflightAgentChange,
   validateAgentChange,
 } from './agent-workflow';
+import { buildArchitectureContextForAgent, evaluateAgentReadiness, getAgentStartContext, getAgentWorkPacket } from './agent-adoption';
 
 test('openAgentWorkbench returns a product-level packet for agent work', async () => {
   await withWorkspace(async workspace => {
@@ -24,10 +25,454 @@ test('openAgentWorkbench returns a product-level packet for agent work', async (
     assert.equal(packet.product, 'agent_workbench');
     assert.equal(packet.task_packet.selected_node?.name, 'UsersService');
     assert.ok(packet.task_packet.file_read_plan.some((item: any) => item.file === 'src/users/users.service.ts'));
+    assert.equal(packet.task_packet.work_context.capability_memory.status, 'possible-existing-capability');
+    assert.ok(packet.task_packet.work_context.capability_memory.reuse_decisions_required.some((decision: any) =>
+      decision.existing_capability === 'Tenant-scoped user management'
+    ));
+    assert.ok(packet.task_packet.work_context.architecture_context.architecture_budget.includes('Service Layer'));
+    assert.ok(packet.task_packet.work_context.risk_context.target_risk);
+    assert.equal(packet.task_packet.work_context.risk_context.target_risk.name, 'UsersService');
+    assert.ok(packet.task_packet.work_context.risk_context.agent_rules.some((rule: string) => rule.includes('assess_change_risk')));
     assert.ok(packet.agent_rules.idiom_rules.some((rule: any) => rule.category === 'testing'));
     assert.equal(packet.signal_quality.overall, 'partial');
     assert.ok(packet.signal_quality.warnings.some((warning: string) => warning.includes('reusable patterns')));
     assert.ok(packet.evidence_policy.must_confirm_in_source.length > 0);
+  });
+});
+
+test('agent work packet exposes compact risk context for broad tasks before a node is selected', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    const packet = await getAgentWorkPacket(cas, workspace, {
+      task_type: 'modify',
+      target: 'improve account safety behavior',
+    });
+
+    assert.equal(packet.work_context.risk_context.status, 'ready');
+    assert.ok(packet.work_context.risk_context.summary.total_high_risk_nodes >= 1);
+    assert.ok(packet.work_context.risk_context.repo_top_risks.some((risk: any) => risk.name === 'UsersService'));
+    assert.ok(packet.work_context.risk_context.agent_rules.some((rule: string) => rule.includes('repo_top_risks')));
+  });
+});
+
+test('agent work packet prioritizes documentation files for documentation tasks', async () => {
+  await withWorkspace(async workspace => {
+    fs.mkdirSync(path.join(workspace, 'docs', 'mcp'), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, 'docs', 'mcp', 'ANALYSIS-PERFECTION-AUDIT.md'),
+      '# Analysis Perfection Audit\n\nCurrent proof evidence.\n',
+    );
+    const cas = fixtureCas();
+    cas.system = { ...cas.system, root_path: workspace } as any;
+
+    const packet = await getAgentWorkPacket(cas, workspace, {
+      task_type: 'modify',
+      target: 'analysis perfection audit documentation and MCP work packet evidence',
+    });
+
+    assert.equal(packet.selected_node, null);
+    assert.equal(packet.file_read_plan[0]?.file, 'docs/mcp/ANALYSIS-PERFECTION-AUDIT.md');
+    assert.match(packet.file_read_plan[0]?.reason || '', /task hint related file/);
+  });
+});
+
+test('agent work packet treats audit proof targets as documentation-first', async () => {
+  await withWorkspace(async workspace => {
+    fs.mkdirSync(path.join(workspace, 'docs', 'mcp'), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, 'docs', 'mcp', 'ANALYSIS-PERFECTION-AUDIT.md'),
+      '# Analysis Perfection Audit\n\nStorage maintenance MCP proof evidence.\n',
+    );
+    const cas = fixtureCas();
+    cas.system = { ...cas.system, root_path: workspace } as any;
+    cas.nodes.push(node('coverage-evidence', 'evidence', 'function', 'apps/mcp-server/src/agent-task-family-coverage.ts', 825));
+
+    const packet = await getAgentWorkPacket(cas, workspace, {
+      task_type: 'modify',
+      target: 'storage maintenance MCP tools and analysis perfection audit evidence',
+    });
+
+    assert.equal(packet.selected_node, null);
+    assert.equal(packet.file_read_plan[0]?.file, 'docs/mcp/ANALYSIS-PERFECTION-AUDIT.md');
+  });
+});
+
+test('agent work packet does not treat docs-heavy inference tasks as documentation edits', async () => {
+  await withWorkspace(async workspace => {
+    fs.mkdirSync(path.join(workspace, 'docs', 'cas'), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, 'docs', 'cas', 'README.md'),
+      '# CAS docs\n\nSDK embedded examples can confuse profile inference.\n',
+    );
+    const cas = fixtureCas();
+    cas.system = { ...cas.system, root_path: workspace } as any;
+    cas.nodes.push(
+      node('domain-extractor', 'DomainExtractor', 'class', 'packages/analyzer-core/src/analyzer/core/domain-extractor.ts', 1),
+      node('analysis-profile', 'classifyAnalysisProfile', 'function', 'apps/mcp-server/src/analysis-profile.ts', 12),
+    );
+
+    const packet = await getAgentWorkPacket(cas, workspace, {
+      task_type: 'modify',
+      target: 'adversarial domain profile inference docs heavy SDK embedded examples monorepo product summary',
+    });
+
+    assert.notEqual(packet.selected_node, null);
+    assert.ok(
+      ['DomainExtractor', 'classifyAnalysisProfile'].includes(packet.selected_node?.name || ''),
+      `expected analyzer source target, got ${packet.selected_node?.name || 'none'}`,
+    );
+    assert.ok(!packet.file_read_plan[0]?.file.endsWith('.md'));
+  });
+});
+
+test('architecture context gives agents pattern budget and target-relevant owners', () => {
+  const context = buildArchitectureContextForAgent(fixtureCas(), {
+    target: 'UsersService',
+    files: ['src/users/users.service.ts'],
+  });
+
+  assert.equal(context.system_type, 'api');
+  assert.ok(context.architecture_budget.includes('Service Layer'));
+  assert.ok(context.architecture_budget.includes('Repository'));
+  assert.equal(context.inventory_counts.services, 1);
+  assert.ok(context.inventory_examples.controllers.some((item: any) => item.name === 'UsersController'));
+  assert.ok(context.relevant_inventory.services.some((item: any) => item.name === 'UsersService'));
+  assert.ok(context.pattern_decision_matrix.some((item: any) =>
+    item.pattern === 'Repository' && item.owner_categories.includes('repositories')
+  ));
+  assert.ok(context.agent_rules.some((rule: string) => rule.includes('business rules')));
+});
+
+test('architecture context does not promote unrelated global patterns for a targeted task', () => {
+  const cas = fixtureCas();
+  cas.nodes.push(
+    node('legacy-controller', 'LegacyReportsController', 'controller', 'legacy/reports/reports.controller.ts', 1),
+    node('legacy-model', 'LegacyReport', 'entity', 'legacy/reports/report.entity.ts', 1),
+    node('legacy-view', 'LegacyReportsPage', 'component', 'legacy/reports/ReportsPage.tsx', 1),
+  );
+  cas.architecture_summary!.architectural_patterns = [
+    ...(cas.architecture_summary!.architectural_patterns || []),
+    {
+      name: 'MVC',
+      category: 'application-architecture',
+      confidence: 0.93,
+      evidence: ['legacy controller/model/view inventory'],
+      node_ids: ['legacy-controller', 'legacy-model', 'legacy-view'],
+      guidance: 'Preserve controller/model/view separation for legacy reports.',
+    },
+  ] as any;
+  cas.architecture_summary!.architectural_inventory = {
+    ...cas.architecture_summary!.architectural_inventory!,
+    controllers: [
+      ...(cas.architecture_summary!.architectural_inventory!.controllers || []),
+      'legacy-controller',
+    ],
+    models: [
+      ...(cas.architecture_summary!.architectural_inventory!.models || []),
+      'legacy-model',
+    ],
+    views: [
+      ...(cas.architecture_summary!.architectural_inventory!.views || []),
+      'legacy-view',
+    ],
+  };
+
+  const context = buildArchitectureContextForAgent(cas, {
+    target: 'UsersService',
+    files: ['src/users/users.service.ts'],
+  });
+
+  assert.ok(context.architecture_budget.includes('Service Layer'));
+  assert.ok(context.architecture_budget.includes('Repository'));
+  assert.ok(!context.architecture_budget.includes('MVC'));
+  assert.ok(context.global_architecture_budget?.includes('MVC'));
+  assert.ok(context.pattern_decision_matrix.every((item: any) => item.pattern !== 'MVC'));
+  assert.ok(context.inventory_examples.controllers.every((item: any) => item.name !== 'LegacyReportsController'));
+});
+
+test('architecture context scopes file-targeted analyzer work away from legacy API patterns', () => {
+  const cas = fixtureCas();
+  cas.system = {
+    ...cas.system,
+    type: 'MCP analyzer monorepo',
+  } as any;
+  cas.nodes.push(
+    node('quick-description', 'buildQuickDescription', 'method', 'packages/analyzer-core/src/analyzer/core/orchestrator.ts', 7017),
+    node('analyzer-service', 'CASAnalyzerService', 'service', 'packages/analyzer-core/src/analyzer/services/cas-analyzer.service.ts', 82),
+    node('query-helper', 'runQuery', 'function', 'apps/mcp-server/src/query.ts', 60),
+    node('query-import', 'import ../../../packages/analyzer-core/src/types/cas.types', 'import', 'apps/mcp-server/src/query.ts', 1),
+    node('legacy-controller', 'WorkspacesController', 'controller', 'src/workspaces/workspaces.controller.ts', 1),
+    node('legacy-model', 'workspace.entity.ts', 'file', 'src/database/entities/workspace.entity.ts', 1),
+    node('legacy-view', 'ComponentsService', 'service', 'src/components/components.service.ts', 1),
+  );
+  cas.architecture_summary!.architectural_patterns = [
+    ...(cas.architecture_summary!.architectural_patterns || []),
+    {
+      name: 'MVC',
+      category: 'application-architecture',
+      confidence: 0.95,
+      evidence: ['legacy controller/model/view inventory'],
+      node_ids: ['legacy-controller', 'legacy-model', 'legacy-view'],
+      guidance: 'Preserve legacy controller/model/view separation.',
+    },
+    {
+      name: 'Command Script / Automation',
+      category: 'automation',
+      confidence: 0.67,
+      evidence: ['analyzer orchestration method'],
+      node_ids: ['quick-description', 'analyzer-service', 'query-helper', 'query-import'],
+      guidance: 'Preserve analyzer orchestration and helper-module split.',
+    },
+  ] as any;
+  cas.architecture_summary!.architectural_inventory = {
+    ...cas.architecture_summary!.architectural_inventory!,
+    controllers: [
+      ...(cas.architecture_summary!.architectural_inventory!.controllers || []),
+      'legacy-controller',
+    ],
+    models: [
+      ...(cas.architecture_summary!.architectural_inventory!.models || []),
+      'legacy-model',
+    ],
+    views: [
+      ...(cas.architecture_summary!.architectural_inventory!.views || []),
+      'legacy-view',
+    ],
+    scripts: ['quick-description'],
+    services: [
+      ...(cas.architecture_summary!.architectural_inventory!.services || []),
+      'analyzer-service',
+    ],
+    mediators: ['query-helper', 'query-import'],
+  };
+
+  const context = buildArchitectureContextForAgent(cas, {
+    target: 'analysis quality MCP usefulness token savings greenfield existing project architecture idiom proof',
+    files: [
+      'packages/analyzer-core/src/analyzer/core/orchestrator.ts',
+      'packages/analyzer-core/src/analyzer/services/cas-analyzer.service.ts',
+      'apps/mcp-server/src/query.ts',
+    ],
+  });
+
+  assert.ok(context.architecture_budget.includes('Command Script / Automation'));
+  assert.ok(!context.architecture_budget.includes('MVC'));
+  assert.ok(context.global_architecture_budget?.includes('MVC'));
+  assert.ok(context.pattern_decision_matrix.every((item: any) => item.pattern !== 'MVC'));
+  assert.ok(context.pattern_decision_matrix.every((item: any) =>
+    (item.examples || []).every((example: any) => !String(example.file || '').includes('src/workspaces'))
+  ));
+  assert.ok((context.inventory_examples.controllers || []).every((item: any) => item.name !== 'WorkspacesController'));
+  assert.ok((context.inventory_examples.models || []).every((item: any) => item.name !== 'workspace.entity.ts'));
+  const allExamples = [
+    ...Object.values(context.inventory_examples || {}).flat(),
+    ...Object.values(context.relevant_inventory || {}).flat(),
+    ...context.pattern_decision_matrix.flatMap((row: any) => row.examples || []),
+  ] as any[];
+  assert.ok(allExamples.every((example: any) => example.type !== 'import'));
+  assert.ok(allExamples.every((example: any) => !String(example.name || '').startsWith('import ')));
+});
+
+test('architecture context scopes Angular feature examples to the selected feature while allowing shared API definitions', () => {
+  const cas = fixtureCas();
+  cas.system = {
+    ...cas.system,
+    type: 'Angular frontend',
+  } as any;
+  cas.nodes.push(
+    node('company-api', 'Company', 'class', 'src/app/defs-api/company.ts', 95),
+    node('reports-api', 'reports.ts', 'file', 'src/app/defs-api/reports.ts', 1),
+    node('vehicle-api', 'Vehicle', 'class', 'src/app/defs-api/vehicles.ts', 1),
+    node('user-api', 'User', 'class', 'src/app/defs-api/user.ts', 1),
+    node('company-view', 'CompanyComponent', 'class', 'src/app/features/admin/companies/view/company.component.ts', 1),
+    node('user-view', 'UserViewComponent', 'class', 'src/app/features/admin/users/view/user-view.component.ts', 1),
+    node('device-view', 'AdminDeviceComponent', 'class', 'src/app/features/admin/devices/view/device.component.ts', 1),
+  );
+  cas.edges.push(
+    { id: 'edge-company-reports', source: 'company-api', target: 'reports-api', type: 'calls' },
+    { id: 'edge-company-vehicle', source: 'company-api', target: 'vehicle-api', type: 'uses' },
+    { id: 'edge-company-user', source: 'company-api', target: 'user-api', type: 'uses' },
+  );
+  cas.architecture_summary!.architectural_patterns = [
+    {
+      name: 'Client SDK / API Wrapper',
+      category: 'integration',
+      confidence: 0.9,
+      evidence: ['generated API definitions'],
+      node_ids: ['company-api', 'reports-api', 'vehicle-api', 'user-api'],
+      guidance: 'Keep API protocol shapes in defs-api owners.',
+    },
+    {
+      name: 'Component/Page UI',
+      category: 'presentation',
+      confidence: 0.88,
+      evidence: ['feature component folders'],
+      node_ids: ['company-view', 'user-view', 'device-view'],
+      guidance: 'Place UI behavior under the closest feature component.',
+    },
+  ] as any;
+  cas.architecture_summary!.architectural_inventory = {
+    ...cas.architecture_summary!.architectural_inventory!,
+    views: ['company-view', 'user-view', 'device-view'],
+    clients: ['company-api', 'reports-api'],
+    packages: ['vehicle-api', 'user-api'],
+  };
+
+  const context = buildArchitectureContextForAgent(cas, {
+    target: 'Company Management',
+    files: [
+      'src/app/defs-api/company.ts',
+      'src/app/features/admin/companies/view/company.component.ts',
+      'src/app/defs-api/reports.ts',
+    ],
+  });
+
+  const viewExamples = [
+    ...((context.relevant_inventory.views || []) as any[]),
+    ...((context.inventory_examples.views || []) as any[]),
+  ];
+  assert.ok(viewExamples.some((example: any) => example.name === 'CompanyComponent'));
+  assert.ok(viewExamples.every((example: any) => example.name !== 'UserViewComponent'));
+  assert.ok(viewExamples.every((example: any) => example.name !== 'AdminDeviceComponent'));
+  assert.ok((context.relevant_inventory.packages || []).some((example: any) => example.name === 'Vehicle'));
+});
+
+test('architecture context synthesizes selected-file owners instead of global examples for unbucketed files', () => {
+  const cas = fixtureCas();
+  cas.system = {
+    ...cas.system,
+    type: 'React frontend with Python service helpers',
+  } as any;
+  cas.nodes.push(
+    node('wallet-page', 'WalletsPage.tsx', 'file', 'src/pages/WalletsPage.tsx', 1),
+    node('app-route', 'signals', 'route', 'src/App.tsx', 22),
+    node('dominator-class', 'Dominator', 'class', 'server/dominator.py', 116),
+    node('asyncio-import', 'asyncio', 'import', 'server/dominator.py', 1),
+  );
+  cas.architecture_summary!.architectural_patterns = [
+    {
+      name: 'Component/Page UI',
+      category: 'presentation',
+      confidence: 0.88,
+      evidence: ['React page inventory'],
+      node_ids: ['wallet-page', 'app-route'],
+      guidance: 'Keep UI behavior in page/component owners.',
+    },
+  ] as any;
+  cas.architecture_summary!.architectural_inventory = {
+    ...cas.architecture_summary!.architectural_inventory!,
+    views: ['wallet-page'],
+    controllers: ['app-route'],
+    packages: [],
+    scripts: [],
+  };
+
+  const context = buildArchitectureContextForAgent(cas, {
+    target: 'Dominator',
+    files: ['server/dominator.py'],
+  });
+
+  const allExampleFiles = [
+    ...Object.values(context.inventory_examples || {}).flat().map((item: any) => item.file),
+    ...Object.values(context.relevant_inventory || {}).flat().map((item: any) => item.file),
+    ...context.pattern_decision_matrix.flatMap((row: any) => (row.examples || []).map((item: any) => item.file)),
+  ].filter(Boolean);
+  assert.ok(allExampleFiles.some((file: string) => file === 'server/dominator.py'));
+  assert.ok(allExampleFiles.every((file: string) => !String(file).includes('src/pages/WalletsPage.tsx')));
+  assert.ok(allExampleFiles.every((file: string) => !String(file).includes('src/App.tsx')));
+  assert.ok((context.relevant_inventory.services || context.relevant_inventory.packages || []).length > 0);
+  const allExamples = [
+    ...Object.values(context.inventory_examples || {}).flat(),
+    ...Object.values(context.relevant_inventory || {}).flat(),
+    ...context.pattern_decision_matrix.flatMap((row: any) => row.examples || []),
+  ] as any[];
+  assert.ok(allExamples.every((example: any) => example.type !== 'import'));
+  assert.ok(allExamples.every((example: any) => !String(example.name || '').startsWith('import ')));
+});
+
+test('architecture context exposes local pattern owners for architecture proposal decisions', () => {
+  const cas = fixtureCas();
+  cas.nodes.push(
+    node('users-repository', 'UsersRepository', 'repository', 'src/users/users.repository.ts', 1),
+    node('users-page', 'UsersPage', 'component', 'src/users/UsersPage.tsx', 1),
+    node('users-view-model', 'UsersViewModel', 'class', 'src/users/UsersViewModel.ts', 1),
+    node('create-user-handler', 'CreateUserCommandHandler', 'class', 'src/users/handlers/CreateUserCommandHandler.ts', 1),
+    node('unit-of-work', 'UnitOfWork', 'class', 'src/persistence/UnitOfWork.ts', 1),
+  );
+  cas.architecture_summary!.architectural_patterns = [
+    ...(cas.architecture_summary!.architectural_patterns || []),
+    {
+      name: 'MVC',
+      category: 'application-architecture',
+      confidence: 0.86,
+      evidence: ['controller/model/view inventory'],
+      node_ids: ['users-controller', 'user-entity', 'users-page'],
+      guidance: 'Preserve controller/model/view separation for request and page flows.',
+    },
+    {
+      name: 'MVVM',
+      category: 'ui-state',
+      confidence: 0.84,
+      evidence: ['view and view-model inventory'],
+      node_ids: ['users-page', 'users-view-model'],
+      guidance: 'Put UI interaction state in view models rather than components.',
+    },
+    {
+      name: 'Mediator / Handler',
+      category: 'application-architecture',
+      confidence: 0.82,
+      evidence: ['command handler inventory'],
+      node_ids: ['create-user-handler'],
+      guidance: 'Add use-case handlers beside existing command/query handlers.',
+    },
+    {
+      name: 'Unit of Work',
+      category: 'data-access',
+      confidence: 0.8,
+      evidence: ['unit of work inventory'],
+      node_ids: ['unit-of-work'],
+      guidance: 'Coordinate multi-repository writes through the unit-of-work boundary.',
+    },
+  ] as any;
+  cas.architecture_summary!.architectural_inventory = {
+    ...cas.architecture_summary!.architectural_inventory!,
+    views: ['users-page'],
+    view_models: ['users-view-model'],
+    repositories: ['users-repository'],
+    mediators: ['create-user-handler'],
+    unit_of_work: ['unit-of-work'],
+  };
+
+  const context = buildArchitectureContextForAgent(cas, { target: 'new users workflow', limit: 8 });
+  const matrix = context.pattern_decision_matrix;
+
+  assert.ok(context.inventory_examples.models.some((item: any) => item.name === 'User'));
+  assert.ok(context.inventory_examples.views.some((item: any) => item.name === 'UsersPage'));
+  assert.ok(context.inventory_examples.controllers.some((item: any) => item.name === 'UsersController'));
+  assert.ok(matrix.some((item: any) => item.pattern === 'MVC' && item.owner_categories.includes('controllers') && item.owner_categories.includes('models')));
+  assert.ok(matrix.some((item: any) => item.pattern === 'MVVM' && item.owner_categories.includes('view_models')));
+  assert.ok(matrix.some((item: any) => item.pattern === 'Mediator / Handler' && item.owner_categories.includes('mediators')));
+  assert.ok(matrix.some((item: any) => item.pattern === 'Unit of Work' && item.owner_categories.includes('unit_of_work')));
+});
+
+test('small-repo work packets retain compact architecture decision context', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    cas.nodes = cas.nodes.slice(0, 3);
+    cas.edges = cas.edges.slice(0, 2);
+    cas.test_suites = [];
+
+    const packet = await getAgentWorkPacket(cas, workspace, {
+      task_type: 'modify',
+      target: 'UsersService',
+      instructions: 'Make a small service change.',
+    });
+
+    const compactPacket = packet as any;
+    assert.match(compactPacket.packet_profile || '', /small-repo-minimal|micro-repo|token-minimal/);
+    assert.ok(compactPacket.work_context.architecture_context);
+    assert.ok(compactPacket.work_context.architecture_context.pattern_decision_matrix.length > 0);
+    assert.ok(compactPacket.work_context.architecture_context.agent_rules.some((rule: string) => /architectural style|pattern/i.test(rule)));
   });
 });
 
@@ -55,6 +500,152 @@ test('preflightAgentChange explains fit, impacts, and required checks before edi
     assert.ok(review.findings.some((finding: any) => finding.evidence_source === 'cas-analysis'));
     assert.equal(review.signal_quality.counts.tests, 1);
     assert.ok(review.plan_output_block.include_in_agent_plan);
+  });
+});
+
+test('agent work packet honors explicit file path targets before semantic fallback', async () => {
+  await withWorkspace(async workspace => {
+    const packet = await getAgentWorkPacket(fixtureCas(), workspace, {
+      task_type: 'modify',
+      target: 'src/users/entities/user.entity.ts',
+      instructions: 'Change the persisted User shape.',
+    });
+
+    assert.equal(packet.selected_node?.name, 'User');
+    assert.equal(packet.file_read_plan[0].file, 'src/users/entities/user.entity.ts');
+    assert.ok(packet.target_resolution.candidates.every((candidate: any) =>
+      candidate.file === 'src/users/entities/user.entity.ts' || candidate.score < 250
+    ));
+  });
+});
+
+test('agent work packet ignores generic capability suffixes when resolving targets', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    cas.nodes.push(
+      node('payments-service', 'PaymentsService', 'service', 'src/payments/payments.service.ts', 1),
+      node('portfolio-management-service', 'PortfolioManagementService', 'service', 'src/business/services/portfolio-management/portfolio-management.service.ts', 1),
+    );
+
+    const packet = await getAgentWorkPacket(cas, workspace, {
+      task_type: 'modify',
+      target: 'Payments Management',
+      instructions: 'Make a small idiomatic change without duplicating existing behavior.',
+    });
+
+    assert.equal(packet.selected_node?.name, 'PaymentsService');
+    assert.equal(packet.file_read_plan[0].file, 'src/payments/payments.service.ts');
+  });
+});
+
+test('agent work packet prefers active analyzer source over legacy lexical matches for analyzer maintenance', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    cas.nodes.push(
+      node('legacy-analyzer-method', 'analyzer', 'method', 'legacy/database/typescript/database-client.ts', 111) as any,
+      node('language-analyzer-method', 'analyze', 'method', 'packages/analyzer-core/src/analyzer/languages/typescript-javascript-analyzer.ts', 326) as any,
+      node('active-capability-summary', 'buildQuickDescription', 'method', 'packages/analyzer-core/src/analyzer/core/orchestrator.ts', 6660) as any,
+    );
+
+    const packet = await getAgentWorkPacket(cas, workspace, {
+      task_type: 'modify',
+      target: 'capability summaries analyzer usefulness review',
+      instructions: 'Improve CAS capability summaries and analysis usefulness review output.',
+    });
+
+    assert.equal(packet.selected_node?.name, 'buildQuickDescription');
+    assert.equal(packet.file_read_plan[0].file, 'packages/analyzer-core/src/analyzer/core/orchestrator.ts');
+  });
+});
+
+test('agent work packet keeps task-hint files out of architecture placement guidance', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    cas.system = {
+      ...cas.system,
+      type: 'MCP analyzer monorepo',
+    } as any;
+    cas.nodes.push(
+      node('quick-description', 'buildQuickDescription', 'method', 'packages/analyzer-core/src/analyzer/core/orchestrator.ts', 7017),
+      node('analyzer-service', 'CASAnalyzerService', 'service', 'packages/analyzer-core/src/analyzer/services/cas-analyzer.service.ts', 82),
+      node('auth-service', 'AuthService', 'service', 'packages/analyzer-core/src/auth/auth.service.ts', 9),
+    );
+    cas.architecture_summary!.architectural_patterns = [
+      {
+        name: 'Service Layer',
+        category: 'business-logic',
+        confidence: 0.91,
+        evidence: ['analyzer service inventory'],
+        node_ids: ['quick-description', 'analyzer-service', 'auth-service'],
+        guidance: 'Keep analyzer orchestration in analyzer services.',
+      },
+    ] as any;
+    cas.architecture_summary!.architectural_inventory = {
+      ...cas.architecture_summary!.architectural_inventory!,
+      services: ['analyzer-service', 'auth-service'],
+    };
+
+    const packet = await getAgentWorkPacket(cas, workspace, {
+      task_type: 'modify',
+      target: 'buildQuickDescription',
+      instructions: 'Improve analyzer output without changing auth.',
+    });
+
+    const examples = [
+      ...Object.values(packet.work_context.architecture_context.inventory_examples || {}).flatMap((items: any) => items || []),
+      ...Object.values(packet.work_context.architecture_context.relevant_inventory || {}).flatMap((items: any) => items || []),
+    ] as any[];
+    assert.ok(examples.some((example: any) => String(example.file || '').includes('src/analyzer')));
+    assert.ok(examples.every((example: any) => !String(example.file || '').includes('src/auth')));
+  });
+});
+
+test('agent work packet infers focused tests from the workspace when CAS test links are missing', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    delete (cas as any).test_suites;
+    cas.edges = (cas.edges || []).filter(edge => edge.type !== 'tests');
+
+    const packet = await getAgentWorkPacket(cas, workspace, {
+      task_type: 'modify',
+      target: 'src/users/users.service.ts',
+      instructions: 'Change service behavior without broad test exploration.',
+    });
+
+    assert.equal(packet.validation_plan.strategy, 'focused-tests-first');
+    assert.ok(packet.validation_plan.tests_to_inspect.some((testFile: any) =>
+      testFile.file === 'src/users/users.service.spec.ts'
+    ));
+    assert.ok(packet.validation_plan.commands.some((command: any) =>
+      command.scope === 'focused-test' && command.command.includes('src/users/users.service.spec.ts')
+    ));
+  });
+});
+
+test('agent work packet excludes Klauro proof artifacts from task-hint source files', async () => {
+  await withWorkspace(async workspace => {
+    const generatedDir = path.join(workspace, '.klauro-existing-task-live-audit-feature', 'run', 'with-klauro', 'src', 'domain');
+    fs.mkdirSync(path.join(workspace, 'src', 'domain'), { recursive: true });
+    fs.mkdirSync(generatedDir, { recursive: true });
+    fs.writeFileSync(path.join(workspace, 'src', 'domain', 'task.ts'), 'export class Task {}');
+    fs.writeFileSync(path.join(generatedDir, 'task.ts'), 'export class Task {}');
+
+    const cas = fixtureCas();
+    cas.system.root_path = workspace;
+    cas.nodes.push(
+      node('task-domain', 'Task', 'entity', 'src/domain/task.ts', 1) as any,
+      node('generated-task-domain', 'Task', 'entity', '.klauro-existing-task-live-audit-feature/run/with-klauro/src/domain/task.ts', 1) as any,
+    );
+
+    const packet = await getAgentWorkPacket(cas, workspace, {
+      task_type: 'modify',
+      target: 'audit task domain model',
+      instructions: 'Add audit domain behavior without reading generated proof artifacts.',
+    });
+
+    const files = packet.file_read_plan.map((item: any) => item.file);
+    assert.ok(files.some((file: string) => file === 'src/domain/task.ts'));
+    assert.ok(files.every((file: string) => !file.includes('.klauro-existing-task-live')));
   });
 });
 
@@ -115,9 +706,55 @@ test('validateAgentChange blocks non-idiomatic post-edit diffs', async () => {
   });
 });
 
+test('readiness, start context, and work packet surface dominant unanalyzed languages', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    (cas.system as any).technologies = {
+      ...(cas.system as any).technologies,
+      unanalyzed_languages: [{ name: 'Ruby', files: 289, share_of_source: 79 }],
+    };
+
+    const readiness = evaluateAgentReadiness(cas, workspace);
+    const languageGate = readiness.gates.find(item => item.id === 'language-coverage');
+    assert.equal(languageGate?.status, 'fail');
+    assert.equal(
+      languageGate?.detail,
+      'Ruby is 79% of source but not analyzed; CAS covers only the analyzed remainder',
+    );
+    assert.ok(readiness.adoption_gaps.includes(
+      'language-coverage: Ruby is 79% of source but not analyzed; CAS covers only the analyzed remainder',
+    ));
+    assert.equal(readiness.default_use, false);
+
+    const expectedNote = 'Ruby is 79% of source (289 files) but not analyzed; CAS covers only the analyzed remainder. Fall back to direct file reading for the Ruby portion.';
+    const context = getAgentStartContext(cas, workspace);
+    assert.equal(context.readiness.language_coverage_note, expectedNote);
+
+    const packet = await getAgentWorkPacket(cas, workspace, { task_type: 'orient' });
+    assert.equal(packet.readiness.language_coverage_note, expectedNote);
+  });
+});
+
+test('readiness has no language coverage gate when no unanalyzed language dominates', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    (cas.system as any).technologies = {
+      ...(cas.system as any).technologies,
+      unanalyzed_languages: [{ name: 'Lua', files: 6, share_of_source: 4 }],
+    };
+
+    const readiness = evaluateAgentReadiness(cas, workspace);
+    assert.equal(readiness.gates.find(item => item.id === 'language-coverage'), undefined);
+
+    const context = getAgentStartContext(cas, workspace);
+    assert.equal(context.readiness.language_coverage_note, undefined);
+  });
+});
+
 async function withWorkspace(run: (workspace: string) => void | Promise<void>): Promise<void> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-agent-workflow-test-'));
   try {
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ scripts: { test: 'jest', typecheck: 'tsc --noEmit' } }));
     fs.mkdirSync(path.join(root, 'src', 'users', 'entities'), { recursive: true });
     fs.writeFileSync(path.join(root, 'src', 'users', 'users.service.ts'), 'export class UsersService {}\n');
     fs.writeFileSync(path.join(root, 'src', 'users', 'users.service.spec.ts'), 'describe("UsersService", () => {});\n');
@@ -163,6 +800,53 @@ function fixtureCas(): CASOutput {
     analyzer_contributions: [
       { analyzer_name: 'fixture', nodes_created: 4, edges_created: 3 },
     ],
+    architecture_summary: {
+      system_type: 'api',
+      total_files: 4,
+      architectural_patterns: [
+        {
+          name: 'Service Layer',
+          category: 'business-logic',
+          confidence: 0.9,
+          evidence: ['1 service/use-case node'],
+          node_ids: ['users-service'],
+          guidance: 'Put business rules in services/use-cases and keep entry points thin.',
+        },
+        {
+          name: 'Repository',
+          category: 'data-access',
+          confidence: 0.72,
+          evidence: ['entity-backed data access'],
+          node_ids: ['user-entity'],
+          guidance: 'Use the repository/store layer for persistence access instead of reaching into storage from controllers or UI code.',
+        },
+      ],
+      architectural_inventory: {
+        models: ['user-entity'],
+        views: [],
+        controllers: ['users-controller'],
+        view_models: [],
+        services: ['users-service'],
+        repositories: [],
+        clients: [],
+        mediators: [],
+        unit_of_work: [],
+        singletons: [],
+        scripts: [],
+        packages: [],
+      },
+      pattern_balance: {
+        status: 'balanced',
+        detected_count: 2,
+        risks: [],
+        recommendations: ['Use detected patterns as placement guidance, then verify against local examples and tests.'],
+      },
+      layers: {
+        presentation: { controllers: 1, endpoints: 1 },
+        business: { services: 1 },
+        data: { entities: 1 },
+      },
+    },
     test_suites: [
       {
         id: 'suite-users-service',
@@ -236,6 +920,58 @@ function fixtureCas(): CASOutput {
         related_boundaries: [],
         related_entities: ['User'],
         gaps: [],
+      },
+    ],
+    change_risks: [
+      {
+        node_id: 'users-service',
+        risk_level: 'high',
+        risk_factors: [
+          { factor: 'security-sensitive', severity: 'high', details: 'Creates tenant-scoped users.' },
+          { factor: 'critical-path', severity: 'medium', details: 'Backs the POST /users entry point.' },
+        ],
+        downstream_impact: {
+          direct_callers: ['users-controller'],
+          transitive_callers: [],
+          affected_call_chains: [],
+          affected_entry_points: ['entry-users-create'],
+        },
+        test_protection: {
+          has_direct_tests: true,
+          has_integration_tests: false,
+          test_ids: ['test-create-user'],
+        },
+        stability_context: {
+          recent_churn: false,
+          commit_count_30d: 0,
+          bug_fix_density: 0,
+        },
+        recommendations: ['Inspect tenant-scope tests before changing user creation.'],
+      },
+    ],
+    change_risk_summary: {
+      high_risk_nodes: ['users-service'],
+      untested_critical_paths: [],
+      recent_hotspots: [],
+    },
+    system_capabilities: [
+      {
+        id: 'capability-users',
+        name: 'Tenant-scoped user management',
+        description: 'Creates and manages users while preserving organization tenant scope.',
+        category: 'core',
+        operations: [
+          {
+            entry_point_id: 'entry-users-create',
+            entry_point_type: 'http',
+            action: 'create tenant-scoped user',
+            path_or_command: 'src/users/users.service.ts',
+          },
+        ],
+        related_entities: ['User'],
+        related_domains: ['users', 'tenant-scope'],
+        criticality: 'critical',
+        criticality_factors: ['tenant scope'],
       },
     ],
     analysis_errors: [],

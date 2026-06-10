@@ -1,13 +1,20 @@
 import * as fs from 'fs-extra';
+import * as os from 'os';
 import * as path from 'path';
+import { spawn } from 'child_process';
 import pLimit from 'p-limit';
 import { getOrchestrator } from './analyzer';
 import { evaluateAgentReadiness } from './agent-adoption';
 import { runAgentIdiomBenchmark } from './agent-idiom-benchmark';
+import { runAgentGreenfieldBenchmark } from './agent-greenfield-benchmark';
+import { runAgentCapabilityMemoryBenchmark } from './agent-capability-memory-benchmark';
+import { runFromZeroBuildPacketProof } from './agent-from-zero-build-packet-proof';
+import { reviewAnalysisUsefulness } from './analysis-usefulness-review';
 import { runIncrementalValueBenchmark } from './incremental-benchmark';
 import { discoverRealRepos, type RealRepoTarget } from './repo-discovery';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
+export type MachineProofMode = 'fast' | 'full';
 
 interface Gate {
   id: string;
@@ -16,9 +23,12 @@ interface Gate {
   detail: string;
 }
 
-interface ParsedArgs {
+export interface ParsedArgs {
   devRoot: string;
+  mode?: MachineProofMode;
   maxTargets?: number;
+  startIndex?: number;
+  maxSourceFiles?: number;
   outputPath: string;
   markdownPath: string;
   workRoot?: string;
@@ -33,6 +43,9 @@ interface ParsedArgs {
   discardWorkspaces: boolean;
   analysisConcurrency?: number;
   incrementalConcurrency?: number;
+  analysisBudgetMs?: number;
+  incrementalBudgetMs?: number;
+  incrementalExecutionModel?: 'in-process' | 'isolated';
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -40,6 +53,9 @@ function parseArgs(argv: string[]): ParsedArgs {
   let outputPath = path.join(process.cwd(), '.klauro-agent-proof-machine', 'latest-report.json');
   let markdownPath = path.join(process.cwd(), '.klauro-agent-proof-machine', 'latest-report.md');
   let maxTargets: number | undefined;
+  let startIndex: number | undefined;
+  let mode: MachineProofMode | undefined;
+  let maxSourceFiles: number | undefined;
   let workRoot: string | undefined;
   let runLive = true;
   let agentWithCommand: string | undefined;
@@ -52,11 +68,17 @@ function parseArgs(argv: string[]): ParsedArgs {
   let discardWorkspaces = true;
   let analysisConcurrency = 1;
   let incrementalConcurrency = 1;
+  let analysisBudgetMs: number | undefined;
+  let incrementalBudgetMs: number | undefined;
+  let incrementalExecutionModel: ParsedArgs['incrementalExecutionModel'];
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--dev-root') devRoot = path.resolve(argv[++i]);
+    else if (arg === '--mode') mode = parseMachineProofMode(argv[++i]);
     else if (arg === '--max-targets') maxTargets = Number(argv[++i]);
+    else if (arg === '--start-index') startIndex = Number(argv[++i]);
+    else if (arg === '--max-source-files') maxSourceFiles = Number(argv[++i]);
     else if (arg === '--output') outputPath = path.resolve(argv[++i]);
     else if (arg === '--markdown') markdownPath = path.resolve(argv[++i]);
     else if (arg === '--work-root') workRoot = path.resolve(argv[++i]);
@@ -70,6 +92,9 @@ function parseArgs(argv: string[]): ParsedArgs {
     else if (arg === '--test-timeout-ms') testTimeoutMs = Number(argv[++i]);
     else if (arg === '--analysis-concurrency') analysisConcurrency = Number(argv[++i]);
     else if (arg === '--incremental-concurrency') incrementalConcurrency = Number(argv[++i]);
+    else if (arg === '--analysis-budget-ms') analysisBudgetMs = Number(argv[++i]);
+    else if (arg === '--incremental-budget-ms') incrementalBudgetMs = Number(argv[++i]);
+    else if (arg === '--incremental-execution') incrementalExecutionModel = parseIncrementalExecutionModel(argv[++i]);
     else if (arg === '--keep-workspaces') discardWorkspaces = false;
     else if (arg === '--help' || arg === '-h') {
       printHelp();
@@ -79,7 +104,10 @@ function parseArgs(argv: string[]): ParsedArgs {
 
   return {
     devRoot,
+    mode,
     maxTargets,
+    startIndex,
+    maxSourceFiles,
     outputPath,
     markdownPath,
     workRoot,
@@ -94,7 +122,20 @@ function parseArgs(argv: string[]): ParsedArgs {
     discardWorkspaces,
     analysisConcurrency,
     incrementalConcurrency,
+    analysisBudgetMs,
+    incrementalBudgetMs,
+    incrementalExecutionModel,
   };
+}
+
+function parseMachineProofMode(value: string): MachineProofMode {
+  if (value === 'fast' || value === 'full') return value;
+  throw new Error(`Invalid machine proof mode "${value}". Expected fast or full.`);
+}
+
+function parseIncrementalExecutionModel(value: string): ParsedArgs['incrementalExecutionModel'] {
+  if (value === 'in-process' || value === 'isolated') return value;
+  throw new Error(`Invalid incremental execution model "${value}". Expected in-process or isolated.`);
 }
 
 function printHelp(): void {
@@ -103,7 +144,10 @@ function printHelp(): void {
     '',
     'Options:',
     '  --dev-root /path               Root to discover real Git repos under. Default ~/dev.',
+    '  --mode fast|full               fast samples eligible repos with resource budgets; full analyzes every eligible repo. Default fast.',
     '  --max-targets n                Limit eligible repos for expensive analysis/proof while still reporting all discovered repos.',
+    '  --start-index n                Start selected eligible repos at this zero-based index after size filtering. Use with --max-targets for batched gauntlets.',
+    '  --max-source-files n           Skip eligible repos above this source-file count for expensive checks while still reporting them.',
     '  --no-live                      Skip live idiom A/B gate. The report will fail the live-proof gate.',
     '  --agent-with-cmd command       Live with-Klauro agent command template.',
     '  --agent-without-cmd command    Live without-Klauro agent command template.',
@@ -113,6 +157,9 @@ function printHelp(): void {
     '  --max-live-tasks n             Maximum live idiom task pairs.',
     '  --analysis-concurrency n       Number of repo analyses to run concurrently. Default 1.',
     '  --incremental-concurrency n    Number of incremental repo checks to run concurrently. Default 1. Values above 1 are capped by the incremental benchmark.',
+    '  --incremental-execution mode   Incremental proof model: in-process or isolated. Default in-process for fast mode, isolated for full mode.',
+    '  --analysis-budget-ms n         Per-selected-repo analysis budget gate. Default 30000 in fast mode, 120000 in full mode.',
+    '  --incremental-budget-ms n      Per-selected-repo incremental budget gate. Default 30000 in fast mode, 120000 in full mode.',
     '  --keep-workspaces              Keep copied repo workspaces.',
     '  --output /path/report.json     Write JSON report.',
     '  --markdown /path/report.md     Write Markdown report.',
@@ -120,11 +167,17 @@ function printHelp(): void {
 }
 
 export async function runMachineAgentProof(options: ParsedArgs) {
+  options = normalizeMachineProofOptions(options);
+  const previousFreshOrchestrator = process.env.KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS;
+  if (previousFreshOrchestrator === undefined) {
+    process.env.KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS = '1';
+  }
+
   const runId = `machine-${Date.now()}`;
-  const workRoot = options.workRoot || path.join(process.env.HOME || process.cwd(), '.klauro', 'machine-proof-workspaces', runId);
+  const workRoot = options.workRoot || defaultMachineProofWorkRoot(runId);
   const discovery = await discoverRealRepos(options.devRoot);
   const eligible = discovery.repos.filter(repo => repo.status === 'eligible');
-  const selectedEligible = eligible.slice(0, options.maxTargets || eligible.length);
+  const selectedEligible = selectEligibleReposForMachineProof(eligible, options);
   const selectedPaths = new Set(selectedEligible.map(repo => repo.path));
   const unselectedEligible = eligible.filter(repo => !selectedPaths.has(repo.path));
   const limit = pLimit(Math.max(1, options.analysisConcurrency || 3));
@@ -136,10 +189,12 @@ export async function runMachineAgentProof(options: ParsedArgs) {
     try {
       const cas = await getOrchestrator().orchestrateAnalysis(repo.path);
       const readiness = evaluateAgentReadiness(cas, repo.path);
+      const analysisQuality = assessAnalysisQuality(cas, repo.path);
+      const usefulnessReview = await reviewAnalysisUsefulness(cas, repo.path, repo.name);
       logMachineProgress(`analyzed ${repo.name} in ${Date.now() - startedAt}ms`);
       return {
         ...repo,
-        proof_status: cas.analysis_errors?.length ? 'fail' : readiness.default_use && (cas.codebase_idioms?.length || 0) > 0 ? 'pass' : 'fail',
+        proof_status: cas.analysis_errors?.length ? 'fail' : readiness.default_use && analysisQuality.status === 'pass' && usefulnessReview.status === 'pass' ? 'pass' : 'fail',
         analysis_ms: Date.now() - startedAt,
         cas: {
           nodes: cas.nodes.length,
@@ -148,8 +203,16 @@ export async function runMachineAgentProof(options: ParsedArgs) {
           exit_points: cas.exit_points?.length || 0,
           behavioral_invariants: cas.behavioral_invariants?.length || 0,
           codebase_idioms: cas.codebase_idioms?.length || 0,
+          system_capabilities: cas.system_capabilities?.length || 0,
+          primary_domain: cas.enhanced_system_purpose?.primary_domain || null,
+          description_source: cas.enhanced_system_purpose?.description_source || null,
+          description_generation: cas.enhanced_system_purpose?.description_generation || null,
+          architectural_patterns: cas.architecture_summary?.architectural_patterns?.length || 0,
+          pattern_balance: cas.architecture_summary?.pattern_balance?.status || null,
           analysis_errors: cas.analysis_errors?.length || 0,
         },
+        analysis_quality: analysisQuality,
+        usefulness_review: usefulnessReview,
         readiness: {
           status: readiness.status,
           score: readiness.score,
@@ -169,24 +232,9 @@ export async function runMachineAgentProof(options: ParsedArgs) {
   }
 
   const incremental = selectedEligible.length > 0
-    ? await runIncrementalValueBenchmark({
-      repos: selectedEligible.map(repo => ({ name: repo.name, path: repo.path })),
-      maxTargets: selectedEligible.length,
-      workRoot: path.join(workRoot, 'incremental'),
-      verifyFull: false,
-      keepWorkspaces: !options.discardWorkspaces,
-      quiet: true,
-      concurrency: options.incrementalConcurrency || 3,
-      progress: event => {
-        if (event.stage === 'start') {
-          logMachineProgress(`incremental ${event.target} (${event.path})`);
-        } else if (event.stage === 'complete') {
-          logMachineProgress(`incremental ${event.target} complete in ${event.duration_ms}ms`);
-        } else {
-          logMachineProgress(`incremental ${event.target} failed in ${event.duration_ms}ms: ${event.error}`);
-        }
-      },
-    })
+    ? options.incrementalExecutionModel === 'in-process'
+      ? await runMachineIncrementalBenchmarkInProcess(selectedEligible, options, path.join(workRoot, 'incremental'))
+      : await runMachineIncrementalBenchmarkIsolated(selectedEligible, options, path.join(workRoot, 'incremental'))
     : null;
 
   const liveConfigured = Boolean(options.agentWithCommand && options.agentWithoutCommand);
@@ -227,22 +275,95 @@ export async function runMachineAgentProof(options: ParsedArgs) {
     }))
     : null;
 
-  const gates = buildGates(discovery, selectedEligible, repoResults, incremental, idiomBenchmark, options);
+  const greenfieldBenchmark = await runAgentGreenfieldBenchmark({
+    references: selectGreenfieldReferencePaths(selectedEligible, repoResults),
+    outputPath: path.join(workRoot, 'greenfield', 'report.json'),
+    markdownPath: path.join(workRoot, 'greenfield', 'report.md'),
+  }).catch(error => ({
+    generated_at: new Date().toISOString(),
+    benchmark_type: 'agent-greenfield-benchmark',
+    status: 'fail',
+    score: 0,
+    reference_count: 0,
+    summary: {
+      scenario_count: 0,
+      average_quality_delta: 0,
+      scenarios_improved: 0,
+      preview_successes: 0,
+      error: error instanceof Error ? error.message : String(error),
+    },
+    results: [],
+  }));
+
+  const capabilityMemoryBenchmark = await runAgentCapabilityMemoryBenchmark({
+    repos: selectedEligible.map(repo => ({ name: repo.name, path: repo.path })),
+    maxTargets: Math.min(selectedEligible.length, 12),
+    maxTasksPerRepo: 3,
+    outputPath: path.join(workRoot, 'capability-memory', 'report.json'),
+    markdownPath: path.join(workRoot, 'capability-memory', 'report.md'),
+    quiet: true,
+  }).catch(error => ({
+    generated_at: new Date().toISOString(),
+    benchmark_type: 'agent-capability-memory',
+    status: 'fail',
+    score: 0,
+    summary: {
+      target_count: 0,
+      task_count: 0,
+      memory_hit_rate: 0,
+      average_duplicate_avoidance_delta: 0,
+      error: error instanceof Error ? error.message : String(error),
+    },
+    repositories: [],
+  }));
+
+  const fromZeroBuildPacketProof = await runFromZeroBuildPacketProof({
+    outputRoot: path.join(workRoot, 'from-zero-build-packet-proof'),
+    reportPath: path.join(workRoot, 'from-zero-build-packet-proof', 'report.json'),
+    markdownPath: path.join(workRoot, 'from-zero-build-packet-proof', 'report.md'),
+  }).catch(error => ({
+    generated_at: new Date().toISOString(),
+    benchmark_type: 'from-zero-build-packet-proof',
+    status: 'fail',
+    score: 0,
+    summary: {
+      task_count: 0,
+      quality_delta: 0,
+      duplicate_class_delta: 0,
+      error: error instanceof Error ? error.message : String(error),
+    },
+  }));
+
+  const gates = buildGates(discovery, selectedEligible, repoResults, incremental, idiomBenchmark, greenfieldBenchmark, capabilityMemoryBenchmark, fromZeroBuildPacketProof, options);
+  const performanceDiagnostics = buildMachinePerformanceDiagnostics(repoResults, incremental, options);
   const report = {
     generated_at: new Date().toISOString(),
     status: aggregateStatus(gates.map(gate => gate.status)),
     score: Math.round(average(gates.map(gate => gate.score))),
     dev_root: options.devRoot,
+    mode: options.mode,
+    resource_policy: {
+      max_targets: options.maxTargets ?? null,
+      start_index: options.startIndex ?? 0,
+      max_source_files: options.maxSourceFiles ?? null,
+      analysis_concurrency: options.analysisConcurrency ?? 1,
+      incremental_concurrency: options.incrementalConcurrency ?? 1,
+      analysis_budget_ms: options.analysisBudgetMs ?? null,
+      incremental_budget_ms: options.incrementalBudgetMs ?? null,
+      live_enabled: Boolean(options.runLive && options.agentWithCommand && options.agentWithoutCommand),
+      discard_workspaces: options.discardWorkspaces,
+      work_root: workRoot,
+    },
+    ai_interpretation_summary: summarizeAiInterpretation(repoResults),
     discovery,
     selected_eligible_count: selectedEligible.length,
+    performance_diagnostics: performanceDiagnostics,
     repo_results: [
       ...repoResults,
       ...unselectedEligible.map(repo => ({
         ...repo,
         proof_status: 'skipped',
-        reason: options.maxTargets
-          ? `Eligible repo not analyzed because --max-targets limited this run to ${selectedEligible.length} of ${eligible.length} eligible repos.`
-          : 'Eligible repo was not selected for analysis.',
+        reason: unselectedMachineProofReason(repo, options, selectedEligible.length, eligible.length),
       })),
       ...discovery.repos.filter(repo => repo.status !== 'eligible').map(repo => ({
         ...repo,
@@ -252,9 +373,359 @@ export async function runMachineAgentProof(options: ParsedArgs) {
     ],
     incremental,
     idiom_benchmark: idiomBenchmark,
+    greenfield_benchmark: greenfieldBenchmark,
+    from_zero_build_packet_proof: fromZeroBuildPacketProof,
+    capability_memory_benchmark: capabilityMemoryBenchmark,
     gates,
   };
+  if (previousFreshOrchestrator === undefined) {
+    delete process.env.KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS;
+  } else {
+    process.env.KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS = previousFreshOrchestrator;
+  }
+
   return report;
+}
+
+export function buildMachinePerformanceDiagnostics(repoResults: any[], incremental: any, options: Pick<ParsedArgs, 'analysisBudgetMs' | 'incrementalBudgetMs'> = {}) {
+  const analysisBudgetMs = Number(options.analysisBudgetMs || 120_000);
+  const incrementalBudgetMs = Number(options.incrementalBudgetMs || 120_000);
+  const analysisWatchMs = Math.min(60_000, Math.max(15_000, Math.round(analysisBudgetMs * 0.5)));
+  const proofHarnessWatchMs = Math.min(60_000, Math.max(15_000, Math.round(incrementalBudgetMs * 0.5)));
+  const editIncrementalWatchMs = Math.min(60_000, Math.max(15_000, Math.round(incrementalBudgetMs * 0.5)));
+  const editLoopWatchMs = Math.min(15_000, Math.max(5_000, Math.round(incrementalBudgetMs * 0.12)));
+  const weakTokenReductionThreshold = 50;
+  const largePacketTokenThreshold = 6_000;
+  const targets = Array.isArray(incremental?.targets) ? incremental.targets : [];
+  const slowAnalyses = repoResults
+    .filter(result => Number(result.analysis_ms || 0) >= analysisWatchMs)
+    .sort((a, b) => Number(b.analysis_ms || 0) - Number(a.analysis_ms || 0))
+    .slice(0, 10)
+    .map(result => ({
+      name: result.name,
+      path: result.path,
+      analysis_ms: Number(result.analysis_ms || 0),
+      source_files: Number(result.source_files || result.sourceFiles || 0) || undefined,
+      nodes: Number(result.cas?.nodes || 0) || undefined,
+      reason: Number(result.analysis_ms || 0) > analysisBudgetMs
+        ? 'exceeds analysis budget'
+        : 'slow but within analysis budget',
+    }));
+  const slowProofHarnesses = targets
+    .filter((target: any) => Number(target.timings?.isolated_child_wall_ms || target.timings?.total_wall_ms || 0) >= proofHarnessWatchMs)
+    .sort((a: any, b: any) => Number(b.timings?.isolated_child_wall_ms || b.timings?.total_wall_ms || 0) - Number(a.timings?.isolated_child_wall_ms || a.timings?.total_wall_ms || 0))
+    .slice(0, 10)
+    .map((target: any) => ({
+      name: target.name,
+      path: target.original_path,
+      isolated_child_wall_ms: Number(target.timings?.isolated_child_wall_ms || target.timings?.total_wall_ms || 0),
+      copy_repo_ms: Number(target.timings?.copy_repo_ms || 0),
+      edit_loop_wall_ms: Number(target.timings?.edit_loop_wall_ms || target.timings?.edit_incremental_ms || 0),
+      full_ms: Number(target.timings?.initial_full_ms || 0),
+      edit_incremental_ms: Number(target.timings?.edit_incremental_ms || 0),
+      edit_speedup_vs_full: Number(target.speedups?.edit_incremental_vs_full || 0),
+      nodes: Number(target.output_summary?.nodes || 0) || undefined,
+      tracked_files: Number(target.output_summary?.tracked_files || 0) || undefined,
+      reason: Number(target.timings?.isolated_child_wall_ms || target.timings?.total_wall_ms || 0) > incrementalBudgetMs
+        ? 'proof harness wall time exceeded the incremental budget; inspect copy/setup and analysis phases separately'
+        : 'slow proof harness wall time; edit incremental still passed',
+    }));
+  const slowIncrementals = targets
+    .filter((target: any) => Number(target.timings?.edit_incremental_ms || 0) >= editIncrementalWatchMs)
+    .sort((a: any, b: any) => Number(b.timings?.edit_incremental_ms || 0) - Number(a.timings?.edit_incremental_ms || 0))
+    .slice(0, 10)
+    .map((target: any) => ({
+      name: target.name,
+      path: target.original_path,
+      edit_incremental_ms: Number(target.timings?.edit_incremental_ms || 0),
+      full_ms: Number(target.timings?.initial_full_ms || 0),
+      edit_speedup_vs_full: Number(target.speedups?.edit_incremental_vs_full || 0),
+      nodes: Number(target.output_summary?.nodes || 0) || undefined,
+      tracked_files: Number(target.output_summary?.tracked_files || 0) || undefined,
+      reason: Number(target.timings?.edit_incremental_ms || 0) > incrementalBudgetMs
+        ? 'edit incremental analysis exceeded the incremental budget'
+        : 'edit incremental analysis is slow enough to watch before tightening budgets',
+    }));
+  const slowEditLoops = targets
+    .filter((target: any) => Number(target.timings?.edit_loop_wall_ms || target.timings?.edit_incremental_ms || 0) >= editLoopWatchMs)
+    .sort((a: any, b: any) => Number(b.timings?.edit_loop_wall_ms || b.timings?.edit_incremental_ms || 0) - Number(a.timings?.edit_loop_wall_ms || a.timings?.edit_incremental_ms || 0))
+    .slice(0, 10)
+    .map((target: any) => ({
+      name: target.name,
+      path: target.original_path,
+      edit_loop_wall_ms: Number(target.timings?.edit_loop_wall_ms || target.timings?.edit_incremental_ms || 0),
+      edit_incremental_ms: Number(target.timings?.edit_incremental_ms || 0),
+      packet_generation_ms: Number(target.agent_value_after_edit?.packet_generation_ms || 0),
+      reason: 'agent-facing edit loop is near the human-noticeable boundary',
+    }));
+  const weakTokenReductionTargets = targets
+    .filter((target: any) => Number(target.agent_value_after_edit?.estimated_search_token_reduction_percentage || 0) < weakTokenReductionThreshold)
+    .sort((a: any, b: any) => Number(a.agent_value_after_edit?.estimated_search_token_reduction_percentage || 0) - Number(b.agent_value_after_edit?.estimated_search_token_reduction_percentage || 0))
+    .slice(0, 10)
+    .map((target: any) => ({
+      name: target.name,
+      path: target.original_path,
+      token_reduction_vs_search: Number(target.agent_value_after_edit?.estimated_search_token_reduction_percentage || 0),
+      packet_tokens: Number(target.agent_value_after_edit?.estimated_packet_tokens || 0),
+      total_context_tokens: Number(target.agent_value_after_edit?.estimated_total_context_tokens || 0),
+      search_baseline_tokens: Number(target.agent_value_after_edit?.estimated_search_baseline_tokens || 0),
+      reason: 'token reduction is positive but below the preferred margin',
+    }));
+  const largePacketTargets = targets
+    .filter((target: any) => Number(target.agent_value_after_edit?.estimated_packet_tokens || 0) > largePacketTokenThreshold)
+    .sort((a: any, b: any) => Number(b.agent_value_after_edit?.estimated_packet_tokens || 0) - Number(a.agent_value_after_edit?.estimated_packet_tokens || 0))
+    .slice(0, 10)
+    .map((target: any) => ({
+      name: target.name,
+      path: target.original_path,
+      packet_tokens: Number(target.agent_value_after_edit?.estimated_packet_tokens || 0),
+      total_context_tokens: Number(target.agent_value_after_edit?.estimated_total_context_tokens || 0),
+      token_reduction_vs_search: Number(target.agent_value_after_edit?.estimated_search_token_reduction_percentage || 0),
+      reason: 'packet is large enough to watch even when token reduction is strong',
+    }));
+
+  const recommendations: string[] = Array.from(new Set([
+    slowIncrementals.length > 0 ? 'Prioritize analyzer hot paths for slow incremental repos with high node/file counts before tightening full-mode budgets.' : '',
+    slowProofHarnesses.length > 0 ? 'Separate benchmark harness overhead from agent-facing edit-loop latency before treating proof wall time as product latency.' : '',
+    slowEditLoops.length > 0 ? 'Keep edit-loop context generation compact for human-interactive agent use; anything above roughly 10-15s should be profiled.' : '',
+    weakTokenReductionTargets.length > 0 ? 'For tiny or narrow repos, prefer smaller architecture/idiom packets so Klauro never costs more tokens than direct targeted search.' : '',
+    largePacketTargets.length > 0 ? 'Review large packets for verbose inventory examples, source snippets, and redundant guidance.' : '',
+  ].filter((recommendation): recommendation is string => Boolean(recommendation))));
+
+  return {
+    status: slowAnalyses.length || slowProofHarnesses.length || slowIncrementals.length || slowEditLoops.length || weakTokenReductionTargets.length || largePacketTargets.length ? 'watch' : 'pass',
+    thresholds: {
+      analysis_watch_ms: analysisWatchMs,
+      proof_harness_watch_ms: proofHarnessWatchMs,
+      incremental_edit_watch_ms: editIncrementalWatchMs,
+      edit_loop_watch_ms: editLoopWatchMs,
+      weak_token_reduction_threshold: weakTokenReductionThreshold,
+      large_packet_token_threshold: largePacketTokenThreshold,
+    },
+    counts: {
+      slow_analysis_repos: slowAnalyses.length,
+      slow_proof_harness_repos: slowProofHarnesses.length,
+      slow_incremental_repos: slowIncrementals.length,
+      slow_edit_loop_repos: slowEditLoops.length,
+      weak_token_reduction_repos: weakTokenReductionTargets.length,
+      large_packet_repos: largePacketTargets.length,
+    },
+    slow_analysis_repos: slowAnalyses,
+    slow_proof_harness_repos: slowProofHarnesses,
+    slow_incremental_repos: slowIncrementals,
+    slow_edit_loop_repos: slowEditLoops,
+    weak_token_reduction_repos: weakTokenReductionTargets,
+    large_packet_repos: largePacketTargets,
+    recommendations,
+  };
+}
+
+export function normalizeMachineProofOptions(options: ParsedArgs): ParsedArgs {
+  const mode = options.mode || 'fast';
+  const fast = mode === 'fast';
+  return {
+    ...options,
+    mode,
+    maxTargets: options.maxTargets ?? (fast ? 8 : undefined),
+    startIndex: Math.max(0, Math.floor(options.startIndex || 0)),
+    maxSourceFiles: options.maxSourceFiles ?? (fast ? 2500 : undefined),
+    runLive: fast && !options.agentWithCommand && !options.agentWithoutCommand ? false : options.runLive,
+    analysisConcurrency: Math.max(1, Math.min(fast ? 1 : 2, options.analysisConcurrency || 1)),
+    incrementalConcurrency: Math.max(1, Math.min(fast ? 1 : 2, options.incrementalConcurrency || 1)),
+    analysisBudgetMs: options.analysisBudgetMs ?? (fast ? 30_000 : 120_000),
+    incrementalBudgetMs: options.incrementalBudgetMs ?? (fast ? 30_000 : 120_000),
+    incrementalExecutionModel: options.incrementalExecutionModel ?? (fast ? 'in-process' : 'isolated'),
+  };
+}
+
+export function defaultMachineProofWorkRoot(runId = `machine-${Date.now()}`): string {
+  return path.join(os.tmpdir(), 'klauro-machine-proof-workspaces', runId);
+}
+
+export function selectEligibleReposForMachineProof(eligible: RealRepoTarget[], options: ParsedArgs): RealRepoTarget[] {
+  const withinSizeBudget = typeof options.maxSourceFiles === 'number' && Number.isFinite(options.maxSourceFiles)
+    ? eligible.filter(repo => Number(repo.source_files || 0) <= Number(options.maxSourceFiles))
+    : eligible;
+  const start = Math.max(0, Math.floor(options.startIndex || 0));
+  return withinSizeBudget.slice(start, start + (options.maxTargets || withinSizeBudget.length));
+}
+
+function unselectedMachineProofReason(repo: RealRepoTarget, options: ParsedArgs, selectedCount: number, eligibleCount: number): string {
+  if (typeof options.maxSourceFiles === 'number' && Number(repo.source_files || 0) > options.maxSourceFiles) {
+    return `Eligible repo not analyzed in ${options.mode} mode because ${repo.source_files} source files exceeds --max-source-files=${options.maxSourceFiles}.`;
+  }
+  if (options.maxTargets) {
+    return `Eligible repo not analyzed because this ${options.mode} batch selected ${selectedCount} of ${eligibleCount} eligible repos with --start-index=${options.startIndex || 0} and --max-targets=${options.maxTargets}.`;
+  }
+  return 'Eligible repo was not selected for analysis.';
+}
+
+function assessAnalysisQuality(cas: any, repoPath = ''): { status: GateStatus; score: number; failures: string[]; warnings: string[] } {
+  const failures: string[] = [];
+  const warnings: string[] = [];
+  const primaryDomain = String(cas.enhanced_system_purpose?.primary_domain || '');
+  const description = String(cas.enhanced_system_purpose?.inferred_description || '');
+  const repoSignal = `${repoPath} ${cas.system?.name || ''}`.toLowerCase();
+  const capabilities = cas.system_capabilities || [];
+  const architecturalPatterns = cas.architecture_summary?.architectural_patterns || [];
+  const architecturalInventory = cas.architecture_summary?.architectural_inventory || {};
+  const patternBalance = cas.architecture_summary?.pattern_balance;
+  const descriptionGeneration = cas.enhanced_system_purpose?.description_generation;
+
+  if (!primaryDomain || primaryDomain === 'unknown' || isGenericDomain(primaryDomain)) {
+    failures.push(`primary domain is weak (${primaryDomain || 'missing'})`);
+  }
+  if (isCryptoTradingRepoSignal(repoSignal) && primaryDomain !== 'solana-arbitrage') {
+    failures.push(`crypto/Solana repo signal conflicts with primary domain (${primaryDomain})`);
+  }
+  if (/testing[-_ ]utilities|test[-_ ]utilities/.test(repoSignal) && /medical-device|hardware-device/.test(primaryDomain)) {
+    failures.push(`testing utility repo was classified as ${primaryDomain}`);
+  }
+  if (capabilities.length === 0) {
+    failures.push('no system capabilities inferred');
+  }
+  if (!description || description.length < 80 || /key capabilities:\s*(test|main|home|settings)(,|\.|$)/i.test(description)) {
+    failures.push('system description is missing, too short, or dominated by generic/test capabilities');
+  }
+  if (!descriptionGeneration?.status) {
+    warnings.push('system description generation source is not recorded');
+  }
+  const weakDescriptionReasons = findWeakMachineDescriptionReasons(cas, description, repoSignal);
+  failures.push(...weakDescriptionReasons);
+  if (primaryDomain === 'solana-arbitrage' && /\b(dapp|decentralized application|miner|mining|mine tokens?)\b/i.test(description)) {
+    failures.push('system description adds unsupported crypto-mining/DApp language');
+  }
+  if (architecturalPatterns.length === 0 && (cas.nodes?.length || 0) > 50) {
+    warnings.push('no architectural patterns detected for non-trivial repo');
+  }
+  if (patternBalance?.status === 'over-patterned') {
+    failures.push('pattern balance reports over-patterned analysis; agents need concrete local examples');
+  }
+  if (architecturalPatterns.length > 10) {
+    failures.push(`too many architectural patterns detected (${architecturalPatterns.length}); likely pattern splurge`);
+  }
+  const patternNames = architecturalPatterns.map((pattern: any) => String(pattern.name || '').toLowerCase());
+  if (patternNames.some((name: string) => name.includes('mvc'))) {
+    requireInventory(architecturalInventory, failures, 'MVC', ['controllers', 'models']);
+  }
+  if (patternNames.some((name: string) => name.includes('mvvm'))) {
+    requireInventory(architecturalInventory, failures, 'MVVM', ['views', 'view_models', 'models']);
+  }
+  if (patternNames.some((name: string) => name.includes('repository'))) {
+    requireInventory(architecturalInventory, failures, 'Repository', ['repositories']);
+  }
+  if (patternNames.some((name: string) => name.includes('mediator'))) {
+    requireInventory(architecturalInventory, failures, 'Mediator', ['mediators']);
+  }
+  if (patternNames.some((name: string) => name.includes('unit of work'))) {
+    requireInventory(architecturalInventory, failures, 'Unit of Work', ['unit_of_work']);
+  }
+  if (patternNames.some((name: string) => name.includes('singleton'))) {
+    requireInventory(architecturalInventory, failures, 'Singleton', ['singletons']);
+  }
+  const score = Math.max(0, 100 - failures.length * 30 - warnings.length * 10);
+  return {
+    status: failures.length > 0 ? 'fail' : warnings.length > 0 ? 'warn' : 'pass',
+    score,
+    failures,
+    warnings,
+  };
+}
+
+function summarizeAiInterpretation(repoResults: any[]): Record<string, number> {
+  const summary: Record<string, number> = {};
+  for (const result of repoResults) {
+    const status = result.cas?.description_generation?.status || 'missing';
+    summary[status] = (summary[status] || 0) + 1;
+    const source = result.cas?.description_source || 'missing-source';
+    summary[`source:${source}`] = (summary[`source:${source}`] || 0) + 1;
+  }
+  return summary;
+}
+
+function isCryptoTradingRepoSignal(text: string): boolean {
+  return /\b(solana|pumpfun|jito|mev|sniper|bundler|arbitrage)\b/.test(text);
+}
+
+function requireInventory(inventory: any, failures: string[], pattern: string, keys: string[]): void {
+  const missing = keys.filter(key => !Array.isArray(inventory[key]) || inventory[key].length === 0);
+  if (missing.length > 0) {
+    failures.push(`${pattern} detected without inventory for ${missing.join(', ')}`);
+  }
+}
+
+function isGenericDomain(domain: string): boolean {
+  return new Set([
+    'test', 'main', 'app', 'application', 'service', 'controller', 'component',
+    'services', 'controllers', 'components', 'page', 'route', 'handler',
+    'handlers', 'module', 'modules', 'data', 'config', 'settings', 'home',
+    'asset', 'assets', 'generated', 'gql', 'graphql', 'document', 'documents',
+  ]).has(domain.toLowerCase());
+}
+
+function findWeakMachineDescriptionReasons(cas: any, description: string, repoSignal = ''): string[] {
+  const reasons: string[] = [];
+  const text = String(description || '');
+  if (!text || text.length < 80) return reasons;
+  const concepts = [
+    ...(cas.enhanced_system_purpose?.core_concepts || []),
+    ...(cas.domain_concepts || []).map((concept: any) => concept.name),
+    ...(cas.system_capabilities || []).map((capability: any) => capability.name),
+  ].map(value => String(value || '').toLowerCase()).filter(Boolean);
+  const distinctive = concepts.filter(isDistinctiveMachineDescriptionTerm);
+  if (/project text identifies the main concepts as/i.test(text) && distinctive.length < 3) {
+    reasons.push('system description uses weak project-text fallback without enough distinctive concepts');
+  }
+  if (/\b(seamless(?:ly)?|indispensable|unified experience|robust api|complex queries|large datasets|crucial role|underlying platform|wide range of clients|high-quality [a-z ]+ experience|regulatory requirements?|best practices|designed for managing|facilitates|various applications|robust [a-z ]*framework|enhances (?:the )?[a-z ]*(?:security|efficiency)|allowing developers to focus|complex tasks)\b/i.test(text)) {
+    reasons.push('system description contains generic AI marketing language');
+  }
+  if (/\bprimary interface for interacting with (?:the )?(?:application'?s )?database\b/i.test(text) ||
+    /\bintermediary between the frontend ui and the server-side logic\b/i.test(text)) {
+    reasons.push('system description describes a generic backend role instead of codebase-specific behavior');
+  }
+  const unsupportedClaim = text.match(/\b(command-line interface|coupons?|discounts?)\b/i)?.[1];
+  if (unsupportedClaim &&
+    !descriptionClaimIsGroundedInRepoSignal(repoSignal, unsupportedClaim) &&
+    !descriptionTermIsGroundedInMachineCas(cas, unsupportedClaim)) {
+    reasons.push(`system description claims unsupported ${unsupportedClaim} behavior`);
+  }
+  if ([...text.matchAll(/\b[A-Z][a-z]{1,3}\b/g)].some(match =>
+    !descriptionTermIsGroundedInMachineCas(cas, match[0]) &&
+    !/^(A|An|The|This|It|Its|Key|Data|Entry|REST|API|UI|SQL|AWS|GPO)$/.test(match[0])
+  )) {
+    reasons.push('system description includes unexplained short proper-noun claims');
+  }
+  return Array.from(new Set(reasons));
+}
+
+function descriptionClaimIsGroundedInRepoSignal(repoSignal: string, term: string): boolean {
+  const normalized = String(term || '').toLowerCase();
+  if (normalized === 'command-line interface') {
+    return /\b(cli|command|console)\b|(^|[/_-])bin($|[/_-])|__main__|entry_points/i.test(repoSignal);
+  }
+  return false;
+}
+
+function isDistinctiveMachineDescriptionTerm(value: string): boolean {
+  const generic = new Set([
+    'app', 'application', 'api', 'service', 'services', 'system', 'data', 'user', 'users',
+    'page', 'pages', 'component', 'components', 'route', 'routes', 'access', 'network',
+    'main', 'home', 'settings', 'config', 'backend', 'frontend',
+  ]);
+  return value.split(/[^a-z0-9]+/).some(token => token.length > 3 && !generic.has(token));
+}
+
+function descriptionTermIsGroundedInMachineCas(cas: any, term: string): boolean {
+  const normalized = String(term || '').toLowerCase();
+  if (!normalized) return false;
+  const haystack = JSON.stringify({
+    domain: cas.enhanced_system_purpose?.primary_domain,
+    concepts: cas.enhanced_system_purpose?.core_concepts,
+    capabilities: (cas.system_capabilities || []).map((capability: any) => capability.name),
+    entries: (cas.entry_points || []).map((entry: any) => `${entry.name} ${entry.type}`),
+    nodes: (cas.nodes || []).slice(0, 200).map((node: any) => `${node.name} ${node.type} ${node.source?.file || ''}`),
+  }).toLowerCase();
+  return haystack.includes(normalized);
 }
 
 function selectIdiomProofTargets(selectedEligible: RealRepoTarget[], repoResults: any[], targetCount: number): RealRepoTarget[] {
@@ -272,9 +743,342 @@ function selectIdiomProofTargets(selectedEligible: RealRepoTarget[], repoResults
   return selected.length > 0 ? selected : selectedEligible.slice(0, Math.min(targetCount, selectedEligible.length));
 }
 
+function selectGreenfieldReferencePaths(selectedEligible: RealRepoTarget[], repoResults: any[]): string[] {
+  const passing = new Set(repoResults
+    .filter(result => result.proof_status === 'pass')
+    .map(result => result.path));
+  const preferredNames = ['proof-of-concept', 'zerac-api', 'soon-ui', 'soon-bos', 'kadra', 'SoundSyft'];
+  const preferred = preferredNames
+    .map(name => selectedEligible.find(repo => repo.name === name && passing.has(repo.path)))
+    .filter((repo): repo is RealRepoTarget => Boolean(repo));
+  const fallback = selectedEligible.filter(repo => passing.has(repo.path) && !preferred.some(item => item.path === repo.path));
+  return [...preferred, ...fallback].slice(0, 6).map(repo => repo.path);
+}
+
 function logMachineProgress(message: string): void {
   if (process.env.KLAURO_MACHINE_QUIET === '1') return;
   console.error(`[MachineProof] ${message}`);
+}
+
+async function runMachineIncrementalBenchmarkIsolated(
+  repos: RealRepoTarget[],
+  options: ParsedArgs,
+  workRoot: string,
+) {
+  await fs.ensureDir(workRoot);
+  const packageDir = path.resolve(__dirname, '..');
+  const incrementalTimeoutMs = Number(process.env.KLAURO_MACHINE_INCREMENTAL_TIMEOUT_MS || 600000);
+  const limit = pLimit(Math.max(1, Math.min(3, options.incrementalConcurrency || 1)));
+
+  const reports = await Promise.all(repos.map(repo => limit(async () => {
+    const startedAt = Date.now();
+    logMachineProgress(`incremental ${repo.name} (${repo.path})`);
+    const reportPath = path.join(workRoot, 'reports', `${slugForMachineFile(repo.name)}-${Date.now()}.json`);
+    const markdownPath = path.join(workRoot, 'reports', `${slugForMachineFile(repo.name)}-${Date.now()}.md`);
+    await fs.ensureDir(path.dirname(reportPath));
+
+    const child = await runChildProcess('npm', [
+      '--prefix',
+      packageDir,
+      'run',
+      'incremental-benchmark',
+      '--',
+      '--repo',
+      `${repo.name}=${repo.path}`,
+      '--max-targets',
+      '1',
+      '--no-verify-full',
+      options.discardWorkspaces ? '--discard-workspaces' : '--keep-workspaces',
+      '--work-root',
+      path.join(workRoot, 'workspaces'),
+      '--output',
+      reportPath,
+      '--markdown',
+      markdownPath,
+    ], {
+      cwd: path.resolve(packageDir, '../..'),
+      env: {
+        ...process.env,
+        NODE_OPTIONS: withNodeHeapLimit(process.env.NODE_OPTIONS),
+        KLAURO_AI_INTERPRETATION_BUDGET_MS: process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS || '1000',
+        KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS: '0',
+      },
+      timeout: incrementalTimeoutMs,
+      maxBuffer: 20 * 1024 * 1024,
+    });
+
+    if (await fs.pathExists(reportPath)) {
+      const report = await fs.readJson(reportPath);
+      const target = report.targets?.[0];
+      const childWallMs = Math.max(1, Date.now() - startedAt);
+      logMachineProgress(`incremental ${repo.name} complete in ${childWallMs}ms`);
+      if (!target) {
+        return failedIsolatedIncrementalReport(repo, 'Incremental child report did not contain a target result', childWallMs);
+      }
+      target.timings = {
+        ...(target.timings || {}),
+        isolated_child_wall_ms: childWallMs,
+        isolated_child_overhead_ms: isolatedChildOverheadMs(target.timings, childWallMs),
+      };
+      return target;
+    }
+
+    const detail = [
+      child.error instanceof Error ? child.error.message : '',
+      child.stderr || '',
+      child.stdout || '',
+    ].filter(Boolean).join('\n').slice(0, 4000) || `incremental child exited with status ${child.status ?? 'unknown'}`;
+    logMachineProgress(`incremental ${repo.name} failed in ${Date.now() - startedAt}ms: ${detail.split('\n')[0]}`);
+    return failedIsolatedIncrementalReport(repo, detail, Date.now() - startedAt);
+  })));
+
+  const generatedAt = new Date().toISOString();
+  return {
+    generated_at: generatedAt,
+    generatedAt,
+    benchmark_type: 'incremental-analysis-agent-value',
+    execution_model: 'isolated-child-process-per-repo',
+    status: aggregateStatus(reports.map(target => target.status)),
+    score: Math.round(average(reports.map(target => target.score))),
+    summary: {
+      target_count: reports.length,
+      targets_passed: reports.filter(target => target.status === 'pass').length,
+      targets_warned: reports.filter(target => target.status === 'warn').length,
+      targets_failed: reports.filter(target => target.status === 'fail').length,
+      target_pass_rate: Number((average(reports.map(target => target.status === 'pass' ? 100 : 0)) / 100).toFixed(2)),
+      incremental_success_rate: Number((average(reports.map(target => !target.change_summary?.was_full_rebuild ? 100 : 0)) / 100).toFixed(2)),
+      average_initial_full_ms: Math.round(average(reports.map(target => target.timings?.initial_full_ms || 0))),
+      average_no_change_incremental_ms: Math.round(average(reports.map(target => target.timings?.no_change_incremental_ms || 0))),
+      average_edit_incremental_ms: Math.round(average(reports.map(target => target.timings?.edit_incremental_ms || 0))),
+      average_edit_loop_wall_ms: Math.round(average(reports.map(target => target.timings?.edit_loop_wall_ms || target.timings?.edit_incremental_ms || 0))),
+      average_isolated_child_wall_ms: Math.round(average(reports.map(target => target.timings?.isolated_child_wall_ms || target.timings?.total_wall_ms || 0))),
+      average_isolated_child_overhead_ms: Math.round(average(reports.map(target => target.timings?.isolated_child_overhead_ms || 0))),
+      average_no_change_speedup_vs_full: Number(average(reports.map(target => target.speedups?.no_change_vs_full || 0)).toFixed(2)),
+      average_edit_speedup_vs_full: Number(average(reports.map(target => target.speedups?.edit_incremental_vs_full || 0)).toFixed(2)),
+      average_packet_generation_ms_after_edit: Math.round(average(reports.map(target => target.agent_value_after_edit?.packet_generation_ms || 0))),
+      average_file_read_plan_after_edit: Math.round(average(reports.map(target => target.agent_value_after_edit?.file_read_plan_count || 0))),
+      average_packet_tokens_after_edit: Math.round(average(reports.map(target => target.agent_value_after_edit?.estimated_packet_tokens || 0))),
+      average_total_context_tokens_after_edit: Math.round(average(reports.map(target => target.agent_value_after_edit?.estimated_total_context_tokens || 0))),
+      average_search_baseline_tokens_after_edit: Math.round(average(reports.map(target => target.agent_value_after_edit?.estimated_search_baseline_tokens || 0))),
+      average_search_token_reduction_after_edit: Math.round(average(reports.map(target => target.agent_value_after_edit?.estimated_search_token_reduction_percentage || 0))),
+      average_cold_scan_token_reduction_after_edit: Math.round(average(reports.map(target => target.agent_value_after_edit?.estimated_cold_scan_token_reduction_percentage || 0))),
+      average_full_verify_count_similarity: average(
+        reports
+          .map(target => target.full_verify_parity?.count_similarity)
+          .filter((value): value is number => typeof value === 'number')
+      ),
+    },
+    targets: reports,
+  };
+}
+
+async function runMachineIncrementalBenchmarkInProcess(
+  repos: RealRepoTarget[],
+  options: ParsedArgs,
+  workRoot: string,
+) {
+  await fs.ensureDir(workRoot);
+  const previousFreshOrchestrator = process.env.KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS;
+  const previousAiBudget = process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS;
+  process.env.KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS = '0';
+  process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS = process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS || '1000';
+
+  try {
+    const report = await runIncrementalValueBenchmark({
+      repos: repos.map(repo => ({ name: repo.name, path: repo.path })),
+      maxTargets: repos.length,
+      workRoot: path.join(workRoot, 'workspaces'),
+      keepWorkspaces: !options.discardWorkspaces,
+      verifyFull: false,
+      concurrency: options.incrementalConcurrency,
+      quiet: true,
+      progress: event => {
+        if (event.stage === 'start') {
+          logMachineProgress(`incremental ${event.target} (${event.path})`);
+        } else if (event.stage === 'complete') {
+          logMachineProgress(`incremental ${event.target} complete in ${event.duration_ms}ms`);
+        } else {
+          logMachineProgress(`incremental ${event.target} failed in ${event.duration_ms}ms: ${event.error || 'unknown error'}`);
+        }
+      },
+    });
+    return {
+      ...report,
+      execution_model: 'in-process-shared-analyzer',
+      summary: {
+        ...report.summary,
+        average_isolated_child_wall_ms: report.summary.average_total_wall_ms,
+        average_isolated_child_overhead_ms: 0,
+      },
+      targets: report.targets.map((target: any) => ({
+        ...target,
+        timings: {
+          ...(target.timings || {}),
+          isolated_child_wall_ms: target.timings?.total_wall_ms || target.timings?.edit_loop_wall_ms || target.timings?.edit_incremental_ms || 0,
+          isolated_child_overhead_ms: 0,
+        },
+      })),
+    };
+  } finally {
+    if (previousFreshOrchestrator === undefined) {
+      delete process.env.KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS;
+    } else {
+      process.env.KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS = previousFreshOrchestrator;
+    }
+    if (previousAiBudget === undefined) {
+      delete process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS;
+    } else {
+      process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS = previousAiBudget;
+    }
+  }
+}
+
+function failedIsolatedIncrementalReport(repo: RealRepoTarget, detail: string, durationMs: number) {
+  return {
+    name: repo.name,
+    original_path: repo.path,
+    workspace: '',
+    edit: {
+      kind: 'whitespace-fallback',
+      detail: 'No edit result was produced because the isolated incremental child failed.',
+    },
+    status: 'fail' as GateStatus,
+    score: 0,
+    gates: [{
+      id: 'incremental-child-completed',
+      status: 'fail' as GateStatus,
+      score: 0,
+      detail,
+    }],
+    timings: {
+      total_wall_ms: Math.max(1, durationMs),
+      isolated_child_wall_ms: Math.max(1, durationMs),
+      isolated_child_overhead_ms: 0,
+      initial_full_ms: Math.max(1, durationMs),
+      no_change_incremental_ms: 0,
+      edit_incremental_ms: 0,
+      edit_loop_wall_ms: 0,
+    },
+    speedups: {
+      no_change_vs_full: 0,
+      edit_incremental_vs_full: 0,
+    },
+    change_summary: {
+      files_changed: 0,
+      files_added: 0,
+      files_modified: 0,
+      files_deleted: 0,
+      nodes_added: 0,
+      nodes_modified: 0,
+      nodes_deleted: 0,
+      risk_level: 'unknown',
+      was_full_rebuild: true,
+      full_rebuild_reason: detail,
+    },
+    output_summary: {
+      nodes: 0,
+      edges: 0,
+      entry_points: 0,
+      exit_points: 0,
+      analysis_errors: 1,
+      tracked_files: 0,
+      file_cache_entries: 0,
+      file_cache_bytes: 0,
+    },
+    agent_value_after_edit: {
+      packet_generation_ms: 0,
+      file_read_plan_count: 0,
+      next_mcp_calls: 0,
+      estimated_packet_tokens: 0,
+      estimated_source_tokens: 0,
+      estimated_total_context_tokens: 0,
+      estimated_search_baseline_tokens: 0,
+      estimated_search_token_reduction_percentage: 0,
+      estimated_cold_scan_tokens: 0,
+      estimated_cold_scan_token_reduction_percentage: 0,
+      default_use: false,
+    },
+  };
+}
+
+function isolatedChildOverheadMs(timings: any, childWallMs: number): number {
+  const measured = Number(timings?.total_wall_ms || 0) || (
+    Number(timings?.initial_full_ms || 0)
+    + Number(timings?.no_change_incremental_ms || 0)
+    + Number(timings?.edit_incremental_ms || 0)
+    + Number(timings?.verify_full_after_edit_ms || 0)
+  );
+  return Math.max(0, Math.round(childWallMs - measured));
+}
+
+function runChildProcess(
+  command: string,
+  args: string[],
+  options: {
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    timeout: number;
+    maxBuffer: number;
+  }
+): Promise<{ status: number | null; stdout: string; stderr: string; error?: Error }> {
+  return new Promise(resolve => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+
+    const append = (current: string, chunk: Buffer) => {
+      const next = current + chunk.toString('utf8');
+      return next.length > options.maxBuffer ? next.slice(next.length - options.maxBuffer) : next;
+    };
+
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill('SIGTERM');
+      setTimeout(() => child.kill('SIGKILL'), 5000).unref();
+      resolve({
+        status: null,
+        stdout,
+        stderr,
+        error: new Error(`child process timed out after ${options.timeout}ms`),
+      });
+    }, options.timeout);
+    timeout.unref();
+
+    child.stdout?.on('data', chunk => {
+      stdout = append(stdout, chunk);
+    });
+    child.stderr?.on('data', chunk => {
+      stderr = append(stderr, chunk);
+    });
+    child.on('error', error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve({ status: null, stdout, stderr, error });
+    });
+    child.on('close', status => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve({ status, stdout, stderr });
+    });
+  });
+}
+
+function slugForMachineFile(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'repo';
+}
+
+function withNodeHeapLimit(value: string | undefined): string {
+  const existing = value || '';
+  if (existing.includes('--max-old-space-size')) return existing;
+  return `${existing} --max-old-space-size=8192`.trim();
 }
 
 function buildGates(
@@ -283,13 +1087,25 @@ function buildGates(
   repoResults: any[],
   incremental: any,
   idiomBenchmark: any,
+  greenfieldBenchmark: any,
+  capabilityMemoryBenchmark: any,
+  fromZeroBuildPacketProof: any,
   options: ParsedArgs
 ): Gate[] {
   const allEligibleAccounted = selectedEligible.every(repo => repoResults.some(result => result.path === repo.path));
   const allSelectedPass = repoResults.length > 0 && repoResults.every(result => result.proof_status === 'pass');
   const allHaveIdioms = repoResults.length > 0 && repoResults.every(result => Number(result.cas?.codebase_idioms || 0) > 0);
   const allDefaultUse = repoResults.length > 0 && repoResults.every(result => result.readiness?.default_use === true);
+  const allHaveAnalysisQuality = repoResults.length > 0 && repoResults.every(result => result.analysis_quality?.status === 'pass');
+  const allUsefulForAgents = repoResults.length > 0 && repoResults.every(result => result.usefulness_review?.status === 'pass');
+  const eligible = discovery.repos.filter(repo => repo.status === 'eligible');
+  const expectedSelectedCount = selectEligibleReposForMachineProof(eligible, options).length;
+  const slowAnalyses = repoResults.filter(result => Number(result.analysis_ms || 0) > Number(options.analysisBudgetMs || Infinity));
   const incrementalSummary = incremental?.summary || {};
+  const incrementalTargets = Array.isArray(incremental?.targets) ? incremental.targets : [];
+  const incrementalHasFailures = incrementalTargets.some((target: any) => target?.status === 'fail');
+  const slowIncrementals = incrementalTargets.filter((target: any) => Number(target.timings?.edit_incremental_ms || 0) > Number(options.incrementalBudgetMs || Infinity));
+  const slowWallIncrementals = incrementalTargets.filter((target: any) => Number(target.timings?.edit_loop_wall_ms || target.timings?.edit_incremental_ms || 0) > Number(options.incrementalBudgetMs || Infinity));
   const idiomSummary = idiomBenchmark?.summary || {};
   const hasLiveIdiomProof = Number(idiomSummary.live_trials_attempted || 0) > 0;
   const idiomProofPresent = hasLiveIdiomProof || Number(idiomSummary.task_count || 0) > 0;
@@ -302,18 +1118,77 @@ function buildGates(
   const qualityDelta = hasLiveIdiomProof
     ? Number(idiomSummary.live_average_total_quality_delta || 0)
     : Number(idiomSummary.average_total_quality_delta || 0);
+  const greenfieldSummary = greenfieldBenchmark?.summary || {};
+  const capabilityMemorySummary = capabilityMemoryBenchmark?.summary || {};
+  const fromZeroSummary = fromZeroBuildPacketProof?.summary || {};
+  const fromZeroScenarioCount = Number(fromZeroSummary.scenario_count || (fromZeroBuildPacketProof?.scenario ? 1 : 0));
+  const fromZeroProductFocusCount = Number(fromZeroSummary.product_focus_scenario_count || 0);
+  const fromZeroGrowthIterations = Number(fromZeroSummary.growth_iteration_count || fromZeroSummary.task_count || 0);
   return [
     gate('machine-discovery:repo-accounting', discovery.total_repos === discovery.repos.length && discovery.total_repos > 0, `${discovery.total_repos} discovered, ${discovery.eligible_repos} eligible, ${discovery.unsupported_repos} unsupported, ${discovery.skipped_repos} skipped`),
-    gate('machine-discovery:eligible-selected', selectedEligible.length > 0 && selectedEligible.length === Math.min(options.maxTargets || discovery.eligible_repos, discovery.eligible_repos), `${selectedEligible.length}/${discovery.eligible_repos} eligible selected`),
+    gate('machine-discovery:eligible-selected', selectedEligible.length > 0 && selectedEligible.length === expectedSelectedCount, `${selectedEligible.length}/${discovery.eligible_repos} eligible selected for ${options.mode || 'full'} mode`),
     gate('machine-analysis:all-accounted', allEligibleAccounted, `${repoResults.length}/${selectedEligible.length} selected eligible repos analyzed`),
     gate('machine-analysis:all-pass', allSelectedPass, `${repoResults.filter(result => result.proof_status === 'pass').length}/${repoResults.length} proof pass`),
     gate('machine-analysis:default-use', allDefaultUse, `${repoResults.filter(result => result.readiness?.default_use).length}/${repoResults.length} default-use ready`),
+    gate('machine-analysis:quality', allHaveAnalysisQuality, `${repoResults.filter(result => result.analysis_quality?.status === 'pass').length}/${repoResults.length} with strong domain/capability/description quality`),
+    gate('machine-analysis:agent-usefulness', allUsefulForAgents, `${repoResults.filter(result => result.usefulness_review?.status === 'pass').length}/${repoResults.length} cold CAS/work-packet usefulness pass`),
     gate('machine-analysis:idioms', allHaveIdioms, `${repoResults.filter(result => Number(result.cas?.codebase_idioms || 0) > 0).length}/${repoResults.length} with idioms`),
-    gate('machine-incremental:success', incremental?.status === 'pass' && Number(incrementalSummary.incremental_success_rate) === 1, `${incremental?.status || 'missing'}, ${Math.round(Number(incrementalSummary.incremental_success_rate || 0) * 100)}% success`),
-    gate('machine-incremental:agent-value', Number(incrementalSummary.average_edit_speedup_vs_full || 0) >= 1.5 && Number(incrementalSummary.average_packet_tokens_after_edit || 999999) <= 10000, `${incrementalSummary.average_edit_speedup_vs_full || 0}x edit speedup, ${incrementalSummary.average_packet_tokens_after_edit || 'unknown'} tokens`),
+    gate('machine-performance:analysis-budget', slowAnalyses.length === 0, slowAnalyses.length === 0
+      ? `all selected analyses within ${options.analysisBudgetMs}ms budget`
+      : `${slowAnalyses.length} selected analyses exceeded ${options.analysisBudgetMs}ms: ${slowAnalyses.slice(0, 5).map(result => `${result.name}=${result.analysis_ms}ms`).join(', ')}`),
+    gate(
+      'machine-incremental:success',
+      Boolean(incremental) && !incrementalHasFailures && Number(incrementalSummary.incremental_success_rate) === 1,
+      `${incremental?.status || 'missing'}, ${incrementalSummary.targets_passed ?? 0}/${incrementalSummary.target_count ?? 0} targets passed, ${Math.round(Number(incrementalSummary.incremental_success_rate || 0) * 100)}% stayed incremental`
+    ),
+    gate(
+      'machine-incremental:agent-value',
+      Number(incrementalSummary.average_edit_speedup_vs_full || 0) >= 1.5 &&
+      Number(incrementalSummary.average_packet_tokens_after_edit || 999999) <= 10000 &&
+      Number(incrementalSummary.average_search_token_reduction_after_edit || 0) >= 25,
+      `${incrementalSummary.average_edit_speedup_vs_full || 0}x edit speedup, ${incrementalSummary.average_packet_tokens_after_edit || 'unknown'} packet tokens, ${incrementalSummary.average_search_token_reduction_after_edit ?? 'unknown'}% token reduction vs search, ${incrementalSummary.average_edit_loop_wall_ms || 'unknown'}ms edit-loop wall, ${incrementalSummary.average_isolated_child_wall_ms || 'unknown'}ms proof harness wall`
+    ),
+    gate('machine-performance:incremental-budget', slowIncrementals.length === 0, slowIncrementals.length === 0
+      ? `all selected edit-incremental checks within ${options.incrementalBudgetMs}ms budget`
+      : `${slowIncrementals.length} selected edit-incremental checks exceeded ${options.incrementalBudgetMs}ms: ${slowIncrementals.slice(0, 5).map((target: any) => `${target.name}=${target.timings?.edit_incremental_ms}ms`).join(', ')}`),
+    gate('machine-performance:incremental-edit-loop-wall-clock-budget', slowWallIncrementals.length === 0, slowWallIncrementals.length === 0
+      ? `all selected edit loops completed within ${options.incrementalBudgetMs}ms wall-clock budget`
+      : `${slowWallIncrementals.length} selected edit loops exceeded ${options.incrementalBudgetMs}ms wall-clock: ${slowWallIncrementals.slice(0, 5).map((target: any) => `${target.name}=${target.timings?.edit_loop_wall_ms || target.timings?.edit_incremental_ms}ms`).join(', ')}`),
     gate(hasLiveIdiomProof ? 'machine-idiom-live:present' : 'machine-idiom-proof:present', idiomProofPresent, hasLiveIdiomProof ? `${idiomSummary.live_trials_attempted || 0} live idiom trials` : `${idiomSummary.task_count || 0} deterministic idiom tasks`),
     gate(hasLiveIdiomProof ? 'machine-idiom-live:no-correctness-regression' : 'machine-idiom-proof:no-correctness-regression', idiomCorrectnessOk, hasLiveIdiomProof ? `${idiomSummary.live_correctness_regressions || 0} correctness regressions` : 'deterministic task scoring has no live correctness regression'),
     gate(hasLiveIdiomProof ? 'machine-idiom-live:positive-delta' : 'machine-idiom-proof:positive-delta', idiomDelta > 0 && qualityDelta >= 0, `idiom delta ${idiomDelta}, quality delta ${qualityDelta}`),
+    gate(
+      'machine-greenfield:guided-build-value',
+      greenfieldBenchmark?.status === 'pass' &&
+        Number(greenfieldSummary.scenarios_improved || 0) === Number(greenfieldSummary.scenario_count || -1) &&
+        Number(greenfieldSummary.average_quality_delta || 0) > 0 &&
+        Number(greenfieldSummary.preview_successes || 0) === Number(greenfieldSummary.scenario_count || -1) &&
+        Number(greenfieldSummary.continuity_trial_count || 0) >= 2 &&
+        Number(greenfieldSummary.continuity_trials_passed || 0) === Number(greenfieldSummary.continuity_trial_count || -1) &&
+        Number(greenfieldSummary.continuity_average_delta || 0) > 0,
+      `${greenfieldBenchmark?.status || 'missing'}, ${greenfieldSummary.scenarios_improved || 0}/${greenfieldSummary.scenario_count || 0} improved, +${greenfieldSummary.average_quality_delta || 0} quality delta, ${greenfieldSummary.continuity_trials_passed || 0}/${greenfieldSummary.continuity_trial_count || 0} continuity trials, +${greenfieldSummary.continuity_average_delta || 0} continuity delta`
+    ),
+    gate(
+      'machine-greenfield:from-zero-build-packet',
+      fromZeroBuildPacketProof?.status === 'pass' &&
+        fromZeroScenarioCount >= 3 &&
+        Number(fromZeroSummary.scenarios_passed || 0) === fromZeroScenarioCount &&
+        fromZeroProductFocusCount === fromZeroScenarioCount &&
+        fromZeroGrowthIterations >= 15 &&
+        Number(fromZeroSummary.quality_delta || 0) > 0 &&
+        Number(fromZeroSummary.duplicate_class_delta || 0) > 0 &&
+        Number(fromZeroSummary.context_char_reduction_percentage || 0) > 0 &&
+        Number(fromZeroSummary.with_klauro_duplicate_classes || 0) === 0,
+      `${fromZeroBuildPacketProof?.status || 'missing'}, ${fromZeroSummary.scenarios_passed || 0}/${fromZeroScenarioCount} scenarios, ${fromZeroProductFocusCount}/${fromZeroScenarioCount} product-focus packets, ${fromZeroGrowthIterations} growth iterations, +${fromZeroSummary.quality_delta || 0} quality delta, +${fromZeroSummary.duplicate_class_delta || 0} duplicate-class delta, ${fromZeroSummary.context_char_reduction_percentage ?? 'unknown'}% context reduction, ${fromZeroSummary.with_klauro_duplicate_classes ?? 'unknown'} with-Klauro duplicate classes`
+    ),
+    gate(
+      'machine-capability-memory:duplicate-avoidance',
+      capabilityMemoryBenchmark?.status === 'pass' &&
+        Number(capabilityMemorySummary.task_count || 0) > 0 &&
+        Number(capabilityMemorySummary.memory_hit_rate || 0) >= 80 &&
+        Number(capabilityMemorySummary.average_duplicate_avoidance_delta || 0) > 0,
+      `${capabilityMemoryBenchmark?.status || 'missing'}, ${capabilityMemorySummary.task_count || 0} tasks, ${capabilityMemorySummary.memory_hit_rate || 0}% hit rate, +${capabilityMemorySummary.average_duplicate_avoidance_delta || 0} duplicate-avoidance delta`
+    ),
   ];
 }
 
@@ -333,6 +1208,11 @@ function average(values: number[]): number {
 }
 
 function formatMarkdown(report: Awaited<ReturnType<typeof runMachineAgentProof>>): string {
+  const incrementalSummary: any = report.incremental?.summary || {};
+  const diagnostics: any = (report as any).performance_diagnostics || {};
+  const greenfieldSummary: any = report.greenfield_benchmark?.summary || {};
+  const fromZeroSummary: any = report.from_zero_build_packet_proof?.summary || {};
+  const capabilityMemorySummary: any = report.capability_memory_benchmark?.summary || {};
   const lines = [
     '# Klauro Machine-Wide Agent Proof',
     '',
@@ -357,6 +1237,63 @@ function formatMarkdown(report: Awaited<ReturnType<typeof runMachineAgentProof>>
     '| Repo | Status | Proof | Languages | Reason |',
     '| --- | --- | --- | --- | --- |',
     ...report.repo_results.map((repo: any) => `| ${repo.name} | ${repo.status} | ${repo.proof_status || ''} | ${(repo.languages || []).join(', ')} | ${repo.reason || repo.error || ''} |`),
+    '',
+    '## Incremental Agent Value',
+    '',
+    report.incremental
+      ? `Status: ${report.incremental.status}; targets: ${incrementalSummary.targets_passed || 0}/${incrementalSummary.target_count || 0}; edit speedup: ${incrementalSummary.average_edit_speedup_vs_full || 0}x; packet: ${incrementalSummary.average_packet_tokens_after_edit || 0} tokens; token reduction: ${incrementalSummary.average_search_token_reduction_after_edit ?? 'unknown'}%; edit-loop wall: ${incrementalSummary.average_edit_loop_wall_ms || 'unknown'}ms; proof harness wall: ${incrementalSummary.average_isolated_child_wall_ms || 'unknown'}ms; isolated overhead: ${incrementalSummary.average_isolated_child_overhead_ms || 0}ms`
+      : 'Not run',
+    '',
+    '## Performance Diagnostics',
+    '',
+    diagnostics.status
+      ? `Status: ${diagnostics.status}; slow analyses: ${diagnostics.counts?.slow_analysis_repos || 0}; slow proof harnesses: ${diagnostics.counts?.slow_proof_harness_repos || 0}; slow incrementals: ${diagnostics.counts?.slow_incremental_repos || 0}; slow edit loops: ${diagnostics.counts?.slow_edit_loop_repos || 0}; weak token reductions: ${diagnostics.counts?.weak_token_reduction_repos || 0}; large packets: ${diagnostics.counts?.large_packet_repos || 0}`
+      : 'Not run',
+    ...(Array.isArray(diagnostics.recommendations) && diagnostics.recommendations.length > 0
+      ? ['', ...diagnostics.recommendations.map((recommendation: string) => `- ${recommendation}`)]
+      : []),
+    ...(Array.isArray(diagnostics.slow_proof_harness_repos) && diagnostics.slow_proof_harness_repos.length > 0
+      ? [
+          '',
+          '| Slow proof harness repo | Harness wall ms | Copy ms | Edit-loop ms | Full ms | Edit ms | Nodes | Reason |',
+          '| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
+          ...diagnostics.slow_proof_harness_repos.slice(0, 5).map((item: any) => `| ${item.name} | ${item.isolated_child_wall_ms} | ${item.copy_repo_ms || ''} | ${item.edit_loop_wall_ms} | ${item.full_ms} | ${item.edit_incremental_ms} | ${item.nodes || ''} | ${String(item.reason || '').replace(/\|/g, '\\|')} |`),
+        ]
+      : []),
+    ...(Array.isArray(diagnostics.slow_incremental_repos) && diagnostics.slow_incremental_repos.length > 0
+      ? [
+          '',
+          '| Slow edit incremental repo | Edit ms | Full ms | Speedup | Nodes | Reason |',
+          '| --- | ---: | ---: | ---: | ---: | --- |',
+          ...diagnostics.slow_incremental_repos.slice(0, 5).map((item: any) => `| ${item.name} | ${item.edit_incremental_ms} | ${item.full_ms} | ${item.edit_speedup_vs_full} | ${item.nodes || ''} | ${String(item.reason || '').replace(/\|/g, '\\|')} |`),
+        ]
+      : []),
+    ...(Array.isArray(diagnostics.weak_token_reduction_repos) && diagnostics.weak_token_reduction_repos.length > 0
+      ? [
+          '',
+          '| Weak token-reduction repo | Reduction | Packet tokens | Total context | Search baseline | Reason |',
+          '| --- | ---: | ---: | ---: | ---: | --- |',
+          ...diagnostics.weak_token_reduction_repos.slice(0, 5).map((item: any) => `| ${item.name} | ${item.token_reduction_vs_search}% | ${item.packet_tokens} | ${item.total_context_tokens} | ${item.search_baseline_tokens} | ${String(item.reason || '').replace(/\|/g, '\\|')} |`),
+        ]
+      : []),
+    '',
+    '## Greenfield Agent Benchmark',
+    '',
+    report.greenfield_benchmark
+      ? `Status: ${report.greenfield_benchmark.status}; scenarios improved: ${greenfieldSummary.scenarios_improved || 0}/${greenfieldSummary.scenario_count || 0}; average quality delta: +${greenfieldSummary.average_quality_delta || 0}; continuity: ${greenfieldSummary.continuity_trials_passed || 0}/${greenfieldSummary.continuity_trial_count || 0} (+${greenfieldSummary.continuity_average_delta || 0})`
+      : 'Not run',
+    '',
+    '## From-Zero Build Packet Proof',
+    '',
+    report.from_zero_build_packet_proof
+      ? `Status: ${report.from_zero_build_packet_proof.status}; quality delta: +${fromZeroSummary.quality_delta || 0}; duplicate-class delta: +${fromZeroSummary.duplicate_class_delta || 0}; with-Klauro duplicates: ${fromZeroSummary.with_klauro_duplicate_classes ?? 'unknown'}; context char reduction: ${fromZeroSummary.context_char_reduction_percentage ?? 'unknown'}%`
+      : 'Not run',
+    '',
+    '## Capability Memory Benchmark',
+    '',
+    report.capability_memory_benchmark
+      ? `Status: ${report.capability_memory_benchmark.status}; tasks: ${capabilityMemorySummary.task_count || 0}; memory hit rate: ${capabilityMemorySummary.memory_hit_rate || 0}%; duplicate-avoidance delta: +${capabilityMemorySummary.average_duplicate_avoidance_delta || 0}`
+      : 'Not run',
   ];
   return `${lines.join('\n')}\n`;
 }
@@ -368,11 +1305,20 @@ async function main(): Promise<void> {
   await fs.writeJson(args.outputPath, report, { spaces: 2 });
   await fs.ensureDir(path.dirname(args.markdownPath));
   await fs.writeFile(args.markdownPath, formatMarkdown(report), 'utf8');
+  const workRoot = (report.resource_policy as any).work_root;
+  if (args.discardWorkspaces && workRoot && !pathContains(workRoot, args.outputPath) && !pathContains(workRoot, args.markdownPath)) {
+    await fs.remove(workRoot).catch(() => undefined);
+  }
   console.log(`Machine agent proof: ${report.status.toUpperCase()} (${report.score}/100)`);
   for (const gate of report.gates) console.log(`${gate.status.toUpperCase().padEnd(4)} ${gate.id} - ${gate.detail}`);
   console.log(`Report: ${args.outputPath}`);
   console.log(`Markdown: ${args.markdownPath}`);
   if (report.status === 'fail') process.exitCode = 1;
+}
+
+function pathContains(parent: string, child: string): boolean {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
 if (require.main === module) {

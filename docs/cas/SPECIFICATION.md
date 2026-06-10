@@ -1,6 +1,6 @@
 # Code Analysis Specification (CAS)
 
-**Version:** 1.9.0
+**Version:** 1.10.0
 **Status:** Active
 **Last Updated:** 2026-02-05
 
@@ -23,7 +23,7 @@ The Code Analysis Specification (CAS) defines a universal, language-agnostic for
 
 ## Version History
 
-This document specifies version 1.9.0 of the Code Analysis Specification. The evolution of CAS includes:
+This document specifies version 1.10.0 of the Code Analysis Specification. The evolution of CAS includes:
 
 - **[Version 1.0.0](./v1.0.0.md)** (2024-01-01) - Initial release with core nodes, edges, and basic metadata
 - **[Version 1.1.0](./v1.1.0.md)** (2024-06-01) - Added progressive levels, entry/exit points, and extended metadata
@@ -34,7 +34,8 @@ This document specifies version 1.9.0 of the Code Analysis Specification. The ev
 - **[Version 1.6.0](./v1.6.0-rfp.md)** (2026-01-23) - Added test architecture, test categorization, BDD support, and test-to-code relationships
 - **[Version 1.7.0](./v1.7.0-rfp.md)** (2026-01-25) - Added inference-based intelligence: intent, critical flows, change risk, data lifecycle, security boundaries, flow coverage, temporal stability
 - **[Version 1.8.0](./v1.8.0-rfp.md)** (2026-02-05) - Added incremental analysis: change detection, change reporting, change history, impact analysis
-- **[Version 1.9.0](./v1.9.0-rfp.md)** (2026-05-13) - Current version - Added Codebase Idiom Intelligence for repo-local conventions, examples, violations, and agent validation
+- **Version 1.10.0** (2026-06-08) - Current version - Added system health/coherence analysis and graph-anchored semantic retrieval
+- **[Version 1.9.0](./v1.9.0-rfp.md)** (2026-05-13) - Added Codebase Idiom Intelligence for repo-local conventions, examples, violations, and agent validation
 
 ## 1. Introduction
 
@@ -92,7 +93,7 @@ The root structure containing complete analysis results:
 
 ```typescript
 interface CASOutput {
-  cas_version: "1.9.0";
+  cas_version: "1.10.0";
   analysis_timestamp: string;  // ISO 8601
   analysis_id: string;          // Unique identifier
 
@@ -116,6 +117,7 @@ interface CASOutput {
   dependencies?: Dependencies;
   disclosure?: DisclosureHints;     // Added in v1.1.0
   analyzer_contributions: AnalyzerContribution[];
+  analysis_phases?: CASAnalysisPhase[]; // Added in v1.10.0
   progressive_levels?: ProgressiveLevels;
 
   perspectives?: CASPerspective[];  // Added in v1.2.0
@@ -127,6 +129,7 @@ interface CASOutput {
   documentation_summary?: CASDocumentationSummary;  // Added in v1.4.0
   todos_summary?: CASTodoSummary;                   // Added in v1.4.0
   implementation_health?: CASImplementationHealth;  // Added in v1.4.0
+  system_health?: CASSystemHealth;                  // Coherence, risk, duplication, pattern drift, and remediation guidance
 
   patterns?: CASPattern[];          // Enhanced in v1.5.0 with variations
 
@@ -178,6 +181,9 @@ interface CASNode {
   name: string;                  // Human-readable name
   type: string;                  // Node type (e.g., 'class', 'function', 'module')
   tags: string[];                // Classification tags (v1.1.0: accumulative from all analyzers)
+  description?: string;           // Extracted or explicitly generated element description
+  description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
+  description_generation?: CASDescriptionGeneration;
 
   parent?: string;               // v1.5.0: REQUIRED for class members (methods, properties)
 
@@ -1088,6 +1094,65 @@ interface CASIdiomSummary {
 }
 ```
 
+### 4.10 System Health And Coherence
+
+`system_health` summarizes whether the codebase is coherent enough for humans and agents to extend safely. It combines static health signals that otherwise live separately: architectural pattern balance, paradigm drift, complexity hotspots, duplicate concepts, implementation gaps, test gaps, runtime instrumentation gaps, and idiom violations such as naming, dependency-injection, and module-boundary drift.
+
+```typescript
+interface CASSystemHealth {
+  score: number; // 0-100
+  status: 'healthy' | 'watch' | 'at-risk' | 'critical';
+  summary: string;
+  risk_areas: CASSystemHealthRiskArea[];
+  coherence: {
+    status: 'coherent' | 'mixed' | 'drifting' | 'fragmented';
+    paradigm_count: number;
+    primary_paradigms: string[];
+    conflicting_paradigms: string[];
+    naming_convention_violations: number;
+    dependency_injection_violations: number;
+    module_boundary_violations: number;
+    duplication_signals: number;
+  };
+  remediation: {
+    immediate: string[];
+    agent_rules: string[];
+    validation_tools: string[];
+  };
+}
+
+interface CASSystemHealthRiskArea {
+  id: string;
+  type:
+    | 'complexity'
+    | 'duplication'
+    | 'paradigm-drift'
+    | 'naming-drift'
+    | 'dependency-injection-drift'
+    | 'module-boundary-drift'
+    | 'implementation-gap'
+    | 'test-gap'
+    | 'runtime-coverage-gap'
+    | 'pattern-balance';
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  title: string;
+  description: string;
+  affected_files?: string[];
+  affected_nodes?: string[];
+  evidence: string[];
+  recommendation: string;
+  agent_guidance: string;
+}
+```
+
+Semantic rules:
+
+- Agents SHOULD use `system_health.remediation.agent_rules` before broad feature work, refactors, auth changes, data changes, and multi-file edits.
+- `system_health.risk_areas` SHOULD point to concrete files, nodes, or evidence strings whenever the analyzer can identify them.
+- Coherence findings SHOULD not replace `codebase_idioms`; they summarize where those idioms, architectural patterns, and risk fields show drift that should be fixed or consciously preserved.
+- Duplication findings SHOULD be role-aware. A normal layered concept family such as `UserController`, `UserService`, `UserRepository`, and `UserEntity` is not duplication by itself; duplication risk is present when the same concept has multiple owners in the same architectural role, such as two business-service implementations.
+- Runtime coverage gaps SHOULD be treated as missing observability, not proof that a flow is unused.
+
 Idiom categories are intentionally agent-facing:
 
 | Category | Meaning |
@@ -1329,6 +1394,50 @@ interface CASTestSummary {
 
 ### 4.11 Inference-Based Intelligence Structures (v1.7.0)
 
+#### CASDescriptionGeneration
+Provenance for generated descriptions:
+
+```typescript
+interface CASDescriptionGeneration {
+  status:
+    | 'deterministic_initial'
+    | 'deterministic_kept'
+    | 'ai_applied'
+    | 'ai_rejected'
+    | 'ai_skipped'
+    | 'ai_failed'
+    | 'reused_previous';
+  attempted: boolean;
+  reason?: string;
+  budget_ms?: number;
+  generated_at?: string;
+}
+```
+
+#### CASAnalysisPhase
+Layered analysis phases:
+
+```typescript
+interface CASAnalysisPhase {
+  id: string;
+  name: string;
+  priority: number;
+  status: 'complete' | 'partial' | 'skipped' | 'deferred';
+  purpose: 'visualization' | 'agent-development' | 'deep-context' | 'ai-enrichment' | 'runtime';
+  default_phase: boolean;
+  description: string;
+  outputs: string[];
+  agent_value: string;
+  visualization_value: string;
+  can_run_later: boolean;
+  requires_ai?: boolean;
+  generated_at?: string;
+  notes?: string[];
+}
+```
+
+Default analysis MUST prioritize `core-graph` and `agent-context` before heavier enrichment. AI MUST be used for the system narrative and primary capability descriptions when an AI provider is configured. Per-node, service, entity, entry point, and exit point descriptions SHOULD be deferred and generated only by explicit enrichment requests so default analysis stays fast and token-efficient.
+
 #### CASIntent
 Inferred purpose and architectural intent:
 
@@ -1427,6 +1536,9 @@ interface CASDataEntity {
   id: string;
   name: string;
   schema_source?: string;
+  description?: string;
+  description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
+  description_generation?: CASDescriptionGeneration;
 
   fields?: Array<{
     name: string;
@@ -2021,6 +2133,8 @@ interface CASValidation {
 - Sensitive fields MUST be flagged based on naming conventions (password, token, email, etc.)
 - `lifecycle` operations MUST map to node IDs that perform CRUD
 - `validation_gaps` SHOULD flag entities with `created_by` but no `validation` rules
+- `description` MAY be present for drilldown views, but AI-generated entity descriptions SHOULD be produced by explicit enrichment requests rather than every default analysis run.
+- Description consumers MUST inspect `description_source` and `description_generation`; stale or skipped AI descriptions MUST NOT be presented as if they were fresh AI output.
 
 ### 5.19 Security Boundary (v1.7.0+)
 
@@ -2079,6 +2193,8 @@ Capability detection strategies MUST vary based on the detected system type:
 - Entry points are exported functions/classes
 - Capabilities are the functionality domains the exports provide
 - Group related exports into capability domains
+
+Capability descriptions MUST be AI-generated when an AI provider is configured. If AI is unavailable or rejected by the quality gate, CAS MUST retain provenance in `description_source` and `description_generation` so UI and MCP consumers can expose the gap instead of pretending deterministic text is equivalent.
 
 ### 5.23 Runtime-to-Static Correlation (v1.8.0+)
 
@@ -2665,7 +2781,21 @@ interface BaseAnalyzer {
 **Breaking changes:**
 - None. All new fields and features are optional.
 
-### 11.10 Backward Compatibility
+### 11.10 Upgrading from v1.9.0 to v1.10.0
+
+**Required changes:**
+- Update `cas_version` to "1.10.0"
+
+**Optional enhancements:**
+- Emit `system_health` with coherence, risk areas, remediation guidance, and agent validation tools.
+- Fold complexity, duplication, paradigm drift, naming/DI/module convention drift, implementation gaps, test gaps, and runtime coverage gaps into system health.
+- Expose system health through MCP so agents preserve local paradigms and can also fix duplication, risks, and drift intentionally.
+- Use runtime observations with static CAS links to rank operational priorities such as bugs, bottlenecks, and problematic flows.
+
+**Breaking changes:**
+- None. All new fields and features are optional.
+
+### 11.11 Backward Compatibility
 
 All versions maintain backward compatibility:
 - New fields are optional
@@ -2676,6 +2806,17 @@ All versions maintain backward compatibility:
 ## Appendices
 
 ### Appendix A: Version History
+
+- **v1.10.0** (2026-06-08): System Health And Semantic Retrieval
+  - System health/coherence analysis
+  - Complexity, duplication, paradigm drift, and idiom drift risk areas
+  - Runtime-informed operational priorities through MCP
+  - Graph-anchored semantic retrieval
+
+- **v1.9.0** (2026-05-13): Codebase Idiom Intelligence
+  - Repo-local convention extraction
+  - Idiom examples, violations, and validation
+  - Idiom-aware agent work packets
 
 - **v1.0.0** (2024-01-01): Initial release
   - Core node and edge structures
@@ -2755,6 +2896,13 @@ All versions maintain backward compatibility:
   - MCP idiom queries, examples, validation, and idiom-aware work packets
   - Live copied-repo A/B idiom quality proof
   - Machine-wide real-repo discovery and accounting
+
+- **v1.10.0** (2026-06-08): Layered Analysis and Description Enrichment
+  - `analysis_phases` explains which analysis layers ran, which are deferred, and what each layer provides to UI and agents
+  - AI system narrative and primary capability descriptions are treated as default high-leverage enrichment when an AI provider is configured
+  - Per-element descriptions for nodes, services, entities, capabilities, entry points, and exit points are manually triggered enrichment outputs
+  - Generated descriptions carry provenance, timestamps, and invalidation metadata so stale drilldown text is not trusted after source changes
+  - MCP tools can request focused description enrichment without re-running the full analyzer or paying token cost for every element
 
 ### Appendix B: Language Support
 

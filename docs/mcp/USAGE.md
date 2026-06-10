@@ -50,10 +50,13 @@ Use preview_greenfield_codebase with plan_text="..." and proposed_files=[...].
 
 Agents should include the returned advisory verdict, private preview URL, changed contracts, required checks, and uncertainty in the plan output. A `needs_revision` or `high_risk` verdict is not a hard blocker in v1, but it must be surfaced before implementation.
 
+For large greenfield builds, first call `get_greenfield_build_packet` against the empty target folder. It returns first-slice architecture guidance without wasting tokens exploring an empty tree. After the first slice exists, call it again against the same folder; Klauro analyzes the new codebase as normal CAS and returns graph memory, architecture memory, model ownership, boundary ownership, test memory, product-focus guidance, a growth control plane, concepts to reuse, focused files to read, duplicate-prevention rules, and validation checks for the next slice. The `product_focus` and `growth_control_plane` sections are the agent-facing shift in responsibility: they name the requested product behaviors, the architecture decisions Klauro is carrying, the product-slice stop rule, the architecture budget, concept ownership, duplication gates, what not to spend time rediscovering, and the next product slice definition. Treat each vertical slice as a normal codebase iteration: packet, build, preview/analyze, packet again. The live scratch harness now passes this compact growth-control context into with-Klauro agents for both empty-folder and continuation waves. The `agent-greenfield-benchmark` includes a continuity trial that proves this behavior by comparing a baseline that rebuilds `User`, `Workspace`, `Project`, and route boundaries against a Klauro-guided slice that reuses the existing models, services, migrations, and tests. The `agent-from-zero-build-packet-proof` now runs three-iteration empty-folder builds across multiple domains and compares Klauro-guided growth against baselines that pass tests while duplicating domain concepts.
+
 CLI equivalents:
 
 ```
 npm run proposal-preview -- /repo --plan-file plan.md --diff-file changes.patch --json
+npm run greenfield-build-packet -- /empty-or-growing-project --plan-file plan.md --json
 npm run greenfield-preview -- --plan-file plan.md --proposed-files files.json --json
 ```
 
@@ -117,9 +120,9 @@ When the agent is ready to act, request the task packet:
 Use get_agent_work_packet with path="/repo" and task={ "task_type": "modify", "target": "auth" }
 ```
 
-The work packet resolves the target, includes coding context, risk, callers, callees, tests, behavioral invariant impact, entry/call-chain context, and returns a concrete file read plan. Agents should inspect those files first before expanding to broader source reads.
+The work packet resolves the target, includes coding context, architecture context, risk, callers, callees, tests, behavioral invariant impact, entry/call-chain context, and returns a concrete file read plan. Agents should inspect those files first before expanding to broader source reads. The architecture context is intentionally compact: it names the system type, architecture budget, local patterns such as MVC, MVVM, repository, service layer, mediator, unit of work, and singleton where present, inventory examples, target-relevant owners, a pattern decision matrix, pattern-balance risks, and rules for preserving the codebase's existing shape.
 
-The CLI mirrors this behavior. `npm --silent run agent-work-packet -- /repo --json --compact` includes each file plan's `line_window`, and the plain-text output prints the same line range so CLI-first agents can avoid reading whole files by default. Use `npm --silent` for JSON output so npm's command banner does not pollute stdout.
+The CLI mirrors this behavior. `npm --silent run agent-work-packet -- /repo --json --compact --quiet` includes each file plan's `line_window`, and the plain-text output prints the same line range so CLI-first agents can avoid reading whole files by default. Use `npm --silent` and `--quiet` for machine-readable JSON so npm's command banner and analyzer maintenance logs do not pollute stdout. Work packets are token-bounded by default; ask follow-up MCP tools for deeper context only when the focused packet proves insufficient.
 
 ### 6. Use The Agent Workbench And Change Lifecycle
 
@@ -148,6 +151,14 @@ Use get_codebase_agent_rules with path="/repo"
 ```
 
 This returns architecture, idiom, invariant, testing, source-reading, confidence, and signal-quality rules derived from CAS.
+
+When the task specifically needs architecture-shape guidance without the rest of a work packet, use:
+
+```
+Use get_architecture_context with path="/repo" and target="billing"
+```
+
+This returns a bounded architecture view for planning and editing: primary system type, architecture budget, detected patterns, inventory counts, target-relevant models/views/controllers/services/repositories/handlers, pattern-balance risks, and agent rules. Use it before introducing a new architectural style or moving behavior across layers.
 
 To explain the shape of a proposed or actual diff:
 
@@ -247,6 +258,7 @@ From there, drill into targeted areas:
 - **Check test coverage**: `find_tests`, `get_test_summary`, `get_flow_coverage` (use `chain_id` for per-flow detail)
 - **Review security**: `get_security_overview`
 - **Discover patterns**: `get_patterns` (summaries), `get_pattern_instances` (drill into specific pattern)
+- **Preserve architecture shape**: `get_architecture_context` before significant edits to see system type, MVC/MVVM/repository/service/mediator/unit-of-work/singleton inventory examples, pattern decision matrix, pattern-balance risks, and target-relevant owners
 - **Explore concepts**: `get_domain_concepts` (filterable, paginated)
 - **Understand recent changes**: `get_changes_since`, `get_change_summary`, `get_hot_spots`, `get_analysis_snapshots`
 - **Resolve monorepos/subprojects**: `resolve_agent_analysis`, `get_agent_project_map`
@@ -257,6 +269,7 @@ From there, drill into targeted areas:
 - **Persist workspace graphs**: `save_workspace_graph`, `get_workspace_graph`, `verify_workspace_link`
 - **Validate CAS completeness**: `validate_cas_contract`, `save_cas_golden_snapshot`, `compare_cas_golden_snapshot`
 - **Check integration analyzer depth**: `get_integration_depth_report`
+- **Avoid rebuilding existing behavior**: `get_capability_memory` or the `capability_memory` field in `get_agent_work_packet` before adding services, routes, workers, models, packages, or new feature slices
 - **Inspect and validate behavior-level rules**: `get_behavioral_invariants` before edits and `validate_behavioral_invariants` after edits for tenant scope, auth, DB constraints, migrations, and test coverage
 - **Inspect and validate repo-local practices**: `get_codebase_idioms` and `get_idiom_examples` before edits, then `validate_codebase_idioms` after edits so changes match local naming, placement, testing, migration, error/logging, and boundary conventions
 - **Inspect MCP storage**: `get_storage_health`
@@ -284,16 +297,20 @@ Use the architectural_context prompt with path="/absolute/path/to/your/project"
 
 This gives the AI assistant knowledge of system type, tech stack, architecture layers, API routes, database schema, capabilities, security posture, and design patterns -- all in a single context injection.
 
+To prove duplicate-work avoidance across repos, run `npm run agent-capability-memory-benchmark` from `apps/mcp-server/`. It compares source-search-only behavior against CAS-backed capability memory and reports whether agents receive explicit reuse/extend/extract decisions before creating overlapping code.
+
 ### Before modifying code
 
 1. Call `get_agent_tool_plan` with `task_type="modify"` and the target.
 2. Call `get_agent_work_packet` with the same task.
-3. Read the packet's file read plan first, starting with each item's `line_window` when present.
-4. Use the packet's risk, callers, callees, tests, and validation plan to decide the edit and verification path.
-5. Run the packet's validation commands. In monorepos these may route to package roots, such as `cd packages/analyzer-core && npm test`.
-6. After edits, call `validate_behavioral_invariants` and `validate_codebase_idioms` against the working diff before finalizing.
+3. Use the packet's `architecture_context` to preserve the existing pattern budget and owner categories. Do not introduce a new paradigm unless the packet shows no local fit or the user explicitly asks for that architectural change.
+4. Check the packet's `capability_memory` or call `get_capability_memory` if the change adds behavior, so the plan explicitly reuses, extends, extracts, or distinguishes existing capabilities before creating new code.
+5. Read the packet's file read plan first, starting with each item's `line_window` when present.
+6. Use the packet's risk, callers, callees, tests, and validation plan to decide the edit and verification path.
+7. Run the packet's validation commands. In monorepos these may route to package roots, such as `cd packages/analyzer-core && npm test`.
+8. After edits, call `validate_behavioral_invariants` and `validate_codebase_idioms` against the working diff before finalizing.
 
-The validation plan is part of the product surface, not a benchmark-only artifact. It gives agents focused test/typecheck/build commands when CAS can infer them, lists tests to inspect first, and tells agents to report an environment blocker instead of installing dependencies or doing broad setup unless the task explicitly asks for that. The packet also includes behavioral invariants, invariant impact, and `idiom_context` so agents preserve tenant/org scope, auth boundaries, DB constraints, migration contracts, test coverage, naming, file placement, module boundaries, validation style, error/logging style, async style, and configuration practices while editing.
+The validation plan is part of the product surface, not a benchmark-only artifact. It gives agents focused test/typecheck/build commands when CAS can infer them, lists tests to inspect first, and tells agents to report an environment blocker instead of installing dependencies or doing broad setup unless the task explicitly asks for that. The packet also includes `architecture_context`, behavioral invariants, invariant impact, and `idiom_context` so agents preserve architectural paradigms, tenant/org scope, auth boundaries, DB constraints, migration contracts, test coverage, naming, file placement, module boundaries, validation style, error/logging style, async style, and configuration practices while editing.
 
 Or use the `safe_modification_guide` prompt which composes all of these into a single output.
 
@@ -706,10 +723,36 @@ From `apps/mcp-server/`:
 
 ```
 npm run discover-real-repos
+npm run agent-proof-fast
 npm run agent-proof-machine -- --agent-with-cmd "agent-with --workspace {workspace} --prompt-file {prompt_file}" --agent-without-cmd "agent-without --workspace {workspace} --prompt-file {prompt_file}" --max-live-tasks 6
 ```
 
-The machine proof discovers every real Git repo under `/Users/michaelshattuck/dev`, excludes generated benchmark/live-trial copies and dependency/cache/build directories, includes nested standalone Git repos, and reports every repo as passed, failed, unsupported, or skipped with a reason. Eligible repos must pass analysis/readiness/idiom checks, incremental edit-loop checks, and live idiom A/B proof.
+Use `agent-proof-fast` for normal local development. It still discovers every real Git repo under `/Users/michaelshattuck/dev` and reports every repo as passed, failed, unsupported, or skipped with a reason, but it analyzes a bounded sample with source-file and timing budgets so the proof does not monopolize the workstation.
+
+Use `agent-proof-machine` or `analysis-perfection-gauntlet` only when you intentionally want the full local-machine proof. The full mode excludes generated benchmark/live-trial copies and dependency/cache/build directories, includes nested standalone Git repos, and runs analysis/readiness/idiom checks, incremental edit-loop checks, and idiom proof for eligible repos. Full mode is CPU/disk heavy on large repo sets by design; prefer it before releases or after analyzer changes that could affect many languages/frameworks.
+
+Proof, preview, and live-trial commands create temporary copied workspaces. They are removed on successful runs, but interrupted runs can leave generated temp artifacts behind. To inspect or prune only allowlisted Klauro-generated temp workspaces:
+
+```
+npm run storage-report -- --include-temp-artifacts --max-bytes 1073741824
+npm run storage-prune -- --include-temp-artifacts --max-bytes 1073741824 --confirm
+```
+
+MCP agents can use the same maintenance path without shelling out:
+
+```
+Use get_storage_maintenance_report with include_temp_artifacts=true and max_bytes=1073741824
+Use prune_storage_artifacts with confirm_delete=true, include_temp_artifacts=true, and max_bytes=1073741824 only after the user approves deletion.
+```
+
+The temp cleanup path is intentionally separate from analysis retention. It does not delete `~/.klauro/analyses` unless `--include-analyses` is explicitly supplied.
+
+Resource controls:
+
+```
+npm run agent-proof-machine -- --mode fast --max-targets 4 --max-source-files 1000 --analysis-budget-ms 20000 --incremental-budget-ms 20000
+npm run agent-proof-machine -- --mode full --analysis-concurrency 1 --incremental-concurrency 1
+```
 
 To enforce the complete non-UI product bar from the latest proof artifacts:
 
@@ -770,11 +813,12 @@ Storage behavior:
 - Per-project incremental state is stored under a project directory inside `~/.klauro/analyses/`.
 - File-level cache entries are stored under that project directory's `file-cache/`.
 - Change history is stored as `change-history.json`.
-- Analysis snapshots are stored under `snapshots/` and capped by the MCP storage layer.
+- Analysis snapshots are stored under `snapshots/` and capped by the MCP storage layer. Defaults are 10 snapshots and 512 MB per project; set `KLAURO_MAX_SNAPSHOTS` or `KLAURO_MAX_SNAPSHOT_BYTES` when a longer local time-travel window is needed. Incremental snapshots are throttled to at most once per 60 seconds by default while the latest CAS file is still updated on every changed analysis; set `KLAURO_INCREMENTAL_SNAPSHOT_INTERVAL_MS=0` to snapshot every incremental edit.
 - Saved CAS golden snapshots are stored as `cas-golden-snapshot.json`.
 - Runtime observations are stored as `runtime-observations.json`.
 - Persisted workspace graphs are stored under `workspace-graphs/`.
 - Agentic benchmark, quality, live, and incremental benchmark reports are stored under `agentic-benchmarks/`, with `latest.json` pointing to the latest report. MCP benchmark tools persist reports automatically, and the benchmark CLIs persist their generated reports after writing local JSON/Markdown artifacts.
+- Interrupted proof, preview, and live-trial runs may leave allowlisted `klauro-*` temp workspaces under the OS temp directory. Use `npm run storage-report -- --include-temp-artifacts` or the `get_storage_maintenance_report` MCP tool to inspect them. Use `npm run storage-prune -- --include-temp-artifacts --confirm` or the guarded `prune_storage_artifacts` MCP tool to delete them only after explicit approval. Analysis files are not included in this cleanup unless `--include-analyses` is provided.
 
 Use `force_full=true` when the incremental state is suspect or when you need a clean rebuild.
 

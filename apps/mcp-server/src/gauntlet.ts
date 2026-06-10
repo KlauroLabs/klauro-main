@@ -61,7 +61,7 @@ interface GauntletReport {
 const DEFAULT_TARGETS: Array<{ name: string; relativePath: string; expectation: RepoExpectation }> = [
   {
     name: 'klauro-proof-of-concept',
-    relativePath: 'klauro/proof-of-concept',
+    relativePath: 'unravl/proof-of-concept',
     expectation: {
       minNodes: 250,
       minEdges: 150,
@@ -122,6 +122,15 @@ const DEFAULT_TARGETS: Array<{ name: string; relativePath: string; expectation: 
       minNodes: 50,
       minEdges: 25,
       requiredLanguages: ['Rust']
+    }
+  },
+  {
+    name: 'openclaw',
+    relativePath: 'openclaw',
+    expectation: {
+      minNodes: 250,
+      minEdges: 150,
+      requiredLanguages: ['TypeScript/JavaScript', 'Go', 'Python']
     }
   },
   {

@@ -1,6 +1,6 @@
 import * as path from 'path';
 import type { CASBehavioralInvariant, CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import { getAgentStartContext, getAgentWorkPacket, type AgentTask } from './agent-adoption';
+import { buildCapabilityMemoryForAgent, getAgentStartContext, getAgentWorkPacket, type AgentTask } from './agent-adoption';
 import { assessBehavioralInvariantImpact, validateBehavioralInvariants } from './invariant-validation';
 import { buildIdiomContextForAgent, validateCodebaseIdioms } from './idiom-query';
 import { assessChangeRisk, buildSummary, findTests, getSystemOverview } from './query';
@@ -61,6 +61,7 @@ export async function openAgentWorkbench(cas: CASOutput, projectPath: string, ta
     task_packet: {
       target_resolution: workPacket.target_resolution,
       selected_node: workPacket.selected_node,
+      work_context: workPacket.work_context,
       file_read_plan: workPacket.file_read_plan,
       validation_plan: workPacket.validation_plan,
       source_reading_rule: workPacket.source_reading_rule,
@@ -98,6 +99,12 @@ export async function preflightAgentChange(
     files: changedFiles.length ? changedFiles : workPacket.file_read_plan.map((item: any) => item.file),
     limit: 10,
   });
+  const capabilityMemory = buildCapabilityMemoryForAgent(cas, {
+    target,
+    instructions: planText,
+    files: changedFiles.length ? changedFiles : workPacket.file_read_plan.map((item: any) => item.file),
+    limit: 8,
+  });
   const invariantImpact = assessFocusedInvariantImpact(cas, {
     target,
     files: changedFiles,
@@ -131,6 +138,7 @@ export async function preflightAgentChange(
     selected_node: workPacket.selected_node,
     likely_impacts: {
       risk: summarizeRisk(risks),
+      capability_memory: capabilityMemory,
       idioms: idiomImpact,
       invariants: invariantImpact,
       tests: workPacket.work_context?.tests || null,
@@ -158,6 +166,11 @@ export function buildCodebaseAgentRules(
     files: options.files,
     limit: options.limit || 12,
   });
+  const capabilityMemory = buildCapabilityMemoryForAgent(cas, {
+    target: options.target,
+    files: options.files,
+    limit: options.limit || 8,
+  });
   const invariants = selectImportantInvariants(cas, options);
   const tests = findTests(cas, { limit: 8 });
   const signalQuality = buildSignalQuality(cas);
@@ -173,6 +186,15 @@ export function buildCodebaseAgentRules(
     },
     default_agent_rule: 'Ask Klauro for target, file_read_plan, idioms, invariants, and validation checks before broad source exploration or edits.',
     architecture_rules: architectureRules(summary, overview),
+    capability_rules: capabilityMemory.matched_capabilities.map((capability: any) => ({
+      id: capability.id,
+      name: capability.name,
+      score: capability.score,
+      rule: 'Check this existing capability before creating overlapping behavior.',
+      operation_paths: capability.operation_paths,
+      related_entities: capability.related_entities,
+    })),
+    reuse_decisions_required: capabilityMemory.reuse_decisions_required,
     idiom_rules: idiomContext.selected_idioms.map((idiom: any) => ({
       id: idiom.id,
       category: idiom.category,
@@ -195,6 +217,7 @@ export function buildCodebaseAgentRules(
     testing_rules: testingRules(tests),
     source_reading_rules: [
       'Use file_read_plan before opening broad directories.',
+      'Use capability_memory before adding a new capability so existing behavior is reused, extended, extracted, or explicitly distinguished.',
       'Prefer local examples from get_idiom_examples before creating new patterns.',
       'Treat low-confidence facts as leads that require source confirmation.',
       'After edits, run validate_agent_change before finalizing.',
@@ -583,8 +606,23 @@ function postEditShapeFindings(shape: any, idioms: any, invariants: any) {
 }
 
 function architectureRules(summary: any, overview: any): string[] {
+  const patterns = Array.isArray(summary.architectural_patterns)
+    ? summary.architectural_patterns
+    : overview.architecture_summary?.architectural_patterns || [];
+  const inventory = summary.architectural_inventory_counts || {};
+  const balance = summary.pattern_balance || overview.architecture_summary?.pattern_balance;
   return uniqueStrings([
     summary.architecture_type ? `Respect the ${summary.architecture_type} architecture shape.` : '',
+    patterns.length
+      ? `Detected architecture patterns: ${patterns.slice(0, 6).map((pattern: any) => `${pattern.name} (${Math.round(Number(pattern.confidence || 0) * 100)}%)`).join(', ')}.`
+      : 'No strong architecture pattern was detected; inspect nearby files before introducing a new pattern.',
+    Object.keys(inventory).length
+      ? `Architecture inventory: ${Object.entries(inventory).filter(([, count]) => Number(count) > 0).slice(0, 8).map(([kind, count]) => `${kind}=${count}`).join(', ')}.`
+      : '',
+    balance?.status && balance.status !== 'balanced'
+      ? `Pattern balance is ${balance.status}: ${(balance.risks || []).slice(0, 2).join('; ')}`
+      : '',
+    ...patterns.slice(0, 5).map((pattern: any) => pattern.guidance).filter(Boolean),
     summary.database_entities?.length ? 'Treat database entities as contract-bearing nodes; schema changes need migration/test review.' : '',
     overview.runtime_static_links_count ? 'Runtime-linked behavior should be checked against static and runtime evidence when available.' : '',
     summary.entry_points ? 'Use entry points to reason from user/API triggers to internal behavior.' : '',
@@ -628,6 +666,7 @@ function buildSignalQuality(cas: CASOutput) {
   const anyCas = cas as any;
   const tests = Array.isArray(cas.test_suites) ? cas.test_suites.length : 0;
   const patterns = Array.isArray(cas.patterns) ? cas.patterns.length : 0;
+  const capabilities = Array.isArray(cas.system_capabilities) ? cas.system_capabilities.length : 0;
   const idioms = Array.isArray(cas.codebase_idioms) ? cas.codebase_idioms.length : 0;
   const invariants = Array.isArray(cas.behavioral_invariants) ? cas.behavioral_invariants.length : 0;
   const errors = Array.isArray(cas.analysis_errors) ? cas.analysis_errors.length : 0;
@@ -640,6 +679,7 @@ function buildSignalQuality(cas: CASOutput) {
   const warnings = uniqueStrings([
     tests === 0 ? 'CAS mapped no test suites; test guidance is a source-discovery requirement, not coverage evidence.' : '',
     patterns === 0 ? 'CAS mapped no reusable patterns; agents should inspect local examples before creating or refactoring patterns.' : '',
+    capabilities === 0 ? 'CAS mapped no system capabilities; duplicate-work avoidance requires direct source confirmation.' : '',
     idioms === 0 ? 'CAS detected no repo-local idioms; style and placement guidance needs direct source confirmation.' : '',
     invariants === 0 ? 'CAS detected no behavioral invariants; auth, tenant, data, and boundary assumptions need source confirmation.' : '',
     errors > 0 ? `${errors} analyzer error(s) were reported; omitted areas may be missing from this packet.` : '',
@@ -656,6 +696,7 @@ function buildSignalQuality(cas: CASOutput) {
       exit_points: cas.exit_points?.length || 0,
       tests,
       patterns,
+      capabilities,
       idioms,
       invariants,
       analysis_errors: errors,
