@@ -51,6 +51,55 @@ describe('RailsAnalyzer', () => {
     });
   });
 
+  describe('extractModels', () => {
+    it('recognizes STI subclasses across files and carries the root table', () => {
+      const models = analyzer.extractModels([
+        { file: 'app/models/time_off.rb', content: 'class TimeOff < Event\nend\n' },
+        { file: 'app/models/event.rb', content: 'class Event < ApplicationRecord\nend\n' },
+        { file: 'app/models/paid_time_off.rb', content: 'class PaidTimeOff < TimeOff\nend\n' },
+      ]);
+
+      const event = models.find(model => model.name === 'Event');
+      const timeOff = models.find(model => model.name === 'TimeOff');
+      const paidTimeOff = models.find(model => model.name === 'PaidTimeOff');
+
+      expect(event!.tableName).toBe('events');
+      expect(event!.stiParent).toBeUndefined();
+      expect(timeOff).toEqual(expect.objectContaining({ tableName: 'events', stiParent: 'Event' }));
+      expect(paidTimeOff).toEqual(expect.objectContaining({ tableName: 'events', stiParent: 'TimeOff' }));
+    });
+
+    it('respects table_name overrides on subclasses', () => {
+      const models = analyzer.extractModels([
+        { file: 'app/models/event.rb', content: 'class Event < ApplicationRecord\nend\n' },
+        { file: 'app/models/audit_event.rb', content: "class AuditEvent < Event\n  self.table_name = 'audit_events'\nend\n" },
+      ]);
+
+      const auditEvent = models.find(model => model.name === 'AuditEvent');
+      expect(auditEvent).toEqual(expect.objectContaining({ tableName: 'audit_events', stiParent: 'Event' }));
+    });
+
+    it('gives subclasses of abstract base classes their own table without STI parent', () => {
+      const models = analyzer.extractModels([
+        { file: 'app/models/legacy_record.rb', content: 'class LegacyRecord < ActiveRecord::Base\n  self.abstract_class = true\nend\n' },
+        { file: 'app/models/invoice.rb', content: 'class Invoice < LegacyRecord\nend\n' },
+      ]);
+
+      const invoice = models.find(model => model.name === 'Invoice');
+      expect(invoice!.tableName).toBe('invoices');
+      expect(invoice!.stiParent).toBeUndefined();
+    });
+
+    it('does not treat plain service classes as models', () => {
+      const models = analyzer.extractModels([
+        { file: 'app/models/event.rb', content: 'class Event < ApplicationRecord\nend\n' },
+        { file: 'app/models/event_summary.rb', content: 'class EventSummary < BasePresenter\nend\n' },
+      ]);
+
+      expect(models.map(model => model.name)).toEqual(['Event']);
+    });
+  });
+
   describe('extractModelAccesses', () => {
     it('classifies class-level creates, updates, deletes, and reads', () => {
       const scope = [
@@ -439,6 +488,122 @@ describe('RailsAnalyzer', () => {
 
       const nonModelEdges = edges.filter(e => ['creates', 'reads', 'updates', 'deletes'].includes(e.type) && e.target !== model!.id);
       expect(nonModelEdges).toEqual([]);
+    });
+  });
+
+  describe('analyze STI subclass models', () => {
+    let projectPath: string;
+
+    beforeEach(async () => {
+      projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'rails-analyzer-sti-test-'));
+      await fs.writeFile(path.join(projectPath, 'Gemfile'), "source 'https://rubygems.org'\ngem 'rails', '~> 7.1'\n");
+      await fs.ensureDir(path.join(projectPath, 'config'));
+      await fs.writeFile(
+        path.join(projectPath, 'config', 'routes.rb'),
+        [
+          'Rails.application.routes.draw do',
+          '  resources :my_time_offs, only: [:create]',
+          'end',
+          '',
+        ].join('\n')
+      );
+      await fs.ensureDir(path.join(projectPath, 'app', 'models'));
+      await fs.writeFile(
+        path.join(projectPath, 'app', 'models', 'event.rb'),
+        'class Event < ApplicationRecord\nend\n'
+      );
+      await fs.writeFile(
+        path.join(projectPath, 'app', 'models', 'time_off.rb'),
+        'class TimeOff < Event\nend\n'
+      );
+      await fs.writeFile(
+        path.join(projectPath, 'app', 'models', 'paid_time_off.rb'),
+        'class PaidTimeOff < TimeOff\nend\n'
+      );
+      await fs.ensureDir(path.join(projectPath, 'app', 'controllers'));
+      await fs.writeFile(
+        path.join(projectPath, 'app', 'controllers', 'my_time_offs_controller.rb'),
+        [
+          'class MyTimeOffsController < ApplicationController',
+          '  def create',
+          '    time_off = TimeOff.new(time_off_params)',
+          '    time_off.save!',
+          '    head :created',
+          '  end',
+          'end',
+          '',
+        ].join('\n')
+      );
+      await fs.ensureDir(path.join(projectPath, 'db'));
+      await fs.writeFile(
+        path.join(projectPath, 'db', 'schema.rb'),
+        [
+          'ActiveRecord::Schema[7.1].define(version: 2026_01_01_000000) do',
+          '  create_table "events", force: :cascade do |t|',
+          '    t.string "type"',
+          '    t.string "employee_email"',
+          '    t.date "starts_on"',
+          '  end',
+          'end',
+          '',
+        ].join('\n')
+      );
+    });
+
+    afterEach(async () => {
+      await fs.remove(projectPath);
+    });
+
+    it('emits model nodes for STI subclasses with the parent table and sti_parent metadata', async () => {
+      const contribution = await analyzer.analyze({ projectPath } as any);
+      const nodes = contribution.nodes || [];
+
+      const timeOff = nodes.find(n => n.type === 'rails_model' && n.name === 'TimeOff');
+      const paidTimeOff = nodes.find(n => n.type === 'rails_model' && n.name === 'PaidTimeOff');
+      expect(timeOff).toBeDefined();
+      expect(paidTimeOff).toBeDefined();
+
+      const timeOffAttributes = timeOff!.metadata?.attributes as Record<string, unknown>;
+      expect(timeOffAttributes.table).toBe('events');
+      expect(timeOffAttributes.sti_parent).toBe('Event');
+
+      const paidTimeOffAttributes = paidTimeOff!.metadata?.attributes as Record<string, unknown>;
+      expect(paidTimeOffAttributes.table).toBe('events');
+      expect(paidTimeOffAttributes.sti_parent).toBe('TimeOff');
+    });
+
+    it('links controller writes to the STI subclass model node', async () => {
+      const contribution = await analyzer.analyze({ projectPath } as any);
+      const nodes = contribution.nodes || [];
+      const edges = contribution.edges || [];
+
+      const timeOff = nodes.find(n => n.type === 'rails_model' && n.name === 'TimeOff');
+      expect(timeOff).toBeDefined();
+
+      const createEdge = edges.find(e =>
+        e.type === 'creates' && e.source.includes('MyTimeOffsController_create') && e.target === timeOff!.id
+      );
+      expect(createEdge).toBeDefined();
+    });
+
+    it('gives STI subclasses field nodes for the shared parent table so sensitive lineage stays reachable through the subclass', async () => {
+      const contribution = await analyzer.analyze({ projectPath } as any);
+      const nodes = contribution.nodes || [];
+      const edges = contribution.edges || [];
+
+      const timeOff = nodes.find(n => n.type === 'rails_model' && n.name === 'TimeOff');
+      const timeOffFields = nodes.filter(n => n.type === 'field' && n.parent === timeOff!.id);
+      expect(timeOffFields.map(n => n.name).sort()).toEqual(['employee_email', 'starts_on', 'type']);
+
+      const emailField = timeOffFields.find(n => n.name === 'employee_email');
+      const emailAttributes = emailField!.metadata?.attributes as Record<string, unknown>;
+      expect(emailAttributes.sensitive).toBe(true);
+      expect(emailAttributes.table).toBe('events');
+
+      const fieldEdge = edges.find(e =>
+        e.type === 'has_field' && e.source === timeOff!.id && e.target === emailField!.id
+      );
+      expect(fieldEdge).toBeDefined();
     });
   });
 
