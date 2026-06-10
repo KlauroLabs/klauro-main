@@ -8,7 +8,9 @@ export { CSharpAnalyzer } from './csharp-analyzer';
 export { GoAnalyzer } from './go-analyzer';
 export { RustAnalyzer } from './rust-analyzer';
 export { PHPAnalyzer } from './php-analyzer';
+export { RubyAnalyzer } from './ruby-analyzer';
 export { DartAnalyzer } from './dart-analyzer';
+export { TerraformAnalyzer } from './terraform-analyzer';
 
 // Language analyzer mappings for easy lookup
 export const LanguageAnalyzers = {
@@ -24,7 +26,10 @@ export const LanguageAnalyzers = {
   go: 'GoAnalyzer',
   rust: 'RustAnalyzer',
   php: 'PHPAnalyzer',
-  dart: 'DartAnalyzer'
+  ruby: 'RubyAnalyzer',
+  dart: 'DartAnalyzer',
+  terraform: 'TerraformAnalyzer',
+  hcl: 'TerraformAnalyzer'
 } as const;
 
 // Supported languages list
@@ -68,6 +73,10 @@ export const FrameworkLanguageMap = {
   rocket: 'rust',
   warp: 'rust',
   
+  // Ruby frameworks
+  rails: 'ruby',
+  sinatra: 'ruby',
+
   // PHP frameworks
   laravel: 'php',
   symfony: 'php',
@@ -142,10 +151,24 @@ export const ANALYZER_METADATA = [
     category: 'language'
   },
   {
+    name: 'RubyAnalyzer',
+    languages: ['ruby'],
+    frameworks: ['rails', 'sinatra', 'sidekiq', 'rspec', 'minitest'],
+    priority: 90,
+    category: 'language'
+  },
+  {
     name: 'DartAnalyzer',
     languages: ['dart'],
     frameworks: ['flutter', 'dart'],
     priority: 90,
+    category: 'language'
+  },
+  {
+    name: 'TerraformAnalyzer',
+    languages: ['terraform', 'hcl'],
+    frameworks: ['terraform', 'opentofu'],
+    priority: 85,
     category: 'language'
   }
 ] as const;

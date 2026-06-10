@@ -234,7 +234,15 @@ export class PHPAnalyzer extends BaseAnalyzer {
     await this.analyzePHPFile(context.filePath, context.relativePath, nodes, edges, entryPoints, exitPoints, namespaces, context);
     this.detectFrameworkPatterns(nodes, edges, entryPoints);
     this.buildInheritanceRelationships(nodes, edges);
-    await this.analyzeCallGraph(context.projectPath, nodes, edges, exitPoints);
+    await this.analyzeCallGraphFastFallback(
+      context.projectPath,
+      [context.relativePath],
+      nodes,
+      edges,
+      exitPoints,
+      nodes.filter(n => n.type === 'method' || n.type === 'function'),
+      nodes.filter(n => n.type === 'class' || n.type === 'interface' || n.type === 'trait')
+    );
 
     const imports = this.extractUses(content).map(use => use.namespace);
     const exports = nodes
@@ -1473,11 +1481,19 @@ export class PHPAnalyzer extends BaseAnalyzer {
     const functions: PHPFunction[] = [];
     const lines = content.split('\n');
     const namespace = this.extractNamespace(content) || '';
+    const typeBlockRanges = this.extractTypeBlockRanges(lines);
+    let rangeIndex = 0;
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
+      while (rangeIndex < typeBlockRanges.length && i > typeBlockRanges[rangeIndex].end) {
+        rangeIndex++;
+      }
+      const insideTypeBlock = rangeIndex < typeBlockRanges.length &&
+        i >= typeBlockRanges[rangeIndex].start &&
+        i <= typeBlockRanges[rangeIndex].end;
 
-      if (line.includes('function ') && !line.startsWith('//') && !line.startsWith('*') && !this.isInsideClass(lines, i)) {
+      if (line.includes('function ') && !line.startsWith('//') && !line.startsWith('*') && !insideTypeBlock) {
         const functionMatch = line.match(/function\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*:\s*([^{]+))?/);
         if (functionMatch) {
           const functionName = functionMatch[1];
@@ -1505,6 +1521,17 @@ export class PHPAnalyzer extends BaseAnalyzer {
     }
 
     return functions;
+  }
+
+  private extractTypeBlockRanges(lines: string[]): Array<{ start: number; end: number }> {
+    const ranges: Array<{ start: number; end: number }> = [];
+    const declarationPattern = /\b(?:class|interface|trait|enum)\s+[A-Za-z_][A-Za-z0-9_]*/;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (line.startsWith('//') || line.startsWith('*') || !declarationPattern.test(line)) continue;
+      ranges.push({ start: i, end: this.findBlockEnd(lines, i) - 1 });
+    }
+    return ranges.sort((left, right) => left.start - right.start);
   }
 
   private extractProperties(lines: string[], classStart: number, classEnd: number): PHPProperty[] {
@@ -1668,9 +1695,17 @@ export class PHPAnalyzer extends BaseAnalyzer {
   private extractGlobalVariables(content: string): PHPVariable[] {
     const variables: PHPVariable[] = [];
     const lines = content.split('\n');
+    const blockedRanges = this.extractNonGlobalBlockRanges(lines);
+    let rangeIndex = 0;
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
+      while (rangeIndex < blockedRanges.length && i > blockedRanges[rangeIndex].end) {
+        rangeIndex++;
+      }
+      if (rangeIndex < blockedRanges.length && i >= blockedRanges[rangeIndex].start && i <= blockedRanges[rangeIndex].end) {
+        continue;
+      }
 
       if (this.isGlobalVariableDeclaration(line)) {
         const varMatch = line.match(/\$([a-zA-Z0-9_]+)(?:\s*=\s*([^;]+))?;/);
@@ -1694,9 +1729,17 @@ export class PHPAnalyzer extends BaseAnalyzer {
   private extractGlobalConstants(content: string): PHPConstant[] {
     const constants: PHPConstant[] = [];
     const lines = content.split('\n');
+    const blockedRanges = this.extractNonGlobalBlockRanges(lines);
+    let rangeIndex = 0;
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
+      while (rangeIndex < blockedRanges.length && i > blockedRanges[rangeIndex].end) {
+        rangeIndex++;
+      }
+      if (rangeIndex < blockedRanges.length && i >= blockedRanges[rangeIndex].start && i <= blockedRanges[rangeIndex].end) {
+        continue;
+      }
 
       if (line.startsWith('define(') || line.startsWith('const ')) {
         let constantMatch: RegExpMatchArray | null = null;
@@ -1726,6 +1769,17 @@ export class PHPAnalyzer extends BaseAnalyzer {
     }
 
     return constants;
+  }
+
+  private extractNonGlobalBlockRanges(lines: string[]): Array<{ start: number; end: number }> {
+    const ranges = this.extractTypeBlockRanges(lines);
+    const functionPattern = /\bfunction\s+[A-Za-z_][A-Za-z0-9_]*\s*\(/;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (line.startsWith('//') || line.startsWith('*') || !functionPattern.test(line)) continue;
+      ranges.push({ start: i, end: this.findBlockEnd(lines, i) - 1 });
+    }
+    return ranges.sort((left, right) => left.start - right.start);
   }
 
   private extractFunctionParameters(paramsStr: string): PHPParameter[] {

@@ -134,11 +134,12 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   }
 
   async getRelevantFiles(projectPath: string): Promise<string[]> {
-    return glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
+    const files = await glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
       cwd: projectPath,
       ignore: this.getIgnorePatterns({ projectPath }),
       nodir: true
     });
+    return files.sort();
   }
 
   async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
@@ -341,11 +342,11 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
       this.callGraphExtractor = new EnhancedCallGraphExtractor(context.projectPath);
 
-      const sourceFiles = await glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
+      const sourceFiles = (await glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
         cwd: context.projectPath,
         ignore: this.getIgnorePatterns(context),
         nodir: true
-      });
+      })).sort();
       tsTimings['glob'] = Date.now() - tsStart;
 
       tsStart = Date.now();
@@ -402,6 +403,15 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       this.createPerspectives(perspectives);
       tsTimings['categorize'] = Date.now() - tsStart;
 
+      if (process.env.KLAURO_DEBUG_TS_ANALYZER_TIMINGS === '1') {
+        console.error(`[Klauro] TypeScript/JavaScript analyzer completed for ${context.projectPath}:`, JSON.stringify({
+          ...tsTimings,
+          ...this.getProcessTimings(),
+          filesAnalyzed: sourceFiles.length,
+          nodes: nodes.length,
+          edges: edges.length,
+        }, null, 2));
+      }
 
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
         framework_specific: {

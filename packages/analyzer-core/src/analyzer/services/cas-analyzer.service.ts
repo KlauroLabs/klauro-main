@@ -10,7 +10,9 @@ import { CSharpAnalyzer } from '../languages/csharp-analyzer';
 import { GoAnalyzer } from '../languages/go-analyzer';
 import { RustAnalyzer } from '../languages/rust-analyzer';
 import { PHPAnalyzer } from '../languages/php-analyzer';
+import { RubyAnalyzer } from '../languages/ruby-analyzer';
 import { DartAnalyzer } from '../languages/dart-analyzer';
+import { TerraformAnalyzer } from '../languages/terraform-analyzer';
 
 import {
   NestJSAnalyzer,
@@ -24,6 +26,7 @@ import {
   AngularAnalyzer,
   LaravelAnalyzer,
   SymfonyAnalyzer,
+  RailsAnalyzer,
   NextJSAnalyzer
 } from '../frameworks/web';
 
@@ -306,6 +309,17 @@ export class CASAnalyzerService {
         analyzer: new PHPAnalyzer()
       },
       {
+        id: 'ruby',
+        name: 'Ruby Analyzer',
+        type: 'language',
+        version: '1.0.0',
+        detectPatterns: {
+          files: ['Gemfile', 'Gemfile.lock', 'Rakefile'],
+          content: [/\.rb$/]
+        },
+        analyzer: new RubyAnalyzer()
+      },
+      {
         id: 'dart',
         name: 'Dart/Flutter Analyzer',
         type: 'language',
@@ -315,6 +329,17 @@ export class CASAnalyzerService {
           content: [/\.dart$/]
         },
         analyzer: new DartAnalyzer()
+      },
+      {
+        id: 'terraform',
+        name: 'Terraform/HCL Analyzer',
+        type: 'language',
+        version: '1.0.0',
+        detectPatterns: {
+          files: ['*.tf', '*.tfvars'],
+          content: [/\.tf$/, /\.tfvars$/]
+        },
+        analyzer: new TerraformAnalyzer()
       }
     ];
 
@@ -408,6 +433,18 @@ export class CASAnalyzerService {
         },
         requires: ['php'],
         analyzer: new SymfonyAnalyzer()
+      },
+      {
+        id: 'rails',
+        name: 'Rails Analyzer',
+        type: 'framework',
+        version: '1.0.0',
+        detectPatterns: {
+          files: ['Gemfile', 'config/routes.rb'],
+          dependencies: ['rails']
+        },
+        requires: ['ruby'],
+        analyzer: new RailsAnalyzer()
       },
       {
         id: 'express',

@@ -9,4 +9,5 @@ export { VueAnalyzer } from './vue-analyzer';
 export { AngularAnalyzer } from './angular-analyzer';
 export { LaravelAnalyzer } from './laravel-analyzer';
 export { SymfonyAnalyzer } from './symfony-analyzer';
+export { RailsAnalyzer } from './rails-analyzer';
 export { NextJSAnalyzer } from './nextjs-analyzer';

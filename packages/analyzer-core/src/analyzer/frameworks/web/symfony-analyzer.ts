@@ -6,14 +6,45 @@ import {
 import { AnalyzerError } from '../../core/errors';
 import * as path from 'path';
 import * as fs from 'fs-extra';
+import * as yaml from 'js-yaml';
 import { glob } from 'glob';
+
+interface SymfonyRoute {
+  path: string;
+  methods: string[];
+  name?: string;
+  line: number;
+  classLevel?: boolean;
+}
+
+interface SymfonySecurityGuard {
+  attribute: string;
+  roles: string[];
+  line: number;
+  classLevel?: boolean;
+}
+
+interface SymfonyResourcePrefix {
+  dir: string;
+  prefix: string;
+}
+
+interface SymfonyAccessControlRule {
+  pattern: RegExp;
+  roles: string[];
+}
+
+interface SymfonyRoutingConfig {
+  resourcePrefixes: SymfonyResourcePrefix[];
+  accessControl: SymfonyAccessControlRule[];
+}
 
 interface SymfonyController {
   name: string;
   filePath: string;
   namespace: string;
-  methods: Array<{ name: string; visibility: string; parameters: any[]; returnType?: string; line: number }>;
-  routes: Array<{ path: string; methods: string[]; name?: string; line: number }>;
+  methods: Array<{ name: string; visibility: string; parameters: any[]; returnType?: string; line: number; usedDependencies?: string[] }>;
+  routes: SymfonyRoute[];
   dependencies: string[];
   isAbstract: boolean;
 }
@@ -100,8 +131,18 @@ interface SymfonyVoter {
   subjectClass?: string;
 }
 
+function timeSync<T>(label: string, timings: Record<string, number>, fn: () => T): T {
+  const startedAt = Date.now();
+  try {
+    return fn();
+  } finally {
+    timings[label] = Date.now() - startedAt;
+  }
+}
+
 export class SymfonyAnalyzer extends BaseAnalyzer {
   private fileContentCache = new Map<string, string>();
+  private lineIndexCache = new Map<string, number[]>();
   private todoCounter = 0;
   private commentCounter = 0;
 
@@ -139,43 +180,58 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
   }
 
   async analyze(context: AnalysisContext): Promise<CASContribution> {
+    const timings: Record<string, number> = {};
+    const time = async <T>(label: string, fn: () => Promise<T>): Promise<T> => {
+      const startedAt = Date.now();
+      try {
+        return await fn();
+      } finally {
+        timings[label] = Date.now() - startedAt;
+      }
+    };
     this.fileContentCache.clear();
+    this.lineIndexCache.clear();
     const nodes: CASNode[] = [];
     const edges: CASEdge[] = [];
     const entryPoints: CASEntryPoint[] = [];
     const exitPoints: CASExitPoint[] = [];
 
     try {
-      const phpFiles = await glob(['**/*.php'], {
+      const phpFiles = await time('glob_php', () => glob(['**/*.php'], {
         cwd: context.projectPath,
         ignore: [...this.getIgnorePatterns(context), '**/var/**', '**/tests/**', '**/test/**'],
         nodir: true
-      });
+      }));
 
-      const twigFiles = await glob(['**/*.twig'], {
+      const twigFiles = await time('glob_twig', () => glob(['**/*.twig'], {
         cwd: context.projectPath,
         ignore: [...this.getIgnorePatterns(context), '**/var/**'],
         nodir: true
-      });
+      }));
 
-      const controllers = await this.analyzeControllers(phpFiles, context.projectPath, nodes, edges, entryPoints);
-      const entities = await this.analyzeEntities(phpFiles, context.projectPath, nodes, edges);
-      const repositories = await this.analyzeRepositories(phpFiles, context.projectPath, nodes, edges);
-      const services = await this.analyzeServices(phpFiles, context.projectPath, nodes, edges);
-      const commands = await this.analyzeCommands(phpFiles, context.projectPath, nodes, edges, entryPoints);
-      const subscribers = await this.analyzeEventSubscribers(phpFiles, context.projectPath, nodes, edges, entryPoints);
-      const forms = await this.analyzeForms(phpFiles, context.projectPath, nodes, edges);
-      const templates = await this.analyzeTemplates(twigFiles, context.projectPath, nodes, edges);
-      const migrations = await this.analyzeMigrations(phpFiles, context.projectPath, nodes, edges);
-      const messageHandlers = await this.analyzeMessageHandlers(phpFiles, context.projectPath, nodes, edges, entryPoints);
-      const voters = await this.analyzeVoters(phpFiles, context.projectPath, nodes, edges);
-      await this.analyzeConfigRoutes(context.projectPath, nodes, edges, entryPoints);
+      const routingConfig = await time('routing_config', () => this.loadRoutingConfig(context.projectPath));
+      const controllers = await time('controllers', () => this.analyzeControllers(phpFiles, context.projectPath, nodes, edges, entryPoints, routingConfig));
+      const entities = await time('entities', () => this.analyzeEntities(phpFiles, context.projectPath, nodes, edges));
+      const repositories = await time('repositories', () => this.analyzeRepositories(phpFiles, context.projectPath, nodes, edges));
+      const services = await time('services', () => this.analyzeServices(phpFiles, context.projectPath, nodes, edges));
+      const commands = await time('commands', () => this.analyzeCommands(phpFiles, context.projectPath, nodes, edges, entryPoints));
+      const subscribers = await time('event_subscribers', () => this.analyzeEventSubscribers(phpFiles, context.projectPath, nodes, edges, entryPoints));
+      const forms = await time('forms', () => this.analyzeForms(phpFiles, context.projectPath, nodes, edges));
+      const templates = await time('templates', () => this.analyzeTemplates(twigFiles, context.projectPath, nodes, edges));
+      const migrations = await time('migrations', () => this.analyzeMigrations(phpFiles, context.projectPath, nodes, edges));
+      const messageHandlers = await time('message_handlers', () => this.analyzeMessageHandlers(phpFiles, context.projectPath, nodes, edges, entryPoints));
+      const voters = await time('voters', () => this.analyzeVoters(phpFiles, context.projectPath, nodes, edges));
+      await time('config_routes', () => this.analyzeConfigRoutes(context.projectPath, nodes, edges, entryPoints, routingConfig));
 
-      this.buildRelationships(controllers, entities, repositories, services, forms, subscribers, migrations, templates, nodes, edges);
-      await this.identifyExitPoints(entities, repositories, services, messageHandlers, phpFiles, context.projectPath, exitPoints);
+      timeSync('relationships', timings, () => this.buildRelationships(controllers, entities, repositories, services, forms, subscribers, migrations, templates, nodes, edges));
+      await time('exit_points', () => this.identifyExitPoints(entities, repositories, services, messageHandlers, phpFiles, context.projectPath, exitPoints));
+      if (process.env.KLAURO_DEBUG_ANALYSIS_TIMINGS === '1') {
+        console.error('[Klauro] Symfony breakdown:', JSON.stringify(timings, null, 2));
+      }
 
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
         framework_specific: {
+          analysis_timings: timings,
           symfony_version: await this.detectSymfonyVersion(context.projectPath),
           controllers_detected: controllers.length,
           entities_detected: entities.length,
@@ -241,7 +297,8 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
     projectPath: string,
     nodes: CASNode[],
     edges: CASEdge[],
-    entryPoints: CASEntryPoint[]
+    entryPoints: CASEntryPoint[],
+    routingConfig?: SymfonyRoutingConfig
   ): Promise<SymfonyController[]> {
     const controllers: SymfonyController[] = [];
     const controllerFiles = phpFiles.filter(f =>
@@ -263,7 +320,10 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
         const isAbstract = /abstract\s+class/.test(content);
         const dependencies = this.extractDependencies(content);
         const methods = this.extractMethods(content, file);
+        this.attachMethodDependencyUsage(content, methods);
         const routes = this.extractControllerRoutes(content, file);
+        const guards = this.extractSecurityGuards(content);
+        const resourcePrefix = this.findResourcePrefix(file, routingConfig?.resourcePrefixes ?? []);
         const comments = this.extractComments(content, file);
         const todos = this.extractTodos(comments);
         const documentation = this.extractDocumentation(content);
@@ -285,7 +345,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
             this.createNodeBuilder(controllerId, name, 'controller')
               .withLevel(2, 'architectural')
               .withCategory('symfony-controller')
-              .withSource({ file, line: this.findClassLine(content), end_line: content.split('\n').length })
+              .withSource({ file, line: this.findClassLine(content), end_line: this.lineCount(content) })
               .withMetadata({
                 framework: 'symfony',
                 attributes: {
@@ -302,9 +362,19 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
               .build()
           );
 
+          const classRoute = routes.find(r => r.classLevel);
+          const classGuards = guards.filter(g => g.classLevel);
+          const orderedMethodLines = methods.map(m => m.line).sort((a, b) => a - b);
+
           for (const method of methods) {
             const methodId = this.generateId('method', file, `${name}.${method.name}`);
-            const matchingRoute = routes.find(r => r.line <= method.line && r.line >= method.line - 5);
+            const previousMethodLine = orderedMethodLines
+              .filter(l => l < method.line)
+              .pop() ?? 0;
+            const methodRoutes = routes.filter(r =>
+              !r.classLevel && r.line <= method.line && r.line > previousMethodLine
+            );
+            const matchingRoute = methodRoutes[0];
 
             nodes.push(
               this.createNodeBuilder(methodId, method.name, 'method')
@@ -317,7 +387,12 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
                   attributes: {
                     parameters: method.parameters,
                     return_type: method.returnType,
-                    route: matchingRoute ? { path: matchingRoute.path, methods: matchingRoute.methods } : undefined
+                    route: matchingRoute
+                      ? {
+                          path: this.joinRoutePaths(resourcePrefix, classRoute?.path, matchingRoute.path),
+                          methods: matchingRoute.methods
+                        }
+                      : undefined
                   }
                 })
                 .withParent(controllerId)
@@ -339,24 +414,40 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
               'structural'
             ));
 
-            if (matchingRoute) {
-              const httpMethods = matchingRoute.methods.length > 0 ? matchingRoute.methods : ['GET'];
+            const methodGuards = guards.filter(g =>
+              !g.classLevel && g.line <= method.line && g.line > previousMethodLine
+            );
+
+            for (const route of methodRoutes) {
+              const fullPath = this.joinRoutePaths(resourcePrefix, classRoute?.path, route.path);
+              const httpMethods = route.methods.length > 0 ? route.methods : ['GET'];
+              const security = this.resolveRouteSecurity(
+                fullPath,
+                [...classGuards, ...methodGuards],
+                routingConfig?.accessControl ?? []
+              );
               for (const httpMethod of httpMethods) {
                 entryPoints.push(this.createEntryPoint(
-                  `entry_${httpMethod.toLowerCase()}_${this.sanitizeId(matchingRoute.path)}_${this.sanitizeId(method.name)}`,
+                  `entry_${httpMethod.toLowerCase()}_${this.sanitizeId(fullPath)}_${this.sanitizeId(method.name)}`,
                   methodId,
                   'http',
-                  `${httpMethod} ${matchingRoute.path}`,
+                  `${httpMethod} ${fullPath}`,
                   `HTTP ${httpMethod} endpoint handled by ${name}::${method.name}`,
                   {
                     method: httpMethod,
-                    path: matchingRoute.path
+                    path: fullPath
                   },
-                  undefined,
+                  security,
                   {
                     controller: name,
                     action: method.name,
-                    route_name: matchingRoute.name
+                    route_name: route.name
+                  },
+                  {
+                    node_id: methodId,
+                    method_name: method.name,
+                    file,
+                    line: method.line
                   }
                 ));
               }
@@ -419,7 +510,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
           this.createNodeBuilder(entityId, name, 'entity')
             .withLevel(3, 'code')
             .withCategory('doctrine-entity')
-            .withSource({ file, line: this.findClassLine(content), end_line: content.split('\n').length })
+            .withSource({ file, line: this.findClassLine(content), end_line: this.lineCount(content) })
             .withMetadata({
               framework: 'symfony',
               attributes: {
@@ -544,7 +635,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
           this.createNodeBuilder(repoId, name, 'repository')
             .withLevel(3, 'code')
             .withCategory('doctrine-repository')
-            .withSource({ file, line: this.findClassLine(content), end_line: content.split('\n').length })
+            .withSource({ file, line: this.findClassLine(content), end_line: this.lineCount(content) })
             .withMetadata({
               framework: 'symfony',
               attributes: {
@@ -612,12 +703,16 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
     edges: CASEdge[]
   ): Promise<SymfonyService[]> {
     const services: SymfonyService[] = [];
-    const serviceFiles = phpFiles.filter(f =>
-      (f.includes('Service') || f.includes('Handler') || f.includes('Manager') || f.includes('Provider')) &&
-      f.endsWith('.php') &&
-      !f.includes('Controller') && !f.includes('Repository') && !f.includes('Entity') &&
-      !f.includes('Command') && !f.includes('Subscriber') && !f.includes('Listener')
-    );
+    const serviceFiles = phpFiles.filter(f => {
+      const basename = path.basename(f, '.php');
+      return (
+        (basename.includes('Service') || basename.includes('Handler') || basename.includes('Manager') || basename.includes('Provider')) &&
+        !basename.includes('Controller') && !basename.includes('Repository') && !basename.includes('Entity') &&
+        !basename.includes('Command') && !basename.includes('Subscriber') && !basename.includes('Listener') &&
+        !basename.includes('Request') && !basename.includes('Response') && !basename.includes('Exception') &&
+        !basename.includes('Event') && !basename.includes('Model') && !basename.includes('Dto') && !basename.includes('DTO')
+      );
+    });
 
     for (const file of serviceFiles) {
       try {
@@ -654,7 +749,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
           this.createNodeBuilder(serviceId, name, 'service')
             .withLevel(3, 'code')
             .withCategory('symfony-service')
-            .withSource({ file, line: this.findClassLine(content), end_line: content.split('\n').length })
+            .withSource({ file, line: this.findClassLine(content), end_line: this.lineCount(content) })
             .withMetadata({
               framework: 'symfony',
               attributes: {
@@ -760,7 +855,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
           this.createNodeBuilder(commandId, name, 'command')
             .withLevel(3, 'code')
             .withCategory('symfony-command')
-            .withSource({ file, line: this.findClassLine(content), end_line: content.split('\n').length })
+            .withSource({ file, line: this.findClassLine(content), end_line: this.lineCount(content) })
             .withMetadata({
               framework: 'symfony',
               attributes: {
@@ -845,7 +940,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
           this.createNodeBuilder(subscriberId, name, 'event_subscriber')
             .withLevel(3, 'code')
             .withCategory('symfony-event-subscriber')
-            .withSource({ file, line: this.findClassLine(content), end_line: content.split('\n').length })
+            .withSource({ file, line: this.findClassLine(content), end_line: this.lineCount(content) })
             .withMetadata({
               framework: 'symfony',
               attributes: {
@@ -930,7 +1025,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
           this.createNodeBuilder(formId, name, 'form')
             .withLevel(3, 'code')
             .withCategory('symfony-form')
-            .withSource({ file, line: this.findClassLine(content), end_line: content.split('\n').length })
+            .withSource({ file, line: this.findClassLine(content), end_line: this.lineCount(content) })
             .withMetadata({
               framework: 'symfony',
               attributes: {
@@ -1019,7 +1114,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
           this.createNodeBuilder(templateId, name, 'template')
             .withLevel(3, 'code')
             .withCategory('twig-template')
-            .withSource({ file, line: 1, end_line: content.split('\n').length })
+            .withSource({ file, line: 1, end_line: this.lineCount(content) })
             .withMetadata({
               framework: 'symfony',
               attributes: {
@@ -1083,7 +1178,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
           this.createNodeBuilder(migrationId, name, 'migration')
             .withLevel(3, 'code')
             .withCategory('doctrine-migration')
-            .withSource({ file, line: this.findClassLine(content), end_line: content.split('\n').length })
+            .withSource({ file, line: this.findClassLine(content), end_line: this.lineCount(content) })
             .withMetadata({
               framework: 'symfony',
               attributes: {
@@ -1112,10 +1207,10 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
     entryPoints: CASEntryPoint[]
   ): Promise<SymfonyMessageHandler[]> {
     const handlers: SymfonyMessageHandler[] = [];
-    const handlerFiles = phpFiles.filter(f =>
-      (f.includes('Handler') || f.includes('MessageHandler')) && f.endsWith('.php') &&
-      !f.includes('EventHandler')
-    );
+    const handlerFiles = phpFiles.filter(f => {
+      const basename = path.basename(f, '.php');
+      return (basename.includes('Handler') || basename.includes('MessageHandler')) && !basename.includes('EventHandler');
+    });
 
     for (const file of handlerFiles) {
       try {
@@ -1147,7 +1242,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
           this.createNodeBuilder(handlerId, name, 'message_handler')
             .withLevel(3, 'code')
             .withCategory('symfony-messenger')
-            .withSource({ file, line: this.findClassLine(content), end_line: content.split('\n').length })
+            .withSource({ file, line: this.findClassLine(content), end_line: this.lineCount(content) })
             .withMetadata({
               framework: 'symfony',
               attributes: {
@@ -1224,7 +1319,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
           this.createNodeBuilder(voterId, name, 'voter')
             .withLevel(3, 'code')
             .withCategory('symfony-security')
-            .withSource({ file, line: this.findClassLine(content), end_line: content.split('\n').length })
+            .withSource({ file, line: this.findClassLine(content), end_line: this.lineCount(content) })
             .withMetadata({
               framework: 'symfony',
               attributes: {
@@ -1250,7 +1345,8 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
     projectPath: string,
     nodes: CASNode[],
     edges: CASEdge[],
-    entryPoints: CASEntryPoint[]
+    entryPoints: CASEntryPoint[],
+    routingConfig?: SymfonyRoutingConfig
   ): Promise<void> {
     const yamlRouteFiles = await glob(['config/routes*.yaml', 'config/routes*.yml', 'config/routes/**/*.yaml', 'config/routes/**/*.yml'], {
       cwd: projectPath,
@@ -1261,22 +1357,33 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
     for (const file of yamlRouteFiles) {
       try {
         const content = await this.readProjectFile(projectPath, file);
-        const routePattern = /^(\w+):\s*\n\s+path:\s*(.+)\s*\n(?:\s+controller:\s*(.+))?\s*\n?(?:\s+methods:\s*\[?([^\]\n]+)\]?)?/gm;
+        const parsed = yaml.load(content) as Record<string, any> | undefined;
+        if (!parsed || typeof parsed !== 'object') continue;
 
-        let match;
-        while ((match = routePattern.exec(content)) !== null) {
-          const routeName = match[1];
-          const routePath = match[2].trim();
-          const controller = match[3]?.trim();
-          const methods = match[4]?.split(',').map((m: string) => m.trim().replace(/['"]/g, '')) || ['GET'];
+        for (const [routeName, value] of Object.entries(parsed)) {
+          if (routeName.startsWith('when@') || !value || typeof value !== 'object') continue;
+          if (typeof value.path !== 'string') continue;
+
+          const routePath = value.path;
+          const controller = typeof value.controller === 'string'
+            ? value.controller
+            : typeof value.defaults?._controller === 'string' ? value.defaults._controller : undefined;
+          const rawMethods = value.methods;
+          const methods = (Array.isArray(rawMethods)
+            ? rawMethods
+            : typeof rawMethods === 'string' ? rawMethods.split('|') : ['GET'])
+            .map((m: string) => String(m).trim().toUpperCase())
+            .filter(Boolean);
 
           const routeId = this.generateId('route', file, routeName);
+          const handler = this.findControllerActionHandler(controller, nodes);
+          const security = this.resolveRouteSecurity(routePath, [], routingConfig?.accessControl ?? []);
 
           nodes.push(
             this.createNodeBuilder(routeId, routeName, 'route')
               .withLevel(3, 'code')
               .withCategory('symfony-route')
-              .withSource({ file, line: content.substring(0, match.index).split('\n').length })
+              .withSource({ file, line: this.lineNumberAt(content, content.indexOf(`${routeName}:`)) })
               .withMetadata({
                 framework: 'symfony',
                 attributes: {
@@ -1292,7 +1399,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
           for (const method of methods) {
             entryPoints.push(this.createEntryPoint(
               `entry_yaml_${method.toLowerCase()}_${this.sanitizeId(routePath)}`,
-              routeId,
+              handler?.node_id ?? routeId,
               'http',
               `${method} ${routePath}`,
               `YAML-defined route: ${routeName}`,
@@ -1300,11 +1407,13 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
                 method,
                 path: routePath
               },
-              undefined,
+              security,
               {
                 route_name: routeName,
+                controller,
                 source: 'yaml'
-              }
+              },
+              handler
             ));
           }
         }
@@ -1314,12 +1423,59 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
     }
   }
 
+  private findControllerActionHandler(
+    controller: string | undefined,
+    nodes: CASNode[]
+  ): CASEntryPoint['handler'] | undefined {
+    if (!controller) return undefined;
+    const [classPath, action] = controller.split('::');
+    if (!classPath) return undefined;
+    const className = classPath.split('\\').pop();
+    if (!className) return undefined;
+
+    const controllerNode = nodes.find(n =>
+      n.name === className && n.category === 'symfony-controller'
+    );
+    if (!controllerNode) return undefined;
+
+    if (!action) {
+      return {
+        node_id: controllerNode.id,
+        method_name: '__invoke',
+        file: controllerNode.source?.file,
+        line: controllerNode.source?.line
+      };
+    }
+
+    const methodNode = nodes.find(n =>
+      n.name === action &&
+      n.category === 'controller-action' &&
+      n.source?.file === controllerNode.source?.file
+    );
+    if (!methodNode) {
+      return {
+        node_id: controllerNode.id,
+        method_name: action,
+        file: controllerNode.source?.file
+      };
+    }
+
+    return {
+      node_id: methodNode.id,
+      method_name: action,
+      file: methodNode.source?.file,
+      line: methodNode.source?.line
+    };
+  }
+
   private isSymfonyController(content: string): boolean {
     return (
       content.includes('AbstractController') ||
       content.includes('ControllerInterface') ||
       content.includes('#[Route') ||
       content.includes('@Route') ||
+      content.includes('FOS\\RestBundle') ||
+      /#\[\s*(?:[A-Za-z_]\w*\\)+(?:Route|Get|Post|Put|Patch|Delete|Head|Options)\b/.test(content) ||
       (content.includes('Response') && content.includes('function ') && content.includes('Controller'))
     );
   }
@@ -1390,7 +1546,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
       const name = match[2];
       if (name === '__construct') continue;
 
-      const line = content.substring(0, match.index).split('\n').length;
+      const line = this.lineNumberAt(content, match.index);
       const parameters = this.parseMethodParameters(match[3]);
       const returnType = match[4];
 
@@ -1398,6 +1554,65 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
     }
 
     return methods;
+  }
+
+  private attachMethodDependencyUsage(
+    content: string,
+    methods: Array<{ name: string; visibility: string; parameters: any[]; returnType?: string; line: number; usedDependencies?: string[] }>
+  ): void {
+    const propertyTypes = new Map<string, string>();
+
+    const promotedPattern = /(?:private|protected|public)\s+(?:readonly\s+)?\??([\w\\]+)\s+\$(\w+)/g;
+    let match: RegExpExecArray | null;
+    while ((match = promotedPattern.exec(content)) !== null) {
+      const shortType = match[1].split('\\').pop();
+      if (shortType && /^[A-Z]/.test(shortType)) {
+        propertyTypes.set(match[2], shortType);
+      }
+    }
+
+    const constructorMatch = content.match(/function\s+__construct\s*\(([^)]*)\)/s);
+    if (constructorMatch) {
+      const paramTypes = new Map<string, string>();
+      const paramPattern = /\??([\w\\]+)\s+\$(\w+)/g;
+      while ((match = paramPattern.exec(constructorMatch[1])) !== null) {
+        const shortType = match[1].split('\\').pop();
+        if (shortType && /^[A-Z]/.test(shortType)) {
+          paramTypes.set(match[2], shortType);
+        }
+      }
+      const assignmentPattern = /\$this->(\w+)\s*=\s*\$(\w+)/g;
+      while ((match = assignmentPattern.exec(content)) !== null) {
+        const type = paramTypes.get(match[2]);
+        if (type && !propertyTypes.has(match[1])) {
+          propertyTypes.set(match[1], type);
+        }
+      }
+    }
+
+    const lines = content.split('\n');
+    const sortedLines = methods.map(m => m.line).sort((a, b) => a - b);
+
+    for (const method of methods) {
+      const nextLine = sortedLines.find(l => l > method.line);
+      const body = lines.slice(method.line - 1, nextLine ? nextLine - 1 : lines.length).join('\n');
+      const used = new Set<string>();
+
+      for (const param of method.parameters) {
+        const shortType = typeof param.type === 'string' ? param.type.split('\\').pop() : undefined;
+        if (shortType && /^[A-Z]/.test(shortType)) {
+          used.add(shortType);
+        }
+      }
+
+      const propertyUsePattern = /\$this->(\w+)\s*->/g;
+      while ((match = propertyUsePattern.exec(body)) !== null) {
+        const type = propertyTypes.get(match[1]);
+        if (type) used.add(type);
+      }
+
+      method.usedDependencies = Array.from(used);
+    }
   }
 
   private parseMethodParameters(paramStr: string): Array<{ name: string; type?: string }> {
@@ -1416,37 +1631,240 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
     return params;
   }
 
-  private extractControllerRoutes(content: string, filePath: string): Array<{ path: string; methods: string[]; name?: string; line: number }> {
-    const routes: Array<{ path: string; methods: string[]; name?: string; line: number }> = [];
+  private extractControllerRoutes(content: string, filePath: string): SymfonyRoute[] {
+    const routes: SymfonyRoute[] = [];
+    const classDeclIndex = content.search(/^\s*(?:final\s+|abstract\s+|readonly\s+)*class\s+\w+/m);
+    const isClassLevel = (index: number) => classDeclIndex >= 0 && index < classDeclIndex;
+    const hasFosRest = content.includes('FOS\\RestBundle');
 
-    const attributeRoutePattern = /#\[Route\s*\(\s*['"]([^'"]+)['"](?:\s*,\s*(?:name:\s*['"]([^'"]+)['"]))?(?:\s*,\s*(?:methods:\s*\[([^\]]*)\]))?[^)]*\)\]/g;
-    let match;
-    while ((match = attributeRoutePattern.exec(content)) !== null) {
-      const routePath = match[1];
-      const name = match[2];
-      const methodsStr = match[3];
-      const methods = methodsStr
-        ? methodsStr.split(',').map((m: string) => m.trim().replace(/['"]/g, ''))
-        : [];
-      const line = content.substring(0, match.index).split('\n').length;
+    const attributeNamePattern = /(?:#\[|,)\s*((?:[A-Za-z_]\w*\\)*)(Route|Get|Post|Put|Patch|Delete|Head|Options)\s*(?=[(,\]])/g;
+    let match: RegExpExecArray | null;
+    while ((match = attributeNamePattern.exec(content)) !== null) {
+      const prefix = match[1];
+      const attributeName = match[2];
+      const isVerb = attributeName !== 'Route';
 
-      routes.push({ path: routePath, methods, name, line });
+      if (isVerb) {
+        if (!hasFosRest) continue;
+        if (/^(OA|OpenApi|Nelmio|SWG)\\/i.test(prefix)) continue;
+      }
+
+      const argsStart = match.index + match[0].length;
+      const args = content[argsStart] === '('
+        ? this.extractBalancedParens(content, argsStart)
+        : '';
+
+      const pathMatch = args.match(/^\(\s*(?:path\s*[:=]\s*)?['"]([^'"]*)['"]/) ||
+        args.match(/[(,]\s*path\s*[:=]\s*['"]([^'"]*)['"]/);
+      const routePath = pathMatch ? pathMatch[1] : '';
+      const nameMatch = args.match(/[(,]\s*name\s*[:=]\s*['"]([^'"]+)['"]/);
+      const methodsMatch = args.match(/methods\s*[:=]\s*(?:\[([^\]]*)\]|\{([^}]*)\}|['"](\w+)['"])/);
+      const methodsStr = methodsMatch ? (methodsMatch[1] ?? methodsMatch[2] ?? methodsMatch[3]) : undefined;
+      const methods = isVerb
+        ? [attributeName.toUpperCase()]
+        : methodsStr
+          ? methodsStr.split(',').map((m: string) => m.trim().replace(/['"]/g, '')).filter(Boolean)
+          : [];
+
+      const line = this.lineNumberAt(content, match.index);
+      routes.push({
+        path: routePath,
+        methods,
+        name: nameMatch ? nameMatch[1] : undefined,
+        line,
+        classLevel: isClassLevel(match.index)
+      });
     }
 
-    const annotationRoutePattern = /@Route\s*\(\s*["']([^"']+)["'](?:\s*,\s*(?:name\s*=\s*["']([^"']+)["']))?(?:\s*,\s*(?:methods\s*=\s*\{([^}]*)\}))?[^)]*\)/g;
+    const annotationRoutePattern = /@(?:(\w+)\\)?(Route|Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*["']([^"']*)["']([^)]*)\)/g;
     while ((match = annotationRoutePattern.exec(content)) !== null) {
-      const routePath = match[1];
-      const name = match[2];
-      const methodsStr = match[3];
-      const methods = methodsStr
-        ? methodsStr.split(',').map((m: string) => m.trim().replace(/["']/g, ''))
-        : [];
-      const line = content.substring(0, match.index).split('\n').length;
+      const attributeName = match[2];
+      const isVerb = attributeName !== 'Route';
+      if (isVerb && !hasFosRest) continue;
 
-      routes.push({ path: routePath, methods, name, line });
+      const routePath = match[3];
+      const rest = match[4] || '';
+      const nameMatch = rest.match(/name\s*=\s*["']([^"']+)["']/);
+      const methodsMatch = rest.match(/methods\s*=\s*\{([^}]*)\}/);
+      const methods = isVerb
+        ? [attributeName.toUpperCase()]
+        : methodsMatch
+          ? methodsMatch[1].split(',').map((m: string) => m.trim().replace(/["']/g, '')).filter(Boolean)
+          : [];
+      const line = this.lineNumberAt(content, match.index);
+
+      routes.push({
+        path: routePath,
+        methods,
+        name: nameMatch ? nameMatch[1] : undefined,
+        line,
+        classLevel: isClassLevel(match.index)
+      });
     }
 
     return routes;
+  }
+
+  private extractBalancedParens(content: string, openIndex: number): string {
+    let depth = 0;
+    let inString: string | null = null;
+    for (let i = openIndex; i < content.length; i++) {
+      const ch = content[i];
+      if (inString) {
+        if (ch === '\\') {
+          i++;
+        } else if (ch === inString) {
+          inString = null;
+        }
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        inString = ch;
+      } else if (ch === '(') {
+        depth++;
+      } else if (ch === ')') {
+        depth--;
+        if (depth === 0) return content.slice(openIndex, i + 1);
+      }
+    }
+    return content.slice(openIndex);
+  }
+
+  private extractSecurityGuards(content: string): SymfonySecurityGuard[] {
+    const guards: SymfonySecurityGuard[] = [];
+    const classDeclIndex = content.search(/^\s*(?:final\s+|abstract\s+|readonly\s+)*class\s+\w+/m);
+    const guardPattern = /(?:#\[|,|@)\s*(IsGranted|Security)\s*(?=\()/g;
+
+    let match: RegExpExecArray | null;
+    while ((match = guardPattern.exec(content)) !== null) {
+      const argsStart = match.index + match[0].length;
+      const args = this.extractBalancedParens(content, argsStart);
+      const roles = Array.from(new Set(
+        args.match(/ROLE_\w+|IS_AUTHENTICATED_\w+|PUBLIC_ACCESS/g) ?? []
+      ));
+
+      guards.push({
+        attribute: match[1],
+        roles,
+        line: this.lineNumberAt(content, match.index),
+        classLevel: classDeclIndex >= 0 && match.index < classDeclIndex
+      });
+    }
+
+    return guards;
+  }
+
+  private joinRoutePaths(...segments: Array<string | undefined>): string {
+    const parts = segments
+      .filter((s): s is string => s !== undefined && s !== '' && s !== '/')
+      .map(s => s.replace(/^\/+|\/+$/g, ''))
+      .filter(Boolean);
+    return `/${parts.join('/')}`;
+  }
+
+  private findResourcePrefix(controllerFile: string, resourcePrefixes: SymfonyResourcePrefix[]): string | undefined {
+    const normalized = controllerFile.split(path.sep).join('/');
+    let best: SymfonyResourcePrefix | undefined;
+    for (const candidate of resourcePrefixes) {
+      if (!normalized.startsWith(`${candidate.dir}/`)) continue;
+      if (!best || candidate.dir.length > best.dir.length) {
+        best = candidate;
+      }
+    }
+    return best?.prefix;
+  }
+
+  private resolveRouteSecurity(
+    fullPath: string,
+    guards: SymfonySecurityGuard[],
+    accessControl: SymfonyAccessControlRule[]
+  ): CASEntryPoint['security'] | undefined {
+    const guardNames = Array.from(new Set(guards.map(g => g.attribute)));
+    const guardRoles = Array.from(new Set(guards.flatMap(g => g.roles)));
+
+    const matchedRule = accessControl.find(rule => rule.pattern.test(fullPath));
+    const ruleRoles = matchedRule?.roles ?? [];
+
+    if (guardNames.length === 0 && !matchedRule) return undefined;
+
+    const allRoles = Array.from(new Set([...guardRoles, ...ruleRoles]));
+    const restrictedRoles = allRoles.filter(r => r !== 'PUBLIC_ACCESS');
+    const isPublic = guardNames.length === 0 && ruleRoles.length > 0 && restrictedRoles.length === 0;
+
+    return {
+      authenticated: !isPublic,
+      authorized_roles: restrictedRoles,
+      guards: guardNames,
+      roles: allRoles
+    };
+  }
+
+  private async loadRoutingConfig(projectPath: string): Promise<SymfonyRoutingConfig> {
+    const config: SymfonyRoutingConfig = { resourcePrefixes: [], accessControl: [] };
+
+    const routeFiles = await glob(['config/routes*.yaml', 'config/routes*.yml', 'config/routes/**/*.yaml', 'config/routes/**/*.yml'], {
+      cwd: projectPath,
+      ignore: this.getIgnorePatterns({ projectPath }),
+      nodir: true
+    });
+
+    for (const file of routeFiles) {
+      try {
+        const content = await this.readProjectFile(projectPath, file);
+        const parsed = yaml.load(content) as Record<string, any> | undefined;
+        if (!parsed || typeof parsed !== 'object') continue;
+
+        for (const [key, value] of Object.entries(parsed)) {
+          if (key.startsWith('when@') || !value || typeof value !== 'object') continue;
+          const resource = value.resource;
+          const resourcePath = typeof resource === 'object' && resource !== null
+            ? resource.path
+            : typeof resource === 'string' ? resource : undefined;
+          const prefix = typeof value.prefix === 'string' ? value.prefix : undefined;
+          if (!resourcePath || !prefix || typeof resourcePath !== 'string') continue;
+          if (resourcePath.startsWith('@')) continue;
+
+          const dir = path.posix.normalize(
+            path.posix.join(path.posix.dirname(file.split(path.sep).join('/')), resourcePath)
+          );
+          config.resourcePrefixes.push({ dir, prefix });
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    const securityFiles = await glob(['config/packages/security.yaml', 'config/packages/security.yml', 'config/security.yaml', 'config/security.yml'], {
+      cwd: projectPath,
+      ignore: this.getIgnorePatterns({ projectPath }),
+      nodir: true
+    });
+
+    for (const file of securityFiles) {
+      try {
+        const content = await this.readProjectFile(projectPath, file);
+        const parsed = yaml.load(content) as Record<string, any> | undefined;
+        const accessControl = parsed?.security?.access_control;
+        if (!Array.isArray(accessControl)) continue;
+
+        for (const rule of accessControl) {
+          if (!rule || typeof rule !== 'object' || typeof rule.path !== 'string') continue;
+          const rawRoles = rule.roles ?? rule.role;
+          const roles = (Array.isArray(rawRoles) ? rawRoles : rawRoles !== undefined ? [rawRoles] : [])
+            .filter((r: unknown): r is string => typeof r === 'string');
+          if (roles.length === 0) continue;
+          try {
+            config.accessControl.push({ pattern: new RegExp(rule.path), roles });
+          } catch {
+            continue;
+          }
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return config;
   }
 
   private extractEntityTable(content: string): string | undefined {
@@ -1483,7 +1901,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
     while ((match = columnPattern.exec(content)) !== null) {
       const options = match[1];
       const name = match[2];
-      const line = content.substring(0, match.index).split('\n').length;
+      const line = this.lineNumberAt(content, match.index);
 
       const typeMatch = options.match(/type:\s*['"](\w+)['"]/);
       const type = typeMatch ? typeMatch[1] : 'string';
@@ -1497,7 +1915,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
     while ((match = annotationColumnPattern.exec(content)) !== null) {
       const options = match[1];
       const name = match[2];
-      const line = content.substring(0, match.index).split('\n').length;
+      const line = this.lineNumberAt(content, match.index);
 
       const typeMatch = options.match(/type\s*=\s*["'](\w+)["']/);
       const type = typeMatch ? typeMatch[1] : 'string';
@@ -1521,7 +1939,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
       while ((match = attrPattern.exec(content)) !== null) {
         const options = match[1];
         const name = match[2];
-        const line = content.substring(0, match.index).split('\n').length;
+        const line = this.lineNumberAt(content, match.index);
 
         const targetMatch = options.match(/targetEntity:\s*(\w+)::class/);
         const targetEntity = targetMatch ? targetMatch[1] : 'unknown';
@@ -1542,7 +1960,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
       while ((match = annotPattern.exec(content)) !== null) {
         const options = match[1];
         const name = match[2];
-        const line = content.substring(0, match.index).split('\n').length;
+        const line = this.lineNumberAt(content, match.index);
 
         const targetMatch = options.match(/targetEntity\s*=\s*["']?([^"',\s]+)/);
         const targetEntity = targetMatch ? targetMatch[1].replace('::class', '').split('\\').pop() || 'unknown' : 'unknown';
@@ -1811,9 +2229,37 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
   private findClassLine(content: string): number {
     const match = content.match(/class\s+\w+/);
     if (match && match.index !== undefined) {
-      return content.substring(0, match.index).split('\n').length;
+      return this.lineNumberAt(content, match.index);
     }
     return 1;
+  }
+
+  private lineCount(content: string): number {
+    return this.lineIndexes(content).length + 1;
+  }
+
+  private lineNumberAt(content: string, index: number | undefined): number {
+    if (!index || index <= 0) return 1;
+    const indexes = this.lineIndexes(content);
+    let low = 0;
+    let high = indexes.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (indexes[mid] < index) low = mid + 1;
+      else high = mid;
+    }
+    return low + 1;
+  }
+
+  private lineIndexes(content: string): number[] {
+    const cached = this.lineIndexCache.get(content);
+    if (cached) return cached;
+    const indexes: number[] = [];
+    for (let index = content.indexOf('\n'); index !== -1; index = content.indexOf('\n', index + 1)) {
+      indexes.push(index);
+    }
+    this.lineIndexCache.set(content, indexes);
+    return indexes;
   }
 
   private async detectSymfonyVersion(projectPath: string): Promise<string> {
@@ -1880,6 +2326,38 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
           ));
         }
       }
+
+      for (const method of controller.methods) {
+        const usedDependencies = method.usedDependencies ?? [];
+        if (usedDependencies.length === 0) continue;
+        const methodId = this.generateId('method', controller.filePath, `${controller.name}.${method.name}`);
+
+        for (const service of services) {
+          if (usedDependencies.some(dep => dep.includes(service.name))) {
+            const serviceId = this.generateId('service', service.filePath, service.name);
+            edges.push(this.createEdge(
+              this.generateEdgeId(methodId, serviceId, 'calls'),
+              methodId,
+              serviceId,
+              'calls',
+              'behavioral'
+            ));
+          }
+        }
+
+        for (const repo of repositories) {
+          if (usedDependencies.some(dep => dep.includes(repo.name))) {
+            const repoId = this.generateId('repository', repo.filePath, repo.name);
+            edges.push(this.createEdge(
+              this.generateEdgeId(methodId, repoId, 'calls'),
+              methodId,
+              repoId,
+              'calls',
+              'behavioral'
+            ));
+          }
+        }
+      }
     }
 
     for (const service of services) {
@@ -1944,10 +2422,29 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
     for (const subscriber of subscribers) {
       const subscriberId = this.generateId('event_subscriber', subscriber.filePath, subscriber.name);
       for (const se of subscriber.subscribedEvents) {
+        const eventShortName = String(se.event || '').split('\\').pop() || '';
+        if (eventShortName.length < 4 || /^(method|methods|event|events|priority)$/i.test(eventShortName)) continue;
+        const existingNode = nodes.find(node => node.name === eventShortName || node.name === se.event);
+        let eventNodeId = existingNode?.id;
+        if (!eventNodeId) {
+          eventNodeId = this.sanitizeId(se.event);
+          if (!nodes.some(node => node.id === eventNodeId)) {
+            nodes.push(this.createNode(
+              eventNodeId,
+              eventShortName,
+              'event',
+              undefined,
+              subscriber.filePath,
+              1,
+              undefined,
+              { attributes: { event_class: se.event, inferred_from: 'event-subscriber' } }
+            ));
+          }
+        }
         edges.push(this.createEdge(
-          this.generateEdgeId(subscriberId, this.sanitizeId(se.event), 'listens_to'),
+          this.generateEdgeId(subscriberId, eventNodeId, 'listens_to'),
           subscriberId,
-          this.sanitizeId(se.event),
+          eventNodeId,
           'listens_to',
           'behavioral',
           { attributes: { event: se.event, method: se.method, priority: se.priority } }
@@ -2129,7 +2626,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
 
     if (!summary) return undefined;
 
-    const startLine = content.substring(0, match.index || 0).split('\n').length;
+    const startLine = this.lineNumberAt(content, match.index || 0);
     const endLine = startLine + raw.split('\n').length - 1;
 
     return {
@@ -2219,7 +2716,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
     while ((match = twigCommentPattern.exec(content)) !== null) {
       const text = match[1].trim();
       if (text.length > 0) {
-        const line = content.substring(0, match.index).split('\n').length;
+        const line = this.lineNumberAt(content, match.index);
         comments.push({
           id: `comment_${++this.commentCounter}`,
           type: 'single-line',

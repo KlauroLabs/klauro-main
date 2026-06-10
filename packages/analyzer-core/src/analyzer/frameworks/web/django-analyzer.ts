@@ -64,6 +64,7 @@ interface DjangoView {
   serializerClass?: string;
   serializerReferences: string[];
   modelReferences: string[];
+  modelAccesses: DjangoModelAccess[];
   querysetModel?: string;
 }
 
@@ -117,6 +118,7 @@ interface GraphQLMutation {
   arguments: Array<{ name: string; type: string; required: boolean }>;
   returnType?: string;
   resolverMethod?: string;
+  modelAccesses?: DjangoModelAccess[];
 }
 
 interface GraphQLQuery {
@@ -146,6 +148,12 @@ interface CeleryTask {
   arguments: Array<{ name: string; type?: string; default?: string }>;
   description?: string;
   retryPolicy?: { maxRetries?: number; countdown?: number };
+  modelAccesses?: DjangoModelAccess[];
+}
+
+export interface DjangoModelAccess {
+  model: string;
+  access: 'reads' | 'creates' | 'updates' | 'deletes';
 }
 
 export class DjangoAnalyzer extends BaseAnalyzer {
@@ -688,6 +696,32 @@ export class DjangoAnalyzer extends BaseAnalyzer {
           modelId,
           'contains'
         ));
+
+        for (const field of model.fields) {
+          const fieldId = `${modelId}_field_${this.sanitizeId(field.name)}`;
+          nodes.push(this.createNodeBuilder(fieldId, field.name, 'field')
+            .withLevel(4, 'member')
+            .withCategory('field', ['data'])
+            .withSource({ file: path.join(projectPath, model.filePath), line: 1, end_line: 1 })
+            .withSignature({ parameters: [], return_type: field.type })
+            .withMetadata({
+              framework: 'django',
+              attributes: {
+                fieldType: field.type,
+                sensitive: this.isSensitiveModelField(field.name, field.type)
+              }
+            })
+            .withParent(modelId)
+            .withAnalyzers([this.analyzerId], this.analyzerId)
+            .build());
+
+          edges.push(this.createEdge(
+            `${modelId}_has_field_${fieldId}`,
+            modelId,
+            fieldId,
+            'has_field'
+          ));
+        }
       }
 
       for (const [index, view] of views.entries()) {
@@ -853,9 +887,13 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
   private async analyzeModels(files: string[], projectPath: string, appDir: string): Promise<DjangoModel[]> {
     const models: DjangoModel[] = [];
-    const modelsFile = files.find(f => f === path.join(appDir, 'models.py'));
+    const modelsPackagePrefix = path.join(appDir, 'models') + '/';
+    const modelFiles = files.filter(f =>
+      f === path.join(appDir, 'models.py') ||
+      (f.startsWith(modelsPackagePrefix) && f.endsWith('.py'))
+    );
 
-    if (modelsFile) {
+    for (const modelsFile of modelFiles) {
       const content = await fs.readFile(path.join(projectPath, modelsFile), 'utf-8');
       const extractedModels = this.extractModels(content, modelsFile);
       models.push(...extractedModels);
@@ -1033,7 +1071,8 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         mutationType: 'custom',
         arguments: args,
         returnType,
-        resolverMethod
+        resolverMethod,
+        modelAccesses: this.extractModelAccesses(classContent, content)
       });
     }
 
@@ -1275,7 +1314,8 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         retryPolicy: (retryMatch || maxRetriesMatch) ? {
           countdown: retryMatch ? parseInt(retryMatch[1]) : undefined,
           maxRetries: maxRetriesMatch ? parseInt(maxRetriesMatch[1]) : undefined
-        } : undefined
+        } : undefined,
+        modelAccesses: this.extractModelAccesses(funcContent, content)
       });
     }
 
@@ -1288,13 +1328,17 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
       const isBound = decoratorLine.includes('bind=True');
       const args = this.parseTaskArguments(argsStr, isBound);
+      const funcStart = match.index;
+      const funcEnd = this.findFunctionEnd(content, funcStart);
+      const funcContent = content.substring(funcStart, funcEnd);
 
       tasks.push({
         name: taskName,
         filePath,
         decorators: ['app.task'],
         isBound,
-        arguments: args
+        arguments: args,
+        modelAccesses: this.extractModelAccesses(funcContent, content)
       });
     }
 
@@ -1499,17 +1543,23 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
   private extractModels(content: string, filePath: string): DjangoModel[] {
     const models: DjangoModel[] = [];
-    const classPattern = /class\s+(\w+)\s*\(\s*(?:models\.)?Model\s*\):/g;
+    const classPattern = /class\s+(\w+)\s*\(([^)]*)\)\s*:/g;
+    const modelBasePattern = /\bmodels\.Model\b|\b\w*Model\b|\bAbstractUser\b|\bAbstractBaseUser\b/;
+    const nonModelBasePattern = /\b(?:TextChoices|IntegerChoices|Choices|Enum|Serializer|Form|Admin|TestCase)\b/;
 
     let match;
     while ((match = classPattern.exec(content)) !== null) {
       const modelName = match[1];
+      const bases = match[2];
+      if (!modelBasePattern.test(bases) || nonModelBasePattern.test(bases)) continue;
       const classStart = match.index;
       const classEnd = this.findClassEnd(content, classStart);
       const classContent = content.substring(classStart, classEnd);
 
       const fields = this.extractModelFields(classContent);
-      const relationships = this.extractModelRelationships(classContent);
+      const relationships = this.extractModelRelationships(classContent).map(relationship =>
+        relationship.target === 'self' ? { ...relationship, target: modelName } : relationship
+      );
       const meta = this.extractModelMeta(classContent);
       const methods = this.extractModelMethods(classContent);
 
@@ -1714,12 +1764,15 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
   private extractModelFields(content: string): Array<{ name: string; type: string; options: Record<string, any> }> {
     const fields: Array<{ name: string; type: string; options: Record<string, any> }> = [];
-    const fieldPattern = /(\w+)\s*=\s*models\.(\w+)\s*\([^)]*\)/g;
+    const fieldPattern = /^\s+(\w+)\s*=\s*(?:\w+\.)?(\w*Field|ForeignKey|OneToOneField|ManyToManyField)\s*\(/gm;
+    const seen = new Set<string>();
 
     let match;
     while ((match = fieldPattern.exec(content)) !== null) {
       const name = match[1];
       const type = match[2];
+      if (seen.has(name)) continue;
+      seen.add(name);
 
       fields.push({
         name,
@@ -1733,12 +1786,19 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
   private extractModelRelationships(content: string): Array<{ type: string; target: string; relatedName?: string }> {
     const relationships: Array<{ type: string; target: string; relatedName?: string }> = [];
-    const relationPattern = /(\w+)\s*=\s*models\.(ForeignKey|OneToOneField|ManyToManyField)\s*\(\s*['"]?(\w+)['"]?/g;
+    const relationPattern = /(\w+)\s*=\s*(?:\w+\.)?(ForeignKey|OneToOneField|ManyToManyField)\s*\(\s*(?:to\s*=\s*)?(settings\.AUTH_USER_MODEL|['"][\w.]+['"]|\w+)/g;
 
     let match;
     while ((match = relationPattern.exec(content)) !== null) {
       const type = match[2];
-      const target = match[3];
+      const rawTarget = match[3].replace(/['"]/g, '');
+
+      let target = rawTarget;
+      if (rawTarget === 'settings.AUTH_USER_MODEL' || rawTarget === 'AUTH_USER_MODEL') {
+        target = 'User';
+      } else if (rawTarget.includes('.')) {
+        target = rawTarget.split('.').pop() || rawTarget;
+      }
 
       relationships.push({
         type,
@@ -1798,6 +1858,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
       const decorators = this.extractDecorators(content, functionStart);
       const serializerReferences = this.extractSerializerInstantiations(functionContent, content);
       const modelReferences = this.extractModelReferences(functionContent, content);
+      const modelAccesses = this.extractModelAccesses(functionContent, content);
 
       views.push({
         name: viewName,
@@ -1807,7 +1868,8 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         decorators,
         permissions: this.extractPermissions(decorators),
         serializerReferences,
-        modelReferences
+        modelReferences,
+        modelAccesses
       });
     }
 
@@ -1853,6 +1915,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         const serializerClass = this.extractSerializerClassAttribute(classContent);
         const serializerReferences = this.extractSerializerInstantiations(classContent, content);
         const modelReferences = this.extractModelReferences(classContent, content);
+        const modelAccesses = this.extractModelAccesses(classContent, content);
         const querysetModel = this.extractQuerysetModel(classContent);
 
         views.push({
@@ -1866,6 +1929,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
           serializerClass,
           serializerReferences,
           modelReferences,
+          modelAccesses,
           querysetModel
         });
       }
@@ -1980,6 +2044,104 @@ export class DjangoAnalyzer extends BaseAnalyzer {
       const modelName = match[1];
       if (importedModels.includes(modelName) && !models.includes(modelName)) {
         models.push(modelName);
+      }
+    }
+
+    return models;
+  }
+
+  isSensitiveModelField(name: string, type: string): boolean {
+    const sensitiveTypes = new Set(['EmailField']);
+    if (sensitiveTypes.has(type)) return true;
+
+    const nameLower = name.toLowerCase();
+    const tokens = nameLower.split(/[^a-z0-9]+/).filter(Boolean);
+    const substringPatterns = [
+      'password', 'passwd', 'secret', 'token', 'credential',
+      'social_security', 'date_of_birth', 'account_number',
+      'routing_number', 'email', 'phone', 'address', 'salary'
+    ];
+    const tokenPatterns = ['ssn', 'card', 'cvv', 'iban', 'dob', 'tax_id'];
+
+    if (substringPatterns.some(pattern => nameLower.includes(pattern))) return true;
+    return tokenPatterns.some(pattern =>
+      pattern.includes('_') ? nameLower.includes(pattern) : tokens.includes(pattern)
+    );
+  }
+
+  extractModelAccesses(scopeContent: string, fullContent: string): DjangoModelAccess[] {
+    const knownModels = new Set([
+      ...this.extractImportedModels(fullContent),
+      ...this.extractLocalModelDefinitions(fullContent)
+    ]);
+    const isCandidate = (name: string) => knownModels.has(name) || /^[A-Z]/.test(name);
+
+    const managerAccessByMethod: Record<string, DjangoModelAccess['access']> = {
+      create: 'creates',
+      bulk_create: 'creates',
+      get_or_create: 'creates',
+      save: 'creates',
+      update: 'updates',
+      bulk_update: 'updates',
+      update_or_create: 'updates',
+      delete: 'deletes',
+    };
+
+    const accesses = new Map<string, DjangoModelAccess>();
+    const record = (model: string, access: DjangoModelAccess['access']) => {
+      accesses.set(`${model}:${access}`, { model, access });
+    };
+
+    const managerCallPattern = /(\w+)\.objects\.(\w+)/g;
+    let match;
+    while ((match = managerCallPattern.exec(scopeContent)) !== null) {
+      const model = match[1];
+      if (!isCandidate(model)) continue;
+      record(model, managerAccessByMethod[match[2]] || 'reads');
+    }
+
+    const chainedWritePattern = /(\w+)\.objects\b[^\n]*?\.(update|delete)\s*\(/g;
+    while ((match = chainedWritePattern.exec(scopeContent)) !== null) {
+      const model = match[1];
+      if (!isCandidate(model)) continue;
+      record(model, match[2] === 'delete' ? 'deletes' : 'updates');
+    }
+
+    const querysetVariablePattern = /(\w+)\s*=\s*(\w+)\.objects\b/g;
+    const fetchedVariableToModel = new Map<string, string>();
+    while ((match = querysetVariablePattern.exec(scopeContent)) !== null) {
+      if (!knownModels.has(match[2])) continue;
+      fetchedVariableToModel.set(match[1], match[2]);
+    }
+
+    const instanceWritePattern = /(\w+)\.(save|delete)\s*\(/g;
+    while ((match = instanceWritePattern.exec(scopeContent)) !== null) {
+      const model = fetchedVariableToModel.get(match[1]);
+      if (!model) continue;
+      record(model, match[2] === 'delete' ? 'deletes' : 'updates');
+    }
+
+    if (/\.save\s*\(/.test(scopeContent)) {
+      const constructionPattern = /(?:^|[^.\w])([A-Z]\w*)\s*\(/g;
+      while ((match = constructionPattern.exec(scopeContent)) !== null) {
+        const model = match[1];
+        if (!knownModels.has(model)) continue;
+        record(model, 'creates');
+      }
+    }
+
+    return [...accesses.values()];
+  }
+
+  private extractLocalModelDefinitions(content: string): string[] {
+    const models: string[] = [];
+    const classPattern = /class\s+(\w+)\s*\(([^)]*)\)\s*:/g;
+
+    let match;
+    while ((match = classPattern.exec(content)) !== null) {
+      const bases = match[2];
+      if (/\bmodels\.Model\b/.test(bases) || /\b\w*Model\b/.test(bases) || /\bAbstractUser\b/.test(bases) || /\bAbstractBaseUser\b/.test(bases)) {
+        models.push(match[1]);
       }
     }
 
@@ -2281,6 +2443,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     const projectId = `project_${this.sanitizeId(project.name)}`;
     const allModels = apps.flatMap(app => app.models.map(m => ({ ...m, appId: `app_${this.sanitizeId(app.name)}` })));
     const allSerializers = apps.flatMap(app => app.serializers.map(s => ({ ...s, appId: `app_${this.sanitizeId(app.name)}` })));
+    const allGraphQLTypes = apps.flatMap(app => app.graphqlTypes);
 
     apps.forEach(app => {
       const appId = `app_${this.sanitizeId(app.name)}`;
@@ -2390,6 +2553,19 @@ export class DjangoAnalyzer extends BaseAnalyzer {
           }
         }
 
+        for (const access of view.modelAccesses || []) {
+          const targetModel = allModels.find(m => m.name === access.model);
+          if (!targetModel) continue;
+          const modelId = `model_${targetModel.appId}_${this.sanitizeId(access.model)}`;
+
+          edges.push(this.createEdge(
+            `${viewId}_${access.access}_${modelId}`,
+            viewId,
+            modelId,
+            access.access
+          ));
+        }
+
         if (view.templateName) {
           app.models.forEach(model => {
             const modelId = `model_${appId}_${this.sanitizeId(model.name)}`;
@@ -2403,6 +2579,81 @@ export class DjangoAnalyzer extends BaseAnalyzer {
             }
           });
         }
+      });
+
+      app.celeryTasks.forEach(task => {
+        const taskId = `celery_task_${appId}_${this.sanitizeId(task.name)}`;
+
+        for (const access of task.modelAccesses || []) {
+          const targetModel = allModels.find(m => m.name === access.model);
+          if (!targetModel) continue;
+          const modelId = `model_${targetModel.appId}_${this.sanitizeId(access.model)}`;
+
+          edges.push(this.createEdge(
+            `${taskId}_${access.access}_${modelId}`,
+            taskId,
+            modelId,
+            access.access
+          ));
+        }
+      });
+
+      const modelIdForName = (modelName: string): string | undefined => {
+        const targetModel = allModels.find(m => m.name === modelName);
+        return targetModel ? `model_${targetModel.appId}_${this.sanitizeId(modelName)}` : undefined;
+      };
+      const modelIdForTypeName = (typeName: string): string | undefined => {
+        const gqlType = allGraphQLTypes.find(t => t.name === typeName);
+        return gqlType?.model ? modelIdForName(gqlType.model) : undefined;
+      };
+      const crudMutationAccess: Record<string, DjangoModelAccess['access']> = {
+        'crud-create': 'creates',
+        'crud-update': 'updates',
+        'crud-delete': 'deletes'
+      };
+
+      app.graphqlMutations.forEach(mutation => {
+        if (!mutation.name) return;
+        const mutationId = `graphql_mutation_${appId}_${this.sanitizeId(mutation.name)}`;
+
+        const crudAccess = crudMutationAccess[mutation.mutationType];
+        if (crudAccess) {
+          const modelId = modelIdForTypeName(mutation.baseClass);
+          if (modelId) {
+            edges.push(this.createEdge(
+              `${mutationId}_${crudAccess}_${modelId}`,
+              mutationId,
+              modelId,
+              crudAccess
+            ));
+          }
+        }
+
+        for (const access of mutation.modelAccesses || []) {
+          const modelId = modelIdForName(access.model);
+          if (!modelId) continue;
+          edges.push(this.createEdge(
+            `${mutationId}_${access.access}_${modelId}`,
+            mutationId,
+            modelId,
+            access.access
+          ));
+        }
+      });
+
+      app.graphqlQueries.forEach(query => {
+        if (!query.name || !query.returnType) return;
+        const queryId = `graphql_query_${appId}_${this.sanitizeId(query.name)}`;
+        const typeName = query.returnType.replace(/[[\]]/g, '');
+        const modelId = modelIdForTypeName(typeName);
+        if (!modelId) return;
+
+        edges.push(this.createEdge(
+          `${queryId}_reads_${modelId}`,
+          queryId,
+          modelId,
+          'reads'
+        ));
       });
     });
   }
