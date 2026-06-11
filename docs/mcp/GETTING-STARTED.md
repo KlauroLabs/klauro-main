@@ -84,9 +84,9 @@ The packet contains the resolved target node, change risk, covering tests, call 
 
 Measured on a mid-size production Angular repository (truckspyui, ~800 TypeScript files) on an Apple Silicon laptop, full rebuild from scratch (`--force`):
 
-- `analyze --analysis-focus agent-fast --force`: MEASURED_ANALYZE
-- `agent-work-packet --task-type modify`: MEASURED_PACKET
-- Total install-to-first-packet (excluding one-time `npm install`): MEASURED_TOTAL
+- `analyze --analysis-focus agent-fast --force`: 12.9s
+- `agent-work-packet --task-type modify`: 2.4s
+- Total install-to-first-packet (excluding one-time `npm install`): ~15s after a one-time npm install and build
 
 ## Optional: workspace instructions
 

@@ -1,6 +1,7 @@
 {
   "name": "@klauro/analyzer-core",
   "version": "1.0.0",
+  "private": true,
   "description": "Klauro CAS analyzer engine and legacy API shell kept for analyzer compatibility.",
   "main": "index.js",
   "scripts": {
@@ -23,7 +24,7 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "UNLICENSED",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.62.0",
     "@babel/parser": "^7.28.4",
