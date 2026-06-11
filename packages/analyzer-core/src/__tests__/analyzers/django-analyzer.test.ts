@@ -612,4 +612,271 @@ describe('DjangoAnalyzer', () => {
       expect(new Set(vehicleModels.map(n => n.id)).size).toBe(2);
     });
   });
+  describe('multi-root monorepo discovery', () => {
+    let projectPath: string;
+
+    const write = async (files: Record<string, string>) => {
+      for (const [relativePath, content] of Object.entries(files)) {
+        const fullPath = path.join(projectPath, relativePath);
+        await fs.ensureDir(path.dirname(fullPath));
+        await fs.writeFile(fullPath, content);
+      }
+    };
+
+    beforeEach(async () => {
+      projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'django-analyzer-monorepo-test-'));
+      await write({
+        'requirements.txt': 'Django==4.2\n',
+        'conftest.py': 'import pytest\n',
+
+        'backend/manage.py': 'from django.core.management import execute_from_command_line\n',
+        'backend/config/__init__.py': '',
+        'backend/config/settings.py': "INSTALLED_APPS = [\n    'shop',\n    'blog',\n]\nDEBUG = True\nROOT_URLCONF = 'config.urls'\n",
+        'backend/config/urls.py': [
+          'from django.contrib import admin',
+          'from django.urls import include, path',
+          'from rest_framework.routers import DefaultRouter',
+          'from shop.views import ProductViewSet',
+          '',
+          'router = DefaultRouter()',
+          'router.register(r"products", ProductViewSet, basename="product")',
+          '',
+          'urlpatterns = [',
+          '    path("admin/", admin.site.urls),',
+          '    path("shop/", include("shop.urls")),',
+          '    path("blog/", include("blog.urls", namespace="blog")),',
+          '    path("api/", include(router.urls)),',
+          ']',
+          '',
+        ].join('\n'),
+        'backend/shop/__init__.py': '',
+        'backend/shop/apps.py': 'from django.apps import AppConfig\n\nclass ShopConfig(AppConfig):\n    name = "shop"\n',
+        'backend/shop/models.py': [
+          'from django.db import models',
+          '',
+          'class TimestampedModel(models.Model):',
+          '    created_at = models.DateTimeField(auto_now_add=True)',
+          '',
+          '    class Meta:',
+          '        abstract = True',
+          '',
+          'class Product(TimestampedModel):',
+          '    name = models.CharField(max_length=100)',
+          '',
+          'class Sku(Product):',
+          '    code = models.CharField(max_length=32)',
+          '',
+        ].join('\n'),
+        'backend/shop/views.py': [
+          'from rest_framework.viewsets import ModelViewSet',
+          'from shop.models import Product',
+          '',
+          'class ProductViewSet(ModelViewSet):',
+          '    queryset = Product.objects.all()',
+          '',
+          'def product_list(request):',
+          '    return Product.objects.all()',
+          '',
+        ].join('\n'),
+        'backend/shop/urls.py': [
+          'from django.urls import path',
+          'from . import views',
+          '',
+          'urlpatterns = [',
+          '    path("", views.product_list, name="product-list"),',
+          ']',
+          '',
+        ].join('\n'),
+        'backend/blog/__init__.py': '',
+        'backend/blog/apps.py': 'from django.apps import AppConfig\n\nclass BlogConfig(AppConfig):\n    name = "blog"\n',
+        'backend/blog/models.py': 'from django.db import models\n\nclass Post(models.Model):\n    title = models.CharField(max_length=100)\n',
+        'backend/blog/views.py': 'def post_detail(request, slug):\n    return None\n',
+        'backend/blog/urls.py': [
+          'from django.urls import re_path',
+          'from . import views',
+          '',
+          'app_name = "blog"',
+          'urlpatterns = [',
+          '    re_path(r"^posts/(?P<slug>[\\w-]+)/$", views.post_detail, name="post-detail"),',
+          ']',
+          '',
+        ].join('\n'),
+
+        'service2/manage.py': 'from django.core.management import execute_from_command_line\n',
+        'service2/conf/__init__.py': '',
+        'service2/conf/settings.py': "INSTALLED_APPS = ['billing']\nDEBUG = False\n",
+        'service2/conf/urls.py': [
+          'from django.urls import include, path',
+          '',
+          'urlpatterns = [',
+          '    path("billing/", include("billing.urls")),',
+          ']',
+          '',
+        ].join('\n'),
+        'service2/billing/__init__.py': '',
+        'service2/billing/apps.py': 'from django.apps import AppConfig\n\nclass BillingConfig(AppConfig):\n    name = "billing"\n',
+        'service2/billing/models.py': 'from django.db import models\n\nclass Invoice(models.Model):\n    total = models.DecimalField(max_digits=8, decimal_places=2)\n',
+        'service2/billing/views.py': 'def invoice_list(request):\n    return None\n',
+        'service2/billing/urls.py': [
+          'from django.urls import path',
+          'from . import views',
+          '',
+          'urlpatterns = [',
+          '    path("invoices/", views.invoice_list, name="invoice-list"),',
+          ']',
+          '',
+        ].join('\n'),
+
+        'project_template/manage.py-tpl': 'from django.core.management import execute_from_command_line\n',
+        'project_template/project_name/__init__.py': '',
+        'project_template/project_name/settings.py': "INSTALLED_APPS = ['sample']\n",
+        'project_template/project_name/urls.py': 'from django.urls import path\n\nurlpatterns = []\n',
+        'project_template/sample/__init__.py': '',
+        'project_template/sample/apps.py': 'from django.apps import AppConfig\n\nclass SampleConfig(AppConfig):\n    name = "sample"\n',
+        'project_template/sample/models.py': 'from django.db import models\n\nclass ScaffoldModel(models.Model):\n    name = models.CharField(max_length=10)\n',
+        'project_template/sample/urls.py': 'from django.urls import path\n\nurlpatterns = [\n    path("scaffold/", None),\n]\n',
+
+        '{{cookiecutter.project_slug}}/app/__init__.py': '',
+        '{{cookiecutter.project_slug}}/app/apps.py': 'from django.apps import AppConfig\n\nclass AppConfig2(AppConfig):\n    name = "app"\n',
+        '{{cookiecutter.project_slug}}/app/models.py': 'from django.db import models\n\nclass CookieModel(models.Model):\n    name = models.CharField(max_length=10)\n',
+      });
+    });
+
+    afterEach(async () => {
+      await fs.remove(projectPath);
+    });
+
+    it('discovers every Django root and excludes scaffold trees from root candidacy', async () => {
+      const roots = await analyzer.discoverDjangoRoots(projectPath);
+      expect(roots).toEqual(['backend', 'service2']);
+    });
+
+    it('treats a flat single-root project as a single root', async () => {
+      const flatPath = await fs.mkdtemp(path.join(os.tmpdir(), 'django-analyzer-flat-test-'));
+      try {
+        await fs.writeFile(path.join(flatPath, 'manage.py'), 'from django.core.management import execute_from_command_line\n');
+        await fs.ensureDir(path.join(flatPath, 'shop'));
+        await fs.writeFile(path.join(flatPath, 'shop', '__init__.py'), '');
+        await fs.writeFile(path.join(flatPath, 'shop', 'models.py'), 'from django.db import models\n\nclass Product(models.Model):\n    name = models.CharField(max_length=10)\n');
+
+        const roots = await analyzer.discoverDjangoRoots(flatPath);
+        expect(roots).toEqual(['']);
+      } finally {
+        await fs.remove(flatPath);
+      }
+    });
+
+    it('treats a package root with apps.py and a models package as the owning app', async () => {
+      const packagePath = await fs.mkdtemp(path.join(os.tmpdir(), 'django-analyzer-package-test-'));
+      try {
+        const writeAll = async (files: Record<string, string>) => {
+          for (const [relativePath, content] of Object.entries(files)) {
+            const fullPath = path.join(packagePath, relativePath);
+            await fs.ensureDir(path.dirname(fullPath));
+            await fs.writeFile(fullPath, content);
+          }
+        };
+        await writeAll({
+          '__init__.py': '',
+          'apps.py': 'from django.apps import AppConfig\n\nclass CoreConfig(AppConfig):\n    name = "core"\n',
+          'models/__init__.py': 'from django.db import models\n\nclass Page(models.Model):\n    title = models.CharField(max_length=255)\n\nclass Homepage(Page):\n    tagline = models.CharField(max_length=255)\n',
+          'admin/__init__.py': '',
+          'admin/apps.py': 'from django.apps import AppConfig\n\nclass AdminConfig(AppConfig):\n    name = "core.admin"\n',
+          'admin/urls/__init__.py': [
+            'from django.urls import include, path',
+            'from core.admin.urls import pages as pages_urls',
+            '',
+            'urlpatterns = [',
+            '    path("pages/", include(pages_urls)),',
+            ']',
+            '',
+          ].join('\n'),
+          'admin/urls/pages.py': [
+            'from django.urls import path',
+            'from core.admin import views',
+            '',
+            'urlpatterns = [',
+            '    path("<int:page_id>/edit/", views.edit, name="edit"),',
+            ']',
+            '',
+          ].join('\n'),
+          'admin/views.py': 'def edit(request, page_id):\n    return None\n',
+        });
+
+        const contribution = await analyzer.analyze({ projectPath: packagePath } as any);
+        const nodes = contribution.nodes || [];
+        const appNames = nodes.filter(n => n.id.startsWith('app_')).map(n => n.name).sort();
+        expect(appNames).toContain('admin');
+        expect(appNames).not.toContain('models');
+
+        const modelNames = nodes.filter(n => n.type === 'model').map(n => n.name).sort();
+        expect(modelNames).toEqual(['Homepage', 'Page']);
+
+        const entryPaths = (contribution.entry_points || []).map(e => e.trigger?.path);
+        expect(entryPaths).toContain('/pages/<int:page_id>/edit/');
+      } finally {
+        await fs.remove(packagePath);
+      }
+    });
+
+    it('analyzes apps, models, and routes from all roots while ignoring scaffolding', async () => {
+      const contribution = await analyzer.analyze({ projectPath } as any);
+      const nodes = contribution.nodes || [];
+      const entryPoints = contribution.entry_points || [];
+
+      const appNames = nodes.filter(n => n.id.startsWith('app_')).map(n => n.name).sort();
+      expect(appNames).toContain('shop');
+      expect(appNames).toContain('blog');
+      expect(appNames).toContain('billing');
+      expect(appNames).not.toContain('sample');
+      expect(appNames).not.toContain('app');
+      expect(appNames).not.toContain('project_name');
+
+      const modelNames = nodes.filter(n => n.type === 'model').map(n => n.name);
+      expect(modelNames).toContain('Product');
+      expect(modelNames).toContain('Sku');
+      expect(modelNames).toContain('Post');
+      expect(modelNames).toContain('Invoice');
+      expect(modelNames).not.toContain('ScaffoldModel');
+      expect(modelNames).not.toContain('CookieModel');
+
+      const timestamped = nodes.find(n => n.type === 'model' && n.name === 'TimestampedModel');
+      expect(timestamped).toBeDefined();
+      expect(timestamped!.subcategories).toContain('abstract');
+      expect(timestamped!.subcategories).not.toContain('entity');
+
+      const sku = nodes.find(n => n.type === 'model' && n.name === 'Sku');
+      expect(sku!.subcategories).toContain('entity');
+      expect(sku!.metadata?.attributes?.parent_model).toBe('Product');
+      const skuFieldNames = nodes
+        .filter(n => n.type === 'field' && n.parent === sku!.id)
+        .map(n => n.name)
+        .sort();
+      expect(skuFieldNames).toEqual(['code', 'created_at', 'name']);
+
+      const invoiceFields = nodes.filter(n => n.type === 'field' && n.name === 'total');
+      expect(invoiceFields.length).toBeGreaterThanOrEqual(1);
+
+      const entryPaths = entryPoints.map(e => e.trigger?.path);
+      expect(entryPaths).toContain('/shop/');
+      expect(entryPaths).toContain('/blog/posts/<slug>/');
+      expect(entryPaths).toContain('/billing/invoices/');
+      expect(entryPaths).toContain('/api/products/');
+      expect(entryPaths).toContain('/api/products/<pk>/');
+      expect(entryPaths).toContain('/admin/');
+      expect(entryPaths.some(p => p && p.includes('scaffold'))).toBe(false);
+
+      const adminEntries = entryPoints.filter(e => e.trigger?.path === '/admin/');
+      expect(adminEntries.length).toBeGreaterThanOrEqual(1);
+      for (const adminEntry of adminEntries) {
+        expect(adminEntry.security?.authenticated).toBe(true);
+      }
+
+      const detailEntry = entryPoints.find(e => e.trigger?.path === '/api/products/<pk>/' && e.trigger?.method === 'DELETE');
+      expect(detailEntry).toBeDefined();
+
+      const metadata = contribution.analyzer_metadata as Record<string, any>;
+      expect(metadata.djangoRoots).toEqual(['backend', 'service2']);
+    });
+  });
 });

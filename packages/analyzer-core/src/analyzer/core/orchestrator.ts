@@ -76,6 +76,7 @@ import { ChangeDetector } from './change-detector';
 import { buildUserJourneys } from './journey-builder';
 import { buildParadigmConformance } from './paradigm-conformance';
 import { buildDataLineage } from './data-lineage';
+import { isLanguageBuiltinName, isLanguageBuiltinExitPoint } from './language-builtins';
 import { buildProductMap } from './product-map';
 import { CallGraphBuilder } from './call-graph-builder';
 import { DomainExtractor } from './domain-extractor';
@@ -797,7 +798,7 @@ export class AnalyzerOrchestrator {
     const dataEntities = this.buildDataEntities(allNodes, allEdges, projectPath);
     const dataSummary = this.buildDataSummary(dataEntities, allNodes);
     const securityBoundaries = this.buildSecurityBoundaries(allNodes, allEntryPoints);
-    const securitySummary = this.buildSecuritySummary(securityBoundaries, allNodes);
+    const securitySummary = this.buildSecuritySummary(securityBoundaries, allNodes, allEntryPoints);
     logTiming('pp_dataAndSecurity', phaseStart);
 
     phaseStart = Date.now();
@@ -1591,7 +1592,7 @@ export class AnalyzerOrchestrator {
     const dataEntities = this.buildDataEntities(nodes, edges, projectPath);
     const dataSummary = this.buildDataSummary(dataEntities, nodes);
     const securityBoundaries = this.buildSecurityBoundaries(nodes, entryPoints);
-    const securitySummary = this.buildSecuritySummary(securityBoundaries, nodes);
+    const securitySummary = this.buildSecuritySummary(securityBoundaries, nodes, entryPoints);
     const temporalStability = this.buildTemporalStability(nodes, gitAnalyzer);
     const stabilitySummary = this.buildStabilitySummary(temporalStability);
     const testSuites = this.buildTestSuites(nodes, entryPoints, projectPath);
@@ -5283,6 +5284,7 @@ export class AnalyzerOrchestrator {
 
     const entityNodes = nodes.filter(n =>
       (!projectPath || this.isPrimaryProductNodeForProject(n, projectPath)) &&
+      !n.subcategories?.includes('abstract') &&
       (
         n.type === 'entity' ||
         n.type === 'model' ||
@@ -5498,50 +5500,6 @@ export class AnalyzerOrchestrator {
     const services: CASExternalService[] = [];
     const serviceMap = new Map<string, CASExternalService>();
 
-    const stdBuiltins = new Set([
-      // JavaScript/Node built-ins
-      'console', 'path', 'fs', 'os', 'crypto', 'http', 'https', 'url', 'util',
-      'stream', 'buffer', 'events', 'child_process', 'cluster', 'dgram', 'dns',
-      'net', 'readline', 'repl', 'tls', 'tty', 'v8', 'vm', 'zlib', 'assert',
-      'Object', 'Array', 'String', 'Number', 'Boolean', 'Date', 'Math', 'JSON',
-      'Promise', 'Map', 'Set', 'WeakMap', 'WeakSet', 'Symbol', 'Proxy', 'Reflect',
-      'Error', 'TypeError', 'ReferenceError', 'SyntaxError', 'RangeError',
-      'RegExp', 'Function', 'Buffer', 'process', 'global', 'setTimeout',
-      'setInterval', 'setImmediate', 'clearTimeout', 'clearInterval', 'clearImmediate',
-      'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'encodeURI', 'decodeURI',
-      'encodeURIComponent', 'decodeURIComponent', 'escape', 'unescape', 'eval',
-      'Intl', 'Atomics', 'SharedArrayBuffer', 'ArrayBuffer', 'DataView',
-      'Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array',
-      'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array', 'BigInt64Array',
-      'BigUint64Array', 'BigInt', 'Infinity', 'NaN', 'undefined', 'null',
-      // Rust standard library
-      'std', 'core', 'alloc', 'Vec', 'HashMap', 'HashSet', 'BTreeMap', 'BTreeSet',
-      'Option', 'Result', 'Box', 'Rc', 'Arc', 'Cell', 'RefCell', 'Mutex', 'RwLock',
-      'Duration', 'Instant', 'SystemTime', 'Path', 'PathBuf', 'OsStr', 'OsString',
-      'File', 'Read', 'Write', 'BufRead', 'BufReader', 'BufWriter',
-      'TcpStream', 'TcpListener', 'UdpSocket', 'Command', 'Child', 'Stdio',
-      'thread', 'sync', 'collections', 'io', 'env', 'fmt', 'str', 'slice', 'iter',
-      'ops', 'cmp', 'convert', 'default', 'mem', 'ptr', 'num', 'time', 'ffi',
-      'Cow', 'Deref', 'DerefMut', 'Drop', 'Clone', 'Copy', 'Debug', 'Display',
-      'Default', 'PartialEq', 'Eq', 'PartialOrd', 'Ord', 'Hash', 'Iterator',
-      'IntoIterator', 'FromIterator', 'Extend', 'From', 'Into', 'TryFrom', 'TryInto',
-      'AsRef', 'AsMut', 'Send', 'Sync', 'Sized', 'Unpin', 'VecDeque', 'LinkedList',
-      'BinaryHeap', 'Range', 'PhantomData', 'ManuallyDrop', 'MaybeUninit', 'NonNull',
-      'Ordering', 'Reverse', 'format', 'println', 'print', 'eprintln', 'eprint',
-      'dbg', 'todo', 'unimplemented', 'unreachable', 'assert', 'assert_eq', 'assert_ne',
-      'vec', 'format_args', 'write', 'writeln', 'DefaultHasher', 'RandomState',
-      'ErrorKind', 'Formatter', 'Arguments', 'Pin', 'Waker', 'Context', 'Poll',
-      'Future', 'CStr', 'CString', 'ipaddr', 'RateLimiter'
-    ]);
-    for (const builtin of [
-      'System', 'Console', 'Task', 'Thread', 'Timer', 'File', 'Directory',
-      'Path', 'Stream', 'MemoryStream', 'FileStream', 'String', 'Math',
-      'DateTime', 'TimeSpan', 'Guid', 'Uri', 'Regex', 'Enumerable',
-      'File.Exists', 'String.IsNullOrEmpty', 'String.IsNullOrWhiteSpace',
-      'Math.Abs', 'Math.Max', 'Math.Min'
-    ]) {
-      stdBuiltins.add(builtin);
-    }
 
     exitPoints.forEach(ep => {
       if (ep.type === 'database') {
@@ -5585,7 +5543,7 @@ export class AnalyzerOrchestrator {
       } else if (ep.type === 'api' || ep.type === 'sdk') {
         const sdkName = ep.target?.sdk || ep.name || 'External API';
 
-        if (stdBuiltins.has(sdkName) || !this.isMeaningfulExternalServiceName(sdkName)) {
+        if (isLanguageBuiltinName(sdkName) || isLanguageBuiltinExitPoint(ep) || !this.isMeaningfulExternalServiceName(sdkName)) {
           return;
         }
 
@@ -9380,6 +9338,7 @@ export class AnalyzerOrchestrator {
 
     const entityNodes = nodes.filter(n =>
       (!projectPath || this.isPrimaryProductNodeForProject(n, projectPath)) &&
+      !n.subcategories?.includes('abstract') &&
       (
         n.type === 'entity' ||
         n.type === 'model' ||
@@ -9637,7 +9596,8 @@ export class AnalyzerOrchestrator {
       invariants.push({
         id: `invariant_security_${this.slugForId(boundary.id)}`,
         name: boundary.name,
-        invariant_type: boundary.boundary_type === 'authorization' ? 'authorization' : 'auth-boundary',
+        invariant_type: boundary.boundary_type === 'authorization' ? 'authorization' :
+          boundary.boundary_type === 'tenant-isolation' ? 'tenant-scope' : 'auth-boundary',
         description: `${boundary.name} moves trust from ${boundary.trust_transition.from_trust_level} to ${boundary.trust_transition.to_trust_level}.`,
         scope: {
           node_ids: boundary.enforcement_points.map(point => point.node_id).filter(id => id !== 'entry_point_security'),
@@ -10113,6 +10073,11 @@ export class AnalyzerOrchestrator {
     const boundaries: CASSecurityBoundary[] = [];
 
     const securityNodes = nodes.filter(n => this.hasSecurityEnforcementSemantics(n));
+    const enforcementNameIndex = new Set<string>();
+    for (const node of securityNodes) {
+      enforcementNameIndex.add(node.name.toLowerCase());
+      for (const token of this.signalTokens(node.name)) enforcementNameIndex.add(token);
+    }
 
     const authVocabulary = [
       'auth', 'authentication', 'authenticate', 'authenticated', 'authenticator',
@@ -10136,11 +10101,39 @@ export class AnalyzerOrchestrator {
         confidence: 'enforced' as const
       }));
 
+      const unresolvedGuards = new Map<string, string>();
+      for (const ep of authenticatedEntryPoints) {
+        for (const guard of ep.security?.guards || []) {
+          const guardKey = guard.toLowerCase();
+          if (unresolvedGuards.has(guardKey)) continue;
+          const guardTokens = this.signalTokens(guard);
+          const resolved = enforcementNameIndex.has(guardKey) ||
+            guardTokens.some(token => enforcementNameIndex.has(token));
+          if (!resolved) unresolvedGuards.set(guardKey, ep.handler?.node_id || ep.source_node);
+        }
+      }
+      for (const [guardName, nodeId] of [...unresolvedGuards.entries()].slice(0, 25)) {
+        enforcementPoints.push({
+          node_id: nodeId,
+          mechanism: `Declared guard "${guardName}" (marker only; no resolved enforcement code)`,
+          confidence: 'assumed'
+        });
+      }
+
       if (enforcementPoints.length === 0 && authenticatedEntryPoints.length > 0) {
         enforcementPoints.push({
           node_id: 'entry_point_security',
           mechanism: 'Entry point authentication markers',
           confidence: 'assumed'
+        });
+      }
+
+      const unprotectedSensitive = this.unprotectedSensitiveEntryPoints(entryPoints);
+      for (const ep of unprotectedSensitive.slice(0, 25)) {
+        enforcementPoints.push({
+          node_id: ep.handler?.node_id || ep.source_node,
+          mechanism: `No authentication detected on sensitive operation ${ep.trigger?.method || ep.type} ${ep.trigger?.path || ep.name}`,
+          confidence: 'missing'
         });
       }
 
@@ -10153,7 +10146,10 @@ export class AnalyzerOrchestrator {
           from_trust_level: 'untrusted',
           to_trust_level: 'partially-trusted'
         },
-        sensitive_operations: authenticatedEntryPoints.map(ep => ep.source_node)
+        sensitive_operations: authenticatedEntryPoints.map(ep => ep.source_node),
+        bypass_risks: unprotectedSensitive.length > 0
+          ? [`${unprotectedSensitive.length} mutating entry point(s) have no detected authentication or guard.`]
+          : undefined
       });
     }
 
@@ -10172,6 +10168,25 @@ export class AnalyzerOrchestrator {
         enforcement_points: permissionNodes.map(g => ({
           node_id: g.id,
           mechanism: this.inferAuthzMechanism(g),
+          confidence: 'enforced' as const
+        })),
+        trust_transition: {
+          from_trust_level: 'partially-trusted',
+          to_trust_level: 'trusted'
+        },
+        sensitive_operations: []
+      });
+    }
+
+    const tenantNodes = nodes.filter(n => this.hasTenantIsolationSemantics(n));
+    if (tenantNodes.length > 0) {
+      boundaries.push({
+        id: 'boundary_tenant_isolation',
+        name: 'Tenant Isolation Boundary',
+        boundary_type: 'tenant-isolation',
+        enforcement_points: tenantNodes.slice(0, 50).map(n => ({
+          node_id: n.id,
+          mechanism: `Tenant/organization scoping: ${n.name}`,
           confidence: 'enforced' as const
         })),
         trust_transition: {
@@ -10217,7 +10232,80 @@ export class AnalyzerOrchestrator {
       }
     }
 
+    const rateLimitNodes = nodes.filter(n => this.hasRateLimitingSemantics(n));
+    const rateLimitedEntryPoints = entryPoints.filter(ep => ep.security?.rate_limit);
+    if (rateLimitNodes.length > 0 || rateLimitedEntryPoints.length > 0) {
+      const enforcementPoints: CASSecurityBoundary['enforcement_points'] = rateLimitNodes.slice(0, 50).map(n => ({
+        node_id: n.id,
+        mechanism: `Rate limiting: ${n.name}`,
+        confidence: 'enforced' as const
+      }));
+      if (enforcementPoints.length === 0) {
+        enforcementPoints.push({
+          node_id: rateLimitedEntryPoints[0].handler?.node_id || rateLimitedEntryPoints[0].source_node,
+          mechanism: 'Entry point rate-limit markers',
+          confidence: 'assumed'
+        });
+      }
+      boundaries.push({
+        id: 'boundary_rate_limiting',
+        name: 'Rate Limiting Boundary',
+        boundary_type: 'rate-limiting',
+        enforcement_points: enforcementPoints,
+        trust_transition: {
+          from_trust_level: 'untrusted',
+          to_trust_level: 'untrusted'
+        },
+        sensitive_operations: rateLimitedEntryPoints.map(ep => ep.source_node)
+      });
+    }
+
     return boundaries;
+  }
+
+  /**
+   * Sensitive operations are mutating HTTP entry points. They are unprotected
+   * when the analysis found no authentication marker and no guard on them.
+   * This is evidence-driven: repos where every route is guarded report zero.
+   */
+  private unprotectedSensitiveEntryPoints(entryPoints: CASEntryPoint[]): CASEntryPoint[] {
+    const mutating = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+    return entryPoints.filter(ep =>
+      ep.type === 'http' &&
+      mutating.has((ep.trigger?.method || '').toUpperCase()) &&
+      !ep.security?.authenticated &&
+      (ep.security?.guards || []).length === 0 &&
+      (ep.security?.roles || []).length === 0 &&
+      (ep.security?.permissions || []).length === 0
+    );
+  }
+
+  /**
+   * Tenant isolation evidence: scoping helpers, multitenancy library hooks,
+   * or guard/middleware/scope code whose name binds an organization-like
+   * owner to a scope. Domain models named Organization/Account alone are not
+   * evidence; the name must express scoping or tenancy.
+   */
+  private hasTenantIsolationSemantics(node: CASNode): boolean {
+    if (node.type === 'entity' || node.type === 'model') return false;
+    const tokens = this.signalTokens(`${node.name} ${node.qualified_name || ''}`);
+    if (tokens.includes('tenant') || tokens.includes('tenancy') || tokens.includes('multitenant') || tokens.includes('multitenancy')) {
+      return true;
+    }
+    const scopeTokens = ['scope', 'scoped', 'scoping'];
+    const ownerTokens = ['organization', 'org', 'account', 'company', 'workspace'];
+    return scopeTokens.some(t => tokens.includes(t)) && ownerTokens.some(t => tokens.includes(t));
+  }
+
+  private hasRateLimitingSemantics(node: CASNode): boolean {
+    if (node.type === 'entity' || node.type === 'model') return false;
+    const tokens = this.signalTokens(`${node.name} ${node.qualified_name || ''}`);
+    if ((tokens.includes('rate') && (tokens.includes('limit') || tokens.includes('limiter') || tokens.includes('limiting'))) ||
+        tokens.includes('ratelimit') || tokens.includes('throttle') || tokens.includes('throttling') || tokens.includes('throttled')) {
+      return true;
+    }
+    const nameLower = node.name.toLowerCase();
+    return nameLower.includes('rack::attack') || nameLower.includes('rack_attack');
   }
 
   /**
@@ -10286,7 +10374,11 @@ export class AnalyzerOrchestrator {
     return 'Authorization check';
   }
 
-  private buildSecuritySummary(boundaries: CASSecurityBoundary[], nodes: CASNode[]): CASSecuritySummary {
+  private buildSecuritySummary(
+    boundaries: CASSecurityBoundary[],
+    nodes: CASNode[],
+    entryPoints: CASEntryPoint[]
+  ): CASSecuritySummary {
     let enforced = 0;
     let assumed = 0;
     let missing = 0;
@@ -10299,9 +10391,12 @@ export class AnalyzerOrchestrator {
       }
     }
 
+    const unprotected = this.unprotectedSensitiveEntryPoints(entryPoints);
+    missing = Math.max(missing, unprotected.length);
+
     return {
       boundaries,
-      unprotected_sensitive_ops: [],
+      unprotected_sensitive_ops: unprotected.map(ep => ep.source_node),
       assumed_vs_enforced: { enforced, assumed, missing }
     };
   }
@@ -13584,16 +13679,46 @@ export class AnalyzerOrchestrator {
       });
     }
 
-    const penalty = riskAreas.reduce((total, area) => total + (
-      area.severity === 'critical' ? 30 :
-      area.severity === 'high' ? 18 :
-      area.severity === 'medium' ? 10 : 4
-    ), 0);
+    // Score calibration rationale:
+    // - Every penalty is proportional to the measured extent of the problem
+    //   (affected count over its relevant population), capped per category.
+    //   The previous flat per-category deduction (high=18, medium=10) meant
+    //   any production repo with the usual mix of signals (some duplication,
+    //   a few complexity hotspots, thin tests, no telemetry yet) bottomed out
+    //   at 26-36 and always read "critical", which carried no signal.
+    // - Category caps express how strongly each dimension predicts change
+    //   failure: untested critical paths (25) and incomplete implementations
+    //   (20) dominate; coherence and convention drift are bounded (5-12);
+    //   absent runtime telemetry is informational (3) because it describes
+    //   SDK rollout status, not code health.
+    // - Status bands: critical < 25 means structurally unsafe to modify;
+    //   at-risk < 50; watch < 75; healthy >= 75.
+    const extentRatio = (count: number, population: number): number =>
+      Math.min(1, count / Math.max(1, population));
+    const calibratedPenalties = new Map<string, number>([
+      ['pattern-balance', patternBalance?.status === 'mixed' ? 5 : 8],
+      ['paradigm-drift', conflictingParadigms.length > 2 ? 8 : 5],
+      ['duplication-signals', 12 * extentRatio(duplicateNodes.length, 20)],
+      ['complexity-hotspots',
+        (complexNodes.some(node => (node.metadata?.complexity?.cyclomatic || 0) >= 50) ? 12 : 8) *
+        extentRatio(complexNodes.length, 10)],
+      ['naming-drift', 6 * extentRatio(namingViolations, 20)],
+      ['dependency-injection-drift', 6 * extentRatio(diViolations, 20)],
+      ['module-boundary-drift', 6 * extentRatio(boundaryViolations, 20)],
+      ['implementation-gaps', 20 * (1 - Math.max(0, Math.min(1, implementationHealth.health_score)))],
+      ['untested-critical-paths',
+        25 * extentRatio(untestedCritical.length, Math.max(10, changeRiskSummary.high_risk_nodes.length))],
+      ['runtime-coverage-gaps', 3 * extentRatio(runtimeMissing.length, 20)],
+    ]);
+    const fallbackPenalty = (severity: CASSystemHealth['risk_areas'][number]['severity']): number =>
+      severity === 'critical' ? 12 : severity === 'high' ? 8 : severity === 'medium' ? 5 : 2;
+    const penalty = riskAreas.reduce((total, area) =>
+      total + (calibratedPenalties.get(area.id) ?? fallbackPenalty(area.severity)), 0);
     const score = Math.max(0, Math.min(100, Math.round(100 - penalty)));
     const status: CASSystemHealth['status'] =
-      score < 40 ? 'critical' :
-      score < 65 ? 'at-risk' :
-      score < 85 ? 'watch' : 'healthy';
+      score < 25 ? 'critical' :
+      score < 50 ? 'at-risk' :
+      score < 75 ? 'watch' : 'healthy';
     const coherenceStatus: CASSystemHealth['coherence']['status'] =
       conflictingParadigms.length > 3 || duplicateNodes.length > 6 ? 'fragmented' :
       conflictingParadigms.length > 0 || patternBalance?.status === 'mixed' ? 'drifting' :

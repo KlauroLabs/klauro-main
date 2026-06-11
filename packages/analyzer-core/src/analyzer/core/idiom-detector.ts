@@ -64,6 +64,11 @@ interface IdiomDraft {
   affected_scopes?: CASCodebaseIdiom['affected_scopes'];
   agent_guidance: CASCodebaseIdiom['agent_guidance'];
   deviations?: CASIdiomViolation[];
+  stats?: {
+    population: number;
+    matching: number;
+    derivation: string;
+  };
 }
 
 const EMPTY_CATEGORY_COUNTS: Record<CASIdiomCategory, number> = {
@@ -371,14 +376,22 @@ function detectFileOrganizationIdioms(input: IdiomDetectionInput, files: FileInv
 function detectModuleBoundaryIdioms(input: IdiomDetectionInput): IdiomDraft[] {
   const moduleNodes = input.nodes.filter(node => /module/i.test(node.type) || /Module$/.test(node.name));
   const containsEdges = input.edges.filter(edge => /contain|export|import|provide|depends/i.test(edge.type));
-  if (moduleNodes.length === 0 || containsEdges.length === 0) return [];
+  if (moduleNodes.length === 0 || containsEdges.length < 2) return [];
+  const connectedModuleIds = new Set([...containsEdges.map(edge => edge.source), ...containsEdges.map(edge => edge.target)]);
+  const connectedModules = moduleNodes.filter(node => connectedModuleIds.has(node.id));
+  if (connectedModules.length === 0) return [];
   const idiomId = 'module-boundary-explicit-modules';
   return [{
     category: 'module-boundary',
     name: 'Module boundaries are explicit graph objects',
-    description: 'Modules/packages participate in containment or dependency edges, so edits should preserve these boundaries.',
-    confidence: confidenceFromPrevalence(0.75, moduleNodes.length + containsEdges.length),
+    description: `${connectedModules.length} of ${moduleNodes.length} module nodes participate in ${containsEdges.length} containment/dependency edge(s); edits should preserve these boundaries.`,
+    confidence: confidenceFromPrevalence(connectedModules.length / moduleNodes.length, connectedModules.length),
     prevalence: Math.min(1, moduleNodes.length / Math.max(1, input.nodes.length)),
+    stats: {
+      population: moduleNodes.length,
+      matching: connectedModules.length,
+      derivation: `${connectedModules.length} of ${moduleNodes.length} module nodes appear in ${containsEdges.length} boundary edges.`,
+    },
     evidence: [
       ...moduleNodes.slice(0, 5).map(nodeEvidence('Module node defines a local boundary')),
       ...containsEdges.slice(0, 3).map(edge => edgeEvidence(edge, 'Boundary relationship found')),
@@ -402,17 +415,27 @@ function detectDependencyInjectionIdioms(input: IdiomDetectionInput): IdiomDraft
     /constructor\s*\([^)]*(private|protected|readonly|inject|@Inject)/i.test(node.source?.raw || '') ||
     /dependency-injection|provider/i.test(node.category || '')
   );
-  if (injectableNodes.length + constructorInjectionNodes.length < 3 && decoratorNames.filter(name => /injectable|inject|controller|module/.test(name)).length < 2) {
+  const diDecorators = decoratorNames.filter(name => /injectable|inject|controller|module|component|service|autowired|provide/.test(name));
+  if (injectableNodes.length + constructorInjectionNodes.length < 5 && diDecorators.length < 3) {
     return [];
   }
+  const allDiNodes = uniqueNodes([...injectableNodes, ...constructorInjectionNodes]);
   const examples = uniqueNodes([...constructorInjectionNodes, ...injectableNodes]).slice(0, 5);
+  const mechanism = diDecorators.length >= constructorInjectionNodes.length
+    ? `decorator-marked providers (${topCounted(diDecorators, 3).join(', ')})`
+    : 'constructor injection';
   const idiomId = 'dependency-injection-framework-providers';
   return [{
     category: 'dependency-injection',
-    name: 'Dependencies are wired through framework providers',
-    description: 'Services/controllers/providers rely on decorators or constructor injection rather than ad hoc instantiation.',
-    confidence: confidenceFromPrevalence(0.8, injectableNodes.length + constructorInjectionNodes.length + decoratorNames.length),
-    prevalence: Math.min(1, uniqueNodes([...injectableNodes, ...constructorInjectionNodes]).length / Math.max(1, input.nodes.length)),
+    name: `Dependencies are wired through ${mechanism}`,
+    description: `${allDiNodes.length} provider-style node(s) and ${diDecorators.length} DI decorator(s) show collaborators are injected via ${mechanism}, not ad hoc instantiation.`,
+    confidence: confidenceFromPrevalence(Math.min(1, (allDiNodes.length + diDecorators.length) / 20), allDiNodes.length + diDecorators.length),
+    prevalence: Math.min(1, allDiNodes.length / Math.max(1, input.nodes.length)),
+    stats: {
+      population: input.nodes.length,
+      matching: allDiNodes.length,
+      derivation: `${allDiNodes.length} provider-style nodes plus ${diDecorators.length} DI decorators; dominant mechanism: ${mechanism}.`,
+    },
     evidence: [
       ...examples.map(nodeEvidence('Node participates in dependency injection')),
       ...input.decorators.slice(0, 4).map(decorator => ({
@@ -441,15 +464,23 @@ function detectDataAccessIdioms(input: IdiomDetectionInput, files: FileInventory
   );
   const dataLibraries = input.libraries.filter(library => /prisma|typeorm|mikro|sequelize|mongoose|sqlalchemy|diesel|sqlx|entity framework|ef core/i.test(library.name));
   const exitPoints = input.exitPoints.filter(exitPoint => exitPoint.type === 'database');
-  if (dataNodes.length + dataLibraries.length + exitPoints.length === 0) return [];
+  if (dataNodes.length < 3 && dataLibraries.length === 0 && exitPoints.length < 3) return [];
   const schemaFiles = files.schema.filter(file => !isConfigPath(file) && !isMigrationPath(file) && !isTestPath(file));
+  const ormLabel = dataLibraries.length > 0
+    ? dataLibraries.map(library => library.name).slice(0, 2).join('/')
+    : 'repository/entity classes';
   const idiomId = 'data-access-through-repositories-or-orm';
   return [{
     category: 'data-access',
-    name: 'Data access uses repository/ORM boundaries',
-    description: 'Database behavior is represented by repositories, ORM models/entities, or database exit points.',
-    confidence: confidenceFromPrevalence(0.76, dataNodes.length + dataLibraries.length + exitPoints.length),
+    name: `Data access goes through ${ormLabel}`,
+    description: `${dataNodes.length} data-access node(s), ${exitPoints.length} database exit point(s), and ${dataLibraries.length} ORM library(ies) show persistence is mediated by ${ormLabel}.`,
+    confidence: confidenceFromPrevalence(Math.min(1, (dataNodes.length + exitPoints.length) / 20), dataNodes.length + dataLibraries.length + exitPoints.length),
     prevalence: Math.min(1, (dataNodes.length + exitPoints.length) / Math.max(1, input.nodes.length + input.exitPoints.length)),
+    stats: {
+      population: input.nodes.length + input.exitPoints.length,
+      matching: dataNodes.length + exitPoints.length,
+      derivation: `${dataNodes.length} data-access nodes, ${exitPoints.length} database exits, libraries: ${dataLibraries.map(library => library.name).join(', ') || 'none detected'}.`,
+    },
     evidence: [
       ...dataNodes.slice(0, 6).map(nodeEvidence('Data access node identified')),
       ...dataLibraries.slice(0, 3).map(library => ({ kind: 'analysis-fact' as const, claim: `Data library detected: ${library.name}.`, confidence: 0.78 })),
@@ -469,14 +500,29 @@ function detectErrorHandlingIdioms(input: IdiomDetectionInput): IdiomDraft[] {
   const exceptionNodes = input.nodes.filter(node =>
     /throw\s+new\s+\w*Exception|raise\s+HTTPException|Result<|anyhow::Result|thiserror|BadRequestException|NotFoundException|ForbiddenException/i.test(node.source?.raw || '')
   );
-  if (exceptionNodes.length < 2) return [];
+  if (exceptionNodes.length < 3) return [];
+  const styleCounts = new Map<string, number>();
+  for (const node of exceptionNodes) {
+    const raw = node.source?.raw || '';
+    const style = /Result<|anyhow::Result|thiserror/.test(raw) ? 'typed Result errors'
+      : /raise\s+HTTPException/.test(raw) ? 'HTTPException raises'
+      : /BadRequestException|NotFoundException|ForbiddenException/.test(raw) ? 'framework HTTP exceptions'
+      : 'domain exception throws';
+    styleCounts.set(style, (styleCounts.get(style) || 0) + 1);
+  }
+  const dominantStyle = [...styleCounts.entries()].sort((a, b) => b[1] - a[1])[0][0];
   const idiomId = 'error-handling-framework-specific-errors';
   return [{
     category: 'error-handling',
-    name: 'Errors use framework/domain-specific error types',
-    description: 'The codebase favors framework exceptions, typed Results, or domain errors over anonymous generic errors.',
-    confidence: confidenceFromPrevalence(0.78, exceptionNodes.length),
+    name: `Errors use ${dominantStyle}`,
+    description: `${exceptionNodes.length} node(s) raise typed errors; the dominant style is ${dominantStyle} (${styleCounts.get(dominantStyle)} of ${exceptionNodes.length}).`,
+    confidence: confidenceFromPrevalence(Math.min(1, exceptionNodes.length / 20), exceptionNodes.length),
     prevalence: Math.min(1, exceptionNodes.length / Math.max(1, input.nodes.length)),
+    stats: {
+      population: input.nodes.length,
+      matching: exceptionNodes.length,
+      derivation: `${exceptionNodes.length} typed-error nodes; dominant style ${dominantStyle}.`,
+    },
     evidence: exceptionNodes.slice(0, 8).map(nodeEvidence('Framework/domain error pattern found')),
     positive_examples: exceptionNodes.slice(0, 5).map((node, index) => nodeExample(idiomId, node, index, 'Uses the repo-local error-handling style.')),
     affected_scopes: { files: unique(exceptionNodes.map(node => node.source?.file).filter(Boolean) as string[]).slice(0, 25) },
@@ -493,14 +539,38 @@ function detectValidationIdioms(input: IdiomDetectionInput): IdiomDraft[] {
     /class-validator|zod|joi|pydantic|validate|validator|dto|schema/i.test([node.name, node.type, node.source?.file || '', node.source?.raw || ''].join(' ')) &&
     Boolean(node.source?.file && !isConfigPath(node.source.file) && !isMigrationPath(node.source.file) && !isTestPath(node.source.file))
   );
-  if (validationNodes.length < 2) return [];
+  if (validationNodes.length < 5) return [];
+  const mechanismCounts = new Map<string, number>();
+  for (const node of validationNodes) {
+    const haystack = [node.name, node.source?.file || '', node.source?.raw || ''].join(' ');
+    for (const [label, pattern] of [
+      ['class-validator', /class-validator/i],
+      ['zod', /\bzod\b/i],
+      ['joi', /\bjoi\b/i],
+      ['pydantic', /pydantic/i],
+      ['DTO classes', /dto/i],
+      ['schema objects', /schema/i],
+      ['validator classes', /validat/i],
+    ] as const) {
+      if (pattern.test(haystack)) {
+        mechanismCounts.set(label, (mechanismCounts.get(label) || 0) + 1);
+        break;
+      }
+    }
+  }
+  const dominantMechanism = [...mechanismCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || 'validator objects';
   const idiomId = 'validation-dtos-schemas-or-validators';
   return [{
     category: 'validation',
-    name: 'Inputs are validated through DTO/schema/validator objects',
-    description: 'Validation appears as DTOs, schemas, Pydantic/Zod/Joi/class-validator usage, or validator nodes.',
-    confidence: confidenceFromPrevalence(0.78, validationNodes.length),
+    name: `Inputs are validated through ${dominantMechanism}`,
+    description: `${validationNodes.length} validation node(s) found; the dominant mechanism is ${dominantMechanism} (${mechanismCounts.get(dominantMechanism) || validationNodes.length} of ${validationNodes.length}).`,
+    confidence: confidenceFromPrevalence(Math.min(1, validationNodes.length / 20), validationNodes.length),
     prevalence: Math.min(1, validationNodes.length / Math.max(1, input.nodes.length)),
+    stats: {
+      population: input.nodes.length,
+      matching: validationNodes.length,
+      derivation: `${validationNodes.length} validation nodes; dominant mechanism ${dominantMechanism}.`,
+    },
     evidence: validationNodes.slice(0, 8).map(nodeEvidence('Validation convention evidence')),
     positive_examples: validationNodes.slice(0, 5).map((node, index) => nodeExample(idiomId, node, index, 'Uses local validation structure.')),
     affected_scopes: { files: unique(validationNodes.map(node => node.source?.file).filter(Boolean) as string[]).slice(0, 25), file_globs: ['**/*{dto,schema,validator}*'] },
@@ -519,14 +589,21 @@ function detectAuthTenantIdioms(input: IdiomDetectionInput): IdiomDraft[] {
   const authNodes = input.nodes.filter(node =>
     /auth|tenant|organization|org|guard|permission|role|scope/i.test([node.name, node.type, node.source?.file || '', node.source?.raw || ''].join(' '))
   );
-  if (invariants.length + authNodes.length < 2) return [];
+  if (invariants.length === 0 && authNodes.length < 5) return [];
+  const invariantTypes = unique(invariants.map(invariant => invariant.invariant_type));
+  const scopeLabel = invariantTypes.length > 0 ? invariantTypes.join('/') : 'auth';
   const idiomId = 'auth-tenant-scope-preserved-through-boundaries';
   return [{
     category: 'auth-tenant-scope',
-    name: 'Auth and tenant scope are boundary-level concerns',
-    description: 'Auth, authorization, or tenant/org scope is represented by invariants, guards, middleware, or scoped query logic.',
-    confidence: confidenceFromPrevalence(0.86, invariants.length + authNodes.length),
+    name: `${scopeLabel} scope is enforced at boundaries`,
+    description: `${invariants.length} ${scopeLabel} invariant(s) and ${authNodes.length} auth/tenant node(s) show access scope is a boundary-level concern in this repo.`,
+    confidence: confidenceFromPrevalence(Math.min(1, (invariants.length * 4 + authNodes.length) / 20), invariants.length + authNodes.length),
     prevalence: Math.min(1, (invariants.length + authNodes.length) / Math.max(1, input.nodes.length + input.behavioralInvariants.length)),
+    stats: {
+      population: input.nodes.length + input.behavioralInvariants.length,
+      matching: invariants.length + authNodes.length,
+      derivation: `${invariants.length} invariant(s) of type ${scopeLabel}; ${authNodes.length} auth/tenant-related nodes.`,
+    },
     evidence: [
       ...invariants.slice(0, 5).map(invariant => ({
         kind: 'invariant' as const,
@@ -552,14 +629,19 @@ function detectLoggingIdioms(input: IdiomDetectionInput): IdiomDraft[] {
   const loggingNodes = input.nodes.filter(node =>
     /logger|logging|log\.|this\.logger|Logger\(/i.test([node.name, node.type, node.source?.raw || ''].join(' '))
   );
-  if (loggingNodes.length < 2) return [];
+  if (loggingNodes.length < 5) return [];
   const idiomId = 'logging-local-logger-abstraction';
   return [{
     category: 'logging',
     name: 'Logging goes through the local logger abstraction',
-    description: 'The codebase uses logger fields/classes/helpers instead of scattered console prints.',
-    confidence: confidenceFromPrevalence(0.74, loggingNodes.length),
+    description: `${loggingNodes.length} node(s) use logger fields/classes/helpers instead of scattered console prints.`,
+    confidence: confidenceFromPrevalence(Math.min(1, loggingNodes.length / 20), loggingNodes.length),
     prevalence: Math.min(1, loggingNodes.length / Math.max(1, input.nodes.length)),
+    stats: {
+      population: input.nodes.length,
+      matching: loggingNodes.length,
+      derivation: `${loggingNodes.length} logger-usage nodes detected.`,
+    },
     evidence: loggingNodes.slice(0, 8).map(nodeEvidence('Logger usage found')),
     positive_examples: loggingNodes.slice(0, 5).map((node, index) => nodeExample(idiomId, node, index, 'Uses local logger convention.')),
     affected_scopes: { files: unique(loggingNodes.map(node => node.source?.file).filter(Boolean) as string[]).slice(0, 25) },
@@ -586,9 +668,14 @@ function detectTestingIdioms(input: IdiomDetectionInput, files: FileInventory): 
   return [{
     category: 'testing',
     name: `Tests use ${dominantLabel}`,
-    description: 'Focused tests are discoverable through local test-file naming and placement conventions.',
+    description: `${testFiles.length} test file(s) found; ${Math.max(specFiles.length, pythonTests.length, colocated.length)} follow the dominant ${dominantLabel} convention.`,
     confidence: confidenceFromPrevalence(Math.max(0.62, prevalence), testFiles.length),
     prevalence,
+    stats: {
+      population: testFiles.length,
+      matching: Math.max(specFiles.length, pythonTests.length, colocated.length),
+      derivation: `${testFiles.length} test files; dominant convention ${dominantLabel}.`,
+    },
     evidence: testFiles.slice(0, 8).map(fileEvidence('Test file follows a local testing convention')),
     positive_examples: testFiles.slice(0, 5).map((file, index) => fileExample(idiomId, file, index, 'Represents local test placement/naming.')),
     affected_scopes: { file_globs: ['**/*.{spec,test}.*', '**/test_*.py', '**/*_test.py'], files: testFiles.slice(0, 25) },
@@ -604,13 +691,25 @@ function detectMigrationIdioms(input: IdiomDetectionInput, files: FileInventory)
   if (files.migrations.length === 0 && !input.behavioralInvariants.some(invariant => invariant.invariant_type === 'migration-contract')) {
     return [];
   }
+  const migrationDirCounts = countBy(files.migrations.map(file => {
+    const parts = normalizePath(file).split('/');
+    const migrationIndex = parts.findIndex(part => /migrations?$|^migrate$/i.test(part));
+    return migrationIndex >= 0 ? parts.slice(0, migrationIndex + 1).join('/') : parts.slice(0, -1).join('/');
+  }).filter(Boolean));
+  const dominantMigrationDir = [...migrationDirCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+  const migrationLocation = dominantMigrationDir ? `${dominantMigrationDir}/` : 'migration artifacts';
   const idiomId = 'migrations-schema-changes-use-migrations';
   return [{
     category: 'migrations',
-    name: 'Schema changes go through migrations',
-    description: 'Database/schema changes are expected to be paired with migration artifacts.',
+    name: `Schema changes go through ${migrationLocation}`,
+    description: `${files.migrations.length} migration file(s) under ${migrationLocation} show database/schema changes are paired with migration artifacts.`,
     confidence: files.migrations.length > 0 ? 0.86 : 0.72,
     prevalence: Math.min(1, files.migrations.length / Math.max(1, files.schema.length)),
+    stats: {
+      population: files.schema.length,
+      matching: files.migrations.length,
+      derivation: `${files.migrations.length} migration files; dominant location ${migrationLocation}.`,
+    },
     evidence: [
       ...files.migrations.slice(0, 8).map(fileEvidence('Migration file found')),
       ...input.behavioralInvariants
@@ -654,13 +753,19 @@ function detectAsyncStyleIdioms(input: IdiomDetectionInput): IdiomDraft[] {
 function detectConfigurationIdioms(input: IdiomDetectionInput, files: FileInventory): IdiomDraft[] {
   const envVars = input.configuration?.environment_variables || [];
   if (envVars.length === 0 && files.config.length < 2) return [];
+  const configSurface = files.config.slice(0, 3).map(file => normalizePath(file).split('/').pop()).filter(Boolean).join(', ');
   const idiomId = 'configuration-central-config-and-env';
   return [{
     category: 'configuration',
     name: 'Configuration is centralized in config files or environment declarations',
-    description: 'Runtime settings are represented by configuration files and/or explicit environment variable metadata.',
+    description: `${files.config.length} config file(s) (${configSurface || 'none named'}) and ${envVars.length} declared environment variable(s) carry runtime settings.`,
     confidence: envVars.length > 0 ? 0.84 : 0.68,
     prevalence: Math.min(1, (envVars.length + files.config.length) / Math.max(1, files.all.length)),
+    stats: {
+      population: files.all.length,
+      matching: files.config.length + envVars.length,
+      derivation: `${files.config.length} config files (${configSurface || 'unnamed'}); ${envVars.length} environment variables.`,
+    },
     evidence: [
       ...files.config.slice(0, 6).map(fileEvidence('Config file found')),
       ...envVars.slice(0, 4).map(env => ({ kind: 'analysis-fact' as const, claim: `Environment variable declared: ${env.name}.`, confidence: env.required ? 0.82 : 0.68 })),
@@ -779,6 +884,11 @@ function toIdiom(draft: IdiomDraft, index: number): CASCodebaseIdiom {
   const id = `${slug(draft.category)}-${slug(draft.name)}` || `idiom-${index + 1}`;
   const examples = draft.positive_examples.map(example => ({ ...example, idiom_id: id }));
   const deviations = draft.deviations?.map(item => ({ ...item, idiom_id: id })) || [];
+  const evidence = draft.evidence.slice(0, 12).map(item => ({ ...item, confidence: roundRatio(item.confidence) }));
+  const evidenceFiles = unique(draft.evidence.map(item => item.file || '').filter(Boolean)).length;
+  const evidenceNodes = draft.evidence.filter(item => item.kind === 'node').length;
+  const matching = draft.stats?.matching ?? draft.evidence.length;
+  const population = draft.stats?.population ?? matching;
   return {
     id,
     category: draft.category,
@@ -786,11 +896,19 @@ function toIdiom(draft: IdiomDraft, index: number): CASCodebaseIdiom {
     description: draft.description,
     confidence: roundRatio(draft.confidence),
     prevalence: roundRatio(draft.prevalence),
-    evidence: draft.evidence.slice(0, 12).map(evidence => ({ ...evidence, confidence: roundRatio(evidence.confidence) })),
+    evidence,
     positive_examples: examples,
     affected_scopes: draft.affected_scopes || {},
     agent_guidance: draft.agent_guidance,
     deviations: deviations.length > 0 ? deviations : undefined,
+    provenance: {
+      evidence_files: evidenceFiles,
+      evidence_nodes: evidenceNodes,
+      population,
+      matching,
+      derivation: draft.stats?.derivation
+        ?? `Derived from ${matching} matching item(s) across ${evidenceFiles} evidence file(s).`,
+    },
   };
 }
 
@@ -961,6 +1079,13 @@ function countBy(values: string[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const value of values) counts.set(value, (counts.get(value) || 0) + 1);
   return counts;
+}
+
+function topCounted(values: string[], limit: number): string[] {
+  return [...countBy(values).entries()]
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, limit)
+    .map(([value]) => value);
 }
 
 function dominantNamingStyle(names: string[]): { style: 'snake_case' | 'camelCase' | 'PascalCase'; label: string; prevalence: number } | undefined {

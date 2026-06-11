@@ -233,3 +233,50 @@ describe('buildDataLineage', () => {
     })).toEqual([]);
   });
 });
+
+describe('buildDataLineage language-builtin exit filtering', () => {
+  const arrayFilterExit: CASExitPoint = {
+    id: 'exit_array_filter',
+    source_node: 'n_payments_service_create',
+    type: 'sdk',
+    name: 'External call: array_filter',
+  } as CASExitPoint;
+  const issetExit: CASExitPoint = {
+    id: 'exit_isset',
+    source_node: 'n_payments_service_create',
+    type: 'sdk',
+    name: 'External call: isset',
+  } as CASExitPoint;
+  const ioExit: CASExitPoint = {
+    id: 'exit_io',
+    source_node: 'n_payments_service_create',
+    type: 'sdk',
+    name: 'io',
+    target: { sdk: 'io' },
+  } as CASExitPoint;
+  const mathAbsExit: CASExitPoint = {
+    id: 'exit_math_abs',
+    source_node: 'n_payments_service_create',
+    type: 'sdk',
+    name: 'External call: Math::abs',
+  } as CASExitPoint;
+
+  const lineage = buildDataLineage({
+    nodes,
+    edges,
+    dataEntities: [paymentEntity],
+    exitPoints: [stripeExit, arrayFilterExit, issetExit, ioExit, mathAbsExit],
+    entryPoints,
+    userJourneys: journeys,
+  });
+  const payment = lineage.find(item => item.entity_id === 'entity_payment')!;
+
+  it('excludes stdlib/builtin calls from external recipients', () => {
+    const services = payment.external_recipients.map(recipient => recipient.service);
+    expect(services).toEqual(['stripe']);
+  });
+
+  it('keeps external transfer exposure from genuine external services only', () => {
+    expect(payment.exposure.external_transfer).toBe(true);
+  });
+});

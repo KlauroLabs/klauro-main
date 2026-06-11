@@ -10,6 +10,7 @@ import {
   CASEntityLineageExternalRecipient,
   CASEntityLineageBoundary
 } from '../../types/cas.types';
+import { isLanguageBuiltinExitPoint } from './language-builtins';
 
 export interface DataLineageInput {
   nodes: CASNode[];
@@ -94,7 +95,7 @@ function buildLineageIndex(input: DataLineageInput): LineageIndex {
   const externalExitsBySource = new Map<string, CASExitPoint[]>();
   const databaseExitsByResourceKey = new Map<string, CASExitPoint[]>();
   for (const exitPoint of input.exitPoints) {
-    if (EXTERNAL_EXIT_TYPES.has(exitPoint.type) && exitPoint.source_node) {
+    if (EXTERNAL_EXIT_TYPES.has(exitPoint.type) && exitPoint.source_node && !isLanguageBuiltinExitPoint(exitPoint)) {
       const list = externalExitsBySource.get(exitPoint.source_node) || [];
       list.push(exitPoint);
       externalExitsBySource.set(exitPoint.source_node, list);
@@ -207,6 +208,7 @@ function buildEntityLineage(entity: CASDataEntity, index: LineageIndex): CASEnti
   const recipients = new Map<string, CASEntityLineageExternalRecipient>();
   const recordRecipient = (exitPoint: CASExitPoint) => {
     if (!EXTERNAL_EXIT_TYPES.has(exitPoint.type) || recipients.has(exitPoint.id)) return;
+    if (isLanguageBuiltinExitPoint(exitPoint)) return;
     recipients.set(exitPoint.id, {
       exit_point_id: exitPoint.id,
       service: exitPoint.target?.service_id || exitPoint.target?.sdk || exitPoint.name,

@@ -4,6 +4,7 @@ import {
   CASDocumentation, CASComment, CASTodo, CASImplementationStatus, FileAnalysisResult
 } from '../../types/cas.types';
 import { AnalyzerError } from '../core/errors';
+import { isPhpPureBuiltinFunction } from '../core/language-builtins';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
 import { TreeSitterParser } from '../core/tree-sitter-parser';
@@ -2873,20 +2874,26 @@ export class PHPAnalyzer extends BaseAnalyzer {
   }
 
   private isExternalLibraryCall(classOrFunc: string, functionName: string, currentNamespace: string): boolean {
-    const phpFunctions = [
-      'echo', 'print', 'die', 'exit', 'isset', 'empty', 'include', 'require',
-      'include_once', 'require_once', 'array_map', 'array_filter', 'array_reduce',
-      'json_encode', 'json_decode', 'file_get_contents', 'file_put_contents',
-      'curl_init', 'curl_exec', 'mysqli_connect', 'PDO'
+    if (isPhpPureBuiltinFunction(functionName) || isPhpPureBuiltinFunction(classOrFunc)) {
+      return false;
+    }
+
+    const boundaryCrossingBuiltins = [
+      'file_get_contents', 'file_put_contents', 'fopen', 'fwrite', 'fread',
+      'curl_init', 'curl_exec', 'curl_setopt', 'curl_close', 'fsockopen',
+      'stream_socket_client', 'mail', 'exec', 'shell_exec', 'proc_open',
+      'passthru', 'system', 'mysqli_connect', 'mysqli_query', 'pg_connect',
+      'pg_query', 'socket_create', 'socket_connect', 'ftp_connect',
+      'ldap_connect', 'PDO'
     ];
 
     const frameworkClasses = [
       'DB', 'Cache', 'Session', 'Request', 'Response', 'View', 'Redirect',
       'Auth', 'Hash', 'Validator', 'Mail', 'Queue', 'Event', 'Log',
-      'Eloquent', 'Model', 'Controller', 'Middleware'
+      'Eloquent', 'Model', 'Controller', 'Middleware', 'PDO', 'mysqli', 'Redis', 'Memcached'
     ];
 
-    return phpFunctions.includes(functionName) ||
+    return boundaryCrossingBuiltins.includes(functionName) ||
            frameworkClasses.includes(classOrFunc) ||
            classOrFunc.startsWith('\\') ||
            (classOrFunc.includes('\\') && !classOrFunc.startsWith(currentNamespace));

@@ -2427,3 +2427,218 @@ describe('capability noise floor and terminal capability labels', () => {
     expect(names).toContain('Stock Management');
   });
 });
+
+describe('evidence-driven security boundaries and summary', () => {
+  const node = (partial: Partial<CASNode>): CASNode => ({
+    id: partial.id || partial.name || 'node',
+    name: partial.name || 'Node',
+    type: partial.type || 'class',
+    source: partial.source || { file: `src/${partial.name || 'node'}.ts`, line: 1 },
+    metadata: partial.metadata || {},
+    subcategories: partial.subcategories,
+  } as CASNode);
+
+  const httpEntry = (partial: any) => ({
+    id: partial.id,
+    source_node: partial.source_node || partial.id,
+    type: 'http',
+    name: partial.name || `${partial.method} ${partial.path}`,
+    trigger: { method: partial.method, path: partial.path },
+    security: partial.security,
+    handler: partial.handler,
+  });
+
+  it('emits a tenant-isolation boundary only when tenant scoping evidence exists', () => {
+    const tenantNodes = [
+      node({ id: 'tenant-scope', name: 'set_current_tenant', type: 'method' }),
+      node({ id: 'org-scope', name: 'organization_scope', type: 'method' }),
+    ];
+    const withTenant = orch.buildSecurityBoundaries(tenantNodes, []);
+    expect(withTenant.map((b: any) => b.boundary_type)).toContain('tenant-isolation');
+
+    const withoutTenant = orch.buildSecurityBoundaries([
+      node({ id: 'org-model', name: 'Organization', type: 'model' }),
+    ], []);
+    expect(withoutTenant.map((b: any) => b.boundary_type)).not.toContain('tenant-isolation');
+  });
+
+  it('does not treat Organization domain models as tenant isolation evidence', () => {
+    const boundaries = orch.buildSecurityBoundaries([
+      node({ id: 'org', name: 'Organization', type: 'entity' }),
+      node({ id: 'account', name: 'Account', type: 'model' }),
+    ], []);
+    expect(boundaries.map((b: any) => b.boundary_type)).not.toContain('tenant-isolation');
+  });
+
+  it('emits a rate-limiting boundary from throttle middleware evidence', () => {
+    const boundaries = orch.buildSecurityBoundaries([
+      node({ id: 'throttle', name: 'RequestThrottleMiddleware', type: 'middleware' }),
+    ], []);
+    const rateBoundary = boundaries.find((b: any) => b.boundary_type === 'rate-limiting');
+    expect(rateBoundary).toBeDefined();
+    expect(rateBoundary.enforcement_points[0].confidence).toBe('enforced');
+  });
+
+  it('marks unresolved entry-point guards as assumed enforcement', () => {
+    const nodes = [node({ id: 'auth-guard', name: 'JwtAuthGuard', type: 'guard' })];
+    const entryPoints = [
+      httpEntry({
+        id: 'ep1', method: 'POST', path: '/orders',
+        security: { authenticated: true, guards: ['require_mystery_role'] },
+      }),
+    ];
+    const boundaries = orch.buildSecurityBoundaries(nodes, entryPoints);
+    const auth = boundaries.find((b: any) => b.boundary_type === 'authentication');
+    const confidences = auth.enforcement_points.map((p: any) => p.confidence);
+    expect(confidences).toContain('enforced');
+    expect(confidences).toContain('assumed');
+  });
+
+  it('does not mark guards as assumed when they resolve to enforcement nodes', () => {
+    const nodes = [node({ id: 'auth-guard', name: 'JwtAuthGuard', type: 'guard' })];
+    const entryPoints = [
+      httpEntry({
+        id: 'ep1', method: 'POST', path: '/orders',
+        security: { authenticated: true, guards: ['JwtAuthGuard'] },
+      }),
+    ];
+    const boundaries = orch.buildSecurityBoundaries(nodes, entryPoints);
+    const auth = boundaries.find((b: any) => b.boundary_type === 'authentication');
+    expect(auth.enforcement_points.every((p: any) => p.confidence === 'enforced')).toBe(true);
+  });
+
+  it('reports unguarded mutating entry points as missing enforcement and unprotected sensitive ops', () => {
+    const nodes = [node({ id: 'auth-guard', name: 'JwtAuthGuard', type: 'guard' })];
+    const entryPoints = [
+      httpEntry({ id: 'ep-protected', method: 'POST', path: '/orders', security: { authenticated: true } }),
+      httpEntry({ id: 'ep-open', source_node: 'open-handler', method: 'DELETE', path: '/admin/users/{id}' }),
+      httpEntry({ id: 'ep-read', source_node: 'read-handler', method: 'GET', path: '/orders' }),
+    ];
+    const boundaries = orch.buildSecurityBoundaries(nodes, entryPoints);
+    const auth = boundaries.find((b: any) => b.boundary_type === 'authentication');
+    expect(auth.enforcement_points.some((p: any) => p.confidence === 'missing')).toBe(true);
+
+    const summary = orch.buildSecuritySummary(boundaries, nodes, entryPoints);
+    expect(summary.unprotected_sensitive_ops).toEqual(['open-handler']);
+    expect(summary.assumed_vs_enforced.missing).toBeGreaterThanOrEqual(1);
+    expect(summary.assumed_vs_enforced.enforced).toBeGreaterThanOrEqual(1);
+  });
+
+  it('reports zero unprotected sensitive ops when every mutating entry is guarded', () => {
+    const nodes = [node({ id: 'auth-guard', name: 'JwtAuthGuard', type: 'guard' })];
+    const entryPoints = [
+      httpEntry({ id: 'ep1', method: 'POST', path: '/orders', security: { authenticated: true } }),
+      httpEntry({ id: 'ep2', method: 'GET', path: '/orders' }),
+    ];
+    const boundaries = orch.buildSecurityBoundaries(nodes, entryPoints);
+    const summary = orch.buildSecuritySummary(boundaries, nodes, entryPoints);
+    expect(summary.unprotected_sensitive_ops).toEqual([]);
+    expect(summary.assumed_vs_enforced.missing).toBe(0);
+  });
+});
+
+describe('calibrated system health scoring', () => {
+  const node = (partial: Partial<CASNode>): CASNode => ({
+    id: partial.id || partial.name || 'node',
+    name: partial.name || 'Node',
+    type: partial.type || 'class',
+    source: partial.source || { file: `src/${partial.name || 'node'}.ts`, line: 1 },
+    metadata: partial.metadata || {},
+  } as CASNode);
+
+  const emptyArchitecture = { architectural_patterns: [], pattern_balance: undefined } as any;
+  const healthyImplementation = {
+    complete_implementations: 100, partial_implementations: 0, stubs: 0,
+    not_implemented: 0, deprecated: 0, experimental: 0, health_score: 1, risk_areas: [],
+  } as any;
+  const emptyIdioms = { idioms: [], examples: [], violations: [], summary: {} } as any;
+  const emptyRuntime = { instrumentation: { missing_runtime_coverage: [] } } as any;
+
+  const buildHealth = (overrides: any = {}) => orch.buildSystemHealth(
+    overrides.architecture || emptyArchitecture,
+    overrides.implementation || healthyImplementation,
+    overrides.changeRisk || { high_risk_nodes: [], untested_critical_paths: [], recent_hotspots: [] },
+    overrides.idioms || emptyIdioms,
+    overrides.nodes || [],
+    overrides.callChains || [],
+    overrides.runtime || emptyRuntime
+  );
+
+  it('scores a clean repo healthy', () => {
+    const health = buildHealth();
+    expect(health.score).toBe(100);
+    expect(health.status).toBe('healthy');
+  });
+
+  it('keeps a production repo with small bounded risks out of critical', () => {
+    const nodes = Array.from({ length: 500 }, (_, i) => node({ id: `n${i}`, name: `Node${i}` }));
+    const complex = node({ id: 'hot', name: 'HotSpot', metadata: { complexity: { cyclomatic: 25 } } as any });
+    const health = buildHealth({
+      nodes: [...nodes, complex],
+      changeRisk: {
+        high_risk_nodes: Array.from({ length: 40 }, (_, i) => `risk${i}`),
+        untested_critical_paths: ['risk0', 'risk1', 'risk2'],
+        recent_hotspots: [],
+      },
+      runtime: { instrumentation: { missing_runtime_coverage: ['ep1', 'ep2', 'ep3'] } },
+    });
+    expect(health.status).not.toBe('critical');
+    expect(health.score).toBeGreaterThanOrEqual(50);
+  });
+
+  it('penalizes extensive untested critical paths more than sparse ones', () => {
+    const sparse = buildHealth({
+      changeRisk: {
+        high_risk_nodes: Array.from({ length: 100 }, (_, i) => `r${i}`),
+        untested_critical_paths: ['r0', 'r1'],
+        recent_hotspots: [],
+      },
+    });
+    const extensive = buildHealth({
+      changeRisk: {
+        high_risk_nodes: Array.from({ length: 100 }, (_, i) => `r${i}`),
+        untested_critical_paths: Array.from({ length: 100 }, (_, i) => `r${i}`),
+        recent_hotspots: [],
+      },
+    });
+    expect(extensive.score).toBeLessThan(sparse.score);
+  });
+
+  it('weighs incomplete implementation by its measured ratio', () => {
+    const partial = buildHealth({
+      implementation: {
+        ...{ complete_implementations: 50, partial_implementations: 50, stubs: 0, not_implemented: 0, deprecated: 0, experimental: 0 },
+        health_score: 0.5,
+        risk_areas: [{ node_id: 'x', node_name: 'X', risk_type: 'incomplete', risk_level: 'high', recommendation: 'finish' }],
+      },
+    });
+    const nearComplete = buildHealth({
+      implementation: {
+        ...{ complete_implementations: 95, partial_implementations: 5, stubs: 0, not_implemented: 0, deprecated: 0, experimental: 0 },
+        health_score: 0.95,
+        risk_areas: [{ node_id: 'x', node_name: 'X', risk_type: 'incomplete', risk_level: 'high', recommendation: 'finish' }],
+      },
+    });
+    expect(partial.score).toBeLessThan(nearComplete.score);
+  });
+
+  it('treats missing runtime telemetry as informational, not health-defining', () => {
+    const health = buildHealth({
+      runtime: { instrumentation: { missing_runtime_coverage: Array.from({ length: 100 }, (_, i) => `ep${i}`) } },
+    });
+    expect(health.score).toBeGreaterThanOrEqual(95);
+  });
+});
+
+describe('language builtin exit-point exclusion from external services', () => {
+  it('drops PHP builtin External call exits from external services', () => {
+    const services = orch.buildExternalServices([], [
+      exitPoint({ id: 'arr-filter', type: 'sdk', name: 'External call: array_filter' }),
+      exitPoint({ id: 'arr-map', type: 'sdk', name: 'External call: array_map' }),
+      exitPoint({ id: 'isset', type: 'sdk', name: 'External call: isset' }),
+      exitPoint({ id: 'io', type: 'sdk', name: 'io', target: { sdk: 'io' } }),
+      exitPoint({ id: 'stripe', type: 'sdk', name: 'Stripe', target: { sdk: 'Stripe' } }),
+    ], []);
+    expect(services.map((service: any) => service.name)).toEqual(['Stripe']);
+  });
+});

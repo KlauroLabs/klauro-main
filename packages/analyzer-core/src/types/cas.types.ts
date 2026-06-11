@@ -542,6 +542,13 @@ export interface CASCodebaseIdiom {
     validation: string[];
   };
   deviations?: CASIdiomViolation[];
+  provenance?: {
+    evidence_files: number;
+    evidence_nodes: number;
+    population: number;
+    matching: number;
+    derivation: string;
+  };
 }
 
 export interface CASIdiomSummary {
@@ -2440,7 +2447,7 @@ export interface CASSecurityBoundary {
   id: string;
   name: string;
   boundary_type: 'authentication' | 'authorization' | 'input-validation' |
-                 'output-encoding' | 'rate-limiting' | 'encryption';
+                 'output-encoding' | 'rate-limiting' | 'encryption' | 'tenant-isolation';
 
   enforcement_points: Array<{
     node_id: string;

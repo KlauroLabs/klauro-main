@@ -34,3 +34,25 @@ describe('PHP analyzer classification', () => {
     expect(constants.map((item: any) => item.name)).toEqual(['TOP_LEVEL_CONST']);
   });
 });
+
+describe('PHP external call classification', () => {
+  const analyzer = new PHPAnalyzer() as any;
+
+  it('does not classify pure language builtins as external library calls', () => {
+    for (const builtin of ['array_filter', 'array_map', 'isset', 'empty', 'json_encode', 'json_decode', 'str_replace', 'count', 'implode', 'usort', 'preg_match', 'sprintf']) {
+      expect(analyzer.isExternalLibraryCall(builtin, builtin, 'App\\Service')).toBe(false);
+    }
+  });
+
+  it('keeps boundary-crossing builtins as external calls', () => {
+    for (const builtin of ['curl_exec', 'file_get_contents', 'mysqli_connect', 'mail', 'shell_exec']) {
+      expect(analyzer.isExternalLibraryCall(builtin, builtin, 'App\\Service')).toBe(true);
+    }
+  });
+
+  it('keeps framework facade and namespaced calls as external calls', () => {
+    expect(analyzer.isExternalLibraryCall('DB', 'table', 'App\\Service')).toBe(true);
+    expect(analyzer.isExternalLibraryCall('PDO', 'query', 'App\\Service')).toBe(true);
+    expect(analyzer.isExternalLibraryCall('\\Stripe\\Charge', 'create', 'App\\Service')).toBe(true);
+  });
+});
