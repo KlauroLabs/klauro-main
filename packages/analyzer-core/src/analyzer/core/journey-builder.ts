@@ -136,8 +136,11 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
 
   const sortedEntryPoints = [...input.entryPoints].sort((a, b) => a.id.localeCompare(b.id));
 
+  const seenEntryPointIds = new Set<string>();
   for (const entryPoint of sortedEntryPoints) {
     if (SKIPPED_ENTRY_TYPES.has(entryPoint.type)) continue;
+    if (seenEntryPointIds.has(entryPoint.id)) continue;
+    seenEntryPointIds.add(entryPoint.id);
 
     const chains = dedupeChains([
       ...(chainsByEntryPointId.get(entryPoint.id) || []),
@@ -893,6 +896,16 @@ function journeyDiscriminator(entryPoint: CASEntryPoint): string {
   const method = entryPoint.trigger?.method?.toUpperCase();
   const path = entryPoint.trigger?.path;
   if (method && path) return `${method} ${path}`;
+  if (entryPoint.type === 'cli') {
+    const metadata = entryPoint.metadata || {};
+    const parts = [
+      cliMetadataString(metadata.binary) || cliMetadataString(metadata.crate),
+      cliMetadataString(metadata.subcommand) || cliMetadataString(metadata.command)
+    ].filter(Boolean);
+    if (parts.length > 0) return parts.join(' ');
+    const derived = cliProgramFromFilePath(entryPoint);
+    if (derived) return derived;
+  }
   const handler = entryPoint.metadata?.handler
     || entryPoint.metadata?.handler_method
     || entryPoint.metadata?.controller
@@ -904,7 +917,8 @@ function journeyDiscriminator(entryPoint: CASEntryPoint): string {
 function buildJourneyName(entryPoint: CASEntryPoint, effects: TerminalEffects): string {
   const action = describeEntryAction(entryPoint, effects);
   const outcome = describeTerminalOutcome(effects);
-  return outcome ? `${action} -> ${outcome}` : action;
+  if (!outcome || outcome === 'main') return action;
+  return `${action} -> ${outcome}`;
 }
 
 function describeEntryAction(entryPoint: CASEntryPoint, effects: TerminalEffects): string {
@@ -931,7 +945,7 @@ function describeEntryAction(entryPoint: CASEntryPoint, effects: TerminalEffects
       default: return entryPoint.name;
     }
   }
-  if (entryPoint.type === 'cli') return `Run ${entryPoint.trigger?.pattern || entryPoint.name}`;
+  if (entryPoint.type === 'cli') return describeCliEntryAction(entryPoint);
   if (entryPoint.type === 'schedule') return `Scheduled ${humanizeLabel(entryPoint.name)}`;
   if (entryPoint.type === 'event' || entryPoint.type === 'message') {
     const subject = entryPoint.trigger?.event
@@ -946,6 +960,83 @@ function describeEntryAction(entryPoint: CASEntryPoint, effects: TerminalEffects
     return `Visit ${entryPoint.trigger?.path || entryPoint.trigger?.pattern || humanizeLabel(entryPoint.name)}`;
   }
   return humanizeLabel(entryPoint.name);
+}
+
+const GENERIC_CLI_COMMAND_LABELS = new Set([
+  '', 'cli', 'args', 'arguments', 'command', 'commands', 'subcommand', 'subcommands',
+  'opts', 'options', 'opt', 'app', 'application', 'main', 'parser', 'config'
+]);
+const CLI_COMMAND_TYPE_SUFFIXES = /(clap|cli|args|arguments|options|opts|command|commands|parser)$/i;
+const FILE_PATH_LIKE = /[\\/]|\.(rs|go|py|ts|js|cs|php|java|rb)$/i;
+
+function describeCliEntryAction(entryPoint: CASEntryPoint): string {
+  const metadata = entryPoint.metadata || {};
+  const crate = cliMetadataString(metadata.crate);
+  const program = cliMetadataString(metadata.binary) || crate;
+
+  if (metadata.build_script) {
+    const target = program || cliProgramFromFilePath(entryPoint)?.replace(/ build script$/, '');
+    return target ? `Build ${target}` : 'Run build script';
+  }
+
+  const subcommand = cliMetadataString(metadata.subcommand);
+  if (subcommand) {
+    const action = humanizeLabel(subcommand).toLowerCase();
+    if (!program) return `Run ${action} command`;
+    const programLabel = humanizeLabel(program).toLowerCase();
+    if (action === programLabel || action.startsWith(`${programLabel} `)) return capitalizeLabel(action);
+    return `${capitalizeLabel(program)} ${action}`;
+  }
+
+  const command = cliMetadataString(metadata.command);
+  if (command) {
+    const label = humanizeLabel(command.replace(CLI_COMMAND_TYPE_SUFFIXES, '')).toLowerCase();
+    if (!GENERIC_CLI_COMMAND_LABELS.has(label)) return `Run ${label}`;
+    if (program) return `Run ${program}`;
+  }
+
+  const pattern = entryPoint.trigger?.pattern;
+  if (pattern && !FILE_PATH_LIKE.test(pattern)) return `Run ${pattern}`;
+
+  if (program) return `Run ${program}`;
+
+  const name = entryPoint.name;
+  if (name && name.toLowerCase() !== 'main' && !FILE_PATH_LIKE.test(name)) return `Run ${name}`;
+
+  const derived = cliProgramFromFilePath(entryPoint);
+  if (derived) return `Run ${derived}`;
+  return name && name.toLowerCase() !== 'main' ? `Run ${name}` : 'Run program';
+}
+
+function cliMetadataString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+const CLI_STRUCTURE_DIRS = new Set(['src', 'bin', 'examples', 'crates', 'apps', 'cmd', 'packages', 'libs']);
+
+function cliProgramFromFilePath(entryPoint: CASEntryPoint): string | undefined {
+  const candidates = [
+    entryPoint.handler?.file,
+    entryPoint.trigger?.path,
+    entryPoint.trigger?.pattern,
+    entryPoint.source_node,
+    entryPoint.id
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') continue;
+    const match = candidate.match(/([\w@.~-]+(?:\/[\w@.~-]+)*\.(?:rs|go|py|ts|js|cs))/);
+    if (!match) continue;
+    const segments = match[1].split('/');
+    const stem = segments[segments.length - 1].replace(/\.\w+$/, '');
+    if (!/^(main|build|index|mod|lib|program)$/i.test(stem)) return stem;
+    for (let i = segments.length - 2; i >= 0; i--) {
+      const segment = segments[i];
+      if (!CLI_STRUCTURE_DIRS.has(segment.toLowerCase())) {
+        return /^build$/i.test(stem) ? `${segment} build script` : segment;
+      }
+    }
+  }
+  return undefined;
 }
 
 const SOURCE_FILE_EXTENSION = /\.(tsx|jsx|ts|js|mjs|cjs|vue|svelte|html?)$/i;

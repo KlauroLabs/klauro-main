@@ -935,3 +935,192 @@ describe('buildUserJourneys page-component entries', () => {
     expect(journeys[0].entry.path_or_trigger).toBe('/profit-machine');
   });
 });
+
+describe('buildUserJourneys CLI entry naming', () => {
+  const cliEntry = (
+    id: string,
+    sourceNode: string,
+    name: string,
+    metadata?: Record<string, unknown>,
+    trigger?: { pattern?: string }
+  ): CASEntryPoint => ({
+    id,
+    source_node: sourceNode,
+    source_analyzer: 'rust',
+    type: 'cli',
+    name,
+    trigger,
+    metadata,
+  } as CASEntryPoint);
+
+  const callGraph = () => ({
+    nodes: [
+      node('n_main', 'main', 'function'),
+      node('n_runner', 'run_loop', 'function'),
+    ],
+    edges: [edge('e1', 'n_main', 'n_runner', 'calls')],
+    exitPoints: [],
+    callChains: [],
+    dataEntities: [],
+  });
+
+  it('names a bare main entry after its binary instead of main', () => {
+    const input = {
+      ...callGraph(),
+      entryPoints: [cliEntry('entry:main:bin/coordinator/src/main.rs', 'n_main', 'main', { crate: 'coordinator', binary: 'coordinator' })],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys).toHaveLength(1);
+    expect(journeys[0].name).toBe('Run coordinator -> run_loop');
+    expect(journeys[0].name).not.toMatch(/\bmain\b/);
+  });
+
+  it('names a build script entry as a build of its crate', () => {
+    const input = {
+      ...callGraph(),
+      entryPoints: [cliEntry('entry:main:bin/agent/build.rs', 'n_main', 'main', { crate: 'agent', build_script: true })],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys[0].name).toBe('Build agent -> run_loop');
+  });
+
+  it('names a clap subcommand variant with binary plus subcommand intent', () => {
+    const input = {
+      ...callGraph(),
+      entryPoints: [cliEntry('entry:cli:bin/agent/src/main.rs:subcommand:Connect', 'n_main', 'Connect', {
+        crate: 'agent', binary: 'agent', subcommand: 'Connect', command_type: 'subcommand_variant',
+      })],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys[0].name).toBe('Agent connect -> run_loop');
+  });
+
+  it('humanizes multi-word subcommand variants', () => {
+    const input = {
+      ...callGraph(),
+      entryPoints: [cliEntry('entry:cli:bin/scan/src/main.rs:subcommand:ScanTarget', 'n_main', 'ScanTarget', {
+        crate: 'zerac-scan', binary: 'scan', subcommand: 'ScanTarget', command_type: 'subcommand_variant',
+      })],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys[0].name).toBe('Scan target -> run_loop');
+  });
+
+  it('falls back to the binary when the clap command struct name is generic', () => {
+    const input = {
+      ...callGraph(),
+      entryPoints: [cliEntry('entry:cli:bin/zeracd/src/main.rs:Commands', 'n_main', 'Commands', {
+        crate: 'zeracd', binary: 'zeracd', command: 'Commands', command_type: 'subcommand_enum',
+      })],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys[0].name).toBe('Run zeracd -> run_loop');
+  });
+
+  it('strips clap type suffixes from descriptive command struct names', () => {
+    const input = {
+      ...callGraph(),
+      entryPoints: [cliEntry('entry:cli:crates/config/src/agent.rs:AgentClap', 'n_main', 'AgentClap', {
+        crate: 'zerac_config', binary: 'zerac_config', command: 'AgentClap', command_type: 'command_struct',
+      })],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys[0].name).toBe('Run agent -> run_loop');
+  });
+
+  it('derives the program from the entry file path when metadata is absent', () => {
+    const input = {
+      ...callGraph(),
+      entryPoints: [cliEntry('entry:main:bin/agent/src/main.rs', 'n_main', 'main')],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys[0].name).toBe('Run agent -> run_loop');
+  });
+
+  it('derives the binary stem for src/bin targets without metadata', () => {
+    const input = {
+      ...callGraph(),
+      entryPoints: [cliEntry('entry:main:src/bin/zerac-ngrok.rs', 'n_main', 'main')],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys[0].name).toBe('Run zerac-ngrok -> run_loop');
+  });
+
+  it('keeps non-file trigger patterns from other CLI analyzers', () => {
+    const input = {
+      ...callGraph(),
+      entryPoints: [cliEntry('entry_cli_app_user_promote', 'n_main', 'bin/console app:user:promote', undefined, { pattern: 'app:user:promote' })],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys[0].name).toBe('Run app:user:promote -> run_loop');
+  });
+
+  it('drops a zero-signal main terminal outcome', () => {
+    const input = {
+      nodes: [
+        node('n_main', 'main', 'function'),
+        node('n_helper', 'main', 'function_call'),
+      ],
+      edges: [edge('e1', 'n_main', 'n_helper', 'calls')],
+      entryPoints: [cliEntry('entry:main:bin/hello/src/main.rs', 'n_main', 'main', { crate: 'hello', binary: 'hello' })],
+      exitPoints: [],
+      callChains: [],
+      dataEntities: [],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys[0].name).toBe('Run hello');
+  });
+
+  it('builds a single journey when the same entry point id appears twice', () => {
+    const duplicate = cliEntry('entry:main:bin/agent/build.rs', 'n_main', 'main', { crate: 'agent', build_script: true });
+    const input = {
+      ...callGraph(),
+      entryPoints: [duplicate, { ...duplicate }],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys).toHaveLength(1);
+    expect(journeys[0].name).toBe('Build agent -> run_loop');
+  });
+
+  it('disambiguates same-named CLI journeys with binary context instead of main', () => {
+    const graph = {
+      nodes: [
+        node('n_main_a', 'main', 'function'),
+        node('n_main_b', 'main', 'function'),
+        node('n_runner', 'run_loop', 'function'),
+      ],
+      edges: [
+        edge('e1', 'n_main_a', 'n_runner', 'calls'),
+        edge('e2', 'n_main_b', 'n_runner', 'calls'),
+      ],
+      exitPoints: [],
+      callChains: [],
+      dataEntities: [],
+    };
+    const input = {
+      ...graph,
+      entryPoints: [
+        cliEntry('entry:main:crates/transport/build.rs', 'n_main_a', 'main', { crate: 'transport', build_script: true }),
+        cliEntry('entry:main:crates/version/build.rs', 'n_main_b', 'main', { crate: 'transport', build_script: true }),
+      ],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    const names = journeys.map(j => j.name).sort();
+    expect(names).toHaveLength(2);
+    expect(names[0]).not.toContain('(main)');
+    expect(names[1]).not.toContain('(main)');
+    expect(names.some(name => name.includes('transport'))).toBe(true);
+  });
+});

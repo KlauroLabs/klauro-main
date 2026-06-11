@@ -291,6 +291,8 @@ export class RustAnalyzer extends BaseAnalyzer {
   private cargoProject = false;
   private projectName = '';
   private projectVersion = '';
+  private crateNamesByDir = new Map<string, string>();
+  private crateManifestProjectPath = '';
   private astRunner: TreeSitterParser;
   private astCache = new Map<string, RustASTNode>();
   private todoCounter = 0;
@@ -549,9 +551,85 @@ export class RustAnalyzer extends BaseAnalyzer {
       if (await fs.pathExists(cargoLockPath)) {
         await this.parseCargoLock(cargoLockPath);
       }
+
+      await this.indexCrateManifests(projectPath);
     } catch (error) {
       console.warn('Failed to detect project type:', error);
     }
+  }
+
+  private async indexCrateManifests(projectPath: string): Promise<void> {
+    if (this.crateManifestProjectPath === projectPath) return;
+    this.crateManifestProjectPath = projectPath;
+    this.crateNamesByDir = new Map<string, string>();
+    const manifestFiles = await glob(['**/Cargo.toml'], {
+      cwd: projectPath,
+      ignore: this.getIgnorePatterns({ projectPath }),
+      nodir: true
+    });
+    for (const manifestFile of manifestFiles) {
+      try {
+        const content = await fs.readFile(path.resolve(projectPath, manifestFile), 'utf-8');
+        const packageName = this.readCargoPackageName(content);
+        if (!packageName) continue;
+        const dir = path.posix.dirname(manifestFile.split(path.sep).join('/'));
+        this.crateNamesByDir.set(dir === '.' ? '' : dir, packageName);
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  private readCargoPackageName(content: string): string | undefined {
+    let currentSection = '';
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+        currentSection = trimmed.slice(1, -1).toLowerCase();
+        continue;
+      }
+      if (currentSection !== 'package' || !trimmed.includes('=')) continue;
+      const [key, ...valueParts] = trimmed.split('=');
+      if (key.trim() !== 'name') continue;
+      const value = valueParts.join('=').trim().replace(/^["']|["']$/g, '');
+      if (value) return value;
+    }
+    return undefined;
+  }
+
+  private cliEntryMetadata(relativePath: string): Record<string, any> {
+    const posixPath = relativePath.split(path.sep).join('/');
+    let crateDir = '';
+    let crate: string | undefined;
+    for (const [dir, name] of this.crateNamesByDir) {
+      if (dir !== '' && posixPath !== dir && !posixPath.startsWith(`${dir}/`)) continue;
+      if (crate === undefined || dir.length >= crateDir.length) {
+        crateDir = dir;
+        crate = name;
+      }
+    }
+    if (!crate && this.projectName) crate = this.projectName;
+
+    const pathInCrate = crateDir ? posixPath.slice(crateDir.length + 1) : posixPath;
+    const segments = pathInCrate.split('/');
+    const fileStem = segments[segments.length - 1].replace(/\.rs$/, '');
+    const parentDir = segments.length > 1 ? segments[segments.length - 2] : '';
+
+    const metadata: Record<string, any> = {};
+    if (crate) metadata.crate = crate;
+    if (fileStem === 'build' && segments.length === 1) {
+      metadata.build_script = true;
+      return metadata;
+    }
+    if (parentDir === 'bin') {
+      metadata.binary = fileStem;
+    } else if (parentDir === 'examples') {
+      metadata.binary = fileStem;
+      metadata.example = true;
+    } else if (crate) {
+      metadata.binary = crate;
+    }
+    return metadata;
   }
 
   private async parseCargoToml(cargoTomlPath: string): Promise<void> {
@@ -1437,7 +1515,10 @@ export class RustAnalyzer extends BaseAnalyzer {
               nodeId,
               'cli',
               'main',
-              'Program entry point'
+              'Program entry point',
+              undefined,
+              undefined,
+              this.cliEntryMetadata(relativePath)
             ));
           }
 
@@ -1779,7 +1860,14 @@ export class RustAnalyzer extends BaseAnalyzer {
             nodeId,
             'cli',
             name,
-            `CLI ${line.includes('enum') ? 'subcommand enum' : 'command struct'}: ${name}`
+            `CLI ${line.includes('enum') ? 'subcommand enum' : 'command struct'}: ${name}`,
+            undefined,
+            undefined,
+            {
+              ...this.cliEntryMetadata(relativePath),
+              command: name,
+              command_type: line.includes('enum') ? 'subcommand_enum' : 'command_struct'
+            }
           ));
         }
       }
@@ -1817,7 +1905,14 @@ export class RustAnalyzer extends BaseAnalyzer {
 	              variantNodeId,
                 'cli',
                 variantName,
-                `CLI subcommand: ${variantName}`
+                `CLI subcommand: ${variantName}`,
+                undefined,
+                undefined,
+                {
+                  ...this.cliEntryMetadata(relativePath),
+                  subcommand: variantName,
+                  command_type: 'subcommand_variant'
+                }
               ));
             }
           }

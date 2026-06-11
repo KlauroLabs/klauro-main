@@ -447,3 +447,109 @@ describe('RustAnalyzer', () => {
     });
   });
 });
+
+describe('RustAnalyzer CLI entry metadata', () => {
+  let analyzer: RustAnalyzer;
+  let testContext: AnalysisContext;
+
+  beforeEach(() => {
+    analyzer = new RustAnalyzer();
+    testContext = createTestContext();
+  });
+
+  afterEach(() => {
+    cleanupMocks();
+  });
+
+  const agentMain = `
+use clap::{Parser, Subcommand};
+
+#[derive(Parser)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    Connect { host: String },
+    Disconnect,
+}
+
+fn main() {
+    let cli = Cli::parse();
+}
+`;
+
+  const workspaceFiles = () => [
+    createMockRustFile('bin/agent/Cargo.toml', '[package]\nname = "agent"\nversion = "0.1.0"\n'),
+    createMockRustFile('bin/agent/src/main.rs', agentMain),
+    createMockRustFile('bin/agent/build.rs', 'fn main() {\n    println!("cargo:rerun-if-changed=build.rs");\n}\n'),
+    createMockRustFile('src/bin/zerac-ngrok.rs', 'fn main() {\n    run();\n}\n\nfn run() {}\n'),
+  ];
+
+  test('attaches crate and binary metadata to main entry points', async () => {
+    setupMockFileSystem(workspaceFiles(), createMockCargoToml(['clap']));
+
+    const result = await analyzer.analyze(testContext);
+    const mainEntries = result.entry_points!.filter((ep: any) => ep.id.startsWith('entry:main:'));
+
+    const agentEntry = mainEntries.find((ep: any) => ep.id === 'entry:main:bin/agent/src/main.rs');
+    expect(agentEntry).toBeDefined();
+    expect(agentEntry!.metadata).toMatchObject({ crate: 'agent', binary: 'agent' });
+
+    const ngrokEntry = mainEntries.find((ep: any) => ep.id === 'entry:main:src/bin/zerac-ngrok.rs');
+    expect(ngrokEntry).toBeDefined();
+    expect(ngrokEntry!.metadata).toMatchObject({ crate: 'test-project', binary: 'zerac-ngrok' });
+  });
+
+  test('marks crate-root build.rs entries as build scripts without a binary', async () => {
+    setupMockFileSystem(workspaceFiles(), createMockCargoToml(['clap']));
+
+    const result = await analyzer.analyze(testContext);
+    const buildEntry = result.entry_points!.find((ep: any) => ep.id === 'entry:main:bin/agent/build.rs');
+
+    expect(buildEntry).toBeDefined();
+    expect(buildEntry!.metadata).toMatchObject({ crate: 'agent', build_script: true });
+    expect(buildEntry!.metadata!.binary).toBeUndefined();
+  });
+
+  test('attaches binary and subcommand metadata to clap subcommand variants', async () => {
+    setupMockFileSystem(workspaceFiles(), createMockCargoToml(['clap']));
+
+    const result = await analyzer.analyze(testContext);
+    const connectEntry = result.entry_points!.find((ep: any) =>
+      ep.id === 'entry:cli:bin/agent/src/main.rs:subcommand:Connect');
+
+    expect(connectEntry).toBeDefined();
+    expect(connectEntry!.metadata).toMatchObject({
+      crate: 'agent',
+      binary: 'agent',
+      subcommand: 'Connect',
+      command_type: 'subcommand_variant',
+    });
+  });
+
+  test('attaches command metadata to clap parser structs and subcommand enums', async () => {
+    setupMockFileSystem(workspaceFiles(), createMockCargoToml(['clap']));
+
+    const result = await analyzer.analyze(testContext);
+
+    const cliStruct = result.entry_points!.find((ep: any) => ep.id === 'entry:cli:bin/agent/src/main.rs:Cli');
+    expect(cliStruct).toBeDefined();
+    expect(cliStruct!.metadata).toMatchObject({
+      crate: 'agent',
+      binary: 'agent',
+      command: 'Cli',
+      command_type: 'command_struct',
+    });
+
+    const commandsEnum = result.entry_points!.find((ep: any) => ep.id === 'entry:cli:bin/agent/src/main.rs:Commands');
+    expect(commandsEnum).toBeDefined();
+    expect(commandsEnum!.metadata).toMatchObject({
+      crate: 'agent',
+      command: 'Commands',
+      command_type: 'subcommand_enum',
+    });
+  });
+});
