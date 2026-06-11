@@ -41,7 +41,7 @@ const TEST_EDGE_TYPES = new Set(['tests', 'covers']);
 const TRAVERSAL_EDGE_TYPES = new Set([
   'calls', 'invokes', 'executes', 'triggers', 'routes_to', 'handled_by',
   'uses', 'depends_on', 'manages', 'maps_to', 'reads', 'writes', 'queries',
-  'creates', 'updates', 'deletes'
+  'creates', 'updates', 'deletes', 'transitions_to'
 ]);
 const CONTAINMENT_EDGE_TYPES = new Set(['contains', 'has_method', 'declares']);
 const ENTITY_RELATION_EDGE_TYPES = new Set(['relates_to']);
