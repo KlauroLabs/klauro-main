@@ -426,10 +426,12 @@ function scoreCas(output: CASOutput, target: RepoTarget, durationMs: number): Ta
   const graphIntegrity = output.validation?.graph_integrity;
   const languages = detectedLanguages(output);
   const frameworks = detectedFrameworks(output);
-  const analysisErrors = output.analysis_errors?.length || 0;
+  const analysisErrorEntries = output.analysis_errors || [];
+  const analysisErrors = analysisErrorEntries.filter(entry => (entry.severity ?? 'error') === 'error').length;
+  const analysisWarnings = analysisErrorEntries.length - analysisErrors;
 
   const gates: GateResult[] = [
-    gate('analysis-errors', analysisErrors === 0 ? 'pass' : 'fail', analysisErrors === 0 ? 100 : 0, `${analysisErrors} analysis errors`),
+    gate('analysis-errors', analysisErrors === 0 ? 'pass' : 'fail', analysisErrors === 0 ? 100 : 0, `${analysisErrors} analysis errors, ${analysisWarnings} warnings`),
     scoreMinimum('nodes', output.nodes.length, target.expectation.minNodes || 25),
     scoreMinimum('edges', output.edges.length, target.expectation.minEdges || 10),
     scoreMinimum('entry-points', entryPoints.length, target.expectation.minEntryPoints || 1),

@@ -549,15 +549,16 @@ function scoreCas(cas: CASOutput, target: RepoTarget, durationMs: number): Targe
     securityProbe(cas),
   ].map(result => validateEvidence(cas, result));
 
-  const analysisErrors = cas.analysis_errors?.length || 0;
+  const analysisErrorEntries = cas.analysis_errors || [];
+  const analysisErrors = analysisErrorEntries.filter(entry => (entry.severity ?? 'error') === 'error').length;
   if (analysisErrors > 0) {
     probes.unshift(probe(
       'analysis-errors',
       'Did analysis complete without errors?',
-      { analysis_errors: cas.analysis_errors },
+      { analysis_errors: analysisErrorEntries.filter(entry => (entry.severity ?? 'error') === 'error') },
       [],
       [],
-      [`${analysisErrors} analysis errors`]
+      [`${analysisErrors} analysis errors (${analysisErrorEntries.length - analysisErrors} non-blocking warnings not counted)`]
     ));
   }
 

@@ -3941,7 +3941,9 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
   const runtimeLinks = cas.runtime_static_links?.length || 0;
   const facts = cas.analysis_facts?.length || 0;
   const idioms = cas.codebase_idioms?.length || 0;
-  const analysisErrors = cas.analysis_errors?.length || 0;
+  const analysisErrorEntries = cas.analysis_errors || [];
+  const analysisErrors = analysisErrorEntries.filter(entry => (entry.severity ?? 'error') === 'error').length;
+  const analysisWarningCount = analysisErrorEntries.length - analysisErrors;
   const testGate = testReadinessGate(tests.total_suites, opts.testEvidence);
   const invariantGapCount = cas.behavioral_invariant_summary?.gaps?.length || 0;
   const invariantGapSeverity = cas.behavioral_invariant_summary?.by_gap_severity || severityCounts(cas.behavioral_invariant_summary?.gaps || []);
@@ -3953,7 +3955,7 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
     ? 70
     : blockingInvariantGaps > 0 ? 86 : 100;
   const rawGates: AgentReadinessGate[] = [
-    gate('analysis-errors', analysisErrors === 0 ? 'pass' : 'fail', analysisErrors === 0 ? 100 : 0, `${analysisErrors} analysis errors`),
+    gate('analysis-errors', analysisErrors === 0 ? 'pass' : 'fail', analysisErrors === 0 ? 100 : 0, `${analysisErrors} analysis errors, ${analysisWarningCount} warnings`),
     gate('nodes', cas.nodes.length > 0 ? 'pass' : 'fail', cas.nodes.length > 0 ? 100 : 0, `${cas.nodes.length} nodes`),
     gate('edges', cas.edges.length > 0 ? 'pass' : 'fail', cas.edges.length > 0 ? 100 : 0, `${cas.edges.length} edges`),
     coverageGate('entry-points', cas.entry_points?.length || 0, minimumEntryPointCount(cas, profile)),

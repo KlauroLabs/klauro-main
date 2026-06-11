@@ -195,7 +195,7 @@ export async function runMachineAgentProof(options: ParsedArgs) {
       logMachineProgress(`analyzed ${repo.name} in ${Date.now() - startedAt}ms`);
       return {
         ...repo,
-        proof_status: cas.analysis_errors?.length ? 'fail' : readiness.default_use && analysisQuality.status === 'pass' && usefulnessReview.status === 'pass' ? 'pass' : 'fail',
+        proof_status: (cas.analysis_errors || []).some(entry => (entry.severity ?? 'error') === 'error') ? 'fail' : readiness.default_use && analysisQuality.status === 'pass' && usefulnessReview.status === 'pass' ? 'pass' : 'fail',
         analysis_ms: Date.now() - startedAt,
         cas: {
           nodes: cas.nodes.length,
