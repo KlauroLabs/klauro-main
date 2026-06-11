@@ -18,7 +18,7 @@ import {
   getSecurityOverview,
   searchNodes,
 } from './query';
-import { runAnswerPack } from './product';
+import { describeAnswerPackCatalog, runAnswerPack } from './product';
 import { semanticSearch } from './semantic-search';
 import type { TestDiscoveryEvidence } from './test-discovery';
 import { assessBehavioralInvariantImpact } from './invariant-validation';
@@ -149,12 +149,14 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
   const exitPoints = getExitPoints(cas, { limit: 8 });
   const runtimeLinks = getRuntimeStaticLinks(cas, { limit: 8 });
   const productOrientation = buildProductOrientationLine(cas);
+  const sensitiveDataExposure = buildSensitiveExposureDigest(cas);
 
   return {
     path,
     generated_at: new Date().toISOString(),
     default_rule: 'Use this CAS-backed MCP context before broad file reads. Read source files after MCP narrows the target or reports a gap. After edits, run validate_behavioral_invariants and validate_codebase_idioms before finalizing changes.',
     task: normalizeTask(task),
+    ...(sensitiveDataExposure ? { sensitive_data_exposure: sensitiveDataExposure } : {}),
     readiness: {
       status: readiness.status,
       score: readiness.score,
@@ -315,12 +317,15 @@ export async function getAgentWorkPacket(cas: CASOutput, path: string, taskInput
     ...validationPlan.gaps.map(gap => `validation-plan: ${gap}`),
   ];
 
+  const sensitiveDataExposure = buildSensitiveExposureDigest(cas);
+
   const packet = {
     path,
     generated_at: new Date().toISOString(),
     task,
     status: gaps.length === 0 ? 'ready' : 'needs-review',
     default_use: readiness.default_use,
+    ...(sensitiveDataExposure ? { sensitive_data_exposure: sensitiveDataExposure } : {}),
     readiness: {
       status: readiness.status,
       score: readiness.score,
@@ -345,8 +350,8 @@ export async function getAgentWorkPacket(cas: CASOutput, path: string, taskInput
       system_health: summarizeSystemHealthForAgent(cas),
       capability_memory: capabilityMemory,
       entry_context: entryContext,
-      ...(journeyContext ? { journey_context: journeyContext } : {}),
       ...(lineageContext ? { lineage_context: lineageContext } : {}),
+      ...(journeyContext ? { journey_context: journeyContext } : {}),
       ...(conformanceContext ? { conformance_context: conformanceContext } : {}),
     },
     file_read_plan: fileReadPlan,
@@ -432,6 +437,36 @@ export function buildJourneyContextForAgent(
   };
 }
 
+const SENSITIVE_EXPOSURE_INSTRUCTION = 'Address or verify these sensitive-data exposure paths before answering security or data-exposure questions.';
+
+type LineageRecord = NonNullable<CASOutput['data_lineage']>[number];
+
+function lineageEntityHasExposure(item: LineageRecord): boolean {
+  return Boolean(item.exposure?.sensitive && ((item.exposure?.unguarded_paths || 0) > 0 || item.exposure?.external_transfer));
+}
+
+function lineageExposureScore(item: LineageRecord): number {
+  return (item.exposure?.unguarded_paths || 0) * 2 + (item.exposure?.external_transfer ? 1 : 0);
+}
+
+function lineageExposureLine(item: LineageRecord): string {
+  const fields = (item.sensitive_fields || []).slice(0, 3);
+  const fieldsSuffix = fields.length > 0 ? `, sensitive fields: ${fields.join(', ')}` : '';
+  return `${item.entity_name}: ${item.exposure?.unguarded_paths || 0} unguarded paths, external_transfer: ${Boolean(item.exposure?.external_transfer)}${fieldsSuffix}`;
+}
+
+export function buildSensitiveExposureDigest(cas: CASOutput, limit = 3) {
+  const exposed = (cas.data_lineage || [])
+    .filter(lineageEntityHasExposure)
+    .sort((a, b) => lineageExposureScore(b) - lineageExposureScore(a) || a.entity_name.localeCompare(b.entity_name));
+  if (exposed.length === 0) return null;
+  return {
+    instruction: SENSITIVE_EXPOSURE_INSTRUCTION,
+    total_exposed_entities: exposed.length,
+    highest_risk: exposed.slice(0, limit).map(lineageExposureLine),
+  };
+}
+
 export function buildLineageContextForAgent(
   cas: CASOutput,
   opts: { nodeId?: string; file?: string; entityName?: string } = {},
@@ -463,7 +498,11 @@ export function buildLineageContextForAgent(
     exposureScore(b) - exposureScore(a) ||
     Number(b.writes) - Number(a.writes) ||
     a.item.entity_name.localeCompare(b.item.entity_name));
+  const highestRisk = rows.find(row => lineageEntityHasExposure(row.item));
   return {
+    ...(highestRisk
+      ? { headline: lineageExposureLine(highestRisk.item), instruction: SENSITIVE_EXPOSURE_INSTRUCTION }
+      : {}),
     total_matching: rows.length,
     entities: trimToPillarTokenBudget(rows.slice(0, 5).map(({ item, writes, reads, isTargetEntity }) => ({
       entity: item.entity_name,
@@ -527,6 +566,15 @@ function compactPillarWorkContext(
 ): Record<string, any> {
   const result: Record<string, any> = {};
   if (!context || typeof context !== 'object') return result;
+  if (context.lineage_context?.entities?.length) {
+    result.lineage_context = {
+      ...(context.lineage_context.headline
+        ? { headline: context.lineage_context.headline, instruction: context.lineage_context.instruction }
+        : {}),
+      total_matching: context.lineage_context.total_matching,
+      entities: context.lineage_context.entities.slice(0, limits.entities),
+    };
+  }
   if (context.journey_context?.journeys?.length) {
     result.journey_context = {
       total_matching: context.journey_context.total_matching,
@@ -540,12 +588,6 @@ function compactPillarWorkContext(
         boundaries: Array.isArray(journey.boundaries) ? journey.boundaries.slice(0, 2) : journey.boundaries,
         tests: journey.tests,
       })),
-    };
-  }
-  if (context.lineage_context?.entities?.length) {
-    result.lineage_context = {
-      total_matching: context.lineage_context.total_matching,
-      entities: context.lineage_context.entities.slice(0, limits.entities),
     };
   }
   if (context.conformance_context?.deviations?.length) {
@@ -1151,6 +1193,7 @@ function compactSmallRepoMinimalWorkPacket<T extends Record<string, any>>(packet
     status: packet.status,
     default_use: packet.default_use,
     packet_profile: 'small-repo-minimal',
+    ...(packet.sensitive_data_exposure ? { sensitive_data_exposure: packet.sensitive_data_exposure } : {}),
     selected_node: packet.selected_node,
     work_context: {
       coding_context: compactCodingContextForMicroRepo(context.coding_context),
@@ -1183,6 +1226,7 @@ function compactTinyWorkPacket<T extends Record<string, any>>(packet: T): T {
     status: packet.status,
     default_use: packet.default_use,
     packet_profile: 'ultra-small-repo',
+    ...(packet.sensitive_data_exposure ? { sensitive_data_exposure: packet.sensitive_data_exposure } : {}),
     readiness: {
       status: packet.readiness?.status,
       score: packet.readiness?.score,
@@ -1244,6 +1288,7 @@ function compactTokenMinimalWorkPacket<T extends Record<string, any>>(packet: T)
     status: packet.status,
     default_use: packet.default_use,
     packet_profile: 'token-minimal',
+    ...(packet.sensitive_data_exposure ? { sensitive_data_exposure: packet.sensitive_data_exposure } : {}),
     readiness: {
       status: packet.readiness?.status,
       score: packet.readiness?.score,
@@ -2015,6 +2060,9 @@ export function getAgentToolPlan(cas: CASOutput, input: { path: string; task?: A
     task,
     rule: 'Use this plan before broad file reads. Source files are for targeted verification and edits after MCP identifies the relevant graph area.',
     steps,
+    ...(steps.some(item => item.tool === 'run_answer_pack')
+      ? { answer_packs: `Valid run_answer_pack packs: ${describeAnswerPackCatalog()}. Do not guess other pack names; narrow with section: '<id>' instead.` }
+      : {}),
     fallback: {
       condition: 'CAS analysis is missing, stale, or returns an error.',
       action: 'Run analyze_codebase. If the error remains, report the MCP/CAS failure and fall back to direct code reading for the task.',

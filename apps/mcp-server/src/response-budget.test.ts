@@ -10,7 +10,8 @@ import {
   serializeToolResponse,
   type BoundedEnvelope,
 } from './response-budget';
-import { buildAnswerPackDigest, type AnswerPackResult } from './product';
+import { buildAnswerPackDigest, describeAnswerPackCatalog, runAnswerPack, type AnswerPackResult } from './product';
+import { getTestSummary } from './query';
 import { createServer } from './server';
 import { listAnalyses } from './storage';
 
@@ -131,6 +132,73 @@ test('buildAnswerPackDigest includes everything when the pack is small', () => {
   assert.equal(digest.truncated, false);
   assert.equal(digest.answers.length, 1);
   assert.equal(digest.sections[0].included, true);
+});
+
+test('runAnswerPack lists available packs and their sections when the pack is unknown', () => {
+  const result = runAnswerPack({} as any, '/tmp/example', 'security');
+  assert.equal(result.pack, 'security');
+  assert.equal(result.answers.length, 0);
+  assert.equal(result.gaps.length, 1);
+  assert.ok(result.gaps[0].startsWith('Unknown answer pack: security.'));
+  assert.ok(result.gaps[0].includes("Available packs: 'mastery'"));
+  assert.ok(result.gaps[0].includes('sections: overview, entry-points'));
+  assert.ok(result.gaps[0].includes('security'));
+  assert.ok(result.gaps[0].includes("Retry with pack: 'mastery'"));
+  assert.ok(describeAnswerPackCatalog().includes("'mastery' (sections: overview, entry-points, representative-flow, change-impact, data, tests, external-boundaries, security, runtime-readiness)"));
+});
+
+test('getTestSummary aggregates gap statistics server-side and pages the highest-severity gaps', () => {
+  const cas = {
+    test_summary: { total_tests: 5 },
+    test_gaps: [
+      ...Array.from({ length: 30 }, (_, index) => ({
+        gap_type: 'untested-flow',
+        severity: 'medium',
+        location: {},
+        recommendation: `cover flow ${index}`,
+      })),
+      { gap_type: 'untested-branch', severity: 'critical', location: {}, recommendation: 'cover the critical branch' },
+      { gap_type: 'mock-only', severity: 'high', location: {}, recommendation: 'replace the mock-only coverage' },
+    ],
+    test_coverage: {
+      summary: { total_coverage: 12 },
+      by_level: { unit: { coverage: 12 } },
+      by_component: {
+        billing: { coverage: 1, untested_nodes: ['a', 'b'] },
+        users: { coverage: 90, untested_nodes: [] },
+      },
+      test_relationships: [{ test_id: 't1' }],
+    },
+  } as any;
+
+  const summary = getTestSummary(cas);
+  assert.equal(summary.gap_summary.total, 32);
+  assert.equal(summary.gap_summary.matching, 32);
+  assert.equal(summary.gap_summary.returned, 25);
+  assert.equal(summary.test_gaps.length, 25);
+  assert.equal(summary.test_gaps[0].severity, 'critical');
+  assert.equal(summary.test_gaps[1].severity, 'high');
+  assert.equal(summary.gap_summary.by_severity.medium, 30);
+  assert.equal(summary.gap_summary.by_severity.critical, 1);
+  assert.equal(summary.gap_summary.by_type['untested-flow'], 30);
+  assert.ok(summary.continuation);
+  assert.ok(summary.continuation!.includes('offset'));
+  assert.ok(summary.continuation!.includes('severity'));
+  assert.equal(summary.test_coverage!.component_count, 2);
+  assert.equal(summary.test_coverage!.worst_covered_components[0].component, 'billing');
+  assert.equal(summary.test_coverage!.worst_covered_components[0].untested_node_count, 2);
+  assert.equal(summary.test_coverage!.test_relationship_count, 1);
+  assert.ok(!('by_component' in (summary.test_coverage as Record<string, unknown>)));
+
+  const paged = getTestSummary(cas, { severity: 'medium', limit: 10, offset: 25 });
+  assert.equal(paged.gap_summary.matching, 30);
+  assert.equal(paged.gap_summary.returned, 5);
+  assert.equal(paged.gap_summary.offset, 25);
+  assert.ok(!('continuation' in paged));
+
+  const typed = getTestSummary(cas, { gapType: 'mock-only' });
+  assert.equal(typed.gap_summary.matching, 1);
+  assert.equal(typed.test_gaps[0].recommendation, 'replace the mock-only coverage');
 });
 
 interface ToolResponse {

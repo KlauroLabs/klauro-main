@@ -209,6 +209,12 @@ export function getAnswerPackCatalog(): Array<{
   ];
 }
 
+export function describeAnswerPackCatalog(): string {
+  return getAnswerPackCatalog()
+    .map(pack => `'${pack.id}' (sections: ${pack.questions.map(question => question.id).join(', ')})`)
+    .join('; ');
+}
+
 export function runAnswerPack(cas: CASOutput, path: string, pack = 'mastery'): AnswerPackResult {
   if (pack !== 'mastery') {
     return {
@@ -216,7 +222,9 @@ export function runAnswerPack(cas: CASOutput, path: string, pack = 'mastery'): A
       path,
       generated_at: new Date().toISOString(),
       answers: [],
-      gaps: [`Unknown answer pack: ${pack}`],
+      gaps: [
+        `Unknown answer pack: ${pack}. Available packs: ${describeAnswerPackCatalog()}. Retry with pack: 'mastery', optionally narrowed with section: '<id>'.`,
+      ],
     };
   }
 

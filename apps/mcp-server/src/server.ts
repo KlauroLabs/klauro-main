@@ -1,7 +1,7 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { appendFileSync } from 'fs';
-import { analyzeProject, getAnalysis, analyzeProjectIncremental } from './analyzer';
+import { getAnalysis, runAnalysis } from './analyzer';
 import { getAnalysisEntry, getStorageHealth, listAgenticBenchmarkReports, listAnalyses, listWorkspaceGraphs, loadAgenticBenchmarkReport, loadGoldenSnapshot, loadLatestAgenticBenchmarkReportByType, loadRuntimeObservations, loadWorkspaceGraph, saveAgenticBenchmarkReport, saveGoldenSnapshot, saveRuntimeObservation, saveWorkspaceGraph } from './storage';
 import * as query from './query';
 import * as watcher from './watcher';
@@ -380,51 +380,25 @@ function registerTools(server: McpServer) {
     } as any,
     async ({ path, force_full, analysis_focus }: any) => withErrorHandling(async () => withAnalysisFocus(analysis_focus, async () => {
       const previousEntry = await getAnalysisEntry(path);
-      if (force_full) {
-        const result = await analyzeProject(path);
-        return json({
-          status: 'success',
-          analysis_type: 'full',
-          analysis_focus: analysis_focus || 'full',
-          path,
-          name: result.system?.name || path.split('/').pop(),
-          nodes: result.nodes?.length || 0,
-          edges: result.edges?.length || 0,
-          entry_points: result.entry_points?.length || 0,
-          analyzers_run: result.analyzer_contributions?.length || 0,
-          errors: result.analysis_errors?.length || 0,
-          phases: result.analysis_phases || [],
-          version_upgrade: versionUpgradeReport(Boolean(previousEntry), previousEntry?.cas_version, result.cas_version),
-        });
-      }
-
-      const result = await analyzeProjectIncremental(path);
+      const summary = await runAnalysis(path, { forceFull: Boolean(force_full) });
       return json({
         status: 'success',
-        analysis_type: result.wasFullRebuild ? 'full' : 'incremental',
+        analysis_type: summary.analysisType,
         analysis_focus: analysis_focus || 'full',
         path,
-        name: result.output.system?.name || path.split('/').pop(),
-        nodes: result.output.nodes?.length || 0,
-        edges: result.output.edges?.length || 0,
-        entry_points: result.output.entry_points?.length || 0,
-        analyzers_run: result.output.analyzer_contributions?.length || 0,
-        errors: result.output.analysis_errors?.length || 0,
-        phases: result.output.analysis_phases || [],
+        name: summary.name,
+        nodes: summary.nodes,
+        edges: summary.edges,
+        entry_points: summary.entryPoints,
+        analyzers_run: summary.analyzersRun,
+        errors: summary.errors,
+        phases: summary.phases,
         version_upgrade: versionUpgradeReport(
           Boolean(previousEntry),
-          result.previousCasVersion || previousEntry?.cas_version,
-          result.output.cas_version
+          summary.previousCasVersion || previousEntry?.cas_version,
+          summary.casVersion
         ),
-        change_summary: result.wasFullRebuild ? undefined : {
-          files_changed: result.changeReport.summary.filesAdded +
-                        result.changeReport.summary.filesModified +
-                        result.changeReport.summary.filesDeleted,
-          nodes_added: result.changeReport.summary.nodesAdded,
-          nodes_modified: result.changeReport.summary.nodesModified,
-          nodes_deleted: result.changeReport.summary.nodesDeleted,
-          risk_level: result.changeReport.impact.riskLevel,
-        },
+        change_summary: summary.changeSummary,
       });
     }))
   );
@@ -545,41 +519,18 @@ function registerTools(server: McpServer) {
           : 'deep-context';
 
       return json(await withAnalysisFocus(focus, async () => {
-        if (force_full) {
-          const result = await analyzeProject(path);
-          return {
-            status: 'success',
-            layer,
-            analysis_type: 'full',
-            analysis_focus: focus,
-            path,
-            nodes: result.nodes?.length || 0,
-            edges: result.edges?.length || 0,
-            entry_points: result.entry_points?.length || 0,
-            phases: result.analysis_phases || [],
-          };
-        }
-
-        const result = await analyzeProjectIncremental(path);
+        const summary = await runAnalysis(path, { forceFull: Boolean(force_full) });
         return {
           status: 'success',
           layer,
-          analysis_type: result.wasFullRebuild ? 'full' : 'incremental',
+          analysis_type: summary.analysisType,
           analysis_focus: focus,
           path,
-          nodes: result.output.nodes?.length || 0,
-          edges: result.output.edges?.length || 0,
-          entry_points: result.output.entry_points?.length || 0,
-          phases: result.output.analysis_phases || [],
-          change_summary: result.wasFullRebuild ? undefined : {
-            files_changed: result.changeReport.summary.filesAdded +
-              result.changeReport.summary.filesModified +
-              result.changeReport.summary.filesDeleted,
-            nodes_added: result.changeReport.summary.nodesAdded,
-            nodes_modified: result.changeReport.summary.nodesModified,
-            nodes_deleted: result.changeReport.summary.nodesDeleted,
-            risk_level: result.changeReport.impact.riskLevel,
-          },
+          nodes: summary.nodes,
+          edges: summary.edges,
+          entry_points: summary.entryPoints,
+          phases: summary.phases,
+          change_summary: summary.changeSummary,
         };
       }));
     })
@@ -1149,11 +1100,11 @@ function registerTools(server: McpServer) {
     'run_answer_pack',
     {
       title: 'Run Answer Pack',
-      description: 'Answer core product questions from CAS using MCP query surfaces. Returns a bounded digest: per-section sizes plus the sections that fit the response budget inline. Fetch any withheld section in full with the section parameter.',
+      description: `Answer core product questions from CAS using MCP query surfaces. Available packs: ${product.describeAnswerPackCatalog()}. No other pack names exist — for a security or tests slice, use pack 'mastery' with the matching section id. Returns a bounded digest: per-section sizes plus the sections that fit the response budget inline. Fetch any withheld section in full with the section parameter.`,
       inputSchema: {
         path: z.string().describe('Project path'),
-        pack: z.string().optional().describe('Answer pack id (default: mastery)'),
-        section: z.string().optional().describe('Answer section id to fetch in full (section ids and sizes are listed in the digest response)'),
+        pack: z.string().optional().describe("Answer pack id. 'mastery' is the only pack (default); call list_answer_packs for the catalog"),
+        section: z.string().optional().describe('Answer section id to fetch in full: overview, entry-points, representative-flow, change-impact, data, tests, external-boundaries, security, or runtime-readiness'),
       } as any,
     } as any,
     async ({ path, pack, section }: any) => withErrorHandling(async () => {
@@ -1162,7 +1113,9 @@ function registerTools(server: McpServer) {
       if (section) {
         const match = result.answers.find(item => item.id === section);
         if (!match) {
-          throw new Error(`Unknown answer pack section '${section}'. Available sections: ${result.answers.map(item => item.id).join(', ')}`);
+          throw new Error(result.answers.length > 0
+            ? `Unknown answer pack section '${section}'. Available sections: ${result.answers.map(item => item.id).join(', ')}`
+            : `Unknown answer pack: ${result.pack}. Available packs: ${product.describeAnswerPackCatalog()}.`);
         }
         return json({ pack: result.pack, path: result.path, generated_at: result.generated_at, gaps: result.gaps, section: match });
       }
@@ -3382,12 +3335,18 @@ function registerTools(server: McpServer) {
     'get_test_summary',
     {
       title: 'Get Test Summary',
-      description: 'Full test overview: counts by type/status, coverage, mocks, fixtures. Plus test gaps (untested flows, branches, mock-only coverage, no-assertion tests).',
-      inputSchema: { path: z.string().describe('Project path') } as any,
+      description: 'Test overview: counts by type/status, coverage, mocks, fixtures, plus aggregated gap statistics (totals by severity and gap type) and the highest-severity test gaps. Page additional gaps with limit/offset or narrow with gap_type and severity.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        gap_type: z.enum(['untested-flow', 'untested-branch', 'mock-only', 'no-assertions']).optional().describe('Only gaps of this type'),
+        severity: z.enum(['critical', 'high', 'medium', 'low']).optional().describe('Only gaps of this severity'),
+        limit: z.number().optional().describe('Max gaps to return (default 25, max 200)'),
+        offset: z.number().optional().describe('Skip first N gaps after severity sorting (default 0)'),
+      } as any,
     } as any,
-    async ({ path }: any) => withErrorHandling(async () => {
+    async ({ path, gap_type, severity, limit, offset }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      return json(query.getTestSummary(cas));
+      return json(query.getTestSummary(cas, { gapType: gap_type, severity, limit, offset }));
     })
   );
 
@@ -4366,13 +4325,9 @@ function registerPrompts(server: McpServer) {
         sections.push(`Mocks: ${ts.mocks.total}, Fixtures: ${ts.fixtures.total}`);
       }
 
-      if (testSummary.test_gaps.length > 0) {
-        sections.push(`\n## Test Gaps (${testSummary.test_gaps.length})`);
-        const bySeverity: Record<string, number> = {};
-        for (const g of testSummary.test_gaps) {
-          bySeverity[g.severity] = (bySeverity[g.severity] || 0) + 1;
-        }
-        sections.push(`By severity: ${Object.entries(bySeverity).map(([k, v]) => `${k}:${v}`).join(', ')}`);
+      if (testSummary.gap_summary.total > 0) {
+        sections.push(`\n## Test Gaps (${testSummary.gap_summary.total})`);
+        sections.push(`By severity: ${Object.entries(testSummary.gap_summary.by_severity).map(([k, v]) => `${k}:${v}`).join(', ')}`);
 
         const critical = testSummary.test_gaps.filter(g => g.severity === 'critical' || g.severity === 'high');
         for (const g of critical.slice(0, 20)) {

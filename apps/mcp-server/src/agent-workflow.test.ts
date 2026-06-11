@@ -11,7 +11,7 @@ import {
   preflightAgentChange,
   validateAgentChange,
 } from './agent-workflow';
-import { buildArchitectureContextForAgent, evaluateAgentReadiness, getAgentStartContext, getAgentWorkPacket } from './agent-adoption';
+import { buildArchitectureContextForAgent, evaluateAgentReadiness, getAgentStartContext, getAgentToolPlan, getAgentWorkPacket } from './agent-adoption';
 
 test('openAgentWorkbench returns a product-level packet for agent work', async () => {
   await withWorkspace(async workspace => {
@@ -901,6 +901,99 @@ test('compacted work packets do not invent pillar digests when data is absent', 
       if (previous === undefined) delete process.env.KLAURO_AGENT_PACKET_PROFILE;
       else process.env.KLAURO_AGENT_PACKET_PROFILE = previous;
     }
+  });
+});
+
+test('start context and work packet lead with the sensitive-data exposure digest', async () => {
+  await withWorkspace(async workspace => {
+    const cas = pillarFixtureCas();
+    const expectedLine = 'User: 1 unguarded paths, external_transfer: false, sensitive fields: email';
+
+    const context = getAgentStartContext(cas, workspace, {});
+    const exposure = (context as any).sensitive_data_exposure;
+    assert.ok(exposure, 'sensitive_data_exposure missing from start context');
+    assert.equal(exposure.total_exposed_entities, 1);
+    assert.deepEqual(exposure.highest_risk, [expectedLine]);
+    assert.match(exposure.instruction, /before answering security/);
+    assert.equal(Object.keys(exposure)[0], 'instruction');
+    const contextKeys = Object.keys(context);
+    assert.ok(contextKeys.indexOf('sensitive_data_exposure') < contextKeys.indexOf('readiness'),
+      'exposure digest should precede readiness in the start context');
+
+    const packet = await getAgentWorkPacket(cas, workspace, { task_type: 'modify', target: 'UsersService' });
+    const packetExposure = (packet as any).sensitive_data_exposure;
+    assert.ok(packetExposure, 'sensitive_data_exposure missing from work packet');
+    assert.deepEqual(packetExposure.highest_risk, [expectedLine]);
+    const packetKeys = Object.keys(packet);
+    assert.ok(packetKeys.indexOf('sensitive_data_exposure') < packetKeys.indexOf('work_context'),
+      'exposure digest should precede work_context in the packet');
+
+    const lineageContext = packet.work_context.lineage_context;
+    assert.ok(lineageContext, 'lineage_context missing');
+    assert.equal(Object.keys(lineageContext)[0], 'headline');
+    assert.equal(lineageContext.headline, expectedLine);
+    assert.match(String(lineageContext.instruction), /before answering security/);
+    const workContextKeys = Object.keys(packet.work_context);
+    assert.ok(workContextKeys.indexOf('lineage_context') < workContextKeys.indexOf('journey_context'),
+      'lineage_context should precede journey_context');
+  });
+});
+
+test('exposure digest is omitted when no sensitive entity has unguarded or external paths', async () => {
+  await withWorkspace(async workspace => {
+    const bareContext = getAgentStartContext(fixtureCas(), workspace, {});
+    assert.ok(!('sensitive_data_exposure' in bareContext));
+
+    const cas = pillarFixtureCas();
+    (cas as any).data_lineage[0].exposure = { unguarded_paths: 0, external_transfer: false, sensitive: true };
+    const context = getAgentStartContext(cas, workspace, {});
+    assert.ok(!('sensitive_data_exposure' in context));
+
+    const packet = await getAgentWorkPacket(cas, workspace, { task_type: 'modify', target: 'UsersService' });
+    assert.ok(!('sensitive_data_exposure' in packet));
+    const lineageContext = packet.work_context.lineage_context;
+    assert.ok(lineageContext, 'lineage_context should still match the target');
+    assert.ok(!('headline' in lineageContext));
+    assert.ok(!('instruction' in lineageContext));
+  });
+});
+
+test('compacted work packets preserve the exposure digest and lineage headline', async () => {
+  for (const profile of ['small-repo-minimal', 'token-minimal', 'tiny', 'micro']) {
+    await withWorkspace(async workspace => {
+      const previous = process.env.KLAURO_AGENT_PACKET_PROFILE;
+      process.env.KLAURO_AGENT_PACKET_PROFILE = profile;
+      try {
+        const packet = await getAgentWorkPacket(pillarFixtureCas(), workspace, {
+          task_type: 'modify',
+          target: 'UsersService',
+        });
+        assert.ok((packet as any).sensitive_data_exposure, `${profile}: sensitive_data_exposure dropped`);
+        const lineageContext = packet.work_context.lineage_context;
+        assert.ok(lineageContext, `${profile}: lineage_context dropped`);
+        assert.equal(lineageContext.headline, 'User: 1 unguarded paths, external_transfer: false, sensitive fields: email', `${profile}: lineage headline dropped`);
+        assert.match(String(lineageContext.instruction), /before answering security/, `${profile}: lineage instruction dropped`);
+      } finally {
+        if (previous === undefined) delete process.env.KLAURO_AGENT_PACKET_PROFILE;
+        else process.env.KLAURO_AGENT_PACKET_PROFILE = previous;
+      }
+    });
+  }
+});
+
+test('agent tool plan names the valid answer packs when a step runs one', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    const reviewPlan = getAgentToolPlan(cas, { path: workspace, task: { task_type: 'review' } });
+    assert.ok(reviewPlan.steps.some(step => step.tool === 'run_answer_pack'));
+    assert.ok((reviewPlan as any).answer_packs, 'answer_packs guidance missing');
+    assert.ok((reviewPlan as any).answer_packs.includes("'mastery'"));
+    assert.ok((reviewPlan as any).answer_packs.includes('security'));
+    assert.ok((reviewPlan as any).answer_packs.includes('Do not guess other pack names'));
+
+    const modifyPlan = getAgentToolPlan(cas, { path: workspace, task: { task_type: 'modify', target: 'UsersService' } });
+    assert.ok(!modifyPlan.steps.some(step => step.tool === 'run_answer_pack'));
+    assert.ok(!('answer_packs' in modifyPlan));
   });
 });
 

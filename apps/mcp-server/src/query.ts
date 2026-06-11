@@ -1628,11 +1628,61 @@ function pathStemForQuery(file: string): string {
     .toLowerCase();
 }
 
-export function getTestSummary(cas: CASOutput) {
+const TEST_GAP_SEVERITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+
+export function getTestSummary(
+  cas: CASOutput,
+  opts: { gapType?: string; severity?: string; limit?: number; offset?: number } = {},
+) {
+  const allGaps = cas.test_gaps || [];
+  const filtered = allGaps.filter(gap =>
+    (!opts.gapType || gap.gap_type === opts.gapType) &&
+    (!opts.severity || gap.severity === opts.severity));
+  const sorted = [...filtered].sort((a, b) =>
+    (TEST_GAP_SEVERITY_RANK[a.severity] ?? 4) - (TEST_GAP_SEVERITY_RANK[b.severity] ?? 4));
+  const offset = Math.max(0, opts.offset || 0);
+  const limit = Math.max(1, Math.min(opts.limit || 25, 200));
+  const page = sorted.slice(offset, offset + limit);
+  const countBy = (key: 'severity' | 'gap_type') => allGaps.reduce((counts, gap) => {
+    const value = gap[key];
+    counts[value] = (counts[value] || 0) + 1;
+    return counts;
+  }, {} as Record<string, number>);
+
+  const coverage = cas.test_coverage || null;
+  const componentEntries = Object.entries(coverage?.by_component || {});
+  const testCoverage = coverage
+    ? {
+      summary: coverage.summary || null,
+      by_level: coverage.by_level || null,
+      component_count: componentEntries.length,
+      worst_covered_components: componentEntries
+        .map(([component, detail]) => ({
+          component,
+          coverage: detail?.coverage ?? null,
+          untested_node_count: (detail?.untested_nodes || []).length,
+        }))
+        .sort((a, b) => (a.coverage ?? -1) - (b.coverage ?? -1))
+        .slice(0, 10),
+      test_relationship_count: (coverage.test_relationships || []).length,
+    }
+    : null;
+
   return {
     test_summary: cas.test_summary || null,
-    test_gaps: cas.test_gaps || [],
-    test_coverage: cas.test_coverage || null,
+    gap_summary: {
+      total: allGaps.length,
+      matching: filtered.length,
+      returned: page.length,
+      offset,
+      by_severity: countBy('severity'),
+      by_type: countBy('gap_type'),
+    },
+    test_gaps: page,
+    test_coverage: testCoverage,
+    ...(filtered.length > offset + page.length
+      ? { continuation: `Returned ${page.length} of ${filtered.length} matching gaps sorted by severity. Page with offset/limit, or narrow with gap_type (untested-flow, untested-branch, mock-only, no-assertions) and severity (critical, high, medium, low). Use find_tests for per-node coverage.` }
+      : {}),
   };
 }
 
