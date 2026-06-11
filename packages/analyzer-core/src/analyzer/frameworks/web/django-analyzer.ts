@@ -56,6 +56,7 @@ interface DjangoView {
   name: string;
   filePath: string;
   type: 'function' | 'class';
+  owningClass?: string;
   baseClass?: string;
   methods: string[];
   decorators: string[];
@@ -774,18 +775,19 @@ export class DjangoAnalyzer extends BaseAnalyzer {
       for (const [index, view] of views.entries()) {
         if (!view.name) continue;
 
-        const viewId = `view_${appId}_${this.sanitizeId(view.name)}`;
+        const viewId = this.viewNodeId(appId, view);
         const viewContent = await this.readViewContent(projectPath, view.filePath);
         const viewDocumentation = this.extractDocumentation(viewContent, path.join(projectPath, view.filePath));
         const viewComments = this.extractComments(viewContent, path.join(projectPath, view.filePath));
         const viewTodos = this.extractTodos(viewComments);
         const viewImplementationStatus = this.determineImplementationStatus(viewContent, viewComments);
 
-        const viewNode = this.createNodeBuilder(viewId, view.name, 'controller')
+        const viewDisplayName = view.owningClass ? `${view.owningClass}.${view.name}` : view.name;
+        const viewNode = this.createNodeBuilder(viewId, viewDisplayName, 'controller')
           .withLevel(3, 'code')
           .withCategory('controller', ['api', 'rest'])
           .withSource({ file: path.join(projectPath, view.filePath), line: 1, end_line: 1 })
-          .withDescription(`Django view: ${view.name}`)
+          .withDescription(`Django view: ${viewDisplayName}`)
           .withDocumentation(viewDocumentation)
           .withComments(viewComments)
           .withTodos(viewTodos)
@@ -794,6 +796,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
             framework: 'django',
             attributes: {
               type: view.type,
+              owningClass: view.owningClass,
               baseClass: view.baseClass,
               methods: view.methods,
               decorators: view.decorators,
@@ -878,7 +881,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
           return v.name === viewClassName || url.view.includes(v.name);
         });
 
-        const viewId = matchingView ? `view_${appId}_${this.sanitizeId(matchingView.name)}` : undefined;
+        const viewId = matchingView ? this.viewNodeId(appId, matchingView) : undefined;
 
         const httpMethods = matchingView?.type === 'class'
           ? (matchingView.methods.length > 0 ? matchingView.methods : ['GET'])
@@ -1907,11 +1910,13 @@ export class DjangoAnalyzer extends BaseAnalyzer {
       const serializerWrites = this.extractSerializerWrites(functionContent);
       const modelReferences = this.extractModelReferences(functionContent, content);
       const modelAccesses = this.extractModelAccesses(functionContent, content);
+      const owningClass = this.findOwningClass(content, functionStart);
 
       views.push({
         name: viewName,
         filePath,
         type: 'function',
+        owningClass,
         methods: [],
         decorators,
         permissions: this.extractPermissions(decorators),
@@ -1923,6 +1928,34 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     }
 
     return views;
+  }
+
+  private findOwningClass(content: string, functionStart: number): string | undefined {
+    const lineStart = content.lastIndexOf('\n', functionStart - 1) + 1;
+    const indent = content.substring(lineStart, functionStart);
+    if (indent.length === 0 || /\S/.test(indent)) {
+      return undefined;
+    }
+
+    const classPattern = /^([ \t]*)class\s+(\w+)/gm;
+    let owningClass: string | undefined;
+    let match;
+    while ((match = classPattern.exec(content)) !== null) {
+      if (match.index >= functionStart) break;
+      if (match[1].length >= indent.length) continue;
+      const classEnd = this.findClassEnd(content, match.index);
+      if (classEnd > functionStart) {
+        owningClass = match[2];
+      }
+    }
+
+    return owningClass;
+  }
+
+  private viewNodeId(appId: string, view: DjangoView): string {
+    return view.owningClass
+      ? `view_${appId}_${this.sanitizeId(view.owningClass)}_${this.sanitizeId(view.name)}`
+      : `view_${appId}_${this.sanitizeId(view.name)}`;
   }
 
   private extractClassViews(content: string, filePath: string): DjangoView[] {
@@ -2579,7 +2612,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
       });
 
       app.views.forEach(view => {
-        const viewId = `view_${appId}_${this.sanitizeId(view.name)}`;
+        const viewId = this.viewNodeId(appId, view);
 
         if (view.serializerClass) {
           const serializer = allSerializers.find(s => s.name === view.serializerClass);

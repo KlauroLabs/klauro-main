@@ -355,6 +355,112 @@ describe('DjangoAnalyzer', () => {
     });
   });
 
+  describe('analyze class-based view method node identity', () => {
+    let projectPath: string;
+
+    beforeEach(async () => {
+      projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'django-analyzer-cbv-test-'));
+      await fs.writeFile(path.join(projectPath, 'requirements.txt'), 'Django==4.2\ndjangorestframework==3.14\n');
+      await fs.writeFile(path.join(projectPath, 'manage.py'), '');
+      await fs.ensureDir(path.join(projectPath, 'myproj'));
+      await fs.writeFile(
+        path.join(projectPath, 'myproj', 'settings.py'),
+        "INSTALLED_APPS = [\n    'django.contrib.auth',\n    'api',\n]\nDEBUG = True\n"
+      );
+      await fs.ensureDir(path.join(projectPath, 'api'));
+      await fs.writeFile(path.join(projectPath, 'api', '__init__.py'), '');
+      await fs.writeFile(
+        path.join(projectPath, 'api', 'views.py'),
+        [
+          'from rest_framework.views import APIView',
+          '',
+          'class AlphaView(APIView):',
+          '    def get(self, request):',
+          '        return None',
+          '',
+          '    def post(self, request):',
+          '        return None',
+          '',
+          'class BetaView(APIView):',
+          '    def get(self, request):',
+          '        return None',
+          '',
+          '    def post(self, request):',
+          '        return None',
+          '',
+        ].join('\n')
+      );
+      await fs.writeFile(
+        path.join(projectPath, 'api', 'urls.py'),
+        [
+          'from django.urls import path',
+          'from api.views import AlphaView, BetaView',
+          '',
+          'urlpatterns = [',
+          "    path('alpha/', AlphaView.as_view(), name='alpha'),",
+          "    path('beta/', BetaView.as_view(), name='beta'),",
+          ']',
+          '',
+        ].join('\n')
+      );
+    });
+
+    afterEach(async () => {
+      await fs.remove(projectPath);
+    });
+
+    it('emits distinct class-qualified node ids for same-named methods across classes', async () => {
+      const contribution = await analyzer.analyze({ projectPath });
+      const nodes = contribution.nodes || [];
+
+      const viewNodes = nodes.filter(n => n.id.startsWith('view_'));
+      const viewIds = viewNodes.map(n => n.id);
+      expect(new Set(viewIds).size).toBe(viewIds.length);
+
+      const methodNodeIds = [
+        'view_app_api_AlphaView_get',
+        'view_app_api_AlphaView_post',
+        'view_app_api_BetaView_get',
+        'view_app_api_BetaView_post',
+      ];
+      for (const id of methodNodeIds) {
+        expect(viewIds).toContain(id);
+      }
+      expect(viewIds).not.toContain('view_app_api_get');
+      expect(viewIds).not.toContain('view_app_api_post');
+
+      const alphaGet = viewNodes.find(n => n.id === 'view_app_api_AlphaView_get');
+      expect(alphaGet!.name).toBe('AlphaView.get');
+      expect((alphaGet!.metadata?.attributes as Record<string, unknown>).owningClass).toBe('AlphaView');
+
+      const betaPost = viewNodes.find(n => n.id === 'view_app_api_BetaView_post');
+      expect(betaPost!.name).toBe('BetaView.post');
+      expect((betaPost!.metadata?.attributes as Record<string, unknown>).owningClass).toBe('BetaView');
+
+      expect(viewIds).toContain('view_app_api_AlphaView');
+      expect(viewIds).toContain('view_app_api_BetaView');
+    });
+
+    it('keeps url binding resolved to the owning class view with the right handler', async () => {
+      const contribution = await analyzer.analyze({ projectPath });
+      const entryPoints = contribution.entry_points || [];
+
+      const alphaEntries = entryPoints.filter(e => e.name.endsWith('/alpha/'));
+      expect(alphaEntries.map(e => e.metadata?.handler).sort()).toEqual(['get', 'post']);
+      for (const entry of alphaEntries) {
+        expect(entry.source_node).toBe('view_app_api_AlphaView');
+        expect(entry.metadata?.controller).toBe('AlphaView');
+      }
+
+      const betaEntries = entryPoints.filter(e => e.name.endsWith('/beta/'));
+      expect(betaEntries.map(e => e.metadata?.handler).sort()).toEqual(['get', 'post']);
+      for (const entry of betaEntries) {
+        expect(entry.source_node).toBe('view_app_api_BetaView');
+        expect(entry.metadata?.controller).toBe('BetaView');
+      }
+    });
+  });
+
   describe('app discovery', () => {
     let projectPath: string;
 
