@@ -373,7 +373,7 @@ export class RustAnalyzer extends BaseAnalyzer {
 
     const imports = [...content.matchAll(/^\s*(?:pub\s+)?use\s+([^;]+);/gm)].map(match => match[1].trim());
     const exports = nodes
-      .filter(node => ['module', 'struct', 'enum', 'trait', 'impl', 'function', 'method', 'constant', 'static', 'type_alias'].includes(node.type))
+      .filter(node => ['module', 'struct', 'enum', 'trait', 'impl', 'function', 'method', 'constant', 'static', 'type'].includes(this.declarationKind(node)))
       .map(node => node.name);
 
     return this.createFileAnalysisResult(
@@ -1090,6 +1090,11 @@ export class RustAnalyzer extends BaseAnalyzer {
     return this.crateContextForPath(relative)?.name;
   }
 
+  private declarationKind(node: CASNode): string {
+    const separator = node.id.indexOf(':');
+    return separator === -1 ? node.id : node.id.slice(0, separator);
+  }
+
   private selectResolvedNode(candidates: CASNode[], callerFilePath: string): CASNode | undefined {
     if (candidates.length <= 1) return candidates[0];
     const callerRelative = this.relativeSourcePath(callerFilePath);
@@ -1409,7 +1414,7 @@ export class RustAnalyzer extends BaseAnalyzer {
 
 	          const targetNode = nodes.find(node =>
 	            node.name === targetType &&
-	            ['struct', 'enum', 'trait', 'type_alias'].includes(node.type) &&
+	            ['struct', 'enum', 'trait', 'type'].includes(this.declarationKind(node)) &&
 	            (node.source?.file === relativePath || node.source?.file?.endsWith(relativePath))
 	          );
 	          if (targetNode) {
@@ -2206,7 +2211,7 @@ export class RustAnalyzer extends BaseAnalyzer {
 
       const callerNodeId = callerNode.id;
       const referencedTypeNodes = nodes.filter(n =>
-        ['struct', 'service', 'enum', 'trait'].includes(n.type) &&
+        ['struct', 'enum', 'trait'].includes(this.declarationKind(n)) &&
         n.id !== callerNodeId &&
         func.body?.includes(`${n.name}::`)
       );
@@ -2226,7 +2231,7 @@ export class RustAnalyzer extends BaseAnalyzer {
           const targetType = call.targetModule ? this.baseTypeName(call.targetModule) : undefined;
           const targetNode = targetType
             ? this.selectResolvedNode(
-                nodes.filter(n => ['struct', 'enum', 'trait'].includes(n.type) && n.name === targetType),
+                nodes.filter(n => ['struct', 'enum', 'trait'].includes(this.declarationKind(n)) && n.name === targetType),
                 func.filePath
               )
             : undefined;

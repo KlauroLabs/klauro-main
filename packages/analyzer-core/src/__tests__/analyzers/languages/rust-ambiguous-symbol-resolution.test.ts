@@ -135,3 +135,123 @@ describe('Rust ambiguous symbol resolution', () => {
     }
   });
 });
+
+describe('Rust reclassified struct resolution', () => {
+  let root: string;
+
+  const write = (relative: string, content: string) => {
+    const full = path.join(root, relative);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, content);
+  };
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-rust-reclassified-'));
+    write('Cargo.toml', [
+      '[workspace]',
+      'members = ["crates/delta", "crates/gamma", "crates/omega"]',
+      '',
+    ].join('\n'));
+    write('crates/delta/Cargo.toml', '[package]\nname = "delta"\nversion = "0.1.0"\n');
+    write('crates/gamma/Cargo.toml', '[package]\nname = "gamma"\nversion = "0.1.0"\n');
+    write('crates/omega/Cargo.toml', '[package]\nname = "omega"\nversion = "0.1.0"\n');
+    write('crates/delta/src/failure.rs', [
+      'pub struct Error {',
+      '    pub message: String,',
+      '}',
+      '',
+    ].join('\n'));
+    write('crates/gamma/src/failure.rs', [
+      'pub struct Error {',
+      '    pub code: u32,',
+      '}',
+      '',
+    ].join('\n'));
+    write('crates/delta/src/lib.rs', [
+      'pub mod failure;',
+      '',
+      'pub fn delta_handle() {',
+      '    failure::Error::custom();',
+      '}',
+      '',
+    ].join('\n'));
+    write('crates/gamma/src/lib.rs', [
+      'pub mod failure;',
+      '',
+      'pub fn gamma_handle() {',
+      '    failure::Error::custom();',
+      '}',
+      '',
+    ].join('\n'));
+    write('crates/omega/src/lib.rs', [
+      'pub fn omega_handle() {',
+      '    failure::Error::custom();',
+      '}',
+      '',
+    ].join('\n'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const analyzeOnce = async (): Promise<CASContribution> => {
+    return new RustAnalyzer().analyze({ projectPath: root });
+  };
+
+  const errorUsesEdges = (contribution: CASContribution, callerFile: string) => {
+    return (contribution.edges || []).filter(edge =>
+      edge.type === 'uses' &&
+      edge.id.startsWith('uses:') &&
+      /:\d+$/.test(edge.id) &&
+      edge.source.includes(callerFile) &&
+      /struct:[^:]+:Error/.test(edge.target)
+    );
+  };
+
+  it('reclassifies struct Error nodes to the error type while keeping the struct id', async () => {
+    const contribution = await analyzeOnce();
+
+    const errorNodes = (contribution.nodes || []).filter(node =>
+      node.id.startsWith('struct:') && node.name === 'Error'
+    );
+    expect(errorNodes.length).toBe(2);
+    for (const node of errorNodes) {
+      expect(node.type).toBe('error');
+    }
+  });
+
+  it('creates uses edges to struct types reclassified to semantic node types', async () => {
+    const contribution = await analyzeOnce();
+
+    const deltaEdges = errorUsesEdges(contribution, 'crates/delta/src/lib.rs');
+    expect(deltaEdges.length).toBeGreaterThan(0);
+    for (const edge of deltaEdges) {
+      expect(edge.target).toContain('crates/delta/src/failure.rs');
+    }
+
+    const gammaEdges = errorUsesEdges(contribution, 'crates/gamma/src/lib.rs');
+    expect(gammaEdges.length).toBeGreaterThan(0);
+    for (const edge of gammaEdges) {
+      expect(edge.target).toContain('crates/gamma/src/failure.rs');
+    }
+  });
+
+  it('falls back lexicographically for callers whose crate has no matching definition', async () => {
+    const contribution = await analyzeOnce();
+
+    const omegaEdges = errorUsesEdges(contribution, 'crates/omega/src/lib.rs');
+    expect(omegaEdges.length).toBeGreaterThan(0);
+    for (const edge of omegaEdges) {
+      expect(edge.target).toContain('crates/delta/src/failure.rs');
+    }
+  });
+
+  it('produces identical edges across repeated analyses', async () => {
+    const first = await analyzeOnce();
+    const second = await analyzeOnce();
+
+    expect((second.edges || []).map(edge => `${edge.id}|${edge.source}|${edge.target}`))
+      .toEqual((first.edges || []).map(edge => `${edge.id}|${edge.source}|${edge.target}`));
+  });
+});
