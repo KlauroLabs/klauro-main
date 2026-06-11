@@ -2,6 +2,8 @@
 
 This is the minimum security and privacy material needed before onboarding customers to hosted or self-hosted analyzer deployments.
 
+For the complete local data inventory, the local-only default guarantee, the full egress audit, cloud-AI opt-in semantics, and the deletion story, see `docs/SECURITY-PRIVACY.md`. The default analyzer mode is `local`; remote upload requires explicit opt-in (`analyzer.mode: "remote"`, `klauro remote-analyze`, or the remote MCP tools).
+
 ## What Runs Locally
 
 - Thin CLI.

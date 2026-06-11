@@ -78,7 +78,7 @@ export function defaultKlauroConfig(projectPath: string): KlauroConfig {
       name: path.basename(path.resolve(projectPath)),
     },
     analyzer: {
-      mode: 'remote',
+      mode: 'local',
       serverUrl: process.env.KLAURO_ANALYZER_URL || 'http://127.0.0.1:8787',
       selfHosted: false,
     },
@@ -253,7 +253,6 @@ export function resolveAnalysisId(loaded: LoadedKlauroConfig, fallback: string, 
 
 export function assertRemoteAnalyzerAllowed(loaded: LoadedKlauroConfig, serverUrl?: string): void {
   const config = loaded.config;
-  if (config.analyzer.mode !== 'remote') return;
   if (!config.policy.allowRemoteAnalyzer) {
     throw new Error('Remote analyzer is blocked by .klaurorc policy.allowRemoteAnalyzer=false');
   }

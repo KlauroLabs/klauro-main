@@ -5,7 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { buildUploadManifest } from './remote-source';
-import { writeDefaultKlauroConfig } from './klauro-config';
+import { assertRemoteAnalyzerAllowed, defaultKlauroConfig, writeDefaultKlauroConfig, type LoadedKlauroConfig } from './klauro-config';
 
 const repoRoot = path.resolve(__dirname, '..');
 const tsxBin = path.join(repoRoot, 'node_modules', '.bin', 'tsx');
@@ -63,6 +63,30 @@ test('customer CLI init and upload-manifest produce parseable onboarding artifac
     assert.ok(parsed.summary.included_files > 0);
     assert.ok(parsed.included_files.some((file: any) => file.path === 'app/main.py'));
   });
+});
+
+test('analyzer mode defaults to local so no source leaves the machine without explicit opt-in', () => {
+  const config = defaultKlauroConfig('/tmp/example-project');
+  assert.equal(config.analyzer.mode, 'local');
+});
+
+test('remote analyzer policy is enforced even when analyzer mode is local', () => {
+  const config = defaultKlauroConfig('/tmp/example-project');
+  config.policy.allowRemoteAnalyzer = false;
+  const loaded: LoadedKlauroConfig = { config, ignorePatterns: [] };
+
+  assert.throws(
+    () => assertRemoteAnalyzerAllowed(loaded, 'https://analyzer.example.test'),
+    /allowRemoteAnalyzer=false/
+  );
+
+  config.policy.allowRemoteAnalyzer = true;
+  config.policy.allowedAnalyzerHosts = ['https://allowed.example.test'];
+  assert.throws(
+    () => assertRemoteAnalyzerAllowed(loaded, 'https://analyzer.example.test'),
+    /allowedAnalyzerHosts/
+  );
+  assert.doesNotThrow(() => assertRemoteAnalyzerAllowed(loaded, 'https://allowed.example.test'));
 });
 
 async function withFixtureWorkspace(run: (workspace: { root: string; repo: string }) => void | Promise<void>): Promise<void> {
