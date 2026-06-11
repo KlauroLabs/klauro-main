@@ -4,6 +4,7 @@ import * as crypto from 'crypto';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import { setAICacheProjectScope } from '../../../packages/analyzer-core/src/ai/ai-cache';
 import { getAIConfig } from '../../../packages/analyzer-core/src/config/ai.config';
+import { validateElementDescription } from '../../../packages/analyzer-core/src/ai/element-description-validator';
 import type { CASOutput, CASNode } from '../../../packages/analyzer-core/src/types/cas.types';
 import { getProjectStorageDir, loadAnalysis, saveAnalysis } from './storage';
 
@@ -410,42 +411,20 @@ function cleanDescription(raw: string): string {
 }
 
 function validateDescription(description: string, target: ResolvedTarget): { ok: boolean; reason?: string } {
-  if (description.length < 35) return { ok: false, reason: 'too-short' };
-  if (description.length > 800) return { ok: false, reason: 'too-long' };
-  if (description.includes('**') || description.includes('`') || /^#+\s/.test(description)) return { ok: false, reason: 'markdown-formatting' };
-  const lower = description.toLowerCase();
-  const nameTokens = target.name
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(token => token.length > 2);
-  const marketingTerms = ungroundedMarketingTerms(description, nameTokens);
-  if (marketingTerms.length > 0) {
-    return { ok: false, reason: `unsupported-marketing-language: ${marketingTerms.join(', ')}` };
-  }
-  if (/\b(graph endpoints?|parent signals?|internal entry points?|graph structure|entry[- ]point mechanics|associated (?:graph )?endpoints?|(?:read|update|coordinate|process|analyze|delete)(?:,? (?:and )?(?:read|update|coordinate|process|analyze|delete))+ (?:actions|operations|paths)|operations for|centers on)\b/i.test(description)) {
-    return { ok: false, reason: 'structural-parser-language-instead-of-product-behavior' };
-  }
-  if (nameTokens.length > 0 && !nameTokens.some(token => lower.includes(token))) {
-    return { ok: false, reason: 'target-name-not-referenced' };
-  }
-  return { ok: true };
+  const relatedDomains = Array.isArray((target.target as any)?.related_domains)
+    ? (target.target as any).related_domains.filter((domain: unknown): domain is string => typeof domain === 'string')
+    : undefined;
+  return validateElementDescription(description, {
+    name: target.name,
+    relatedDomains,
+  }, {
+    minLength: 35,
+    maxLength: 800,
+  });
 }
 
 function isUsefulDescription(description: string, target: ResolvedTarget): boolean {
   return validateDescription(description, target).ok;
-}
-
-function ungroundedMarketingTerms(description: string, groundedTokens: string[]): string[] {
-  const pattern = /\b(plays a crucial role|plays a key role|robust|various|operations for|functionality|seamless(?:ly)?|comprehensive|efficient(?:ly)?|efficiency|productivity|compliant|compliance|advanced|streamline(?:s|d|ing)?|user-friendly|business value|improving operational|enhances?|reduces? costs?|best practices|scalable|secure by design)\b/gi;
-  const matches = Array.from(new Set((description.match(pattern) || []).map(match => match.toLowerCase().trim())));
-  if (matches.length === 0) return [];
-  const groundedStems = new Set(groundedTokens.filter(token => token.length >= 4).map(token => token.slice(0, 8)));
-  return matches.filter(match => {
-    const tokens = match.split(/\s+/);
-    if (tokens.length > 1) return true;
-    return !groundedStems.has(tokens[0].slice(0, 8));
-  });
 }
 
 function applyDescriptionToTarget(target: any, description: string, generatedAt: string, reason: string): void {

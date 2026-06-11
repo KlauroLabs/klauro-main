@@ -1106,7 +1106,7 @@ describe('architecture and capability inference', () => {
       description_generation: { status: 'deterministic_initial', attempted: false },
       category: 'core',
       operations: [],
-      related_entities: [],
+      related_entities: ['entity_invoice'],
       related_domains: ['invoice'],
       criticality: 'high',
       criticality_factors: [],
@@ -1123,12 +1123,12 @@ describe('architecture and capability inference', () => {
       }
     }
 
-    expect(capabilities[0].description).toBe('Invoice Management maintains invoice records, workflows, and relationships used by invoice behavior.');
+    expect(capabilities[0].description).toBe('Invoice Settlement maintains invoice records, workflows, and relationships used by invoice behavior.');
     expect(capabilities[0].description_source).toBe('manual');
     expect(capabilities[0].description_generation).toEqual(expect.objectContaining({
       status: 'deterministic_kept',
       attempted: true,
-      reason: 'curated-product-capability-description',
+      reason: expect.stringMatching(/^curated-product-capability-description \(was: .+\)$/),
     }));
   });
 
@@ -1170,7 +1170,7 @@ describe('architecture and capability inference', () => {
     expect(capabilities[0].description_generation).toEqual(expect.objectContaining({
       status: 'deterministic_kept',
       attempted: true,
-      reason: 'curated-product-capability-description',
+      reason: expect.stringMatching(/^curated-product-capability-description \(was: .+\)$/),
     }));
   });
 
@@ -3017,5 +3017,105 @@ describe('refinePrimaryDomain: industry refinement of generic structural classes
     };
     expect(orch.refinePrimaryDomain('unknown', 'some-app', capabilities, concepts, signal))
       .toBe('order-invoice-management');
+  });
+});
+
+describe('bare generic domain tokens never become the primary domain', () => {
+  const crossCuttingCapabilities = [
+    {
+      name: 'User Management',
+      description: 'Manage users',
+      category: 'core',
+      related_domains: ['user'],
+      related_entities: ['User'],
+      operations: [],
+    },
+  ];
+
+  it('rejects bare generic concept-fallback tokens like resource and command', () => {
+    const concepts = [
+      { name: 'admin' },
+      { name: 'zerac' },
+      { name: 'resource' },
+      { name: 'command' },
+    ];
+    const refined = orch.refinePrimaryDomain('admin', 'zerac-demo', crossCuttingCapabilities, concepts, { concepts: [], evidence: [] });
+    expect(refined).not.toBe('resource');
+    expect(refined).not.toBe('command');
+  });
+
+  it('rejects a bare generic extractor domain like resource and defers to capabilities', () => {
+    const refined = orch.refinePrimaryDomain('resource', 'some-app', crossCuttingCapabilities, [], { concepts: [], evidence: [] });
+    expect(refined).not.toBe('resource');
+  });
+
+  it('still accepts a semantic single-token concept fallback', () => {
+    const concepts = [{ name: 'admin' }, { name: 'pharmacy' }];
+    expect(orch.refinePrimaryDomain('unknown', 'some-app', [], concepts, { concepts: [], evidence: [] }))
+      .toBe('pharmacy');
+  });
+
+  it('does not reject composed domains containing a generic noun token', () => {
+    expect(orch.isBareGenericDomainNoun('resource-management')).toBe(false);
+    expect(orch.isBareGenericDomainNoun('resource')).toBe(true);
+    const capabilities = [
+      {
+        name: 'Resource Allocation',
+        description: 'Allocate shared resources to teams',
+        category: 'core',
+        related_domains: ['resource'],
+        related_entities: ['ResourcePool', 'Allocation'],
+        operations: [],
+      },
+      {
+        name: 'Resource Scheduling',
+        description: 'Schedule resource usage windows',
+        category: 'core',
+        related_domains: ['scheduling'],
+        related_entities: ['ResourcePool', 'Booking'],
+        operations: [],
+      },
+    ];
+    const concepts = [{ name: 'ResourcePool' }, { name: 'Allocation' }, { name: 'Booking' }];
+    const signal = { primaryDomain: 'resource-management', concepts: ['resource pool'], evidence: ['README.md'] };
+    expect(orch.refinePrimaryDomain('unknown', 'some-app', capabilities, concepts, signal))
+      .toBe('resource-management');
+  });
+});
+
+describe('reconcilePrimaryDomainWithAreas: bare-token primaries yield to composed area domains', () => {
+  it('replaces a single bare-token primary with the heaviest composed area domain', () => {
+    const areas = [
+      { area: 'admin-ui', domain: 'network-access-management', nodeCount: 843, share: 0.49 },
+      { area: 'internal', domain: 'network-access-management', nodeCount: 554, share: 0.32 },
+      { area: 'zerac', domain: 'user-identity-management', nodeCount: 274, share: 0.16 },
+    ];
+    const result = orch.reconcilePrimaryDomainWithAreas('resource', areas);
+    expect(result.primaryDomain).toBe('network-access-management');
+  });
+
+  it('keeps a composed primary that is compatible with the heaviest area domain', () => {
+    const areas = [
+      { area: 'src', domain: 'fleet-management', nodeCount: 900, share: 0.9 },
+    ];
+    const result = orch.reconcilePrimaryDomainWithAreas('fleet-vehicle-management', areas);
+    expect(result.primaryDomain).toBe('fleet-vehicle-management');
+  });
+
+  it('keeps a bare-token primary when the classified area share is marginal', () => {
+    const areas = [
+      { area: 'plugins', domain: 'billing-payments', nodeCount: 50, share: 0.1 },
+    ];
+    const result = orch.reconcilePrimaryDomainWithAreas('pharmacy', areas);
+    expect(result.primaryDomain).toBe('pharmacy');
+  });
+
+  it('never resolves to a junk bare-token area domain when a composed one exists', () => {
+    const areas = [
+      { area: 'apps', domain: 'use', nodeCount: 3024, share: 0.82 },
+      { area: 'packages', domain: 'billing-payments', nodeCount: 647, share: 0.17 },
+    ];
+    const result = orch.reconcilePrimaryDomainWithAreas('unknown', areas);
+    expect(result.primaryDomain).toBe('billing-payments');
   });
 });

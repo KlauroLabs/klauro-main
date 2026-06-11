@@ -142,6 +142,17 @@ function localOpenAIBaseURL(): string | undefined {
   return undefined;
 }
 
+export function isLocalAIProvider(): boolean {
+  if (process.env.KLAURO_OLLAMA_AUTO === 'true' || process.env.KLAURO_OLLAMA_AUTO === '1') return true;
+  if (process.env.OLLAMA_BASE_URL || process.env.LOCAL_OPENAI_BASE_URL) return true;
+  const baseURL = localOpenAIBaseURL();
+  return Boolean(baseURL && /(?:127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1\])/i.test(baseURL));
+}
+
+function defaultRequestTimeoutMs(): string {
+  return isLocalAIProvider() ? '120000' : '30000';
+}
+
 export function getAIConfig(): AIConfig {
   const openAICompatibleBaseURL = localOpenAIBaseURL();
   const config = {
@@ -159,7 +170,7 @@ export function getAIConfig(): AIConfig {
         (openAICompatibleBaseURL?.includes('127.0.0.1:11434') || openAICompatibleBaseURL?.includes('localhost:11434') ? 'qwen3:8b' : 'gpt-4o-mini'),
       maxTokens: parseInt(process.env.OPENAI_MAX_TOKENS || '2000'),
       temperature: parseFloat(process.env.OPENAI_TEMPERATURE || '0.3'),
-      timeout: parseInt(process.env.AI_TIMEOUT || '30000'),
+      timeout: parseInt(process.env.AI_TIMEOUT || defaultRequestTimeoutMs()),
       maxRetries: parseInt(process.env.AI_MAX_RETRIES || '3'),
       rateLimit: {
         requestsPerMinute: parseInt(process.env.OPENAI_RATE_LIMIT_RPM || '50'),

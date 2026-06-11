@@ -77,7 +77,7 @@ import { ChangeDetector } from './change-detector';
 import { buildUserJourneys } from './journey-builder';
 import { buildParadigmConformance } from './paradigm-conformance';
 import { buildDataLineage } from './data-lineage';
-import { isLanguageBuiltinName, isLanguageBuiltinExitPoint } from './language-builtins';
+import { isLanguageBuiltinName, isLanguageBuiltinExitPoint, isLanguageBuiltinDomainToken } from './language-builtins';
 import { buildProductMap } from './product-map';
 import { relativizeProjectPaths } from './relativize-project-paths';
 import { CallGraphBuilder } from './call-graph-builder';
@@ -94,7 +94,9 @@ import { AnalysisRunLog } from './run-log';
 import { EmbeddingPhase, type EmbeddingPhaseConfig } from '../embedding/embedding-phase';
 import { aiService } from '../../ai/ai-service';
 import { setAICacheProjectScope } from '../../ai/ai-cache';
-import { aiConfig, getAIConfig } from '../../config/ai.config';
+import { aiConfig, getAIConfig, isLocalAIProvider } from '../../config/ai.config';
+import { validateElementDescription as validateSharedElementDescription } from '../../ai/element-description-validator';
+import { filterPlausibleExternalServices } from '../../ai/external-service-plausibility';
 
 export type { CASOutput } from '../../types/cas.types';
 import * as fs from 'fs-extra';
@@ -6654,7 +6656,7 @@ export class AnalyzerOrchestrator {
     const configuredBudget = Number(process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS || '');
     const budgetMs = Number.isFinite(configuredBudget) && configuredBudget > 0
       ? configuredBudget
-      : 20000;
+      : isLocalAIProvider() ? 240000 : 20000;
     if (budgetMs <= 0) {
       this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'ai_skipped', false, 'budget-disabled', budgetMs);
       return;
@@ -6709,7 +6711,7 @@ export class AnalyzerOrchestrator {
         frameworks,
         libraries: libraryNames,
         databaseEntities,
-        externalServices,
+        externalServices: this.plausiblePromptExternalServices(systemName, externalServices),
         structuralTokens: this.structuralGroundingTokens(systemName, structuralFacts, databaseEntities),
       };
       const domainCandidates: string[] = [];
@@ -6735,6 +6737,9 @@ export class AnalyzerOrchestrator {
           : { ok: false as const, reason: 'missing-description' };
         if (elementValidation.ok && candidate) acceptedElements.set(target.id, candidate);
         else rejectedElements.set(target.id, elementValidation.reason || 'generated-description-failed-quality-gate');
+      }
+      if (rejectedElements.size > 0) {
+        console.error(`[Klauro] AI capability descriptions rejected on first pass: ${[...rejectedElements.entries()].map(([id, reason]) => `${id} (${reason})`).join('; ')}`);
       }
 
       if ((!validation.ok || rejectedElements.size > 0) && Date.now() - aiStartedAt < budgetMs) {
@@ -6794,7 +6799,11 @@ export class AnalyzerOrchestrator {
         }
       }
 
-      if (validation.ok) {
+      if (validation.ok && this.deterministicSystemDescriptionIsStronger(enhancedSystemPurpose, cleaned, interpretationFacts)) {
+        this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'deterministic_kept', true, 'deterministic-retained-stronger', budgetMs);
+        AnalyzerOrchestrator.aiInterpretationTimeouts = 0;
+        console.error('[Klauro] deterministic system description retained; AI replacement carried fewer grounded facts');
+      } else if (validation.ok) {
         enhancedSystemPurpose.inferred_description = cleaned;
         this.recordDescriptionGeneration(enhancedSystemPurpose, 'ai', 'ai_applied', true, undefined, budgetMs);
         AnalyzerOrchestrator.aiInterpretationTimeouts = 0;
@@ -6822,7 +6831,8 @@ export class AnalyzerOrchestrator {
         }
         const curated = this.curatedElementDescription(target);
         if (curated) {
-          this.applyElementDescription(target.id, curated, systemCapabilities, [], 'manual', 'deterministic_kept', true, 'curated-product-capability-description', budgetMs);
+          const firstPassReason = rejectedElements.get(target.id) || 'generated-description-failed-quality-gate';
+          this.applyElementDescription(target.id, curated, systemCapabilities, [], 'manual', 'deterministic_kept', true, `curated-product-capability-description (was: ${firstPassReason})`, budgetMs);
         } else {
           this.applyElementDescription(target.id, undefined, systemCapabilities, [], 'deterministic', 'ai_rejected', true, rejectedElements.get(target.id) || 'generated-description-failed-quality-gate', budgetMs);
         }
@@ -6856,6 +6866,41 @@ export class AnalyzerOrchestrator {
       }
       console.error(`[Klauro] AI interpretation skipped (${message}); keeping heuristic description`);
     }
+  }
+
+  private plausiblePromptExternalServices(systemName: string, externalServices: string[]): string[] {
+    const selfNames = [
+      systemName,
+      ...(this.activeAnalysisProjectPath ? this.activeAnalysisProjectPath.split(/[\\/]/).filter(Boolean).slice(-2) : []),
+    ];
+    return filterPlausibleExternalServices(externalServices, selfNames);
+  }
+
+  private deterministicSystemDescriptionIsStronger(
+    enhancedSystemPurpose: EnhancedSystemPurpose,
+    aiDescription: string,
+    facts: { externalServices?: string[]; structuralTokens?: string[] },
+  ): boolean {
+    if (process.env.KLAURO_AI_INTERPRETATION_KEEP_BETTER === 'false' || process.env.KLAURO_AI_INTERPRETATION_KEEP_BETTER === '0') {
+      return false;
+    }
+    const deterministic = (enhancedSystemPurpose.inferred_description || '').trim();
+    if (!deterministic || deterministic.length <= aiDescription.length) return false;
+    const vocabulary = new Set([
+      ...(facts.structuralTokens || []),
+      ...(facts.externalServices || [])
+        .map(service => service.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim())
+        .filter(service => service.length > 2),
+    ]);
+    const countGrounded = (text: string): number => {
+      const lower = text.toLowerCase();
+      let count = 0;
+      for (const token of vocabulary) {
+        if (lower.includes(token)) count += 1;
+      }
+      return count;
+    };
+    return countGrounded(deterministic) > countGrounded(aiDescription);
   }
 
   private structuralGroundingTokens(
@@ -6986,7 +7031,7 @@ export class AnalyzerOrchestrator {
     const configuredBudget = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS || '');
     const budgetMs = Number.isFinite(configuredBudget) && configuredBudget > 0
       ? configuredBudget
-      : 15000;
+      : isLocalAIProvider() ? 240000 : 15000;
     if (budgetMs <= 0) {
       this.recordElementDescriptionGeneration(capabilities, entities, 'deterministic', 'ai_skipped', false, 'budget-disabled', budgetMs);
       return;
@@ -7165,7 +7210,9 @@ export class AnalyzerOrchestrator {
               curatedDescription && description === curatedDescription ? 'manual' : 'ai',
               curatedDescription && description === curatedDescription ? 'deterministic_kept' : 'ai_applied',
               true,
-              curatedDescription && description === curatedDescription ? 'curated-product-capability-description' : undefined,
+              curatedDescription && description === curatedDescription
+                ? `curated-product-capability-description (was: ${repairedValidation.reason || 'generated-description-failed-quality-gate'})`
+                : undefined,
               budgetMs
             );
           } else {
@@ -7213,15 +7260,33 @@ export class AnalyzerOrchestrator {
         .split(/\s+/)
         .map(token => this.normalizeDomainToken(token))
         .filter(token => token && !this.isGenericCapabilityToken(token));
-      if (subjectTokens.length > 0) {
+      if (
+        subjectTokens.length > 0 &&
+        !subjectTokens.some(token => this.isCodeIdentifierSubjectToken(token)) &&
+        (target.relatedEntities || []).length > 0
+      ) {
         const subject = this.humanizeDomainKey(subjectTokens.join(' ')).toLowerCase();
+        const label = /\bmanagement\b/.test(key)
+          ? `${this.humanizeDomainKey(subjectTokens.join(' '))} Management`
+          : this.humanizeDomainKey(key);
         const domain = target.relatedDomains?.[0] && !this.isGenericCapabilityToken(target.relatedDomains[0])
           ? this.humanizeDomainKey(target.relatedDomains[0]).toLowerCase()
           : 'the surrounding product';
-        return `${this.humanizeDomainKey(subjectTokens.join(' '))} Management maintains ${subject} records, workflows, and relationships used by ${domain} behavior.`;
+        return `${label} maintains ${subject} records, workflows, and relationships used by ${domain} behavior.`;
       }
     }
     return undefined;
+  }
+
+  private isCodeIdentifierSubjectToken(token: string): boolean {
+    if (token.length <= 3) return true;
+    return new Set([
+      'impl', 'impls', 'util', 'utils', 'libs', 'mods', 'crate', 'crates', 'proc', 'procs',
+      'init', 'main', 'misc', 'temp', 'tmps', 'vars', 'func', 'funcs', 'iter', 'sync', 'async',
+      'macro', 'macros', 'trait', 'traits', 'struct', 'structs', 'enums', 'types', 'typedefs',
+      'param', 'params', 'args', 'deps', 'pkgs', 'bins', 'objs', 'ptrs', 'refs', 'vecs',
+      'stdlib', 'builtin', 'builtins', 'internals', 'srcs',
+    ]).has(token);
   }
 
   private entityDescriptionTarget(entity: CASDataEntity): DescriptionTarget {
@@ -7269,29 +7334,16 @@ export class AnalyzerOrchestrator {
   }
 
   private validateElementDescription(description: string, target: DescriptionTarget): { ok: boolean; reason?: string } {
-    const cleaned = this.cleanGeneratedDescriptionText(description);
-    if (cleaned.length < 50) return { ok: false, reason: 'too-short' };
-    if (cleaned.length > 420) return { ok: false, reason: 'too-long' };
-    if (/\*\*|`|^#+\s/m.test(cleaned)) return { ok: false, reason: 'markdown-formatting' };
-    if (/\b(operations for|functionality|centers on|graph endpoint|graph structure|coordinat(?:e|es|ing) operations|(?:read|process|coordinate|analyze|delete) behavior|(?:read|process|analyze|delete) paths?|coordinates? internal files|internal files|supports? tasks|agent-driven operations|operations and insights|quality of description analysis|review and understanding|Key capabilities|Data model|Entry points|Integrations):?\b/i.test(cleaned) ||
-      /\b(?:supports?|coordinates?|reads?|processes?|handles?|spans)\b/i.test(cleaned) ||
-      /\bby\s+(?:reading|processing|coordinating|handling)\b/i.test(cleaned)) {
-      return { ok: false, reason: 'generic-structural-phrase' };
-    }
-    if (/\b(seamless(?:ly)?|robust|comprehensive|various|crucial role|plays a key role|efficient(?:ly)?|efficiency|productivity|compliant|compliance|advanced|streamline(?:s|d|ing)?|user-friendly|business value|improving operational|enhanc(?:e|es|ing)|better understanding|insights(?: into)?|structured data and insights|reduces? costs?|best practices|scalable|secure by design|user experience)\b/i.test(cleaned)) {
-      return { ok: false, reason: 'unsupported-marketing-language' };
-    }
-    const groundedTokens = [
-      ...target.name.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/),
-      ...(target.relatedDomains || []),
-      ...(target.fields || []).map(field => field.split(':')[0]),
-    ]
-      .map(token => this.normalizeDomainToken(token.toLowerCase()))
-      .filter(token => token.length > 2 && !this.isGenericCapabilityToken(token));
-    if (groundedTokens.length === 0) return { ok: true };
-    const lower = description.toLowerCase();
-    if (!groundedTokens.some(token => lower.includes(token))) return { ok: false, reason: 'target-not-grounded' };
-    return { ok: true };
+    return validateSharedElementDescription(this.cleanGeneratedDescriptionText(description), {
+      name: target.name,
+      relatedDomains: target.relatedDomains,
+      fields: target.fields,
+    }, {
+      minLength: 50,
+      maxLength: 420,
+      normalizeToken: token => this.normalizeDomainToken(token),
+      isGenericToken: token => this.isGenericCapabilityToken(token),
+    });
   }
 
   private cleanGeneratedDescriptionText(description: string): string {
@@ -7832,7 +7884,7 @@ export class AnalyzerOrchestrator {
       capabilities: topCapabilities,
       domainConcepts: conceptPool,
       databaseEntities: databaseEntities.slice(0, 15),
-      externalServices: externalServices.slice(0, 10),
+      externalServices: this.plausiblePromptExternalServices(systemName, externalServices).slice(0, 10),
     };
   }
 
@@ -8024,6 +8076,23 @@ export class AnalyzerOrchestrator {
     return nameTokens.includes(normalized);
   }
 
+  private isBareGenericDomainNoun(label: string): boolean {
+    const normalized = (label || '').toLowerCase().trim();
+    if (/[-\s_]/.test(normalized)) return false;
+    return new Set([
+      'resource', 'resources', 'item', 'items', 'record', 'records',
+      'entity', 'entities', 'object', 'objects', 'model', 'models',
+      'list', 'lists', 'detail', 'details', 'group', 'groups',
+      'type', 'types', 'status', 'statuses', 'value', 'values',
+      'info', 'usage', 'config', 'configs', 'setting', 'settings',
+      'field', 'fields', 'entry', 'entries', 'result', 'results',
+      'request', 'requests', 'response', 'responses', 'message', 'messages',
+      'manager', 'managers', 'helper', 'helpers', 'util', 'utils',
+      'command', 'commands', 'action', 'actions', 'event', 'events',
+      'job', 'jobs', 'queue', 'queues', 'state', 'states',
+    ]).has(normalized);
+  }
+
   private refinePrimaryDomain(
     inferredDomain: string,
     systemName: string | undefined,
@@ -8054,7 +8123,8 @@ export class AnalyzerOrchestrator {
       }
       return normalizedCapabilityDomain;
     }
-    if (projectTextSignal.primaryDomain && !this.isGenericDomainToken(projectTextSignal.primaryDomain)) {
+    if (projectTextSignal.primaryDomain && !this.isGenericDomainToken(projectTextSignal.primaryDomain) &&
+      !this.isBareGenericDomainNoun(projectTextSignal.primaryDomain)) {
       if ((this.isBroadProjectTextDomain(projectTextSignal.primaryDomain) ||
         this.isNonSemanticDomainLabel(projectTextSignal.primaryDomain, systemName)) && capabilityDomain) {
         return capabilityDomain;
@@ -8064,7 +8134,8 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    if (inferredDomain && inferredDomain !== 'unknown' && !this.isGenericDomainToken(inferredDomain)) {
+    if (inferredDomain && inferredDomain !== 'unknown' && !this.isGenericDomainToken(inferredDomain) &&
+      !this.isBareGenericDomainNoun(inferredDomain)) {
       if ((this.isBroadProjectTextDomain(inferredDomain) ||
         this.isNarrowCrossCuttingDomain(inferredDomain) ||
         this.isNonSemanticDomainLabel(inferredDomain, systemName)) && capabilityDomain) {
@@ -8077,6 +8148,7 @@ export class AnalyzerOrchestrator {
 
     const concept = coreConcepts.find(candidate =>
       !this.isGenericDomainToken(candidate.name) &&
+      !this.isBareGenericDomainNoun(candidate.name) &&
       !this.isNonSemanticDomainLabel(candidate.name, systemName));
     if (concept) return concept.name.toLowerCase().replace(/\s+/g, '-');
 
@@ -8174,10 +8246,24 @@ export class AnalyzerOrchestrator {
     let resolved = primaryDomain;
     const primaryIsUseful = Boolean(primaryDomain) &&
       primaryDomain !== 'unknown' &&
-      !this.isGenericDomainToken(primaryDomain);
+      !this.isGenericDomainToken(primaryDomain) &&
+      !this.isBareGenericDomainNoun(primaryDomain);
     const heaviest = ordered[0];
+    const heaviestUseful = ordered.find(([domain]) =>
+      this.isComposedDomainLabel(domain) &&
+      !this.isGenericDomainToken(domain) &&
+      !this.isBareGenericDomainNoun(domain));
     if (!primaryIsUseful) {
-      resolved = heaviest[0];
+      resolved = (heaviestUseful || heaviest)[0];
+    } else if (
+      !this.isComposedDomainLabel(primaryDomain) &&
+      heaviestUseful &&
+      heaviestUseful[1].share >= 0.3
+    ) {
+      // A single bare-token primary (a concept-fallback label like 'resource'
+      // or 'command') carries far less evidence than a composed structural
+      // classification of the repo's heaviest code area; prefer the area domain.
+      resolved = heaviestUseful[0];
     } else if (!this.areDomainsCompatible(primaryDomain, heaviest[0]) && this.isComposedDomainLabel(heaviest[0])) {
       const primaryGroup = ordered.find(([domain]) => this.areDomainsCompatible(primaryDomain, domain));
       if (primaryGroup) resolved = heaviest[0];
@@ -11386,7 +11472,8 @@ export class AnalyzerOrchestrator {
       .split(/[^a-z0-9]+/)
       .map(token => this.normalizeDomainToken(token))
       .filter(token => token.length > 2)
-      .filter(token => !this.isGenericCapabilityToken(token));
+      .filter(token => !this.isGenericCapabilityToken(token))
+      .filter(token => !isLanguageBuiltinDomainToken(token));
   }
 
   private normalizeDomainToken(token: string): string {
@@ -11724,7 +11811,8 @@ export class AnalyzerOrchestrator {
       .split(/[^a-z0-9]+/)
       .map(token => this.normalizeDomainToken(token))
       .filter(token => token.length > 2)
-      .filter(token => !this.isGenericCapabilityToken(token));
+      .filter(token => !this.isGenericCapabilityToken(token))
+      .filter(token => !isLanguageBuiltinDomainToken(token));
 
     if (tokens.length === 0) return undefined;
     return tokens.find(token => !/^(app|bin|console|command|event|message|handler|handlers)$/.test(token)) || tokens[0];

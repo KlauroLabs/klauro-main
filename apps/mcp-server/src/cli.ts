@@ -21,6 +21,7 @@ import { buildSupportBundle, formatSupportBundleResult } from './support-bundle'
 import { formatFullPurgeReport, formatProjectPurgeReport, purgeAll, purgeProject, resolvePurgeRoots } from './purge';
 import { getAnalysisRunLogPath } from '../../../packages/analyzer-core/src/analyzer/core/run-log';
 import { formatBuildIdentity, getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
+import { isLocalAIProvider } from '../../../packages/analyzer-core/src/config/ai.config';
 import * as fs from 'fs-extra';
 import * as readline from 'readline';
 
@@ -425,11 +426,16 @@ async function withAnalysisFocus<T>(focus: ParsedArgs['analysisFocus'], fn: () =
       process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = 'false';
       process.env.KLAURO_EMBEDDING_ENABLED = 'false';
     } else if (focus === 'ui-overview') {
+      // Local providers (ollama qwen-class reasoning models) need a wall budget
+      // that fits one full combined call plus one repair at observed latency
+      // (~35-60s per call with a 120s per-request timeout). Cloud providers
+      // keep the tighter budgets.
+      const localProvider = isLocalAIProvider();
       process.env.KLAURO_AI_INTERPRETATION = process.env.KLAURO_AI_INTERPRETATION || 'true';
       process.env.KLAURO_AI_INTERPRETATION_FORCE = process.env.KLAURO_AI_INTERPRETATION_FORCE || 'true';
       process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP = 'false';
-      process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS = process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS || '45000';
-      process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS || '90000';
+      process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS = process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS || (localProvider ? '240000' : '45000');
+      process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS || (localProvider ? '240000' : '90000');
       process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE || '4';
       process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS || 'true';
       process.env.KLAURO_EMBEDDING_ENABLED = 'false';

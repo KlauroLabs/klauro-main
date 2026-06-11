@@ -222,3 +222,58 @@ test('manual element descriptions retry once and store the repaired grounded ans
     await fs.remove(storage);
   }
 });
+
+test('manual element descriptions reject generic filler word salad that the validator previously admitted', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-description-filler-'));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-description-storage-'));
+  const previousStorage = process.env.KLAURO_STORAGE_PATH;
+  const previousLocal = process.env.AI_LOCAL_ENABLED;
+  process.env.KLAURO_STORAGE_PATH = storage;
+  process.env.AI_LOCAL_ENABLED = 'true';
+
+  const cas: CASOutput = {
+    cas_version: '1.10.0',
+    analysis_timestamp: new Date().toISOString(),
+    analysis_id: 'analysis-description-filler-test',
+    system: { id: 'system-test', name: 'gateway', type: 'service', root_path: root },
+    nodes: [],
+    edges: [],
+    analyzer_contributions: [],
+    progressive_levels: { levels: {}, level_definitions: [] } as any,
+    system_capabilities: [{
+      id: 'cap_zerac',
+      name: 'Zerac Management',
+      description: 'Zerac Management covers process paths; spans zerac.',
+      category: 'core',
+      criticality: 'medium',
+      criticality_factors: [],
+      operations: [],
+      related_entities: [],
+      related_domains: ['zerac'],
+    }] as any,
+  };
+
+  const originalGenerate = aiService.generateComponentDescription;
+  aiService.generateComponentDescription = async () =>
+    'Zerac Management coordinates the integration of zerac-related components and protocol agents to ensure secure communication. It facilitates the interaction between zerac services and protocol modules to support secure data transmission and session management.';
+
+  try {
+    await saveAnalysis(root, cas);
+    await assert.rejects(
+      () => generateElementDescription({
+        projectPath: root,
+        target: 'Zerac Management',
+        targetKind: 'capability',
+      }),
+      /low-quality or ungrounded description/,
+    );
+  } finally {
+    aiService.generateComponentDescription = originalGenerate;
+    if (previousStorage === undefined) delete process.env.KLAURO_STORAGE_PATH;
+    else process.env.KLAURO_STORAGE_PATH = previousStorage;
+    if (previousLocal === undefined) delete process.env.AI_LOCAL_ENABLED;
+    else process.env.AI_LOCAL_ENABLED = previousLocal;
+    await fs.remove(root);
+    await fs.remove(storage);
+  }
+});
