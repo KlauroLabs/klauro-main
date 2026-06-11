@@ -68,6 +68,7 @@ interface NestController {
   interceptors: string[];
   pipes: string[];
   dependencies: string[];
+  decorators: string[];
 }
 
 interface NestRoute {
@@ -79,6 +80,13 @@ interface NestRoute {
   guards: string[];
   pipes: string[];
   interceptors: string[];
+  decorators: string[];
+}
+
+interface NestGlobalGuardRegistration {
+  guardName: string;
+  file: string;
+  appScope: string | null;
 }
 
 interface NestProvider {
@@ -104,6 +112,7 @@ interface NestMiddleware {
 
 export class NestJSAnalyzer extends BaseAnalyzer {
   private callGraphExtractor?: EnhancedCallGraphExtractor;
+  private globalGuardCache = new Map<string, NestGlobalGuardRegistration[]>();
 
   constructor() {
     super(
@@ -164,7 +173,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     this.callGraphExtractor = new EnhancedCallGraphExtractor(context.projectPath);
 
     const modules = await this.analyzeModules([file], context.projectPath, allNodes, edges, newNodes);
-    const controllers = await this.analyzeControllers([file], context.projectPath, allNodes, edges, entryPoints, enhancedNodes, newNodes);
+    const incrementalGlobalGuards = await this.detectGlobalGuardRegistrations([file], context.projectPath);
+    const controllers = await this.analyzeControllers([file], context.projectPath, allNodes, edges, entryPoints, enhancedNodes, newNodes, incrementalGlobalGuards);
     const providers = await this.analyzeProviders([file], context.projectPath, allNodes, edges, enhancedNodes, newNodes);
     const guards = await this.analyzeGuards([file], context.projectPath, allNodes, edges, enhancedNodes, newNodes);
     const middleware = await this.analyzeMiddleware([file], context.projectPath, allNodes, edges, enhancedNodes, newNodes);
@@ -228,7 +238,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       timings['modules'] = Date.now() - t;
 
       t = Date.now();
-      const controllers = await this.analyzeControllers(nestFiles, context.projectPath, allNodes, edges, entryPoints, enhancedNodes, newNodes);
+      const globalGuards = await this.detectGlobalGuardRegistrations(nestFiles, context.projectPath);
+      const controllers = await this.analyzeControllers(nestFiles, context.projectPath, allNodes, edges, entryPoints, enhancedNodes, newNodes, globalGuards);
       timings['controllers'] = Date.now() - t;
 
       t = Date.now();
@@ -349,6 +360,90 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     return modules;
   }
 
+  /**
+   * Detects guards registered for every route of a Nest application rather
+   * than via per-controller decorators: APP_GUARD providers in modules and
+   * app.useGlobalGuards(...) calls in bootstrap files. In monorepos that
+   * follow the apps/<name> layout, a registration inside an app directory is
+   * scoped to that app; registrations in shared code apply project-wide.
+   */
+  private async detectGlobalGuardRegistrations(
+    files: string[],
+    projectPath: string
+  ): Promise<NestGlobalGuardRegistration[]> {
+    const cached = this.globalGuardCache.get(projectPath);
+    if (cached) return cached;
+
+    const registrations: NestGlobalGuardRegistration[] = [];
+    // Global guard registrations often live in shared library modules that
+    // sibling-root scope filters exclude from this analyzer's file list, so
+    // scan the whole project for module/bootstrap files independently.
+    let projectWideCandidates: string[] = [];
+    try {
+      projectWideCandidates = await glob(['**/*{module,main,bootstrap}*.{ts,js}'], {
+        cwd: projectPath,
+        ignore: [
+          'node_modules/**', '**/node_modules/**',
+          'dist/**', '**/dist/**',
+          'build/**', '**/build/**',
+          'vendor/**', '**/vendor/**',
+          'coverage/**', '**/coverage/**',
+          '**/*.spec.ts', '**/*.test.ts', '**/test/**',
+        ],
+        nodir: true,
+      });
+    } catch {
+      projectWideCandidates = [];
+    }
+    const candidateFiles = Array.from(new Set([
+      ...files.filter(file => /(\bmodule\b|\.module\.|\bmain\b|\.main\.|bootstrap)/i.test(file)),
+      ...projectWideCandidates,
+    ]));
+    for (const file of candidateFiles) {
+      try {
+        const fullPath = path.join(projectPath, file);
+        const stat = await fs.stat(fullPath);
+        if (!stat.isFile()) continue;
+        const content = await fs.readFile(fullPath, 'utf-8');
+        if (!content.includes('APP_GUARD') && !content.includes('useGlobalGuards')) continue;
+
+        const appScope = this.appScopeForFile(file);
+        const providerBlocks = content.match(/\{[^{}]*APP_GUARD[^{}]*\}/g) || [];
+        for (const block of providerBlocks) {
+          const target = block.match(/use(?:Class|Existing)\s*:\s*([A-Za-z0-9_]+)/);
+          if (target) registrations.push({ guardName: target[1], file, appScope });
+        }
+        const globalCalls = content.match(/useGlobalGuards\(([^)]*)\)/g) || [];
+        for (const call of globalCalls) {
+          const args = call.slice(call.indexOf('(') + 1, -1);
+          const constructed = [...args.matchAll(/new\s+([A-Za-z0-9_]+)/g)].map(match => match[1]);
+          const bare = constructed.length > 0
+            ? []
+            : args.split(',').map(token => token.trim()).filter(token => /^[A-Za-z_][A-Za-z0-9_]*$/.test(token));
+          for (const guardName of [...constructed, ...bare]) {
+            registrations.push({ guardName, file, appScope });
+          }
+        }
+      } catch {
+        continue;
+      }
+    }
+    const deduped = registrations.filter((registration, index) =>
+      registrations.findIndex(other => other.guardName === registration.guardName && other.appScope === registration.appScope) === index);
+    this.globalGuardCache.set(projectPath, deduped);
+    return deduped;
+  }
+
+  private appScopeForFile(file: string): string | null {
+    const normalized = file.replace(/\\/g, '/');
+    const match = normalized.match(/^(apps\/[^/]+\/)/);
+    return match ? match[1] : null;
+  }
+
+  private isAnonymousOptOutDecorator(name: string): boolean {
+    return /^(Public|IsPublic|AllowAnonymous|AllowAnonymousRequest|SkipAuth|SkipAuthGuard|SkipJwtAuth|NoAuth|Anonymous|Unprotected|AllowUnauthorized(Request)?)$/i.test(name);
+  }
+
   private async analyzeControllers(
     files: string[],
     projectPath: string,
@@ -356,7 +451,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     edges: CASEdge[],
     entryPoints: any[],
     enhancedNodes: CASNode[],
-    newNodes: CASNode[]
+    newNodes: CASNode[],
+    globalGuards: NestGlobalGuardRegistration[] = []
   ): Promise<NestController[]> {
     const controllers: NestController[] = [];
     const controllerFiles = files.filter(f => f.includes('.controller.'));
@@ -474,7 +570,15 @@ export class NestJSAnalyzer extends BaseAnalyzer {
               'structural'
             ));
 
-            const allGuards = [...new Set([...controllerInfo.guards, ...route.guards])];
+            const optedOutOfGlobalGuards = [...route.decorators, ...controllerInfo.decorators]
+              .some(decorator => this.isAnonymousOptOutDecorator(decorator));
+            const controllerFile = controllerInfo.filePath.replace(/\\/g, '/');
+            const applicableGlobalGuards = optedOutOfGlobalGuards
+              ? []
+              : globalGuards
+                .filter(registration => !registration.appScope || controllerFile.startsWith(registration.appScope))
+                .map(registration => registration.guardName);
+            const allGuards = [...new Set([...controllerInfo.guards, ...route.guards, ...applicableGlobalGuards])];
 
             const methodNodeId = nodes.find(n =>
               n.name === route.handlerName &&
@@ -501,6 +605,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                 handler: route.handlerName,
                 parameters: route.parameters,
                 guards: allGuards,
+                global_guards: applicableGlobalGuards,
                 pipes: route.pipes,
                 interceptors: route.interceptors
               },
@@ -1653,7 +1758,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
             guards,
             interceptors,
             pipes,
-            dependencies: this.extractConstructorDependencies(node)
+            dependencies: this.extractConstructorDependencies(node),
+            decorators: this.extractAllDecoratorNames(node.decorators)
           };
         }
       }
@@ -1865,7 +1971,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
               parameters,
               guards,
               pipes,
-              interceptors
+              interceptors,
+              decorators: this.extractAllDecoratorNames(member.decorators)
             });
           }
         }
@@ -1958,6 +2065,12 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     }
 
     return metadata;
+  }
+
+  private extractAllDecoratorNames(decorators: any[] | undefined): string[] {
+    return (decorators || [])
+      .map((dec: any) => dec.expression?.callee?.name || dec.expression?.name)
+      .filter((name: any): name is string => typeof name === 'string');
   }
 
   private extractClassDecorators(classNode: any, decoratorName: string): string[] {
