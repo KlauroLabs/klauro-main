@@ -272,6 +272,18 @@ interface RustParameter {
   lineNumber: number;
 }
 
+interface RustFileExtraction {
+  fullPath: string;
+  structs: RustStruct[];
+  enums: RustEnum[];
+  traits: RustTrait[];
+  impls: RustImpl[];
+  functions: RustFunction[];
+  constants: RustConstant[];
+  statics: RustStatic[];
+  types: RustTypeAlias[];
+}
+
 export class RustAnalyzer extends BaseAnalyzer {
   private actixFrameworkDetected = false;
   private rocketFrameworkDetected = false;
@@ -335,11 +347,12 @@ export class RustAnalyzer extends BaseAnalyzer {
   }
 
   async getRelevantFiles(projectPath: string): Promise<string[]> {
-    return glob(['**/*.rs'], {
+    const files = await glob(['**/*.rs'], {
       cwd: projectPath,
       ignore: this.getIgnorePatterns({ projectPath }),
       nodir: true
     });
+    return files.sort();
   }
 
   async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
@@ -353,7 +366,10 @@ export class RustAnalyzer extends BaseAnalyzer {
 
     await this.detectProjectType(context.projectPath);
     this.createFileNode(context.relativePath, context.filePath, nodes, context);
-    await this.analyzeFile(context.filePath, nodes, edges, entryPoints, exitPoints, methodCalls, context);
+    const extraction = await this.extractFileElements(context.filePath, nodes, edges, entryPoints, context);
+    if (extraction) {
+      this.linkFileElements(extraction, nodes, edges, new Set(edges.map(edge => edge.id)), exitPoints, methodCalls);
+    }
 
     const imports = [...content.matchAll(/^\s*(?:pub\s+)?use\s+([^;]+);/gm)].map(match => match[1].trim());
     const exports = nodes
@@ -386,16 +402,23 @@ export class RustAnalyzer extends BaseAnalyzer {
       const libraries: any[] = [];
       await this.extractDependencies(context.projectPath, libraries);
 
-      const rustFiles = await glob(['**/*.rs'], {
+      const rustFiles = (await glob(['**/*.rs'], {
         cwd: context.projectPath,
         ignore: this.getIgnorePatterns(context),
         nodir: true
-      });
+      })).sort();
 
+      const extractions: RustFileExtraction[] = [];
       for (const file of rustFiles) {
         const fullPath = path.resolve(context.projectPath, file);
         this.createFileNode(file, fullPath, nodes, context);
-        await this.analyzeFile(fullPath, nodes, edges, entryPoints, exitPoints, methodCalls, context);
+        const extraction = await this.extractFileElements(fullPath, nodes, edges, entryPoints, context);
+        if (extraction) extractions.push(extraction);
+      }
+
+      const edgeIds = new Set(edges.map(edge => edge.id));
+      for (const extraction of extractions) {
+        this.linkFileElements(extraction, nodes, edges, edgeIds, exitPoints, methodCalls);
       }
 
       this.createExitPointsForLibraries(libraries, exitPoints, nodes);
@@ -562,11 +585,11 @@ export class RustAnalyzer extends BaseAnalyzer {
     if (this.crateManifestProjectPath === projectPath) return;
     this.crateManifestProjectPath = projectPath;
     this.crateNamesByDir = new Map<string, string>();
-    const manifestFiles = await glob(['**/Cargo.toml'], {
+    const manifestFiles = (await glob(['**/Cargo.toml'], {
       cwd: projectPath,
       ignore: this.getIgnorePatterns({ projectPath }),
       nodir: true
-    });
+    })).sort();
     for (const manifestFile of manifestFiles) {
       try {
         const content = await fs.readFile(path.resolve(projectPath, manifestFile), 'utf-8');
@@ -597,17 +620,22 @@ export class RustAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  private cliEntryMetadata(relativePath: string): Record<string, any> {
-    const posixPath = relativePath.split(path.sep).join('/');
-    let crateDir = '';
-    let crate: string | undefined;
+  private crateContextForPath(posixPath: string): { dir: string; name: string } | undefined {
+    let context: { dir: string; name: string } | undefined;
     for (const [dir, name] of this.crateNamesByDir) {
       if (dir !== '' && posixPath !== dir && !posixPath.startsWith(`${dir}/`)) continue;
-      if (crate === undefined || dir.length >= crateDir.length) {
-        crateDir = dir;
-        crate = name;
+      if (context === undefined || dir.length > context.dir.length) {
+        context = { dir, name };
       }
     }
+    return context;
+  }
+
+  private cliEntryMetadata(relativePath: string): Record<string, any> {
+    const posixPath = relativePath.split(path.sep).join('/');
+    const crateContext = this.crateContextForPath(posixPath);
+    const crateDir = crateContext?.dir ?? '';
+    let crate = crateContext?.name;
     if (!crate && this.projectName) crate = this.projectName;
 
     const pathInCrate = crateDir ? posixPath.slice(crateDir.length + 1) : posixPath;
@@ -782,62 +810,48 @@ export class RustAnalyzer extends BaseAnalyzer {
     }
   }
 
-  private async analyzeFile(
+  private async extractFileElements(
     fullPath: string,
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: CASEntryPoint[],
-    exitPoints: CASExitPoint[],
-    methodCalls: CASMethodCall[],
     context: AnalysisContext
-  ): Promise<void> {
+  ): Promise<RustFileExtraction | undefined> {
     try {
       const content = await fs.readFile(fullPath, 'utf-8');
       const relativePath = path.relative(context.projectPath, fullPath);
 
-      // Parse modules
-      const modules = await this.extractModules(content, relativePath, nodes);
-
-      // Parse uses
-      const uses = await this.extractUses(content, relativePath, nodes);
-
-      // Parse structs
+      await this.extractModules(content, relativePath, nodes);
+      await this.extractUses(content, relativePath, nodes);
       const structs = await this.extractStructs(content, relativePath, nodes, edges);
-
-      // Parse enums
       const enums = await this.extractEnums(content, relativePath, nodes);
-
-      // Parse traits
       const traits = await this.extractTraits(content, relativePath, nodes);
-
-      // Parse impls
       const impls = await this.extractImpls(content, relativePath, nodes, edges);
-
-      // Parse functions
       const functions = await this.extractFunctions(content, relativePath, nodes, entryPoints);
-
-      // Extract CLI subcommands if clap/structopt detected
       this.extractCliSubcommands(content, relativePath, nodes, entryPoints);
-
-      // Parse constants
       const constants = await this.extractConstants(content, relativePath, nodes);
-
-      // Parse statics
       const statics = await this.extractStatics(content, relativePath, nodes);
-
-      // Parse type aliases
       const types = await this.extractTypes(content, relativePath, nodes);
 
-      // Create relationships
-      this.createRelationships(nodes, edges, structs, enums, traits, impls, functions, constants, statics, types);
-      this.createMethodCalls(functions, nodes, methodCalls);
-
-      // Create exit points from function calls
-      this.createExitPointsFromFunctions(functions, fullPath, exitPoints, nodes);
-
+      return { fullPath, structs, enums, traits, impls, functions, constants, statics, types };
     } catch (error) {
       console.warn(`Failed to analyze file ${fullPath}:`, error);
+      return undefined;
     }
+  }
+
+  private linkFileElements(
+    extraction: RustFileExtraction,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    edgeIds: Set<string>,
+    exitPoints: CASExitPoint[],
+    methodCalls: CASMethodCall[]
+  ): void {
+    const { fullPath, structs, enums, traits, impls, functions, constants, statics, types } = extraction;
+    this.createRelationships(nodes, edges, edgeIds, structs, enums, traits, impls, functions, constants, statics, types);
+    this.createMethodCalls(functions, nodes, methodCalls);
+    this.createExitPointsFromFunctions(functions, fullPath, exitPoints, nodes);
   }
 
   private async extractModules(content: string, relativePath: string, nodes: CASNode[]): Promise<RustModule[]> {
@@ -1060,6 +1074,43 @@ export class RustAnalyzer extends BaseAnalyzer {
       .split('::')
       .pop()
       ?.trim() || typeName.trim();
+  }
+
+  private relativeSourcePath(file: string | undefined): string {
+    if (!file) return '';
+    const posix = file.split(path.sep).join('/');
+    const root = this.crateManifestProjectPath ? this.crateManifestProjectPath.split(path.sep).join('/') : '';
+    if (root && posix.startsWith(`${root}/`)) return posix.slice(root.length + 1);
+    return posix;
+  }
+
+  private crateForSourceFile(file: string | undefined): string | undefined {
+    const relative = this.relativeSourcePath(file);
+    if (!relative) return undefined;
+    return this.crateContextForPath(relative)?.name;
+  }
+
+  private selectResolvedNode(candidates: CASNode[], callerFilePath: string): CASNode | undefined {
+    if (candidates.length <= 1) return candidates[0];
+    const callerRelative = this.relativeSourcePath(callerFilePath);
+    const callerCrate = this.crateForSourceFile(callerFilePath);
+    const rankOf = (node: CASNode): number => {
+      const nodeRelative = this.relativeSourcePath(node.source?.file);
+      if (nodeRelative === callerRelative) return 0;
+      if (callerCrate && this.crateForSourceFile(node.source?.file) === callerCrate) return 1;
+      return 2;
+    };
+    return [...candidates].sort((a, b) => {
+      const rankDelta = rankOf(a) - rankOf(b);
+      if (rankDelta !== 0) return rankDelta;
+      const fileA = this.relativeSourcePath(a.source?.file);
+      const fileB = this.relativeSourcePath(b.source?.file);
+      if (fileA !== fileB) return fileA < fileB ? -1 : 1;
+      const lineA = a.source?.line ?? 0;
+      const lineB = b.source?.line ?? 0;
+      if (lineA !== lineB) return lineA - lineB;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    })[0];
   }
 
   private extractDocumentation(lines: string[], declarationLine: number, filePath: string): CASDocumentation | undefined {
@@ -2069,6 +2120,7 @@ export class RustAnalyzer extends BaseAnalyzer {
   private createRelationships(
     nodes: CASNode[],
     edges: CASEdge[],
+    edgeIds: Set<string>,
     structs: RustStruct[],
     enums: RustEnum[],
     traits: RustTrait[],
@@ -2089,12 +2141,16 @@ export class RustAnalyzer extends BaseAnalyzer {
 	            if (func.isPublic) {
 	              const targetNodeId = this.findRustFunctionNodeId(nodes, func);
 	              if (targetNodeId) {
-	                edges.push(this.createEdge(
-	                  `struct_func:${structNode.id}:${targetNodeId}`,
-	                  structNode.id,
-	                  targetNodeId,
-	                  'uses'
-	                ));
+	                const edgeId = `struct_func:${structNode.id}:${targetNodeId}`;
+	                if (!edgeIds.has(edgeId)) {
+	                  edgeIds.add(edgeId);
+	                  edges.push(this.createEdge(
+	                    edgeId,
+	                    structNode.id,
+	                    targetNodeId,
+	                    'uses'
+	                  ));
+	                }
 	              }
 	            }
 	          }
@@ -2112,12 +2168,16 @@ export class RustAnalyzer extends BaseAnalyzer {
             if (impl.traitName === trait.name) {
               const implNode = nodes.find(n => n.id === `impl:${impl.filePath}:${impl.targetType}${impl.traitName ? `:${impl.traitName}` : ''}`);
               if (implNode) {
-                edges.push(this.createEdge(
-                  `trait_impl:${traitNode.id}:${implNode.id}`,
-                  traitNode.id,
-                  implNode.id,
-                  'implemented_by'
-                ));
+                const edgeId = `trait_impl:${traitNode.id}:${implNode.id}`;
+                if (!edgeIds.has(edgeId)) {
+                  edgeIds.add(edgeId);
+                  edges.push(this.createEdge(
+                    edgeId,
+                    traitNode.id,
+                    implNode.id,
+                    'implemented_by'
+                  ));
+                }
               }
             }
           }
@@ -2152,8 +2212,8 @@ export class RustAnalyzer extends BaseAnalyzer {
       );
       for (const referencedTypeNode of referencedTypeNodes) {
         const edgeId = `uses:${callerNodeId}:${referencedTypeNode.id}`;
-        const existingEdge = edges.find(e => e.id === edgeId);
-        if (!existingEdge) {
+        if (!edgeIds.has(edgeId)) {
+          edgeIds.add(edgeId);
           edges.push({
             ...this.createEdge(edgeId, callerNodeId, referencedTypeNode.id, 'uses'),
             aggregated_from: [`body:${func.filePath}:${func.name}`]
@@ -2165,12 +2225,15 @@ export class RustAnalyzer extends BaseAnalyzer {
         if (call.isExternal) {
           const targetType = call.targetModule ? this.baseTypeName(call.targetModule) : undefined;
           const targetNode = targetType
-            ? nodes.find(n => ['struct', 'enum', 'trait'].includes(n.type) && n.name === targetType)
+            ? this.selectResolvedNode(
+                nodes.filter(n => ['struct', 'enum', 'trait'].includes(n.type) && n.name === targetType),
+                func.filePath
+              )
             : undefined;
           if (targetNode) {
             const edgeId = `uses:${callerNodeId}:${targetNode.id}:${call.callLine}`;
-            const existingEdge = edges.find(e => e.id === edgeId);
-            if (!existingEdge) {
+            if (!edgeIds.has(edgeId)) {
+              edgeIds.add(edgeId);
               edges.push({
                 ...this.createEdge(edgeId, callerNodeId, targetNode.id, 'uses'),
                 aggregated_from: [`call:${callerNodeId}:${call.targetFunction}:${call.callLine}`]
@@ -2184,8 +2247,8 @@ export class RustAnalyzer extends BaseAnalyzer {
         for (const targetNodeId of targetNodeIds) {
           if (targetNodeId !== callerNodeId) {
             const edgeId = `call:${callerNodeId}:${targetNodeId}:${call.callLine}`;
-            const existingEdge = edges.find(e => e.id === edgeId);
-            if (!existingEdge) {
+            if (!edgeIds.has(edgeId)) {
+              edgeIds.add(edgeId);
               edges.push(this.createEdge(
                 edgeId,
                 callerNodeId,
@@ -2201,8 +2264,8 @@ export class RustAnalyzer extends BaseAnalyzer {
           for (const selfMethodId of selfMethodIds) {
             if (selfMethodId !== callerNodeId) {
               const edgeId = `call:${callerNodeId}:${selfMethodId}:${call.callLine}`;
-              const existingEdge = edges.find(e => e.id === edgeId);
-              if (!existingEdge) {
+              if (!edgeIds.has(edgeId)) {
+                edgeIds.add(edgeId);
                 edges.push(this.createEdge(
                   edgeId,
                   callerNodeId,
@@ -2218,23 +2281,31 @@ export class RustAnalyzer extends BaseAnalyzer {
       if (func.isPublic) {
         for (const constant of constants) {
           if (constant.isPublic) {
-            edges.push(this.createEdge(
-              `func_const:${callerNodeId}:${constant.filePath}:${constant.name}`,
-              callerNodeId,
-              `constant:${constant.filePath}:${constant.name}`,
-              'uses'
-            ));
+            const edgeId = `func_const:${callerNodeId}:${constant.filePath}:${constant.name}`;
+            if (!edgeIds.has(edgeId)) {
+              edgeIds.add(edgeId);
+              edges.push(this.createEdge(
+                edgeId,
+                callerNodeId,
+                `constant:${constant.filePath}:${constant.name}`,
+                'uses'
+              ));
+            }
           }
         }
 
         for (const static_ of statics) {
           if (static_.isPublic) {
-            edges.push(this.createEdge(
-              `func_static:${callerNodeId}:${static_.filePath}:${static_.name}`,
-              callerNodeId,
-              `static:${static_.filePath}:${static_.name}`,
-              'uses'
-            ));
+            const edgeId = `func_static:${callerNodeId}:${static_.filePath}:${static_.name}`;
+            if (!edgeIds.has(edgeId)) {
+              edgeIds.add(edgeId);
+              edges.push(this.createEdge(
+                edgeId,
+                callerNodeId,
+                `static:${static_.filePath}:${static_.name}`,
+                'uses'
+              ));
+            }
           }
         }
       }
@@ -2259,9 +2330,10 @@ export class RustAnalyzer extends BaseAnalyzer {
       if (!callerNode) continue;
 
       for (const call of func.calls) {
-        const targetNode = (functionNodeMap.get(call.targetFunction) || [])
+        const targetCandidates = (functionNodeMap.get(call.targetFunction) || [])
           .map(id => nodes.find(node => node.id === id))
-          .find((node): node is CASNode => Boolean(node));
+          .filter((node): node is CASNode => Boolean(node));
+        const targetNode = this.selectResolvedNode(targetCandidates, func.filePath);
 
         methodCalls.push({
           id: `call:${callerNode.id}:${call.targetFunction}:${call.callLine}:${methodCalls.length}`,

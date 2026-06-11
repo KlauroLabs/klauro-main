@@ -1421,6 +1421,10 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     entryPoints: CASEntryPoint[],
     newNodes: CASNode[]
   ): void {
+    const appQualifier = this.sanitizeId(filePath.replace(/\.[cm]?[tj]sx?$/, ''));
+    const bootstrapId = `bootstrap_main_${appQualifier}`;
+    let httpServerCount = 0;
+
     const walk = (node: any) => {
       // Look for bootstrap function or NestFactory.create
       if (!node || typeof node !== 'object') return;
@@ -1428,10 +1432,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       if (node.type === 'CallExpression') {
         if (node.callee?.type === 'MemberExpression' &&
             node.callee.object?.name === 'NestFactory' &&
-            node.callee.property?.name === 'create') {
-
-          // Create main application bootstrap node
-          const bootstrapId = `bootstrap_main`;
+            ['create', 'createMicroservice', 'createApplicationContext'].includes(node.callee.property?.name)) {
+          const bootstrapMethod = `NestFactory.${node.callee.property.name}`;
           const bootstrapNode = this.createNodeBuilder(bootstrapId, 'Application Bootstrap', 'bootstrap')
             .withLevel(1, 'system')
             .withCategory('bootstrap', ['initialization', 'nestjs'])
@@ -1453,18 +1455,18 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           }
 
           entryPoints.push(this.createEntryPoint(
-            'entry_bootstrap',
+            `entry_bootstrap_${appQualifier}`,
             bootstrapId,
             'file',
             'Application Start',
-            'NestJS application bootstrap via NestFactory.create()',
+            `NestJS application bootstrap via ${bootstrapMethod}()`,
             {},
             {},
             {
               file: filePath,
               line: node.loc?.start.line,
               entry_file: filePath,
-              bootstrap_method: 'NestFactory.create'
+              bootstrap_method: bootstrapMethod
             }
           ));
         }
@@ -1473,10 +1475,13 @@ export class NestJSAnalyzer extends BaseAnalyzer {
         if (node.callee?.type === 'MemberExpression' &&
             node.callee.property?.name === 'listen') {
           const port = node.arguments?.[0]?.value || 3000;
+          httpServerCount += 1;
 
           entryPoints.push(this.createEntryPoint(
-            'entry_http_server',
-            'bootstrap_main',
+            httpServerCount === 1
+              ? `entry_http_server_${appQualifier}`
+              : `entry_http_server_${appQualifier}_${httpServerCount}`,
+            bootstrapId,
             'http',
             `HTTP Server: port ${port}`,
             `HTTP server listening on port ${port}`,
@@ -1496,7 +1501,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
             node.callee.property?.name === 'connectMicroservice') {
           entryPoints.push(this.createEntryPoint(
             `entry_microservice_${this.generateId('ms', filePath, '')}`,
-            'bootstrap_main',
+            bootstrapId,
             'message',
             'Microservice Connection',
             'NestJS microservice transport layer initialization',

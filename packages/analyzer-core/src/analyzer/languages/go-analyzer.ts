@@ -164,11 +164,12 @@ export class GoAnalyzer extends BaseAnalyzer {
   }
 
   async getRelevantFiles(projectPath: string): Promise<string[]> {
-    return glob(['**/*.go'], {
+    const files = await glob(['**/*.go'], {
       cwd: projectPath,
       ignore: this.getIgnorePatterns({ projectPath }),
       nodir: true
     });
+    return files.sort();
   }
 
   async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
@@ -221,6 +222,7 @@ export class GoAnalyzer extends BaseAnalyzer {
         ignore: this.getIgnorePatterns(context),
         nodir: true
       });
+      goFiles.sort();
 
       const packages = new Map<string, string[]>();
 
@@ -1657,6 +1659,7 @@ export class GoAnalyzer extends BaseAnalyzer {
       ignore: this.getIgnorePatterns({ projectPath }),
       nodir: true
     });
+    goFiles.sort();
 
     const functionNodes = nodes.filter(n => n.type === 'function' || n.type === 'method');
     const structNodes = nodes.filter(n => n.type === 'struct' || n.type === 'interface');

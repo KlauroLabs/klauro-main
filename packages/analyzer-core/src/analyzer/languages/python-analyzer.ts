@@ -161,11 +161,12 @@ export class PythonAnalyzer extends BaseAnalyzer {
 
   async getRelevantFiles(projectPath: string): Promise<string[]> {
     const ignorePatterns = this.getIgnorePatterns({ projectPath });
-    return glob(['**/*.py'], {
+    const files = await glob(['**/*.py'], {
       cwd: projectPath,
       ignore: [...ignorePatterns, '**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**'],
       nodir: true
     });
+    return files.sort();
   }
 
   async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
@@ -221,6 +222,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
         ignore: pythonIgnorePatterns,
         nodir: true
       });
+      pythonFiles.sort();
 
       const modules = new Map<string, string[]>();
 

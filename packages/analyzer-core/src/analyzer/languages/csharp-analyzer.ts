@@ -195,11 +195,12 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   }
 
   async getRelevantFiles(projectPath: string): Promise<string[]> {
-    return glob(['**/*.cs'], {
+    const files = await glob(['**/*.cs'], {
       cwd: projectPath,
       ignore: this.getCSharpIgnorePatterns({ projectPath }, true),
       nodir: true
     });
+    return files.sort();
   }
 
   private getCSharpIgnorePatterns(context: AnalysisContext, excludeTests = false): string[] {
@@ -307,6 +308,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
         ignore: this.getCSharpIgnorePatterns(context, true),
         nodir: true
       });
+      csharpFiles.sort();
 
       const namespaces = new Map<string, string[]>();
 
@@ -1630,6 +1632,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       ignore: this.getCSharpIgnorePatterns({ projectPath }, true),
       nodir: true
     });
+    csharpFiles.sort();
 
     for (const relativeFile of csharpFiles) {
       const fullPath = path.join(projectPath, relativeFile);
@@ -2149,6 +2152,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       ignore: this.getCSharpIgnorePatterns({ projectPath }, true),
       nodir: true
     });
+    csharpFiles.sort();
 
     const methodNodes = nodes.filter(n => n.type === 'method');
     const classNodes = nodes.filter(n => n.type === 'class' || n.type === 'worker' || n.type === 'interface' || n.type === 'struct');

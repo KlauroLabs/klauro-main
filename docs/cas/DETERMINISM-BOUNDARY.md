@@ -46,11 +46,12 @@ Beyond AI-on/off equality, repeated analyses of the same unchanged source tree p
 
 Everything else is guaranteed identical across runs: node, edge, entry-point, and exit-point arrays in the same order, all derived structures (`index`, `progressive_levels`, `analysis_facts`, `test_gaps`, `temporal_stability`, `system.quality` including floating-point aggregates), descriptions, capabilities, journeys, conformance, lineage, and the product map.
 
-Three mechanisms enforce this:
+Four mechanisms enforce this:
 
-1. File discovery in the language analyzers sorts glob results before emission (`glob` v9+ returns results in nondeterministic filesystem order).
+1. File discovery in the language analyzers sorts glob results before emission (`glob` v9+ returns results in nondeterministic filesystem order). This covers the per-analyzer `analyze` file loops, `getRelevantFiles`, and the Rust crate-manifest index.
 2. The orchestrator applies a canonical ordering (`applyCanonicalOrdering` in `packages/analyzer-core/src/analyzer/core/orchestrator.ts`) to merged nodes (by source file, line, id; nodes without a source file sort last), edges (by source, target, type, id), entry points, exit points, and libraries before and after route-handler linking, so every downstream builder and order-sensitive aggregate (such as the maintainability index average) consumes a deterministic sequence.
 3. Selections that previously fell back to array order now use explicit tie-breaks: the orientation fallback entry point (`selectFallbackEntryNode`) breaks score ties by connection degree, then source file, line, and id, so the synthesized `entry_orientation_*` entry point is identical across runs.
+4. The Rust analyzer links relationships in a second phase after all files are extracted (`extractFileElements` then `linkFileElements` in `packages/analyzer-core/src/analyzer/languages/rust-analyzer.ts`), so cross-file call and type resolution sees the complete node set regardless of discovery order, and ambiguous symbol references (for example two crates both defining `Error`) resolve through `selectResolvedNode`: same file first, then same crate, then lexicographic source file, line, and id. Regression test: `npx jest src/__tests__/analyzers/languages/rust-ambiguous-symbol-resolution.test.ts`.
 
 Regression test (two full in-process analyses, deep equality of the full CAS minus the allowlist above):
 

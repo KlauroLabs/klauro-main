@@ -111,11 +111,12 @@ export class JavaAnalyzer extends BaseAnalyzer {
   }
 
   async getRelevantFiles(projectPath: string): Promise<string[]> {
-    return glob(['**/*.java'], {
+    const files = await glob(['**/*.java'], {
       cwd: projectPath,
       ignore: [...this.getIgnorePatterns({ projectPath }), '**/test/**', '**/*Test.java'],
       nodir: true
     });
+    return files.sort();
   }
 
   async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
@@ -169,6 +170,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
         ignore: [...this.getIgnorePatterns(context), '**/test/**', '**/*Test.java'],
         nodir: true
       });
+      javaFiles.sort();
 
       const packages = new Map<string, string[]>();
 
@@ -1742,6 +1744,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
       ignore: this.getIgnorePatterns({ projectPath }),
       nodir: true
     });
+    javaFiles.sort();
 
     const methodNodes = nodes.filter(n => n.type === 'method' || n.type === 'interface_method');
     const classNodes = nodes.filter(n => n.type === 'class' || n.type === 'interface');

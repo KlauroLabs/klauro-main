@@ -198,11 +198,12 @@ export class PHPAnalyzer extends BaseAnalyzer {
   }
 
   async getRelevantFiles(projectPath: string): Promise<string[]> {
-    return glob(['**/*.php'], {
+    const files = await glob(['**/*.php'], {
       cwd: projectPath,
       ignore: this.getPHPIgnorePatterns({ projectPath }),
       nodir: true
     });
+    return files.sort();
   }
 
   private getPHPIgnorePatterns(context: AnalysisContext): string[] {
@@ -284,6 +285,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
         ignore: this.getPHPIgnorePatterns(context),
         nodir: true
       });
+      phpFiles.sort();
 
       const namespaces = new Map<string, string[]>();
 
@@ -2318,6 +2320,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
       ignore: this.getPHPIgnorePatterns({ projectPath }),
       nodir: true
     });
+    phpFiles.sort();
 
     const methodNodes = nodes.filter(n => n.type === 'method' || n.type === 'function');
     const classNodes = nodes.filter(n => n.type === 'class' || n.type === 'interface' || n.type === 'trait');

@@ -51,11 +51,12 @@ export class DartAnalyzer extends BaseAnalyzer {
   }
 
   async getRelevantFiles(projectPath: string): Promise<string[]> {
-    return glob(['**/*.dart'], {
+    const files = await glob(['**/*.dart'], {
       cwd: projectPath,
       ignore: this.ignorePatterns(),
       nodir: true,
     });
+    return files.sort();
   }
 
   async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
@@ -111,6 +112,7 @@ export class DartAnalyzer extends BaseAnalyzer {
         ignore: this.ignorePatterns(),
         nodir: true,
       });
+      files.sort();
       const pubspec = await this.readPubspec(context.projectPath);
       const isFlutterProject = Boolean(pubspec.match(/\bflutter\s*:/) || pubspec.includes('sdk: flutter'));
 
