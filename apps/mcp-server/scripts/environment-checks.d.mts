@@ -23,6 +23,8 @@ export interface BundleToolCallResult {
 export declare const MINIMUM_NODE_MAJOR: number;
 export declare const DEFAULT_HANDSHAKE_LIMIT_MS: number;
 export declare const OPERATING_LOOP_MARKER: string;
+export declare const OPERATING_LOOP_BEGIN_MARKER: string;
+export declare const OPERATING_LOOP_END_MARKER: string;
 
 export declare function checkResult(id: string, status: 'pass' | 'warn' | 'fail', detail: string, fix?: string): EnvironmentCheck;
 export declare function formatCheck(check: EnvironmentCheck): string;
@@ -84,4 +86,6 @@ export declare function claudeRegisterCommand(bundlePath: string, scope?: string
 export declare function mcpJsonSnippet(bundlePath: string, packageRoot: string): string;
 export declare function codexInstructions(bundlePath: string): string;
 export declare function operatingLoopSnippet(): string;
+export declare function legacyOperatingLoopSnippet(): string;
 export declare function shouldAppendOperatingLoop(existingContent: string | undefined): boolean;
+export declare function removeOperatingLoop(existingContent: string | undefined): { content: string; removed: boolean };

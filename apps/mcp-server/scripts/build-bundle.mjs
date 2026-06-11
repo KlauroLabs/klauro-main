@@ -1,11 +1,25 @@
-import { spawn } from 'child_process';
-import { writeFileSync } from 'fs';
+import { spawn, spawnSync } from 'child_process';
+import { readFileSync, writeFileSync } from 'fs';
 import { build } from 'esbuild';
 import { createRequire } from 'module';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+function resolveGitSha() {
+  const revParse = spawnSync('git', ['rev-parse', '--short=12', 'HEAD'], { cwd: packageRoot, encoding: 'utf8' });
+  if (revParse.status !== 0) return 'unknown';
+  const sha = String(revParse.stdout || '').trim();
+  if (!/^[0-9a-f]{7,40}$/.test(sha)) return 'unknown';
+  const status = spawnSync('git', ['status', '--porcelain'], { cwd: packageRoot, encoding: 'utf8' });
+  const dirty = status.status === 0 && String(status.stdout || '').trim().length > 0;
+  return dirty ? `${sha}-dirty` : sha;
+}
+
+const buildGitSha = resolveGitSha();
+const buildTime = new Date().toISOString();
+const packageVersion = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8')).version || '1.0.0';
 
 const NATIVE_PACKAGES = [
   'tree-sitter',
@@ -49,6 +63,11 @@ const sharedOptions = {
   sourcemap: false,
   logLevel: 'warning',
   absWorkingDir: packageRoot,
+  define: {
+    __KLAURO_GIT_SHA__: JSON.stringify(buildGitSha),
+    __KLAURO_BUILD_TIME__: JSON.stringify(buildTime),
+    __KLAURO_VERSION__: JSON.stringify(packageVersion),
+  },
 };
 
 await build({
@@ -141,4 +160,4 @@ const handshake = {
 };
 writeFileSync(path.join(packageRoot, 'dist', 'handshake.json'), JSON.stringify(handshake));
 const toolCount = profile => handshake[profile].methods['tools/list'].result.tools.length;
-console.log(`Built dist/index.cjs (bootstrap), dist/server.cjs, dist/handshake.json (core: ${toolCount('core')} tools, full: ${toolCount('full')} tools)`);
+console.log(`Built dist/index.cjs (bootstrap), dist/server.cjs, dist/handshake.json (core: ${toolCount('core')} tools, full: ${toolCount('full')} tools, build ${packageVersion}+${buildGitSha} at ${buildTime})`);

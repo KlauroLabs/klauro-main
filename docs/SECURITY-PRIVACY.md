@@ -35,7 +35,7 @@ All paths are relative to the storage root: `~/.klauro/analyses/` unless `KLAURO
 | Ingested telemetry | Runtime events you POST in via MCP: routes, status codes, durations, **error messages and stack frames** (file/line/function), service/env names, custom attributes | `<slug>/ingested-telemetry/<YYYY-MM-DD>.json` | 14 days, max 5,000 events/day |
 | Runtime observations (simulated + legacy) | Same event shape as above | `<slug>/runtime-observations.json` | Last 5,000 |
 | Golden snapshot | A pinned CAS comparison snapshot | `<slug>/cas-golden-snapshot.json` | Until replaced |
-| AI response cache | AI-generated description/interpretation **responses** keyed by prompt hash (prompts themselves are not stored) | `~/.klauro/ai-cache/<sha>.json` | TTL-based (default 24 h metadata; files until pruned) |
+| AI response cache | AI-generated description/interpretation **responses** keyed by prompt hash (prompts themselves are not stored). Entries written by this release carry the originating project slug and live in a per-project subdirectory; entries written by earlier releases sit unassociated in the cache root and cannot be attributed to a project after the fact. | `~/.klauro/ai-cache/<slug>/<sha>.json` (current); `~/.klauro/ai-cache/<sha>.json` (pre-association legacy) | TTL-based (default 24 h metadata; files until pruned or purged) |
 | Proposal previews | Plan text, optional diff text, proposed file contents, baseline/proposed CAS, comparisons | `proposal-previews/<id>/` | Until deleted |
 | Workspace graphs, benchmark reports, gauntlet workspaces | Cross-repo link metadata; benchmark/proof artifacts (may contain code copies of *benchmark fixture* repos) | `workspace-graphs/`, `agentic-benchmarks/`, `~/.klauro/<benchmark dirs>` | Benchmarks pruned at 50 reports / 256 MB |
 | Analysis run log | Per-run diagnostics: project path/name, phase timings, analyzer IDs with node/edge counts, AI call outcomes (provider names, status, reason — never prompt contents or responses), warning/error codes and messages (truncated, max 50/run), failure messages with top stack frames. No code text. | `~/.klauro/logs/analysis-runs.jsonl` (or `KLAURO_LOG_DIR`) | Last 50 runs, max 50 MB (`KLAURO_RUN_LOG_MAX_RUNS`/`KLAURO_RUN_LOG_MAX_BYTES`); disable with `KLAURO_RUN_LOG=false` |
@@ -111,20 +111,40 @@ Setting an AI provider API key opts you into sending, per analysis or per descri
 
 ## Deletion Story: Fully Purging a Project
 
-All local state for one project (everything: CAS, snapshots, caches, embeddings, telemetry, descriptions):
+The supported path is the CLI:
 
 ```bash
-# 1. Remove the per-project directory and analysis files
+klauro purge /path/to/repo
+```
+
+This removes, for that project: the stored CAS analysis (`<slug>.json` / `.json.zst` / `.json.br`), the per-project directory (snapshots, incremental state, file cache, embeddings, change history, element descriptions, ingested telemetry, runtime observations, golden snapshot), the project's `index.json` entry, the project's records in the analysis run log (`~/.klauro/logs/analysis-runs.jsonl`), and the project's AI response cache subdirectory (`~/.klauro/ai-cache/<slug>/`).
+
+**Known limitation — pre-association AI cache entries.** AI cache entries written before this release live unassociated at the cache root (`~/.klauro/ai-cache/<sha>.json`) with no project attribution, so a per-project purge cannot identify which of them describe the purged project. `klauro purge` reports how many such entries remain and how to remove them:
+
+```bash
+klauro purge /path/to/repo --all-ai-cache   # also deletes the entire shared AI cache
+```
+
+Entries written by this release are project-associated, so for projects analyzed only with this release the per-project purge is complete on its own.
+
+The manual equivalent of the per-project purge, if you prefer raw commands:
+
+```bash
 rm -rf ~/.klauro/analyses/<slug> ~/.klauro/analyses/<slug>.json.zst ~/.klauro/analyses/<slug>.json ~/.klauro/analyses/<slug>.json.br
-# 2. Remove the project's entry from the index (or delete the index; it is rebuilt)
-#    index.json maps absolute project paths to entries.
+rm -rf ~/.klauro/ai-cache/<slug>
+# Remove the project's entry from index.json (keyed by absolute project path),
+# and the project's lines from ~/.klauro/logs/analysis-runs.jsonl.
+# Pre-association ai-cache entries at the cache root are not attributable; remove
+# them all with: rm -rf ~/.klauro/ai-cache
 ```
 
-To purge everything Klauro has ever stored locally, including AI caches and benchmark artifacts:
+To purge everything Klauro has ever stored locally, including all AI caches, logs, and benchmark artifacts:
 
 ```bash
-rm -rf ~/.klauro
+klauro purge --all        # equivalent to rm -rf ~/.klauro, with confirmation
 ```
+
+Purging data does not reverse the installation itself. `klauro uninstall` removes the Claude Code MCP registration and the Klauro operating-loop block from CLAUDE.md files written by `klauro install`.
 
 If you used opt-in egress, local deletion does not delete remote copies: remote analyzer server storage, S3 artifact buckets, AI provider/data-retention policies, and pgvector rows must be purged on those systems. Hosted retention controls (delete project / delete uploaded source / retention periods / audit trail) are **planned** — see `docs/mcp/SECURITY-PACKET.md`.
 

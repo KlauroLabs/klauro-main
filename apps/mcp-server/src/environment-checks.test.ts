@@ -182,6 +182,44 @@ test('operating loop snippet is idempotent via the marker', async () => {
   assert.strictEqual(checks.shouldAppendOperatingLoop(`# My project\n\n${snippet}`), false);
 });
 
+test('operating loop snippet is delimited by begin/end markers', async () => {
+  const checks = await loadChecks();
+  const snippet = checks.operatingLoopSnippet();
+  assert.ok(snippet.startsWith(checks.OPERATING_LOOP_BEGIN_MARKER));
+  assert.ok(snippet.endsWith(checks.OPERATING_LOOP_END_MARKER));
+});
+
+test('removeOperatingLoop strips a marker-delimited block and keeps the rest', async () => {
+  const checks = await loadChecks();
+  const snippet = checks.operatingLoopSnippet();
+  const result = checks.removeOperatingLoop(`# My project\n\nLocal rules.\n\n${snippet}\n\nMore rules.\n`);
+  assert.strictEqual(result.removed, true);
+  assert.strictEqual(result.content, '# My project\n\nLocal rules.\n\nMore rules.\n');
+});
+
+test('removeOperatingLoop strips the legacy unmarked block', async () => {
+  const checks = await loadChecks();
+  const legacy = checks.legacyOperatingLoopSnippet();
+  assert.strictEqual(legacy.includes(checks.OPERATING_LOOP_BEGIN_MARKER), false);
+  const result = checks.removeOperatingLoop(`# My project\n\n${legacy}\n\nMore rules.\n`);
+  assert.strictEqual(result.removed, true);
+  assert.strictEqual(result.content, '# My project\n\nMore rules.\n');
+});
+
+test('removeOperatingLoop returns empty content when the file only held the block', async () => {
+  const checks = await loadChecks();
+  const result = checks.removeOperatingLoop(`${checks.operatingLoopSnippet()}\n`);
+  assert.strictEqual(result.removed, true);
+  assert.strictEqual(result.content, '');
+});
+
+test('removeOperatingLoop is a no-op without the block', async () => {
+  const checks = await loadChecks();
+  const result = checks.removeOperatingLoop('# My project\n\nNo Klauro here.\n');
+  assert.strictEqual(result.removed, false);
+  assert.strictEqual(result.content, '# My project\n\nNo Klauro here.\n');
+});
+
 test('formatCheck prints status, detail, and the fix for non-pass results', async () => {
   const checks = await loadChecks();
   const pass = checks.formatCheck({ id: 'node-version', status: 'pass', detail: 'ok', fix: 'unused' });

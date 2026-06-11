@@ -18,8 +18,11 @@ import { compareAnalysisIterations, getPreviewAnalysis, previewCodebaseIteration
 import { buildGreenfieldArchitectureGuidance, type GreenfieldReferenceAnalysis } from './greenfield-guidance';
 import { buildGreenfieldBuildPacket } from './greenfield-build-session';
 import { buildSupportBundle, formatSupportBundleResult } from './support-bundle';
+import { formatFullPurgeReport, formatProjectPurgeReport, purgeAll, purgeProject, resolvePurgeRoots } from './purge';
 import { getAnalysisRunLogPath } from '../../../packages/analyzer-core/src/analyzer/core/run-log';
+import { formatBuildIdentity, getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import * as fs from 'fs-extra';
+import * as readline from 'readline';
 
 interface ParsedArgs {
   command?: string;
@@ -47,19 +50,33 @@ interface ParsedArgs {
   baselinePath?: string;
   proposedPath?: string;
   outputPath?: string;
+  all: boolean;
+  allAiCache: boolean;
+  yes: boolean;
 }
 
 async function main(): Promise<void> {
-  if (process.argv[2] === 'install') {
-    const result = spawnSync(process.execPath, [path.resolve(__dirname, '..', 'scripts', 'install.mjs'), ...process.argv.slice(3)], {
+  if (process.argv[2] === 'install' || process.argv[2] === 'uninstall') {
+    const script = process.argv[2] === 'install' ? 'install.mjs' : 'uninstall.mjs';
+    const result = spawnSync(process.execPath, [path.resolve(__dirname, '..', 'scripts', script), ...process.argv.slice(3)], {
       stdio: 'inherit',
     });
     process.exit(result.status ?? 1);
   }
 
+  if (process.argv[2] === '--version' || process.argv[2] === '-v' || process.argv[2] === 'version') {
+    process.stdout.write(`klauro ${formatBuildIdentity()}\n`);
+    return;
+  }
+
   const args = parseArgs(process.argv.slice(2));
   if (!args.command || args.command === 'help' || args.command === '--help' || args.command === '-h') {
     printHelp();
+    return;
+  }
+
+  if (args.command === 'purge') {
+    await runPurgeCommand(args);
     return;
   }
 
@@ -313,6 +330,53 @@ async function main(): Promise<void> {
   }
 }
 
+async function runPurgeCommand(args: ParsedArgs): Promise<void> {
+  if (!args.all && !args.path) {
+    throw new Error('purge requires a project path or --all');
+  }
+  const roots = resolvePurgeRoots();
+
+  if (args.all) {
+    const confirmed = await confirmDestructiveAction(
+      `This permanently deletes ALL local Klauro data under ${roots.klauroRoot} (analyses, snapshots, caches, embeddings, telemetry, logs, AI cache).`,
+      args.yes,
+    );
+    if (!confirmed) {
+      process.stdout.write('Aborted; nothing was removed.\n');
+      process.exitCode = 1;
+      return;
+    }
+    const report = await purgeAll();
+    process.stdout.write(args.json ? `${JSON.stringify(report, null, 2)}\n` : formatFullPurgeReport(report));
+    return;
+  }
+
+  const projectPath = path.resolve(args.path!);
+  const confirmed = await confirmDestructiveAction(
+    `This permanently deletes all stored Klauro data for ${projectPath} (analysis, snapshots, file cache, embeddings, descriptions, telemetry, run-log entries, project AI cache${args.allAiCache ? ', plus the ENTIRE shared AI cache (--all-ai-cache)' : ''}).`,
+    args.yes,
+  );
+  if (!confirmed) {
+    process.stdout.write('Aborted; nothing was removed.\n');
+    process.exitCode = 1;
+    return;
+  }
+  const report = await purgeProject(projectPath, { allAiCache: args.allAiCache });
+  process.stdout.write(args.json ? `${JSON.stringify(report, null, 2)}\n` : formatProjectPurgeReport(report));
+}
+
+async function confirmDestructiveAction(description: string, preApproved: boolean): Promise<boolean> {
+  if (preApproved) return true;
+  if (!process.stdin.isTTY) {
+    throw new Error(`${description}\nRe-run with --yes to confirm (non-interactive session).`);
+  }
+  process.stdout.write(`${description}\n`);
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const answer = await new Promise<string>(resolve => rl.question('Proceed? [y/N] ', resolve));
+  rl.close();
+  return answer.trim().toLowerCase() === 'y' || answer.trim().toLowerCase() === 'yes';
+}
+
 async function loadOrAnalyze(projectPath: string, refresh: boolean) {
   if (refresh) return (await analyzeProjectIncremental(projectPath)).output;
 
@@ -418,6 +482,9 @@ function parseArgs(argv: string[]): ParsedArgs {
     baselinePath: undefined,
     proposedPath: undefined,
     outputPath: undefined,
+    all: false,
+    allAiCache: false,
+    yes: false,
   };
 
   for (let i = 1; i < argv.length; i++) {
@@ -469,6 +536,12 @@ function parseArgs(argv: string[]): ParsedArgs {
       parsed.analysisFocus = argv[++i] as ParsedArgs['analysisFocus'];
     } else if (arg === '--force') {
       parsed.force = true;
+    } else if (arg === '--all') {
+      parsed.all = true;
+    } else if (arg === '--all-ai-cache') {
+      parsed.allAiCache = true;
+    } else if (arg === '--yes' || arg === '-y') {
+      parsed.yes = true;
     } else if (arg === '--dirty-tree') {
       parsed.dirtyTree = true;
     } else if (arg === '--task-type') {
@@ -493,6 +566,10 @@ function printHelp(): void {
   process.stdout.write([
     'Usage:',
     '  klauro install [repo-path] [--claude-md /path/to/repo] [--claude-scope user|project|local] [--no-register] [--rebuild] [--skip-self-check]',
+    '  klauro uninstall [--claude-md /path/to/repo] [--no-deregister]',
+    '  klauro purge </path/to/repo> [--all-ai-cache] [--yes] [--json]',
+    '  klauro purge --all [--yes] [--json]     (wipe all local Klauro data under ~/.klauro)',
+    '  klauro --version',
     '  klauro doctor [--json]                  (no path: environment health for this machine)',
     '  klauro init [/path/to/repo] [--mode local|remote] [--server-url url] [--project-id id] [--organization-id id] [--force] [--json]',
     '  klauro upload-manifest [/path/to/repo] [--dirty-tree] [--json]',

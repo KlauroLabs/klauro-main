@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { AICache } from '../../ai/ai-cache';
+import { AICache, aiCacheProjectScope, getAICacheProjectScope, setAICacheProjectScope } from '../../ai/ai-cache';
 
 /**
  * Builds an AICache whose disk tier is redirected to an isolated temp
@@ -63,6 +63,62 @@ describe('AICache', () => {
     const files = fs.readdirSync(diskDir).filter(f => f.endsWith('.json'));
     expect(files.length).toBe(2);
     await cache.close();
+  });
+
+  describe('project scope association', () => {
+    const projectPath = '/tmp/klauro-test-projects/alpha';
+
+    afterEach(() => {
+      setAICacheProjectScope(undefined);
+    });
+
+    it('derives a stable slug from the project path', () => {
+      const scope = aiCacheProjectScope(projectPath);
+      expect(scope).toMatch(/^alpha-[0-9a-f]{12}$/);
+      expect(aiCacheProjectScope(projectPath)).toBe(scope);
+      expect(aiCacheProjectScope('/tmp/klauro-test-projects/beta')).not.toBe(scope);
+    });
+
+    it('writes scoped entries into a per-project subdirectory with the project recorded', async () => {
+      setAICacheProjectScope(projectPath);
+      const scope = getAICacheProjectScope()!;
+      const cache = makeCache(diskDir);
+      await cache.set('scoped-key', 'scoped-value');
+
+      const scopedDir = path.join(diskDir, scope);
+      const files = fs.readdirSync(scopedDir).filter(f => f.endsWith('.json'));
+      expect(files.length).toBe(1);
+      const entry = JSON.parse(fs.readFileSync(path.join(scopedDir, files[0]), 'utf8'));
+      expect(entry.project).toBe(scope);
+      expect(fs.readdirSync(diskDir).filter(f => f.endsWith('.json')).length).toBe(0);
+      await cache.close();
+    });
+
+    it('reads scoped entries back across instances and falls back to legacy root entries', async () => {
+      // Legacy entry written with no scope.
+      const legacyWriter = makeCache(diskDir);
+      await legacyWriter.set('legacy-key', 'legacy-value');
+      await legacyWriter.close();
+
+      setAICacheProjectScope(projectPath);
+      const scopedWriter = makeCache(diskDir);
+      await scopedWriter.set('scoped-key', 'scoped-value');
+      await scopedWriter.close();
+
+      const reader = makeCache(diskDir);
+      expect(await reader.get('scoped-key')).toBe('scoped-value');
+      expect(await reader.get('legacy-key')).toBe('legacy-value');
+      await reader.close();
+    });
+
+    it('returns to unscoped root writes after the scope is cleared', async () => {
+      setAICacheProjectScope(projectPath);
+      setAICacheProjectScope(undefined);
+      const cache = makeCache(diskDir);
+      await cache.set('global-key', 'global-value');
+      expect(fs.readdirSync(diskDir).filter(f => f.endsWith('.json')).length).toBe(1);
+      await cache.close();
+    });
   });
 
   it('treats an expired disk entry as a miss', async () => {

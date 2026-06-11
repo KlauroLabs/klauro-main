@@ -10,6 +10,7 @@ import {
   getAnalysisRunLogPath,
 } from '../../../packages/analyzer-core/src/analyzer/core/run-log';
 import { getAnalysisEntry, loadAnalysis, MINIMUM_COMPATIBLE_CAS_VERSION } from './storage';
+import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 
 const execFileAsync = promisify(execFile);
 
@@ -45,6 +46,9 @@ export interface SupportBundleOptions {
 interface EnvironmentSnapshot {
   generated_at: string;
   klauro_version: string;
+  klauro_git_sha: string;
+  klauro_build_time?: string;
+  klauro_build_channel: 'bundle' | 'dev';
   cas_version: string;
   minimum_compatible_cas_version: string;
   node_version: string;
@@ -59,15 +63,6 @@ interface EnvironmentSnapshot {
   env: Record<string, string>;
 }
 
-function readKlauroVersion(): string {
-  try {
-    const packageJson = fs.readJsonSync(path.join(__dirname, '..', 'package.json'));
-    return typeof packageJson.version === 'string' ? packageJson.version : 'unknown';
-  } catch {
-    return 'unknown';
-  }
-}
-
 function snapshotEnvironment(): EnvironmentSnapshot {
   const env: Record<string, string> = {};
   const interestingNames = Object.keys(process.env)
@@ -80,9 +75,13 @@ function snapshotEnvironment(): EnvironmentSnapshot {
     env[providerKey] = process.env[providerKey] ? '[set]' : '[unset]';
   }
 
+  const build = getBuildIdentity();
   return {
     generated_at: new Date().toISOString(),
-    klauro_version: readKlauroVersion(),
+    klauro_version: build.version,
+    klauro_git_sha: build.git_sha,
+    klauro_build_time: build.build_time,
+    klauro_build_channel: build.channel,
     cas_version: CAS_VERSION,
     minimum_compatible_cas_version: MINIMUM_COMPATIBLE_CAS_VERSION,
     node_version: process.version,

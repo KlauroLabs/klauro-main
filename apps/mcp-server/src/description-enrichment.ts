@@ -2,6 +2,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
+import { setAICacheProjectScope } from '../../../packages/analyzer-core/src/ai/ai-cache';
 import { getAIConfig } from '../../../packages/analyzer-core/src/config/ai.config';
 import type { CASOutput, CASNode } from '../../../packages/analyzer-core/src/types/cas.types';
 import { getProjectStorageDir, loadAnalysis, saveAnalysis } from './storage';
@@ -64,6 +65,7 @@ export async function generateElementDescription(input: {
     throw new Error(`Could not find ${input.targetKind || 'analysis element'} matching: ${input.target}`);
   }
 
+  setAICacheProjectScope(input.projectPath);
   const generated = await generateUsefulDescription(cas, resolved, input.instructions);
   const { description } = generated;
 

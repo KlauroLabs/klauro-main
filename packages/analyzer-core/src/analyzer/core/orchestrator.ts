@@ -93,6 +93,7 @@ import { detectCodebaseIdioms } from './idiom-detector';
 import { AnalysisRunLog } from './run-log';
 import { EmbeddingPhase, type EmbeddingPhaseConfig } from '../embedding/embedding-phase';
 import { aiService } from '../../ai/ai-service';
+import { setAICacheProjectScope } from '../../ai/ai-cache';
 import { aiConfig, getAIConfig } from '../../config/ai.config';
 
 export type { CASOutput } from '../../types/cas.types';
@@ -619,6 +620,7 @@ export class AnalyzerOrchestrator {
 
   async orchestrateAnalysis(projectPath: string): Promise<CASOutput> {
     this.activeAnalysisProjectPath = projectPath;
+    setAICacheProjectScope(projectPath);
     const analysisId = `analysis_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const runLog = new AnalysisRunLog(projectPath, analysisId, CAS_VERSION);
     try {

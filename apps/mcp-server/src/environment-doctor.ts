@@ -1,5 +1,6 @@
 import * as path from 'path';
 import { pathToFileURL } from 'url';
+import { formatBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import {
   MINIMUM_ANALYSIS_HEAP_MB,
   describeAnalysisHeap,
@@ -85,6 +86,7 @@ export async function runEnvironmentDoctor(options: {
   const bundlePath = path.join(packageRoot, 'dist', 'index.cjs');
   const results: EnvironmentCheck[] = [];
 
+  results.push(checks.checkResult('build-identity', 'pass', `klauro ${formatBuildIdentity()}`));
   results.push(checks.evaluateNodeVersion(process.version));
 
   const bundleCheck = checks.inspectBundle({

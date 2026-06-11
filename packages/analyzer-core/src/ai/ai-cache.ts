@@ -12,6 +12,37 @@ export interface CacheEntry<T = any> {
   ttl: number;
   version: string;
   contentHash?: string;
+  project?: string;
+}
+
+let activeProjectScope: string | undefined;
+
+/**
+ * Derives the per-project AI cache scope from a project path. Matches the
+ * analysis storage slug shape: <basename-slug>-<sha256(absolute path)[0:12]>.
+ */
+export function aiCacheProjectScope(projectPath: string): string {
+  const resolved = path.resolve(projectPath);
+  const base = path.basename(resolved)
+    .replace(/[^a-zA-Z0-9]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .toLowerCase()
+    .substring(0, 80) || 'project';
+  const hash = crypto.createHash('sha256').update(resolved).digest('hex').slice(0, 12);
+  return `${base}-${hash}`;
+}
+
+/**
+ * Associates subsequent AI cache writes with a project so per-project purge
+ * can delete them. Pass undefined to return to unassociated (global) writes.
+ */
+export function setAICacheProjectScope(projectPath: string | undefined): void {
+  activeProjectScope = projectPath ? aiCacheProjectScope(projectPath) : undefined;
+}
+
+export function getAICacheProjectScope(): string | undefined {
+  return activeProjectScope;
 }
 
 export interface CacheStats {
@@ -202,7 +233,8 @@ export class AICache {
         timestamp: Date.now(),
         ttl: cacheTtl,
         version: this.CACHE_VERSION,
-        contentHash: this.generateContentHash(value)
+        contentHash: this.generateContentHash(value),
+        project: activeProjectScope
       };
 
       // Try Redis first
@@ -431,34 +463,52 @@ export class AICache {
     this.fallbackCache.set(key, entry);
   }
 
-  private diskPath(fullKey: string): string {
+  private diskFileName(fullKey: string): string {
     // Hash the key so the filename is always filesystem-safe and bounded.
     const hash = crypto.createHash('sha1').update(fullKey).digest('hex');
-    return path.join(this.diskCacheDir, `${hash}.json`);
+    return `${hash}.json`;
+  }
+
+  private diskPath(fullKey: string): string {
+    // Project-scoped entries live in a per-project subdirectory so a single
+    // project's derived AI output can be deleted without touching the rest.
+    if (activeProjectScope) {
+      return path.join(this.diskCacheDir, activeProjectScope, this.diskFileName(fullKey));
+    }
+    return path.join(this.diskCacheDir, this.diskFileName(fullKey));
+  }
+
+  private legacyDiskPath(fullKey: string): string {
+    return path.join(this.diskCacheDir, this.diskFileName(fullKey));
   }
 
   private getFromDisk<T>(fullKey: string): { value: T; entry: CacheEntry<T> } | null {
     if (!this.diskCacheEnabled) return null;
-    const file = this.diskPath(fullKey);
-    try {
-      if (!fs.existsSync(file)) return null;
-      const entry: CacheEntry<T> = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (this.isExpired(entry) || entry.version !== this.CACHE_VERSION) {
+    const candidates = [this.diskPath(fullKey)];
+    const legacy = this.legacyDiskPath(fullKey);
+    if (legacy !== candidates[0]) candidates.push(legacy);
+    for (const file of candidates) {
+      try {
+        if (!fs.existsSync(file)) continue;
+        const entry: CacheEntry<T> = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (this.isExpired(entry) || entry.version !== this.CACHE_VERSION) {
+          try { fs.unlinkSync(file); } catch { /* ignore */ }
+          continue;
+        }
+        return { value: entry.data, entry };
+      } catch (error) {
+        // Corrupt or unreadable entry — drop it and miss.
         try { fs.unlinkSync(file); } catch { /* ignore */ }
-        return null;
       }
-      return { value: entry.data, entry };
-    } catch (error) {
-      // Corrupt or unreadable entry — drop it and miss.
-      try { fs.unlinkSync(file); } catch { /* ignore */ }
-      return null;
     }
+    return null;
   }
 
   private setOnDisk<T>(fullKey: string, entry: CacheEntry<T>): void {
     if (!this.diskCacheEnabled) return;
     const file = this.diskPath(fullKey);
     try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
       // Atomic write: write to a temp file then rename.
       const tmp = `${file}.${process.pid}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(entry), 'utf8');

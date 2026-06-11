@@ -6,6 +6,8 @@ import * as path from 'path';
 export const MINIMUM_NODE_MAJOR = 20;
 export const DEFAULT_HANDSHAKE_LIMIT_MS = 600;
 export const OPERATING_LOOP_MARKER = '## Klauro Agent Rule';
+export const OPERATING_LOOP_BEGIN_MARKER = '<!-- klauro:operating-loop:begin -->';
+export const OPERATING_LOOP_END_MARKER = '<!-- klauro:operating-loop:end -->';
 
 export function checkResult(id, status, detail, fix) {
   return fix ? { id, status, detail, fix } : { id, status, detail };
@@ -432,7 +434,7 @@ export function codexInstructions(bundlePath) {
   ].join('\n');
 }
 
-export function operatingLoopSnippet() {
+function operatingLoopBody() {
   return [
     OPERATING_LOOP_MARKER,
     '',
@@ -449,6 +451,50 @@ export function operatingLoopSnippet() {
   ].join('\n');
 }
 
+export function operatingLoopSnippet() {
+  return [OPERATING_LOOP_BEGIN_MARKER, operatingLoopBody(), OPERATING_LOOP_END_MARKER].join('\n');
+}
+
+export function legacyOperatingLoopSnippet() {
+  return operatingLoopBody();
+}
+
 export function shouldAppendOperatingLoop(existingContent) {
   return !String(existingContent || '').includes(OPERATING_LOOP_MARKER);
+}
+
+export function removeOperatingLoop(existingContent) {
+  const original = String(existingContent || '');
+  let content = original;
+
+  const markedBlock = new RegExp(
+    `${escapeRegExp(OPERATING_LOOP_BEGIN_MARKER)}[\\s\\S]*?${escapeRegExp(OPERATING_LOOP_END_MARKER)}`,
+    'g',
+  );
+  content = content.replace(markedBlock, '');
+
+  // Legacy installs wrote the bare snippet without markers; remove the exact
+  // block. Tolerate trailing-list drift by also matching from the heading to
+  // the end of the numbered list when the exact text is absent.
+  const legacy = legacyOperatingLoopSnippet();
+  if (content.includes(legacy)) {
+    content = content.replace(legacy, '');
+  } else if (content.includes(OPERATING_LOOP_MARKER)) {
+    const headingPattern = new RegExp(
+      `${escapeRegExp(OPERATING_LOOP_MARKER)}\\n[\\s\\S]*?(?:\\n\\d+\\..*)+`,
+    );
+    content = content.replace(headingPattern, '');
+  }
+
+  content = content.replace(/\n{3,}/g, '\n\n').replace(/^\n+/, '').replace(/\n{2,}$/, '\n');
+  if (content.trim().length === 0) {
+    content = '';
+  } else if (!content.endsWith('\n')) {
+    content = `${content}\n`;
+  }
+  return { content, removed: content !== original };
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
