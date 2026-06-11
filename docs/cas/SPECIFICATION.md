@@ -2215,7 +2215,7 @@ Capability descriptions MUST be AI-generated when an AI provider is configured. 
 ### 5.25 Graph Integrity (v1.8.0+)
 
 - `validation.graph_integrity` SHOULD report dangling edges, orphaned nodes, entry point handler coverage, exit point source coverage, runtime instrumentation coverage, fact evidence coverage, and an aggregate relationship coverage score.
-- `dangling_edges` MUST count every source or target reference that does not resolve to a node.
+- `dangling_edges` MUST count every source or target reference that does not resolve to a graph endpoint. Edge endpoints MAY be node ids, entry point ids, or exit point ids (e.g. `calls` edges targeting `exit_db_*`/`exit_api_*`); auditors validating edges against `nodes` alone will misreport resolved exit-point references as dangling.
 - `relationship_coverage_score` SHOULD be 0-100 and SHOULD combine source location, edge validity, entry/exit coverage, runtime link instrumentation, and analysis fact evidence.
 - UI and MCP consumers SHOULD expose low integrity scores as trust warnings rather than silently rendering incomplete analysis.
 
