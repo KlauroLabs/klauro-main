@@ -887,12 +887,12 @@ function journeyDiscriminator(entryPoint: CASEntryPoint): string {
 }
 
 function buildJourneyName(entryPoint: CASEntryPoint, effects: TerminalEffects): string {
-  const action = describeEntryAction(entryPoint);
+  const action = describeEntryAction(entryPoint, effects);
   const outcome = describeTerminalOutcome(effects);
   return outcome ? `${action} -> ${outcome}` : action;
 }
 
-function describeEntryAction(entryPoint: CASEntryPoint): string {
+function describeEntryAction(entryPoint: CASEntryPoint, effects: TerminalEffects): string {
   const method = entryPoint.trigger?.method?.toUpperCase();
   const path = entryPoint.trigger?.path;
 
@@ -926,9 +926,80 @@ function describeEntryAction(entryPoint: CASEntryPoint): string {
     return `Handle ${humanizeLabel(subject)}`;
   }
   if (entryPoint.type === 'page' || entryPoint.type === 'route') {
+    const frontendAction = describeFrontendEntryAction(entryPoint, effects);
+    if (frontendAction) return frontendAction;
     return `Visit ${entryPoint.trigger?.path || humanizeLabel(entryPoint.name)}`;
   }
   return humanizeLabel(entryPoint.name);
+}
+
+const SOURCE_FILE_EXTENSION = /\.(tsx|jsx|ts|js|mjs|cjs|vue|svelte|html?)$/i;
+const FRONTEND_STRUCTURE_SEGMENTS = new Set([
+  'src', 'app', 'apps', 'ui', 'lib', 'libs', 'modules', 'views', 'view', 'pages', 'page',
+  'components', 'component', 'widgets', 'widget', 'partials', 'sections', 'elements',
+  'layouts', 'layout', 'screens', 'screen', 'containers', 'features', 'shared', 'common'
+]);
+const FRONTEND_CONTEXT_TAIL_LABELS = new Set([
+  'settings', 'details', 'detail', 'overview', 'summary', 'list', 'history', 'form', 'status'
+]);
+const FRONTEND_SUBJECT_VERBS = new Set([
+  'create', 'update', 'delete', 'edit', 'add', 'remove', 'manage', 'forgot', 'reset',
+  'register', 'login', 'logout', 'signup', 'signin', 'checkout', 'migrate', 'transfer',
+  'buy', 'sell', 'search', 'upgrade', 'confirm', 'verify', 'cancel', 'review', 'connect',
+  'setup', 'onboard', 'invite', 'share', 'export', 'import', 'upload', 'download', 'send'
+]);
+const COMPONENT_LABEL_SUFFIXES = /\s+(page|view|screen)$/;
+
+function describeFrontendEntryAction(entryPoint: CASEntryPoint, effects: TerminalEffects): string | undefined {
+  const segments = frontendPathSegments(entryPoint.trigger?.path);
+  let subject: string | undefined;
+  let parent: string | undefined;
+
+  let lastIndex = segments.length - 1;
+  if (lastIndex >= 0 && segments[lastIndex].toLowerCase() === 'index') lastIndex -= 1;
+  if (lastIndex >= 0) {
+    const last = humanizeLabel(segments[lastIndex]);
+    parent = lastIndex > 0 ? singularizeLabel(humanizeLabel(segments[lastIndex - 1])) : undefined;
+    subject = parent && FRONTEND_CONTEXT_TAIL_LABELS.has(last) ? `${parent} ${last}` : last;
+  }
+  if (!subject) {
+    const component = entryPoint.metadata?.component;
+    if (typeof component === 'string' && /^[A-Z]/.test(component)) {
+      const label = humanizeLabel(component).replace(COMPONENT_LABEL_SUFFIXES, '');
+      if (label) subject = label;
+    }
+  }
+  if (!subject) return undefined;
+
+  const words = subject.split(' ');
+  if (FRONTEND_SUBJECT_VERBS.has(words[0])) {
+    const phrase = words.length === 1 && parent ? `${subject} ${parent}` : subject;
+    return capitalizeLabel(phrase);
+  }
+  return `${frontendActionVerb(effects)} ${subject}`;
+}
+
+function frontendActionVerb(effects: TerminalEffects): string {
+  const primary = effects.terminalEntities[0];
+  if (primary?.access === 'created') return 'Create';
+  if (primary?.access === 'updated') return 'Update';
+  if (primary?.access === 'deleted') return 'Delete';
+  return 'View';
+}
+
+function frontendPathSegments(path: string | undefined): string[] {
+  if (!path) return [];
+  return path
+    .split('/')
+    .map(segment => segment.trim())
+    .filter(Boolean)
+    .map(segment => segment.replace(SOURCE_FILE_EXTENSION, ''))
+    .filter(segment => !/^[:{*[]/.test(segment))
+    .filter(segment => !FRONTEND_STRUCTURE_SEGMENTS.has(segment.toLowerCase()));
+}
+
+function capitalizeLabel(label: string): string {
+  return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
 function describeTerminalOutcome(effects: TerminalEffects): string | undefined {

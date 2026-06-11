@@ -561,6 +561,172 @@ describe('buildUserJourneys', () => {
   });
 });
 
+describe('buildUserJourneys frontend entry naming', () => {
+  const pageEntry = (
+    id: string,
+    sourceNode: string,
+    pageName: string,
+    path: string,
+    component: string
+  ): CASEntryPoint => ({
+    id,
+    source_node: sourceNode,
+    source_analyzer: 'react',
+    type: 'page',
+    name: `Page ${pageName}`,
+    trigger: { path, method: 'GET' },
+    metadata: { component, name: pageName },
+  } as CASEntryPoint);
+
+  it('names a file-path page entry from its route segments instead of the file path', () => {
+    const input = {
+      nodes: [
+        node('n_page', 'decision-list', 'page'),
+        node('n_hook', 'useDecisionHistory', 'hook'),
+      ],
+      edges: [edge('e1', 'n_page', 'n_hook', 'calls')],
+      entryPoints: [pageEntry('entry_decision_list', 'n_page', 'decision-list', '/activity/decision-list.tsx', 'DecisionList')],
+      exitPoints: [],
+      callChains: [],
+      dataEntities: [],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys).toHaveLength(1);
+    expect(journeys[0].name).toBe('View decision list -> useDecisionHistory');
+    expect(journeys[0].name).not.toContain('.tsx');
+    expect(journeys[0].entry.path_or_trigger).toBe('/activity/decision-list.tsx');
+  });
+
+  it('drops structural directories like components and widgets from the subject', () => {
+    const input = {
+      nodes: [
+        node('n_page', 'stop-loss', 'page'),
+        node('n_hook', 'useAutomationConfig', 'hook'),
+      ],
+      edges: [edge('e1', 'n_page', 'n_hook', 'calls')],
+      entryPoints: [pageEntry('entry_stop_loss', 'n_page', 'stop-loss', '/connections/dashboard/widgets/stop-loss.tsx', 'StopLoss')],
+      exitPoints: [],
+      callChains: [],
+      dataEntities: [],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys[0].name).toBe('View stop loss -> useAutomationConfig');
+  });
+
+  it('uses the parent segment when an index page is the entry file', () => {
+    const input = {
+      nodes: [
+        node('n_page', 'index', 'page'),
+        node('n_hook', 'useActivityFeed', 'hook'),
+      ],
+      edges: [edge('e1', 'n_page', 'n_hook', 'calls')],
+      entryPoints: [pageEntry('entry_activity_index', 'n_page', 'index', '/activity/index.tsx', 'ActivityPage')],
+      exitPoints: [],
+      callChains: [],
+      dataEntities: [],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys[0].name).toBe('View activity -> useActivityFeed');
+  });
+
+  it('contextualizes generic tail segments like settings with the owning resource', () => {
+    const input = {
+      nodes: [
+        node('n_page', 'settings', 'page'),
+        node('n_machine', 'Machine', 'entity'),
+      ],
+      edges: [edge('e1', 'n_page', 'n_machine', 'updates')],
+      entryPoints: [pageEntry('entry_machine_settings', 'n_page', 'settings', '/machines/[id]/settings', 'MachineSettings')],
+      exitPoints: [],
+      callChains: [],
+      dataEntities: [
+        { id: 'entity_machine', name: 'Machine', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } } as CASDataEntity,
+      ],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys[0].name).toBe('Update machine settings -> Machine updated');
+  });
+
+  it('keeps verb-led route subjects as the action without a stacked verb', () => {
+    const input = {
+      nodes: [
+        node('n_route_node', 'app.tsx', 'file'),
+        node('n_app', 'App', 'function'),
+      ],
+      edges: [edge('e1', 'n_route_node', 'n_app', 'calls')],
+      entryPoints: [{
+        id: 'entry_update_billing',
+        source_node: 'n_route_node',
+        source_analyzer: 'react-router',
+        type: 'route',
+        name: 'GET /update-billing',
+        trigger: { path: '/update-billing', method: 'GET' },
+        metadata: { framework: 'react-router', component: 'Redirect' },
+      } as CASEntryPoint],
+      exitPoints: [],
+      callChains: [],
+      dataEntities: [],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys[0].name).toBe('Update billing -> App');
+  });
+
+  it('falls back to the component display name for root and wildcard routes', () => {
+    const input = {
+      nodes: [
+        node('n_route_node', 'app.tsx', 'file'),
+        node('n_app', 'App', 'function'),
+      ],
+      edges: [edge('e1', 'n_route_node', 'n_app', 'calls')],
+      entryPoints: [{
+        id: 'entry_root',
+        source_node: 'n_route_node',
+        source_analyzer: 'react-router',
+        type: 'route',
+        name: 'GET /',
+        trigger: { path: '/', method: 'GET' },
+        metadata: { framework: 'react-router', component: 'LoginPage' },
+      } as CASEntryPoint],
+      exitPoints: [],
+      callChains: [],
+      dataEntities: [],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys[0].name).toBe('Login -> App');
+  });
+
+  it('keeps the Visit fallback when neither path segments nor a component exist', () => {
+    const input = {
+      nodes: [
+        node('n_route_node', 'app-routing.ts', 'file'),
+        node('n_cmp', 'AdminComponent', 'component'),
+      ],
+      edges: [edge('e1', 'n_route_node', 'n_cmp', 'calls')],
+      entryPoints: [{
+        id: 'entry_wildcard',
+        source_node: 'n_route_node',
+        source_analyzer: 'angular',
+        type: 'route',
+        name: 'Route **',
+        trigger: { path: '**', method: 'GET' },
+        metadata: {},
+      } as CASEntryPoint],
+      exitPoints: [],
+      callChains: [],
+      dataEntities: [],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys[0].name).toBe('Visit ** -> AdminComponent');
+  });
+});
+
 describe('buildUserJourneys state machine walking', () => {
   const file = '/repo/core/app/models/spree/order.rb';
   const stateNode = (id: string, name: string, initial = false): CASNode => ({

@@ -127,6 +127,14 @@ test('storedJourneyNameParts splits the deterministic stored name format', () =>
   assert.equal(storedJourneyNameHeadline('Sync inventory'), 'Sync inventory');
 });
 
+test('storedJourneyNameParts handles intent-named frontend journeys with file-path provenance', () => {
+  const parts = storedJourneyNameParts('View crypto assets table -> useConnectionHoldings (GET /dashboard/widgets/crypto-assets-table.tsx)');
+  assert.equal(parts.title, 'View crypto assets table');
+  assert.equal(parts.outcome, 'useConnectionHoldings');
+  assert.equal(parts.entry, 'GET /dashboard/widgets/crypto-assets-table.tsx');
+  assert.equal(storedJourneyNameParts('Update machine settings -> Machine updated').title, 'Update machine settings');
+});
+
 function casWithJourneys(): any {
   return {
     cas_version: '1.11.0',
