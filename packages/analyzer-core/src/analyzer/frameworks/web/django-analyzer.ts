@@ -63,9 +63,15 @@ interface DjangoView {
   contextObject?: string;
   serializerClass?: string;
   serializerReferences: string[];
+  serializerWrites: DjangoSerializerWrite[];
   modelReferences: string[];
   modelAccesses: DjangoModelAccess[];
   querysetModel?: string;
+}
+
+export interface DjangoSerializerWrite {
+  serializer: string;
+  access: 'creates' | 'updates';
 }
 
 interface DjangoUrl {
@@ -1669,7 +1675,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
   private extractSerializers(content: string, filePath: string): DjangoSerializer[] {
     const serializers: DjangoSerializer[] = [];
-    const serializerPattern = /class\s+(\w+)\s*\(\s*(serializers\.\w+)\s*\):/g;
+    const serializerPattern = /class\s+(\w+)\s*\(\s*((?:[\w.]+\s*,\s*)*[\w.]*Serializer\w*(?:\s*,\s*[\w.]+)*)\s*\):/g;
 
     let match;
     while ((match = serializerPattern.exec(content)) !== null) {
@@ -1857,6 +1863,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
       const decorators = this.extractDecorators(content, functionStart);
       const serializerReferences = this.extractSerializerInstantiations(functionContent, content);
+      const serializerWrites = this.extractSerializerWrites(functionContent);
       const modelReferences = this.extractModelReferences(functionContent, content);
       const modelAccesses = this.extractModelAccesses(functionContent, content);
 
@@ -1868,6 +1875,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         decorators,
         permissions: this.extractPermissions(decorators),
         serializerReferences,
+        serializerWrites,
         modelReferences,
         modelAccesses
       });
@@ -1914,6 +1922,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
         const serializerClass = this.extractSerializerClassAttribute(classContent);
         const serializerReferences = this.extractSerializerInstantiations(classContent, content);
+        const serializerWrites = this.extractSerializerWrites(classContent, baseClass, serializerClass);
         const modelReferences = this.extractModelReferences(classContent, content);
         const modelAccesses = this.extractModelAccesses(classContent, content);
         const querysetModel = this.extractQuerysetModel(classContent);
@@ -1928,6 +1937,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
           permissions: [...this.extractPermissions(allDecorators), ...permissionClasses, ...authenticationClasses],
           serializerClass,
           serializerReferences,
+          serializerWrites,
           modelReferences,
           modelAccesses,
           querysetModel
@@ -2007,6 +2017,42 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     }
 
     return serializers;
+  }
+
+  extractSerializerWrites(scopeContent: string, baseClass?: string, serializerClass?: string): DjangoSerializerWrite[] {
+    const writes = new Map<string, DjangoSerializerWrite>();
+    const record = (serializer: string, access: DjangoSerializerWrite['access']) => {
+      writes.set(`${serializer}:${access}`, { serializer, access });
+    };
+
+    if (/\.save\s*\(/.test(scopeContent)) {
+      const createPattern = /(\w+Serializer)\s*\(\s*data\s*=/g;
+      let match;
+      while ((match = createPattern.exec(scopeContent)) !== null) {
+        record(match[1], 'creates');
+      }
+
+      const updatePattern = /(\w+Serializer)\s*\(\s*(?:instance\s*=\s*)?(?!data\s*=)[\w.]+(?:\(\s*\))?(?:\[[^\]]*\])?\s*,\s*data\s*=/g;
+      while ((match = updatePattern.exec(scopeContent)) !== null) {
+        record(match[1], 'updates');
+      }
+    }
+
+    if (serializerClass && baseClass) {
+      const bases = baseClass.split(',').map(b => (b.trim().split('.').pop() || '').trim());
+      if (bases.includes('ModelViewSet')) {
+        record(serializerClass, 'creates');
+        record(serializerClass, 'updates');
+      }
+      if (bases.some(b => b === 'CreateAPIView' || b === 'ListCreateAPIView' || b === 'CreateModelMixin')) {
+        record(serializerClass, 'creates');
+      }
+      if (bases.some(b => b === 'UpdateAPIView' || b === 'RetrieveUpdateAPIView' || b === 'RetrieveUpdateDestroyAPIView' || b === 'UpdateModelMixin')) {
+        record(serializerClass, 'updates');
+      }
+    }
+
+    return [...writes.values()];
   }
 
   private extractImportedSerializers(content: string): string[] {
@@ -2273,7 +2319,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
   }
 
   private extractSerializerMeta(content: string): { model?: string; fields?: string[]; depth?: number } | undefined {
-    const metaPattern = /class\s+Meta\s*:([^}]*?)(?=class|\Z)/;
+    const metaPattern = /class\s+Meta\s*:([\s\S]*?)(?=\n\s*(?:def\s|class\s)|$)/;
     const metaMatch = metaPattern.exec(content);
 
     if (metaMatch) {
@@ -2563,6 +2609,26 @@ export class DjangoAnalyzer extends BaseAnalyzer {
             viewId,
             modelId,
             access.access
+          ));
+        }
+
+        for (const write of view.serializerWrites || []) {
+          const serializer = allSerializers.find(s => s.name === write.serializer);
+          const modelName = serializer?.meta?.model;
+          if (!modelName) continue;
+          const targetModel = allModels.find(m => m.name === modelName);
+          if (!targetModel) continue;
+          const modelId = `model_${targetModel.appId}_${this.sanitizeId(modelName)}`;
+          const edgeId = `${viewId}_${write.access}_${modelId}`;
+          if (edges.some(e => e.id === edgeId)) continue;
+
+          edges.push(this.createEdge(
+            edgeId,
+            viewId,
+            modelId,
+            write.access,
+            undefined,
+            { serializer: write.serializer }
           ));
         }
 
