@@ -969,3 +969,44 @@ test('duplication review treats infrastructure inventory as the duplicate-work s
 
   assert.equal(gate.status, 'pass');
 });
+
+test('description quality gate warns, never fails, when AI was never attempted (deterministic by configuration)', () => {
+  const profile: any = {
+    kind: 'backend-service',
+    confidence: 0.9,
+    evidence: ['HTTP/API framework or entry points'],
+    expectations: {
+      entry_points: 'required',
+      call_chains: 'required',
+      behavioral_invariants: 'required',
+      security: 'required',
+      runtime_correlation: 'optional',
+      flow_coverage: 'required',
+    },
+  };
+  const gate = scoreDescriptionQuality({
+    enhanced_system_purpose: {
+      primary_domain: 'cloud-infrastructure',
+      core_concepts: ['module'],
+      inferred_description: 'short deterministic line',
+      description_source: 'deterministic',
+      description_generation: { status: 'ai_skipped', attempted: false },
+    },
+    system_capabilities: [
+      {
+        id: 'file-workflow',
+        name: 'File Workflow',
+        category: 'supporting',
+        criticality: 'medium',
+        description: 'supports read operations.',
+        description_source: 'deterministic',
+        operations: [{ action: 'read' }],
+        related_entities: [],
+        related_domains: [],
+      },
+    ],
+  } as any, profile);
+
+  assert.notEqual(gate.status, 'fail');
+  assert.ok(gate.detail.includes('deterministic by configuration'));
+});

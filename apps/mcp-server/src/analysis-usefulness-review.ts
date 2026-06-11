@@ -483,6 +483,14 @@ export function scoreDescriptionQuality(cas: CASOutput, profile: AnalysisProfile
 
   score += 10;
   score = Math.min(score, hardCap);
+
+  const aiNeverAttempted = systemGeneration?.attempted === false
+    && !capabilities.some(capability => capability.description_generation?.attempted);
+  if (aiNeverAttempted && score < 75) {
+    score = 75;
+    details.push('descriptions are deterministic by configuration (AI off); run description enrichment for narrative quality');
+  }
+
   return gate('description-quality', score, details.length ? details.join('; ') : 'AI-backed system and capability descriptions are useful');
 }
 
