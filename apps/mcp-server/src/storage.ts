@@ -1,4 +1,5 @@
 import * as fs from 'fs-extra';
+import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import * as zlib from 'zlib';
@@ -176,10 +177,218 @@ function projectSlug(projectPath: string): string {
   return `${base}-${hash}`;
 }
 
+let orphanedTmpSweepStarted = false;
+
 async function ensureStorageDir(): Promise<string> {
   const storagePath = getStoragePath();
   await fs.ensureDir(storagePath);
+  if (!orphanedTmpSweepStarted) {
+    orphanedTmpSweepStarted = true;
+    void pruneOrphanedTmpFiles().catch(() => undefined);
+  }
   return storagePath;
+}
+
+const DEFAULT_ORPHANED_TMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const ORPHANED_TMP_SWEEP_MAX_DEPTH = 6;
+
+export async function pruneOrphanedTmpFiles(options: { maxAgeMs?: number; root?: string } = {}): Promise<{ removed: string[] }> {
+  const root = options.root || getStoragePath();
+  const maxAgeMs = options.maxAgeMs ?? DEFAULT_ORPHANED_TMP_MAX_AGE_MS;
+  const cutoffMs = Date.now() - maxAgeMs;
+  const removed: string[] = [];
+
+  const sweep = async (directory: string, depth: number): Promise<void> => {
+    if (depth > ORPHANED_TMP_SWEEP_MAX_DEPTH) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.readdir(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await sweep(entryPath, depth + 1);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith('.tmp')) continue;
+      const stat = await fs.stat(entryPath).catch(() => null);
+      if (stat && stat.mtimeMs < cutoffMs) {
+        await fs.remove(entryPath).catch(() => undefined);
+        removed.push(entryPath);
+      }
+    }
+  };
+
+  await sweep(root, 0);
+  return { removed };
+}
+
+// =============================================================================
+// ADVISORY FILE LOCKING
+// =============================================================================
+//
+// Multiple MCP server processes share one store under the default user-scope
+// install. Mutations of shared files (index.json) and whole-analysis runs are
+// guarded by advisory lock files holding the owner pid, hostname, and acquire
+// time. Stale locks (dead pid on the same host, or older than the age cap) are
+// broken automatically; waiting is bounded so a lock can never deadlock a
+// caller, only fail with a clear error.
+
+interface StorageLockInfo {
+  pid: number;
+  hostname: string;
+  acquired_at: string;
+  purpose?: string;
+}
+
+export interface StorageLockHandle {
+  lockPath: string;
+  release(): Promise<void>;
+}
+
+export interface StorageLockOptions {
+  waitMs: number;
+  staleMs: number;
+  purpose: string;
+}
+
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+interface StorageLockState {
+  raw: string;
+  info: StorageLockInfo | null;
+  mtimeMs: number;
+}
+
+async function readStorageLockState(lockPath: string): Promise<StorageLockState | null> {
+  try {
+    const [raw, stat] = await Promise.all([fs.readFile(lockPath, 'utf8'), fs.stat(lockPath)]);
+    let info: StorageLockInfo | null = null;
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.pid === 'number') info = parsed as StorageLockInfo;
+    } catch {
+      info = null;
+    }
+    return { raw, info, mtimeMs: stat.mtimeMs };
+  } catch {
+    return null;
+  }
+}
+
+function storageLockAgeMs(state: StorageLockState): number {
+  const acquiredAt = state.info?.acquired_at ? new Date(state.info.acquired_at).getTime() : NaN;
+  const reference = Number.isFinite(acquiredAt) ? acquiredAt : state.mtimeMs;
+  return Math.max(0, Date.now() - reference);
+}
+
+function isStorageLockStale(state: StorageLockState, staleMs: number): boolean {
+  if (storageLockAgeMs(state) > staleMs) return true;
+  if (!state.info) return false;
+  return state.info.hostname === os.hostname() && !isProcessAlive(state.info.pid);
+}
+
+async function removeStorageLockIfUnchanged(lockPath: string, expectedRaw: string): Promise<void> {
+  const current = await readStorageLockState(lockPath);
+  if (current && current.raw === expectedRaw) {
+    await fs.remove(lockPath).catch(() => undefined);
+  }
+}
+
+function describeStorageLockHolder(state: StorageLockState): string {
+  const ageSeconds = Math.round(storageLockAgeMs(state) / 1000);
+  if (!state.info) return `(lock file is unreadable, last modified ${ageSeconds}s ago)`;
+  return `(started ${ageSeconds}s ago by pid ${state.info.pid} on ${state.info.hostname})`;
+}
+
+function sleepMs(durationMs: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, durationMs));
+}
+
+export async function acquireStorageLock(lockPath: string, options: StorageLockOptions): Promise<StorageLockHandle> {
+  const startedAt = Date.now();
+  let delayMs = 25;
+
+  for (;;) {
+    try {
+      const fd = await fs.open(lockPath, 'wx');
+      const payload = JSON.stringify({
+        pid: process.pid,
+        hostname: os.hostname(),
+        acquired_at: new Date().toISOString(),
+        purpose: options.purpose,
+      } satisfies StorageLockInfo);
+      await fs.write(fd, payload);
+      await fs.close(fd);
+      return {
+        lockPath,
+        release: async () => {
+          await fs.remove(lockPath).catch(() => undefined);
+        },
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+
+    const existing = await readStorageLockState(lockPath);
+    if (!existing) continue;
+
+    if (isStorageLockStale(existing, options.staleMs)) {
+      await removeStorageLockIfUnchanged(lockPath, existing.raw);
+      continue;
+    }
+
+    if (Date.now() - startedAt >= options.waitMs) {
+      const waitedSeconds = Math.round((Date.now() - startedAt) / 1000);
+      throw new Error(
+        `${options.purpose} is already in progress ${describeStorageLockHolder(existing)}. ` +
+        `Waited ${waitedSeconds}s for ${lockPath} without acquiring it. ` +
+        `If no other Klauro process is running, delete the lock file and retry.`
+      );
+    }
+
+    await sleepMs(delayMs + Math.floor(Math.random() * 25));
+    delayMs = Math.min(Math.floor(delayMs * 1.6), 500);
+  }
+}
+
+export async function withIndexLock<T>(fn: () => Promise<T>): Promise<T> {
+  const storagePath = await ensureStorageDir();
+  const lock = await acquireStorageLock(path.join(storagePath, 'index.json.lock'), {
+    waitMs: parsePositiveIntegerEnv('KLAURO_INDEX_LOCK_WAIT_MS', 10_000),
+    staleMs: parsePositiveIntegerEnv('KLAURO_INDEX_LOCK_STALE_MS', 30_000),
+    purpose: 'Analysis index update',
+  });
+  try {
+    return await fn();
+  } finally {
+    await lock.release();
+  }
+}
+
+export async function withProjectAnalysisLock<T>(projectPath: string, fn: () => Promise<T>): Promise<T> {
+  const projectDir = getProjectStorageDir(projectPath);
+  await fs.ensureDir(projectDir);
+  const lock = await acquireStorageLock(path.join(projectDir, 'analysis.lock'), {
+    waitMs: parsePositiveIntegerEnv('KLAURO_ANALYSIS_LOCK_WAIT_MS', 10 * 60_000),
+    staleMs: parsePositiveIntegerEnv('KLAURO_ANALYSIS_LOCK_STALE_MS', 60 * 60_000),
+    purpose: `Analysis of ${projectPath}`,
+  });
+  try {
+    return await fn();
+  } finally {
+    await lock.release();
+  }
 }
 
 async function loadIndex(): Promise<AnalysisIndex> {
@@ -201,20 +410,25 @@ async function saveIndex(index: AnalysisIndex): Promise<void> {
   });
 }
 
-async function writeJsonAtomic(filePath: string, value: unknown, options: { spaces?: number } = { spaces: 2 }): Promise<void> {
+export async function writeJsonAtomic(filePath: string, value: unknown, options: { spaces?: number } = { spaces: 2 }): Promise<void> {
   await fs.ensureDir(path.dirname(filePath));
   const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   try {
-    if (shouldStreamJson(value)) {
+    try {
+      if (shouldStreamJson(value)) {
+        await writeJsonStreamed(tmpPath, value);
+      } else {
+        await fs.writeJson(tmpPath, value, options);
+      }
+    } catch (error) {
+      if (!isJsonStringTooLargeError(error)) throw error;
       await writeJsonStreamed(tmpPath, value);
-    } else {
-      await fs.writeJson(tmpPath, value, options);
     }
+    await fs.move(tmpPath, filePath, { overwrite: true });
   } catch (error) {
-    if (!isJsonStringTooLargeError(error)) throw error;
-    await writeJsonStreamed(tmpPath, value);
+    await fs.remove(tmpPath).catch(() => undefined);
+    throw error;
   }
-  await fs.move(tmpPath, filePath, { overwrite: true });
 }
 
 async function writeCompressedJsonAtomic(filePath: string, value: unknown, options: { spaces?: number } = { spaces: 0 }): Promise<void> {
@@ -471,9 +685,11 @@ export async function saveAnalysis(projectPath: string, output: CASOutput): Prom
     cas_version: output.cas_version,
   };
 
-  const index = await loadIndex();
-  index.analyses[projectPath] = entry;
-  await saveIndex(index);
+  await withIndexLock(async () => {
+    const index = await loadIndex();
+    index.analyses[projectPath] = entry;
+    await saveIndex(index);
+  });
 
   return entry;
 }

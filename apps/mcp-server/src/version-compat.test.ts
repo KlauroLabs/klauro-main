@@ -308,6 +308,107 @@ test('diff_behavior flags a pre-pillar baseline snapshot instead of misattributi
   }
 });
 
+const REAL_LEGACY_FIXTURE_PATH = path.resolve(__dirname, '..', 'fixtures', 'compat', 'testing-utilities-net-1.10.0.json');
+
+async function loadRealLegacyFixture(): Promise<CASOutput> {
+  return await fs.readJson(REAL_LEGACY_FIXTURE_PATH) as CASOutput;
+}
+
+test('a real stored 1.10.0 artifact round-trips through storage with the correct classification', async () => {
+  const fixture = await loadRealLegacyFixture();
+  assert.equal(fixture.cas_version, '1.10.0');
+  assert.ok(fixture.nodes.length > 0, 'fixture must be a real non-empty analysis');
+
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-real-compat-'));
+  const projectPath = path.join(root, 'testing-utilities-net');
+  const previousStoragePath = process.env.KLAURO_STORAGE_PATH;
+  const previousCompression = process.env.KLAURO_ANALYSIS_COMPRESSION;
+  process.env.KLAURO_STORAGE_PATH = path.join(root, 'storage');
+  process.env.KLAURO_ANALYSIS_COMPRESSION = 'none';
+
+  try {
+    await fs.ensureDir(projectPath);
+    const entry = await saveAnalysis(projectPath, fixture);
+    assert.equal(entry.cas_version, '1.10.0');
+
+    const loaded = await loadAnalysis(projectPath);
+    assert.ok(loaded);
+    const info = getAnalysisVersionInfo(loaded!);
+    assert.equal(info.stored_version, '1.10.0');
+    assert.equal(info.status, 'older-compatible');
+    assert.doesNotThrow(() => assertAnalysisVersionSupported(loaded!, projectPath));
+  } finally {
+    restoreEnv('KLAURO_STORAGE_PATH', previousStoragePath);
+    restoreEnv('KLAURO_ANALYSIS_COMPRESSION', previousCompression);
+    await fs.remove(root);
+  }
+});
+
+test('core tools degrade per policy on the real 1.10.0 artifact', async () => {
+  const legacy = await loadRealLegacyFixture();
+
+  const summary = buildSummary(legacy);
+  assert.equal(summary.nodes, legacy.nodes.length);
+  assert.equal(summary.analysis_version_status, 'older-compatible');
+  assert.ok(summary.analysis_version_notice?.includes('Re-run analyze_codebase'));
+
+  assert.doesNotThrow(() => getSystemOverview(legacy));
+  assert.doesNotThrow(() => searchNodes(legacy, 'Using_specs_for'));
+  assert.doesNotThrow(() => getEntryPoints(legacy));
+  assert.doesNotThrow(() => getExitPoints(legacy));
+  assert.doesNotThrow(() => getWorkflows(legacy));
+  assert.doesNotThrow(() => getFlowCoverage(legacy));
+  assert.doesNotThrow(() => getSecurityOverview(legacy));
+
+  const matches = searchNodes(legacy, 'Using_specs_for') as Array<{ name?: string }>;
+  assert.ok(matches.length > 0, 'search over the real artifact must find its real nodes');
+});
+
+test('pillar tools return the version notice on the real 1.10.0 artifact', async () => {
+  const legacy = await loadRealLegacyFixture();
+
+  const journeys = getUserJourneys(legacy) as { total: number; analysis_version_notice?: string };
+  assert.equal(journeys.total, 0);
+  assert.ok(journeys.analysis_version_notice?.includes('user journeys'));
+  assert.ok(journeys.analysis_version_notice?.includes('1.10.0'));
+  assert.ok(journeys.analysis_version_notice?.includes('Re-run analyze_codebase'));
+
+  const paradigms = getParadigmConformance(legacy) as { total: number; analysis_version_notice?: string };
+  assert.equal(paradigms.total, 0);
+  assert.ok(paradigms.analysis_version_notice?.includes('paradigm conformance'));
+
+  const lineage = getDataLineage(legacy) as { total: number; analysis_version_notice?: string };
+  assert.equal(lineage.total, 0);
+  assert.ok(lineage.analysis_version_notice?.includes('data lineage'));
+
+  const map = getProductMap(legacy) as { identity?: unknown; analysis_version_notice?: string };
+  assert.ok(map.identity !== undefined);
+  assert.ok(map.analysis_version_notice?.includes('computed on demand'));
+});
+
+test('a newer-minor analysis classifies as newer-compatible and loads without degradation', () => {
+  const [major, minor] = parseCasVersion(CAS_VERSION)!;
+  const newerMinor = `${major}.${minor + 1}.0`;
+
+  const info = describeAnalysisVersion(newerMinor);
+  assert.equal(info.status, 'newer-compatible');
+  assert.equal(info.stored_version, newerMinor);
+
+  const newer = makeCas(newerMinor);
+  assert.doesNotThrow(() => assertAnalysisVersionSupported(newer, '/tmp/p'));
+
+  const summary = buildSummary(newer);
+  assert.equal(summary.analysis_version_status, 'newer-compatible');
+  assert.equal(summary.analysis_version_notice, undefined);
+
+  assert.doesNotThrow(() => getSystemOverview(newer));
+  assert.doesNotThrow(() => searchNodes(newer, 'handleRequest'));
+
+  const journeys = getUserJourneys(newer) as { total: number; analysis_version_notice?: string };
+  assert.equal(journeys.total, 0);
+  assert.equal(journeys.analysis_version_notice, undefined, 'a newer analysis must not be flagged as pre-pillar');
+});
+
 test('nightly eval version-skew checks all hold', () => {
   const checks = evaluateVersionSkewChecks();
   assert.equal(checks.length, 6);

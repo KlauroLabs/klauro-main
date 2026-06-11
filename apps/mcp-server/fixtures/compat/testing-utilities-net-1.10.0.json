@@ -1,0 +1,2388 @@
+{
+  "cas_version": "1.10.0",
+  "analysis_timestamp": "2026-06-09T03:15:23.340Z",
+  "analysis_id": "analysis_1780974923192_j84omsqpz",
+  "system": {
+    "id": "system_testing-utilities-net",
+    "name": "testing-utilities-net",
+    "type": "application",
+    "root_path": "/Users/michaelshattuck/dev/soon/testing-utilities-net",
+    "technologies": {
+      "languages": [
+        {
+          "name": "C#",
+          "percentage": 100,
+          "files": 12
+        }
+      ],
+      "frameworks": []
+    },
+    "quality": {
+      "documentation_coverage": 0,
+      "test_coverage": 0,
+      "complexity_score": 0,
+      "maintainability_index": 44.20384130343141
+    }
+  },
+  "architecture_summary": {
+    "system_type": "Application",
+    "total_files": 1,
+    "architectural_inventory": {
+      "models": [],
+      "views": [],
+      "controllers": [],
+      "view_models": [],
+      "services": [],
+      "repositories": [],
+      "clients": [],
+      "mediators": [],
+      "unit_of_work": [],
+      "singletons": [],
+      "scripts": [],
+      "packages": [
+        "namespace_Soon_TestingUtilities"
+      ]
+    },
+    "pattern_balance": {
+      "status": "balanced",
+      "detected_count": 0,
+      "risks": [],
+      "recommendations": [
+        "Use detected patterns as placement guidance, then verify against local examples and tests."
+      ]
+    },
+    "layers": {
+      "presentation": {},
+      "business": {},
+      "data": {},
+      "infrastructure": {}
+    }
+  },
+  "nodes": [
+    {
+      "id": "file_Soon_TestingUtilities_Using_specs_for_cs",
+      "name": "Using_specs_for.cs",
+      "type": "file",
+      "analyzers": [
+        "csharp"
+      ],
+      "primaryAnalyzer": "csharp",
+      "level": 1,
+      "level_name": "system",
+      "source": {
+        "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+        "line": 1,
+        "end_line": 73,
+        "raw": "﻿using System;\nusing System.Linq.Expressions;\nusing Moq;\nusing Moq.Language;\nusing Moq.Language.Flow;\nusing Machine.Specifications;\nusing StructureMap.AutoMocking.Moq;\n\nnamespace Soon.TestingUtilities\n{\n    public abstract class Using_specs_for<T> where T : class\n    {\n        static MoqAutoMocker<T> autoMocker;\n\n        Establish context = () =>\n        {\n            autoMocker = new MoqAutoMocker<T>();\n        };\n\n        protected static T ClassUnderTest => autoMocker.ClassUnderTest;\n        protected static T Subject => autoMocker.ClassUnderTest;\n\n        protected static Mock<TMock> GetTestDouble<TMock>() where TMock : class\n        {\n            return Moq.Mock.Get(autoMocker.Get<TMock>());\n        }\n        protected static Mock<TMock> Mock<TMock>() where TMock : class\n        {\n            return Moq.Mock.Get(autoMocker.Get<TMock>());\n        }\n\n        protected static TValue Any<TValue>()\n        {\n            return Moq.It.IsAny<TValue>();\n        }\n\n        protected static void Verify<TMock>(Expression<Action<TMock>> predicate) where TMock : class\n        {\n            Mock<TMock>().Verify(predicate);\n        }\n\n        protected static void Verify<TMock>(Expression<Action<TMock>> predicate, Times howOften) where TMock : class\n        {\n            Mock<TMock>().Verify(predicate, howOften);\n        }\n\n        protected static void Verify<TMock, TResult>(Expression<Func<TMock, TResult>> predicate) where TMock : class\n        {\n            Mock<TMock>().Verify(predicate);\n        }\n\n        protected static void Verify<TMock, TResult>(Expression<Func<TMock, TResult>> predicate, Times howOften) where TMock : class\n        {\n            Mock<TMock>().Verify(predicate, howOften);\n        }\n\n        protected static ISetup<TMock> Setup<TMock>(Expression<Action<TMock>> predicate) where TMock : class\n        {\n            return Mock<TMock>().Setup(predicate);\n        }\n\n        protected static ISetup<TMock, TResult> Setup<TMock, TResult>(Expression<Func<TMock\n..."
+      },
+      "metadata": {
+        "language": "csharp",
+        "attributes": {
+          "namespace": "Soon.TestingUtilities",
+          "usings": [
+            "System",
+            "System.Linq.Expressions",
+            "Moq",
+            "Moq.Language",
+            "Moq.Language.Flow",
+            "Machine.Specifications",
+            "StructureMap.AutoMocking.Moq"
+          ],
+          "classCount": 1,
+          "interfaceCount": 0,
+          "enumCount": 0,
+          "structCount": 0
+        },
+        "metrics": {
+          "lines_of_code": 73
+        }
+      },
+      "parent": "namespace_Soon_TestingUtilities",
+      "perspectives": {
+        "code-structure": {
+          "hierarchy": [
+            "structure",
+            "file",
+            "Using_specs_for.cs"
+          ],
+          "level": 1,
+          "priority": 50
+        }
+      }
+    },
+    {
+      "id": "using_file_Soon_TestingUtilities_Using_specs_for_cs_System",
+      "name": "System",
+      "type": "using",
+      "analyzers": [
+        "csharp"
+      ],
+      "primaryAnalyzer": "csharp",
+      "level": 2,
+      "level_name": "architectural",
+      "source": {
+        "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+        "line": 1,
+        "end_line": 1,
+        "raw": "﻿using System;"
+      },
+      "metadata": {
+        "framework": "c# language",
+        "namespace": "System",
+        "isStatic": false,
+        "isGlobal": false,
+        "metrics": {
+          "lines_of_code": 1
+        }
+      },
+      "tags": [
+        "analyzer:csharp"
+      ],
+      "call_graph": {
+        "called_by": [
+          {
+            "source_id": "file_Soon_TestingUtilities_Using_specs_for_cs",
+            "source_name": "Using_specs_for.cs",
+            "source_type": "file",
+            "location": {
+              "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+              "line": 1
+            }
+          }
+        ],
+        "call_chain_depth": 0,
+        "is_entry_point": false,
+        "is_exit_point": false,
+        "total_calls_made": 0,
+        "total_calls_received": 1
+      }
+    },
+    {
+      "id": "using_file_Soon_TestingUtilities_Using_specs_for_cs_System_Linq_Expressions",
+      "name": "System.Linq.Expressions",
+      "type": "using",
+      "analyzers": [
+        "csharp"
+      ],
+      "primaryAnalyzer": "csharp",
+      "level": 2,
+      "level_name": "architectural",
+      "source": {
+        "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+        "line": 2,
+        "end_line": 2,
+        "raw": "using System.Linq.Expressions;"
+      },
+      "metadata": {
+        "framework": "c# language",
+        "namespace": "System.Linq.Expressions",
+        "isStatic": false,
+        "isGlobal": false,
+        "metrics": {
+          "lines_of_code": 1
+        }
+      },
+      "tags": [
+        "analyzer:csharp"
+      ],
+      "call_graph": {
+        "called_by": [
+          {
+            "source_id": "file_Soon_TestingUtilities_Using_specs_for_cs",
+            "source_name": "Using_specs_for.cs",
+            "source_type": "file",
+            "location": {
+              "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+              "line": 1
+            }
+          }
+        ],
+        "call_chain_depth": 0,
+        "is_entry_point": false,
+        "is_exit_point": false,
+        "total_calls_made": 0,
+        "total_calls_received": 1
+      }
+    },
+    {
+      "id": "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq",
+      "name": "Moq",
+      "type": "using",
+      "analyzers": [
+        "csharp"
+      ],
+      "primaryAnalyzer": "csharp",
+      "level": 2,
+      "level_name": "architectural",
+      "source": {
+        "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+        "line": 3,
+        "end_line": 3,
+        "raw": "using Moq;"
+      },
+      "metadata": {
+        "framework": "c# language",
+        "namespace": "Moq",
+        "isStatic": false,
+        "isGlobal": false,
+        "metrics": {
+          "lines_of_code": 1
+        }
+      },
+      "tags": [
+        "analyzer:csharp"
+      ],
+      "call_graph": {
+        "called_by": [
+          {
+            "source_id": "file_Soon_TestingUtilities_Using_specs_for_cs",
+            "source_name": "Using_specs_for.cs",
+            "source_type": "file",
+            "location": {
+              "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+              "line": 1
+            }
+          }
+        ],
+        "call_chain_depth": 0,
+        "is_entry_point": false,
+        "is_exit_point": false,
+        "total_calls_made": 0,
+        "total_calls_received": 1
+      }
+    },
+    {
+      "id": "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language",
+      "name": "Moq.Language",
+      "type": "using",
+      "analyzers": [
+        "csharp"
+      ],
+      "primaryAnalyzer": "csharp",
+      "level": 2,
+      "level_name": "architectural",
+      "source": {
+        "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+        "line": 4,
+        "end_line": 4,
+        "raw": "using Moq.Language;"
+      },
+      "metadata": {
+        "framework": "c# language",
+        "namespace": "Moq.Language",
+        "isStatic": false,
+        "isGlobal": false,
+        "metrics": {
+          "lines_of_code": 1
+        }
+      },
+      "tags": [
+        "analyzer:csharp"
+      ],
+      "call_graph": {
+        "called_by": [
+          {
+            "source_id": "file_Soon_TestingUtilities_Using_specs_for_cs",
+            "source_name": "Using_specs_for.cs",
+            "source_type": "file",
+            "location": {
+              "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+              "line": 1
+            }
+          }
+        ],
+        "call_chain_depth": 0,
+        "is_entry_point": false,
+        "is_exit_point": false,
+        "total_calls_made": 0,
+        "total_calls_received": 1
+      }
+    },
+    {
+      "id": "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language_Flow",
+      "name": "Moq.Language.Flow",
+      "type": "using",
+      "analyzers": [
+        "csharp"
+      ],
+      "primaryAnalyzer": "csharp",
+      "level": 2,
+      "level_name": "architectural",
+      "source": {
+        "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+        "line": 5,
+        "end_line": 5,
+        "raw": "using Moq.Language.Flow;"
+      },
+      "metadata": {
+        "framework": "c# language",
+        "namespace": "Moq.Language.Flow",
+        "isStatic": false,
+        "isGlobal": false,
+        "metrics": {
+          "lines_of_code": 1
+        }
+      },
+      "tags": [
+        "analyzer:csharp"
+      ],
+      "call_graph": {
+        "called_by": [
+          {
+            "source_id": "file_Soon_TestingUtilities_Using_specs_for_cs",
+            "source_name": "Using_specs_for.cs",
+            "source_type": "file",
+            "location": {
+              "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+              "line": 1
+            }
+          }
+        ],
+        "call_chain_depth": 0,
+        "is_entry_point": false,
+        "is_exit_point": false,
+        "total_calls_made": 0,
+        "total_calls_received": 1
+      }
+    },
+    {
+      "id": "using_file_Soon_TestingUtilities_Using_specs_for_cs_Machine_Specifications",
+      "name": "Machine.Specifications",
+      "type": "using",
+      "analyzers": [
+        "csharp"
+      ],
+      "primaryAnalyzer": "csharp",
+      "level": 2,
+      "level_name": "architectural",
+      "source": {
+        "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+        "line": 6,
+        "end_line": 6,
+        "raw": "using Machine.Specifications;"
+      },
+      "metadata": {
+        "framework": "c# language",
+        "namespace": "Machine.Specifications",
+        "isStatic": false,
+        "isGlobal": false,
+        "metrics": {
+          "lines_of_code": 1
+        }
+      },
+      "tags": [
+        "analyzer:csharp"
+      ],
+      "call_graph": {
+        "called_by": [
+          {
+            "source_id": "file_Soon_TestingUtilities_Using_specs_for_cs",
+            "source_name": "Using_specs_for.cs",
+            "source_type": "file",
+            "location": {
+              "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+              "line": 1
+            }
+          }
+        ],
+        "call_chain_depth": 0,
+        "is_entry_point": false,
+        "is_exit_point": false,
+        "total_calls_made": 0,
+        "total_calls_received": 1
+      }
+    },
+    {
+      "id": "using_file_Soon_TestingUtilities_Using_specs_for_cs_StructureMap_AutoMocking_Moq",
+      "name": "StructureMap.AutoMocking.Moq",
+      "type": "using",
+      "analyzers": [
+        "csharp"
+      ],
+      "primaryAnalyzer": "csharp",
+      "level": 2,
+      "level_name": "architectural",
+      "source": {
+        "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+        "line": 7,
+        "end_line": 7,
+        "raw": "using StructureMap.AutoMocking.Moq;"
+      },
+      "metadata": {
+        "framework": "c# language",
+        "namespace": "StructureMap.AutoMocking.Moq",
+        "isStatic": false,
+        "isGlobal": false,
+        "metrics": {
+          "lines_of_code": 1
+        }
+      },
+      "tags": [
+        "analyzer:csharp"
+      ],
+      "call_graph": {
+        "called_by": [
+          {
+            "source_id": "file_Soon_TestingUtilities_Using_specs_for_cs",
+            "source_name": "Using_specs_for.cs",
+            "source_type": "file",
+            "location": {
+              "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+              "line": 1
+            }
+          }
+        ],
+        "call_chain_depth": 0,
+        "is_entry_point": false,
+        "is_exit_point": false,
+        "total_calls_made": 0,
+        "total_calls_received": 1
+      }
+    },
+    {
+      "id": "class_Soon_TestingUtilities_Using_specs_for",
+      "name": "Using_specs_for",
+      "type": "class",
+      "analyzers": [
+        "csharp"
+      ],
+      "primaryAnalyzer": "csharp",
+      "level": 2,
+      "level_name": "Class/Interface",
+      "category": "structures",
+      "subcategories": [
+        "classes"
+      ],
+      "source": {
+        "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+        "line": 11,
+        "end_line": 71,
+        "raw": "    public abstract class Using_specs_for<T> where T : class\n    {\n        static MoqAutoMocker<T> autoMocker;\n\n        Establish context = () =>\n        {\n            autoMocker = new MoqAutoMocker<T>();\n        };\n\n        protected static T ClassUnderTest => autoMocker.ClassUnderTest;\n        protected static T Subject => autoMocker.ClassUnderTest;\n\n        protected static Mock<TMock> GetTestDouble<TMock>() where TMock : class\n        {\n            return Moq.Mock.Get(autoMocker.Get<TMock>());\n        }\n        protected static Mock<TMock> Mock<TMock>() where TMock : class\n        {\n            return Moq.Mock.Get(autoMocker.Get<TMock>());\n        }\n\n        protected static TValue Any<TValue>()\n        {\n            return Moq.It.IsAny<TValue>();\n        }\n\n        protected static void Verify<TMock>(Expression<Action<TMock>> predicate) where TMock : class\n        {\n            Mock<TMock>().Verify(predicate);\n        }\n\n        protected static void Verify<TMock>(Expression<Action<TMock>> predicate, Times howOften) where TMock : class\n        {\n            Mock<TMock>().Verify(predicate, howOften);\n        }\n\n        protected static void Verify<TMock, TResult>(Expression<Func<TMock, TResult>> predicate) where TMock : class\n        {\n            Mock<TMock>().Verify(predicate);\n        }\n\n        protected static void Verify<TMock, TResult>(Expression<Func<TMock, TResult>> predicate, Times howOften) where TMock : class\n        {\n            Mock<TMock>().Verify(predicate, howOften);\n        }\n\n        protected static ISetup<TMock> Setup<TMock>(Expression<Action<TMock>> predicate) where TMock : class\n        {\n            return Mock<TMock>().Setup(predicate);\n        }\n\n        protected static ISetup<TMock, TResult> Setup<TMock, TResult>(Expression<Func<TMock, TResult>> predicate) where TMock : class\n        {\n            return Mock<TMock>().Setup(predicate);\n        }\n\n        protected static ISetupSequentialResult<TResult> SetupSequence<TMock, TResult>(E\n..."
+      },
+      "metadata": {
+        "attributes": {
+          "namespace": "Soon.TestingUtilities",
+          "modifiers": [
+            "public",
+            "abstract"
+          ],
+          "baseClass": "class",
+          "implementedInterfaces": [],
+          "csharpAttributes": [],
+          "fieldCount": 2,
+          "propertyCount": 0,
+          "methodCount": 0,
+          "isPublic": true,
+          "isAbstract": true,
+          "isSealed": false,
+          "isStatic": false
+        },
+        "metrics": {
+          "lines_of_code": 61
+        }
+      },
+      "parent": "file_Soon_TestingUtilities_Using_specs_for_cs",
+      "perspectives": {
+        "code-structure": {
+          "hierarchy": [
+            "structure",
+            "structures",
+            "Using_specs_for"
+          ],
+          "level": 2,
+          "priority": 60
+        }
+      }
+    },
+    {
+      "id": "field_class_Soon_TestingUtilities_Using_specs_for_static",
+      "name": "static",
+      "type": "field",
+      "analyzers": [
+        "csharp"
+      ],
+      "primaryAnalyzer": "csharp",
+      "level": 4,
+      "level_name": "member",
+      "source": {
+        "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+        "line": 20,
+        "end_line": 20,
+        "raw": "        protected static T ClassUnderTest => autoMocker.ClassUnderTest;"
+      },
+      "metadata": {
+        "framework": "c# language",
+        "type": "protected",
+        "modifiers": [
+          "protected",
+          "static"
+        ],
+        "attributes": [],
+        "isStatic": true,
+        "isReadonly": false,
+        "isConst": false,
+        "metrics": {
+          "lines_of_code": 1
+        }
+      },
+      "tags": [
+        "analyzer:csharp"
+      ],
+      "perspectives": {
+        "code-structure": {
+          "hierarchy": [
+            "structure",
+            "field",
+            "static"
+          ],
+          "level": 4,
+          "priority": 50
+        }
+      }
+    },
+    {
+      "id": "namespace_Soon_TestingUtilities",
+      "name": "Soon.TestingUtilities",
+      "type": "namespace",
+      "analyzers": [
+        "csharp"
+      ],
+      "primaryAnalyzer": "csharp",
+      "level": 1,
+      "level_name": "system",
+      "metadata": {
+        "framework": "c# language",
+        "fileCount": 1,
+        "files": [
+          "Soon.TestingUtilities/Using_specs_for.cs"
+        ]
+      },
+      "tags": [
+        "analyzer:csharp"
+      ],
+      "perspectives": {
+        "code-structure": {
+          "hierarchy": [
+            "structure",
+            "namespace",
+            "Soon.TestingUtilities"
+          ],
+          "level": 1,
+          "priority": 50
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_System",
+      "source": "file_Soon_TestingUtilities_Using_specs_for_cs",
+      "target": "using_file_Soon_TestingUtilities_Using_specs_for_cs_System",
+      "type": "uses"
+    },
+    {
+      "id": "file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_System_Linq_Expressions",
+      "source": "file_Soon_TestingUtilities_Using_specs_for_cs",
+      "target": "using_file_Soon_TestingUtilities_Using_specs_for_cs_System_Linq_Expressions",
+      "type": "uses"
+    },
+    {
+      "id": "file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq",
+      "source": "file_Soon_TestingUtilities_Using_specs_for_cs",
+      "target": "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq",
+      "type": "uses"
+    },
+    {
+      "id": "file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language",
+      "source": "file_Soon_TestingUtilities_Using_specs_for_cs",
+      "target": "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language",
+      "type": "uses"
+    },
+    {
+      "id": "file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language_Flow",
+      "source": "file_Soon_TestingUtilities_Using_specs_for_cs",
+      "target": "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language_Flow",
+      "type": "uses"
+    },
+    {
+      "id": "file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_Machine_Specifications",
+      "source": "file_Soon_TestingUtilities_Using_specs_for_cs",
+      "target": "using_file_Soon_TestingUtilities_Using_specs_for_cs_Machine_Specifications",
+      "type": "uses"
+    },
+    {
+      "id": "file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_StructureMap_AutoMocking_Moq",
+      "source": "file_Soon_TestingUtilities_Using_specs_for_cs",
+      "target": "using_file_Soon_TestingUtilities_Using_specs_for_cs_StructureMap_AutoMocking_Moq",
+      "type": "uses"
+    },
+    {
+      "id": "file_Soon_TestingUtilities_Using_specs_for_cs_contains_class_Soon_TestingUtilities_Using_specs_for",
+      "source": "file_Soon_TestingUtilities_Using_specs_for_cs",
+      "target": "class_Soon_TestingUtilities_Using_specs_for",
+      "type": "contains"
+    },
+    {
+      "id": "class_Soon_TestingUtilities_Using_specs_for_has_field_field_class_Soon_TestingUtilities_Using_specs_for_static",
+      "source": "class_Soon_TestingUtilities_Using_specs_for",
+      "target": "field_class_Soon_TestingUtilities_Using_specs_for_static",
+      "type": "has_field"
+    },
+    {
+      "id": "namespace_Soon_TestingUtilities_contains_file_Soon_TestingUtilities_Using_specs_for_cs",
+      "source": "namespace_Soon_TestingUtilities",
+      "target": "file_Soon_TestingUtilities_Using_specs_for_cs",
+      "type": "contains"
+    }
+  ],
+  "entry_points": [
+    {
+      "id": "entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs",
+      "source_node": "file_Soon_TestingUtilities_Using_specs_for_cs",
+      "source_analyzer": "orchestrator",
+      "type": "file",
+      "name": "Orientation entry Soon.TestingUtilities/Using_specs_for.cs",
+      "description": "No formal framework, route, CLI, or runtime entry point was detected; this file entry gives agents a concrete CAS starting point for repository orientation.",
+      "trigger": {
+        "pattern": "Soon.TestingUtilities/Using_specs_for.cs"
+      },
+      "handler": {
+        "node_id": "file_Soon_TestingUtilities_Using_specs_for_cs",
+        "method_name": "Using_specs_for.cs",
+        "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+        "line": 1
+      },
+      "metadata": {
+        "discovered": true,
+        "inferred_orientation_only": true,
+        "discovery_source": "representative-source-node",
+        "file": "Soon.TestingUtilities/Using_specs_for.cs"
+      }
+    }
+  ],
+  "exit_points": [],
+  "index": {
+    "by_type": {
+      "file": [
+        "file_Soon_TestingUtilities_Using_specs_for_cs"
+      ],
+      "using": [
+        "using_file_Soon_TestingUtilities_Using_specs_for_cs_System",
+        "using_file_Soon_TestingUtilities_Using_specs_for_cs_System_Linq_Expressions",
+        "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq",
+        "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language",
+        "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language_Flow",
+        "using_file_Soon_TestingUtilities_Using_specs_for_cs_Machine_Specifications",
+        "using_file_Soon_TestingUtilities_Using_specs_for_cs_StructureMap_AutoMocking_Moq"
+      ],
+      "class": [
+        "class_Soon_TestingUtilities_Using_specs_for"
+      ],
+      "field": [
+        "field_class_Soon_TestingUtilities_Using_specs_for_static"
+      ],
+      "namespace": [
+        "namespace_Soon_TestingUtilities"
+      ]
+    },
+    "by_name": {
+      "using_specs_for.cs": [
+        "file_Soon_TestingUtilities_Using_specs_for_cs"
+      ],
+      "system": [
+        "using_file_Soon_TestingUtilities_Using_specs_for_cs_System"
+      ],
+      "system.linq.expressions": [
+        "using_file_Soon_TestingUtilities_Using_specs_for_cs_System_Linq_Expressions"
+      ],
+      "moq": [
+        "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq"
+      ],
+      "moq.language": [
+        "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language"
+      ],
+      "moq.language.flow": [
+        "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language_Flow"
+      ],
+      "machine.specifications": [
+        "using_file_Soon_TestingUtilities_Using_specs_for_cs_Machine_Specifications"
+      ],
+      "structuremap.automocking.moq": [
+        "using_file_Soon_TestingUtilities_Using_specs_for_cs_StructureMap_AutoMocking_Moq"
+      ],
+      "using_specs_for": [
+        "class_Soon_TestingUtilities_Using_specs_for"
+      ],
+      "static": [
+        "field_class_Soon_TestingUtilities_Using_specs_for_static"
+      ],
+      "soon.testingutilities": [
+        "namespace_Soon_TestingUtilities"
+      ]
+    },
+    "by_perspective": {},
+    "entry_points": [
+      "entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs"
+    ],
+    "exit_points": []
+  },
+  "libraries": [
+    {
+      "id": "lib_Moq",
+      "name": "Moq",
+      "version": "4.20.69",
+      "type": "production",
+      "category": "nuget",
+      "package_manager": "nuget",
+      "metadata": {
+        "packageManager": "nuget",
+        "isProduction": true
+      }
+    },
+    {
+      "id": "lib_Machine_Specifications",
+      "name": "Machine.Specifications",
+      "version": "1.1.1",
+      "type": "production",
+      "category": "nuget",
+      "package_manager": "nuget",
+      "metadata": {
+        "packageManager": "nuget",
+        "isProduction": true
+      }
+    },
+    {
+      "id": "lib_structuremap_automocking_moq",
+      "name": "structuremap.automocking.moq",
+      "version": "4.0.0.315",
+      "type": "production",
+      "category": "nuget",
+      "package_manager": "nuget",
+      "metadata": {
+        "packageManager": "nuget",
+        "isProduction": true
+      }
+    }
+  ],
+  "analyzer_contributions": [
+    {
+      "analyzer_id": "csharp",
+      "analyzer_name": "C# Analyzer",
+      "analyzer_version": "1.0.0",
+      "analyzer_type": "language",
+      "contribution_type": "language",
+      "execution_time_ms": 12,
+      "nodes_created": 12,
+      "edges_created": 11,
+      "confidence": 1,
+      "contributed_categories": 0,
+      "provided_perspectives": []
+    }
+  ],
+  "progressive_levels": {
+    "total_levels": 5,
+    "level_definitions": [
+      {
+        "level": 1,
+        "name": "Major Components",
+        "description": "Major components, services, and their relationships",
+        "node_count": 2,
+        "recommended_for": [
+          "Component understanding",
+          "API discovery",
+          "Service mapping"
+        ],
+        "example_nodes": [
+          "file_Soon_TestingUtilities_Using_specs_for_cs",
+          "namespace_Soon_TestingUtilities"
+        ],
+        "time_to_understand": "2 minutes",
+        "contains": {
+          "categories": [],
+          "entry_points": "included",
+          "exit_points": "included",
+          "key_connections": "all"
+        }
+      },
+      {
+        "level": 2,
+        "name": "Implementation Details",
+        "description": "Classes, modules, and detailed structure",
+        "node_count": 8,
+        "recommended_for": [
+          "Implementation review",
+          "Code navigation",
+          "Refactoring planning"
+        ],
+        "example_nodes": [
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_System",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_System_Linq_Expressions",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq"
+        ],
+        "time_to_understand": "5 minutes",
+        "contains": {
+          "categories": [
+            "structures"
+          ],
+          "entry_points": "referenced",
+          "exit_points": "included",
+          "key_connections": "all"
+        }
+      },
+      {
+        "level": 4,
+        "name": "Code Details",
+        "description": "Variables, parameters, and low-level details",
+        "node_count": 1,
+        "recommended_for": [
+          "Deep debugging",
+          "Security audit",
+          "Complete understanding"
+        ],
+        "example_nodes": [
+          "field_class_Soon_TestingUtilities_Using_specs_for_static"
+        ],
+        "time_to_understand": "20 minutes",
+        "contains": {
+          "categories": [],
+          "entry_points": "referenced",
+          "exit_points": "referenced",
+          "key_connections": "primary"
+        }
+      }
+    ],
+    "query_patterns": {
+      "level_specific": {
+        "description": "Get nodes at a specific level",
+        "example": "level=1",
+        "use_case": "View high-level architecture"
+      },
+      "level_range": {
+        "description": "Get nodes up to a certain level",
+        "example": "maxLevel=2",
+        "use_case": "Progressive exploration"
+      },
+      "discover_levels": {
+        "description": "Discover what levels are available",
+        "example": "query=levels",
+        "response": "List of level definitions"
+      },
+      "category_with_level": {
+        "description": "Get specific category at level",
+        "example": "category=controllers&level=1",
+        "use_case": "Focused exploration"
+      },
+      "children_progressive": {
+        "description": "Get children of node progressively",
+        "example": "nodeId=xxx&depth=1",
+        "use_case": "Drill-down navigation"
+      }
+    },
+    "consumer_recommendations": {
+      "mcp_servers": {
+        "initial_load": "Start with levels 0-1 for context",
+        "on_demand": "Request deeper levels as needed",
+        "benefit": "Reduces token usage by 10-20x",
+        "adaptive": "Adjust based on query complexity"
+      },
+      "ui_visualization": {
+        "overview_mode": "Show levels 0-1 initially",
+        "detail_mode": "Expand to level 2-3 on interaction",
+        "debug_mode": "Show all levels with filtering",
+        "benefit": "Progressive disclosure improves UX"
+      },
+      "documentation_tools": {
+        "architecture_docs": "Use levels 0-1",
+        "api_docs": "Use levels 1-2 for endpoints",
+        "implementation_docs": "Use levels 2-4",
+        "benefit": "Right detail for right audience"
+      }
+    },
+    "level_strategy": {
+      "flexible_depth": "Analyzers can define custom levels",
+      "minimum_levels": 2,
+      "maximum_levels": "Unlimited, typically 4-6",
+      "common_range": "3-5 levels",
+      "examples": {
+        "simple_script": "2 levels",
+        "web_application": "4 levels",
+        "enterprise_system": "5+ levels"
+      }
+    }
+  },
+  "change_risk_summary": {
+    "high_risk_nodes": [],
+    "untested_critical_paths": [],
+    "recent_hotspots": []
+  },
+  "data_summary": {
+    "entities": [],
+    "sensitive_data_nodes": [],
+    "validation_gaps": []
+  },
+  "security_summary": {
+    "boundaries": [],
+    "unprotected_sensitive_ops": [],
+    "assumed_vs_enforced": {
+      "enforced": 0,
+      "assumed": 0,
+      "missing": 0
+    }
+  },
+  "flow_coverage": [
+    {
+      "call_chain_id": "chain:entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs",
+      "call_chain_name": "Using_specs_for.cs",
+      "coverage_status": "not-covered",
+      "coverage_percentage": 0,
+      "tested_segments": [],
+      "untested_segments": [
+        {
+          "node_id": "file_Soon_TestingUtilities_Using_specs_for_cs",
+          "importance": "medium",
+          "reason": "Node Using_specs_for.cs lacks test coverage"
+        },
+        {
+          "node_id": "using_file_Soon_TestingUtilities_Using_specs_for_cs_System",
+          "importance": "medium",
+          "reason": "Node System lacks test coverage"
+        }
+      ],
+      "test_quality": {
+        "has_unit_tests": false,
+        "has_integration_tests": false,
+        "has_e2e_tests": false,
+        "uses_mocks": false
+      }
+    }
+  ],
+  "test_gaps": [
+    {
+      "gap_type": "untested-flow",
+      "location": {
+        "node_id": "class_Soon_TestingUtilities_Using_specs_for"
+      },
+      "severity": "medium",
+      "recommendation": "Add tests for Using_specs_for"
+    }
+  ],
+  "temporal_stability": [
+    {
+      "node_id": "file_Soon_TestingUtilities_Using_specs_for_cs",
+      "stability_score": 100,
+      "stability_class": "stable",
+      "churn_metrics": {
+        "commits_30d": 0,
+        "commits_90d": 0,
+        "unique_authors_30d": 0,
+        "lines_changed_30d": 0
+      },
+      "quality_signals": {
+        "bug_fix_rate": 0,
+        "refactor_frequency": "rare",
+        "has_recent_regression": false
+      },
+      "age_context": {
+        "file_age_days": 1761,
+        "is_legacy": true
+      },
+      "risk_correlation": {
+        "high_churn_high_bugs": false,
+        "recent_refactor_unstable": false
+      }
+    },
+    {
+      "node_id": "class_Soon_TestingUtilities_Using_specs_for",
+      "stability_score": 100,
+      "stability_class": "stable",
+      "churn_metrics": {
+        "commits_30d": 0,
+        "commits_90d": 0,
+        "unique_authors_30d": 0,
+        "lines_changed_30d": 0
+      },
+      "quality_signals": {
+        "bug_fix_rate": 0,
+        "refactor_frequency": "rare",
+        "has_recent_regression": false
+      },
+      "age_context": {
+        "file_age_days": 1761,
+        "is_legacy": true
+      },
+      "risk_correlation": {
+        "high_churn_high_bugs": false,
+        "recent_refactor_unstable": false
+      }
+    }
+  ],
+  "stability_summary": {
+    "by_stability_class": {
+      "stable": 2,
+      "evolving": 0,
+      "volatile": 0,
+      "fragile": 0
+    },
+    "hotspots": [],
+    "legacy_areas": [
+      "file_Soon_TestingUtilities_Using_specs_for_cs",
+      "class_Soon_TestingUtilities_Using_specs_for"
+    ]
+  },
+  "system_capabilities": [
+    {
+      "id": "cap_0",
+      "name": "File Management",
+      "description": "process operations for file management",
+      "category": "supporting",
+      "operations": [
+        {
+          "entry_point_id": "entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs",
+          "entry_point_type": "file",
+          "action": "Process"
+        }
+      ],
+      "related_entities": [],
+      "related_domains": [
+        "file"
+      ],
+      "criticality": "low",
+      "criticality_factors": []
+    },
+    {
+      "id": "cap_1",
+      "name": "Moq Capability",
+      "description": "Moq Capability supports coordinate behavior; has 1 graph endpoint/parent signal(s).",
+      "category": "supporting",
+      "operations": [
+        {
+          "entry_point_id": "node:using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language_Flow",
+          "entry_point_type": "internal",
+          "action": "Coordinate",
+          "path_or_command": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs"
+        }
+      ],
+      "related_entities": [],
+      "related_domains": [
+        "moq"
+      ],
+      "criticality": "low",
+      "criticality_factors": [
+        "Inferred from 1 terminal or parent business node(s)"
+      ]
+    }
+  ],
+  "system_purpose": {
+    "primary_type": "document-management",
+    "confidence": 0.15,
+    "evidence": [
+      "Capabilities: file"
+    ]
+  },
+  "call_chains": [
+    {
+      "id": "chain:entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs",
+      "chain_type": "dead-end",
+      "entry_point": {
+        "node_id": "file_Soon_TestingUtilities_Using_specs_for_cs",
+        "method_name": "Using_specs_for.cs",
+        "entry_point_id": "entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs"
+      },
+      "call_path": [
+        {
+          "call_id": "entry:entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs",
+          "node_id": "file_Soon_TestingUtilities_Using_specs_for_cs",
+          "method_name": "Using_specs_for.cs",
+          "depth": 0
+        },
+        {
+          "call_id": "file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_System",
+          "node_id": "using_file_Soon_TestingUtilities_Using_specs_for_cs_System",
+          "method_name": "System",
+          "depth": 1
+        }
+      ],
+      "characteristics": {
+        "total_calls": 1,
+        "max_depth": 1,
+        "has_external_calls": false,
+        "has_database_calls": false,
+        "has_async_calls": false,
+        "is_circular": false,
+        "is_recursive": false,
+        "complexity_score": 1
+      },
+      "risk_analysis": {
+        "risk_level": "low",
+        "risk_factors": []
+      },
+      "criticality": "low",
+      "criticality_factors": [
+        "file"
+      ]
+    }
+  ],
+  "workflow_graph": {
+    "workflows": [],
+    "dependencies": [],
+    "critical_shared_nodes": []
+  },
+  "domain_concepts": [
+    {
+      "id": "concept_soon",
+      "name": "soon",
+      "frequency": 17,
+      "appears_in": {
+        "entry_points": [],
+        "entities": [],
+        "nodes": [
+          "namespace_Soon_TestingUtilities",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_System",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_System_Linq_Expressions",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language_Flow",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Machine_Specifications",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_StructureMap_AutoMocking_Moq",
+          "field_class_Soon_TestingUtilities_Using_specs_for_static"
+        ]
+      },
+      "classification": "core"
+    },
+    {
+      "id": "concept_using",
+      "name": "using",
+      "frequency": 9,
+      "appears_in": {
+        "entry_points": [],
+        "entities": [],
+        "nodes": [
+          "class_Soon_TestingUtilities_Using_specs_for",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_System",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_System_Linq_Expressions",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language_Flow",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Machine_Specifications",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_StructureMap_AutoMocking_Moq",
+          "field_class_Soon_TestingUtilities_Using_specs_for_static"
+        ]
+      },
+      "classification": "core"
+    },
+    {
+      "id": "concept_specs",
+      "name": "specs",
+      "frequency": 9,
+      "appears_in": {
+        "entry_points": [],
+        "entities": [],
+        "nodes": [
+          "class_Soon_TestingUtilities_Using_specs_for",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_System",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_System_Linq_Expressions",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language_Flow",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Machine_Specifications",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_StructureMap_AutoMocking_Moq",
+          "field_class_Soon_TestingUtilities_Using_specs_for_static"
+        ]
+      },
+      "classification": "core"
+    },
+    {
+      "id": "concept_testing",
+      "name": "testing",
+      "frequency": 9,
+      "appears_in": {
+        "entry_points": [],
+        "entities": [],
+        "nodes": [
+          "namespace_Soon_TestingUtilities",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_System",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_System_Linq_Expressions",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language_Flow",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Machine_Specifications",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_StructureMap_AutoMocking_Moq",
+          "field_class_Soon_TestingUtilities_Using_specs_for_static"
+        ]
+      },
+      "classification": "core"
+    },
+    {
+      "id": "concept_moq",
+      "name": "moq",
+      "frequency": 8,
+      "appears_in": {
+        "entry_points": [],
+        "entities": [],
+        "nodes": [
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language_Flow",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_StructureMap_AutoMocking_Moq"
+        ]
+      },
+      "classification": "supporting"
+    },
+    {
+      "id": "concept_net",
+      "name": "net",
+      "frequency": 8,
+      "appears_in": {
+        "entry_points": [],
+        "entities": [],
+        "nodes": [
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_System",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_System_Linq_Expressions",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language_Flow",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Machine_Specifications",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_StructureMap_AutoMocking_Moq",
+          "field_class_Soon_TestingUtilities_Using_specs_for_static"
+        ]
+      },
+      "classification": "core"
+    },
+    {
+      "id": "concept_system",
+      "name": "system",
+      "frequency": 4,
+      "appears_in": {
+        "entry_points": [],
+        "entities": [],
+        "nodes": [
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_System",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_System_Linq_Expressions"
+        ]
+      },
+      "classification": "supporting"
+    },
+    {
+      "id": "concept_language",
+      "name": "language",
+      "frequency": 4,
+      "appears_in": {
+        "entry_points": [],
+        "entities": [],
+        "nodes": [
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language",
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language_Flow"
+        ]
+      },
+      "classification": "supporting"
+    },
+    {
+      "id": "concept_linq",
+      "name": "linq",
+      "frequency": 2,
+      "appears_in": {
+        "entry_points": [],
+        "entities": [],
+        "nodes": [
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_System_Linq_Expressions"
+        ]
+      },
+      "classification": "supporting"
+    },
+    {
+      "id": "concept_expressions",
+      "name": "expressions",
+      "frequency": 2,
+      "appears_in": {
+        "entry_points": [],
+        "entities": [],
+        "nodes": [
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_System_Linq_Expressions"
+        ]
+      },
+      "classification": "supporting"
+    },
+    {
+      "id": "concept_flow",
+      "name": "flow",
+      "frequency": 2,
+      "appears_in": {
+        "entry_points": [],
+        "entities": [],
+        "nodes": [
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language_Flow"
+        ]
+      },
+      "classification": "supporting"
+    },
+    {
+      "id": "concept_machine",
+      "name": "machine",
+      "frequency": 2,
+      "appears_in": {
+        "entry_points": [],
+        "entities": [],
+        "nodes": [
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Machine_Specifications"
+        ]
+      },
+      "classification": "supporting"
+    },
+    {
+      "id": "concept_specifications",
+      "name": "specifications",
+      "frequency": 2,
+      "appears_in": {
+        "entry_points": [],
+        "entities": [],
+        "nodes": [
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_Machine_Specifications"
+        ]
+      },
+      "classification": "supporting"
+    },
+    {
+      "id": "concept_structure",
+      "name": "structure",
+      "frequency": 2,
+      "appears_in": {
+        "entry_points": [],
+        "entities": [],
+        "nodes": [
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_StructureMap_AutoMocking_Moq"
+        ]
+      },
+      "classification": "supporting"
+    },
+    {
+      "id": "concept_auto",
+      "name": "auto",
+      "frequency": 2,
+      "appears_in": {
+        "entry_points": [],
+        "entities": [],
+        "nodes": [
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_StructureMap_AutoMocking_Moq"
+        ]
+      },
+      "classification": "supporting"
+    },
+    {
+      "id": "concept_mocking",
+      "name": "mocking",
+      "frequency": 2,
+      "appears_in": {
+        "entry_points": [],
+        "entities": [],
+        "nodes": [
+          "using_file_Soon_TestingUtilities_Using_specs_for_cs_StructureMap_AutoMocking_Moq"
+        ]
+      },
+      "classification": "supporting"
+    },
+    {
+      "id": "concept_static",
+      "name": "static",
+      "frequency": 2,
+      "appears_in": {
+        "entry_points": [],
+        "entities": [],
+        "nodes": [
+          "field_class_Soon_TestingUtilities_Using_specs_for_static"
+        ]
+      },
+      "classification": "supporting"
+    }
+  ],
+  "enhanced_system_purpose": {
+    "primary_type": "document-management",
+    "confidence": 0.15,
+    "evidence": [
+      "Capabilities: file",
+      "source text"
+    ],
+    "primary_domain": "soon",
+    "core_concepts": [
+      "soon",
+      "using",
+      "specs",
+      "testing",
+      "net",
+      "moq",
+      "system",
+      "language",
+      "linq",
+      "expressions"
+    ],
+    "inferred_description": "A soon system. Key capabilities: file management, moq management. Entry points: 1 file.",
+    "description_source": "deterministic",
+    "description_generation": {
+      "status": "deterministic_kept",
+      "attempted": false,
+      "reason": "deterministic-description-is-useful",
+      "generated_at": "2026-06-09T03:15:23.327Z"
+    },
+    "supporting_workflow_ids": []
+  },
+  "flow_graph": {
+    "capabilities": [
+      {
+        "id": "capability_orientation",
+        "name": "Orientation",
+        "description": "Orientation: action operation via file",
+        "entry_points": [
+          "entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs"
+        ],
+        "entry_point_summary": {
+          "types": [
+            "file"
+          ],
+          "count": 1,
+          "primary_type": "file"
+        },
+        "operations": [
+          {
+            "id": "op_entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs",
+            "name": "Orientation entry Soon.TestingUtilities/Using_specs_for.cs",
+            "pattern": "action",
+            "entry_point_id": "entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs",
+            "call_chain_ids": [
+              "chain:entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs"
+            ],
+            "implementing_nodes": [
+              "file_Soon_TestingUtilities_Using_specs_for_cs"
+            ],
+            "trigger": {
+              "type": "file",
+              "command": "Soon.TestingUtilities/Using_specs_for.cs"
+            }
+          }
+        ],
+        "operation_patterns": [
+          "command"
+        ],
+        "entities_touched": [],
+        "services_used": [],
+        "exit_points": [],
+        "call_chain_ids": [
+          "chain:entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs"
+        ],
+        "complexity_profile": {
+          "avg_depth": 1,
+          "max_depth": 1,
+          "has_external_calls": false,
+          "has_database_calls": false,
+          "has_async_calls": false,
+          "branching_factor": 1
+        },
+        "classification": "supporting",
+        "criticality": "medium",
+        "signals": {
+          "domain_concept_score": 30,
+          "centrality_score": 0,
+          "coverage_score": 40,
+          "complexity_score": 20,
+          "total_score": 21
+        },
+        "depends_on": [],
+        "depended_by": []
+      }
+    ],
+    "dependencies": [],
+    "topology": {
+      "root_capabilities": [
+        "capability_orientation"
+      ],
+      "leaf_capabilities": [
+        "capability_orientation"
+      ],
+      "critical_path": [],
+      "max_depth": 0
+    },
+    "primary_flow": {
+      "core_capability_id": "capability_orientation",
+      "value_chain": [
+        "capability_orientation"
+      ],
+      "supporting_capabilities": [
+        "capability_orientation"
+      ],
+      "infrastructure_capabilities": []
+    },
+    "layers": [
+      {
+        "layer_number": 1,
+        "layer_name": "Business Logic",
+        "capabilities": [
+          "capability_orientation"
+        ],
+        "layer_type": "business"
+      }
+    ],
+    "system_insights": {
+      "detected_patterns": [],
+      "primary_entry_type": "unknown",
+      "data_flow_type": "stateless"
+    }
+  },
+  "flow_summary": {
+    "total_critical_flows": 0,
+    "by_criticality": {
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 1
+    },
+    "untested_critical_flows": [],
+    "high_error_rate_flows": []
+  },
+  "documentation_summary": {
+    "total_documented_nodes": 0,
+    "documentation_coverage": 0,
+    "by_type": {
+      "functions": {
+        "documented": 0,
+        "total": 0,
+        "coverage": 0
+      },
+      "classes": {
+        "documented": 0,
+        "total": 1,
+        "coverage": 0
+      },
+      "interfaces": {
+        "documented": 0,
+        "total": 0,
+        "coverage": 0
+      },
+      "modules": {
+        "documented": 0,
+        "total": 1,
+        "coverage": 0
+      }
+    },
+    "by_documentation_type": {},
+    "quality_metrics": {
+      "average_description_length": 0,
+      "parameters_documented": 0,
+      "returns_documented": 0,
+      "examples_provided": 0,
+      "deprecated_items": 0
+    },
+    "missing_documentation": []
+  },
+  "todos_summary": {
+    "total_todos": 0,
+    "total_fixmes": 0,
+    "total_hacks": 0,
+    "total_warnings": 0,
+    "by_priority": {
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 0
+    },
+    "by_category": {},
+    "technical_debt_items": 0,
+    "blocking_items": 0,
+    "hotspots": []
+  },
+  "implementation_health": {
+    "complete_implementations": 0,
+    "partial_implementations": 0,
+    "stubs": 0,
+    "not_implemented": 0,
+    "deprecated": 0,
+    "experimental": 0,
+    "health_score": 1,
+    "risk_areas": []
+  },
+  "system_health": {
+    "score": 96,
+    "status": "healthy",
+    "summary": "1 system health risk area(s) detected across architecture coherence, implementation health, tests, idioms, and runtime coverage.",
+    "risk_areas": [
+      {
+        "id": "runtime-coverage-gaps",
+        "type": "runtime-coverage-gap",
+        "severity": "low",
+        "title": "Runtime telemetry coverage is incomplete",
+        "description": "Static CAS can identify instrumentable paths that do not yet have runtime observations.",
+        "affected_nodes": [
+          "chain:entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs"
+        ],
+        "evidence": [
+          "chain:entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs"
+        ],
+        "recommendation": "Install or configure the runtime SDK on high-volume entry points and external exits.",
+        "agent_guidance": "For production bug triage, combine get_runtime_observations with get_operational_priorities and static risk."
+      }
+    ],
+    "coherence": {
+      "status": "coherent",
+      "paradigm_count": 0,
+      "primary_paradigms": [],
+      "conflicting_paradigms": [],
+      "naming_convention_violations": 0,
+      "dependency_injection_violations": 0,
+      "module_boundary_violations": 0,
+      "duplication_signals": 0
+    },
+    "remediation": {
+      "immediate": [
+        "Install or configure the runtime SDK on high-volume entry points and external exits."
+      ],
+      "agent_rules": [
+        "For production bug triage, combine get_runtime_observations with get_operational_priorities and static risk."
+      ],
+      "validation_tools": [
+        "get_system_health",
+        "get_codebase_idioms",
+        "validate_codebase_idioms",
+        "assess_change_risk",
+        "find_tests",
+        "get_runtime_observations",
+        "get_operational_priorities"
+      ]
+    }
+  },
+  "configuration": {
+    "config_files": [
+      {
+        "path": "Soon.TestingUtilities.sln",
+        "format": "other",
+        "environment_specific": true
+      }
+    ]
+  },
+  "runtime": {
+    "dependencies": {
+      "system_libraries": [],
+      "external_services": []
+    },
+    "instrumentation": {
+      "instrumentable_entry_points": [
+        "entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs"
+      ],
+      "instrumentable_exit_points": [],
+      "observed_call_chains": [],
+      "missing_runtime_coverage": [
+        "chain:entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs"
+      ]
+    }
+  },
+  "runtime_static_links": [
+    {
+      "id": "runtime_entry_entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs",
+      "kind": "entry-point",
+      "static_id": "entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs",
+      "runtime_signal": "file Orientation entry Soon.TestingUtilities/Using_specs_for.cs",
+      "telemetry_status": "instrumentable",
+      "confidence": 0.85,
+      "instrumentation_points": [
+        "file_Soon_TestingUtilities_Using_specs_for_cs",
+        "file_Soon_TestingUtilities_Using_specs_for_cs"
+      ],
+      "evidence": [
+        {
+          "kind": "route",
+          "source": "entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs",
+          "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+          "line": 1,
+          "confidence": 0.85
+        }
+      ]
+    },
+    {
+      "id": "runtime_chain_chain:entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs",
+      "kind": "call-chain",
+      "static_id": "chain:entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs",
+      "runtime_signal": "Using_specs_for.cs",
+      "telemetry_status": "instrumentable",
+      "confidence": 0.75,
+      "instrumentation_points": [
+        "file_Soon_TestingUtilities_Using_specs_for_cs",
+        "using_file_Soon_TestingUtilities_Using_specs_for_cs_System"
+      ],
+      "evidence": [
+        {
+          "kind": "graph",
+          "source": "chain:entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs",
+          "confidence": 0.75
+        }
+      ]
+    }
+  ],
+  "analysis_facts": [
+    {
+      "id": "fact_node_file_Soon_TestingUtilities_Using_specs_for_cs",
+      "subject_type": "node",
+      "subject_id": "file_Soon_TestingUtilities_Using_specs_for_cs",
+      "fact_type": "definition",
+      "claim": "Using_specs_for.cs is a file",
+      "confidence": 0.9,
+      "produced_by": "csharp",
+      "evidence": [
+        {
+          "kind": "source-location",
+          "source": "Using_specs_for.cs",
+          "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+          "line": 1,
+          "excerpt": "",
+          "confidence": 0.9
+        }
+      ]
+    },
+    {
+      "id": "fact_node_using_file_Soon_TestingUtilities_Using_specs_for_cs_System",
+      "subject_type": "node",
+      "subject_id": "using_file_Soon_TestingUtilities_Using_specs_for_cs_System",
+      "fact_type": "definition",
+      "claim": "System is a using",
+      "confidence": 0.9,
+      "produced_by": "csharp",
+      "evidence": [
+        {
+          "kind": "source-location",
+          "source": "System",
+          "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+          "line": 1,
+          "excerpt": "",
+          "confidence": 0.9
+        }
+      ]
+    },
+    {
+      "id": "fact_node_using_file_Soon_TestingUtilities_Using_specs_for_cs_System_Linq_Expressions",
+      "subject_type": "node",
+      "subject_id": "using_file_Soon_TestingUtilities_Using_specs_for_cs_System_Linq_Expressions",
+      "fact_type": "definition",
+      "claim": "System.Linq.Expressions is a using",
+      "confidence": 0.9,
+      "produced_by": "csharp",
+      "evidence": [
+        {
+          "kind": "source-location",
+          "source": "System.Linq.Expressions",
+          "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+          "line": 2,
+          "excerpt": "",
+          "confidence": 0.9
+        }
+      ]
+    },
+    {
+      "id": "fact_node_using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq",
+      "subject_type": "node",
+      "subject_id": "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq",
+      "fact_type": "definition",
+      "claim": "Moq is a using",
+      "confidence": 0.9,
+      "produced_by": "csharp",
+      "evidence": [
+        {
+          "kind": "source-location",
+          "source": "Moq",
+          "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+          "line": 3,
+          "excerpt": "",
+          "confidence": 0.9
+        }
+      ]
+    },
+    {
+      "id": "fact_node_using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language",
+      "subject_type": "node",
+      "subject_id": "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language",
+      "fact_type": "definition",
+      "claim": "Moq.Language is a using",
+      "confidence": 0.9,
+      "produced_by": "csharp",
+      "evidence": [
+        {
+          "kind": "source-location",
+          "source": "Moq.Language",
+          "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+          "line": 4,
+          "excerpt": "",
+          "confidence": 0.9
+        }
+      ]
+    },
+    {
+      "id": "fact_node_using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language_Flow",
+      "subject_type": "node",
+      "subject_id": "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language_Flow",
+      "fact_type": "definition",
+      "claim": "Moq.Language.Flow is a using",
+      "confidence": 0.9,
+      "produced_by": "csharp",
+      "evidence": [
+        {
+          "kind": "source-location",
+          "source": "Moq.Language.Flow",
+          "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+          "line": 5,
+          "excerpt": "",
+          "confidence": 0.9
+        }
+      ]
+    },
+    {
+      "id": "fact_node_using_file_Soon_TestingUtilities_Using_specs_for_cs_Machine_Specifications",
+      "subject_type": "node",
+      "subject_id": "using_file_Soon_TestingUtilities_Using_specs_for_cs_Machine_Specifications",
+      "fact_type": "definition",
+      "claim": "Machine.Specifications is a using",
+      "confidence": 0.9,
+      "produced_by": "csharp",
+      "evidence": [
+        {
+          "kind": "source-location",
+          "source": "Machine.Specifications",
+          "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+          "line": 6,
+          "excerpt": "",
+          "confidence": 0.9
+        }
+      ]
+    },
+    {
+      "id": "fact_node_using_file_Soon_TestingUtilities_Using_specs_for_cs_StructureMap_AutoMocking_Moq",
+      "subject_type": "node",
+      "subject_id": "using_file_Soon_TestingUtilities_Using_specs_for_cs_StructureMap_AutoMocking_Moq",
+      "fact_type": "definition",
+      "claim": "StructureMap.AutoMocking.Moq is a using",
+      "confidence": 0.9,
+      "produced_by": "csharp",
+      "evidence": [
+        {
+          "kind": "source-location",
+          "source": "StructureMap.AutoMocking.Moq",
+          "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+          "line": 7,
+          "excerpt": "",
+          "confidence": 0.9
+        }
+      ]
+    },
+    {
+      "id": "fact_node_class_Soon_TestingUtilities_Using_specs_for",
+      "subject_type": "node",
+      "subject_id": "class_Soon_TestingUtilities_Using_specs_for",
+      "fact_type": "definition",
+      "claim": "Using_specs_for is a class",
+      "confidence": 0.9,
+      "produced_by": "csharp",
+      "evidence": [
+        {
+          "kind": "source-location",
+          "source": "Using_specs_for",
+          "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+          "line": 11,
+          "excerpt": "",
+          "confidence": 0.9
+        }
+      ]
+    },
+    {
+      "id": "fact_node_field_class_Soon_TestingUtilities_Using_specs_for_static",
+      "subject_type": "node",
+      "subject_id": "field_class_Soon_TestingUtilities_Using_specs_for_static",
+      "fact_type": "definition",
+      "claim": "static is a field",
+      "confidence": 0.9,
+      "produced_by": "csharp",
+      "evidence": [
+        {
+          "kind": "source-location",
+          "source": "static",
+          "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+          "line": 20,
+          "excerpt": "",
+          "confidence": 0.9
+        }
+      ]
+    },
+    {
+      "id": "fact_edge_file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_System",
+      "subject_type": "edge",
+      "subject_id": "file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_System",
+      "fact_type": "relationship",
+      "claim": "file_Soon_TestingUtilities_Using_specs_for_cs uses using_file_Soon_TestingUtilities_Using_specs_for_cs_System",
+      "confidence": 0.75,
+      "produced_by": "C# Analyzer",
+      "evidence": [
+        {
+          "kind": "graph",
+          "source": "file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_System",
+          "confidence": 0.75
+        }
+      ]
+    },
+    {
+      "id": "fact_edge_file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_System_Linq_Expressions",
+      "subject_type": "edge",
+      "subject_id": "file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_System_Linq_Expressions",
+      "fact_type": "relationship",
+      "claim": "file_Soon_TestingUtilities_Using_specs_for_cs uses using_file_Soon_TestingUtilities_Using_specs_for_cs_System_Linq_Expressions",
+      "confidence": 0.75,
+      "produced_by": "C# Analyzer",
+      "evidence": [
+        {
+          "kind": "graph",
+          "source": "file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_System_Linq_Expressions",
+          "confidence": 0.75
+        }
+      ]
+    },
+    {
+      "id": "fact_edge_file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq",
+      "subject_type": "edge",
+      "subject_id": "file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq",
+      "fact_type": "relationship",
+      "claim": "file_Soon_TestingUtilities_Using_specs_for_cs uses using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq",
+      "confidence": 0.75,
+      "produced_by": "C# Analyzer",
+      "evidence": [
+        {
+          "kind": "graph",
+          "source": "file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq",
+          "confidence": 0.75
+        }
+      ]
+    },
+    {
+      "id": "fact_edge_file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language",
+      "subject_type": "edge",
+      "subject_id": "file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language",
+      "fact_type": "relationship",
+      "claim": "file_Soon_TestingUtilities_Using_specs_for_cs uses using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language",
+      "confidence": 0.75,
+      "produced_by": "C# Analyzer",
+      "evidence": [
+        {
+          "kind": "graph",
+          "source": "file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language",
+          "confidence": 0.75
+        }
+      ]
+    },
+    {
+      "id": "fact_edge_file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language_Flow",
+      "subject_type": "edge",
+      "subject_id": "file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language_Flow",
+      "fact_type": "relationship",
+      "claim": "file_Soon_TestingUtilities_Using_specs_for_cs uses using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language_Flow",
+      "confidence": 0.75,
+      "produced_by": "C# Analyzer",
+      "evidence": [
+        {
+          "kind": "graph",
+          "source": "file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language_Flow",
+          "confidence": 0.75
+        }
+      ]
+    },
+    {
+      "id": "fact_edge_file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_Machine_Specifications",
+      "subject_type": "edge",
+      "subject_id": "file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_Machine_Specifications",
+      "fact_type": "relationship",
+      "claim": "file_Soon_TestingUtilities_Using_specs_for_cs uses using_file_Soon_TestingUtilities_Using_specs_for_cs_Machine_Specifications",
+      "confidence": 0.75,
+      "produced_by": "C# Analyzer",
+      "evidence": [
+        {
+          "kind": "graph",
+          "source": "file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_Machine_Specifications",
+          "confidence": 0.75
+        }
+      ]
+    },
+    {
+      "id": "fact_edge_file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_StructureMap_AutoMocking_Moq",
+      "subject_type": "edge",
+      "subject_id": "file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_StructureMap_AutoMocking_Moq",
+      "fact_type": "relationship",
+      "claim": "file_Soon_TestingUtilities_Using_specs_for_cs uses using_file_Soon_TestingUtilities_Using_specs_for_cs_StructureMap_AutoMocking_Moq",
+      "confidence": 0.75,
+      "produced_by": "C# Analyzer",
+      "evidence": [
+        {
+          "kind": "graph",
+          "source": "file_Soon_TestingUtilities_Using_specs_for_cs_uses_using_file_Soon_TestingUtilities_Using_specs_for_cs_StructureMap_AutoMocking_Moq",
+          "confidence": 0.75
+        }
+      ]
+    },
+    {
+      "id": "fact_edge_file_Soon_TestingUtilities_Using_specs_for_cs_contains_class_Soon_TestingUtilities_Using_specs_for",
+      "subject_type": "edge",
+      "subject_id": "file_Soon_TestingUtilities_Using_specs_for_cs_contains_class_Soon_TestingUtilities_Using_specs_for",
+      "fact_type": "relationship",
+      "claim": "file_Soon_TestingUtilities_Using_specs_for_cs contains class_Soon_TestingUtilities_Using_specs_for",
+      "confidence": 0.75,
+      "produced_by": "C# Analyzer",
+      "evidence": [
+        {
+          "kind": "graph",
+          "source": "file_Soon_TestingUtilities_Using_specs_for_cs_contains_class_Soon_TestingUtilities_Using_specs_for",
+          "confidence": 0.75
+        }
+      ]
+    },
+    {
+      "id": "fact_edge_class_Soon_TestingUtilities_Using_specs_for_has_field_field_class_Soon_TestingUtilities_Using_specs_for_static",
+      "subject_type": "edge",
+      "subject_id": "class_Soon_TestingUtilities_Using_specs_for_has_field_field_class_Soon_TestingUtilities_Using_specs_for_static",
+      "fact_type": "relationship",
+      "claim": "class_Soon_TestingUtilities_Using_specs_for has_field field_class_Soon_TestingUtilities_Using_specs_for_static",
+      "confidence": 0.75,
+      "produced_by": "C# Analyzer",
+      "evidence": [
+        {
+          "kind": "graph",
+          "source": "class_Soon_TestingUtilities_Using_specs_for_has_field_field_class_Soon_TestingUtilities_Using_specs_for_static",
+          "confidence": 0.75
+        }
+      ]
+    },
+    {
+      "id": "fact_edge_namespace_Soon_TestingUtilities_contains_file_Soon_TestingUtilities_Using_specs_for_cs",
+      "subject_type": "edge",
+      "subject_id": "namespace_Soon_TestingUtilities_contains_file_Soon_TestingUtilities_Using_specs_for_cs",
+      "fact_type": "relationship",
+      "claim": "namespace_Soon_TestingUtilities contains file_Soon_TestingUtilities_Using_specs_for_cs",
+      "confidence": 0.75,
+      "produced_by": "C# Analyzer",
+      "evidence": [
+        {
+          "kind": "graph",
+          "source": "namespace_Soon_TestingUtilities_contains_file_Soon_TestingUtilities_Using_specs_for_cs",
+          "confidence": 0.75
+        }
+      ]
+    },
+    {
+      "id": "fact_entry_entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs",
+      "subject_type": "entry_point",
+      "subject_id": "entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs",
+      "fact_type": "entry",
+      "claim": "Orientation entry Soon.TestingUtilities/Using_specs_for.cs exposes file",
+      "confidence": 0.85,
+      "produced_by": "orchestrator",
+      "evidence": [
+        {
+          "kind": "route",
+          "source": "entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs",
+          "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+          "line": 1,
+          "confidence": 0.85
+        }
+      ]
+    },
+    {
+      "id": "fact_capability_cap_0",
+      "subject_type": "capability",
+      "subject_id": "cap_0",
+      "fact_type": "capability",
+      "claim": "File Management is a low supporting capability",
+      "confidence": 0.75,
+      "produced_by": "CapabilityDetector",
+      "evidence": [
+        {
+          "kind": "route",
+          "source": "entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs",
+          "confidence": 0.75
+        }
+      ]
+    },
+    {
+      "id": "fact_capability_cap_1",
+      "subject_type": "capability",
+      "subject_id": "cap_1",
+      "fact_type": "capability",
+      "claim": "Moq Capability is a low supporting capability",
+      "confidence": 0.75,
+      "produced_by": "CapabilityDetector",
+      "evidence": [
+        {
+          "kind": "route",
+          "source": "node:using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq_Language_Flow",
+          "confidence": 0.75
+        }
+      ]
+    },
+    {
+      "id": "fact_runtime_runtime_entry_entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs",
+      "subject_type": "runtime_link",
+      "subject_id": "runtime_entry_entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs",
+      "fact_type": "runtime-correlation",
+      "claim": "entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs maps to runtime signal file Orientation entry Soon.TestingUtilities/Using_specs_for.cs",
+      "confidence": 0.85,
+      "produced_by": "AnalyzerOrchestrator",
+      "evidence": [
+        {
+          "kind": "route",
+          "source": "entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs",
+          "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+          "line": 1,
+          "confidence": 0.85
+        }
+      ]
+    },
+    {
+      "id": "fact_runtime_runtime_chain_chain:entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs",
+      "subject_type": "runtime_link",
+      "subject_id": "runtime_chain_chain:entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs",
+      "fact_type": "runtime-correlation",
+      "claim": "chain:entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs maps to runtime signal Using_specs_for.cs",
+      "confidence": 0.75,
+      "produced_by": "AnalyzerOrchestrator",
+      "evidence": [
+        {
+          "kind": "graph",
+          "source": "chain:entry_orientation_file_Soon_TestingUtilities_Using_specs_for_cs",
+          "confidence": 0.75
+        }
+      ]
+    }
+  ],
+  "codebase_idioms": [
+    {
+      "id": "naming-symbols-generally-use-pascalcase",
+      "category": "naming",
+      "name": "Symbols generally use PascalCase",
+      "description": "The visible symbol graph mostly follows PascalCase naming.",
+      "confidence": 0.535,
+      "prevalence": 0.5,
+      "evidence": [
+        {
+          "kind": "node",
+          "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+          "line": 1,
+          "node_id": "using_file_Soon_TestingUtilities_Using_specs_for_cs_System",
+          "claim": "Symbol uses PascalCase: System.",
+          "confidence": 0.78
+        },
+        {
+          "kind": "node",
+          "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+          "line": 3,
+          "node_id": "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq",
+          "claim": "Symbol uses PascalCase: Moq.",
+          "confidence": 0.78
+        }
+      ],
+      "positive_examples": [
+        {
+          "id": "naming-dominant-PascalCase-example-1",
+          "idiom_id": "naming-symbols-generally-use-pascalcase",
+          "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+          "line": 1,
+          "node_id": "using_file_Soon_TestingUtilities_Using_specs_for_cs_System",
+          "name": "System",
+          "explanation": "Follows the dominant PascalCase naming style."
+        },
+        {
+          "id": "naming-dominant-PascalCase-example-2",
+          "idiom_id": "naming-symbols-generally-use-pascalcase",
+          "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+          "line": 3,
+          "node_id": "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq",
+          "name": "Moq",
+          "explanation": "Follows the dominant PascalCase naming style."
+        }
+      ],
+      "affected_scopes": {
+        "node_types": [
+          "using",
+          "class",
+          "field",
+          "namespace"
+        ],
+        "files": [
+          "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs"
+        ]
+      },
+      "agent_guidance": {
+        "do": [
+          "Name new local symbols using PascalCase when adding peers in this area."
+        ],
+        "avoid": [
+          "Do not import a naming style from another language or framework area without local examples."
+        ],
+        "validation": [
+          "Check added symbols against nearby names before finalizing."
+        ]
+      }
+    },
+    {
+      "id": "file-organization-source-edits-stay-near",
+      "category": "file-organization",
+      "name": "Source edits stay near /",
+      "description": "The strongest observable placement convention is to keep source files near /.",
+      "confidence": 0.45,
+      "prevalence": 0.5,
+      "evidence": [
+        {
+          "kind": "file",
+          "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+          "claim": "Source file follows dominant / placement: /Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs.",
+          "confidence": 0.74
+        }
+      ],
+      "positive_examples": [
+        {
+          "id": "file-organization-dominant-source-location-example-1",
+          "idiom_id": "file-organization-source-edits-stay-near",
+          "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+          "explanation": "Shows the local source placement convention near /."
+        }
+      ],
+      "affected_scopes": {
+        "file_globs": [
+          "/**/*"
+        ],
+        "files": [
+          "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs"
+        ]
+      },
+      "agent_guidance": {
+        "do": [
+          "Make new production edits next to the existing peer files in /.",
+          "Prefer modifying a local peer over creating a new top-level area."
+        ],
+        "avoid": [
+          "Do not introduce a parallel source layout unless the task explicitly creates a new package boundary."
+        ],
+        "validation": [
+          "Check that new or moved source files follow the dominant repository layout."
+        ]
+      }
+    }
+  ],
+  "idiom_summary": {
+    "total": 2,
+    "high_confidence": 0,
+    "violations": 0,
+    "by_category": {
+      "naming": 1,
+      "file-organization": 1,
+      "module-boundary": 0,
+      "dependency-injection": 0,
+      "data-access": 0,
+      "error-handling": 0,
+      "validation": 0,
+      "auth-tenant-scope": 0,
+      "logging": 0,
+      "testing": 0,
+      "migrations": 0,
+      "async-style": 0,
+      "configuration": 0
+    },
+    "top_idioms": [
+      "naming-symbols-generally-use-pascalcase",
+      "file-organization-source-edits-stay-near"
+    ],
+    "guidance_digest": [
+      "Name new local symbols using PascalCase when adding peers in this area.",
+      "Make new production edits next to the existing peer files in /."
+    ]
+  },
+  "idiom_examples": [
+    {
+      "id": "file-organization-dominant-source-location-example-1",
+      "idiom_id": "file-organization-source-edits-stay-near",
+      "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+      "explanation": "Shows the local source placement convention near /."
+    },
+    {
+      "id": "naming-dominant-PascalCase-example-1",
+      "idiom_id": "naming-symbols-generally-use-pascalcase",
+      "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+      "line": 1,
+      "node_id": "using_file_Soon_TestingUtilities_Using_specs_for_cs_System",
+      "name": "System",
+      "explanation": "Follows the dominant PascalCase naming style."
+    },
+    {
+      "id": "naming-dominant-PascalCase-example-2",
+      "idiom_id": "naming-symbols-generally-use-pascalcase",
+      "file": "/Users/michaelshattuck/dev/soon/testing-utilities-net/Soon.TestingUtilities/Using_specs_for.cs",
+      "line": 3,
+      "node_id": "using_file_Soon_TestingUtilities_Using_specs_for_cs_Moq",
+      "name": "Moq",
+      "explanation": "Follows the dominant PascalCase naming style."
+    }
+  ],
+  "analysis_errors": [],
+  "validation": {
+    "schema_version": "1.8.0",
+    "completeness": {
+      "nodes_with_location": 10,
+      "edges_with_metadata": 0,
+      "documented_nodes": 0
+    },
+    "graph_integrity": {
+      "total_edges": 10,
+      "dangling_edges": 0,
+      "connected_nodes": 11,
+      "orphaned_nodes": 0,
+      "entry_points_with_handlers": 1,
+      "exit_points_with_sources": 0,
+      "runtime_links_with_instrumentation": 2,
+      "facts_with_evidence": 25,
+      "relationship_coverage_score": 98
+    }
+  },
+  "test_suites": [],
+  "mocks": [
+    {
+      "id": "mock_using_file_Soon_TestingUtilities_Using_specs_for_cs_StructureMap_AutoMocking_Moq",
+      "name": "StructureMap.AutoMocking.Moq",
+      "type": "mock",
+      "framework": "unittest.mock"
+    }
+  ],
+  "fixtures": [],
+  "test_summary": {
+    "total_tests": 0,
+    "by_type": {
+      "unit": 0,
+      "integration": 0,
+      "e2e": 0,
+      "acceptance": 0,
+      "bdd": 0,
+      "other": 0
+    },
+    "by_status": {
+      "passing": 0,
+      "failing": 0,
+      "skipped": 0,
+      "flaky": 0
+    },
+    "coverage": {},
+    "mocks": {
+      "total": 1
+    },
+    "fixtures": {
+      "total": 0
+    }
+  },
+  "embedding_index": {
+    "model": "klauro-local-hash-v1",
+    "provider": "local",
+    "dimensions": 384,
+    "document_version": "1.0",
+    "store": "file",
+    "generated_at": "2026-06-09T03:15:23.342Z",
+    "node_count": 11,
+    "coverage": {
+      "embedded": 11,
+      "skipped": 0,
+      "failed": 0
+    }
+  }
+}

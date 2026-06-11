@@ -59,7 +59,8 @@ import {
   listAnalysisSnapshots,
   saveFileCache,
   loadFileCache,
-  getProjectStorageDir
+  getProjectStorageDir,
+  withProjectAnalysisLock
 } from './storage';
 import { loadKlauroConfig, validateEmbeddingConfig } from './klauro-config';
 import { createEmbeddingProvider } from '../../../packages/analyzer-core/src/analyzer/embedding/embedding-provider-factory';
@@ -328,14 +329,16 @@ export async function analyzeProject(projectPath: string): Promise<CASOutput> {
     throw new Error(`Project path does not exist: ${projectPath}`);
   }
 
-  const orch = getOrchestrator();
-  orch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
-  const result = await orch.orchestrateAnalysis(projectPath);
+  return withProjectAnalysisLock(projectPath, async () => {
+    const orch = getOrchestrator();
+    orch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
+    const result = await orch.orchestrateAnalysis(projectPath);
 
-  await saveAnalysis(projectPath, result);
-  await saveAnalysisSnapshot(projectPath, result);
+    await saveAnalysis(projectPath, result);
+    await saveAnalysisSnapshot(projectPath, result);
 
-  return result;
+    return result;
+  });
 }
 
 export async function getAnalysis(projectPath: string): Promise<CASOutput> {
@@ -515,15 +518,20 @@ function buildChangeHistoryEntry(result: IncrementalAnalysisResult): ChangeHisto
 }
 
 export async function analyzeProjectIncremental(projectPath: string): Promise<IncrementalAnalysisResult> {
+  if (!(await fs.pathExists(projectPath))) {
+    throw new Error(`Project path does not exist: ${projectPath}`);
+  }
+
+  return withProjectAnalysisLock(projectPath, () => runIncrementalAnalysis(projectPath));
+}
+
+async function runIncrementalAnalysis(projectPath: string): Promise<IncrementalAnalysisResult> {
   const debugTimings = process.env.KLAURO_DEBUG_INCREMENTAL_TIMINGS === '1';
   const debug = (label: string, startedAt: number) => {
     if (debugTimings) {
       console.error(`[Klauro] incremental timing ${label}: ${Date.now() - startedAt}ms`);
     }
   };
-  if (!(await fs.pathExists(projectPath))) {
-    throw new Error(`Project path does not exist: ${projectPath}`);
-  }
 
   const orch = getOrchestrator();
   orch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));

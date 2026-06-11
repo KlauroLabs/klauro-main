@@ -7,11 +7,19 @@ const FUZZ_ROOT = '/tmp/klauro-fuzz';
 const CASE_TIMEOUT_SECONDS = 120;
 const APP_DIR = path.resolve(__dirname, '..');
 
+interface CustomCaseResult {
+  failures: string[];
+  notes: string[];
+  nodes: number | null;
+  edges: number | null;
+}
+
 interface FuzzCase {
   name: string;
   description: string;
   expectHonestSignal?: boolean;
   generate: (dir: string) => Promise<void>;
+  execute?: (caseDir: string, outFile: string) => Promise<CustomCaseResult>;
 }
 
 interface CaseVerdict {
@@ -24,6 +32,7 @@ interface CaseVerdict {
   edges: number | null;
   failures: string[];
   honestSignals: string[];
+  notes?: string[];
 }
 
 const SUPPORTED_EXTENSIONS = [
@@ -253,7 +262,328 @@ const CASES: FuzzCase[] = [
       await fs.writeFile(path.join(dir, 'package.json'), '{ "name": "zero-byte-fixture", "version": "1.0.0" }\n');
     },
   },
+  {
+    name: 'kill9-mid-analysis',
+    description: 'kill -9 mid-analysis (early and during the storage write window), then re-run to completion',
+    generate: dir => generateTypeScriptProject(dir, 1200),
+    execute: async (caseDir, outFile) => {
+      const failures: string[] = [];
+      const notes: string[] = [];
+      const storageDir = path.join(FUZZ_ROOT, '.storage-kill9');
+      await fs.rm(storageDir, { recursive: true, force: true });
+
+      const earlyKill = await runIncrementalInChild(caseDir, outFile, { storageDir, killAfterMs: 2_000 });
+      if (!earlyKill.killed && earlyKill.exitCode === 0) notes.push('run 1 completed before the 2s kill');
+      failures.push(...(await collectStorageCorruption(storageDir)).map(f => `after early kill: ${f}`));
+
+      const midWriteKill = await runIncrementalInChild(caseDir, outFile, { storageDir, killOnStorageWrite: true });
+      if (!midWriteKill.killed && midWriteKill.exitCode === 0) notes.push('run 2 completed before the storage-write kill');
+      failures.push(...(await collectStorageCorruption(storageDir)).map(f => `after mid-write kill: ${f}`));
+
+      await fs.rm(outFile, { force: true });
+      const rerun = await runIncrementalInChild(caseDir, outFile, { storageDir });
+      if (rerun.exitCode !== 0) {
+        failures.push(`re-run after kill -9 exited with code ${rerun.exitCode}: ${rerun.stderr.slice(0, 400)}`);
+      }
+      failures.push(...(await collectStorageCorruption(storageDir)).map(f => `after re-run: ${f}`));
+
+      const cas = await readCasResult(outFile, failures);
+      if ((await readIndexPaths(storageDir, failures)).filter(p => p === caseDir).length !== 1) {
+        failures.push('index.json is missing the entry for the re-analyzed project');
+      }
+      const meta = await fs.readJson(`${outFile}.meta.json`).catch(() => null);
+      if (meta?.wasFullRebuild) notes.push(`re-run rebuilt: ${meta.fullRebuildReason || 'no reason recorded'}`);
+      else if (meta) notes.push('re-run recovered incrementally');
+      if (await fs.pathExists(path.join(storageDir, projectStorageDirName(caseDir), 'analysis.lock'))) {
+        failures.push('analysis.lock left behind after the re-run completed');
+      }
+
+      return { failures, notes, nodes: cas.nodes, edges: cas.edges };
+    },
+  },
+  {
+    name: 'concurrent-same-fixture',
+    description: 'Two concurrent analyses of the same fixture against one store serialize via the per-project lock',
+    generate: dir => generateTypeScriptProject(dir, 40),
+    execute: async (caseDir, outFile) => {
+      const failures: string[] = [];
+      const notes: string[] = [];
+      const storageDir = path.join(FUZZ_ROOT, '.storage-concurrent-same');
+      await fs.rm(storageDir, { recursive: true, force: true });
+      const secondOutFile = outFile.replace(/\.cas\.json$/, '.second.cas.json');
+
+      const [first, second] = await Promise.all([
+        runIncrementalInChild(caseDir, outFile, { storageDir }),
+        runIncrementalInChild(caseDir, secondOutFile, { storageDir }),
+      ]);
+      for (const [label, run] of [['first', first], ['second', second]] as const) {
+        if (run.exitCode !== 0) {
+          const cleanInProgress = run.stderr.includes('already in progress');
+          if (cleanInProgress) notes.push(`${label} run cleanly reported analysis in progress`);
+          else failures.push(`${label} run exited with code ${run.exitCode}: ${run.stderr.slice(0, 400)}`);
+        }
+      }
+      if (first.exitCode !== 0 && second.exitCode !== 0) {
+        failures.push('neither concurrent run succeeded');
+      }
+
+      failures.push(...await collectStorageCorruption(storageDir));
+      if ((await readIndexPaths(storageDir, failures)).filter(p => p === caseDir).length !== 1) {
+        failures.push('index.json does not contain exactly one entry for the concurrently analyzed project');
+      }
+      if (await fs.pathExists(path.join(storageDir, projectStorageDirName(caseDir), 'analysis.lock'))) {
+        failures.push('analysis.lock left behind after both runs finished');
+      }
+
+      const cas = await readCasResult(first.exitCode === 0 ? outFile : secondOutFile, failures);
+      return { failures, notes, nodes: cas.nodes, edges: cas.edges };
+    },
+  },
+  {
+    name: 'concurrent-different-fixtures',
+    description: 'Two concurrent analyses of different fixtures sharing one store lose no index entries',
+    generate: async dir => {
+      await fs.mkdirp(path.join(dir, 'project-a'));
+      await fs.mkdirp(path.join(dir, 'project-b'));
+      await generateTypeScriptProject(path.join(dir, 'project-a'), 30);
+      await generateTypeScriptProject(path.join(dir, 'project-b'), 30);
+    },
+    execute: async (caseDir, outFile) => {
+      const failures: string[] = [];
+      const notes: string[] = [];
+      const storageDir = path.join(FUZZ_ROOT, '.storage-concurrent-different');
+      await fs.rm(storageDir, { recursive: true, force: true });
+      const projectA = path.join(caseDir, 'project-a');
+      const projectB = path.join(caseDir, 'project-b');
+      const outFileB = outFile.replace(/\.cas\.json$/, '.project-b.cas.json');
+
+      const [runA, runB] = await Promise.all([
+        runIncrementalInChild(projectA, outFile, { storageDir }),
+        runIncrementalInChild(projectB, outFileB, { storageDir }),
+      ]);
+      if (runA.exitCode !== 0) failures.push(`project-a run exited with code ${runA.exitCode}: ${runA.stderr.slice(0, 400)}`);
+      if (runB.exitCode !== 0) failures.push(`project-b run exited with code ${runB.exitCode}: ${runB.stderr.slice(0, 400)}`);
+
+      failures.push(...await collectStorageCorruption(storageDir));
+      const indexPaths = await readIndexPaths(storageDir, failures);
+      for (const projectPath of [projectA, projectB]) {
+        if (!indexPaths.includes(projectPath)) {
+          failures.push(`index.json lost the entry for ${path.basename(projectPath)} (concurrent index write)`);
+        }
+      }
+
+      const cas = await readCasResult(outFile, failures);
+      await readCasResult(outFileB, failures);
+      return { failures, notes, nodes: cas.nodes, edges: cas.edges };
+    },
+  },
+  {
+    name: 'atomic-tmp-hygiene',
+    description: 'ENOSPC substitute: failed atomic writes leave no tmp orphans; the sweep prunes aged orphans',
+    generate: async () => {},
+    execute: async caseDir => {
+      const failures: string[] = [];
+      const notes: string[] = [];
+      const { writeJsonAtomic, pruneOrphanedTmpFiles } = await import('./storage');
+
+      const target = path.join(caseDir, 'value.json');
+      const nodes: unknown[] = Array.from({ length: 100_001 }, (_, index) => ({ id: index }));
+      nodes[100_000] = { toJSON: () => { throw new Error('simulated write failure'); } };
+      let threw = false;
+      try {
+        await writeJsonAtomic(target, { nodes });
+      } catch {
+        threw = true;
+      }
+      if (!threw) failures.push('poisoned writeJsonAtomic did not throw');
+      const leftovers = (await fs.readdir(caseDir)).filter(file => file.endsWith('.tmp'));
+      if (leftovers.length > 0) failures.push(`failed atomic write left tmp orphans: ${leftovers.join(', ')}`);
+      if (await fs.pathExists(target)) failures.push('failed atomic write must not produce the target file');
+
+      const agedTmp = path.join(caseDir, 'aged.json.1.2.tmp');
+      const freshTmp = path.join(caseDir, 'fresh.json.3.4.tmp');
+      await fs.writeFile(agedTmp, '{}');
+      await fs.writeFile(freshTmp, '{}');
+      const oldTime = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+      await fs.utimes(agedTmp, oldTime, oldTime);
+      await pruneOrphanedTmpFiles({ root: caseDir, maxAgeMs: 24 * 60 * 60 * 1000 });
+      if (await fs.pathExists(agedTmp)) failures.push('sweep did not remove the aged orphan tmp file');
+      if (!(await fs.pathExists(freshTmp))) failures.push('sweep removed a fresh tmp file it should retain');
+      if (failures.length === 0) notes.push('write-throw cleanup and aged-orphan sweep verified');
+
+      return { failures, notes, nodes: null, edges: null };
+    },
+  },
 ];
+
+async function generateTypeScriptProject(dir: string, moduleCount: number): Promise<void> {
+  await fs.writeJson(path.join(dir, 'package.json'), { name: path.basename(dir), version: '1.0.0' }, { spaces: 2 });
+  const src = path.join(dir, 'src');
+  await fs.mkdirp(src);
+  for (let i = 0; i < moduleCount; i++) {
+    const lines: string[] = [];
+    if (i > 0) lines.push(`import { process${i - 1} } from './module-${i - 1}';`);
+    lines.push(`export interface Payload${i} { id: number; label: string; }`);
+    lines.push(`export function process${i}(input: number): number {`);
+    lines.push(i > 0 ? `  return process${i - 1}(input) + ${i};` : `  return input + ${i};`);
+    lines.push('}');
+    lines.push(`export class Service${i} {`);
+    lines.push(`  run(value: number): number { return process${i}(value); }`);
+    lines.push('}');
+    await fs.writeFile(path.join(src, `module-${i}.ts`), `${lines.join('\n')}\n`);
+  }
+}
+
+function projectStorageDirName(projectPath: string): string {
+  const base = path.basename(projectPath)
+    .replace(/[^a-zA-Z0-9]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .toLowerCase()
+    .substring(0, 80) || 'project';
+  const hash = crypto.createHash('sha256').update(path.resolve(projectPath)).digest('hex').slice(0, 12);
+  return `${base}-${hash}`;
+}
+
+interface IncrementalRunOptions {
+  storageDir: string;
+  killAfterMs?: number;
+  killOnStorageWrite?: boolean;
+}
+
+interface IncrementalRunResult extends ChildResult {
+  killed: boolean;
+}
+
+async function storedAnalysisFileExists(storageDir: string): Promise<boolean> {
+  try {
+    const entries = await fs.readdir(storageDir);
+    return entries.some(entry => entry === 'index.json' || (entry.endsWith('.json') && entry !== 'index.json' && !entry.endsWith('.tmp')));
+  } catch {
+    return false;
+  }
+}
+
+function runIncrementalInChild(projectDir: string, outFile: string, options: IncrementalRunOptions): Promise<IncrementalRunResult> {
+  const tsxBin = path.join(APP_DIR, 'node_modules', '.bin', 'tsx');
+  const scriptPath = path.join(APP_DIR, 'src', 'robustness-battery.ts');
+  const startedAt = Date.now();
+
+  return new Promise(resolve => {
+    const child = spawn(
+      tsxBin,
+      [scriptPath, '--run-incremental', projectDir, '--out', outFile],
+      {
+        cwd: APP_DIR,
+        env: {
+          ...process.env,
+          KLAURO_AI_INTERPRETATION: 'false',
+          KLAURO_AI_INTERPRETATION_FORCE: 'false',
+          KLAURO_AI_ELEMENT_DESCRIPTIONS: 'false',
+          KLAURO_EMBEDDING_ENABLED: 'false',
+          KLAURO_ANALYSIS_COMPRESSION: 'none',
+          KLAURO_STORAGE_PATH: options.storageDir,
+        },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      },
+    );
+
+    let killed = false;
+    let stderr = '';
+    const timers: Array<ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>> = [];
+    const killChild = () => {
+      if (child.exitCode === null && !child.killed) {
+        killed = true;
+        child.kill('SIGKILL');
+      }
+    };
+
+    if (options.killAfterMs !== undefined) {
+      timers.push(setTimeout(killChild, options.killAfterMs));
+    }
+    if (options.killOnStorageWrite) {
+      timers.push(setInterval(() => {
+        void storedAnalysisFileExists(options.storageDir).then(exists => {
+          if (exists) killChild();
+        });
+      }, 50));
+    }
+    timers.push(setTimeout(killChild, CASE_TIMEOUT_SECONDS * 1000 * 3));
+
+    child.stderr.on('data', chunk => {
+      if (stderr.length < 1024 * 1024) stderr += chunk.toString();
+    });
+    child.on('error', error => {
+      for (const timer of timers) clearTimeout(timer as ReturnType<typeof setTimeout>);
+      resolve({ exitCode: null, timedOut: false, durationMs: Date.now() - startedAt, stderr: String(error), killed });
+    });
+    child.on('close', code => {
+      for (const timer of timers) clearTimeout(timer as ReturnType<typeof setTimeout>);
+      resolve({ exitCode: code, timedOut: false, durationMs: Date.now() - startedAt, stderr, killed });
+    });
+  });
+}
+
+async function collectStorageCorruption(storageDir: string): Promise<string[]> {
+  const failures: string[] = [];
+  const walk = async (directory: string): Promise<void> => {
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.readdir(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await walk(entryPath);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+      try {
+        JSON.parse(await fs.readFile(entryPath, 'utf8'));
+      } catch (error) {
+        failures.push(`corrupt JSON at ${path.relative(storageDir, entryPath)}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  };
+  await walk(storageDir);
+  return failures;
+}
+
+async function readIndexPaths(storageDir: string, failures: string[]): Promise<string[]> {
+  const indexPath = path.join(storageDir, 'index.json');
+  if (!(await fs.pathExists(indexPath))) {
+    failures.push('index.json does not exist after analysis completed');
+    return [];
+  }
+  try {
+    const index = await fs.readJson(indexPath);
+    return Object.keys(index.analyses || {});
+  } catch (error) {
+    failures.push(`index.json is unreadable: ${error instanceof Error ? error.message : String(error)}`);
+    return [];
+  }
+}
+
+async function readCasResult(outFile: string, failures: string[]): Promise<{ nodes: number | null; edges: number | null }> {
+  try {
+    const cas = JSON.parse(await fs.readFile(outFile, 'utf8'));
+    if (!Array.isArray(cas.nodes)) {
+      failures.push(`CAS nodes is not an array in ${path.basename(outFile)}`);
+      return { nodes: null, edges: null };
+    }
+    if (!Array.isArray(cas.edges)) {
+      failures.push(`CAS edges is not an array in ${path.basename(outFile)}`);
+      return { nodes: cas.nodes.length, edges: null };
+    }
+    if (cas.nodes.length === 0) failures.push(`CAS output in ${path.basename(outFile)} has zero nodes for a non-empty fixture`);
+    return { nodes: cas.nodes.length, edges: cas.edges.length };
+  } catch (error) {
+    failures.push(`CAS output ${path.basename(outFile)} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+    return { nodes: null, edges: null };
+  }
+}
 
 function collectHonestSignals(cas: any): string[] {
   const signals: string[] = [];
@@ -412,16 +742,16 @@ function formatReport(verdicts: CaseVerdict[]): string {
   lines.push('# Klauro Analyzer Robustness Battery Report');
   lines.push('');
   lines.push(`Generated: ${new Date().toISOString()}`);
-  lines.push(`Per-case timeout: ${CASE_TIMEOUT_SECONDS}s, AI off, isolated child process per case.`);
+  lines.push(`Per-case timeout: ${CASE_TIMEOUT_SECONDS}s, AI off, isolated child process per analysis (crash/concurrency cases manage their own children; atomic-tmp-hygiene runs in-process).`);
   lines.push('');
   lines.push('| Case | Verdict | Exit | Duration | Nodes | Edges | Notes |');
   lines.push('| --- | --- | --- | --- | --- | --- | --- |');
   for (const verdict of verdicts) {
-    const notes = verdict.pass
-      ? verdict.honestSignals.length > 0
-        ? `${verdict.honestSignals.length} honest warning(s)`
-        : ''
-      : verdict.failures.join('; ');
+    const passNotes = [
+      ...(verdict.honestSignals.length > 0 ? [`${verdict.honestSignals.length} honest warning(s)`] : []),
+      ...(verdict.notes || []),
+    ].join('; ');
+    const notes = verdict.pass ? passNotes : verdict.failures.join('; ');
     lines.push(
       `| ${verdict.name} | ${verdict.pass ? 'PASS' : 'FAIL'} | ${verdict.exitCode ?? 'spawn-error'} | ${(verdict.durationMs / 1000).toFixed(1)}s | ${verdict.nodes ?? '-'} | ${verdict.edges ?? '-'} | ${notes.replace(/\|/g, '\\|')} |`,
     );
@@ -449,6 +779,16 @@ async function runChildCase(caseDir: string, outFile: string): Promise<void> {
   await fs.writeFile(outFile, JSON.stringify(cas));
 }
 
+async function runIncrementalChildCase(projectDir: string, outFile: string): Promise<void> {
+  const { analyzeProjectIncremental } = await import('./analyzer');
+  const result = await analyzeProjectIncremental(projectDir);
+  await fs.writeFile(outFile, JSON.stringify(result.output));
+  await fs.writeJson(`${outFile}.meta.json`, {
+    wasFullRebuild: result.wasFullRebuild,
+    fullRebuildReason: result.fullRebuildReason || null,
+  });
+}
+
 async function runBattery(filterNames: string[]): Promise<void> {
   const selected = filterNames.length > 0
     ? CASES.filter(fuzzCase => filterNames.includes(fuzzCase.name))
@@ -470,8 +810,26 @@ async function runBattery(filterNames: string[]): Promise<void> {
     await fuzzCase.generate(caseDir);
     await fs.rm(outFile, { force: true });
     process.stdout.write('analyzing... ');
-    const result = await runCaseInChild(caseDir, outFile);
-    const verdict = await evaluateCase(fuzzCase, result, outFile);
+    let verdict: CaseVerdict;
+    if (fuzzCase.execute) {
+      const startedAt = Date.now();
+      const custom = await fuzzCase.execute(caseDir, outFile);
+      verdict = {
+        name: fuzzCase.name,
+        pass: custom.failures.length === 0,
+        exitCode: custom.failures.length === 0 ? 0 : 1,
+        timedOut: false,
+        durationMs: Date.now() - startedAt,
+        nodes: custom.nodes,
+        edges: custom.edges,
+        failures: custom.failures,
+        honestSignals: [],
+        notes: custom.notes,
+      };
+    } else {
+      const result = await runCaseInChild(caseDir, outFile);
+      verdict = await evaluateCase(fuzzCase, result, outFile);
+    }
     verdicts.push(verdict);
     console.log(`${verdict.pass ? 'PASS' : 'FAIL'} (${(verdict.durationMs / 1000).toFixed(1)}s)${verdict.pass ? '' : ` -> ${verdict.failures.join('; ')}`}`);
     if (fuzzCase.name === 'permission-denied-subdir') {
@@ -500,6 +858,19 @@ async function main(): Promise<void> {
       process.exit(2);
     }
     await runChildCase(caseDir, outFile);
+    return;
+  }
+
+  const runIncrementalIndex = argv.indexOf('--run-incremental');
+  if (runIncrementalIndex !== -1) {
+    const projectDir = argv[runIncrementalIndex + 1];
+    const outIndex = argv.indexOf('--out');
+    const outFile = outIndex !== -1 ? argv[outIndex + 1] : undefined;
+    if (!projectDir || !outFile) {
+      console.error('Usage: robustness-battery --run-incremental <dir> --out <file>');
+      process.exit(2);
+    }
+    await runIncrementalChildCase(projectDir, outFile);
     return;
   }
 
