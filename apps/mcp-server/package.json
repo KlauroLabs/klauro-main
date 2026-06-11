@@ -65,6 +65,7 @@
     "incremental-benchmark": "tsx src/incremental-benchmark.ts",
     "analysis-scale-benchmark": "tsx src/analysis-scale-benchmark.ts",
     "analysis-gauntlet": "tsx src/analysis-gauntlet.ts",
+    "nightly-eval": "tsx src/nightly-eval.ts",
     "contract-gauntlet": "tsx src/contract-gauntlet.ts",
     "vision-gauntlet": "tsx src/vision-gauntlet.ts",
     "test": "tsx --test --test-concurrency=1 src/*.test.ts",

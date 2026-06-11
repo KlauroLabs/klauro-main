@@ -97,12 +97,18 @@ const IGNORE_PATTERNS = [
 
 export class ChangeDetector {
   private projectPath: string;
+  private projectRealPath: string;
   private gitRoot: string | null = null;
   private isGitRepo: boolean;
   private lastSourceFileScan: string[] | null = null;
 
   constructor(projectPath: string) {
     this.projectPath = projectPath;
+    try {
+      this.projectRealPath = fs.realpathSync(projectPath);
+    } catch {
+      this.projectRealPath = projectPath;
+    }
     this.isGitRepo = this.checkGitRepo();
   }
 
@@ -112,10 +118,15 @@ export class ChangeDetector {
         cwd: this.projectPath,
         stdio: 'pipe',
       });
-      this.gitRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      const reportedRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
         cwd: this.projectPath,
         stdio: 'pipe',
       }).toString().trim();
+      try {
+        this.gitRoot = fs.realpathSync(reportedRoot);
+      } catch {
+        this.gitRoot = reportedRoot;
+      }
       return true;
     } catch {
       this.gitRoot = null;
@@ -175,17 +186,12 @@ export class ChangeDetector {
 
   private async scanByMtime(lastAnalysisTimestamp: number): Promise<string[]> {
     const candidates: string[] = [];
-    const files = await this.getAllSourceFiles();
-    this.lastSourceFileScan = files;
+    const entries = await this.scanSourceFileEntries();
+    this.lastSourceFileScan = entries.map(entry => entry.file);
 
-    for (const file of files) {
-      try {
-        const stat = await fs.stat(file);
-        if (stat.mtimeMs >= lastAnalysisTimestamp - 1000) {
-          candidates.push(path.relative(this.projectPath, file));
-        }
-      } catch {
-        candidates.push(path.relative(this.projectPath, file));
+    for (const entry of entries) {
+      if (entry.mtimeMs === null || entry.mtimeMs >= lastAnalysisTimestamp - 1000) {
+        candidates.push(path.relative(this.projectPath, entry.file));
       }
     }
 
@@ -193,23 +199,34 @@ export class ChangeDetector {
   }
 
   private async getAllSourceFiles(): Promise<string[]> {
+    const entries = await this.scanSourceFileEntries();
+    return entries.map(entry => entry.file);
+  }
+
+  private async scanSourceFileEntries(): Promise<Array<{ file: string; mtimeMs: number | null }>> {
     const patterns = [
       ...SOURCE_EXTENSIONS.map(ext => `**/*${ext}`),
       ...CORE_CONFIG_PATTERNS,
     ];
-    const files: string[] = [];
 
-    for (const pattern of patterns) {
-      const matches = await glob(pattern, {
-        cwd: this.projectPath,
-        absolute: true,
-        ignore: IGNORE_PATTERNS,
-        nodir: true,
-      });
-      files.push(...matches);
+    const matches = await glob(patterns, {
+      cwd: this.projectPath,
+      absolute: true,
+      ignore: IGNORE_PATTERNS,
+      nodir: true,
+      withFileTypes: true,
+      stat: true,
+    });
+
+    const entries: Array<{ file: string; mtimeMs: number | null }> = [];
+    const seen = new Set<string>();
+    for (const match of matches) {
+      const file = match.fullpath();
+      if (seen.has(file)) continue;
+      seen.add(file);
+      entries.push({ file, mtimeMs: match.mtimeMs ?? null });
     }
-
-    return files;
+    return entries;
   }
 
   private async detectGitChanges(previousCommit?: string): Promise<ChangeSet | null> {
@@ -624,7 +641,7 @@ export class ChangeDetector {
     }
 
     const absolute = path.resolve(this.gitRoot, normalizedFile);
-    const relativeToProject = path.relative(this.projectPath, absolute).replace(/\\/g, '/');
+    const relativeToProject = path.relative(this.projectRealPath, absolute).replace(/\\/g, '/');
     if (!relativeToProject || relativeToProject.startsWith('../') || path.isAbsolute(relativeToProject)) {
       return null;
     }
