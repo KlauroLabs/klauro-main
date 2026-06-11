@@ -85,6 +85,74 @@ const PHP_PURE_BUILTIN_FUNCTIONS = new Set([
   'include', 'require', 'include_once', 'require_once',
 ]);
 
+/**
+ * Module, package, keyword, and platform tokens that come from a language or
+ * its source layout rather than the product domain. Capability and domain
+ * naming must never seed a capability from these: "Fmt Management" or
+ * "Lib Management" describe Rust stdlib and file layout, not system behavior.
+ * Unlike LANGUAGE_BUILTIN_NAMES, entries here may legitimately cross process
+ * boundaries (subprocess, urllib) because this set only guards domain naming,
+ * never exit-point classification.
+ */
+const LANGUAGE_MODULE_TOKENS = new Set([
+  // Rust keywords, source-layout module names, and plumbing crates whose
+  // names surface in type/derive names (ClientClap, SerdeConfig)
+  'lib', 'mod', 'main', 'impl', 'dyn', 'mut', 'pub', 'crate', 'crates', 'super',
+  'trait', 'struct', 'enum', 'unsafe', 'async', 'await', 'match', 'loop',
+  'ref', 'move', 'where', 'spawn', 'cfg', 'derive', 'macro', 'panic',
+  'src', 'clap', 'serde', 'tokio',
+  // Go standard library packages and source-layout names
+  // ('runtime' and 'log' stay out: they are real product-domain nouns)
+  'fmt', 'errors', 'strings', 'strconv', 'bytes', 'bufio', 'sort',
+  'regexp', 'flag', 'encoding', 'xml', 'filepath', 'ioutil',
+  'reflect', 'unicode', 'rand', 'atomic', 'func', 'chan',
+  'pkg', 'cmd', 'internal', 'golang',
+  // Python standard library modules
+  'sys', 'itertools', 'functools', 'typing', 'datetime', 'pathlib',
+  'subprocess', 'threading', 'asyncio', 'logging', 'random', 'abc',
+  'dataclasses', 'contextlib', 'argparse', 'shutil', 'tempfile', 'glob',
+  'hashlib', 'hmac', 'uuid', 'urllib', 'inspect', 'traceback', 'warnings',
+  'weakref', 'queue', 'heapq', 'bisect', 'pickle', 'textwrap', 'codecs',
+  // Platform module names used for OS-specific source files
+  'linux', 'windows', 'macos', 'darwin', 'unix', 'posix', 'win32', 'android',
+  'native',
+]);
+
+/**
+ * Lowercase builtin names that double as common product-domain nouns. A todo
+ * app's "Todo Management" or a trading platform's "Crypto Management" must
+ * survive even though `todo!` is a Rust macro and `crypto` is a Node module.
+ */
+const DOMAIN_NOUN_EXCEPTIONS = new Set([
+  'todo', 'crypto', 'stream', 'events', 'cluster',
+]);
+
+const LOWERCASE_BUILTIN_DOMAIN_TOKENS = (() => {
+  const tokens = new Set<string>(LANGUAGE_MODULE_TOKENS);
+  for (const name of LANGUAGE_BUILTIN_NAMES) {
+    if (name === name.toLowerCase() && !name.includes('.')) {
+      tokens.add(name);
+    }
+  }
+  for (const exception of DOMAIN_NOUN_EXCEPTIONS) {
+    tokens.delete(exception);
+  }
+  return tokens;
+})();
+
+/**
+ * True when a lowercased domain/capability token originates from a language
+ * runtime, standard library module, keyword, or source-layout convention
+ * (fmt, lib, mod, vec, asyncio, strconv) instead of the product domain.
+ * Capability clustering uses this so stdlib names never seed capability
+ * names in any language. Intentionally skips capitalized-only builtins such
+ * as Task, File, and Command whose lowercase forms are ordinary domain nouns.
+ */
+export function isLanguageBuiltinDomainToken(token: string | undefined): boolean {
+  if (!token) return false;
+  return LOWERCASE_BUILTIN_DOMAIN_TOKENS.has(token.trim().toLowerCase());
+}
+
 const PHP_BUILTIN_PREFIXES = /^(array_|str_|mb_|ctype_|filter_)/;
 
 export function isPhpPureBuiltinFunction(name: string): boolean {
