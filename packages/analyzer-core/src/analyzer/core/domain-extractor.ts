@@ -102,6 +102,12 @@ const FRAMEWORK_AND_LIBRARY_TERMS = new Set([
   'dto', 'dtos', 'entity', 'entities', 'repository', 'repo', 'orm',
   'middleware', 'guard', 'guards', 'interceptor', 'decorator', 'provider',
   'component', 'components', 'hook', 'hooks', 'directive', 'pipe',
+  'rack', 'rake', 'turbo', 'stimulus', 'sprockets', 'hotwire',
+  'actiontext', 'activestorage', 'actioncable', 'actionmailer', 'actionpack',
+  'activerecord', 'activejob', 'activemodel', 'activesupport', 'actionview',
+  'importmap', 'webpacker', 'propshaft', 'sidekiq', 'kaminari', 'ransack',
+  'devise', 'warden', 'omniauth', 'pundit', 'cancan', 'cancancan', 'doorkeeper',
+  'rspec', 'rubocop', 'erb', 'haml', 'gem', 'gems', 'gemfile', 'bundler',
 ]);
 
 // Common English stopwords and structural-noise words that survive the
@@ -122,14 +128,19 @@ const ENGLISH_STOPWORDS = new Set([
 
 export class DomainExtractor {
   private concepts: Map<string, ConceptOccurrence> = new Map();
+  private projectRoot?: string;
 
   extract(
     nodes: CASNode[],
     entryPoints: CASEntryPoint[],
     dataEntities: CASDataEntity[],
-    edges: CASEdge[] = []
+    edges: CASEdge[] = [],
+    projectPath?: string
   ): CASDomainConcept[] {
     this.concepts.clear();
+    this.projectRoot = projectPath
+      ? projectPath.replace(/\\/g, '/').replace(/\/+$/, '')
+      : undefined;
 
     this.extractFromNodes(nodes);
     this.extractFromEntryPoints(entryPoints);
@@ -159,7 +170,7 @@ export class DomainExtractor {
 
       const concepts = [
         ...this.extractConceptsFromName(node.name),
-        ...this.extractConceptsFromPath(node.source?.file || ''),
+        ...this.extractConceptsFromPath(this.projectRelativeFilePath(node.source?.file || '')),
       ];
       const weight = isDomainCarrier ? 3 : hasChildren ? 2 : 1;
 
@@ -249,6 +260,27 @@ export class DomainExtractor {
     const words = normalized.split(/[\s_\-./]+/).filter(w => w.length > 2);
 
     return words.map(w => w.toLowerCase());
+  }
+
+  /**
+   * Filesystem location must never become domain vocabulary. Source-file
+   * paths are reduced to their repo-relative form before concept extraction.
+   * Absolute file paths that do not sit under the analyzed root (or whose
+   * root is unknown) are skipped entirely, so clone locations like
+   * /tmp/some-workspace/repo cannot leak workspace names into domain
+   * concepts. Only applied to source-file paths; HTTP route paths are
+   * extracted unchanged.
+   */
+  private projectRelativeFilePath(file: string): string {
+    const normalized = file.replace(/\\/g, '/');
+    if (this.projectRoot) {
+      if (normalized === this.projectRoot) return '';
+      if (normalized.startsWith(`${this.projectRoot}/`)) {
+        return normalized.slice(this.projectRoot.length + 1);
+      }
+    }
+    if (/^(?:[a-zA-Z]:)?\//.test(normalized)) return '';
+    return normalized;
   }
 
   private extractConceptsFromPath(path: string): string[] {

@@ -2199,3 +2199,142 @@ resource "aws_s3_bucket_policy" "analysis_artifacts" {
     }
   });
 });
+
+describe('domain and security classification robustness (out-of-distribution repos)', () => {
+  const node = (partial: Partial<CASNode>): CASNode => ({
+    id: partial.id || partial.name || 'node',
+    name: partial.name || 'Node',
+    type: partial.type || 'class',
+    source: partial.source || { file: `src/${partial.name || 'node'}.ts`, line: 1 },
+    metadata: partial.metadata || {},
+    subcategories: partial.subcategories,
+  } as CASNode);
+
+  it('matches whole identifier tokens only, never substrings of compound identifiers', () => {
+    expect(orch.matchesSignalPattern(orch.signalTokens('credit_card'), 'card')).toBe(false);
+    expect(orch.matchesSignalPattern(orch.signalTokens('gift_card'), 'card')).toBe(false);
+    expect(orch.matchesSignalPattern(orch.signalTokens('CreditCard'), 'card')).toBe(false);
+    expect(orch.matchesSignalPattern(orch.signalTokens('dashboard'), 'board')).toBe(false);
+    expect(orch.matchesSignalPattern(orch.signalTokens('return_authorization'), 'turn')).toBe(false);
+    expect(orch.matchesSignalPattern(orch.signalTokens('return_authorization'), 'auth')).toBe(false);
+    expect(orch.matchesSignalPattern(orch.signalTokens('ReturnAuthorization'), 'auth')).toBe(false);
+
+    expect(orch.matchesSignalPattern(orch.signalTokens('CardGame'), 'game')).toBe(true);
+    expect(orch.matchesSignalPattern(orch.signalTokens('game_board'), 'board')).toBe(true);
+    expect(orch.matchesSignalPattern(orch.signalTokens('carts'), 'cart')).toBe(true);
+    expect(orch.matchesSignalPattern(orch.signalTokens('CartsController'), 'cart')).toBe(true);
+    expect(orch.matchesSignalPattern(orch.signalTokens('MuscleTestViewModel'), 'viewmodel')).toBe(true);
+    expect(orch.matchesSignalPattern(orch.signalTokens('static-analysis runner'), 'static analysis')).toBe(true);
+  });
+
+  it('does not classify commerce vocabulary (credit_card, gift_card, dashboard, return_authorization) as a gaming platform', () => {
+    const nodes: CASNode[] = [
+      node({ id: 'cc', name: 'CreditCard', source: { file: 'app/models/spree/credit_card.rb' } }),
+      node({ id: 'gc', name: 'GiftCard', source: { file: 'app/models/spree/gift_card.rb' } }),
+      node({ id: 'ra', name: 'ReturnAuthorization', source: { file: 'app/models/spree/return_authorization.rb' } }),
+      node({ id: 'dash', name: 'DashboardsController', type: 'controller', source: { file: 'app/controllers/spree/admin/dashboards_controller.rb' } }),
+      node({ id: 'order', name: 'Order', source: { file: 'app/models/spree/order.rb' } }),
+      node({ id: 'payment', name: 'Payment', source: { file: 'app/models/spree/payment.rb' } }),
+      node({ id: 'cart', name: 'CartsController', type: 'controller', source: { file: 'app/controllers/spree/carts_controller.rb' } }),
+      node({ id: 'checkout', name: 'CheckoutController', type: 'controller', source: { file: 'app/controllers/spree/checkout_controller.rb' } }),
+      node({ id: 'product', name: 'Product', source: { file: 'app/models/spree/product.rb' } }),
+      node({ id: 'shipment', name: 'Shipment', source: { file: 'app/models/spree/shipment.rb' } }),
+    ];
+
+    const purpose = orch.inferSystemPurpose([], [], [], nodes);
+
+    expect(purpose.primary_type).not.toBe('gaming-platform');
+    expect(purpose.secondary_types || []).not.toContain('gaming-platform');
+  });
+
+  it('still recognizes a real card game as a gaming platform with whole-token evidence', () => {
+    const nodes: CASNode[] = [
+      node({ id: 'game', name: 'Game', source: { file: 'src/game/game.ts' } }),
+      node({ id: 'deck', name: 'Deck', source: { file: 'src/game/deck.ts' } }),
+      node({ id: 'card', name: 'Card', source: { file: 'src/game/card.ts' } }),
+      node({ id: 'player', name: 'Player', source: { file: 'src/game/player.ts' } }),
+      node({ id: 'lobby', name: 'GameLobby', source: { file: 'src/game/lobby.ts' } }),
+      node({ id: 'board', name: 'GameBoard', source: { file: 'src/game/board.ts' } }),
+    ];
+
+    const purpose = orch.inferSystemPurpose([], [], [], nodes);
+
+    expect(purpose.primary_type).toBe('gaming-platform');
+  });
+
+  it('does not treat ReturnAuthorization domain models as authentication or authorization enforcement points', () => {
+    const nodes: CASNode[] = [
+      node({ id: 'ra1', name: 'ReturnAuthorization', source: { file: 'app/models/spree/return_authorization.rb' }, subcategories: ['model'] }),
+      node({ id: 'ra2', name: 'ReturnAuthorizationReason', source: { file: 'app/models/spree/return_authorization_reason.rb' } }),
+      node({ id: 'pa', name: 'PaymentAuthorization', source: { file: 'app/models/payment_authorization.rb' } }),
+      node({ id: 'ra-filter', name: 'load_return_authorization', type: 'method', subcategories: ['before_action'], source: { file: 'app/controllers/spree/admin/return_authorizations_controller.rb' } }),
+      node({ id: 'policies-crud', name: 'PoliciesController', type: 'controller', subcategories: ['before_action'], source: { file: 'app/controllers/spree/admin/policies_controller.rb' } }),
+      node({ id: 'auth-mw', name: 'AuthenticationMiddleware', type: 'middleware', source: { file: 'app/middleware/authentication_middleware.rb' } }),
+      node({ id: 'ability', name: 'Ability', source: { file: 'app/models/spree/ability.rb' } }),
+    ];
+
+    const boundaries = orch.buildSecurityBoundaries(nodes, []);
+    const enforcementIds = boundaries.flatMap((boundary: any) =>
+      boundary.enforcement_points.map((point: any) => point.node_id));
+
+    expect(enforcementIds).not.toContain('ra1');
+    expect(enforcementIds).not.toContain('ra2');
+    expect(enforcementIds).not.toContain('pa');
+    expect(enforcementIds).not.toContain('ra-filter');
+    expect(enforcementIds).not.toContain('policies-crud');
+    expect(enforcementIds).toContain('auth-mw');
+    expect(enforcementIds).toContain('ability');
+  });
+
+  it('keeps genuine auth actors as enforcement points under token matching', () => {
+    const nodes: CASNode[] = [
+      node({ id: 'guard', name: 'JwtAuthGuard', type: 'guard', source: { file: 'src/auth/jwt-auth.guard.ts' } }),
+      node({ id: 'authorizer', name: 'AuthorizationService', type: 'service', source: { file: 'src/auth/authorization.service.ts' } }),
+      node({ id: 'policy', name: 'OrderPolicy', source: { file: 'app/policies/order_policy.rb' } }),
+    ];
+
+    const boundaries = orch.buildSecurityBoundaries(nodes, []);
+    const enforcementIds = boundaries.flatMap((boundary: any) =>
+      boundary.enforcement_points.map((point: any) => point.node_id));
+
+    expect(enforcementIds).toContain('guard');
+    expect(enforcementIds).toContain('authorizer');
+    expect(enforcementIds).toContain('policy');
+  });
+
+  it('does not let parent directories of the repo influence project-text domain inference', () => {
+    expect(orch.inferDomainFromProjectText(
+      'Customers manage cart handling, checkout, orders, and billing for the storefront operations team.',
+      '/tmp/terraform-workspaces/shop'
+    )).toBe('commerce-operations-portal');
+
+    expect(orch.inferDomainFromProjectText(
+      'Terraform modules and providers describing AWS VPC, ECS, RDS, and CloudFront deployment resources with variables and outputs.',
+      '/tmp/shop-clones/central-server-infra'
+    )).toBe('cloud-infrastructure');
+  });
+
+  it('classifies order plus payment vocabulary without invoices as order-payment-management', () => {
+    expect(orch.structuralDomainFromText('order checkout payment shipment customers')).toBe('order-payment-management');
+    expect(orch.structuralDomainFromText('order invoice payment ledger')).toBe('order-invoice-management');
+    expect(orch.structuralDomainFromText('order fulfillment warehouse')).toBe('order-management');
+  });
+
+  it('does not classify commerce payment gateways and store policies as network access management', () => {
+    expect(orch.structuralDomainFromText(
+      'checkout cart order payment gateways policies access store products'
+    )).toBe('order-payment-management');
+    expect(orch.structuralDomainFromText(
+      'gateway posture policy network access request verification'
+    )).toBe('network-access-management');
+  });
+
+  it('filters rails-ecosystem framework noise out of capability naming', () => {
+    for (const token of ['turbo', 'stimulus', 'sprockets', 'actiontext', 'activestorage', 'activerecord', 'devise', 'sidekiq', 'hotwire', 'importmap']) {
+      expect(orch.isGenericCapabilityToken(token)).toBe(true);
+    }
+    expect(orch.domainKeyFromText('TurboStreamsController')).not.toBe('turbo');
+    expect(orch.domainKeyFromText('TurboController')).toBeUndefined();
+    expect(orch.domainKeyFromText('PaymentController')).toBe('payment');
+  });
+});

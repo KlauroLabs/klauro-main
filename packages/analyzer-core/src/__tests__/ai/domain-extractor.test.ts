@@ -165,3 +165,53 @@ describe('DomainExtractor', () => {
     }
   });
 });
+
+describe('DomainExtractor path hygiene', () => {
+  const extractor = new DomainExtractor();
+
+  const classNode = (id: string, name: string, file: string): CASNode =>
+    node(id, name, { type: 'class', source: { file, line: 1 } as any });
+
+  it('never promotes clone-path segments above the repo root into domain concepts', () => {
+    const projectPath = '/tmp/klauro-oss-blind/spree';
+    const nodes = [
+      classNode('n1', 'CreditCard', '/tmp/klauro-oss-blind/spree/core/app/models/spree/credit_card.rb'),
+      classNode('n2', 'GiftCard', '/tmp/klauro-oss-blind/spree/core/app/models/spree/gift_card.rb'),
+      classNode('n3', 'Order', '/tmp/klauro-oss-blind/spree/core/app/models/spree/order.rb'),
+      classNode('n4', 'Payment', '/tmp/klauro-oss-blind/spree/core/app/models/spree/payment.rb'),
+    ];
+
+    const concepts = extractor.extract(nodes, [], [], [], projectPath);
+    const names = concepts.map(c => c.name);
+
+    expect(names).not.toContain('klauro');
+    expect(names).not.toContain('oss');
+    expect(names).not.toContain('blind');
+    expect(names).not.toContain('tmp');
+    expect(names).toContain('spree');
+  });
+
+  it('skips absolute file paths entirely when the project root is unknown', () => {
+    const nodes = [
+      classNode('n1', 'Order', '/tmp/klauro-oss-blind/spree/core/app/models/spree/order.rb'),
+      classNode('n2', 'Payment', '/tmp/klauro-oss-blind/spree/core/app/models/spree/payment.rb'),
+    ];
+
+    const concepts = extractor.extract(nodes, [], [], []);
+    const names = concepts.map(c => c.name);
+
+    expect(names).not.toContain('klauro');
+    expect(names).not.toContain('blind');
+    expect(names).not.toContain('tmp');
+  });
+
+  it('still extracts repo-relative path concepts', () => {
+    const nodes = [
+      classNode('n1', 'OrdersController', 'app/controllers/orders_controller.rb'),
+      classNode('n2', 'Order', 'app/models/order.rb'),
+    ];
+
+    const concepts = extractor.extract(nodes, [], [], []);
+    expect(concepts.map(c => c.name)).toContain('order');
+  });
+});

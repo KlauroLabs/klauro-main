@@ -847,7 +847,7 @@ export class AnalyzerOrchestrator {
 
     phaseStart = Date.now();
     const domainExtractor = new DomainExtractor();
-    const domainConcepts = domainExtractor.extract(allNodes, allEntryPoints, dataEntities, allEdges);
+    const domainConcepts = domainExtractor.extract(allNodes, allEntryPoints, dataEntities, allEdges, projectPath);
     logTiming('pp_domainConcepts', phaseStart);
 
     phaseStart = Date.now();
@@ -1612,7 +1612,7 @@ export class AnalyzerOrchestrator {
     const testGaps = this.buildTestGaps(flowCoverage, nodes);
 
     const domainExtractor = new DomainExtractor();
-    const domainConcepts = domainExtractor.extract(nodes, entryPoints, dataEntities, edges);
+    const domainConcepts = domainExtractor.extract(nodes, entryPoints, dataEntities, edges, projectPath);
 
     const workflowDetector = new WorkflowDetector();
     const workflows = workflowDetector.detectWorkflows(entryPoints, callChains, nodes, edges, exitPoints);
@@ -3492,7 +3492,7 @@ export class AnalyzerOrchestrator {
         return false;
       }
 
-      if (registration.type === 'framework' || registration.type === 'library') {
+      if ((registration.type === 'framework' || registration.type === 'library') && !registration.analyzer.discoversNestedRoots) {
         const nestedRoots = this.projectRoots
           .filter(root => root !== projectPath)
           .sort((a, b) => b.length - a.length);
@@ -8066,13 +8066,21 @@ export class AnalyzerOrchestrator {
     if (has(/\b(fleet|telematics)\b/) && has(/\b(vehicle|vehicles|driver|drivers|dispatch|dispatching|trip|trips)\b/)) {
       return 'fleet-management';
     }
-    const networkAccessAnchors = [/\baccess\b/, /\bpolicy|policies\b/, /\bnetwork|networks\b/, /\bposture\b/]
+    const networkAccessAnchors = [/\baccess\b/, /\bpolic(y|ies)\b/, /\bnetworks?\b/, /\bposture\b/]
       .filter(pattern => pattern.test(text)).length;
-    if (has(/\b(gateway|gateways)\b/) && !has(/\bpayment gateway\b/) && networkAccessAnchors >= 2) {
+    // Commerce systems also have gateways (payment gateways) and policies
+    // (store/legal policies); cart/checkout vocabulary means the gateway
+    // evidence is commerce, not network access control.
+    const hasCommerceCheckoutAnchor = has(/\b(carts?|checkouts?)\b/);
+    if (has(/\b(gateway|gateways)\b/) && !has(/\bpayment gateway\b/) && !hasCommerceCheckoutAnchor && networkAccessAnchors >= 2) {
       return 'network-access-management';
     }
-    if (has(/\border|orders|salesorder|sales order\b/) && has(/\binvoice|invoices|payment|payments\b/)) {
+    const hasOrderAnchor = has(/\b(orders?|salesorders?|sales orders?)\b/);
+    if (hasOrderAnchor && has(/\binvoices?\b/)) {
       return 'order-invoice-management';
+    }
+    if (hasOrderAnchor && has(/\b(payments?|billing)\b/)) {
+      return 'order-payment-management';
     }
     if (has(/\binvoice|invoices|payment|payments|billing\b/)) {
       return 'billing-payments';
@@ -8101,6 +8109,7 @@ export class AnalyzerOrchestrator {
       'fleet-management': ['fleet', 'vehicle', 'driver', 'dispatch', 'telematics', 'trip'],
       'network-access-management': ['gateway', 'access', 'policy', 'network', 'posture', 'resource'],
       'order-invoice-management': ['order', 'invoice', 'payment'],
+      'order-payment-management': ['order', 'payment', 'billing'],
       'billing-payments': ['invoice', 'payment', 'billing'],
       'order-management': ['order', 'fulfillment'],
       'document-reporting': ['document', 'report', 'pdf'],
@@ -8407,12 +8416,15 @@ export class AnalyzerOrchestrator {
 
   private inferDomainFromProjectText(text: string, projectPath: string): string | undefined {
     const repoName = path.basename(projectPath).toLowerCase();
-    const pathSegments = projectPath.toLowerCase().split(/[\\/]+/);
-    const locationText = [repoName, ...pathSegments.slice(-4)].join(' ');
+    // Only the repo basename may contribute location evidence. Parent
+    // directories (clone workspaces, /tmp paths, client folders) must never
+    // leak into domain inference. The basename is counted twice to preserve
+    // the prior weighting where it appeared as both repo name and final path
+    // segment, without it dominating real project text.
+    const locationText = `${repoName} ${repoName}`;
     const searchableText = `${text}\n${locationText}`;
     const isInfrastructureRepo =
-      /\b(infra|infrastructure|terraform|opentofu|aws-infra|system-infra)\b/.test(locationText) ||
-      pathSegments.some(segment => /^(infra|infrastructure|terraform|aws-infra|system-infra)$/.test(segment));
+      /\b(infra|infrastructure|terraform|opentofu|aws-infra|system-infra)\b/.test(repoName);
     const isExplicitZeroTrustProduct = /\bzero[-\s]?trust\b/.test(text) && !isInfrastructureRepo;
     if (isInfrastructureRepo) {
       return 'cloud-infrastructure';
@@ -10088,29 +10100,15 @@ export class AnalyzerOrchestrator {
   private buildSecurityBoundaries(nodes: CASNode[], entryPoints: CASEntryPoint[]): CASSecurityBoundary[] {
     const boundaries: CASSecurityBoundary[] = [];
 
-    const securityNodes = nodes.filter(n => {
-      const nameLower = n.name.toLowerCase();
-      const qualifiedLower = (n.qualified_name || '').toLowerCase();
-      return n.type === 'guard' ||
-             n.subcategories?.includes('guard') ||
-             n.subcategories?.includes('middleware') ||
-             n.subcategories?.includes('permission') ||
-             nameLower.includes('guard') ||
-             nameLower.includes('permission') ||
-             nameLower.includes('authenticat') ||
-             nameLower.includes('authoriz') ||
-             qualifiedLower.includes('permission') ||
-             qualifiedLower.includes('middleware');
-    });
+    const securityNodes = nodes.filter(n => this.hasSecurityEnforcementSemantics(n));
 
+    const authVocabulary = [
+      'auth', 'authentication', 'authenticate', 'authenticated', 'authenticator',
+      'jwt', 'login', 'logout', 'session', 'token', 'oauth', 'sso', 'devise', 'warden',
+    ];
     const authNodes = securityNodes.filter(n => {
-      const nameLower = n.name.toLowerCase();
-      return nameLower.includes('auth') ||
-             nameLower.includes('jwt') ||
-             nameLower.includes('login') ||
-             nameLower.includes('session') ||
-             nameLower.includes('token') ||
-             nameLower.includes('isauthenticated');
+      const tokens = this.signalTokens(n.name);
+      return authVocabulary.some(term => tokens.includes(term));
     });
 
     const authenticatedEntryPoints = entryPoints.filter(ep => ep.security?.authenticated);
@@ -10147,13 +10145,11 @@ export class AnalyzerOrchestrator {
       });
     }
 
+    const permissionVocabulary = ['role', 'roles', 'permission', 'permissions', 'crud', 'access', 'pundit', 'cancan', 'cancancan'];
     const permissionNodes = securityNodes.filter(n => {
-      const nameLower = n.name.toLowerCase();
-      return nameLower.includes('role') ||
-             nameLower.includes('permission') ||
-             nameLower.includes('crud') ||
-             nameLower.includes('access') ||
-             nameLower.includes('policy');
+      const tokens = this.signalTokens(n.name);
+      return permissionVocabulary.some(term => tokens.includes(term)) ||
+        this.nameTokensIndicateAuthorizationActor(tokens);
     });
 
     if (permissionNodes.length > 0) {
@@ -10210,6 +10206,53 @@ export class AnalyzerOrchestrator {
     }
 
     return boundaries;
+  }
+
+  /**
+   * Security boundaries are anchored on code that ENFORCES access decisions
+   * (guards, middleware, policies, before_action filters, devise/warden,
+   * permission configuration), never on domain models whose names merely
+   * contain auth-looking substrings. `ReturnAuthorization` (RMA) and
+   * `PaymentAuthorization` are commerce domain models, not enforcement points.
+   */
+  private hasSecurityEnforcementSemantics(node: CASNode): boolean {
+    const subcategories = (node.subcategories || []).map(s => s.toLowerCase());
+    if (node.type === 'guard' || node.type === 'middleware') return true;
+    if (['guard', 'middleware', 'permission', 'policy', 'before_action', 'before_filter', 'ability'].some(s => subcategories.includes(s))) {
+      return true;
+    }
+    const qualifiedTokens = this.signalTokens(node.qualified_name || '');
+    if (qualifiedTokens.includes('middleware') || qualifiedTokens.includes('permission')) return true;
+
+    const isDomainModel = node.type === 'entity' ||
+      node.type === 'model' ||
+      subcategories.some(s => ['model', 'entity', 'active_record', 'activerecord', 'aggregate', 'value_object'].includes(s));
+    if (isDomainModel) return false;
+
+    const tokens = this.signalTokens(node.name);
+    const enforcementVocabulary = [
+      'guard', 'guards', 'permission', 'permissions',
+      'devise', 'warden', 'cancan', 'cancancan', 'pundit',
+      'authentication', 'authenticate', 'authenticated', 'authenticator', 'auth', 'jwt', 'oauth', 'sso',
+    ];
+    if (enforcementVocabulary.some(term => tokens.includes(term))) return true;
+    return this.nameTokensIndicateAuthorizationActor(tokens);
+  }
+
+  /**
+   * "authorization"/"authorize" only count when the name IS the auth concept
+   * (Authorization, Authorizer, authorize_admin), never when the token trails
+   * a domain noun in a compound (ReturnAuthorization, PaymentAuthorization,
+   * load_return_authorization). "policy"/"ability" follow the pundit/cancan
+   * class convention: singular, leading or trailing (OrderPolicy, Ability) —
+   * plural resource CRUD like PoliciesController (store legal pages) and
+   * route paths like /policies are domain content, not enforcement.
+   */
+  private nameTokensIndicateAuthorizationActor(tokens: string[]): boolean {
+    if (/^authoriz(e|er|es|ed|ation|ations)$/.test(tokens[0] || '')) return true;
+    const head = tokens[0];
+    const tail = tokens[tokens.length - 1];
+    return ['policy', 'ability'].some(term => head === term || tail === term);
   }
 
   private inferAuthMechanism(node: CASNode): string {
@@ -10879,6 +10922,12 @@ export class AnalyzerOrchestrator {
       'dev', 'clients', 'outcode', 'personal', 'business', 'apps', 'libs',
       'entry', 'entries', 'first', 'path', 'paths', 'percent', 'percentage',
       'minimal', 'gate', 'gates', 'compatible',
+      'rails', 'rack', 'rake', 'turbo', 'stimulus', 'sprockets', 'hotwire',
+      'actiontext', 'activestorage', 'actioncable', 'actionmailer', 'actionpack',
+      'activerecord', 'activejob', 'activemodel', 'activesupport', 'actionview',
+      'importmap', 'webpacker', 'propshaft', 'sidekiq', 'kaminari', 'ransack',
+      'devise', 'warden', 'omniauth', 'pundit', 'cancan', 'cancancan', 'doorkeeper',
+      'rspec', 'rubocop', 'erb', 'haml', 'ruby', 'gem', 'gems', 'gemfile', 'bundler',
     ]).has(token);
   }
 
@@ -11352,6 +11401,91 @@ export class AnalyzerOrchestrator {
     return `${name} covers ${this.joinHumanList(uniqueActions.slice(0, 4))} paths${entryPhrase}.`;
   }
 
+  private signalTokens(item: string): string[] {
+    return item
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean);
+  }
+
+  private singularizeSignalToken(token: string): string {
+    if (token.length > 3 && token.endsWith('ies')) return `${token.slice(0, -3)}y`;
+    if (token.length > 4 && token.endsWith('ses')) return token.slice(0, -2);
+    if (token.length > 2 && token.endsWith('s') && !token.endsWith('ss')) return token.slice(0, -1);
+    return token;
+  }
+
+  /**
+   * Compound identifiers whose surrounding tokens change the meaning of an
+   * otherwise distinctive signal token. `credit_card`/`gift_card` are commerce
+   * vocabulary, not gaming "card" evidence; `dash board`/`key board` style
+   * splits must not count as game "board" evidence.
+   */
+  private isBlockedSignalCompound(tokens: string[], start: number, end: number): boolean {
+    if (end - start !== 1) return false;
+    const blockers: Record<string, { before: string[]; after: string[] }> = {
+      card: {
+        before: ['credit', 'gift', 'debit', 'loyalty', 'membership', 'business', 'bank', 'id', 'sim', 'sd', 'key'],
+        after: ['reader', 'holder'],
+      },
+      board: { before: ['dash', 'on', 'key', 'clip', 'leader', 'white'], after: [] },
+      turn: { before: ['re'], after: [] },
+    };
+    const rule = blockers[tokens[start]];
+    if (!rule) return false;
+    const before = tokens[start - 1];
+    const after = tokens[end];
+    return (before !== undefined && rule.before.includes(before)) ||
+      (after !== undefined && rule.after.includes(after));
+  }
+
+  /**
+   * Whole-token signal matching. The pattern must appear as a contiguous run
+   * of complete identifier tokens (snake_case/camelCase split), never as a
+   * substring of a larger token: "card" does not match `credit_card`,
+   * "board" does not match `dashboard`, "turn" does not match
+   * `return_authorization`. Single-token patterns may also match a join of
+   * two or more adjacent tokens ("viewmodel" matches `MuscleTestViewModel`).
+   */
+  private matchesSignalPattern(rawTokens: string[], pattern: string): boolean {
+    const patternTokens = pattern
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean)
+      .map(token => this.singularizeSignalToken(token));
+    if (patternTokens.length === 0) return false;
+    const tokens = rawTokens.map(token => this.singularizeSignalToken(token));
+    for (let i = 0; i + patternTokens.length <= tokens.length; i++) {
+      let matched = true;
+      for (let j = 0; j < patternTokens.length; j++) {
+        if (tokens[i + j] !== patternTokens[j]) {
+          matched = false;
+          break;
+        }
+      }
+      if (matched && !this.isBlockedSignalCompound(tokens, i, i + patternTokens.length)) {
+        return true;
+      }
+    }
+    if (patternTokens.length === 1) {
+      const target = patternTokens[0];
+      for (let i = 0; i < tokens.length - 1; i++) {
+        let joined = tokens[i];
+        for (let j = i + 1; j < tokens.length && joined.length < target.length; j++) {
+          joined += tokens[j];
+          if (joined === target) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  private tokenizeSignalItems(items: string[]): string[][] {
+    return items.map(item => this.signalTokens(item));
+  }
+
   private inferSystemPurpose(
     entryPoints: CASEntryPoint[],
     dataEntities: CASDataEntity[],
@@ -11717,12 +11851,12 @@ export class AnalyzerOrchestrator {
         type: 'devtools-platform',
         description: 'Developer tools, code analysis, or visualization platform',
         indicators: {
-          // Substring-matched, so only genuinely distinctive tokens are
-          // listed. Generic terms (node, edge, graph, component, token,
-          // render, layout, plugin, sdk) were removed: they appear in almost
-          // every codebase and previously caused systems like a Claude-agent
-          // manager or any React app to be mislabeled a devtools platform.
-          pathPatterns: ['analyzer', 'sourcemap', 'transpil', 'linter', 'codegen', 'blueprint'],
+          // Only genuinely distinctive tokens are listed. Generic terms
+          // (node, edge, graph, component, token, render, layout, plugin,
+          // sdk) were removed: they appear in almost every codebase and
+          // previously caused systems like a Claude-agent manager or any
+          // React app to be mislabeled a devtools platform.
+          pathPatterns: ['analyzer', 'sourcemap', 'transpile', 'transpiler', 'transpilation', 'linter', 'codegen', 'blueprint'],
           verbPatterns: ['transpile', 'instrument', 'profile'],
           entityPatterns: ['analyzer', 'sourcemap', 'blueprint', 'diagnostic', 'codemod'],
           capabilityPatterns: ['static analysis', 'code analysis', 'transpilation', 'instrumentation', 'profiling'],
@@ -11763,19 +11897,19 @@ export class AnalyzerOrchestrator {
     const evidence: string[] = [];
     const signatureEvidence = new Map<string, string[]>();
 
-    const paths = productEntryPoints.map(ep => (ep.trigger?.path || ep.name).toLowerCase());
-    const nodeNames = productNodes.map(n => n.name.toLowerCase());
-    const namespaceNames = productNodes.filter(n => n.type === 'namespace').map(n => n.name.toLowerCase());
-    const entityNames = productDataEntities.map(de => de.name.toLowerCase());
-    const capabilityNames = productCapabilities.map(c => c.name.toLowerCase());
-    const nodeTypeList = productNodes.map(n => n.type.toLowerCase());
+    const paths = this.tokenizeSignalItems(productEntryPoints.map(ep => ep.trigger?.path || ep.name));
+    const nodeNames = this.tokenizeSignalItems(productNodes.map(n => n.name));
+    const namespaceNames = this.tokenizeSignalItems(productNodes.filter(n => n.type === 'namespace').map(n => n.name));
+    const entityNames = this.tokenizeSignalItems(productDataEntities.map(de => de.name));
+    const capabilityNames = this.tokenizeSignalItems(productCapabilities.map(c => c.name));
+    const nodeTypeList = this.tokenizeSignalItems(productNodes.map(n => n.type));
 
-    const countMatches = (items: string[], patterns: string[]): { count: number; matched: string[] } => {
+    const countMatches = (items: string[][], patterns: string[]): { count: number; matched: string[] } => {
       const matched: string[] = [];
       let count = 0;
-      for (const item of items) {
+      for (const tokens of items) {
         for (const pattern of patterns) {
-          if (item.includes(pattern)) {
+          if (this.matchesSignalPattern(tokens, pattern)) {
             if (!matched.includes(pattern)) {
               matched.push(pattern);
             }
@@ -11842,8 +11976,9 @@ export class AnalyzerOrchestrator {
       }
 
       if (sig.type === 'gaming-platform' && score > 0) {
-        const gameText = [...paths, ...nodeNames, ...entityNames, ...capabilityNames].join(' ');
-        const strongGameSignals = Array.from(new Set(gameText.match(/\b(game|deck|match|lobby|turn|mana|mulligan)\b/g) || []));
+        const gameTokenLists = [...paths, ...nodeNames, ...entityNames, ...capabilityNames];
+        const strongGameSignals = ['game', 'deck', 'lobby', 'mana', 'mulligan', 'gameplay', 'matchmaking']
+          .filter(signal => gameTokenLists.some(tokens => this.matchesSignalPattern(tokens, signal)));
         if (strongGameSignals.length < 1) {
           score = 0;
           typeEvidence.length = 0;
@@ -11887,15 +12022,16 @@ export class AnalyzerOrchestrator {
     const httpEntryPoints = productEntryPoints.filter(ep => ep.type === 'http');
     const pageEntryPoints = productEntryPoints.filter(ep => ep.type === 'page' || ep.type === 'route');
     const desktopUiSignals = countMatches([...nodeNames, ...paths], ['window', 'viewmodel', 'xaml', 'modal']);
+    const nameEntityCapabilityPathTokens = [...nodeNames, ...entityNames, ...capabilityNames, ...paths];
     const hasDominantDesktopUi =
       ['desktop-application', 'medical-device-software', 'clinical-testing-platform', 'hardware-device-software'].includes(topMatch.type) ||
       desktopUiSignals.count >= 5;
     const clinicalSignals = countMatches(
-      [...nodeNames, ...entityNames, ...capabilityNames, ...paths],
+      nameEntityCapabilityPathTokens,
       ['patient', 'muscle', 'device', 'measurement', 'force', 'inclinometry', 'grip', 'pinch', 'rehabilitation']
     );
     const devtoolsSignals = countMatches(
-      [...nodeNames, ...entityNames, ...capabilityNames, ...paths],
+      nameEntityCapabilityPathTokens,
       ['analyzer', 'static analysis', 'code analysis', 'codebase analysis', 'codebase graph', 'codemod']
     );
     if (devtoolsSignals.count >= 3 && devtoolsSignals.matched.some(signal => /analyzer|analysis|codebase/.test(signal)) && topMatch.type !== 'medical-device-software' && topMatch.type !== 'clinical-testing-platform') {
