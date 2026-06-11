@@ -2904,6 +2904,92 @@ describe('structural domain text rules: site operations anchor', () => {
   });
 });
 
+describe('structural domain text rules: business operations anchor', () => {
+  it('classifies approvals/budgets/kpis/profit vocabulary as business-operations-management even with connector content noise', () => {
+    const text = 'approvals budget reviews kpis profit objectives webflow cms content sync pages collections invoices payments';
+    expect(orch.structuralDomainFromText(text)).toBe('business-operations-management');
+  });
+
+  it('requires three distinct business-operations anchors: a lone approval token stays commerce', () => {
+    const text = 'approvals orders order items invoices customers products shipping';
+    expect(orch.structuralDomainFromText(text)).toBe('order-invoice-management');
+  });
+
+  it('requires three distinct anchors: two business tokens do not claim the identity', () => {
+    const text = 'approvals budget orders order items invoices customers products';
+    expect(orch.structuralDomainFromText(text)).toBe('order-invoice-management');
+  });
+
+  it('does not steal a real CMS: revision plus page plus publishing evidence keeps content-management', () => {
+    const text = 'pages revisions publish unpublish drafts moderation workflow approvals budget kpis';
+    expect(orch.structuralDomainFromText(text)).toBe('content-management');
+  });
+});
+
+describe('dominant business domain: connector content vocabulary cannot own a business OS', () => {
+  const capability = (name: string, entities: string[]) => ({
+    id: `cap_${name.toLowerCase().replace(/\s+/g, '_')}`,
+    name,
+    description: '',
+    category: 'core',
+    related_domains: [],
+    related_entities: entities,
+    operations: [],
+  });
+
+  it('prefers business-operations-management over a lone connector content token', () => {
+    const result = orch.inferDominantBusinessDomainFromCapabilities(
+      [
+        capability('Approval Management', ['Approval', 'ApprovalRequest']),
+        capability('Budget Management', ['Budget', 'BudgetLine']),
+        capability('KPI Management', ['Kpi', 'KpiSnapshot']),
+        capability('Content Sync', ['Content', 'WebflowItem']),
+      ],
+      [{ name: 'Approval' }, { name: 'Budget' }, { name: 'Kpi' }, { name: 'Profit' }]
+    );
+    expect(result).toBe('business-operations-management');
+  });
+
+  it('keeps content-management when business-operations evidence is a stray token', () => {
+    const result = orch.inferDominantBusinessDomainFromCapabilities(
+      [
+        capability('Content Management', ['Content', 'Post']),
+        capability('Approval Management', ['Approval']),
+      ],
+      [{ name: 'Content' }, { name: 'Post' }, { name: 'Approval' }]
+    );
+    expect(result).toBe('content-management');
+  });
+});
+
+describe('reconcilePrimaryDomainWithAreas: module-confined identity suppression', () => {
+  it('majority business-operations area beats a primary no area supports', () => {
+    const areas = [
+      { area: 'apps', domain: 'business-operations-management', nodeCount: 3024, share: 0.82 },
+      { area: 'packages', domain: 'business-operations-management', nodeCount: 647, share: 0.17 },
+    ];
+    const result = orch.reconcilePrimaryDomainWithAreas('content-management', areas);
+    expect(result.primaryDomain).toBe('business-operations-management');
+  });
+
+  it('keeps the primary when the majority area carries a compatible domain', () => {
+    const areas = [
+      { area: 'wagtail', domain: 'content-management', nodeCount: 5000, share: 0.95 },
+    ];
+    const result = orch.reconcilePrimaryDomainWithAreas('content-management', areas);
+    expect(result.primaryDomain).toBe('content-management');
+  });
+
+  it('keeps the primary when the conflicting area lacks a clear majority', () => {
+    const areas = [
+      { area: 'apps', domain: 'business-operations-management', nodeCount: 500, share: 0.45 },
+      { area: 'packages', domain: 'billing-payments', nodeCount: 400, share: 0.4 },
+    ];
+    const result = orch.reconcilePrimaryDomainWithAreas('content-management', areas);
+    expect(result.primaryDomain).toBe('content-management');
+  });
+});
+
 describe('project text domains: car wash and pharmaceutical anchors', () => {
   it('classifies a car wash operations README as car-wash-operations', () => {
     expect(orch.inferDomainFromProjectText(

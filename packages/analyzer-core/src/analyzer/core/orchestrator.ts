@@ -8267,6 +8267,15 @@ export class AnalyzerOrchestrator {
     } else if (!this.areDomainsCompatible(primaryDomain, heaviest[0]) && this.isComposedDomainLabel(heaviest[0])) {
       const primaryGroup = ordered.find(([domain]) => this.areDomainsCompatible(primaryDomain, domain));
       if (primaryGroup) resolved = heaviest[0];
+      else if (heaviest === heaviestUseful && heaviest[1].share >= 0.6 && heaviest[1].areas.length >= 2) {
+        // A module-confined vocabulary (a CMS connector, a billing
+        // integration) can win the capability-text race without any code
+        // area actually carrying that domain. When independent code areas
+        // agree on one composed domain covering the dominant majority of
+        // product code and nothing on disk supports the primary, the
+        // majority areas own the identity.
+        resolved = heaviest[0];
+      }
     }
 
     const secondaryDomains = groups.size < 2
@@ -8316,9 +8325,15 @@ export class AnalyzerOrchestrator {
     ].join(' ').toLowerCase();
 
     const ruleDomain = this.structuralDomainFromText(text);
+    if (process.env.KLAURO_DOMAIN_DEBUG) {
+      console.error('[domain-debug] capability-path', JSON.stringify({ ruleDomain }));
+    }
     if (ruleDomain) return ruleDomain;
 
     const dominantBusinessDomain = this.inferDominantBusinessDomainFromCapabilities(systemCapabilities, coreConcepts);
+    if (process.env.KLAURO_DOMAIN_DEBUG) {
+      console.error('[domain-debug] capability-path', JSON.stringify({ dominantBusinessDomain }));
+    }
     if (dominantBusinessDomain) return dominantBusinessDomain;
 
     const capabilityDomain = systemCapabilities
@@ -8402,6 +8417,28 @@ export class AnalyzerOrchestrator {
         ? 'car-wash-operations'
         : 'site-operations-management';
     }
+    // Business operating systems (approvals, budgets, KPIs, forecasts,
+    // payroll, profit) must outrank the order/billing rules: their finance
+    // modules and platform connectors expose invoice/payment and
+    // content-sync vocabulary that would otherwise read as commerce or CMS.
+    // The gate requires at least three distinct business-operations evidence
+    // tokens, so a stray approval token in a real CMS or commerce system
+    // never claims the identity. The CMS anchor above stays ahead of this
+    // rule because its evidence (revision + page/document + publishing) is
+    // load-bearing CMS structure that a business OS does not carry.
+    const businessOperationsAnchorPatterns = [
+      /\bapprovals?\b/,
+      /\bbudgets?\b/,
+      /\bkpis?\b/,
+      /\bforecast(s|ing)?\b/,
+      /\bexpenses?\b/,
+      /\bpayrolls?\b/,
+      /\bprofit(s|ability)?\b/,
+    ];
+    const distinctBusinessOperationsAnchors = businessOperationsAnchorPatterns.filter(pattern => pattern.test(text)).length;
+    if (distinctBusinessOperationsAnchors >= 3) {
+      return 'business-operations-management';
+    }
     const hasOrderAnchor = has(/\b(orders?|salesorders?|sales orders?)\b/);
     if (hasOrderAnchor && has(/\binvoices?\b/)) {
       return 'order-invoice-management';
@@ -8439,6 +8476,7 @@ export class AnalyzerOrchestrator {
       'fleet-management': ['fleet', 'vehicle', 'driver', 'dispatch', 'telematics', 'trip'],
       'pharmaceutical-order-management': ['pharmacy', 'pharmaceutical', 'prescription', 'medication', 'rems', 'ndc', 'drug', 'order', 'invoice'],
       'site-operations-management': ['inspection', 'incident', 'shift', 'equipment', 'bay', 'site', 'location'],
+      'business-operations-management': ['approval', 'budget', 'kpi', 'forecast', 'expense', 'payroll', 'profit', 'objective'],
       'car-wash-operations': ['wash', 'bay', 'detailing', 'inspection', 'incident', 'shift', 'location'],
       'network-access-management': ['gateway', 'access', 'policy', 'network', 'posture', 'resource'],
       'order-invoice-management': ['order', 'invoice', 'payment'],
@@ -8537,6 +8575,12 @@ export class AnalyzerOrchestrator {
       return 'product-data-management';
     }
     if (score('company') > 0 && score('source') > 0) return 'company-source-management';
+    // A lone content/post token (a CMS connector inside a larger platform)
+    // must not own the whole-system identity when distinct
+    // business-operations evidence dominates the capability vocabulary.
+    const businessOperationsEvidence = ['approval', 'budget', 'kpi', 'forecast', 'expense', 'payroll', 'profit']
+      .filter(token => score(token) > 0 || score(`${token}s`) > 0);
+    if (businessOperationsEvidence.length >= 3) return 'business-operations-management';
     if (score('post') > 0 || score('content') > 0) return 'content-management';
     if (score('product') > 0) return 'product-management';
 
