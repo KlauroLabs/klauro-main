@@ -93,6 +93,7 @@ interface ReactUtil {
 export class ReactAnalyzer extends BaseAnalyzer {
   private commentCounter = 0;
   private todoCounter = 0;
+  private fileRouterCache = new Map<string, boolean>();
 
   constructor() {
     super(
@@ -169,9 +170,11 @@ export class ReactAnalyzer extends BaseAnalyzer {
       this.analyzeContexts([file], context.projectPath, localNodes[2], localEdges[2]),
       this.analyzeRoutes([file], context.projectPath, localNodes[3], localEdges[3], localEntryPoints[0]),
       this.analyzeStores([file], context.projectPath, localNodes[4], localEdges[4]),
-      this.analyzePages([file], context.projectPath, localNodes[5], localEdges[5], localEntryPoints[1]),
+      this.analyzePages([file], context.projectPath, localNodes[5], localEdges[5]),
       this.analyzeUtils([file], context.projectPath, localNodes[6], localEdges[6])
     ]);
+
+    this.createPageEntryPoints(pages, routes, localEntryPoints[1], await this.isFileRouterProject(context.projectPath));
 
     for (const n of localNodes) nodes.push(...n);
     for (const e of localEdges) edges.push(...e);
@@ -240,9 +243,11 @@ export class ReactAnalyzer extends BaseAnalyzer {
         this.analyzeContexts(reactFiles, context.projectPath, localNodes[2], localEdges[2]),
         this.analyzeRoutes(reactFiles, context.projectPath, localNodes[3], localEdges[3], localEntryPoints[0]),
         this.analyzeStores(reactFiles, context.projectPath, localNodes[4], localEdges[4]),
-        this.analyzePages(reactFiles, context.projectPath, localNodes[5], localEdges[5], localEntryPoints[1]),
+        this.analyzePages(reactFiles, context.projectPath, localNodes[5], localEdges[5]),
         this.analyzeUtils(reactFiles, context.projectPath, localNodes[6], localEdges[6])
       ]);
+
+      this.createPageEntryPoints(pages, routes, localEntryPoints[1], application?.type === 'next');
 
       for (const n of localNodes) nodes.push(...n);
       for (const e of localEdges) edges.push(...e);
@@ -700,8 +705,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
     files: string[],
     projectPath: string,
     nodes: CASNode[],
-    edges: CASEdge[],
-    entryPoints: CASEntryPoint[]
+    edges: CASEdge[]
   ): Promise<ReactPage[]> {
     const pages: ReactPage[] = [];
 
@@ -747,15 +751,45 @@ export class ReactAnalyzer extends BaseAnalyzer {
           })
           .build();
         nodes.push(pageNode);
+      }
+    }
 
+    return pages;
+  }
+
+  /**
+   * Emits entry points for page components after route extraction so a page
+   * already reachable through an extracted router route is not duplicated as
+   * a second entry. Only file-router projects (Next.js pages directory) map
+   * files to real HTTP routes; everywhere else a page file is a component
+   * reference, not an HTTP path, and is marked as such.
+   */
+  private createPageEntryPoints(
+    pages: ReactPage[],
+    routes: ReactRoute[],
+    entryPoints: CASEntryPoint[],
+    fileRouter: boolean
+  ): void {
+    const routedComponents = new Set<string>();
+    const visit = (route: ReactRoute) => {
+      if (route.component) routedComponents.add(route.component);
+      for (const child of route.children || []) visit(child);
+    };
+    routes.forEach(visit);
+
+    for (const page of pages) {
+      const pageId = this.generateId('page', page.filePath, page.name);
+      const isFileRoute = fileRouter && page.filePath.split('/').includes('pages');
+
+      if (isFileRoute) {
         entryPoints.push(this.createEntryPoint(
           `entry_${pageId}`,
           pageId,
           'page',
-          `Page ${pageName}`,
-          `React page component accessible at ${route}`,
+          `Page ${page.name}`,
+          `React page component accessible at ${page.route}`,
           {
-            path: route,
+            path: page.route,
             method: 'GET'
           },
           {
@@ -763,13 +797,33 @@ export class ReactAnalyzer extends BaseAnalyzer {
           },
           {
             component: page.component,
-            name: pageName
+            name: page.name
           }
         ));
+        continue;
       }
-    }
 
-    return pages;
+      if (routedComponents.has(page.component) || routedComponents.has(page.name)) continue;
+
+      entryPoints.push(this.createEntryPoint(
+        `entry_${pageId}`,
+        pageId,
+        'page',
+        `Page ${page.name}`,
+        `React page component ${page.component}`,
+        {
+          pattern: page.route
+        },
+        {
+          authenticated: false
+        },
+        {
+          component: page.component,
+          name: page.name,
+          trigger_kind: 'page-component'
+        }
+      ));
+    }
   }
 
   private async analyzeUtils(
@@ -1737,14 +1791,30 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
     if (segments.includes('pages')) {
       const pageIndex = segments.indexOf('pages');
-      const routeSegments = segments.slice(pageIndex + 1);
-      if (routeSegments.length > 0) {
-        const route = '/' + routeSegments.join('/').replace(/index$/, '');
-        return route === '/' ? '/' : route.replace(/\/$/, '');
+      const routeSegments = segments
+        .slice(pageIndex + 1)
+        .map(segment => this.routeSegmentFromFileSegment(segment))
+        .filter(Boolean);
+      if (routeSegments.length > 0 && routeSegments[routeSegments.length - 1] === 'index') {
+        routeSegments.pop();
       }
+      return '/' + routeSegments.join('/');
     }
 
-    return '/' + fileName.toLowerCase().replace(/page$|view$|screen$/, '');
+    const baseName = fileName.replace(/Page$|View$|Screen$/, '') || fileName;
+    return '/' + this.routeSegmentFromFileSegment(baseName);
+  }
+
+  private routeSegmentFromFileSegment(segment: string): string {
+    const withoutExtension = segment.replace(/\.(tsx|jsx|ts|js|mjs|cjs)$/i, '');
+    const catchAll = withoutExtension.match(/^\[\.\.\..+\]$/);
+    if (catchAll) return '*';
+    const dynamic = withoutExtension.match(/^\[(.+)\]$/);
+    if (dynamic) return `:${dynamic[1]}`;
+    return withoutExtension
+      .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+      .replace(/[_\s]+/g, '-')
+      .toLowerCase();
   }
 
   private extractComponentName(content: string): string | null {
@@ -1858,6 +1928,21 @@ export class ReactAnalyzer extends BaseAnalyzer {
     } catch {
       return 'unknown';
     }
+  }
+
+  private async isFileRouterProject(projectPath: string): Promise<boolean> {
+    const cached = this.fileRouterCache.get(projectPath);
+    if (cached !== undefined) return cached;
+    let fileRouter = false;
+    try {
+      const packageJson = await fs.readJson(path.join(projectPath, 'package.json'));
+      const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
+      fileRouter = Object.keys(deps).includes('next');
+    } catch {
+      fileRouter = false;
+    }
+    this.fileRouterCache.set(projectPath, fileRouter);
+    return fileRouter;
   }
 
   private extractExistingReactFacts(context: FileAnalysisContext, excludedFile: string): {

@@ -598,7 +598,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
               },
               {
                 authenticated: allGuards.some(g => this.isAuthGuard(g)),
-                authorized_roles: this.extractRolesFromGuards(allGuards)
+                authorized_roles: this.extractRolesFromGuards(allGuards),
+                guards: allGuards
               },
               {
                 controller: controllerInfo.name,

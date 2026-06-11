@@ -767,6 +767,20 @@ function normalizeEntityKey(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+function entryPointGuards(entryPoint: CASEntryPoint): string[] {
+  const guards = new Set<string>();
+  for (const guard of entryPoint.security?.guards || []) {
+    if (typeof guard === 'string' && guard) guards.add(guard);
+  }
+  const metadataGuards = entryPoint.metadata?.guards;
+  if (Array.isArray(metadataGuards)) {
+    for (const guard of metadataGuards) {
+      if (typeof guard === 'string' && guard) guards.add(guard);
+    }
+  }
+  return [...guards];
+}
+
 function collectSecurityBoundaries(
   entryPoint: CASEntryPoint,
   pathNodeIds: Map<string, number>,
@@ -775,10 +789,11 @@ function collectSecurityBoundaries(
 ): CASUserJourney['security_boundaries'] {
   const boundaries = new Map<string, CASUserJourney['security_boundaries'][number]>();
 
-  for (const guard of entryPoint.security?.guards || []) {
+  const entryGuards = entryPointGuards(entryPoint);
+  for (const guard of entryGuards) {
     boundaries.set(`guard:${guard}`, { name: guard, mechanism: 'entry-guard' });
   }
-  if (entryPoint.security?.authenticated && (entryPoint.security?.guards || []).length === 0) {
+  if (entryPoint.security?.authenticated && entryGuards.length === 0) {
     boundaries.set('guard:authenticated', { name: 'authentication', mechanism: 'entry-guard' });
   }
 
@@ -928,7 +943,7 @@ function describeEntryAction(entryPoint: CASEntryPoint, effects: TerminalEffects
   if (entryPoint.type === 'page' || entryPoint.type === 'route') {
     const frontendAction = describeFrontendEntryAction(entryPoint, effects);
     if (frontendAction) return frontendAction;
-    return `Visit ${entryPoint.trigger?.path || humanizeLabel(entryPoint.name)}`;
+    return `Visit ${entryPoint.trigger?.path || entryPoint.trigger?.pattern || humanizeLabel(entryPoint.name)}`;
   }
   return humanizeLabel(entryPoint.name);
 }
@@ -951,7 +966,7 @@ const FRONTEND_SUBJECT_VERBS = new Set([
 const COMPONENT_LABEL_SUFFIXES = /\s+(page|view|screen)$/;
 
 function describeFrontendEntryAction(entryPoint: CASEntryPoint, effects: TerminalEffects): string | undefined {
-  const segments = frontendPathSegments(entryPoint.trigger?.path);
+  const segments = frontendPathSegments(entryPoint.trigger?.path || entryPoint.trigger?.pattern);
   let subject: string | undefined;
   let parent: string | undefined;
 

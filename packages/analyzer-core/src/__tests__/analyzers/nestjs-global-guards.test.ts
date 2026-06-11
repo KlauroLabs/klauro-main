@@ -103,9 +103,12 @@ describe('NestJS globally registered guard detection', () => {
     const guarded = entryPoints.find(entry => entry.name.startsWith('PUT'));
     const anonymous = entryPoints.find(entry => entry.name.includes('health'));
     expect(guarded.security.authenticated).toBe(true);
+    expect(guarded.security.guards).toContain('GlobalAuthGuard');
+    expect(guarded.security.guards).not.toContain('OtherAppGuard');
     expect(guarded.metadata.guards).toContain('GlobalAuthGuard');
     expect(guarded.metadata.guards).not.toContain('OtherAppGuard');
     expect(anonymous.security.authenticated).toBe(false);
+    expect(anonymous.security.guards).not.toContain('GlobalAuthGuard');
     expect(anonymous.metadata.guards).not.toContain('GlobalAuthGuard');
   });
 
@@ -121,5 +124,6 @@ describe('NestJS globally registered guard detection', () => {
     const entryPoints: any[] = [];
     await analyzer().analyzeControllers(['src/users/users.controller.ts'], root, [], [], entryPoints, [], []);
     expect(entryPoints[0].security.authenticated).toBe(false);
+    expect(entryPoints[0].security.guards).toEqual([]);
   });
 });

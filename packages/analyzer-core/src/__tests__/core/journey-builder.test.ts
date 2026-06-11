@@ -826,3 +826,112 @@ describe('buildUserJourneys state machine walking', () => {
     expect(stepNames).not.toContain('pending');
   });
 });
+
+describe('buildUserJourneys entry guard truth', () => {
+  const httpEntry = (overrides: Partial<CASEntryPoint>): CASEntryPoint => ({
+    id: 'entry_update_config',
+    source_node: 'n_controller',
+    type: 'http',
+    name: 'PUT /automation/autopilot/config',
+    trigger: { method: 'PUT', path: '/automation/autopilot/config' },
+    handler: { node_id: 'n_controller', method_name: 'updateConfig' },
+    ...overrides,
+  } as CASEntryPoint);
+
+  const input = (entryPoint: CASEntryPoint) => ({
+    nodes: [
+      node('n_controller', 'AutoPilotController', 'controller'),
+      node('n_service', 'AutomationService', 'service'),
+    ],
+    edges: [edge('e1', 'n_controller', 'n_service', 'calls')],
+    entryPoints: [entryPoint],
+    exitPoints: [],
+    callChains: [],
+    dataEntities: [],
+  });
+
+  it('renders security.guards set by the analyzer as entry-guard boundaries', () => {
+    const { journeys } = buildUserJourneys(input(httpEntry({
+      security: { authenticated: false, authorized_roles: [], guards: ['ThrottlerGuard'] },
+      metadata: { controller: 'AutoPilotController', handler: 'updateConfig', guards: ['ThrottlerGuard'] },
+    })));
+    expect(journeys[0].security_boundaries).toEqual([
+      { name: 'ThrottlerGuard', mechanism: 'entry-guard' },
+    ]);
+  });
+
+  it('reads metadata.guards as the same guard truth the route table renders', () => {
+    const { journeys } = buildUserJourneys(input(httpEntry({
+      security: { authenticated: false, authorized_roles: [] },
+      metadata: { controller: 'AutoPilotController', handler: 'updateConfig', guards: ['ThrottlerGuard', 'ApiKeyGuard'] },
+    })));
+    const names = journeys[0].security_boundaries.map(boundary => boundary.name);
+    expect(names).toEqual(['ApiKeyGuard', 'ThrottlerGuard']);
+  });
+
+  it('names global guards applied by the framework instead of the generic authentication label', () => {
+    const { journeys } = buildUserJourneys(input(httpEntry({
+      security: { authenticated: true, authorized_roles: [], guards: ['GlobalAuthGuard'] },
+      metadata: { controller: 'AutoPilotController', handler: 'updateConfig', guards: ['GlobalAuthGuard'], global_guards: ['GlobalAuthGuard'] },
+    })));
+    expect(journeys[0].security_boundaries).toEqual([
+      { name: 'GlobalAuthGuard', mechanism: 'entry-guard' },
+    ]);
+  });
+
+  it('deduplicates guards present in both security and metadata', () => {
+    const { journeys } = buildUserJourneys(input(httpEntry({
+      security: { authenticated: true, authorized_roles: [], guards: ['LocalAuthGuard', 'ThrottlerGuard'] },
+      metadata: { guards: ['LocalAuthGuard', 'ThrottlerGuard'] },
+    })));
+    const names = journeys[0].security_boundaries.map(boundary => boundary.name);
+    expect(names).toEqual(['LocalAuthGuard', 'ThrottlerGuard']);
+  });
+
+  it('keeps the authentication fallback when authenticated with no named guards', () => {
+    const { journeys } = buildUserJourneys(input(httpEntry({
+      security: { authenticated: true, authorized_roles: [] },
+    })));
+    expect(journeys[0].security_boundaries).toEqual([
+      { name: 'authentication', mechanism: 'entry-guard' },
+    ]);
+  });
+
+  it('keeps anonymous opted-out entries unguarded', () => {
+    const { journeys } = buildUserJourneys(input(httpEntry({
+      security: { authenticated: false, authorized_roles: [], guards: [] },
+      metadata: { guards: [] },
+    })));
+    expect(journeys[0].security_boundaries).toEqual([]);
+  });
+});
+
+describe('buildUserJourneys page-component entries', () => {
+  it('names a page-component entry from its trigger pattern and keeps it free of HTTP framing', () => {
+    const input = {
+      nodes: [
+        node('n_page', 'ProfitMachine', 'react_page'),
+        node('n_hook', 'useBosState', 'hook'),
+      ],
+      edges: [edge('e1', 'n_page', 'n_hook', 'calls')],
+      entryPoints: [{
+        id: 'entry_profit_machine',
+        source_node: 'n_page',
+        source_analyzer: 'react',
+        type: 'page',
+        name: 'Page ProfitMachine',
+        trigger: { pattern: '/profit-machine' },
+        metadata: { component: 'ProfitMachine', name: 'ProfitMachine', trigger_kind: 'page-component' },
+      } as CASEntryPoint],
+      exitPoints: [],
+      callChains: [],
+      dataEntities: [],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys).toHaveLength(1);
+    expect(journeys[0].name).toBe('View profit machine -> useBosState');
+    expect(journeys[0].entry.method).toBeUndefined();
+    expect(journeys[0].entry.path_or_trigger).toBe('/profit-machine');
+  });
+});
