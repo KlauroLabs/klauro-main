@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { EventEmitter } from 'events';
-import { analyzeProjectIncremental, IncrementalAnalysisResult } from './analyzer';
+import { runAnalysis } from './analyzer';
 import type { ChangeReport } from '../../../packages/analyzer-core/src/types/cas.types';
 
 interface WatchSession {
@@ -85,7 +85,10 @@ async function runIncrementalAnalysis(session: WatchSession): Promise<void> {
   const startTime = Date.now();
 
   try {
-    const result = await analyzeProjectIncremental(session.projectPath);
+    const result = await runAnalysis(session.projectPath);
+    if (!result.changeReport) {
+      throw new Error('Incremental analysis returned no change report');
+    }
     const duration = Date.now() - startTime;
 
     session.lastAnalysis = new Date().toISOString();

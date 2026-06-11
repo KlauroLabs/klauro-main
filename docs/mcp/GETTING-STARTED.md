@@ -88,13 +88,24 @@ Measured on a mid-size production Angular repository (truckspyui, ~800 TypeScrip
 - `agent-work-packet --task-type modify`: 2.4s
 - Total install-to-first-packet (excluding one-time `npm install`): ~15s after a one-time npm install and build
 
+## Operations: analysis memory
+
+`analyze_codebase` runs in a separate worker process, not in the MCP server itself. The server stays at roughly 250 MB regardless of repository size; all analysis memory lives in the worker, whose heap is bounded:
+
+- Worker heap default: 8192 MB on machines with at least 16 GB RAM; on smaller machines the default is capped at 50% of total RAM. Set `KLAURO_ANALYSIS_HEAP_MB` in the MCP server environment to override (minimum 256). `klauro doctor` reports the resolved value under the `analysis-heap` check.
+- If an analysis exceeds the worker heap, the worker dies but the MCP server and the agent session survive. The tool call returns an error naming the `KLAURO_ANALYSIS_HEAP_MB` value to raise, and the aborted run is recorded as `run-failed` in `~/.klauro/logs/analysis-runs.jsonl`.
+- Measured envelope through the installed bundle with no NODE_OPTIONS (Apple Silicon, 32 GB RAM, `agent-fast` focus): a 51,357-node / 93,950-edge production repository fully analyzes in 26 s with a peak worker RSS of 1.6 GB — well inside the default heap. A 48,575-node repository peaks at 1.1 GB. Repositories substantially larger than this (for example the 163k-file synthetic benchmark) need `KLAURO_ANALYSIS_HEAP_MB=12288` or higher.
+- Incremental refreshes reuse a persistent worker, so no-change incremental runs stay at the in-process speed (about 1.0 s on the 51k-node repository; about 0.3 s on a 15k-node repository). Only the first incremental after server startup pays a one-time worker spawn and load cost (about 1.4 s extra on the 51k-node repository).
+- `KLAURO_ANALYSIS_IN_PROCESS=1` forces the old in-process analysis path; it is intended for tests and small fixtures only, because it puts analysis memory back inside the MCP server process.
+- The `klauro analyze` CLI command runs analysis in the CLI process itself (an OOM there exits the command without affecting any MCP session); for very large repositories invoke it with `NODE_OPTIONS=--max-old-space-size=<MB>`.
+
 ## Optional: workspace instructions
 
 Run `klauro install-agent /path/to/your/repo` to write agent default instructions into the repo, or copy the operating-loop block from `docs/mcp/CLAUDE-MD-PROMPT.md` into the project's `CLAUDE.md`. Adoption measurement (`npm run agent-adoption-measurement`) shows agents use Klauro tools far more reliably when the operating loop is present in workspace instructions.
 
 ## Troubleshooting
 
-- `klauro doctor` (no path) checks the environment: Node version, bundle freshness, handshake latency, storage, AI providers, analysis version floor, running servers.
+- `klauro doctor` (no path) checks the environment: Node version, bundle freshness, handshake latency, storage, analysis worker heap, AI providers, analysis version floor, running servers.
 - `klauro doctor /path/to/your/repo` checks analysis readiness for that repository.
 - Analyses are stored under `~/.klauro/analyses/` unless `KLAURO_STORAGE_PATH` is set.
 - Set `KLAURO_TOOL_CALL_LOG=/path/to/log.jsonl` in the server env to append one JSON line per tool call (tool name + timestamp) for adoption auditing.

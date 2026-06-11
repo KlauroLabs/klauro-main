@@ -60,6 +60,13 @@ await build({
 
 await build({
   ...sharedOptions,
+  entryPoints: ['src/analysis-worker.ts'],
+  outfile: 'dist/analysis-worker.cjs',
+  plugins: [nativeExternals],
+});
+
+await build({
+  ...sharedOptions,
   entryPoints: ['src/bootstrap.ts'],
   outfile: 'dist/index.cjs',
   external: ['./server.cjs'],

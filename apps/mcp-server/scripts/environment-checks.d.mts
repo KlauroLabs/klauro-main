@@ -31,6 +31,7 @@ export declare function evaluateBundleState(input: {
   bundleExists: boolean;
   serverExists: boolean;
   handshakeExists: boolean;
+  workerExists?: boolean;
   bundleMtimeMs: number | null;
   newestSourceMtimeMs: number | null;
   packageRoot: string;

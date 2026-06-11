@@ -33,13 +33,14 @@ export function evaluateNodeVersion(versionString, minimumMajor = MINIMUM_NODE_M
 }
 
 export function evaluateBundleState(input) {
-  const { bundleExists, serverExists, handshakeExists, bundleMtimeMs, newestSourceMtimeMs, packageRoot } = input;
+  const { bundleExists, serverExists, handshakeExists, workerExists, bundleMtimeMs, newestSourceMtimeMs, packageRoot } = input;
   const buildFix = `Run: npm --prefix ${packageRoot} run build (skip while a live run is using dist/).`;
-  if (!bundleExists || !serverExists || !handshakeExists) {
+  if (!bundleExists || !serverExists || !handshakeExists || workerExists === false) {
     const missing = [
       !bundleExists ? 'dist/index.cjs' : null,
       !serverExists ? 'dist/server.cjs' : null,
       !handshakeExists ? 'dist/handshake.json' : null,
+      workerExists === false ? 'dist/analysis-worker.cjs' : null,
     ].filter(Boolean).join(', ');
     return checkResult('bundle', 'fail', `Bundle incomplete: missing ${missing}.`, buildFix);
   }
@@ -94,6 +95,7 @@ export function inspectBundle({ packageRoot, sourceDirs }) {
     bundleExists,
     serverExists: fs.existsSync(serverPath),
     handshakeExists: fs.existsSync(handshakePath),
+    workerExists: fs.existsSync(path.join(packageRoot, 'dist', 'analysis-worker.cjs')),
     bundleMtimeMs: bundleExists ? fs.statSync(bundlePath).mtimeMs : null,
     newestSourceMtimeMs,
     packageRoot,

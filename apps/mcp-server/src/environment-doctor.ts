@@ -1,6 +1,11 @@
 import * as path from 'path';
 import { pathToFileURL } from 'url';
 import {
+  MINIMUM_ANALYSIS_HEAP_MB,
+  describeAnalysisHeap,
+  resolveAnalysisHeapMb,
+} from './analysis-heap';
+import {
   MINIMUM_COMPATIBLE_CAS_VERSION,
   describeAnalysisVersion,
   listAnalyses,
@@ -107,6 +112,16 @@ export async function runEnvironmentDoctor(options: {
   }
 
   results.push(checks.inspectStorage(process.env));
+
+  const heap = resolveAnalysisHeapMb();
+  results.push(checks.checkResult(
+    'analysis-heap',
+    heap.envInvalid ? 'warn' : 'pass',
+    describeAnalysisHeap(heap),
+    heap.envInvalid
+      ? `Set KLAURO_ANALYSIS_HEAP_MB to a number of megabytes >= ${MINIMUM_ANALYSIS_HEAP_MB}, or unset it to use the default.`
+      : undefined,
+  ));
 
   const configured = checks.summarizeAiProviders(process.env);
   const ollamaConfigured = Boolean(process.env.OLLAMA_BASE_URL);

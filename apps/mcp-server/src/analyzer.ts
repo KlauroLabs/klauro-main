@@ -37,6 +37,16 @@ import {
 } from '../../../packages/analyzer-core/src/analyzer/libraries';
 import type { AnalyzerRegistration } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
 import * as fs from 'fs-extra';
+import * as nodeFs from 'fs';
+import * as path from 'path';
+import { fork, type ChildProcess } from 'child_process';
+import {
+  getAnalysisRunLogPath,
+  type AnalysisRunFinalRecord,
+  type AnalysisRunRecord,
+  type AnalysisRunStartRecord,
+} from '../../../packages/analyzer-core/src/analyzer/core/run-log';
+import { resolveAnalysisHeapMb, type AnalysisHeapResolution } from './analysis-heap';
 import {
   assertAnalysisVersionSupported,
   getAnalysisVersionInfo,
@@ -595,4 +605,362 @@ export async function analyzeProjectIncremental(projectPath: string): Promise<In
 
 export async function getIncrementalState(projectPath: string): Promise<IncrementalState | null> {
   return loadIncrementalState(projectPath);
+}
+
+export interface AnalysisChangeSummary {
+  files_changed: number;
+  nodes_added: number;
+  nodes_modified: number;
+  nodes_deleted: number;
+  risk_level: string;
+}
+
+export interface AnalysisRunSummary {
+  analysisType: 'full' | 'incremental';
+  name: string;
+  nodes: number;
+  edges: number;
+  entryPoints: number;
+  analyzersRun: number;
+  errors: number;
+  phases: unknown[];
+  casVersion?: string;
+  previousCasVersion?: string;
+  wasFullRebuild: boolean;
+  fullRebuildReason?: string;
+  changeSummary?: AnalysisChangeSummary;
+  changeReport?: ChangeReport;
+}
+
+function summarizeOutput(projectPath: string, output: CASOutput): Omit<AnalysisRunSummary, 'analysisType' | 'wasFullRebuild'> {
+  return {
+    name: output.system?.name || projectPath.split('/').pop() || projectPath,
+    nodes: output.nodes?.length || 0,
+    edges: output.edges?.length || 0,
+    entryPoints: output.entry_points?.length || 0,
+    analyzersRun: output.analyzer_contributions?.length || 0,
+    errors: output.analysis_errors?.length || 0,
+    phases: output.analysis_phases || [],
+    casVersion: output.cas_version,
+  };
+}
+
+export function summarizeFullAnalysis(projectPath: string, output: CASOutput): AnalysisRunSummary {
+  return {
+    ...summarizeOutput(projectPath, output),
+    analysisType: 'full',
+    wasFullRebuild: true,
+  };
+}
+
+function trimChangeReportForTransfer(report: ChangeReport, wasFullRebuild: boolean): ChangeReport {
+  if (!wasFullRebuild) return report;
+  const emptiedDetails = Object.fromEntries(
+    Object.entries(report.details || {}).map(([key, value]) => [key, Array.isArray(value) ? [] : value]),
+  ) as unknown as ChangeReport['details'];
+  return { ...report, details: emptiedDetails };
+}
+
+export function summarizeIncrementalAnalysis(projectPath: string, result: IncrementalAnalysisResult): AnalysisRunSummary {
+  return {
+    ...summarizeOutput(projectPath, result.output),
+    analysisType: result.wasFullRebuild ? 'full' : 'incremental',
+    wasFullRebuild: result.wasFullRebuild,
+    fullRebuildReason: result.fullRebuildReason,
+    previousCasVersion: result.previousCasVersion,
+    changeReport: trimChangeReportForTransfer(result.changeReport, result.wasFullRebuild),
+    changeSummary: result.wasFullRebuild ? undefined : {
+      files_changed: result.changeReport.summary.filesAdded +
+        result.changeReport.summary.filesModified +
+        result.changeReport.summary.filesDeleted,
+      nodes_added: result.changeReport.summary.nodesAdded,
+      nodes_modified: result.changeReport.summary.nodesModified,
+      nodes_deleted: result.changeReport.summary.nodesDeleted,
+      risk_level: result.changeReport.impact.riskLevel,
+    },
+  };
+}
+
+export interface RunAnalysisOptions {
+  forceFull?: boolean;
+}
+
+export async function runAnalysisInProcess(projectPath: string, options: RunAnalysisOptions = {}): Promise<AnalysisRunSummary> {
+  if (options.forceFull) {
+    const output = await analyzeProject(projectPath);
+    return summarizeFullAnalysis(projectPath, output);
+  }
+  const result = await analyzeProjectIncremental(projectPath);
+  return summarizeIncrementalAnalysis(projectPath, result);
+}
+
+export function analysisRunsInProcess(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.KLAURO_ANALYSIS_IN_PROCESS === '1' || env.KLAURO_ANALYSIS_IN_PROCESS === 'true';
+}
+
+interface WorkerAnalyzeRequest {
+  type: 'analyze';
+  id: number;
+  projectPath: string;
+  forceFull: boolean;
+  env: Record<string, string>;
+}
+
+interface WorkerResultMessage {
+  type: 'result';
+  id: number;
+  summary: AnalysisRunSummary;
+}
+
+interface WorkerErrorMessage {
+  type: 'error';
+  id: number;
+  message: string;
+  stackTop?: string;
+}
+
+type WorkerResponse = WorkerResultMessage | WorkerErrorMessage;
+
+interface PendingWorkerJob {
+  projectPath: string;
+  startedAtMs: number;
+  resolve: (summary: AnalysisRunSummary) => void;
+  reject: (error: Error) => void;
+}
+
+interface WorkerHandle {
+  child: ChildProcess;
+  heap: AnalysisHeapResolution;
+  stderrTail: string;
+  pending: Map<number, PendingWorkerJob>;
+}
+
+const WORKER_STDERR_TAIL_CHARS = 4096;
+
+let workerHandle: WorkerHandle | null = null;
+let nextWorkerJobId = 1;
+let workerJobChain: Promise<unknown> = Promise.resolve();
+
+function resolveWorkerEntryPath(): string {
+  for (const candidate of ['analysis-worker.cjs', 'analysis-worker.ts']) {
+    const candidatePath = path.join(__dirname, candidate);
+    if (nodeFs.existsSync(candidatePath)) return candidatePath;
+  }
+  throw new Error(`Analysis worker entry not found next to ${__dirname}; rebuild the bundle (npm run build).`);
+}
+
+function collectKlauroEnvSnapshot(): Record<string, string> {
+  const snapshot: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith('KLAURO_') && value !== undefined) snapshot[key] = value;
+  }
+  return snapshot;
+}
+
+function spawnAnalysisWorker(heap: AnalysisHeapResolution): WorkerHandle {
+  const child = fork(resolveWorkerEntryPath(), [], {
+    execArgv: [...process.execArgv, `--max-old-space-size=${heap.heapMb}`],
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    env: process.env,
+  });
+
+  const handle: WorkerHandle = { child, heap, stderrTail: '', pending: new Map() };
+
+  const captureOutput = (chunk: Buffer) => {
+    process.stderr.write(chunk);
+    handle.stderrTail = (handle.stderrTail + chunk.toString()).slice(-WORKER_STDERR_TAIL_CHARS);
+  };
+  child.stdout?.on('data', captureOutput);
+  child.stderr?.on('data', captureOutput);
+
+  child.on('message', (message: WorkerResponse) => {
+    const job = handle.pending.get(message.id);
+    if (!job) return;
+    handle.pending.delete(message.id);
+    if (message.type === 'result') {
+      job.resolve(message.summary);
+    } else {
+      const error = new Error(message.message);
+      if (message.stackTop) error.stack = `${message.message}\n${message.stackTop}`;
+      job.reject(error);
+    }
+  });
+
+  child.on('error', (error) => {
+    failPendingWorkerJobs(handle, null, null, `worker process error: ${error.message}`);
+  });
+
+  child.on('exit', (code, signal) => {
+    if (workerHandle === handle) workerHandle = null;
+    failPendingWorkerJobs(handle, code, signal);
+  });
+
+  return handle;
+}
+
+function workerLooksOutOfMemory(handle: WorkerHandle, code: number | null, signal: NodeJS.Signals | null): boolean {
+  if (/Reached heap limit|JavaScript heap out of memory|FATAL ERROR/i.test(handle.stderrTail)) return true;
+  return signal === 'SIGABRT' || code === 134;
+}
+
+function buildWorkerCrashMessage(
+  handle: WorkerHandle,
+  job: PendingWorkerJob,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+  detail?: string,
+): string {
+  const exitDescription = detail
+    ? detail
+    : signal
+      ? `killed by signal ${signal}`
+      : `exited with code ${code}`;
+  const oom = workerLooksOutOfMemory(handle, code, signal);
+  const heap = handle.heap;
+  const heapSource = heap.source === 'env' ? 'from KLAURO_ANALYSIS_HEAP_MB' : 'default';
+  const suggestedHeap = Math.min(heap.totalRamMb, heap.heapMb * 2);
+  return [
+    `Analysis worker for ${job.projectPath} ${exitDescription}${oom ? ' after exhausting its heap' : ''}.`,
+    `The worker heap was ${heap.heapMb} MB (${heapSource}).`,
+    `Raise it with KLAURO_ANALYSIS_HEAP_MB=${suggestedHeap} in the MCP server environment and re-run analyze_codebase,`,
+    `or use analysis_focus: "agent-fast" to reduce memory pressure.`,
+    `The MCP server itself is unaffected; a run-failed record was written to ${getAnalysisRunLogPath()}.`,
+  ].join(' ');
+}
+
+function failPendingWorkerJobs(
+  handle: WorkerHandle,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+  detail?: string,
+): void {
+  for (const [id, job] of handle.pending) {
+    handle.pending.delete(id);
+    const message = buildWorkerCrashMessage(handle, job, code, signal, detail);
+    try {
+      finalizeWorkerRunFailure(job.projectPath, job.startedAtMs, message);
+    } catch {
+      // Run-log finalization is best effort; the error below still reaches the caller.
+    }
+    job.reject(new Error(message));
+  }
+}
+
+function readRunLogRecords(): AnalysisRunRecord[] {
+  const logPath = getAnalysisRunLogPath();
+  if (!nodeFs.existsSync(logPath)) return [];
+  const records: AnalysisRunRecord[] = [];
+  for (const line of nodeFs.readFileSync(logPath, 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      records.push(JSON.parse(line) as AnalysisRunRecord);
+    } catch {
+      // Skip unparseable lines; rotation owns log hygiene.
+    }
+  }
+  return records;
+}
+
+export function finalizeWorkerRunFailure(projectPath: string, jobStartedAtMs: number, message: string): void {
+  const records = readRunLogRecords();
+  const finalized = new Set(
+    records
+      .filter(record => record.event === 'run-complete' || record.event === 'run-failed')
+      .map(record => record.run_id),
+  );
+  const orphans = records.filter((record): record is AnalysisRunStartRecord =>
+    record.event === 'run-start' &&
+    record.project_path === projectPath &&
+    !finalized.has(record.run_id) &&
+    Date.parse(record.started_at) >= jobStartedAtMs - 60_000,
+  );
+
+  const nowIso = new Date().toISOString();
+  const failures: AnalysisRunFinalRecord[] = orphans.length > 0
+    ? orphans.map(start => ({
+      run_id: start.run_id,
+      project_path: start.project_path,
+      project_name: start.project_name,
+      cas_version: start.cas_version,
+      event: 'run-failed',
+      started_at: start.started_at,
+      ended_at: nowIso,
+      duration_ms: Math.max(0, Date.now() - Date.parse(start.started_at)),
+      phases: [],
+      analyzers: [],
+      warnings: [],
+      warning_overflow: 0,
+      error: { message },
+    }))
+    : [{
+      run_id: `analysis_worker_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+      project_path: projectPath,
+      project_name: path.basename(projectPath),
+      event: 'run-failed',
+      started_at: new Date(jobStartedAtMs).toISOString(),
+      ended_at: nowIso,
+      duration_ms: Math.max(0, Date.now() - jobStartedAtMs),
+      phases: [],
+      analyzers: [],
+      warnings: [],
+      warning_overflow: 0,
+      error: { message },
+    }];
+
+  const logPath = getAnalysisRunLogPath();
+  nodeFs.mkdirSync(path.dirname(logPath), { recursive: true });
+  nodeFs.appendFileSync(logPath, failures.map(record => `${JSON.stringify(record)}\n`).join(''));
+}
+
+function ensureAnalysisWorker(): WorkerHandle {
+  const heap = resolveAnalysisHeapMb();
+  if (workerHandle && workerHandle.heap.heapMb !== heap.heapMb) {
+    shutdownAnalysisWorker();
+  }
+  if (!workerHandle) {
+    workerHandle = spawnAnalysisWorker(heap);
+  }
+  return workerHandle;
+}
+
+export function shutdownAnalysisWorker(): void {
+  if (!workerHandle) return;
+  const handle = workerHandle;
+  workerHandle = null;
+  handle.child.removeAllListeners('exit');
+  handle.child.kill();
+  failPendingWorkerJobs(handle, null, 'SIGTERM', 'was shut down while a job was running');
+}
+
+function dispatchWorkerJob(projectPath: string, options: RunAnalysisOptions): Promise<AnalysisRunSummary> {
+  const handle = ensureAnalysisWorker();
+  const id = nextWorkerJobId++;
+  return new Promise<AnalysisRunSummary>((resolve, reject) => {
+    handle.pending.set(id, { projectPath, startedAtMs: Date.now(), resolve, reject });
+    const request: WorkerAnalyzeRequest = {
+      type: 'analyze',
+      id,
+      projectPath,
+      forceFull: Boolean(options.forceFull),
+      env: collectKlauroEnvSnapshot(),
+    };
+    handle.child.send(request, (error) => {
+      if (error) {
+        const job = handle.pending.get(id);
+        if (job) {
+          handle.pending.delete(id);
+          reject(new Error(`Failed to dispatch analysis to worker: ${error.message}`));
+        }
+      }
+    });
+  });
+}
+
+export async function runAnalysis(projectPath: string, options: RunAnalysisOptions = {}): Promise<AnalysisRunSummary> {
+  if (analysisRunsInProcess()) {
+    return runAnalysisInProcess(projectPath, options);
+  }
+  const run = workerJobChain.then(() => dispatchWorkerJob(projectPath, options));
+  workerJobChain = run.catch(() => undefined);
+  return run;
 }
