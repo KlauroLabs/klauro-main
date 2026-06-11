@@ -4,6 +4,7 @@ import {
   CASDocumentation, CASComment, CASTodo, CASImplementationStatus, FileAnalysisResult
 } from '../../types/cas.types';
 import { AnalyzerError } from '../core/errors';
+import { detectSyntaxDegradation } from '../core/syntax-degradation';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
 
@@ -202,6 +203,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
   }
 
   async analyze(context: AnalysisContext): Promise<CASContribution> {
+    this.resetAnalysisWarnings();
     const nodes: CASNode[] = [];
     const edges: CASEdge[] = [];
     const entryPoints: CASEntryPoint[] = [];
@@ -232,7 +234,9 @@ export class PythonAnalyzer extends BaseAnalyzer {
       this.buildInheritanceRelationships(nodes, edges);
       this.buildCallGraph(nodes, edges, entryPoints, exitPoints);
 
+      const warnings = this.collectAnalysisWarnings();
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
+        ...(warnings.length > 0 ? { warnings } : {}),
         framework_specific: {
           language: 'python',
           djangoFramework: this.djangoFrameworkDetected,
@@ -406,6 +410,13 @@ export class PythonAnalyzer extends BaseAnalyzer {
       const classes = this.extractClasses(content, relativePath);
       const functions = this.extractFunctions(content, relativePath);
       const variables = this.extractGlobalVariables(content);
+      const degradation = detectSyntaxDegradation({
+        relativePath,
+        content,
+        language: 'python',
+        extractedNodeCount: classes.length + functions.length,
+      });
+      if (degradation) this.addAnalysisWarning(degradation);
       const fileComments = this.extractCommentsFromFile(content, fullPath);
       const fileTodos = this.extractTodosFromComments(fileComments, fullPath);
 

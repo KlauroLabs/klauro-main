@@ -4,6 +4,7 @@ import {
   CASDocumentation, CASComment, CASTodo, CASImplementationStatus, FileAnalysisResult
 } from '../../types/cas.types';
 import { AnalyzerError } from '../core/errors';
+import { detectSyntaxDegradation } from '../core/syntax-degradation';
 import { isPhpPureBuiltinFunction } from '../core/language-builtins';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
@@ -265,6 +266,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
   }
 
   async analyze(context: AnalysisContext): Promise<CASContribution> {
+    this.resetAnalysisWarnings();
     const nodes: CASNode[] = [];
     const edges: CASEdge[] = [];
     const entryPoints: CASEntryPoint[] = [];
@@ -296,7 +298,9 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
       await this.analyzeCallGraph(context.projectPath, nodes, edges, exitPoints);
 
+      const warnings = this.collectAnalysisWarnings();
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
+        ...(warnings.length > 0 ? { warnings } : {}),
         framework_specific: {
           language: 'php',
           laravelFramework: this.laravelFrameworkDetected,
@@ -490,6 +494,13 @@ export class PHPAnalyzer extends BaseAnalyzer {
       const functions = this.extractFunctions(content, relativePath);
       const globalVars = this.extractGlobalVariables(content);
       const constants = this.extractGlobalConstants(content);
+      const degradation = detectSyntaxDegradation({
+        relativePath,
+        content,
+        language: 'php',
+        extractedNodeCount: classes.length + interfaces.length + traits.length + enums.length + functions.length,
+      });
+      if (degradation) this.addAnalysisWarning(degradation);
 
       if (namespace) {
         if (!namespaces.has(namespace)) {

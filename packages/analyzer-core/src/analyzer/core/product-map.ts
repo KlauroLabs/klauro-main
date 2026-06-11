@@ -237,8 +237,14 @@ function buildCoverageCaveats(
   const caveats: string[] = [];
 
   for (const language of unanalyzedLanguages) {
-    const share = Math.round(language.share_of_source * 100);
-    caveats.push(`${language.name} not analyzed: ${language.files} files (${share}% of source)`);
+    caveats.push(`${language.name} not analyzed: ${language.files} files (${language.share_of_source}% of source)`);
+  }
+
+  for (const repository of cas.system?.technologies?.nested_repositories || []) {
+    const language = repository.primary_language ? `, primary language ${repository.primary_language}` : '';
+    caveats.push(
+      `Nested git repository ${repository.path}/ excluded from this analysis (${repository.source_files} source files${language}); analyze it separately and correlate through cross-repository links`
+    );
   }
 
   const journeySummary = cas.user_journey_summary;
@@ -273,6 +279,9 @@ export function buildProductMap(cas: CASOutput): CASProductMap {
   const unanalyzedLanguages = [...(cas.system?.technologies?.unanalyzed_languages || [])].sort(
     (a, b) => b.share_of_source - a.share_of_source || a.name.localeCompare(b.name)
   );
+  const nestedRepositories = [...(cas.system?.technologies?.nested_repositories || [])].sort(
+    (a, b) => a.path.localeCompare(b.path)
+  );
 
   return {
     identity: {
@@ -282,6 +291,7 @@ export function buildProductMap(cas: CASOutput): CASProductMap {
       description: purpose?.inferred_description || cas.system?.description || '',
       description_source: purpose?.description_source || (cas.system?.description ? 'manual' : 'deterministic'),
       unanalyzed_languages: unanalyzedLanguages,
+      ...(nestedRepositories.length > 0 ? { nested_repositories: nestedRepositories } : {}),
     },
     capabilities: buildCapabilities(cas),
     journeys: buildJourneys(cas),

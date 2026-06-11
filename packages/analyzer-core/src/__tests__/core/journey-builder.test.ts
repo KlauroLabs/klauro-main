@@ -560,3 +560,103 @@ describe('buildUserJourneys', () => {
     expect(names.some(name => name.toLowerCase().includes('list edits'))).toBe(false);
   });
 });
+
+describe('buildUserJourneys state machine walking', () => {
+  const file = '/repo/core/app/models/spree/order.rb';
+  const stateNode = (id: string, name: string, initial = false): CASNode => ({
+    id,
+    name,
+    type: 'state',
+    source: { file, line: 10 },
+    metadata: { framework: 'ruby', attributes: { state_machine_attribute: 'state', initial } },
+  } as CASNode);
+
+  const stateMachineNodes: CASNode[] = [
+    { id: 'n_route', name: 'POST /orders', type: 'rails_route', source: { file: '/repo/config/routes.rb', line: 5 } } as CASNode,
+    { id: 'n_controller', name: 'OrdersController', type: 'rails_controller', source: { file: '/repo/app/controllers/orders_controller.rb', line: 1 } } as CASNode,
+    { id: 'n_model', name: 'Order', type: 'rails_model', source: { file, line: 1 } } as CASNode,
+    { id: 'n_class', name: 'Order', type: 'class', source: { file, line: 9 } } as CASNode,
+    stateNode('n_state_cart', 'cart', true),
+    stateNode('n_state_address', 'address'),
+    stateNode('n_state_complete', 'complete'),
+  ];
+
+  const stateMachineEdges: CASEdge[] = [
+    edge('e_route', 'n_route', 'n_controller', 'routes_to'),
+    edge('e_model', 'n_controller', 'n_model', 'uses'),
+    edge('e_own_cart', 'n_class', 'n_state_cart', 'contains'),
+    edge('e_own_address', 'n_class', 'n_state_address', 'contains'),
+    edge('e_own_complete', 'n_class', 'n_state_complete', 'contains'),
+    edge('e_t1', 'n_state_cart', 'n_state_address', 'transitions_to'),
+    edge('e_t2', 'n_state_address', 'n_state_complete', 'transitions_to'),
+  ];
+
+  const orderEntity: CASDataEntity = {
+    id: 'entity_order',
+    name: 'Order',
+    lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+  } as CASDataEntity;
+
+  const entryPoint: CASEntryPoint = {
+    id: 'entry_create_order',
+    source_node: 'n_route',
+    type: 'http',
+    name: 'POST /orders',
+    trigger: { method: 'POST', path: '/orders' },
+    handler: { node_id: 'n_controller', method_name: 'create' },
+  } as CASEntryPoint;
+
+  const input = {
+    nodes: stateMachineNodes,
+    edges: stateMachineEdges,
+    entryPoints: [entryPoint],
+    exitPoints: [],
+    callChains: [
+      chain('chain_order', 'n_route', 'entry_create_order', [['n_route', 0], ['n_controller', 1]]),
+    ],
+    dataEntities: [orderEntity],
+  };
+
+  it('walks from a model step into its state machine through transitions_to', () => {
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys).toHaveLength(1);
+    const stepNames = journeys[0].steps.map(step => step.name);
+    expect(stepNames).toContain('Order');
+    const cartIndex = stepNames.indexOf('cart');
+    const addressIndex = stepNames.indexOf('address');
+    const completeIndex = stepNames.indexOf('complete');
+    expect(cartIndex).toBeGreaterThan(-1);
+    expect(addressIndex).toBeGreaterThan(cartIndex);
+    expect(completeIndex).toBeGreaterThan(addressIndex);
+  });
+
+  it('renders state steps with the state name and keeps terminal grounding on the entity', () => {
+    const { journeys } = buildUserJourneys(input);
+    const journey = journeys[0];
+    const stateSteps = journey.steps.filter(step => ['cart', 'address', 'complete'].includes(step.name));
+    expect(stateSteps).toHaveLength(3);
+    for (const step of stateSteps) {
+      expect(step.layer).toBe('business');
+    }
+    const terminalNames = journey.terminal_entities.map(entity => entity.name);
+    expect(terminalNames).toContain('Order');
+    expect(terminalNames).not.toContain('cart');
+    expect(terminalNames).not.toContain('address');
+    expect(terminalNames).not.toContain('complete');
+  });
+
+  it('does not pull in a state machine from an unrelated file that shares the model name', () => {
+    const otherFile = '/repo/core/app/models/spree/other.rb';
+    const unrelated: CASNode[] = [
+      { id: 'n_other_class', name: 'Other', type: 'class', source: { file: otherFile, line: 1 } } as CASNode,
+      { id: 'n_other_state', name: 'pending', type: 'state', source: { file: otherFile, line: 5 }, metadata: { attributes: { initial: true } } } as CASNode,
+    ];
+    const { journeys } = buildUserJourneys({
+      ...input,
+      nodes: [...stateMachineNodes, ...unrelated],
+      edges: [...stateMachineEdges, edge('e_other', 'n_other_class', 'n_other_state', 'contains')],
+    });
+    const stepNames = journeys[0].steps.map(step => step.name);
+    expect(stepNames).not.toContain('pending');
+  });
+});

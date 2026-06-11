@@ -90,7 +90,6 @@ interface VariableInfo {
 
 const PARALLEL_BATCH_SIZE = 100;
 const MAX_SOURCE_FILE_BYTES = 5 * 1024 * 1024;
-const MAX_REPORTED_FILE_WARNINGS = 25;
 
 export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private astCache = new Map<string, ParsedAST>();
@@ -108,23 +107,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private callEdgeIds = new Set<string>();
   private exitPointIds = new Set<string>();
   private callTargetResolutionCache = new Map<string, string | undefined>();
-  private analysisWarnings: string[] = [];
-  private suppressedWarningCount = 0;
-
-  private addAnalysisWarning(warning: string): void {
-    if (this.analysisWarnings.length >= MAX_REPORTED_FILE_WARNINGS) {
-      this.suppressedWarningCount += 1;
-      return;
-    }
-    this.analysisWarnings.push(warning);
-  }
-
-  private collectAnalysisWarnings(): string[] {
-    if (this.suppressedWarningCount > 0) {
-      return [...this.analysisWarnings, `${this.suppressedWarningCount} additional file warnings suppressed`];
-    }
-    return [...this.analysisWarnings];
-  }
 
   constructor() {
     super(

@@ -126,7 +126,16 @@ const fullCas = {
     type: 'application',
     root_path: '/tmp/acme',
     technologies: {
-      unanalyzed_languages: [{ name: 'Ruby', files: 12, share_of_source: 0.3 }],
+      unanalyzed_languages: [{ name: 'Ruby', files: 12, share_of_source: 30 }],
+      nested_repositories: [
+        {
+          path: 'rust-engine',
+          has_git_directory: true,
+          primary_language: 'Rust',
+          source_files: 42,
+          note: 'Nested git repository excluded from this analysis; analyze it as its own codebase and link the two through cross-repository correlation.',
+        },
+      ],
     },
   },
   nodes: [],
@@ -204,7 +213,10 @@ describe('buildProductMap', () => {
     expect(map.identity.domain_source).toBe('deterministic');
     expect(map.identity.description).toBe('A billing platform for charging customers.');
     expect(map.identity.description_source).toBe('ai');
-    expect(map.identity.unanalyzed_languages).toEqual([{ name: 'Ruby', files: 12, share_of_source: 0.3 }]);
+    expect(map.identity.unanalyzed_languages).toEqual([{ name: 'Ruby', files: 12, share_of_source: 30 }]);
+    expect(map.identity.nested_repositories).toEqual([
+      expect.objectContaining({ path: 'rust-engine', primary_language: 'Rust', source_files: 42 }),
+    ]);
   });
 
   it('orders capabilities by criticality and carries description provenance', () => {
@@ -277,6 +289,12 @@ describe('buildProductMap', () => {
     expect(map.coverage_caveats).toContain('Ruby not analyzed: 12 files (30% of source)');
     expect(map.coverage_caveats).toContain('5 journeys discovered, 3 included in detail');
   });
+
+  it('surfaces excluded nested git repositories as a coverage caveat', () => {
+    expect(map.coverage_caveats).toContain(
+      'Nested git repository rust-engine/ excluded from this analysis (42 source files, primary language Rust); analyze it separately and correlate through cross-repository links'
+    );
+  });
 });
 
 describe('buildProductMap with a minimal CAS', () => {
@@ -299,6 +317,7 @@ describe('buildProductMap with a minimal CAS', () => {
       description_source: 'deterministic',
       unanalyzed_languages: [],
     });
+    expect(map.identity.nested_repositories).toBeUndefined();
     expect(map.capabilities).toEqual([]);
     expect(map.journeys).toMatchObject({ total: 0, user_facing: 0, system: 0, scheduled: 0, top: [] });
     expect(map.data).toEqual({ entities: 0, sensitive: [], exposure_highlights: [] });

@@ -135,6 +135,14 @@ export interface CASPerspective {
   metadata?: Record<string, any>;
 }
 
+export interface CASNestedRepository {
+  path: string;
+  has_git_directory: boolean;
+  primary_language?: string;
+  source_files: number;
+  note: string;
+}
+
 export interface CASSystem {
   id: string;
   name: string;
@@ -163,6 +171,7 @@ export interface CASSystem {
       files: number;
       share_of_source: number;
     }>;
+    nested_repositories?: CASNestedRepository[];
     frameworks?: Array<{
       name: string;
       version?: string;
@@ -615,6 +624,7 @@ export interface CASProductMap {
     description: string;
     description_source: 'deterministic' | 'ai' | 'manual' | 'reused';
     unanalyzed_languages: Array<{ name: string; files: number; share_of_source: number }>;
+    nested_repositories?: CASNestedRepository[];
   };
   capabilities: CASProductMapCapability[];
   journeys: {

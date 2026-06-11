@@ -1,6 +1,7 @@
 import { BaseAnalyzer, AnalysisContext, FileAnalysisContext } from '../core/base-analyzer';
 import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint, CASDocumentation, CASComment, CASTodo, CASImplementationStatus, FileAnalysisResult } from '../../types/cas.types';
 import { AnalyzerError } from '../core/errors';
+import { detectSyntaxDegradation } from '../core/syntax-degradation';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
 
@@ -152,6 +153,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
   }
 
   async analyze(context: AnalysisContext): Promise<CASContribution> {
+    this.resetAnalysisWarnings();
     const nodes: CASNode[] = [];
     const edges: CASEdge[] = [];
     const entryPoints: CASEntryPoint[] = [];
@@ -181,7 +183,9 @@ export class JavaAnalyzer extends BaseAnalyzer {
 
       await this.analyzeCallGraph(context.projectPath, nodes, edges, exitPoints);
 
+      const warnings = this.collectAnalysisWarnings();
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
+        ...(warnings.length > 0 ? { warnings } : {}),
         framework_specific: {
           language: 'java',
           springFramework: this.springFrameworkDetected,
@@ -311,6 +315,13 @@ export class JavaAnalyzer extends BaseAnalyzer {
       const imports = this.extractImports(content);
       const classes = this.extractClasses(content, relativePath);
       const interfaces = this.extractInterfaces(content, relativePath);
+      const degradation = detectSyntaxDegradation({
+        relativePath,
+        content,
+        language: 'java',
+        extractedNodeCount: classes.length + interfaces.length,
+      });
+      if (degradation) this.addAnalysisWarning(degradation);
       const comments = this.extractComments(content, relativePath);
       const todos = this.extractTodos(content, relativePath);
 

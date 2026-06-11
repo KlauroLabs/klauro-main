@@ -2743,3 +2743,102 @@ describe('language builtin exit-point exclusion from external services', () => {
     expect(services.map((service: any) => service.name)).toEqual(['Stripe']);
   });
 });
+
+describe('content-management domain anchor (inferSystemPurpose)', () => {
+  const entity = (name: string): CASDataEntity => ({
+    id: `entity_${name.toLowerCase()}`,
+    name,
+    lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+  } as CASDataEntity);
+
+  const httpEntry = (id: string, pathValue: string) => ({
+    id,
+    type: 'http',
+    name: `GET ${pathValue}`,
+    source_node: undefined,
+    trigger: { method: 'GET', path: pathValue },
+  });
+
+  const capability = (name: string) => ({
+    id: `cap_${name.toLowerCase().replace(/\s+/g, '_')}`,
+    name,
+    category: 'core',
+    operations: [],
+  });
+
+  it('classifies a page-tree CMS with revision and publishing vocabulary as content-management', () => {
+    const purpose = orch.inferSystemPurpose(
+      [
+        httpEntry('e1', '/pages/1/unpublish/'),
+        httpEntry('e2', '/pages/1/revisions/'),
+        httpEntry('e3', '/pages/1/edit/preview/'),
+        httpEntry('e4', '/pages/1/view_draft/'),
+        httpEntry('e5', '/pages/workflow/preview/1/2/'),
+      ],
+      [
+        entity('Page'), entity('Revision'), entity('Document'), entity('Rendition'),
+        entity('Collection'), entity('Redirect'), entity('Locale'), entity('Site'),
+        entity('Workflow'), entity('Task'), entity('TaskState'), entity('WorkflowState'),
+      ],
+      [
+        capability('Revision Management'), capability('Document Management'),
+        capability('Task Management'), capability('Image Management'),
+      ],
+      []
+    );
+    expect(purpose.primary_type).toBe('content-management');
+    expect(purpose.confidence).toBeGreaterThanOrEqual(0.8);
+    expect(purpose.evidence.join(' ')).toContain('revision');
+  });
+
+  it('does not classify a workflow engine without content entities as content-management', () => {
+    const purpose = orch.inferSystemPurpose(
+      [
+        httpEntry('e1', '/workflows/1/approve/'),
+        httpEntry('e2', '/tasks/1/submit/'),
+      ],
+      [entity('Workflow'), entity('Task'), entity('Approval'), entity('Assignee')],
+      [capability('Task Management'), capability('Workflow Management')],
+      []
+    );
+    expect(purpose.primary_type).not.toBe('content-management');
+  });
+
+  it('does not classify a commerce system without revision vocabulary as content-management', () => {
+    const purpose = orch.inferSystemPurpose(
+      [
+        httpEntry('e1', '/cart'),
+        httpEntry('e2', '/checkout'),
+        httpEntry('e3', '/orders/1'),
+      ],
+      [entity('Order'), entity('Cart'), entity('Payment'), entity('Product'), entity('Customer'), entity('Site'), entity('Page')],
+      [capability('Checkout Management'), capability('Cart Management')],
+      []
+    );
+    expect(purpose.primary_type).not.toBe('content-management');
+  });
+
+  it('maps a generic primary domain to content-management for CMS purposes', () => {
+    expect(orch.refinePrimaryDomainForPurpose('views', { primary_type: 'content-management' })).toBe('content-management');
+    expect(orch.refinePrimaryDomainForPurpose('publishing', { primary_type: 'content-management' })).toBe('content-management');
+    expect(orch.refinePrimaryDomainForPurpose('clinical-trials', { primary_type: 'content-management' })).toBe('clinical-trials');
+    expect(orch.refinePrimaryDomainForPurpose('views', { primary_type: 'web-application' })).toBe('views');
+  });
+});
+
+describe('structural domain text rules: content management precedence', () => {
+  it('classifies page+revision+publishing vocabulary as content-management even with ordering noise', () => {
+    const text = 'page management revision management publish unpublish draft moderation set page order ordering position';
+    expect(orch.structuralDomainFromText(text)).toBe('content-management');
+  });
+
+  it('keeps order vocabulary without revision/publishing as order-management', () => {
+    const text = 'order management fulfillment shipping customer orders';
+    expect(orch.structuralDomainFromText(text)).toBe('order-management');
+  });
+
+  it('keeps order+invoice commerce vocabulary out of content-management', () => {
+    const text = 'order management invoice billing payment pages';
+    expect(orch.structuralDomainFromText(text)).toBe('order-invoice-management');
+  });
+});

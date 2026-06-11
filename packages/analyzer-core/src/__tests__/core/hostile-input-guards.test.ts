@@ -164,4 +164,88 @@ describe('hostile input guards', () => {
       expect(runtime).toBeDefined();
     });
   });
+
+  describe('regex analyzer syntax self-reporting', () => {
+    it('PythonAnalyzer reports broken syntax in analyzer_metadata.warnings', async () => {
+      const { PythonAnalyzer } = require('../../analyzer/languages/python-analyzer');
+      await fs.writeFile(path.join(tempDir, 'ok.py'), 'def fine():\n    return 1\n');
+      await fs.writeFile(path.join(tempDir, 'broken.py'), 'def broken(((((\n    print((((\n');
+
+      const analyzer = new PythonAnalyzer();
+      const contribution = await analyzer.analyze({ projectPath: tempDir });
+      const warnings: string[] = contribution.analyzer_metadata.warnings || [];
+      expect(warnings.some((warning: string) => warning.includes('broken.py') && warning.includes('broken syntax'))).toBe(true);
+      expect(warnings.some((warning: string) => warning.includes('ok.py'))).toBe(false);
+    });
+
+    it('RubyAnalyzer reports broken syntax in analyzer_metadata.warnings', async () => {
+      const { RubyAnalyzer } = require('../../analyzer/languages/ruby-analyzer');
+      await fs.writeFile(path.join(tempDir, 'ok.rb'), 'class Fine\n  def run; end\nend\n');
+      await fs.writeFile(path.join(tempDir, 'broken.rb'), 'class Broken\n  def a((((\n  def b((((\nend\n');
+
+      const analyzer = new RubyAnalyzer();
+      const contribution = await analyzer.analyze({ projectPath: tempDir });
+      const warnings: string[] = contribution.analyzer_metadata.warnings || [];
+      expect(warnings.some((warning: string) => warning.includes('broken.rb') && warning.includes('broken syntax'))).toBe(true);
+      expect(warnings.some((warning: string) => warning.includes('ok.rb'))).toBe(false);
+    });
+
+    it('JavaAnalyzer reports broken syntax in analyzer_metadata.warnings', async () => {
+      const { JavaAnalyzer } = require('../../analyzer/languages/java-analyzer');
+      await fs.writeFile(path.join(tempDir, 'Broken.java'), 'public class Broken {\n  void a() {\n  void b() {\n  void c() {\n');
+
+      const analyzer = new JavaAnalyzer();
+      const contribution = await analyzer.analyze({ projectPath: tempDir });
+      const warnings: string[] = contribution.analyzer_metadata.warnings || [];
+      expect(warnings.some((warning: string) => warning.includes('Broken.java') && warning.includes('broken syntax'))).toBe(true);
+    });
+
+    it('PhpAnalyzer reports broken syntax in analyzer_metadata.warnings', async () => {
+      const { PHPAnalyzer } = require('../../analyzer/languages/php-analyzer');
+      await fs.writeFile(path.join(tempDir, 'broken.php'), '<?php\nclass Broken {\n  function a() {\n  function b() {\n  function c() {\n');
+
+      const analyzer = new PHPAnalyzer();
+      const contribution = await analyzer.analyze({ projectPath: tempDir });
+      const warnings: string[] = contribution.analyzer_metadata.warnings || [];
+      expect(warnings.some((warning: string) => warning.includes('broken.php') && warning.includes('broken syntax'))).toBe(true);
+    });
+
+    it('DartAnalyzer reports broken syntax in analyzer_metadata.warnings', async () => {
+      const { DartAnalyzer } = require('../../analyzer/languages/dart-analyzer');
+      await fs.writeFile(path.join(tempDir, 'pubspec.yaml'), 'name: hostile_fixture\n');
+      await fs.mkdirp(path.join(tempDir, 'lib'));
+      await fs.writeFile(path.join(tempDir, 'lib', 'broken.dart'), 'class Broken {\n  void a() {\n  void b() {\n  void c() {\n');
+
+      const analyzer = new DartAnalyzer();
+      const contribution = await analyzer.analyze({ projectPath: tempDir });
+      const warnings: string[] = contribution.analyzer_metadata.warnings || [];
+      expect(warnings.some((warning: string) => warning.includes('broken.dart') && warning.includes('broken syntax'))).toBe(true);
+    });
+  });
+
+  describe('nested repository visibility', () => {
+    it('describeNestedRepositories reports excluded nested git repos with a primary language', async () => {
+      await fs.mkdirp(path.join(tempDir, 'rust-engine', '.git'));
+      await fs.writeFile(path.join(tempDir, 'rust-engine', 'main.rs'), 'fn main() {}\n');
+      await fs.writeFile(path.join(tempDir, 'rust-engine', 'lib.rs'), 'pub fn lib() {}\n');
+      await fs.writeFile(path.join(tempDir, 'index.ts'), 'export const host = true;\n');
+
+      const orchestrator = new AnalyzerOrchestrator() as any;
+      const nested = await orchestrator.describeNestedRepositories(tempDir);
+      expect(nested).toHaveLength(1);
+      expect(nested[0].path).toBe('rust-engine');
+      expect(nested[0].has_git_directory).toBe(true);
+      expect(nested[0].primary_language).toBe('Rust');
+      expect(nested[0].source_files).toBe(2);
+      expect(nested[0].note).toContain('excluded from this analysis');
+      expect(nested[0].note).toContain('cross-repository');
+    });
+
+    it('describeNestedRepositories returns an empty list when no nested repos exist', async () => {
+      await fs.writeFile(path.join(tempDir, 'index.ts'), 'export const host = true;\n');
+      const orchestrator = new AnalyzerOrchestrator() as any;
+      const nested = await orchestrator.describeNestedRepositories(tempDir);
+      expect(nested).toHaveLength(0);
+    });
+  });
 });

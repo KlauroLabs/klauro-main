@@ -6,6 +6,7 @@ import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { glob } from 'glob';
+import { detectSyntaxDegradation } from '../core/syntax-degradation';
 
 interface RubyMethodCall {
   name: string;
@@ -268,6 +269,7 @@ export class RubyAnalyzer extends BaseAnalyzer {
   }
 
   async analyze(context: AnalysisContext): Promise<CASContribution> {
+    this.resetAnalysisWarnings();
     const nodes: CASNode[] = [];
     const edges: CASEdge[] = [];
     const entryPoints: CASEntryPoint[] = [];
@@ -290,6 +292,13 @@ export class RubyAnalyzer extends BaseAnalyzer {
           continue;
         }
         const analysis = this.parseRubySource(content, file);
+        const degradation = detectSyntaxDegradation({
+          relativePath: file,
+          content,
+          language: 'ruby',
+          extractedNodeCount: analysis.classes.length + analysis.modules.length + analysis.topLevelMethods.length,
+        });
+        if (degradation) this.addAnalysisWarning(degradation);
         fileAnalyses.push(analysis);
         this.emitFileNodes(analysis, file, fullPath, nodes, edges);
       }
@@ -299,7 +308,9 @@ export class RubyAnalyzer extends BaseAnalyzer {
 
       const gems = await this.extractGems(context.projectPath);
 
+      const warnings = this.collectAnalysisWarnings();
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
+        ...(warnings.length > 0 ? { warnings } : {}),
         framework_specific: {
           language: 'ruby',
           files_analyzed: rubyFiles.length,

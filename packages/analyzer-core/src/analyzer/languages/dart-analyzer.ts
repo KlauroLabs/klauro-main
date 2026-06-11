@@ -11,6 +11,7 @@ import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { glob } from 'glob';
+import { detectSyntaxDegradation } from '../core/syntax-degradation';
 
 interface DartClass {
   name: string;
@@ -98,6 +99,7 @@ export class DartAnalyzer extends BaseAnalyzer {
   }
 
   async analyze(context: AnalysisContext): Promise<CASContribution> {
+    this.resetAnalysisWarnings();
     const nodes: CASNode[] = [];
     const edges: CASEdge[] = [];
     const entryPoints: CASEntryPoint[] = [];
@@ -128,7 +130,9 @@ export class DartAnalyzer extends BaseAnalyzer {
         });
       }
 
+      const warnings = this.collectAnalysisWarnings();
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
+        ...(warnings.length > 0 ? { warnings } : {}),
         framework_specific: {
           language: 'dart',
           framework: isFlutterProject ? 'flutter' : 'dart',
@@ -254,6 +258,13 @@ export class DartAnalyzer extends BaseAnalyzer {
     }
 
     const functions = this.extractFunctions(content, relativeFile, classes);
+    const degradation = detectSyntaxDegradation({
+      relativePath: relativeFile,
+      content,
+      language: 'dart',
+      extractedNodeCount: classes.length + functions.length,
+    });
+    if (degradation) this.addAnalysisWarning(degradation);
     for (const fn of functions) {
       const ownerId = fn.ownerClass ? classIds.get(fn.ownerClass) : fileId;
       const functionId = `function_${this.sanitizeId(relativeFile)}_${this.sanitizeId(fn.ownerClass || 'top')}_${this.sanitizeId(fn.name)}_${fn.line}`;

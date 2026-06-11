@@ -93,6 +93,7 @@ interface JourneyGraph {
   aliasIndex: Map<string, CASNode[]>;
   aliasCache: Map<string, string[]>;
   methodNamePopularity: Map<string, number>;
+  initialStatesByOwnerKey: Map<string, string[]>;
 }
 
 export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyOptions = {}): UserJourneyResult {
@@ -304,6 +305,21 @@ function buildJourneyGraph(input: UserJourneyInput): JourneyGraph {
     for (const nodeId of entity.lifecycle?.read_by || []) recordEntityAccess(nodeId, entity, 'read');
   }
 
+  const initialStatesByOwnerKey = new Map<string, string[]>();
+  for (const node of input.nodes) {
+    if (node.type !== 'state') continue;
+    const initial = (node.metadata as any)?.attributes?.initial;
+    if (!initial) continue;
+    const ownerId = ownerByChild.get(node.id);
+    const owner = ownerId ? nodesById.get(ownerId) : undefined;
+    if (!owner) continue;
+    const key = stateMachineOwnerKey(owner);
+    if (!key) continue;
+    const list = initialStatesByOwnerKey.get(key) || [];
+    list.push(node.id);
+    initialStatesByOwnerKey.set(key, list);
+  }
+
   const aliasIndex = new Map<string, CASNode[]>();
   const methodNamePopularity = new Map<string, number>();
   for (const node of input.nodes) {
@@ -334,6 +350,7 @@ function buildJourneyGraph(input: UserJourneyInput): JourneyGraph {
     aliasIndex,
     aliasCache: new Map(),
     methodNamePopularity,
+    initialStatesByOwnerKey,
   };
 }
 
@@ -452,8 +469,38 @@ function collectPathNodeIds(
       queue.push({ nodeId: edge.target, depth: depth + 1 });
       if (pathNodeIds.size >= WALK_MAX_NODES) break;
     }
+    for (const stateId of stateMachineEntryStates(nodeId, graph)) {
+      if (visited.has(stateId) || pathNodeIds.size >= WALK_MAX_NODES) continue;
+      visited.add(stateId);
+      addNode(stateId, depth + 1);
+      queue.push({ nodeId: stateId, depth: depth + 1 });
+    }
   }
   return pathNodeIds;
+}
+
+/**
+ * A state machine's states hang off the declaring class via containment, so a
+ * journey that reaches the owning model would never step into the machine:
+ * the only traversal edges into a state chain start at the initial state.
+ * When a walked node shares a source file and name with a state-machine
+ * owner (a framework model node and the language-level class are separate
+ * nodes for the same declaration), the machine's initial states join the
+ * walk so transitions_to edges can carry the journey through the flow.
+ */
+function stateMachineEntryStates(nodeId: string, graph: JourneyGraph): string[] {
+  const node = graph.nodesById.get(nodeId);
+  if (!node || !node.name) return [];
+  if (!ENTITY_NODE_TYPES.test(node.type) && node.type !== 'class') return [];
+  const key = stateMachineOwnerKey(node);
+  if (!key) return [];
+  return graph.initialStatesByOwnerKey.get(key) || [];
+}
+
+function stateMachineOwnerKey(node: CASNode): string | undefined {
+  const file = node.source?.file;
+  if (!file || !node.name) return undefined;
+  return `${file.replace(/\\/g, '/').toLowerCase()}::${node.name.toLowerCase()}`;
 }
 
 interface TerminalEffects {

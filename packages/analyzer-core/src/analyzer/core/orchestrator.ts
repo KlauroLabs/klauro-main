@@ -1,6 +1,7 @@
 import { BaseAnalyzer, CASAnalysisResult, CASNode, CASEdge, AnalysisContext, FileAnalysisContext } from './base-analyzer';
 import {
   CASOutput,
+  CASNestedRepository,
   CASAnalysisPhase,
   CASContribution,
   CASProgressiveLevels,
@@ -89,6 +90,7 @@ import { FlowScorer } from './flow-scorer';
 import { FlowGraphBuilder } from './flow-graph-builder';
 import { GitAnalyzer } from './git-analyzer';
 import { detectCodebaseIdioms } from './idiom-detector';
+import { AnalysisRunLog } from './run-log';
 import { EmbeddingPhase, type EmbeddingPhaseConfig } from '../embedding/embedding-phase';
 import { aiService } from '../../ai/ai-service';
 import { aiConfig, getAIConfig } from '../../config/ai.config';
@@ -617,11 +619,22 @@ export class AnalyzerOrchestrator {
 
   async orchestrateAnalysis(projectPath: string): Promise<CASOutput> {
     this.activeAnalysisProjectPath = projectPath;
-    const startTime = Date.now();
     const analysisId = `analysis_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const runLog = new AnalysisRunLog(projectPath, analysisId, CAS_VERSION);
+    try {
+      return await this.executeAnalysis(projectPath, analysisId, runLog);
+    } catch (error) {
+      runLog.fail(error);
+      throw error;
+    }
+  }
+
+  private async executeAnalysis(projectPath: string, analysisId: string, runLog: AnalysisRunLog): Promise<CASOutput> {
+    const startTime = Date.now();
     const timings: Record<string, number> = {};
     const logTiming = (phase: string, start: number) => {
       timings[phase] = Date.now() - start;
+      runLog.recordPhase(phase, start, timings[phase]);
     };
 
     let phaseStart = Date.now();
@@ -985,6 +998,7 @@ export class AnalyzerOrchestrator {
 
     phaseStart = Date.now();
     const unanalyzedLanguages = this.scanUnanalyzedLanguages(projectPath);
+    const nestedRepositories = await this.describeNestedRepositories(projectPath);
     await this.applyAIInterpretation(
       enhancedSystemPurpose,
       systemName,
@@ -999,6 +1013,17 @@ export class AnalyzerOrchestrator {
       this.libraryNamesForInterpretation(allLibraries)
     );
     logTiming('pp_aiInterpretation', phaseStart);
+
+    const aiGeneration = enhancedSystemPurpose.description_generation;
+    runLog.recordAi({
+      provider_configured: this.hasAIInterpretationProviderConfigured(),
+      providers: this.configuredAiInterpretationProviders(),
+      attempted: aiGeneration?.attempted ?? false,
+      outcome: aiGeneration?.status || 'unknown',
+      reason: aiGeneration?.reason,
+      duration_ms: timings['pp_aiInterpretation'],
+      description_source: enhancedSystemPurpose.description_source,
+    });
 
     phaseStart = Date.now();
     const methodCalls = this.buildMethodCalls(allNodes, allEdges);
@@ -1082,6 +1107,7 @@ export class AnalyzerOrchestrator {
         technologies: {
           ...this.extractTechnologies(contributions, allLibraries),
           unanalyzed_languages: unanalyzedLanguages,
+          ...(nestedRepositories.length > 0 ? { nested_repositories: nestedRepositories } : {}),
         },
         quality: this.calculateQualityMetrics(allNodes)
       },
@@ -1162,7 +1188,25 @@ export class AnalyzerOrchestrator {
 
     output.product_map = buildProductMap(output);
 
+    phaseStart = Date.now();
     await this.applyEmbeddingPhase(output, projectPath);
+    logTiming('pp_embeddingAndFinalize', phaseStart);
+
+    const sourceFiles = new Set<string>();
+    for (const node of output.nodes) {
+      if (node.source?.file) sourceFiles.add(node.source.file);
+    }
+    runLog.recordAnalyzers(contributions);
+    runLog.recordWarnings(analysisErrors);
+    runLog.complete({
+      nodes: output.nodes.length,
+      edges: output.edges.length,
+      entry_points: output.entry_points?.length || 0,
+      exit_points: output.exit_points?.length || 0,
+      files: sourceFiles.size,
+      errors: analysisErrors.filter(issue => issue.severity === 'error').length,
+      warnings: analysisErrors.filter(issue => issue.severity === 'warning').length,
+    });
     return output;
   }
 
@@ -4451,6 +4495,76 @@ export class AnalyzerOrchestrator {
     }
   }
 
+  /**
+   * Nested git repositories are excluded from this analysis so their code is
+   * never silently merged into the host system's graph. Without an explicit
+   * record, that exclusion looks like a blind spot ("why is the rust/
+   * directory missing?"). Each excluded repository is therefore reported on
+   * the system surface with its primary language so readers and agents know
+   * the boundary is intentional and where to analyze next.
+   */
+  private async describeNestedRepositories(projectPath: string): Promise<CASNestedRepository[]> {
+    const patterns = await this.getNestedRepoIgnorePatterns(projectPath);
+    const directories = Array.from(new Set(patterns
+      .map(pattern => pattern.replace(/\/\*\*$/, ''))
+      .filter(Boolean)))
+      .sort();
+    return directories.map(directory => {
+      const absolute = path.join(projectPath, directory);
+      const scan = this.scanDirectoryLanguageProfile(absolute);
+      return {
+        path: directory,
+        has_git_directory: fs.existsSync(path.join(absolute, '.git')),
+        ...(scan.primaryLanguage ? { primary_language: scan.primaryLanguage } : {}),
+        source_files: scan.sourceFiles,
+        note: 'Nested git repository excluded from this analysis; analyze it as its own codebase and link the two through cross-repository correlation.',
+      };
+    });
+  }
+
+  private scanDirectoryLanguageProfile(directoryPath: string): { primaryLanguage?: string; sourceFiles: number } {
+    const counts = new Map<string, number>();
+    let sourceFiles = 0;
+    const stack: Array<{ directory: string; depth: number }> = [{ directory: directoryPath, depth: 0 }];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (current.depth > 6) continue;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(current.directory, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (entry.name.startsWith('.')) continue;
+        if (entry.isDirectory()) {
+          if (['node_modules', 'dist', 'build', 'coverage', 'vendor', 'vendors', 'tmp', 'log', 'public', 'target', '__pycache__', 'venv', 'env'].includes(entry.name)) continue;
+          stack.push({ directory: path.join(current.directory, entry.name), depth: current.depth + 1 });
+          continue;
+        }
+        const extension = entry.name.split('.').pop()?.toLowerCase() || '';
+        const language = AnalyzerOrchestrator.LANGUAGE_NAMES_BY_EXTENSION[extension];
+        if (!language) continue;
+        sourceFiles += 1;
+        counts.set(language, (counts.get(language) || 0) + 1);
+      }
+    }
+    const top = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+    return { primaryLanguage: top?.[0], sourceFiles };
+  }
+
+  private static readonly LANGUAGE_NAMES_BY_EXTENSION: Record<string, string> = {
+    ts: 'TypeScript', tsx: 'TypeScript',
+    js: 'JavaScript', jsx: 'JavaScript', mjs: 'JavaScript', cjs: 'JavaScript',
+    py: 'Python', java: 'Java', cs: 'C#', go: 'Go', rs: 'Rust',
+    php: 'PHP', dart: 'Dart', rb: 'Ruby', erb: 'Ruby', rake: 'Ruby',
+    ex: 'Elixir', exs: 'Elixir', scala: 'Scala', kt: 'Kotlin', kts: 'Kotlin',
+    swift: 'Swift', lua: 'Lua', r: 'R', jl: 'Julia', erl: 'Erlang',
+    clj: 'Clojure', hs: 'Haskell', ml: 'OCaml', vb: 'Visual Basic',
+    fs: 'F#', pl: 'Perl', pm: 'Perl', groovy: 'Groovy',
+    c: 'C', h: 'C', cpp: 'C++', cc: 'C++', hpp: 'C++', m: 'Objective-C',
+  };
+
   private scanUnanalyzedLanguages(projectPath: string): Array<{ name: string; files: number; share_of_source: number }> {
     const supported = new Set(['ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'py', 'java', 'cs', 'dart', 'go', 'rs', 'php', 'rb', 'erb', 'rake']);
     const unanalyzedNames: Record<string, string> = {
@@ -6823,6 +6937,15 @@ export class AnalyzerOrchestrator {
     );
   }
 
+  private configuredAiInterpretationProviders(): string[] {
+    const freshConfig = getAIConfig();
+    const providers: string[] = [];
+    if (freshConfig.openai.apiKey) providers.push('openai');
+    if (freshConfig.anthropic.apiKey) providers.push('anthropic');
+    if (process.env.AI_LOCAL_ENABLED === 'true') providers.push('local');
+    return providers;
+  }
+
   private async applyAIElementDescriptions(
     capabilities: SystemCapability[],
     entities: CASDataEntity[],
@@ -7856,7 +7979,16 @@ export class AnalyzerOrchestrator {
         ? 'hardware-device'
         : domain;
     }
+    if (systemPurpose.primary_type === 'content-management') {
+      return this.isGenericDomainToken(normalizedDomain) || this.isContentManagementDomain(normalizedDomain)
+        ? 'content-management'
+        : domain;
+    }
     return domain;
+  }
+
+  private isContentManagementDomain(domain: string): boolean {
+    return /\b(content|cms|publishing|page|pages|editorial|revision|workflow)\b/.test(domain);
   }
 
   private isClinicalOrDeviceDomain(domain: string): boolean {
@@ -8096,6 +8228,18 @@ export class AnalyzerOrchestrator {
     const hasCommerceCheckoutAnchor = has(/\b(carts?|checkouts?)\b/);
     if (has(/\b(gateway|gateways)\b/) && !has(/\bpayment gateway\b/) && !hasCommerceCheckoutAnchor && networkAccessAnchors >= 2) {
       return 'network-access-management';
+    }
+    // Content-management must outrank the order/billing rules: a page-tree
+    // CMS exposes ordering vocabulary (page position, ordering parameters)
+    // that would otherwise read as commerce. The gate requires versioned
+    // content evidence (revision + publishing workflow), which commerce
+    // systems do not carry.
+    if (
+      has(/\b(pages?|contents?|documents?)\b/) &&
+      has(/\brevisions?\b/) &&
+      has(/\b(publish|published|publishing|unpublish|drafts?|moderation)\b/)
+    ) {
+      return 'content-management';
     }
     const hasOrderAnchor = has(/\b(orders?|salesorders?|sales orders?)\b/);
     if (hasOrderAnchor && has(/\binvoices?\b/)) {
@@ -8797,7 +8941,7 @@ export class AnalyzerOrchestrator {
       'arrow', 'padding', 'total', 'home', 'submit', 'rewrite', 'rewrites',
       'asset', 'assets', 'generated', 'gql', 'graphql', 'document', 'documents',
       'render', 'close', 'focus', 'normalize', 'ensure', 'path', 'clamp', 'install',
-      'modal', 'dialog', 'popup', 'screen', 'window',
+      'modal', 'dialog', 'popup', 'screen', 'window', 'view', 'views',
     ]).has(token.toLowerCase());
   }
 
@@ -12314,6 +12458,39 @@ export class AnalyzerOrchestrator {
         evidence: [`Clinical desktop signals: ${clinicalSignals.matched.join(', ')}`],
         secondary_types: [topMatch.type, ...secondaryTypes]
           .filter(type => type !== 'clinical-testing-platform')
+          .slice(0, 3),
+      };
+    }
+
+    // Anchor-gated like the clinical and commerce signatures: a CMS verdict
+    // requires the revision entity (the load-bearing CMS concept: versioned
+    // content) together with page or document entities, broad page-tree
+    // entity vocabulary, and publishing-workflow vocabulary on real paths or
+    // capabilities. Workflow/task/approval vocabulary alone must keep losing
+    // to this gate: a page-tree CMS contains a moderation workflow engine,
+    // not the other way around.
+    const cmsEntitySignals = countMatches(
+      entityNames,
+      ['page', 'document', 'revision', 'rendition', 'collection', 'redirect', 'snippet', 'locale', 'site', 'media']
+    );
+    const cmsPublishingSignals = countMatches(
+      nameEntityCapabilityPathTokens,
+      ['publish', 'unpublish', 'draft', 'moderation', 'preview', 'revision']
+    );
+    const hasCmsEntityAnchor =
+      cmsEntitySignals.matched.includes('revision') &&
+      (cmsEntitySignals.matched.includes('page') || cmsEntitySignals.matched.includes('document'));
+    if (hasCmsEntityAnchor && cmsEntitySignals.matched.length >= 4 && cmsPublishingSignals.matched.length >= 2 &&
+      topMatch.type !== 'medical-device-software' && topMatch.type !== 'clinical-testing-platform') {
+      return {
+        primary_type: 'content-management',
+        confidence: Math.max(0.8, Math.round(confidence * 100) / 100),
+        evidence: [
+          `Content entities: ${cmsEntitySignals.matched.join(', ')}`,
+          `Publishing vocabulary: ${cmsPublishingSignals.matched.join(', ')}`,
+        ],
+        secondary_types: [topMatch.type, ...secondaryTypes]
+          .filter(type => type !== 'content-management')
           .slice(0, 3),
       };
     }

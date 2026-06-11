@@ -50,6 +50,8 @@ export interface FileAnalysisContext extends AnalysisContext {
 import * as path from 'path';
 import * as fs from 'fs-extra';
 
+const MAX_REPORTED_FILE_WARNINGS = 25;
+
 export abstract class BaseAnalyzer {
   readonly discoversNestedRoots: boolean = false;
 
@@ -57,6 +59,8 @@ export abstract class BaseAnalyzer {
   protected analyzerName: string;
   protected analyzerVersion: string;
   protected analyzerType: 'language' | 'framework' | 'library' | 'pattern';
+  protected analysisWarnings: string[] = [];
+  protected suppressedWarningCount = 0;
 
   constructor(
     id: string,
@@ -97,6 +101,26 @@ export abstract class BaseAnalyzer {
   async analyzeFileSingle?(context: FileAnalysisContext): Promise<FileAnalysisResult>;
 
   async getRelevantFiles?(projectPath: string): Promise<string[]>;
+
+  protected resetAnalysisWarnings(): void {
+    this.analysisWarnings = [];
+    this.suppressedWarningCount = 0;
+  }
+
+  protected addAnalysisWarning(warning: string): void {
+    if (this.analysisWarnings.length >= MAX_REPORTED_FILE_WARNINGS) {
+      this.suppressedWarningCount += 1;
+      return;
+    }
+    this.analysisWarnings.push(warning);
+  }
+
+  protected collectAnalysisWarnings(): string[] {
+    if (this.suppressedWarningCount > 0) {
+      return [...this.analysisWarnings, `${this.suppressedWarningCount} additional file warnings suppressed`];
+    }
+    return [...this.analysisWarnings];
+  }
 
   protected getFrameworkVersion(projectPath: string, frameworkName: string): Promise<string | undefined> {
     return this.getPackageVersion(projectPath, frameworkName);
