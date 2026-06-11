@@ -2583,7 +2583,7 @@ export class RustAnalyzer extends BaseAnalyzer {
     }
 
     const builderStructs = nodes.filter(n =>
-      n.type === 'struct' &&
+      this.declarationKind(n) === 'struct' &&
       (n.name.endsWith('Builder') || n.name.endsWith('Config') || n.name.endsWith('Options'))
     );
     if (builderStructs.length > 0) {
@@ -2602,7 +2602,7 @@ export class RustAnalyzer extends BaseAnalyzer {
     }
 
     const errorTypes = nodes.filter(n =>
-      (n.type === 'enum' || n.type === 'struct') &&
+      ['enum', 'struct'].includes(this.declarationKind(n)) &&
       (n.name.endsWith('Error') || n.name.endsWith('Err') || n.name === 'Error')
     );
     if (errorTypes.length > 0) {
@@ -2637,7 +2637,7 @@ export class RustAnalyzer extends BaseAnalyzer {
     }
 
     const serviceTraits = traits.filter(n => n.name.endsWith('Service'));
-    const serviceStructs = nodes.filter(n => ['struct', 'service'].includes(n.type) && n.name.endsWith('Service'));
+    const serviceStructs = nodes.filter(n => this.declarationKind(n) === 'struct' && n.name.endsWith('Service'));
     if (serviceTraits.length > 0 || serviceStructs.length > 0) {
       const variations = [];
       if (serviceTraits.length > 0) {
