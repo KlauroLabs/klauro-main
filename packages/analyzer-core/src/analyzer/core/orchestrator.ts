@@ -7889,6 +7889,17 @@ export class AnalyzerOrchestrator {
     const areaDomains = this.classifyTopLevelAreaDomains(nodes, projectPath);
     const areaResolution = this.reconcilePrimaryDomainWithAreas(inferredPrimaryDomain, areaDomains);
     const primaryDomain = this.refinePrimaryDomainForPurpose(areaResolution.primaryDomain, basePurpose);
+    if (process.env.KLAURO_DOMAIN_DEBUG) {
+      console.error('[domain-debug]', JSON.stringify({
+        extractorDomain: domainExtractor.inferPrimaryDomain(domainConcepts),
+        capabilityDomain: this.inferPrimaryDomainFromCapabilities(systemCapabilities, coreConcepts),
+        projectTextDomain: projectTextSignal.primaryDomain,
+        inferredPrimaryDomain,
+        areaDomains,
+        areaResolved: areaResolution.primaryDomain,
+        final: primaryDomain,
+      }));
+    }
 
     const coreConceptNames = [
       ...projectTextSignal.concepts,
@@ -8022,7 +8033,26 @@ export class AnalyzerOrchestrator {
   ): string {
     const capabilityDomain = this.inferPrimaryDomainFromCapabilities(systemCapabilities, coreConcepts);
     if (capabilityDomain && this.isSpecificStructuralDomain(capabilityDomain, systemCapabilities, coreConcepts, systemName)) {
-      return capabilityDomain.toLowerCase().replace(/\s+/g, '-');
+      const normalizedCapabilityDomain = capabilityDomain.toLowerCase().replace(/\s+/g, '-');
+      // A project-text domain that shares evidence vocabulary with a generic
+      // structural class is an industry refinement of it (a site-operations
+      // platform whose own project text says "car wash"), not a competing
+      // seed; prefer the more specific human-authored label.
+      const projectDomain = projectTextSignal.primaryDomain;
+      if (
+        projectDomain &&
+        projectDomain !== normalizedCapabilityDomain &&
+        this.isRefinableStructuralDomainClass(normalizedCapabilityDomain) &&
+        !this.isRefinableStructuralDomainClass(projectDomain) &&
+        this.isComposedDomainLabel(projectDomain) &&
+        !this.isGenericDomainToken(projectDomain) &&
+        !this.isBroadProjectTextDomain(projectDomain) &&
+        !this.isNonSemanticDomainLabel(projectDomain, systemName) &&
+        this.areDomainsCompatible(projectDomain, normalizedCapabilityDomain)
+      ) {
+        return projectDomain;
+      }
+      return normalizedCapabilityDomain;
     }
     if (projectTextSignal.primaryDomain && !this.isGenericDomainToken(projectTextSignal.primaryDomain)) {
       if ((this.isBroadProjectTextDomain(projectTextSignal.primaryDomain) ||
@@ -8219,7 +8249,31 @@ export class AnalyzerOrchestrator {
     if (has(/\bcodebase\b/) && has(/\b(analysis|analyzer|analyses)\b/)) {
       return 'codebase-analysis';
     }
-    if (has(/\b(fleet|telematics)\b/) && has(/\b(vehicle|vehicles|driver|drivers|dispatch|dispatching|trip|trips)\b/)) {
+    // Pharmaceutical ordering must outrank fleet and order/billing rules:
+    // pharmacy distribution systems carry order/invoice vocabulary and often
+    // incidental fleet/delivery naming. The gate requires at least two
+    // distinct regulated-pharma evidence tokens plus ordering structure, so
+    // generic commerce never reads as pharma.
+    const pharmaceuticalAnchorPatterns = [
+      /\bpharmac(y|ies|eutical|euticals)\b/,
+      /\bprescriptions?\b/,
+      /\bmedications?\b/,
+      /\brems\b/,
+      /\bndcs?\b/,
+      /\bformular(y|ies)\b/,
+      /\bdispens(e|es|ed|ing)\b/,
+      /\bdrugs?\b/,
+    ];
+    const distinctPharmaceuticalAnchors = pharmaceuticalAnchorPatterns.filter(pattern => pattern.test(text)).length;
+    const hasOrderingStructure = has(/\b(orders?|salesorders?|sales orders?|purchase orders?|fulfillment)\b/);
+    if (distinctPharmaceuticalAnchors >= 2 && hasOrderingStructure) {
+      return 'pharmaceutical-order-management';
+    }
+    // The fleet anchor needs real vehicle-operations evidence: a single
+    // incidental companion token (a database "driver", one delivery mention)
+    // next to fleet-prefixed naming must not mint a fleet identity.
+    const fleetCompanionMatches = (text.match(/\b(vehicle|vehicles|driver|drivers|dispatch|dispatching|trip|trips)\b/g) || []).length;
+    if (has(/\b(fleet|telematics)\b/) && fleetCompanionMatches >= 2) {
       return 'fleet-management';
     }
     const networkAccessAnchors = [/\baccess\b/, /\bpolic(y|ies)\b/, /\bnetworks?\b/, /\bposture\b/]
@@ -8243,6 +8297,25 @@ export class AnalyzerOrchestrator {
     ) {
       return 'content-management';
     }
+    // Site/field operations must outrank the order rules: operational
+    // platforms expose position-ordering vocabulary ("order update" on task
+    // lists) that would otherwise read as commerce. The gate requires at
+    // least three distinct site-operations evidence tokens.
+    const siteOperationsAnchorPatterns = [
+      /\binspections?\b/,
+      /\bincidents?\b/,
+      /\bshifts?\b/,
+      /\bequipment\b/,
+      /\bbays?\b/,
+      /\btime ?offs?\b/,
+      /\bwork ?orders?\b/,
+    ];
+    const distinctSiteOperationsAnchors = siteOperationsAnchorPatterns.filter(pattern => pattern.test(text)).length;
+    if (distinctSiteOperationsAnchors >= 3) {
+      return has(/\b(car ?wash(es)?|wash(es|ing)?|detailing)\b/)
+        ? 'car-wash-operations'
+        : 'site-operations-management';
+    }
     const hasOrderAnchor = has(/\b(orders?|salesorders?|sales orders?)\b/);
     if (hasOrderAnchor && has(/\binvoices?\b/)) {
       return 'order-invoice-management';
@@ -8253,7 +8326,10 @@ export class AnalyzerOrchestrator {
     if (has(/\binvoice|invoices|payment|payments|billing\b/)) {
       return 'billing-payments';
     }
-    if (has(/\border|orders|fulfillment|salesorder|sales order\b/)) {
+    // Bare singular "order" (sort order, order update, display order) is not
+    // commerce evidence; order-management requires plural orders or
+    // fulfillment structure.
+    if (has(/\b(orders|fulfillment|salesorders?|sales orders?)\b/)) {
       return 'order-management';
     }
     if (has(/\bdocument|documents|file|files\b/) && has(/\breport|reports|pdf|download|print\b/)) {
@@ -8275,6 +8351,9 @@ export class AnalyzerOrchestrator {
     const vocabulary: Record<string, string[]> = {
       'codebase-analysis': ['analysis', 'analyzer', 'analyses', 'codebase', 'cas', 'mcp', 'parser', 'ast'],
       'fleet-management': ['fleet', 'vehicle', 'driver', 'dispatch', 'telematics', 'trip'],
+      'pharmaceutical-order-management': ['pharmacy', 'pharmaceutical', 'prescription', 'medication', 'rems', 'ndc', 'drug', 'order', 'invoice'],
+      'site-operations-management': ['inspection', 'incident', 'shift', 'equipment', 'bay', 'site', 'location'],
+      'car-wash-operations': ['wash', 'bay', 'detailing', 'inspection', 'incident', 'shift', 'location'],
       'network-access-management': ['gateway', 'access', 'policy', 'network', 'posture', 'resource'],
       'order-invoice-management': ['order', 'invoice', 'payment'],
       'order-payment-management': ['order', 'payment', 'billing'],
@@ -8322,6 +8401,18 @@ export class AnalyzerOrchestrator {
 
   private isNarrowCrossCuttingDomain(domain: string): boolean {
     return /^(auth|authentication|authorization|login|user|users|session|sessions|identity|account|accounts)$/i.test(domain);
+  }
+
+  private isRefinableStructuralDomainClass(domain: string): boolean {
+    return [
+      'site-operations-management',
+      'order-management',
+      'order-invoice-management',
+      'order-payment-management',
+      'billing-payments',
+      'document-reporting',
+      'member-document-portal',
+    ].includes(domain);
   }
 
   private inferDominantBusinessDomainFromCapabilities(
@@ -8374,7 +8465,7 @@ export class AnalyzerOrchestrator {
   }
 
   private isBroadProjectTextDomain(domain: string): boolean {
-    return /^(customer-relationship-management|business|portal|web-application|frontend|backend|hercules)$/i.test(domain);
+    return /^(customer-relationship-management|business|portal|web-application|frontend|backend)$/i.test(domain);
   }
 
   private domainFromSystemName(systemName?: string): string | null {
@@ -8745,6 +8836,36 @@ export class AnalyzerOrchestrator {
       this.phraseScore(searchableText, ['account', 'cart']) +
       this.phraseScore(searchableText, ['search', 'checkout']) +
       this.phraseScore(searchableText, ['location', 'order']);
+    // Car-wash/site-service operations: requires an explicit wash-business
+    // anchor phrase; site-operations vocabulary alone never claims it.
+    const carWashAnchorScore =
+      this.phraseScore(text, ['car wash']) +
+      this.phraseScore(text, ['carwash']) +
+      this.phraseScore(text, ['car washes']) +
+      this.phraseScore(text, ['wash bay']) +
+      this.phraseScore(text, ['detailing']);
+    const carWashScore = carWashAnchorScore === 0
+      ? 0
+      : this.phraseScore(searchableText, ['car wash', 'carwash', 'car washes']) * 3 +
+      this.phraseScore(searchableText, ['wash bay', 'detailing']) * 2 +
+      this.phraseScore(searchableText, ['wash', 'washes']) +
+      this.phraseScore(searchableText, ['inspection', 'inspections', 'incident', 'incidents', 'shift', 'shifts', 'site', 'location']);
+    // Pharmaceutical ordering: requires at least two distinct regulated-pharma
+    // anchors in real project text so generic commerce never reads as pharma.
+    const pharmaceuticalAnchorCount = [
+      /\bpharmac(y|ies|eutical|euticals)\b/,
+      /\bprescriptions?\b/,
+      /\bmedications?\b/,
+      /\brems\b/,
+      /\bndcs?\b/,
+      /\bformular(y|ies)\b/,
+      /\bdispens(e|es|ed|ing)\b/,
+    ].filter(pattern => pattern.test(text)).length;
+    const pharmaceuticalOrderScore = pharmaceuticalAnchorCount < 2
+      ? 0
+      : this.phraseScore(searchableText, ['pharmacy', 'pharmaceutical', 'prescription', 'medication']) * 3 +
+      this.phraseScore(searchableText, ['rems', 'ndc', 'formulary', 'dispensing']) * 2 +
+      this.phraseScore(searchableText, ['order', 'orders', 'inventory', 'wholesale', 'distributor']);
     const clinicalTestingScore = clinicalAnchorScore === 0
       ? 0
       : this.phraseScore(searchableText, ['patient']) * 3 +
@@ -8764,6 +8885,8 @@ export class AnalyzerOrchestrator {
         ? 0
         : this.phraseScore(searchableText, ['shopify', 'theme']) * 2 + this.phraseScore(searchableText, ['online store']) + this.phraseScore(searchableText, ['storefront', 'merchant'])],
       ['commerce-operations-portal', commerceOperationsScore],
+      ['car-wash-operations', carWashScore],
+      ['pharmaceutical-order-management', pharmaceuticalOrderScore],
       ['clinical-testing', clinicalTestingScore],
       ['cloud-infrastructure', effectiveCloudInfrastructureScore + (isInfrastructureRepo ? 12 : 0)],
       ['zero-trust-security', zeroTrustScore],
@@ -8881,6 +9004,12 @@ export class AnalyzerOrchestrator {
     }
     if (primaryDomain === 'commerce-operations-portal') {
       return 'A commerce operations portal for account, cart, checkout, order, invoice, billing, search, and location workflows. Project text and source copy describe user-facing commerce screens and operational customer flows.';
+    }
+    if (primaryDomain === 'car-wash-operations') {
+      return 'A car wash operations and management platform for running wash locations. Project text and source copy describe site-level workflows such as task management, inspections, incident reporting, shift scheduling, equipment, and service tracking across locations.';
+    }
+    if (primaryDomain === 'pharmaceutical-order-management') {
+      return 'A pharmaceutical ordering and distribution system. Project text and source copy describe regulated pharmacy products, ordering and fulfillment workflows, invoicing, inventory, and compliance-oriented records.';
     }
     if (primaryDomain === 'clinical-testing') {
       return 'A clinical testing and scientific measurement application for patient, protocol, device, muscle, force, and assessment workflows. Project text and source copy describe desktop or service-side support for clinical evaluation and reporting.';

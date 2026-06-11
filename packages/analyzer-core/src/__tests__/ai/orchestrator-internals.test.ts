@@ -2842,3 +2842,180 @@ describe('structural domain text rules: content management precedence', () => {
     expect(orch.structuralDomainFromText(text)).toBe('order-invoice-management');
   });
 });
+
+describe('structural domain text rules: pharmaceutical ordering anchor', () => {
+  it('classifies pharma entity evidence plus ordering structure as pharmaceutical-order-management', () => {
+    const text = 'rems management ndc numbers orders order items invoices specialty pharmacy products manufacturers';
+    expect(orch.structuralDomainFromText(text)).toBe('pharmaceutical-order-management');
+  });
+
+  it('requires two distinct pharma anchors: a single rems-like token stays commerce', () => {
+    const text = 'rems management orders order items invoices customers products';
+    expect(orch.structuralDomainFromText(text)).toBe('order-invoice-management');
+  });
+
+  it('requires ordering structure: pharma vocabulary without orders is not pharma ordering', () => {
+    const text = 'prescription records medication schedules patient education content';
+    expect(orch.structuralDomainFromText(text)).not.toBe('pharmaceutical-order-management');
+  });
+
+  it('does not classify generic commerce as pharma', () => {
+    const text = 'cart checkout orders invoices billing customers products shipping warehouse';
+    expect(orch.structuralDomainFromText(text)).not.toBe('pharmaceutical-order-management');
+  });
+
+  it('outranks the fleet anchor when fleet-prefixed naming sits next to pharma ordering evidence', () => {
+    const text = 'fleet order api fleet orders driver deliveries rems ndc orders invoices pharmacy products';
+    expect(orch.structuralDomainFromText(text)).toBe('pharmaceutical-order-management');
+  });
+});
+
+describe('structural domain text rules: fleet anchor evidence strength', () => {
+  it('keeps fleet-management for real vehicle-operations vocabulary', () => {
+    const text = 'fleet management vehicles drivers dispatch trips telematics fuel maintenance';
+    expect(orch.structuralDomainFromText(text)).toBe('fleet-management');
+  });
+
+  it('does not mint fleet from fleet-prefixed naming plus one incidental driver token', () => {
+    const text = 'fleet order api driver orders order items invoices customers products';
+    expect(orch.structuralDomainFromText(text)).toBe('order-invoice-management');
+  });
+});
+
+describe('structural domain text rules: site operations anchor', () => {
+  it('classifies inspection/incident/shift/equipment/bay vocabulary as site-operations-management', () => {
+    const text = 'inspections incidents shifts equipment bays locations tasks task lists order update services';
+    expect(orch.structuralDomainFromText(text)).toBe('site-operations-management');
+  });
+
+  it('refines to car-wash-operations when wash evidence accompanies the site-operations anchors', () => {
+    const text = 'inspections incidents shifts equipment wash bays locations services detailing';
+    expect(orch.structuralDomainFromText(text)).toBe('car-wash-operations');
+  });
+
+  it('requires three distinct site-operations anchors', () => {
+    const text = 'inspections shifts customers orders invoices billing';
+    expect(orch.structuralDomainFromText(text)).toBe('order-invoice-management');
+  });
+
+  it('does not mint order-management from bare singular position-ordering vocabulary', () => {
+    const text = 'task list order update display order sorting position';
+    expect(orch.structuralDomainFromText(text)).not.toBe('order-management');
+  });
+});
+
+describe('project text domains: car wash and pharmaceutical anchors', () => {
+  it('classifies a car wash operations README as car-wash-operations', () => {
+    expect(orch.inferDomainFromProjectText(
+      'A B2B operations and management platform built specifically for the car wash industry. Includes task management, inspections, incident reporting, service tracking, and site-specific tools to help operators run car wash locations and improve wash quality.',
+      '/tmp/site-ops-app'
+    )).toBe('car-wash-operations');
+  });
+
+  it('does not claim car wash without a wash-business anchor phrase', () => {
+    expect(orch.inferDomainFromProjectText(
+      'A B2B operations platform with task management, inspections, incident reporting, shift scheduling, and service tracking for site teams.',
+      '/tmp/site-ops-app'
+    )).not.toBe('car-wash-operations');
+  });
+
+  it('classifies pharmacy ordering project text as pharmaceutical-order-management', () => {
+    expect(orch.inferDomainFromProjectText(
+      'A pharmacy ordering portal where clinics submit medication orders, track prescriptions, manage NDC catalogs and REMS compliance, and receive invoices from distributors.',
+      '/tmp/pharma-portal'
+    )).toBe('pharmaceutical-order-management');
+  });
+
+  it('does not classify generic commerce project text as pharma', () => {
+    expect(orch.inferDomainFromProjectText(
+      'Customers manage cart handling, checkout, orders, invoices, and billing for the storefront operations team.',
+      '/tmp/shop-ops'
+    )).not.toBe('pharmaceutical-order-management');
+  });
+
+  it('keeps infrastructure-only repos as cloud-infrastructure', () => {
+    expect(orch.inferDomainFromProjectText(
+      'Terraform modules and providers describing AWS VPC, ECS, RDS, and CloudFront deployment resources with variables and outputs.',
+      '/tmp/acme/platform-infra'
+    )).toBe('cloud-infrastructure');
+  });
+});
+
+describe('refinePrimaryDomain: industry refinement of generic structural classes', () => {
+  const siteOpsCapabilities = [
+    {
+      name: 'Inspections Management',
+      description: 'Site inspection workflows',
+      category: 'core',
+      related_domains: ['inspections'],
+      related_entities: ['Inspection', 'InspectionsEquipment'],
+      operations: [],
+    },
+    {
+      name: 'Incidents Management',
+      description: 'Incident reporting',
+      category: 'core',
+      related_domains: ['incidents'],
+      related_entities: ['Incident'],
+      operations: [],
+    },
+    {
+      name: 'Shifts Management',
+      description: 'Shift scheduling',
+      category: 'core',
+      related_domains: ['shifts'],
+      related_entities: ['Shift', 'ShiftBreak'],
+      operations: [],
+    },
+  ];
+  const siteOpsConcepts = [{ name: 'Inspection' }, { name: 'Incident' }, { name: 'Shift' }, { name: 'Location' }];
+
+  it('lets a compatible car-wash project text label refine a site-operations structural class', () => {
+    const signal = {
+      primaryDomain: 'car-wash-operations',
+      concepts: ['car wash', 'inspections'],
+      evidence: ['README.md'],
+    };
+    expect(orch.refinePrimaryDomain('unknown', 'some-app', siteOpsCapabilities, siteOpsConcepts, signal))
+      .toBe('car-wash-operations');
+  });
+
+  it('keeps the structural class when the project text label shares no evidence vocabulary', () => {
+    const signal = {
+      primaryDomain: 'solana-arbitrage',
+      concepts: ['solana'],
+      evidence: ['README.md'],
+    };
+    expect(orch.refinePrimaryDomain('unknown', 'some-app', siteOpsCapabilities, siteOpsConcepts, signal))
+      .toBe('site-operations-management');
+  });
+
+  it('does not let one generic structural class hijack another via project text', () => {
+    const capabilities = [
+      {
+        name: 'Order Management',
+        description: 'Order lifecycle',
+        category: 'core',
+        related_domains: ['orders'],
+        related_entities: ['Order', 'OrderItem'],
+        operations: [],
+      },
+      {
+        name: 'Invoice Management',
+        description: 'Invoicing',
+        category: 'core',
+        related_domains: ['invoices'],
+        related_entities: ['Invoice'],
+        operations: [],
+      },
+    ];
+    const concepts = [{ name: 'Order' }, { name: 'Invoice' }];
+    const signal = {
+      primaryDomain: 'billing-payments',
+      concepts: ['billing'],
+      evidence: ['README.md'],
+    };
+    expect(orch.refinePrimaryDomain('unknown', 'some-app', capabilities, concepts, signal))
+      .toBe('order-invoice-management');
+  });
+});
