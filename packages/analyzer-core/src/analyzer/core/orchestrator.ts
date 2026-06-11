@@ -184,6 +184,8 @@ export class AnalyzerOrchestrator {
   private nodeLookupSource: CASNode[] | null = null;
   private nodeLookupById: Map<string, CASNode> = new Map();
   private embeddingPhaseConfig: EmbeddingPhaseConfig | null = null;
+  private activeAnalysisProjectPath?: string;
+  private klauroSelfProjectCache: Map<string, boolean> = new Map();
   private static aiInterpretationTimeouts = 0;
   private static aiInterpretationDisabledUntil = 0;
 
@@ -577,6 +579,7 @@ export class AnalyzerOrchestrator {
   }
 
   async orchestrateAnalysis(projectPath: string): Promise<CASOutput> {
+    this.activeAnalysisProjectPath = projectPath;
     const startTime = Date.now();
     const analysisId = `analysis_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const timings: Record<string, number> = {};
@@ -1124,6 +1127,7 @@ export class AnalyzerOrchestrator {
     wasFullRebuild: boolean;
     fullRebuildReason?: string;
   }> {
+    this.activeAnalysisProjectPath = projectPath;
     const changeDetector = new ChangeDetector(projectPath);
     const changeSet = await changeDetector.detectChanges(previousState);
     const schemaRebuildReason = this.fullRebuildReasonForPreviousOutput(previousOutput);
@@ -7007,15 +7011,19 @@ export class AnalyzerOrchestrator {
     if (target.kind !== 'capability') return undefined;
     const key = target.name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
     const descriptions: Record<string, string> = {
-      'codebase analysis': 'Codebase Analysis builds a CAS relationship graph from repository structure so agents can understand entry points, data, tests, risks, and dependencies before editing.',
-      'architecture mapping': 'Architecture Mapping identifies local patterns, ownership layers, and inventories so agents can place changes in the right architectural boundary.',
-      'greenfield planning': 'Greenfield Planning compares a proposed product slice against existing capability memory so new projects avoid duplicate concepts and start with coherent architecture.',
       'file workflow': 'Infrastructure Definition captures resource files, variables, modules, and provider relationships so agents can understand what cloud resources the stack manages.',
-      'proposal preview': 'Proposal Preview analyzes a proposed codebase iteration as a temporary CAS graph so reviewers can inspect changed contracts, risks, idioms, and test impact before the real repo changes.',
-      'agent work packets': 'Agent Work Packets turns CAS graph matches, risks, idioms, and tests into a compact coding brief before an AI agent edits a repository.',
-      'codebase idiom guidance': 'Codebase Idiom Guidance identifies local conventions and validates proposed changes against the patterns already used in the repository.',
-      'analysis storage': 'Analysis Storage persists CAS outputs, snapshots, incremental state, and compressed artifacts so later MCP calls can reuse prior analysis.',
     };
+    if (this.isKlauroSelfProject(this.activeAnalysisProjectPath)) {
+      Object.assign(descriptions, {
+        'codebase analysis': 'Codebase Analysis builds a CAS relationship graph from repository structure so agents can understand entry points, data, tests, risks, and dependencies before editing.',
+        'architecture mapping': 'Architecture Mapping identifies local patterns, ownership layers, and inventories so agents can place changes in the right architectural boundary.',
+        'greenfield planning': 'Greenfield Planning compares a proposed product slice against existing capability memory so new projects avoid duplicate concepts and start with coherent architecture.',
+        'proposal preview': 'Proposal Preview analyzes a proposed codebase iteration as a temporary CAS graph so reviewers can inspect changed contracts, risks, idioms, and test impact before the real repo changes.',
+        'agent work packets': 'Agent Work Packets turns CAS graph matches, risks, idioms, and tests into a compact coding brief before an AI agent edits a repository.',
+        'codebase idiom guidance': 'Codebase Idiom Guidance identifies local conventions and validates proposed changes against the patterns already used in the repository.',
+        'analysis storage': 'Analysis Storage persists CAS outputs, snapshots, incremental state, and compressed artifacts so later MCP calls can reuse prior analysis.',
+      });
+    }
     if (descriptions[key]) return descriptions[key];
 
     const managementSubject = key.replace(/\bmanagement\b/g, ' ').replace(/\s+/g, ' ').trim();
@@ -10771,7 +10779,7 @@ export class AnalyzerOrchestrator {
 
       const category = this.inferCapabilityCategory(group.entryPoints, resourceKey);
 
-      const capabilityName = this.formatDomainCapabilityName(resourceKey, group.name, operations, relatedEntities.length);
+      const capabilityName = this.formatDomainCapabilityName(resourceKey, group.name, operations, relatedEntities.length, projectPath);
 
       capabilities.push({
         id: `cap_${capIndex++}`,
@@ -10796,7 +10804,8 @@ export class AnalyzerOrchestrator {
       productDataEntities,
       productNodes,
       productEdges,
-      new Set(capabilities.flatMap(capability => capability.related_domains))
+      new Set(capabilities.flatMap(capability => capability.related_domains)),
+      projectPath
     );
     for (const capability of terminalCapabilities) {
       capabilities.push({
@@ -10818,7 +10827,8 @@ export class AnalyzerOrchestrator {
     dataEntities: CASDataEntity[],
     nodes: CASNode[],
     edges: CASEdge[],
-    existingDomains: Set<string>
+    existingDomains: Set<string>,
+    projectPath?: string
   ): SystemCapability[] {
     const nodesById = new Map(nodes.map(node => [node.id, node]));
     const incoming = new Map<string, number>();
@@ -10909,7 +10919,7 @@ export class AnalyzerOrchestrator {
         }));
 
       const category = this.inferTerminalCapabilityCategory(key, uniqueNodes, uniqueEntities);
-      const capabilityName = this.formatTerminalCapabilityName(key, group.label, operations, uniqueEntities);
+      const capabilityName = this.formatTerminalCapabilityName(key, group.label, operations, uniqueEntities, projectPath);
       capabilities.push({
         id: 'cap_pending',
         name: capabilityName,
@@ -11081,9 +11091,10 @@ export class AnalyzerOrchestrator {
     key: string,
     label: string,
     operations: SystemCapability['operations'],
-    entities: CASDataEntity[]
+    entities: CASDataEntity[],
+    projectPath?: string
   ): string {
-    const namedDomain = this.namedSystemCapabilityForDomain(key);
+    const namedDomain = this.namedSystemCapabilityForDomain(key, projectPath);
     if (namedDomain) return namedDomain;
 
     const lower = label.toLowerCase();
@@ -11115,9 +11126,10 @@ export class AnalyzerOrchestrator {
     key: string,
     fallbackLabel: string,
     operations: SystemCapability['operations'],
-    entityCount = 0
+    entityCount = 0,
+    projectPath?: string
   ): string {
-    const namedDomain = this.namedSystemCapabilityForDomain(key);
+    const namedDomain = this.namedSystemCapabilityForDomain(key, projectPath);
     if (namedDomain) return namedDomain;
 
     const operationText = [
@@ -11142,7 +11154,28 @@ export class AnalyzerOrchestrator {
     return `${label} Workflow`;
   }
 
-  private namedSystemCapabilityForDomain(key: string): string | undefined {
+  private isKlauroSelfProject(projectPath?: string): boolean {
+    if (!projectPath) return false;
+    const resolved = path.resolve(projectPath);
+    const cached = this.klauroSelfProjectCache.get(resolved);
+    if (cached !== undefined) return cached;
+    let isSelf = false;
+    try {
+      const packageJsonPath = path.join(resolved, 'package.json');
+      if (fs.existsSync(packageJsonPath)) {
+        const parsed = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+        const name = typeof parsed?.name === 'string' ? parsed.name : '';
+        isSelf = /(^|[@/])klauro([-/.]|$)/i.test(name);
+      }
+    } catch {
+      isSelf = false;
+    }
+    this.klauroSelfProjectCache.set(resolved, isSelf);
+    return isSelf;
+  }
+
+  private namedSystemCapabilityForDomain(key: string, projectPath?: string): string | undefined {
+    if (!this.isKlauroSelfProject(projectPath)) return undefined;
     const normalized = this.normalizeDomainToken((key || '').toLowerCase());
     const names: Record<string, string> = {
       agent: 'Agent Work Packets',

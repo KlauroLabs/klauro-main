@@ -585,7 +585,12 @@ describe('architecture and capability inference', () => {
     expect(names).toEqual(expect.arrayContaining(['Report Generation', 'Portfolio Rebalancing', 'Invoice Settlement']));
   });
 
-  it('uses product-surface capability names and filters helper buckets', () => {
+  it('uses product-surface capability names and filters helper buckets when analyzing Klauro itself', () => {
+    const klauroRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-self-naming-'));
+    fs.writeFileSync(
+      path.join(klauroRoot, 'package.json'),
+      JSON.stringify({ name: '@klauro/monorepo', version: '1.0.0' }),
+    );
     const nodes: CASNode[] = [
       node({ id: 'agent', name: 'AgentWorkflowService', type: 'service', source: { file: 'src/agent-workflow.ts' } }),
       node({ id: 'runtime', name: 'RuntimeTelemetryService', type: 'service', source: { file: 'src/runtime-simulation.ts' } }),
@@ -593,14 +598,110 @@ describe('architecture and capability inference', () => {
       node({ id: 'compatible', name: 'PathsCompatibleService', type: 'service', source: { file: 'src/query.ts' } }),
     ];
 
-    const capabilities = orch.buildSystemCapabilities([], [], nodes, []);
-    const names = capabilities.map((capability: any) => capability.name);
+    try {
+      const capabilities = orch.buildSystemCapabilities([], [], nodes, [], klauroRoot);
+      const names = capabilities.map((capability: any) => capability.name);
 
-    expect(names).toEqual(expect.arrayContaining(['Agent Work Packets', 'Runtime Telemetry', 'Proposal Preview']));
-    expect(names).not.toContain('Agent Management');
-    expect(names).not.toContain('Runtime Management');
-    expect(names).not.toContain('Proposal Management');
-    expect(names).not.toContain('Compatible Management');
+      expect(names).toEqual(expect.arrayContaining(['Agent Work Packets', 'Runtime Telemetry', 'Proposal Preview']));
+      expect(names).not.toContain('Agent Management');
+      expect(names).not.toContain('Runtime Management');
+      expect(names).not.toContain('Proposal Management');
+      expect(names).not.toContain('Compatible Management');
+    } finally {
+      fs.rmSync(klauroRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('never applies Klauro product capability names to a foreign repository', () => {
+    const foreignRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-foreign-naming-'));
+    fs.writeFileSync(
+      path.join(foreignRoot, 'package.json'),
+      JSON.stringify({ name: 'wagtail-admin', version: '1.0.0' }),
+    );
+    const nodes: CASNode[] = [
+      node({ id: 'task-model', name: 'Task', type: 'entity', source: { file: 'wagtail/models/tasks.py' } }),
+      node({ id: 'task-state-model', name: 'TaskState', type: 'entity', source: { file: 'wagtail/models/tasks.py' } }),
+      node({ id: 'workflow-task-model', name: 'WorkflowTask', type: 'entity', source: { file: 'wagtail/models/tasks.py' } }),
+      node({ id: 'task-view', name: 'TaskChooserView', type: 'service', source: { file: 'wagtail/admin/views/workflows.py' } }),
+      node({ id: 'task-method', name: 'createTask', type: 'method', source: { file: 'wagtail/admin/views/workflows.py' } }),
+    ];
+    const edges: CASEdge[] = [
+      { id: 'e1', source: 'task-view', target: 'task-method', type: 'calls' },
+      { id: 'e2', source: 'task-method', target: 'task-model', type: 'uses' },
+    ];
+    const entities: CASDataEntity[] = [
+      {
+        id: 'entity-task',
+        name: 'Task',
+        type: 'entity',
+        fields: [],
+        lifecycle: { created_by: ['task-method'], read_by: ['task-view'], updated_by: [], deleted_by: [] },
+        relationships: [],
+      } as any,
+    ];
+
+    try {
+      const capabilities = orch.buildSystemCapabilities([], entities, nodes, edges, foreignRoot);
+      const names = capabilities.map((capability: any) => capability.name);
+
+      expect(names.length).toBeGreaterThan(0);
+      const klauroVocabulary = [
+        'Agent Task Proof',
+        'Agent Work Packets',
+        'Agent Continuation',
+        'Codebase Analysis',
+        'Codebase Idiom Guidance',
+        'CAS Contract Validation',
+        'Answer Packs',
+        'Machine Repo Gauntlet',
+        'Greenfield Planning',
+        'Proposal Preview',
+        'Klauro CLI',
+        'Analysis Storage',
+      ];
+      for (const name of klauroVocabulary) {
+        expect(names).not.toContain(name);
+      }
+      expect(names).toContain('Task Management');
+    } finally {
+      fs.rmSync(foreignRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('only serves Klauro curated capability descriptions when analyzing Klauro itself', () => {
+    const klauroRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-self-description-'));
+    const foreignRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-foreign-description-'));
+    fs.writeFileSync(
+      path.join(klauroRoot, 'package.json'),
+      JSON.stringify({ name: '@klauro/monorepo', version: '1.0.0' }),
+    );
+    fs.writeFileSync(
+      path.join(foreignRoot, 'package.json'),
+      JSON.stringify({ name: 'wagtail-admin', version: '1.0.0' }),
+    );
+    const target = {
+      id: 'cap_1',
+      name: 'Agent Work Packets',
+      kind: 'capability',
+      operations: [],
+      relatedEntities: [],
+      relatedDomains: ['agent'],
+    };
+    const previousActivePath = orch.activeAnalysisProjectPath;
+
+    try {
+      orch.activeAnalysisProjectPath = foreignRoot;
+      const foreignDescription = orch.curatedElementDescription(target);
+      expect(foreignDescription || '').not.toContain('CAS graph');
+
+      orch.activeAnalysisProjectPath = klauroRoot;
+      const selfDescription = orch.curatedElementDescription(target);
+      expect(selfDescription).toContain('Agent Work Packets turns CAS graph matches');
+    } finally {
+      orch.activeAnalysisProjectPath = previousActivePath;
+      fs.rmSync(klauroRoot, { recursive: true, force: true });
+      fs.rmSync(foreignRoot, { recursive: true, force: true });
+    }
   });
 
   it('derives route-backed rails capabilities when projectPath scopes the product checks', () => {
