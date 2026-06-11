@@ -326,6 +326,92 @@ test('usefulness review grounds short package names through integration evidence
   assert.doesNotMatch(reasons.join('\n'), /unexplained short proper-noun/);
 });
 
+test('usefulness review grounds short proper nouns in repo languages, frameworks, and package names', () => {
+  const reasons = findWeakDescriptionReasons({
+    system: {
+      name: 'washup',
+      technologies: {
+        languages: [{ name: 'Ruby' }, { name: 'TypeScript' }],
+        frameworks: [{ name: 'Rails' }, { name: 'React' }],
+      },
+    },
+    enhanced_system_purpose: {
+      primary_domain: 'order-management',
+      core_concepts: ['order', 'shift', 'incident', 'location'],
+    },
+    domain_concepts: [{ name: 'order' }, { name: 'shift' }],
+    system_capabilities: [{ name: 'Order Management' }, { name: 'Shift Management' }],
+    libraries: [{ name: 'activerecord' }],
+  } as any, {
+    kind: 'backend-service',
+    confidence: 0.9,
+    evidence: ['HTTP/API framework or entry points'],
+    expectations: {
+      entry_points: 'required',
+      call_chains: 'required',
+      behavioral_invariants: 'required',
+      security: 'required',
+      runtime_correlation: 'optional',
+      flow_coverage: 'required',
+    },
+  }, 'A system for managing orders and related workflows, focusing on user, location, shift, and incident coordination. It uses Rails, Ruby, and React for HTTP endpoints and message handling, connecting to ActiveRecord for data storage.');
+
+  assert.doesNotMatch(reasons.join('\n'), /unexplained short proper-noun/);
+});
+
+test('usefulness review grounds short proper nouns in the repo name and entity vocabulary', () => {
+  const reasons = findWeakDescriptionReasons({
+    system: { name: 'soon-infra' },
+    enhanced_system_purpose: {
+      primary_domain: 'cloud-infrastructure',
+      core_concepts: ['module', 'provider', 'variable', 'output'],
+    },
+    domain_concepts: [{ name: 'module' }, { name: 'provider' }],
+    database_schema: { entities: [{ name: 'Deck' }] },
+    system_capabilities: [{ name: 'Resource Provisioning' }],
+  } as any, {
+    kind: 'infrastructure',
+    confidence: 0.9,
+    evidence: ['terraform modules'],
+    expectations: {
+      entry_points: 'optional',
+      call_chains: 'optional',
+      behavioral_invariants: 'optional',
+      security: 'optional',
+      runtime_correlation: 'optional',
+      flow_coverage: 'optional',
+    },
+  }, 'The Soon platform infrastructure defines deployment resources and operational boundaries with modules, providers, variables, and outputs, including Deck record provisioning for server configurations and resource groups.');
+
+  assert.doesNotMatch(reasons.join('\n'), /unexplained short proper-noun/);
+});
+
+test('usefulness review still flags short proper nouns with no grounding in the analysis', () => {
+  const reasons = findWeakDescriptionReasons({
+    system: { name: 'washup' },
+    enhanced_system_purpose: {
+      primary_domain: 'order-management',
+      core_concepts: ['order', 'shift', 'incident', 'location'],
+    },
+    domain_concepts: [{ name: 'order' }, { name: 'shift' }],
+    system_capabilities: [{ name: 'Order Management' }],
+  } as any, {
+    kind: 'backend-service',
+    confidence: 0.9,
+    evidence: ['HTTP/API framework or entry points'],
+    expectations: {
+      entry_points: 'required',
+      call_chains: 'required',
+      behavioral_invariants: 'required',
+      security: 'required',
+      runtime_correlation: 'optional',
+      flow_coverage: 'required',
+    },
+  }, 'A system for managing orders and related workflows, focusing on user, location, shift, and incident coordination. It relies on Zorp to schedule order processing and incident escalation across locations.');
+
+  assert.match(reasons.join('\n'), /unexplained short proper-noun/);
+});
+
 test('description quality gate accepts AI-backed descriptions that orient agents to behavior', () => {
   const profile: any = {
     kind: 'backend-service',

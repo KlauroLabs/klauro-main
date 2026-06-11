@@ -940,7 +940,8 @@ export class AnalyzerOrchestrator {
       flowGraph,
       domainConcepts,
       systemCapabilities,
-      unanalyzedLanguages
+      unanalyzedLanguages,
+      this.libraryNamesForInterpretation(allLibraries)
     );
     logTiming('pp_aiInterpretation', phaseStart);
 
@@ -1748,7 +1749,8 @@ export class AnalyzerOrchestrator {
         flowGraph,
         domainConcepts,
         systemCapabilities,
-        previousOutput.system?.technologies?.unanalyzed_languages || []
+        previousOutput.system?.technologies?.unanalyzed_languages || [],
+        this.libraryNamesForInterpretation(libraries)
       );
     } else if (previousOutput.enhanced_system_purpose?.inferred_description) {
       enhancedSystemPurpose.inferred_description = previousOutput.enhanced_system_purpose.inferred_description;
@@ -4930,8 +4932,12 @@ export class AnalyzerOrchestrator {
         ...(Array.isArray(metadata.frameworks) ? metadata.frameworks : []),
       ];
       for (const candidate of candidates) {
-        const name = String(candidate || '').trim();
-        if (name) productFrameworks.add(name.replace(' Analyzer', ''));
+        const name = String(candidate || '')
+          .trim()
+          .replace(/\s*analyzer$/i, '')
+          .replace(/^enhanced\s+/i, '')
+          .trim();
+        if (name) productFrameworks.add(name);
       }
     }
 
@@ -6479,7 +6485,8 @@ export class AnalyzerOrchestrator {
     flowGraph: CASFlowGraph,
     domainConcepts: CASDomainConcept[],
     systemCapabilities: SystemCapability[] = [],
-    unanalyzedLanguages: Array<{ name: string; files: number; share_of_source: number }> = []
+    unanalyzedLanguages: Array<{ name: string; files: number; share_of_source: number }> = [],
+    libraryNames: string[] = []
   ): Promise<void> {
     if (process.env.KLAURO_AI_INTERPRETATION === 'false' || process.env.KLAURO_AI_INTERPRETATION === '0') {
       this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'ai_skipped', false, 'disabled-by-env');
@@ -6519,7 +6526,8 @@ export class AnalyzerOrchestrator {
       externalServices,
       flowGraph,
       domainConcepts,
-      systemCapabilities
+      systemCapabilities,
+      libraryNames
     );
 
     const elementsEnabled = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS !== 'false' && process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS !== '0';
@@ -6557,6 +6565,7 @@ export class AnalyzerOrchestrator {
       const combined = this.parseCombinedInterpretation(raw);
       const interpretationFacts = {
         frameworks,
+        libraries: libraryNames,
         databaseEntities,
         externalServices,
         structuralTokens: this.structuralGroundingTokens(systemName, structuralFacts, databaseEntities),
@@ -7353,7 +7362,7 @@ export class AnalyzerOrchestrator {
   private validateAIInterpretation(
     description: string,
     enhancedSystemPurpose: EnhancedSystemPurpose,
-    facts: { frameworks?: string[]; databaseEntities?: string[]; externalServices?: string[]; structuralTokens?: string[] } = {},
+    facts: { frameworks?: string[]; libraries?: string[]; databaseEntities?: string[]; externalServices?: string[]; structuralTokens?: string[] } = {},
   ): { ok: boolean; reason?: string } {
     const cleaned = this.cleanGeneratedDescriptionText(description);
     if (cleaned.length < 120) return { ok: false, reason: 'too-short' };
@@ -7424,7 +7433,7 @@ export class AnalyzerOrchestrator {
     if (/\b(Key capabilities|Data model|Entry points|Integrations):/i.test(description)) {
       return { ok: false, reason: 'raw-fact-list-format' };
     }
-    const allowedFrameworks = (facts.frameworks || []).map(framework => framework.toLowerCase().replace(/[^a-z0-9]+/g, ''));
+    const allowedFrameworks = this.frameworkClaimAllowList(facts);
     const mentionedFrameworks = [
       ['nestjs', /\bnest\s*js\b|\bnestjs\b/i],
       ['fastapi', /\bfastapi\b/i],
@@ -7443,7 +7452,7 @@ export class AnalyzerOrchestrator {
       ['vue', /\bvue\b/i],
       ['angular', /\bangular\b/i],
     ].filter(([, pattern]) => (pattern as RegExp).test(cleaned));
-    if (mentionedFrameworks.some(([key]) => !allowedFrameworks.includes(String(key)))) {
+    if (mentionedFrameworks.some(([key]) => !this.frameworkClaimIsAllowed(String(key), allowedFrameworks))) {
       return { ok: false, reason: 'unsupported-framework-claim' };
     }
     const integrationsPattern = /\b(external services?|integrations?|integrates with)\b/i;
@@ -7462,10 +7471,32 @@ export class AnalyzerOrchestrator {
     return { ok: true };
   }
 
+  private libraryNamesForInterpretation(libraries: Array<{ name?: string }>): string[] {
+    return Array.from(new Set(
+      (libraries || [])
+        .map(library => String(library?.name || '').trim())
+        .filter(Boolean)
+    ));
+  }
+
+  private frameworkClaimAllowList(facts: { frameworks?: string[]; libraries?: string[] }): string[] {
+    return [...(facts.frameworks || []), ...(facts.libraries || [])]
+      .map(name => name.toLowerCase().replace(/[^a-z0-9]+/g, ''))
+      .filter(Boolean);
+  }
+
+  private frameworkClaimIsAllowed(claimKey: string, allowList: string[]): boolean {
+    return allowList.some(name =>
+      name === claimKey ||
+      name.startsWith(claimKey) ||
+      (name.length >= 4 && claimKey.startsWith(name))
+    );
+  }
+
   private sanitizeAIInterpretation(
     description: string,
     enhancedSystemPurpose: EnhancedSystemPurpose,
-    facts: { frameworks?: string[]; databaseEntities?: string[]; externalServices?: string[] } = {},
+    facts: { frameworks?: string[]; libraries?: string[]; databaseEntities?: string[]; externalServices?: string[] } = {},
   ): string {
     const cleaned = this.cleanGeneratedDescriptionText(description)
       .replace(/\bfacilitates\b/gi, 'links')
@@ -7505,7 +7536,7 @@ export class AnalyzerOrchestrator {
       .filter(Boolean);
     if (sentences.length <= 1) return cleaned;
 
-    const allowedFrameworks = (facts.frameworks || []).map(framework => framework.toLowerCase().replace(/[^a-z0-9]+/g, ''));
+    const allowedFrameworks = this.frameworkClaimAllowList(facts);
     const groundedTerms = [
       enhancedSystemPurpose.primary_domain,
       ...(enhancedSystemPurpose.core_concepts || []),
@@ -7531,7 +7562,7 @@ export class AnalyzerOrchestrator {
       ['vue', /\bvue\b/i],
       ['angular', /\bangular\b/i],
     ]
-      .filter(([key]) => !allowedFrameworks.includes(String(key)))
+      .filter(([key]) => !this.frameworkClaimIsAllowed(String(key), allowedFrameworks))
       .map(([, pattern]) => pattern as RegExp);
 
     const keep = sentences.filter(sentence => {
@@ -7605,7 +7636,8 @@ export class AnalyzerOrchestrator {
     externalServices: string[],
     flowGraph: CASFlowGraph,
     domainConcepts: CASDomainConcept[],
-    systemCapabilities: SystemCapability[] = []
+    systemCapabilities: SystemCapability[] = [],
+    libraryNames: string[] = []
   ): Record<string, unknown> {
     const topCapabilities = (systemCapabilities.length > 0
       ? systemCapabilities
@@ -7642,10 +7674,13 @@ export class AnalyzerOrchestrator {
     return {
       systemName,
       frameworks: frameworks.slice(0, 6),
+      libraries: libraryNames.slice(0, 12),
       allowedFrameworks: frameworks.length > 0 ? frameworks.slice(0, 6) : ['none detected'],
       forbiddenFrameworkInstruction: frameworks.length > 0
-        ? 'Mention only frameworks in allowedFrameworks.'
-        : 'No framework was detected in product code; do not mention any framework.',
+        ? 'Mention only frameworks in allowedFrameworks or packages in libraries.'
+        : libraryNames.length > 0
+          ? 'No framework was detected in product code; mention only packages listed in libraries.'
+          : 'No framework was detected in product code; do not mention any framework.',
       entryPoints: [...meaningfulEntryPoints].sort((a, b) => a.type.localeCompare(b.type)),
       capabilities: topCapabilities,
       domainConcepts: conceptPool,

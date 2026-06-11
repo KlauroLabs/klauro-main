@@ -896,6 +896,31 @@ describe('architecture and capability inference', () => {
     expect(orch.frameworkNamesForPurpose(contributions, nodes, projectRoot)).toEqual([]);
   });
 
+  it('strips analyzer display-name artifacts so "enhanced rust" never reaches purpose framework names', () => {
+    const projectRoot = '/repo/arb_engine';
+    const nodes: CASNode[] = [
+      node({
+        id: 'engine',
+        name: 'engine',
+        type: 'module',
+        source: { file: '/repo/arb_engine/src/engine.rs' },
+        metadata: { framework: 'enhanced rust' },
+      }),
+      node({
+        id: 'router',
+        name: 'AppRouter',
+        type: 'component',
+        source: { file: '/repo/arb_engine/ui/src/AppRouter.tsx' },
+        metadata: { framework: 'React Router' },
+      }),
+    ];
+
+    const names = orch.frameworkNamesForPurpose([], nodes, projectRoot);
+    expect(names).toContain('rust');
+    expect(names).toContain('React Router');
+    expect(names.join(' ')).not.toMatch(/enhanced/i);
+  });
+
   it('uses AI to replace capability descriptions when configured without auto-enriching every entity', async () => {
     const previousLocal = process.env.AI_LOCAL_ENABLED;
     const previousElementDescriptions = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS;
@@ -1712,6 +1737,44 @@ describe('architecture and capability inference', () => {
     expect(orch.validateAIInterpretation(description, purpose, {
       structuralTokens: ['laundry', 'booking', 'pickup', 'delivery'],
     }).ok).toBe(true);
+  });
+
+  it('accepts framework mentions backed by detected libraries instead of framework analyzers', () => {
+    const purpose = { primary_domain: 'game-management', core_concepts: ['game', 'tournament', 'card', 'deck'] };
+    const description = 'A game management system built with React and Prisma that coordinates game, tournament, card, and deck workflows, tracking deck construction and tournament pairings for players.';
+
+    expect(orch.validateAIInterpretation(description, purpose, { frameworks: [] }).reason).toBe('unsupported-framework-claim');
+    expect(orch.validateAIInterpretation(description, purpose, {
+      frameworks: [],
+      libraries: ['react', 'zustand', '@prisma/client'],
+    }).ok).toBe(true);
+    expect(orch.validateAIInterpretation(description, purpose, {
+      frameworks: [],
+      libraries: ['preact', 'zustand'],
+    }).reason).toBe('unsupported-framework-claim');
+  });
+
+  it('matches scoped and suffixed package names against framework claim keys', () => {
+    const purpose = { primary_domain: 'order-management', core_concepts: ['order', 'shipment'] };
+    const description = 'An order management service built with Express and NestJS that records orders and shipments, links shipment updates to each order, and answers order lookups for dispatch operators.';
+
+    expect(orch.validateAIInterpretation(description, purpose, {
+      libraries: ['express', '@nestjs/swagger'],
+    }).ok).toBe(true);
+    expect(orch.validateAIInterpretation(description, purpose, {
+      libraries: ['express-rate-limit'],
+    }).reason).toBe('unsupported-framework-claim');
+  });
+
+  it('keeps library-backed framework sentences when sanitizing rejected descriptions', () => {
+    const purpose = { primary_domain: 'game-management', core_concepts: ['game', 'tournament', 'card', 'deck'] };
+    const description = 'A game management system that coordinates game, tournament, card, and deck workflows. It is built with React and Prisma for deck construction and tournament pairing screens.';
+
+    expect(orch.sanitizeAIInterpretation(description, purpose, { frameworks: [] })).not.toMatch(/react/i);
+    expect(orch.sanitizeAIInterpretation(description, purpose, {
+      frameworks: [],
+      libraries: ['react', '@prisma/client'],
+    })).toMatch(/built with React and Prisma/);
   });
 
   it('does not classify an application repo as cloud infrastructure just because it contains terraform files', () => {
