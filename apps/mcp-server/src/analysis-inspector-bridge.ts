@@ -6,8 +6,9 @@ import { analyzeProject } from './analyzer';
 
 const port = Number(process.env.KLAURO_INSPECTOR_BRIDGE_PORT || '48731');
 const analysesRoot = process.env.KLAURO_STORAGE_PATH || path.join(process.env.HOME || '', '.klauro', 'analyses');
+const repoGeneratorPath = path.join(__dirname, '..', 'scripts', 'create-analysis-inspector.js');
 const generatorPath = process.env.KLAURO_INSPECTOR_GENERATOR ||
-  path.join(analysesRoot, 'create-analysis-inspector.js');
+  (fs.existsSync(repoGeneratorPath) ? repoGeneratorPath : path.join(analysesRoot, 'create-analysis-inspector.js'));
 
 type JobStatus = 'queued' | 'running' | 'complete' | 'failed';
 
