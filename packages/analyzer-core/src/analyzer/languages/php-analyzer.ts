@@ -587,6 +587,8 @@ export class PHPAnalyzer extends BaseAnalyzer {
         await this.processPHPFunction(func, fileId, fullPath, lines, fileComments, nodes, edges, entryPoints);
       }
 
+      this.detectSoapExitPoints(content, fullPath, fileId, classes, nodes, exitPoints);
+
       for (const variable of globalVars) {
         const variableId = `variable_${fileId}_${this.sanitizeId(variable.name)}`;
         nodes.push(this.createNodeBuilder(
@@ -648,6 +650,191 @@ export class PHPAnalyzer extends BaseAnalyzer {
     } catch (error) {
       console.warn(`Failed to analyze PHP file ${relativePath}:`, error);
     }
+  }
+
+  private detectSoapExitPoints(
+    content: string,
+    fullPath: string,
+    fileId: string,
+    classes: PHPClass[],
+    nodes: CASNode[],
+    exitPoints: CASExitPoint[]
+  ): void {
+    if (!content.includes('SoapClient') && !content.includes('__soapCall')) return;
+
+    const lines = content.split('\n');
+
+    const soapClassNames = new Set<string>();
+    let resolvedNewSoapClass = true;
+    while (resolvedNewSoapClass) {
+      resolvedNewSoapClass = false;
+      for (const cls of classes) {
+        if (soapClassNames.has(cls.name) || !cls.extendsClass) continue;
+        const parentBase = cls.extendsClass.replace(/^\\+/, '').split('\\').pop() || '';
+        if (parentBase === 'SoapClient' || soapClassNames.has(parentBase)) {
+          soapClassNames.add(cls.name);
+          resolvedNewSoapClass = true;
+        }
+      }
+    }
+
+    const isSoapClientClassName = (raw: string): boolean => {
+      const base = raw.replace(/^\\+/, '').split('\\').pop() || '';
+      return base === 'SoapClient' || soapClassNames.has(base);
+    };
+
+    const stringAssignments = new Map<string, string>();
+    for (const line of lines) {
+      const variableAssignment = line.match(/\$(\w+)\s*=\s*['"]([^'"]+)['"]\s*;/);
+      if (variableAssignment) stringAssignments.set(variableAssignment[1], variableAssignment[2]);
+      const constAssignment = line.match(/const\s+(\w+)\s*=\s*['"]([^'"]+)['"]/);
+      if (constAssignment) stringAssignments.set(constAssignment[1], constAssignment[2]);
+      const defineAssignment = line.match(/define\s*\(\s*['"](\w+)['"]\s*,\s*['"]([^'"]+)['"]/);
+      if (defineAssignment) stringAssignments.set(defineAssignment[1], defineAssignment[2]);
+    }
+
+    const classWsdl = new Map<string, string>();
+    for (const cls of classes) {
+      if (!soapClassNames.has(cls.name)) continue;
+      for (let i = cls.lineStart - 1; i < cls.lineEnd && i < lines.length; i++) {
+        const wsdlLiteral = lines[i].match(/\$wsdl\s*=\s*[^;]*?['"]([^'"]+)['"]/) ||
+          lines[i].match(/parent::__construct\s*\(\s*['"]([^'"]+)['"]/);
+        if (wsdlLiteral && (/^https?:\/\//i.test(wsdlLiteral[1]) || /\.(wsdl|xml)(\?|$)/i.test(wsdlLiteral[1]) || /wsdl/i.test(wsdlLiteral[1]))) {
+          classWsdl.set(cls.name, wsdlLiteral[1]);
+          break;
+        }
+      }
+    }
+
+    const soapReceivers = new Map<string, { wsdl?: string; clientClass: string }>();
+
+    for (const cls of classes) {
+      for (const property of cls.properties) {
+        const propertyType = (property.type || '').replace(/^\?/, '');
+        if (propertyType && isSoapClientClassName(propertyType)) {
+          const base = propertyType.replace(/^\\+/, '').split('\\').pop() || 'SoapClient';
+          soapReceivers.set(`$this->${property.name}`, { wsdl: classWsdl.get(base), clientClass: base });
+        }
+      }
+    }
+
+    const resolveWsdlArgument = (argument: string): string | undefined => {
+      const trimmed = argument.trim();
+      const literal = trimmed.match(/^['"]([^'"]+)['"]$/);
+      if (literal) return literal[1];
+      const variable = trimmed.match(/^\$(\w+)$/);
+      if (variable) return stringAssignments.get(variable[1]);
+      const constant = trimmed.match(/^(?:self::|static::)?([A-Z][A-Z0-9_]*)$/);
+      if (constant) return stringAssignments.get(constant[1]);
+      return undefined;
+    };
+
+    const exitIds = new Set(exitPoints.map(exit => exit.id));
+    const methodNodesInFile = nodes.filter(node =>
+      (node.type === 'method' || node.type === 'function') && node.source?.file === fullPath
+    );
+    const enclosingNodeId = (lineNumber: number): string => {
+      let innermost: CASNode | undefined;
+      for (const node of methodNodesInFile) {
+        if (node.source?.line === undefined || node.source?.end_line === undefined) continue;
+        if (node.source.line > lineNumber || node.source.end_line < lineNumber) continue;
+        if (!innermost || node.source.line > (innermost.source?.line ?? 0)) innermost = node;
+      }
+      return innermost?.id || fileId;
+    };
+    const enclosingSoapClass = (lineNumber: number): PHPClass | undefined =>
+      classes.find(cls => soapClassNames.has(cls.name) && cls.lineStart <= lineNumber && cls.lineEnd >= lineNumber);
+
+    const pushSoapExit = (
+      lineNumber: number,
+      operation: string | undefined,
+      wsdl: string | undefined,
+      clientClass: string
+    ) => {
+      const sourceNode = enclosingNodeId(lineNumber);
+      const targetName = this.soapTargetName(wsdl, clientClass);
+      const exitId = `exit_soap_${sourceNode}_${this.sanitizeId(operation || 'connect')}_${lineNumber}`;
+      if (exitIds.has(exitId)) return;
+      exitIds.add(exitId);
+      exitPoints.push(this.createExitPoint(
+        exitId,
+        sourceNode,
+        'api',
+        operation ? `SOAP call: ${targetName}::${operation}` : `SOAP client: ${targetName}`,
+        operation
+          ? `SOAP operation ${operation} against ${targetName}`
+          : `SOAP client construction for ${targetName}`,
+        { endpoint: wsdl, resource: targetName, sdk: clientClass },
+        { action: operation || 'connect', method: 'SOAP' },
+        { protocol: 'soap', wsdl, line: lineNumber, client: clientClass }
+      ));
+    };
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line.includes('new ')) continue;
+
+      const constructions = line.matchAll(/(?:(\$this->\w+|\$\w+)\s*=\s*)?new\s+(\\?[\w\\]+)\s*\(\s*([^,)]*)/g);
+      for (const construction of constructions) {
+        const receiver = construction[1];
+        const className = construction[2];
+        if (!isSoapClientClassName(className)) continue;
+
+        const classBase = className.replace(/^\\+/, '').split('\\').pop() || 'SoapClient';
+        const wsdl = classBase === 'SoapClient'
+          ? resolveWsdlArgument(construction[3] || '')
+          : classWsdl.get(classBase) || resolveWsdlArgument(construction[3] || '');
+
+        if (receiver) soapReceivers.set(receiver, { wsdl, clientClass: classBase });
+        pushSoapExit(i + 1, undefined, wsdl, classBase);
+      }
+    }
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line.includes('->') && !line.includes('::')) continue;
+
+      const soapCalls = line.matchAll(/(\$this->\w+|\$\w+|parent|self|static)(?:->|::)__soapCall\s*\(\s*['"]([\w.]+)['"]/g);
+      for (const soapCall of soapCalls) {
+        const receiver = soapCall[1];
+        const operation = soapCall[2];
+
+        if (receiver === '$this' || receiver === 'parent' || receiver === 'self' || receiver === 'static') {
+          const soapClass = enclosingSoapClass(i + 1);
+          if (!soapClass) continue;
+          pushSoapExit(i + 1, operation, classWsdl.get(soapClass.name), soapClass.name);
+        } else {
+          const traced = soapReceivers.get(receiver);
+          if (!traced) continue;
+          pushSoapExit(i + 1, operation, traced.wsdl, traced.clientClass);
+        }
+      }
+
+      const directCalls = line.matchAll(/(\$this->\w+|\$\w+)->(\w+)\s*\(/g);
+      for (const directCall of directCalls) {
+        const receiver = directCall[1];
+        const methodName = directCall[2];
+        if (methodName.startsWith('__')) continue;
+        const traced = soapReceivers.get(receiver);
+        if (!traced) continue;
+        pushSoapExit(i + 1, methodName, traced.wsdl, traced.clientClass);
+      }
+    }
+  }
+
+  private soapTargetName(wsdl: string | undefined, clientClass: string): string {
+    if (wsdl) {
+      if (/^https?:\/\//i.test(wsdl)) {
+        try {
+          return new URL(wsdl).hostname;
+        } catch {
+          // fall through to other naming strategies
+        }
+      }
+      const basename = wsdl.split('/').pop();
+      if (basename && /\.(wsdl|xml)$/i.test(basename)) return basename;
+    }
+    return clientClass;
   }
 
   private async processPHPClass(
