@@ -8,6 +8,7 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
 import { parse } from '@typescript-eslint/typescript-estree';
+import { AngularRouteResolver, ResolvedAngularRoute } from './angular-route-resolver';
 
 interface AngularApplication {
   name: string;
@@ -82,7 +83,8 @@ interface AngularPipe {
 interface AngularGuard {
   name: string;
   filePath: string;
-  type: 'CanActivate' | 'CanDeactivate' | 'CanLoad' | 'Resolve';
+  type: 'CanActivate' | 'CanActivateChild' | 'CanDeactivate' | 'CanLoad' | 'CanMatch' | 'Resolve';
+  functional: boolean;
   methods: string[];
   dependencies: string[];
 }
@@ -184,7 +186,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
       const directives = await this.analyzeDirectives(angularFiles, context.projectPath, nodes, edges);
       const pipes = await this.analyzePipes(angularFiles, context.projectPath, nodes, edges);
       const guards = await this.analyzeGuards(angularFiles, context.projectPath, nodes, edges);
-      const routes = await this.analyzeRoutes(angularFiles, context.projectPath, nodes, edges, entryPoints);
+      const routes = await this.analyzeRoutes(angularFiles, context.projectPath, nodes, edges, entryPoints, components, guards);
 
       this.buildAngularRelationships(components, services, modules, directives, pipes, guards, routes, nodes, edges);
       this.identifyAPIConnections(services, components, exitPoints);
@@ -588,11 +590,11 @@ export class AngularAnalyzer extends BaseAnalyzer {
       const fullPath = path.join(projectPath, file);
       const content = await fs.readFile(fullPath, 'utf-8');
 
-      if (content.includes('CanActivate') || content.includes('CanDeactivate') || content.includes('CanLoad') || content.includes('Resolve')) {
+      if (content.includes('CanActivate') || content.includes('CanDeactivate') || content.includes('CanLoad') || content.includes('CanMatch') || content.includes('Resolve')) {
         try {
-          const guard = this.extractAngularGuard(content, file);
+          const extractedGuards = this.extractAngularGuards(content, file);
 
-          if (guard) {
+          for (const guard of extractedGuards) {
             guards.push(guard);
 
             const guardId = this.generateId('guard', guard.filePath, guard.name);
@@ -605,6 +607,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
                 framework: 'angular',
                 attributes: {
                   guard_type: guard.type,
+                  functional: guard.functional,
                   methods: guard.methods,
                   dependencies_count: guard.dependencies.length
                 }
@@ -626,6 +629,165 @@ export class AngularAnalyzer extends BaseAnalyzer {
     projectPath: string,
     nodes: CASNode[],
     edges: CASEdge[],
+    entryPoints: CASEntryPoint[],
+    components: AngularComponent[],
+    guards: AngularGuard[]
+  ): Promise<AngularRoute[]> {
+    let resolvedRoutes: ResolvedAngularRoute[] = [];
+    try {
+      const resolver = new AngularRouteResolver(projectPath);
+      resolvedRoutes = (await resolver.resolve(files)).routes;
+    } catch (error) {
+      console.warn('Angular route resolution failed:', error);
+    }
+
+    if (resolvedRoutes.length > 0) {
+      return this.emitResolvedRoutes(resolvedRoutes, projectPath, nodes, edges, entryPoints, components, guards);
+    }
+
+    return this.analyzeRoutesByPattern(files, projectPath, nodes, entryPoints);
+  }
+
+  private emitResolvedRoutes(
+    resolvedRoutes: ResolvedAngularRoute[],
+    projectPath: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[],
+    components: AngularComponent[],
+    guards: AngularGuard[]
+  ): AngularRoute[] {
+    const componentIdsByName = new Map<string, Array<{ id: string; filePath: string }>>();
+    for (const component of components) {
+      const list = componentIdsByName.get(component.name) || [];
+      list.push({ id: this.generateId('component', component.filePath, component.name), filePath: component.filePath });
+      componentIdsByName.set(component.name, list);
+    }
+    const guardIdsByName = new Map<string, string>();
+    for (const guard of guards) {
+      guardIdsByName.set(guard.name, this.generateId('guard', guard.filePath, guard.name));
+    }
+
+    const routes: AngularRoute[] = [];
+    const seenRouteIds = new Set<string>();
+
+    for (const route of resolvedRoutes) {
+      const displayPath = `/${route.fullPath}`;
+      const allGuards = [...new Set([...route.inheritedGuards, ...route.guards])];
+      const routeId = this.generateId('route', route.sourceFile, `${displayPath}_${route.line}`);
+      if (seenRouteIds.has(routeId)) continue;
+      seenRouteIds.add(routeId);
+
+      const routeNode = this.createNodeBuilder(routeId, displayPath, 'angular_route')
+        .withLevel(3, 'code')
+        .withCategory('route', ['angular', 'navigation'])
+        .withSource({ file: path.join(projectPath, route.sourceFile), line: route.line, end_line: route.line })
+        .withDescription(route.component
+          ? `Angular route ${displayPath} rendering ${route.component}`
+          : route.redirectTo !== undefined
+            ? `Angular route ${displayPath} redirecting to ${route.redirectTo || '/'}`
+            : `Angular route ${displayPath}`)
+        .withMetadata({
+          framework: 'angular',
+          attributes: {
+            path: displayPath,
+            segment: route.segment,
+            path_resolved: route.pathResolved,
+            component: route.component,
+            component_file: route.componentFile,
+            lazy: route.lazyComponent || route.lazyChildren,
+            load_children: route.loadChildrenFile,
+            redirect_to: route.redirectTo,
+            guards: allGuards.length > 0 ? allGuards : undefined,
+            guard_kinds: Object.keys(route.guardKinds).length > 0 ? route.guardKinds : undefined,
+            resolve: route.resolve,
+            data: route.data
+          }
+        })
+        .build();
+      nodes.push(routeNode);
+
+      if (route.component) {
+        const candidates = componentIdsByName.get(route.component) || [];
+        const matched = route.componentFile
+          ? candidates.find(candidate => candidate.filePath === route.componentFile) || candidates[0]
+          : candidates[0];
+        const componentId = matched?.id
+          || this.generateId('component', route.componentFile || '', route.component);
+        edges.push(this.createEdge(
+          this.generateEdgeId(routeId, componentId, 'renders'),
+          routeId,
+          componentId,
+          'renders',
+          'structural',
+          { route_path: displayPath }
+        ));
+        edges.push(this.createEdge(
+          this.generateEdgeId(routeId, componentId, 'routes_to'),
+          routeId,
+          componentId,
+          'routes_to',
+          'dependency',
+          { route_path: displayPath }
+        ));
+      }
+
+      for (const guardName of allGuards) {
+        const guardId = guardIdsByName.get(guardName);
+        if (!guardId) continue;
+        edges.push(this.createEdge(
+          this.generateEdgeId(routeId, guardId, 'guarded_by'),
+          routeId,
+          guardId,
+          'guarded_by',
+          'dependency',
+          { route_path: displayPath, guard: guardName }
+        ));
+      }
+
+      if (route.component && route.pathResolved && route.segment !== '**') {
+        entryPoints.push(this.createEntryPoint(
+          `entry_${routeId}`,
+          routeId,
+          'route',
+          `Route ${displayPath}`,
+          `Angular route ${displayPath} rendering ${route.component}`,
+          {
+            path: displayPath,
+            method: 'GET'
+          },
+          {
+            authenticated: allGuards.length > 0,
+            authorized_roles: allGuards
+          },
+          {
+            component: route.component,
+            component_file: route.componentFile,
+            guards: allGuards,
+            lazy: route.lazyComponent || route.lazyChildren,
+            data: route.data,
+            route_file: route.sourceFile
+          }
+        ));
+      }
+
+      routes.push({
+        path: displayPath,
+        component: route.component,
+        loadChildren: route.loadChildrenFile,
+        redirectTo: route.redirectTo,
+        canActivate: allGuards.length > 0 ? allGuards : undefined,
+        data: route.data
+      });
+    }
+
+    return routes;
+  }
+
+  private async analyzeRoutesByPattern(
+    files: string[],
+    projectPath: string,
+    nodes: CASNode[],
     entryPoints: CASEntryPoint[]
   ): Promise<AngularRoute[]> {
     const routes: AngularRoute[] = [];
@@ -819,17 +981,59 @@ export class AngularAnalyzer extends BaseAnalyzer {
     };
   }
 
-  private extractAngularGuard(content: string, filePath: string): AngularGuard | null {
-    const guardName = this.extractGuardName(content, filePath);
-    if (!guardName) return null;
+  private extractAngularGuards(content: string, filePath: string): AngularGuard[] {
+    const guards: AngularGuard[] = [];
+    const seen = new Set<string>();
 
-    return {
-      name: guardName,
-      filePath,
-      type: this.extractGuardType(content),
-      methods: this.extractGuardMethods(content),
-      dependencies: this.extractDependencies(content)
-    };
+    const functionalPattern = /export\s+const\s+(\w+)\s*:\s*(CanActivateChildFn|CanActivateFn|CanDeactivateFn|CanMatchFn|CanLoadFn|ResolveFn)\b/g;
+    let match: RegExpExecArray | null;
+    while ((match = functionalPattern.exec(content)) !== null) {
+      const name = match[1];
+      if (seen.has(name)) continue;
+      seen.add(name);
+      guards.push({
+        name,
+        filePath,
+        type: match[2].replace(/Fn$/, '') as AngularGuard['type'],
+        functional: true,
+        methods: [],
+        dependencies: this.extractDependencies(content)
+      });
+    }
+
+    const classPattern = /export\s+class\s+(\w+)[^{]*\bimplements\b([^{]+)\{/g;
+    while ((match = classPattern.exec(content)) !== null) {
+      const interfaces = match[2];
+      const guardInterface = interfaces.match(/\b(CanActivateChild|CanActivate|CanDeactivate|CanMatch|CanLoad|Resolve)\b/);
+      if (!guardInterface) continue;
+      const name = match[1];
+      if (seen.has(name)) continue;
+      seen.add(name);
+      guards.push({
+        name,
+        filePath,
+        type: guardInterface[1] as AngularGuard['type'],
+        functional: false,
+        methods: this.extractGuardMethods(content),
+        dependencies: this.extractDependencies(content)
+      });
+    }
+
+    if (guards.length === 0 && this.extractGuardMethods(content).length > 0) {
+      const guardName = this.extractGuardName(content, filePath);
+      if (guardName) {
+        guards.push({
+          name: guardName,
+          filePath,
+          type: this.extractGuardType(content),
+          functional: false,
+          methods: this.extractGuardMethods(content),
+          dependencies: this.extractDependencies(content)
+        });
+      }
+    }
+
+    return guards;
   }
 
   private extractRoutes(content: string, filePath: string): AngularRoute[] {
@@ -1469,21 +1673,6 @@ export class AngularAnalyzer extends BaseAnalyzer {
       });
     });
 
-    routes.forEach((route, index) => {
-      if (route.component) {
-        const routeId = this.generateId('route', '', `${route.path}_${index}`);
-        const componentId = this.generateId('component', '', route.component);
-
-        edges.push(this.createEdge(
-          this.generateEdgeId(routeId, componentId, 'renders'),
-          routeId,
-          componentId,
-          'renders',
-          'structural',
-          { route_path: route.path }
-        ));
-      }
-    });
   }
 
   private identifyAPIConnections(services: AngularService[], components: AngularComponent[], exitPoints: CASExitPoint[]): void {
