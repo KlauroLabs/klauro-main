@@ -119,6 +119,41 @@ export interface IncrementalAnalysisOptions {
   saveCache?: (contentHash: string, result: FileAnalysisResult) => Promise<void>;
 }
 
+export const KLAURO_SELF_CAPABILITY_NAMES: Readonly<Record<string, string>> = {
+  agent: 'Agent Work Packets',
+  analysis: 'Codebase Analysis',
+  architecture: 'Architecture Mapping',
+  answer: 'Answer Packs',
+  cas: 'CAS Contract Validation',
+  change: 'Change Impact Analysis',
+  continuation: 'Agent Continuation',
+  contract: 'Contract Impact Analysis',
+  description: 'AI Description Enrichment',
+  evidence: 'Evidence Validation',
+  greenfield: 'Greenfield Planning',
+  idiom: 'Codebase Idiom Guidance',
+  incremental: 'Incremental Analysis',
+  invariant: 'Behavioral Invariant Validation',
+  klauro: 'Klauro CLI',
+  machine: 'Machine Repo Gauntlet',
+  project: 'Project Resolution',
+  proposal: 'Proposal Preview',
+  runtime: 'Runtime Telemetry',
+  storage: 'Analysis Storage',
+  task: 'Agent Task Proof',
+  workspace: 'Workspace Mapping',
+};
+
+export const KLAURO_SELF_CAPABILITY_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  'codebase analysis': 'Codebase Analysis builds a CAS relationship graph from repository structure so agents can understand entry points, data, tests, risks, and dependencies before editing.',
+  'architecture mapping': 'Architecture Mapping identifies local patterns, ownership layers, and inventories so agents can place changes in the right architectural boundary.',
+  'greenfield planning': 'Greenfield Planning compares a proposed product slice against existing capability memory so new projects avoid duplicate concepts and start with coherent architecture.',
+  'proposal preview': 'Proposal Preview analyzes a proposed codebase iteration as a temporary CAS graph so reviewers can inspect changed contracts, risks, idioms, and test impact before the real repo changes.',
+  'agent work packets': 'Agent Work Packets turns CAS graph matches, risks, idioms, and tests into a compact coding brief before an AI agent edits a repository.',
+  'codebase idiom guidance': 'Codebase Idiom Guidance identifies local conventions and validates proposed changes against the patterns already used in the repository.',
+  'analysis storage': 'Analysis Storage persists CAS outputs, snapshots, incremental state, and compressed artifacts so later MCP calls can reuse prior analysis.',
+};
+
 interface DetectedAnalyzerCacheEntry {
   expiresAt: number;
   projectRoots: string[];
@@ -7043,15 +7078,7 @@ export class AnalyzerOrchestrator {
       'file workflow': 'Infrastructure Definition captures resource files, variables, modules, and provider relationships so agents can understand what cloud resources the stack manages.',
     };
     if (this.isKlauroSelfProject(this.activeAnalysisProjectPath)) {
-      Object.assign(descriptions, {
-        'codebase analysis': 'Codebase Analysis builds a CAS relationship graph from repository structure so agents can understand entry points, data, tests, risks, and dependencies before editing.',
-        'architecture mapping': 'Architecture Mapping identifies local patterns, ownership layers, and inventories so agents can place changes in the right architectural boundary.',
-        'greenfield planning': 'Greenfield Planning compares a proposed product slice against existing capability memory so new projects avoid duplicate concepts and start with coherent architecture.',
-        'proposal preview': 'Proposal Preview analyzes a proposed codebase iteration as a temporary CAS graph so reviewers can inspect changed contracts, risks, idioms, and test impact before the real repo changes.',
-        'agent work packets': 'Agent Work Packets turns CAS graph matches, risks, idioms, and tests into a compact coding brief before an AI agent edits a repository.',
-        'codebase idiom guidance': 'Codebase Idiom Guidance identifies local conventions and validates proposed changes against the patterns already used in the repository.',
-        'analysis storage': 'Analysis Storage persists CAS outputs, snapshots, incremental state, and compressed artifacts so later MCP calls can reuse prior analysis.',
-      });
+      Object.assign(descriptions, KLAURO_SELF_CAPABILITY_DESCRIPTIONS);
     }
     if (descriptions[key]) return descriptions[key];
 
@@ -11265,31 +11292,7 @@ export class AnalyzerOrchestrator {
   private namedSystemCapabilityForDomain(key: string, projectPath?: string): string | undefined {
     if (!this.isKlauroSelfProject(projectPath)) return undefined;
     const normalized = this.normalizeDomainToken((key || '').toLowerCase());
-    const names: Record<string, string> = {
-      agent: 'Agent Work Packets',
-      analysis: 'Codebase Analysis',
-      architecture: 'Architecture Mapping',
-      answer: 'Answer Packs',
-      cas: 'CAS Contract Validation',
-      change: 'Change Impact Analysis',
-      continuation: 'Agent Continuation',
-      contract: 'Contract Impact Analysis',
-      description: 'AI Description Enrichment',
-      evidence: 'Evidence Validation',
-      greenfield: 'Greenfield Planning',
-      idiom: 'Codebase Idiom Guidance',
-      incremental: 'Incremental Analysis',
-      invariant: 'Behavioral Invariant Validation',
-      klauro: 'Klauro CLI',
-      machine: 'Machine Repo Gauntlet',
-      project: 'Project Resolution',
-      proposal: 'Proposal Preview',
-      runtime: 'Runtime Telemetry',
-      storage: 'Analysis Storage',
-      task: 'Agent Task Proof',
-      workspace: 'Workspace Mapping',
-    };
-    return names[normalized];
+    return KLAURO_SELF_CAPABILITY_NAMES[normalized];
   }
 
   private inferActionFromNodeName(name: string): string {

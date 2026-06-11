@@ -6,6 +6,10 @@ import { isDirectCliInvocation } from './cli-invocation';
 import { assertAnalysisVersionSupported, describeAnalysisVersion, loadAnalysis } from './storage';
 import { buildSummary, getDataLineage, getParadigmConformance, getProductMap, getUserJourneys } from './query';
 import { buildCrossRepoRouteDrift } from './product';
+import {
+  KLAURO_SELF_CAPABILITY_DESCRIPTIONS,
+  KLAURO_SELF_CAPABILITY_NAMES,
+} from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
 const PACKAGE_ROOT = path.resolve(__dirname, '..');
@@ -336,6 +340,112 @@ function runVersionSkewSuite(): { result: SuiteResult; checks: AnswerPackCheck[]
   return { result, checks };
 }
 
+export function buildKlauroVocabulary(): string[] {
+  const terms = new Set<string>(['Klauro']);
+  for (const name of Object.values(KLAURO_SELF_CAPABILITY_NAMES)) terms.add(name);
+  for (const description of Object.values(KLAURO_SELF_CAPABILITY_DESCRIPTIONS)) terms.add(description);
+  return [...terms];
+}
+
+function vocabularyTermAppearsIn(term: string, text: string): boolean {
+  if (term === 'Klauro') return /klauro/i.test(text);
+  return text.includes(term);
+}
+
+export function collectProductSurfaceText(cas: CASOutput): Record<string, string> {
+  const capabilities = cas.system_capabilities || [];
+  const productMap = getProductMap(cas, { format: 'markdown' }) as { markdown?: string };
+  return {
+    capability_names: capabilities.map(capability => capability.name).join('\n'),
+    capability_descriptions: capabilities.map(capability => capability.description || '').join('\n'),
+    domains: capabilities.flatMap(capability => capability.related_domains || []).join('\n'),
+    journeys: JSON.stringify(cas.user_journeys || []),
+    product_map: [productMap.markdown || '', JSON.stringify(cas.product_map || {})].join('\n'),
+  };
+}
+
+export function findVocabularyLeaks(cas: CASOutput): Array<{ term: string; section: string }> {
+  const sections = collectProductSurfaceText(cas);
+  const leaks: Array<{ term: string; section: string }> = [];
+  for (const term of buildKlauroVocabulary()) {
+    for (const [section, text] of Object.entries(sections)) {
+      if (vocabularyTermAppearsIn(term, text)) leaks.push({ term, section });
+    }
+  }
+  return leaks;
+}
+
+export function evaluateVocabIsolationChecks(input: {
+  foreign: Array<{ name: string; cas: CASOutput | null }>;
+  klauroSelf: CASOutput | null;
+}): AnswerPackCheck[] {
+  const checks: AnswerPackCheck[] = [];
+  const record = (id: string, question: string, invariant: string, observed: string, pass: boolean) => {
+    checks.push({ id, question, invariant, observed, status: pass ? 'pass' : 'fail' });
+  };
+
+  for (const target of input.foreign) {
+    const leaks = target.cas ? findVocabularyLeaks(target.cas) : null;
+    const summary = leaks
+      ? leaks.length === 0
+        ? '0 vocabulary occurrences'
+        : leaks.slice(0, 5).map(leak => `"${leak.term}" in ${leak.section}`).join('; ')
+      : 'analysis not loaded';
+    record(
+      `vocab-isolation-${target.name}`,
+      `Is the ${target.name} analysis free of Klauro product vocabulary?`,
+      'zero curated capability names, curated descriptions, or Klauro mentions in capability names, descriptions, domains, journeys, and product map',
+      summary,
+      leaks !== null && leaks.length === 0
+    );
+  }
+
+  const selfCapabilityNames = (input.klauroSelf?.system_capabilities || []).map(capability => capability.name);
+  const curatedNames = Object.values(KLAURO_SELF_CAPABILITY_NAMES);
+  const selfHits = curatedNames.filter(name => selfCapabilityNames.includes(name));
+  record(
+    'vocab-isolation-klauro-self-positive',
+    'Does the Klauro self-analysis still receive its curated product-surface capability names?',
+    'at least 1 curated capability name present in system_capabilities',
+    input.klauroSelf
+      ? `${selfHits.length}/${curatedNames.length} curated names present (${selfHits.slice(0, 3).join(', ')})`
+      : 'analysis not loaded',
+    selfHits.length >= 1
+  );
+
+  return checks;
+}
+
+async function runVocabIsolationSuite(): Promise<{ result: SuiteResult; checks: AnswerPackCheck[] }> {
+  const startedAt = Date.now();
+  const railsPath = path.join(PACKAGE_ROOT, 'fixtures', 'analysis-truth', 'rails-work-orders');
+  const truckspyAppPath = process.env.KLAURO_EVAL_TRUCKSPY_APP
+    || path.join(os.homedir(), 'dev', 'clients', 'outcode', 'truckspy', 'truckspyapp');
+
+  const [rails, truckspyApp, klauroSelf] = await Promise.all([
+    loadStoredAnalysis(railsPath),
+    loadStoredAnalysis(truckspyAppPath),
+    loadStoredAnalysis(REPO_ROOT),
+  ]);
+
+  const checks = evaluateVocabIsolationChecks({
+    foreign: [
+      { name: 'rails-work-orders', cas: rails },
+      { name: 'truckspyapp', cas: truckspyApp },
+    ],
+    klauroSelf,
+  });
+  const failing = checks.filter(check => check.status === 'fail');
+  const result = suiteResult(
+    'vocab-isolation',
+    failing.length === 0 ? 'pass' : 'fail',
+    Date.now() - startedAt,
+    `${checks.length - failing.length}/${checks.length} vocabulary isolation invariants held`,
+    { failing: failing.map(check => check.id), vocabulary_terms: buildKlauroVocabulary().length }
+  );
+  return { result, checks };
+}
+
 async function runAnswerPackSuite(): Promise<{ result: SuiteResult; checks: AnswerPackCheck[] }> {
   const startedAt = Date.now();
   const railsPath = path.join(PACKAGE_ROOT, 'fixtures', 'analysis-truth', 'rails-work-orders');
@@ -546,6 +656,14 @@ async function main(): Promise<void> {
       name: 'version-skew',
       run: async () => {
         const { result, checks } = runVersionSkewSuite();
+        answerPackChecks = [...answerPackChecks, ...checks];
+        return result;
+      },
+    },
+    {
+      name: 'vocab-isolation',
+      run: async () => {
+        const { result, checks } = await runVocabIsolationSuite();
         answerPackChecks = [...answerPackChecks, ...checks];
         return result;
       },
