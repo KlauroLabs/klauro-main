@@ -24,6 +24,7 @@ import type { TestDiscoveryEvidence } from './test-discovery';
 import { assessBehavioralInvariantImpact } from './invariant-validation';
 import { buildIdiomContextForAgent } from './idiom-query';
 import { summarizeAnalysisFreshness, type AnalysisFreshnessSummary } from './freshness';
+import { journeyHeadline } from './journey-presentation';
 import {
   classifyAnalysisProfile,
   expectedCallChainCount,
@@ -502,12 +503,10 @@ export function buildJourneyContextForAgent(
     total_matching: matching.length,
     journeys: trimToPillarTokenBudget(matching.slice(0, 5).map(journey => ({
       id: journey.id,
-      name: journey.name.length > 64 ? `${journey.name.slice(0, 61)}...` : journey.name,
+      headline: journeyHeadline(journey).slice(0, 160),
       kind: journey.journey_kind,
       criticality: journey.criticality,
-      entry: [journey.entry?.method, journey.entry?.path_or_trigger || journey.entry?.name].filter(Boolean).join(' ').slice(0, 64),
-      entities_written: (journey.terminal_effects?.entities_written || []).slice(0, 4),
-      boundaries: (journey.security_boundaries || []).slice(0, 3).map(boundary => boundary.name),
+      boundaries: [...new Set((journey.security_boundaries || []).slice(0, 3).map(boundary => boundary.name))],
       tests: (journey.tests_covering || []).length,
     }))),
   };
@@ -656,11 +655,9 @@ function compactPillarWorkContext(
       total_matching: context.journey_context.total_matching,
       journeys: context.journey_context.journeys.slice(0, limits.journeys).map((journey: any) => ({
         id: journey.id,
-        name: journey.name,
+        headline: journey.headline,
         kind: journey.kind,
         criticality: journey.criticality,
-        entry: journey.entry,
-        entities_written: Array.isArray(journey.entities_written) ? journey.entities_written.slice(0, 2) : journey.entities_written,
         boundaries: Array.isArray(journey.boundaries) ? journey.boundaries.slice(0, 2) : journey.boundaries,
         tests: journey.tests,
       })),

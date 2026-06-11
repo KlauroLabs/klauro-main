@@ -2879,18 +2879,19 @@ function registerTools(server: McpServer) {
     'get_user_journeys',
     {
       title: 'Get User Journeys',
-      description: 'Deterministic end-to-end user journeys composed from entry points, call chains, and terminal effects. Each journey shows why a path exists via its terminal entities (e.g. "Create work order -> WorkOrder created"). With journey_id: returns full journey detail with steps, security boundaries, and covering tests. Without: returns paginated journey summaries.',
+      description: 'Deterministic end-to-end user journeys composed from entry points, call chains, and terminal effects. Each journey shows why a path exists via its terminal entities (e.g. "Create work order -> WorkOrder created"). With journey_id: returns full journey detail with steps, security boundaries, and covering tests. Without: returns paginated journey summaries with a human-readable title and headline per journey. Use format markdown for a readable journey brief.',
       inputSchema: {
         path: z.string().describe('Project path'),
         journey_id: z.string().optional().describe('Specific journey ID for full detail'),
         kind: z.enum(['user-facing', 'system', 'scheduled']).optional().describe('Filter by journey kind'),
         limit: z.number().optional().describe('Max results when listing (default 25)'),
         offset: z.number().optional().describe('Skip first N results (default 0)'),
+        format: z.enum(['json', 'markdown']).optional().describe("Output format: 'json' (default) or 'markdown' for a human-readable journey brief"),
       } as any,
     } as any,
-    async ({ path, journey_id, kind, limit, offset }: any) => withErrorHandling(async () => {
+    async ({ path, journey_id, kind, limit, offset, format }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      return json(query.getUserJourneys(cas, { journeyId: journey_id, kind, limit, offset }));
+      return json(query.getUserJourneys(cas, { journeyId: journey_id, kind, limit, offset, format }));
     })
   );
 

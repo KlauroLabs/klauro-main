@@ -8,6 +8,14 @@ import { diffBehavior } from '../../../packages/analyzer-core/src/analyzer/core/
 import { buildProductMap } from '../../../packages/analyzer-core/src/analyzer/core/product-map';
 import type { CASProductMap } from '../../../packages/analyzer-core/src/types/cas.types';
 import {
+  journeyDetailMarkdown,
+  journeyHeadline,
+  journeyListMarkdown,
+  journeyTitle,
+  storedJourneyNameHeadline,
+  storedJourneyNameParts,
+} from './journey-presentation';
+import {
   loadChangeHistory,
   getChangeHistoryEntry,
   listAnalysisSnapshots,
@@ -809,15 +817,24 @@ export function getWorkflows(cas: CASOutput, workflowId?: string) {
 
 export function getUserJourneys(
   cas: CASOutput,
-  opts: { journeyId?: string; kind?: string; limit?: number; offset?: number } = {}
+  opts: { journeyId?: string; kind?: string; limit?: number; offset?: number; format?: 'json' | 'markdown' } = {}
 ) {
   const journeysNotice = cas.user_journeys === undefined
     ? analysisVersionNotice(cas, 'user journeys')
     : undefined;
   const journeys = cas.user_journeys || [];
   if (opts.journeyId) {
+    const journey = journeys.find(item => item.id === opts.journeyId) || null;
+    if (opts.format === 'markdown') {
+      const markdown = journey ? journeyDetailMarkdown(journey) : `No journey with id '${opts.journeyId}'.`;
+      return {
+        markdown: journeysNotice ? `> ${journeysNotice}\n\n${markdown}` : markdown,
+      };
+    }
     return {
-      journey: journeys.find(journey => journey.id === opts.journeyId) || null,
+      journey: journey
+        ? { title: journeyTitle(journey), headline: journeyHeadline(journey), ...journey }
+        : null,
       analysis_version_notice: journeysNotice,
     };
   }
@@ -829,6 +846,18 @@ export function getUserJourneys(
 
   const limit = opts.limit || 25;
   const offset = opts.offset || 0;
+  const page = filtered.slice(offset, offset + limit);
+
+  if (opts.format === 'markdown') {
+    const markdown = journeyListMarkdown(page, {
+      total: filtered.length,
+      offset,
+      byKind: cas.user_journey_summary?.by_kind,
+    });
+    return {
+      markdown: journeysNotice ? `> ${journeysNotice}\n\n${markdown}` : markdown,
+    };
+  }
 
   return {
     total: filtered.length,
@@ -836,8 +865,10 @@ export function getUserJourneys(
     limit,
     analysis_version_notice: journeysNotice,
     summary: cas.user_journey_summary || null,
-    journeys: filtered.slice(offset, offset + limit).map(journey => ({
+    journeys: page.map(journey => ({
       id: journey.id,
+      title: journeyTitle(journey),
+      headline: journeyHeadline(journey),
       name: journey.name,
       journey_kind: journey.journey_kind,
       criticality: journey.criticality,
@@ -1063,7 +1094,7 @@ export function productMapToMarkdown(map: CASProductMap): string {
     lines.push(`- **${capability.name}** [${capability.criticality}, ${capability.category}] ${capability.description}`);
     const facts: string[] = [];
     if (capability.journeys.length > 0) {
-      facts.push(`journeys: ${capability.journeys.map(journey => journey.name).join('; ')}`);
+      facts.push(`journeys: ${capability.journeys.map(journey => storedJourneyNameParts(journey.name).title || journey.name).join('; ')}`);
     }
     if (capability.entities.length > 0) {
       facts.push(`entities: ${capability.entities.join(', ')}`);
@@ -1086,8 +1117,10 @@ export function productMapToMarkdown(map: CASProductMap): string {
     lines.push(`${map.journeys.total} total: ${kindBreakdown}.`);
   }
   for (const journey of map.journeys.top) {
-    const boundaries = journey.boundaries.length > 0 ? journey.boundaries.join(', ') : 'none';
-    lines.push(`- ${journey.name} (${journey.kind}, ${journey.criticality}) | boundaries: ${boundaries} | tests: ${journey.tests}`);
+    const uniqueBoundaries = [...new Set(journey.boundaries)];
+    const guardText = uniqueBoundaries.length > 0 ? `guarded (${uniqueBoundaries.join(', ')})` : 'unguarded';
+    const testText = journey.tests === 0 ? 'no tests' : `${journey.tests} test${journey.tests === 1 ? '' : 's'}`;
+    lines.push(`- ${storedJourneyNameHeadline(journey.name)}; ${guardText}, ${testText} [${journey.kind}, ${journey.criticality}]`);
   }
 
   lines.push('');

@@ -1,0 +1,483 @@
+{
+  "source": "Real journeys extracted from stored Klauro analyses (truckspyapp PHP/Symfony, washup Rails, Klauro self-analysis Rails fixture). Stored fields only; used by journey-presentation tests.",
+  "truckspy_create_company": {
+    "id": "journey_entry_post__api_web_partner_companies_createCompany",
+    "name": "Create company -> Company created (+7 more) (POST /api/web/partner/companies)",
+    "journey_kind": "user-facing",
+    "entry_point_id": "entry_post__api_web_partner_companies_createCompany",
+    "entry": {
+      "type": "http",
+      "name": "POST /api/web/partner/companies",
+      "method": "POST",
+      "path_or_trigger": "/api/web/partner/companies",
+      "handler_node_id": "method_src_controller_api_partnerweb_companycontroller_ph_CompanyController_createCompany_41d2f42e"
+    },
+    "steps": [
+      {
+        "node_id": "method_src_controller_api_partnerweb_companycontroller_ph_CompanyController_createCompany_41d2f42e",
+        "name": "createCompany",
+        "layer": "entry",
+        "depth": 0
+      },
+      {
+        "node_id": "service_src_service_companyservice_companymanager_php_CompanyManager_7b2c83cc",
+        "name": "CompanyManager",
+        "layer": "business",
+        "depth": 1
+      },
+      {
+        "node_id": "method_class_App_Service_CompanyService_CompanyManager_validateCompanyName_108",
+        "name": "validateCompanyName",
+        "layer": "business",
+        "depth": 2
+      },
+      {
+        "node_id": "method_src_service_companyservice_companymanager_php_CompanyManager_churnCompany_f99918c2",
+        "name": "churnCompany",
+        "layer": "business",
+        "depth": 2
+      },
+      {
+        "node_id": "method_src_service_companyservice_companymanager_php_CompanyManager_createCompany_67822bdc",
+        "name": "createCompany",
+        "layer": "business",
+        "depth": 2
+      },
+      {
+        "node_id": "method_src_service_companyservice_companymanager_php_CompanyManager_getCompany_b5de3c83",
+        "name": "getCompany",
+        "layer": "business",
+        "depth": 2
+      },
+      {
+        "node_id": "method_src_service_companyservice_companymanager_php_CompanyManager_setCompanyStripeSource_f2ec316c",
+        "name": "setCompanyStripeSource",
+        "layer": "business",
+        "depth": 2
+      },
+      {
+        "node_id": "method_src_service_companyservice_companymanager_php_CompanyManager_updateCompany_21dfb956",
+        "name": "updateCompany",
+        "layer": "business",
+        "depth": 2
+      },
+      {
+        "node_id": "method_class_App_Entity_Address_toString_184",
+        "name": "toString",
+        "layer": "business",
+        "depth": 3
+      },
+      {
+        "node_id": "method_class_App_Entity_Company_getStripeCustomerId_165",
+        "name": "getStripeCustomerId",
+        "layer": "business",
+        "depth": 3
+      },
+      {
+        "node_id": "method_class_App_Entity_Company_setChurnedAt_401",
+        "name": "setChurnedAt",
+        "layer": "business",
+        "depth": 3
+      },
+      {
+        "node_id": "method_class_App_Entity_Company_setStripeCustomer_180",
+        "name": "setStripeCustomer",
+        "layer": "business",
+        "depth": 3
+      },
+      {
+        "node_id": "method_class_App_Entity_ReportingProfile_getActiveSubscriptions_639",
+        "name": "getActiveSubscriptions",
+        "layer": "business",
+        "depth": 3
+      },
+      {
+        "node_id": "method_class_App_Entity_StopImage_getCreator_149",
+        "name": "getCreator",
+        "layer": "business",
+        "depth": 3
+      },
+      {
+        "node_id": "method_class_App_Entity_Subscription_setLastQuantity_120",
+        "name": "setLastQuantity",
+        "layer": "business",
+        "depth": 3
+      },
+      {
+        "node_id": "method_class_App_Entity_User_setRoles_312",
+        "name": "setRoles",
+        "layer": "business",
+        "depth": 3
+      },
+      {
+        "node_id": "method_class_App_Repository_DeviceRepository_find_239",
+        "name": "find",
+        "layer": "business",
+        "depth": 3
+      },
+      {
+        "node_id": "method_class_App_Repository_NotificationSettingRepository_deleteAllForCompany_83",
+        "name": "deleteAllForCompany",
+        "layer": "business",
+        "depth": 3
+      },
+      {
+        "node_id": "method_class_App_Service_BillingSystem_PriceService_PriceService_estimateCurrentUsage_23",
+        "name": "estimateCurrentUsage",
+        "layer": "business",
+        "depth": 3
+      },
+      {
+        "node_id": "method_class_App_Service_CompanyService_CompanyRequestAssembler_readCompany_14",
+        "name": "readCompany",
+        "layer": "business",
+        "depth": 3
+      },
+      {
+        "node_id": "method_class_App_Service_CompanyService_CompanyRequestAssembler_readUser_35",
+        "name": "readUser",
+        "layer": "business",
+        "depth": 3
+      },
+      {
+        "node_id": "method_class_App_Service_ConnectionProvider_ConnectionManager_disableAllCompanyConnections_167",
+        "name": "disableAllCompanyConnections",
+        "layer": "business",
+        "depth": 3
+      },
+      {
+        "node_id": "method_class_App_Service_PartnerManager_CompanyManager_PartnerCompanyManager_linkPartnerCompany_39",
+        "name": "linkPartnerCompany",
+        "layer": "business",
+        "depth": 3
+      },
+      {
+        "node_id": "method_class_App_Service_ReportingProfileService_ReportingProfileService_createEmptyDefaultReportingProfile_133",
+        "name": "createEmptyDefaultReportingProfile",
+        "layer": "business",
+        "depth": 3
+      }
+    ],
+    "terminal_effects": {
+      "entities_written": [
+        "Company",
+        "Partner"
+      ],
+      "entities_read": [
+        "Device",
+        "ModernSubscriptionQuantity",
+        "ReportingProfile",
+        "StopImage",
+        "Subscription",
+        "User"
+      ],
+      "external_services": [],
+      "messages_emitted": []
+    },
+    "terminal_entities": [
+      {
+        "entity_id": "entity_company",
+        "name": "Company",
+        "access": "created",
+        "node_id": "class_App_Entity_Company",
+        "terminal_kind": "entity"
+      },
+      {
+        "entity_id": "entity_partner",
+        "name": "Partner",
+        "access": "created",
+        "node_id": "class_App_Entity_Partner",
+        "terminal_kind": "entity"
+      },
+      {
+        "entity_id": "entity_device",
+        "name": "Device",
+        "access": "read",
+        "node_id": "class_App_Entity_Device",
+        "terminal_kind": "entity"
+      },
+      {
+        "entity_id": "entity_modernsubscriptionquantity",
+        "name": "ModernSubscriptionQuantity",
+        "access": "read",
+        "node_id": "class_App_Entity_ModernSubscriptionQuantity",
+        "terminal_kind": "entity"
+      },
+      {
+        "entity_id": "entity_reportingprofile",
+        "name": "ReportingProfile",
+        "access": "read",
+        "node_id": "class_App_Entity_ReportingProfile",
+        "terminal_kind": "entity"
+      },
+      {
+        "entity_id": "entity_user",
+        "name": "User",
+        "access": "read",
+        "node_id": "class_App_Entity_User",
+        "terminal_kind": "entity"
+      },
+      {
+        "entity_id": "entity_stopimage",
+        "name": "StopImage",
+        "access": "read",
+        "node_id": "class_App_Entity_StopImage",
+        "terminal_kind": "entity"
+      },
+      {
+        "entity_id": "entity_subscription",
+        "name": "Subscription",
+        "access": "read",
+        "node_id": "class_App_Entity_Subscription",
+        "terminal_kind": "entity"
+      }
+    ],
+    "security_boundaries": [
+      {
+        "name": "IsGranted",
+        "mechanism": "entry-guard"
+      }
+    ],
+    "tests_covering": [],
+    "criticality": "critical",
+    "call_chain_ids": [
+      "chain:entry_post__api_web_partner_companies_createCompany"
+    ],
+    "exit_point_ids": []
+  },
+  "washup_update_location_event": {
+    "id": "journey_entry_route_config_routes_rb_PATCH__location_events__id_270_331b1d9d",
+    "name": "Update location event -> InvitationEvent deleted (+7 more) (PATCH /location_events/:id)",
+    "journey_kind": "user-facing",
+    "entry_point_id": "entry_route_config_routes_rb_PATCH__location_events__id_270_331b1d9d",
+    "entry": {
+      "type": "http",
+      "name": "PATCH /location_events/:id",
+      "method": "PATCH",
+      "path_or_trigger": "/location_events/:id",
+      "handler_node_id": "method_app_controllers_location_events_controller_rb_LocationEventsController_update_d7677c10"
+    },
+    "steps": [
+      {
+        "node_id": "method_app_controllers_location_events_controller_rb_LocationEventsController_update_d7677c10",
+        "name": "update",
+        "layer": "entry",
+        "depth": 0
+      },
+      {
+        "node_id": "route_config_routes_rb_PATCH__location_events__id_270_331b1d9d",
+        "name": "PATCH /location_events/:id",
+        "layer": "entry",
+        "depth": 0
+      },
+      {
+        "node_id": "controller_app_controllers_location_events_controller_rb_LocationEventsController_1fce0790",
+        "name": "LocationEventsController",
+        "layer": "entry",
+        "depth": 1
+      },
+      {
+        "node_id": "model_app_models_invitation_event_rb_InvitationEvent_99da2974",
+        "name": "InvitationEvent",
+        "layer": "data",
+        "depth": 1
+      },
+      {
+        "node_id": "model_app_models_user_rb_User_e65ff735",
+        "name": "User",
+        "layer": "data",
+        "depth": 1
+      },
+      {
+        "node_id": "model_app_models_location_event_rb_LocationEvent_14782edd",
+        "name": "LocationEvent",
+        "layer": "data",
+        "depth": 2
+      }
+    ],
+    "terminal_effects": {
+      "entities_written": [
+        "InvitationEvent",
+        "LocationEvent",
+        "User"
+      ],
+      "entities_read": [
+        "AccountOwner",
+        "Availability",
+        "Bay",
+        "Company",
+        "Event",
+        "History",
+        "Incident",
+        "Inspection",
+        "Location",
+        "Note",
+        "Notification",
+        "SecurityPin",
+        "Shift",
+        "Task",
+        "TimeOff",
+        "UserLocation",
+        "UserNotification"
+      ],
+      "external_services": [],
+      "messages_emitted": []
+    },
+    "terminal_entities": [
+      {
+        "entity_id": "entity_invitationevent",
+        "name": "InvitationEvent",
+        "access": "deleted",
+        "node_id": "method_app_controllers_location_events_controller_rb_LocationEventsController_update_c483662a",
+        "terminal_kind": "entity"
+      },
+      {
+        "entity_id": "entity_locationevent",
+        "name": "LocationEvent",
+        "access": "updated",
+        "node_id": "model_app_models_location_event_rb_LocationEvent_14782edd",
+        "terminal_kind": "entity"
+      },
+      {
+        "entity_id": "entity_user",
+        "name": "User",
+        "access": "updated",
+        "node_id": "model_app_models_user_rb_User_e65ff735",
+        "terminal_kind": "entity"
+      },
+      {
+        "entity_id": "entity_accountowner",
+        "name": "AccountOwner",
+        "access": "read",
+        "node_id": "model_app_models_account_owner_rb_AccountOwner_95a21ac1",
+        "terminal_kind": "entity"
+      },
+      {
+        "entity_id": "entity_availability",
+        "name": "Availability",
+        "access": "read",
+        "node_id": "model_app_models_availability_rb_Availability_88756705",
+        "terminal_kind": "entity"
+      },
+      {
+        "entity_id": "entity_bay",
+        "name": "Bay",
+        "access": "read",
+        "node_id": "model_app_models_bay_rb_Bay_da42a951",
+        "terminal_kind": "entity"
+      },
+      {
+        "entity_id": "entity_company",
+        "name": "Company",
+        "access": "read",
+        "node_id": "model_app_models_company_rb_Company_b5ba38a3",
+        "terminal_kind": "entity"
+      },
+      {
+        "entity_id": "entity_event",
+        "name": "Event",
+        "access": "read",
+        "node_id": "model_app_models_event_rb_Event_bea70c49",
+        "terminal_kind": "entity"
+      }
+    ],
+    "security_boundaries": [],
+    "tests_covering": [
+      "test_test_models_invitation_event_test_rb_InvitationEventTest_8f196400",
+      "test_test_models_user_test_rb_UserTest_a6e4edc1"
+    ],
+    "criticality": "critical",
+    "call_chain_ids": [
+      "chain:entry_route_config_routes_rb_PATCH__location_events__id_270_331b1d9d",
+      "chain:entry_route_config_routes_rb_PUT__location_events__id_271_23869707"
+    ],
+    "exit_point_ids": [
+      "exit_db_model_app_models_invitation_event_rb_InvitationEvent_99da2974",
+      "exit_db_model_app_models_user_rb_User_e65ff735"
+    ]
+  },
+  "klauro_delete_work_order": {
+    "id": "journey_entry_route_config_routes_rb_DELETE__work_orders__id_5_ec6c5e7d",
+    "name": "Delete work order -> WorkOrder deleted (+1 more)",
+    "journey_kind": "user-facing",
+    "entry_point_id": "entry_route_config_routes_rb_DELETE__work_orders__id_5_ec6c5e7d",
+    "entry": {
+      "type": "http",
+      "name": "DELETE /work_orders/:id",
+      "method": "DELETE",
+      "path_or_trigger": "/work_orders/:id",
+      "handler_node_id": "method_apps_mcp_server_fixtures_analysis_truth_rails_work_WorkOrdersController_destroy_c128b557"
+    },
+    "steps": [
+      {
+        "node_id": "method_apps_mcp_server_fixtures_analysis_truth_rails_work_WorkOrdersController_destroy_c128b557",
+        "name": "destroy",
+        "layer": "entry",
+        "depth": 0
+      },
+      {
+        "node_id": "route_config_routes_rb_DELETE__work_orders__id_5_ec6c5e7d",
+        "name": "DELETE /work_orders/:id",
+        "layer": "entry",
+        "depth": 0
+      },
+      {
+        "node_id": "controller_app_controllers_work_orders_controller_rb_WorkOrdersController_e7a45ac7",
+        "name": "WorkOrdersController",
+        "layer": "entry",
+        "depth": 1
+      },
+      {
+        "node_id": "model_app_models_work_order_rb_WorkOrder_707a93b8",
+        "name": "WorkOrder",
+        "layer": "data",
+        "depth": 2
+      }
+    ],
+    "terminal_effects": {
+      "entities_written": [
+        "WorkOrder"
+      ],
+      "entities_read": [
+        "Customer"
+      ],
+      "external_services": [],
+      "messages_emitted": []
+    },
+    "terminal_entities": [
+      {
+        "name": "WorkOrder",
+        "access": "deleted",
+        "node_id": "model_app_models_work_order_rb_WorkOrder_707a93b8",
+        "terminal_kind": "entity"
+      },
+      {
+        "name": "Customer",
+        "access": "read",
+        "node_id": "model_app_models_customer_rb_Customer_64fe562f",
+        "terminal_kind": "entity"
+      }
+    ],
+    "security_boundaries": [
+      {
+        "name": "require_auth",
+        "mechanism": "entry-guard"
+      },
+      {
+        "node_id": "middleware_app_controllers_work_orders_controller_rb_WorkOrdersController_require_auth_85dfb2d9",
+        "name": "require_auth",
+        "mechanism": "guarded_by"
+      }
+    ],
+    "tests_covering": [
+      "test_spec_work_orders_controller_spec_rb_WorkOrdersController_0130aa10"
+    ],
+    "criticality": "high",
+    "call_chain_ids": [
+      "chain:entry_route_config_routes_rb_DELETE__work_orders__id_5_ec6c5e7d"
+    ],
+    "exit_point_ids": [
+      "exit_db_model_app_models_work_order_rb_WorkOrder_707a93b8"
+    ]
+  }
+}
