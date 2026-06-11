@@ -118,3 +118,10 @@ describe('capability clustering builtin token filtering', () => {
     expect(orchestrator.domainKeyFromEntryPointText('coordinator_keepalive')).toBe('coordinator');
   });
 });
+
+test('dns and tls survive as domain nouns for network products', () => {
+  const { isLanguageBuiltinDomainToken } = require('../../analyzer/core/language-builtins');
+  expect(isLanguageBuiltinDomainToken('dns')).toBe(false);
+  expect(isLanguageBuiltinDomainToken('tls')).toBe(false);
+  expect(isLanguageBuiltinDomainToken('fmt')).toBe(true);
+});

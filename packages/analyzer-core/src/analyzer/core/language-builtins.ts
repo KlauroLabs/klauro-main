@@ -124,7 +124,7 @@ const LANGUAGE_MODULE_TOKENS = new Set([
  * survive even though `todo!` is a Rust macro and `crypto` is a Node module.
  */
 const DOMAIN_NOUN_EXCEPTIONS = new Set([
-  'todo', 'crypto', 'stream', 'events', 'cluster',
+  'todo', 'crypto', 'stream', 'events', 'cluster', 'dns', 'tls',
 ]);
 
 const LOWERCASE_BUILTIN_DOMAIN_TOKENS = (() => {
