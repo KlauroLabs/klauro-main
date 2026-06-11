@@ -711,4 +711,218 @@ describe('RailsAnalyzer', () => {
       expect(association).toBeDefined();
     });
   });
+
+  describe('analyze engine monorepo with multiple Rails roots', () => {
+    let projectPath: string;
+
+    beforeEach(async () => {
+      projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'rails-analyzer-engines-test-'));
+      await fs.writeFile(path.join(projectPath, 'Gemfile'), "source 'https://rubygems.org'\ngemspec\n");
+
+      await fs.ensureDir(path.join(projectPath, 'catalog', 'config'));
+      await fs.writeFile(path.join(projectPath, 'catalog', 'catalog.gemspec'), "Gem::Specification.new do |s|\n  s.name = 'catalog'\nend\n");
+      await fs.writeFile(
+        path.join(projectPath, 'catalog', 'config', 'routes.rb'),
+        [
+          'Catalog::Engine.routes.draw do',
+          '  resources :products, only: [:index, :show]',
+          'end',
+          '',
+        ].join('\n')
+      );
+      await fs.ensureDir(path.join(projectPath, 'catalog', 'app', 'models', 'catalog'));
+      await fs.writeFile(
+        path.join(projectPath, 'catalog', 'app', 'models', 'catalog', 'base.rb'),
+        [
+          'class Catalog::Base < ApplicationRecord',
+          '  self.abstract_class = true',
+          'end',
+          '',
+        ].join('\n')
+      );
+      await fs.writeFile(
+        path.join(projectPath, 'catalog', 'app', 'models', 'catalog', 'product.rb'),
+        [
+          'module Catalog',
+          '  class Product < Catalog.base_class',
+          '    has_many :invoices',
+          '  end',
+          'end',
+          '',
+        ].join('\n')
+      );
+      await fs.ensureDir(path.join(projectPath, 'catalog', 'app', 'controllers', 'catalog'));
+      await fs.writeFile(
+        path.join(projectPath, 'catalog', 'app', 'controllers', 'catalog', 'products_controller.rb'),
+        [
+          'module Catalog',
+          '  class ProductsController < ApplicationController',
+          '    def index',
+          '      @products = Product.all',
+          '    end',
+          '',
+          '    def show',
+          '      @product = Product.find(params[:id])',
+          '    end',
+          '  end',
+          'end',
+          '',
+        ].join('\n')
+      );
+
+      await fs.ensureDir(path.join(projectPath, 'billing', 'config'));
+      await fs.writeFile(path.join(projectPath, 'billing', 'billing.gemspec'), "Gem::Specification.new do |s|\n  s.name = 'billing'\nend\n");
+      await fs.writeFile(
+        path.join(projectPath, 'billing', 'config', 'routes.rb'),
+        [
+          'Billing::Engine.routes.draw do',
+          "  post 'invoices' => 'invoices#create'",
+          'end',
+          '',
+        ].join('\n')
+      );
+      await fs.ensureDir(path.join(projectPath, 'billing', 'app', 'models', 'billing'));
+      await fs.writeFile(
+        path.join(projectPath, 'billing', 'app', 'models', 'billing', 'invoice.rb'),
+        [
+          'module Billing',
+          '  class Invoice < ApplicationRecord',
+          '    belongs_to :product',
+          '  end',
+          'end',
+          '',
+        ].join('\n')
+      );
+      await fs.ensureDir(path.join(projectPath, 'billing', 'app', 'controllers', 'billing'));
+      await fs.writeFile(
+        path.join(projectPath, 'billing', 'app', 'controllers', 'billing', 'invoices_controller.rb'),
+        [
+          'module Billing',
+          '  class InvoicesController < ApplicationController',
+          '    def create',
+          '      invoice = Invoice.new(invoice_params)',
+          '      invoice.save!',
+          '    end',
+          '  end',
+          'end',
+          '',
+        ].join('\n')
+      );
+    });
+
+    afterEach(async () => {
+      await fs.remove(projectPath);
+    });
+
+    it('discovers every Rails root in the repo', async () => {
+      const roots = await analyzer.discoverRailsRoots(projectPath);
+      expect(roots).toEqual(['billing', 'catalog']);
+      expect(await analyzer.canAnalyze(projectPath)).toBe(true);
+    });
+
+    it('surfaces models from all engines as entity-tagged rails_model nodes without id collisions', async () => {
+      const contribution = await analyzer.analyze({ projectPath } as any);
+      const nodes = contribution.nodes || [];
+
+      const product = nodes.find(n => n.type === 'rails_model' && n.name === 'Product');
+      const invoice = nodes.find(n => n.type === 'rails_model' && n.name === 'Invoice');
+      expect(product).toBeDefined();
+      expect(invoice).toBeDefined();
+      expect(product!.subcategories).toContain('entity');
+      expect(invoice!.subcategories).toContain('entity');
+      expect(product!.source?.file).toContain(path.join('catalog', 'app', 'models'));
+      expect(invoice!.source?.file).toContain(path.join('billing', 'app', 'models'));
+
+      const ids = nodes.map(n => n.id);
+      expect(new Set(ids).size).toBe(ids.length);
+
+      const apps = nodes.filter(n => n.type === 'rails_app').map(n => n.name).sort();
+      expect(apps).toEqual(['billing', 'catalog']);
+    });
+
+    it('turns routes from every engine routes file into HTTP entry points', async () => {
+      const contribution = await analyzer.analyze({ projectPath } as any);
+      const entryPoints = contribution.entry_points || [];
+      const httpEntries = entryPoints.filter(e => e.type === 'http');
+
+      const paths = httpEntries.map(e => `${e.trigger?.method} ${e.trigger?.path}`).sort();
+      expect(paths).toEqual(['GET /products', 'GET /products/:id', 'POST /invoices']);
+
+      const invoiceEntry = httpEntries.find(e => e.trigger?.path === '/invoices');
+      expect(invoiceEntry!.handler?.file).toBe('billing/app/controllers/billing/invoices_controller.rb');
+    });
+
+    it('links cross-engine associations and code-level model access', async () => {
+      const contribution = await analyzer.analyze({ projectPath } as any);
+      const nodes = contribution.nodes || [];
+      const edges = contribution.edges || [];
+
+      const product = nodes.find(n => n.type === 'rails_model' && n.name === 'Product');
+      const invoice = nodes.find(n => n.type === 'rails_model' && n.name === 'Invoice');
+
+      const crossEngineAssociation = edges.find(e =>
+        e.type === 'relates_to' && e.source === invoice!.id && e.target === product!.id
+      );
+      expect(crossEngineAssociation).toBeDefined();
+
+      const createEdge = edges.find(e =>
+        e.type === 'creates' && e.source.includes('InvoicesController_create') && e.target === invoice!.id
+      );
+      expect(createEdge).toBeDefined();
+    });
+
+    it('maps namespace-prefixed multi-table migrations to engine model fields', async () => {
+      await fs.ensureDir(path.join(projectPath, 'catalog', 'db', 'migrate'));
+      await fs.writeFile(
+        path.join(projectPath, 'catalog', 'db', 'migrate', '20260101000000_catalog_schema.rb'),
+        [
+          'class CatalogSchema < ActiveRecord::Migration[7.1]',
+          '  def change',
+          '    create_table "catalog_products", force: :cascade do |t|',
+          '      t.string :name',
+          '      t.decimal :price',
+          '    end',
+          '    create_table "catalog_settings" do |t|',
+          '      t.string :key',
+          '    end',
+          '    add_column :catalog_products, :sku, :string',
+          '  end',
+          'end',
+          '',
+        ].join('\n')
+      );
+
+      const contribution = await analyzer.analyze({ projectPath } as any);
+      const nodes = contribution.nodes || [];
+      const product = nodes.find(n => n.type === 'rails_model' && n.name === 'Product');
+      const fields = nodes.filter(n => n.type === 'field' && n.parent === product!.id);
+      expect(fields.map(n => n.name).sort()).toEqual(['name', 'price', 'sku']);
+    });
+
+    it('keeps the single-app layout working with one implicit root', async () => {
+      const singleAppPath = await fs.mkdtemp(path.join(os.tmpdir(), 'rails-analyzer-single-test-'));
+      try {
+        await fs.writeFile(path.join(singleAppPath, 'Gemfile'), "source 'https://rubygems.org'\ngem 'rails', '~> 7.1'\n");
+        await fs.ensureDir(path.join(singleAppPath, 'config'));
+        await fs.writeFile(
+          path.join(singleAppPath, 'config', 'routes.rb'),
+          'Rails.application.routes.draw do\n  resources :widgets, only: [:index]\nend\n'
+        );
+        await fs.ensureDir(path.join(singleAppPath, 'app', 'models'));
+        await fs.writeFile(path.join(singleAppPath, 'app', 'models', 'widget.rb'), 'class Widget < ApplicationRecord\nend\n');
+
+        const roots = await analyzer.discoverRailsRoots(singleAppPath);
+        expect(roots).toEqual(['']);
+
+        const contribution = await analyzer.analyze({ projectPath: singleAppPath } as any);
+        const nodes = contribution.nodes || [];
+        expect(nodes.find(n => n.type === 'rails_model' && n.name === 'Widget')).toBeDefined();
+        expect((contribution.entry_points || []).filter(e => e.type === 'http')).toHaveLength(1);
+        const app = nodes.find(n => n.type === 'rails_app');
+        expect(app!.name).toBe(path.basename(singleAppPath));
+      } finally {
+        await fs.remove(singleAppPath);
+      }
+    });
+  });
 });

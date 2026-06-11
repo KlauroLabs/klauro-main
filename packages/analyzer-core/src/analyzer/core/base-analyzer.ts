@@ -51,6 +51,8 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 
 export abstract class BaseAnalyzer {
+  readonly discoversNestedRoots: boolean = false;
+
   protected analyzerId: string;
   protected analyzerName: string;
   protected analyzerVersion: string;

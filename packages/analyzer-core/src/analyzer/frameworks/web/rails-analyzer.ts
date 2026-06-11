@@ -98,7 +98,17 @@ const RESTFUL_ACTIONS: Array<{ action: string; method: string; suffix: string }>
 
 const AUTH_FILTER_PATTERN = /auth|require_|logged_in|signed_in|login|verify_|authorize/i;
 
+const ROOT_DISCOVERY_IGNORES = [
+  '**/node_modules/**',
+  '**/vendor/**',
+  '**/tmp/**',
+  '**/log/**',
+  '**/.git/**'
+];
+
 export class RailsAnalyzer extends BaseAnalyzer {
+  readonly discoversNestedRoots = true;
+
   constructor() {
     super(
       'rails',
@@ -121,10 +131,65 @@ export class RailsAnalyzer extends BaseAnalyzer {
           await fs.pathExists(path.join(projectPath, 'app', 'controllers'))) return true;
       if (await fs.pathExists(path.join(projectPath, 'bin', 'rails'))) return true;
 
-      return false;
+      return (await this.discoverRailsRoots(projectPath)).length > 0;
     } catch {
       return false;
     }
+  }
+
+  async discoverRailsRoots(projectPath: string): Promise<string[]> {
+    const markerFiles = await glob(
+      [
+        '**/config/routes.rb',
+        '**/app/models/**/*.rb',
+        '**/app/controllers/**/*.rb',
+        '**/app/jobs/**/*.rb',
+        '**/app/mailers/**/*.rb'
+      ],
+      { cwd: projectPath, nodir: true, ignore: ROOT_DISCOVERY_IGNORES }
+    );
+
+    const roots = new Set<string>();
+    for (const marker of markerFiles) {
+      const normalized = marker.replace(/\\/g, '/');
+      const routesMatch = normalized.match(/^(?:(.*)\/)?config\/routes\.rb$/);
+      if (routesMatch) {
+        roots.add(routesMatch[1] || '');
+        continue;
+      }
+      const appMatch = normalized.match(/^(?:(.*)\/)?app\/(?:models|controllers|jobs|mailers)\/.+\.rb$/);
+      if (appMatch) roots.add(appMatch[1] || '');
+    }
+
+    return [...roots].sort();
+  }
+
+  private toProjectRelative(root: string, file: string): string {
+    const normalized = file.replace(/\\/g, '/');
+    return root ? `${root}/${normalized}` : normalized;
+  }
+
+  private owningRoot(file: string, roots: string[]): string {
+    let owner = '';
+    for (const root of roots) {
+      if (!root) continue;
+      if (file.startsWith(`${root}/`) && root.length > owner.length) owner = root;
+    }
+    return owner;
+  }
+
+  private async globRootFiles(
+    projectPath: string,
+    root: string,
+    patterns: string | string[],
+    roots: string[]
+  ): Promise<string[]> {
+    const absRoot = root ? path.join(projectPath, root) : projectPath;
+    const matches = await glob(patterns, { cwd: absRoot, nodir: true });
+    return matches
+      .map(match => this.toProjectRelative(root, match))
+      .filter(file => this.owningRoot(file, roots) === root)
+      .sort();
   }
 
   protected getLevelName(level: number): string {
@@ -160,28 +225,51 @@ export class RailsAnalyzer extends BaseAnalyzer {
     const exitPoints: CASExitPoint[] = [];
 
     try {
-      await this.analyzeApplication(context.projectPath, nodes);
-      const models = await this.analyzeModels(context.projectPath, nodes, edges, exitPoints);
-      const controllers = await this.analyzeControllers(context.projectPath, nodes, edges);
-      const routes = await this.analyzeRoutes(context.projectPath, controllers, nodes, edges, entryPoints);
-      const migrations = await this.analyzeMigrations(context.projectPath, nodes);
-      await this.analyzeModelFields(context.projectPath, models, migrations, nodes, edges);
-      const workers = await this.analyzeWorkers(context.projectPath, nodes, entryPoints, exitPoints);
-      const testSuites = await this.analyzeTestSuites(context.projectPath, models, controllers, nodes, edges);
+      const projectPath = context.projectPath;
+      const roots = await this.discoverRailsRoots(projectPath);
+      if (roots.length === 0) roots.push('');
 
-      this.linkControllersToModels(controllers, models, nodes, edges);
-      this.linkModelAccesses(controllers, workers, models, edges);
+      const allModels: RailsModel[] = [];
+      const allControllers: RailsController[] = [];
+      const allWorkers: RailsWorker[] = [];
+      const allTestSuites: RailsTestSuite[] = [];
+      const allMigrations: RailsMigration[] = [];
+      let routesDetected = 0;
+
+      for (const root of roots) {
+        await this.analyzeApplication(projectPath, root, nodes);
+        const models = await this.analyzeModels(projectPath, root, roots, nodes, exitPoints);
+        const controllers = await this.analyzeControllers(projectPath, root, roots, nodes, edges);
+        const routes = await this.analyzeRoutes(projectPath, root, controllers, nodes, edges, entryPoints);
+        const migrations = await this.analyzeMigrations(projectPath, root, roots, nodes);
+        const workers = await this.analyzeWorkers(projectPath, root, roots, nodes, entryPoints, exitPoints);
+        const testSuites = await this.analyzeTestSuites(projectPath, root, roots, nodes);
+
+        allModels.push(...models);
+        allControllers.push(...controllers);
+        allWorkers.push(...workers);
+        allTestSuites.push(...testSuites);
+        allMigrations.push(...migrations);
+        routesDetected += routes.length;
+      }
+
+      await this.analyzeModelFields(projectPath, roots, allModels, allMigrations, nodes, edges);
+      this.linkModelAssociations(allModels, edges);
+      this.linkControllersToModels(allControllers, allModels, nodes, edges);
+      this.linkModelAccesses(allControllers, allWorkers, allModels, edges);
+      this.linkTestSuites(allTestSuites, allModels, allControllers, edges);
 
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
         framework_specific: {
-          rails_version: await this.detectRailsVersion(context.projectPath),
-          models_detected: models.length,
-          controllers_detected: controllers.length,
-          routes_detected: routes.length,
-          migrations_detected: migrations.length,
-          jobs_detected: workers.filter(worker => worker.kind === 'job').length,
-          mailers_detected: workers.filter(worker => worker.kind === 'mailer').length,
-          test_suites_detected: testSuites.length
+          rails_version: await this.detectRailsVersion(projectPath),
+          rails_roots: roots.map(root => root || '.'),
+          models_detected: allModels.length,
+          controllers_detected: allControllers.length,
+          routes_detected: routesDetected,
+          migrations_detected: allMigrations.length,
+          jobs_detected: allWorkers.filter(worker => worker.kind === 'job').length,
+          mailers_detected: allWorkers.filter(worker => worker.kind === 'mailer').length,
+          test_suites_detected: allTestSuites.length
         }
       });
     } catch (error) {
@@ -192,21 +280,36 @@ export class RailsAnalyzer extends BaseAnalyzer {
     }
   }
 
-  private async analyzeApplication(projectPath: string, nodes: CASNode[]): Promise<void> {
-    const gemfilePath = path.join(projectPath, 'Gemfile');
-    if (!await fs.pathExists(gemfilePath)) return;
+  private async analyzeApplication(projectPath: string, root: string, nodes: CASNode[]): Promise<void> {
+    const absRoot = root ? path.join(projectPath, root) : projectPath;
 
-    const appName = path.basename(projectPath);
-    const appId = this.generateId('app', 'Gemfile', appName);
+    let marker: string | undefined;
+    if (await fs.pathExists(path.join(absRoot, 'Gemfile'))) {
+      marker = 'Gemfile';
+    } else {
+      const gemspecs = await glob('*.gemspec', { cwd: absRoot, nodir: true });
+      if (gemspecs.length > 0) {
+        marker = gemspecs.sort()[0];
+      } else if (await fs.pathExists(path.join(absRoot, 'config', 'routes.rb'))) {
+        marker = 'config/routes.rb';
+      }
+    }
+    if (!marker) return;
+
+    const appName = root ? path.basename(root) : path.basename(projectPath);
+    const markerRelative = this.toProjectRelative(root, marker);
+    const appId = this.generateId('app', markerRelative, appName);
+    const railsVersion = await this.detectRailsVersion(absRoot) || (root ? await this.detectRailsVersion(projectPath) : undefined);
     nodes.push(this.createNodeBuilder(appId, appName, 'rails_app')
       .withLevel(1, 'system')
       .withCategory('backend', ['rails', 'ruby', 'application'])
-      .withSource({ file: gemfilePath, line: 1, end_line: 1 })
-      .withDescription(`Rails application: ${appName}`)
+      .withSource({ file: path.join(projectPath, markerRelative), line: 1, end_line: 1 })
+      .withDescription(root ? `Rails engine or application: ${appName}` : `Rails application: ${appName}`)
       .withMetadata({
         framework: 'rails',
         attributes: {
-          rails_version: await this.detectRailsVersion(projectPath)
+          rails_version: railsVersion,
+          ...(root ? { root } : {})
         }
       })
       .build());
@@ -214,11 +317,12 @@ export class RailsAnalyzer extends BaseAnalyzer {
 
   private async analyzeModels(
     projectPath: string,
+    root: string,
+    roots: string[],
     nodes: CASNode[],
-    edges: CASEdge[],
     exitPoints: CASExitPoint[]
   ): Promise<RailsModel[]> {
-    const modelFiles = await glob('app/models/**/*.rb', { cwd: projectPath, nodir: true });
+    const modelFiles = await this.globRootFiles(projectPath, root, 'app/models/**/*.rb', roots);
     const sources: Array<{ file: string; content: string }> = [];
     for (const file of modelFiles) {
       const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
@@ -261,6 +365,10 @@ export class RailsAnalyzer extends BaseAnalyzer {
       ));
     }
 
+    return models;
+  }
+
+  private linkModelAssociations(models: RailsModel[], edges: CASEdge[]): void {
     for (const model of models) {
       const modelId = this.modelNodeId(model);
       for (const association of model.associations) {
@@ -281,8 +389,6 @@ export class RailsAnalyzer extends BaseAnalyzer {
         ));
       }
     }
-
-    return models;
   }
 
   private modelNodeId(model: RailsModel): string {
@@ -299,13 +405,13 @@ export class RailsAnalyzer extends BaseAnalyzer {
         models.push(baseModel);
         continue;
       }
-      const classMatch = source.content.match(/^\s*class\s+([A-Z]\w*)\s*<\s*(?:::)?([A-Z][\w:]*)/m);
+      const classMatch = source.content.match(/^\s*class\s+([A-Z][\w:]*)\s*<\s*(?:::)?([A-Z][\w:]*(?:\.base_class)?)/m);
       if (classMatch) {
         pending.push({
           file: source.file,
           content: source.content,
-          name: classMatch[1],
-          parentName: classMatch[2].split('::').pop()!
+          name: classMatch[1].split('::').pop()!,
+          parentName: classMatch[2].endsWith('.base_class') ? 'Base' : classMatch[2].split('::').pop()!
         });
       }
     }
@@ -333,9 +439,9 @@ export class RailsAnalyzer extends BaseAnalyzer {
   }
 
   extractModel(content: string, filePath: string): RailsModel | null {
-    const classMatch = content.match(/^\s*class\s+([A-Z]\w*)\s*<\s*(ApplicationRecord|ActiveRecord::Base)/m);
+    const classMatch = content.match(/^\s*class\s+([A-Z][\w:]*)\s*<\s*(?:::)?(ApplicationRecord|ActiveRecord::Base)\b/m);
     if (!classMatch) return null;
-    return this.buildModel(content, filePath, classMatch[1]);
+    return this.buildModel(content, filePath, classMatch[1].split('::').pop()!);
   }
 
   private buildModel(content: string, filePath: string, name: string): RailsModel {
@@ -379,11 +485,13 @@ export class RailsAnalyzer extends BaseAnalyzer {
 
   private async analyzeControllers(
     projectPath: string,
+    root: string,
+    roots: string[],
     nodes: CASNode[],
     edges: CASEdge[]
   ): Promise<RailsController[]> {
     const controllers: RailsController[] = [];
-    const controllerFiles = await glob('app/controllers/**/*.rb', { cwd: projectPath, nodir: true });
+    const controllerFiles = await this.globRootFiles(projectPath, root, 'app/controllers/**/*.rb', roots);
 
     for (const file of controllerFiles) {
       const fullPath = path.join(projectPath, file);
@@ -467,10 +575,10 @@ export class RailsAnalyzer extends BaseAnalyzer {
   }
 
   extractController(content: string, filePath: string): RailsController | null {
-    const classMatch = content.match(/^\s*class\s+(\w+Controller)\s*<\s*[\w:]+/m);
+    const classMatch = content.match(/^\s*class\s+((?:[A-Z]\w*::)*\w+Controller)\s*<\s*[\w:.]+/m);
     if (!classMatch) return null;
 
-    const name = classMatch[1];
+    const name = classMatch[1].split('::').pop()!;
     const lines = content.split('\n');
     const actions: RailsControllerAction[] = [];
     const beforeActions: RailsBeforeAction[] = [];
@@ -543,20 +651,23 @@ export class RailsAnalyzer extends BaseAnalyzer {
 
   private async analyzeRoutes(
     projectPath: string,
+    root: string,
     controllers: RailsController[],
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: CASEntryPoint[]
   ): Promise<RailsRoute[]> {
-    const routesPath = path.join(projectPath, 'config', 'routes.rb');
+    const routesRelative = this.toProjectRelative(root, 'config/routes.rb');
+    const routesPath = path.join(projectPath, routesRelative);
     if (!await fs.pathExists(routesPath)) return [];
 
     const content = await fs.readFile(routesPath, 'utf-8');
     const routes = this.extractRoutes(content);
 
     routes.forEach((route, index) => {
-      const routeId = this.generateId('route', 'config/routes.rb', `${route.method}_${route.path}_${index}`);
-      const controller = controllers.find(candidate => candidate.controllerPath === route.controller);
+      const routeId = this.generateId('route', routesRelative, `${route.method}_${route.path}_${index}`);
+      const controller = controllers.find(candidate => candidate.controllerPath === route.controller)
+        || controllers.find(candidate => candidate.controllerPath.endsWith(`/${route.controller}`));
       const handlerNodeId = controller ? this.actionNodeId(controller, route.action) : '';
       const authenticated = controller
         ? controller.beforeActions.some(filter =>
@@ -747,9 +858,14 @@ export class RailsAnalyzer extends BaseAnalyzer {
     return (match[2].match(/:(\w+)/g) || []).map(symbol => symbol.slice(1));
   }
 
-  private async analyzeMigrations(projectPath: string, nodes: CASNode[]): Promise<RailsMigration[]> {
+  private async analyzeMigrations(
+    projectPath: string,
+    root: string,
+    roots: string[],
+    nodes: CASNode[]
+  ): Promise<RailsMigration[]> {
     const migrations: RailsMigration[] = [];
-    const migrationFiles = await glob('db/migrate/*.rb', { cwd: projectPath, nodir: true });
+    const migrationFiles = await this.globRootFiles(projectPath, root, 'db/migrate/*.rb', roots);
 
     for (const file of migrationFiles) {
       const fullPath = path.join(projectPath, file);
@@ -806,24 +922,34 @@ export class RailsAnalyzer extends BaseAnalyzer {
 
   private async analyzeModelFields(
     projectPath: string,
+    roots: string[],
     models: RailsModel[],
     migrations: RailsMigration[],
     nodes: CASNode[],
     edges: CASEdge[]
   ): Promise<void> {
-    const columnsByTable = await this.collectSchemaColumns(projectPath);
+    const columnsByTable = await this.collectSchemaColumns(projectPath, roots);
 
     for (const migration of migrations) {
-      if (!migration.table || migration.action === 'drop' || migration.columns.length === 0) continue;
-      if (!columnsByTable.has(migration.table)) columnsByTable.set(migration.table, new Map());
-      const tableColumns = columnsByTable.get(migration.table)!;
-      for (const column of migration.columns) {
-        if (!tableColumns.has(column.name)) tableColumns.set(column.name, column.type);
+      if (migration.action === 'drop') continue;
+      let content: string;
+      try {
+        content = await fs.readFile(path.join(projectPath, migration.filePath), 'utf-8');
+      } catch {
+        continue;
+      }
+      for (const [table, columns] of this.parseMigrationColumns(content)) {
+        if (!columnsByTable.has(table)) columnsByTable.set(table, new Map());
+        const tableColumns = columnsByTable.get(table)!;
+        for (const [columnName, columnType] of columns) {
+          if (!tableColumns.has(columnName)) tableColumns.set(columnName, columnType);
+        }
       }
     }
 
     for (const model of models) {
-      const tableColumns = columnsByTable.get(model.tableName);
+      const tableColumns = columnsByTable.get(model.tableName)
+        || this.findNamespacePrefixedTable(columnsByTable, model);
       if (!tableColumns || tableColumns.size === 0) continue;
       const modelId = this.modelNodeId(model);
       const modelFile = path.join(projectPath, model.filePath);
@@ -857,30 +983,104 @@ export class RailsAnalyzer extends BaseAnalyzer {
     }
   }
 
-  private async collectSchemaColumns(projectPath: string): Promise<Map<string, Map<string, string>>> {
-    const columnsByTable = new Map<string, Map<string, string>>();
-    const schemaPath = path.join(projectPath, 'db', 'schema.rb');
-    if (!await fs.pathExists(schemaPath)) return columnsByTable;
+  parseMigrationColumns(content: string): Map<string, Map<string, string>> {
+    const tables = new Map<string, Map<string, string>>();
+    const ensureTable = (table: string): Map<string, string> => {
+      if (!tables.has(table)) tables.set(table, new Map());
+      return tables.get(table)!;
+    };
 
-    const content = await fs.readFile(schemaPath, 'utf-8');
     let currentTable: Map<string, string> | undefined;
-
     for (const raw of content.split('\n')) {
       const line = raw.trim();
-      const tableMatch = line.match(/^create_table\s+"(\w+)"/);
-      if (tableMatch) {
-        currentTable = columnsByTable.get(tableMatch[1]) || new Map();
-        columnsByTable.set(tableMatch[1], currentTable);
+
+      const blockMatch = line.match(/^(?:create_table|change_table)\s+(?::(\w+)|["'](\w+)["'])/);
+      if (blockMatch) {
+        currentTable = ensureTable(blockMatch[1] || blockMatch[2]);
         continue;
       }
-      if (!currentTable) continue;
       if (/^end\b/.test(line)) {
         currentTable = undefined;
         continue;
       }
-      const columnMatch = line.match(/^t\.(\w+)\s+"(\w+)"/);
-      if (!columnMatch || columnMatch[1] === 'index') continue;
-      currentTable.set(columnMatch[2], columnMatch[1]);
+
+      const addColumnMatch = line.match(/^add_column\s+(?::(\w+)|["'](\w+)["'])\s*,\s*:(\w+)\s*,\s*:(\w+)/);
+      if (addColumnMatch) {
+        const columns = ensureTable(addColumnMatch[1] || addColumnMatch[2]);
+        if (!columns.has(addColumnMatch[3])) columns.set(addColumnMatch[3], addColumnMatch[4]);
+        continue;
+      }
+
+      const addReferenceMatch = line.match(/^add_reference\s+(?::(\w+)|["'](\w+)["'])\s*,\s*:(\w+)/);
+      if (addReferenceMatch) {
+        const columns = ensureTable(addReferenceMatch[1] || addReferenceMatch[2]);
+        const columnName = `${addReferenceMatch[3]}_id`;
+        if (!columns.has(columnName)) columns.set(columnName, 'references');
+        continue;
+      }
+
+      if (!currentTable) continue;
+
+      const referencesMatch = line.match(/^t\.(?:references|belongs_to)\s+(?::(\w+)|["'](\w+)["'])/);
+      if (referencesMatch) {
+        const columnName = `${referencesMatch[1] || referencesMatch[2]}_id`;
+        if (!currentTable.has(columnName)) currentTable.set(columnName, 'references');
+        continue;
+      }
+
+      const columnMatch = line.match(/^t\.(\w+)\s+(?::(\w+)|["'](\w+)["'])/);
+      if (!columnMatch) continue;
+      if (columnMatch[1] === 'timestamps' || columnMatch[1] === 'index') continue;
+      const columnName = columnMatch[2] || columnMatch[3];
+      if (!currentTable.has(columnName)) currentTable.set(columnName, columnMatch[1]);
+    }
+
+    return tables;
+  }
+
+  private findNamespacePrefixedTable(
+    columnsByTable: Map<string, Map<string, string>>,
+    model: RailsModel
+  ): Map<string, string> | undefined {
+    const directory = path.dirname(model.filePath).replace(/\\/g, '/');
+    const namespaceMatch = directory.match(/app\/models\/(.+)$/);
+    if (namespaceMatch) {
+      const namespacePrefix = namespaceMatch[1].split('/').join('_');
+      const namespaced = columnsByTable.get(`${namespacePrefix}_${model.tableName}`);
+      if (namespaced) return namespaced;
+    }
+
+    const candidates = [...columnsByTable.keys()].filter(table => table.endsWith(`_${model.tableName}`));
+    return candidates.length === 1 ? columnsByTable.get(candidates[0]) : undefined;
+  }
+
+  private async collectSchemaColumns(projectPath: string, roots: string[]): Promise<Map<string, Map<string, string>>> {
+    const columnsByTable = new Map<string, Map<string, string>>();
+
+    for (const root of roots) {
+      const schemaPath = path.join(projectPath, this.toProjectRelative(root, 'db/schema.rb'));
+      if (!await fs.pathExists(schemaPath)) continue;
+
+      const content = await fs.readFile(schemaPath, 'utf-8');
+      let currentTable: Map<string, string> | undefined;
+
+      for (const raw of content.split('\n')) {
+        const line = raw.trim();
+        const tableMatch = line.match(/^create_table\s+"(\w+)"/);
+        if (tableMatch) {
+          currentTable = columnsByTable.get(tableMatch[1]) || new Map();
+          columnsByTable.set(tableMatch[1], currentTable);
+          continue;
+        }
+        if (!currentTable) continue;
+        if (/^end\b/.test(line)) {
+          currentTable = undefined;
+          continue;
+        }
+        const columnMatch = line.match(/^t\.(\w+)\s+"(\w+)"/);
+        if (!columnMatch || columnMatch[1] === 'index') continue;
+        currentTable.set(columnMatch[2], columnMatch[1]);
+      }
     }
 
     return columnsByTable;
@@ -905,13 +1105,15 @@ export class RailsAnalyzer extends BaseAnalyzer {
 
   private async analyzeWorkers(
     projectPath: string,
+    root: string,
+    roots: string[],
     nodes: CASNode[],
     entryPoints: CASEntryPoint[],
     exitPoints: CASExitPoint[]
   ): Promise<RailsWorker[]> {
     const workers: RailsWorker[] = [];
-    const jobFiles = await glob('app/jobs/**/*.rb', { cwd: projectPath, nodir: true });
-    const mailerFiles = await glob('app/mailers/**/*.rb', { cwd: projectPath, nodir: true });
+    const jobFiles = await this.globRootFiles(projectPath, root, 'app/jobs/**/*.rb', roots);
+    const mailerFiles = await this.globRootFiles(projectPath, root, 'app/mailers/**/*.rb', roots);
 
     for (const file of [...jobFiles, ...mailerFiles]) {
       const fullPath = path.join(projectPath, file);
@@ -988,14 +1190,13 @@ export class RailsAnalyzer extends BaseAnalyzer {
 
   private async analyzeTestSuites(
     projectPath: string,
-    models: RailsModel[],
-    controllers: RailsController[],
-    nodes: CASNode[],
-    edges: CASEdge[]
+    root: string,
+    roots: string[],
+    nodes: CASNode[]
   ): Promise<RailsTestSuite[]> {
     const testSuites: RailsTestSuite[] = [];
-    const specFiles = await glob('spec/**/*_spec.rb', { cwd: projectPath, nodir: true });
-    const testFiles = await glob('test/**/*_test.rb', { cwd: projectPath, nodir: true });
+    const specFiles = await this.globRootFiles(projectPath, root, 'spec/**/*_spec.rb', roots);
+    const testFiles = await this.globRootFiles(projectPath, root, 'test/**/*_test.rb', roots);
 
     for (const file of [...specFiles, ...testFiles]) {
       const fullPath = path.join(projectPath, file);
@@ -1020,28 +1221,38 @@ export class RailsAnalyzer extends BaseAnalyzer {
         })
         .build());
 
-      if (suite.subject) {
-        const subjectController = controllers.find(controller => controller.name === suite.subject);
-        const subjectModel = models.find(model => model.name === suite.subject);
-        const subjectId = subjectController
-          ? this.controllerNodeId(subjectController)
-          : subjectModel
-            ? this.modelNodeId(subjectModel)
-            : undefined;
-        if (subjectId) {
-          edges.push(this.createEdge(
-            this.generateEdgeId(suiteId, subjectId, 'tests'),
-            suiteId,
-            subjectId,
-            'tests',
-            'testing',
-            { test_framework: suite.framework }
-          ));
-        }
-      }
     }
 
     return testSuites;
+  }
+
+  private linkTestSuites(
+    testSuites: RailsTestSuite[],
+    models: RailsModel[],
+    controllers: RailsController[],
+    edges: CASEdge[]
+  ): void {
+    for (const suite of testSuites) {
+      if (!suite.subject) continue;
+      const suiteId = this.generateId('test', suite.filePath, suite.name);
+      const subjectController = controllers.find(controller => controller.name === suite.subject);
+      const subjectModel = models.find(model => model.name === suite.subject);
+      const subjectId = subjectController
+        ? this.controllerNodeId(subjectController)
+        : subjectModel
+          ? this.modelNodeId(subjectModel)
+          : undefined;
+      if (subjectId) {
+        edges.push(this.createEdge(
+          this.generateEdgeId(suiteId, subjectId, 'tests'),
+          suiteId,
+          subjectId,
+          'tests',
+          'testing',
+          { test_framework: suite.framework }
+        ));
+      }
+    }
   }
 
   extractTestSuite(content: string, filePath: string): RailsTestSuite | null {
