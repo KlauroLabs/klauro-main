@@ -512,7 +512,7 @@ export async function analyzeProjectIncremental(projectPath: string): Promise<In
   const orch = getOrchestrator();
   orch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
 
-  const previousOutput = await loadAnalysis(projectPath);
+  const previousOutput = await loadAnalysis(projectPath, { preferCache: true });
   const previousState = await loadIncrementalState(projectPath);
 
   if (!previousOutput) {

@@ -159,6 +159,11 @@ interface DescriptionTarget {
   };
 }
 
+interface EntityPropertyIndex {
+  byParent: Map<string, Array<{ node: CASNode; position: number }>>;
+  byFileBasename: Map<string, Array<{ node: CASNode; position: number; normalizedFile: string }>>;
+}
+
 interface DiscoveredEntryPointCandidate {
   file: string;
   type: CASEntryPoint['type'];
@@ -5281,11 +5286,12 @@ export class AnalyzerOrchestrator {
       )
     );
 
+    const propertyIndex = this.buildEntityPropertyIndex(nodes);
     entityNodes.forEach(entityNode => {
       const fields: CASDatabaseEntity['fields'] = [];
       const entityRelationships: CASDatabaseEntity['relationships'] = [];
 
-      const propertyNodes = this.entityPropertyNodes(nodes, entityNode);
+      const propertyNodes = this.entityPropertyNodesFromIndex(propertyIndex, entityNode);
 
       propertyNodes.forEach(prop => {
         const annotations = [
@@ -5350,19 +5356,74 @@ export class AnalyzerOrchestrator {
   }
 
   private entityPropertyNodes(nodes: CASNode[], entityNode: CASNode): CASNode[] {
-    return nodes.filter(n =>
-      (n.type === 'property' || n.type === 'field' || n.type === 'attribute' || n.type === 'variable') &&
-      (
-        n.parent === entityNode.id ||
-        (n.source?.file && entityNode.source?.file && this.sourceFilesCompatible(n.source.file, entityNode.source.file) && n.id.includes(entityNode.id))
-      )
-    );
+    return this.entityPropertyNodesFromIndex(this.buildEntityPropertyIndex(nodes), entityNode);
+  }
+
+  private buildEntityPropertyIndex(nodes: CASNode[]): EntityPropertyIndex {
+    const byParent = new Map<string, Array<{ node: CASNode; position: number }>>();
+    const byFileBasename = new Map<string, Array<{ node: CASNode; position: number; normalizedFile: string }>>();
+
+    for (let position = 0; position < nodes.length; position++) {
+      const node = nodes[position];
+      if (node.type !== 'property' && node.type !== 'field' && node.type !== 'attribute' && node.type !== 'variable') {
+        continue;
+      }
+      if (node.parent) {
+        let bucket = byParent.get(node.parent);
+        if (!bucket) {
+          bucket = [];
+          byParent.set(node.parent, bucket);
+        }
+        bucket.push({ node, position });
+      }
+      if (node.source?.file) {
+        const normalizedFile = this.normalizeSourcePath(node.source.file);
+        const basename = normalizedFile.slice(normalizedFile.lastIndexOf('/') + 1);
+        let bucket = byFileBasename.get(basename);
+        if (!bucket) {
+          bucket = [];
+          byFileBasename.set(basename, bucket);
+        }
+        bucket.push({ node, position, normalizedFile });
+      }
+    }
+
+    return { byParent, byFileBasename };
+  }
+
+  private entityPropertyNodesFromIndex(index: EntityPropertyIndex, entityNode: CASNode): CASNode[] {
+    const matches = new Map<CASNode, number>();
+
+    for (const { node, position } of index.byParent.get(entityNode.id) || []) {
+      matches.set(node, position);
+    }
+
+    if (entityNode.source?.file) {
+      const entityFile = this.normalizeSourcePath(entityNode.source.file);
+      const basename = entityFile.slice(entityFile.lastIndexOf('/') + 1);
+      for (const { node, position, normalizedFile } of index.byFileBasename.get(basename) || []) {
+        if (matches.has(node)) continue;
+        if (this.normalizedSourcePathsCompatible(normalizedFile, entityFile) && node.id.includes(entityNode.id)) {
+          matches.set(node, position);
+        }
+      }
+    }
+
+    return [...matches.entries()]
+      .sort((a, b) => a[1] - b[1])
+      .map(([node]) => node);
+  }
+
+  private normalizeSourcePath(file: string): string {
+    return file.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+  }
+
+  private normalizedSourcePathsCompatible(left: string, right: string): boolean {
+    return left === right || left.endsWith(`/${right}`) || right.endsWith(`/${left}`);
   }
 
   private sourceFilesCompatible(left: string, right: string): boolean {
-    const normalizedLeft = left.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
-    const normalizedRight = right.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
-    return normalizedLeft === normalizedRight || normalizedLeft.endsWith(`/${normalizedRight}`) || normalizedRight.endsWith(`/${normalizedLeft}`);
+    return this.normalizedSourcePathsCompatible(this.normalizeSourcePath(left), this.normalizeSourcePath(right));
   }
 
   private sourceDecoratorsForNode(projectPath: string | undefined, node: CASNode): string[] {
@@ -9273,6 +9334,25 @@ export class AnalyzerOrchestrator {
       )
     );
 
+    const propertyIndex = this.buildEntityPropertyIndex(nodes);
+    const nodesById = new Map<string, CASNode>();
+    for (const node of nodes) {
+      if (!nodesById.has(node.id)) nodesById.set(node.id, node);
+    }
+    const edgesByNode = new Map<string, CASEdge[]>();
+    const addEdgeToBucket = (nodeId: string, edge: CASEdge) => {
+      let bucket = edgesByNode.get(nodeId);
+      if (!bucket) {
+        bucket = [];
+        edgesByNode.set(nodeId, bucket);
+      }
+      bucket.push(edge);
+    };
+    for (const edge of edges) {
+      addEdgeToBucket(edge.source, edge);
+      if (edge.target !== edge.source) addEdgeToBucket(edge.target, edge);
+    }
+
     for (const entityNode of entityNodes) {
       const fields: Array<{
         name: string;
@@ -9281,7 +9361,7 @@ export class AnalyzerOrchestrator {
         validation?: string[];
       }> = [];
 
-      const propertyNodes = this.entityPropertyNodes(nodes, entityNode);
+      const propertyNodes = this.entityPropertyNodesFromIndex(propertyIndex, entityNode);
 
       const sensitivePatterns = [
         'password', 'secret', 'token', 'key', 'credential',
@@ -9318,8 +9398,8 @@ export class AnalyzerOrchestrator {
         'has_field', 'has_attribute', 'imports', 'inherits', 'exposes', 'maps_to', 'wraps'
       ]);
 
-      for (const edge of edges) {
-        if (edge.target === entityNode.id || edge.source === entityNode.id) {
+      for (const edge of edgesByNode.get(entityNode.id) || []) {
+        {
           if (edge.target === entityNode.id) {
             const bucket = lifecycleBucketForEdgeType(edge.type);
             if (bucket) {
@@ -9328,9 +9408,7 @@ export class AnalyzerOrchestrator {
             }
           }
           if (structuralEdgeTypes.has(edge.type)) continue;
-          const relatedNode = nodes.find(n =>
-            n.id === (edge.target === entityNode.id ? edge.source : edge.target)
-          );
+          const relatedNode = nodesById.get(edge.target === entityNode.id ? edge.source : edge.target);
           if (relatedNode) {
             const methodLower = relatedNode.name.toLowerCase();
             if (methodLower.includes('create') || methodLower.includes('add') || methodLower.includes('insert')) {

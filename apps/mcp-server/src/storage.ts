@@ -346,12 +346,31 @@ function hasCustomJsonShape(value: object): boolean {
   return typeof (value as { toJSON?: unknown }).toJSON === 'function';
 }
 
+interface LoadedAnalysisCacheEntry {
+  filePath: string;
+  mtimeMs: number;
+  size: number;
+  output: CASOutput;
+}
+
+const loadedAnalysisCache = new Map<string, LoadedAnalysisCacheEntry>();
+
+async function rememberLoadedAnalysis(projectPath: string, filePath: string, output: CASOutput): Promise<void> {
+  try {
+    const stat = await fs.stat(filePath);
+    loadedAnalysisCache.set(projectPath, { filePath, mtimeMs: stat.mtimeMs, size: stat.size, output });
+  } catch {
+    loadedAnalysisCache.delete(projectPath);
+  }
+}
+
 export async function saveAnalysis(projectPath: string, output: CASOutput): Promise<AnalysisEntry> {
   const storagePath = await ensureStorageDir();
   const fileName = `${projectSlug(projectPath)}.json${compressedJsonExtension()}`;
   const filePath = path.join(storagePath, fileName);
 
   await writeCompressedJsonAtomic(filePath, output, { spaces: 0 });
+  await rememberLoadedAnalysis(projectPath, filePath, output);
 
   const frameworks = output.system.technologies?.frameworks?.map(f => f.name) || [];
 
@@ -373,7 +392,10 @@ export async function saveAnalysis(projectPath: string, output: CASOutput): Prom
   return entry;
 }
 
-export async function loadAnalysis(projectPath: string): Promise<CASOutput | null> {
+export async function loadAnalysis(
+  projectPath: string,
+  options?: { preferCache?: boolean }
+): Promise<CASOutput | null> {
   const index = await loadIndex();
   const entry = index.analyses[projectPath];
   if (!entry) return null;
@@ -382,6 +404,25 @@ export async function loadAnalysis(projectPath: string): Promise<CASOutput | nul
   const filePath = path.join(storagePath, entry.file);
   const resolved = await resolveJsonStoragePath(filePath);
   if (!resolved) return null;
+
+  if (options?.preferCache) {
+    const cached = loadedAnalysisCache.get(projectPath);
+    if (cached && cached.filePath === resolved) {
+      try {
+        const stat = await fs.stat(resolved);
+        if (stat.mtimeMs === cached.mtimeMs && stat.size === cached.size) {
+          return cached.output;
+        }
+      } catch {
+        // fall through to a fresh read
+      }
+    }
+    const output = await readJsonMaybeCompressed(resolved);
+    if (output) {
+      await rememberLoadedAnalysis(projectPath, resolved, output);
+    }
+    return output;
+  }
 
   return readJsonMaybeCompressed(resolved);
 }

@@ -211,7 +211,6 @@ export class ChangeDetector {
 
     const matches = await glob(patterns, {
       cwd: this.projectPath,
-      absolute: true,
       ignore: IGNORE_PATTERNS,
       nodir: true,
       withFileTypes: true,
