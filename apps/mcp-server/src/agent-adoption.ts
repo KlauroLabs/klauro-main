@@ -148,6 +148,7 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
   const entryPoints = getEntryPoints(cas, { limit: 8 });
   const exitPoints = getExitPoints(cas, { limit: 8 });
   const runtimeLinks = getRuntimeStaticLinks(cas, { limit: 8 });
+  const productOrientation = buildProductOrientationLine(cas);
 
   return {
     path,
@@ -172,6 +173,7 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
       frameworks: summary.frameworks,
       top_capabilities: summary.top_capabilities,
     },
+    ...(productOrientation ? { product_orientation: productOrientation } : {}),
     scale: {
       nodes: summary.nodes,
       edges: summary.edges,
@@ -296,6 +298,15 @@ export async function getAgentWorkPacket(cas: CASOutput, path: string, taskInput
     files: fileReadPlan.map(item => item.file),
     limit: 6,
   });
+  const pillarTargetFile = selectedNode?.source?.file
+    ? normalizeSourceFile(selectedNode.source.file, cas.system?.root_path)
+    : requestedTargetFile;
+  const pillarEntityName = selectedNode && ['entity', 'class', 'model'].includes(String(selectedNode.type || '').toLowerCase())
+    ? selectedNode.name
+    : undefined;
+  const journeyContext = buildJourneyContextForAgent(cas, { nodeId: selectedNode?.id, file: pillarTargetFile || undefined, entityName: pillarEntityName });
+  const lineageContext = buildLineageContextForAgent(cas, { nodeId: selectedNode?.id, file: pillarTargetFile || undefined, entityName: pillarEntityName });
+  const conformanceContext = buildConformanceContextForAgent(cas, { file: pillarTargetFile || undefined });
   const validationPlan = buildValidationPlan(path, cas, task, selectedNode || undefined, tests, fileReadPlan, risk, behavioralInvariants);
   const gaps = [
     ...readiness.adoption_gaps,
@@ -334,6 +345,9 @@ export async function getAgentWorkPacket(cas: CASOutput, path: string, taskInput
       system_health: summarizeSystemHealthForAgent(cas),
       capability_memory: capabilityMemory,
       entry_context: entryContext,
+      ...(journeyContext ? { journey_context: journeyContext } : {}),
+      ...(lineageContext ? { lineage_context: lineageContext } : {}),
+      ...(conformanceContext ? { conformance_context: conformanceContext } : {}),
     },
     file_read_plan: fileReadPlan,
     invariant_impact: compactInvariantImpact,
@@ -344,6 +358,209 @@ export async function getAgentWorkPacket(cas: CASOutput, path: string, taskInput
   };
 
   return adaptWorkPacketForRepoScale(packet, cas);
+}
+
+function buildProductOrientationLine(cas: CASOutput): string | null {
+  const map = cas.product_map;
+  if (!map) return null;
+  const capabilities = (map.capabilities || []).slice(0, 3).map(capability => capability.name).filter(Boolean);
+  const parts = [
+    capabilities.length > 0 ? `Top capabilities: ${capabilities.join(', ')}` : '',
+    typeof map.journeys?.total === 'number' ? `${map.journeys.total} journeys` : '',
+    Array.isArray(map.data?.sensitive) ? `${map.data.sensitive.length} sensitive entities` : '',
+  ].filter(Boolean);
+  if (parts.length === 0) return null;
+  const identity = [map.identity?.name, map.identity?.domain].filter(Boolean).join(' / ');
+  return `${identity ? `${identity} — ` : ''}${parts.join('; ')}.`;
+}
+
+const CRITICALITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+const DEVIATION_SEVERITY_RANK: Record<string, number> = { error: 0, warning: 1, info: 2 };
+const PILLAR_DIGEST_TOKEN_BUDGET = 120;
+
+function trimToPillarTokenBudget<T>(items: T[]): T[] {
+  let selected = items;
+  while (selected.length > 1 && JSON.stringify(selected).length > PILLAR_DIGEST_TOKEN_BUDGET * 4) {
+    selected = selected.slice(0, -1);
+  }
+  return selected;
+}
+
+export function buildJourneyContextForAgent(
+  cas: CASOutput,
+  opts: { nodeId?: string; file?: string; entityName?: string } = {},
+) {
+  const journeys = cas.user_journeys || [];
+  if (journeys.length === 0 || (!opts.nodeId && !opts.file && !opts.entityName)) return null;
+  const rootPath = cas.system?.root_path;
+  const nodeFiles = new Map<string, string>();
+  for (const node of cas.nodes || []) {
+    if (node.source?.file) nodeFiles.set(node.id, normalizeSourceFile(node.source.file, rootPath));
+  }
+  const targetFile = opts.file ? normalizeSourceFile(opts.file, rootPath) : '';
+  const matching = journeys.filter(journey => {
+    const journeyNodeIds = [
+      journey.entry?.handler_node_id,
+      ...(journey.steps || []).map(step => step.node_id),
+      ...(journey.terminal_entities || []).map(terminal => terminal.node_id),
+    ].filter((id): id is string => Boolean(id));
+    if (opts.nodeId && journeyNodeIds.includes(opts.nodeId)) return true;
+    if (opts.entityName) {
+      if ((journey.terminal_entities || []).some(terminal => terminal.name === opts.entityName)) return true;
+      const effects = journey.terminal_effects;
+      if ((effects?.entities_written || []).includes(opts.entityName) || (effects?.entities_read || []).includes(opts.entityName)) return true;
+    }
+    if (!targetFile) return false;
+    return journeyNodeIds.some(id => {
+      const file = nodeFiles.get(id);
+      return Boolean(file && projectPathsMatch(file, targetFile));
+    });
+  }).sort((a, b) => (CRITICALITY_RANK[a.criticality] ?? 4) - (CRITICALITY_RANK[b.criticality] ?? 4));
+  if (matching.length === 0) return null;
+  return {
+    total_matching: matching.length,
+    journeys: trimToPillarTokenBudget(matching.slice(0, 5).map(journey => ({
+      id: journey.id,
+      name: journey.name.length > 64 ? `${journey.name.slice(0, 61)}...` : journey.name,
+      kind: journey.journey_kind,
+      criticality: journey.criticality,
+      entry: [journey.entry?.method, journey.entry?.path_or_trigger || journey.entry?.name].filter(Boolean).join(' ').slice(0, 64),
+      entities_written: (journey.terminal_effects?.entities_written || []).slice(0, 4),
+      boundaries: (journey.security_boundaries || []).slice(0, 3).map(boundary => boundary.name),
+      tests: (journey.tests_covering || []).length,
+    }))),
+  };
+}
+
+export function buildLineageContextForAgent(
+  cas: CASOutput,
+  opts: { nodeId?: string; file?: string; entityName?: string } = {},
+) {
+  const lineage = cas.data_lineage || [];
+  if (lineage.length === 0 || (!opts.nodeId && !opts.file && !opts.entityName)) return null;
+  const rootPath = cas.system?.root_path;
+  const targetFile = opts.file ? normalizeSourceFile(opts.file, rootPath) : '';
+  const accessorMatches = (accessor: { node_id?: string; file?: string }) => {
+    if (opts.nodeId && accessor.node_id === opts.nodeId) return true;
+    if (!targetFile || !accessor.file) return false;
+    return projectPathsMatch(normalizeSourceFile(accessor.file, rootPath), targetFile);
+  };
+  const rows: Array<{ item: NonNullable<CASOutput['data_lineage']>[number]; writes: boolean; reads: boolean; isTargetEntity: boolean }> = [];
+  for (const item of lineage) {
+    const writes = (item.writers || []).some(accessorMatches);
+    const reads = (item.readers || []).some(accessorMatches);
+    const isTargetEntity = Boolean(opts.entityName && item.entity_name === opts.entityName);
+    if (!writes && !reads && !isTargetEntity) continue;
+    rows.push({ item, writes, reads, isTargetEntity });
+  }
+  if (rows.length === 0) return null;
+  const exposureScore = (row: typeof rows[number]) =>
+    (row.item.exposure?.sensitive ? 4 : 0) +
+    ((row.item.exposure?.unguarded_paths || 0) > 0 ? 2 : 0) +
+    (row.item.exposure?.external_transfer ? 1 : 0);
+  rows.sort((a, b) =>
+    Number(b.isTargetEntity) - Number(a.isTargetEntity) ||
+    exposureScore(b) - exposureScore(a) ||
+    Number(b.writes) - Number(a.writes) ||
+    a.item.entity_name.localeCompare(b.item.entity_name));
+  return {
+    total_matching: rows.length,
+    entities: trimToPillarTokenBudget(rows.slice(0, 5).map(({ item, writes, reads, isTargetEntity }) => ({
+      entity: item.entity_name,
+      access: writes && reads ? 'writes+reads' : writes ? 'writes' : reads ? 'reads' : (isTargetEntity ? 'target-entity' : 'reads'),
+      writers: (item.writers || []).length,
+      readers: (item.readers || []).length,
+      sensitive: Boolean(item.exposure?.sensitive),
+      ...(item.sensitive_fields?.length ? { sensitive_fields: item.sensitive_fields.slice(0, 3) } : {}),
+      unguarded_paths: item.exposure?.unguarded_paths || 0,
+      external_transfer: Boolean(item.exposure?.external_transfer),
+    }))),
+  };
+}
+
+export function buildConformanceContextForAgent(
+  cas: CASOutput,
+  opts: { file?: string } = {},
+) {
+  const paradigms = cas.paradigm_conformance || [];
+  if (paradigms.length === 0 || !opts.file) return null;
+  const rootPath = cas.system?.root_path;
+  const targetFile = normalizeSourceFile(opts.file, rootPath);
+  const moduleDir = targetFile.includes('/') ? targetFile.split('/').slice(0, -1).join('/') : '';
+  const collect = (matches: (file: string) => boolean) => {
+    const found: Array<{ paradigm: string; kind: string; severity: string; file: string; detail: string }> = [];
+    for (const paradigm of paradigms) {
+      for (const deviation of paradigm.deviations || []) {
+        const file = normalizeSourceFile(deviation.file || '', rootPath);
+        if (!file || !matches(file)) continue;
+        const detail = String(deviation.detail || '');
+        found.push({
+          paradigm: paradigm.paradigm,
+          kind: deviation.kind,
+          severity: deviation.severity,
+          file,
+          detail: detail.length > 140 ? `${detail.slice(0, 137)}...` : detail,
+        });
+      }
+    }
+    return found;
+  };
+  let scope = 'file';
+  let deviations = collect(file => projectPathsMatch(file, targetFile));
+  if (deviations.length === 0 && moduleDir) {
+    scope = 'module';
+    const moduleLower = `${moduleDir.toLowerCase()}/`;
+    deviations = collect(file => file.toLowerCase().startsWith(moduleLower));
+  }
+  if (deviations.length === 0) return null;
+  deviations.sort((a, b) => (DEVIATION_SEVERITY_RANK[a.severity] ?? 3) - (DEVIATION_SEVERITY_RANK[b.severity] ?? 3));
+  return {
+    scope,
+    total_matching: deviations.length,
+    deviations: trimToPillarTokenBudget(deviations.slice(0, 5)),
+  };
+}
+
+function compactPillarWorkContext(
+  context: any,
+  limits: { journeys: number; entities: number; deviations: number },
+): Record<string, any> {
+  const result: Record<string, any> = {};
+  if (!context || typeof context !== 'object') return result;
+  if (context.journey_context?.journeys?.length) {
+    result.journey_context = {
+      total_matching: context.journey_context.total_matching,
+      journeys: context.journey_context.journeys.slice(0, limits.journeys).map((journey: any) => ({
+        id: journey.id,
+        name: journey.name,
+        kind: journey.kind,
+        criticality: journey.criticality,
+        entry: journey.entry,
+        entities_written: Array.isArray(journey.entities_written) ? journey.entities_written.slice(0, 2) : journey.entities_written,
+        boundaries: Array.isArray(journey.boundaries) ? journey.boundaries.slice(0, 2) : journey.boundaries,
+        tests: journey.tests,
+      })),
+    };
+  }
+  if (context.lineage_context?.entities?.length) {
+    result.lineage_context = {
+      total_matching: context.lineage_context.total_matching,
+      entities: context.lineage_context.entities.slice(0, limits.entities),
+    };
+  }
+  if (context.conformance_context?.deviations?.length) {
+    result.conformance_context = {
+      scope: context.conformance_context.scope,
+      total_matching: context.conformance_context.total_matching,
+      deviations: context.conformance_context.deviations.slice(0, limits.deviations).map((deviation: any) => ({
+        paradigm: deviation.paradigm,
+        kind: deviation.kind,
+        severity: deviation.severity,
+        file: deviation.file,
+      })),
+    };
+  }
+  return result;
 }
 
 function isArchitecturePlacementFileReadPlanItem(item: FileReadPlanItem): boolean {
@@ -944,6 +1161,7 @@ function compactSmallRepoMinimalWorkPacket<T extends Record<string, any>>(packet
       behavioral_invariants: compactMinimalInvariants(context.behavioral_invariants),
       idiom_context: compactMinimalIdioms(context.idiom_context),
       capability_memory: compactSmallRepoCapabilityMemory(context.capability_memory),
+      ...compactPillarWorkContext(context, { journeys: 2, entities: 2, deviations: 2 }),
     },
     file_read_plan: compactMinimalFileReadPlan(packet.file_read_plan).slice(0, 3),
     validation_plan: compactMinimalValidationPlan(packet.validation_plan),
@@ -996,6 +1214,7 @@ function compactTinyWorkPacket<T extends Record<string, any>>(packet: T): T {
         total: invariants.total,
         invariants: Array.isArray(invariants.invariants) ? invariants.invariants.slice(0, 2) : invariants.invariants,
       } : null,
+      ...compactPillarWorkContext(context, { journeys: 2, entities: 2, deviations: 2 }),
     },
     file_read_plan: compactMicroFileReadPlan(packet.file_read_plan).slice(0, 5),
     validation_plan: {
@@ -1046,6 +1265,7 @@ function compactTokenMinimalWorkPacket<T extends Record<string, any>>(packet: T)
       idiom_context: compactMinimalIdioms(context.idiom_context),
       system_health: compactMinimalSystemHealth(context.system_health),
       capability_memory: compactMinimalCapabilityMemory(context.capability_memory),
+      ...compactPillarWorkContext(context, { journeys: 2, entities: 2, deviations: 2 }),
     },
     file_read_plan: fileReadPlan,
     validation_plan: compactMinimalValidationPlan(packet.validation_plan),
@@ -1384,6 +1604,7 @@ function compactMicroWorkContext(context: any) {
     system_health: compactSystemHealthForAgent(context.system_health),
     capability_memory: compactCapabilityMemoryForMicroRepo(context.capability_memory),
     entry_context: compactEntryContextForMicroRepo(context.entry_context),
+    ...compactPillarWorkContext(context, { journeys: 3, entities: 3, deviations: 3 }),
   };
 }
 

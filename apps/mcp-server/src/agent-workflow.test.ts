@@ -751,6 +751,258 @@ test('readiness has no language coverage gate when no unanalyzed language domina
   });
 });
 
+test('agent work packet carries target-scoped pillar digests when pillar data touches the target', async () => {
+  await withWorkspace(async workspace => {
+    const cas = pillarFixtureCas();
+    const packet = await getAgentWorkPacket(cas, workspace, {
+      task_type: 'modify',
+      target: 'UsersService',
+    });
+
+    const journeyContext = packet.work_context.journey_context;
+    assert.ok(journeyContext, 'journey_context missing');
+    assert.equal(journeyContext.total_matching, 1);
+    assert.equal(journeyContext.journeys[0].id, 'journey-create-user');
+    assert.equal(journeyContext.journeys[0].kind, 'user-facing');
+    assert.ok(journeyContext.journeys[0].boundaries.includes('JWT auth'));
+    assert.equal(journeyContext.journeys[0].tests, 1);
+    assert.ok(!journeyContext.journeys.some((journey: any) => journey.id === 'journey-billing-export'));
+
+    const lineageContext = packet.work_context.lineage_context;
+    assert.ok(lineageContext, 'lineage_context missing');
+    assert.equal(lineageContext.total_matching, 1);
+    assert.equal(lineageContext.entities[0].entity, 'User');
+    assert.equal(lineageContext.entities[0].access, 'writes');
+    assert.equal(lineageContext.entities[0].sensitive, true);
+    assert.deepEqual(lineageContext.entities[0].sensitive_fields, ['email']);
+    assert.ok(!lineageContext.entities.some((entity: any) => entity.entity === 'Invoice'));
+
+    const conformanceContext = packet.work_context.conformance_context;
+    assert.ok(conformanceContext, 'conformance_context missing');
+    assert.equal(conformanceContext.scope, 'module');
+    assert.equal(conformanceContext.deviations[0].kind, 'unguarded-entry-point');
+    assert.equal(conformanceContext.deviations[0].severity, 'error');
+    assert.ok(!conformanceContext.deviations.some((deviation: any) => deviation.file.startsWith('src/billing/')));
+
+    for (const digest of [journeyContext.journeys, lineageContext.entities, conformanceContext.deviations]) {
+      assert.ok(JSON.stringify(digest).length <= 600, `pillar digest exceeds token budget: ${JSON.stringify(digest).length} chars`);
+    }
+  });
+});
+
+test('agent work packet bounds journey digests and reports the true match count', async () => {
+  await withWorkspace(async workspace => {
+    const cas = pillarFixtureCas();
+    const journeys = (cas as any).user_journeys;
+    const base = journeys[0];
+    for (let index = 0; index < 7; index += 1) {
+      journeys.push({ ...base, id: `journey-extra-${index}`, name: `Extra user flow ${index}`, criticality: 'medium' });
+    }
+    const packet = await getAgentWorkPacket(cas, workspace, {
+      task_type: 'modify',
+      target: 'UsersService',
+    });
+    const journeyContext = packet.work_context.journey_context;
+    assert.ok(journeyContext);
+    assert.equal(journeyContext.total_matching, 8);
+    assert.ok(journeyContext.journeys.length <= 5);
+    assert.equal(journeyContext.journeys[0].id, 'journey-create-user');
+    assert.ok(JSON.stringify(journeyContext.journeys).length <= 600);
+  });
+});
+
+test('agent work packet pillar digests match entity targets through terminal entities and lineage rows', async () => {
+  await withWorkspace(async workspace => {
+    const cas = pillarFixtureCas();
+    (cas as any).data_lineage[0].writers = [];
+    (cas as any).data_lineage[0].readers = [];
+    const packet = await getAgentWorkPacket(cas, workspace, {
+      task_type: 'modify',
+      target: 'User',
+    });
+    assert.equal(packet.selected_node?.name, 'User');
+    const journeyContext = packet.work_context.journey_context;
+    assert.ok(journeyContext, 'journey_context missing for entity target');
+    assert.equal(journeyContext.journeys[0].id, 'journey-create-user');
+    const lineageContext = packet.work_context.lineage_context;
+    assert.ok(lineageContext, 'lineage_context missing for entity target');
+    assert.equal(lineageContext.entities[0].entity, 'User');
+    assert.equal(lineageContext.entities[0].access, 'target-entity');
+  });
+});
+
+test('agent work packet omits pillar digests when no pillar data exists', async () => {
+  await withWorkspace(async workspace => {
+    const packet = await getAgentWorkPacket(fixtureCas(), workspace, {
+      task_type: 'modify',
+      target: 'UsersService',
+    });
+    assert.ok(!('journey_context' in packet.work_context));
+    assert.ok(!('lineage_context' in packet.work_context));
+    assert.ok(!('conformance_context' in packet.work_context));
+  });
+});
+
+test('agent work packet omits pillar digests when pillar data exists but misses the target', async () => {
+  await withWorkspace(async workspace => {
+    const cas = pillarFixtureCas();
+    (cas as any).user_journeys = [(cas as any).user_journeys[1]];
+    (cas as any).data_lineage = [(cas as any).data_lineage[1]];
+    (cas as any).paradigm_conformance[0].deviations = (cas as any).paradigm_conformance[0].deviations.filter(
+      (deviation: any) => deviation.file.startsWith('src/billing/'),
+    );
+    const packet = await getAgentWorkPacket(cas, workspace, {
+      task_type: 'modify',
+      target: 'UsersService',
+    });
+    assert.ok(!('journey_context' in packet.work_context));
+    assert.ok(!('lineage_context' in packet.work_context));
+    assert.ok(!('conformance_context' in packet.work_context));
+  });
+});
+
+test('compacted work packets preserve pillar digests', async () => {
+  for (const profile of ['small-repo-minimal', 'token-minimal', 'tiny', 'micro']) {
+    await withWorkspace(async workspace => {
+      const previous = process.env.KLAURO_AGENT_PACKET_PROFILE;
+      process.env.KLAURO_AGENT_PACKET_PROFILE = profile;
+      try {
+        const packet = await getAgentWorkPacket(pillarFixtureCas(), workspace, {
+          task_type: 'modify',
+          target: 'UsersService',
+        });
+        assert.ok(packet.work_context.journey_context, `${profile}: journey_context dropped`);
+        assert.equal(packet.work_context.journey_context.journeys[0].id, 'journey-create-user');
+        assert.ok(packet.work_context.lineage_context, `${profile}: lineage_context dropped`);
+        assert.equal(packet.work_context.lineage_context.entities[0].entity, 'User');
+        assert.ok(packet.work_context.conformance_context, `${profile}: conformance_context dropped`);
+        assert.equal(packet.work_context.conformance_context.deviations[0].severity, 'error');
+      } finally {
+        if (previous === undefined) delete process.env.KLAURO_AGENT_PACKET_PROFILE;
+        else process.env.KLAURO_AGENT_PACKET_PROFILE = previous;
+      }
+    });
+  }
+});
+
+test('compacted work packets do not invent pillar digests when data is absent', async () => {
+  await withWorkspace(async workspace => {
+    const previous = process.env.KLAURO_AGENT_PACKET_PROFILE;
+    process.env.KLAURO_AGENT_PACKET_PROFILE = 'small-repo-minimal';
+    try {
+      const packet = await getAgentWorkPacket(fixtureCas(), workspace, {
+        task_type: 'modify',
+        target: 'UsersService',
+      });
+      assert.ok(!('journey_context' in packet.work_context));
+      assert.ok(!('lineage_context' in packet.work_context));
+      assert.ok(!('conformance_context' in packet.work_context));
+    } finally {
+      if (previous === undefined) delete process.env.KLAURO_AGENT_PACKET_PROFILE;
+      else process.env.KLAURO_AGENT_PACKET_PROFILE = previous;
+    }
+  });
+});
+
+test('agent start context carries a one-line product orientation when a product map exists', async () => {
+  await withWorkspace(async workspace => {
+    const startContext = getAgentStartContext(pillarFixtureCas(), workspace, {});
+    assert.ok(startContext.product_orientation);
+    assert.match(String(startContext.product_orientation), /Tenant-scoped user management/);
+    assert.match(String(startContext.product_orientation), /2 journeys/);
+    assert.match(String(startContext.product_orientation), /1 sensitive entities/);
+
+    const bare = getAgentStartContext(fixtureCas(), workspace, {});
+    assert.ok(!('product_orientation' in bare));
+  });
+});
+
+function pillarFixtureCas(): CASOutput {
+  const cas = fixtureCas();
+  (cas as any).user_journeys = [
+    {
+      id: 'journey-create-user',
+      name: 'Create tenant user',
+      journey_kind: 'user-facing',
+      entry_point_id: 'entry-users-create',
+      entry: { type: 'http', name: 'POST /users', method: 'POST', path_or_trigger: '/users', handler_node_id: 'users-service' },
+      steps: [
+        { node_id: 'users-controller', name: 'UsersController', layer: 'entry', depth: 0 },
+        { node_id: 'users-service', name: 'UsersService', layer: 'business', depth: 1 },
+      ],
+      terminal_effects: { entities_written: ['User'], entities_read: [], external_services: [], messages_emitted: [] },
+      terminal_entities: [{ name: 'User', access: 'created', terminal_kind: 'entity' }],
+      security_boundaries: [{ name: 'JWT auth', mechanism: 'jwt' }],
+      tests_covering: ['src/users/users.service.spec.ts'],
+      criticality: 'critical',
+      call_chain_ids: [],
+      exit_point_ids: [],
+    },
+    {
+      id: 'journey-billing-export',
+      name: 'Billing export',
+      journey_kind: 'scheduled',
+      entry_point_id: 'entry-billing-export',
+      entry: { type: 'schedule', name: 'billing export' },
+      steps: [{ node_id: 'billing-job', name: 'BillingJob', layer: 'business', depth: 0 }],
+      terminal_effects: { entities_written: ['Invoice'], entities_read: [], external_services: [], messages_emitted: [] },
+      terminal_entities: [],
+      security_boundaries: [],
+      tests_covering: [],
+      criticality: 'low',
+      call_chain_ids: [],
+      exit_point_ids: [],
+    },
+  ];
+  (cas as any).data_lineage = [
+    {
+      entity_id: 'entity-user',
+      entity_name: 'User',
+      sensitive_fields: ['email'],
+      writers: [{ node_id: 'users-service', file: 'src/users/users.service.ts', via: 'create' }],
+      readers: [{ node_id: 'users-controller', file: 'src/users/users.controller.ts', via: 'list' }],
+      external_recipients: [],
+      boundaries_crossed: [],
+      journeys_carrying: ['journey-create-user'],
+      exposure: { unguarded_paths: 1, external_transfer: false, sensitive: true },
+    },
+    {
+      entity_id: 'entity-invoice',
+      entity_name: 'Invoice',
+      sensitive_fields: [],
+      writers: [{ node_id: 'billing-job', file: 'src/billing/billing-job.ts', via: 'run' }],
+      readers: [],
+      external_recipients: [],
+      boundaries_crossed: [],
+      journeys_carrying: [],
+      exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
+    },
+  ];
+  (cas as any).paradigm_conformance = [
+    {
+      paradigm: 'guarded-http-entry-points',
+      description: 'HTTP entry points use auth guards.',
+      adoption: { following_count: 9, comparable_count: 10, adoption_rate: 0.9, evidence_files: [] },
+      deviations: [
+        { file: 'src/users/users.controller.ts', node_id: 'users-controller', kind: 'unguarded-entry-point', detail: 'POST /users/import lacks an auth guard.', severity: 'error' },
+        { file: 'src/billing/billing-job.ts', node_id: 'billing-job', kind: 'direct-data-access', detail: 'Job queries the database directly.', severity: 'warning' },
+      ],
+    },
+  ];
+  (cas as any).product_map = {
+    identity: { name: 'Fixture API', domain: 'user-management', domain_source: 'deterministic', description: 'Tenant-scoped user API', description_source: 'deterministic', unanalyzed_languages: [] },
+    capabilities: [
+      { name: 'Tenant-scoped user management', description: '', description_source: 'deterministic', category: 'core', criticality: 'critical', journeys: [], entities: ['User'], tests_present: true, risk_level: 'high' },
+    ],
+    journeys: { total: 2, user_facing: 1, system: 0, scheduled: 1, top: [] },
+    data: { entities: 2, sensitive: ['User'], exposure_highlights: [] },
+    conventions: { paradigms: [], open_deviations: { error: 1, warning: 1, info: 0 } },
+    health: { tests: { total: 1, passing: 1, failing: 0 }, implementation: { complete: 4, partial: 0, stubs: 0, not_implemented: 0, deprecated: 0 }, top_risks: [] },
+    coverage_caveats: [],
+  };
+  return cas;
+}
+
 async function withWorkspace(run: (workspace: string) => void | Promise<void>): Promise<void> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-agent-workflow-test-'));
   try {
