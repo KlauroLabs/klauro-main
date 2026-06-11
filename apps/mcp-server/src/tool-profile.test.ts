@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { test } from 'node:test';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import { CORE_TOOL_NAMES, createServer, resolveToolProfile } from './server';
+import { CORE_TOOL_NAMES, PILLAR_TOOL_NAMES, createServer, resolveToolProfile } from './server';
 import { saveAnalysis } from './storage';
 
 function restoreEnv(name: string, previous: string | undefined): void {
@@ -28,6 +28,8 @@ test('tool profile defaults to full and only accepts core explicitly', () => {
     assert.equal(resolveToolProfile(), 'full');
     process.env.KLAURO_TOOL_PROFILE = 'core';
     assert.equal(resolveToolProfile(), 'core');
+    process.env.KLAURO_TOOL_PROFILE = 'core-no-pillars';
+    assert.equal(resolveToolProfile(), 'core-no-pillars');
     process.env.KLAURO_TOOL_PROFILE = 'unknown-value';
     assert.equal(resolveToolProfile(), 'full');
   } finally {
@@ -48,6 +50,33 @@ test('core profile registers exactly the core tools plus the gateway', () => {
     assert.ok(gatewayDescription.includes('analyze_codebase'));
     for (const coreName of CORE_TOOL_NAMES) {
       assert.ok(!gatewayDescription.includes(coreName), `gateway description should not list core tool ${coreName}`);
+    }
+  } finally {
+    restoreEnv('KLAURO_TOOL_PROFILE', previous);
+  }
+});
+
+test('core-no-pillars profile removes pillar tools from direct exposure and the gateway', async () => {
+  const previous = process.env.KLAURO_TOOL_PROFILE;
+  try {
+    process.env.KLAURO_TOOL_PROFILE = 'core-no-pillars';
+    const server = createServer();
+    const names = registeredToolNames(server).sort();
+    const expected = [...CORE_TOOL_NAMES.filter(name => !PILLAR_TOOL_NAMES.includes(name)), 'klauro_query'].sort();
+    assert.deepEqual(names, expected);
+
+    const gatewayDescription = (server as any)._registeredTools['klauro_query'].description as string;
+    for (const pillarName of PILLAR_TOOL_NAMES) {
+      assert.ok(!gatewayDescription.includes(pillarName), `gateway description should not list pillar tool ${pillarName}`);
+    }
+
+    const callback = gatewayCallback(server);
+    for (const pillarName of PILLAR_TOOL_NAMES) {
+      const blocked = await callback({ tool: pillarName, args: {} });
+      assert.equal(blocked.isError, true, `gateway should not dispatch pillar tool ${pillarName}`);
+      const message = JSON.parse(blocked.content[0].text).error as string;
+      assert.ok(message.includes(`Unknown Klauro tool '${pillarName}'`));
+      assert.ok(!message.includes('get_data_lineage,'), 'available-tool listing should not advertise pillar tools');
     }
   } finally {
     restoreEnv('KLAURO_TOOL_PROFILE', previous);

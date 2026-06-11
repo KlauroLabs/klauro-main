@@ -50,10 +50,30 @@ const SERVER_INSTRUCTIONS = [
   'If no analysis exists or a tool errors, fall back to direct file reading.',
 ].join(' ');
 
-export type ToolProfile = 'core' | 'full';
+export type ToolProfile = 'core' | 'core-no-pillars' | 'full';
 
 export function resolveToolProfile(): ToolProfile {
-  return (process.env.KLAURO_TOOL_PROFILE || '').trim().toLowerCase() === 'core' ? 'core' : 'full';
+  const value = (process.env.KLAURO_TOOL_PROFILE || '').trim().toLowerCase();
+  if (value === 'core') return 'core';
+  if (value === 'core-no-pillars') return 'core-no-pillars';
+  return 'full';
+}
+
+export const PILLAR_TOOL_NAMES = [
+  'get_user_journeys',
+  'get_paradigm_conformance',
+  'get_data_lineage',
+  'diff_behavior',
+  'get_product_map',
+];
+
+function blockedToolNames(profile: ToolProfile): Set<string> {
+  return new Set(profile === 'core-no-pillars' ? PILLAR_TOOL_NAMES : []);
+}
+
+function directToolNames(profile: ToolProfile): string[] {
+  const blocked = blockedToolNames(profile);
+  return CORE_TOOL_NAMES.filter(name => !blocked.has(name));
 }
 
 export const CORE_TOOL_NAMES = [
@@ -95,7 +115,7 @@ export function createServer(): McpServer {
   const toolRegistry = recordToolRegistrations(server, toolProfile);
   enableToolCallLogging(server);
   registerTools(server);
-  if (toolProfile === 'core') registerToolGateway(server, toolRegistry);
+  if (toolProfile !== 'full') registerToolGateway(server, toolRegistry, toolProfile);
   registerResources(server);
   registerPrompts(server);
 
@@ -107,7 +127,7 @@ function recordToolRegistrations(server: McpServer, profile: ToolProfile): Map<s
   const originalRegisterTool = server.registerTool.bind(server);
   (server as any).registerTool = (name: string, config: any, handler: (...args: any[]) => any) => {
     registry.set(name, { config, handler });
-    if (profile === 'core' && !CORE_TOOL_NAMES.includes(name) && name !== GATEWAY_TOOL_NAME) return undefined;
+    if (profile !== 'full' && !directToolNames(profile).includes(name) && name !== GATEWAY_TOOL_NAME) return undefined;
     return originalRegisterTool(name as any, config as any, handler as any);
   };
   return registry;
@@ -128,9 +148,10 @@ const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
   { label: 'Watch mode', tools: ['start_watch', 'stop_watch', 'get_watch_status', 'list_watches', 'poll_watch_changes'] },
 ];
 
-function buildGatewayDescription(registry: Map<string, RegisteredToolEntry>): string {
+function buildGatewayDescription(registry: Map<string, RegisteredToolEntry>, profile: ToolProfile): string {
+  const blocked = blockedToolNames(profile);
   const available = new Set(
-    [...registry.keys()].filter(name => !CORE_TOOL_NAMES.includes(name) && name !== GATEWAY_TOOL_NAME)
+    [...registry.keys()].filter(name => !CORE_TOOL_NAMES.includes(name) && !blocked.has(name) && name !== GATEWAY_TOOL_NAME)
   );
   const lines: string[] = [];
   for (const group of GATEWAY_TOOL_GROUPS) {
@@ -147,12 +168,13 @@ function buildGatewayDescription(registry: Map<string, RegisteredToolEntry>): st
   ].join('\n');
 }
 
-function registerToolGateway(server: McpServer, registry: Map<string, RegisteredToolEntry>): void {
+function registerToolGateway(server: McpServer, registry: Map<string, RegisteredToolEntry>, profile: ToolProfile): void {
+  const blocked = blockedToolNames(profile);
   server.registerTool(
     GATEWAY_TOOL_NAME,
     {
       title: 'Klauro Query Gateway',
-      description: buildGatewayDescription(registry),
+      description: buildGatewayDescription(registry, profile),
       inputSchema: {
         tool: z.string().describe('Name of the Klauro tool to run'),
         args: z.record(z.unknown()).optional().describe('Arguments object for the tool, matching its documented input schema'),
@@ -160,8 +182,8 @@ function registerToolGateway(server: McpServer, registry: Map<string, Registered
     } as any,
     async ({ tool, args }: any) => withErrorHandling(async () => {
       const entry = registry.get(tool);
-      if (!entry || tool === GATEWAY_TOOL_NAME) {
-        const names = [...registry.keys()].filter(name => name !== GATEWAY_TOOL_NAME).sort();
+      if (!entry || tool === GATEWAY_TOOL_NAME || blocked.has(tool)) {
+        const names = [...registry.keys()].filter(name => name !== GATEWAY_TOOL_NAME && !blocked.has(name)).sort();
         throw new Error(`Unknown Klauro tool '${tool}'. Available tools: ${names.join(', ')}`);
       }
       return await entry.handler(parseGatewayArgs(tool, entry, args ?? {}));
