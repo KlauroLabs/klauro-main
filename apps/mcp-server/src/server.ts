@@ -41,6 +41,7 @@ import * as telemetryIngestion from './telemetry-ingestion';
 import { semanticSearch } from './semantic-search';
 import { pruneKlauroStorage } from './storage-maintenance';
 import { RESPONSE_BUDGET_BYTES, boundToolPayload, boundToolText, serializeToolResponse } from './response-budget';
+import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 
 const SERVER_INSTRUCTIONS = [
   'Klauro serves a precomputed code analysis (CAS) for analyzed repositories.',
@@ -102,7 +103,7 @@ interface RegisteredToolEntry {
 export function createServer(): McpServer {
   const toolProfile = resolveToolProfile();
   const server = new McpServer(
-    { name: 'klauro', version: '1.0.0' },
+    { name: 'klauro', version: getBuildIdentity().version },
     {
       capabilities: {
         resources: {},

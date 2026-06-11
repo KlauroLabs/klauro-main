@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { CASAnalysisError } from '../../types/cas.types';
+import { getBuildIdentity } from './build-identity';
 
 const DEFAULT_MAX_RUNS = 50;
 const DEFAULT_MAX_BYTES = 50 * 1024 * 1024;
@@ -55,6 +56,7 @@ interface AnalysisRunBaseRecord {
   project_path: string;
   project_name: string;
   cas_version?: string;
+  klauro_build?: string;
 }
 
 export interface AnalysisRunStartRecord extends AnalysisRunBaseRecord {
@@ -176,6 +178,7 @@ export class AnalysisRunLog {
       project_path: projectPath,
       project_name: path.basename(projectPath),
       cas_version: casVersion,
+      klauro_build: getBuildIdentity().version,
     };
     this.startedAtMs = Date.now();
     this.write({
