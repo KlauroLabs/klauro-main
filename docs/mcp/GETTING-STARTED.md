@@ -6,10 +6,36 @@ From zero to a first agent work packet in under two minutes on a mid-size reposi
 
 - Node.js 20+
 - A local checkout of this repository (`proof-of-concept`)
-- Dependencies installed once: `npm install` inside `apps/mcp-server/`
-- Bundled server built once: `npm run build` inside `apps/mcp-server/`
 
-## 1. Install: register the MCP server with Claude Code
+## 1. Install: one command
+
+```bash
+node /absolute/path/to/proof-of-concept/apps/mcp-server/scripts/install.mjs /path/to/your/repo --claude-md /path/to/your/repo
+```
+
+(Equivalent once dependencies exist: `npm --prefix apps/mcp-server run setup -- ...` or `klauro install ...`.)
+
+The installer is idempotent and does all of the following, printing a PASS/WARN/FAIL line with a concrete fix for every step:
+
+1. Verifies Node.js 20+ and npm.
+2. Runs `npm install` in `apps/mcp-server/` if dependencies are missing.
+3. Locates the bundled server (`dist/index.cjs`) and builds it only when missing (`--rebuild` to force).
+4. Creates `~/.klauro/analyses` (or `KLAURO_STORAGE_PATH`) and verifies it is writable.
+5. Registers the server with Claude Code (`claude mcp add --scope user klauro -- node .../dist/index.cjs`; `--no-register` to skip, `--claude-scope` for project/local scope) and prints the project-scoped `.mcp.json` snippet plus exact Codex CLI registration commands.
+6. With `--claude-md <repo>`, appends the Klauro operating loop to that repo's `CLAUDE.md` (idempotent; without the flag it prints the snippet to copy).
+7. Self-check: spawns the bundle, asserts the MCP initialize handshake answers within 600ms, then calls `resolve_agent_analysis` end to end — reporting either the selected analysis or a clear "no analyses yet" message with the exact analyze command to run next.
+
+Restart Claude Code and confirm with `/mcp` that the `klauro` server is listed.
+
+Environment health at any later point:
+
+```bash
+npm --prefix apps/mcp-server run doctor
+```
+
+With no path, `klauro doctor` checks the machine: Node version, bundle presence and freshness against the sources, handshake latency, `~/.klauro` writability and disk usage, AI provider availability (none configured means analysis runs fully deterministic — the agent-fast profile is unaffected), zstd, stored-analysis versions against the 1.6.0 compatibility floor, and running Klauro server processes. Every WARN/FAIL carries its fix. With a path, `klauro doctor /path/to/repo` reports per-repository analysis readiness instead.
+
+## Manual install (what the installer automates)
 
 The bundled entry (`dist/index.cjs`) starts in well under a second, so the server connects inside the Claude Code init window and its tools are visible to the agent from the first turn. The `src/index.ts` + tsx entry remains the development path (`npm run dev`), but registering it with clients is not recommended: its slower startup can leave the server pending at session init.
 
@@ -68,6 +94,7 @@ Run `klauro install-agent /path/to/your/repo` to write agent default instruction
 
 ## Troubleshooting
 
-- `klauro doctor /path/to/your/repo` checks analysis readiness.
+- `klauro doctor` (no path) checks the environment: Node version, bundle freshness, handshake latency, storage, AI providers, analysis version floor, running servers.
+- `klauro doctor /path/to/your/repo` checks analysis readiness for that repository.
 - Analyses are stored under `~/.klauro/analyses/` unless `KLAURO_STORAGE_PATH` is set.
 - Set `KLAURO_TOOL_CALL_LOG=/path/to/log.jsonl` in the server env to append one JSON line per tool call (tool name + timestamp) for adoption auditing.

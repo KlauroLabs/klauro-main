@@ -13,6 +13,7 @@
     "analyzer-server": "tsx src/remote-analyzer-service.ts",
     "dev": "tsx watch src/index.ts",
     "init": "tsx src/cli.ts init",
+    "setup": "node scripts/install.mjs",
     "analyze": "tsx src/cli.ts analyze",
     "upload-manifest": "tsx src/cli.ts upload-manifest",
     "install-agent": "tsx src/cli.ts install-agent",

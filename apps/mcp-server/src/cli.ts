@@ -1,6 +1,8 @@
 #!/usr/bin/env tsx
 import * as path from 'path';
+import { spawnSync } from 'child_process';
 import { analyzeProject, analyzeProjectIncremental, getAnalysis } from './analyzer';
+import { formatEnvironmentDoctor, runEnvironmentDoctor } from './environment-doctor';
 import { getAgentBootstrap } from './agent-bootstrap';
 import { writeAgentDefaultConfig } from './agent-defaults';
 import { getAgentDoctor } from './agent-doctor';
@@ -15,6 +17,8 @@ import { buildGithubImportPlan } from './github-import';
 import { compareAnalysisIterations, getPreviewAnalysis, previewCodebaseIteration, previewGreenfieldCodebase, type ProposedFileInput } from './proposal-preview';
 import { buildGreenfieldArchitectureGuidance, type GreenfieldReferenceAnalysis } from './greenfield-guidance';
 import { buildGreenfieldBuildPacket } from './greenfield-build-session';
+import { buildSupportBundle, formatSupportBundleResult } from './support-bundle';
+import { getAnalysisRunLogPath } from '../../../packages/analyzer-core/src/analyzer/core/run-log';
 import * as fs from 'fs-extra';
 
 interface ParsedArgs {
@@ -42,12 +46,27 @@ interface ParsedArgs {
   previewId?: string;
   baselinePath?: string;
   proposedPath?: string;
+  outputPath?: string;
 }
 
 async function main(): Promise<void> {
+  if (process.argv[2] === 'install') {
+    const result = spawnSync(process.execPath, [path.resolve(__dirname, '..', 'scripts', 'install.mjs'), ...process.argv.slice(3)], {
+      stdio: 'inherit',
+    });
+    process.exit(result.status ?? 1);
+  }
+
   const args = parseArgs(process.argv.slice(2));
   if (!args.command || args.command === 'help' || args.command === '--help' || args.command === '-h') {
     printHelp();
+    return;
+  }
+
+  if (args.command === 'doctor' && !args.path) {
+    const report = await runEnvironmentDoctor();
+    process.stdout.write(args.json ? `${JSON.stringify(report, null, 2)}\n` : `${await formatEnvironmentDoctor(report)}\n`);
+    process.exitCode = report.status === 'fail' ? 1 : 0;
     return;
   }
 
@@ -70,13 +89,14 @@ async function main(): Promise<void> {
     'greenfield-build-packet',
     'preview-get',
     'compare-iterations',
+    'support-bundle',
   ].includes(args.command)) {
     throw new Error(`Unknown command: ${args.command}`);
   }
   if (!args.path && ['init', 'analyze', 'upload-manifest', 'install-agent', 'github-import-plan'].includes(args.command)) {
     args.path = '.';
   }
-  if (!args.path && !['greenfield-preview', 'greenfield-guidance', 'greenfield-build-packet', 'preview-get', 'compare-iterations'].includes(args.command)) {
+  if (!args.path && !['greenfield-preview', 'greenfield-guidance', 'greenfield-build-packet', 'preview-get', 'compare-iterations', 'support-bundle'].includes(args.command)) {
     throw new Error(`${args.command} requires a project path`);
   }
 
@@ -225,6 +245,15 @@ async function main(): Promise<void> {
       references,
     }));
     process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatGreenfieldBuildPacket(result));
+    return;
+  }
+
+  if (args.command === 'support-bundle') {
+    const result = await buildSupportBundle({
+      projectPath: args.path ? projectPath : undefined,
+      outputPath: args.outputPath,
+    });
+    process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatSupportBundleResult(result));
     return;
   }
 
@@ -388,6 +417,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     previewId: undefined,
     baselinePath: undefined,
     proposedPath: undefined,
+    outputPath: undefined,
   };
 
   for (let i = 1; i < argv.length; i++) {
@@ -431,6 +461,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       parsed.baselinePath = path.resolve(argv[++i]);
     } else if (arg === '--proposed-path') {
       parsed.proposedPath = path.resolve(argv[++i]);
+    } else if (arg === '--output') {
+      parsed.outputPath = argv[++i];
     } else if (arg === '--mode') {
       parsed.mode = argv[++i] as 'local' | 'remote';
     } else if (arg === '--analysis-focus') {
@@ -460,6 +492,8 @@ function parseArgs(argv: string[]): ParsedArgs {
 function printHelp(): void {
   process.stdout.write([
     'Usage:',
+    '  klauro install [repo-path] [--claude-md /path/to/repo] [--claude-scope user|project|local] [--no-register] [--rebuild] [--skip-self-check]',
+    '  klauro doctor [--json]                  (no path: environment health for this machine)',
     '  klauro init [/path/to/repo] [--mode local|remote] [--server-url url] [--project-id id] [--organization-id id] [--force] [--json]',
     '  klauro upload-manifest [/path/to/repo] [--dirty-tree] [--json]',
     '  klauro analyze [/path/to/repo] [--server-url http://127.0.0.1:8787] [--analysis-id id] [--analysis-focus agent-fast|ui-overview|deep-context|full] [--force] [--json]',
@@ -468,7 +502,7 @@ function printHelp(): void {
     '  klauro agent-start /path/to/repo [--task-type orient|modify|debug|review|trace|cross-repo|runtime] [--target query] [--json] [--refresh]',
     '  klauro agent-work-packet /path/to/repo [--task-type orient|modify|debug|review|trace|cross-repo|runtime] [--target query] [--instructions text] [--success-criterion text] [--json] [--compact] [--quiet] [--refresh]',
     '  klauro agent-install /path/to/repo [--task-type orient|modify|debug|review|trace|cross-repo|runtime] [--target query] [--json] [--refresh]',
-    '  klauro doctor /path/to/repo [--json] [--refresh]',
+    '  klauro doctor /path/to/repo [--json] [--refresh]   (with path: per-repository analysis readiness)',
     '  klauro save-golden /path/to/repo [--json] [--refresh]',
     '  klauro remote-analyze /path/to/repo [--server-url http://127.0.0.1:8787] [--analysis-id id] [--json]',
     '  klauro remote-sync /path/to/repo [--server-url http://127.0.0.1:8787] [--analysis-id id] [--json]',
@@ -476,6 +510,7 @@ function printHelp(): void {
     '  klauro greenfield-guidance --plan-file plan.md [--reference-path /existing/repo] [--proposed-files files.json] [--json]',
     '  klauro greenfield-build-packet [/empty/or/current/project] --plan-file plan.md [--reference-path /existing/repo] [--proposed-files files.json] [--json]',
     '  klauro greenfield-preview --plan-file plan.md --proposed-files files.json [--server-url app-url] [--json]',
+    '  klauro support-bundle [/path/to/repo] [--output bundle.tar.gz] [--json]',
     '  klauro preview-get [--preview-id id] [--json]',
     '  klauro compare-iterations [--preview-id id] [--baseline-path /repo] [--proposed-path /repo-copy] [--json]',
     '',
@@ -489,6 +524,7 @@ function printHelp(): void {
     '  klauro agent-install .',
     '  klauro doctor .',
     '  klauro save-golden .',
+    '  klauro support-bundle . --output klauro-support.tar.gz',
     '  klauro remote-analyze . --server-url http://127.0.0.1:8787',
     '  klauro remote-sync . --server-url http://127.0.0.1:8787',
     '  klauro proposal-preview . --plan "Add a health endpoint" --proposed-files proposed-files.json',
@@ -885,5 +921,10 @@ function formatDoctor(doctor: Awaited<ReturnType<typeof getAgentDoctor>>): strin
 main().catch(error => {
   const message = error instanceof Error ? error.message : String(error);
   process.stderr.write(`${message}\n`);
+  const runLogPath = getAnalysisRunLogPath();
+  if (fs.existsSync(runLogPath)) {
+    process.stderr.write(`Analysis run log: ${runLogPath}\n`);
+  }
+  process.stderr.write('For diagnostics, run: klauro support-bundle <project-path> and send the bundle to support.\n');
   process.exit(1);
 });
