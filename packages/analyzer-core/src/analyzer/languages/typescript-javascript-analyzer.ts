@@ -101,6 +101,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private importSourceMap = new Map<string, string>();
   private classFieldTypes = new Map<string, { typeName: string; library?: string }>();
   private repositoryPropertyTypes = new Map<string, string>();
+  private prismaModelNames = new Map<string, string>();
   private nodeById = new Map<string, CASNode>();
   private nodesByName = new Map<string, CASNode[]>();
   private methodsByParent = new Map<string, CASNode[]>();
@@ -336,6 +337,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     this.importSourceMap.clear();
     this.classFieldTypes.clear();
     this.repositoryPropertyTypes.clear();
+    this.prismaModelNames.clear();
     this.analysisWarnings = [];
     this.suppressedWarningCount = 0;
 
@@ -367,6 +369,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           );
         }
       }
+      await this.collectPrismaModelNames(context);
       tsTimings['setup'] = Date.now() - tsStart;
 
       tsStart = Date.now();
@@ -641,6 +644,10 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
       this.processTreeSitterImports(extraction, relativePath, fileId, nodes, edges, exitPoints);
       const extractedFunctions = this.processTreeSitterFunctions(extraction, relativePath, fileId, nodes, edges, entryPoints);
+      for (const extractedFunction of extractedFunctions) {
+        (extractedFunction as any).constructedClassNames =
+          this.extractConstructedClassNames(lines, extractedFunction.lineStart, extractedFunction.lineEnd);
+      }
       this.processTreeSitterClasses(extraction, relativePath, fileId, nodes, edges);
       this.processTreeSitterVariables(extraction, relativePath, fileId, nodes, edges);
       this.processTreeSitterExports(extraction, relativePath, entryPoints);
@@ -1376,6 +1383,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     let t = Date.now();
     extractedFunctions.forEach(func => {
       const sourceNodeId = this.resolveSourceNodeIdIndexed(filePath, func);
+      this.addConstructedEntityPersistEdges(edges, sourceNodeId, func);
       func.calls.forEach((call: any) => {
         if (call.httpMethod && call.httpPath) {
           if (sourceNodeId) {
@@ -1555,6 +1563,9 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
                 }
               });
             }
+          }
+          if (sourceNodeId && !targetNodeId) {
+            this.addEntityAccessEdge(edges, sourceNodeId, call, func);
           }
         } else if (sourceNodeId && (call.targetType === 'external' || call.targetType === 'library')) {
           const library = this.getLibraryForType(call.target) || this.importSourceMap.get(call.target) || call.target;
@@ -2731,6 +2742,224 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     return this.repositoryPropertyTypes.get(propertyName);
   }
 
+  private static readonly ENTITY_ACCESS_BY_METHOD: Record<string, 'creates' | 'updates' | 'deletes' | 'reads'> = {
+    create: 'creates',
+    createmany: 'creates',
+    createmanyandreturn: 'creates',
+    insert: 'creates',
+    insertmany: 'creates',
+    nativeinsert: 'creates',
+    persist: 'creates',
+    persistandflush: 'creates',
+    save: 'creates',
+    upsert: 'creates',
+    upsertmany: 'creates',
+    update: 'updates',
+    updatemany: 'updates',
+    updateone: 'updates',
+    nativeupdate: 'updates',
+    findoneandupdate: 'updates',
+    findbyidandupdate: 'updates',
+    replaceone: 'updates',
+    increment: 'updates',
+    decrement: 'updates',
+    restore: 'updates',
+    assign: 'updates',
+    bulkwrite: 'updates',
+    delete: 'deletes',
+    deletemany: 'deletes',
+    deleteone: 'deletes',
+    nativedelete: 'deletes',
+    remove: 'deletes',
+    removeandflush: 'deletes',
+    destroy: 'deletes',
+    softdelete: 'deletes',
+    softremove: 'deletes',
+    findbyidanddelete: 'deletes',
+    findbyidandremove: 'deletes',
+    findoneanddelete: 'deletes',
+    findoneandremove: 'deletes',
+    find: 'reads',
+    findone: 'reads',
+    findoneorfail: 'reads',
+    findall: 'reads',
+    findandcount: 'reads',
+    findandcountall: 'reads',
+    findmany: 'reads',
+    findunique: 'reads',
+    finduniqueorthrow: 'reads',
+    findfirst: 'reads',
+    findfirstorthrow: 'reads',
+    findbyid: 'reads',
+    findbycursor: 'reads',
+    count: 'reads',
+    countdocuments: 'reads',
+    estimateddocumentcount: 'reads',
+    distinct: 'reads',
+    exists: 'reads',
+    aggregate: 'reads',
+    groupby: 'reads',
+    getresult: 'reads',
+    getresultlist: 'reads',
+    getsingleresult: 'reads',
+    getresultandcount: 'reads'
+  };
+
+  private classifyEntityAccess(method: string): 'creates' | 'updates' | 'deletes' | 'reads' | undefined {
+    return TypeScriptJavaScriptAnalyzer.ENTITY_ACCESS_BY_METHOD[method.toLowerCase()];
+  }
+
+  private async collectPrismaModelNames(context: AnalysisContext): Promise<void> {
+    try {
+      const schemaFiles = await glob(['**/prisma/schema.prisma'], {
+        cwd: context.projectPath,
+        ignore: this.getIgnorePatterns(context),
+        nodir: true
+      });
+      const modelPattern = /model\s+(\w+)\s*\{/g;
+      for (const schemaFile of schemaFiles.slice(0, 10)) {
+        const schemaContent = await fs.readFile(path.join(context.projectPath, schemaFile), 'utf-8');
+        let modelMatch;
+        while ((modelMatch = modelPattern.exec(schemaContent)) !== null) {
+          this.prismaModelNames.set(modelMatch[1].toLowerCase(), modelMatch[1]);
+        }
+        modelPattern.lastIndex = 0;
+      }
+    } catch {
+      // Prisma schema parsing is best-effort; entity access falls back to class-based resolution.
+    }
+  }
+
+  private lookupEntityNodeId(entityName: string): string | undefined {
+    const candidates = this.nodesByName.get(entityName);
+    if (!candidates) return undefined;
+    const entityNode = candidates.find(node => node.type === 'entity' || node.type === 'model');
+    return entityNode?.id;
+  }
+
+  private isEntityManagerCaller(callerProperty: string, className?: string): boolean {
+    const lower = callerProperty.toLowerCase();
+    if (lower === 'em' || lower === 'entitymanager' || lower === 'manager') return true;
+    const fieldType = (className && this.classFieldTypes.get(`${className}.${callerProperty}`)?.typeName)
+      || this.repositoryPropertyTypes.get(callerProperty);
+    return !!fieldType && fieldType.toLowerCase().includes('entitymanager');
+  }
+
+  private resolveEntityAccessTarget(call: any, func: any): string | undefined {
+    const callExpression = String(call.callExpression || '');
+    const targetParts = String(call.target || '').split('.');
+    targetParts.pop();
+    const callerParts = targetParts[0] === 'this' ? targetParts.slice(1) : targetParts;
+    const callerProperty = callerParts[callerParts.length - 1] || '';
+
+    const queryBuilderEntity = callExpression.match(/createQueryBuilder\s*\(\s*([A-Z][A-Za-z0-9_]*)/);
+    if (queryBuilderEntity) return this.lookupEntityNodeId(queryBuilderEntity[1]);
+
+    if (this.isEntityManagerCaller(callerProperty, func?.className)) {
+      const firstArgEntity = callExpression.match(/\.\s*\w+\s*(?:<[^(]*>)?\s*\(\s*(?:new\s+)?([A-Z][A-Za-z0-9_]*)\s*[\s,()]/);
+      return firstArgEntity ? this.lookupEntityNodeId(firstArgEntity[1]) : undefined;
+    }
+
+    const prismaParent = callerParts.length >= 2 ? callerParts[callerParts.length - 2].toLowerCase() : '';
+    if (prismaParent.includes('prisma')) {
+      const modelKey = callerProperty.toLowerCase();
+      if (this.prismaModelNames.has(modelKey)) return `entity_prisma_${modelKey}`;
+      return undefined;
+    }
+
+    const propertyType = (func?.className && this.classFieldTypes.get(`${func.className}.${callerProperty}`)?.typeName)
+      || this.repositoryPropertyTypes.get(callerProperty);
+    if (propertyType && this.isRepositoryLikeType(propertyType)) {
+      const genericEntity = propertyType.match(/<\s*([A-Z][A-Za-z0-9_]*)\s*[>,]/);
+      if (genericEntity) {
+        const resolved = this.lookupEntityNodeId(genericEntity[1]);
+        if (resolved) return resolved;
+      }
+    }
+
+    if (/^[A-Z]/.test(callerProperty)) {
+      const resolved = this.lookupEntityNodeId(callerProperty);
+      if (resolved) return resolved;
+    }
+
+    const suffixedProperty = callerProperty.match(/^(.+)(Repository|Repo|Model)$/);
+    if (suffixedProperty) {
+      return this.lookupEntityNodeId(this.propertyNameToClassName(suffixedProperty[1]));
+    }
+    return undefined;
+  }
+
+  private extractConstructedClassNames(lines: string[], lineStart?: number, lineEnd?: number): string[] {
+    if (!lineStart || !lineEnd || lineEnd < lineStart) return [];
+    const body = lines.slice(lineStart - 1, lineEnd).join('\n');
+    const constructed = new Set<string>();
+    const constructionPattern = /\bnew\s+([A-Z][A-Za-z0-9_]*)\s*\(/g;
+    let constructionMatch;
+    while ((constructionMatch = constructionPattern.exec(body)) !== null) {
+      constructed.add(constructionMatch[1]);
+    }
+    return [...constructed];
+  }
+
+  private addConstructedEntityPersistEdges(edges: CASEdge[], sourceNodeId: string | undefined, func: any): void {
+    if (!sourceNodeId) return;
+    const constructedClassNames: string[] = func?.constructedClassNames || [];
+    if (constructedClassNames.length === 0) return;
+    const calls: any[] = func?.calls || [];
+    const hasPersistingCall = calls.some(call => {
+      const target = String(call.target || '');
+      const method = target.split('.').pop() || '';
+      return this.classifyEntityAccess(method) === 'creates' && this.isRepositoryCall(target);
+    });
+    if (!hasPersistingCall) return;
+
+    for (const constructedClassName of constructedClassNames) {
+      const entityNodeId = this.lookupEntityNodeId(constructedClassName);
+      if (!entityNodeId || entityNodeId === sourceNodeId) continue;
+      this.addCallEdge(edges, {
+        id: `entity_access_${sourceNodeId}_${entityNodeId}_creates`,
+        source: sourceNodeId,
+        target: entityNodeId,
+        type: 'creates',
+        category: 'data',
+        metadata: {
+          attributes: {
+            reason: 'code_level_model_access',
+            method: 'constructor_with_persist',
+            line: func.lineStart
+          }
+        }
+      });
+    }
+  }
+
+  private addEntityAccessEdge(
+    edges: CASEdge[],
+    sourceNodeId: string,
+    call: any,
+    func: any
+  ): void {
+    const method = String(call.target || '').split('.').pop() || '';
+    const access = this.classifyEntityAccess(method);
+    if (!access) return;
+    const entityNodeId = this.resolveEntityAccessTarget(call, func);
+    if (!entityNodeId || entityNodeId === sourceNodeId) return;
+    this.addCallEdge(edges, {
+      id: `entity_access_${sourceNodeId}_${entityNodeId}_${access}`,
+      source: sourceNodeId,
+      target: entityNodeId,
+      type: access,
+      category: 'data',
+      metadata: {
+        attributes: {
+          reason: 'code_level_model_access',
+          method,
+          line: call.line
+        }
+      }
+    });
+  }
+
   private resolveSourceNodeId(
     filePath: string,
     func: ExtractedFunction,
@@ -2774,7 +3003,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       if (!nodeIds.has(edge.source) && !edge.source.startsWith('exit_') && !edge.source.startsWith('library_')) {
         console.warn(`Edge ${edge.id} has invalid source: ${edge.source}`);
       }
-      if (!nodeIds.has(edge.target) && !edge.target.startsWith('exit_') && !edge.target.startsWith('library_')) {
+      if (!nodeIds.has(edge.target) && !edge.target.startsWith('exit_') && !edge.target.startsWith('library_') && !edge.target.startsWith('entity_prisma_')) {
         console.warn(`Edge ${edge.id} has invalid target: ${edge.target}`);
       }
     });

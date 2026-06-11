@@ -16,6 +16,40 @@ function loadParser(): any {
   return ParserClass;
 }
 
+const SAVED_ROOT_NODE_DESCRIPTOR = '__klauroSavedRootNodeDescriptor';
+
+/*
+ * The tree-sitter JS wrapper replaces Tree.prototype.rootNode with a getter that closes
+ * over the original native accessor. When the wrapper is evaluated a second time in the
+ * same process through a separate module registry (e.g. two Jest test files in one worker),
+ * it destructures the already-replaced getter -- which returns undefined for a prototype
+ * receiver -- and redefines the shared native prototype with that captured undefined,
+ * breaking rootNode for every module registry in the process. The native Tree prototype is
+ * shared process-wide, so we stash the first working descriptor on it and restore it when
+ * corruption is detected.
+ */
+function getRootNode(tree: any): any {
+  if (!tree) return undefined;
+  let root = tree.rootNode;
+  const proto = Object.getPrototypeOf(tree);
+  if (!proto) return root;
+  if (root) {
+    if (!Object.prototype.hasOwnProperty.call(proto, SAVED_ROOT_NODE_DESCRIPTOR)) {
+      const descriptor = Object.getOwnPropertyDescriptor(proto, 'rootNode');
+      if (descriptor) {
+        Object.defineProperty(proto, SAVED_ROOT_NODE_DESCRIPTOR, { value: descriptor, configurable: true });
+      }
+    }
+    return root;
+  }
+  const saved = (proto as any)[SAVED_ROOT_NODE_DESCRIPTOR];
+  if (saved) {
+    Object.defineProperty(proto, 'rootNode', saved);
+    root = tree.rootNode;
+  }
+  return root;
+}
+
 function getGrammar(filePath: string): any {
   loadParser();
   if (filePath.endsWith('.tsx') || filePath.endsWith('.jsx')) {
@@ -174,7 +208,7 @@ export class TreeSitterTSExtractor {
 
     const parser = this.getParser(filePath);
     const tree = parser.parse(content);
-    const root = tree.rootNode;
+    const root = getRootNode(tree);
 
     const result: TSFileExtraction = {
       imports: this.extractImports(root),
