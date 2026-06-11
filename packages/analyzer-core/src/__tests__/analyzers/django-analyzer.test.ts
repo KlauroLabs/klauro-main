@@ -354,4 +354,156 @@ describe('DjangoAnalyzer', () => {
       expect(pingWrites).toEqual([]);
     });
   });
+
+  describe('app discovery', () => {
+    let projectPath: string;
+
+    const writeProject = async (files: Record<string, string>) => {
+      for (const [relativePath, content] of Object.entries(files)) {
+        const fullPath = path.join(projectPath, relativePath);
+        await fs.ensureDir(path.dirname(fullPath));
+        await fs.writeFile(fullPath, content);
+      }
+    };
+
+    const modelsSource = (modelName: string) => [
+      'from django.db import models',
+      '',
+      `class ${modelName}(models.Model):`,
+      '    name = models.CharField(max_length=100)',
+      '',
+    ].join('\n');
+
+    const viewSource = (viewName: string, modelImport: string, modelName: string) => [
+      modelImport,
+      'from django.views import View',
+      '',
+      `class ${viewName}(View):`,
+      `    def handle(self, request):`,
+      `        return ${modelName}.objects.all()`,
+      '',
+    ].join('\n');
+
+    beforeEach(async () => {
+      projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'django-analyzer-apps-test-'));
+      await fs.writeFile(path.join(projectPath, 'requirements.txt'), 'Django==4.2\n');
+      await fs.writeFile(path.join(projectPath, 'manage.py'), '');
+      await fs.ensureDir(path.join(projectPath, 'myproj'));
+      await fs.writeFile(
+        path.join(projectPath, 'myproj', 'settings.py'),
+        "INSTALLED_APPS = [\n    'django.contrib.auth',\n]\nDEBUG = True\n"
+      );
+    });
+
+    afterEach(async () => {
+      await fs.remove(projectPath);
+    });
+
+    it('does not register a parent package that merely contains apps, and assigns each file to exactly one app', async () => {
+      await writeProject({
+        'modules/__init__.py': '',
+        'modules/api/__init__.py': '',
+        'modules/api/apps.py': 'from django.apps import AppConfig\n\nclass ApiConfig(AppConfig):\n    name = "modules.api"\n',
+        'modules/api/models.py': modelsSource('FleetOrder'),
+        'modules/api/views.py': viewSource('FleetOrderAPI', 'from modules.api.models import FleetOrder', 'FleetOrder'),
+        'modules/billing/__init__.py': '',
+        'modules/billing/apps.py': 'from django.apps import AppConfig\n\nclass BillingConfig(AppConfig):\n    name = "modules.billing"\n',
+        'modules/billing/models.py': modelsSource('Invoice'),
+      });
+
+      const contribution = await analyzer.analyze({ projectPath });
+      const nodes = contribution.nodes || [];
+
+      const appNodes = nodes.filter(n => n.id.startsWith('app_'));
+      expect(appNodes.map(n => n.name).sort()).toEqual(['api', 'billing']);
+      expect(appNodes.find(n => n.name === 'modules')).toBeUndefined();
+
+      const fleetViews = nodes.filter(n => n.name === 'FleetOrderAPI');
+      expect(fleetViews).toHaveLength(1);
+      expect(fleetViews[0].id).toBe('view_app_api_FleetOrderAPI');
+
+      const fleetModels = nodes.filter(n => n.type === 'model' && n.name === 'FleetOrder');
+      expect(fleetModels).toHaveLength(1);
+      const invoiceModels = nodes.filter(n => n.type === 'model' && n.name === 'Invoice');
+      expect(invoiceModels).toHaveLength(1);
+
+      const idCounts = new Map<string, number>();
+      for (const node of nodes) idCounts.set(node.id, (idCounts.get(node.id) || 0) + 1);
+      const duplicateIds = [...idCounts.entries()].filter(([, count]) => count > 1);
+      expect(duplicateIds).toEqual([]);
+    });
+
+    it('rolls marker-less subpackages up into the nearest app', async () => {
+      await writeProject({
+        'accounts/__init__.py': '',
+        'accounts/apps.py': 'from django.apps import AppConfig\n\nclass AccountsConfig(AppConfig):\n    name = "accounts"\n',
+        'accounts/models.py': modelsSource('Customer'),
+        'accounts/services/__init__.py': '',
+        'accounts/services/helpers.py': 'def helper():\n    return None\n',
+      });
+
+      const contribution = await analyzer.analyze({ projectPath });
+      const nodes = contribution.nodes || [];
+
+      const appNodes = nodes.filter(n => n.id.startsWith('app_'));
+      expect(appNodes.map(n => n.name)).toEqual(['accounts']);
+    });
+
+    it('preserves legitimate nested apps and splits file ownership at the nested app boundary', async () => {
+      await writeProject({
+        'shop/__init__.py': '',
+        'shop/apps.py': 'from django.apps import AppConfig\n\nclass ShopConfig(AppConfig):\n    name = "shop"\n',
+        'shop/models.py': modelsSource('Product'),
+        'shop/views.py': viewSource('ProductView', 'from shop.models import Product', 'Product'),
+        'shop/payments/__init__.py': '',
+        'shop/payments/apps.py': 'from django.apps import AppConfig\n\nclass PaymentsConfig(AppConfig):\n    name = "shop.payments"\n',
+        'shop/payments/models.py': modelsSource('Payment'),
+        'shop/payments/views.py': viewSource('PaymentView', 'from shop.payments.models import Payment', 'Payment'),
+      });
+
+      const contribution = await analyzer.analyze({ projectPath });
+      const nodes = contribution.nodes || [];
+
+      const appNodes = nodes.filter(n => n.id.startsWith('app_'));
+      expect(appNodes.map(n => n.name).sort()).toEqual(['payments', 'shop']);
+
+      const productViews = nodes.filter(n => n.name === 'ProductView');
+      expect(productViews).toHaveLength(1);
+      expect(productViews[0].id).toBe('view_app_shop_ProductView');
+
+      const paymentViews = nodes.filter(n => n.name === 'PaymentView');
+      expect(paymentViews).toHaveLength(1);
+      expect(paymentViews[0].id).toBe('view_app_payments_PaymentView');
+
+      const paymentModels = nodes.filter(n => n.type === 'model' && n.name === 'Payment');
+      expect(paymentModels).toHaveLength(1);
+      expect(paymentModels[0].id).toBe('model_app_payments_Payment');
+
+      const productModels = nodes.filter(n => n.type === 'model' && n.name === 'Product');
+      expect(productModels).toHaveLength(1);
+      expect(productModels[0].id).toBe('model_app_shop_Product');
+    });
+
+    it('disambiguates app node ids when two app directories share a basename', async () => {
+      await writeProject({
+        'modules/__init__.py': '',
+        'modules/fleet/__init__.py': '',
+        'modules/fleet/models.py': modelsSource('Vehicle'),
+        'legacy_sync/__init__.py': '',
+        'legacy_sync/fleet/__init__.py': '',
+        'legacy_sync/fleet/models.py': modelsSource('LegacyVehicle'),
+      });
+
+      const contribution = await analyzer.analyze({ projectPath });
+      const nodes = contribution.nodes || [];
+
+      const fleetApps = nodes.filter(n => n.id.startsWith('app_') && n.name === 'fleet');
+      expect(fleetApps).toHaveLength(2);
+      expect(new Set(fleetApps.map(n => n.id)).size).toBe(2);
+
+      const vehicleModels = nodes.filter(n => n.type === 'model' && (n.name === 'Vehicle' || n.name === 'LegacyVehicle'));
+      expect(vehicleModels).toHaveLength(2);
+      expect(new Set(vehicleModels.map(n => n.id)).size).toBe(2);
+    });
+  });
 });

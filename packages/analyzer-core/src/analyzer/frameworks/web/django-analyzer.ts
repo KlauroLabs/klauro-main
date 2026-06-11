@@ -28,6 +28,7 @@ interface DjangoSettings {
 }
 
 interface DjangoApp {
+  id: string;
   name: string;
   path: string;
   models: DjangoModel[];
@@ -336,21 +337,61 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     exitPoints: any[]
   ): Promise<DjangoApp[]> {
     const apps: DjangoApp[] = [];
-    const appDirs = new Set<string>();
+    const fileSet = new Set(files);
+    const packageDirs = new Set<string>();
+    const markerDirs = new Set<string>();
 
     files.forEach(file => {
       const dir = path.dirname(file);
-      if (files.some(f => f === path.join(dir, '__init__.py')) ||
-          files.some(f => f === path.join(dir, 'apps.py'))) {
-        appDirs.add(dir);
+      if (fileSet.has(path.join(dir, '__init__.py')) ||
+          fileSet.has(path.join(dir, 'apps.py'))) {
+        packageDirs.add(dir);
+      }
+      if (fileSet.has(path.join(dir, 'apps.py')) ||
+          fileSet.has(path.join(dir, 'models.py'))) {
+        markerDirs.add(dir);
       }
     });
 
+    const hasMarkerAncestor = (dir: string): boolean => {
+      let current = path.dirname(dir);
+      while (current && current !== '.' && current !== path.dirname(current)) {
+        if (markerDirs.has(current)) return true;
+        current = path.dirname(current);
+      }
+      return false;
+    };
+    const hasMarkerDescendant = (dir: string): boolean => {
+      for (const marker of markerDirs) {
+        if (marker.startsWith(dir + '/')) return true;
+      }
+      return false;
+    };
+
+    const appDirs = [...packageDirs].sort().filter(dir => {
+      const name = path.basename(dir);
+      if (name === '.' || name.startsWith('__')) return false;
+      if (markerDirs.has(dir)) return true;
+      if (hasMarkerAncestor(dir)) return false;
+      if (hasMarkerDescendant(dir)) return false;
+      return true;
+    });
+
+    const appDirsDeepestFirst = appDirs.slice().sort((a, b) => b.length - a.length);
+    const owningAppDir = (file: string): string | undefined =>
+      appDirsDeepestFirst.find(dir => file.startsWith(dir + '/'));
+
+    const usedAppIds = new Set<string>();
+
     for (const appDir of appDirs) {
       const appName = path.basename(appDir);
-      if (appName === '.' || appName.startsWith('__')) continue;
+      let appId = `app_${this.sanitizeId(appName)}`;
+      if (usedAppIds.has(appId)) {
+        appId = `app_${this.sanitizeId(appDir.split('/').join('_'))}`;
+      }
+      usedAppIds.add(appId);
 
-      const appFiles = files.filter(f => f.startsWith(appDir + '/'));
+      const appFiles = files.filter(f => owningAppDir(f) === appDir);
       const models = await this.analyzeModels(appFiles, projectPath, appDir);
       const views = await this.analyzeViews(appFiles, projectPath, appDir);
       const urls = await this.analyzeUrls(appFiles, projectPath, appDir);
@@ -363,6 +404,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
       const celeryTasks = await this.analyzeCeleryTasks(appFiles, projectPath, appDir);
 
       const app: DjangoApp = {
+        id: appId,
         name: appName,
         path: appDir,
         models,
@@ -379,7 +421,6 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
       apps.push(app);
 
-      const appId = `app_${this.sanitizeId(appName)}`;
       const appComments = this.extractComments('', path.join(projectPath, appDir));
       const appTodos = this.extractTodos(appComments);
       const appImplementationStatus = this.determineImplementationStatus('', appComments);
@@ -2487,12 +2528,12 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     if (!project) return;
 
     const projectId = `project_${this.sanitizeId(project.name)}`;
-    const allModels = apps.flatMap(app => app.models.map(m => ({ ...m, appId: `app_${this.sanitizeId(app.name)}` })));
-    const allSerializers = apps.flatMap(app => app.serializers.map(s => ({ ...s, appId: `app_${this.sanitizeId(app.name)}` })));
+    const allModels = apps.flatMap(app => app.models.map(m => ({ ...m, appId: app.id })));
+    const allSerializers = apps.flatMap(app => app.serializers.map(s => ({ ...s, appId: app.id })));
     const allGraphQLTypes = apps.flatMap(app => app.graphqlTypes);
 
     apps.forEach(app => {
-      const appId = `app_${this.sanitizeId(app.name)}`;
+      const appId = app.id;
 
       edges.push(this.createEdge(
         `${projectId}_contains_${appId}`,
