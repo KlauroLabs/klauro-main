@@ -9,6 +9,7 @@ import * as fs from 'fs-extra';
 import { glob } from 'glob';
 
 interface DjangoProject {
+  id?: string;
   name: string;
   filePath: string;
   apps: string[];
@@ -50,6 +51,8 @@ interface DjangoModel {
   relationships: Array<{ type: string; target: string; relatedName?: string }>;
   meta: { dbTable?: string; ordering?: string[]; verbose?: string };
   methods: Array<{ name: string; isProperty: boolean; isClassMethod: boolean }>;
+  abstract?: boolean;
+  parentModel?: string;
 }
 
 interface DjangoView {
@@ -82,6 +85,29 @@ interface DjangoUrl {
   view: string;
   namespace?: string;
   included?: boolean;
+  methods?: string[];
+  sourceFile?: string;
+  authRequired?: boolean;
+}
+
+interface DjangoUrlModule {
+  file: string;
+  module: string;
+  routes: Array<{ pattern: string; viewExpr: string; name?: string }>;
+  includes: Array<{ pattern: string; module?: string; namespace?: string; raw: string }>;
+  adminMounts: Array<{ pattern: string }>;
+  routerMounts: Array<{ pattern: string; router: string }>;
+  routers: Map<string, Array<{ prefix: string; viewset: string; kind: 'drf' | 'endpoint' }>>;
+}
+
+interface DjangoModelClassDecl {
+  name: string;
+  bases: string[];
+  filePath: string;
+  appDir: string;
+  classContent: string;
+  abstract: boolean;
+  imports: Map<string, string>;
 }
 
 interface DjangoAdmin {
@@ -164,7 +190,11 @@ export interface DjangoModelAccess {
   access: 'reads' | 'creates' | 'updates' | 'deletes';
 }
 
+const SCAFFOLD_SEGMENT_PATTERN = /(^|\/)(project_template|app_template|\{\{[^/]*\}\})(\/|$)/;
+
 export class DjangoAnalyzer extends BaseAnalyzer {
+  readonly discoversNestedRoots = true;
+
   private todoCounter = 0;
   private commentCounter = 0;
 
@@ -223,6 +253,74 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     }
   }
 
+  private async findScaffoldDirs(projectPath: string): Promise<string[]> {
+    try {
+      const templateMarkerFiles = await glob('**/*-tpl', {
+        cwd: projectPath,
+        ignore: this.getIgnorePatterns({ projectPath }),
+        nodir: true
+      });
+
+      const dirs = new Set<string>();
+      for (const file of templateMarkerFiles) {
+        const dir = path.dirname(file.replace(/\\/g, '/'));
+        if (dir && dir !== '.') dirs.add(dir);
+      }
+      return [...dirs].sort();
+    } catch {
+      return [];
+    }
+  }
+
+  private isScaffoldPath(relativePath: string, scaffoldDirs: string[]): boolean {
+    const normalized = relativePath.replace(/\\/g, '/');
+    if (SCAFFOLD_SEGMENT_PATTERN.test(normalized)) return true;
+    return scaffoldDirs.some(dir => normalized === dir || normalized.startsWith(dir + '/'));
+  }
+
+  async discoverDjangoRoots(projectPath: string): Promise<string[]> {
+    const scaffoldDirs = await this.findScaffoldDirs(projectPath);
+    const markerFiles = await glob(
+      ['**/manage.py', '**/settings.py', '**/settings/__init__.py', '**/urls.py', '**/apps.py', '**/models.py'],
+      { cwd: projectPath, ignore: this.getIgnorePatterns({ projectPath }), nodir: true }
+    );
+
+    const files = markerFiles
+      .map(file => file.replace(/\\/g, '/'))
+      .filter(file => !this.isScaffoldPath(file, scaffoldDirs));
+    const fileSet = new Set(files);
+
+    const asRoot = (dir: string): string => (dir === '.' ? '' : dir);
+    const roots = new Set<string>();
+
+    for (const file of files) {
+      const base = path.basename(file);
+      if (base === 'manage.py') {
+        roots.add(asRoot(path.dirname(file)));
+        continue;
+      }
+
+      let packageDir: string | undefined;
+      if (file.endsWith('settings/__init__.py')) {
+        packageDir = path.dirname(path.dirname(file));
+      } else if (base === 'settings.py') {
+        packageDir = path.dirname(file);
+      }
+      if (packageDir !== undefined) {
+        const hasUrls = fileSet.has(packageDir === '.' ? 'urls.py' : `${packageDir}/urls.py`);
+        if (hasUrls) {
+          roots.add(asRoot(packageDir === '.' ? '.' : path.dirname(packageDir)));
+        }
+      }
+    }
+
+    if (roots.size === 0 && files.some(file => file.endsWith('apps.py') || file.endsWith('models.py'))) {
+      roots.add('');
+    }
+
+    return [...roots].sort();
+  }
+
   async analyze(context: AnalysisContext): Promise<CASContribution> {
     const nodes: CASNode[] = [];
     const edges: CASEdge[] = [];
@@ -231,17 +329,23 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     const perspectives: CASPerspective[] = [];
 
     try {
-      const pythonFiles = await glob(['**/*.py'], {
+      const scaffoldDirs = await this.findScaffoldDirs(context.projectPath);
+      const rawPythonFiles = await glob(['**/*.py'], {
         cwd: context.projectPath,
         ignore: [...this.getIgnorePatterns(context), '**/migrations/**'],
         nodir: true
       });
+      const pythonFiles = rawPythonFiles
+        .map(file => file.replace(/\\/g, '/'))
+        .filter(file => !this.isScaffoldPath(file, scaffoldDirs));
 
-      const project = await this.analyzeProject(context.projectPath, nodes);
+      const roots = await this.discoverDjangoRoots(context.projectPath);
+      const projects = await this.analyzeProjects(context.projectPath, pythonFiles, nodes);
+      const project = projects[0] || null;
       const apps = await this.analyzeApps(pythonFiles, context.projectPath, nodes, edges, entryPoints, exitPoints);
       const middleware = await this.analyzeMiddleware(pythonFiles, context.projectPath, nodes, edges);
 
-      this.buildDjangoRelationships(project, apps, nodes, edges);
+      this.buildDjangoRelationships(projects, apps, nodes, edges);
       this.identifyDatabaseConnections(apps, nodes, exitPoints);
 
       this.tagNodesWithPerspectives(nodes, edges);
@@ -251,6 +355,8 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         framework: 'django',
         version: await this.detectDjangoVersion(context.projectPath),
         projectName: project?.name || 'Unknown',
+        djangoRoots: roots.map(root => root || '.'),
+        projectsFound: projects.length,
         appsFound: apps.length,
         modelsFound: apps.reduce((sum, app) => sum + app.models.length, 0),
         viewsFound: apps.reduce((sum, app) => sum + app.views.length, 0),
@@ -274,21 +380,48 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     }
   }
 
-  private async analyzeProject(projectPath: string, nodes: CASNode[]): Promise<DjangoProject | null> {
-    const settingsFiles = await glob(['**/settings.py', '**/settings/*.py'], {
-      cwd: projectPath,
-      ignore: this.getIgnorePatterns({ projectPath }),
-      nodir: true
-    });
+  private async analyzeProjects(projectPath: string, pythonFiles: string[], nodes: CASNode[]): Promise<DjangoProject[]> {
+    const settingsFiles = pythonFiles.filter(file =>
+      /(^|\/)settings\.py$/.test(file) || /(^|\/)settings\/[^/]+\.py$/.test(file)
+    );
 
-    if (settingsFiles.length === 0) return null;
+    const settingsByPackage = new Map<string, string>();
+    for (const file of settingsFiles.slice().sort()) {
+      const packageDir = /(^|\/)settings\.py$/.test(file)
+        ? path.dirname(file)
+        : path.dirname(path.dirname(file));
+      if (!settingsByPackage.has(packageDir)) {
+        settingsByPackage.set(packageDir, file);
+      }
+    }
 
-    const settingsPath = settingsFiles[0];
+    const projects: DjangoProject[] = [];
+    const usedProjectIds = new Set<string>();
+    for (const [packageDir, settingsPath] of [...settingsByPackage.entries()].sort()) {
+      const project = await this.analyzeProjectSettings(projectPath, packageDir, settingsPath, usedProjectIds, nodes);
+      if (project) projects.push(project);
+    }
+
+    return projects;
+  }
+
+  private async analyzeProjectSettings(
+    projectPath: string,
+    packageDir: string,
+    settingsPath: string,
+    usedProjectIds: Set<string>,
+    nodes: CASNode[]
+  ): Promise<DjangoProject | null> {
     const fullSettingsPath = path.join(projectPath, settingsPath);
-    const settingsContent = await fs.readFile(fullSettingsPath, 'utf-8');
+    let settingsContent: string;
+    try {
+      settingsContent = await fs.readFile(fullSettingsPath, 'utf-8');
+    } catch {
+      return null;
+    }
 
     const settings = this.extractSettings(settingsContent, settingsPath);
-    const projectName = path.basename(path.dirname(settingsPath));
+    const projectName = packageDir === '.' ? path.basename(projectPath) : path.basename(packageDir);
 
     const project: DjangoProject = {
       name: projectName,
@@ -298,7 +431,12 @@ export class DjangoAnalyzer extends BaseAnalyzer {
       urlconf: this.extractRootUrlconf(settingsContent)
     };
 
-    const projectId = `project_${this.sanitizeId(projectName)}`;
+    let projectId = `project_${this.sanitizeId(projectName)}`;
+    if (usedProjectIds.has(projectId)) {
+      projectId = `project_${this.sanitizeId(packageDir.split('/').join('_'))}`;
+    }
+    usedProjectIds.add(projectId);
+    project.id = projectId;
     const documentation = this.extractDocumentation(settingsContent, fullSettingsPath);
     const comments = this.extractComments(settingsContent, fullSettingsPath);
     const todos = this.extractTodos(comments);
@@ -349,18 +487,24 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         packageDirs.add(dir);
       }
       if (fileSet.has(path.join(dir, 'apps.py')) ||
-          fileSet.has(path.join(dir, 'models.py'))) {
+          fileSet.has(path.join(dir, 'models.py')) ||
+          (dir !== '.' && fileSet.has(path.join(dir, 'models', '__init__.py')))) {
         markerDirs.add(dir);
       }
     });
 
+    if (fileSet.has('apps.py') || fileSet.has('models.py') || fileSet.has('models/__init__.py')) {
+      packageDirs.add('.');
+      markerDirs.add('.');
+    }
+
     const hasMarkerAncestor = (dir: string): boolean => {
       let current = path.dirname(dir);
-      while (current && current !== '.' && current !== path.dirname(current)) {
+      for (;;) {
         if (markerDirs.has(current)) return true;
+        if (!current || current === '.' || current === path.dirname(current)) return false;
         current = path.dirname(current);
       }
-      return false;
     };
     const hasMarkerDescendant = (dir: string): boolean => {
       for (const marker of markerDirs) {
@@ -371,7 +515,8 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
     const appDirs = [...packageDirs].sort().filter(dir => {
       const name = path.basename(dir);
-      if (name === '.' || name.startsWith('__')) return false;
+      if (name.startsWith('__')) return false;
+      if (name === '.') return markerDirs.has('.');
       if (markerDirs.has(dir)) return true;
       if (hasMarkerAncestor(dir)) return false;
       if (hasMarkerDescendant(dir)) return false;
@@ -380,22 +525,32 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
     const appDirsDeepestFirst = appDirs.slice().sort((a, b) => b.length - a.length);
     const owningAppDir = (file: string): string | undefined =>
-      appDirsDeepestFirst.find(dir => file.startsWith(dir + '/'));
+      appDirsDeepestFirst.find(dir => dir === '.' || file.startsWith(dir + '/'));
 
     const usedAppIds = new Set<string>();
-
+    const appIdByDir = new Map<string, string>();
+    const appFilesByDir = new Map<string, string[]>();
     for (const appDir of appDirs) {
-      const appName = path.basename(appDir);
+      const appName = appDir === '.' ? path.basename(projectPath) : path.basename(appDir);
       let appId = `app_${this.sanitizeId(appName)}`;
       if (usedAppIds.has(appId)) {
         appId = `app_${this.sanitizeId(appDir.split('/').join('_'))}`;
       }
       usedAppIds.add(appId);
+      appIdByDir.set(appDir, appId);
+      appFilesByDir.set(appDir, files.filter(f => owningAppDir(f) === appDir));
+    }
 
-      const appFiles = files.filter(f => owningAppDir(f) === appDir);
-      const models = await this.analyzeModels(appFiles, projectPath, appDir);
+    const modelsByApp = await this.analyzeModelsAcrossApps(appFilesByDir, projectPath);
+    const urlsByFile = await this.analyzeUrlGraph(files, projectPath);
+
+    for (const appDir of appDirs) {
+      const appName = appDir === '.' ? path.basename(projectPath) : path.basename(appDir);
+      const appId = appIdByDir.get(appDir)!;
+      const appFiles = appFilesByDir.get(appDir) || [];
+      const models = modelsByApp.get(appDir) || [];
       const views = await this.analyzeViews(appFiles, projectPath, appDir);
-      const urls = await this.analyzeUrls(appFiles, projectPath, appDir);
+      const urls = appFiles.flatMap(file => urlsByFile.get(file) || []);
       const admin = await this.analyzeAdmin(appFiles, projectPath, appDir);
       const forms = await this.analyzeForms(appFiles, projectPath, appDir);
       const serializers = await this.analyzeSerializers(appFiles, projectPath, appDir);
@@ -719,7 +874,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
         const modelNode = this.createNodeBuilder(modelId, model.name, 'model')
           .withLevel(3, 'code')
-          .withCategory('model', ['data', 'entity'])
+          .withCategory('model', model.abstract ? ['data', 'abstract'] : ['data', 'entity'])
           .withSource({ file: path.join(projectPath, model.filePath), line: 1, end_line: 1 })
           .withDescription(`Django model: ${model.name}`)
           .withDocumentation(modelDocumentation)
@@ -731,7 +886,9 @@ export class DjangoAnalyzer extends BaseAnalyzer {
             attributes: {
               fields: model.fields.length,
               relationships: model.relationships.length,
-              dbTable: model.meta.dbTable || model.name.toLowerCase()
+              dbTable: model.meta.dbTable || model.name.toLowerCase(),
+              abstract: model.abstract === true,
+              ...(model.parentModel ? { parent_model: model.parentModel } : {})
             }
           })
           .withAnalyzers([this.analyzerId], this.analyzerId)
@@ -844,7 +1001,8 @@ export class DjangoAnalyzer extends BaseAnalyzer {
       }
 
       urls.forEach((url, index) => {
-        if (!url.pattern || !url.view) return;
+        if (!url.view) return;
+        if (!url.pattern && url.included) return;
 
         const urlId = `url_${appId}_${index}`;
         const urlName = url.pattern || `route_${index}`;
@@ -852,7 +1010,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
           .withLevel(4, 'member')
           .withCategory('route', ['http', 'endpoint'])
           .withSource({
-            file: path.join(projectPath, appDir, 'urls.py'),
+            file: path.join(projectPath, url.sourceFile || path.join(appDir, 'urls.py')),
             line: 1,
             end_line: 1
           })
@@ -883,9 +1041,11 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
         const viewId = matchingView ? this.viewNodeId(appId, matchingView) : undefined;
 
-        const httpMethods = matchingView?.type === 'class'
-          ? (matchingView.methods.length > 0 ? matchingView.methods : ['GET'])
-          : ['GET', 'POST'];
+        const httpMethods = url.methods && url.methods.length > 0
+          ? url.methods
+          : matchingView?.type === 'class'
+            ? (matchingView.methods.length > 0 ? matchingView.methods : ['GET'])
+            : ['GET', 'POST'];
 
         for (const method of httpMethods) {
           const entryPointId = `entry_${urlId}_${method.toLowerCase()}`;
@@ -903,7 +1063,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
               parameters: this.extractUrlParameters(url.pattern)
             },
             {
-              authenticated: this.hasAuthDecorator(matchingView?.decorators || []),
+              authenticated: url.authRequired === true || this.hasAuthDecorator(matchingView?.decorators || []),
               guards: this.extractGuardsFromDecorators(matchingView?.decorators || []),
               roles: matchingView?.permissions || [],
               permissions: matchingView?.permissions || []
@@ -935,28 +1095,268 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     return apps;
   }
 
-  private async analyzeModels(files: string[], projectPath: string, appDir: string): Promise<DjangoModel[]> {
-    const models: DjangoModel[] = [];
-    const modelsPackagePrefix = path.join(appDir, 'models') + '/';
-    const modelFiles = files.filter(f =>
-      f === path.join(appDir, 'models.py') ||
-      (f.startsWith(modelsPackagePrefix) && f.endsWith('.py'))
-    );
+  private inAppDir(file: string, appDir: string): boolean {
+    return appDir === '.' || file.startsWith(appDir + '/');
+  }
 
-    for (const modelsFile of modelFiles) {
-      const content = await fs.readFile(path.join(projectPath, modelsFile), 'utf-8');
-      const extractedModels = this.extractModels(content, modelsFile);
-      models.push(...extractedModels);
+  private async analyzeModelsAcrossApps(
+    appFilesByDir: Map<string, string[]>,
+    projectPath: string
+  ): Promise<Map<string, DjangoModel[]>> {
+    const declarations: DjangoModelClassDecl[] = [];
+
+    for (const [appDir, appFiles] of appFilesByDir) {
+      const modelsPackagePrefix = path.join(appDir, 'models') + '/';
+      const modelFiles = appFiles.filter(f =>
+        f === path.join(appDir, 'models.py') ||
+        (f.startsWith(modelsPackagePrefix) && f.endsWith('.py'))
+      );
+
+      for (const modelsFile of modelFiles) {
+        let content: string;
+        try {
+          content = await fs.readFile(path.join(projectPath, modelsFile), 'utf-8');
+        } catch {
+          continue;
+        }
+        declarations.push(...this.collectModelClassDecls(content, modelsFile, appDir));
+      }
     }
 
-    return models;
+    const models = this.resolveModelHierarchy(declarations);
+    const modelsByApp = new Map<string, DjangoModel[]>();
+    for (const { model, appDir } of models) {
+      let bucket = modelsByApp.get(appDir);
+      if (!bucket) {
+        bucket = [];
+        modelsByApp.set(appDir, bucket);
+      }
+      bucket.push(model);
+    }
+    return modelsByApp;
+  }
+
+  private collectModelClassDecls(content: string, filePath: string, appDir: string): DjangoModelClassDecl[] {
+    const decls: DjangoModelClassDecl[] = [];
+    const classPattern = /class\s+(\w+)\s*\(([^)]*)\)\s*:/g;
+    const imports = this.extractModuleImports(content);
+
+    let match;
+    while ((match = classPattern.exec(content)) !== null) {
+      const name = match[1];
+      const bases = match[2]
+        .split(',')
+        .map(base => base.trim())
+        .filter(base => base.length > 0 && !base.startsWith('metaclass'))
+        .map(base => base.split('.').pop() || base)
+        .map(base => base.replace(/\[.*$/, ''));
+      const classStart = match.index;
+      const lineStart = content.lastIndexOf('\n', classStart) + 1;
+      const headerIndent = classStart - lineStart;
+      const classEnd = this.findIndentedBlockEnd(content, classStart + match[0].length, headerIndent);
+      const classContent = content.substring(classStart, classEnd);
+
+      decls.push({
+        name,
+        bases,
+        filePath,
+        appDir,
+        classContent,
+        abstract: /\babstract\s*=\s*True\b/.test(classContent),
+        imports
+      });
+    }
+
+    return decls;
+  }
+
+  private findIndentedBlockEnd(content: string, bodyStart: number, headerIndent: number): number {
+    let lineStart = content.indexOf('\n', bodyStart) + 1;
+    if (lineStart === 0) return content.length;
+
+    while (lineStart < content.length) {
+      const lineEnd = content.indexOf('\n', lineStart);
+      const line = content.substring(lineStart, lineEnd === -1 ? content.length : lineEnd);
+      const trimmed = line.trim();
+      if (trimmed.length > 0 && !trimmed.startsWith('#')) {
+        const indent = line.length - line.trimStart().length;
+        if (indent <= headerIndent) return lineStart;
+      }
+      if (lineEnd === -1) break;
+      lineStart = lineEnd + 1;
+    }
+    return content.length;
+  }
+
+  private extractModuleImports(content: string): Map<string, string> {
+    const imports = new Map<string, string>();
+
+    const fromImportPattern = /^[ \t]*from\s+([\w.]+)\s+import\s+(?:\(([^)]*)\)|([^\n]+))/gm;
+    let match;
+    while ((match = fromImportPattern.exec(content)) !== null) {
+      const module = match[1];
+      const importedNames = (match[2] !== undefined ? match[2] : match[3]).replace(/#[^\n]*/g, '');
+      const names = importedNames.split(',').map(part => part.trim()).filter(Boolean);
+      for (const namePart of names) {
+        const [original, alias] = namePart.split(/\s+as\s+/).map(part => part.trim());
+        if (!original || !/^\w+$/.test(original)) continue;
+        imports.set(alias || original, `${module}.${original}`);
+      }
+    }
+
+    const plainImportPattern = /^\s*import\s+([\w.]+)(?:\s+as\s+(\w+))?/gm;
+    while ((match = plainImportPattern.exec(content)) !== null) {
+      const module = match[1];
+      const alias = match[2] || module.split('.')[0];
+      imports.set(alias, module);
+    }
+
+    return imports;
+  }
+
+  private moduleNameForFile(filePath: string): string {
+    return filePath
+      .replace(/\\/g, '/')
+      .replace(/\.py$/, '')
+      .split('/')
+      .join('.')
+      .replace(/\.__init__$/, '');
+  }
+
+  private resolveModelHierarchy(
+    declarations: DjangoModelClassDecl[]
+  ): Array<{ model: DjangoModel; appDir: string }> {
+    const modelBasePattern = /\bmodels\.Model\b|\b\w*Model\b|\bAbstractUser\b|\bAbstractBaseUser\b|\bMP_Node\b|\bNS_Node\b|\bAL_Node\b/;
+    const nonModelBasePattern = /\b(?:TextChoices|IntegerChoices|Choices|Enum|Serializer|Form|Admin|TestCase)\b/;
+
+    const resolved = new Map<DjangoModelClassDecl, { parent?: DjangoModelClassDecl }>();
+    const pending: DjangoModelClassDecl[] = [];
+
+    for (const decl of declarations) {
+      const baseText = decl.bases.join(', ');
+      if (nonModelBasePattern.test(baseText)) continue;
+      if (modelBasePattern.test(baseText)) {
+        resolved.set(decl, {});
+      } else {
+        pending.push(decl);
+      }
+    }
+
+    const declsByName = new Map<string, DjangoModelClassDecl[]>();
+    for (const decl of declarations) {
+      let bucket = declsByName.get(decl.name);
+      if (!bucket) {
+        bucket = [];
+        declsByName.set(decl.name, bucket);
+      }
+      bucket.push(decl);
+    }
+
+    const resolveBase = (decl: DjangoModelClassDecl, baseName: string): DjangoModelClassDecl | undefined => {
+      const candidates = (declsByName.get(baseName) || []).filter(candidate => resolved.has(candidate));
+      if (candidates.length === 0) return undefined;
+      const sameFile = candidates.find(candidate => candidate.filePath === decl.filePath);
+      if (sameFile) return sameFile;
+      const sameApp = candidates.find(candidate => candidate.appDir === decl.appDir);
+      if (sameApp) return sameApp;
+
+      const importedFrom = decl.imports.get(baseName);
+      if (importedFrom) {
+        const importedModule = importedFrom.split('.').slice(0, -1).join('.');
+        const byModule = candidates.find(candidate => {
+          const declModule = this.moduleNameForFile(candidate.filePath);
+          return declModule === importedModule ||
+            declModule.endsWith(`.${importedModule}`) ||
+            importedModule.endsWith(`.${declModule}`) ||
+            (declModule === '' && importedModule.length > 0);
+        });
+        if (byModule) return byModule;
+      }
+
+      return candidates.length === 1 ? candidates[0] : undefined;
+    };
+
+    const resolveParent = (decl: DjangoModelClassDecl): DjangoModelClassDecl | undefined => {
+      for (const base of decl.bases) {
+        const parent = resolveBase(decl, base);
+        if (parent && parent !== decl) return parent;
+      }
+      return undefined;
+    };
+
+    let progressed = true;
+    while (progressed && pending.length > 0) {
+      progressed = false;
+      for (let index = pending.length - 1; index >= 0; index--) {
+        const decl = pending[index];
+        const parent = resolveParent(decl);
+        if (!parent) continue;
+        resolved.set(decl, { parent });
+        pending.splice(index, 1);
+        progressed = true;
+      }
+    }
+
+    for (const [decl, info] of resolved) {
+      if (info.parent) continue;
+      const parent = resolveParent(decl);
+      if (parent) info.parent = parent;
+    }
+
+    const builtByDecl = new Map<DjangoModelClassDecl, DjangoModel>();
+    const buildModel = (decl: DjangoModelClassDecl): DjangoModel => {
+      const existing = builtByDecl.get(decl);
+      if (existing) return existing;
+
+      const fields = this.extractModelFields(decl.classContent);
+      const relationships = this.extractModelRelationships(decl.classContent).map(relationship =>
+        relationship.target === 'self' ? { ...relationship, target: decl.name } : relationship
+      );
+      const meta = this.extractModelMeta(decl.classContent);
+      const methods = this.extractModelMethods(decl.classContent);
+
+      const model: DjangoModel = {
+        name: decl.name,
+        filePath: decl.filePath,
+        fields,
+        relationships,
+        meta,
+        methods,
+        abstract: decl.abstract
+      };
+      builtByDecl.set(decl, model);
+
+      const parent = resolved.get(decl)?.parent;
+      if (parent) {
+        const parentModel = buildModel(parent);
+        model.parentModel = parentModel.name;
+        const ownFieldNames = new Set(model.fields.map(field => field.name));
+        for (const inherited of parentModel.fields) {
+          if (ownFieldNames.has(inherited.name)) continue;
+          ownFieldNames.add(inherited.name);
+          model.fields.push(inherited);
+        }
+        if (!model.meta.dbTable && !parentModel.abstract && parentModel.meta.dbTable) {
+          model.meta.dbTable = parentModel.meta.dbTable;
+        }
+      }
+
+      return model;
+    };
+
+    const results: Array<{ model: DjangoModel; appDir: string }> = [];
+    for (const decl of declarations) {
+      if (!resolved.has(decl)) continue;
+      results.push({ model: buildModel(decl), appDir: decl.appDir });
+    }
+    return results;
   }
 
   private async analyzeViews(files: string[], projectPath: string, appDir: string): Promise<DjangoView[]> {
     const views: DjangoView[] = [];
     const viewsFiles = files.filter(f =>
-      f.startsWith(appDir + '/') &&
-      (f.endsWith('/views.py') || f === path.join(appDir, 'views.py'))
+      this.inAppDir(f, appDir) &&
+      (f.endsWith('/views.py') || f === path.join(appDir, 'views.py') || /(^|\/)views\/[^/]+\.py$/.test(f))
     );
 
     for (const viewsFile of viewsFiles) {
@@ -968,20 +1368,377 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     return views;
   }
 
-  private async analyzeUrls(files: string[], projectPath: string, appDir: string): Promise<DjangoUrl[]> {
-    const urls: DjangoUrl[] = [];
-    const urlsFiles = files.filter(f =>
-      f.startsWith(appDir + '/') &&
-      (f.endsWith('/urls.py') || f === path.join(appDir, 'urls.py'))
+  async analyzeUrlGraph(files: string[], projectPath: string): Promise<Map<string, DjangoUrl[]>> {
+    const urlFiles = files.filter(f =>
+      /(^|\/)urls\.py$/.test(f) || /(^|\/)urls\/[^/]+\.py$/.test(f)
     );
 
-    for (const urlsFile of urlsFiles) {
-      const content = await fs.readFile(path.join(projectPath, urlsFile), 'utf-8');
-      const extractedUrls = this.extractUrls(content);
-      urls.push(...extractedUrls);
+    const modules = new Map<string, DjangoUrlModule>();
+    for (const file of urlFiles) {
+      let content: string;
+      try {
+        content = await fs.readFile(path.join(projectPath, file), 'utf-8');
+      } catch {
+        continue;
+      }
+      const parsed = this.parseUrlModule(content, file);
+      modules.set(parsed.module, parsed);
     }
 
-    return urls;
+    return this.resolveUrlGraph(modules);
+  }
+
+  parseUrlModule(content: string, filePath: string): DjangoUrlModule {
+    const imports = this.extractModuleImports(content);
+    const module: DjangoUrlModule = {
+      file: filePath,
+      module: this.moduleNameForFile(filePath),
+      routes: [],
+      includes: [],
+      adminMounts: [],
+      routerMounts: [],
+      routers: new Map()
+    };
+
+    const routerDefPattern = /(\w+)\s*=\s*(?:[\w.]+\.)?(\w*Router)\s*\(/g;
+    let match;
+    while ((match = routerDefPattern.exec(content)) !== null) {
+      if (!module.routers.has(match[1])) module.routers.set(match[1], []);
+    }
+
+    const registerPattern = /(\w+)\.register(_endpoint)?\s*\(/g;
+    while ((match = registerPattern.exec(content)) !== null) {
+      const routerVar = match[1];
+      if (!module.routers.has(routerVar)) continue;
+      const args = this.splitTopLevelArgs(this.extractBalancedParens(content, match.index + match[0].length - 1));
+      if (args.length < 2) continue;
+      const prefix = this.unquotePattern(args[0]);
+      if (prefix === undefined) continue;
+      const viewset = (args[1].split('.').pop() || args[1]).trim();
+      if (!/^\w+$/.test(viewset)) continue;
+      module.routers.get(routerVar)!.push({
+        prefix,
+        viewset,
+        kind: match[2] ? 'endpoint' : 'drf'
+      });
+    }
+
+    const resolveIncludeTarget = (expr: string): { module?: string; namespace?: string } => {
+      let inner = expr.trim();
+      let namespace: string | undefined;
+
+      const tupleMatch = inner.match(/^\(\s*([^,]+),\s*['"](\w+)['"]\s*\)$/s);
+      if (tupleMatch) {
+        inner = tupleMatch[1].trim();
+        namespace = tupleMatch[2];
+      }
+
+      const literal = this.unquotePattern(inner);
+      if (literal !== undefined) return { module: literal, namespace };
+
+      const identifier = inner.match(/^[\w.]+$/) ? inner : undefined;
+      if (identifier) {
+        const head = identifier.split('.')[0];
+        const mapped = imports.get(head) || imports.get(identifier);
+        if (mapped) {
+          const rest = identifier.split('.').slice(1).join('.');
+          return { module: rest && mapped !== identifier ? `${mapped}.${rest}` : mapped, namespace };
+        }
+        return { module: identifier, namespace };
+      }
+
+      return { namespace };
+    };
+
+    const urlCallPattern = /\b(path|re_path|url)\s*\(/g;
+    while ((match = urlCallPattern.exec(content)) !== null) {
+      const kind = match[1];
+      const argsRaw = this.extractBalancedParens(content, match.index + match[0].length - 1);
+      if (argsRaw === undefined) continue;
+      const args = this.splitTopLevelArgs(argsRaw);
+      if (args.length < 2) continue;
+
+      const rawPattern = this.unquotePattern(args[0]);
+      if (rawPattern === undefined) continue;
+      const pattern = kind === 'path' ? rawPattern : this.cleanRegexPattern(rawPattern);
+      const viewExpr = args[1].trim();
+      const nameArg = args.find(arg => /^name\s*=/.test(arg.trim()));
+      const name = nameArg ? this.unquotePattern(nameArg.replace(/^name\s*=\s*/, '').trim()) : undefined;
+
+      if (/^include\s*\(/.test(viewExpr)) {
+        const includeArgsRaw = this.extractBalancedParens(viewExpr, viewExpr.indexOf('(')) || '';
+        const includeArgs = this.splitTopLevelArgs(includeArgsRaw);
+        const namespaceArg = [...args, ...includeArgs].find(arg => /^namespace\s*=/.test(arg.trim()));
+        const namespace = namespaceArg
+          ? this.unquotePattern(namespaceArg.replace(/^namespace\s*=\s*/, '').trim())
+          : undefined;
+        const target = resolveIncludeTarget(includeArgs[0] || '');
+
+        if (includeArgs[0] && /admin\.site\.urls/.test(includeArgs[0])) {
+          module.adminMounts.push({ pattern });
+          continue;
+        }
+        const routerFromInclude = (includeArgs[0] || '').match(/^(\w+)\.urls$/);
+        if (routerFromInclude && module.routers.has(routerFromInclude[1])) {
+          module.routerMounts.push({ pattern, router: routerFromInclude[1] });
+          continue;
+        }
+
+        module.includes.push({
+          pattern,
+          module: target.module,
+          namespace: target.namespace || namespace,
+          raw: viewExpr
+        });
+        continue;
+      }
+
+      if (/admin\.site\.urls/.test(viewExpr)) {
+        module.adminMounts.push({ pattern });
+        continue;
+      }
+
+      const routerUrls = viewExpr.match(/^(\w+)\.urls$/);
+      if (routerUrls && module.routers.has(routerUrls[1])) {
+        module.routerMounts.push({ pattern, router: routerUrls[1] });
+        continue;
+      }
+
+      module.routes.push({ pattern, viewExpr, name });
+    }
+
+    const bareRouterPattern = /urlpatterns\s*\+?=\s*(\w+)\.urls\b/g;
+    while ((match = bareRouterPattern.exec(content)) !== null) {
+      if (module.routers.has(match[1])) {
+        module.routerMounts.push({ pattern: '', router: match[1] });
+      }
+    }
+
+    return module;
+  }
+
+  private resolveUrlGraph(modules: Map<string, DjangoUrlModule>): Map<string, DjangoUrl[]> {
+    const moduleNames = [...modules.keys()];
+    const lookupModule = (target?: string): DjangoUrlModule | undefined => {
+      if (!target) return undefined;
+      const direct = modules.get(target);
+      if (direct) return direct;
+      const suffixMatches = moduleNames.filter(name =>
+        name.endsWith(`.${target}`) || target.endsWith(`.${name}`) || (name === '' && target.length > 0)
+      );
+      if (suffixMatches.length === 1) return modules.get(suffixMatches[0]);
+      return undefined;
+    };
+
+    const includedModules = new Set<string>();
+    for (const urlModule of modules.values()) {
+      for (const include of urlModule.includes) {
+        const target = lookupModule(include.module);
+        if (target) includedModules.add(target.module);
+      }
+    }
+
+    const urlsByFile = new Map<string, DjangoUrl[]>();
+    const emit = (file: string, url: DjangoUrl) => {
+      let bucket = urlsByFile.get(file);
+      if (!bucket) {
+        bucket = [];
+        urlsByFile.set(file, bucket);
+      }
+      bucket.push(url);
+    };
+
+    const expandRouter = (
+      urlModule: DjangoUrlModule,
+      routerVar: string,
+      prefix: string,
+      namespace?: string
+    ) => {
+      const registrations = urlModule.routers.get(routerVar) || [];
+      for (const registration of registrations) {
+        const base = this.joinUrlPatterns(prefix, registration.prefix.replace(/\/?$/, '/'));
+        if (registration.kind === 'drf') {
+          emit(urlModule.file, {
+            pattern: base,
+            view: registration.viewset,
+            name: namespace,
+            namespace,
+            methods: ['GET', 'POST'],
+            sourceFile: urlModule.file
+          });
+          emit(urlModule.file, {
+            pattern: this.joinUrlPatterns(base, '<pk>/'),
+            view: registration.viewset,
+            name: namespace,
+            namespace,
+            methods: ['GET', 'PUT', 'PATCH', 'DELETE'],
+            sourceFile: urlModule.file
+          });
+        } else {
+          emit(urlModule.file, {
+            pattern: base,
+            view: registration.viewset,
+            namespace,
+            methods: ['GET'],
+            sourceFile: urlModule.file
+          });
+          emit(urlModule.file, {
+            pattern: this.joinUrlPatterns(base, '<id>/'),
+            view: registration.viewset,
+            namespace,
+            methods: ['GET'],
+            sourceFile: urlModule.file
+          });
+        }
+      }
+    };
+
+    const walk = (urlModule: DjangoUrlModule, prefix: string, namespace: string | undefined, visited: Set<string>) => {
+      if (visited.has(urlModule.module) || visited.size > 50) return;
+      visited.add(urlModule.module);
+
+      for (const route of urlModule.routes) {
+        emit(urlModule.file, {
+          pattern: this.joinUrlPatterns(prefix, route.pattern),
+          view: route.viewExpr,
+          name: namespace && route.name ? `${namespace}:${route.name}` : route.name,
+          namespace,
+          sourceFile: urlModule.file
+        });
+      }
+
+      for (const adminMount of urlModule.adminMounts) {
+        emit(urlModule.file, {
+          pattern: this.joinUrlPatterns(prefix, adminMount.pattern),
+          view: 'django.contrib.admin.site',
+          name: 'django-admin',
+          namespace,
+          methods: ['GET', 'POST'],
+          authRequired: true,
+          sourceFile: urlModule.file
+        });
+      }
+
+      for (const routerMount of urlModule.routerMounts) {
+        expandRouter(urlModule, routerMount.router, this.joinUrlPatterns(prefix, routerMount.pattern), namespace);
+      }
+
+      for (const include of urlModule.includes) {
+        const target = lookupModule(include.module);
+        const childPrefix = this.joinUrlPatterns(prefix, include.pattern);
+        if (target) {
+          walk(target, childPrefix, include.namespace || namespace, visited);
+        } else {
+          emit(urlModule.file, {
+            pattern: childPrefix,
+            view: include.raw,
+            namespace: include.namespace || namespace,
+            included: true,
+            sourceFile: urlModule.file
+          });
+        }
+      }
+
+      visited.delete(urlModule.module);
+    };
+
+    for (const urlModule of modules.values()) {
+      if (includedModules.has(urlModule.module)) continue;
+      walk(urlModule, '', undefined, new Set());
+    }
+
+    for (const urlModule of modules.values()) {
+      if (!includedModules.has(urlModule.module)) continue;
+      if (urlsByFile.has(urlModule.file)) continue;
+      walk(urlModule, '', undefined, new Set());
+    }
+
+    return urlsByFile;
+  }
+
+  private extractBalancedParens(content: string, openParenIndex: number): string | undefined {
+    if (content[openParenIndex] !== '(') return undefined;
+    let depth = 0;
+    let inString: string | undefined;
+    for (let index = openParenIndex; index < content.length; index++) {
+      const char = content[index];
+      if (inString) {
+        if (char === '\\') {
+          index++;
+        } else if (char === inString) {
+          inString = undefined;
+        }
+        continue;
+      }
+      if (char === '"' || char === "'") {
+        inString = char;
+        continue;
+      }
+      if (char === '(' || char === '[' || char === '{') depth++;
+      if (char === ')' || char === ']' || char === '}') {
+        depth--;
+        if (depth === 0) return content.substring(openParenIndex + 1, index);
+      }
+    }
+    return undefined;
+  }
+
+  private splitTopLevelArgs(argsRaw: string | undefined): string[] {
+    if (argsRaw === undefined) return [];
+    const args: string[] = [];
+    let depth = 0;
+    let inString: string | undefined;
+    let current = '';
+    for (let index = 0; index < argsRaw.length; index++) {
+      const char = argsRaw[index];
+      if (inString) {
+        current += char;
+        if (char === '\\') {
+          current += argsRaw[index + 1] || '';
+          index++;
+        } else if (char === inString) {
+          inString = undefined;
+        }
+        continue;
+      }
+      if (char === '"' || char === "'") {
+        inString = char;
+        current += char;
+        continue;
+      }
+      if (char === '(' || char === '[' || char === '{') depth++;
+      if (char === ')' || char === ']' || char === '}') depth--;
+      if (char === ',' && depth === 0) {
+        if (current.trim()) args.push(current.trim());
+        current = '';
+        continue;
+      }
+      current += char;
+    }
+    if (current.trim()) args.push(current.trim());
+    return args;
+  }
+
+  private unquotePattern(expr: string): string | undefined {
+    const match = expr.trim().match(/^[rbu]{0,2}(['"])([\s\S]*)\1$/);
+    return match ? match[2] : undefined;
+  }
+
+  private cleanRegexPattern(pattern: string): string {
+    return pattern
+      .replace(/^\^/, '')
+      .replace(/\$$/, '')
+      .replace(/\(\?P<(\w+)>[^)]*\)/g, '<$1>')
+      .replace(/\\\./g, '.')
+      .replace(/\\\//g, '/');
+  }
+
+  private joinUrlPatterns(prefix: string, pattern: string): string {
+    const left = prefix || '';
+    const right = pattern || '';
+    if (!left) return right;
+    if (!right) return left;
+    return `${left.replace(/\/+$/, '/')}${right.replace(/^\/+/, '')}`.replace(/\/{2,}/g, '/');
   }
 
   private async analyzeAdmin(files: string[], projectPath: string, appDir: string): Promise<DjangoAdmin[]> {
@@ -1013,7 +1770,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
   private async analyzeSerializers(files: string[], projectPath: string, appDir: string): Promise<DjangoSerializer[]> {
     const serializers: DjangoSerializer[] = [];
     const serializersFiles = files.filter(f =>
-      f.startsWith(appDir + '/') &&
+      this.inAppDir(f, appDir) &&
       (f.endsWith('/serializers.py') || f === path.join(appDir, 'serializers.py'))
     );
 
@@ -1032,7 +1789,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     const mutationsFiles = files.filter(f =>
       f.includes('schemas/mutations.py') ||
       f.includes('graphql/mutations.py') ||
-      (f.includes('mutations.py') && f.startsWith(appDir))
+      (f.includes('mutations.py') && this.inAppDir(f, appDir))
     );
 
     for (const file of mutationsFiles) {
@@ -1050,7 +1807,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     const queryFiles = files.filter(f =>
       f.includes('schemas/queries.py') ||
       f.includes('graphql/queries.py') ||
-      (f.includes('queries.py') && f.startsWith(appDir))
+      (f.includes('queries.py') && this.inAppDir(f, appDir))
     );
 
     for (const file of queryFiles) {
@@ -1068,7 +1825,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     const typeFiles = files.filter(f =>
       f.includes('schemas/types.py') ||
       f.includes('graphql/types.py') ||
-      (f.includes('types.py') && f.startsWith(appDir) && !f.includes('__pycache__'))
+      (f.includes('types.py') && this.inAppDir(f, appDir) && !f.includes('__pycache__'))
     );
 
     for (const file of typeFiles) {
@@ -1085,7 +1842,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
     const taskFiles = files.filter(f =>
       f === path.join(appDir, 'tasks.py') ||
-      (f.includes('tasks.py') && f.startsWith(appDir))
+      (f.includes('tasks.py') && this.inAppDir(f, appDir))
     );
 
     for (const file of taskFiles) {
@@ -1591,41 +2348,6 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     };
   }
 
-  private extractModels(content: string, filePath: string): DjangoModel[] {
-    const models: DjangoModel[] = [];
-    const classPattern = /class\s+(\w+)\s*\(([^)]*)\)\s*:/g;
-    const modelBasePattern = /\bmodels\.Model\b|\b\w*Model\b|\bAbstractUser\b|\bAbstractBaseUser\b/;
-    const nonModelBasePattern = /\b(?:TextChoices|IntegerChoices|Choices|Enum|Serializer|Form|Admin|TestCase)\b/;
-
-    let match;
-    while ((match = classPattern.exec(content)) !== null) {
-      const modelName = match[1];
-      const bases = match[2];
-      if (!modelBasePattern.test(bases) || nonModelBasePattern.test(bases)) continue;
-      const classStart = match.index;
-      const classEnd = this.findClassEnd(content, classStart);
-      const classContent = content.substring(classStart, classEnd);
-
-      const fields = this.extractModelFields(classContent);
-      const relationships = this.extractModelRelationships(classContent).map(relationship =>
-        relationship.target === 'self' ? { ...relationship, target: modelName } : relationship
-      );
-      const meta = this.extractModelMeta(classContent);
-      const methods = this.extractModelMethods(classContent);
-
-      models.push({
-        name: modelName,
-        filePath,
-        fields,
-        relationships,
-        meta,
-        methods
-      });
-    }
-
-    return models;
-  }
-
   private extractViews(content: string, filePath: string): DjangoView[] {
     const views: DjangoView[] = [];
 
@@ -1634,27 +2356,6 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
     views.push(...functionViews, ...classViews);
     return views;
-  }
-
-  private extractUrls(content: string): DjangoUrl[] {
-    const urls: DjangoUrl[] = [];
-    const urlPattern = /path\s*\(\s*['"](.*?)['"],\s*([^,]+)(?:,\s*name=['"]([^'"]+)['"])?\s*\)/g;
-
-    let match;
-    while ((match = urlPattern.exec(content)) !== null) {
-      const pattern = match[1];
-      const view = match[2].trim();
-      const name = match[3];
-
-      urls.push({
-        pattern,
-        view,
-        name,
-        included: view.includes('include(')
-      });
-    }
-
-    return urls;
   }
 
   private extractAdmin(content: string, filePath: string): DjangoAdmin[] {
@@ -2553,20 +3254,42 @@ export class DjangoAnalyzer extends BaseAnalyzer {
   }
 
   private buildDjangoRelationships(
-    project: DjangoProject | null,
+    projects: DjangoProject[],
     apps: DjangoApp[],
     nodes: CASNode[],
     edges: CASEdge[]
   ): void {
-    if (!project) return;
+    if (projects.length === 0) return;
 
-    const projectId = `project_${this.sanitizeId(project.name)}`;
+    const projectRoot = (project: DjangoProject): string => {
+      const packageDir = /(^|\/)settings\.py$/.test(project.filePath)
+        ? path.dirname(project.filePath)
+        : path.dirname(path.dirname(project.filePath));
+      const root = path.dirname(packageDir);
+      return root === '.' ? '' : root;
+    };
+    const projectForApp = (appDir: string): DjangoProject => {
+      let best: DjangoProject | undefined;
+      let bestRootLength = -1;
+      for (const project of projects) {
+        const root = projectRoot(project);
+        const contains = root === '' || appDir === root || appDir.startsWith(root + '/');
+        if (contains && root.length > bestRootLength) {
+          best = project;
+          bestRootLength = root.length;
+        }
+      }
+      return best || projects[0];
+    };
+
     const allModels = apps.flatMap(app => app.models.map(m => ({ ...m, appId: app.id })));
     const allSerializers = apps.flatMap(app => app.serializers.map(s => ({ ...s, appId: app.id })));
     const allGraphQLTypes = apps.flatMap(app => app.graphqlTypes);
 
     apps.forEach(app => {
       const appId = app.id;
+      const owningProject = projectForApp(app.path);
+      const projectId = owningProject.id || `project_${this.sanitizeId(owningProject.name)}`;
 
       edges.push(this.createEdge(
         `${projectId}_contains_${appId}`,
