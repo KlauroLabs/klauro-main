@@ -1135,6 +1135,12 @@ export interface CASValidation {
   graph_integrity?: {
     total_edges: number;
     dangling_edges: number;
+    duplicate_ids?: {
+      nodes: number;
+      edges: number;
+      entry_points: number;
+      exit_points: number;
+    };
     connected_nodes: number;
     orphaned_nodes: number;
     entry_points_with_handlers: number;

@@ -766,7 +766,8 @@ export class AnalyzerOrchestrator {
       for (const { registration, result, executionTime } of successfulResults) {
         this.mergeAnalysisResult(
           { allNodes, allEdges, allEntryPoints, allExitPoints },
-          result
+          result,
+          { analyzerId: registration.id, analysisErrors }
         );
 
         if (result.behaviors) allBehaviors.push(...result.behaviors);
@@ -1600,6 +1601,10 @@ export class AnalyzerOrchestrator {
         }
       }
     }
+    const incrementalMergeWarnings: CASAnalysisError[] = [];
+    this.dedupeGraphItemsInPlace(filteredEntryPoints, 'entry point', 'incremental', incrementalMergeWarnings);
+    this.dedupeGraphItemsInPlace(filteredExitPoints, 'exit point', 'incremental', incrementalMergeWarnings);
+    this.dedupeGraphItemsInPlace(filteredEdges, 'edge', 'incremental', incrementalMergeWarnings);
     debugIncrementalPhase('analyze-changed-files');
 
     if (failedFiles.length > 0 || fileResults.size !== filesToAnalyze.length) {
@@ -1655,6 +1660,9 @@ export class AnalyzerOrchestrator {
       filteredExitPoints,
       previousOutput
     );
+    if (incrementalMergeWarnings.length > 0) {
+      rebuiltOutput.analysis_errors = [...(rebuiltOutput.analysis_errors || []), ...incrementalMergeWarnings];
+    }
 
     return { output: rebuiltOutput, fileResults };
   }
@@ -4001,7 +4009,8 @@ export class AnalyzerOrchestrator {
 
     this.mergeAnalysisResult(
       { allNodes: accumulators.allNodes, allEdges: accumulators.allEdges, allEntryPoints: accumulators.allEntryPoints, allExitPoints: accumulators.allExitPoints },
-      result
+      result,
+      { analyzerId: registration.id, analysisErrors: accumulators.analysisErrors }
     );
 
     if (result.behaviors) accumulators.allBehaviors.push(...result.behaviors);
@@ -4108,6 +4117,68 @@ export class AnalyzerOrchestrator {
     );
   }
 
+  private canonicalGraphJson(value: unknown): string {
+    const sortValue = (input: unknown): unknown => {
+      if (Array.isArray(input)) return input.map(sortValue);
+      if (input && typeof input === 'object') {
+        return Object.keys(input as Record<string, unknown>).sort().reduce<Record<string, unknown>>((acc, key) => {
+          acc[key] = sortValue((input as Record<string, unknown>)[key]);
+          return acc;
+        }, {});
+      }
+      return input;
+    };
+    return JSON.stringify(sortValue(value));
+  }
+
+  private describeGraphItemSource(item: any, fallbackAnalyzer: string): string {
+    const analyzer = item?.source_analyzer || fallbackAnalyzer || 'unknown analyzer';
+    const file = item?.metadata?.file || item?.handler?.file || item?.source?.file || item?.source_location?.file;
+    return file ? `${analyzer} (${file})` : analyzer;
+  }
+
+  private appendGraphItemsUnique<T extends { id: string }>(
+    target: T[],
+    incoming: T[],
+    sectionLabel: 'entry point' | 'exit point' | 'edge',
+    analyzerId: string,
+    analysisErrors?: CASAnalysisError[]
+  ): void {
+    const byId = new Map<string, T>(target.map(item => [item.id, item]));
+    const warnedIds = new Set<string>();
+    for (const item of incoming) {
+      const existing = byId.get(item.id);
+      if (!existing) {
+        target.push(item);
+        byId.set(item.id, item);
+        continue;
+      }
+      if (this.canonicalGraphJson(existing) === this.canonicalGraphJson(item)) continue;
+      if (warnedIds.has(item.id)) continue;
+      warnedIds.add(item.id);
+      analysisErrors?.push({
+        severity: 'warning',
+        code: 'PARTIAL_ANALYSIS',
+        message: `Duplicate ${sectionLabel} id "${item.id}": kept ${this.describeGraphItemSource(existing, analyzerId)}, dropped differing duplicate from ${this.describeGraphItemSource(item, analyzerId)}`,
+        analyzer: analyzerId,
+        recoverable: true
+      });
+    }
+  }
+
+  private dedupeGraphItemsInPlace<T extends { id: string }>(
+    items: T[],
+    sectionLabel: 'entry point' | 'exit point' | 'edge',
+    analyzerId: string,
+    analysisErrors?: CASAnalysisError[]
+  ): void {
+    const deduped: T[] = [];
+    this.appendGraphItemsUnique(deduped, items, sectionLabel, analyzerId, analysisErrors);
+    if (deduped.length === items.length) return;
+    items.length = 0;
+    items.push(...deduped);
+  }
+
   private mergeAnalysisResult(
     target: {
       allNodes: CASNode[];
@@ -4115,10 +4186,12 @@ export class AnalyzerOrchestrator {
       allEntryPoints: any[];
       allExitPoints: any[];
     },
-    source: CASContribution
+    source: CASContribution,
+    options?: { analyzerId?: string; analysisErrors?: CASAnalysisError[] }
   ): void {
+    const contributingAnalyzer = options?.analyzerId || source.analyzer_metadata?.analyzer_id || 'unknown analyzer';
     const existingNodeIds = new Set(target.allNodes.map(n => n.id));
-    const existingEdgeIds = new Set(target.allEdges.map(e => e.id));
+    const existingEdgesById = new Map(target.allEdges.map(e => [e.id, e]));
     const validEntryPoints = (source.entry_points || []).filter(ep => this.isValidEntryPoint(ep));
     const validExitPoints = (source.exit_points || []).filter(ep => this.isValidExitPoint(ep));
     const invalidEntryPointIds = new Set((source.entry_points || [])
@@ -4165,17 +4238,32 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    for (const edge of source.edges || []) {
-      if (invalidEntryPointIds.has(edge.source) || invalidEntryPointIds.has(edge.target)) continue;
-      if (invalidExitPointIds.has(edge.source) || invalidExitPointIds.has(edge.target)) continue;
-      if (!existingEdgeIds.has(edge.id)) {
+    const edgesToMerge = (source.edges || []).filter(edge =>
+      !invalidEntryPointIds.has(edge.source) && !invalidEntryPointIds.has(edge.target) &&
+      !invalidExitPointIds.has(edge.source) && !invalidExitPointIds.has(edge.target)
+    );
+    const edgeWarnedIds = new Set<string>();
+    for (const edge of edgesToMerge) {
+      const existing = existingEdgesById.get(edge.id);
+      if (!existing) {
         target.allEdges.push(edge);
-        existingEdgeIds.add(edge.id);
+        existingEdgesById.set(edge.id, edge);
+        continue;
       }
+      if (edgeWarnedIds.has(edge.id)) continue;
+      if (this.canonicalGraphJson(existing) === this.canonicalGraphJson(edge)) continue;
+      edgeWarnedIds.add(edge.id);
+      options?.analysisErrors?.push({
+        severity: 'warning',
+        code: 'PARTIAL_ANALYSIS',
+        message: `Duplicate edge id "${edge.id}": kept ${this.describeGraphItemSource(existing, contributingAnalyzer)}, dropped differing duplicate from ${this.describeGraphItemSource(edge, contributingAnalyzer)}`,
+        analyzer: contributingAnalyzer,
+        recoverable: true
+      });
     }
 
-    target.allEntryPoints.push(...validEntryPoints);
-    target.allExitPoints.push(...validExitPoints);
+    this.appendGraphItemsUnique(target.allEntryPoints, validEntryPoints, 'entry point', contributingAnalyzer, options?.analysisErrors);
+    this.appendGraphItemsUnique(target.allExitPoints, validExitPoints, 'exit point', contributingAnalyzer, options?.analysisErrors);
   }
 
   private isValidEntryPoint(ep: CASEntryPoint): boolean {
@@ -13779,6 +13867,27 @@ export class AnalyzerOrchestrator {
     const exitPointIds = new Set(exitPoints.map(exitPoint => exitPoint.id));
     const graphEndpointIds = new Set([...nodeIds, ...entryPointIds, ...exitPointIds]);
     const warnings: Array<{ path?: string; message?: string }> = [];
+
+    const countDuplicateIds = (items: Array<{ id: string }>, section: string): number => {
+      const counts = new Map<string, number>();
+      for (const item of items) counts.set(item.id, (counts.get(item.id) || 0) + 1);
+      let duplicateIds = 0;
+      for (const [id, count] of counts) {
+        if (count <= 1) continue;
+        duplicateIds++;
+        warnings.push({
+          path: `${section}[${id}]`,
+          message: `Duplicate ${section} id "${id}" appears ${count} times`
+        });
+      }
+      return duplicateIds;
+    };
+    const duplicateIds = {
+      nodes: countDuplicateIds(nodes, 'nodes'),
+      edges: countDuplicateIds(edges, 'edges'),
+      entry_points: countDuplicateIds(entryPoints, 'entry_points'),
+      exit_points: countDuplicateIds(exitPoints, 'exit_points')
+    };
     let danglingEdges = 0;
     const connectedNodeIds = new Set<string>();
 
@@ -13844,6 +13953,7 @@ export class AnalyzerOrchestrator {
       graph_integrity: {
         total_edges: edges.length,
         dangling_edges: danglingEdges,
+        duplicate_ids: duplicateIds,
         connected_nodes: connectedNodeIds.size,
         orphaned_nodes: orphanedNodes,
         entry_points_with_handlers: entryPointsWithHandlers,
