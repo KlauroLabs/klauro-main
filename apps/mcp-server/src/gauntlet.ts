@@ -319,7 +319,19 @@ async function resolveExpectation(repoPath: string, expectation: RepoExpectation
   };
 }
 
-async function repoAppearsToContainLanguage(repoPath: string, language: string): Promise<boolean> {
+export async function nestedGitRepoIgnorePatterns(repoPath: string): Promise<string[]> {
+  const gitMarkers = await glob('**/.git', {
+    cwd: repoPath,
+    dot: true,
+    ignore: ['**/node_modules/**', '**/vendor/**'],
+  });
+  return gitMarkers
+    .map(marker => marker.replace(/\\/g, '/'))
+    .filter(marker => marker !== '.git')
+    .map(marker => `${marker.slice(0, -'/.git'.length)}/**`);
+}
+
+export async function repoAppearsToContainLanguage(repoPath: string, language: string): Promise<boolean> {
   const patternsByLanguage: Record<string, string[]> = {
     'TypeScript/JavaScript': ['**/package.json', '**/*.{ts,tsx,js,jsx,mjs,cjs}'],
     Python: ['**/pyproject.toml', '**/requirements.txt', '**/*.py'],
@@ -332,6 +344,7 @@ async function repoAppearsToContainLanguage(repoPath: string, language: string):
   const matches = await glob(patterns, {
     cwd: repoPath,
     ignore: [
+      ...await nestedGitRepoIgnorePatterns(repoPath),
       '**/node_modules/**',
       '**/dist/**',
       '**/build/**',
