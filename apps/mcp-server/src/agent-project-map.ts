@@ -1,9 +1,10 @@
 import * as path from 'path';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import { listAnalyses, type AnalysisEntry } from './storage';
+import { listAnalyses, getAnalysisEntry, type AnalysisEntry } from './storage';
 import { getAnalysis } from './analyzer';
 import { evaluateAgentReadiness, type AgentTask } from './agent-adoption';
 import { classifyAnalysisProfile } from './analysis-profile';
+import { summarizeAnalysisFreshness, type AnalysisFreshnessSummary } from './freshness';
 
 export interface AgentAnalysisCandidate {
   path: string;
@@ -77,23 +78,32 @@ export async function resolveAgentAnalysis(input: {
   generated_at: string;
   requested_path: string;
   selected_path: string | null;
+  analysis_freshness?: AnalysisFreshnessSummary;
   selected?: AgentAnalysisCandidate;
   candidates: AgentAnalysisCandidate[];
   recommendation: string;
 }> {
   const map = await getAgentProjectMap({ path: input.path, task: input.task, limit: 12 });
   const selected = map.selected;
+  const selectedEntry = selected ? await getAnalysisEntry(selected.path) : null;
+  const freshness = selected
+    ? summarizeAnalysisFreshness(selected.path, selectedEntry?.analyzed_at)
+    : null;
+  const baseRecommendation = selected
+    ? selected.path === normalizePath(input.path)
+      ? 'Continue with the requested path; it is the best matching analysis.'
+      : `Use ${selected.path} for agent-start/work-packet calls; it is the best matching analyzed subproject.`
+    : 'No stored analysis matches this path. Run analyze_codebase on the repository or target subproject first.';
   return {
     generated_at: new Date().toISOString(),
     requested_path: input.path,
     selected_path: selected?.path || null,
+    ...(freshness ? { analysis_freshness: freshness } : {}),
     selected,
     candidates: map.candidates,
-    recommendation: selected
-      ? selected.path === normalizePath(input.path)
-        ? 'Continue with the requested path; it is the best matching analysis.'
-        : `Use ${selected.path} for agent-start/work-packet calls; it is the best matching analyzed subproject.`
-      : 'No stored analysis matches this path. Run analyze_codebase on the repository or target subproject first.',
+    recommendation: freshness && freshness.staleness !== 'fresh'
+      ? `${baseRecommendation} ${freshness.recommendation}`
+      : baseRecommendation,
   };
 }
 

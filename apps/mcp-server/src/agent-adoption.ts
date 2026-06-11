@@ -23,6 +23,7 @@ import { semanticSearch } from './semantic-search';
 import type { TestDiscoveryEvidence } from './test-discovery';
 import { assessBehavioralInvariantImpact } from './invariant-validation';
 import { buildIdiomContextForAgent } from './idiom-query';
+import { summarizeAnalysisFreshness, type AnalysisFreshnessSummary } from './freshness';
 import {
   classifyAnalysisProfile,
   expectedCallChainCount,
@@ -150,6 +151,7 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
   const runtimeLinks = getRuntimeStaticLinks(cas, { limit: 8 });
   const productOrientation = buildProductOrientationLine(cas);
   const sensitiveDataExposure = buildSensitiveExposureDigest(cas);
+  const analysisFreshness = summarizeAnalysisFreshness(path, cas.analysis_timestamp);
 
   return {
     path,
@@ -157,6 +159,7 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
     default_rule: 'Use this CAS-backed MCP context before broad file reads. Read source files after MCP narrows the target or reports a gap. After edits, run validate_behavioral_invariants and validate_codebase_idioms before finalizing changes.',
     task: normalizeTask(task),
     ...(sensitiveDataExposure ? { sensitive_data_exposure: sensitiveDataExposure } : {}),
+    ...(analysisFreshness ? { analysis_freshness: analysisFreshness } : {}),
     readiness: {
       status: readiness.status,
       score: readiness.score,
@@ -318,6 +321,13 @@ export async function getAgentWorkPacket(cas: CASOutput, path: string, taskInput
   ];
 
   const sensitiveDataExposure = buildSensitiveExposureDigest(cas);
+  const analysisFreshness = buildWorkPacketFreshness(cas, path, selectedNode || undefined, fileReadPlan);
+  if (analysisFreshness?.invalid_citations) {
+    gaps.push('analysis-freshness: files cited by this packet changed or were deleted after analysis; re-run analyze_codebase before trusting citations');
+  }
+  const riskWithFreshness = analysisFreshness?.target_file_note && riskForAgent
+    ? { ...riskForAgent, target_file_changed_since_analysis: analysisFreshness.target_file_note }
+    : riskForAgent;
 
   const packet = {
     path,
@@ -326,6 +336,7 @@ export async function getAgentWorkPacket(cas: CASOutput, path: string, taskInput
     status: gaps.length === 0 ? 'ready' : 'needs-review',
     default_use: readiness.default_use,
     ...(sensitiveDataExposure ? { sensitive_data_exposure: sensitiveDataExposure } : {}),
+    ...(analysisFreshness ? { analysis_freshness: analysisFreshness.summary } : {}),
     readiness: {
       status: readiness.status,
       score: readiness.score,
@@ -337,7 +348,7 @@ export async function getAgentWorkPacket(cas: CASOutput, path: string, taskInput
     selected_node: selectedNode ? summarizeNodeForAgent(selectedNode) : null,
     work_context: {
       coding_context: codingContext,
-      risk: riskForAgent,
+      risk: riskWithFreshness,
       risk_context: riskContext,
       callers,
       callees,
@@ -363,6 +374,71 @@ export async function getAgentWorkPacket(cas: CASOutput, path: string, taskInput
   };
 
   return adaptWorkPacketForRepoScale(packet, cas);
+}
+
+const WORK_PACKET_CITATION_CHECK_LIMIT = 20;
+
+interface WorkPacketFreshness {
+  summary: AnalysisFreshnessSummary & {
+    cited_files_changed_since_analysis?: string[];
+    cited_files_deleted_since_analysis?: string[];
+    warning?: string;
+  };
+  invalid_citations: boolean;
+  target_file_note?: string;
+}
+
+function buildWorkPacketFreshness(
+  cas: CASOutput,
+  projectPath: string,
+  selectedNode: CASNode | undefined,
+  fileReadPlan: FileReadPlanItem[],
+): WorkPacketFreshness | null {
+  const base = summarizeAnalysisFreshness(projectPath, cas.analysis_timestamp);
+  if (!base) return null;
+  const analyzedAtMs = Date.parse(base.analyzed_at);
+  const rootPath = cas.system?.root_path;
+  const targetFile = selectedNode?.source?.file
+    ? normalizeSourceFile(selectedNode.source.file, rootPath)
+    : null;
+  const citedFiles = uniqueStrings([
+    ...(targetFile ? [targetFile] : []),
+    ...fileReadPlan.map(item => item.file),
+  ]).slice(0, WORK_PACKET_CITATION_CHECK_LIMIT);
+
+  const changedCited: string[] = [];
+  const deletedCited: string[] = [];
+  for (const file of citedFiles) {
+    const absolute = nodePath.isAbsolute(file) ? file : nodePath.join(projectPath, file);
+    try {
+      const stat = fs.statSync(absolute);
+      if (stat.mtimeMs > analyzedAtMs) changedCited.push(file);
+    } catch {
+      deletedCited.push(file);
+    }
+  }
+
+  const invalidCitations = changedCited.length > 0 || deletedCited.length > 0;
+  if (!invalidCitations) return { summary: base, invalid_citations: false };
+
+  let targetFileNote: string | undefined;
+  if (targetFile && deletedCited.includes(targetFile)) {
+    targetFileNote = `${targetFile} was deleted after this analysis was generated; this node no longer exists at the cited location and its risk assessment describes stale code.`;
+  } else if (targetFile && changedCited.includes(targetFile)) {
+    targetFileNote = `${targetFile} was modified after this analysis was generated; this node's line numbers, structure, and risk assessment may no longer match the source.`;
+  }
+
+  return {
+    summary: {
+      ...base,
+      staleness: 'stale',
+      cited_files_changed_since_analysis: changedCited.slice(0, 5),
+      cited_files_deleted_since_analysis: deletedCited.slice(0, 5),
+      warning: `STALE ANALYSIS: ${changedCited.length} file(s) cited by this packet changed and ${deletedCited.length} were deleted after the analysis was generated. Specific file/line citations in this packet may be invalid. Re-run analyze_codebase for ${projectPath} (incremental) before relying on them.`,
+    },
+    invalid_citations: true,
+    target_file_note: targetFileNote,
+  };
 }
 
 function buildProductOrientationLine(cas: CASOutput): string | null {
@@ -1194,6 +1270,7 @@ function compactSmallRepoMinimalWorkPacket<T extends Record<string, any>>(packet
     default_use: packet.default_use,
     packet_profile: 'small-repo-minimal',
     ...(packet.sensitive_data_exposure ? { sensitive_data_exposure: packet.sensitive_data_exposure } : {}),
+    ...(packet.analysis_freshness ? { analysis_freshness: packet.analysis_freshness } : {}),
     selected_node: packet.selected_node,
     work_context: {
       coding_context: compactCodingContextForMicroRepo(context.coding_context),
@@ -1227,6 +1304,7 @@ function compactTinyWorkPacket<T extends Record<string, any>>(packet: T): T {
     default_use: packet.default_use,
     packet_profile: 'ultra-small-repo',
     ...(packet.sensitive_data_exposure ? { sensitive_data_exposure: packet.sensitive_data_exposure } : {}),
+    ...(packet.analysis_freshness ? { analysis_freshness: packet.analysis_freshness } : {}),
     readiness: {
       status: packet.readiness?.status,
       score: packet.readiness?.score,
@@ -1289,6 +1367,7 @@ function compactTokenMinimalWorkPacket<T extends Record<string, any>>(packet: T)
     default_use: packet.default_use,
     packet_profile: 'token-minimal',
     ...(packet.sensitive_data_exposure ? { sensitive_data_exposure: packet.sensitive_data_exposure } : {}),
+    ...(packet.analysis_freshness ? { analysis_freshness: packet.analysis_freshness } : {}),
     readiness: {
       status: packet.readiness?.status,
       score: packet.readiness?.score,
@@ -1373,6 +1452,7 @@ function compactSmallRepoArchitectureContext(context: any) {
 function compactMinimalRisk(risk: any) {
   if (!risk || typeof risk !== 'object') return risk || null;
   return {
+    ...(risk.target_file_changed_since_analysis ? { target_file_changed_since_analysis: risk.target_file_changed_since_analysis } : {}),
     risk_level: risk.risk?.risk_level || risk.risk_level || null,
     factors: Array.isArray(risk.risk?.risk_factors) ? risk.risk.risk_factors.slice(0, 2) : [],
     recommendations: Array.isArray(risk.risk?.recommendations) ? risk.risk.recommendations.slice(0, 2) : [],
@@ -1685,6 +1765,7 @@ function compactRiskForMicroRepo(risk: any) {
   if (!risk || typeof risk !== 'object') return risk || null;
   const summary = risk.change_risk_summary;
   return {
+    ...(risk.target_file_changed_since_analysis ? { target_file_changed_since_analysis: risk.target_file_changed_since_analysis } : {}),
     risk: risk.risk ? {
       risk_level: risk.risk.risk_level,
       risk_factors: Array.isArray(risk.risk.risk_factors) ? risk.risk.risk_factors.slice(0, 3) : risk.risk.risk_factors,
