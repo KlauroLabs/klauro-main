@@ -28,6 +28,7 @@ import {
   searchNodes,
 } from './query';
 import { classifyAnalysisProfile, shouldSuppressAnswerGap } from './analysis-profile';
+import { RESPONSE_BUDGET_BYTES } from './response-budget';
 
 export interface EvidenceRef {
   type: 'node' | 'edge' | 'entry_point' | 'exit_point' | 'call_chain' | 'runtime_link' | 'repository_link' | 'fact' | 'data_entity' | 'test' | 'summary';
@@ -57,6 +58,63 @@ export interface AnswerPackResult {
     follow_up_tools: string[];
   }>;
   gaps: string[];
+}
+
+export interface AnswerPackDigest {
+  pack: string;
+  path: string;
+  generated_at: string;
+  gaps: string[];
+  full_size_bytes: number;
+  truncated: boolean;
+  sections: Array<{
+    id: string;
+    question: string;
+    confidence: number;
+    size_bytes: number;
+    included: boolean;
+    fetch_with?: { tool: 'run_answer_pack'; args: { path: string; pack: string; section: string } };
+  }>;
+  answers: AnswerPackResult['answers'];
+  continuation: string;
+}
+
+export function buildAnswerPackDigest(result: AnswerPackResult, budgetBytes = RESPONSE_BUDGET_BYTES): AnswerPackDigest {
+  const sized = result.answers.map(item => ({
+    item,
+    size: Buffer.byteLength(JSON.stringify(item), 'utf8'),
+  }));
+  const fullSize = sized.reduce((sum, entry) => sum + entry.size, 0);
+  const inlineBudget = Math.floor(budgetBytes * 0.6);
+  const included = new Set<string>();
+  let used = 0;
+  for (const entry of [...sized].sort((a, b) => a.size - b.size)) {
+    if (used + entry.size > inlineBudget) continue;
+    included.add(entry.item.id);
+    used += entry.size;
+  }
+  return {
+    pack: result.pack,
+    path: result.path,
+    generated_at: result.generated_at,
+    gaps: result.gaps,
+    full_size_bytes: fullSize,
+    truncated: included.size < result.answers.length,
+    sections: sized.map(({ item, size }) => ({
+      id: item.id,
+      question: item.question,
+      confidence: item.confidence,
+      size_bytes: size,
+      included: included.has(item.id),
+      ...(included.has(item.id)
+        ? {}
+        : { fetch_with: { tool: 'run_answer_pack' as const, args: { path: result.path, pack: result.pack, section: item.id } } }),
+    })),
+    answers: result.answers.filter(item => included.has(item.id)),
+    continuation: included.size < result.answers.length
+      ? "Sections with included=false were withheld to stay within the response budget. Fetch each one in full with run_answer_pack { path, pack, section: '<id>' }; never request the whole pack expecting unbounded output."
+      : 'All sections fit within the response budget.',
+  };
 }
 
 export interface RuntimeEventInput {

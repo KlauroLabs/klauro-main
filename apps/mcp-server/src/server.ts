@@ -40,6 +40,7 @@ import * as runtimeSimulation from './runtime-simulation';
 import * as telemetryIngestion from './telemetry-ingestion';
 import { semanticSearch } from './semantic-search';
 import { pruneKlauroStorage } from './storage-maintenance';
+import { RESPONSE_BUDGET_BYTES, boundToolPayload, boundToolText, serializeToolResponse } from './response-budget';
 
 const SERVER_INSTRUCTIONS = [
   'Klauro serves a precomputed code analysis (CAS) for analyzed repositories.',
@@ -126,11 +127,48 @@ function recordToolRegistrations(server: McpServer, profile: ToolProfile): Map<s
   const registry = new Map<string, RegisteredToolEntry>();
   const originalRegisterTool = server.registerTool.bind(server);
   (server as any).registerTool = (name: string, config: any, handler: (...args: any[]) => any) => {
-    registry.set(name, { config, handler });
+    const boundedHandler = withResponseBudget(name, config, handler, profile);
+    registry.set(name, { config, handler: boundedHandler });
     if (profile !== 'full' && !directToolNames(profile).includes(name) && name !== GATEWAY_TOOL_NAME) return undefined;
-    return originalRegisterTool(name as any, config as any, handler as any);
+    return originalRegisterTool(name as any, config as any, boundedHandler as any);
   };
   return registry;
+}
+
+function withResponseBudget(
+  name: string,
+  config: { inputSchema?: Record<string, unknown> } | undefined,
+  handler: (...args: any[]) => any,
+  profile: ToolProfile
+): (...args: any[]) => Promise<any> {
+  return async (...args: any[]) => enforceResponseBudget(name, config, await handler(...args), profile);
+}
+
+function enforceResponseBudget(
+  name: string,
+  config: { inputSchema?: Record<string, unknown> } | undefined,
+  result: any,
+  profile: ToolProfile
+): any {
+  if (!result || result.isError || !Array.isArray(result.content)) return result;
+  if (result.content.length !== 1 || result.content[0]?.type !== 'text' || typeof result.content[0].text !== 'string') return result;
+  const text = result.content[0].text;
+  if (Buffer.byteLength(text, 'utf8') <= RESPONSE_BUDGET_BYTES) return result;
+
+  const options = {
+    tool: name,
+    parameterNames: Object.keys(config?.inputSchema ?? {}),
+    viaGateway: profile !== 'full' && name !== GATEWAY_TOOL_NAME && !directToolNames(profile).includes(name),
+  };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { ...result, content: [{ type: 'text', text: boundToolText(text, options) }] };
+  }
+  const bounded = boundToolPayload(parsed, options);
+  return { ...result, content: [{ type: 'text', text: serializeToolResponse(bounded) }] };
 }
 
 const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
@@ -163,6 +201,7 @@ function buildGatewayDescription(registry: Map<string, RegisteredToolEntry>, pro
   return [
     'Run any Klauro analysis tool that is not exposed directly in this core profile.',
     'Pass the tool name and its arguments object; the call dispatches to the same handler as the full tool.',
+    `Responses are bounded to ${RESPONSE_BUDGET_BYTES} bytes: oversized results return truncated data plus continuation instructions for paging or narrowing instead of an unbounded payload.`,
     'Available tools by purpose:',
     ...lines,
   ].join('\n');
@@ -220,7 +259,7 @@ function enableToolCallLogging(server: McpServer): void {
 }
 
 function json(data: unknown): { content: Array<{ type: 'text'; text: string }> } {
-  return { content: [{ type: 'text', text: JSON.stringify(data) }] };
+  return { content: [{ type: 'text', text: serializeToolResponse(data) }] };
 }
 
 function errorResponse(error: unknown): { content: Array<{ type: 'text'; text: string }>; isError: true } {
@@ -1110,15 +1149,24 @@ function registerTools(server: McpServer) {
     'run_answer_pack',
     {
       title: 'Run Answer Pack',
-      description: 'Answer core product questions from CAS using MCP query surfaces. Returns structured answers with evidence references, confidence, follow-up tools, and gaps.',
+      description: 'Answer core product questions from CAS using MCP query surfaces. Returns a bounded digest: per-section sizes plus the sections that fit the response budget inline. Fetch any withheld section in full with the section parameter.',
       inputSchema: {
         path: z.string().describe('Project path'),
         pack: z.string().optional().describe('Answer pack id (default: mastery)'),
+        section: z.string().optional().describe('Answer section id to fetch in full (section ids and sizes are listed in the digest response)'),
       } as any,
     } as any,
-    async ({ path, pack }: any) => withErrorHandling(async () => {
+    async ({ path, pack, section }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      return json(product.runAnswerPack(cas, path, pack));
+      const result = product.runAnswerPack(cas, path, pack);
+      if (section) {
+        const match = result.answers.find(item => item.id === section);
+        if (!match) {
+          throw new Error(`Unknown answer pack section '${section}'. Available sections: ${result.answers.map(item => item.id).join(', ')}`);
+        }
+        return json({ pack: result.pack, path: result.path, generated_at: result.generated_at, gaps: result.gaps, section: match });
+      }
+      return json(product.buildAnswerPackDigest(result));
     })
   );
 
