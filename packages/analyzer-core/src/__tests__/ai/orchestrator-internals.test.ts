@@ -1717,6 +1717,23 @@ describe('architecture and capability inference', () => {
     )).toBe('personal-ai-assistant');
   });
 
+  it('does not classify UI theming vocabulary as an ecommerce storefront without a shopify, liquid, or storefront anchor', () => {
+    expect(orch.inferDomainFromProjectText(
+      'A content management system with an admin interface. Users can switch the admin theme between light theme and dark theme, customize the theme colors, and apply a theme to page previews while editing site content.',
+      '/tmp/wagtail'
+    )).not.toBe('ecommerce-storefront');
+  });
+
+  it('does not claim Shopify or Liquid in the ecommerce storefront summary without project text evidence', () => {
+    const shopifyText = 'dawn is a shopify theme for online store 2.0 storefronts using server-rendered liquid templates for merchants.';
+    expect(orch.summaryFromProjectText('ecommerce-storefront', [], shopifyText, ['README.md'])).toMatch(/shopify/i);
+
+    const genericStorefrontText = 'a storefront for merchants selling products in an online store with theme customization.';
+    const summary = orch.summaryFromProjectText('ecommerce-storefront', [], genericStorefrontText, ['README.md']);
+    expect(summary).toBeDefined();
+    expect(summary).not.toMatch(/shopify|liquid/i);
+  });
+
   it('does not classify order/search/account vocabulary as commerce without a cart, checkout, invoice, or billing anchor', () => {
     expect(orch.inferDomainFromProjectText(
       'A voice conversion web UI where users search models, set the sort order of results, manage account settings, and pick output locations for converted audio.',
@@ -2336,5 +2353,77 @@ describe('domain and security classification robustness (out-of-distribution rep
     expect(orch.domainKeyFromText('TurboStreamsController')).not.toBe('turbo');
     expect(orch.domainKeyFromText('TurboController')).toBeUndefined();
     expect(orch.domainKeyFromText('PaymentController')).toBe('payment');
+  });
+});
+
+describe('capability noise floor and terminal capability labels', () => {
+  it('suppresses error, notice, and framework-plumbing capability names', () => {
+    for (const name of [
+      'Forbidden Workflow',
+      'General Workflow',
+      'Errors Management',
+      'Getting Started Workflow',
+      'Dismiss_enterprise_edition_notice Workflow',
+      'Dismiss_updater_notice Workflow',
+      'Json_previews Workflow',
+      'Job Workflow',
+      'Action_text Management',
+      'Legacy Management',
+    ]) {
+      expect(orch.isGenericCapabilityDisplayName(name)).toBe(true);
+    }
+  });
+
+  it('keeps genuine commerce capability names', () => {
+    for (const name of [
+      'Orders Management',
+      'Gift_cards Management',
+      'Stock Management',
+      'Product_translations Workflow',
+      'Payment_links Workflow',
+      'Jobs Management',
+      'Proposal Preview',
+    ]) {
+      expect(orch.isGenericCapabilityDisplayName(name)).toBe(false);
+    }
+  });
+
+  it('labels terminal capabilities with the full domain phrase instead of a truncated first token', () => {
+    const entity = (name: string): CASDataEntity => ({
+      id: `entity_${name.toLowerCase()}`,
+      name,
+      lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+    } as CASDataEntity);
+
+    const capabilities = orch.buildTerminalCapabilities(
+      [entity('Wishlist'), entity('WishedItem')],
+      [],
+      [],
+      new Set<string>()
+    );
+    const names = capabilities.map((capability: { name: string }) => capability.name);
+    expect(names).toContain('Wishlist Management');
+    expect(names).toContain('Wished Item Management');
+    expect(names.some((name: string) => /^Wished Management$/.test(name))).toBe(false);
+  });
+
+  it('skips terminal capabilities whose domain duplicates an existing route domain in singular or plural form', () => {
+    const entity = (name: string): CASDataEntity => ({
+      id: `entity_${name.toLowerCase()}`,
+      name,
+      lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+    } as CASDataEntity);
+
+    const capabilities = orch.buildTerminalCapabilities(
+      [entity('Order'), entity('LineItem'), entity('StockItem'), entity('Stock')],
+      [],
+      [],
+      new Set<string>(['orders', 'line_items', 'stock_items'])
+    );
+    const names = capabilities.map((capability: { name: string }) => capability.name);
+    expect(names).not.toContain('Order Management');
+    expect(names).not.toContain('Line Management');
+    expect(names).not.toContain('Line Item Management');
+    expect(names).toContain('Stock Management');
   });
 });

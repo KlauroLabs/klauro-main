@@ -515,5 +515,94 @@ describe('RubyAnalyzer', () => {
       expect(cancelEdge.target).toBe(canceledNode.id);
       expect(cancelEdge.metadata.attributes.from).toEqual(['any']);
     });
+
+    it('does not harvest transition callback symbols as states', () => {
+      const source = [
+        'class Shipment',
+        '  state_machine :state, initial: :pending do',
+        '    event :ship do',
+        '      transition from: :ready, to: :shipped',
+        '    end',
+        '',
+        '    after_transition to: :shipped, do: [:after_ship, :send_shipment_shipped_webhook, :publish_shipment_shipped_event]',
+        '    after_transition to: :canceled, do: :after_cancel',
+        '    before_transition from: [:pending, :ready], to: :canceled, do: :ensure_cancelable',
+        '  end',
+        'end',
+      ].join('\n');
+
+      const analysis = analyzer.parseRubySource(source, 'app/models/shipment.rb');
+      const machine = analysis.classes[0].stateMachines[0];
+      expect([...machine.states].sort()).toEqual(['canceled', 'pending', 'ready', 'shipped']);
+    });
+
+    it('builds a linear transition chain from sequential go_to_state calls in a checkout_flow block', () => {
+      const source = [
+        'module Spree',
+        '  class Order',
+        '    MONEY_VALIDATION = { presence: true }.freeze',
+        '',
+        '    POSITIVE_MONEY_VALIDATION = MONEY_VALIDATION.deep_dup.tap do |validation|',
+        '      validation.fetch(:numericality)[:greater_than_or_equal_to] = 0',
+        '    end.freeze',
+        '',
+        '    checkout_flow do',
+        '      go_to_state :address',
+        '      go_to_state :delivery, if: ->(order) { order.delivery_required? }',
+        '      go_to_state :payment, if: ->(order) { order.payment_required? }',
+        '      go_to_state :confirm, if: ->(order) { order.confirmation_required? }',
+        '      go_to_state :complete',
+        '    end',
+        '',
+        '    def self.insert_checkout_step(name, options = {})',
+        '      checkout_flow do',
+        '        go_to_state(name, options)',
+        '      end',
+        '    end',
+        '  end',
+        'end',
+      ].join('\n');
+
+      const analysis = analyzer.parseRubySource(source, 'app/models/spree/order.rb');
+      const order = analysis.classes.find(item => item.name === 'Order');
+      expect(order!.stateMachines).toHaveLength(1);
+
+      const machine = order!.stateMachines[0];
+      expect(machine.dsl).toBe('checkout_flow');
+      expect(machine.attribute).toBe('state');
+      expect(machine.initialState).toBe('cart');
+      expect(machine.states).toEqual(['cart', 'address', 'delivery', 'payment', 'confirm', 'complete']);
+      expect(machine.transitions).toEqual([
+        expect.objectContaining({ event: 'next', from: ['cart'], to: 'address', conditional: false }),
+        expect.objectContaining({ event: 'next', from: ['address'], to: 'delivery', conditional: true }),
+        expect.objectContaining({ event: 'next', from: ['delivery'], to: 'payment', conditional: true }),
+        expect.objectContaining({ event: 'next', from: ['payment'], to: 'confirm', conditional: true }),
+        expect.objectContaining({ event: 'next', from: ['confirm'], to: 'complete', conditional: false }),
+      ]);
+    });
+
+    it('parents state machines to the declaring class, not an inline nested class', () => {
+      const source = [
+        'module Spree',
+        '  class Reimbursement',
+        '    class IncompleteReimbursementError < StandardError; end',
+        '',
+        '    state_machine :reimbursement_status, initial: :pending do',
+        '      event :errored do',
+        '        transition from: :pending, to: :errored',
+        '      end',
+        '    end',
+        '  end',
+        'end',
+      ].join('\n');
+
+      const analysis = analyzer.parseRubySource(source, 'app/models/spree/reimbursement.rb');
+      const reimbursement = analysis.classes.find(item => item.name === 'Reimbursement');
+      const inlineError = analysis.classes.find(item => item.name === 'IncompleteReimbursementError');
+      expect(inlineError).toBeDefined();
+      expect(inlineError!.stateMachines).toHaveLength(0);
+      expect(reimbursement!.stateMachines).toHaveLength(1);
+      expect(reimbursement!.stateMachines[0].attribute).toBe('reimbursement_status');
+    });
   });
 });

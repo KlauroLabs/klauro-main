@@ -486,6 +486,17 @@ function collectTerminalEffects(
   const exitPointIds = new Set<string>();
   const candidates: TerminalCandidate[] = [];
   const entryAccess = inferEntryAccess(entryPoint);
+  const routeResourceKeys = routeResourceEntityKeys(entryPoint);
+  const isRouteResource = (name: string) =>
+    entityNameKeys(name).some(entityKey => {
+      if (routeResourceKeys.has(entityKey)) return true;
+      for (const routeKey of routeResourceKeys) {
+        if (routeKey.length >= 4 && entityKey.startsWith(routeKey)) return true;
+      }
+      return false;
+    });
+  const defaultAccessFor = (name: string): EntityAccessKind =>
+    isRouteResource(name) ? entryAccess : 'read';
 
   const reachableExitPoints: Array<{ exitPoint: CASExitPoint; depth: number }> = [];
   for (const [nodeId, depth] of pathNodeIds) {
@@ -511,7 +522,7 @@ function collectTerminalEffects(
         candidates.push({
           entity_id: entity.id,
           name: entity.name,
-          access: accessFromOperationAction(exitPoint.operation?.action) ?? entryAccess,
+          access: accessFromOperationAction(exitPoint.operation?.action) ?? defaultAccessFor(entity.name),
           node_id: exitPoint.source_node,
           depth: depth + 1,
           viaRank: 1,
@@ -539,10 +550,11 @@ function collectTerminalEffects(
     const existing = entityNodeHits.get(entityNodeId);
     if (existing === undefined || depth > existing) entityNodeHits.set(entityNodeId, depth);
     const entity = matchEntityByName(node.name, graph.entitiesByKey);
+    const name = entity?.name || node.name;
     candidates.push({
       entity_id: entity?.id,
-      name: entity?.name || node.name,
-      access: accessHint ?? entryAccess,
+      name,
+      access: accessHint ?? defaultAccessFor(name),
       node_id: entityNodeId,
       depth,
       viaRank,
@@ -557,12 +569,7 @@ function collectTerminalEffects(
       if (targetNode && isLowConfidenceTarget(targetNode, graph)) continue;
       const targetEntity = entityNodeFor(edge.target, graph);
       if (!targetEntity) continue;
-      const sourceNode = graph.nodesById.get(nodeId);
-      const accessHint =
-        accessFromEdgeType(edge.type) ??
-        accessFromName(sourceNode?.name) ??
-        accessFromName(graph.nodesById.get(edge.target)?.name);
-      recordEntityNode(targetEntity, depth + 1, 1, accessHint);
+      recordEntityNode(targetEntity, depth + 1, 1, accessFromEdgeType(edge.type));
     }
   }
 
@@ -605,7 +612,7 @@ function collectTerminalEffects(
     if (fallback) {
       terminalEntities.push({
         name: fallback.name,
-        access: entryAccess,
+        access: defaultAccessFor(fallback.name),
         node_id: fallback.id,
         terminal_kind: 'node',
       });
@@ -689,16 +696,6 @@ function accessFromEdgeType(edgeType: string): EntityAccessKind | undefined {
   if (edgeType === 'updates' || edgeType === 'writes') return 'updated';
   if (edgeType === 'deletes') return 'deleted';
   if (edgeType === 'reads' || edgeType === 'queries') return 'read';
-  return undefined;
-}
-
-function accessFromName(name?: string): EntityAccessKind | undefined {
-  if (!name) return undefined;
-  const normalized = name.toLowerCase();
-  if (/(^|[^a-z])(create|insert|persist|add|register)/.test(normalized)) return 'created';
-  if (/(^|[^a-z])(update|edit|save|set|assign)/.test(normalized)) return 'updated';
-  if (/(^|[^a-z])(delete|remove|destroy|purge)/.test(normalized)) return 'deleted';
-  if (/(^|[^a-z])(find|get|fetch|load|list|show|read|index)/.test(normalized)) return 'read';
   return undefined;
 }
 
@@ -853,6 +850,14 @@ function describeEntryAction(entryPoint: CASEntryPoint): string {
   const path = entryPoint.trigger?.path;
 
   if (entryPoint.type === 'http' && method && path) {
+    const segments = resourcePathSegments(path);
+    const last = segments[segments.length - 1];
+    if (method === 'GET' && (last === 'new' || last === 'edit')) {
+      const owner = segments[segments.length - 2];
+      const resource = owner ? singularizeLabel(humanizeLabel(owner)) : undefined;
+      const formKind = last === 'new' ? 'New' : 'Edit';
+      return resource ? `${formKind} ${resource} form` : `${formKind} form`;
+    }
     const resource = humanizeResource(path);
     const isItemPath = /[:{*]|\[/.test(path.split('/').pop() || '');
     switch (method) {
@@ -891,12 +896,27 @@ function describeTerminalOutcome(effects: TerminalEffects): string | undefined {
   return undefined;
 }
 
-function humanizeResource(path: string): string | undefined {
-  const segments = path
+function resourcePathSegments(path: string): string[] {
+  return path
     .split('/')
     .filter(Boolean)
     .filter(segment => !/^[:{*]|\[/.test(segment))
     .filter(segment => !/^(api|v\d+)$/i.test(segment));
+}
+
+function routeResourceEntityKeys(entryPoint: CASEntryPoint): Set<string> {
+  const keys = new Set<string>();
+  const path = entryPoint.trigger?.path;
+  if (entryPoint.type !== 'http' || !path) return keys;
+  for (const segment of resourcePathSegments(path)) {
+    if (/^(new|edit)$/i.test(segment)) continue;
+    for (const key of entityNameKeys(segment)) keys.add(key);
+  }
+  return keys;
+}
+
+function humanizeResource(path: string): string | undefined {
+  const segments = resourcePathSegments(path);
   const last = segments[segments.length - 1];
   if (!last) return undefined;
   const label = humanizeLabel(last);

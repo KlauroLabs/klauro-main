@@ -447,4 +447,116 @@ describe('buildUserJourneys', () => {
     expect(names.some(name => name.includes('PUT /work_orders/:id'))).toBe(true);
     expect(names.some(name => name.includes('PATCH /work_orders/:id'))).toBe(true);
   });
+
+  it('does not apply the route verb to adjacent entities reached through associations', () => {
+    const input = {
+      nodes: [
+        node('n_route', 'DELETE /addresses/:id', 'route'),
+        node('n_ctrl', 'AddressesController', 'controller'),
+        node('n_address', 'Address', 'rails_model'),
+        node('n_country', 'Country', 'rails_model'),
+      ],
+      edges: [
+        edge('e_route', 'n_route', 'n_ctrl', 'routes_to'),
+        edge('e_uses', 'n_ctrl', 'n_address', 'uses'),
+        edge('e_rel', 'n_address', 'n_country', 'relates_to'),
+      ],
+      entryPoints: [{
+        id: 'entry_delete_address',
+        source_node: 'n_route',
+        type: 'http',
+        name: 'DELETE /addresses/:id',
+        trigger: { method: 'DELETE', path: '/addresses/:id' },
+        handler: { node_id: 'n_ctrl', method_name: 'destroy' },
+      } as CASEntryPoint],
+      exitPoints: [],
+      callChains: [],
+      dataEntities: [
+        { id: 'entity_address', name: 'Address', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } } as CASDataEntity,
+        { id: 'entity_country', name: 'Country', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } } as CASDataEntity,
+      ],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys).toHaveLength(1);
+    const byName = new Map(journeys[0].terminal_entities.map(item => [item.name, item]));
+    expect(byName.get('Address')?.access).toBe('deleted');
+    expect(byName.get('Country')?.access).toBe('read');
+    expect(journeys[0].terminal_effects.entities_written).toEqual(['Address']);
+    expect(journeys[0].terminal_effects.entities_read).toContain('Country');
+    expect(journeys[0].name).toBe('Delete address -> Address deleted (+1 more)');
+  });
+
+  it('honors explicit write edges on the path for non-route entities', () => {
+    const input = {
+      nodes: [
+        node('n_route', 'POST /orders/:id/complete', 'route'),
+        node('n_ctrl', 'OrdersController', 'controller'),
+        node('n_order', 'Order', 'rails_model'),
+        node('n_shipment', 'Shipment', 'rails_model'),
+      ],
+      edges: [
+        edge('e_route', 'n_route', 'n_ctrl', 'routes_to'),
+        edge('e_uses', 'n_ctrl', 'n_order', 'uses'),
+        edge('e_creates', 'n_order', 'n_shipment', 'creates'),
+      ],
+      entryPoints: [{
+        id: 'entry_complete_order',
+        source_node: 'n_route',
+        type: 'http',
+        name: 'POST /orders/:id/complete',
+        trigger: { method: 'POST', path: '/orders/:id/complete' },
+        handler: { node_id: 'n_ctrl', method_name: 'complete' },
+      } as CASEntryPoint],
+      exitPoints: [],
+      callChains: [],
+      dataEntities: [
+        { id: 'entity_order', name: 'Order', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } } as CASDataEntity,
+        { id: 'entity_shipment', name: 'Shipment', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } } as CASDataEntity,
+      ],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys).toHaveLength(1);
+    const byName = new Map(journeys[0].terminal_entities.map(item => [item.name, item]));
+    expect(byName.get('Shipment')?.access).toBe('created');
+    expect(journeys[0].terminal_effects.entities_written).toContain('Shipment');
+  });
+
+  it('names GET /new and GET /:id/edit routes as forms, not list journeys', () => {
+    const formEntryPoints: CASEntryPoint[] = [
+      {
+        id: 'entry_new',
+        source_node: 'n_controller',
+        type: 'http',
+        name: 'GET /addresses/new',
+        trigger: { method: 'GET', path: '/addresses/new' },
+        handler: { node_id: 'n_controller', method_name: 'new' },
+      } as CASEntryPoint,
+      {
+        id: 'entry_edit',
+        source_node: 'n_controller',
+        type: 'http',
+        name: 'GET /addresses/:id/edit',
+        trigger: { method: 'GET', path: '/addresses/:id/edit' },
+        handler: { node_id: 'n_controller', method_name: 'edit' },
+      } as CASEntryPoint,
+    ];
+
+    const { journeys } = buildUserJourneys({
+      ...baseInput,
+      entryPoints: formEntryPoints,
+      callChains: [
+        chain('chain_new', 'n_controller', 'entry_new', [['n_controller', 0], ['n_service', 1]]),
+        chain('chain_edit', 'n_controller', 'entry_edit', [['n_controller', 0], ['n_service', 1]]),
+      ],
+    });
+
+    expect(journeys).toHaveLength(2);
+    const names = journeys.map(journey => journey.name);
+    expect(names.some(name => name.startsWith('New address form'))).toBe(true);
+    expect(names.some(name => name.startsWith('Edit address form'))).toBe(true);
+    expect(names.some(name => name.toLowerCase().includes('list news'))).toBe(false);
+    expect(names.some(name => name.toLowerCase().includes('list edits'))).toBe(false);
+  });
 });

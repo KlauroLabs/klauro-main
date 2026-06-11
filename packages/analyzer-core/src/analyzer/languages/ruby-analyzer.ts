@@ -34,13 +34,14 @@ interface RubyStateTransition {
 }
 
 interface RubyStateMachine {
-  dsl: 'state_machines' | 'aasm';
+  dsl: 'state_machines' | 'aasm' | 'checkout_flow';
   attribute: string;
   initialState?: string;
   states: string[];
   transitions: RubyStateTransition[];
   lineStart: number;
   lineEnd: number;
+  lastFlowState?: string;
 }
 
 interface RubyAttribute {
@@ -122,6 +123,8 @@ const VISIBILITY_PATTERN = /^(private|protected|public)\s*$/;
 const GEM_PATTERN = /^\s*gem\s+['"]([^'"]+)['"]/;
 const STATE_MACHINE_START_PATTERN = /^state_machines?\b(?![.\w])([^#]*?)\bdo\s*(?:\|[^|]*\|)?\s*$/;
 const AASM_START_PATTERN = /^aasm\b([^#]*?)\bdo\s*$/;
+const CHECKOUT_FLOW_START_PATTERN = /^checkout_flow\b([^#]*?)\bdo\s*$/;
+const GO_TO_STATE_PATTERN = /^go_to_state[\s(]+:(\w+)/;
 const MACHINE_EVENT_PATTERN = /^event\s+:(\w+)/;
 const MACHINE_STATE_PATTERN = /^state\s+((?::\w+[?!]?\s*,?\s*)+)/;
 const MACHINE_TRANSITION_PATTERN = /^transitions?\b[\s(]/;
@@ -405,10 +408,13 @@ export class RubyAnalyzer extends BaseAnalyzer {
       if (machineFrameIndex === -1) {
         const machineStartMatch = trimmed.match(STATE_MACHINE_START_PATTERN);
         const aasmStartMatch = machineStartMatch ? null : trimmed.match(AASM_START_PATTERN);
-        if (machineStartMatch || aasmStartMatch) {
+        const checkoutFlowMatch = machineStartMatch || aasmStartMatch || insideMethod()
+          ? null
+          : trimmed.match(CHECKOUT_FLOW_START_PATTERN);
+        if (machineStartMatch || aasmStartMatch || checkoutFlowMatch) {
           const machine = this.startStateMachine(
-            machineStartMatch ? 'state_machines' : 'aasm',
-            (machineStartMatch ? machineStartMatch[1] : aasmStartMatch![1]) || '',
+            machineStartMatch ? 'state_machines' : aasmStartMatch ? 'aasm' : 'checkout_flow',
+            (machineStartMatch ? machineStartMatch[1] : aasmStartMatch ? aasmStartMatch[1] : checkoutFlowMatch![1]) || '',
             lineNumber,
             lines.length
           );
@@ -421,6 +427,23 @@ export class RubyAnalyzer extends BaseAnalyzer {
         }
       } else {
         const machine = stack[machineFrameIndex].machineRef!;
+
+        const goToStateMatch = trimmed.match(GO_TO_STATE_PATTERN);
+        if (goToStateMatch) {
+          const to = goToStateMatch[1];
+          const from = machine.lastFlowState ?? machine.initialState;
+          if (from) this.addMachineState(machine, from);
+          this.addMachineState(machine, to);
+          machine.transitions.push({
+            event: 'next',
+            from: from ? [from] : [],
+            to,
+            conditional: /\b(?:if|unless)(?::|\s*=>)/.test(trimmed),
+            line: lineNumber
+          });
+          machine.lastFlowState = to;
+          continue;
+        }
 
         STATES_REF_PATTERN.lastIndex = 0;
         for (const statesRef of trimmed.matchAll(STATES_REF_PATTERN)) {
@@ -498,7 +521,11 @@ export class RubyAnalyzer extends BaseAnalyzer {
           stateMachines: []
         };
         analysis.classes.push(rubyClass);
-        stack.push({ kind: 'class', classRef: rubyClass, visibility: 'public', lineStart: lineNumber });
+        if (/;\s*end\s*$/.test(this.stripStringsAndComments(trimmed).trimEnd())) {
+          rubyClass.lineEnd = lineNumber;
+        } else {
+          stack.push({ kind: 'class', classRef: rubyClass, visibility: 'public', lineStart: lineNumber });
+        }
         continue;
       }
 
@@ -516,7 +543,11 @@ export class RubyAnalyzer extends BaseAnalyzer {
           stateMachines: []
         };
         analysis.modules.push(rubyModule);
-        stack.push({ kind: 'module', moduleRef: rubyModule, visibility: 'public', lineStart: lineNumber });
+        if (/;\s*end\s*$/.test(this.stripStringsAndComments(trimmed).trimEnd())) {
+          rubyModule.lineEnd = lineNumber;
+        } else {
+          stack.push({ kind: 'module', moduleRef: rubyModule, visibility: 'public', lineStart: lineNumber });
+        }
         continue;
       }
 
@@ -598,6 +629,9 @@ export class RubyAnalyzer extends BaseAnalyzer {
         if (ownerClass) ownerClass.constants.push(constant);
         else if (ownerModule) ownerModule.constants.push(constant);
         else analysis.topLevelConstants.push(constant);
+        if (TRAILING_DO_PATTERN.test(this.stripStringsAndComments(trimmed).trimEnd())) {
+          stack.push({ kind: 'block', visibility: 'public', lineStart: lineNumber });
+        }
         continue;
       }
 
@@ -625,7 +659,7 @@ export class RubyAnalyzer extends BaseAnalyzer {
   }
 
   private startStateMachine(
-    dsl: 'state_machines' | 'aasm',
+    dsl: 'state_machines' | 'aasm' | 'checkout_flow',
     args: string,
     lineStart: number,
     lineEnd: number
@@ -636,8 +670,8 @@ export class RubyAnalyzer extends BaseAnalyzer {
     const initialMatch = args.match(/initial(?::|\s*=>)\s*:(\w+)/);
     const machine: RubyStateMachine = {
       dsl,
-      attribute: attributeMatch ? attributeMatch[1] : (dsl === 'state_machines' ? 'state' : 'aasm_state'),
-      initialState: initialMatch ? initialMatch[1] : undefined,
+      attribute: attributeMatch ? attributeMatch[1] : (dsl === 'aasm' ? 'aasm_state' : 'state'),
+      initialState: initialMatch ? initialMatch[1] : (dsl === 'checkout_flow' ? 'cart' : undefined),
       states: [],
       transitions: [],
       lineStart,
@@ -695,10 +729,11 @@ export class RubyAnalyzer extends BaseAnalyzer {
   }
 
   private harvestHookStates(machine: RubyStateMachine, text: string): void {
-    for (const direct of text.matchAll(/\b(?:to|from)(?::|\s*=>)\s*:(\w+[?!]?)/g)) {
+    const stateArgsOnly = text.replace(/\b(?:do|if|unless|on)(?::|\s*=>)\s*(?::\w+[?!]?|\[[^\]]*\])/g, '');
+    for (const direct of stateArgsOnly.matchAll(/\b(?:to|from)(?::|\s*=>)\s*:(\w+[?!]?)/g)) {
       this.addMachineState(machine, direct[1]);
     }
-    for (const bracketed of text.matchAll(/\[([^\]]*)\]/g)) {
+    for (const bracketed of stateArgsOnly.matchAll(/\[([^\]]*)\]/g)) {
       for (const symbol of bracketed[1].match(/:(\w+[?!]?)/g) || []) {
         this.addMachineState(machine, symbol.slice(1));
       }

@@ -8533,7 +8533,9 @@ export class AnalyzerOrchestrator {
       ['personal-ai-assistant', this.phraseScore(searchableText, ['assistant']) === 0
         ? 0
         : this.phraseScore(searchableText, ['personal ai assistant']) * 3 + this.phraseScore(searchableText, ['multi-channel', 'assistant']) + this.phraseScore(searchableText, ['channels', 'gateway'])],
-      ['ecommerce-storefront', this.phraseScore(searchableText, ['shopify', 'theme']) * 2 + this.phraseScore(searchableText, ['online store']) + this.phraseScore(searchableText, ['storefront', 'merchant'])],
+      ['ecommerce-storefront', this.phraseScore(searchableText, ['shopify', 'liquid', 'storefront']) === 0
+        ? 0
+        : this.phraseScore(searchableText, ['shopify', 'theme']) * 2 + this.phraseScore(searchableText, ['online store']) + this.phraseScore(searchableText, ['storefront', 'merchant'])],
       ['commerce-operations-portal', commerceOperationsScore],
       ['clinical-testing', clinicalTestingScore],
       ['cloud-infrastructure', effectiveCloudInfrastructureScore + (isInfrastructureRepo ? 12 : 0)],
@@ -8669,7 +8671,10 @@ export class AnalyzerOrchestrator {
       return 'A personal AI assistant platform for coordinating local tools, multi-channel messaging, gateway control, and companion apps.';
     }
     if (primaryDomain === 'ecommerce-storefront') {
-      return 'An ecommerce storefront theme for merchant-facing online shopping experiences. Project text describes Shopify theme development, server-rendered Liquid, storefront performance, and online store features.';
+      if (this.phraseScore(text, ['shopify']) > 0 && this.phraseScore(text, ['liquid']) > 0) {
+        return 'An ecommerce storefront theme for merchant-facing online shopping experiences. Project text describes Shopify theme development, server-rendered Liquid, storefront performance, and online store features.';
+      }
+      return 'An ecommerce storefront for merchant-facing online shopping experiences. Project text describes storefront features and online store workflows.';
     }
     if (primaryDomain === 'portfolio-management') {
       return 'A portfolio management codebase for tracking assets, investment holdings, risk, and portfolio reporting workflows.';
@@ -8981,18 +8986,20 @@ export class AnalyzerOrchestrator {
 
   private isGenericCapabilityDisplayName(name: string): boolean {
     if (/\b(bin\/console|console commands?|event(s)? handlers?|message handlers?|route handlers?)\b/i.test(name)) return true;
-    if (/^(help management|report reporting)$/i.test(name)) return true;
+    if (/^(help management|report reporting|jobs? workflow)$/i.test(name)) return true;
+    if (/^dismiss[_\s]/i.test(name)) return true;
+    if (/^(action[_\s]?text|active[_\s]?storage|action[_\s]?cable|action[_\s]?mailbox)\b/i.test(name)) return true;
     if (/[()[\]{}<>'"`:]|\.with\b/i.test(name)) return true;
     const subject = name
       .toLowerCase()
-      .replace(/\b(management|capability|authentication|reporting|commands|handlers|tasks)\b/g, ' ')
+      .replace(/\b(management|capability|authentication|reporting|commands|handlers|tasks|workflow)\b/g, ' ')
       .replace(/[^a-z0-9]+/g, ' ')
       .trim();
     if (!subject) return true;
     return subject
       .split(/\s+/)
       .map(token => this.normalizeDomainToken(token))
-      .every(token => token.length <= 2 || this.isGenericCapabilityToken(token) || /^(toggle|success|failure|misc|root|read|write|use|used|using)$/.test(token));
+      .every(token => token.length <= 2 || this.isGenericCapabilityToken(token) || /^(toggle|success|failure|misc|root|read|write|use|used|using|item|items|flat|tiered|available|bogus)$/.test(token));
   }
 
 
@@ -9442,8 +9449,21 @@ export class AnalyzerOrchestrator {
         return undefined;
       };
       const structuralEdgeTypes = new Set([
-        'has_field', 'has_attribute', 'imports', 'inherits', 'exposes', 'maps_to', 'wraps'
+        'has_field', 'has_attribute', 'imports', 'inherits', 'exposes', 'maps_to', 'wraps', 'relates_to', 'contains'
       ]);
+      const accessFromNodeName = (name: string): string[] | undefined => {
+        const words = name
+          .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+          .toLowerCase()
+          .split(/[^a-z0-9]+/)
+          .filter(Boolean);
+        const hasAny = (...verbs: string[]) => words.some(word => verbs.includes(word));
+        if (hasAny('create', 'creates', 'created', 'add', 'adds', 'added', 'insert', 'inserts')) return createdBy;
+        if (hasAny('get', 'gets', 'find', 'finds', 'read', 'reads', 'fetch', 'fetches', 'list', 'lists', 'show', 'index')) return readBy;
+        if (hasAny('update', 'updates', 'set', 'sets', 'modify', 'modifies', 'save', 'saves')) return updatedBy;
+        if (hasAny('delete', 'deletes', 'remove', 'removes', 'destroy', 'destroys')) return deletedBy;
+        return undefined;
+      };
 
       for (const edge of edgesByNode.get(entityNode.id) || []) {
         {
@@ -9457,16 +9477,8 @@ export class AnalyzerOrchestrator {
           if (structuralEdgeTypes.has(edge.type)) continue;
           const relatedNode = nodesById.get(edge.target === entityNode.id ? edge.source : edge.target);
           if (relatedNode) {
-            const methodLower = relatedNode.name.toLowerCase();
-            if (methodLower.includes('create') || methodLower.includes('add') || methodLower.includes('insert')) {
-              createdBy.push(relatedNode.id);
-            } else if (methodLower.includes('get') || methodLower.includes('find') || methodLower.includes('read') || methodLower.includes('fetch')) {
-              readBy.push(relatedNode.id);
-            } else if (methodLower.includes('update') || methodLower.includes('set') || methodLower.includes('modify')) {
-              updatedBy.push(relatedNode.id);
-            } else if (methodLower.includes('delete') || methodLower.includes('remove')) {
-              deletedBy.push(relatedNode.id);
-            }
+            const bucket = accessFromNodeName(relatedNode.name);
+            if (bucket) bucket.push(relatedNode.id);
           }
         }
       }
@@ -10723,22 +10735,26 @@ export class AnalyzerOrchestrator {
 
     const groups = new Map<string, {
       label: string;
+      labelTokenLists: string[][];
       nodes: CASNode[];
       entities: CASDataEntity[];
       operations: SystemCapability['operations'];
     }>();
 
-    const ensureGroup = (key: string, label: string) => {
+    const ensureGroup = (key: string, labelTokens: string[]) => {
       if (!groups.has(key)) {
-        groups.set(key, { label, nodes: [], entities: [], operations: [] });
+        groups.set(key, { label: this.humanizeDomainKey(key), labelTokenLists: [], nodes: [], entities: [], operations: [] });
       }
-      return groups.get(key)!;
+      const group = groups.get(key)!;
+      if (labelTokens.length > 0) group.labelTokenLists.push(labelTokens);
+      return group;
     };
 
     for (const entity of dataEntities) {
-      const key = this.domainKeyFromText(entity.name);
+      const tokens = this.domainTokensFromText(entity.name);
+      const key = tokens[0];
       if (!key || existingDomains.has(key)) continue;
-      const group = ensureGroup(key, this.humanizeDomainKey(key));
+      const group = ensureGroup(key, tokens);
       group.entities.push(entity);
       const lifecycleNodes = [
         ...entity.lifecycle.created_by,
@@ -10765,7 +10781,7 @@ export class AnalyzerOrchestrator {
 
       const key = this.domainKeyFromNode(node);
       if (!key || existingDomains.has(key)) continue;
-      const group = ensureGroup(key, this.humanizeDomainKey(key));
+      const group = ensureGroup(key, []);
       group.nodes.push(node);
       group.operations.push({
         entry_point_id: `node:${node.id}`,
@@ -10780,6 +10796,13 @@ export class AnalyzerOrchestrator {
       const uniqueNodes = Array.from(new Map(group.nodes.map(node => [node.id, node])).values());
       const uniqueEntities = Array.from(new Map(group.entities.map(entity => [entity.id, entity])).values());
       if (uniqueNodes.length + uniqueEntities.length === 0) continue;
+
+      const labelTokens = [...group.labelTokenLists].sort((a, b) =>
+        a.length - b.length || a.join(' ').localeCompare(b.join(' '))
+      )[0] || [key];
+      const labelKey = labelTokens.join('_');
+      if (this.domainVariantInSet(labelKey, existingDomains) || this.domainVariantInSet(key, existingDomains)) continue;
+      group.label = this.humanizeDomainKey(labelTokens.join(' '));
 
       const operations = group.operations.length > 0
         ? group.operations
@@ -10857,7 +10880,11 @@ export class AnalyzerOrchestrator {
   }
 
   private domainKeyFromText(text: string): string | undefined {
-    const tokens = text
+    return this.domainTokensFromText(text)[0];
+  }
+
+  private domainTokensFromText(text: string): string[] {
+    return text
       .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
       .replace(/[_\-./]/g, ' ')
       .toLowerCase()
@@ -10865,7 +10892,6 @@ export class AnalyzerOrchestrator {
       .map(token => this.normalizeDomainToken(token))
       .filter(token => token.length > 2)
       .filter(token => !this.isGenericCapabilityToken(token));
-    return tokens[0];
   }
 
   private normalizeDomainToken(token: string): string {
@@ -10922,6 +10948,9 @@ export class AnalyzerOrchestrator {
       'dev', 'clients', 'outcode', 'personal', 'business', 'apps', 'libs',
       'entry', 'entries', 'first', 'path', 'paths', 'percent', 'percentage',
       'minimal', 'gate', 'gates', 'compatible',
+      'forbidden', 'error', 'errors', 'general', 'getting', 'started', 'dismiss',
+      'notice', 'notices', 'json', 'preview', 'previews', 'legacy', 'unauthorized', 'denied',
+      'change', 'changes',
       'rails', 'rack', 'rake', 'turbo', 'stimulus', 'sprockets', 'hotwire',
       'actiontext', 'activestorage', 'actioncable', 'actionmailer', 'actionpack',
       'activerecord', 'activejob', 'activemodel', 'activesupport', 'actionview',
@@ -10935,6 +10964,22 @@ export class AnalyzerOrchestrator {
     return key
       .replace(/[-_]/g, ' ')
       .replace(/\b\w/g, char => char.toUpperCase());
+  }
+
+  private domainVariantInSet(key: string, domains: Set<string>): boolean {
+    const variants = new Set([key]);
+    if (key.endsWith('ies')) variants.add(`${key.slice(0, -3)}y`);
+    if (key.endsWith('s') && !key.endsWith('ss')) variants.add(key.slice(0, -1));
+    if (key.endsWith('s')) variants.add(`${key}es`);
+    else {
+      variants.add(`${key}s`);
+      variants.add(`${key}es`);
+      if (key.endsWith('y')) variants.add(`${key.slice(0, -1)}ies`);
+    }
+    for (const variant of variants) {
+      if (domains.has(variant)) return true;
+    }
+    return false;
   }
 
   private formatTerminalCapabilityName(

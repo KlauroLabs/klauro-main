@@ -338,7 +338,9 @@ export class RailsAnalyzer extends BaseAnalyzer {
       const modelId = this.modelNodeId(model);
       nodes.push(this.createNodeBuilder(modelId, model.name, 'rails_model')
         .withLevel(2, 'architectural')
-        .withCategory('model', ['rails', 'activerecord', 'database', 'entity'])
+        .withCategory('model', model.abstract
+          ? ['rails', 'activerecord', 'database', 'abstract']
+          : ['rails', 'activerecord', 'database', 'entity'])
         .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
         .withDescription(`Rails ActiveRecord model: ${model.name}`)
         .withMetadata({
@@ -349,6 +351,7 @@ export class RailsAnalyzer extends BaseAnalyzer {
             validations_count: model.validations,
             scopes: model.scopes,
             callbacks: model.callbacks,
+            abstract: model.abstract,
             ...(model.stiParent ? { sti_parent: model.stiParent } : {})
           }
         })
@@ -397,7 +400,7 @@ export class RailsAnalyzer extends BaseAnalyzer {
 
   extractModels(sources: Array<{ file: string; content: string }>): RailsModel[] {
     const models: RailsModel[] = [];
-    const pending: Array<{ file: string; content: string; name: string; parentName: string }> = [];
+    const pending: Array<{ file: string; content: string; name: string; parentRef: string }> = [];
 
     for (const source of sources) {
       const baseModel = this.extractModel(source.content, source.file);
@@ -411,17 +414,21 @@ export class RailsAnalyzer extends BaseAnalyzer {
           file: source.file,
           content: source.content,
           name: classMatch[1].split('::').pop()!,
-          parentName: classMatch[2].endsWith('.base_class') ? 'Base' : classMatch[2].split('::').pop()!
+          parentRef: classMatch[2]
         });
       }
     }
 
+    const sourcePathKeys = new Set(sources.map(source => this.modelPathKey(source.file)));
+
     let resolvedSubclass = true;
     while (resolvedSubclass && pending.length > 0) {
       resolvedSubclass = false;
+      const modelIndex = new Map(models.map(model => [this.modelPathKey(model.filePath), model]));
       for (let index = pending.length - 1; index >= 0; index--) {
         const candidate = pending[index];
-        const parent = models.find(model => model.name === candidate.parentName);
+        const resolution = this.resolveParentModel(candidate.file, candidate.parentRef, modelIndex, sourcePathKeys);
+        const parent = resolution.parent;
         if (!parent) continue;
         const model = this.buildModel(candidate.content, candidate.file, candidate.name);
         if (!parent.abstract) {
@@ -436,6 +443,52 @@ export class RailsAnalyzer extends BaseAnalyzer {
     }
 
     return models;
+  }
+
+  private modelPathKey(filePath: string): string {
+    return filePath.replace(/\\/g, '/').replace(/\.rb$/, '');
+  }
+
+  private parentRefPath(parentRef: string): string {
+    const normalized = parentRef.endsWith('.base_class')
+      ? parentRef.replace(/\.base_class$/, '::Base')
+      : parentRef;
+    return normalized
+      .replace(/^::/, '')
+      .split('::')
+      .map(segment => segment
+        .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+        .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+        .toLowerCase())
+      .join('/');
+  }
+
+  private resolveParentModel(
+    candidateFile: string,
+    parentRef: string,
+    modelsByPathKey: Map<string, RailsModel>,
+    sourcePathKeys: Set<string>
+  ): { parent?: RailsModel; shadowed?: boolean } {
+    const refPath = this.parentRefPath(parentRef);
+    const segments = this.modelPathKey(candidateFile).split('/');
+    segments.pop();
+
+    for (;;) {
+      const prefix = segments.join('/');
+      const candidatePath = prefix ? `${prefix}/${refPath}` : refPath;
+      const parent = modelsByPathKey.get(candidatePath);
+      if (parent) return { parent };
+      if (sourcePathKeys.has(candidatePath)) return { shadowed: true };
+      if (segments.length === 0) break;
+      segments.pop();
+    }
+
+    if (refPath.includes('/')) {
+      const suffix = `/${refPath}`;
+      const matches = [...modelsByPathKey.entries()].filter(([key]) => key.endsWith(suffix));
+      if (matches.length === 1) return { parent: matches[0][1] };
+    }
+    return {};
   }
 
   extractModel(content: string, filePath: string): RailsModel | null {

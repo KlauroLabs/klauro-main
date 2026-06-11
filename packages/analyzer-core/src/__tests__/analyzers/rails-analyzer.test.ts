@@ -98,6 +98,46 @@ describe('RailsAnalyzer', () => {
 
       expect(models.map(model => model.name)).toEqual(['Event']);
     });
+
+    it('resolves a bare Base superclass to the nearest namespace, not a distant AR Base', () => {
+      const models = analyzer.extractModels([
+        { file: 'core/app/models/spree/base.rb', content: 'class Spree::Base < ApplicationRecord\n  self.abstract_class = true\nend\n' },
+        { file: 'core/app/models/spree/order.rb', content: 'module Spree\n  class Order < Spree.base_class\n  end\nend\n' },
+        { file: 'core/app/models/spree/permission_sets/base.rb', content: 'module Spree\n  module PermissionSets\n    class Base\n    end\n  end\nend\n' },
+        { file: 'core/app/models/spree/permission_sets/product_management.rb', content: 'module Spree\n  module PermissionSets\n    class ProductManagement < Base\n    end\n  end\nend\n' },
+      ]);
+
+      const names = models.map(model => model.name).sort();
+      expect(names).toEqual(['Base', 'Order']);
+      const order = models.find(model => model.name === 'Order');
+      expect(order!.tableName).toBe('orders');
+      expect(order!.stiParent).toBeUndefined();
+    });
+
+    it('does not promote classes whose qualified parent is a plain class with a colliding Base name', () => {
+      const models = analyzer.extractModels([
+        { file: 'core/app/models/spree/base.rb', content: 'class Spree::Base < ApplicationRecord\n  self.abstract_class = true\nend\n' },
+        { file: 'core/app/models/spree/stock/splitter/base.rb', content: 'module Spree\n  module Stock\n    module Splitter\n      class Base\n      end\n    end\n  end\nend\n' },
+        { file: 'core/app/models/spree/stock/splitter/backordered.rb', content: 'module Spree\n  module Stock\n    module Splitter\n      class Backordered < Spree::Stock::Splitter::Base\n      end\n    end\n  end\nend\n' },
+        { file: 'core/app/models/spree/search_provider/base.rb', content: 'module Spree\n  module SearchProvider\n    class Base\n    end\n  end\nend\n' },
+        { file: 'core/app/models/spree/search_provider/database.rb', content: 'module Spree\n  module SearchProvider\n    class Database < Base\n    end\n  end\nend\n' },
+      ]);
+
+      expect(models.map(model => model.name)).toEqual(['Base']);
+    });
+
+    it('still resolves STI through multiple passes when intermediate parents resolve late', () => {
+      const models = analyzer.extractModels([
+        { file: 'core/app/models/spree/calculator/flat_rate.rb', content: 'module Spree\n  class Calculator::FlatRate < Calculator\n  end\nend\n' },
+        { file: 'core/app/models/spree/calculator.rb', content: 'module Spree\n  class Calculator < Spree.base_class\n  end\nend\n' },
+        { file: 'core/app/models/spree/base.rb', content: 'class Spree::Base < ApplicationRecord\n  self.abstract_class = true\nend\n' },
+      ]);
+
+      const flatRate = models.find(model => model.name === 'FlatRate');
+      expect(flatRate).toBeDefined();
+      expect(flatRate!.stiParent).toBe('Calculator');
+      expect(flatRate!.tableName).toBe('calculators');
+    });
   });
 
   describe('extractModelAccesses', () => {
