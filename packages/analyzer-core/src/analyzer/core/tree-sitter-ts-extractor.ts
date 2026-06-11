@@ -139,6 +139,15 @@ export interface TSFileExtraction {
   variables: TSExtractedVariable[];
   exports: TSExtractedExport[];
   comments: Array<{ type: string; text: string; line: number }>;
+  hasSyntaxErrors: boolean;
+}
+
+export function treeHasSyntaxErrors(root: any): boolean {
+  try {
+    return typeof root.hasError === 'function' ? Boolean(root.hasError()) : Boolean(root.hasError);
+  } catch {
+    return false;
+  }
 }
 
 export class TreeSitterTSExtractor {
@@ -173,7 +182,8 @@ export class TreeSitterTSExtractor {
       classes: [],
       variables: [],
       exports: [],
-      comments: this.extractComments(root)
+      comments: this.extractComments(root),
+      hasSyntaxErrors: treeHasSyntaxErrors(root)
     };
 
     const functions = this.extractStandaloneFunctions(root);

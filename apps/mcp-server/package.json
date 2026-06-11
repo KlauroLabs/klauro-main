@@ -68,6 +68,7 @@
     "nightly-eval": "tsx src/nightly-eval.ts",
     "contract-gauntlet": "tsx src/contract-gauntlet.ts",
     "vision-gauntlet": "tsx src/vision-gauntlet.ts",
+    "robustness-battery": "tsx src/robustness-battery.ts",
     "test": "tsx --test --test-concurrency=1 src/*.test.ts",
     "typecheck": "NODE_OPTIONS='--max-old-space-size=8192' tsc --noEmit"
   },

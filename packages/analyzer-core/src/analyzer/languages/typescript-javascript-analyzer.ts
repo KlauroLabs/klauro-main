@@ -89,6 +89,8 @@ interface VariableInfo {
 }
 
 const PARALLEL_BATCH_SIZE = 100;
+const MAX_SOURCE_FILE_BYTES = 5 * 1024 * 1024;
+const MAX_REPORTED_FILE_WARNINGS = 25;
 
 export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private astCache = new Map<string, ParsedAST>();
@@ -106,6 +108,23 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private callEdgeIds = new Set<string>();
   private exitPointIds = new Set<string>();
   private callTargetResolutionCache = new Map<string, string | undefined>();
+  private analysisWarnings: string[] = [];
+  private suppressedWarningCount = 0;
+
+  private addAnalysisWarning(warning: string): void {
+    if (this.analysisWarnings.length >= MAX_REPORTED_FILE_WARNINGS) {
+      this.suppressedWarningCount += 1;
+      return;
+    }
+    this.analysisWarnings.push(warning);
+  }
+
+  private collectAnalysisWarnings(): string[] {
+    if (this.suppressedWarningCount > 0) {
+      return [...this.analysisWarnings, `${this.suppressedWarningCount} additional file warnings suppressed`];
+    }
+    return [...this.analysisWarnings];
+  }
 
   constructor() {
     super(
@@ -335,6 +354,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     this.importSourceMap.clear();
     this.classFieldTypes.clear();
     this.repositoryPropertyTypes.clear();
+    this.analysisWarnings = [];
+    this.suppressedWarningCount = 0;
 
     try {
       const tsTimings: Record<string, number> = {};
@@ -355,8 +376,14 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
       const packageJsonPath = path.join(context.projectPath, 'package.json');
       if (await fs.pathExists(packageJsonPath)) {
-        const packageJson = await fs.readJson(packageJsonPath);
-        this.extractLibraries(packageJson, libraries);
+        try {
+          const packageJson = await fs.readJson(packageJsonPath);
+          this.extractLibraries(packageJson, libraries);
+        } catch (error) {
+          this.addAnalysisWarning(
+            `package.json could not be parsed; dependency information is unavailable: ${(error as Error).message}`
+          );
+        }
       }
       tsTimings['setup'] = Date.now() - tsStart;
 
@@ -413,6 +440,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         }, null, 2));
       }
 
+      const warnings = this.collectAnalysisWarnings();
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
         framework_specific: {
           isTypeScriptProject: this.isTypeScriptProject,
@@ -421,7 +449,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         },
         categories,
         perspectives,
-        provided_perspectives: perspectives.map(p => p.id)
+        provided_perspectives: perspectives.map(p => p.id),
+        ...(warnings.length > 0 ? { warnings } : {})
       });
 
     } catch (error) {
@@ -447,10 +476,20 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           try {
             const stat = await fs.stat(fullPath);
             if (!stat.isFile()) return null;
+            if (stat.size > MAX_SOURCE_FILE_BYTES) {
+              this.addAnalysisWarning(
+                `${file} exceeds the ${Math.round(MAX_SOURCE_FILE_BYTES / (1024 * 1024))}MB source file limit (${Math.round(stat.size / (1024 * 1024))}MB); file skipped`
+              );
+              return null;
+            }
             const content = await fs.readFile(fullPath, 'utf-8');
             const extraction = this.tsExtractor.extractFromSource(content, fullPath);
+            if (extraction.hasSyntaxErrors) {
+              this.addAnalysisWarning(`${file} contains syntax errors; extraction may be partial`);
+            }
             return { relativePath: file, fullPath, content, extraction };
           } catch (error) {
+            this.addAnalysisWarning(`${file} could not be parsed: ${(error as Error).message}`);
             console.warn(`Failed to parse ${file}:`, error);
             return null;
           }

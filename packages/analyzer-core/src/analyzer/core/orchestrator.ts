@@ -78,6 +78,7 @@ import { buildParadigmConformance } from './paradigm-conformance';
 import { buildDataLineage } from './data-lineage';
 import { isLanguageBuiltinName, isLanguageBuiltinExitPoint } from './language-builtins';
 import { buildProductMap } from './product-map';
+import { relativizeProjectPaths } from './relativize-project-paths';
 import { CallGraphBuilder } from './call-graph-builder';
 import { DomainExtractor } from './domain-extractor';
 import { WorkflowDetector } from './workflow-detector';
@@ -204,6 +205,7 @@ export class AnalyzerOrchestrator {
       await phase.run(output, projectPath);
     }
     this.compactSourceRaw(output);
+    relativizeProjectPaths(output, projectPath);
   }
 
   private compactSourceRaw(output: CASOutput): void {
@@ -614,6 +616,8 @@ export class AnalyzerOrchestrator {
       allLibraries, categories, contributions, analysisErrors
     };
 
+    this.collectProjectReadabilityWarnings(projectPath, analysisErrors);
+
     const languageAnalyzers = detectedAnalyzers.filter(r => r.type === 'language');
     const parallelAnalyzers = detectedAnalyzers.filter(r => r.type === 'framework' || r.type === 'library');
     const patternAnalyzers = detectedAnalyzers.filter(r => r.type === 'pattern');
@@ -720,6 +724,17 @@ export class AnalyzerOrchestrator {
         if (result.perspectives) allPerspectives.push(...result.perspectives);
 
         const analyzerMeta = result.analyzer_metadata || {};
+        if (Array.isArray(analyzerMeta.warnings)) {
+          for (const warning of analyzerMeta.warnings) {
+            analysisErrors.push({
+              severity: 'warning',
+              code: 'PARTIAL_ANALYSIS',
+              message: String(warning),
+              analyzer: registration.id,
+              recoverable: true
+            });
+          }
+        }
         contributions.push({
           analyzer_id: registration.id,
           analyzer_name: registration.name,
@@ -735,7 +750,8 @@ export class AnalyzerOrchestrator {
           framework_specific: analyzerMeta.frameworks_detected || analyzerMeta.crates || undefined,
           application_type: analyzerMeta.application_type,
           project_name: analyzerMeta.project_name,
-          project_version: analyzerMeta.project_version
+          project_version: analyzerMeta.project_version,
+          warnings: Array.isArray(analyzerMeta.warnings) && analyzerMeta.warnings.length > 0 ? analyzerMeta.warnings : undefined
         });
 
         if (result.libraries) {
@@ -3867,6 +3883,7 @@ export class AnalyzerOrchestrator {
       allLibraries: any[];
       categories: CASCategories;
       contributions: any[];
+      analysisErrors: CASAnalysisError[];
     }
   ): Promise<void> {
     const analyzerStartTime = Date.now();
@@ -3911,6 +3928,17 @@ export class AnalyzerOrchestrator {
     if (result.perspectives) accumulators.allPerspectives.push(...result.perspectives);
 
     const analyzerMeta = result.analyzer_metadata || {};
+    if (Array.isArray(analyzerMeta.warnings)) {
+      for (const warning of analyzerMeta.warnings) {
+        accumulators.analysisErrors.push({
+          severity: 'warning',
+          code: 'PARTIAL_ANALYSIS',
+          message: String(warning),
+          analyzer: registration.id,
+          recoverable: true
+        });
+      }
+    }
     accumulators.contributions.push({
       analyzer_id: registration.id,
       analyzer_name: registration.name,
@@ -3926,7 +3954,8 @@ export class AnalyzerOrchestrator {
       framework_specific: analyzerMeta.frameworks_detected || analyzerMeta.crates || undefined,
       application_type: analyzerMeta.application_type,
       project_name: analyzerMeta.project_name,
-      project_version: analyzerMeta.project_version
+      project_version: analyzerMeta.project_version,
+      warnings: Array.isArray(analyzerMeta.warnings) && analyzerMeta.warnings.length > 0 ? analyzerMeta.warnings : undefined
     });
 
     if (result.libraries) {
@@ -8280,6 +8309,65 @@ export class AnalyzerOrchestrator {
       return fs.readJsonSync(filePath);
     } catch {
       return null;
+    }
+  }
+
+  private collectProjectReadabilityWarnings(projectPath: string, analysisErrors: CASAnalysisError[]): void {
+    const packageJsonPath = path.join(projectPath, 'package.json');
+    if (fs.existsSync(packageJsonPath)) {
+      try {
+        fs.readJsonSync(packageJsonPath);
+      } catch (error) {
+        analysisErrors.push({
+          severity: 'warning',
+          code: 'MANIFEST_PARSE_ERROR',
+          message: `package.json could not be parsed; dependency and script information is unavailable: ${(error as Error).message}`,
+          file: 'package.json',
+          recoverable: true
+        });
+      }
+    }
+
+    const deniedPaths: string[] = [];
+    const maxDeniedReports = 25;
+    const maxDirectoriesScanned = 5000;
+    let directoriesScanned = 0;
+    const stack: Array<{ absolute: string; relative: string; depth: number }> = [
+      { absolute: projectPath, relative: '', depth: 0 }
+    ];
+    while (stack.length > 0 && directoriesScanned < maxDirectoriesScanned) {
+      const current = stack.pop()!;
+      directoriesScanned += 1;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(current.absolute, { withFileTypes: true });
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if ((code === 'EACCES' || code === 'EPERM') && deniedPaths.length < maxDeniedReports) {
+          deniedPaths.push(current.relative || '.');
+        }
+        continue;
+      }
+      if (current.depth >= 300) continue;
+      for (const entry of entries) {
+        if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+        const relativePath = current.relative ? `${current.relative}/${entry.name}` : entry.name;
+        if (this.isIgnoredInventoryDirectory(entry.name, relativePath, new Set())) continue;
+        stack.push({
+          absolute: path.join(current.absolute, entry.name),
+          relative: relativePath,
+          depth: current.depth + 1
+        });
+      }
+    }
+    for (const deniedPath of deniedPaths) {
+      analysisErrors.push({
+        severity: 'warning',
+        code: 'PERMISSION_DENIED',
+        message: `Directory could not be read (permission denied); its contents are missing from the analysis: ${deniedPath}`,
+        file: deniedPath,
+        recoverable: true
+      });
     }
   }
 
@@ -13880,7 +13968,7 @@ export class AnalyzerOrchestrator {
     const dockerfilePath = path.join(projectPath, 'Dockerfile');
     const dockerComposePath = path.join(projectPath, 'docker-compose.yml');
     const composePath = path.join(projectPath, 'compose.yml');
-    const packageJson = fs.existsSync(packageJsonPath) ? fs.readJsonSync(packageJsonPath) : {};
+    const packageJson = this.safeReadJson(packageJsonPath) || {};
     const scripts = packageJson.scripts || {};
     const runtimeDependencies = [
       ...Object.keys(packageJson.dependencies || {}),
