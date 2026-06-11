@@ -2,7 +2,7 @@ import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mc
 import { z } from 'zod';
 import { appendFileSync } from 'fs';
 import { analyzeProject, getAnalysis, analyzeProjectIncremental } from './analyzer';
-import { getStorageHealth, listAgenticBenchmarkReports, listAnalyses, listWorkspaceGraphs, loadAgenticBenchmarkReport, loadGoldenSnapshot, loadLatestAgenticBenchmarkReportByType, loadRuntimeObservations, loadWorkspaceGraph, saveAgenticBenchmarkReport, saveGoldenSnapshot, saveRuntimeObservation, saveWorkspaceGraph } from './storage';
+import { getAnalysisEntry, getStorageHealth, listAgenticBenchmarkReports, listAnalyses, listWorkspaceGraphs, loadAgenticBenchmarkReport, loadGoldenSnapshot, loadLatestAgenticBenchmarkReportByType, loadRuntimeObservations, loadWorkspaceGraph, saveAgenticBenchmarkReport, saveGoldenSnapshot, saveRuntimeObservation, saveWorkspaceGraph } from './storage';
 import * as query from './query';
 import * as watcher from './watcher';
 import * as product from './product';
@@ -228,6 +228,21 @@ function errorResponse(error: unknown): { content: Array<{ type: 'text'; text: s
   return { content: [{ type: 'text', text: JSON.stringify({ error: message }) }], isError: true };
 }
 
+function versionUpgradeReport(
+  hadPreviousAnalysis: boolean,
+  previousVersion: string | undefined,
+  newVersion: string | undefined
+): { from: string; to: string; note: string } | undefined {
+  if (!hadPreviousAnalysis || !newVersion) return undefined;
+  const from = previousVersion || 'unknown (stored before versioned index)';
+  if (from === newVersion) return undefined;
+  return {
+    from,
+    to: newVersion,
+    note: `Stored analysis was upgraded from cas_version ${from} to ${newVersion}. Fields introduced between these versions are now populated for this project.`,
+  };
+}
+
 async function withErrorHandling(fn: () => Promise<{ content: Array<{ type: 'text'; text: string }> }>): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   try {
     return await fn();
@@ -325,6 +340,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, force_full, analysis_focus }: any) => withErrorHandling(async () => withAnalysisFocus(analysis_focus, async () => {
+      const previousEntry = await getAnalysisEntry(path);
       if (force_full) {
         const result = await analyzeProject(path);
         return json({
@@ -339,6 +355,7 @@ function registerTools(server: McpServer) {
           analyzers_run: result.analyzer_contributions?.length || 0,
           errors: result.analysis_errors?.length || 0,
           phases: result.analysis_phases || [],
+          version_upgrade: versionUpgradeReport(Boolean(previousEntry), previousEntry?.cas_version, result.cas_version),
         });
       }
 
@@ -355,6 +372,11 @@ function registerTools(server: McpServer) {
         analyzers_run: result.output.analyzer_contributions?.length || 0,
         errors: result.output.analysis_errors?.length || 0,
         phases: result.output.analysis_phases || [],
+        version_upgrade: versionUpgradeReport(
+          Boolean(previousEntry),
+          result.previousCasVersion || previousEntry?.cas_version,
+          result.output.cas_version
+        ),
         change_summary: result.wasFullRebuild ? undefined : {
           files_changed: result.changeReport.summary.filesAdded +
                         result.changeReport.summary.filesModified +

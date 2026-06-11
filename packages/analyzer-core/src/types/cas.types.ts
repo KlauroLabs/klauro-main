@@ -2915,7 +2915,7 @@ export interface CASFlowGraph {
   };
 }
 
-export const CAS_VERSION = '1.10.0';
+export const CAS_VERSION = '1.11.0';
 
 export interface CASFlowLayer {
   layer_number: number;

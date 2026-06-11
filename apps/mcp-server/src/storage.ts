@@ -12,6 +12,7 @@ import type {
   ChangeReport,
   INCREMENTAL_STATE_VERSION,
 } from '../../../packages/analyzer-core/src/types/cas.types';
+import { CAS_VERSION } from '../../../packages/analyzer-core/src/types/cas.types';
 import type { RuntimeObservation } from './product';
 import { mirrorArtifactsToS3 } from './s3-artifacts';
 
@@ -42,6 +43,90 @@ export interface AnalysisEntry {
   frameworks: string[];
   node_count: number;
   edge_count: number;
+  cas_version?: string;
+}
+
+export const MINIMUM_COMPATIBLE_CAS_VERSION = '1.6.0';
+
+export type AnalysisVersionStatus = 'current' | 'older-compatible' | 'newer-compatible' | 'unsupported' | 'newer-major';
+
+export interface AnalysisVersionInfo {
+  stored_version: string;
+  current_version: string;
+  minimum_compatible_version: string;
+  status: AnalysisVersionStatus;
+}
+
+export function parseCasVersion(version: string | undefined): [number, number, number] | null {
+  if (!version) return null;
+  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version.trim());
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+export function compareCasVersions(a: string | undefined, b: string | undefined): number {
+  const left = parseCasVersion(a) || [0, 0, 0];
+  const right = parseCasVersion(b) || [0, 0, 0];
+  for (let index = 0; index < 3; index++) {
+    if (left[index] !== right[index]) return left[index] < right[index] ? -1 : 1;
+  }
+  return 0;
+}
+
+export function describeAnalysisVersion(storedVersion: string | undefined): AnalysisVersionInfo {
+  const stored = parseCasVersion(storedVersion) ? (storedVersion as string).trim() : '0.0.0';
+  const current = parseCasVersion(CAS_VERSION) || [0, 0, 0];
+  const parsed = parseCasVersion(stored) || [0, 0, 0];
+
+  let status: AnalysisVersionStatus;
+  if (parsed[0] > current[0]) {
+    status = 'newer-major';
+  } else if (parsed[0] < current[0] || compareCasVersions(stored, MINIMUM_COMPATIBLE_CAS_VERSION) < 0) {
+    status = 'unsupported';
+  } else if (compareCasVersions(stored, CAS_VERSION) === 0) {
+    status = 'current';
+  } else if (compareCasVersions(stored, CAS_VERSION) > 0) {
+    status = 'newer-compatible';
+  } else {
+    status = 'older-compatible';
+  }
+
+  return {
+    stored_version: stored,
+    current_version: CAS_VERSION,
+    minimum_compatible_version: MINIMUM_COMPATIBLE_CAS_VERSION,
+    status,
+  };
+}
+
+export function getAnalysisVersionInfo(cas: CASOutput): AnalysisVersionInfo {
+  const tagged = (cas as CASOutput & { analysis_version_info?: AnalysisVersionInfo }).analysis_version_info;
+  return tagged || describeAnalysisVersion(cas.cas_version);
+}
+
+export function assertAnalysisVersionSupported(cas: CASOutput, projectPath: string): void {
+  const info = getAnalysisVersionInfo(cas);
+  if (info.status === 'unsupported') {
+    throw new Error(
+      `Stored analysis for ${projectPath} uses cas_version ${info.stored_version}, which is below the minimum compatible version ${info.minimum_compatible_version} (server is at ${info.current_version}). Re-run analyze_codebase on this path to regenerate the analysis.`
+    );
+  }
+  if (info.status === 'newer-major') {
+    throw new Error(
+      `Stored analysis for ${projectPath} uses cas_version ${info.stored_version}, which is a newer major version than this server's CAS version ${info.current_version}. Upgrade the Klauro MCP server, or re-run analyze_codebase with this server to regenerate the analysis.`
+    );
+  }
+}
+
+function tagAnalysisVersion(output: CASOutput): CASOutput {
+  const info = describeAnalysisVersion(output.cas_version);
+  Object.defineProperty(output, 'analysis_version_info', {
+    value: info,
+    enumerable: false,
+    configurable: true,
+    writable: true,
+  });
+  return output;
 }
 
 export interface ProposalPreviewArtifact {
@@ -383,6 +468,7 @@ export async function saveAnalysis(projectPath: string, output: CASOutput): Prom
     frameworks,
     node_count: output.nodes.length,
     edge_count: output.edges.length,
+    cas_version: output.cas_version,
   };
 
   const index = await loadIndex();
@@ -411,7 +497,7 @@ export async function loadAnalysis(
       try {
         const stat = await fs.stat(resolved);
         if (stat.mtimeMs === cached.mtimeMs && stat.size === cached.size) {
-          return cached.output;
+          return tagAnalysisVersion(cached.output);
         }
       } catch {
         // fall through to a fresh read
@@ -421,10 +507,11 @@ export async function loadAnalysis(
     if (output) {
       await rememberLoadedAnalysis(projectPath, resolved, output);
     }
-    return output;
+    return output ? tagAnalysisVersion(output) : output;
   }
 
-  return readJsonMaybeCompressed(resolved);
+  const output = await readJsonMaybeCompressed(resolved);
+  return output ? tagAnalysisVersion(output) : output;
 }
 
 export async function listAnalyses(): Promise<AnalysisEntry[]> {

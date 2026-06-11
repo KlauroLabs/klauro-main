@@ -116,6 +116,7 @@ test('klauro_query dispatches to a long-tail tool handler', async () => {
   try {
     await fs.ensureDir(projectPath);
     await saveAnalysis(projectPath, {
+      cas_version: '1.10.0',
       analysis_timestamp: '2026-01-01T00:00:00.000Z',
       nodes: [{ id: 'node-1', kind: 'function', name: 'listDrivers', file_path: 'src/drivers.ts' }],
       edges: [],

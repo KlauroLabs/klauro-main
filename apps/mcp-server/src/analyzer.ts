@@ -38,6 +38,8 @@ import {
 import type { AnalyzerRegistration } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
 import * as fs from 'fs-extra';
 import {
+  assertAnalysisVersionSupported,
+  getAnalysisVersionInfo,
   saveAnalysis,
   loadAnalysis,
   saveIncrementalState,
@@ -328,7 +330,10 @@ export async function analyzeProject(projectPath: string): Promise<CASOutput> {
 
 export async function getAnalysis(projectPath: string): Promise<CASOutput> {
   const cached = await loadAnalysis(projectPath);
-  if (cached) return applyStoredElementDescriptions(projectPath, cached);
+  if (cached) {
+    assertAnalysisVersionSupported(cached, projectPath);
+    return applyStoredElementDescriptions(projectPath, cached);
+  }
   throw new Error(`No analysis found for: ${projectPath}. Run analyze_codebase first.`);
 }
 
@@ -338,6 +343,7 @@ export interface IncrementalAnalysisResult {
   changeReport: ChangeReport;
   wasFullRebuild: boolean;
   fullRebuildReason?: string;
+  previousCasVersion?: string;
 }
 
 const DEFAULT_INCREMENTAL_SNAPSHOT_INTERVAL_MS = 60_000;
@@ -514,6 +520,9 @@ export async function analyzeProjectIncremental(projectPath: string): Promise<In
 
   const previousOutput = await loadAnalysis(projectPath, { preferCache: true });
   const previousState = await loadIncrementalState(projectPath);
+  const previousCasVersion = previousOutput
+    ? getAnalysisVersionInfo(previousOutput).stored_version
+    : undefined;
 
   if (!previousOutput) {
     let phaseStartedAt = Date.now();
@@ -581,7 +590,7 @@ export async function analyzeProjectIncremental(projectPath: string): Promise<In
     }
   }
 
-  return result;
+  return { ...result, previousCasVersion };
 }
 
 export async function getIncrementalState(projectPath: string): Promise<IncrementalState | null> {

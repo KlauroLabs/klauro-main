@@ -13,7 +13,21 @@ import {
   listAnalysisSnapshots,
   loadAnalysisSnapshot,
   getAnalysisAt as getStorageAnalysisAt,
+  compareCasVersions,
+  describeAnalysisVersion,
 } from './storage';
+
+export const PILLAR_ATTESTED_CAS_VERSION = '1.11.0';
+
+export function analysisVersionNotice(
+  cas: CASOutput,
+  featureLabel: string,
+  attestedSince: string = PILLAR_ATTESTED_CAS_VERSION
+): string | undefined {
+  const stored = cas.cas_version || '0.0.0';
+  if (compareCasVersions(stored, attestedSince) >= 0) return undefined;
+  return `This analysis (cas_version ${stored}) predates ${featureLabel}, which is guaranteed from CAS ${attestedSince}. Re-run analyze_codebase on this project to generate it.`;
+}
 
 export function buildSummary(cas: CASOutput) {
   const nodesByType: Record<string, number> = {};
@@ -30,10 +44,16 @@ export function buildSummary(cas: CASOutput) {
   const inventory = cas.architecture_summary?.architectural_inventory;
   const primaryDomain = cas.enhanced_system_purpose?.primary_domain || null;
   const productTech = productTechSignals(cas);
+  const versionInfo = describeAnalysisVersion(cas.cas_version);
 
   return {
     name: cas.system?.name,
     type: cas.system?.type,
+    cas_version: versionInfo.stored_version,
+    analysis_version_status: versionInfo.status,
+    analysis_version_notice: versionInfo.status === 'older-compatible'
+      ? `This analysis was produced by cas_version ${versionInfo.stored_version}; the server is at ${versionInfo.current_version}. Re-run analyze_codebase to populate fields added since (user journeys, data lineage, paradigm conformance, product map).`
+      : undefined,
     languages: productTech.languages.length ? productTech.languages : techs?.languages?.map(l => l.name) || [],
     frameworks: productTech.frameworks.length ? productTech.frameworks : techs?.frameworks?.map(f => f.name) || [],
     primary_domain: primaryDomain,
@@ -791,9 +811,15 @@ export function getUserJourneys(
   cas: CASOutput,
   opts: { journeyId?: string; kind?: string; limit?: number; offset?: number } = {}
 ) {
+  const journeysNotice = cas.user_journeys === undefined
+    ? analysisVersionNotice(cas, 'user journeys')
+    : undefined;
   const journeys = cas.user_journeys || [];
   if (opts.journeyId) {
-    return { journey: journeys.find(journey => journey.id === opts.journeyId) || null };
+    return {
+      journey: journeys.find(journey => journey.id === opts.journeyId) || null,
+      analysis_version_notice: journeysNotice,
+    };
   }
 
   let filtered = journeys;
@@ -808,6 +834,7 @@ export function getUserJourneys(
     total: filtered.length,
     offset,
     limit,
+    analysis_version_notice: journeysNotice,
     summary: cas.user_journey_summary || null,
     journeys: filtered.slice(offset, offset + limit).map(journey => ({
       id: journey.id,
@@ -830,11 +857,14 @@ export function getParadigmConformance(
   cas: CASOutput,
   opts: { paradigm?: string } = {}
 ) {
+  const paradigmsNotice = cas.paradigm_conformance === undefined
+    ? analysisVersionNotice(cas, 'paradigm conformance')
+    : undefined;
   const paradigms = cas.paradigm_conformance || [];
 
   if (opts.paradigm) {
     const match = paradigms.find(item => item.paradigm === opts.paradigm) || null;
-    return { paradigm: match };
+    return { paradigm: match, analysis_version_notice: paradigmsNotice };
   }
 
   const severityCounts = (deviations: { severity: string }[]) => {
@@ -848,6 +878,7 @@ export function getParadigmConformance(
   return {
     total: paradigms.length,
     total_deviations: paradigms.reduce((sum, item) => sum + item.deviations.length, 0),
+    analysis_version_notice: paradigmsNotice,
     paradigms: paradigms.map(item => ({
       paradigm: item.paradigm,
       description: item.description,
@@ -863,11 +894,14 @@ export function getDataLineage(
   cas: CASOutput,
   opts: { entityId?: string; sensitiveOnly?: boolean; limit?: number; offset?: number } = {}
 ) {
+  const lineageNotice = cas.data_lineage === undefined
+    ? analysisVersionNotice(cas, 'data lineage')
+    : undefined;
   const lineage = cas.data_lineage || [];
 
   if (opts.entityId) {
     const entity = lineage.find(item => item.entity_id === opts.entityId) || null;
-    return { entity };
+    return { entity, analysis_version_notice: lineageNotice };
   }
 
   const exposureScore = (item: typeof lineage[number]) => {
@@ -896,6 +930,7 @@ export function getDataLineage(
     total: filtered.length,
     offset,
     limit,
+    analysis_version_notice: lineageNotice,
     sensitive_entities: lineage.filter(item => item.exposure.sensitive).length,
     entities_with_external_transfer: lineage.filter(item => item.exposure.external_transfer).length,
     entities_with_unguarded_paths: lineage.filter(item => item.exposure.unguarded_paths > 0).length,
@@ -949,9 +984,17 @@ export async function diffBehaviorAgainstSnapshot(
 
   const diff = diffBehavior(before, currentCas);
 
+  const baselinePredatesPillars =
+    before.user_journeys === undefined &&
+    before.data_lineage === undefined &&
+    compareCasVersions(before.cas_version, PILLAR_ATTESTED_CAS_VERSION) < 0;
+
   return {
     applicable: true,
     compared_to_snapshot: resolvedId,
+    analysis_version_notice: baselinePredatesPillars
+      ? `Baseline snapshot '${resolvedId}' was produced by cas_version ${before.cas_version || 'unknown'}, which predates behavior pillars (journeys, lineage, conformance). Added/removed counts may reflect the analyzer upgrade rather than code changes. Re-run analyze_codebase after changes to build current baselines.`
+      : undefined,
     risk_flags: diff.summary.risk_flags,
     counts: {
       journeys_added: diff.journeys.added.length,
@@ -977,9 +1020,17 @@ export function getProductMap(
   opts: { section?: string; format?: 'json' | 'markdown' } = {}
 ) {
   const map = cas.product_map || buildProductMap(cas);
+  const mapPredatesStorage = cas.product_map === undefined
+    && compareCasVersions(cas.cas_version, PILLAR_ATTESTED_CAS_VERSION) < 0;
+  const mapNotice = mapPredatesStorage
+    ? `This analysis (cas_version ${cas.cas_version || '0.0.0'}) predates the stored product map; the map below was computed on demand from older analysis data and may miss journeys, lineage, and conventions. Re-run analyze_codebase for the full product map.`
+    : undefined;
 
   if (opts.format === 'markdown') {
-    return { markdown: productMapToMarkdown(map) };
+    const markdown = productMapToMarkdown(map);
+    return {
+      markdown: mapNotice ? `> ${mapNotice}\n\n${markdown}` : markdown,
+    };
   }
 
   if (opts.section) {
@@ -988,10 +1039,10 @@ export function getProductMap(
         error: `Unknown section '${opts.section}'. Available sections: ${PRODUCT_MAP_SECTIONS.join(', ')}.`,
       };
     }
-    return { [opts.section]: map[opts.section as keyof CASProductMap] };
+    return { [opts.section]: map[opts.section as keyof CASProductMap], analysis_version_notice: mapNotice };
   }
 
-  return map;
+  return mapNotice ? { ...map, analysis_version_notice: mapNotice } : map;
 }
 
 export function productMapToMarkdown(map: CASProductMap): string {
