@@ -2,6 +2,16 @@ export interface ElementDescriptionSubject {
   name: string;
   relatedDomains?: string[];
   fields?: string[];
+  /** Entity names connected to the subject; ground domain-legitimate vocabulary. */
+  relatedEntities?: string[];
+  /**
+   * System-level grounding vocabulary: primary domain, core concepts, and the
+   * deterministic overview text. Marketing-flagged words that are grounded in
+   * this vocabulary are domain terms (e.g. "compliance" in a fleet-compliance
+   * system) and must not be rejected — parity with the system description
+   * validator's grounded-words-allowed rule.
+   */
+  domainVocabulary?: string[];
 }
 
 export interface ElementDescriptionValidationOptions {
@@ -31,13 +41,20 @@ const FILLER_PHRASE_PATTERN = new RegExp([
 
 const MARKETING_LANGUAGE_PATTERN = /\b(seamless(?:ly)?|robust|comprehensive|various|crucial role|plays a key role|efficient(?:ly)?|efficiency|productivity|compliant|compliance|advanced|streamline(?:s|d|ing)?|user-friendly|business value|improving operational|enhanc(?:e|es|ing)|better understanding|insights(?: into)?|structured data and insights|reduces? costs?|best practices|scalable|secure by design|user experience)\b/gi;
 
+function splitGroundingSource(value: string): string[] {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/);
+}
+
 function subjectGroundingTokens(
   subject: ElementDescriptionSubject,
   normalizeToken: (token: string) => string,
   isGenericToken: (token: string) => boolean,
 ): string[] {
   return [
-    ...subject.name.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/),
+    ...splitGroundingSource(subject.name),
     ...(subject.relatedDomains || []),
     ...(subject.fields || []).map(field => field.split(':')[0]),
   ]
@@ -45,17 +62,46 @@ function subjectGroundingTokens(
     .filter(token => token.length > 2 && !isGenericToken(token));
 }
 
-function ungroundedMarketingMatches(description: string, subjectTokens: string[]): string[] {
+/**
+ * Grounding tokens that legitimize marketing-flagged vocabulary but do NOT
+ * count toward target-not-grounded: entity names and system-level domain
+ * vocabulary. Kept separate so a description still has to mention the subject
+ * itself, while domain terms like "compliance" survive in a compliance system.
+ */
+function marketingGroundingTokens(
+  subject: ElementDescriptionSubject,
+  normalizeToken: (token: string) => string,
+): string[] {
+  return [
+    ...(subject.relatedEntities || []),
+    ...(subject.domainVocabulary || []),
+  ]
+    .flatMap(value => splitGroundingSource(String(value || '')))
+    .map(token => normalizeToken(token))
+    .filter(token => token.length > 2);
+}
+
+function ungroundedMarketingMatches(
+  description: string,
+  subjectTokens: string[],
+  extraGroundingTokens: string[] = [],
+  groundingText = '',
+): string[] {
   const matches = Array.from(new Set(
     (description.match(MARKETING_LANGUAGE_PATTERN) || []).map(match => match.toLowerCase().trim())
   ));
   if (matches.length === 0) return [];
   const groundedStems = new Set(
-    subjectTokens.filter(token => token.length >= 4).map(token => token.slice(0, 8))
+    [...subjectTokens, ...extraGroundingTokens]
+      .filter(token => token.length >= 4)
+      .map(token => token.slice(0, 8))
   );
+  const lowerGroundingText = groundingText.toLowerCase();
   return matches.filter(match => {
     const tokens = match.split(/\s+/);
-    if (tokens.length > 1) return true;
+    if (tokens.length > 1) {
+      return !(lowerGroundingText && lowerGroundingText.includes(match));
+    }
     return !groundedStems.has(tokens[0].slice(0, 8));
   });
 }
@@ -77,7 +123,12 @@ export function validateElementDescription(
   if (FILLER_PHRASE_PATTERN.test(cleaned)) return { ok: false, reason: 'generic-structural-phrase' };
 
   const subjectTokens = subjectGroundingTokens(subject, normalizeToken, isGenericToken);
-  const marketingMatches = ungroundedMarketingMatches(cleaned, subjectTokens);
+  const marketingMatches = ungroundedMarketingMatches(
+    cleaned,
+    subjectTokens,
+    marketingGroundingTokens(subject, token => normalizeToken(token)),
+    (subject.domainVocabulary || []).join(' '),
+  );
   if (marketingMatches.length > 0) {
     return { ok: false, reason: `unsupported-marketing-language: ${marketingMatches.join(', ')}` };
   }

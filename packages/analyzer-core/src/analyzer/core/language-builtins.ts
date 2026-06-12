@@ -153,6 +153,63 @@ const QUALIFIER_DOMAIN_TOKENS = new Set([
 ]);
 
 /**
+ * CSS/DOM state adjectives that surface in theme and frontend code (class
+ * toggles, pseudo-state handlers, layout helpers). A storefront theme's
+ * "Inner Management", "Active Management", or "Predictive Management" is a
+ * UI state token, not a product capability, so these can never seed a
+ * capability or domain name. Real product nouns ("cart", "checkout",
+ * "product") are unaffected because filtering is per-token: "Active
+ * Directory" still seeds from "directory".
+ */
+const UI_STATE_DOMAIN_TOKENS = new Set([
+  'inner', 'outer', 'active', 'inactive', 'connected', 'disconnected',
+  'predictive', 'hover', 'hovered', 'hovering', 'focused', 'focusable',
+  'selected', 'unselected', 'expanded', 'collapsed', 'hidden', 'visible',
+  'sticky', 'disabled', 'enabled', 'checked', 'unchecked', 'dragging',
+  'draggable', 'scrollable', 'clicked', 'pressed', 'highlighted',
+]);
+
+/**
+ * Serialization/encoding plumbing verbs. When serde/marshalling helpers are
+ * the most connected terminal nodes (common in Rust and Go service plumbing),
+ * they produce capabilities like "Deserialize Management" or "Serialize
+ * Management" that describe wire-format mechanics, not system behavior.
+ * Domain nouns that merely contain these stems ("token", "encoder ring"
+ * products) are unaffected because matching is exact-token.
+ */
+const SERIALIZATION_PLUMBING_TOKENS = new Set([
+  'serialize', 'serializes', 'serialized', 'serializing', 'serialization',
+  'deserialize', 'deserializes', 'deserialized', 'deserializing', 'deserialization',
+  'encode', 'encodes', 'encoded', 'decode', 'decodes', 'decoded',
+  'marshal', 'marshals', 'marshalled', 'marshaled', 'unmarshal', 'unmarshals',
+  'unmarshalled', 'unmarshaled',
+]);
+
+/**
+ * Vendor/infrastructure library names that show up as terminal nodes when a
+ * codebase wraps an SDK (Jito block-engine clients, Borsh codecs). Unlike
+ * LANGUAGE_MODULE_TOKENS these are not filtered unconditionally: a vendor
+ * token may legitimately name a capability when the surrounding group shows
+ * product evidence (entities or multiple operations). Capability building
+ * consults isVendorLibDomainToken only for the evidence-free
+ * "<Label> Capability" fallback.
+ */
+const VENDOR_LIB_DOMAIN_TOKENS = new Set([
+  'jito', 'borsh',
+]);
+
+/**
+ * True when a lowercased domain/capability token names a vendor or
+ * infrastructure library (jito, borsh) rather than a product concept.
+ * Callers should only suppress these when the capability has no product
+ * evidence; see VENDOR_LIB_DOMAIN_TOKENS.
+ */
+export function isVendorLibDomainToken(token: string | undefined): boolean {
+  if (!token) return false;
+  return VENDOR_LIB_DOMAIN_TOKENS.has(token.trim().toLowerCase());
+}
+
+/**
  * Digit-led tokens that name real technology rather than numeric noise.
  * These survive the numeric-token rejection below.
  */
@@ -173,6 +230,8 @@ export function isCapabilityNoiseToken(token: string | undefined): boolean {
   const normalized = token.trim().toLowerCase();
   if (!normalized) return false;
   if (QUALIFIER_DOMAIN_TOKENS.has(normalized)) return true;
+  if (UI_STATE_DOMAIN_TOKENS.has(normalized)) return true;
+  if (SERIALIZATION_PLUMBING_TOKENS.has(normalized)) return true;
   if (/^[0-9]/.test(normalized)) {
     return !DIGIT_LED_TECHNOLOGY_TOKENS.has(normalized);
   }

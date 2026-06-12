@@ -176,3 +176,55 @@ describe('capability tokenizers reject numeric and qualifier noise', () => {
     expect(orchestrator.domainKeyFromEntryPointText('2fa_enrollment')).toBe('2fa');
   });
 });
+
+describe('UI state and serialization plumbing capability noise', () => {
+  const { isCapabilityNoiseToken } = require('../../analyzer/core/language-builtins');
+  const orchestrator = new AnalyzerOrchestrator() as any;
+
+  it('rejects CSS/DOM state adjectives that seed junk theme capabilities', () => {
+    for (const token of ['inner', 'active', 'connected', 'predictive', 'hover', 'hovered', 'focused', 'selected', 'expanded', 'collapsed', 'hidden', 'visible', 'sticky', 'disabled', 'enabled']) {
+      expect(isCapabilityNoiseToken(token)).toBe(true);
+    }
+  });
+
+  it('rejects serialization plumbing verbs that seed serde capabilities', () => {
+    for (const token of ['serialize', 'deserialize', 'serialized', 'deserialized', 'encode', 'decode', 'marshal', 'unmarshal']) {
+      expect(isCapabilityNoiseToken(token)).toBe(true);
+    }
+  });
+
+  it('keeps real product-domain tokens that neighbor the new noise classes', () => {
+    for (const token of ['token', 'wallet', 'cart', 'checkout', 'product', 'directory', 'activity', 'connection']) {
+      expect(isCapabilityNoiseToken(token)).toBe(false);
+    }
+  });
+
+  it('never seeds a capability name from UI state or serde tokens', () => {
+    expect(orchestrator.domainTokensFromText('inner')).toEqual([]);
+    expect(orchestrator.domainTokensFromText('predictive')).toEqual([]);
+    expect(orchestrator.domainTokensFromText('deserialize_instruction')).toEqual(['instruction']);
+    expect(orchestrator.domainKeyFromEntryPointText('active_menu_toggle')).toBe('menu');
+    expect(orchestrator.domainKeyFromEntryPointText('serialize')).toBeUndefined();
+  });
+
+  it('keeps Token Authentication style capabilities seeded from real domain nouns', () => {
+    expect(orchestrator.domainTokensFromText('TokenAuth')).toEqual(['token', 'auth']);
+    expect(orchestrator.domainTokensFromText('WalletService')).toEqual(['wallet']);
+  });
+});
+
+describe('isVendorLibDomainToken', () => {
+  const { isVendorLibDomainToken } = require('../../analyzer/core/language-builtins');
+
+  it('flags vendor/infrastructure library tokens', () => {
+    for (const token of ['jito', 'Jito', ' borsh ']) {
+      expect(isVendorLibDomainToken(token)).toBe(true);
+    }
+  });
+
+  it('keeps product and chain tokens that carry domain meaning', () => {
+    for (const token of ['solana', 'wallet', 'token', 'pool', 'anchor', undefined, '']) {
+      expect(isVendorLibDomainToken(token as any)).toBe(false);
+    }
+  });
+});

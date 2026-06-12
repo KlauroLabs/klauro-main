@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import { generateElementDescription, getElementDescription } from './description-enrichment';
+import { generateElementDescription, getElementDescription, validateDescription } from './description-enrichment';
 import { saveAnalysis } from './storage';
 
 test('manual element descriptions are stored and invalidated when source changes', async () => {
@@ -276,4 +276,77 @@ test('manual element descriptions reject generic filler word salad that the vali
     await fs.remove(root);
     await fs.remove(storage);
   }
+});
+
+function groundingCas(purpose: Record<string, unknown> = {}, dataEntities: unknown[] = []): CASOutput {
+  return {
+    enhanced_system_purpose: {
+      primary_type: 'library',
+      confidence: 0.8,
+      evidence: [],
+      primary_domain: 'order-card-carrier-management',
+      core_concepts: ['order', 'card', 'carrier', 'policy', 'compliance'],
+      inferred_description: 'A payments and fuel-card client managing order, card, carrier, and policy compliance workflows.',
+      supporting_workflow_ids: [],
+      ...purpose,
+    },
+    data_entities: dataEntities,
+  } as unknown as CASOutput;
+}
+
+test('capability descriptions are held to the review-gate 50-char floor', () => {
+  const target = {
+    kind: 'capability' as const,
+    name: 'Policy Management',
+    target: { related_domains: ['policy'] },
+  };
+  // 40 chars: passed the old 35 floor but fails the usefulness review gate.
+  const result = validateDescription('Policy Management holds policy records.', target, groundingCas());
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'too-short');
+});
+
+test('marketing-flagged words grounded in system domain vocabulary are allowed for capabilities', () => {
+  const target = {
+    kind: 'capability' as const,
+    name: 'Policy Management',
+    target: { related_domains: ['policy'] },
+  };
+  const description = 'Policy Management maintains policy records and compliance rules applied to card and carrier workflows.';
+  const result = validateDescription(description, target, groundingCas());
+  assert.equal(result.ok, true, result.reason);
+});
+
+test('related entity ids are resolved to names for grounding', () => {
+  const target = {
+    kind: 'capability' as const,
+    name: 'Transaction Settlement',
+    target: { related_domains: ['transaction'], related_entities: ['entity_policy'] },
+  };
+  const cas = groundingCas(
+    { primary_domain: 'payments', core_concepts: ['transaction', 'card'], inferred_description: 'A payments client.' },
+    [{ id: 'entity_policy', name: 'CompliancePolicy' }],
+  );
+  const description = 'Transaction Settlement records settlement outcomes and compliance checks for each card transaction.';
+  const result = validateDescription(description, target, cas);
+  assert.equal(result.ok, true, result.reason);
+});
+
+test('ungrounded marketing words are still rejected and named for the repair prompt', () => {
+  const target = {
+    kind: 'capability' as const,
+    name: 'Bundle Submission',
+    target: { related_domains: ['bundle'] },
+  };
+  const cas = groundingCas({
+    primary_domain: 'solana-trading',
+    core_concepts: ['bundle', 'transaction'],
+    inferred_description: 'A Solana trading bot that submits transaction bundles.',
+  });
+  const description = 'Bundle Submission sends transaction bundles, enhancing throughput and efficiency for the trading bot.';
+  const result = validateDescription(description, target, cas);
+  assert.equal(result.ok, false);
+  assert.ok(result.reason?.includes('unsupported-marketing-language'));
+  assert.ok(result.reason?.includes('enhancing'));
+  assert.ok(result.reason?.includes('efficiency'));
 });

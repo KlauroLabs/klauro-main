@@ -3364,3 +3364,53 @@ describe('reconcilePrimaryDomainWithAreas: bare-token primaries yield to compose
     expect(result.primaryDomain).toBe('billing-payments');
   });
 });
+
+describe('vendor-lib terminal capabilities require product evidence', () => {
+  const vendorNode = (partial: Partial<CASNode>): CASNode => ({
+    id: partial.id || partial.name || 'node',
+    name: partial.name || 'Node',
+    type: partial.type || 'service',
+    source: partial.source || { file: `src/${partial.name || 'node'}.rs`, line: 1 },
+    metadata: partial.metadata || {},
+  } as CASNode);
+
+  it('drops an evidence-free Jito Capability seeded from a vendor SDK wrapper', () => {
+    const nodes: CASNode[] = [
+      vendorNode({ id: 'jito-service', name: 'JitoService', type: 'service', source: { file: 'src/jito.rs' } }),
+      vendorNode({ id: 'caller', name: 'BotRunnerHelper', type: 'class', source: { file: 'src/runner.rs' } }),
+    ];
+    const edges: CASEdge[] = [
+      { id: 'e1', source: 'caller', target: 'jito-service', type: 'calls' },
+    ] as CASEdge[];
+
+    const capabilities = orch.buildTerminalCapabilities([], nodes, edges, new Set<string>());
+    const names = capabilities.map((capability: { name: string }) => capability.name);
+    expect(names).not.toContain('Jito Capability');
+  });
+
+  it('keeps vendor-token capabilities that carry product evidence', () => {
+    const entity: CASDataEntity = {
+      id: 'entity_jito_bundle',
+      name: 'JitoBundle',
+      lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+    } as CASDataEntity;
+
+    const capabilities = orch.buildTerminalCapabilities([entity], [], [], new Set<string>());
+    const names = capabilities.map((capability: { name: string }) => capability.name);
+    expect(names).toContain('Jito Bundle Management');
+  });
+
+  it('keeps non-vendor evidence-free capabilities untouched', () => {
+    const nodes: CASNode[] = [
+      vendorNode({ id: 'pricing-service', name: 'PricingService', type: 'service', source: { file: 'src/pricing.rs' } }),
+      vendorNode({ id: 'caller2', name: 'BotRunnerHelper', type: 'class', source: { file: 'src/runner.rs' } }),
+    ];
+    const edges: CASEdge[] = [
+      { id: 'e1', source: 'caller2', target: 'pricing-service', type: 'calls' },
+    ] as CASEdge[];
+
+    const capabilities = orch.buildTerminalCapabilities([], nodes, edges, new Set<string>());
+    const names = capabilities.map((capability: { name: string }) => capability.name);
+    expect(names.some((name: string) => name.startsWith('Pricing'))).toBe(true);
+  });
+});

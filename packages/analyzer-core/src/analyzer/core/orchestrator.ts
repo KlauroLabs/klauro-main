@@ -77,7 +77,7 @@ import { ChangeDetector } from './change-detector';
 import { buildUserJourneys } from './journey-builder';
 import { buildParadigmConformance } from './paradigm-conformance';
 import { buildDataLineage } from './data-lineage';
-import { isLanguageBuiltinName, isLanguageBuiltinExitPoint, isLanguageBuiltinDomainToken, isCapabilityNoiseToken } from './language-builtins';
+import { isLanguageBuiltinName, isLanguageBuiltinExitPoint, isLanguageBuiltinDomainToken, isCapabilityNoiseToken, isVendorLibDomainToken } from './language-builtins';
 import { buildProductMap } from './product-map';
 import { relativizeProjectPaths } from './relativize-project-paths';
 import { CallGraphBuilder } from './call-graph-builder';
@@ -227,6 +227,13 @@ export class AnalyzerOrchestrator {
   private embeddingPhaseConfig: EmbeddingPhaseConfig | null = null;
   private activeAnalysisProjectPath?: string;
   private klauroSelfProjectCache: Map<string, boolean> = new Map();
+  /**
+   * System-level grounding vocabulary (primary domain, core concepts,
+   * deterministic overview) for the element description validator. Set by the
+   * AI description passes so capability/entity descriptions get the same
+   * grounded-words-allowed treatment as the system description validator.
+   */
+  private elementDescriptionGroundingVocabulary: string[] = [];
   private static aiInterpretationTimeouts = 0;
   private static aiInterpretationDisabledUntil = 0;
 
@@ -1015,7 +1022,8 @@ export class AnalyzerOrchestrator {
       domainConcepts,
       systemCapabilities,
       unanalyzedLanguages,
-      this.libraryNamesForInterpretation(allLibraries)
+      this.libraryNamesForInterpretation(allLibraries),
+      dataEntities
     );
     logTiming('pp_aiInterpretation', phaseStart);
 
@@ -1862,7 +1870,8 @@ export class AnalyzerOrchestrator {
         domainConcepts,
         systemCapabilities,
         previousOutput.system?.technologies?.unanalyzed_languages || [],
-        this.libraryNamesForInterpretation(libraries)
+        this.libraryNamesForInterpretation(libraries),
+        dataEntities
       );
     } else if (previousOutput.enhanced_system_purpose?.inferred_description) {
       enhancedSystemPurpose.inferred_description = previousOutput.enhanced_system_purpose.inferred_description;
@@ -6718,8 +6727,14 @@ export class AnalyzerOrchestrator {
     domainConcepts: CASDomainConcept[],
     systemCapabilities: SystemCapability[] = [],
     unanalyzedLanguages: Array<{ name: string; files: number; share_of_source: number }> = [],
-    libraryNames: string[] = []
+    libraryNames: string[] = [],
+    dataEntities: CASDataEntity[] = []
   ): Promise<void> {
+    this.setElementDescriptionGrounding(
+      enhancedSystemPurpose.primary_domain,
+      enhancedSystemPurpose.core_concepts,
+      enhancedSystemPurpose.inferred_description
+    );
     if (process.env.KLAURO_AI_INTERPRETATION === 'false' || process.env.KLAURO_AI_INTERPRETATION === '0') {
       this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'ai_skipped', false, 'disabled-by-env');
       return;
@@ -6765,8 +6780,9 @@ export class AnalyzerOrchestrator {
     const elementsEnabled = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS !== 'false' && process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS !== '0';
     const configuredElementLimit = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT || '');
     const elementLimit = Number.isFinite(configuredElementLimit) && configuredElementLimit > 0 ? configuredElementLimit : 8;
+    const entityNamesById = new Map(dataEntities.map(entity => [entity.id, entity.name]));
     const capabilityTargets = elementsEnabled
-      ? systemCapabilities.slice(0, elementLimit).map(capability => this.capabilityDescriptionTarget(capability))
+      ? systemCapabilities.slice(0, elementLimit).map(capability => this.capabilityDescriptionTarget(capability, entityNamesById))
       : [];
 
     try {
@@ -7092,8 +7108,14 @@ export class AnalyzerOrchestrator {
       includeEntities?: boolean;
     }
   ): Promise<void> {
+    this.setElementDescriptionGrounding(
+      context.enhancedSystemPurpose?.primary_domain || context.projectTextSignal?.primaryDomain,
+      context.enhancedSystemPurpose?.core_concepts || context.projectTextSignal?.concepts,
+      context.enhancedSystemPurpose?.inferred_description || context.projectTextSignal?.summary
+    );
+    const entityNamesById = new Map(entities.map(entity => [entity.id, entity.name]));
     const allTargets = [
-      ...capabilities.map(capability => this.capabilityDescriptionTarget(capability)),
+      ...capabilities.map(capability => this.capabilityDescriptionTarget(capability, entityNamesById)),
       ...(context.includeEntities ? entities.map(entity => this.entityDescriptionTarget(entity)) : []),
     ];
     const configuredLimit = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT || '');
@@ -7316,7 +7338,7 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  private capabilityDescriptionTarget(capability: SystemCapability): DescriptionTarget {
+  private capabilityDescriptionTarget(capability: SystemCapability, entityNamesById?: Map<string, string>): DescriptionTarget {
     return {
       id: capability.id,
       name: capability.name,
@@ -7326,9 +7348,28 @@ export class AnalyzerOrchestrator {
       operations: capability.operations.slice(0, 8).map(operation =>
         [operation.action, operation.entry_point_type, operation.path_or_command].filter(Boolean).join(' ')
       ),
-      relatedEntities: capability.related_entities,
+      // Resolve entity ids to human names so the prompt (and grounding) see
+      // real domain vocabulary instead of opaque ids.
+      relatedEntities: capability.related_entities.map(id => entityNamesById?.get(id) || id),
       relatedDomains: capability.related_domains,
     };
+  }
+
+  /**
+   * Captures the system-level vocabulary used to legitimize marketing-flagged
+   * words in element descriptions — same grounding sources (domain, core
+   * concepts, deterministic overview) the system description validator uses.
+   */
+  private setElementDescriptionGrounding(
+    domain?: string,
+    concepts?: string[],
+    deterministicOverview?: string
+  ): void {
+    this.elementDescriptionGroundingVocabulary = [
+      domain,
+      ...(concepts || []),
+      deterministicOverview,
+    ].filter((term): term is string => Boolean(term && term !== 'unknown'));
   }
 
   private curatedElementDescription(target: DescriptionTarget): string | undefined {
@@ -7426,6 +7467,8 @@ export class AnalyzerOrchestrator {
       name: target.name,
       relatedDomains: target.relatedDomains,
       fields: target.fields,
+      relatedEntities: target.relatedEntities,
+      domainVocabulary: this.elementDescriptionGroundingVocabulary,
     }, {
       minLength: 50,
       maxLength: 420,
@@ -11539,6 +11582,15 @@ export class AnalyzerOrchestrator {
 
       const category = this.inferTerminalCapabilityCategory(key, uniqueNodes, uniqueEntities);
       const capabilityName = this.formatTerminalCapabilityName(key, group.label, operations, uniqueEntities, projectPath);
+      // A bare vendor/infrastructure library token ("Jito Capability") that
+      // reached the evidence-free Capability fallback is SDK plumbing, not a
+      // product capability. Vendor tokens WITH product evidence (entities or
+      // multiple operations) keep their Management/domain-pattern names.
+      if (/ Capability$/.test(capabilityName) &&
+        labelTokens.every(token => isVendorLibDomainToken(this.normalizeDomainToken(token))) &&
+        isVendorLibDomainToken(this.normalizeDomainToken(key))) {
+        continue;
+      }
       capabilities.push({
         id: 'cap_pending',
         name: capabilityName,

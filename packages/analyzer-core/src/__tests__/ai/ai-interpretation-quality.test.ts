@@ -429,3 +429,96 @@ describe('keep-better policy and rejection-reason telemetry in the combined path
     expect(capabilities[0].description_generation.reason).toBe('generic-structural-phrase');
   });
 });
+
+describe('element description grounding parity with the system validator', () => {
+  it('allows marketing-flagged words grounded in the system domain vocabulary', () => {
+    const subject = {
+      name: 'Policy Management',
+      relatedDomains: ['policy'],
+      domainVocabulary: [
+        'order-card-carrier-management',
+        'policy', 'card', 'carrier', 'compliance',
+        'A payments and fuel-card client managing order, card, carrier, and policy compliance workflows.',
+      ],
+    };
+    expect(validateElementDescription(
+      'Policy Management maintains policy records and compliance rules applied to card and carrier workflows.',
+      subject,
+    ).ok).toBe(true);
+  });
+
+  it('allows marketing-flagged words grounded in related entity names', () => {
+    expect(validateElementDescription(
+      'Transaction Settlement records settlement outcomes and compliance checks for each card transaction.',
+      { name: 'Transaction Settlement', relatedEntities: ['CompliancePolicy', 'CardTransaction'] },
+    ).ok).toBe(true);
+  });
+
+  it('still rejects ungrounded marketing words and names them for the repair prompt', () => {
+    const result = validateElementDescription(
+      'Jito Capability submits transaction bundles, enhancing throughput and efficiency for the trading bot.',
+      {
+        name: 'Jito Capability',
+        relatedDomains: ['jito'],
+        domainVocabulary: ['solana-trading', 'bundle', 'transaction', 'A Solana trading bot that submits Jito bundles.'],
+      },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain('unsupported-marketing-language');
+    expect(result.reason).toContain('enhancing');
+    expect(result.reason).toContain('efficiency');
+  });
+
+  it('allows grounded multi-word marketing phrases when the domain vocabulary states them', () => {
+    expect(validateElementDescription(
+      'Experience Personalization tailors the storefront user experience using saved shopper preferences.',
+      {
+        name: 'Experience Personalization',
+        domainVocabulary: ['storefront personalization of the user experience for shoppers'],
+      },
+    ).ok).toBe(true);
+  });
+
+  it('grounds the orchestrator wrapper with system vocabulary and entity names', () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const target = {
+      id: 'cap_1',
+      name: 'Policy Management',
+      kind: 'capability',
+      relatedDomains: ['policy'],
+      relatedEntities: ['Policy'],
+    };
+    const text = 'Policy Management maintains policy records and compliance rules used by carrier and card workflows.';
+
+    expect(localOrch.validateElementDescription(text, target).reason).toContain('unsupported-marketing-language');
+
+    localOrch.setElementDescriptionGrounding(
+      'order-card-carrier-management',
+      ['policy', 'card', 'carrier', 'compliance'],
+      'A payments client that manages order, card, carrier, and policy compliance workflows.'
+    );
+    expect(localOrch.validateElementDescription(text, target).ok).toBe(true);
+  });
+
+  it('resolves related entity ids to names in capability description targets', () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const capability = {
+      id: 'cap_2',
+      name: 'Card Management',
+      description: 'Card Management covers read paths.',
+      category: 'core',
+      operations: [{ entry_point_id: 'ep1', entry_point_type: 'file', action: 'Read', path_or_command: 'src/CardManagementWS.php' }],
+      related_entities: ['entity-card'],
+      related_domains: ['card'],
+      criticality: 'high',
+      criticality_factors: [],
+    };
+    const entityNamesById = new Map([['entity-card', 'FuelCard']]);
+    const target = localOrch.capabilityDescriptionTarget(capability, entityNamesById);
+    expect(target.relatedEntities).toEqual(['FuelCard']);
+    expect(target.operations[0]).toContain('src/CardManagementWS.php');
+
+    const bare = localOrch.capabilityDescriptionTarget(capability);
+    expect(bare.relatedEntities).toEqual(['entity-card']);
+  });
+});

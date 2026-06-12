@@ -115,7 +115,7 @@ async function generateUsefulDescription(
   });
 
   const firstDescription = cleanDescription(firstRaw);
-  const firstValidation = validateDescription(firstDescription, resolved);
+  const firstValidation = validateDescription(firstDescription, resolved, cas);
   if (firstValidation.ok) return { description: firstDescription, attempts: 1 };
 
   const repairRaw = await aiService.generateComponentDescription({
@@ -126,7 +126,7 @@ async function generateUsefulDescription(
   });
 
   const repairedDescription = cleanDescription(repairRaw);
-  const repairedValidation = validateDescription(repairedDescription, resolved);
+  const repairedValidation = validateDescription(repairedDescription, resolved, cas);
   if (repairedValidation.ok) return { description: repairedDescription, attempts: 2 };
 
   throw new Error(`AI generated a low-quality or ungrounded description (${repairedValidation.reason}); no description was stored. Rejected text: "${repairedDescription.slice(0, 220)}"`);
@@ -410,21 +410,36 @@ function cleanDescription(raw: string): string {
     .trim();
 }
 
-function validateDescription(description: string, target: ResolvedTarget): { ok: boolean; reason?: string } {
+export function validateDescription(description: string, target: Pick<ResolvedTarget, 'kind' | 'name' | 'target'>, cas?: CASOutput): { ok: boolean; reason?: string } {
   const relatedDomains = Array.isArray((target.target as any)?.related_domains)
     ? (target.target as any).related_domains.filter((domain: unknown): domain is string => typeof domain === 'string')
     : undefined;
+  const relatedEntityIds = Array.isArray((target.target as any)?.related_entities)
+    ? (target.target as any).related_entities.filter((id: unknown): id is string => typeof id === 'string')
+    : [];
+  const entityNamesById = new Map((cas?.data_entities || []).map(entity => [entity.id, entity.name]));
   return validateElementDescription(description, {
     name: target.name,
     relatedDomains,
+    relatedEntities: relatedEntityIds.map((id: string) => entityNamesById.get(id) || id),
+    // Same grounding sources as the system description validator: domain
+    // vocabulary legitimizes marketing-flagged words (e.g. "compliance" in a
+    // compliance-domain codebase).
+    domainVocabulary: [
+      cas?.enhanced_system_purpose?.primary_domain,
+      ...(cas?.enhanced_system_purpose?.core_concepts || []),
+      cas?.enhanced_system_purpose?.inferred_description,
+    ].filter((term): term is string => Boolean(term && term !== 'unknown')),
   }, {
-    minLength: 35,
+    // Capabilities are reviewed against a 50-char floor by the usefulness
+    // review gate; generating shorter text would pass here and fail review.
+    minLength: target.kind === 'capability' ? 50 : 35,
     maxLength: 800,
   });
 }
 
-function isUsefulDescription(description: string, target: ResolvedTarget): boolean {
-  return validateDescription(description, target).ok;
+function isUsefulDescription(description: string, target: ResolvedTarget, cas?: CASOutput): boolean {
+  return validateDescription(description, target, cas).ok;
 }
 
 function applyDescriptionToTarget(target: any, description: string, generatedAt: string, reason: string): void {
