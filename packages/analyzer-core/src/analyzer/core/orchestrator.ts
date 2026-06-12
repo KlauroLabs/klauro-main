@@ -8240,8 +8240,10 @@ export class AnalyzerOrchestrator {
     const fallbackCorroborated = !fallbackIsWeak &&
       sharesFallbackStem(projectTextSignal.primaryDomain) &&
       sharesFallbackStem(capabilityDomainForReferee);
-    const terminalDomain = terminalCandidate &&
-      ((terminalCandidate.strong && !fallbackCorroborated) || fallbackIsWeak)
+    // Terminal evidence (what journeys actually produce) outranks any
+    // UNCORROBORATED pooled-vocabulary fallback; only a fallback confirmed by
+    // two independent signals (project text + capabilities agreeing) wins.
+    const terminalDomain = terminalCandidate && !fallbackCorroborated
       ? terminalCandidate.domain
       : null;
     const inferredPrimaryDomain = terminalDomain ?? fallbackDomain;

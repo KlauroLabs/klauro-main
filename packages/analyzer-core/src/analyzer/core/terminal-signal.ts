@@ -77,6 +77,8 @@ const HOOK_USAGE_PATTERN = /^use[A-Z0-9].*|^use[A-Z0-9].*\susage$|\susage$/;
 function isNoiseTerminalName(raw: string): boolean {
   const name = (raw || '').trim();
   if (!name) return true;
+  // Underscore-prefixed names are private helpers in Dart/Python conventions.
+  if (name.startsWith('_')) return true;
   const lower = name.toLowerCase();
   if (HTTP_VERB_NAMES.has(lower) || LIFECYCLE_NAMES.has(lower)) return true;
   if (HOOK_USAGE_PATTERN.test(name)) return true;

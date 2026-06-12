@@ -586,14 +586,21 @@ describe('buildUserJourneys frontend entry naming', () => {
       ],
       edges: [edge('e1', 'n_page', 'n_hook', 'calls')],
       entryPoints: [pageEntry('entry_decision_list', 'n_page', 'decision-list', '/activity/decision-list.tsx', 'DecisionList')],
-      exitPoints: [],
+      exitPoints: [{
+        id: 'exit_api_decisions',
+        source_node: 'n_hook',
+        type: 'api',
+        name: 'GET /api/decision-history',
+        target: { service_id: 'external_api', endpoint: '/api/decision-history' },
+        operation: { method: 'GET', action: 'fetch' },
+      } as CASExitPoint],
       callChains: [],
       dataEntities: [],
     };
 
     const { journeys } = buildUserJourneys(input);
     expect(journeys).toHaveLength(1);
-    expect(journeys[0].name).toBe('View decision list -> useDecisionHistory');
+    expect(journeys[0].name).toBe('View decision list -> DecisionHistory read');
     expect(journeys[0].name).not.toContain('.tsx');
     expect(journeys[0].entry.path_or_trigger).toBe('/activity/decision-list.tsx');
   });
@@ -606,13 +613,20 @@ describe('buildUserJourneys frontend entry naming', () => {
       ],
       edges: [edge('e1', 'n_page', 'n_hook', 'calls')],
       entryPoints: [pageEntry('entry_stop_loss', 'n_page', 'stop-loss', '/connections/dashboard/widgets/stop-loss.tsx', 'StopLoss')],
-      exitPoints: [],
+      exitPoints: [{
+        id: 'exit_api_automation_config',
+        source_node: 'n_hook',
+        type: 'api',
+        name: 'GET /api/automation/config',
+        target: { service_id: 'external_api', endpoint: '/api/automation/config' },
+        operation: { method: 'GET', action: 'fetch' },
+      } as CASExitPoint],
       callChains: [],
       dataEntities: [],
     };
 
     const { journeys } = buildUserJourneys(input);
-    expect(journeys[0].name).toBe('View stop loss -> useAutomationConfig');
+    expect(journeys[0].name).toBe('View stop loss -> AutomationConfig read');
   });
 
   it('uses the parent segment when an index page is the entry file', () => {
@@ -623,13 +637,20 @@ describe('buildUserJourneys frontend entry naming', () => {
       ],
       edges: [edge('e1', 'n_page', 'n_hook', 'calls')],
       entryPoints: [pageEntry('entry_activity_index', 'n_page', 'index', '/activity/index.tsx', 'ActivityPage')],
-      exitPoints: [],
+      exitPoints: [{
+        id: 'exit_api_activity_feed',
+        source_node: 'n_hook',
+        type: 'api',
+        name: 'GET /api/activity-feed',
+        target: { service_id: 'external_api', endpoint: '/api/activity-feed' },
+        operation: { method: 'GET', action: 'fetch' },
+      } as CASExitPoint],
       callChains: [],
       dataEntities: [],
     };
 
     const { journeys } = buildUserJourneys(input);
-    expect(journeys[0].name).toBe('View activity -> useActivityFeed');
+    expect(journeys[0].name).toBe('View activity -> ActivityFeed read');
   });
 
   it('contextualizes generic tail segments like settings with the owning resource', () => {
@@ -932,7 +953,10 @@ describe('buildUserJourneys page-component entries', () => {
 
     const { journeys } = buildUserJourneys(input);
     expect(journeys).toHaveLength(1);
-    expect(journeys[0].name).toBe('View profit machine -> useBosState');
+    // The hook node carries no product identity: it must not be promoted to
+    // a terminal outcome, so the name stays at the entry action.
+    expect(journeys[0].name).toBe('View profit machine');
+    expect(journeys[0].terminal_entities).toEqual([]);
     expect(journeys[0].entry.method).toBeUndefined();
     expect(journeys[0].entry.path_or_trigger).toBe('/profit-machine');
   });
@@ -1124,5 +1148,251 @@ describe('buildUserJourneys CLI entry naming', () => {
     expect(names[0]).not.toContain('(main)');
     expect(names[1]).not.toContain('(main)');
     expect(names.some(name => name.includes('transport'))).toBe(true);
+  });
+});
+
+describe('buildUserJourneys terminal data hygiene', () => {
+  it('never stores an HTTP verb as a terminal entity and classifies verb handlers as entry steps', () => {
+    // Next.js App Router style: the route handler is a function literally
+    // named GET; the walk also reaches a same-name alias node with another id.
+    const input = {
+      nodes: [
+        node('n_get_handler', 'GET', 'function'),
+        node('n_get_alias', 'GET', 'function'),
+        node('n_service', 'fetchCollection', 'function'),
+      ],
+      edges: [
+        edge('e1', 'n_get_handler', 'n_get_alias', 'calls'),
+        edge('e2', 'n_get_alias', 'n_service', 'calls'),
+      ],
+      entryPoints: [{
+        id: 'entry_get_collection',
+        source_node: 'n_get_handler',
+        type: 'http',
+        name: 'GET /api/economy/collection',
+        trigger: { method: 'GET', path: '/api/economy/collection' },
+        handler: { node_id: 'n_get_handler', method_name: 'GET' },
+      } as CASEntryPoint],
+      exitPoints: [],
+      callChains: [],
+      dataEntities: [],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys).toHaveLength(1);
+    const terminalNames = journeys[0].terminal_entities.map(t => t.name);
+    expect(terminalNames).not.toContain('GET');
+    expect(journeys[0].terminal_effects.entities_read).not.toContain('GET');
+    expect(journeys[0].terminal_effects.entities_written).not.toContain('GET');
+    for (const step of journeys[0].steps) {
+      if (step.name === 'GET') expect(step.layer).toBe('entry');
+    }
+  });
+
+  it('never emits hook, hook-usage, or lifecycle names in terminal effects or entities', () => {
+    const input = {
+      nodes: [
+        node('n_page', 'BuySellView', 'functional_component'),
+        node('n_hook_usage', 'useEffect usage', 'hook_usage'),
+        node('n_hook', 'useAutomationConfig', 'hook'),
+      ],
+      edges: [
+        edge('e1', 'n_page', 'n_hook_usage', 'uses'),
+        edge('e2', 'n_page', 'n_hook', 'calls'),
+      ],
+      entryPoints: [{
+        id: 'entry_buy_sell',
+        source_node: 'n_page',
+        source_analyzer: 'react',
+        type: 'page',
+        name: 'Page BuySellView',
+        trigger: { pattern: '/buy-sell' },
+        metadata: { component: 'BuySellView' },
+      } as CASEntryPoint],
+      exitPoints: [],
+      callChains: [],
+      dataEntities: [],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys).toHaveLength(1);
+    const journey = journeys[0];
+    const terminalNames = journey.terminal_entities.map(t => t.name);
+    for (const name of terminalNames) {
+      expect(name).not.toMatch(/^use[A-Z]/);
+      expect(name).not.toContain(' usage');
+    }
+    expect(journey.terminal_effects.entities_read).toEqual([]);
+    expect(journey.terminal_effects.entities_written).toEqual([]);
+    const hookUsageStep = journey.steps.find(step => step.name === 'useEffect usage');
+    expect(hookUsageStep?.layer).toBe('infrastructure');
+    const hookStep = journey.steps.find(step => step.name === 'useAutomationConfig');
+    expect(hookStep?.layer).toBe('infrastructure');
+  });
+
+  it('resolves a frontend journey terminal to the data entity behind its API call', () => {
+    const input = {
+      nodes: [
+        node('n_page', 'PortfolioPage', 'react_page'),
+        node('n_hook', 'usePortfolio', 'hook'),
+      ],
+      edges: [edge('e1', 'n_page', 'n_hook', 'calls')],
+      entryPoints: [{
+        id: 'entry_portfolio',
+        source_node: 'n_page',
+        source_analyzer: 'react',
+        type: 'page',
+        name: 'Page PortfolioPage',
+        trigger: { pattern: '/portfolio' },
+        metadata: { component: 'PortfolioPage' },
+      } as CASEntryPoint],
+      exitPoints: [{
+        id: 'exit_api_portfolio',
+        source_node: 'n_hook',
+        type: 'api',
+        name: 'POST /api/portfolio',
+        target: { service_id: 'external_api', endpoint: '/api/portfolio' },
+        operation: { method: 'POST', action: 'post' },
+      } as CASExitPoint],
+      callChains: [],
+      dataEntities: [
+        { id: 'entity_portfolio', name: 'Portfolio', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } } as CASDataEntity,
+      ],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys).toHaveLength(1);
+    const terminal = journeys[0].terminal_entities[0];
+    expect(terminal.name).toBe('Portfolio');
+    expect(terminal.entity_id).toBe('entity_portfolio');
+    expect(terminal.terminal_kind).toBe('entity');
+    expect(terminal.access).toBe('created');
+    expect(journeys[0].terminal_effects.entities_written).toContain('Portfolio');
+  });
+
+  it('falls back to the API resource noun when no data entity matches', () => {
+    const input = {
+      nodes: [
+        node('n_page', 'HoldingsPage', 'react_page'),
+        node('n_hook', 'useConnectionHoldings', 'hook'),
+      ],
+      edges: [edge('e1', 'n_page', 'n_hook', 'calls')],
+      entryPoints: [{
+        id: 'entry_holdings',
+        source_node: 'n_page',
+        source_analyzer: 'react',
+        type: 'page',
+        name: 'Page HoldingsPage',
+        trigger: { pattern: '/holdings' },
+        metadata: { component: 'HoldingsPage' },
+      } as CASEntryPoint],
+      exitPoints: [{
+        id: 'exit_api_holdings',
+        source_node: 'n_hook',
+        type: 'api',
+        name: 'GET /api/connections/holdings',
+        target: { service_id: 'external_api', endpoint: '/api/connections/holdings' },
+        operation: { method: 'GET', action: 'fetch' },
+      } as CASExitPoint],
+      callChains: [],
+      dataEntities: [],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    const terminal = journeys[0].terminal_entities[0];
+    expect(terminal.name).toBe('Holding');
+    expect(terminal.access).toBe('read');
+  });
+
+  it('never promotes Flutter lifecycle methods or widget builders to terminals and demotes them from business stages', () => {
+    const input = {
+      nodes: [
+        node('n_screen', 'DashboardScreen', 'mobile_screen'),
+        node('n_init', 'initState', 'method'),
+        node('n_build', 'build', 'method'),
+        node('n_dispose', 'dispose', 'method'),
+        node('n_builder', '_buildHeader', 'method'),
+        node('n_service', 'AgentDirectory', 'class'),
+      ],
+      edges: [
+        edge('e1', 'n_screen', 'n_init', 'calls'),
+        edge('e2', 'n_screen', 'n_build', 'calls'),
+        edge('e3', 'n_screen', 'n_dispose', 'calls'),
+        edge('e4', 'n_build', 'n_builder', 'calls'),
+        edge('e5', 'n_init', 'n_service', 'calls'),
+      ],
+      entryPoints: [{
+        id: 'entry_dashboard',
+        source_node: 'n_screen',
+        source_analyzer: 'dart',
+        type: 'page',
+        name: 'Dashboard screen',
+        trigger: { pattern: '/dashboard' },
+        metadata: {},
+      } as CASEntryPoint],
+      exitPoints: [],
+      callChains: [],
+      dataEntities: [],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys).toHaveLength(1);
+    const journey = journeys[0];
+    const terminalNames = journey.terminal_entities.map(t => t.name);
+    for (const banned of ['initState', 'build', 'dispose', '_buildHeader']) {
+      expect(terminalNames).not.toContain(banned);
+    }
+    // The fallback resolves past lifecycle plumbing to the deepest node with identity.
+    expect(terminalNames).toContain('AgentDirectory');
+    for (const step of journey.steps) {
+      if (['initState', 'build', 'dispose', '_buildHeader'].includes(step.name)) {
+        expect(step.layer).toBe('infrastructure');
+      }
+    }
+  });
+
+  it('keeps helper and extension classes out of terminals and classifies getters as infrastructure', () => {
+    const input = {
+      nodes: [
+        node('n_controller', 'AddressesController', 'controller'),
+        node('n_service', 'AddressesService', 'service'),
+        node('n_ext', 'ClaimsPrincipalExtensions', 'class'),
+        node('n_helper', 'PathHelper', 'class'),
+        node('n_getter', 'GetIntOrDefault', 'method'),
+        node('n_getter2', 'GetServerPath', 'method'),
+      ],
+      edges: [
+        edge('e1', 'n_controller', 'n_service', 'calls'),
+        edge('e2', 'n_service', 'n_ext', 'calls'),
+        edge('e3', 'n_service', 'n_helper', 'calls'),
+        edge('e4', 'n_helper', 'n_getter', 'calls'),
+        edge('e5', 'n_helper', 'n_getter2', 'calls'),
+      ],
+      entryPoints: [{
+        id: 'entry_get_addresses',
+        source_node: 'n_controller',
+        type: 'http',
+        name: 'GET /api/addresses',
+        trigger: { method: 'GET', path: '/api/addresses' },
+        handler: { node_id: 'n_controller', method_name: 'GetAddresses' },
+      } as CASEntryPoint],
+      exitPoints: [],
+      callChains: [],
+      dataEntities: [],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys).toHaveLength(1);
+    const journey = journeys[0];
+    const terminalNames = journey.terminal_entities.map(t => t.name);
+    for (const banned of ['ClaimsPrincipalExtensions', 'PathHelper', 'GetIntOrDefault', 'GetServerPath']) {
+      expect(terminalNames).not.toContain(banned);
+    }
+    expect(terminalNames).toContain('AddressesService');
+    for (const step of journey.steps) {
+      if (['GetIntOrDefault', 'GetServerPath', 'ClaimsPrincipalExtensions', 'PathHelper'].includes(step.name)) {
+        expect(step.layer).toBe('infrastructure');
+      }
+    }
   });
 });

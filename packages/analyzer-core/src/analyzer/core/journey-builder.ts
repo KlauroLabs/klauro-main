@@ -66,11 +66,77 @@ const SKIPPED_ENTRY_TYPES = new Set(['test']);
 const RISK_ORDER: Record<string, number> = { low: 0, medium: 1, high: 2, critical: 3 };
 const CRITICALITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 
-const ENTRY_LAYER_TYPES = /(^|[_\s])(controller|gateway|resolver|handler|page|route|api_route|view|component|command|subscriber|listener)([_\s]|$)/;
+const ENTRY_LAYER_TYPES = /(^|[_\s])(controller|gateway|resolver|handler|page|route|api_route|view|component|widget|screen|command|subscriber|listener)([_\s]|$)/;
 const DATA_LAYER_TYPES = /(^|[_\s])(entity|repository|model|schema|migration|table|store|dao)([_\s]|$)/;
 const INFRA_LAYER_TYPES = /(^|[_\s])(config|middleware|guard|interceptor|filter|pipe|decorator|logger|cache)([_\s]|$)/;
 const ENTITY_NODE_TYPES = /(^|[_\s])(entity|model)([_\s]|$)/;
 const FRAMEWORK_TERMINAL_TYPES = /(^|[_\s])(route|middleware|guard|config|module|template|migration)([_\s]|$)/;
+
+/**
+ * Framework plumbing that must never become journey terminal data. These are
+ * live-measured pollution classes from real repos:
+ * - Next.js/Express route handlers exported as functions literally named
+ *   GET/POST/PATCH (HTTP verbs stored as node names).
+ * - React hook nodes and hook-usage nodes ("useEffect usage", "useAutomationConfig").
+ * - Framework lifecycle methods across languages (Flutter initState/dispose/build,
+ *   React componentDidMount, Angular ngOnInit, Vue mounted, generic main/init).
+ * - Flutter widget-builder helpers (_buildHeader) and accessor/utility methods
+ *   (GetIntOrDefault, getServerPath) plus helper/extension classes
+ *   (PathHelper, ClaimsPrincipalExtensions).
+ * None of these reveal what the system produces or manages; journeys must
+ * resolve past them to the data entities actually read/written.
+ */
+const HTTP_VERB_NAME = /^(get|post|put|patch|delete|head|options)$/i;
+const FRAMEWORK_LIFECYCLE_NAMES = new Set([
+  // Flutter / Dart
+  'build', 'initstate', 'dispose', 'didchangedependencies', 'didupdatewidget',
+  'reassemble', 'deactivate', 'activate', 'setstate', 'createstate',
+  // React class components
+  'render', 'componentdidmount', 'componentdidupdate', 'componentwillunmount',
+  'shouldcomponentupdate', 'getderivedstatefromprops', 'componentdidcatch',
+  // Angular
+  'ngoninit', 'ngondestroy', 'ngonchanges', 'ngafterviewinit', 'ngaftercontentinit', 'ngdocheck',
+  // Vue
+  'beforecreate', 'beforemount', 'mounted', 'beforeupdate', 'updated',
+  'beforeunmount', 'unmounted', 'beforedestroy', 'destroyed',
+  // Generic / language-level
+  'main', 'constructor', '__construct', '__destruct', 'init', 'initialize', 'setup', 'teardown',
+  // .NET / ASP.NET
+  'onmodelcreating', 'onconfiguring', 'configureservices', 'configure', 'onactionexecuting',
+]);
+const WIDGET_BUILDER_NAME = /^_?build[A-Z_]/;
+const HOOK_LIKE_NAME = /^use[A-Z0-9]/;
+const HOOK_USAGE_NODE_TYPES = /(^|[_\s])hook(_usage)?([_\s]|$)/;
+const UTILITY_CLASS_NAME = /(helper|helpers|extension|extensions|util|utils|utility|utilities)$/i;
+// First-letter case both ways: camelCase (getServerPath) and C#/PascalCase
+// (GetIntOrDefault). The following character must be uppercase/underscore so
+// ordinary words (Settings, Together, Formatting) never match.
+const ACCESSOR_METHOD_NAME = /^_?(?:[Gg]et|[Ss]et|[Ii]s|[Hh]as|[Tt]o|[Ff]rom|[Oo]n|[Hh]andle|[Ff]ormat|[Pp]arse|[Ff]ind|[Tt]ry|[Ii]nit)[A-Z_]/;
+
+/** Lifecycle methods, hooks, widget builders, HTTP-verb handler names. */
+function isFrameworkPlumbingName(rawName: string): boolean {
+  const name = (rawName || '').trim();
+  if (!name) return true;
+  if (HTTP_VERB_NAME.test(name)) return true;
+  if (FRAMEWORK_LIFECYCLE_NAMES.has(name.toLowerCase())) return true;
+  if (HOOK_LIKE_NAME.test(name)) return true;
+  if (WIDGET_BUILDER_NAME.test(name)) return true;
+  return false;
+}
+
+/** Helper/extension/util classes and accessor-style methods. */
+function isUtilityNodeName(rawName: string): boolean {
+  const name = (rawName || '').trim();
+  if (!name) return false;
+  if (UTILITY_CLASS_NAME.test(name)) return true;
+  if (ACCESSOR_METHOD_NAME.test(name)) return true;
+  return false;
+}
+
+/** A name that must never appear as a journey terminal entity or effect. */
+function isExcludedTerminalName(name: string): boolean {
+  return isFrameworkPlumbingName(name) || isUtilityNodeName(name);
+}
 
 type EntityAccessKind = 'created' | 'updated' | 'deleted' | 'read';
 
@@ -130,6 +196,22 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
     if (INFRA_LAYER_TYPES.test(text)) return 'infrastructure';
     if (ENTRY_LAYER_TYPES.test(text)) return 'entry';
     if (entryPointIsHandlerOrSource(entryPoint, node.id)) return 'entry';
+    // Route handlers exported as HTTP-verb functions (Next.js App Router,
+    // Express handler maps) are entry plumbing, not business stages.
+    if (HTTP_VERB_NAME.test(node.name)) return 'entry';
+    if (HOOK_USAGE_NODE_TYPES.test(node.type)) return 'infrastructure';
+    // Lifecycle methods, hooks, widget builders, and accessor/helper
+    // utilities are framework or utility plumbing in any language; the
+    // terminal-segment domain signal only consumes business/data layers.
+    if (isFrameworkPlumbingName(node.name)) return 'infrastructure';
+    if (isUtilityNodeName(node.name)) return 'infrastructure';
+    // Dart methods are lowerCamelCase by convention: a method-like node with
+    // a PascalCase name in a .dart file is a widget/class instantiation
+    // captured as a call target (Container, GestureDetector, Scaffold) --
+    // widget-tree presentation plumbing, not a business stage.
+    if (METHOD_LIKE_TYPES.test(node.type) && /^[A-Z]/.test(node.name) && /\.dart$/i.test(node.source?.file || '')) {
+      return 'entry';
+    }
     return 'business';
   };
 
@@ -586,6 +668,25 @@ function collectTerminalEffects(
     } else {
       externalServices.add(exitPoint.target?.service_id || exitPoint.name);
     }
+    // Frontend journeys terminate at the data behind the API call, not the
+    // component making it: resolve the endpoint's resource noun to a data
+    // entity when one matches, or at minimum keep the resource noun itself
+    // (e.g. /api/portfolio -> Portfolio) as the terminal candidate.
+    if (exitPoint.type === 'api') {
+      const resource = apiResourceName(exitPoint.target?.endpoint || exitPoint.target?.resource);
+      if (resource) {
+        const entity = matchEntityByName(resource, graph.entitiesByKey);
+        const name = entity?.name || resource;
+        candidates.push({
+          entity_id: entity?.id,
+          name,
+          access: accessFromHttpMethod(exitPoint.operation?.method) ?? defaultAccessFor(name),
+          node_id: exitPoint.source_node,
+          depth: depth + 1,
+          viaRank: 2,
+        });
+      }
+    }
   }
 
   for (const [nodeId, depth] of pathNodeIds) {
@@ -643,6 +744,9 @@ function collectTerminalEffects(
   const entitiesWritten = new Set<string>();
   const entitiesRead = new Set<string>();
   for (const candidate of candidates) {
+    // Single choke point: HTTP verbs, lifecycle methods, hooks, widget
+    // builders, and helper/accessor names must never become entity names.
+    if (isExcludedTerminalName(candidate.name)) continue;
     if (seenEntities.has(candidate.name)) continue;
     seenEntities.add(candidate.name);
     if (terminalEntities.length < 8) {
@@ -716,6 +820,12 @@ function deepestMeaningfulNode(
     }
     if (WALK_EXCLUDED_NODE_TYPES.has(node.type)) continue;
     if (FRAMEWORK_TERMINAL_TYPES.test(node.type)) continue;
+    if (HOOK_USAGE_NODE_TYPES.test(node.type)) continue;
+    // Lifecycle methods, hooks, widget builders, HTTP-verb handler aliases,
+    // and helper/extension/accessor utilities carry no product identity; the
+    // fallback must land on a node that does (a component name is acceptable,
+    // a dispose/useEffect/PathHelper terminal is not).
+    if (isExcludedTerminalName(node.name)) continue;
     if (node.id === entryPoint.source_node || node.id === entryPoint.handler?.node_id) continue;
     if (!best || depth > best.depth || (depth === best.depth && node.id.localeCompare(best.node.id) < 0)) {
       best = { node, depth };
@@ -740,6 +850,62 @@ function accessFromOperationAction(action?: string): EntityAccessKind | undefine
   if (/delete|remove/.test(normalized)) return 'deleted';
   if (/^(read|select|find|query)$/.test(normalized)) return 'read';
   return undefined;
+}
+
+function accessFromHttpMethod(method?: string): EntityAccessKind | undefined {
+  if (!method) return undefined;
+  const normalized = method.toUpperCase();
+  if (normalized === 'POST') return 'created';
+  if (normalized === 'PUT' || normalized === 'PATCH') return 'updated';
+  if (normalized === 'DELETE') return 'deleted';
+  if (normalized === 'GET' || normalized === 'HEAD') return 'read';
+  return undefined;
+}
+
+const GENERIC_API_TAIL_SEGMENTS = new Set([
+  'config', 'configs', 'data', 'list', 'lists', 'all', 'index', 'detail', 'details',
+  'status', 'info', 'search', 'query', 'item', 'items', 'get', 'fetch', 'create',
+  'update', 'delete', 'new', 'edit', 'summary',
+]);
+
+/**
+ * Derive the resource noun from an API endpoint path: /api/v1/portfolio/:id
+ * -> Portfolio. Generic tails fold in their parent (/automation/config ->
+ * AutomationConfig). Returns undefined when no meaningful noun exists.
+ */
+function apiResourceName(endpoint: string | undefined): string | undefined {
+  if (!endpoint) return undefined;
+  let path = endpoint.trim();
+  if (!path || path === 'various' || path === 'external') return undefined;
+  const urlMatch = path.match(/^https?:\/\/[^/]+(\/.*)?$/i);
+  if (urlMatch) path = urlMatch[1] || '';
+  path = path.split('?')[0].split('#')[0];
+  const segments = path
+    .split('/')
+    .map(segment => segment.trim())
+    .filter(Boolean)
+    .filter(segment => !/^(api|v\d+)$/i.test(segment))
+    .filter(segment => !/[:{[$]/.test(segment))
+    .filter(segment => !/^\d+$/.test(segment))
+    .filter(segment => !/^[0-9a-f]{8}-[0-9a-f]{4}/i.test(segment));
+  if (segments.length === 0) return undefined;
+  const tail = segments[segments.length - 1];
+  if (GENERIC_API_TAIL_SEGMENTS.has(tail.toLowerCase())) {
+    const parent = segments[segments.length - 2];
+    if (!parent) return undefined;
+    return pascalCaseLabel(`${humanizeLabel(parent)} ${humanizeLabel(tail)}`);
+  }
+  const label = singularizeLabel(humanizeLabel(tail));
+  if (!label || HTTP_VERB_NAME.test(label)) return undefined;
+  return pascalCaseLabel(label);
+}
+
+function pascalCaseLabel(label: string): string {
+  return label
+    .split(' ')
+    .filter(Boolean)
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join('');
 }
 
 function accessFromEdgeType(edgeType: string): EntityAccessKind | undefined {

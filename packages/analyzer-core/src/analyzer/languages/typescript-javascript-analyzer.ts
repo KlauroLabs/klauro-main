@@ -2582,6 +2582,18 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       if (httpMethods.includes(method) && httpClientPatterns.some(p => caller.includes(p))) {
         return true;
       }
+      // Wrapped HTTP clients (LensClient.get, client.post) don't carry an
+      // http/api/axios marker in the caller name, but a URL-path-shaped first
+      // string argument is stronger evidence than the variable name. Route
+      // registrars (router.get('/x', handler)) share this shape and must not
+      // count as outbound API calls.
+      const routeRegistrarCallers = new Set(['router', 'app', 'server', 'express', 'fastify', 'koa']);
+      if (httpMethods.includes(method) && !routeRegistrarCallers.has(caller)) {
+        const endpoint = this.extractEndpointFromExpression(callExpression);
+        if (endpoint && /^(https?:\/\/|\/[A-Za-z0-9_\-.:[\]{}$])/.test(endpoint)) {
+          return true;
+        }
+      }
     }
 
     return false;
