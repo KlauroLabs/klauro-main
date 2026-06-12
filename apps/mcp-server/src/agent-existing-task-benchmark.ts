@@ -5,7 +5,15 @@ import * as path from 'path';
 import { analyzeProjectIncremental } from './analyzer';
 import { getAgentWorkPacket } from './agent-adoption';
 import { validateAgentChange } from './agent-workflow';
-import { runLiveAgentPair, type LiveAgentCommandConfig, type LiveAgentPairResult } from './agent-live-trial';
+import { runLiveAgentPair, type LiveAgentArmResult, type LiveAgentCommandConfig, type LiveAgentPairResult } from './agent-live-trial';
+import {
+  buildLiveRepetitionReport,
+  type LiveArmAggregate,
+  type LiveArmRepRecord,
+  type LivePairRepRecord,
+  type LiveRepetitionReport,
+  type MetricAggregate,
+} from './agent-live-repetition';
 import { saveAgenticBenchmarkReport } from './storage';
 import { isDirectCliInvocation } from './cli-invocation';
 
@@ -94,6 +102,7 @@ interface ScenarioResult {
   };
   findings: string[];
   live_pair?: LiveAgentPairResult;
+  live_repetition?: LiveRepetitionReport;
   live_summary?: {
     status: BenchmarkStatus;
     with_score: number;
@@ -136,11 +145,14 @@ interface Args {
   reportPath: string | null;
   markdownPath: string | null;
   live: boolean;
+  liveReps: number;
   liveConfig: LiveAgentCommandConfig;
   withoutArmRetrieval: boolean;
   realRepoPath: string | null;
   realTaskId: string | null;
 }
+
+const MAX_LIVE_REPS = 5;
 
 interface RealRepoScenario {
   id: string;
@@ -170,6 +182,7 @@ interface RealRepoBenchmarkReport {
     first_files: string[];
   };
   index_retrieval_baseline: ScenarioResult['index_retrieval_baseline'];
+  live_repetition?: LiveRepetitionReport;
   live_summary: NonNullable<ScenarioResult['live_summary']>;
   live_pair: LiveAgentPairResult;
 }
@@ -978,8 +991,14 @@ export async function runSeededExistingTaskBenchmark(args: Args = parseArgs([]))
   for (const scenario of SCENARIOS) {
     const result = await runScenario(args.outputRoot, scenario);
     if (args.live && shouldRunLiveScenario(args.liveConfig, scenario, liveTasksStarted)) {
-      result.live_pair = await runLiveExistingScenario(args.outputRoot, scenario, result, args.liveConfig, args.withoutArmRetrieval);
-      result.live_summary = summarizeLivePair(result.live_pair);
+      const { repetition, pairs } = await runLiveRepetitions(args.liveReps, scenario.changed_files, () =>
+        runLiveExistingScenario(args.outputRoot, scenario, result, args.liveConfig, args.withoutArmRetrieval));
+      result.live_repetition = repetition;
+      const singleRepPair = repetition.single_rep_fields_rep === null ? null : pairs[repetition.single_rep_fields_rep - 1];
+      if (singleRepPair) {
+        result.live_pair = singleRepPair;
+        result.live_summary = summarizeLivePair(singleRepPair);
+      }
       liveTasksStarted += 1;
     }
     scenarios.push(result);
@@ -1095,7 +1114,7 @@ export async function runRealRepoExistingTaskBenchmark(args: Args): Promise<Real
   const indexRetrieval = indexRetrievalBaselineScore(repoPath, scenario);
   const validatorPath = await writeLiveValidator(args.outputRoot, scenario);
 
-  const pair = await runLiveAgentPair({
+  const { repetition, pairs } = await runLiveRepetitions(args.liveReps, scenario.changed_files, () => runLiveAgentPair({
     repo: path.basename(repoPath),
     repoPath,
     taskId: scenario.id,
@@ -1113,7 +1132,12 @@ export async function runRealRepoExistingTaskBenchmark(args: Args): Promise<Real
     ...args.liveConfig,
     workRoot: args.outputRoot,
     testCommand: `node ${shellQuote(validatorPath)}`,
-  });
+  }));
+  const pair = repetition.single_rep_fields_rep === null ? null : pairs[repetition.single_rep_fields_rep - 1];
+  if (!pair) {
+    const failures = repetition.reps.map(rep => `rep ${rep.rep}: ${rep.error || 'failed'}`).join('; ');
+    throw new Error(`All ${args.liveReps} live repetitions failed for ${scenario.id} (${failures})`);
+  }
 
   const liveSummary = summarizeLivePair(pair);
   return {
@@ -1131,14 +1155,80 @@ export async function runRealRepoExistingTaskBenchmark(args: Args): Promise<Real
       first_files: firstFiles.slice(0, 12),
     },
     index_retrieval_baseline: indexRetrieval,
+    live_repetition: repetition,
     live_summary: liveSummary,
     live_pair: pair,
   };
 }
 
+export async function runLiveRepetitions(
+  reps: number,
+  expectedChangedFiles: string[],
+  runRep: (rep: number) => Promise<LiveAgentPairResult>
+): Promise<{ repetition: LiveRepetitionReport; pairs: Array<LiveAgentPairResult | null> }> {
+  const pairs: Array<LiveAgentPairResult | null> = [];
+  const records: LivePairRepRecord[] = [];
+  for (let rep = 1; rep <= reps; rep++) {
+    try {
+      const pair = await runRep(rep);
+      pairs.push(pair);
+      records.push(buildLivePairRepRecord(rep, pair, expectedChangedFiles));
+    } catch (error) {
+      pairs.push(null);
+      records.push({
+        rep,
+        completed: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return { repetition: buildLiveRepetitionReport(records, reps), pairs };
+}
+
+export function buildLivePairRepRecord(rep: number, pair: LiveAgentPairResult, expectedChangedFiles: string[]): LivePairRepRecord {
+  return {
+    rep,
+    completed: true,
+    status: pair.evaluation.status,
+    trial_directory: pair.artifacts.trial_directory,
+    with_arm: buildArmRepRecord(pair.with_klauro, pair.evaluation.with_klauro_quality_score, expectedChangedFiles),
+    without_arm: buildArmRepRecord(pair.without_klauro, pair.evaluation.without_klauro_quality_score, expectedChangedFiles),
+  };
+}
+
+function buildArmRepRecord(arm: LiveAgentArmResult, qualityScore: number, expectedChangedFiles: string[]): LiveArmRepRecord {
+  if (!arm.attempted || arm.timed_out === true || arm.error) {
+    return {
+      completed: false,
+      error: arm.error || (arm.timed_out ? 'timed out' : 'arm not attempted'),
+    };
+  }
+  return {
+    completed: true,
+    metrics: {
+      quality_score: qualityScore,
+      provider_total_tokens: arm.provider_total_tokens ?? null,
+      duration_ms: arm.duration_ms,
+      files_changed: arm.files_changed,
+      lines_changed: arm.lines_added + arm.lines_deleted,
+      changed_file_precision: changedFilePrecision(arm.changed_files, expectedChangedFiles),
+      passed: arm.tests_passed === true,
+    },
+  };
+}
+
+function changedFilePrecision(changedFiles: string[], expectedChangedFiles: string[]): number {
+  if (changedFiles.length === 0) return 0;
+  const expected = new Set(expectedChangedFiles);
+  const hits = changedFiles.filter(file => expected.has(file)).length;
+  return Math.round((hits / changedFiles.length) * 100);
+}
+
 export function formatRealRepoExistingTaskBenchmarkMarkdown(report: RealRepoBenchmarkReport): string {
   const withArm = report.live_pair.with_klauro;
   const withoutArm = report.live_pair.without_klauro;
+  const repetition = report.live_repetition;
+  const repeated = repetition && repetition.reps_requested > 1;
   return [
     '# Real-Repo Existing-Task Live A/B',
     '',
@@ -1148,7 +1238,10 @@ export function formatRealRepoExistingTaskBenchmarkMarkdown(report: RealRepoBenc
     `Without-arm context: ${report.without_arm_retrieval ? 'index-retrieval candidates injected (Cursor-style baseline)' : 'no precomputed context'}`,
     `Status: ${report.status}`,
     '',
-    '## Decisive numbers',
+    ...(repeated ? [...formatLiveRepetitionMarkdown(repetition!, '##'), ''] : []),
+    repeated
+      ? `## Single-rep detail (${repetition!.single_rep_fields_source}, rep ${repetition!.single_rep_fields_rep})`
+      : '## Decisive numbers',
     '',
     `- Quality: with Klauro ${report.live_summary.with_score}/100 vs baseline ${report.live_summary.without_score}/100 (delta ${signed(report.live_summary.quality_delta)})`,
     `- Provider tokens: with ${withArm.provider_total_tokens ?? 'unknown'} vs baseline ${withoutArm.provider_total_tokens ?? 'unknown'} (reduction ${report.live_summary.token_reduction_percentage ?? 'unknown'}%)`,
@@ -1166,6 +1259,77 @@ export function formatRealRepoExistingTaskBenchmarkMarkdown(report: RealRepoBenc
     `Trial artifacts: ${report.live_pair.artifacts.trial_directory}`,
     '',
   ].join('\n');
+}
+
+export function formatLiveRepetitionMarkdown(repetition: LiveRepetitionReport, heading: '##' | '###'): string[] {
+  const comparison = repetition.comparison;
+  const lines = [
+    `${heading} Repeated live measures (n=${repetition.reps_requested} reps per arm)`,
+    '',
+    `- Median quality delta: ${comparison.median_quality_delta === null ? 'unknown (no paired completed reps)' : signed(comparison.median_quality_delta)}${comparison.quality_delta_iqr ? ` (IQR ${signed(comparison.quality_delta_iqr.p25)}..${signed(comparison.quality_delta_iqr.p75)}, paired reps ${comparison.paired_reps})` : ''}`,
+    `- Variance warning: ${comparison.variance_warning ? 'YES - arm quality IQRs overlap the opposing arm median; the effect is within run-to-run noise' : 'no'}`,
+    `- Median token reduction: ${comparison.median_token_reduction_percentage === null ? 'unknown' : `${comparison.median_token_reduction_percentage}%`}`,
+    `- Median time reduction: ${comparison.median_time_reduction_percentage === null ? 'unknown' : `${comparison.median_time_reduction_percentage}%`}`,
+    `- Median changed-file precision delta: ${comparison.median_changed_file_precision_delta === null ? 'unknown' : signed(comparison.median_changed_file_precision_delta)}`,
+    `- With arm: ${formatArmAggregate(repetition.with_arm)}`,
+    `- Without arm: ${formatArmAggregate(repetition.without_arm)}`,
+    '',
+    '| Rep | Status | With quality | Without quality | With tokens | Without tokens | With time (s) | Without time (s) | With files (lines) | Without files (lines) | With precision | Without precision | With pass | Without pass |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+  ];
+  for (const rep of repetition.reps) {
+    if (!rep.completed) {
+      lines.push(`| ${rep.rep} | failed (${rep.error || 'unknown error'}) | - | - | - | - | - | - | - | - | - | - | - | - |`);
+      continue;
+    }
+    const withCells = formatArmRepCells(rep.with_arm);
+    const withoutCells = formatArmRepCells(rep.without_arm);
+    lines.push([
+      '', String(rep.rep), rep.status || '-',
+      withCells.quality, withoutCells.quality,
+      withCells.tokens, withoutCells.tokens,
+      withCells.time, withoutCells.time,
+      withCells.filesLines, withoutCells.filesLines,
+      withCells.precision, withoutCells.precision,
+      withCells.passed, withoutCells.passed,
+      '',
+    ].join(' | ').trim());
+  }
+  return lines;
+}
+
+function formatArmAggregate(arm: LiveArmAggregate): string {
+  if (arm.failed) return `FAILED - all ${arm.reps_requested} reps failed`;
+  const parts = [
+    `${arm.completed_reps}/${arm.reps_requested} reps completed`,
+    `quality ${formatAggregate(arm.quality)}`,
+    `tokens ${formatAggregate(arm.provider_tokens)}`,
+    `time ${formatAggregate(arm.duration_ms, value => `${Math.round(value / 1000)}s`)}`,
+    `precision ${formatAggregate(arm.changed_file_precision)}`,
+    `pass rate ${arm.pass_rate === null ? 'unknown' : `${arm.pass_rate}%`}`,
+  ];
+  return parts.join('; ');
+}
+
+function formatAggregate(aggregate: MetricAggregate | null, render: (value: number) => string = value => String(value)): string {
+  if (!aggregate) return 'unknown';
+  return `median ${render(aggregate.median)} (IQR ${render(aggregate.p25)}-${render(aggregate.p75)}, min ${render(aggregate.min)}, max ${render(aggregate.max)})`;
+}
+
+function formatArmRepCells(arm: LiveArmRepRecord | undefined): { quality: string; tokens: string; time: string; filesLines: string; precision: string; passed: string } {
+  if (!arm || !arm.completed || !arm.metrics) {
+    const reason = `failed (${arm?.error || 'unknown error'})`;
+    return { quality: reason, tokens: '-', time: '-', filesLines: '-', precision: '-', passed: '-' };
+  }
+  const metrics = arm.metrics;
+  return {
+    quality: String(metrics.quality_score),
+    tokens: metrics.provider_total_tokens === null ? 'unknown' : String(metrics.provider_total_tokens),
+    time: `${Math.round(metrics.duration_ms / 1000)}`,
+    filesLines: `${metrics.files_changed} (${metrics.lines_changed})`,
+    precision: `${metrics.changed_file_precision}%`,
+    passed: metrics.passed ? 'pass' : 'fail',
+  };
 }
 
 function printRealRepoReport(report: RealRepoBenchmarkReport): void {
@@ -1292,7 +1456,15 @@ export function formatSeededExistingTaskBenchmarkMarkdown(report: BenchmarkRepor
     lines.push(`Blind proxy: ${scenario.without_klauro_proxy.estimated_files_to_read} files, ${scenario.without_klauro_proxy.estimated_tokens} tokens`);
     lines.push(`Index-retrieval baseline (Cursor-style lexical indexing proxy): ${scenario.index_retrieval_baseline.file_recall}% file recall, ${scenario.index_retrieval_baseline.file_precision}% precision, ${scenario.index_retrieval_baseline.estimated_tokens} tokens (${scenario.index_retrieval_baseline.retrieved_files.length} files)`);
     lines.push(`Delta: +${scenario.deltas.score_delta} score, ${scenario.deltas.file_reduction_percentage}% fewer files, ${scenario.deltas.token_reduction_percentage}% fewer tokens`);
-    if (scenario.live_summary) {
+    if (scenario.live_repetition && scenario.live_repetition.reps_requested > 1) {
+      lines.push('');
+      lines.push(...formatLiveRepetitionMarkdown(scenario.live_repetition, '###'));
+      if (scenario.live_summary) {
+        lines.push('');
+        lines.push(`Single-rep detail (${scenario.live_repetition.single_rep_fields_source}, rep ${scenario.live_repetition.single_rep_fields_rep}): ${scenario.live_summary.status}, with ${scenario.live_summary.with_score}/100 vs without ${scenario.live_summary.without_score}/100, quality delta ${signed(scenario.live_summary.quality_delta)}, token reduction ${scenario.live_summary.token_reduction_percentage ?? 'unknown'}%, time reduction ${scenario.live_summary.time_reduction_percentage}%`);
+        lines.push(`Live trial: ${scenario.live_pair?.artifacts.trial_directory}`);
+      }
+    } else if (scenario.live_summary) {
       lines.push(`Live A/B: ${scenario.live_summary.status}, with ${scenario.live_summary.with_score}/100 vs without ${scenario.live_summary.without_score}/100, quality delta ${signed(scenario.live_summary.quality_delta)}, token reduction ${scenario.live_summary.token_reduction_percentage ?? 'unknown'}%, time reduction ${scenario.live_summary.time_reduction_percentage}%`);
       lines.push(`Live trial: ${scenario.live_pair?.artifacts.trial_directory}`);
     }
@@ -1726,11 +1898,12 @@ function summarizeFamilies(scenarios: ScenarioResult[]): BenchmarkReport['summar
   return families;
 }
 
-function parseArgs(argv: string[]): Args {
+export function parseArgs(argv: string[]): Args {
   let outputRoot = path.join(os.tmpdir(), `klauro-existing-task-benchmark-${Date.now()}`);
   let reportPath: string | null = path.join(process.cwd(), '.klauro-existing-task-benchmark', 'latest-report.json');
   let markdownPath: string | null = path.join(process.cwd(), '.klauro-existing-task-benchmark', 'latest-report.md');
   let live = false;
+  let liveReps = 1;
   let withoutArmRetrieval = false;
   let realRepoPath: string | null = null;
   let realTaskId: string | null = null;
@@ -1741,6 +1914,13 @@ function parseArgs(argv: string[]): Args {
     else if (arg === '--output') reportPath = path.resolve(argv[++i]);
     else if (arg === '--markdown') markdownPath = path.resolve(argv[++i]);
     else if (arg === '--live') live = true;
+    else if (arg === '--live-reps') {
+      const value = Number(argv[++i]);
+      if (!Number.isInteger(value) || value < 1 || value > MAX_LIVE_REPS) {
+        throw new Error(`--live-reps must be an integer between 1 and ${MAX_LIVE_REPS}`);
+      }
+      liveReps = value;
+    }
     else if (arg === '--without-arm-retrieval') withoutArmRetrieval = true;
     else if (arg === '--real-repo') realRepoPath = path.resolve(argv[++i]);
     else if (arg === '--real-task') realTaskId = argv[++i];
@@ -1765,6 +1945,7 @@ function parseArgs(argv: string[]): Args {
         '  --output /path/report.json',
         '  --markdown /path/report.md',
         '  --live',
+        `  --live-reps N                  Independent live repetitions per task per arm (default 1, max ${MAX_LIVE_REPS}); reports medians/IQR.`,
         '  --without-arm-retrieval        Give the without arm Cursor-style index-retrieval candidate files.',
         '  --real-repo /path              Run a defined real-repo live task instead of the seeded scenarios (requires --live).',
         `  --real-task task-id            Real-repo task to run (default ${REAL_REPO_SCENARIOS[0].id}).`,
@@ -1782,7 +1963,7 @@ function parseArgs(argv: string[]): Args {
       throw new Error(`Unknown option ${arg}. Run with --help to list supported options.`);
     }
   }
-  return { outputRoot, reportPath, markdownPath, live, liveConfig, withoutArmRetrieval, realRepoPath, realTaskId };
+  return { outputRoot, reportPath, markdownPath, live, liveReps, liveConfig, withoutArmRetrieval, realRepoPath, realTaskId };
 }
 
 function printReport(report: BenchmarkReport): void {
