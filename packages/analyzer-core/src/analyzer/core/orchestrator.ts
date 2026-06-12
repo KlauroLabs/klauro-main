@@ -71,8 +71,10 @@ import {
   ChangeSemanticImpact,
   FileAnalysisResult,
   CAS_VERSION,
-  INCREMENTAL_STATE_VERSION
+  INCREMENTAL_STATE_VERSION,
+  CASArtifactType
 } from '../../types/cas.types';
+import { classifyArtifactType, artifactLedDomainLabel, collectArtifactManifestSignal, type ArtifactTypeResult } from './artifact-type';
 import { ChangeDetector } from './change-detector';
 import { buildUserJourneys } from './journey-builder';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
@@ -228,6 +230,7 @@ export class AnalyzerOrchestrator {
   private embeddingPhaseConfig: EmbeddingPhaseConfig | null = null;
   private activeAnalysisProjectPath?: string;
   private activeTerminalSignal: TerminalSignal | null = null;
+  private activeArtifactType: CASArtifactType | null = null;
   private klauroSelfProjectCache: Map<string, boolean> = new Map();
   /**
    * System-level grounding vocabulary (primary domain, core concepts,
@@ -1011,7 +1014,8 @@ export class AnalyzerOrchestrator {
       projectTextSignal,
       allNodes,
       projectPath,
-      terminalSignal
+      terminalSignal,
+      allExitPoints
     );
     logTiming('pp_enhancedPurpose', phaseStart);
 
@@ -1854,7 +1858,8 @@ export class AnalyzerOrchestrator {
       incrProjectTextSignal,
       nodes,
       projectPath,
-      buildTerminalSignal({ journeys: userJourneyResult.journeys, systemCapabilities })
+      buildTerminalSignal({ journeys: userJourneyResult.journeys, systemCapabilities }),
+      exitPoints
     );
     if (this.shouldRefreshAIInterpretation(
       previousOutput,
@@ -8060,8 +8065,23 @@ export class AnalyzerOrchestrator {
         nearTerminalStages: this.activeTerminalSignal.ranked_stages.slice(0, 5).map(stage => stage.name),
       }
       : {};
+    // Artifact truth for the model: a library/client/CLI/boilerplate must be
+    // described as what it is, not narrated as a product "system".
+    const artifactNarrativeByType: Record<string, string> = {
+      'library': 'a reusable library — describe it as a library, not as an application or system',
+      'client-sdk': 'an auto-generated/client SDK for an external API — describe it as a client library, not as an application or system',
+      'cli-tool': 'a command-line tool — describe it as a CLI tool, not as an application or system',
+      'boilerplate': 'a boilerplate/starter template with demo content — describe it as a boilerplate, not as a real product',
+    };
+    const artifactFacts = this.activeArtifactType && this.activeArtifactType !== 'app'
+      ? {
+        artifactType: this.activeArtifactType,
+        artifactTypeInstruction: `This codebase is ${artifactNarrativeByType[this.activeArtifactType]}.`,
+      }
+      : {};
     return {
       ...terminalFacts,
+      ...artifactFacts,
       ...this.buildAIInterpretationBaseFacts(
         systemName, frameworks, entryPointSummary, databaseEntities,
         externalServices, flowGraph, domainConcepts, systemCapabilities, libraryNames
@@ -8171,10 +8191,25 @@ export class AnalyzerOrchestrator {
     projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] },
     nodes: CASNode[] = [],
     projectPath = '',
-    terminalSignal: TerminalSignal | null = null
+    terminalSignal: TerminalSignal | null = null,
+    exitPoints: CASExitPoint[] = []
   ): EnhancedSystemPurpose {
     this.activeTerminalSignal = terminalSignal;
     const coreConcepts = domainExtractor.getCoreConcepts(domainConcepts);
+    // Artifact-type classification precedes domain: WHAT KIND of codebase
+    // this is (library/client-sdk/cli-tool/boilerplate/app) is structural
+    // truth that manifests and entry/exit shape reveal directly. Libraries
+    // and generated clients without an anchored product domain get an
+    // artifact-led domain label instead of a forced business domain.
+    const artifactManifest = collectArtifactManifestSignal(projectPath);
+    const artifactResult = classifyArtifactType({
+      nodes,
+      entryPointSummary,
+      exitPoints,
+      frameworks,
+      manifest: artifactManifest,
+    });
+    this.activeArtifactType = artifactResult.artifactType;
     // Terminal-segment principle: the domain is what the journeys ultimately
     // produce or manage (terminal entities + near-terminal stages), not what
     // the pooled vocabulary mentions most. The terminal-derived domain is the
@@ -8212,7 +8247,29 @@ export class AnalyzerOrchestrator {
     const inferredPrimaryDomain = terminalDomain ?? fallbackDomain;
     const areaDomains = this.classifyTopLevelAreaDomains(nodes, projectPath);
     const areaResolution = this.reconcilePrimaryDomainWithAreas(inferredPrimaryDomain, areaDomains);
-    const primaryDomain = this.refinePrimaryDomainForPurpose(areaResolution.primaryDomain, basePurpose);
+    let primaryDomain = this.refinePrimaryDomainForPurpose(areaResolution.primaryDomain, basePurpose);
+    // Artifact-led domain: library/client-sdk/boilerplate repos whose domain
+    // was NOT anchored by terminal evidence get a label that leads with what
+    // the artifact IS ('tray-icon-library', 'soap-client-library',
+    // 'react-boilerplate') instead of a business domain inferred from pooled
+    // vocabulary. An anchored product domain is kept (an SDK clearly for
+    // payments stays payments) — the artifact type still rides along on
+    // artifact_type for every surface to use.
+    if (!terminalDomain) {
+      const artifactDomain = artifactLedDomainLabel(
+        artifactResult,
+        [
+          artifactManifest.cargo?.description || '',
+          artifactManifest.packageJson?.description || '',
+          artifactManifest.composer?.description || '',
+          ...projectTextSignal.concepts,
+          ...coreConcepts.map(c => c.name),
+          ...systemCapabilities.map(c => c.name),
+        ],
+        frameworks
+      );
+      if (artifactDomain) primaryDomain = artifactDomain;
+    }
     if (process.env.KLAURO_DOMAIN_DEBUG) {
       console.error('[domain-debug]', JSON.stringify({
         terminalDomain,
@@ -8224,6 +8281,8 @@ export class AnalyzerOrchestrator {
         inferredPrimaryDomain,
         areaDomains,
         areaResolved: areaResolution.primaryDomain,
+        artifactType: artifactResult.artifactType,
+        artifactEvidence: artifactResult.evidence,
         final: primaryDomain,
       }));
     }
@@ -8250,7 +8309,8 @@ export class AnalyzerOrchestrator {
       systemCapabilities,
       primaryDomain,
       coreConceptNames,
-      terminalSignal
+      terminalSignal,
+      artifactResult
     );
 
     const supportingWorkflows = workflows.filter(w => w.classification === 'supporting');
@@ -8266,6 +8326,7 @@ export class AnalyzerOrchestrator {
       primary_type: primaryType,
       evidence: [...basePurpose.evidence, ...projectTextSignal.evidence].slice(0, 20),
       primary_domain: primaryDomain,
+      artifact_type: artifactResult.artifactType,
       ...(terminalDomain ? { domain_anchored: true } : {}),
       ...(areaResolution.secondaryDomains.length > 0 ? { secondary_domains: areaResolution.secondaryDomains } : {}),
       core_concepts: Array.from(new Set(coreConceptNames)).slice(0, 10),
@@ -9595,13 +9656,18 @@ export class AnalyzerOrchestrator {
     systemCapabilities: SystemCapability[] = [],
     primaryDomain?: string,
     conceptNames: string[] = [],
-    terminalSignal: TerminalSignal | null = null
+    terminalSignal: TerminalSignal | null = null,
+    artifactResult: ArtifactTypeResult | null = null
   ): string {
     const typeLabel = systemPurpose.primary_type.replace(/-/g, ' ');
     const domainLabel = primaryDomain && primaryDomain !== 'unknown'
       ? primaryDomain.replace(/-/g, ' ')
       : '';
     const systemLabel = domainLabel || typeLabel;
+    // Artifact truth leads the first sentence: a library is "a tray icon
+    // library that ...", a generated client is "an auto-generated SOAP client
+    // library for ..." — never "a ... system" pretending to be a product app.
+    const labelPhrase = this.artifactLabelPhrase(systemLabel, artifactResult);
 
     const productFrameworks = frameworks.filter(framework => !/\b(jest|vitest|mocha|cypress|playwright)\b/i.test(framework));
 
@@ -9675,8 +9741,8 @@ export class AnalyzerOrchestrator {
     const integrationPhrase = this.describeIntegrationsForNarrative(externalServices);
 
     const firstSentence = capabilityPhrase
-      ? `${this.articleFor(systemLabel)} ${systemLabel} system${frameworkPhrase} that ${capabilityPhrase}${terminalOutputPhrase}.`
-      : `${this.articleFor(systemLabel)} ${systemLabel} system${frameworkPhrase} that organizes the codebase around its detected domain workflows and runtime boundaries.`;
+      ? `${this.articleFor(labelPhrase)} ${labelPhrase}${frameworkPhrase} that ${capabilityPhrase}${terminalOutputPhrase}.`
+      : `${this.articleFor(labelPhrase)} ${labelPhrase}${frameworkPhrase} that organizes the codebase around its detected domain workflows and runtime boundaries.`;
 
     const secondParts = [
       entityPhrase ? `Its model centers on ${entityPhrase}` : '',
@@ -9688,6 +9754,34 @@ export class AnalyzerOrchestrator {
       : 'The CAS graph maps the system structure, relationships, and change surfaces for deeper inspection.';
 
     return `${firstSentence} ${secondSentence}`;
+  }
+
+  /**
+   * Noun phrase for the description's first sentence, led by artifact type.
+   * Apps keep the existing "<domain> system" shape; libraries/clients/CLI
+   * tools/boilerplates say what they are ("tray icon library",
+   * "auto-generated SOAP client library", "service lifecycle command-line
+   * tool"). When the domain label already ends with the artifact noun
+   * ('tray-icon-library'), the noun is not repeated.
+   */
+  private artifactLabelPhrase(systemLabel: string, artifactResult: ArtifactTypeResult | null): string {
+    const artifactType = artifactResult?.artifactType || 'app';
+    if (artifactType === 'app') return `${systemLabel} system`;
+    const nounByType: Record<string, string> = {
+      'library': 'library',
+      'client-sdk': 'client library',
+      'cli-tool': 'command-line tool',
+      'boilerplate': 'boilerplate',
+    };
+    const noun = nounByType[artifactType] || 'system';
+    const lastNounWord = noun.split(' ').pop() as string;
+    const base = systemLabel.endsWith(lastNounWord) || systemLabel.endsWith(noun)
+      ? systemLabel
+      : `${systemLabel} ${noun}`;
+    const generatedPrefix = artifactType === 'client-sdk' && artifactResult?.generated
+      ? 'auto-generated '
+      : '';
+    return `${generatedPrefix}${base}`;
   }
 
   /**

@@ -1,0 +1,455 @@
+import * as fs from 'fs-extra';
+import * as path from 'path';
+import type { CASArtifactType, CASExitPoint, CASNode } from '../../types/cas.types';
+
+/**
+ * Artifact-type classification: WHAT KIND of codebase this is — a product
+ * application, a reusable library, a generated API client, a CLI tool, or a
+ * boilerplate/starter — decided deterministically BEFORE domain inference.
+ *
+ * Why this exists: libraries, generated SOAP/REST clients, and starter
+ * templates were being forced into business domains ("a SOAP client library
+ * for card operations" became 'order-card-carrier-management'; a tray-icon
+ * Rust library became 'menu-management'). The artifact type is structural
+ * truth that manifests and entry/exit-point shape reveal directly, so it is
+ * evidence-gated on those signals — never on the repository name.
+ */
+
+export interface ArtifactManifestSignal {
+  packageJson?: {
+    name?: string;
+    description?: string;
+    isPrivate: boolean;
+    hasBin: boolean;
+    /** main / module / exports / types — the published-library entry surface. */
+    hasLibraryEntry: boolean;
+    dependencyNames: string[];
+  };
+  cargo?: {
+    description?: string;
+    hasLibSection: boolean;
+    hasBinTarget: boolean;
+    hasLibFile: boolean;
+    hasMainFile: boolean;
+    dependencyNames: string[];
+  };
+  composer?: {
+    name?: string;
+    description?: string;
+    type?: string;
+    requireNames: string[];
+  };
+  pythonSetup?: {
+    description?: string;
+    hasConsoleScripts: boolean;
+    dependencyNames: string[];
+  };
+  /** First ~1500 chars of the README; boilerplate/self-description markers live here. */
+  readmeLead?: string;
+}
+
+export interface ArtifactTypeInput {
+  nodes: Array<Pick<CASNode, 'name' | 'type' | 'source' | 'metadata'>>;
+  entryPointSummary: Array<{ type: string; count: number }>;
+  exitPoints: Array<Pick<CASExitPoint, 'type' | 'name' | 'target'>>;
+  frameworks: string[];
+  manifest: ArtifactManifestSignal;
+}
+
+export interface ArtifactTypeResult {
+  artifactType: CASArtifactType;
+  /** Human-readable evidence trail for why the type was chosen. */
+  evidence: string[];
+  /** Protocol/tech qualifier discovered during detection (soap, openapi, ...). */
+  protocol?: 'soap' | 'openapi' | 'graphql';
+  /** True when generated-code markers backed a client-sdk verdict. */
+  generated?: boolean;
+}
+
+const APP_ENTRY_TYPES = new Set(['http', 'route', 'page', 'websocket', 'event', 'schedule', 'message']);
+const OUTBOUND_EXIT_TYPES = new Set(['api', 'sdk', 'message', 'webhook']);
+
+const CLI_DEPENDENCY_MARKERS = /^(commander|yargs|oclif|@oclif\/.+|meow|cac|vorpal|inquirer|clap|structopt|click|typer|argparse|cobra)$/;
+const APP_FRAMEWORK_MARKERS = /\b(next(\.js)?|nuxt|express|fastify|koa|nestjs|nest|django|flask|fastapi|rails|laravel|symfony|spring|asp\.?net|angular|remix|sveltekit)\b/i;
+
+/** Boilerplate self-declaration: title-region text or manifest name/description. */
+const BOILERPLATE_TEXT = /\b(boilerplate|starter[ -]?(kit|template|project|app)?|skeleton|scaffold(ing)?|template)\b/i;
+
+const GENERATED_CLIENT_TEXT = /\b(wsdl2?php|wsdl|openapi-generator|swagger-codegen|autorest|auto-?generated client|generated (api )?client)\b/i;
+
+function entryCount(summary: Array<{ type: string; count: number }>, predicate: (type: string) => boolean): number {
+  return summary
+    .filter(entry => predicate(entry.type))
+    .reduce((total, entry) => total + entry.count, 0);
+}
+
+export function classifyArtifactType(input: ArtifactTypeInput): ArtifactTypeResult {
+  const { nodes, entryPointSummary, exitPoints, frameworks, manifest } = input;
+  const appEntries = entryCount(entryPointSummary, type => APP_ENTRY_TYPES.has(type));
+  const cliEntries = entryCount(entryPointSummary, type => type === 'cli');
+  const outboundExits = exitPoints.filter(exit => OUTBOUND_EXIT_TYPES.has(exit.type)).length;
+
+  const clientSdk = detectClientSdk(nodes, manifest, appEntries, outboundExits);
+  if (clientSdk) return clientSdk;
+
+  const boilerplate = detectBoilerplate(manifest);
+  if (boilerplate) return boilerplate;
+
+  const cliTool = detectCliTool(manifest, appEntries, cliEntries);
+  if (cliTool) return cliTool;
+
+  const library = detectLibrary(nodes, manifest, frameworks, appEntries, cliEntries);
+  if (library) return library;
+
+  return { artifactType: 'app', evidence: ['default: no library/client/cli/boilerplate markers'] };
+}
+
+/**
+ * Generated API client: WSDL/openapi generation markers or generated-code
+ * density, with outbound calls and no app entry surface of its own.
+ */
+function detectClientSdk(
+  nodes: ArtifactTypeInput['nodes'],
+  manifest: ArtifactManifestSignal,
+  appEntries: number,
+  outboundExits: number
+): ArtifactTypeResult | null {
+  if (appEntries > 0) return null;
+
+  const evidence: string[] = [];
+  let protocol: ArtifactTypeResult['protocol'];
+  let generated = false;
+
+  const composerSoapClient = manifest.composer?.type === 'library' &&
+    manifest.composer.requireNames.some(name => name === 'ext-soap');
+  if (composerSoapClient) {
+    evidence.push('composer type:library requiring ext-soap');
+    protocol = 'soap';
+  }
+
+  const textCorpus = [
+    manifest.readmeLead || '',
+    manifest.packageJson?.description || '',
+    manifest.composer?.description || '',
+  ].join('\n');
+  const textMarker = textCorpus.match(GENERATED_CLIENT_TEXT);
+  if (textMarker) {
+    evidence.push(`generated-client text marker: ${textMarker[0].toLowerCase()}`);
+    generated = true;
+    if (/wsdl/i.test(textMarker[0])) protocol = 'soap';
+    else if (/openapi|swagger|autorest/i.test(textMarker[0])) protocol = 'openapi';
+  }
+
+  const soapPathNodes = nodes.filter(node => /(^|\/)(soap|wsdl)s?(\/|\.)/i.test(node.source?.file || ''));
+  const clientNamedNodes = nodes.filter(node => /(WS|SoapClient|ApiClient|Client)$/.test(node.name || ''));
+  const generatedNodes = nodes.filter(node => node.metadata?.is_generated);
+  if (soapPathNodes.length >= 3) {
+    evidence.push(`${soapPathNodes.length} nodes under soap/wsdl paths`);
+    protocol = protocol || 'soap';
+    generated = true;
+  }
+  if (generatedNodes.length >= 5) {
+    evidence.push(`${generatedNodes.length} generated nodes`);
+    generated = true;
+  }
+
+  // Gate: needs (a) a generation/protocol marker, (b) client-shaped code mass,
+  // and (c) outbound orientation (calls out, nothing routes in).
+  const hasGenerationMarker = composerSoapClient || generated;
+  const hasClientMass = clientNamedNodes.length >= 2 || soapPathNodes.length >= 3;
+  const outboundOriented = outboundExits > 0 || protocol === 'soap';
+  if (!hasGenerationMarker || !hasClientMass || !outboundOriented) return null;
+
+  evidence.push(`${clientNamedNodes.length} *Client/*WS-named nodes, ${outboundExits} outbound exits, 0 app entry points`);
+  return { artifactType: 'client-sdk', evidence, protocol, generated };
+}
+
+/**
+ * Boilerplate/starter: the project SAYS it is one — README title region or
+ * manifest name/description. Scaffold demo content alone is not enough; the
+ * self-declaration is the gate so real apps built FROM a starter stay apps.
+ */
+function detectBoilerplate(manifest: ArtifactManifestSignal): ArtifactTypeResult | null {
+  const candidates: Array<{ text: string; where: string }> = [
+    { text: (manifest.readmeLead || '').slice(0, 300), where: 'README title region' },
+    { text: manifest.packageJson?.name || '', where: 'package.json name' },
+    { text: manifest.packageJson?.description || '', where: 'package.json description' },
+    { text: manifest.composer?.description || '', where: 'composer.json description' },
+  ];
+  for (const candidate of candidates) {
+    const match = candidate.text.match(BOILERPLATE_TEXT);
+    if (match) {
+      return {
+        artifactType: 'boilerplate',
+        evidence: [`${candidate.where} declares "${match[0].toLowerCase()}"`],
+      };
+    }
+  }
+  return null;
+}
+
+/** CLI tool: command entry points dominate — bin/console_scripts/CLI frameworks, no server/page surface. */
+function detectCliTool(
+  manifest: ArtifactManifestSignal,
+  appEntries: number,
+  cliEntries: number
+): ArtifactTypeResult | null {
+  if (appEntries > 0) return null;
+
+  const evidence: string[] = [];
+  if (manifest.packageJson?.hasBin) evidence.push('package.json bin field');
+  if (manifest.pythonSetup?.hasConsoleScripts) evidence.push('python console_scripts entry point');
+  const cliDependency = [
+    ...(manifest.packageJson?.dependencyNames || []),
+    ...(manifest.cargo?.dependencyNames || []),
+    ...(manifest.pythonSetup?.dependencyNames || []),
+  ].find(name => CLI_DEPENDENCY_MARKERS.test(name.toLowerCase()));
+  if (cliDependency) evidence.push(`CLI framework dependency: ${cliDependency}`);
+  if (cliEntries > 0) evidence.push(`${cliEntries} cli entry points, 0 server/page entry points`);
+
+  // Gate: a manifest CLI marker (bin/console_scripts/CLI framework) — cli
+  // entry points alone can be incidental management commands in an app repo.
+  const manifestMarker = manifest.packageJson?.hasBin ||
+    manifest.pythonSetup?.hasConsoleScripts ||
+    Boolean(cliDependency);
+  if (!manifestMarker) return null;
+  return { artifactType: 'cli-tool', evidence };
+}
+
+/**
+ * Library: manifest library target (Cargo lib without product binary,
+ * composer type:library, package.json publish surface) and no app/cli entry
+ * surface — exports are the product.
+ */
+function detectLibrary(
+  nodes: ArtifactTypeInput['nodes'],
+  manifest: ArtifactManifestSignal,
+  frameworks: string[],
+  appEntries: number,
+  cliEntries: number
+): ArtifactTypeResult | null {
+  if (appEntries > 0 || cliEntries > 0) return null;
+
+  if (manifest.cargo) {
+    const cargoLib = (manifest.cargo.hasLibSection || manifest.cargo.hasLibFile) &&
+      !manifest.cargo.hasBinTarget && !manifest.cargo.hasMainFile;
+    if (cargoLib) {
+      return {
+        artifactType: 'library',
+        evidence: ['Cargo lib target without [[bin]] or src/main.rs'],
+      };
+    }
+  }
+
+  if (manifest.composer?.type === 'library') {
+    return {
+      artifactType: 'library',
+      evidence: ['composer.json type:library, no app entry points'],
+    };
+  }
+
+  if (manifest.packageJson?.hasLibraryEntry && !manifest.packageJson.hasBin && !manifest.packageJson.isPrivate) {
+    const frameworkText = frameworks.join(' ');
+    const hasAppFramework = APP_FRAMEWORK_MARKERS.test(frameworkText);
+    const exportedNodes = nodes.filter(node => node.metadata?.is_exported).length;
+    if (!hasAppFramework && exportedNodes >= 5) {
+      return {
+        artifactType: 'library',
+        evidence: [
+          `package.json main/exports publish surface, ${exportedNodes} exported nodes, no app framework or entry points`,
+        ],
+      };
+    }
+  }
+
+  return null;
+}
+
+const GENERIC_QUALIFIER_TOKENS = new Set([
+  'app', 'application', 'system', 'service', 'platform', 'project', 'core', 'common', 'main', 'base',
+  'data', 'item', 'items', 'object', 'objects', 'manager', 'management', 'managing', 'manage', 'util', 'utils', 'utility',
+  'helper', 'helpers', 'handler', 'handlers', 'config', 'configuration', 'settings', 'state', 'status',
+  'user', 'users', 'account', 'accounts', 'auth', 'authentication', 'session', 'sessions', 'login', 'identity',
+  'test', 'tests', 'testing', 'example', 'examples', 'demo', 'modern', 'pure', 'simple', 'new', 'advanced',
+  'client', 'server', 'api', 'web', 'library', 'lib', 'sdk', 'cli', 'tool', 'boilerplate', 'starter', 'template',
+  'implementation', 'module', 'package', 'framework', 'component', 'components', 'page', 'pages', 'view', 'views',
+  'error', 'errors', 'event', 'events', 'request', 'response', 'message', 'menu', 'list', 'detail', 'details',
+  'typescript', 'javascript', 'python', 'rust', 'php', 'java', 'dart', 'node', 'nodejs',
+]);
+
+/**
+ * Artifact-led domain label for library/client-sdk/boilerplate repos with no
+ * anchored product domain: qualifier from the repo's top non-generic
+ * concept/capability tokens plus the artifact suffix ('tray-icon-library',
+ * 'soap-client-library', 'react-boilerplate'). Returns null when the artifact
+ * type does not lead the domain (apps, cli-tools, anchored product domains).
+ */
+export function artifactLedDomainLabel(
+  result: ArtifactTypeResult,
+  qualifierCandidates: string[],
+  frameworks: string[]
+): string | null {
+  if (result.artifactType === 'client-sdk') {
+    if (result.protocol === 'soap') return 'soap-client-library';
+    if (result.protocol === 'openapi') return 'rest-client-library';
+    if (result.protocol === 'graphql') return 'graphql-client-library';
+    return 'api-client-library';
+  }
+
+  if (result.artifactType === 'boilerplate') {
+    const frameworkQualifier = frameworks
+      .map(framework => framework.toLowerCase().replace(/[^a-z0-9]+/g, ''))
+      .find(framework => /^(react|vue|angular|svelte|next|nextjs|nuxt|flutter|django|laravel|rails|express)/.test(framework));
+    if (frameworkQualifier) {
+      const normalized = frameworkQualifier.replace(/^nextjs$/, 'next');
+      return `${normalized}-boilerplate`;
+    }
+    return 'project-boilerplate';
+  }
+
+  if (result.artifactType === 'library') {
+    const tokens = topQualifierTokens(qualifierCandidates, 2);
+    if (tokens.length > 0) return `${tokens.join('-')}-library`;
+    return 'utility-library';
+  }
+
+  return null;
+}
+
+/** First N distinct non-generic tokens from concept/capability candidates, in signal order. */
+function topQualifierTokens(candidates: string[], limit: number): string[] {
+  const tokens: string[] = [];
+  for (const candidate of candidates) {
+    const words = String(candidate || '')
+      // Split camelCase/PascalCase, then non-alphanumerics.
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean);
+    for (const word of words) {
+      if (word.length < 3) continue;
+      if (GENERIC_QUALIFIER_TOKENS.has(word)) continue;
+      if (tokens.includes(word)) continue;
+      tokens.push(word);
+      if (tokens.length >= limit) return tokens;
+    }
+  }
+  return tokens;
+}
+
+/**
+ * Reads the manifest surface the classifier needs. All IO is fault-tolerant —
+ * a missing or unparsable manifest contributes nothing.
+ */
+export function collectArtifactManifestSignal(projectPath: string): ArtifactManifestSignal {
+  if (!projectPath) return {};
+  const signal: ArtifactManifestSignal = {};
+
+  const packageJson = safeReadJson(path.join(projectPath, 'package.json'));
+  if (packageJson) {
+    signal.packageJson = {
+      name: stringOrUndefined(packageJson.name),
+      description: stringOrUndefined(packageJson.description),
+      isPrivate: packageJson.private === true,
+      hasBin: Boolean(packageJson.bin),
+      hasLibraryEntry: Boolean(packageJson.main || packageJson.module || packageJson.exports || packageJson.types),
+      dependencyNames: [
+        ...Object.keys(packageJson.dependencies || {}),
+        ...Object.keys(packageJson.devDependencies || {}),
+      ],
+    };
+  }
+
+  const cargoText = safeReadText(path.join(projectPath, 'Cargo.toml'), 20000);
+  if (cargoText) {
+    signal.cargo = {
+      description: extractTomlString(cargoText, 'description'),
+      hasLibSection: /^\s*\[lib\]/m.test(cargoText),
+      hasBinTarget: /^\s*\[\[bin\]\]/m.test(cargoText),
+      hasLibFile: fs.existsSync(path.join(projectPath, 'src', 'lib.rs')),
+      hasMainFile: fs.existsSync(path.join(projectPath, 'src', 'main.rs')),
+      dependencyNames: extractCargoDependencyNames(cargoText),
+    };
+  }
+
+  const composerJson = safeReadJson(path.join(projectPath, 'composer.json'));
+  if (composerJson) {
+    signal.composer = {
+      name: stringOrUndefined(composerJson.name),
+      description: stringOrUndefined(composerJson.description),
+      type: stringOrUndefined(composerJson.type),
+      requireNames: Object.keys(composerJson.require || {}),
+    };
+  }
+
+  const setupCfg = safeReadText(path.join(projectPath, 'setup.cfg'), 20000);
+  const setupPy = safeReadText(path.join(projectPath, 'setup.py'), 20000);
+  const pyprojectToml = safeReadText(path.join(projectPath, 'pyproject.toml'), 20000);
+  const pythonText = [setupCfg, setupPy, pyprojectToml].filter(Boolean).join('\n');
+  if (pythonText) {
+    signal.pythonSetup = {
+      description: extractTomlString(pythonText, 'description') ||
+        (pythonText.match(/^\s*description\s*=\s*(.+)$/m)?.[1] || '').trim() || undefined,
+      hasConsoleScripts: /console_scripts|\[project\.scripts\]/.test(pythonText),
+      dependencyNames: extractPythonDependencyNames(pythonText),
+    };
+  }
+
+  for (const readmeName of ['README.md', 'README.mdx', 'readme.md', 'README.rst', 'README.txt', 'README']) {
+    const readme = safeReadText(path.join(projectPath, readmeName), 1500);
+    if (readme) {
+      signal.readmeLead = readme;
+      break;
+    }
+  }
+
+  return signal;
+}
+
+function safeReadJson(filePath: string): any | null {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    return fs.readJsonSync(filePath);
+  } catch {
+    return null;
+  }
+}
+
+function safeReadText(filePath: string, maxLength: number): string | null {
+  try {
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) return null;
+    return fs.readFileSync(filePath, 'utf8').slice(0, maxLength);
+  } catch {
+    return null;
+  }
+}
+
+function stringOrUndefined(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function extractTomlString(toml: string, key: string): string | undefined {
+  const match = toml.match(new RegExp(`^\\s*${key}\\s*=\\s*"([^"]*)"`, 'm'));
+  return match?.[1] || undefined;
+}
+
+function extractCargoDependencyNames(cargoText: string): string[] {
+  const names: string[] = [];
+  const sections = cargoText.split(/^\s*\[/m);
+  for (const section of sections) {
+    if (!/^([^\]]*\.)?dependencies\]/.test(section)) continue;
+    for (const line of section.split('\n').slice(1)) {
+      const match = line.match(/^\s*([A-Za-z0-9_-]+)\s*=/);
+      if (match) names.push(match[1]);
+    }
+  }
+  return names;
+}
+
+function extractPythonDependencyNames(pythonText: string): string[] {
+  const names: string[] = [];
+  for (const match of pythonText.matchAll(/^\s*([A-Za-z0-9_.-]+)\s*(?:>=|==|~=|>|<)/gm)) {
+    names.push(match[1]);
+  }
+  return names;
+}
