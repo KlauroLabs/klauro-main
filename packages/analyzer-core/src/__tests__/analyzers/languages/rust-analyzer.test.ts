@@ -553,3 +553,90 @@ fn main() {
     });
   });
 });
+
+describe('Pattern detection with reclassified structs', () => {
+  let analyzer: RustAnalyzer;
+  let testContext: AnalysisContext;
+
+  beforeEach(() => {
+    analyzer = new RustAnalyzer();
+    testContext = createTestContext();
+  });
+
+  afterEach(() => {
+    cleanupMocks();
+  });
+
+  test('reclassified Builder/Config structs appear in builder-pattern instances', async () => {
+    setupMockFileSystem([
+      createMockRustFile('src/config.rs', `
+        pub struct ServerBuilder {
+            port: u16,
+        }
+
+        pub struct TunnelConfig {
+            endpoint: String,
+        }
+      `)
+    ], createMockCargoToml());
+
+    const result = await analyzer.analyze(testContext) as any;
+
+    const builderNode = result.nodes.find((n: any) => n.name === 'ServerBuilder');
+    const configNode = result.nodes.find((n: any) => n.name === 'TunnelConfig');
+    expect(builderNode).toBeDefined();
+    expect(configNode).toBeDefined();
+    expect(builderNode.type).not.toBe('struct');
+
+    const builderPattern = result.patterns.find((p: any) => p.id === 'pattern:rust:builder');
+    expect(builderPattern).toBeDefined();
+    expect(builderPattern.instances).toContain(builderNode.id);
+    expect(builderPattern.instances).toContain(configNode.id);
+  });
+
+  test('reclassified Error struct appears in error-handling pattern instances', async () => {
+    setupMockFileSystem([
+      createMockRustFile('src/error.rs', `
+        pub struct Error {
+            message: String,
+        }
+
+        pub enum ParseError {
+            Invalid,
+        }
+      `)
+    ], createMockCargoToml());
+
+    const result = await analyzer.analyze(testContext) as any;
+
+    const errorStruct = result.nodes.find((n: any) => n.name === 'Error');
+    expect(errorStruct).toBeDefined();
+    expect(errorStruct.type).toBe('error');
+
+    const errorPattern = result.patterns.find((p: any) => p.id === 'pattern:rust:error-handling');
+    expect(errorPattern).toBeDefined();
+    expect(errorPattern.instances).toContain(errorStruct.id);
+    const enumNode = result.nodes.find((n: any) => n.name === 'ParseError');
+    expect(errorPattern.instances).toContain(enumNode.id);
+  });
+
+  test('reclassified Service struct appears in service-pattern instances', async () => {
+    setupMockFileSystem([
+      createMockRustFile('src/service.rs', `
+        pub struct ScanService {
+            jobs: Vec<String>,
+        }
+      `)
+    ], createMockCargoToml());
+
+    const result = await analyzer.analyze(testContext) as any;
+
+    const serviceNode = result.nodes.find((n: any) => n.name === 'ScanService');
+    expect(serviceNode).toBeDefined();
+
+    const servicePattern = result.patterns.find((p: any) =>
+      Array.isArray(p.instances) && p.instances.includes(serviceNode.id)
+    );
+    expect(servicePattern).toBeDefined();
+  });
+});
