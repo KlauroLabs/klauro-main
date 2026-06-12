@@ -7107,15 +7107,24 @@ export class AnalyzerOrchestrator {
     const stem = (token: string) => token.slice(0, Math.min(6, token.length));
     const labelTokens = label.split('-').filter(token => token.length > 2 && token !== 'management');
     const currentTokens = new Set((enhancedSystemPurpose.primary_domain || '').split('-').map(stem));
+    // Anchoring vocabulary comes from WRITE terminals (real product outputs).
+    // When journeys never write extractable entities there is no terminal
+    // truth to anchor against — the gate must not reject grounded AI labels
+    // using read/stage residue as a fake anchor (alpha_engine class: the AI
+    // correctly proposed allocation/leverage labels and was vetoed).
+    const writeEntities = (this.activeTerminalSignal?.ranked_entities || [])
+      .filter(entity => entity.write_journeys > 0);
     const terminalVocabulary = new Set<string>();
-    for (const entity of this.activeTerminalSignal?.ranked_entities || []) {
+    for (const entity of writeEntities) {
       for (const token of this.humanizePascalName(entity.name).toLowerCase().split(/[^a-z0-9]+/)) {
         if (token.length > 2) terminalVocabulary.add(stem(token));
       }
     }
-    for (const stage of this.activeTerminalSignal?.ranked_stages || []) {
-      for (const token of this.humanizePascalName(stage.name).toLowerCase().split(/[^a-z0-9]+/)) {
-        if (token.length > 2) terminalVocabulary.add(stem(token));
+    if (writeEntities.length > 0) {
+      for (const stage of this.activeTerminalSignal?.ranked_stages || []) {
+        for (const token of this.humanizePascalName(stage.name).toLowerCase().split(/[^a-z0-9]+/)) {
+          if (token.length > 2) terminalVocabulary.add(stem(token));
+        }
       }
     }
 
@@ -9599,6 +9608,7 @@ export class AnalyzerOrchestrator {
       'services', 'controllers', 'handlers', 'modules', 'frontend', 'backend',
       'bot', 'worker', 'script', 'test', 'demo', 'poc', 'search',
       'old', 'new', 'main', 'index', 'metadata', 'data', 'core', 'lib', 'library',
+      'src', 'dist', 'build', 'out', 'pkg', 'bin', 'httpexception', 'exception', 'exceptions', 'error', 'errors',
       'libs', 'package', 'portal', 'dashboard', 'admin', 'business', 'apps',
       'users', 'michaelshattuck', 'dev', 'clients', 'outcode', 'personal',
       'page', 'pages', 'route', 'routes', 'component', 'components', 'layout',
@@ -9625,8 +9635,22 @@ export class AnalyzerOrchestrator {
       // A structural class matched the terminal seed — strongest signal.
       return { domain: ruleDomain, strong: true };
     }
+    // Composition is built ONLY from entity-WRITE terminals — the strongest
+    // product evidence. Repos whose journeys never write extractable entities
+    // (trading engines, Electron shells) must not get a domain composed from
+    // whatever plumbing token survives the filters (base58/renderer class).
+    const writeTerminalNames = terminalSignal.ranked_entities
+      .filter(entity => entity.write_journeys > 0)
+      .map(entity => entity.name);
+    if (writeTerminalNames.length === 0) return null;
+    const compositionText = writeTerminalNames
+      .map((name, index) => Array(Math.max(1, writeTerminalNames.length - index)).fill(name).join(' '))
+      .join(' ')
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[_\-./]/g, ' ')
+      .toLowerCase();
     const scores = new Map<string, number>();
-    for (const token of terminalSignal.domain_seed_text.split(/[^a-z0-9]+/)) {
+    for (const token of compositionText.split(/[^a-z0-9]+/)) {
       const normalized = this.normalizeDomainToken(token);
       if (normalized.length <= 2) continue;
       if (this.isGenericDomainToken(normalized) || this.isGenericCapabilityToken(normalized)) continue;
@@ -9636,8 +9660,8 @@ export class AnalyzerOrchestrator {
     }
     const ranked = Array.from(scores.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
     const [top] = ranked;
-    // The seed text repeats the top terminal by rank, so a real signal always
-    // clears this floor; sparse or conflicting terminals do not.
+    // The composition text repeats the top terminal by rank, so a real signal
+    // always clears this floor; sparse or conflicting terminals do not.
     if (!top || top[1] < 3) return null;
     const second = ranked[1];
     const composed = second && second[1] >= Math.max(3, top[1] - 1)

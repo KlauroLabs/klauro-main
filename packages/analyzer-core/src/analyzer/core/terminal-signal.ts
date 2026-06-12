@@ -79,6 +79,12 @@ function isNoiseTerminalName(raw: string): boolean {
   if (!name) return true;
   // Underscore-prefixed names are private helpers in Dart/Python conventions.
   if (name.startsWith('_')) return true;
+  // Exception/error classes are failure paths, not product outputs — a
+  // FastAPI app raises HTTPException from every handler and it must never
+  // become the system's terminal identity (alpha_engine regression).
+  if (/(exception|error)s?$/i.test(name)) return true;
+  // Bare directory-shaped tokens are structure, not product.
+  if (/^(src|lib|app|apps|dist|build|out|pkg|bin|test|tests|main|index|core|common|shared|utils?)$/i.test(name)) return true;
   const lower = name.toLowerCase();
   if (HTTP_VERB_NAMES.has(lower) || LIFECYCLE_NAMES.has(lower)) return true;
   if (HOOK_USAGE_PATTERN.test(name)) return true;
