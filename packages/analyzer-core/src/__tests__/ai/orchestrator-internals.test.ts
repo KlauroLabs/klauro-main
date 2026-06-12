@@ -2912,6 +2912,52 @@ describe('structural domain text rules: fleet anchor evidence strength', () => {
   });
 });
 
+describe('structural domain text rules: learning platform anchor', () => {
+  it('classifies course/lab/achievement/leaderboard structure as learning-management', () => {
+    const text = 'questions courses labs achievements leaderboards activity logs progress users sessions';
+    expect(orch.structuralDomainFromText(text)).toBe('learning-management');
+  });
+
+  it('outranks document-reporting noise from downloadable course materials and progress reports', () => {
+    const text = 'courses lessons quizzes certificates files downloads progress reports documents pdf';
+    expect(orch.structuralDomainFromText(text)).toBe('learning-management');
+  });
+
+  it('requires three distinct learning anchors: a lone course token stays commerce', () => {
+    const text = 'courses customers orders order items invoices products shipping';
+    expect(orch.structuralDomainFromText(text)).toBe('order-invoice-management');
+  });
+});
+
+describe('structural domain text rules: codebase-analysis anchor strength', () => {
+  it('does not mint codebase-analysis from a packet parser and network analyzer in a security simulation', () => {
+    const text = 'packet parser network analyzer app window manager renderer shell process manager network stack';
+    expect(orch.structuralDomainFromText(text)).not.toBe('codebase-analysis');
+  });
+
+  it('keeps codebase-analysis for real code-analysis vocabulary', () => {
+    const text = 'cas graph mcp server analyzer codebase analysis entry points';
+    expect(orch.structuralDomainFromText(text)).toBe('codebase-analysis');
+  });
+});
+
+describe('structural domain text rules: document-reporting evidence density', () => {
+  it('classifies repeated document and reporting vocabulary as document-reporting', () => {
+    const text = 'documents files reports pdf download generator document templates report exports';
+    expect(orch.structuralDomainFromText(text)).toBe('document-reporting');
+  });
+
+  it('does not mint document-reporting from one incidental file plus one report token', () => {
+    const text = 'file associations window renderer report shell desktop audio manager filesystem';
+    expect(orch.structuralDomainFromText(text)).not.toBe('document-reporting');
+  });
+
+  it('does not match file and print inside profile and fingerprint', () => {
+    const text = 'profile profiles fingerprint fingerprints reporting documents';
+    expect(orch.structuralDomainFromText(text)).not.toBe('document-reporting');
+  });
+});
+
 describe('structural domain text rules: site operations anchor', () => {
   it('classifies inspection/incident/shift/equipment/bay vocabulary as site-operations-management', () => {
     const text = 'inspections incidents shifts equipment bays locations tasks task lists order update services';
@@ -3054,6 +3100,89 @@ describe('project text domains: car wash and pharmaceutical anchors', () => {
       'Terraform modules and providers describing AWS VPC, ECS, RDS, and CloudFront deployment resources with variables and outputs.',
       '/tmp/acme/platform-infra'
     )).toBe('cloud-infrastructure');
+  });
+});
+
+describe('project text domains: fleet anchor gating', () => {
+  it('does not mint fleet-management from repeated device-driver vocabulary without a fleet anchor', () => {
+    // A cybersecurity training simulation talks about device drivers,
+    // driver installation, and driver updates; none of that is vehicle
+    // operations evidence.
+    expect(orch.inferDomainFromProjectText(
+      'Install the audio driver, update the display driver, roll back the network driver, list driver versions, scan driver vulnerabilities, and quarantine a malicious driver in the simulated device manager.',
+      '/tmp/cyber-sim'
+    )).not.toBe('fleet-management');
+  });
+
+  it('keeps fleet-management for real fleet project text', () => {
+    expect(orch.inferDomainFromProjectText(
+      'A fleet management platform with telematics integrations for tracking vehicles, drivers, dispatching, fuel usage, and maintenance across commercial vehicle fleets.',
+      '/tmp/fleet-app'
+    )).toBe('fleet-management');
+  });
+});
+
+describe('refinePrimaryDomain: grounded learning structure beats a stray text-catalog domain', () => {
+  const learningCapabilities = [
+    {
+      name: 'Course Progress Management',
+      description: 'Tracks course and lab completion',
+      category: 'core',
+      related_domains: ['course', 'lab'],
+      related_entities: ['Course', 'Lab', 'Question'],
+      operations: [],
+    },
+    {
+      name: 'Achievement Management',
+      description: 'Awards achievements and ranks leaderboards',
+      category: 'core',
+      related_domains: ['achievement', 'leaderboard'],
+      related_entities: ['Achievement', 'Leaderboard'],
+      operations: [],
+    },
+  ];
+  const coreConcepts = [{ name: 'Course' }, { name: 'Lab' }, { name: 'Achievement' }, { name: 'Leaderboard' }];
+
+  it('classifies learning structure from capabilities', () => {
+    expect(orch.inferPrimaryDomainFromCapabilities(learningCapabilities, coreConcepts)).toBe('learning-management');
+  });
+
+  it('does not let a content-corpus text domain override the grounded learning structure', () => {
+    const signal = {
+      primaryDomain: 'fleet-management',
+      concepts: ['driver', 'vehicle'],
+      evidence: ['source text'],
+    };
+    expect(orch.refinePrimaryDomain('unknown', 'knowledgebase', learningCapabilities, coreConcepts, signal)).toBe('learning-management');
+  });
+});
+
+describe('extractProjectTextSignal: bulk content corpora do not feed domain evidence', () => {
+  it('ignores fleet vocabulary inside content/*.md articles of a learning platform', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-content-corpus-'));
+    try {
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'knowledgebase' }));
+      fs.mkdirSync(path.join(root, 'content/automotive-security'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'content/automotive-security/fleet-telematics.md'), [
+        '# Fleet Telematics Security',
+        'Fleet management systems track vehicles and drivers through telematics units.',
+        'Attackers target dispatch servers, vehicle gateways, and driver apps across commercial vehicle fleets.',
+      ].join('\n'));
+      fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'src/deviceManager.ts'), [
+        'export const messages = [',
+        '  "Install the audio driver to continue",',
+        '  "The display driver was updated successfully",',
+        '  "Roll back the network driver from device manager",',
+        '];',
+      ].join('\n'));
+
+      const signal = orch.extractProjectTextSignal(root);
+
+      expect(signal.primaryDomain).not.toBe('fleet-management');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

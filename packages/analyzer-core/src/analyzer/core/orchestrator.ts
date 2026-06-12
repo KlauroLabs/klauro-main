@@ -8433,7 +8433,10 @@ export class AnalyzerOrchestrator {
 
   private structuralDomainFromText(text: string): string | null {
     const has = (pattern: RegExp) => pattern.test(text);
-    if (has(/\b(cas|mcp|ast|parser|call graph|static analysis)\b/) && has(/\b(codebase|analysis|analyzer|analyses)\b/)) {
+    // "parser" is not code-analysis evidence on its own: packet parsers,
+    // CSV parsers, and command parsers appear in unrelated products. The
+    // anchor must be vocabulary that only code-analysis tooling carries.
+    if (has(/\b(cas|mcp|ast|call graph|static analysis)\b/) && has(/\b(codebase|analysis|analyzer|analyses)\b/)) {
       return 'codebase-analysis';
     }
     if (has(/\bcodebase\b/) && has(/\b(analysis|analyzer|analyses)\b/)) {
@@ -8528,6 +8531,30 @@ export class AnalyzerOrchestrator {
     if (distinctBusinessOperationsAnchors >= 3) {
       return 'business-operations-management';
     }
+    // Learning platforms must outrank the order/billing and document rules:
+    // course-delivery systems expose certificates, downloadable materials,
+    // and progress reports that would otherwise read as document-reporting.
+    // The gate requires at least three distinct learning-structure evidence
+    // tokens, so a stray "course" or "lab" in another product never claims
+    // the identity.
+    const learningAnchorPatterns = [
+      /\bcourses?\b/,
+      /\blessons?\b/,
+      /\bquiz(zes)?\b/,
+      /\bcurriculum\b/,
+      /\benrollments?\b/,
+      /\blearners?\b/,
+      /\bachievements?\b/,
+      /\bleaderboards?\b/,
+      /\blabs?\b/,
+      /\bcertifications?\b/,
+      /\bbadges?\b/,
+      /\blearning (checks?|paths?)\b/,
+    ];
+    const distinctLearningAnchors = learningAnchorPatterns.filter(pattern => pattern.test(text)).length;
+    if (distinctLearningAnchors >= 3) {
+      return 'learning-management';
+    }
     const hasOrderAnchor = has(/\b(orders?|salesorders?|sales orders?)\b/);
     if (hasOrderAnchor && has(/\binvoices?\b/)) {
       return 'order-invoice-management';
@@ -8544,7 +8571,13 @@ export class AnalyzerOrchestrator {
     if (has(/\b(orders|fulfillment|salesorders?|sales orders?)\b/)) {
       return 'order-management';
     }
-    if (has(/\bdocument|documents|file|files\b/) && has(/\breport|reports|pdf|download|print\b/)) {
+    // Document-reporting needs the vocabulary to be a real theme, not an
+    // incidental "file" or single "report" token in a large area: require
+    // repeated evidence on both sides with strict word boundaries (the old
+    // unanchored alternation also matched "profile" and "fingerprint").
+    const documentEvidenceMatches = (text.match(/\b(documents?|files?)\b/g) || []).length;
+    const reportingEvidenceMatches = (text.match(/\b(reports?|pdf|download|print)\b/g) || []).length;
+    if (documentEvidenceMatches >= 2 && reportingEvidenceMatches >= 2) {
       return 'document-reporting';
     }
     if (has(/\bcompany|member|members|organization|workspace\b/) && has(/\bdocument|documents|report|reports\b/)) {
@@ -8568,6 +8601,7 @@ export class AnalyzerOrchestrator {
       'business-operations-management': ['approval', 'budget', 'kpi', 'forecast', 'expense', 'payroll', 'profit', 'objective'],
       'car-wash-operations': ['wash', 'bay', 'detailing', 'inspection', 'incident', 'shift', 'location'],
       'network-access-management': ['gateway', 'access', 'policy', 'network', 'posture', 'resource'],
+      'learning-management': ['course', 'lesson', 'quiz', 'curriculum', 'enrollment', 'learner', 'achievement', 'leaderboard', 'lab', 'certification', 'badge', 'learning'],
       'order-invoice-management': ['order', 'invoice', 'payment'],
       'order-payment-management': ['order', 'payment', 'billing'],
       'billing-payments': ['invoice', 'payment', 'billing'],
@@ -9010,14 +9044,24 @@ export class AnalyzerOrchestrator {
     const effectiveCloudInfrastructureScore = isExplicitZeroTrustProduct || (hasApplicationFrameworkSignal && !isInfrastructureRepo)
       ? Math.min(cloudInfrastructureScore, 3)
       : cloudInfrastructureScore;
-    const fleetManagementScore =
+    // Fleet identity requires an explicit fleet/vehicle-operations anchor
+    // phrase. Companion vocabulary alone (a device "driver", incidental
+    // "maintenance" or "fuel" mentions in unrelated product text) must never
+    // mint a fleet identity, mirroring the anchor gates used by the
+    // car-wash, pharmaceutical, clinical, and commerce scores.
+    const fleetAnchorScore =
       this.phraseScore(searchableText, ['fleet management']) * 4 +
       this.phraseScore(searchableText, ['commercial vehicle']) * 3 +
       this.phraseScore(searchableText, ['telematics']) * 3 +
       this.phraseScore(searchableText, ['vehicle fleet']) * 3 +
-      this.phraseScore(searchableText, ['eld compliance', 'fmcsa']) * 2 +
+      this.phraseScore(searchableText, ['fleet']) +
+      this.phraseScore(searchableText, ['eld compliance', 'fmcsa']) * 2;
+    const fleetCompanionScore =
       this.phraseScore(searchableText, ['driver', 'vehicle', 'fuel', 'maintenance']) +
       this.phraseScore(searchableText, ['safety monitoring', 'drive alerts', 'dispatching', 'ifta']);
+    const fleetManagementScore = fleetAnchorScore === 0
+      ? 0
+      : fleetAnchorScore + fleetCompanionScore;
     const clinicalAnchorScore =
       this.phraseScore(searchableText, ['patient']) +
       this.phraseScore(searchableText, ['muscle']) +
@@ -9043,7 +9087,9 @@ export class AnalyzerOrchestrator {
       this.phraseScore(searchableText, ['posture']) +
       this.phraseScore(searchableText, ['access request']) +
       this.phraseScore(searchableText, ['protected resource']);
-    const nicheDomainSignal = fleetManagementScore >= 2 || clinicalAnchorScore >= 2 || networkAccessAnchorScore >= 2;
+    // Companion vocabulary still counts as niche evidence for suppressing
+    // generic commerce labels even when it cannot mint the fleet label itself.
+    const nicheDomainSignal = (fleetAnchorScore + fleetCompanionScore) >= 2 || clinicalAnchorScore >= 2 || networkAccessAnchorScore >= 2;
     const commerceOperationsScore = commerceAnchorScore === 0 || (strongCommerceAnchorScore === 0 && nicheDomainSignal)
       ? 0
       : this.phraseScore(searchableText, ['cart']) * 2 +
