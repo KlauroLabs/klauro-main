@@ -151,6 +151,10 @@ export class ReactRouterAnalyzer extends BaseAnalyzer {
     seenRoutes: Set<string>
   ): void {
     const patterns = [JSX_ROUTE_V5, JSX_ROUTE_V6_ELEMENT, OBJECT_ROUTE];
+    // Distinct route paths can sanitize to the same id fragment (e.g. "/" and
+    // "*" both become "_"), so repeats within this file get a stable ordinal
+    // suffix. Keyed per sanitized id; ids are already namespaced by file.
+    const usedSanitizedIds = new Map<string, number>();
 
     for (const pattern of patterns) {
       pattern.lastIndex = 0;
@@ -159,11 +163,17 @@ export class ReactRouterAnalyzer extends BaseAnalyzer {
         const routePath = match[1];
         const component = match[2] || match[3] || 'Unknown';
 
-        if (seenRoutes.has(routePath)) continue;
-        seenRoutes.add(routePath);
+        // Key by file + path: the same route path declared in different files
+        // must produce distinct items (ids are namespaced by file below).
+        const routeKey = `${relativePath}::${routePath}`;
+        if (seenRoutes.has(routeKey)) continue;
+        seenRoutes.add(routeKey);
 
-        const sanitizedRoute = routePath.replace(/[^a-zA-Z0-9]/g, '_');
-        const nodeId = `route_react_${sanitizedRoute}`;
+        const sanitizedBase = `${sanitizedPath}_${routePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
+        const occurrence = (usedSanitizedIds.get(sanitizedBase) ?? 0) + 1;
+        usedSanitizedIds.set(sanitizedBase, occurrence);
+        const sanitizedRouteId = occurrence === 1 ? sanitizedBase : `${sanitizedBase}_${occurrence}`;
+        const nodeId = `route_react_${sanitizedRouteId}`;
         const isLazy = this.isLazyRoute(content, routePath);
 
         nodes.push(this.createNode(
@@ -206,7 +216,7 @@ export class ReactRouterAnalyzer extends BaseAnalyzer {
         }
 
         entryPoints.push(this.createEntryPoint(
-          `entry_route_${sanitizedRoute}`,
+          `entry_route_${sanitizedRouteId}`,
           fileNodeId || nodeId,
           'route',
           `GET ${routePath}`,

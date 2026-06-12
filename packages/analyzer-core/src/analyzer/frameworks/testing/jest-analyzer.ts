@@ -309,7 +309,7 @@ export class JestAnalyzer extends BaseAnalyzer {
         const suite = this.extractTestSuite(ast, content, file);
         testSuites.push(suite);
 
-        const suiteId = `test_suite_${this.sanitizeId(suite.name)}`;
+        const suiteId = this.suiteNodeId(suite);
         const suiteNode = this.createNodeBuilder(suiteId, suite.name, 'test')
           .withLevel(2, 'architectural')
           .withCategory('test', ['suite'])
@@ -459,7 +459,7 @@ export class JestAnalyzer extends BaseAnalyzer {
         if (suite.tests.length > 0) {
           testSuites.push(suite);
 
-          const suiteId = `test_suite_${this.sanitizeId(suite.name)}`;
+          const suiteId = this.suiteNodeId(suite);
           const fallbackSuiteNode = this.createNodeBuilder(suiteId, suite.name, 'test-suite')
             .withLevel(2, 'architectural')
             .withCategory('test-suite', ['test'])
@@ -663,6 +663,14 @@ export class JestAnalyzer extends BaseAnalyzer {
       moduleNameMapping: jestConfig.moduleNameMapper || {},
       transform: jestConfig.transform || {}
     };
+  }
+
+  /**
+   * Stable node id for a test suite, namespaced by the suite's project-relative
+   * file path so same-named suites in different files never collide.
+   */
+  private suiteNodeId(suite: JestTestSuite): string {
+    return `test_suite_${this.sanitizeId(suite.filePath)}_${this.sanitizeId(suite.name)}`;
   }
 
   private extractTestSuite(ast: any, content: string, filePath: string): JestTestSuite {
@@ -986,7 +994,7 @@ export class JestAnalyzer extends BaseAnalyzer {
       const configId = configuration.filePath.includes('package.json') ? 'jest_config_package' : 'jest_config';
 
       testSuites.forEach(suite => {
-        const suiteId = `test_suite_${this.sanitizeId(suite.name)}`;
+        const suiteId = this.suiteNodeId(suite);
         edges.push(this.createEdge(
           `${configId}_configures_${suiteId}`,
           configId,
@@ -1009,7 +1017,7 @@ export class JestAnalyzer extends BaseAnalyzer {
     }
 
     testSuites.forEach(suite => {
-      const suiteId = `test_suite_${this.sanitizeId(suite.name)}`;
+      const suiteId = this.suiteNodeId(suite);
 
       suite.imports.forEach(importPath => {
         const utility = utilities.find(u => importPath.includes(u.name));
@@ -1060,7 +1068,7 @@ export class JestAnalyzer extends BaseAnalyzer {
     existingAnalysis?: CASAnalysisResult[]
   ): void {
     testSuites.forEach(suite => {
-      const suiteId = `test_suite_${this.sanitizeId(suite.name)}`;
+      const suiteId = this.suiteNodeId(suite);
 
       suite.imports.forEach(importPath => {
         if (importPath.startsWith('./') || importPath.startsWith('../')) {

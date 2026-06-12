@@ -2050,6 +2050,20 @@ export class ReactAnalyzer extends BaseAnalyzer {
       const componentId = this.generateId('component', component.filePath, component.name);
       componentNameToId.set(component.name, componentId);
     });
+    // The same parent can render the same child at multiple JSX sites (each
+    // with its own jsx_line/props). A bare hash of source+target+type would
+    // collide for those instances and the merge boundary would drop differing
+    // duplicates, so repeats get a stable per-pair ordinal mixed into the hash.
+    // The first occurrence keeps the historical id shape.
+    const rendersEdgeOccurrences = new Map<string, number>();
+    const rendersEdgeId = (sourceId: string, targetId: string): string => {
+      const key = `${sourceId}->${targetId}`;
+      const occurrence = rendersEdgeOccurrences.get(key) ?? 0;
+      rendersEdgeOccurrences.set(key, occurrence + 1);
+      return occurrence === 0
+        ? this.generateEdgeId(sourceId, targetId, 'renders')
+        : this.generateEdgeId(`${sourceId}#${occurrence}`, targetId, 'renders');
+    };
     const hookNameToId = new Map<string, string>();
     hooks.forEach(hook => {
       hookNameToId.set(hook.name, this.generateId('hook', hook.filePath, hook.name));
@@ -2110,7 +2124,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
         const childComponentId = componentNameToId.get(rendered.name);
         if (childComponentId) {
           edges.push(this.createEdge(
-            this.generateEdgeId(componentId, childComponentId, 'renders'),
+            rendersEdgeId(componentId, childComponentId),
             componentId,
             childComponentId,
             'renders',
@@ -2131,7 +2145,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
       if (!routeId || !componentId) return;
 
       edges.push(this.createEdge(
-        this.generateEdgeId(routeId, componentId, 'renders'),
+        rendersEdgeId(routeId, componentId),
         routeId,
         componentId,
         'renders',

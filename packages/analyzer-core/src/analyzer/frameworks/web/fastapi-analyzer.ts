@@ -357,7 +357,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
 
         routers.push(router);
 
-        const routerId = `router_${this.sanitizeId(routerName)}`;
+        const routerId = this.routerNodeId(routerName, file);
         const routerDocumentation = this.extractDocumentation(content, fullPath);
         const routerComments = this.extractComments(content, fullPath);
         const routerTodos = this.extractTodos(routerComments);
@@ -847,6 +847,15 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
     }
 
     return dependencies;
+  }
+
+  /**
+   * Stable node id for a router, namespaced by the router's project-relative
+   * file path so the common `router = APIRouter()` variable name in multiple
+   * api files never collides.
+   */
+  private routerNodeId(routerName: string, filePath: string): string {
+    return `router_${this.sanitizeId(filePath)}_${this.sanitizeId(routerName)}`;
   }
 
   private extractRouterName(content: string, filePath: string): string {
@@ -1397,7 +1406,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
     const appId = `app_${this.sanitizeId(application.name)}`;
 
     routers.forEach(router => {
-      const routerId = `router_${this.sanitizeId(router.name)}`;
+      const routerId = this.routerNodeId(router.name, router.filePath);
       edges.push(this.createEdge(
         `${appId}_includes_${routerId}`,
         appId,
