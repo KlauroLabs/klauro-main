@@ -1297,9 +1297,15 @@ describe('architecture and capability inference', () => {
 
       expect(signal.primaryDomain).toBe('fleet-management');
       expect(signal.concepts).toEqual(expect.arrayContaining(['fleet-management', 'telematics', 'vehicle']));
-      expect(signal.summary).toContain('fleet management system');
-      expect(signal.summary).toContain('real-time tracking');
+      // The deterministic summary must only restate facts observed in THIS
+      // project's text, never canned domain copy.
+      expect(signal.summary).toContain('fleet management');
+      expect(signal.summary).toContain('telematics');
       expect(signal.summary).not.toContain('Key concepts:');
+      const projectText = fs.readFileSync(path.join(temp, 'CLAUDE.md'), 'utf8').toLowerCase();
+      for (const concept of signal.concepts) {
+        expect(projectText).toContain(concept.replace(/-/g, ' '));
+      }
       expect(signal.evidence).toContain('CLAUDE.md');
     } finally {
       fs.rmSync(temp, { recursive: true, force: true });
@@ -1826,13 +1832,37 @@ describe('architecture and capability inference', () => {
   });
 
   it('does not claim Shopify or Liquid in the ecommerce storefront summary without project text evidence', () => {
-    const shopifyText = 'dawn is a shopify theme for online store 2.0 storefronts using server-rendered liquid templates for merchants.';
-    expect(orch.summaryFromProjectText('ecommerce-storefront', [], shopifyText, ['README.md'])).toMatch(/shopify/i);
+    const shopifyText = 'dawn is a shopify theme for the online store 2.0 storefront, using a server-rendered liquid template for each merchant.';
+    const shopifyConcepts = orch.inferConceptsFromProjectText(shopifyText);
+    expect(orch.summaryFromProjectText('ecommerce-storefront', shopifyConcepts, shopifyText, ['README.md'])).toMatch(/shopify/i);
 
-    const genericStorefrontText = 'a storefront for merchants selling products in an online store with theme customization.';
-    const summary = orch.summaryFromProjectText('ecommerce-storefront', [], genericStorefrontText, ['README.md']);
+    const genericStorefrontText = 'a storefront for each merchant selling products in an online store with theme customization and checkout.';
+    const genericConcepts = orch.inferConceptsFromProjectText(genericStorefrontText);
+    const summary = orch.summaryFromProjectText('ecommerce-storefront', genericConcepts, genericStorefrontText, ['README.md']);
     expect(summary).toBeDefined();
     expect(summary).not.toMatch(/shopify|liquid/i);
+  });
+
+  it('never returns canned domain copy for a domain whose vocabulary is absent from the project text', () => {
+    // A repo misclassified as fleet-management (for example a cybersecurity
+    // knowledge base) must not receive a description fabricating fleet claims.
+    const text = 'a cybersecurity knowledge base with notes on malware analysis, detection engineering, and incident response playbooks.';
+    const concepts = orch.inferConceptsFromProjectText(text);
+    const summary = orch.summaryFromProjectText('fleet-management', concepts, text, ['README.md']);
+    if (summary) {
+      expect(summary).not.toMatch(/real-time tracking|commercial vehicle|telematics|compliance management|safety monitoring|dispatch/i);
+      expect(summary).not.toMatch(/project documentation describes/i);
+    }
+    // Every canned per-domain paragraph is gone: with no concepts from the
+    // project's own text, no domain label can produce a description.
+    for (const domain of [
+      'fleet-management', 'zero-trust-security', 'commerce-operations-portal',
+      'car-wash-operations', 'pharmaceutical-order-management', 'clinical-testing',
+      'solana-arbitrage', 'codebase-analysis', 'cloud-infrastructure',
+      'personal-ai-assistant', 'ecommerce-storefront', 'portfolio-management',
+    ]) {
+      expect(orch.summaryFromProjectText(domain, [], 'unrelated project text', ['README.md'])).toBeUndefined();
+    }
   });
 
   it('does not classify order/search/account vocabulary as commerce without a cart, checkout, invoice, or billing anchor', () => {

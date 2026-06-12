@@ -8047,10 +8047,11 @@ export class AnalyzerOrchestrator {
       ...domainConcepts.slice(0, 25).map(c => c.name),
     ];
 
-    const description = projectTextSignal.summary && (
-      projectTextSignal.primaryDomain === primaryDomain ||
+    // Prefer the structural description (frameworks, capabilities, entities,
+    // entry points observed in this repo); the project-text summary is a thin
+    // honest fallback used only when the structural signal is too weak.
+    const description = projectTextSignal.summary &&
       this.shouldPreferProjectTextSummary(primaryDomain, systemCapabilities, flowGraph)
-    )
       ? projectTextSignal.summary
       : this.buildQuickDescription(
       basePurpose,
@@ -9163,16 +9164,12 @@ export class AnalyzerOrchestrator {
       'commercial vehicle',
       'telematics',
       'vehicle fleet',
-      'eld compliance',
-      'fmcsa',
       'driver',
       'vehicle',
       'fuel',
       'maintenance',
       'safety monitoring',
-      'drive alerts',
       'dispatching',
-      'ifta',
       'routing',
       'clinical testing',
       'patient',
@@ -9184,8 +9181,6 @@ export class AnalyzerOrchestrator {
       'portfolio',
       'codebase analysis',
       'analyzer',
-      'cas',
-      'mcp',
       'billing',
       'payment',
       'customer',
@@ -9210,54 +9205,24 @@ export class AnalyzerOrchestrator {
   private summaryFromProjectText(
     primaryDomain: string | undefined,
     concepts: string[],
-    text: string,
+    _text: string,
     evidence: string[]
   ): string | undefined {
+    // Honest deterministic fallback: this summary may only state facts that
+    // were actually observed in THIS project's own text. It must never claim
+    // that "project documentation describes X" unless X phrases were extracted
+    // from this project. Per-domain canned paragraphs were removed because any
+    // repo classified into a domain inherited another product's description
+    // verbatim, fabricating features the repo never mentioned.
     if (!primaryDomain) return undefined;
-    if (primaryDomain === 'fleet-management') {
-      return 'A fleet management system for commercial vehicle operations. Project documentation describes real-time tracking, compliance management, safety monitoring, dispatch and trip operations, fuel and maintenance reporting, and integrations with telematics and business-service providers.';
-    }
-    if (primaryDomain === 'zero-trust-security') {
-      return 'A zero-trust security codebase for controlling protected access and network trust decisions. Project text and source copy describe continuous verification, secure access gateways, request workflows, infrastructure policy, and operator-facing controls for reviewing and enforcing policy decisions.';
-    }
-    if (primaryDomain === 'commerce-operations-portal') {
-      return 'A commerce operations portal for account, cart, checkout, order, invoice, billing, search, and location workflows. Project text and source copy describe user-facing commerce screens and operational customer flows.';
-    }
-    if (primaryDomain === 'car-wash-operations') {
-      return 'A car wash operations and management platform for running wash locations. Project text and source copy describe site-level workflows such as task management, inspections, incident reporting, shift scheduling, equipment, and service tracking across locations.';
-    }
-    if (primaryDomain === 'pharmaceutical-order-management') {
-      return 'A pharmaceutical ordering and distribution system. Project text and source copy describe regulated pharmacy products, ordering and fulfillment workflows, invoicing, inventory, and compliance-oriented records.';
-    }
-    if (primaryDomain === 'clinical-testing') {
-      return 'A clinical testing and scientific measurement application for patient, protocol, device, muscle, force, and assessment workflows. Project text and source copy describe desktop or service-side support for clinical evaluation and reporting.';
-    }
-    if (primaryDomain === 'solana-arbitrage') {
-      return 'A Solana arbitrage codebase for monitoring decentralized exchanges, computing profitable routes, applying risk controls, and submitting atomic transactions.';
-    }
-    if (primaryDomain === 'codebase-analysis') {
-      return 'A codebase analysis system that turns source repositories into a relationship graph for humans and AI agents. Project text describes CAS/MCP analysis, graph extraction, agent work packets, and proposal or iteration previews.';
-    }
-    if (primaryDomain === 'cloud-infrastructure') {
-      return 'A cloud infrastructure codebase for managing deployment resources and operational boundaries. Project text and infrastructure files describe Terraform/OpenTofu-managed cloud resources, modules, providers, variables, and outputs.';
-    }
-    if (primaryDomain === 'personal-ai-assistant') {
-      return 'A personal AI assistant platform for coordinating local tools, multi-channel messaging, gateway control, and companion apps.';
-    }
-    if (primaryDomain === 'ecommerce-storefront') {
-      if (this.phraseScore(text, ['shopify']) > 0 && this.phraseScore(text, ['liquid']) > 0) {
-        return 'An ecommerce storefront theme for merchant-facing online shopping experiences. Project text describes Shopify theme development, server-rendered Liquid, storefront performance, and online store features.';
-      }
-      return 'An ecommerce storefront for merchant-facing online shopping experiences. Project text describes storefront features and online store workflows.';
-    }
-    if (primaryDomain === 'portfolio-management') {
-      return 'A portfolio management codebase for tracking assets, investment holdings, risk, and portfolio reporting workflows.';
-    }
     if (!this.hasDistinctiveProjectTextConcepts(concepts)) {
       return undefined;
     }
-    const topConcepts = concepts.length ? concepts.slice(0, 5).join(', ') : primaryDomain.replace(/-/g, ' ');
-    return `A ${primaryDomain.replace(/-/g, ' ')} codebase. Project text identifies the main concepts as ${topConcepts}. Evidence: ${evidence.slice(0, 3).join(', ') || 'source text'}.`;
+    const domainLabel = primaryDomain.replace(/-/g, ' ');
+    const topConcepts = concepts.length
+      ? concepts.slice(0, 5).map(concept => concept.replace(/-/g, ' ')).join(', ')
+      : domainLabel;
+    return `${this.articleFor(domainLabel)} ${domainLabel} codebase. Project text identifies the main concepts as ${topConcepts}. Evidence: ${evidence.slice(0, 3).join(', ') || 'source text'}.`;
   }
 
   private hasDistinctiveProjectTextConcepts(concepts: string[]): boolean {

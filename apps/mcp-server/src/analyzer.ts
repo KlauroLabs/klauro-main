@@ -324,6 +324,73 @@ function buildVectorStore(
   });
 }
 
+/**
+ * True when the description in this output is deterministic because AI
+ * interpretation never ran (disabled by env, no provider configured, feature
+ * off, cooldown, or zero budget). AI-attempted-and-rejected/failed outputs
+ * return false: those keep their deterministic description on purpose.
+ */
+function aiInterpretationWasUnavailable(output: CASOutput): boolean {
+  const generation = output.enhanced_system_purpose?.description_generation;
+  return generation?.status === 'ai_skipped' && generation.attempted === false;
+}
+
+/**
+ * Full re-analyses that run with AI unavailable must not downgrade a stored
+ * AI-enriched analysis to deterministic text. Mirrors the incremental reuse
+ * hook in AnalyzerOrchestrator.orchestrateIncrementalAnalysis: carry the prior
+ * AI system description/domain (and AI/manual capability descriptions) forward
+ * with 'reused' provenance. The carried text is not re-validated against the
+ * new state of the repo, so it is marked may_be_stale.
+ */
+export function preservePreviousAIDescriptions(
+  previousOutput: CASOutput | null | undefined,
+  output: CASOutput
+): CASOutput {
+  const previousPurpose = previousOutput?.enhanced_system_purpose;
+  const purpose = output.enhanced_system_purpose;
+  if (!previousPurpose || !purpose) return output;
+  if (!aiInterpretationWasUnavailable(output)) return output;
+
+  const previousCapabilities = new Map(
+    (previousOutput?.system_capabilities || []).map(capability => [capability.id, capability])
+  );
+  for (const capability of output.system_capabilities || []) {
+    const previous = previousCapabilities.get(capability.id);
+    if (previous?.description && (previous.description_source === 'ai' || previous.description_source === 'manual' || previous.description_source === 'reused')) {
+      capability.description = previous.description;
+      capability.description_source = 'reused';
+      capability.description_generation = {
+        status: 'reused_previous',
+        attempted: false,
+        reason: previous.description_generation?.status,
+        generated_at: new Date().toISOString(),
+        may_be_stale: true,
+      };
+    }
+  }
+
+  if (!previousPurpose.inferred_description ||
+    !(previousPurpose.description_source === 'ai' || previousPurpose.description_source === 'reused')) {
+    return output;
+  }
+  purpose.inferred_description = previousPurpose.inferred_description;
+  purpose.description_source = 'reused';
+  purpose.description_generation = {
+    status: 'reused_previous',
+    attempted: false,
+    reason: 'ai-unavailable-on-full-rebuild',
+    generated_at: new Date().toISOString(),
+    may_be_stale: true,
+  };
+  if (previousPurpose.primary_domain &&
+    (previousPurpose.domain_source === 'ai' || previousPurpose.domain_source === 'reused')) {
+    purpose.primary_domain = previousPurpose.primary_domain;
+    purpose.domain_source = 'reused';
+  }
+  return output;
+}
+
 export async function analyzeProject(projectPath: string): Promise<CASOutput> {
   if (!(await fs.pathExists(projectPath))) {
     throw new Error(`Project path does not exist: ${projectPath}`);
@@ -332,7 +399,11 @@ export async function analyzeProject(projectPath: string): Promise<CASOutput> {
   return withProjectAnalysisLock(projectPath, async () => {
     const orch = getOrchestrator();
     orch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
-    const result = await orch.orchestrateAnalysis(projectPath);
+    const previousOutput = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
+    const result = preservePreviousAIDescriptions(
+      previousOutput,
+      await orch.orchestrateAnalysis(projectPath)
+    );
 
     await saveAnalysis(projectPath, result);
     await saveAnalysisSnapshot(projectPath, result);
@@ -583,6 +654,13 @@ async function runIncrementalAnalysis(projectPath: string): Promise<IncrementalA
     }
   );
   debug('orchestrate-incremental', phaseStartedAt);
+
+  if (result.wasFullRebuild && result.output !== previousOutput) {
+    // A full rebuild inside the incremental path bypasses the orchestrator's
+    // incremental description-reuse hook; keep prior AI descriptions when this
+    // rebuild ran without AI instead of downgrading the stored analysis.
+    preservePreviousAIDescriptions(previousOutput, result.output);
+  }
 
   const casChanged = hasCasReportChanges(result.changeReport);
   const outputChanged = result.output !== previousOutput || casChanged;

@@ -2339,6 +2339,12 @@ export interface CASDescriptionGeneration {
   reason?: string;
   budget_ms?: number;
   generated_at?: string;
+  /**
+   * Set when a prior AI-generated description was carried forward across a
+   * full re-analysis that ran without AI, so the text was not re-validated
+   * against the latest state of the repo.
+   */
+  may_be_stale?: boolean;
 }
 
 export interface CASAnalysisPhase {
