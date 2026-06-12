@@ -77,7 +77,7 @@ import { ChangeDetector } from './change-detector';
 import { buildUserJourneys } from './journey-builder';
 import { buildParadigmConformance } from './paradigm-conformance';
 import { buildDataLineage } from './data-lineage';
-import { isLanguageBuiltinName, isLanguageBuiltinExitPoint, isLanguageBuiltinDomainToken } from './language-builtins';
+import { isLanguageBuiltinName, isLanguageBuiltinExitPoint, isLanguageBuiltinDomainToken, isCapabilityNoiseToken } from './language-builtins';
 import { buildProductMap } from './product-map';
 import { relativizeProjectPaths } from './relativize-project-paths';
 import { CallGraphBuilder } from './call-graph-builder';
@@ -11605,7 +11605,8 @@ export class AnalyzerOrchestrator {
       .map(token => this.normalizeDomainToken(token))
       .filter(token => token.length > 2)
       .filter(token => !this.isGenericCapabilityToken(token))
-      .filter(token => !isLanguageBuiltinDomainToken(token));
+      .filter(token => !isLanguageBuiltinDomainToken(token))
+      .filter(token => !isCapabilityNoiseToken(token));
   }
 
   private normalizeDomainToken(token: string): string {
@@ -11944,7 +11945,8 @@ export class AnalyzerOrchestrator {
       .map(token => this.normalizeDomainToken(token))
       .filter(token => token.length > 2)
       .filter(token => !this.isGenericCapabilityToken(token))
-      .filter(token => !isLanguageBuiltinDomainToken(token));
+      .filter(token => !isLanguageBuiltinDomainToken(token))
+      .filter(token => !isCapabilityNoiseToken(token));
 
     if (tokens.length === 0) return undefined;
     return tokens.find(token => !/^(app|bin|console|command|event|message|handler|handlers)$/.test(token)) || tokens[0];

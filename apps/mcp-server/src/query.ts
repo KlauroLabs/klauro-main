@@ -5,9 +5,11 @@ import type {
   CASTestSuite, ChangeHistoryEntry, ChangeAggregate, HeatMapData, ImpactAnalysis,
 } from '../../../packages/analyzer-core/src/types/cas.types';
 import { diffBehavior } from '../../../packages/analyzer-core/src/analyzer/core/behavior-diff';
+import { isAuthenticationGuardName } from '../../../packages/analyzer-core/src/analyzer/core/guard-classification';
 import { buildProductMap } from '../../../packages/analyzer-core/src/analyzer/core/product-map';
 import type { CASProductMap } from '../../../packages/analyzer-core/src/types/cas.types';
 import {
+  guardPhraseForBoundaries,
   journeyDetailMarkdown,
   journeyHeadline,
   journeyListMarkdown,
@@ -1117,8 +1119,7 @@ export function productMapToMarkdown(map: CASProductMap): string {
     lines.push(`${map.journeys.total} total: ${kindBreakdown}.`);
   }
   for (const journey of map.journeys.top) {
-    const uniqueBoundaries = [...new Set(journey.boundaries)];
-    const guardText = uniqueBoundaries.length > 0 ? `guarded (${uniqueBoundaries.join(', ')})` : 'unguarded';
+    const guardText = guardPhraseForBoundaries(journey.boundaries.map(name => ({ name })));
     const testText = journey.tests === 0 ? 'no tests' : `${journey.tests} test${journey.tests === 1 ? '' : 's'}`;
     lines.push(`- ${storedJourneyNameHeadline(journey.name)}; ${guardText}, ${testText} [${journey.kind}, ${journey.criticality}]`);
   }
@@ -2647,7 +2648,7 @@ export function getFrameworkGuidance(
     const routeCount = cas.route_table?.length || 0;
     if (routeCount > 0) {
       const routes = cas.route_table || [];
-      const hasAuth = routes.some((r: any) => r.auth || r.guards?.length > 0);
+      const hasAuth = routes.some((r: any) => r.auth || r.guards?.some((guard: string) => isAuthenticationGuardName(guard)));
       if (!hasAuth && routeCount > 5) {
         recommendations.push({
           topic: 'routing',

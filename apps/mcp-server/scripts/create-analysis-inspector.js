@@ -377,10 +377,42 @@ function journeyOutcomePhrase(journey) {
   if (readNames.length) return `reads ${joinJourneyNames(readNames, 3)}`;
   return '';
 }
+function classifyGuardKind(guardName) {
+  const name = String(guardName || '').toLowerCase();
+  if (!name) return 'unknown';
+  if (/throttl|rate[-_]?limit/.test(name)) return 'rate-limiting';
+  if (/authoriz|role|permission|policy|policies|acl|rbac|abac|grant|tenant|organization|owner|scope/.test(name)) return 'authorization';
+  if (/csrf|xsrf|recaptcha|captcha/.test(name)) return 'validation';
+  if (/auth|jwt|session|api[-_]?key|apikey|oauth|sso|login|signin|sign[-_]?in|token|bearer|passport|credential|identity/.test(name)) return 'authentication';
+  if (/valid|sanitiz|schema/.test(name)) return 'validation';
+  return 'unknown';
+}
+const GUARD_KIND_ORDER = ['authentication', 'authorization', 'rate-limiting', 'validation', 'unknown'];
+const GUARD_KIND_LABELS = { authentication: 'auth', authorization: 'authorization', 'rate-limiting': 'rate-limited', validation: 'validation', unknown: '' };
 function journeyGuardPhrase(journey) {
-  const names = [...new Set(arr(journey.security_boundaries).map(b => clean(b.name)).filter(Boolean))];
-  if (!names.length) return 'unguarded';
-  return `guarded (${joinJourneyNames(names, 2)})`;
+  const byKind = new Map();
+  const seen = new Set();
+  for (const boundary of arr(journey.security_boundaries)) {
+    const name = clean(boundary && boundary.name);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    const kind = (boundary && boundary.kind) || classifyGuardKind(name);
+    const names = byKind.get(kind) || [];
+    names.push(name);
+    byKind.set(kind, names);
+  }
+  if (!seen.size) return 'unguarded';
+  const hasAuth = byKind.has('authentication');
+  const kindsPresent = GUARD_KIND_ORDER.filter(kind => byKind.has(kind));
+  if (!hasAuth && kindsPresent.length === 1 && kindsPresent[0] === 'rate-limiting') {
+    return `rate-limited (${joinJourneyNames(byKind.get('rate-limiting'), 2)}), no auth guard`;
+  }
+  const segments = kindsPresent.map(kind => {
+    const names = joinJourneyNames(byKind.get(kind), 2);
+    const label = GUARD_KIND_LABELS[kind];
+    return label ? `${label}: ${names}` : names;
+  });
+  return `guarded (${segments.join('; ')})${hasAuth ? '' : ', no auth guard'}`;
 }
 function journeyTestPhrase(journey) {
   const count = arr(journey.tests_covering).length;
@@ -465,7 +497,7 @@ function journeyData(cas) {
       external: arr(j.terminal_effects?.external_services).slice(0, 8).map(clean),
       messages: arr(j.terminal_effects?.messages_emitted).slice(0, 8).map(clean),
     },
-    boundaries: arr(j.security_boundaries).slice(0, 8).map(b => ({ name: clean(b.name), mechanism: clean(b.mechanism) })),
+    boundaries: arr(j.security_boundaries).slice(0, 8).map(b => ({ name: clean(b.name), mechanism: clean(b.mechanism), kind: clean(b.kind) || classifyGuardKind(b.name) })),
     tests_covering: arr(j.tests_covering).length,
     provenance: {
       entry_point_id: clean(j.entry_point_id),

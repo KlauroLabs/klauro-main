@@ -1,4 +1,5 @@
-import type { CASUserJourney, CASUserJourneyStep } from '../../../packages/analyzer-core/src/types/cas.types';
+import type { CASUserJourney, CASUserJourneyStep, CASGuardKind } from '../../../packages/analyzer-core/src/types/cas.types';
+import { classifyGuardKind } from '../../../packages/analyzer-core/src/analyzer/core/guard-classification';
 
 // Presentation-only helpers for stored user journeys. Every function reads
 // fields already present on the CAS journey; nothing here recomputes
@@ -89,10 +90,58 @@ export function journeyOutcomePhrase(
   return '';
 }
 
+export interface GuardBoundary {
+  name: string;
+  kind?: CASGuardKind;
+}
+
+export function guardBoundaryKind(boundary: GuardBoundary): CASGuardKind {
+  return boundary.kind || classifyGuardKind(boundary.name);
+}
+
+const GUARD_KIND_ORDER: CASGuardKind[] = ['authentication', 'authorization', 'rate-limiting', 'validation', 'unknown'];
+
+const GUARD_KIND_LABELS: Record<CASGuardKind, string> = {
+  authentication: 'auth',
+  authorization: 'authorization',
+  'rate-limiting': 'rate-limited',
+  validation: 'validation',
+  unknown: '',
+};
+
+// "guarded" must never conflate rate limiting with authentication: a journey
+// whose only guard is a throttler renders "rate-limited (...), no auth guard"
+// so protection is never overstated.
+export function guardPhraseForBoundaries(boundaries: GuardBoundary[]): string {
+  const byKind = new Map<CASGuardKind, string[]>();
+  const seen = new Set<string>();
+  for (const boundary of boundaries || []) {
+    if (!boundary?.name || seen.has(boundary.name)) continue;
+    seen.add(boundary.name);
+    const kind = guardBoundaryKind(boundary);
+    const names = byKind.get(kind) || [];
+    names.push(boundary.name);
+    byKind.set(kind, names);
+  }
+  if (seen.size === 0) return 'unguarded';
+
+  const hasAuth = byKind.has('authentication');
+  const kindsPresent = GUARD_KIND_ORDER.filter(kind => byKind.has(kind));
+
+  if (!hasAuth && kindsPresent.length === 1 && kindsPresent[0] === 'rate-limiting') {
+    return `rate-limited (${joinWithMore(byKind.get('rate-limiting')!, 2)}), no auth guard`;
+  }
+
+  const segments = kindsPresent.map(kind => {
+    const names = joinWithMore(byKind.get(kind)!, 2);
+    const label = GUARD_KIND_LABELS[kind];
+    return label ? `${label}: ${names}` : names;
+  });
+  return `guarded (${segments.join('; ')})${hasAuth ? '' : ', no auth guard'}`;
+}
+
 export function journeyGuardPhrase(journey: Pick<CASUserJourney, 'security_boundaries'>): string {
-  const boundaries = [...new Set((journey.security_boundaries || []).map(boundary => boundary.name).filter(Boolean))];
-  if (boundaries.length === 0) return 'unguarded';
-  return `guarded (${joinWithMore(boundaries, 2)})`;
+  return guardPhraseForBoundaries(journey.security_boundaries || []);
 }
 
 export function journeyTestPhrase(journey: Pick<CASUserJourney, 'tests_covering'>): string {
@@ -202,7 +251,11 @@ export function journeyDetailMarkdown(journey: CASUserJourney): string {
     lines.push(`- Effects: ${effects.join('; ')}`);
   }
   const boundaries = (journey.security_boundaries || [])
-    .map(boundary => boundary.mechanism ? `${boundary.name} (${boundary.mechanism})` : boundary.name)
+    .map(boundary => {
+      if (!boundary.name) return '';
+      const qualifiers = [guardBoundaryKind(boundary), boundary.mechanism].filter(Boolean);
+      return qualifiers.length > 0 ? `${boundary.name} (${qualifiers.join(', ')})` : boundary.name;
+    })
     .filter(Boolean);
   lines.push(`- Boundaries: ${boundaries.length > 0 ? boundaries.join(', ') : 'none recorded'}`);
   lines.push(`- Tests: ${journeyTestPhrase(journey)}`);

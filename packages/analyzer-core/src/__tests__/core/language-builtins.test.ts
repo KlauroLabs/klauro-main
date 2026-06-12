@@ -125,3 +125,54 @@ test('dns and tls survive as domain nouns for network products', () => {
   expect(isLanguageBuiltinDomainToken('tls')).toBe(false);
   expect(isLanguageBuiltinDomainToken('fmt')).toBe(true);
 });
+
+describe('isCapabilityNoiseToken', () => {
+  const { isCapabilityNoiseToken } = require('../../analyzer/core/language-builtins');
+
+  it('rejects pure-numeric tokens such as IP octets and ports', () => {
+    for (const token of ['172', '192', '8080', '443', '12345']) {
+      expect(isCapabilityNoiseToken(token)).toBe(true);
+    }
+  });
+
+  it('rejects numeric-leading tokens that are not technology names', () => {
+    for (const token of ['172xyz', '24h', '0x1f']) {
+      expect(isCapabilityNoiseToken(token)).toBe(true);
+    }
+  });
+
+  it('keeps digit-led technology tokens that anchor real domains', () => {
+    for (const token of ['2fa', '3ds', '5g', 'i18n', 'a11y']) {
+      expect(isCapabilityNoiseToken(token)).toBe(false);
+    }
+  });
+
+  it('rejects qualifier and hedge words that carry no domain meaning', () => {
+    for (const token of ['likely', 'maybe', 'probably', 'possibly', 'unknown', 'misc', 'temp', 'new', 'old', 'common', 'util', 'utils']) {
+      expect(isCapabilityNoiseToken(token)).toBe(true);
+    }
+  });
+
+  it('keeps real product-domain tokens intact', () => {
+    for (const token of ['dns', 'scan', 'coordinator', 'credential', 'nmap', 'certificate', 'arp']) {
+      expect(isCapabilityNoiseToken(token)).toBe(false);
+    }
+  });
+});
+
+describe('capability tokenizers reject numeric and qualifier noise', () => {
+  const orchestrator = new AnalyzerOrchestrator() as any;
+
+  it('never seeds a capability from an IP fragment or a hedge word', () => {
+    expect(orchestrator.domainTokensFromText('172_16_0_0')).toEqual([]);
+    expect(orchestrator.domainTokensFromText('likely')).toEqual([]);
+    expect(orchestrator.domainTokensFromText('likely_host')).toEqual(['host']);
+    expect(orchestrator.domainKeyFromEntryPointText('172')).toBeUndefined();
+    expect(orchestrator.domainKeyFromEntryPointText('likely')).toBeUndefined();
+  });
+
+  it('keeps digit-led technology tokens as domain anchors', () => {
+    expect(orchestrator.domainTokensFromText('enable_2fa')).toEqual(['enable', '2fa']);
+    expect(orchestrator.domainKeyFromEntryPointText('2fa_enrollment')).toBe('2fa');
+  });
+});

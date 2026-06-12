@@ -141,6 +141,45 @@ const LOWERCASE_BUILTIN_DOMAIN_TOKENS = (() => {
 })();
 
 /**
+ * Qualifier and hedge words that describe certainty, age, or grab-bag grouping
+ * rather than product behavior. A capability named "Likely Management" or
+ * "Misc Management" carries no domain meaning, so these can never seed a
+ * capability or domain name.
+ */
+const QUALIFIER_DOMAIN_TOKENS = new Set([
+  'likely', 'unlikely', 'maybe', 'probably', 'possibly', 'perhaps',
+  'unknown', 'misc', 'miscellaneous', 'temp', 'tmp', 'temporary',
+  'new', 'old', 'common', 'util', 'utils', 'other', 'others', 'various',
+]);
+
+/**
+ * Digit-led tokens that name real technology rather than numeric noise.
+ * These survive the numeric-token rejection below.
+ */
+const DIGIT_LED_TECHNOLOGY_TOKENS = new Set([
+  '2fa', '3ds', '5g', 'i18n', 'a11y',
+]);
+
+/**
+ * True when a lowercased domain/capability token is numeric noise (an IP
+ * octet like "172", a port, a version fragment) or a qualifier word. Pure
+ * digits and digit-led tokens are rejected unless they name a real
+ * technology ("2fa", "3ds"); qualifier words ("likely", "misc", "temp") are
+ * always rejected. Capability clustering applies this alongside
+ * isLanguageBuiltinDomainToken so junk tokens never seed capability names.
+ */
+export function isCapabilityNoiseToken(token: string | undefined): boolean {
+  if (!token) return false;
+  const normalized = token.trim().toLowerCase();
+  if (!normalized) return false;
+  if (QUALIFIER_DOMAIN_TOKENS.has(normalized)) return true;
+  if (/^[0-9]/.test(normalized)) {
+    return !DIGIT_LED_TECHNOLOGY_TOKENS.has(normalized);
+  }
+  return false;
+}
+
+/**
  * True when a lowercased domain/capability token originates from a language
  * runtime, standard library module, keyword, or source-layout convention
  * (fmt, lib, mod, vec, asyncio, strconv) instead of the product domain.

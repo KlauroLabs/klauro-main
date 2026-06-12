@@ -50,17 +50,57 @@ test('journeyHeadline reads as a single narrative line with entry, outcome, and 
   const headline = journeyHeadline(truckspy);
   assert.equal(
     headline,
-    'Create company: POST /api/web/partner/companies -> creates Company, Partner; 24 steps, guarded (IsGranted), no tests'
+    'Create company: POST /api/web/partner/companies -> creates Company, Partner; 24 steps, guarded (authorization: IsGranted), no auth guard, no tests'
   );
   assert.ok(!headline.includes('node_id'));
   assert.ok(!headline.includes('method_'));
 });
 
 test('journeyHeadline reports unguarded journeys and test counts', () => {
-  assert.ok(journeyHeadline(klauro).includes('guarded (require_auth)'));
+  assert.ok(journeyHeadline(klauro).includes('guarded (auth: require_auth)'));
   assert.ok(journeyHeadline(klauro).endsWith('1 test'));
   assert.equal(journeyGuardPhrase({ security_boundaries: [] }), 'unguarded');
   assert.equal(journeyTestPhrase({ tests_covering: [] }), 'no tests');
+});
+
+test('journeyGuardPhrase distinguishes guard kinds instead of conflating them with authentication', () => {
+  assert.equal(
+    journeyGuardPhrase({ security_boundaries: [{ name: 'ThrottlerGuard', mechanism: 'entry-guard' }] }),
+    'rate-limited (ThrottlerGuard), no auth guard'
+  );
+  assert.equal(
+    journeyGuardPhrase({ security_boundaries: [{ name: 'GlobalAuthGuard', mechanism: 'entry-guard' }] }),
+    'guarded (auth: GlobalAuthGuard)'
+  );
+  assert.equal(
+    journeyGuardPhrase({ security_boundaries: [
+      { name: 'GlobalAuthGuard', mechanism: 'entry-guard' },
+      { name: 'ThrottlerGuard', mechanism: 'entry-guard' },
+    ] }),
+    'guarded (auth: GlobalAuthGuard; rate-limited: ThrottlerGuard)'
+  );
+  assert.equal(
+    journeyGuardPhrase({ security_boundaries: [
+      { name: 'OrganizationGuard', mechanism: 'entry-guard' },
+      { name: 'ThrottlerGuard', mechanism: 'entry-guard' },
+    ] }),
+    'guarded (authorization: OrganizationGuard; rate-limited: ThrottlerGuard), no auth guard'
+  );
+  assert.equal(
+    journeyGuardPhrase({ security_boundaries: [{ name: 'MysteryGuard', mechanism: 'entry-guard' }] }),
+    'guarded (MysteryGuard), no auth guard'
+  );
+});
+
+test('journeyGuardPhrase prefers the stored boundary kind over name classification', () => {
+  assert.equal(
+    journeyGuardPhrase({ security_boundaries: [{ name: 'CustomGate', mechanism: 'entry-guard', kind: 'authentication' }] }),
+    'guarded (auth: CustomGate)'
+  );
+  assert.equal(
+    journeyGuardPhrase({ security_boundaries: [{ name: 'CustomGate', mechanism: 'entry-guard', kind: 'rate-limiting' }] }),
+    'rate-limited (CustomGate), no auth guard'
+  );
 });
 
 test('displayJourneySteps drops entry-duplicate and consecutive-duplicate steps', () => {
@@ -165,7 +205,7 @@ test('getUserJourneys markdown mode renders a readable journey brief', () => {
 test('getUserJourneys markdown detail renders the full readable journey', () => {
   const result = getUserJourneys(casWithJourneys(), { journeyId: klauro.id, format: 'markdown' }) as any;
   assert.ok(result.markdown.startsWith('## Delete work order'));
-  assert.ok(result.markdown.includes('- Boundaries: require_auth (entry-guard)'));
+  assert.ok(result.markdown.includes('- Boundaries: require_auth (authentication, entry-guard)'));
 
   const missing = getUserJourneys(casWithJourneys(), { journeyId: 'nope', format: 'markdown' }) as any;
   assert.ok(missing.markdown.includes("No journey with id 'nope'"));
@@ -184,7 +224,7 @@ test('inspector journey tab data carries title, headline, and compressed display
   assert.equal(card.title, 'Create company');
   assert.equal(
     card.headline,
-    'Create company: POST /api/web/partner/companies -> creates Company, Partner; 24 steps, guarded (IsGranted), no tests'
+    'Create company: POST /api/web/partner/companies -> creates Company, Partner; 24 steps, guarded (authorization: IsGranted), no auth guard, no tests'
   );
   assert.equal(card.display_steps.leading.length, 3);
   assert.equal(card.display_steps.trailing.length, 2);
@@ -222,7 +262,7 @@ test('product map markdown renders journey headlines instead of machine names', 
     coverage_caveats: [],
   };
   const markdown = productMapToMarkdown(map);
-  assert.ok(markdown.includes('- Create company: POST /api/web/partner/companies -> Company created +7 more; guarded (IsGranted), no tests [user-facing, critical]'));
+  assert.ok(markdown.includes('- Create company: POST /api/web/partner/companies -> Company created +7 more; guarded (authorization: IsGranted), no auth guard, no tests [user-facing, critical]'));
   assert.ok(markdown.includes('journeys: Create company'), 'capability journey link uses the short title');
   assert.ok(!markdown.includes('| boundaries:'), 'pipe-separated machine row is gone');
 });

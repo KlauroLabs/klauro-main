@@ -856,7 +856,7 @@ describe('buildUserJourneys entry guard truth', () => {
       metadata: { controller: 'AutoPilotController', handler: 'updateConfig', guards: ['ThrottlerGuard'] },
     })));
     expect(journeys[0].security_boundaries).toEqual([
-      { name: 'ThrottlerGuard', mechanism: 'entry-guard' },
+      { name: 'ThrottlerGuard', mechanism: 'entry-guard', kind: 'rate-limiting' },
     ]);
   });
 
@@ -867,6 +867,8 @@ describe('buildUserJourneys entry guard truth', () => {
     })));
     const names = journeys[0].security_boundaries.map(boundary => boundary.name);
     expect(names).toEqual(['ApiKeyGuard', 'ThrottlerGuard']);
+    const kinds = journeys[0].security_boundaries.map(boundary => boundary.kind);
+    expect(kinds).toEqual(['authentication', 'rate-limiting']);
   });
 
   it('names global guards applied by the framework instead of the generic authentication label', () => {
@@ -875,7 +877,7 @@ describe('buildUserJourneys entry guard truth', () => {
       metadata: { controller: 'AutoPilotController', handler: 'updateConfig', guards: ['GlobalAuthGuard'], global_guards: ['GlobalAuthGuard'] },
     })));
     expect(journeys[0].security_boundaries).toEqual([
-      { name: 'GlobalAuthGuard', mechanism: 'entry-guard' },
+      { name: 'GlobalAuthGuard', mechanism: 'entry-guard', kind: 'authentication' },
     ]);
   });
 
@@ -893,7 +895,7 @@ describe('buildUserJourneys entry guard truth', () => {
       security: { authenticated: true, authorized_roles: [] },
     })));
     expect(journeys[0].security_boundaries).toEqual([
-      { name: 'authentication', mechanism: 'entry-guard' },
+      { name: 'authentication', mechanism: 'entry-guard', kind: 'authentication' },
     ]);
   });
 

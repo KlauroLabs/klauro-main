@@ -4,6 +4,7 @@ import {
   CASDocumentation, CASComment, CASTodo, CASImplementationStatus, CASCallGraph
 } from '../../../types/cas.types';
 import { AnalyzerError } from '../../core/errors';
+import { isAuthenticationGuardName } from '../../core/guard-classification';
 import { EnhancedCallGraphExtractor } from '../../enhanced-call-graph-extractor';
 import * as path from 'path';
 import * as fs from 'fs-extra';
@@ -2851,13 +2852,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
   }
 
   private isAuthGuard(guard: string): boolean {
-    const authGuardPatterns = [
-      'AuthGuard', 'JwtAuthGuard', 'JwtGuard',
-      'Auth', 'Authenticated', 'Session'
-    ];
-    return authGuardPatterns.some(pattern =>
-      guard.toLowerCase().includes(pattern.toLowerCase())
-    );
+    return isAuthenticationGuardName(guard);
   }
 
   private createPerspectives(

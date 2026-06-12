@@ -11,6 +11,7 @@ import {
   CASUserJourneySummary,
   CASUserJourneyTerminalEntity
 } from '../../types/cas.types';
+import { classifyGuardKind } from './guard-classification';
 
 export interface UserJourneyInput {
   nodes: CASNode[];
@@ -794,10 +795,10 @@ function collectSecurityBoundaries(
 
   const entryGuards = entryPointGuards(entryPoint);
   for (const guard of entryGuards) {
-    boundaries.set(`guard:${guard}`, { name: guard, mechanism: 'entry-guard' });
+    boundaries.set(`guard:${guard}`, { name: guard, mechanism: 'entry-guard', kind: classifyGuardKind(guard) });
   }
   if (entryPoint.security?.authenticated && entryGuards.length === 0) {
-    boundaries.set('guard:authenticated', { name: 'authentication', mechanism: 'entry-guard' });
+    boundaries.set('guard:authenticated', { name: 'authentication', mechanism: 'entry-guard', kind: 'authentication' });
   }
 
   for (const nodeId of pathNodeIds.keys()) {
@@ -809,6 +810,7 @@ function collectSecurityBoundaries(
         node_id: boundaryNodeId,
         name: boundaryNode.name,
         mechanism: edge.type,
+        kind: classifyGuardKind(boundaryNode.name),
       });
     }
   }

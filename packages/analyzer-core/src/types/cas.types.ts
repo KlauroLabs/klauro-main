@@ -2640,6 +2640,13 @@ export interface CASUserJourneyTerminalEntity {
   terminal_kind: 'entity' | 'node';
 }
 
+/**
+ * What a guard or security boundary actually protects against. A
+ * rate-limiting guard is not authentication; surfaces that say "guarded"
+ * must carry this distinction so protection is never overstated.
+ */
+export type CASGuardKind = 'authentication' | 'authorization' | 'rate-limiting' | 'validation' | 'unknown';
+
 export interface CASUserJourney {
   id: string;
   name: string;
@@ -2664,6 +2671,7 @@ export interface CASUserJourney {
     node_id?: string;
     name: string;
     mechanism: string;
+    kind?: CASGuardKind;
   }>;
   tests_covering: string[];
   risk?: 'low' | 'medium' | 'high' | 'critical';
