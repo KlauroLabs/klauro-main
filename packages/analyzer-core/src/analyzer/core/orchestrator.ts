@@ -8327,6 +8327,12 @@ export class AnalyzerOrchestrator {
         ? 'content-management'
         : domain;
     }
+    // Label-shape contract: a primary domain is 2-4 tokens (the AI path
+    // already enforces this via normalizeAIDomainLabel). A bare single noun
+    // ('menu') is composed rather than emitted raw.
+    if (normalizedDomain && !normalizedDomain.includes('-') && !this.isGenericDomainToken(normalizedDomain)) {
+      return `${normalizedDomain}-management`;
+    }
     return domain;
   }
 
@@ -8519,13 +8525,25 @@ export class AnalyzerOrchestrator {
       group.share += area.share;
       groups.set(area.domain!, group);
     }
-    const ordered = Array.from(groups.entries()).sort((a, b) => b[1].nodeCount - a[1].nodeCount);
-
-    let resolved = primaryDomain;
     const primaryIsUseful = Boolean(primaryDomain) &&
       primaryDomain !== 'unknown' &&
       !this.isGenericDomainToken(primaryDomain) &&
       !this.isBareGenericDomainNoun(primaryDomain);
+    // Plumbing principle (same rule as the AI authority gate): an
+    // identity-class AREA domain may never displace a useful non-identity
+    // primary — every large app has an area dense with Claims/Auth/Account
+    // names (ProtocolApp regression: 84% .NET web area stole
+    // member-document-portal).
+    const identityClassPattern = /^user-identity-management$|^(auth|identity|session|login)-/;
+    if (primaryIsUseful && !identityClassPattern.test(primaryDomain)) {
+      for (const domain of Array.from(groups.keys())) {
+        if (identityClassPattern.test(domain)) groups.delete(domain);
+      }
+    }
+    const ordered = Array.from(groups.entries()).sort((a, b) => b[1].nodeCount - a[1].nodeCount);
+    if (ordered.length === 0) return { primaryDomain, secondaryDomains: [] };
+
+    let resolved = primaryDomain;
     const heaviest = ordered[0];
     const heaviestUseful = ordered.find(([domain]) =>
       this.isComposedDomainLabel(domain) &&
@@ -8602,7 +8620,25 @@ export class AnalyzerOrchestrator {
       ...coreConcepts.map(concept => concept.name),
     ].join(' ').toLowerCase();
 
-    const ruleDomain = this.structuralDomainFromText(text);
+    let ruleDomain = this.structuralDomainFromText(text);
+    // Dominance check: every API carries identity vocabulary (password,
+    // token, permission). Identity may only claim the PRIMARY domain when
+    // identity-ish entities are not outnumbered by distinct product entities
+    // (VRS/ProtocolApp regression class: Vrs, CarePlan, Company >> identity).
+    if (ruleDomain === 'user-identity-management') {
+      const identityEntityPattern = /^(users?|roles?|permissions?|sessions?|credentials?|claims?|tokens?|accounts?|identit)/i;
+      const distinctEntities = new Set(
+        systemCapabilities
+          .flatMap(capability => capability.related_entities || [])
+          .map(entity => String(entity).toLowerCase().trim())
+          .filter(Boolean)
+      );
+      const identityEntities = Array.from(distinctEntities).filter(name => identityEntityPattern.test(name));
+      const productEntities = distinctEntities.size - identityEntities.length;
+      if (productEntities >= 3 && productEntities > identityEntities.length) {
+        ruleDomain = null;
+      }
+    }
     if (process.env.KLAURO_DOMAIN_DEBUG) {
       console.error('[domain-debug] capability-path', JSON.stringify({ ruleDomain }));
     }
@@ -9196,7 +9232,17 @@ export class AnalyzerOrchestrator {
     if (isInfrastructureRepo) {
       return 'cloud-infrastructure';
     }
-    const cryptoTradingScore =
+    // Anchor gate: crypto-trading identity requires explicit chain/DEX
+    // evidence — game-economy vocabulary (currency, shop, trade) must never
+    // mint solana-arbitrage on its own (rpg regression, 2026-06-12).
+    const cryptoAnchorScore =
+      this.phraseScore(searchableText, ['solana']) +
+      this.phraseScore(searchableText, ['pumpfun']) +
+      this.phraseScore(searchableText, ['jito']) +
+      this.phraseScore(searchableText, ['mev']) +
+      this.phraseScore(searchableText, ['arbitrage']) +
+      this.phraseScore(searchableText, ['dex']);
+    const cryptoTradingScore = cryptoAnchorScore === 0 ? 0 :
       this.phraseScore(searchableText, ['solana']) * 3 +
       this.phraseScore(searchableText, ['pumpfun']) * 3 +
       this.phraseScore(searchableText, ['jito']) * 3 +
