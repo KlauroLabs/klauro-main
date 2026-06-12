@@ -620,7 +620,7 @@ export interface CASProductMap {
   identity: {
     name: string;
     domain: string;
-    domain_source: 'deterministic' | 'ai' | 'reused';
+    domain_source: 'deterministic' | 'ai' | 'ai-refined' | 'reused';
     description: string;
     description_source: 'deterministic' | 'ai' | 'manual' | 'reused';
     unanalyzed_languages: Array<{ name: string; files: number; share_of_source: number }>;
@@ -2830,9 +2830,20 @@ export interface CASDomainConcept {
   classification: 'core' | 'supporting' | 'infrastructure';
 }
 
+export type CASArtifactType = 'app' | 'library' | 'client-sdk' | 'cli-tool' | 'boilerplate';
+
 export interface EnhancedSystemPurpose extends SystemPurpose {
   primary_domain: string;
-  domain_source?: 'deterministic' | 'ai' | 'reused';
+  domain_source?: 'deterministic' | 'ai' | 'ai-refined' | 'reused';
+  /** True when the deterministic domain won via an anchor gate or grounded
+   * structural evidence. An anchored domain may only be narrowed by AI
+   * (refined to a more specific child label), never replaced sideways. */
+  domain_anchored?: boolean;
+  /** AI domain candidates rejected by the domain authority rules. */
+  domain_rejected_candidates?: Array<{ label: string; reason: string }>;
+  /** Deterministic artifact classification: what kind of deliverable this
+   * repo is (library, generated client SDK, CLI tool, boilerplate, app). */
+  artifact_type?: CASArtifactType;
   secondary_domains?: Array<{ domain: string; areas: string[]; node_share: number }>;
   core_concepts: string[];
   inferred_description: string;

@@ -2233,7 +2233,7 @@ describe('architecture and capability inference', () => {
     expect(purpose.description_source).toBe('ai');
     expect(purpose.inferred_description).toBe('The mcp-server analyzes source repositories into CAS relationship graphs and exposes MCP work packets so coding agents can navigate entry points, tests, and risks before editing.');
     expect(purpose.primary_domain).toBe('code-analysis-agent');
-    expect(purpose.domain_source).toBe('ai');
+    expect(purpose.domain_source).toBe('ai-refined');
   });
 
   it('passes unanalyzed languages and a coverage instruction to the combined AI prompt', async () => {

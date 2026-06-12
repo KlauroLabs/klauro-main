@@ -75,6 +75,7 @@ import {
 } from '../../types/cas.types';
 import { ChangeDetector } from './change-detector';
 import { buildUserJourneys } from './journey-builder';
+import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
 import { buildParadigmConformance } from './paradigm-conformance';
 import { buildDataLineage } from './data-lineage';
 import { isLanguageBuiltinName, isLanguageBuiltinExitPoint, isLanguageBuiltinDomainToken, isCapabilityNoiseToken, isVendorLibDomainToken } from './language-builtins';
@@ -226,6 +227,7 @@ export class AnalyzerOrchestrator {
   private nodeLookupById: Map<string, CASNode> = new Map();
   private embeddingPhaseConfig: EmbeddingPhaseConfig | null = null;
   private activeAnalysisProjectPath?: string;
+  private activeTerminalSignal: TerminalSignal | null = null;
   private klauroSelfProjectCache: Map<string, boolean> = new Map();
   /**
    * System-level grounding vocabulary (primary domain, core concepts,
@@ -988,6 +990,10 @@ export class AnalyzerOrchestrator {
     const frameworkNames = this.frameworkNamesForPurpose(contributions, allNodes, projectPath);
     const dbEntityNames = databaseSchema.entities.map(e => e.name);
     const externalServiceNames = externalServices.map(svc => svc.name);
+    const terminalSignal = buildTerminalSignal({
+      journeys: userJourneyResult.journeys,
+      systemCapabilities,
+    });
 
     const enhancedSystemPurpose = this.buildEnhancedSystemPurpose(
       systemPurpose,
@@ -1004,7 +1010,8 @@ export class AnalyzerOrchestrator {
       systemName,
       projectTextSignal,
       allNodes,
-      projectPath
+      projectPath,
+      terminalSignal
     );
     logTiming('pp_enhancedPurpose', phaseStart);
 
@@ -1846,7 +1853,8 @@ export class AnalyzerOrchestrator {
       previousOutput.system?.name || path.basename(projectPath),
       incrProjectTextSignal,
       nodes,
-      projectPath
+      projectPath,
+      buildTerminalSignal({ journeys: userJourneyResult.journeys, systemCapabilities })
     );
     if (this.shouldRefreshAIInterpretation(
       previousOutput,
@@ -6791,7 +6799,7 @@ export class AnalyzerOrchestrator {
       const raw = await Promise.race([
         aiService.generateComponentDescription({
           additionalContext: {
-            task: 'Based only on the structural facts below, return ONLY valid JSON with this shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. system_description: describe what this software system is and what it does in 2-4 full sentences (at least 150 characters); infer the kind of system from its frameworks, entry points, and capabilities; do not invent features, expand acronyms, or add company names or business domains that are not implied by the facts; mention integrations or external services only by the exact names listed in externalServices, never as unnamed providers. domain: one lowercase kebab-case label of 2 to 4 words naming the primary business domain with concrete product nouns from the facts, never technology or framework names (for example "wedding-venue-booking" or "fleet-compliance-tracking"). descriptions: one entry per item in items, each one grounded sentence answering what that area lets an engineer, operator, user, or AI agent do; translate source areas and operation names into human purpose.',
+            task: 'Based only on the structural facts below, return ONLY valid JSON with this shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. system_description: describe what this software system is and what it does in 2-4 full sentences (at least 150 characters); infer the kind of system from its frameworks, entry points, and capabilities; do not invent features, expand acronyms, or add company names or business domains that are not implied by the facts; mention integrations or external services only by the exact names listed in externalServices, never as unnamed providers. domain: one lowercase kebab-case label of 2 to 4 words naming the primary business domain with concrete product nouns from the facts, never technology or framework names (for example "wedding-venue-booking" or "fleet-compliance-tracking"); when terminalOutputs and nearTerminalStages are present they are the strongest evidence — the domain must reflect what the system ultimately produces or manages per terminalOutputs and the stage that produces it per nearTerminalStages, never common plumbing nouns (user, identity, session, menu, serialization) unless those ARE the terminal outputs. descriptions: one entry per item in items, each one grounded sentence answering what that area lets an engineer, operator, user, or AI agent do; translate source areas and operation names into human purpose.',
             style: 'Return only the JSON object. system_description must be a short paragraph, not a list or colon-prefixed facts such as "Key capabilities:", "Data model:", "Entry points:", or "Integrations:"; avoid vague phrases like "interact with data" or "designed to be integrated" and avoid promotional language. Capability descriptions: prefer concrete verbs like centralizes, maintains, tracks, prepares, identifies, evaluates, records, links, validates, or preserves; do not use "operations for", "supports", "coordinates", "handles", "reads", "processes", "internal files", "spans", "insights", "efficient", "compliant", "productivity", "business value", or "streamline"; do not mention files unless the item is literally file storage.',
             primaryDomain: enhancedSystemPurpose.primary_domain,
             coreConcepts: enhancedSystemPurpose.core_concepts,
@@ -6919,12 +6927,19 @@ export class AnalyzerOrchestrator {
 
       for (const candidate of domainCandidates) {
         const label = this.normalizeAIDomainLabel(candidate);
-        if (label && label !== enhancedSystemPurpose.primary_domain && this.isGroundedAIDomainLabel(label, enhancedSystemPurpose)) {
+        if (!label || label === enhancedSystemPurpose.primary_domain) continue;
+        const verdict = this.evaluateAIDomainCandidate(label, enhancedSystemPurpose);
+        if (verdict.accepted) {
           enhancedSystemPurpose.primary_domain = label;
-          enhancedSystemPurpose.domain_source = 'ai';
+          enhancedSystemPurpose.domain_source = verdict.refined ? 'ai-refined' : 'ai';
           console.error(`[Klauro] AI domain label applied: ${label}`);
           break;
         }
+        enhancedSystemPurpose.domain_rejected_candidates = [
+          ...(enhancedSystemPurpose.domain_rejected_candidates || []),
+          { label, reason: verdict.reason },
+        ];
+        console.error(`[Klauro] AI domain label rejected (${verdict.reason}): ${label}`);
       }
 
       for (const target of capabilityTargets) {
@@ -7060,6 +7075,71 @@ export class AnalyzerOrchestrator {
     if (tokens.length < 2 || tokens.length > 4) return undefined;
     if (tokens.some(token => token.length < 3 || token.length > 24)) return undefined;
     return tokens.join('-');
+  }
+
+  /**
+   * Domain authority: the AI may NARROW an anchored deterministic domain or
+   * label a weak one, but it may never replace product identity with the
+   * plumbing vocabulary every codebase shares, and when terminal outputs are
+   * known the label must be anchored in them. (Ground-truth audit 2026-06-12:
+   * unconstrained AI labels produced a user-identity-management epidemic
+   * across 15 repos including two regressions of correct domains.)
+   */
+  private static readonly PLUMBING_DOMAIN_TOKENS = new Set([
+    'user', 'users', 'identity', 'auth', 'authentication', 'login', 'account', 'accounts',
+    'session', 'sessions', 'menu', 'serialize', 'serialization', 'deserialize', 'string',
+    'quote', 'request', 'response', 'config', 'configuration', 'settings', 'api', 'data',
+    'file', 'files', 'admin', 'record', 'records', 'item', 'items', 'resource', 'resources',
+  ]);
+
+  private evaluateAIDomainCandidate(
+    label: string,
+    enhancedSystemPurpose: EnhancedSystemPurpose
+  ): { accepted: boolean; refined: boolean; reason: string } {
+    if (!this.isGroundedAIDomainLabel(label, enhancedSystemPurpose)) {
+      return { accepted: false, refined: false, reason: 'not-grounded-in-facts' };
+    }
+    const stem = (token: string) => token.slice(0, Math.min(6, token.length));
+    const labelTokens = label.split('-').filter(token => token.length > 2 && token !== 'management');
+    const currentTokens = new Set((enhancedSystemPurpose.primary_domain || '').split('-').map(stem));
+    const terminalVocabulary = new Set<string>();
+    for (const entity of this.activeTerminalSignal?.ranked_entities || []) {
+      for (const token of this.humanizePascalName(entity.name).toLowerCase().split(/[^a-z0-9]+/)) {
+        if (token.length > 2) terminalVocabulary.add(stem(token));
+      }
+    }
+    for (const stage of this.activeTerminalSignal?.ranked_stages || []) {
+      for (const token of this.humanizePascalName(stage.name).toLowerCase().split(/[^a-z0-9]+/)) {
+        if (token.length > 2) terminalVocabulary.add(stem(token));
+      }
+    }
+
+    const inTerminal = (token: string) => terminalVocabulary.has(stem(token));
+    const inCurrent = (token: string) => currentTokens.has(stem(token));
+
+    // Plumbing labels: every meaningful token is shared plumbing vocabulary.
+    // Allowed only when the terminal outputs themselves are that plumbing
+    // (an identity service whose journeys terminate in User/Claim writes).
+    const allPlumbing = labelTokens.length > 0 &&
+      labelTokens.every(token => AnalyzerOrchestrator.PLUMBING_DOMAIN_TOKENS.has(token));
+    if (allPlumbing && !labelTokens.some(inTerminal)) {
+      return { accepted: false, refined: false, reason: 'generic-plumbing-label' };
+    }
+
+    // Terminal anchoring: when journeys told us what the system produces,
+    // the label must touch that vocabulary or the current domain.
+    if (terminalVocabulary.size > 0 && !labelTokens.some(token => inTerminal(token) || inCurrent(token))) {
+      return { accepted: false, refined: false, reason: 'not-anchored-in-terminal-outputs' };
+    }
+
+    // Anchored deterministic domains may only be narrowed, never replaced
+    // sideways: the label must overlap the current domain or its terminals.
+    if (enhancedSystemPurpose.domain_anchored && !labelTokens.some(token => inCurrent(token) || inTerminal(token))) {
+      return { accepted: false, refined: false, reason: 'not-a-refinement-of-anchored-domain' };
+    }
+
+    const refined = labelTokens.some(inCurrent);
+    return { accepted: true, refined, reason: 'accepted' };
   }
 
   private isGroundedAIDomainLabel(label: string, enhancedSystemPurpose: EnhancedSystemPurpose): boolean {
@@ -7969,6 +8049,37 @@ export class AnalyzerOrchestrator {
     systemCapabilities: SystemCapability[] = [],
     libraryNames: string[] = []
   ): Record<string, unknown> {
+    // Terminal-segment principle: hand the model what journeys ultimately
+    // produce (terminal entities) and the near-terminal stages leading there,
+    // so domain/description anchor on product truth instead of the plumbing
+    // vocabulary (users/sessions/serialization) every codebase shares.
+    const terminalFacts = this.activeTerminalSignal && this.activeTerminalSignal.ranked_entities.length > 0
+      ? {
+        terminalOutputs: this.activeTerminalSignal.ranked_entities.slice(0, 6).map(entity =>
+          `${entity.name} (${entity.write_journeys > 0 ? 'written' : 'read'} by ${entity.journey_count} journeys)`),
+        nearTerminalStages: this.activeTerminalSignal.ranked_stages.slice(0, 5).map(stage => stage.name),
+      }
+      : {};
+    return {
+      ...terminalFacts,
+      ...this.buildAIInterpretationBaseFacts(
+        systemName, frameworks, entryPointSummary, databaseEntities,
+        externalServices, flowGraph, domainConcepts, systemCapabilities, libraryNames
+      ),
+    };
+  }
+
+  private buildAIInterpretationBaseFacts(
+    systemName: string,
+    frameworks: string[],
+    entryPointSummary: { type: string; count: number }[],
+    databaseEntities: string[],
+    externalServices: string[],
+    flowGraph: CASFlowGraph,
+    domainConcepts: CASDomainConcept[],
+    systemCapabilities: SystemCapability[] = [],
+    libraryNames: string[] = []
+  ): Record<string, unknown> {
     const topCapabilities = (systemCapabilities.length > 0
       ? systemCapabilities
         .slice(0, 8)
@@ -8059,21 +8170,54 @@ export class AnalyzerOrchestrator {
     systemName?: string,
     projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] },
     nodes: CASNode[] = [],
-    projectPath = ''
+    projectPath = '',
+    terminalSignal: TerminalSignal | null = null
   ): EnhancedSystemPurpose {
+    this.activeTerminalSignal = terminalSignal;
     const coreConcepts = domainExtractor.getCoreConcepts(domainConcepts);
-    const inferredPrimaryDomain = this.refinePrimaryDomain(
+    // Terminal-segment principle: the domain is what the journeys ultimately
+    // produce or manage (terminal entities + near-terminal stages), not what
+    // the pooled vocabulary mentions most. The terminal-derived domain is the
+    // primary seed; extractor/text inference is the fallback when journeys
+    // are too sparse to carry a specific domain.
+    const terminalCandidate = this.domainFromTerminalSignal(terminalSignal);
+    const fallbackDomain = this.refinePrimaryDomain(
       domainExtractor.inferPrimaryDomain(domainConcepts),
       systemName,
       systemCapabilities,
       coreConcepts,
       projectTextSignal
     );
+    // Referee: a rule-matched terminal domain (structural class hit on the
+    // terminal seed) outranks an UNCORROBORATED fallback; when two
+    // independent fallback signals agree (project text + capability-derived
+    // domain sharing stems), the corroborated fallback wins — terminal rules
+    // were tuned for full text and can misfire on a terminal seed. Composed
+    // terminal labels (weak) only ever label a weak fallback.
+    const fallbackIsWeak = !fallbackDomain ||
+      this.isGenericDomainToken(fallbackDomain) ||
+      !fallbackDomain.includes('-');
+    const stem6 = (token: string) => token.slice(0, Math.min(6, token.length));
+    const fallbackStems = new Set((fallbackDomain || '').split('-').filter(t => t.length > 2).map(stem6));
+    const sharesFallbackStem = (domain: string | null | undefined) =>
+      Boolean(domain) && domain!.split('-').some(token => token.length > 2 && fallbackStems.has(stem6(token)));
+    const capabilityDomainForReferee = this.inferPrimaryDomainFromCapabilities(systemCapabilities, coreConcepts);
+    const fallbackCorroborated = !fallbackIsWeak &&
+      sharesFallbackStem(projectTextSignal.primaryDomain) &&
+      sharesFallbackStem(capabilityDomainForReferee);
+    const terminalDomain = terminalCandidate &&
+      ((terminalCandidate.strong && !fallbackCorroborated) || fallbackIsWeak)
+      ? terminalCandidate.domain
+      : null;
+    const inferredPrimaryDomain = terminalDomain ?? fallbackDomain;
     const areaDomains = this.classifyTopLevelAreaDomains(nodes, projectPath);
     const areaResolution = this.reconcilePrimaryDomainWithAreas(inferredPrimaryDomain, areaDomains);
     const primaryDomain = this.refinePrimaryDomainForPurpose(areaResolution.primaryDomain, basePurpose);
     if (process.env.KLAURO_DOMAIN_DEBUG) {
       console.error('[domain-debug]', JSON.stringify({
+        terminalDomain,
+        terminalEntities: terminalSignal?.ranked_entities.slice(0, 5).map(e => e.name),
+        terminalStages: terminalSignal?.ranked_stages.slice(0, 5).map(s => s.name),
         extractorDomain: domainExtractor.inferPrimaryDomain(domainConcepts),
         capabilityDomain: this.inferPrimaryDomainFromCapabilities(systemCapabilities, coreConcepts),
         projectTextDomain: projectTextSignal.primaryDomain,
@@ -8105,7 +8249,8 @@ export class AnalyzerOrchestrator {
       externalServices,
       systemCapabilities,
       primaryDomain,
-      coreConceptNames
+      coreConceptNames,
+      terminalSignal
     );
 
     const supportingWorkflows = workflows.filter(w => w.classification === 'supporting');
@@ -8121,6 +8266,7 @@ export class AnalyzerOrchestrator {
       primary_type: primaryType,
       evidence: [...basePurpose.evidence, ...projectTextSignal.evidence].slice(0, 20),
       primary_domain: primaryDomain,
+      ...(terminalDomain ? { domain_anchored: true } : {}),
       ...(areaResolution.secondaryDomains.length > 0 ? { secondary_domains: areaResolution.secondaryDomains } : {}),
       core_concepts: Array.from(new Set(coreConceptNames)).slice(0, 10),
       inferred_description: description,
@@ -8623,13 +8769,20 @@ export class AnalyzerOrchestrator {
     if (documentEvidenceMatches >= 2 && reportingEvidenceMatches >= 2) {
       return 'document-reporting';
     }
-    if (has(/\bcompany|member|members|organization|workspace\b/) && has(/\bdocument|documents|report|reports\b/)) {
+    // Membership-portal and identity classes require REPEATED evidence on
+    // both sides: presence-only versions fired on any repo whose entities
+    // merely mention Company/ReportingProfile (truckspy) or carry User plus
+    // an auth-ish token (every SPA), stealing identity from real products.
+    const memberEvidenceMatches = (text.match(/\bcompan(?:y|ies)|members?|organizations?|workspaces?\b/g) || []).length;
+    const portalDocumentMatches = (text.match(/\bdocuments?|reports?\b/g) || []).length;
+    if (memberEvidenceMatches >= 3 && portalDocumentMatches >= 3) {
       return 'member-document-portal';
     }
-    if (
-      has(/\bidentity|auth|authentication|authorization\b/) &&
-      has(/\buser|users|register|login|password|token|email|claims?\b/)
-    ) {
+    const identityAnchorMatches = new Set(
+      (text.match(/\bidentity|sso|oauth|credentials?|claims?|permissions?|roles?|register|login|passwords?|totp|sessions?\b/g) || [])
+        .map(match => match.toLowerCase())
+    );
+    if (identityAnchorMatches.size >= 2 && has(/\busers?\b/)) {
       return 'user-identity-management';
     }
     return null;
@@ -9348,6 +9501,44 @@ export class AnalyzerOrchestrator {
     ]).has(token.toLowerCase());
   }
 
+  /**
+   * Domain from the terminal signal: structural rules over the terminal-seed
+   * text first, then the dominant non-generic terminal token. Returns null
+   * when journeys are too sparse to carry a specific domain — callers fall
+   * back to extractor/text inference.
+   */
+  private domainFromTerminalSignal(
+    terminalSignal: TerminalSignal | null
+  ): { domain: string; strong: boolean } | null {
+    if (!terminalSignal || terminalSignal.ranked_entities.length === 0) return null;
+    const ruleDomain = this.structuralDomainFromText(terminalSignal.domain_seed_text);
+    if (ruleDomain && !this.isGenericDomainToken(ruleDomain)) {
+      // A structural class matched the terminal seed — strongest signal.
+      return { domain: ruleDomain, strong: true };
+    }
+    const scores = new Map<string, number>();
+    for (const token of terminalSignal.domain_seed_text.split(/[^a-z0-9]+/)) {
+      const normalized = this.normalizeDomainToken(token);
+      if (normalized.length <= 2) continue;
+      if (this.isGenericDomainToken(normalized) || this.isGenericCapabilityToken(normalized)) continue;
+      if (this.isCrossCuttingDomainToken(normalized)) continue;
+      if (isLanguageBuiltinDomainToken(normalized) || isCapabilityNoiseToken(normalized)) continue;
+      scores.set(normalized, (scores.get(normalized) || 0) + 1);
+    }
+    const ranked = Array.from(scores.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    const [top] = ranked;
+    // The seed text repeats the top terminal by rank, so a real signal always
+    // clears this floor; sparse or conflicting terminals do not.
+    if (!top || top[1] < 3) return null;
+    const second = ranked[1];
+    const composed = second && second[1] >= Math.max(3, top[1] - 1)
+      ? `${top[0]}-${second[0]}-management`
+      : `${top[0]}-management`;
+    // Token compositions are honest but weak: they may label a weak fallback,
+    // never displace a specific anchored domain.
+    return { domain: composed, strong: false };
+  }
+
   private buildQuickDescription(
     systemPurpose: SystemPurpose,
     flowGraph: CASFlowGraph,
@@ -9357,7 +9548,8 @@ export class AnalyzerOrchestrator {
     externalServices: string[],
     systemCapabilities: SystemCapability[] = [],
     primaryDomain?: string,
-    conceptNames: string[] = []
+    conceptNames: string[] = [],
+    terminalSignal: TerminalSignal | null = null
   ): string {
     const typeLabel = systemPurpose.primary_type.replace(/-/g, ' ');
     const domainLabel = primaryDomain && primaryDomain !== 'unknown'
@@ -9418,12 +9610,26 @@ export class AnalyzerOrchestrator {
       ? ` built with ${this.joinHumanList(productFrameworks.slice(0, 3))}`
       : '';
     const capabilityPhrase = this.describeCapabilitiesForNarrative(capabilityNames);
-    const entityPhrase = this.describeEntitiesForNarrative(databaseEntities);
+    // Terminal-segment principle: the model summary leads with what journeys
+    // ultimately write (terminal entities), not with reference-count order.
+    const terminalEntityNames = (terminalSignal?.ranked_entities || [])
+      .filter(entity => entity.write_journeys > 0)
+      .map(entity => entity.name);
+    const entityNamesForNarrative = terminalEntityNames.length >= 2
+      ? [
+        ...terminalEntityNames,
+        ...databaseEntities.filter(name =>
+          !terminalEntityNames.some(terminal => terminal.toLowerCase() === name.toLowerCase())
+        ),
+      ]
+      : databaseEntities;
+    const entityPhrase = this.describeEntitiesForNarrative(entityNamesForNarrative);
+    const terminalOutputPhrase = this.describeTerminalOutputsForNarrative(terminalSignal);
     const entryPointPhrase = this.describeEntryPointsForNarrative(entryPoints);
     const integrationPhrase = this.describeIntegrationsForNarrative(externalServices);
 
     const firstSentence = capabilityPhrase
-      ? `${this.articleFor(systemLabel)} ${systemLabel} system${frameworkPhrase} that ${capabilityPhrase}.`
+      ? `${this.articleFor(systemLabel)} ${systemLabel} system${frameworkPhrase} that ${capabilityPhrase}${terminalOutputPhrase}.`
       : `${this.articleFor(systemLabel)} ${systemLabel} system${frameworkPhrase} that organizes the codebase around its detected domain workflows and runtime boundaries.`;
 
     const secondParts = [
@@ -9436,6 +9642,21 @@ export class AnalyzerOrchestrator {
       : 'The CAS graph maps the system structure, relationships, and change surfaces for deeper inspection.';
 
     return `${firstSentence} ${secondSentence}`;
+  }
+
+  /**
+   * "to produce/manage X" tail naming the top write-terminal entities — the
+   * function-plus-output shape of the terminal-segment principle.
+   */
+  private describeTerminalOutputsForNarrative(terminalSignal: TerminalSignal | null): string {
+    if (!terminalSignal) return '';
+    const writeTerminals = terminalSignal.ranked_entities
+      .filter(entity => entity.write_journeys > 0)
+      .slice(0, 3)
+      .map(entity => this.humanizePascalName(entity.name).toLowerCase())
+      .filter(name => name && !this.isGenericDomainToken(name));
+    if (writeTerminals.length === 0) return '';
+    return ` to produce and manage ${this.joinHumanList(writeTerminals)} records`;
   }
 
   private describeCapabilitiesForNarrative(capabilityNames: string[]): string {

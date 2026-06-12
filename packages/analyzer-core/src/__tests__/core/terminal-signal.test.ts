@@ -1,0 +1,217 @@
+import { buildTerminalSignal } from '../../analyzer/core/terminal-signal';
+import type { CASUserJourney, SystemCapability } from '../../types/cas.types';
+
+function journey(overrides: Partial<CASUserJourney>): CASUserJourney {
+  return {
+    id: overrides.id || 'journey_test',
+    title: 'Test journey',
+    journey_kind: overrides.journey_kind || 'user-facing',
+    terminal_entities: overrides.terminal_entities || [],
+    steps: overrides.steps || [],
+    ...overrides,
+  } as CASUserJourney;
+}
+
+function capability(name: string, relatedEntities: string[]): SystemCapability {
+  return {
+    name,
+    related_entities: relatedEntities,
+  } as unknown as SystemCapability;
+}
+
+describe('buildTerminalSignal', () => {
+  test('write terminals outrank read terminals regardless of frequency', () => {
+    const journeys = [
+      journey({ id: 'j1', terminal_entities: [{ name: 'Invoice', access: 'created', terminal_kind: 'entity' }] }),
+      journey({ id: 'j2', terminal_entities: [{ name: 'User', access: 'read', terminal_kind: 'entity' }] }),
+      journey({ id: 'j3', terminal_entities: [{ name: 'User', access: 'read', terminal_kind: 'entity' }] }),
+    ];
+    const signal = buildTerminalSignal({ journeys, systemCapabilities: [] });
+    expect(signal.ranked_entities[0].name).toBe('Invoice');
+    expect(signal.ranked_entities[0].write_journeys).toBe(1);
+    expect(signal.ranked_entities[1].name).toBe('User');
+  });
+
+  test('user-facing journeys weigh more than system journeys', () => {
+    const journeys = [
+      journey({ id: 'j1', journey_kind: 'system', terminal_entities: [{ name: 'AuditLog', access: 'created', terminal_kind: 'entity' }] }),
+      journey({ id: 'j2', journey_kind: 'user-facing', terminal_entities: [{ name: 'Order', access: 'created', terminal_kind: 'entity' }] }),
+    ];
+    const signal = buildTerminalSignal({ journeys, systemCapabilities: [] });
+    expect(signal.ranked_entities[0].name).toBe('Order');
+    expect(signal.ranked_entities[0].user_facing_journeys).toBe(1);
+  });
+
+  test('node-kind terminals are demoted against entity-kind terminals', () => {
+    const journeys = [
+      journey({ id: 'j1', terminal_entities: [{ name: 'formatHelper', access: 'created', terminal_kind: 'node' }] }),
+      journey({ id: 'j2', terminal_entities: [{ name: 'Shipment', access: 'created', terminal_kind: 'entity' }] }),
+    ];
+    const signal = buildTerminalSignal({ journeys, systemCapabilities: [] });
+    expect(signal.ranked_entities[0].name).toBe('Shipment');
+  });
+
+  test('capabilities rank by overlap with ranked terminal entities only', () => {
+    const journeys = [
+      journey({ id: 'j1', terminal_entities: [{ name: 'Vehicle', access: 'updated', terminal_kind: 'entity' }] }),
+      journey({ id: 'j2', terminal_entities: [{ name: 'Vehicle', access: 'created', terminal_kind: 'entity' }] }),
+      journey({ id: 'j3', terminal_entities: [{ name: 'Trip', access: 'created', terminal_kind: 'entity' }] }),
+    ];
+    const capabilities = [
+      capability('Vehicle Management', ['Vehicle', 'Trip']),
+      capability('Session Handling', ['Session']),
+    ];
+    const signal = buildTerminalSignal({ journeys, systemCapabilities: capabilities });
+    expect(signal.ranked_capabilities.map(c => c.name)).toEqual(['Vehicle Management']);
+    expect(signal.ranked_capabilities[0].matched_terminal_entities).toEqual(expect.arrayContaining(['Vehicle', 'Trip']));
+  });
+
+  test('domain seed text repeats top terminals by rank so frequency scorers see hierarchy', () => {
+    const journeys = [
+      journey({ id: 'j1', terminal_entities: [{ name: 'WorkOrder', access: 'created', terminal_kind: 'entity' }] }),
+      journey({ id: 'j2', terminal_entities: [{ name: 'WorkOrder', access: 'updated', terminal_kind: 'entity' }] }),
+      journey({ id: 'j3', terminal_entities: [{ name: 'Customer', access: 'read', terminal_kind: 'entity' }] }),
+    ];
+    const signal = buildTerminalSignal({ journeys, systemCapabilities: [] });
+    const workOrderCount = (signal.domain_seed_text.match(/work order/g) || []).length;
+    const customerCount = (signal.domain_seed_text.match(/customer/g) || []).length;
+    expect(workOrderCount).toBeGreaterThan(customerCount);
+  });
+
+  test('empty journeys produce an empty signal, never a throw', () => {
+    const signal = buildTerminalSignal({ journeys: [], systemCapabilities: [capability('X', ['Y'])] });
+    expect(signal.ranked_entities).toEqual([]);
+    expect(signal.ranked_capabilities).toEqual([]);
+    expect(signal.domain_seed_text).toBe('');
+  });
+
+  test('near-terminal stages score with decay: analysis service two above terminal still ranks high', () => {
+    // Soon-shaped case: PortfolioAnalysis sits above the terminal
+    // insight/trade entities but defines the domain.
+    const journeys = [
+      journey({
+        id: 'j1',
+        terminal_entities: [
+          { name: 'ActionableInsight', access: 'created', terminal_kind: 'entity' },
+          { name: 'TradeExecution', access: 'created', terminal_kind: 'entity' },
+        ],
+        steps: [
+          { node_id: 'n1', name: 'PortfolioController', layer: 'entry', depth: 0 },
+          { node_id: 'n2', name: 'PortfolioAnalysisService', layer: 'business', depth: 1 },
+          { node_id: 'n3', name: 'InsightGenerator', layer: 'business', depth: 2 },
+          { node_id: 'n4', name: 'TradeRepository', layer: 'data', depth: 3 },
+        ],
+      }),
+    ];
+    const signal = buildTerminalSignal({ journeys, systemCapabilities: [] });
+    const stageNames = signal.ranked_stages.map(stage => stage.name);
+    expect(stageNames).toContain('PortfolioAnalysisService');
+    expect(stageNames).not.toContain('PortfolioController');
+    const analysis = signal.ranked_stages.find(stage => stage.name === 'PortfolioAnalysisService')!;
+    const repo = signal.ranked_stages.find(stage => stage.name === 'TradeRepository')!;
+    expect(repo.score).toBeGreaterThan(analysis.score);
+    expect(analysis.score).toBeGreaterThan(0);
+    expect(signal.domain_seed_text).toContain('portfolio analysis');
+  });
+
+  test('entry/infrastructure steps never enter the stage ranking', () => {
+    const journeys = [
+      journey({
+        id: 'j1',
+        terminal_entities: [{ name: 'Report', access: 'created', terminal_kind: 'entity' }],
+        steps: [
+          { node_id: 'n1', name: 'AuthMiddleware', layer: 'infrastructure', depth: 0 },
+          { node_id: 'n2', name: 'ReportService', layer: 'business', depth: 1 },
+        ],
+      }),
+    ];
+    const signal = buildTerminalSignal({ journeys, systemCapabilities: [] });
+    expect(signal.ranked_stages.map(stage => stage.name)).toEqual(['ReportService']);
+  });
+
+  test('deterministic ordering: ties break lexicographically', () => {
+    const journeys = [
+      journey({ id: 'j1', terminal_entities: [{ name: 'Beta', access: 'created', terminal_kind: 'entity' }] }),
+      journey({ id: 'j2', terminal_entities: [{ name: 'Alpha', access: 'created', terminal_kind: 'entity' }] }),
+    ];
+    const a = buildTerminalSignal({ journeys, systemCapabilities: [] });
+    const b = buildTerminalSignal({ journeys: [...journeys].reverse(), systemCapabilities: [] });
+    expect(a.ranked_entities.map(e => e.name)).toEqual(['Alpha', 'Beta']);
+    expect(b.ranked_entities.map(e => e.name)).toEqual(a.ranked_entities.map(e => e.name));
+  });
+});
+
+// Domain authority: AI labels are gated by terminal outputs and anchoring.
+import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
+
+describe('evaluateAIDomainCandidate (domain authority)', () => {
+  function orchestratorWithTerminal(entities: string[], stages: string[] = []) {
+    const orch = new AnalyzerOrchestrator() as any;
+    orch.activeTerminalSignal = {
+      ranked_entities: entities.map(name => ({ name, score: 5, journey_count: 2, write_journeys: 2, read_journeys: 0, user_facing_journeys: 1 })),
+      ranked_stages: stages.map(name => ({ name, score: 2, journey_count: 1, min_distance_from_terminal: 1 })),
+      ranked_capabilities: [],
+      domain_seed_text: entities.join(' ').toLowerCase(),
+    };
+    return orch;
+  }
+  const purpose = (domain: string, anchored: boolean, description: string) => ({
+    primary_domain: domain,
+    domain_anchored: anchored,
+    inferred_description: description,
+    core_concepts: [],
+  });
+
+  test('plumbing label rejected when terminals are product entities', () => {
+    const orch = orchestratorWithTerminal(['Protocol', 'CarePlan']);
+    const verdict = orch.evaluateAIDomainCandidate(
+      'user-identity-management',
+      purpose('clinical-testing', true, 'manages user identity, accounts, protocols and care plans for clinics')
+    );
+    expect(verdict.accepted).toBe(false);
+    expect(verdict.reason).toBe('generic-plumbing-label');
+  });
+
+  test('plumbing label allowed when terminals ARE the plumbing (identity service)', () => {
+    const orch = orchestratorWithTerminal(['User', 'IdentityClaim']);
+    const verdict = orch.evaluateAIDomainCandidate(
+      'user-identity-management',
+      purpose('access', false, 'registers users and issues identity claims')
+    );
+    expect(verdict.accepted).toBe(true);
+  });
+
+  test('sideways label rejected against anchored domain; narrowing accepted as ai-refined', () => {
+    const orch = orchestratorWithTerminal(['Vrs', 'ProductSerial']);
+    const sideways = orch.evaluateAIDomainCandidate(
+      'order-billing-management',
+      purpose('product-verification', true, 'verifies product serial numbers, orders and billing references against manufacturer records')
+    );
+    expect(sideways.accepted).toBe(false);
+    const narrowing = orch.evaluateAIDomainCandidate(
+      'product-serial-verification',
+      purpose('product-verification', true, 'verifies product serial numbers against manufacturer records')
+    );
+    expect(narrowing.accepted).toBe(true);
+    expect(narrowing.refined).toBe(true);
+  });
+
+  test('label disconnected from terminal vocabulary rejected even unanchored', () => {
+    const orch = orchestratorWithTerminal(['Portfolio', 'TradeExecution'], ['PortfolioAnalysisService']);
+    const verdict = orch.evaluateAIDomainCandidate(
+      'commerce-operations-portal',
+      purpose('infer', false, 'manages portfolio analysis, commerce operations, portal screens, checkout and trades')
+    );
+    expect(verdict.accepted).toBe(false);
+    expect(verdict.reason).toBe('not-anchored-in-terminal-outputs');
+  });
+
+  test('terminal-anchored specific label accepted when deterministic domain is weak', () => {
+    const orch = orchestratorWithTerminal(['Portfolio', 'ActionableInsight'], ['PortfolioAnalysisService']);
+    const verdict = orch.evaluateAIDomainCandidate(
+      'portfolio-analysis-automation',
+      purpose('infer', false, 'performs portfolio analysis to produce actionable insights and automation')
+    );
+    expect(verdict.accepted).toBe(true);
+  });
+});
