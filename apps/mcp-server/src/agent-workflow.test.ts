@@ -939,6 +939,32 @@ test('start context and work packet lead with the sensitive-data exposure digest
   });
 });
 
+test('exposure digest calls out paths covered only by non-auth guards', async () => {
+  await withWorkspace(async workspace => {
+    const cas = pillarFixtureCas();
+    (cas as any).data_lineage[0].exposure = {
+      unguarded_paths: 26,
+      non_auth_guarded_paths: 22,
+      external_transfer: false,
+      sensitive: true,
+    };
+    const context = getAgentStartContext(cas, workspace, {});
+    const exposure = (context as any).sensitive_data_exposure;
+    assert.ok(exposure, 'sensitive_data_exposure missing from start context');
+    assert.deepEqual(exposure.highest_risk, [
+      'User: 26 unguarded paths (22 with non-auth guards only), external_transfer: false, sensitive fields: email',
+    ]);
+
+    const packet = await getAgentWorkPacket(cas, workspace, { task_type: 'modify', target: 'UsersService' });
+    const lineageContext = packet.work_context.lineage_context;
+    assert.ok(lineageContext, 'lineage_context missing');
+    const userRow = (lineageContext.entities as any[]).find(entity => entity.entity === 'User');
+    assert.ok(userRow, 'User row missing from lineage context entities');
+    assert.equal(userRow.unguarded_paths, 26);
+    assert.equal(userRow.non_auth_guarded_paths, 22);
+  });
+});
+
 test('exposure digest is omitted when no sensitive entity has unguarded or external paths', async () => {
   await withWorkspace(async workspace => {
     const bareContext = getAgentStartContext(fixtureCas(), workspace, {});

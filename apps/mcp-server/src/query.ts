@@ -967,6 +967,7 @@ export function getDataLineage(
     sensitive_entities: lineage.filter(item => item.exposure.sensitive).length,
     entities_with_external_transfer: lineage.filter(item => item.exposure.external_transfer).length,
     entities_with_unguarded_paths: lineage.filter(item => item.exposure.unguarded_paths > 0).length,
+    entities_with_non_auth_guarded_paths: lineage.filter(item => (item.exposure.non_auth_guarded_paths || 0) > 0).length,
     entities: filtered.slice(offset, offset + limit).map(item => ({
       entity_id: item.entity_id,
       entity_name: item.entity_name,
@@ -1131,7 +1132,11 @@ export function productMapToMarkdown(map: CASProductMap): string {
   for (const highlight of map.data.exposure_highlights) {
     const details: string[] = [];
     if (highlight.sensitive_fields.length > 0) details.push(`sensitive fields: ${highlight.sensitive_fields.join(', ')}`);
-    if (highlight.unguarded_paths > 0) details.push(`${highlight.unguarded_paths} unguarded path${highlight.unguarded_paths === 1 ? '' : 's'}`);
+    if (highlight.unguarded_paths > 0) {
+      const nonAuth = highlight.non_auth_guarded_paths || 0;
+      const nonAuthSuffix = nonAuth > 0 ? ` (${nonAuth} with non-auth guards only)` : '';
+      details.push(`${highlight.unguarded_paths} unguarded path${highlight.unguarded_paths === 1 ? '' : 's'}${nonAuthSuffix}`);
+    }
     if (highlight.external_transfer) details.push(`external transfer to ${highlight.external_recipients.join(', ') || 'unknown service'}`);
     lines.push(`- ${highlight.entity}: ${details.join('; ')}`);
   }

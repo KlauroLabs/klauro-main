@@ -8,9 +8,11 @@ import {
   CASEntityLineage,
   CASEntityLineageAccessor,
   CASEntityLineageExternalRecipient,
-  CASEntityLineageBoundary
+  CASEntityLineageBoundary,
+  CASGuardKind
 } from '../../types/cas.types';
 import { isLanguageBuiltinExitPoint } from './language-builtins';
+import { classifyGuardKind } from './guard-classification';
 
 export interface DataLineageInput {
   nodes: CASNode[];
@@ -232,10 +234,17 @@ function buildEntityLineage(entity: CASDataEntity, index: LineageIndex): CASEnti
   }
 
   const boundaries = new Map<string, CASEntityLineageBoundary>();
+  const boundaryKindsByLabel = new Map<string, Set<CASGuardKind>>();
   let unguardedPaths = 0;
+  let nonAuthGuardedPaths = 0;
   for (const journey of journeys) {
-    const guarded = (journey.security_boundaries || []).length > 0;
-    if (!guarded) unguardedPaths += 1;
+    const journeyBoundaries = journey.security_boundaries || [];
+    const kinds = journeyBoundaries.map(boundaryGuardKind);
+    const guarded = kinds.some(isAuthProtectionKind);
+    if (!guarded) {
+      unguardedPaths += 1;
+      if (journeyBoundaries.length > 0) nonAuthGuardedPaths += 1;
+    }
     const label = boundaryLabel(journey);
     const existing = boundaries.get(label);
     if (!existing) {
@@ -243,6 +252,14 @@ function buildEntityLineage(entity: CASDataEntity, index: LineageIndex): CASEnti
     } else if (existing.guarded && !guarded) {
       existing.guarded = false;
     }
+    const kindSet = boundaryKindsByLabel.get(label) || new Set<CASGuardKind>();
+    for (const kind of kinds) kindSet.add(kind);
+    boundaryKindsByLabel.set(label, kindSet);
+  }
+  for (const [label, kindSet] of boundaryKindsByLabel) {
+    if (kindSet.size === 0) continue;
+    const entry = boundaries.get(label);
+    if (entry) entry.guard_kinds = [...kindSet].sort();
   }
 
   return {
@@ -256,6 +273,7 @@ function buildEntityLineage(entity: CASDataEntity, index: LineageIndex): CASEnti
     journeys_carrying: journeys.map(journey => journey.id).sort(),
     exposure: {
       unguarded_paths: unguardedPaths,
+      non_auth_guarded_paths: nonAuthGuardedPaths,
       external_transfer: recipients.size > 0,
       sensitive: sensitiveFields.length > 0,
     },
@@ -268,6 +286,14 @@ function collectJourneys(entity: CASDataEntity, index: LineageIndex): CASUserJou
     for (const journey of index.journeysByEntityKey.get(key) || []) journeys.add(journey);
   }
   return [...journeys].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function boundaryGuardKind(boundary: { kind?: CASGuardKind; name: string }): CASGuardKind {
+  return boundary.kind || classifyGuardKind(boundary.name);
+}
+
+function isAuthProtectionKind(kind: CASGuardKind): boolean {
+  return kind === 'authentication' || kind === 'authorization';
 }
 
 function boundaryLabel(journey: CASUserJourney): string {

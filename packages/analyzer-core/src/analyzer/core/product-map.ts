@@ -149,6 +149,7 @@ function buildData(cas: CASOutput): CASProductMap['data'] {
       entity: item.entity_name,
       sensitive_fields: item.sensitive_fields,
       unguarded_paths: item.exposure.unguarded_paths,
+      ...(item.exposure.non_auth_guarded_paths ? { non_auth_guarded_paths: item.exposure.non_auth_guarded_paths } : {}),
       external_transfer: item.exposure.external_transfer,
       external_recipients: [...new Set(item.external_recipients.map(recipient => recipient.service))].sort((a, b) =>
         a.localeCompare(b)

@@ -641,6 +641,7 @@ export interface CASProductMap {
       entity: string;
       sensitive_fields: string[];
       unguarded_paths: number;
+      non_auth_guarded_paths?: number;
       external_transfer: boolean;
       external_recipients: string[];
     }>;
@@ -2705,6 +2706,7 @@ export interface CASEntityLineageExternalRecipient {
 export interface CASEntityLineageBoundary {
   boundary: string;
   guarded: boolean;
+  guard_kinds?: CASGuardKind[];
 }
 
 export interface CASEntityLineage {
@@ -2718,6 +2720,7 @@ export interface CASEntityLineage {
   journeys_carrying: string[];
   exposure: {
     unguarded_paths: number;
+    non_auth_guarded_paths?: number;
     external_transfer: boolean;
     sensitive: boolean;
   };

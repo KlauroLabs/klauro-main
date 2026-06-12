@@ -527,7 +527,9 @@ function lineageExposureScore(item: LineageRecord): number {
 function lineageExposureLine(item: LineageRecord): string {
   const fields = (item.sensitive_fields || []).slice(0, 3);
   const fieldsSuffix = fields.length > 0 ? `, sensitive fields: ${fields.join(', ')}` : '';
-  return `${item.entity_name}: ${item.exposure?.unguarded_paths || 0} unguarded paths, external_transfer: ${Boolean(item.exposure?.external_transfer)}${fieldsSuffix}`;
+  const nonAuth = item.exposure?.non_auth_guarded_paths || 0;
+  const nonAuthSuffix = nonAuth > 0 ? ` (${nonAuth} with non-auth guards only)` : '';
+  return `${item.entity_name}: ${item.exposure?.unguarded_paths || 0} unguarded paths${nonAuthSuffix}, external_transfer: ${Boolean(item.exposure?.external_transfer)}${fieldsSuffix}`;
 }
 
 export function buildSensitiveExposureDigest(cas: CASOutput, limit = 3) {
@@ -587,6 +589,7 @@ export function buildLineageContextForAgent(
       sensitive: Boolean(item.exposure?.sensitive),
       ...(item.sensitive_fields?.length ? { sensitive_fields: item.sensitive_fields.slice(0, 3) } : {}),
       unguarded_paths: item.exposure?.unguarded_paths || 0,
+      ...(item.exposure?.non_auth_guarded_paths ? { non_auth_guarded_paths: item.exposure.non_auth_guarded_paths } : {}),
       external_transfer: Boolean(item.exposure?.external_transfer),
     }))),
   };
