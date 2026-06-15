@@ -48,6 +48,29 @@ test('agent-work-packet CLI emits parseable compact JSON with line windows', () 
   });
 });
 
+test('agent-work-packet CLI accepts --task as a natural alias for instructions', () => {
+  withFixtureWorkspace(workspace => {
+    const result = runCli(workspace, [
+      'agent-work-packet',
+      workspace.repo,
+      '--task-type',
+      'modify',
+      '--target',
+      'users',
+      '--task',
+      'Update user creation behavior and tests',
+      '--json',
+      '--compact',
+      '--quiet',
+      '--refresh',
+    ]);
+
+    assert.equal(result.status, 0, result.stderr);
+    const packet = JSON.parse(result.stdout);
+    assert.match(JSON.stringify(packet.task || packet), /Update user creation behavior/);
+  });
+});
+
 test('agent-work-packet CLI quiet JSON suppresses analyzer maintenance logs', () => {
   withFixtureWorkspace(workspace => {
     const projectId = storageProjectId(workspace.repo);
@@ -100,6 +123,31 @@ test('agent-work-packet CLI defaults to a bounded packet profile', () => {
   });
 });
 
+test('agent-work-packet CLI supports capsule-only K15/K5 response profile', () => {
+  withFixtureWorkspace(workspace => {
+    const result = runCli(workspace, [
+      'agent-work-packet',
+      workspace.repo,
+      '--task-type',
+      'modify',
+      '--target',
+      'audit logging',
+      '--response-profile',
+      'capsule-only',
+      '--json',
+      '--quiet',
+      '--refresh',
+    ]);
+
+    assert.equal(result.status, 0, result.stderr);
+    const packet = JSON.parse(result.stdout);
+    assert.equal(packet.packet_profile, 'capsule-only');
+    assert.match(packet.context_capsule, /^K15m[A-Za-z0-9]* audit logging/m);
+    assert.match(packet.execution_capsule, /^K5\|m\|/);
+    assert.ok(packet.estimated_tokens < 500);
+  });
+});
+
 test('agent-install CLI emits selected-path routing metadata without placeholder args', () => {
   withFixtureWorkspace(workspace => {
     const result = runCli(workspace, [
@@ -114,10 +162,26 @@ test('agent-install CLI emits selected-path routing metadata without placeholder
     const config = JSON.parse(result.stdout);
     const routedCalls = config.first_calls.filter((call: any) => call.path_source?.includes('selected_path'));
 
-    assert.equal(routedCalls.length, 3);
+    assert.equal(routedCalls.length, 4);
     assert.doesNotMatch(JSON.stringify(config.first_calls), /<selected_path/);
+    assert.ok(config.first_calls.some((call: any) =>
+      call.tool === 'get_agent_work_packet' && call.args.task?.response_profile === 'capsule-only'
+    ));
+    assert.match(config.prompts.agent_skill, /K15 Context Capsule/);
+    assert.match(config.prompts.agent_skill, /read-then-edit/);
+    assert.match(config.prompts.agent_skill, /do-not-rebuild/i);
     assert.ok(fs.existsSync(path.join(workspace.repo, '.klauro', 'agent-defaults.json')));
-    assert.match(fs.readFileSync(path.join(workspace.repo, '.klauro', 'agent-defaults.md'), 'utf8'), /Path source:/);
+    assert.ok(fs.existsSync(path.join(workspace.repo, '.klauro', 'skills', 'klauro', 'SKILL.md')));
+    const markdown = fs.readFileSync(path.join(workspace.repo, '.klauro', 'agent-defaults.md'), 'utf8');
+    const skill = fs.readFileSync(path.join(workspace.repo, '.klauro', 'skills', 'klauro', 'SKILL.md'), 'utf8');
+    assert.match(markdown, /Path source:/);
+    assert.match(markdown, /K15 context capsule/);
+    assert.match(markdown, /portable Klauro agent skill/);
+    assert.match(skill, /^---\nname: klauro/m);
+    assert.match(skill, /K15 Context Capsule/);
+    assert.match(skill, /K5 Execution Capsule/);
+    assert.match(skill, /G1 Greenfield Capsule/);
+    assert.equal(skill, config.prompts.agent_skill);
   });
 });
 

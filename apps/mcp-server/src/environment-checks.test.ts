@@ -37,6 +37,7 @@ test('evaluateBundleState fails when bundle artifacts are missing', async () => 
   const result = checks.evaluateBundleState({
     bundleExists: false,
     serverExists: true,
+    cliExists: false,
     handshakeExists: false,
     bundleMtimeMs: null,
     newestSourceMtimeMs: 1000,
@@ -44,6 +45,7 @@ test('evaluateBundleState fails when bundle artifacts are missing', async () => 
   });
   assert.strictEqual(result.status, 'fail');
   assert.match(result.detail, /dist\/index\.cjs/);
+  assert.match(result.detail, /dist\/cli\.cjs/);
   assert.match(result.detail, /dist\/handshake\.json/);
   assert.match(result.fix || '', /npm --prefix \/srv\/klauro run build/);
 });
@@ -53,6 +55,7 @@ test('evaluateBundleState warns when sources are newer than the bundle', async (
   const result = checks.evaluateBundleState({
     bundleExists: true,
     serverExists: true,
+    cliExists: true,
     handshakeExists: true,
     bundleMtimeMs: 1000,
     newestSourceMtimeMs: 1000 + 5 * 60000,
@@ -67,6 +70,7 @@ test('evaluateBundleState passes for a complete fresh bundle', async () => {
   const result = checks.evaluateBundleState({
     bundleExists: true,
     serverExists: true,
+    cliExists: true,
     handshakeExists: true,
     bundleMtimeMs: 2000,
     newestSourceMtimeMs: 1000,

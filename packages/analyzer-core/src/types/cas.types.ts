@@ -1812,6 +1812,9 @@ export interface CASArchitecturalInventory {
 export interface CASPatternBalance {
   status: 'balanced' | 'under-patterned' | 'over-patterned' | 'mixed';
   detected_count: number;
+  primary_patterns?: string[];
+  conflicting_patterns?: string[];
+  rationale?: string;
   risks: string[];
   recommendations: string[];
 }
@@ -2229,6 +2232,7 @@ export interface CASTestSummary {
     flaky: number;
   };
   coverage: {
+    status?: 'measured' | 'not-measured';
     overall_percentage?: number;
     by_layer?: Record<string, number>;
   };

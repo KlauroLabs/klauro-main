@@ -138,7 +138,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   async getRelevantFiles(projectPath: string): Promise<string[]> {
     const files = await glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
       cwd: projectPath,
-      ignore: this.getIgnorePatterns({ projectPath }),
+      ignore: this.getLanguageIgnorePatterns({ projectPath }),
       nodir: true
     });
     return files.sort();
@@ -349,7 +349,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
       const sourceFiles = (await glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
         cwd: context.projectPath,
-        ignore: this.getIgnorePatterns(context),
+        ignore: this.getLanguageIgnorePatterns(context),
         nodir: true
       })).sort();
       tsTimings['glob'] = Date.now() - tsStart;
@@ -3656,6 +3656,20 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       case 5: return 'implementation';
       default: return `level_${level}`;
     }
+  }
+
+  private getLanguageIgnorePatterns(context: Pick<AnalysisContext, 'projectPath' | 'filters'>): string[] {
+    const patterns = this.getIgnorePatterns(context as AnalysisContext);
+    if (process.env.KLAURO_ANALYSIS_FOCUS === 'agent-fast') {
+      patterns.push(
+        '**/*.test.{js,jsx,ts,tsx,mjs,cjs}',
+        '**/*.spec.{js,jsx,ts,tsx,mjs,cjs}',
+        '**/__tests__/**',
+        '**/test/**',
+        '**/tests/**',
+      );
+    }
+    return patterns;
   }
 
   protected getCapabilities(): string[] {

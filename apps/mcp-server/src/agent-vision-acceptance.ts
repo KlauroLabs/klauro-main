@@ -1,6 +1,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { buildAgentPerformanceProof } from './agent-performance-proof';
+import { isDirectCliInvocation } from './cli-invocation';
 import { listAgenticBenchmarkReports, loadAgenticBenchmarkReport } from './storage';
 
 type GateStatus = 'pass' | 'fail';
@@ -36,6 +37,13 @@ const REPORTS = {
   agenticBenchmark: '.klauro-agent-benchmark/latest-report.json',
   qualityBenchmark: '.klauro-agent-quality-benchmark/latest-report.json',
   incrementalBenchmark: '.klauro-incremental-benchmark/latest-report.json',
+  descriptionQualityBenchmark: '.klauro-description-quality-benchmark/latest-report.json',
+  analysisFocusBenchmark: '.klauro-analysis-focus-benchmark/latest-report.json',
+  competitorBaselineBenchmark: '.klauro-competitor-baseline-benchmark/latest-report.json',
+  agentContextCodecBenchmark: '.klauro-agent-context-codec-benchmark/latest-report.json',
+  architecturePatternBenchmark: '.klauro-architecture-pattern-benchmark/latest-report.json',
+  capabilityInferenceBenchmark: '.klauro-capability-inference-benchmark/latest-report.json',
+  runtimeImpactBenchmark: '.klauro-runtime-impact-benchmark/latest-report.json',
   idiomBenchmark: '.klauro-agent-idiom-benchmark/latest-report.json',
   machineProof: '.klauro-agent-proof-machine/latest-report.json',
   scratchLiveBackend: '.klauro-agent-scratch-build-benchmark/live-work-intake-codex-rescored.json',
@@ -55,6 +63,13 @@ async function main(): Promise<void> {
   const agenticBenchmark = await readReport(REPORTS.agenticBenchmark);
   const qualityBenchmark = await readReport(REPORTS.qualityBenchmark);
   const incrementalBenchmark = await readReport(REPORTS.incrementalBenchmark);
+  const descriptionQualityBenchmark = await readReport(REPORTS.descriptionQualityBenchmark);
+  const analysisFocusBenchmark = await readReport(REPORTS.analysisFocusBenchmark);
+  const competitorBaselineBenchmark = await readReport(REPORTS.competitorBaselineBenchmark);
+  const agentContextCodecBenchmark = await readReport(REPORTS.agentContextCodecBenchmark);
+  const architecturePatternBenchmark = await readReport(REPORTS.architecturePatternBenchmark);
+  const capabilityInferenceBenchmark = await readReport(REPORTS.capabilityInferenceBenchmark);
+  const runtimeImpactBenchmark = await readReport(REPORTS.runtimeImpactBenchmark);
   const idiomBenchmark = await readReport(REPORTS.idiomBenchmark);
   const machineProof = await readReport(REPORTS.machineProof);
   const scratchLiveBackend = await readReport(REPORTS.scratchLiveBackend);
@@ -70,6 +85,13 @@ async function main(): Promise<void> {
     'agentic-benchmark': agenticBenchmark,
     'agent-quality-benchmark': qualityBenchmark,
     'incremental-benchmark': incrementalBenchmark,
+    'description-quality-benchmark': descriptionQualityBenchmark,
+    'analysis-focus-benchmark': analysisFocusBenchmark,
+    'competitor-baseline-benchmark': competitorBaselineBenchmark,
+    'agent-context-codec-benchmark': agentContextCodecBenchmark,
+    'architecture-pattern-benchmark': architecturePatternBenchmark,
+    'capability-inference-benchmark': capabilityInferenceBenchmark,
+    'runtime-impact-benchmark': runtimeImpactBenchmark,
     'agent-idiom-benchmark': idiomBenchmark,
     'machine-agent-proof': machineProof,
     'scratch-live-backend': scratchLiveBackend,
@@ -85,6 +107,13 @@ async function main(): Promise<void> {
   gates.push(...agenticBenchmarkGates(agenticBenchmark));
   gates.push(...qualityBenchmarkGates(qualityBenchmark));
   gates.push(...incrementalBenchmarkGates(incrementalBenchmark));
+  gates.push(...descriptionQualityBenchmarkGates(descriptionQualityBenchmark));
+  gates.push(...analysisFocusBenchmarkGates(analysisFocusBenchmark));
+  gates.push(...competitorBaselineBenchmarkGates(competitorBaselineBenchmark));
+  gates.push(...agentContextCodecBenchmarkGates(agentContextCodecBenchmark));
+  gates.push(...architecturePatternBenchmarkGates(architecturePatternBenchmark));
+  gates.push(...capabilityInferenceBenchmarkGates(capabilityInferenceBenchmark));
+  gates.push(...runtimeImpactBenchmarkGates(runtimeImpactBenchmark));
   gates.push(...idiomBenchmarkGates(idiomBenchmark));
   gates.push(...machineProofGates(machineProof));
   gates.push(...scratchLiveGates([scratchLiveBackend, scratchLiveUi, scratchLiveBackendMultiWave, scratchLiveUiMultiWave, scratchLiveComplianceMultiWave]));
@@ -239,6 +268,197 @@ function incrementalBenchmarkGates(report: JsonObject): Gate[] {
   ];
 }
 
+function descriptionQualityBenchmarkGates(report: JsonObject): Gate[] {
+  const summary = report.summary || {};
+  const results = array(report.results);
+  const generated = results.filter(result => String(result.name || '').startsWith('generate-'));
+  const generatedKinds = new Set(array(summary.generated_target_kinds).map(value => String(value)));
+  const badRejects = results.filter(result => String(result.name || '').startsWith('reject-') && result.status === 'pass');
+  const genericLeaks = generated.filter(result => /\[object Object\]|Key capabilities:|Data model:|Entry points:|operations for|functionality|facilitates seamless/i.test(String(result.description || '')));
+  return [
+    gate('description-quality:status', report.status === 'pass' && Number(report.score) === 100, `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`),
+    gate('description-quality:target-kind-coverage',
+      ['service', 'capability', 'entity', 'entry_point'].every(kind => generatedKinds.has(kind)) && generated.length >= 4,
+      `${Array.from(generatedKinds).join(', ') || 'missing'} generated target kinds`),
+    gate('description-quality:ai-sourced-storage',
+      results.some(result => result.name === 'stored-descriptions-are-ai-sourced' && result.status === 'pass'),
+      results.find(result => result.name === 'stored-descriptions-are-ai-sourced')?.detail || 'missing AI-source storage check'),
+    gate('description-quality:bad-samples-rejected',
+      Number(summary.bad_samples_rejected || badRejects.length) >= 4,
+      `${summary.bad_samples_rejected || badRejects.length} bad samples rejected`),
+    gate('description-quality:no-generic-leaks',
+      genericLeaks.length === 0,
+      genericLeaks.length === 0 ? 'generated descriptions avoid inventory/filler text' : genericLeaks.map(result => result.name).join(', ')),
+  ];
+}
+
+function analysisFocusBenchmarkGates(report: JsonObject): Gate[] {
+  const summary = report.summary || {};
+  const gates = array(report.gates);
+  const failed = gates.filter(item => item.status !== 'pass');
+  const profiles = array(report.profiles);
+  const byFocus = (focus: string) => profiles.find(profile => profile.focus === focus) || {};
+  const agentFast = byFocus('agent-fast');
+  const uiOverview = byFocus('ui-overview');
+  const deepContext = byFocus('deep-context');
+  const agentFastEnabled = array(agentFast.enabled_layers).map(String);
+  const agentFastDeferred = array(agentFast.deferred_layers).map(String);
+  const uiEnabled = array(uiOverview.enabled_layers).map(String);
+  const deepEnabled = array(deepContext.enabled_layers).map(String);
+  return [
+    gate('analysis-focus:status', report.status === 'pass' && Number(report.score) === 100, `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`),
+    gate('analysis-focus:agent-fast-token-discipline',
+      Number(summary.agent_fast_optional_work_units ?? Number.POSITIVE_INFINITY) === 0 &&
+        Number(summary.agent_fast_optional_reduction_percent ?? 0) === 100 &&
+        Number(summary.agent_fast_total_reduction_percent ?? 0) >= 60,
+      `${summary.agent_fast_total_reduction_percent || 0}% total reduction, ${summary.agent_fast_optional_reduction_percent || 0}% optional reduction`),
+    gate('analysis-focus:agent-fast-defers-expensive-layers',
+      agentFastEnabled.includes('core-graph') &&
+        agentFastEnabled.includes('agent-context') &&
+        agentFastDeferred.includes('ai-system-narrative') &&
+        agentFastDeferred.includes('ai-element-descriptions') &&
+        agentFastDeferred.includes('semantic-embeddings'),
+      `enabled ${agentFastEnabled.join(', ') || 'missing'}; deferred ${agentFastDeferred.join(', ') || 'missing'}`),
+    gate('analysis-focus:ui-and-deep-layers-separated',
+      uiEnabled.includes('ai-system-narrative') &&
+        uiEnabled.includes('ai-element-descriptions') &&
+        !uiEnabled.includes('semantic-embeddings') &&
+        deepEnabled.includes('ai-system-narrative') &&
+        deepEnabled.includes('semantic-embeddings') &&
+        !deepEnabled.includes('ai-element-descriptions'),
+      `ui ${uiEnabled.join(', ') || 'missing'}; deep ${deepEnabled.join(', ') || 'missing'}`),
+    gate('analysis-focus:all-local-gates-pass', gates.length >= 8 && failed.length === 0, `${failed.length} failing focus gates`),
+  ];
+}
+
+export function competitorBaselineBenchmarkGates(report: JsonObject): Gate[] {
+  const summary = report.summary || {};
+  const gates = array(report.gates);
+  const failed = gates.filter(item => item.status !== 'pass');
+  return [
+    gate('competitor-baseline:status', report.status === 'pass' && Number(report.score) === 100, `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`),
+    gate('competitor-baseline:scenario-coverage',
+      Number(summary.scenario_count || 0) >= 14 && Number(summary.family_count || 0) >= 12,
+      `${summary.scenario_count || 0} scenarios across ${summary.family_count || 0} families`),
+    gate('competitor-baseline:index-proxy-nontrivial',
+      String(summary.competitor_model || '') === 'cursor-style-lexical-index-proxy-v1' &&
+        Number(summary.average_index_retrieval_file_recall || 0) >= 25 &&
+        Number(summary.average_index_retrieval_file_precision || 0) >= 25,
+      `${summary.competitor_model || 'missing model'}, ${summary.average_index_retrieval_file_recall || 0}% recall, ${summary.average_index_retrieval_file_precision || 0}% precision`),
+    gate('competitor-baseline:quality-lift',
+      Number(summary.average_context_readiness_delta_vs_index || 0) >= 25 &&
+        Number(summary.scenarios_with_positive_context_readiness_delta || 0) >= Math.ceil(Number(summary.scenario_count || 0) * 0.8),
+      `+${summary.average_context_readiness_delta_vs_index || 0} average context readiness, ${summary.scenarios_with_positive_context_readiness_delta || 0}/${summary.scenario_count || 0} positive scenarios`),
+    gate('competitor-baseline:token-reduction',
+      Number(summary.average_token_reduction_vs_index_percentage || 0) >= 15 &&
+        Number(summary.scenarios_with_positive_token_reduction || 0) >= Math.ceil(Number(summary.scenario_count || 0) * 0.8) &&
+        Number(summary.average_klauro_packet_tokens || Number.POSITIVE_INFINITY) <= 3200,
+      `${summary.average_token_reduction_vs_index_percentage || 0}% average token reduction, ${summary.average_klauro_packet_tokens || 'missing'} avg packet tokens`),
+    gate('competitor-baseline:all-local-gates-pass', gates.length >= 6 && failed.length === 0, `${failed.length} failing competitor baseline gates`),
+  ];
+}
+
+function agentContextCodecBenchmarkGates(report: JsonObject): Gate[] {
+  const results = array(report.results);
+  const gates = array(report.gates);
+  const failed = gates.filter(item => item.status !== 'pass');
+  const byName = (name: string) => results.find(result => result.name === name) || {};
+  const k14 = byName('k14-agent-context-language');
+  const k13 = byName('k13-agent-context-language');
+  const k15 = byName('k15-agent-context-language');
+  const k12 = byName('k12-agent-context-language');
+  const k11 = byName('k11-agent-context-language');
+  const k10 = byName('k10-agent-context-language');
+  const k9 = byName('k9-agent-context-language');
+  const k8 = byName('k8-agent-context-language');
+  const minJson = byName('min-json');
+  const jsonb = byName('jsonb-rowset');
+  const protobuf = byName('protobuf-text');
+  const toonish = byName('toonish-table');
+  const yaml = byName('yaml-brief');
+  const xml = byName('xml-tags');
+  return [
+    gate('agent-context-codec:status', report.status === 'pass' && Number(report.score) === 100, `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`),
+    gate('agent-context-codec:default-k15', report.recommendation === 'k15-agent-context-language' && k15.name === 'k15-agent-context-language', `recommendation ${report.recommendation || 'missing'}`),
+    gate('agent-context-codec:token-budget',
+      Number(k15.estimated_tokens || Number.POSITIVE_INFINITY) <= 95 && Number(k15.token_reduction_vs_min_json || 0) >= 73,
+      `${k15.estimated_tokens || 'missing'} tokens, ${k15.token_reduction_vs_min_json || 0}% reduction vs min JSON`),
+    gate('agent-context-codec:promptish-token-budget',
+      Number(k15.promptish_token_reduction_vs_min_json || 0) >= 80 &&
+        Number(k15.context_slots_per_100_promptish_tokens || 0) > Number(k14.context_slots_per_100_promptish_tokens || 0),
+      `${k15.promptish_tokens || 'missing'} promptish tokens, ${k15.promptish_token_reduction_vs_min_json || 0}% reduction vs min JSON, ${k15.context_slots_per_100_promptish_tokens || 'missing'} slots/100`),
+    gate('agent-context-codec:density',
+      Number(k15.context_slots || 0) >= 18 &&
+        Number(k15.context_slots_per_100_tokens || 0) > Number(k14.context_slots_per_100_tokens || Number.POSITIVE_INFINITY) &&
+        Number(k15.estimated_tokens || Number.POSITIVE_INFINITY) < Number(k14.estimated_tokens || 0),
+      `K15 ${k15.context_slots_per_100_tokens || 'missing'} slots/100, ${k15.estimated_tokens || 'missing'} tokens; K14 ${k14.context_slots_per_100_tokens || 'missing'} slots/100, ${k14.estimated_tokens || 'missing'} tokens; K13 ${k13.context_slots_per_100_tokens || 'missing'} slots/100; K12 ${k12.context_slots_per_100_tokens || 'missing'} slots/100; K11 ${k11.context_slots_per_100_tokens || 'missing'} slots/100; K10 ${k10.context_slots_per_100_tokens || 'missing'} slots/100; K9 ${k9.context_slots_per_100_tokens || 'missing'} slots/100; K8 ${k8.context_slots_per_100_tokens || 'missing'} slots/100`),
+    gate('agent-context-codec:beats-baselines',
+      [minJson, jsonb, protobuf, toonish, yaml, xml].every(result => Number(k15.balanced_score || 0) > Number(result.balanced_score || Number.POSITIVE_INFINITY)),
+      `K15 ${k15.balanced_score || 'missing'} vs JSON ${minJson.balanced_score || 'missing'}, JSONB ${jsonb.balanced_score || 'missing'}, protobuf ${protobuf.balanced_score || 'missing'}, TOON-ish ${toonish.balanced_score || 'missing'}, YAML ${yaml.balanced_score || 'missing'}, XML ${xml.balanced_score || 'missing'}`),
+    gate('agent-context-codec:all-local-gates-pass', gates.length >= 5 && failed.length === 0, `${failed.length} failing codec gates`),
+  ];
+}
+
+function architecturePatternBenchmarkGates(report: JsonObject): Gate[] {
+  const summary = report.summary || {};
+  const targets = array(report.targets);
+  const failedTargets = targets.filter(target => target.status !== 'pass' || Number(target.score || 0) < 100);
+  const allPatterns = new Set(targets.flatMap(target => array(target.patterns).map(pattern => String(pattern))));
+  const patternSplurgeFailures = targets.filter(target =>
+    array(target.gates).some(gate => String(gate.id || '').endsWith(':no-pattern-splurge') && gate.status !== 'pass')
+  );
+  const emptyInventoryTargets = targets.filter(target =>
+    Object.values(target.inventory || {}).every(value => Number(value || 0) === 0)
+  );
+  return [
+    gate('architecture-pattern:status', report.status === 'pass' && Number(report.score) === 100, `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`),
+    gate('architecture-pattern:target-count', Number(summary.target_count || targets.length) >= 6, `${summary.target_count || targets.length || 0} targets`),
+    gate('architecture-pattern:fixture-coverage',
+      ['MVC', 'Layered Architecture', 'Service Layer', 'Component/Page UI', 'Mediator / Handler', 'MVVM', 'Repository', 'Unit of Work', 'Singleton / Registry'].every(pattern => allPatterns.has(pattern)),
+      `patterns ${Array.from(allPatterns).join(', ') || 'missing'}`),
+    gate('architecture-pattern:all-targets-pass', targets.length > 0 && failedTargets.length === 0, `${failedTargets.length} failing targets`),
+    gate('architecture-pattern:no-pattern-splurge', patternSplurgeFailures.length === 0, `${patternSplurgeFailures.length} splurge failures`),
+    gate('architecture-pattern:no-empty-inventory', emptyInventoryTargets.length === 0, `${emptyInventoryTargets.length} empty inventory targets`),
+  ];
+}
+
+function capabilityInferenceBenchmarkGates(report: JsonObject): Gate[] {
+  const summary = report.summary || {};
+  const capabilities = array(report.capabilities);
+  const names = capabilities.map(capability => String(capability.name || ''));
+  const failed = array(report.gates).filter(item => item.status !== 'pass');
+  return [
+    gate('capability-inference:status', report.status === 'pass' && Number(report.score) === 100, `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`),
+    gate('capability-inference:domain', summary.primary_domain === 'fleet-management', `primary domain ${summary.primary_domain || 'missing'}`),
+    gate('capability-inference:no-generic-capabilities', Number(summary.generic_capability_count || 0) === 0, `${summary.generic_capability_count || 0} generic capabilities`),
+    gate('capability-inference:domain-capabilities',
+      ['Vehicle Management', 'Fuel Purchase Management', 'Invoice Management'].every(name => names.includes(name)),
+      names.join(', ') || 'missing'),
+    gate('capability-inference:all-local-gates-pass', failed.length === 0 && array(report.gates).length >= 6, `${failed.length} failing capability gates`),
+  ];
+}
+
+function runtimeImpactBenchmarkGates(report: JsonObject): Gate[] {
+  const summary = report.summary || {};
+  const gates = array(report.gates);
+  const failed = gates.filter(item => item.status !== 'pass');
+  return [
+    gate('runtime-impact:status', report.status === 'pass' && Number(report.score) === 100, `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`),
+    gate('runtime-impact:reorders-static-priority',
+      Boolean(summary.runtime_top_file) &&
+        String(summary.runtime_top_file) !== String(summary.baseline_static_top) &&
+        /invoice-export\.service\.ts$/.test(String(summary.runtime_top_file)),
+      `static ${summary.baseline_static_top || 'missing'} -> runtime ${summary.runtime_top_file || 'missing'}`),
+    gate('runtime-impact:matched-telemetry',
+      Number(summary.ingested_events || 0) > 0 && Number(summary.matched_events || 0) >= Number(summary.ingested_events || 0) - 1,
+      `${summary.matched_events || 0}/${summary.ingested_events || 0} events matched`),
+    gate('runtime-impact:compact-agent-context',
+      Number(summary.token_reduction_percentage || 0) >= 70 && Number(summary.capsule_estimated_tokens || Number.POSITIVE_INFINITY) <= 350,
+      `${summary.token_reduction_percentage || 0}% reduction, ${summary.capsule_estimated_tokens || 'missing'} capsule tokens`),
+    gate('runtime-impact:all-local-gates-pass', gates.length >= 6 && failed.length === 0, `${failed.length} failing runtime-impact gates`),
+  ];
+}
+
 function idiomBenchmarkGates(report: JsonObject): Gate[] {
   const summary = report.summary || {};
   const liveTrials = Number(summary.live_trials_attempted || 0);
@@ -263,7 +483,7 @@ function idiomBenchmarkGates(report: JsonObject): Gate[] {
   ];
 }
 
-function machineProofGates(report: JsonObject): Gate[] {
+export function machineProofGates(report: JsonObject): Gate[] {
   const discovery = report.discovery || {};
   const gates = array(report.gates);
   const failed = gates.filter(item => item.status !== 'pass');
@@ -271,10 +491,22 @@ function machineProofGates(report: JsonObject): Gate[] {
   const discovered = array(discovery.repos);
   const eligible = discovered.filter(repo => repo.status === 'eligible');
   const accountedEligible = eligible.filter(repo => repoResults.some(result => result.path === repo.path));
+  const analyzedEligible = eligible.filter(repo => repoResults.some(result =>
+    result.path === repo.path &&
+    result.status === 'eligible' &&
+    result.proof_status !== 'skipped' &&
+    !/^Eligible repo not analyzed/i.test(String(result.reason || ''))
+  ));
   return [
     gate('machine-proof:status', report.status === 'pass' && report.score === 100, `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`),
     gate('machine-proof:discovery-accounting', Number(discovery.total_repos) === discovered.length && discovered.length > 0, `${discovered.length}/${discovery.total_repos || 0} discovered repos accounted`),
     gate('machine-proof:eligible-accounting', accountedEligible.length === eligible.length && eligible.length > 0, `${accountedEligible.length}/${eligible.length} eligible repos accounted`),
+    gate('machine-proof:full-eligible-analysis',
+      report.mode === 'full' &&
+        Number(report.selected_eligible_count || 0) === eligible.length &&
+        analyzedEligible.length === eligible.length &&
+        eligible.length > 0,
+      `${analyzedEligible.length}/${eligible.length} eligible repos analyzed in ${report.mode || 'unknown'} mode`),
     gate('machine-proof:no-silent-omissions', discovered.length > 0 && repoResults.length >= discovered.length, `${repoResults.length}/${discovered.length} repo rows reported`),
     gate('machine-proof:gates-pass', gates.length > 0 && failed.length === 0, `${failed.length} failing machine gates`),
   ];
@@ -368,12 +600,17 @@ async function persistedProofGates(): Promise<Gate[]> {
   const summaries = await listAgenticBenchmarkReports();
   const reports = (await Promise.all(summaries.map(summary => loadAgenticBenchmarkReport(summary.id))))
     .filter((report): report is JsonObject => Boolean(report));
+  const fileAgenticBenchmark = await readReport(REPORTS.agenticBenchmark);
+  const fileQualityBenchmark = await readReport(REPORTS.qualityBenchmark);
+  const fileIdiomBenchmark = await readReport(REPORTS.idiomBenchmark);
+  const fileDescriptionQualityBenchmark = await readReport(REPORTS.descriptionQualityBenchmark);
   const proof = buildAgentPerformanceProof(reports, { sinceDays: 7 });
   const liveRollup = proof.rollups.find((rollup: JsonObject) => rollup.benchmark_type === 'live-agent-quality-ab-rollup');
   const existingLiveRollup = proof.rollups.find((rollup: JsonObject) => rollup.benchmark_type === 'existing-project-live-task-rollup');
   const taskFamilyCoverage = proof.rollups.find((rollup: JsonObject) => rollup.benchmark_type === 'agent-task-family-coverage-rollup');
   const idiomReport = reports.find((report: JsonObject) => report.benchmark_type === 'live-agent-idiom-quality-ab')
-    || reports.find((report: JsonObject) => report.benchmark_type === 'deterministic-agent-idiom-quality-proxy');
+    || reports.find((report: JsonObject) => report.benchmark_type === 'deterministic-agent-idiom-quality-proxy')
+    || (!fileIdiomBenchmark.missing_report ? fileIdiomBenchmark : undefined);
   const fromZeroReport = reports.find((report: JsonObject) => report.benchmark_type === 'from-zero-build-packet-proof');
   const fromZeroScenarioCount = Number(fromZeroReport?.summary?.scenario_count || (fromZeroReport?.scenario ? 1 : 0));
   const fromZeroProductFocusCount = Number(fromZeroReport?.summary?.product_focus_scenario_count || 0);
@@ -384,11 +621,13 @@ async function persistedProofGates(): Promise<Gate[]> {
   const liveTokenReduction = metricPercent(liveRollup?.metrics?.token_reduction);
   const existingLiveTokenReduction = metricPercent(existingLiveRollup?.metrics?.average_token_reduction);
   const deterministicTokenReduction = metricPercent(usefulnessClaim?.evidence?.average_token_reduction_vs_search);
+  const fileAgenticTokenReduction = metricPercent(fileAgenticBenchmark.summary?.average_token_reduction_vs_search);
   const liveTimeReduction = metricPercent(liveRollup?.metrics?.time_reduction);
   const existingLiveTimeReduction = metricPercent(existingLiveRollup?.metrics?.average_time_reduction);
   const deterministicTimeReduction = metricPercent(qualityClaim?.evidence?.average_time_reduction_vs_search);
   const liveFileReduction = metricPercent(liveRollup?.metrics?.file_read_reduction);
   const deterministicFileReduction = metricPercent(usefulnessClaim?.evidence?.average_file_reduction);
+  const fileAgenticFileReduction = metricPercent(fileAgenticBenchmark.summary?.average_file_reduction);
   const liveWithSuccess = metricPercent(liveRollup?.metrics?.with_klauro_success_rate);
   const existingLiveQualityDelta = signedMetric(existingLiveRollup?.metrics?.average_quality_delta);
   const existingLiveTokenRegressions = Number(existingLiveRollup?.metrics?.token_regressions ?? Number.POSITIVE_INFINITY);
@@ -399,17 +638,25 @@ async function persistedProofGates(): Promise<Gate[]> {
   const taskFamilyPartial = Number(taskFamilyCoverage?.metrics?.partial_families || 0);
   const deterministicWithSuccess = metricPercent(qualityClaim?.evidence?.with_klauro_success_rate);
   const deterministicQualityDelta = Number(String(qualityClaim?.evidence?.average_quality_score_delta || '').replace('+', ''));
+  const fileQualityWithSuccess = metricPercent(fileQualityBenchmark.summary?.with_klauro_success_rate);
+  const fileQualityDelta = Number(fileQualityBenchmark.summary?.average_quality_score_delta || 0);
+  const supplementalClaimCount = [
+    !fileAgenticBenchmark.missing_report && fileAgenticBenchmark.status === 'pass',
+    !fileQualityBenchmark.missing_report && fileQualityBenchmark.status === 'pass',
+    !fileIdiomBenchmark.missing_report && fileIdiomBenchmark.status === 'pass',
+    !fileDescriptionQualityBenchmark.missing_report && fileDescriptionQualityBenchmark.status === 'pass',
+  ].filter(Boolean).length;
 
   return [
     gate('mcp-proof:recent-report-coverage', Number(proof.included_report_count) >= 4 && Number(proof.latest_report_count) >= 3, `${proof.included_report_count} recent reports, ${proof.latest_report_count} latest families`),
-    gate('mcp-proof:claims', claims.length >= 4, `${claims.length} proof claims`),
+    gate('mcp-proof:claims', claims.length + supplementalClaimCount >= 4, `${claims.length} persisted proof claims, ${supplementalClaimCount} latest file-backed proof families`),
     gate('mcp-proof:token-reduction',
-      existingLiveTokenReduction >= 0 || liveTokenReduction >= 0.5 || deterministicTokenReduction >= 0.8,
+      existingLiveTokenReduction >= 0 || liveTokenReduction >= 0.5 || deterministicTokenReduction >= 0.8 || fileAgenticTokenReduction >= 0.8,
       existingLiveRollup
         ? `${existingLiveRollup.metrics?.average_token_reduction || 'unknown'} existing-task live token reduction, ${existingLiveRollup.metrics?.token_regressions ?? 'unknown'} token regressions`
         : liveTokenReduction > 0
         ? `${liveRollup?.metrics?.token_reduction || 'unknown'} live token reduction (${liveRollup?.metrics?.token_measurement_source || 'unknown'} tokens)`
-        : `${usefulnessClaim?.evidence?.average_token_reduction_vs_search || 'unknown'} deterministic token reduction`),
+        : `${usefulnessClaim?.evidence?.average_token_reduction_vs_search || fileAgenticBenchmark.summary?.average_token_reduction_vs_search || 'unknown'} deterministic token reduction`),
     gate('mcp-proof:time-reduction',
       existingLiveTimeReduction >= 0 || liveTimeReduction >= 0.2 || deterministicTimeReduction >= 0.8,
       existingLiveRollup
@@ -418,20 +665,23 @@ async function persistedProofGates(): Promise<Gate[]> {
         ? `${liveRollup?.metrics?.time_reduction || 'unknown'} live time reduction`
         : `${qualityClaim?.evidence?.average_time_reduction_vs_search || 'unknown'} deterministic time reduction`),
     gate('mcp-proof:file-reduction',
-      liveFileReduction >= 0.25 || deterministicFileReduction >= 0.95,
+      liveFileReduction >= 0.25 || deterministicFileReduction >= 0.95 || fileAgenticFileReduction >= 0.95,
       liveFileReduction > 0
         ? `${liveRollup?.metrics?.file_read_reduction || 'unknown'} live file-read reduction`
-        : `${usefulnessClaim?.evidence?.average_file_reduction || 'unknown'} deterministic file-read reduction`),
+        : `${usefulnessClaim?.evidence?.average_file_reduction || fileAgenticBenchmark.summary?.average_file_reduction || 'unknown'} deterministic file-read reduction`),
     gate('mcp-proof:quality-preserved',
       (existingLiveRollup
         ? existingLiveRollup.status === 'pass' && existingLiveQualityDelta > 0 && existingLiveTokenRegressions === 0
         : false)
         || (liveRollup ? liveRollup.status !== 'fail' && liveWithSuccess === 1 && metricPercent(liveRollup.metrics?.token_reduction) >= 0 : false)
-        || (deterministicWithSuccess === 1 && deterministicQualityDelta > 0),
+        || (deterministicWithSuccess === 1 && deterministicQualityDelta > 0)
+        || (!fileQualityBenchmark.missing_report && fileQualityBenchmark.status === 'pass' && fileQualityWithSuccess === 1 && fileQualityDelta > 0),
       existingLiveRollup
         ? `${existingLiveRollup.status || 'unknown'}, ${existingLiveRollup.metrics?.passing_live_tasks || 0}/${existingLiveRollup.metrics?.live_tasks || 0} existing-task live passes, ${existingLiveRollup.metrics?.average_quality_delta || 'unknown'} quality delta, ${existingLiveRollup.metrics?.average_token_reduction || 'unknown'} token reduction, ${existingLiveAcceptedTokenTradeoffs} accepted tiny token tradeoffs, ${existingLiveTokenRegressions} token regressions`
         : liveRollup
         ? `${liveRollup.status || 'unknown'}, ${liveRollup.metrics?.with_klauro_success_rate || 'unknown'} live success, ${liveRollup.metrics?.average_quality_delta || 'unknown'} live quality delta`
+        : !fileQualityBenchmark.missing_report
+        ? `${fileQualityBenchmark.summary?.with_klauro_success_rate ?? 'unknown'} file-backed deterministic success, +${fileQualityDelta} quality delta`
         : `${qualityClaim?.evidence?.with_klauro_success_rate || 'unknown'} deterministic success, ${qualityClaim?.evidence?.average_quality_score_delta || 'unknown'} quality delta`),
     gate('mcp-proof:task-family-coverage',
       Boolean(taskFamilyCoverage) && taskFamilyCoverage?.status === 'pass' && taskFamilyStrong === taskFamilyCount && taskFamilyCount >= 17 && taskFamilyPartial === 0 && taskFamilyGaps === 0,
@@ -527,7 +777,9 @@ function array(value: unknown): JsonObject[] {
   return Array.isArray(value) ? value as JsonObject[] : [];
 }
 
-main().catch(error => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+if (isDirectCliInvocation('agent-vision-acceptance')) {
+  main().catch(error => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}

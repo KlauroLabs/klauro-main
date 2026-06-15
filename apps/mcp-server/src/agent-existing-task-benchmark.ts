@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { analyzeProjectIncremental } from './analyzer';
 import { getAgentWorkPacket } from './agent-adoption';
+import { parseAgentContextCapsule } from './agent-context-codec';
 import { validateAgentChange } from './agent-workflow';
 import { runLiveAgentPair, type LiveAgentArmResult, type LiveAgentCommandConfig, type LiveAgentPairResult } from './agent-live-trial';
 import {
@@ -55,13 +56,20 @@ interface SeededScenario {
   changed_files: string[];
   diff_text: string;
   live_checks: LiveFileCheck[];
+  guidance?: string[];
+  edit_recipe?: string[];
   semantic_rules: {
     required_changed_files?: string[];
+    required_context_files?: string[];
     forbidden_changed_files?: string[];
     max_changed_files?: number;
     required_diff_patterns?: string[];
+    prompt_required_evidence?: string[];
     forbidden_diff_patterns?: string[];
+    prompt_forbidden_evidence?: string[];
+    direct_patch?: boolean;
     require_test_change?: boolean;
+    require_test_import_source?: boolean;
     require_production_change?: boolean;
     allow_only_changed_files?: boolean;
   };
@@ -109,6 +117,9 @@ interface ScenarioResult {
     without_score: number;
     quality_delta: number;
     token_reduction_percentage: number | null;
+    provider_total_token_reduction_percentage?: number | null;
+    provider_direct_token_reduction_percentage?: number | null;
+    token_reduction_metric?: string;
     time_reduction_percentage: number;
     changed_file_precision_delta: number;
   };
@@ -131,7 +142,7 @@ interface BenchmarkReport {
     live_scenarios: number;
     live_passing_scenarios: number;
     average_live_quality_delta: number;
-    average_live_token_reduction_percentage: number;
+    average_live_token_reduction_percentage: number | null;
     average_index_retrieval_file_recall: number;
     average_index_retrieval_tokens: number;
     klauro_vs_index_retrieval_token_reduction_percentage: number;
@@ -389,6 +400,7 @@ const SCENARIOS: SeededScenario[] = [
       ],
     },
     files: tenantTaskFiles({
+      'package.json': JSON.stringify({ scripts: { test: `${mcpServerTsxBin()} tests/taskService.test.js` }, type: 'module' }),
       'src/services/taskService.ts': [
         'import { TaskRepository } from "../repositories/taskRepository";',
         'import { assertWorkspaceMember } from "../policies/workspacePolicy";',
@@ -403,17 +415,46 @@ const SCENARIOS: SeededScenario[] = [
     }),
     expected_files: ['src/services/taskService.ts', 'tests/taskService.test.js'],
     expected_terms: ['validation', 'service', 'blank', 'title', 'test'],
-    changed_files: ['src/services/taskService.ts', 'tests/taskService.test.ts'],
+    changed_files: ['src/services/taskService.ts', 'tests/taskService.test.js'],
     diff_text: diff('src/services/taskService.ts', 'assertWorkspaceMember(input.workspaceId, input.assigneeId);', 'if (!input.title.trim()) throw new Error("Task title is required");\n    assertWorkspaceMember(input.workspaceId, input.assigneeId);'),
     live_checks: [
       { file: 'src/services/taskService.ts', patterns: ['title\\.trim\\(\\)|trim\\(\\).*title|Task title is required'] },
       { file: 'tests/taskService.test.js', patterns: ['blank|empty|Task title|required|throws'] },
     ],
+    guidance: [
+      'Root cause: TaskService.createTask accepts empty and whitespace-only titles before calling the repository.',
+      'Keep validation at the service boundary before assertWorkspaceMember and repository.create.',
+      'Do not read or edit repository, policy, controller, or package files for this fix.',
+      'Replace the placeholder taskService test with direct production-source assertions.',
+    ],
+    edit_recipe: [
+      'In createTask: if (!input.title.trim()) throw new Error("Task title is required") before assertWorkspaceMember.',
+      'In tests/taskService.test.js: import node:assert, TaskService, and TaskRepository only.',
+      'Assert empty title throws, whitespace-only title throws, and a valid title still reaches repository.create.',
+    ],
     semantic_rules: {
       required_changed_files: ['src/services/taskService.ts', 'tests/taskService.test.js'],
+      forbidden_changed_files: [
+        'src/repositories/taskRepository.ts',
+        'src/controllers/taskController.ts',
+        'src/policies/workspacePolicy.ts',
+        'src/domain/task.ts',
+        'package.json',
+      ],
       max_changed_files: 3,
       required_diff_patterns: ['title\\.trim\\(\\)|trim\\(\\).*title|Task title is required', 'blank|empty|required|throws'],
+      prompt_required_evidence: [
+        'Service rejects empty and whitespace-only titles before policy/repository calls.',
+        'Focused test imports TaskService and TaskRepository production source directly.',
+        'Focused test proves blank/whitespace titles throw and a valid title still succeeds.',
+      ],
       forbidden_diff_patterns: ['repository\\.create\\(\\{[^}]*title:\\s*input\\.title\\.trim\\(\\)', 'assert\\.ok\\(true\\)'],
+      prompt_forbidden_evidence: [
+        'Do not inline or mirror TaskService in the test.',
+        'Do not change repository, controller, policy, package, or domain files.',
+      ],
+      direct_patch: true,
+      require_test_import_source: true,
     },
   },
   {
@@ -463,11 +504,12 @@ const SCENARIOS: SeededScenario[] = [
       instructions: 'Diagnose and fix the slow task summary path that loads each project one by one. Preserve the public summary contract.',
       success_criteria: [
         'Root cause identifies repeated repository calls.',
-        'Fix batches project lookups behind the repository boundary.',
+        'Fix batches and deduplicates project lookups behind the repository boundary.',
         'Tests preserve the summary contract.',
       ],
     },
     files: tenantTaskFiles({
+      'package.json': JSON.stringify({ scripts: { test: `${mcpServerTsxBin()} tests/taskSummaryService.test.ts` }, type: 'module' }),
       'src/services/taskSummaryService.ts': [
         'import { ProjectRepository } from "../repositories/projectRepository";',
         'import type { Task } from "../domain/task";',
@@ -489,18 +531,43 @@ const SCENARIOS: SeededScenario[] = [
       ].join('\n'),
     }),
     expected_files: ['src/services/taskSummaryService.ts', 'src/repositories/projectRepository.ts', 'tests/taskSummaryService.test.ts'],
-    expected_terms: ['performance', 'batch', 'repository', 'summary', 'test'],
+    expected_terms: ['performance', 'batch', 'deduplicate', 'repository', 'summary', 'test'],
     changed_files: ['src/services/taskSummaryService.ts', 'tests/taskSummaryService.test.ts'],
     diff_text: diff('src/services/taskSummaryService.ts', 'project: await this.projects.findById(task.projectId),', 'project: projectById.get(task.projectId),'),
     live_checks: [
-      { file: 'src/services/taskSummaryService.ts', patterns: ['findByIds', 'Map|projectById'], absent_patterns: ['map\\(async task[\\s\\S]*findById'] },
-      { file: 'tests/taskSummaryService.test.ts', patterns: ['batch|findByIds|summary|contract'] },
+      { file: 'src/services/taskSummaryService.ts', patterns: ['findByIds', 'Map|projectById', 'new Set|Set\\('], absent_patterns: ['map\\(async task[\\s\\S]*findById'] },
+      { file: 'tests/taskSummaryService.test.ts', patterns: ['findByIds', 'length\\s*,\\s*2|length.*2|2 unique|toHaveLength\\(2\\)|deepEqual[\\s\\S]*\\["p1",\\s*"p2"\\]'] },
+    ],
+    guidance: [
+      'Root cause: TaskSummaryService.summarize currently calls ProjectRepository.findById once per task.',
+      'Use [...new Set(tasks.map(task => task.projectId))] before findByIds.',
+      'ProjectRepository exposes findByIds(ids) and findById(id); do not read or edit the repository file.',
+      'In the focused test, track findByIds once, findById zero times, and assert the repeated project id is only requested once.',
+      'The focused test should stay under 35 lines.',
+    ],
+    edit_recipe: [
+      'In summarize: derive unique projectIds with [...new Set(tasks.map(task => task.projectId))].',
+      'Load once with this.projects.findByIds(projectIds), build projectById = new Map(projectList.map(project => [project.id, project])).',
+      'Return tasks.map(task => ({ taskId: task.id, project: projectById.get(task.projectId) })).',
+      'In the test: import node:assert and TaskSummaryService only; use an inline repo object tracking findByIds count, findById count, and captured ids.',
     ],
     semantic_rules: {
       required_changed_files: ['src/services/taskSummaryService.ts', 'tests/taskSummaryService.test.ts'],
       max_changed_files: 3,
-      required_diff_patterns: ['findByIds', 'Map|projectById', 'batch|summary contract'],
-      forbidden_diff_patterns: ['findById\\(task\\.projectId\\)', 'Promise\\.all\\(tasks\\.map\\(async task'],
+      required_diff_patterns: ['findByIds', 'Map|projectById', 'new Set|Set\\(', 'findByIdCalls|findByIdCallCount|idCalls|findById[^\\n]*(?:not be called|0 times)', 'findByIdsCalls|idsCalls|called.*once|findByIds.*once', 'length\\s*,\\s*2|length.*2|2 unique|toHaveLength\\(2\\)|deepEqual[\\s\\S]*\\["p1",\\s*"p2"\\]'],
+      prompt_required_evidence: [
+        'Deduplicate project ids before calling findByIds.',
+        'Call findByIds once and build a projectById map.',
+        'Focused test asserts findByIds once, findById zero, and 2 unique project ids.',
+        'Keep the test compact: import TaskSummaryService only and use a tiny inline repo object.',
+      ],
+      forbidden_diff_patterns: ['findById\\(task\\.projectId\\)', 'Promise\\.all\\(tasks\\.map\\(async task', '\\bdescribe\\s*\\(', '\\bit\\s*\\(', '\\bexpect\\s*\\(', 'import\\s+type\\s+', 'from\\s+["\\\']\\.\\.\\/src\\/repositories\\/projectRepository'],
+      prompt_forbidden_evidence: [
+        'Do not call findById per task.',
+        'Do not use Jest/Mocha globals, type-only imports, or repository imports in the focused test.',
+      ],
+      direct_patch: true,
+      require_test_import_source: true,
     },
   },
   {
@@ -914,6 +981,7 @@ const SCENARIOS: SeededScenario[] = [
       ],
     },
     files: tenantTaskFiles({
+      'package.json': JSON.stringify({ scripts: { test: `${mcpServerTsxBin()} tests/taskService.test.ts` }, type: 'module' }),
       'src/services/taskService.ts': [
         'import { TaskRepository } from "../repositories/taskRepository";',
         'import { assertWorkspaceMember } from "../policies/workspacePolicy";',
@@ -933,20 +1001,22 @@ const SCENARIOS: SeededScenario[] = [
         '  }',
         '}',
       ].join('\n'),
+      'tests/taskService.test.ts': 'import assert from "node:assert/strict"; assert.ok(true);',
     }),
-    expected_files: ['src/services/taskService.ts', 'src/repositories/taskRepository.ts', 'tests/taskService.test.js'],
+    expected_files: ['src/services/taskService.ts', 'src/repositories/taskRepository.ts', 'tests/taskService.test.ts'],
     expected_terms: ['archive', 'test', 'service', 'repository', 'coverage'],
-    changed_files: ['tests/taskService.test.js'],
-    diff_text: diff('tests/taskService.test.js', 'assert.ok(true);', 'assert.ok(true);\nassert.ok("archive behavior is covered");'),
+    changed_files: ['tests/taskService.test.ts'],
+    diff_text: diff('tests/taskService.test.ts', 'assert.ok(true);', 'assert.ok(true);\nassert.ok("archive behavior is covered");'),
     live_checks: [
-      { file: 'tests/taskService.test.js', patterns: ['archive|archived', 'TaskService|archiveTask'] },
+      { file: 'tests/taskService.test.ts', patterns: ['archive|archived', 'TaskService|archiveTask'] },
     ],
     semantic_rules: {
-      required_changed_files: ['tests/taskService.test.js'],
+      required_changed_files: ['tests/taskService.test.ts'],
       forbidden_changed_files: ['src/services/taskService.ts', 'src/repositories/taskRepository.ts', 'src/domain/task.ts'],
       max_changed_files: 1,
       required_diff_patterns: ['archive|archived', 'TaskService|archiveTask'],
       require_test_change: true,
+      require_test_import_source: true,
       require_production_change: false,
       allow_only_changed_files: true,
     },
@@ -1007,6 +1077,9 @@ export async function runSeededExistingTaskBenchmark(args: Args = parseArgs([]))
   const score = Math.round(average(scenarios.map(scenario => scenario.score)));
   const status = score >= 90 ? 'pass' : score >= 70 ? 'warn' : 'fail';
   const liveSummaries = scenarios.map(scenario => scenario.live_summary).filter((summary): summary is NonNullable<ScenarioResult['live_summary']> => Boolean(summary));
+  const liveTokenReductions = liveSummaries
+    .map(summary => summary.token_reduction_percentage)
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
   const proofStrength = liveSummaries.length > 0 ? 'live-agent-proof' : 'deterministic-proxy';
   return {
     generated_at: new Date().toISOString(),
@@ -1027,7 +1100,7 @@ export async function runSeededExistingTaskBenchmark(args: Args = parseArgs([]))
       live_scenarios: liveSummaries.length,
       live_passing_scenarios: liveSummaries.filter(summary => summary.status === 'pass').length,
       average_live_quality_delta: Math.round(average(liveSummaries.map(summary => summary.quality_delta))),
-      average_live_token_reduction_percentage: Math.round(average(liveSummaries.map(summary => summary.token_reduction_percentage ?? 0))),
+      average_live_token_reduction_percentage: liveTokenReductions.length > 0 ? Math.round(average(liveTokenReductions)) : null,
       average_index_retrieval_file_recall: Math.round(average(scenarios.map(scenario => scenario.index_retrieval_baseline.file_recall))),
       average_index_retrieval_tokens: Math.round(average(scenarios.map(scenario => scenario.index_retrieval_baseline.estimated_tokens))),
       klauro_vs_index_retrieval_token_reduction_percentage: Math.round(average(scenarios.map(scenario =>
@@ -1077,6 +1150,7 @@ async function runLiveExistingScenario(outputRoot: string, scenario: SeededScena
       task_family: scenario.family,
       expected_files: scenario.expected_files,
       changed_files: scenario.changed_files,
+      edit_recipe: scenario.edit_recipe,
       semantic_rules: scenario.semantic_rules,
       guidance: [
         'Preserve the existing service/repository/controller boundaries.',
@@ -1084,6 +1158,7 @@ async function runLiveExistingScenario(outputRoot: string, scenario: SeededScena
         ...(scenario.semantic_rules.require_test_change === true
           ? ['Add or update the focused test named by the task.']
           : []),
+        ...(scenario.guidance || []),
       ],
     },
   }, {
@@ -1105,11 +1180,14 @@ export async function runRealRepoExistingTaskBenchmark(args: Args): Promise<Real
 
   const analysis = await analyzeProjectIncremental(repoPath);
   const cas = analysis.output;
-  const packet = await getAgentWorkPacket(cas, repoPath, scenario.task as any) as any;
-  const packetTokens = estimateTokens(JSON.stringify(packet));
-  const fileReadPlan = Array.isArray(packet.file_read_plan) ? packet.file_read_plan : [];
+  const packet = await getAgentWorkPacket(cas, repoPath, {
+    ...(scenario.task as any),
+    response_profile: 'capsule-only',
+  }) as any;
+  const packetTokens = estimatePromptSurfaceTokens(packet);
+  const fileReadPlan = Array.isArray(packet.file_read_plan) ? packet.file_read_plan : Array.isArray(packet.files) ? packet.files : [];
   const firstFiles = fileReadPlan
-    .map((item: any) => String(item.file || item.path || '')).filter(Boolean) as string[];
+    .map((item: any) => typeof item === 'string' ? item : String(item.file || item.path || '')).filter(Boolean) as string[];
 
   const indexRetrieval = indexRetrievalBaselineScore(repoPath, scenario);
   const validatorPath = await writeLiveValidator(args.outputRoot, scenario);
@@ -1244,7 +1322,7 @@ export function formatRealRepoExistingTaskBenchmarkMarkdown(report: RealRepoBenc
       : '## Decisive numbers',
     '',
     `- Quality: with Klauro ${report.live_summary.with_score}/100 vs baseline ${report.live_summary.without_score}/100 (delta ${signed(report.live_summary.quality_delta)})`,
-    `- Provider tokens: with ${withArm.provider_total_tokens ?? 'unknown'} vs baseline ${withoutArm.provider_total_tokens ?? 'unknown'} (reduction ${report.live_summary.token_reduction_percentage ?? 'unknown'}%)`,
+    `- Provider tokens: with ${withArm.provider_total_tokens ?? 'unknown'} vs baseline ${withoutArm.provider_total_tokens ?? 'unknown'} (${formatLiveTokenMetric(report.live_summary)})`,
     `- Wall clock: with ${Math.round(withArm.duration_ms / 1000)}s vs baseline ${Math.round(withoutArm.duration_ms / 1000)}s (time reduction ${report.live_summary.time_reduction_percentage}%)`,
     `- Changed-file precision delta: ${signed(report.live_summary.changed_file_precision_delta)}`,
     `- Changed files: with [${withArm.changed_files.join(', ')}] vs baseline [${withoutArm.changed_files.join(', ')}]`,
@@ -1335,7 +1413,7 @@ function formatArmRepCells(arm: LiveArmRepRecord | undefined): { quality: string
 function printRealRepoReport(report: RealRepoBenchmarkReport): void {
   console.log(`Real-repo existing-task live A/B: ${report.status.toUpperCase()}`);
   console.log(`  quality ${report.live_summary.with_score}/${report.live_summary.without_score} (delta ${signed(report.live_summary.quality_delta)})`);
-  console.log(`  tokens with ${report.live_pair.with_klauro.provider_total_tokens ?? 'unknown'} vs baseline ${report.live_pair.without_klauro.provider_total_tokens ?? 'unknown'} (reduction ${report.live_summary.token_reduction_percentage ?? 'unknown'}%)`);
+  console.log(`  tokens with ${report.live_pair.with_klauro.provider_total_tokens ?? 'unknown'} vs baseline ${report.live_pair.without_klauro.provider_total_tokens ?? 'unknown'} (${formatLiveTokenMetric(report.live_summary)})`);
   console.log(`  time reduction ${report.live_summary.time_reduction_percentage}%; precision delta ${signed(report.live_summary.changed_file_precision_delta)}`);
   console.log(`  retrieval recall ${report.index_retrieval_baseline.file_recall}% precision ${report.index_retrieval_baseline.file_precision}% tokens ${report.index_retrieval_baseline.estimated_tokens}`);
 }
@@ -1347,9 +1425,71 @@ function summarizeLivePair(pair: LiveAgentPairResult): NonNullable<ScenarioResul
     without_score: pair.evaluation.without_klauro_quality_score,
     quality_delta: pair.evaluation.quality_score_delta,
     token_reduction_percentage: pair.evaluation.token_reduction_percentage,
+    provider_total_token_reduction_percentage: pair.evaluation.provider_total_token_reduction_percentage,
+    provider_direct_token_reduction_percentage: pair.evaluation.provider_direct_token_reduction_percentage,
+    token_reduction_metric: pair.evaluation.token_reduction_metric,
     time_reduction_percentage: pair.evaluation.time_reduction_percentage,
     changed_file_precision_delta: pair.evaluation.changed_file_precision_delta,
   };
+}
+
+function formatLiveTokenMetric(summary: NonNullable<ScenarioResult['live_summary']>): string {
+  const main = summary.token_reduction_percentage === null
+    ? 'primary reduction unknown'
+    : `${summary.token_reduction_percentage}% ${summary.token_reduction_metric || 'primary'} reduction`;
+  const total = summary.provider_total_token_reduction_percentage === null || summary.provider_total_token_reduction_percentage === undefined
+    ? ''
+    : `, provider-total ${summary.provider_total_token_reduction_percentage}%`;
+  const direct = summary.provider_direct_token_reduction_percentage === null || summary.provider_direct_token_reduction_percentage === undefined
+    ? ''
+    : `, direct ${summary.provider_direct_token_reduction_percentage}%`;
+  return `${main}${total}${direct}`;
+}
+
+function estimatePromptSurfaceTokens(packet: any): number {
+  const contextCapsule = typeof packet?.context_capsule === 'string'
+    ? packet.context_capsule
+    : typeof packet?.context_capsule?.capsule === 'string'
+      ? packet.context_capsule.capsule
+      : '';
+  const capsule = typeof packet?.execution_capsule === 'string'
+    ? packet.execution_capsule
+    : typeof packet?.execution_brief?.capsule === 'string'
+    ? packet.execution_brief.capsule
+    : typeof packet?.capsule === 'string'
+      ? packet.capsule
+      : '';
+  if (!capsule && !contextCapsule) return estimateTokens(JSON.stringify(packet));
+  const validation = Array.isArray(packet?.validation_plan?.commands)
+    ? packet.validation_plan.commands
+      .map((command: any) => String(command?.command || command || '').trim())
+      .filter(Boolean)
+      .slice(0, 1)
+      .join('\n')
+    : '';
+  return estimateTokens([contextCapsule, capsule, validation].filter(Boolean).join('\n'));
+}
+
+function getContextCapsule(packet: any): string {
+  return typeof packet?.context_capsule === 'string'
+    ? packet.context_capsule
+    : typeof packet?.context_capsule?.capsule === 'string'
+      ? packet.context_capsule.capsule
+      : '';
+}
+
+function packetSearchText(packet: any): string {
+  const parts = [JSON.stringify(packet)];
+  const contextCapsule = getContextCapsule(packet);
+  if (contextCapsule) {
+    const parsed = parseAgentContextCapsule(contextCapsule);
+    parts.push(parsed.files.join('\n'));
+    parts.push(parsed.rules.join('\n'));
+    parts.push(parsed.validation.join('\n'));
+    if (parsed.selected) parts.push(parsed.selected);
+    if (parsed.task) parts.push(parsed.task);
+  }
+  return parts.join('\n').toLowerCase();
 }
 
 async function runScenario(outputRoot: string, scenario: SeededScenario): Promise<ScenarioResult> {
@@ -1358,16 +1498,20 @@ async function runScenario(outputRoot: string, scenario: SeededScenario): Promis
   await writeFiles(repoPath, scenario.files);
   const analysis = await analyzeProjectIncremental(repoPath);
   const cas = analysis.output;
-  const packet = await getAgentWorkPacket(cas, repoPath, scenario.task as any) as any;
+  const packet = await getAgentWorkPacket(cas, repoPath, {
+    ...(scenario.task as any),
+    response_profile: 'capsule-only',
+  }) as any;
   const validation = validateAgentChange(cas, repoPath, {
     target: scenario.task.target,
     files: scenario.changed_files,
     diffText: scenario.diff_text,
     planText: scenario.task.instructions,
   });
-  const packetText = JSON.stringify(packet).toLowerCase();
-  const firstFiles = Array.isArray(packet.file_read_plan)
-    ? packet.file_read_plan.map((item: any) => String(item.file || '')).filter(Boolean) as string[]
+  const packetText = packetSearchText(packet);
+  const firstPlan = Array.isArray(packet.file_read_plan) ? packet.file_read_plan : Array.isArray(packet.files) ? packet.files : [];
+  const firstFiles = Array.isArray(firstPlan)
+    ? firstPlan.map((item: any) => typeof item === 'string' ? item : String(item.file || '')).filter(Boolean) as string[]
     : [];
   const fileHits = scenario.expected_files.filter(file => packetText.includes(file.toLowerCase()));
   const firstReadFileHits = scenario.expected_files.filter(file => firstFiles.some(first => first.endsWith(file) || first === file));
@@ -1375,7 +1519,7 @@ async function runScenario(outputRoot: string, scenario: SeededScenario): Promis
   const fileHitRate = fileHits.length / scenario.expected_files.length;
   const firstReadFileHitRate = firstReadFileHits.length / scenario.expected_files.length;
   const termHitRate = termHits.length / scenario.expected_terms.length;
-  const packetTokens = estimateTokens(JSON.stringify(packet));
+  const packetTokens = estimatePromptSurfaceTokens(packet);
   const withScore = scoreWithKlauro(fileHitRate, termHitRate, validation.status, packetTokens);
   const without = baselineProxyScore(repoPath, scenario);
   const indexRetrieval = indexRetrievalBaselineScore(repoPath, scenario);
@@ -1443,7 +1587,7 @@ export function formatSeededExistingTaskBenchmarkMarkdown(report: BenchmarkRepor
       ? `- Average live quality delta: +${report.summary.average_live_quality_delta}`
       : '',
     report.summary.live_scenarios
-      ? `- Average live token reduction: ${report.summary.average_live_token_reduction_percentage}%`
+      ? `- Average live token reduction: ${formatOptionalPercentage(report.summary.average_live_token_reduction_percentage)}`
       : '',
     '',
   ].filter(Boolean);
@@ -1461,11 +1605,11 @@ export function formatSeededExistingTaskBenchmarkMarkdown(report: BenchmarkRepor
       lines.push(...formatLiveRepetitionMarkdown(scenario.live_repetition, '###'));
       if (scenario.live_summary) {
         lines.push('');
-        lines.push(`Single-rep detail (${scenario.live_repetition.single_rep_fields_source}, rep ${scenario.live_repetition.single_rep_fields_rep}): ${scenario.live_summary.status}, with ${scenario.live_summary.with_score}/100 vs without ${scenario.live_summary.without_score}/100, quality delta ${signed(scenario.live_summary.quality_delta)}, token reduction ${scenario.live_summary.token_reduction_percentage ?? 'unknown'}%, time reduction ${scenario.live_summary.time_reduction_percentage}%`);
+        lines.push(`Single-rep detail (${scenario.live_repetition.single_rep_fields_source}, rep ${scenario.live_repetition.single_rep_fields_rep}): ${scenario.live_summary.status}, with ${scenario.live_summary.with_score}/100 vs without ${scenario.live_summary.without_score}/100, quality delta ${signed(scenario.live_summary.quality_delta)}, ${formatLiveTokenMetric(scenario.live_summary)}, time reduction ${scenario.live_summary.time_reduction_percentage}%`);
         lines.push(`Live trial: ${scenario.live_pair?.artifacts.trial_directory}`);
       }
     } else if (scenario.live_summary) {
-      lines.push(`Live A/B: ${scenario.live_summary.status}, with ${scenario.live_summary.with_score}/100 vs without ${scenario.live_summary.without_score}/100, quality delta ${signed(scenario.live_summary.quality_delta)}, token reduction ${scenario.live_summary.token_reduction_percentage ?? 'unknown'}%, time reduction ${scenario.live_summary.time_reduction_percentage}%`);
+      lines.push(`Live A/B: ${scenario.live_summary.status}, with ${scenario.live_summary.with_score}/100 vs without ${scenario.live_summary.without_score}/100, quality delta ${signed(scenario.live_summary.quality_delta)}, ${formatLiveTokenMetric(scenario.live_summary)}, time reduction ${scenario.live_summary.time_reduction_percentage}%`);
       lines.push(`Live trial: ${scenario.live_pair?.artifacts.trial_directory}`);
     }
     lines.push('');
@@ -1513,6 +1657,20 @@ async function writeLiveValidator(
     '  failures.push(`Too many changed files: ${changedFiles.length} > ${rules.max_changed_files}`);',
     '}',
     'if (rules.require_test_change && !changedFiles.some(file => /test|spec|__tests__/i.test(file))) failures.push("No focused test file changed");',
+    'if (rules.require_test_import_source) {',
+    '  const changedTestFiles = changedFiles.filter(file => /test|spec|__tests__/i.test(file));',
+    '  if (changedTestFiles.length === 0) failures.push("No focused test file changed");',
+    '  for (const file of changedTestFiles) {',
+    '    let content = "";',
+    '    try { content = fs.readFileSync(path.join(root, file), "utf8"); } catch {}',
+    '    if (!/(from\\s+["\\\'][^"\\\']*(?:\\.\\.\\/)+src\\/|require\\(["\\\'][^"\\\']*(?:\\.\\.\\/)+src\\/|import\\(["\\\'][^"\\\']*(?:\\.\\.\\/)+src\\/)/.test(content)) {',
+    '      failures.push(`${file} does not import production source; focused tests must exercise the real implementation`);',
+    '    }',
+    '    if (/(catch\\s*\\(\\s*\\(\\)\\s*=>\\s*null\\s*\\)|\\?\\?\\s*(?:class|function)\\b|fallback to inline|Inline implementations mirror)/i.test(content)) {',
+    '      failures.push(`${file} includes fallback or mirrored implementation logic; focused tests must fail if production source cannot load`);',
+    '    }',
+    '  }',
+    '}',
     'if (rules.require_production_change && !changedFiles.some(file => /^(src|packages|apps)\\//.test(file) && !/test|spec|__tests__/i.test(file))) failures.push("No production source file changed");',
     'for (const pattern of rules.required_diff_patterns || []) {',
     '  if (!new RegExp(pattern, "mi").test(addedDiffText)) failures.push(`Added diff missing /${pattern}/`);',
@@ -1603,6 +1761,10 @@ function tenantTaskFiles(overrides: Record<string, string> = {}): Record<string,
     'tests/taskVisibility.test.ts': 'import assert from "node:assert/strict"; assert.ok(true);',
     ...overrides,
   };
+}
+
+function mcpServerTsxBin(): string {
+  return path.resolve(__dirname, '..', 'node_modules', '.bin', 'tsx');
 }
 
 function authSystemFiles(overrides: Record<string, string> = {}): Record<string, string> {
@@ -1951,6 +2113,7 @@ export function parseArgs(argv: string[]): Args {
         `  --real-task task-id            Real-repo task to run (default ${REAL_REPO_SCENARIOS[0].id}).`,
         '  --agent-with-cmd "codex exec ... - < {prompt_file}"',
         '  --agent-without-cmd "codex exec ... - < {prompt_file}"',
+        '  Claude live proof tip: add --safe-mode --no-session-persistence to both claude -p commands, and put -- before "$(cat {prompt_file})" so --add-dir does not consume the prompt.',
         '  --max-live-tasks N',
         '  --live-task-category family-id',
         '  --live-task-id scenario-id',
@@ -2029,6 +2192,10 @@ function round(value: number): number {
 
 function signed(value: number): string {
   return value >= 0 ? `+${value}` : String(value);
+}
+
+function formatOptionalPercentage(value: number | null | undefined): string {
+  return typeof value === 'number' && Number.isFinite(value) ? `${value}%` : 'unknown';
 }
 
 function shellQuote(value: string): string {

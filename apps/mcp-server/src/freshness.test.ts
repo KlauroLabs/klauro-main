@@ -228,6 +228,28 @@ test('work packet flags a modified analysis target in the risk section', async (
   });
 });
 
+test('first-turn work packet preserves stale-analysis warning', async () => {
+  await withTempDir('klauro-freshness-first-turn-', async root => {
+    const files = writeSourceFixture(root);
+    initGitRepo(root);
+    const analyzedAt = new Date(Date.now() - HOUR_MS).toISOString();
+    for (const file of files) setMtime(file, Date.now() - 2 * HOUR_MS);
+    fs.appendFileSync(files[1], '// changed after analysis\n');
+
+    clearFreshnessSummaryCache();
+    const packet = await getAgentWorkPacket(freshnessFixtureCas(root, analyzedAt), root, {
+      task_type: 'modify',
+      target: 'UsersService',
+      response_profile: 'first-turn',
+    }) as Record<string, any>;
+
+    assert.equal(packet.packet_profile, 'first-turn');
+    assert.equal(packet.analysis_freshness.staleness, 'stale');
+    assert.ok(packet.analysis_freshness.cited_files_changed_since_analysis.includes('src/users/users.service.ts'));
+    assert.match(packet.rule, /STALE: re-run analyze_codebase/i);
+  });
+});
+
 test('work packet stays fresh with no warning when nothing changed', async () => {
   await withTempDir('klauro-freshness-clean-packet-', async root => {
     const files = writeSourceFixture(root);

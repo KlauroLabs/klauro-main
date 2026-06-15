@@ -93,6 +93,42 @@ describe('duplicate id namespacing across files', () => {
 
       expect(await run()).toEqual(await run());
     });
+
+    it('does not ignore source test files whose filename starts with environment or env-', async () => {
+      write('src/environment-checks.test.ts', [
+        "import { test } from 'node:test';",
+        "import assert from 'node:assert/strict';",
+        '',
+        "test('checks the runtime environment', () => {",
+        '  assert.equal(1, 1);',
+        '});',
+      ].join('\n'));
+      write('src/config/env-preserve.test.ts', [
+        "import { describe, it, expect } from 'vitest';",
+        '',
+        "describe('env preserve', () => {",
+        "  it('keeps env refs', () => {",
+        '    expect(true).toBe(true);',
+        '  });',
+        '});',
+      ].join('\n'));
+
+      const analyzer = new JestAnalyzer() as any;
+      const result = await analyzer.analyze({ projectPath: root });
+      const environmentSuite = result.nodes.find((node: CASNode) =>
+        node.type === 'test' &&
+        node.subcategories?.includes('suite') &&
+        node.source?.file?.endsWith('src/environment-checks.test.ts')
+      );
+      const envHyphenSuite = result.nodes.find((node: CASNode) =>
+        node.type === 'test' &&
+        node.subcategories?.includes('suite') &&
+        node.source?.file?.endsWith('src/config/env-preserve.test.ts')
+      );
+
+      expect(environmentSuite).toBeDefined();
+      expect(envHyphenSuite).toBeDefined();
+    });
   });
 
   describe('fastapi analyzer', () => {
@@ -142,6 +178,40 @@ describe('duplicate id namespacing across files', () => {
       expect(new Set(routerNodes.map(node => node.id)).size).toBe(2);
       const routeNodes = nodes.filter(node => node.id.startsWith('route_router_'));
       expect(new Set(routeNodes.map(node => node.id)).size).toBe(4);
+    });
+
+    it('marks FastAPI routes protected by Depends(get_current_user) as authenticated', async () => {
+      write('app/api/auth.py', [
+        'from fastapi import APIRouter, Depends',
+        '',
+        'router = APIRouter(prefix="/children")',
+        '',
+        'def get_current_user():',
+        '    return {}',
+        '',
+        '@router.post("/")',
+        'async def create_child(',
+        '    payload: dict,',
+        '    user: dict = Depends(get_current_user),',
+        '):',
+        '    return payload',
+      ].join('\n'));
+
+      const analyzer = new FastAPIAnalyzer() as any;
+      const nodes: CASNode[] = [];
+      const edges: CASEdge[] = [];
+      const entryPoints: CASEntryPoint[] = [];
+      await analyzer.analyzeRouters(
+        ['app/api/auth.py'],
+        root,
+        nodes,
+        edges,
+        entryPoints
+      );
+
+      const createChild = entryPoints.find(entry => entry.name === 'POST /children/');
+      expect(createChild?.security?.authenticated).toBe(true);
+      expect(createChild?.security?.guards).toContain('get_current_user');
     });
   });
 

@@ -85,6 +85,17 @@ describe('buildTerminalSignal', () => {
     expect(signal.domain_seed_text).toBe('');
   });
 
+  test('keeps lowercase product nouns while filtering lowercase utility words', () => {
+    const journeys = [
+      journey({ id: 'j1', terminal_entities: [{ name: 'portfolio', access: 'updated', terminal_kind: 'entity' }] }),
+      journey({ id: 'j2', terminal_entities: [{ name: 'find', access: 'read', terminal_kind: 'node' }] }),
+      journey({ id: 'j3', terminal_entities: [{ name: 'invoice', access: 'created', terminal_kind: 'entity' }] }),
+    ];
+    const signal = buildTerminalSignal({ journeys, systemCapabilities: [] });
+    expect(signal.ranked_entities.map(entity => entity.name)).toEqual(expect.arrayContaining(['portfolio', 'invoice']));
+    expect(signal.ranked_entities.map(entity => entity.name)).not.toContain('find');
+  });
+
   test('near-terminal stages score with decay: analysis service two above terminal still ranks high', () => {
     // Soon-shaped case: PortfolioAnalysis sits above the terminal
     // insight/trade entities but defines the domain.
@@ -213,5 +224,61 @@ describe('evaluateAIDomainCandidate (domain authority)', () => {
       purpose('infer', false, 'performs portfolio analysis to produce actionable insights and automation')
     );
     expect(verdict.accepted).toBe(true);
+  });
+
+  test('weak terminal token label does not replace a specific fallback domain', () => {
+    const orch = new AnalyzerOrchestrator() as any;
+    const purpose = orch.buildEnhancedSystemPurpose(
+      { primary_type: 'application', confidence: 0.7, evidence: [] },
+      [{ id: 'concept_portfolio', name: 'Portfolio', type: 'entity', confidence: 0.9 }],
+      [],
+      { primary_workflow_id: undefined },
+      {
+        getCoreConcepts: () => [{ name: 'Portfolio' }],
+        inferPrimaryDomain: () => 'portfolio-management',
+      },
+      [],
+      [],
+      [],
+      [],
+      [],
+      {
+        capabilities: [],
+        dependencies: [],
+        topology: { root_capabilities: [], leaf_capabilities: [], critical_path: [], max_depth: 0 },
+        primary_flow: { core_capability_id: '', value_chain: [], supporting_capabilities: [], infrastructure_capabilities: [] },
+        layers: [],
+        system_insights: { detected_patterns: [], primary_entry_type: 'unknown', data_flow_type: 'unknown' },
+      },
+      'portfolio-app',
+      { concepts: ['Portfolio'], evidence: [], primaryDomain: 'portfolio-management' },
+      [],
+      '',
+      {
+        ranked_entities: [{ name: 'Message', score: 5, journey_count: 2, write_journeys: 2, read_journeys: 0, user_facing_journeys: 1 }],
+        ranked_stages: [],
+        ranked_capabilities: [],
+        domain_seed_text: 'message message message message message',
+      },
+      []
+    );
+
+    expect(purpose.primary_domain).toBe('portfolio-management');
+  });
+
+  test('weak terminal token may only label an otherwise weak fallback', () => {
+    const orch = new AnalyzerOrchestrator() as any;
+    const candidate = orch.domainFromTerminalSignal({
+      ranked_entities: [
+        { name: 'Nimbus', score: 5, journey_count: 2, write_journeys: 2, read_journeys: 0, user_facing_journeys: 1 },
+        { name: 'Nimbus', score: 4, journey_count: 1, write_journeys: 1, read_journeys: 0, user_facing_journeys: 1 },
+        { name: 'Nimbus', score: 3, journey_count: 1, write_journeys: 1, read_journeys: 0, user_facing_journeys: 0 },
+      ],
+      ranked_stages: [],
+      ranked_capabilities: [],
+      domain_seed_text: 'nimbus nimbus nimbus nimbus nimbus',
+    });
+
+    expect(candidate).toEqual({ domain: 'nimbus-management', strong: false });
   });
 });

@@ -4,24 +4,26 @@ The first customer experience should prove value without asking the customer to 
 
 ## First Ten Minutes
 
+Current private distribution path:
+
 ```bash
-npx @klauro/cli init
-npx @klauro/cli upload-manifest
-npx @klauro/cli analyze
-npx @klauro/cli doctor
-npx @klauro/cli install-agent
+node /absolute/path/to/proof-of-concept/apps/mcp-server/scripts/install.mjs /absolute/path/to/repo --first-value --claude-md /absolute/path/to/repo
 ```
 
-In this repository today, the equivalent development commands are:
+The installer verifies Node/npm, installs dependencies if needed, builds deterministic `dist/` artifacts, registers the MCP server when Claude Code is available, writes or prints agent operating-loop instructions, runs MCP startup checks, and with `--first-value` returns a first agent work-packet summary.
+
+After install, the direct CLI path is:
 
 ```bash
 cd apps/mcp-server
-npm run init -- /absolute/path/to/repo
-npm run upload-manifest -- /absolute/path/to/repo
-npm run analyze -- /absolute/path/to/repo
-npm run doctor -- /absolute/path/to/repo
-npm run install-agent -- /absolute/path/to/repo
+node dist/cli.cjs init /absolute/path/to/repo
+node dist/cli.cjs upload-manifest /absolute/path/to/repo
+node dist/cli.cjs analyze /absolute/path/to/repo --analysis-focus agent-fast
+node dist/cli.cjs doctor /absolute/path/to/repo
+node dist/cli.cjs install-agent /absolute/path/to/repo
 ```
+
+The future public-package equivalent is `klauro ...` once packaging and licensing are switched on. Do not tell customers to use `npx @klauro/cli` until that package is actually published.
 
 Expected customer-visible outputs:
 
@@ -29,7 +31,11 @@ Expected customer-visible outputs:
 - `.klauroignore` with repo-specific privacy exclusions.
 - Upload manifest showing exactly which files would be sent.
 - CAS stored locally in the MCP cache.
-- Agent defaults installed under `.klauro/`.
+- Agent defaults installed under `.klauro/`, including the K15/K5 capsule-only
+  loop for token-minimal agent context.
+- A portable skill written to `.klauro/skills/klauro/SKILL.md` so Claude,
+  Codex, Cursor-like tools, or other skill-aware agents can learn the same
+  K15/K5/G1 decoding rules without relying on a one-off prompt.
 - Agent Readiness output from `doctor`.
 
 ## Hosted Analyzer
@@ -37,9 +43,9 @@ Expected customer-visible outputs:
 Hosted mode keeps the analyzer implementation off the customer machine:
 
 ```bash
-npx @klauro/cli init --mode remote --server-url https://analyzer.klauro.dev
-npx @klauro/cli upload-manifest
-npx @klauro/cli analyze
+node dist/cli.cjs init /absolute/path/to/repo --mode remote --server-url https://analyzer.klauro.dev
+node dist/cli.cjs upload-manifest /absolute/path/to/repo
+node dist/cli.cjs analyze /absolute/path/to/repo
 ```
 
 Tokens are not stored in `.klaurorc`. Customers should authenticate through login-managed credential storage or environment variables:
@@ -62,7 +68,7 @@ docker run --rm -p 8787:8787 \
 Then:
 
 ```bash
-npx @klauro/cli init --mode remote --server-url https://klauro.internal
+node dist/cli.cjs init /absolute/path/to/repo --mode remote --server-url https://klauro.internal
 ```
 
 Set `.klaurorc` policy gates:
@@ -83,7 +89,7 @@ Set `.klaurorc` policy gates:
 GitHub import is for hosted main-branch truth. It does not replace dirty-tree sync for local agents.
 
 ```bash
-npx @klauro/cli github-import-plan
+node dist/cli.cjs github-import-plan /absolute/path/to/repo
 ```
 
 The GitHub App should request:
@@ -100,6 +106,17 @@ Webhook events:
 - `installation_repositories`
 
 Local agents still call `remote-sync` for uncommitted changes because those changes do not exist in GitHub yet.
+
+## Release Readiness Test
+
+Before a customer install, run:
+
+```bash
+cd apps/mcp-server
+npm run new-user-e2e
+```
+
+Passing means a fresh temp repo can install Klauro, get first value, start a local hosted analyzer, run full remote analysis, and sync an incremental dirty-tree change without mutating the source repo beyond `.klaurorc`/`.klauroignore` when explicitly initialized.
 
 ## Buyer Proof
 

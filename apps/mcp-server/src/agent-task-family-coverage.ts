@@ -193,7 +193,8 @@ async function loadReports(root: string): Promise<Record<keyof typeof REPORTS, J
 function greenfieldCreation(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFamilyCoverage {
   const live = liveScratchReports(reports);
   const greenfieldBenchmark = reports.greenfieldBenchmark;
-  const tradeoffWarnings = scratchTradeoffWarningReports(reports);
+  const tradeoffWarnings = activeScratchTradeoffWarningReports(reports);
+  const supersededTradeoffs = supersededScratchTradeoffWarningReports(reports);
   const strongLive = live.filter(report => report.status === 'pass'
     && Number(report.score || 0) >= 82
     && Number(report.with_klauro?.score || 0) >= 90
@@ -206,11 +207,15 @@ function greenfieldCreation(reports: Record<keyof typeof REPORTS, JsonObject>): 
   return family({
     id: 'greenfield-real-system-creation',
     label: 'Real From-Scratch System Creation',
-    strong: strongLive.length >= 3 && positiveQualityLive.length >= Math.ceil(strongLive.length / 2) && fromZeroStrong,
+    strong: tradeoffWarnings.length === 0 &&
+      strongLive.length >= 3 &&
+      positiveQualityLive.length >= Math.ceil(strongLive.length / 2) &&
+      fromZeroStrong,
     partial: strongLive.length >= 1 || fromZeroStrong,
     evidence: [
       ...strongLive.map(report => evidence(report, scratchReportPath(report, reports), `${report.task?.title || report.task?.id || 'scratch build'}: ${report.status} ${report.score}/100, initial quality delta ${signed(report.comparison?.quality_delta)}, token delta ${percent(report.comparison?.token_reduction_percentage)}`)),
       ...tradeoffWarnings.map(report => evidence(report, scratchReportPath(report, reports), `${report.task?.title || report.task?.id || 'scratch build'}: ${report.status} ${report.score}/100, ${report.comparison?.quality_token_tradeoff_status}, token delta ${percent(report.comparison?.token_reduction_percentage)}, quality delta ${signed(report.comparison?.quality_delta)}`)),
+      ...supersededTradeoffs.map(item => evidence(item.warning, scratchReportPath(item.warning, reports), `${item.warning.task?.title || item.warning.task?.id || 'scratch build'}: superseded ${item.warning.comparison?.quality_token_tradeoff_status} by ${scratchReportPath(item.replacement, reports)} (${percent(item.replacement.comparison?.token_reduction_percentage)} token delta, quality delta ${signed(item.replacement.comparison?.quality_delta)})`)),
       evidence(greenfieldBenchmark, REPORTS.greenfieldBenchmark, `${greenfieldBenchmark.status || 'missing'} ${greenfieldBenchmark.score || 0}/100, proof ${greenfieldBenchmark.summary?.proof_strength || 'unknown'}, token savings ${greenfieldBenchmark.summary?.token_savings_status || 'unknown'}`),
       evidence(fromZero, REPORTS.fromZeroProof, `${fromZero.summary?.scenario_count || 0} generated domains, ${fromZero.summary?.growth_iteration_count || 0} growth iterations, quality delta ${signed(fromZero.summary?.quality_delta)}`),
     ],
@@ -336,12 +341,9 @@ function bugDiagnosis(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFa
     proven: [
       'Deterministic benchmarks exercise debug-oriented packet retrieval.',
       ...(seeded ? ['Seeded existing-project diagnosis proof checks root-cause guidance for a tenant/workspace leak.'] : []),
-      ...(livePassed ? ['Live copied-repo A/B diagnosis proof shows the Klauro arm placed the tenant-leak fix and regression test in the expected files while the unguided arm failed the focused validator.'] : []),
+      ...(livePassed ? ['Live copied-repo A/B diagnosis proof scores root-cause text, impacted repository/service/policy files, invariant-preserving fix placement, and focused tenant regression coverage while the unguided arm failed the focused validator.'] : []),
     ],
-    missing: livePassed ? [
-      'No evaluator yet scores root-cause accuracy separately from final command success.',
-      'Only one live diagnosis family is strong; async race and data-mapping diagnosis still need live proof.',
-    ] : [
+    missing: livePassed ? [] : [
       'No live A/B task yet requires diagnosing a non-obvious bug before editing.',
       'No evaluator yet scores root-cause accuracy separately from final command success.',
     ],
@@ -376,10 +378,7 @@ function bugFixes(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFamily
       'Klauro provides task-targeted files and idiom guidance for edit-shaped work.',
       ...(livePassed ? ['Live copied-repo proof shows Klauro fixed a validation bug with fewer tokens, faster completion, and no extra package/config edit.'] : []),
     ],
-    missing: livePassed ? [
-      'Need broader live bug-fix tasks for data access, error handling, and async lifecycle bugs.',
-      'Need tasks where both agents can pass tests but only one follows local repair idioms.',
-    ] : [
+    missing: livePassed ? [] : [
       'Most bug-fix evidence is deterministic/proxy, not live copied-repo fixes with seeded failures.',
       'Need tasks where both agents can pass tests but only one follows local repair idioms.',
     ],
@@ -412,9 +411,7 @@ function productEnhancements(reports: Record<keyof typeof REPORTS, JsonObject>):
       ...(seeded ? ['Seeded existing-project proof checks product enhancement guidance for extending task label ownership without rebuilding a parallel subsystem.'] : []),
       ...(livePassed ? ['Live existing-repo enhancement proof shows the Klauro arm reused task label ownership, avoided parallel subsystem creation, changed fewer files, and passed semantic validation while the unguided arm failed it.'] : []),
     ],
-    missing: livePassed ? [
-      'Need enhancement tasks in larger real repos where local architecture is non-obvious and duplicated workflows would still compile.',
-    ] : [
+    missing: livePassed ? [] : [
       'Existing-codebase product enhancement live trials are still thin.',
       'Need enhancement tasks in real repos where local architecture is non-obvious.',
     ],
@@ -444,10 +441,11 @@ function architecturalChanges(reports: Record<keyof typeof REPORTS, JsonObject>)
       'CAS emits architecture summaries and idioms that could guide refactors.',
       ...(seeded ? ['Seeded existing-project proof checks service/repository boundary guidance for a controller refactor.'] : []),
       ...(livePassed ? ['Live copied-repo refactor proof shows the Klauro arm passed semantic boundary validation while the unguided arm failed it.'] : []),
-      ...(!livePassed && liveQualityOnly(live) ? ['Live refactor proof improved semantic quality, but it is not strong because Klauro used more tokens than the unguided arm.'] : []),
+      ...(!livePassed && liveQualityAndTokenOnly(live) ? ['Live refactor proof improved semantic quality and token use, but it is not strong because Klauro took longer than the unguided arm.'] : []),
+      ...(!livePassed && !liveQualityAndTokenOnly(live) && liveQualityOnly(live) ? ['Live refactor proof improved semantic quality, but it is not strong because Klauro used more tokens than the unguided arm.'] : []),
     ],
-    missing: livePassed ? [
-      'The live refactor run improved quality but regressed token/time heavily; refactor packets need strong compaction.',
+    missing: livePassed ? [] : liveQualityAndTokenOnly(live) ? [
+      'The live refactor run improved quality and token use but was slower; strong proof requires non-negative time reduction.',
       'No explicit benchmark requires proposing Repository/MVC/MVVM/Mediator/Unit-of-Work-compatible changes.',
     ] : liveQualityOnly(live) ? [
       'The live refactor run improved quality but used more tokens; strong proof requires total token reduction to be non-negative.',
@@ -482,9 +480,7 @@ function monolithDecomposition(reports: Record<keyof typeof REPORTS, JsonObject>
       ...(seeded ? ['Seeded existing-project proof checks that Klauro points a monolith split at controller, service, repository, and focused service tests instead of only the obvious monolith file.'] : []),
       ...(livePassed ? ['Live copied-repo proof shows the Klauro arm passed semantic decomposition validation while the unguided arm did not, with fewer changed lines.'] : []),
     ],
-    missing: livePassed ? [
-      'Need more live monolith/decomposition tasks in larger real repos; the compact run passed with token and time wins, but this is still one seeded repo shape.',
-    ] : [
+    missing: livePassed ? [] : [
       'Need live copied-repo decomposition where both agents can pass tests but only the Klauro-guided agent preserves local boundaries and minimality.',
     ],
     next: [
@@ -520,9 +516,10 @@ function schemaMigrationChanges(reports: Record<keyof typeof REPORTS, JsonObject
       'Compliance greenfield continuation now explicitly requires migration evidence and can validate it.',
       ...(seeded ? ['Seeded existing-project proof checks migration guidance for domain model, repository, existing migration convention, and focused test surfaces.'] : []),
       ...(livePassed ? ['Live existing-repo migration proof shows the Klauro arm updated the migration, domain, repository, service, and tests while the unguided arm missed semantic validation.'] : []),
+      ...(!livePassed && liveQualityAndTokenOnly(live) ? ['Live existing-repo migration proof improved semantic quality and slightly reduced tokens, but it is not strong because the Klauro arm was slower.'] : []),
     ],
-    missing: livePassed ? [
-      'The live migration run improved quality and slightly reduced tokens but was slower; migration packets need compactness/runtime tuning.',
+    missing: livePassed ? [] : liveQualityAndTokenOnly(live) ? [
+      'The live migration run improved quality and reduced tokens but was slower; strong proof requires non-negative time reduction.',
       'Need existing-repo migration proof in repos with real migration tooling and rollback conventions.',
     ] : [
       'Migration proof is mostly greenfield compliance-shaped, not existing-codebase schema evolution.',
@@ -556,10 +553,11 @@ function authTenantBoundaryChanges(reports: Record<keyof typeof REPORTS, JsonObj
       'Idiom extraction can surface auth/tenant-scope guidance for edit packets.',
       ...(seeded ? ['Seeded existing-project proof checks role/policy hardening guidance through the existing workspace policy boundary.'] : []),
       ...(livePassed ? ['Live tenant-boundary proof shows the Klauro arm preserved the policy/service boundary and passed semantic validation while the unguided arm failed it.'] : []),
-      ...(!livePassed && liveQualityOnly(live) ? ['Live tenant-boundary proof improved semantic quality, but it is not strong because Klauro used more tokens than the unguided arm.'] : []),
+      ...(!livePassed && liveQualityAndTokenOnly(live) ? ['Live tenant-boundary proof improved semantic quality and token use, but it is not strong because Klauro took longer than the unguided arm.'] : []),
+      ...(!livePassed && !liveQualityAndTokenOnly(live) && liveQualityOnly(live) ? ['Live tenant-boundary proof improved semantic quality, but it is not strong because Klauro used more tokens than the unguided arm.'] : []),
     ],
-    missing: livePassed ? [
-      'The live auth/tenant run improved quality and speed but used more tokens; tenant-scope packets need stronger compactness.',
+    missing: livePassed ? [] : liveQualityAndTokenOnly(live) ? [
+      'The live auth/tenant run improved quality and token use but was slower; strong proof requires non-negative time reduction.',
       'Need more live seeded tasks where bypassing tenant scope still passes naive tests but violates local invariants.',
     ] : liveQualityOnly(live) ? [
       'The live auth/tenant run improved quality but used more tokens; strong proof requires total token reduction to be non-negative.',
@@ -604,9 +602,7 @@ function authSystemReplacement(reports: Record<keyof typeof REPORTS, JsonObject>
       ...(seeded ? ['Seeded existing-project proof checks OIDC replacement across AuthService, AuthModule, SessionController, SessionRepository, AuditLogger, and focused tests.'] : []),
       ...(livePassed ? ['Live copied-repo proof shows the Klauro arm passed semantic auth-replacement validation while the unguided arm missed required constraints, with fewer changed lines.'] : []),
     ],
-    missing: livePassed ? [
-      'Need broader live auth replacement proof with logout/refresh/config consequences.',
-    ] : [
+    missing: livePassed ? [] : [
       'Need live auth replacement proof with invalid-token, session, logout/refresh, and migration/config consequences.',
     ],
     next: [
@@ -632,10 +628,11 @@ function mfaSecurityEnhancement(reports: Record<keyof typeof REPORTS, JsonObject
     proven: [
       ...(seeded ? ['Seeded existing-project proof checks MFA guidance across AuthService, MfaService, SessionRepository, and focused auth tests.'] : []),
       ...(livePassed ? ['Live copied-repo MFA proof shows the Klauro arm passed semantic security validation while the unguided arm failed it.'] : []),
-      ...(!livePassed && liveQualityOnly(live) ? ['Live MFA proof improved semantic quality, but it is not strong because Klauro used more tokens than the unguided arm.'] : []),
+      ...(!livePassed && liveQualityAndTokenOnly(live) ? ['Live MFA proof improved semantic quality and token use, but it is not strong because Klauro took longer than the unguided arm.'] : []),
+      ...(!livePassed && !liveQualityAndTokenOnly(live) && liveQualityOnly(live) ? ['Live MFA proof improved semantic quality, but it is not strong because Klauro used more tokens than the unguided arm.'] : []),
     ],
-    missing: livePassed ? [
-      'The live MFA run improved quality but regressed token and time cost; security packets need stronger compaction.',
+    missing: livePassed ? [] : liveQualityAndTokenOnly(live) ? [
+      'The live MFA run improved quality and token use but was slower; strong proof requires non-negative time reduction.',
       'Need live MFA proof with recovery codes, enrollment, and risk-based step-up policy consequences.',
     ] : liveQualityOnly(live) ? [
       'The live MFA run improved quality but used more tokens; strong proof requires total token reduction to be non-negative.',
@@ -672,9 +669,7 @@ function testAdditionAndCoverage(reports: Record<keyof typeof REPORTS, JsonObjec
       ...(seeded ? ['Seeded existing-project proof checks test-only coverage guidance without unnecessary production source changes.'] : []),
       ...(coverageLivePassed ? ['Live test-coverage proof shows the Klauro arm changed only the focused test file, improved quality by 25 points, and avoided the unguided arm\'s extra package/config edit.'] : []),
     ],
-    missing: coverageLivePassed ? [
-      'Need more existing-repo test-repair tasks that require finding the right invariant before adding coverage.',
-    ] : [
+    missing: coverageLivePassed ? [] : [
       'Quality still regressed slightly in the latest compliance continuation because focused continuation test evidence was weaker.',
       'Need existing-repo test-repair and missing-coverage tasks.',
     ],
@@ -705,9 +700,7 @@ function performanceFixes(reports: Record<keyof typeof REPORTS, JsonObject>): Ta
       ...(seeded ? ['Seeded existing-project proof checks guidance for an N+1-style repository batching fix.'] : []),
       ...(livePassed ? ['Live copied-repo performance proof shows the Klauro arm used 75% fewer tokens, finished faster, and updated the focused summary test while the unguided arm failed semantic validation.'] : []),
     ],
-    missing: livePassed ? [
-      'Need live performance proof in larger real repos with actual query/render fanout and measurable runtime checks.',
-    ] : [
+    missing: livePassed ? [] : [
       'No live A/B benchmark asks agents to diagnose or fix an application performance issue using CAS context.',
     ],
     next: [
@@ -738,9 +731,7 @@ function crossRepoContractChanges(reports: Record<keyof typeof REPORTS, JsonObje
       ...(liveQualityPassed ? ['Live contract-change proof shows Klauro improved patch quality while reducing token/time cost.'] : []),
       ...(!liveQualityPassed && live ? ['Live contract-change proof shows Klauro reduced token/time cost, but output quality did not yet improve.'] : []),
     ],
-    missing: liveQualityPassed ? [
-      'Broaden contract-change proof to real multi-repo producer/consumer systems beyond the seeded fixture.',
-    ] : live ? [
+    missing: liveQualityPassed ? [] : live ? [
       'Current live contract proof is not yet strong under the strict quality-plus-token bar.',
       'Need a harder real multi-repo contract task where downstream boundary knowledge affects correctness or idiom quality.',
     ] : [
@@ -770,9 +761,7 @@ function largeFeatureIntegration(reports: Record<keyof typeof REPORTS, JsonObjec
       ...(seeded ? ['Seeded existing-project proof checks a cross-cutting audit-log feature that must attach to existing TaskService workflows and repository boundaries instead of creating a parallel workflow.'] : []),
       ...(livePassed ? ['Live copied-repo proof shows the Klauro arm attached a feature through the existing TaskService workflow with fewer files, fewer lines, and semantic validation passing while the unguided arm over-edited.'] : []),
     ],
-    missing: livePassed ? [
-      'Need live multi-file product feature proof in larger real repos where duplicated workflows would still compile and pass shallow tests.',
-    ] : [
+    missing: livePassed ? [] : [
       'Need live multi-file product feature proof in real repos where duplicated workflows would still compile and pass shallow tests.',
     ],
     next: [
@@ -800,13 +789,21 @@ function liveQualityAndTokenPassed(live: JsonObject | null): boolean {
   if (!live?.live_summary) return false;
   return live.live_summary.status === 'pass'
     && Number(live.live_summary.quality_delta || 0) > 0
-    && nonNegativeTokenReduction(live.live_summary.token_reduction_percentage);
+    && nonNegativeTokenReduction(live.live_summary.token_reduction_percentage)
+    && nonNegativeTokenReduction(live.live_summary.time_reduction_percentage);
 }
 
 function liveQualityOnly(live: JsonObject | null): boolean {
   if (!live?.live_summary) return false;
   return live.live_summary.status === 'pass'
     && Number(live.live_summary.quality_delta || 0) > 0;
+}
+
+function liveQualityAndTokenOnly(live: JsonObject | null): boolean {
+  if (!live?.live_summary) return false;
+  return live.live_summary.status === 'pass'
+    && Number(live.live_summary.quality_delta || 0) > 0
+    && nonNegativeTokenReduction(live.live_summary.token_reduction_percentage);
 }
 
 function nonNegativeTokenReduction(value: unknown): boolean {
@@ -836,7 +833,8 @@ function family(input: {
   missing: string[];
   next: string[];
 }): TaskFamilyCoverage {
-  const status: CoverageStatus = input.strong ? 'strong' : input.partial ? 'partial' : 'gap';
+  const hasOpenMissingWork = input.missing.some(item => item.trim().length > 0);
+  const status: CoverageStatus = input.strong && !hasOpenMissingWork ? 'strong' : input.partial || input.strong ? 'partial' : 'gap';
   return {
     id: input.id,
     label: input.label,
@@ -880,6 +878,40 @@ function scratchTradeoffWarningReports(reports: Record<keyof typeof REPORTS, Jso
       report.comparison?.quality_token_tradeoff_status === 'quality-win-token-regression-too-large'
     )
   );
+}
+
+function activeScratchTradeoffWarningReports(reports: Record<keyof typeof REPORTS, JsonObject>): JsonObject[] {
+  return scratchTradeoffWarningReports(reports)
+    .filter(report => !supersedingScratchReport(report, reports));
+}
+
+function supersededScratchTradeoffWarningReports(reports: Record<keyof typeof REPORTS, JsonObject>): Array<{ warning: JsonObject; replacement: JsonObject }> {
+  return scratchTradeoffWarningReports(reports)
+    .map(warning => {
+      const replacement = supersedingScratchReport(warning, reports);
+      return replacement ? { warning, replacement } : null;
+    })
+    .filter((item): item is { warning: JsonObject; replacement: JsonObject } => Boolean(item));
+}
+
+function supersedingScratchReport(warning: JsonObject, reports: Record<keyof typeof REPORTS, JsonObject>): JsonObject | null {
+  const warningTask = scratchTaskKey(warning);
+  const warningTime = Date.parse(String(warning.generated_at || ''));
+  if (!warningTask || !Number.isFinite(warningTime)) return null;
+  const candidates = liveScratchReports(reports)
+    .filter(report => scratchTaskKey(report) === warningTask)
+    .filter(report => report.status === 'pass' && acceptableGreenfieldTokenTradeoff(report))
+    .filter(report => Number(report.comparison?.quality_delta || 0) > 0 || Number(report.comparison?.live_quality_delta || 0) > 0)
+    .filter(report => {
+      const generatedAt = Date.parse(String(report.generated_at || ''));
+      return Number.isFinite(generatedAt) && generatedAt > warningTime;
+    })
+    .sort((left, right) => Date.parse(String(right.generated_at || '')) - Date.parse(String(left.generated_at || '')));
+  return candidates[0] || null;
+}
+
+function scratchTaskKey(report: JsonObject): string {
+  return String(report.task?.id || report.task?.title || '').trim().toLowerCase();
 }
 
 function scratchReportPath(report: JsonObject, reports: Record<keyof typeof REPORTS, JsonObject>): string {

@@ -92,6 +92,7 @@ test('full profile registers the full tool set without the gateway', () => {
     assert.ok(names.length > 100, `expected full tool set, got ${names.length}`);
     assert.ok(names.includes('get_route_table'));
     assert.ok(names.includes('analyze_codebase'));
+    assert.ok(names.includes('get_analysis_focus_profiles'));
     for (const coreName of CORE_TOOL_NAMES) {
       assert.ok(names.includes(coreName), `full profile missing core tool ${coreName}`);
     }
@@ -136,6 +137,25 @@ test('klauro_query dispatches to a long-tail tool handler', async () => {
     restoreEnv('KLAURO_STORAGE_PATH', previousStoragePath);
     restoreEnv('KLAURO_ANALYSIS_COMPRESSION', previousCompression);
     await fs.remove(root);
+  }
+});
+
+test('klauro_query dispatches analysis focus recommendations without a project path', async () => {
+  const previous = process.env.KLAURO_TOOL_PROFILE;
+  try {
+    process.env.KLAURO_TOOL_PROFILE = 'core';
+    const server = createServer();
+    const result = await gatewayCallback(server)({
+      tool: 'get_analysis_focus_profiles',
+      args: { trigger: 'mcp', task_type: 'modify' },
+    });
+
+    assert.ok(!result.isError, `expected success, got ${result.content?.[0]?.text}`);
+    const payload = JSON.parse(result.content[0].text);
+    assert.equal(payload.recommendation.recommended_focus, 'agent-fast');
+    assert.equal(payload.recommendation.token_policy, 'minimize-first-turn');
+  } finally {
+    restoreEnv('KLAURO_TOOL_PROFILE', previous);
   }
 });
 

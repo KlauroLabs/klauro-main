@@ -92,7 +92,7 @@ export function classifyArtifactType(input: ArtifactTypeInput): ArtifactTypeResu
   const clientSdk = detectClientSdk(nodes, manifest, appEntries, outboundExits);
   if (clientSdk) return clientSdk;
 
-  const boilerplate = detectBoilerplate(manifest);
+  const boilerplate = detectBoilerplate(manifest, appEntries);
   if (boilerplate) return boilerplate;
 
   const cliTool = detectCliTool(manifest, appEntries, cliEntries);
@@ -169,7 +169,7 @@ function detectClientSdk(
  * manifest name/description. Scaffold demo content alone is not enough; the
  * self-declaration is the gate so real apps built FROM a starter stay apps.
  */
-function detectBoilerplate(manifest: ArtifactManifestSignal): ArtifactTypeResult | null {
+function detectBoilerplate(manifest: ArtifactManifestSignal, appEntries: number): ArtifactTypeResult | null {
   const candidates: Array<{ text: string; where: string }> = [
     { text: (manifest.readmeLead || '').slice(0, 300), where: 'README title region' },
     { text: manifest.packageJson?.name || '', where: 'package.json name' },
@@ -179,6 +179,9 @@ function detectBoilerplate(manifest: ArtifactManifestSignal): ArtifactTypeResult
   for (const candidate of candidates) {
     const match = candidate.text.match(BOILERPLATE_TEXT);
     if (match) {
+      const declaredInTitleOrName = candidate.where === 'README title region' ||
+        candidate.where === 'package.json name';
+      if (appEntries > 0 && !declaredInTitleOrName) continue;
       return {
         artifactType: 'boilerplate',
         evidence: [`${candidate.where} declares "${match[0].toLowerCase()}"`],
@@ -293,6 +296,8 @@ export function artifactLedDomainLabel(
     if (result.protocol === 'soap') return 'soap-client-library';
     if (result.protocol === 'openapi') return 'rest-client-library';
     if (result.protocol === 'graphql') return 'graphql-client-library';
+    const tokens = topQualifierTokens(qualifierCandidates, 2);
+    if (tokens.length > 0) return `${tokens.join('-')}-client-library`;
     return 'api-client-library';
   }
 

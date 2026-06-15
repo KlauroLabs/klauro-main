@@ -136,7 +136,7 @@ test('findVocabularyLeaks reports zero occurrences on a clean foreign analysis',
 test('findVocabularyLeaks catches curated capability names, descriptions, and Klauro mentions', () => {
   const contaminated = vocabFixture({
     system_capabilities: [
-      capability('Agent Task Proof', 'Codebase Analysis builds a CAS relationship graph from repository structure so agents can understand entry points, data, tests, risks, and dependencies before editing.'),
+      capability('Agent Task Proof', 'Codebase Analysis builds a CAS relationship graph from repository structure so agents can understand interaction surfaces, data, tests, risks, and dependencies before editing.'),
     ],
     user_journeys: [{ id: 'journey-1', name: 'Run klauro analyze on the repo', steps: [] }],
   } as unknown as Partial<CASOutput>);

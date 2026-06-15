@@ -13,6 +13,8 @@ const KNOWN_SERVICE_NAMES = new Set([
   'salesforce', 'hubspot', 'shopify', 'zapier', 'airtable', 'notion',
   'vercel', 'netlify', 'heroku', 'render', 'fly', 'railway',
   'pinecone', 'weaviate', 'qdrant', 'milvus', 'chroma',
+  'pusher', 'lob', 'taxjar', 'taxjarapi', 'geocodio', 'mapbox', 'twilioverify',
+  'shippo', 'easypost', 'stripeconnect',
 ]);
 
 const CODE_TYPE_TOKENS = new Set([
@@ -28,6 +30,7 @@ const CODE_TYPE_TOKENS = new Set([
   'session', 'sessions', 'connection', 'connections', 'message', 'messages', 'request', 'requests',
   'response', 'responses', 'client', 'clients', 'server', 'servers', 'peer', 'peers',
   'database', 'mutation', 'mutations', 'query', 'queries', 'apiconnection',
+  'self',
 ]);
 
 const SERVICE_SHAPED_SUFFIX_PATTERN = /(?:Service|Client|Api|Gateway|Sdk|Bus|Broker|Provider)s?$/;
@@ -51,11 +54,13 @@ export function isPlausibleExternalServiceName(name: string, selfNames: string[]
   if (KNOWN_SERVICE_NAMES.has(norm)) return true;
   if (/^[A-Za-z][A-Za-z ]*:\s/.test(trimmed)) return false;
   if (/_/.test(trimmed)) return false;
+  if (/\.(?:js|jsx|ts|tsx|mjs|cjs|dart|rs|go|py|php|rb|java|cs)$/i.test(trimmed)) return false;
+  if (/^@?[\w.-]+\/[\w./-]+$/.test(trimmed) && !/:\/\//.test(trimmed)) return false;
   if (/\.|:\/\//.test(trimmed)) return true;
   if (SERVICE_SHAPED_SUFFIX_PATTERN.test(trimmed)) return true;
   if (PASCAL_CASE_MULTIWORD_PATTERN.test(trimmed)) return false;
   if (CODE_TYPE_TOKENS.has(norm)) return false;
-  return true;
+  return false;
 }
 
 export function filterPlausibleExternalServices(externalServices: string[], selfNames: string[] = []): string[] {

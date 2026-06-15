@@ -32,6 +32,7 @@ export declare function evaluateNodeVersion(versionString: string, minimumMajor?
 export declare function evaluateBundleState(input: {
   bundleExists: boolean;
   serverExists: boolean;
+  cliExists?: boolean;
   handshakeExists: boolean;
   workerExists?: boolean;
   bundleMtimeMs: number | null;

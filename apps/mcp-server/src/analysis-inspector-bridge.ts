@@ -3,6 +3,7 @@ import * as http from 'http';
 import * as path from 'path';
 import { spawn } from 'child_process';
 import { analyzeProject } from './analyzer';
+import { withAnalysisFocus } from './analysis-focus';
 
 const port = Number(process.env.KLAURO_INSPECTOR_BRIDGE_PORT || '48731');
 const analysesRoot = process.env.KLAURO_STORAGE_PATH || path.join(process.env.HOME || '', '.klauro', 'analyses');
@@ -79,36 +80,13 @@ function runGenerator(logPath: string): Promise<void> {
 async function runJob(job: ReanalysisJob): Promise<void> {
   job.status = 'running';
   job.startedAt = new Date().toISOString();
-  const previous = {
-    interpretation: process.env.KLAURO_AI_INTERPRETATION,
-    interpretationForce: process.env.KLAURO_AI_INTERPRETATION_FORCE,
-    deterministicKeep: process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP,
-    interpretationBudget: process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS,
-    elementBudget: process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS,
-    elementBatchSize: process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE,
-    elementLimit: process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT,
-    elements: process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS,
-    embeddings: process.env.KLAURO_EMBEDDING_ENABLED,
-    ollamaAuto: process.env.KLAURO_OLLAMA_AUTO,
-    ollamaBaseUrl: process.env.OLLAMA_BASE_URL,
-    ollamaModel: process.env.OLLAMA_MODEL,
-  };
   try {
-    process.env.KLAURO_AI_INTERPRETATION = process.env.KLAURO_AI_INTERPRETATION || 'true';
-    process.env.KLAURO_AI_INTERPRETATION_FORCE = process.env.KLAURO_AI_INTERPRETATION_FORCE || 'true';
-    process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP = 'false';
-    process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS = process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS || '90000';
-    process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS || '150000';
-    process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE || '4';
-    process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT || '8';
-    process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS || 'true';
-    process.env.KLAURO_EMBEDDING_ENABLED = 'false';
-    process.env.KLAURO_OLLAMA_AUTO = process.env.KLAURO_OLLAMA_AUTO || 'true';
-    process.env.OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
-    process.env.OLLAMA_MODEL = process.env.OLLAMA_MODEL || process.env.KLAURO_LOCAL_AI_MODEL || 'qwen3:8b';
-
     await appendLog(job.logPath, `$ klauro analyze ${job.projectPath} --analysis-focus ui-overview\n`);
-    const result = await analyzeProject(job.projectPath);
+    const result = await withAnalysisFocus('ui-overview', () => analyzeProject(job.projectPath), {
+      interpretationBudgetMs: '90000',
+      elementDescriptionBudgetMs: '150000',
+      elementDescriptionLimit: '8',
+    });
     await appendLog(job.logPath, `project=${result.system.root_path}\nnodes=${result.nodes.length}\nedges=${result.edges.length}\nfull_rebuild=true\n`);
     await appendLog(job.logPath, `$ node ${generatorPath}\n`);
     await runGenerator(job.logPath);
@@ -119,24 +97,7 @@ async function runJob(job: ReanalysisJob): Promise<void> {
     await appendLog(job.logPath, `ERROR: ${job.error}\n`);
   } finally {
     job.finishedAt = new Date().toISOString();
-    restoreEnv('KLAURO_AI_INTERPRETATION', previous.interpretation);
-    restoreEnv('KLAURO_AI_INTERPRETATION_FORCE', previous.interpretationForce);
-    restoreEnv('KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP', previous.deterministicKeep);
-    restoreEnv('KLAURO_AI_INTERPRETATION_BUDGET_MS', previous.interpretationBudget);
-    restoreEnv('KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS', previous.elementBudget);
-    restoreEnv('KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE', previous.elementBatchSize);
-    restoreEnv('KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT', previous.elementLimit);
-    restoreEnv('KLAURO_AI_ELEMENT_DESCRIPTIONS', previous.elements);
-    restoreEnv('KLAURO_EMBEDDING_ENABLED', previous.embeddings);
-    restoreEnv('KLAURO_OLLAMA_AUTO', previous.ollamaAuto);
-    restoreEnv('OLLAMA_BASE_URL', previous.ollamaBaseUrl);
-    restoreEnv('OLLAMA_MODEL', previous.ollamaModel);
   }
-}
-
-function restoreEnv(name: string, value: string | undefined): void {
-  if (value === undefined) delete process.env[name];
-  else process.env[name] = value;
 }
 
 function validAbsoluteProjectPath(projectPath: string): boolean {

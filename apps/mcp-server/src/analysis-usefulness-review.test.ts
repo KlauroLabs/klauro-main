@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { findArchitectureSystemTypeProblems, findDomainBreadthProblems, findWeakDescriptionReasons, reviewAnalysisUsefulnessStatic, scoreArchitectureAgentContext, scoreDescriptionQuality, scoreDuplicationAvoidance } from './analysis-usefulness-review';
+import { findArchitectureSystemTypeProblems, findDomainBreadthProblems, findWeakDescriptionReasons, getDescriptionEnrichmentTargets, reviewAnalysisUsefulnessStatic, scoreArchitectureAgentContext, scoreDescriptionQuality, scoreDuplicationAvoidance } from './analysis-usefulness-review';
 
 test('usefulness review flags framework-only architecture identity for MCP analyzer monorepos', () => {
   const cas: any = {
@@ -478,6 +478,124 @@ test('description quality gate accepts AI-backed descriptions that orient agents
   assert.equal(gate.status, 'pass');
 });
 
+test('description quality gate flags over-narrow connector descriptions for broad capabilities', () => {
+  const profile: any = {
+    kind: 'backend-service',
+    confidence: 0.9,
+    evidence: ['HTTP/API framework or entry points'],
+    expectations: {
+      entry_points: 'required',
+      call_chains: 'required',
+      behavioral_invariants: 'required',
+      security: 'required',
+      runtime_correlation: 'optional',
+      flow_coverage: 'required',
+    },
+  };
+  const gate = scoreDescriptionQuality({
+    enhanced_system_purpose: {
+      primary_domain: 'agent-communication',
+      core_concepts: ['chat', 'message', 'channel'],
+      inferred_description: 'This service routes agent communication across chat channels, daemon runtime controls, prompts, tools, and message delivery integrations.',
+      description_source: 'ai',
+      description_generation: { status: 'ai_applied', attempted: true },
+    },
+    system_capabilities: [
+      {
+        id: 'chat',
+        name: 'Chat Management',
+        category: 'core',
+        criticality: 'high',
+        description: 'BlueBubbles Chat Management lets an agent send messages, manage chat states, and interact with chat identifiers when handling BlueBubbles communication flows.',
+        description_source: 'ai',
+        description_generation: { status: 'ai_applied', attempted: true },
+        operations: [
+          { entry_point_type: 'internal', path_or_command: 'extensions/bluebubbles/src/chat.ts' },
+          { entry_point_type: 'internal', path_or_command: 'extensions/slack/src/channel.ts' },
+          { entry_point_type: 'internal', path_or_command: 'extensions/matrix/src/channel.ts' },
+          { entry_point_type: 'internal', path_or_command: 'extensions/discord/src/channel.ts' },
+          { entry_point_type: 'internal', path_or_command: 'extensions/msteams/src/channel.ts' },
+        ],
+        related_entities: [],
+        related_domains: ['chat'],
+      },
+      {
+        id: 'daemon',
+        name: 'Daemon Management',
+        category: 'core',
+        criticality: 'high',
+        description: 'Daemon Management lets an operator inspect service status and manage daemon lifecycle decisions during local agent runtime work.',
+        description_source: 'ai',
+        description_generation: { status: 'ai_applied', attempted: true },
+        operations: [],
+        related_entities: [],
+        related_domains: ['daemon'],
+      },
+      {
+        id: 'tools',
+        name: 'Tool Management',
+        category: 'core',
+        criticality: 'high',
+        description: 'Tool Management exposes available agent actions and invocation policy so a developer can choose the right capability for a coding task.',
+        description_source: 'ai',
+        description_generation: { status: 'ai_applied', attempted: true },
+        operations: [],
+        related_entities: [],
+        related_domains: ['tool'],
+      },
+    ],
+  } as any, profile);
+
+  assert.equal(gate.status, 'fail');
+  assert.match(gate.detail, /over-narrow source-area claim/);
+});
+
+test('description quality gate treats AI-reviewed deterministic capability fallbacks as trusted', () => {
+  const profile: any = {
+    kind: 'infrastructure',
+    confidence: 0.9,
+    evidence: ['Terraform/OpenTofu files'],
+    expectations: {
+      entry_points: 'not-applicable',
+      call_chains: 'not-applicable',
+      behavioral_invariants: 'optional',
+      security: 'optional',
+      runtime_correlation: 'optional',
+      flow_coverage: 'not-applicable',
+    },
+  };
+  const gate = scoreDescriptionQuality({
+    enhanced_system_purpose: {
+      primary_domain: 'cloud-infrastructure',
+      core_concepts: ['resource', 'module', 'provider'],
+      inferred_description: 'This infrastructure codebase defines cloud resource modules, provider configuration, and operational outputs so agents can understand which managed resources and access boundaries belong to the deployed platform.',
+      description_source: 'ai',
+      description_generation: { status: 'ai_applied', attempted: true },
+    },
+    domain_concepts: [{ name: 'resource' }, { name: 'module' }],
+    system_capabilities: [
+      {
+        id: 'resource-ecr-api',
+        name: 'Resource Aws Ecr Api Management',
+        category: 'core',
+        criticality: 'medium',
+        description: 'Resource Aws Ecr Api Management maintains ECR repository resources, access policy relationships, and API image registry settings used by cloud infrastructure behavior.',
+        description_source: 'deterministic',
+        description_generation: {
+          status: 'deterministic_kept',
+          attempted: true,
+          reason: 'ai-rejected-deterministic-usable (was: unsupported-marketing-language: efficiently)',
+        },
+        operations: [{ action: 'define' }],
+        related_entities: ['AwsEcrRepository'],
+        related_domains: ['cloud-infrastructure'],
+      },
+    ],
+  } as any, profile);
+
+  assert.equal(gate.status, 'pass');
+});
+
 test('description quality gate fails rejected AI fallbacks that leak structural capability text', () => {
   const profile: any = {
     kind: 'backend-service',
@@ -544,6 +662,73 @@ test('description quality gate fails rejected AI fallbacks that leak structural 
   assert.equal(gate.status, 'fail');
   assert.match(gate.detail, /capability descriptions weak/);
   assert.match(gate.detail, /AI generation failed or was rejected/);
+});
+
+test('description quality gate fails CAS inventory summaries that repeat labels instead of explaining behavior', () => {
+  const profile: any = {
+    kind: 'backend-service',
+    confidence: 0.9,
+    evidence: ['HTTP/API framework or entry points'],
+    expectations: {
+      entry_points: 'required',
+      call_chains: 'required',
+      behavioral_invariants: 'required',
+      security: 'required',
+      runtime_correlation: 'optional',
+      flow_coverage: 'required',
+    },
+  };
+  const gate = scoreDescriptionQuality({
+    enhanced_system_purpose: {
+      primary_domain: 'fleet-management',
+      core_concepts: ['driver', 'invoice', 'fuel'],
+      inferred_description: 'A truckspyapp system built with Symfony. Key capabilities: driver management, invoice settlement, fuel management. Data model: VehicleVideoRequestVideo, VehicleVideoRequest, VehicleType. Entry points: 124 cli, 37 message, 31 event, 8 http. Integrations: Database Connection, Mailer.',
+      description_source: 'ai',
+      description_generation: { status: 'ai_applied', attempted: true },
+    },
+    domain_concepts: [{ name: 'driver' }, { name: 'invoice' }, { name: 'fuel' }],
+    system_capabilities: [
+      {
+        id: 'drivers',
+        name: 'Driver Management',
+        category: 'core',
+        criticality: 'critical',
+        description: 'Driver Management keeps driver records, compliance status, and assignment state connected to fleet workflows.',
+        description_source: 'ai',
+        description_generation: { status: 'ai_applied', attempted: true },
+        operations: [{ action: 'read' }],
+        related_entities: ['Driver'],
+        related_domains: ['fleet'],
+      },
+      {
+        id: 'invoices',
+        name: 'Invoice Settlement',
+        category: 'core',
+        criticality: 'high',
+        description: 'Invoice Settlement reconciles carrier invoices against trips and payment state so billing exceptions can be reviewed.',
+        description_source: 'ai',
+        description_generation: { status: 'ai_applied', attempted: true },
+        operations: [{ action: 'reconcile' }],
+        related_entities: ['Invoice'],
+        related_domains: ['billing'],
+      },
+      {
+        id: 'fuel',
+        name: 'Fuel Management',
+        category: 'core',
+        criticality: 'high',
+        description: 'Fuel Management tracks fuel purchases and rates against vehicles so fleet operating costs stay auditable.',
+        description_source: 'ai',
+        description_generation: { status: 'ai_applied', attempted: true },
+        operations: [{ action: 'track' }],
+        related_entities: ['FuelRate'],
+        related_domains: ['fleet'],
+      },
+    ],
+  } as any, profile);
+
+  assert.equal(gate.status, 'fail');
+  assert.match(gate.detail, /regurgitates CAS inventory/);
 });
 
 test('description quality gate accepts hedged descriptions that acknowledge a dominant unanalyzed language', () => {
@@ -970,7 +1155,7 @@ test('duplication review treats infrastructure inventory as the duplicate-work s
   assert.equal(gate.status, 'pass');
 });
 
-test('description quality gate warns, never fails, when AI was never attempted (deterministic by configuration)', () => {
+test('description quality gate fails full-review narrative when AI was never attempted', () => {
   const profile: any = {
     kind: 'backend-service',
     confidence: 0.9,
@@ -1007,6 +1192,112 @@ test('description quality gate warns, never fails, when AI was never attempted (
     ],
   } as any, profile);
 
-  assert.notEqual(gate.status, 'fail');
+  assert.equal(gate.status, 'fail');
   assert.ok(gate.detail.includes('deterministic by configuration'));
+  assert.ok(gate.detail.includes('run ui-overview analysis'));
+});
+
+test('description enrichment targets point UI and agents at the next weak narrative layers', () => {
+  const targets = getDescriptionEnrichmentTargets({
+    system: { name: 'fleet-api', type: 'service' },
+    enhanced_system_purpose: {
+      primary_domain: 'fleet-management',
+      core_concepts: ['driver', 'invoice', 'fuel'],
+      inferred_description: 'A truckspyapp system built with Symfony. Key capabilities: driver management, invoice settlement, fuel management. Data model: VehicleVideoRequestVideo. Entry points: 124 cli, 37 message, 31 event, 8 http.',
+      description_source: 'ai',
+      description_generation: { status: 'ai_applied', attempted: true },
+    },
+    system_capabilities: [
+      {
+        id: 'cap_packets',
+        name: 'Agent Work Packets',
+        category: 'core',
+        criticality: 'critical',
+        description: 'Agent Work Packets organizes and executes specific functions like parseArgs, formatTable, and renderRow to process and structure data.',
+        description_source: 'ai',
+        description_generation: { status: 'ai_applied', attempted: true },
+        operations: [],
+        related_entities: [],
+        related_domains: ['agent'],
+      },
+      {
+        id: 'cap_storage',
+        name: 'Analysis Storage',
+        category: 'supporting',
+        criticality: 'medium',
+        description: 'Analysis Storage manages analysis storage behavior; owned by storage maintenance and storage.',
+        description_source: 'deterministic',
+        description_generation: { status: 'deterministic_initial', attempted: false },
+        operations: [],
+        related_entities: [],
+        related_domains: ['analysis'],
+      },
+    ],
+    nodes: [
+      {
+        id: 'node-dispatch-service',
+        name: 'DispatchService',
+        type: 'service',
+        description: 'Handles operations for dispatch functionality.',
+        description_source: 'deterministic',
+        description_generation: { status: 'deterministic_initial', attempted: false },
+        source: { file: 'src/dispatch.service.ts', line: 1 },
+      },
+      {
+        id: 'node-dispatch-controller',
+        name: 'DispatchController',
+        type: 'controller',
+        source: { file: 'src/dispatch.controller.ts', line: 1 },
+      },
+    ],
+    edges: [
+      { id: 'edge-dispatch', source: 'node-dispatch-controller', target: 'node-dispatch-service', type: 'calls' },
+    ],
+    data_entities: [
+      {
+        id: 'entity-driver',
+        name: 'Driver',
+        description: '',
+        fields: [{ name: 'id' }, { name: 'licenseNumber' }],
+        relationships: [],
+        sensitive: true,
+      },
+    ],
+    entry_points: [
+      {
+        id: 'entry-dispatch',
+        name: 'Create Dispatch',
+        trigger: { type: 'http', path: '/dispatches' },
+        description: '',
+        security: { requires_auth: false },
+      },
+    ],
+    domain_concepts: [{ name: 'driver' }],
+  } as any, '/tmp/fleet-api');
+
+  assert.equal(targets[0].target_kind, 'system');
+  assert.equal(targets[0].suggested_tool, 'run_analysis_layer');
+  assert.equal(targets[0].suggested_args.layer, 'ui-overview-refresh');
+  assert.match(targets[0].reasons.join('\n'), /regurgitates CAS inventory/);
+
+  const capability = targets.find(target => target.target_id === 'cap_packets');
+  assert.equal(capability?.target_kind, 'capability');
+  assert.equal(capability?.suggested_tool, 'generate_element_description');
+  assert.equal(capability?.suggested_args.target, 'cap_packets');
+  assert.match(capability?.reasons.join('\n') || '', /implementation-function-restatement|generic structural/);
+
+  const service = targets.find(target => target.target_id === 'node-dispatch-service');
+  assert.equal(service?.target_kind, 'service');
+  assert.equal(service?.suggested_tool, 'generate_element_description');
+  assert.equal(service?.suggested_args.target_kind, 'service');
+  assert.match(service?.reasons.join('\n') || '', /structural|source is deterministic/);
+
+  const entity = targets.find(target => target.target_id === 'entity-driver');
+  assert.equal(entity?.target_kind, 'entity');
+  assert.equal(entity?.priority, 'high');
+  assert.equal(entity?.suggested_args.target_kind, 'entity');
+
+  const entryPoint = targets.find(target => target.target_id === 'entry-dispatch');
+  assert.equal(entryPoint?.target_kind, 'entry_point');
+  assert.equal(entryPoint?.priority, 'high');
 });

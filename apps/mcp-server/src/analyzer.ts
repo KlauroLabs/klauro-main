@@ -69,7 +69,8 @@ import type { VectorStoreSetting } from '../../../packages/analyzer-core/src/ana
 import type { VectorStore } from '../../../packages/analyzer-core/src/analyzer/embedding/types';
 import type { EmbeddingPhaseConfig } from '../../../packages/analyzer-core/src/analyzer/embedding/embedding-phase';
 import { getPgPool, resolvePgConnectionString } from './pg-pool';
-import { applyStoredElementDescriptions } from './description-enrichment';
+import { applyStoredElementDescriptions, validateDescription } from './description-enrichment';
+import { isLanguageBuiltinName } from '../../../packages/analyzer-core/src/analyzer/core/language-builtins';
 
 let orchestrator: AnalyzerOrchestrator | null = null;
 
@@ -357,7 +358,10 @@ export function preservePreviousAIDescriptions(
   );
   for (const capability of output.system_capabilities || []) {
     const previous = previousCapabilities.get(capability.id);
-    if (previous?.description && (previous.description_source === 'ai' || previous.description_source === 'manual' || previous.description_source === 'reused')) {
+    if (previous?.description &&
+      capabilityReuseSubjectsMatch(previous, capability) &&
+      validateDescription(previous.description, { kind: 'capability', name: capability.name, target: capability }, output).ok &&
+      (previous.description_source === 'ai' || previous.description_source === 'manual' || previous.description_source === 'reused')) {
       capability.description = previous.description;
       capability.description_source = 'reused';
       capability.description_generation = {
@@ -372,6 +376,10 @@ export function preservePreviousAIDescriptions(
 
   if (!previousPurpose.inferred_description ||
     !(previousPurpose.description_source === 'ai' || previousPurpose.description_source === 'reused')) {
+    return output;
+  }
+  if (hasLowLevelExternalServicePollution(previousPurpose.inferred_description) ||
+    hasProductDomainDescriptionMismatch(previousPurpose.inferred_description, output)) {
     return output;
   }
   purpose.inferred_description = previousPurpose.inferred_description;
@@ -391,6 +399,55 @@ export function preservePreviousAIDescriptions(
   return output;
 }
 
+function capabilityReuseSubjectsMatch(previous: any, current: any): boolean {
+  const previousName = normalizeCapabilityReuseSubject(previous?.name);
+  const currentName = normalizeCapabilityReuseSubject(current?.name);
+  if (!previousName || !currentName || previousName !== currentName) return false;
+  const previousDomains = new Set((previous?.related_domains || []).map((domain: unknown) => normalizeCapabilityReuseSubject(domain)).filter(Boolean));
+  const currentDomains = (current?.related_domains || []).map((domain: unknown) => normalizeCapabilityReuseSubject(domain)).filter(Boolean);
+  if (previousDomains.size === 0 || currentDomains.length === 0) return true;
+  return currentDomains.some((domain: string) => previousDomains.has(domain));
+}
+
+function normalizeCapabilityReuseSubject(value: unknown): string {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/\b(management|capability|workflow|reporting|analysis|generation|settlement|rebalancing|authentication|commands|handlers|tasks)\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function hasLowLevelExternalServicePollution(description: string): boolean {
+  if (/\b(?:connects to|connected to|calls out to)\b[^.]*\b(?:Self|gtk|objc_sys|[A-Z][A-Za-z0-9]*(?:Data|Decl|Item|Pool|Size))\b/.test(description)) {
+    return true;
+  }
+  if (/\bexternal services? like\b/i.test(description)) {
+    const candidates = description
+      .split(/[,\s.()]+/)
+      .map(token => token.trim())
+      .filter(Boolean);
+    if (candidates.some(candidate => isLanguageBuiltinName(candidate))) return true;
+  }
+  return false;
+}
+
+function hasProductDomainDescriptionMismatch(description: string, output: CASOutput): boolean {
+  const lower = description.toLowerCase();
+  const productText = [
+    output.enhanced_system_purpose?.primary_domain || '',
+    ...(output.enhanced_system_purpose?.core_concepts || []),
+    ...(output.system_capabilities || []).map(capability => capability.name),
+  ].join(' ').toLowerCase();
+
+  if (/\b(solana|arbitrage|dex|cex|liquidity|trading)\b/.test(productText) &&
+    /\btoken authentication\b|\bauthentication tokens\b|\bidentity sessions?\b/.test(lower)) {
+    return true;
+  }
+
+  return false;
+}
+
 export async function analyzeProject(projectPath: string): Promise<CASOutput> {
   if (!(await fs.pathExists(projectPath))) {
     throw new Error(`Project path does not exist: ${projectPath}`);
@@ -400,10 +457,10 @@ export async function analyzeProject(projectPath: string): Promise<CASOutput> {
     const orch = getOrchestrator();
     orch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
     const previousOutput = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
-    const result = preservePreviousAIDescriptions(
+    const result = await applyStoredElementDescriptions(projectPath, preservePreviousAIDescriptions(
       previousOutput,
       await orch.orchestrateAnalysis(projectPath)
-    );
+    ));
 
     await saveAnalysis(projectPath, result);
     await saveAnalysisSnapshot(projectPath, result);

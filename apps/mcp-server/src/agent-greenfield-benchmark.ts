@@ -103,7 +103,7 @@ export async function runAgentGreenfieldBenchmark(args: Partial<Args> = {}) {
     const result = results[results.length - 1] as any;
     const maxLiveTasks = parsed.commands.maxLiveTasks;
     if (parsed.liveRequested &&
-      liveCategoryAllowed(parsed.commands, 'greenfield-build') &&
+      liveTaskAllowed(parsed.commands, scenario.id, 'greenfield-build') &&
       (maxLiveTasks === undefined || liveTasksStarted < maxLiveTasks)) {
       liveTasksStarted++;
       result.live_pair = await runLiveGreenfieldScenario(scenario, guidance, parsed.commands);
@@ -138,19 +138,15 @@ export async function runAgentGreenfieldBenchmark(args: Partial<Args> = {}) {
       claim_limit: results.some((result: any) => result.live_pair) || continuityTrials.some((trial: any) => trial.live_pair)
         ? 'Includes live greenfield/continuity trials for covered scenarios; quality/token claims may cite live deltas.'
         : 'Deterministic proxy only; proves architecture guidance, preview analysis, reuse memory, and continuity scoring, but not final live-agent build quality.',
-      token_savings_status: results.some((result: any) => result.live_pair) || continuityTrials.some((trial: any) => trial.live_pair)
-        ? 'live-measured'
-        : 'not-measured-without-live-agent',
-      token_savings_claim: results.some((result: any) => result.live_pair) || continuityTrials.some((trial: any) => trial.live_pair)
-        ? 'Use live_average_token_reduction and live_continuity_average_token_reduction for token claims.'
-        : 'No greenfield token-savings claim is made by this deterministic run; run with live agents to measure total prompt/context/tool tokens.',
+      token_savings_status: liveTokenSavingsStatus(results, continuityTrials),
+      token_savings_claim: liveTokenSavingsClaim(results, continuityTrials),
       scenario_count: results.length,
       average_quality_delta: Math.round(results.reduce((sum, result) => sum + result.score_delta, 0) / Math.max(1, results.length)),
       scenarios_improved: results.filter(result => result.score_delta > 0).length,
       preview_successes: results.filter(result => result.with_klauro.nodes > 0).length,
       live_trials_attempted: results.filter((result: any) => result.live_pair).length,
       live_average_quality_delta: average(results
-        .map((result: any) => result.live_greenfield?.quality_delta)
+        .map((result: any) => conservativeLiveQualityDelta(result.live_greenfield, result.live_pair))
         .filter((value: unknown): value is number => typeof value === 'number')),
       live_average_token_reduction: average(results
         .map((result: any) => result.live_pair?.evaluation?.token_reduction_percentage)
@@ -164,7 +160,7 @@ export async function runAgentGreenfieldBenchmark(args: Partial<Args> = {}) {
       live_continuity_trials_attempted: continuityTrials.filter((trial: any) => trial.live_pair).length,
       live_continuity_trials_passed: continuityTrials.filter((trial: any) => trial.live_continuity?.status === 'pass').length,
       live_continuity_average_delta: average(continuityTrials
-        .map((trial: any) => trial.live_continuity?.quality_delta)
+        .map((trial: any) => conservativeLiveQualityDelta(trial.live_continuity, trial.live_pair))
         .filter((value: unknown): value is number => typeof value === 'number')),
       live_continuity_average_token_reduction: average(continuityTrials
         .map((trial: any) => trial.live_pair?.evaluation?.token_reduction_percentage)
@@ -263,12 +259,20 @@ async function scoreLiveGreenfieldScenario(
   const withScore = scoreGreenfieldBundle(scenario, withFiles, withPayload?.proposed_cas as any, guidance);
   const withoutScore = scoreGreenfieldBundle(scenario, withoutFiles, withoutPayload?.proposed_cas as any, null);
   const qualityDelta = withScore.score - withoutScore.score;
+  const evaluatorQualityDelta = livePair.evaluation.quality_score_delta;
+  const evaluatorArchitectureDelta = livePair.evaluation.architecture_score_delta;
+  const evaluatorAgrees = evaluatorQualityDelta >= 0 &&
+    (typeof evaluatorArchitectureDelta !== 'number' || evaluatorArchitectureDelta >= 0);
 
   return {
-    status: livePair.with_klauro.command_passed && livePair.without_klauro.command_passed && withScore.score >= withoutScore.score ? 'pass' : 'fail',
+    status: liveProofAccepted(livePair, withScore.score, withoutScore.score, evaluatorAgrees) ? 'pass' : 'fail',
+    status_reason: liveStatusReason(livePair),
+    baseline_completed: livePair.without_klauro.command_passed === true,
     with_score: withScore.score,
     without_score: withoutScore.score,
     quality_delta: qualityDelta,
+    evaluator_quality_delta: evaluatorQualityDelta,
+    evaluator_architecture_delta: evaluatorArchitectureDelta,
     with_findings: withScore.findings,
     without_findings: withoutScore.findings,
     with_preview_id: withPreview?.preview?.id,
@@ -609,12 +613,20 @@ async function scoreLiveGreenfieldContinuityTrial(
   const withScore = scoreGreenfieldContinuityBundle(withFiles, withPayload?.proposed_cas as any, guidance);
   const withoutScore = scoreGreenfieldContinuityBundle(withoutFiles, withoutPayload?.proposed_cas as any, null);
   const qualityDelta = withScore.score - withoutScore.score;
+  const evaluatorQualityDelta = livePair.evaluation.quality_score_delta;
+  const evaluatorArchitectureDelta = livePair.evaluation.architecture_score_delta;
+  const evaluatorAgrees = evaluatorQualityDelta >= 0 &&
+    (typeof evaluatorArchitectureDelta !== 'number' || evaluatorArchitectureDelta >= 0);
 
   return {
-    status: livePair.with_klauro.command_passed && livePair.without_klauro.command_passed && withScore.score >= withoutScore.score ? 'pass' : 'fail',
+    status: liveProofAccepted(livePair, withScore.score, withoutScore.score, evaluatorAgrees) ? 'pass' : 'fail',
+    status_reason: liveStatusReason(livePair),
+    baseline_completed: livePair.without_klauro.command_passed === true,
     with_score: withScore.score,
     without_score: withoutScore.score,
     quality_delta: qualityDelta,
+    evaluator_quality_delta: evaluatorQualityDelta,
+    evaluator_architecture_delta: evaluatorArchitectureDelta,
     with_findings: withScore.findings,
     without_findings: withoutScore.findings,
     with_preview_id: withPreview?.preview?.id,
@@ -746,12 +758,20 @@ async function scoreLiveMassiveGreenfieldContinuityTrial(
   const withScore = scoreMassiveGreenfieldContinuityBundle(withFiles, withPayload?.proposed_cas as any, guidance);
   const withoutScore = scoreMassiveGreenfieldContinuityBundle(withoutFiles, withoutPayload?.proposed_cas as any, null);
   const qualityDelta = withScore.score - withoutScore.score;
+  const evaluatorQualityDelta = livePair.evaluation.quality_score_delta;
+  const evaluatorArchitectureDelta = livePair.evaluation.architecture_score_delta;
+  const evaluatorAgrees = evaluatorQualityDelta >= 0 &&
+    (typeof evaluatorArchitectureDelta !== 'number' || evaluatorArchitectureDelta >= 0);
 
   return {
-    status: livePair.with_klauro.command_passed && livePair.without_klauro.command_passed && withScore.score >= withoutScore.score ? 'pass' : 'fail',
+    status: liveProofAccepted(livePair, withScore.score, withoutScore.score, evaluatorAgrees) ? 'pass' : 'fail',
+    status_reason: liveStatusReason(livePair),
+    baseline_completed: livePair.without_klauro.command_passed === true,
     with_score: withScore.score,
     without_score: withoutScore.score,
     quality_delta: qualityDelta,
+    evaluator_quality_delta: evaluatorQualityDelta,
+    evaluator_architecture_delta: evaluatorArchitectureDelta,
     with_findings: withScore.findings,
     without_findings: withoutScore.findings,
     with_preview_id: withPreview?.preview?.id,
@@ -906,7 +926,7 @@ function isCandidateGreenfieldFile(filePath: string): boolean {
   return /\.(ts|tsx|js|jsx|mjs|cjs|py|rs|go|java|cs|php|dart|json|sql|toml|yaml|yml|md)$/.test(filePath);
 }
 
-function scoreGreenfieldBundle(
+export function scoreGreenfieldBundle(
   scenario: Scenario,
   files: ProposedFileInput[],
   cas: any,
@@ -924,6 +944,8 @@ function scoreGreenfieldBundle(
   const hasUi = paths.some(file => /component|page|view|route/i.test(file));
   const hasWorker = paths.some(file => /worker|job|queue|event/i.test(file));
   const hasExternal = files.some(file => /stripe|github|slack|webhook|external|client|sdk/i.test(`${file.path}\n${file.content || ''}`));
+  const hasInstallArtifact = paths.some(file => /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$/i.test(file));
+  const generatedFileCount = paths.filter(file => !/(^|\/)(package\.json|tsconfig\.json|pyproject\.toml|go\.mod|cargo\.toml|composer\.json|pubspec\.yaml)$/i.test(file)).length;
   const nodeCount = cas?.nodes?.length || 0;
   const entryCount = cas?.entry_points?.length || 0;
 
@@ -941,8 +963,16 @@ function scoreGreenfieldBundle(
   if (guidance?.existing_overlap.status === 'overlap-found') score += 8;
   if ((guidance?.recommended_architecture.patterns.length || 0) > 0) score += 6;
   if ((guidance?.risks || []).some(risk => risk.risk === 'Potential duplicate capability')) score += 4;
+  if (hasInstallArtifact) {
+    score -= 8;
+    findings.push('Generated dependency-install artifacts despite live benchmark instruction not to install dependencies.');
+  }
+  if (generatedFileCount > 18) {
+    score -= Math.min(10, Math.ceil((generatedFileCount - 18) / 4) * 2);
+    findings.push(`Generated a broad ${generatedFileCount}-file slice instead of a tightly bounded first slice.`);
+  }
 
-  return { score: Math.min(100, score), findings };
+  return { score: Math.max(0, Math.min(100, score)), findings };
 }
 
 function buildScenarios(): Scenario[] {
@@ -1126,6 +1156,63 @@ function average(values: number[]): number | null {
   return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
 }
 
+function conservativeLiveQualityDelta(liveScore: any, livePair: LiveAgentPairResult | undefined): number | null {
+  const deltas = [
+    typeof liveScore?.quality_delta === 'number' ? liveScore.quality_delta : undefined,
+    typeof livePair?.evaluation?.quality_score_delta === 'number' ? livePair.evaluation.quality_score_delta : undefined,
+    typeof livePair?.evaluation?.architecture_score_delta === 'number' ? livePair.evaluation.architecture_score_delta : undefined,
+  ].filter((value): value is number => typeof value === 'number');
+  return deltas.length ? Math.min(...deltas) : null;
+}
+
+function liveProofAccepted(
+  livePair: LiveAgentPairResult,
+  withScore: number,
+  withoutScore: number,
+  evaluatorAgrees: boolean
+): boolean {
+  if (livePair.evaluation.status !== 'pass') return false;
+  if (livePair.with_klauro.command_passed !== true) return false;
+  if (withScore < withoutScore) return false;
+  if (!evaluatorAgrees) return false;
+  return livePair.without_klauro.attempted === true;
+}
+
+function liveStatusReason(livePair: LiveAgentPairResult): string {
+  if (livePair.without_klauro.command_passed === true) return 'both-arms-completed';
+  if (livePair.without_klauro.timed_out) return 'with-klauro-completed-while-baseline-timed-out';
+  return 'with-klauro-completed-while-baseline-failed';
+}
+
+function liveTokenSavingsStatus(results: any[], continuityTrials: any[]): string {
+  const liveItems = [
+    ...results.filter(result => result.live_pair),
+    ...continuityTrials.filter(trial => trial.live_pair),
+  ];
+  if (!liveItems.length) return 'not-measured-without-live-agent';
+  const reductions = liveItems
+    .map(item => item.live_pair?.evaluation?.token_reduction_percentage)
+    .filter((value): value is number => typeof value === 'number');
+  return reductions.length ? 'live-measured' : 'live-partial-no-baseline-token-total';
+}
+
+function liveTokenSavingsClaim(results: any[], continuityTrials: any[]): string {
+  const status = liveTokenSavingsStatus(results, continuityTrials);
+  if (status === 'not-measured-without-live-agent') {
+    return 'No greenfield token-savings claim is made by this deterministic run; run with live agents to measure total prompt/context/tool tokens.';
+  }
+  if (status === 'live-partial-no-baseline-token-total') {
+    return 'Live run measured success/time/quality, but token reduction is not claimed when a baseline arm fails or omits provider token totals.';
+  }
+  return 'Use live_average_token_reduction and live_continuity_average_token_reduction for token claims.';
+}
+
+function liveTaskAllowed(commands: LiveAgentCommandConfig, taskId: string, category: string): boolean {
+  const taskIds = commands.liveTaskTypes || [];
+  if (taskIds.length && !taskIds.includes(taskId)) return false;
+  return liveCategoryAllowed(commands, category);
+}
+
 function liveCategoryAllowed(commands: LiveAgentCommandConfig, category: string): boolean {
   const categories = commands.liveTaskCategories || [];
   return categories.length === 0 || categories.includes(category);
@@ -1156,6 +1243,11 @@ function parseArgs(argv: string[]): Args {
       const category = argv[++i];
       if (!category) throw new Error('--live-task-category requires a category value');
       args.commands.liveTaskCategories = [...(args.commands.liveTaskCategories || []), category];
+    }
+    else if (arg === '--live-task-id') {
+      const taskId = argv[++i];
+      if (!taskId) throw new Error('--live-task-id requires a scenario id');
+      args.commands.liveTaskTypes = [...(args.commands.liveTaskTypes || []), taskId];
     }
     else if (arg === '--timeout-ms') args.commands.timeoutMs = Number(argv[++i]);
     else if (arg === '--test-timeout-ms') args.commands.testTimeoutMs = Number(argv[++i]);

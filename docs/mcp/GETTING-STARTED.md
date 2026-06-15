@@ -1,6 +1,6 @@
 # Klauro MCP - Getting Started
 
-From zero to a first agent work packet in under two minutes on a mid-size repository. The path is: install the MCP server, analyze the repo with the fast agent profile, ask for a work packet.
+From zero to a first agent work packet in under ten minutes on a mid-size repository. The path is: install the MCP server, analyze the repo with the fast agent profile, ask for a work packet. On a warm developer machine this is usually under two minutes; the ten-minute bar includes dependency install and bundle build.
 
 ## Prerequisites
 
@@ -13,17 +13,24 @@ From zero to a first agent work packet in under two minutes on a mid-size reposi
 node /absolute/path/to/proof-of-concept/apps/mcp-server/scripts/install.mjs /path/to/your/repo --claude-md /path/to/your/repo
 ```
 
-(Equivalent once dependencies exist: `npm --prefix apps/mcp-server run setup -- ...` or `klauro install ...`.)
+To prove immediate value in the same command, add `--first-value`:
+
+```bash
+node /absolute/path/to/proof-of-concept/apps/mcp-server/scripts/install.mjs /path/to/your/repo --first-value --claude-md /path/to/your/repo
+```
+
+Equivalent once dependencies exist: `npm --prefix apps/mcp-server run setup -- ...` or `klauro install ...`.
 
 The installer is idempotent and does all of the following, printing a PASS/WARN/FAIL line with a concrete fix for every step:
 
 1. Verifies Node.js 20+ and npm.
 2. Runs `npm install` in `apps/mcp-server/` if dependencies are missing.
-3. Locates the bundled server (`dist/index.cjs`) and builds it only when missing (`--rebuild` to force).
+3. Locates the bundled server (`dist/index.cjs`) and CLI (`dist/cli.cjs`) and builds them only when missing (`--rebuild` to force).
 4. Creates `~/.klauro/analyses` (or `KLAURO_STORAGE_PATH`) and verifies it is writable.
 5. Registers the server with Claude Code (`claude mcp add --scope user klauro -- node .../dist/index.cjs`; `--no-register` to skip, `--claude-scope` for project/local scope) and prints the project-scoped `.mcp.json` snippet plus exact Codex CLI registration commands.
 6. With `--claude-md <repo>`, appends the Klauro operating loop to that repo's `CLAUDE.md` (idempotent; without the flag it prints the snippet to copy).
 7. Self-check: spawns the bundle, asserts the MCP initialize handshake answers within 600ms, then calls `resolve_agent_analysis` end to end — reporting either the selected analysis or a clear "no analyses yet" message with the exact analyze command to run next.
+8. With `--first-value`, runs `agent-fast` analysis and prints the first agent work-packet summary: system name, graph size, selected task, and first files to inspect.
 
 Restart Claude Code and confirm with `/mcp` that the `klauro` server is listed.
 
@@ -72,13 +79,44 @@ npm --silent run analyze -- /path/to/your/repo --analysis-focus agent-fast
 
 From inside an agent session the equivalent is the `analyze_codebase` tool with `analysis_focus: "agent-fast"`.
 
+## Hosted or self-hosted analyzer path
+
+Local mode keeps analysis on the developer machine. Remote mode keeps analyzer implementation on a hosted or self-hosted Klauro analyzer while still letting local agents sync uncommitted changes.
+
+Start a self-hosted analyzer locally:
+
+```bash
+cd /absolute/path/to/proof-of-concept/apps/mcp-server
+npm run build
+node dist/cli.cjs analyzer-server --host 127.0.0.1 --port 8787
+```
+
+Point a repo at the analyzer:
+
+```bash
+node dist/cli.cjs init /path/to/your/repo --mode remote --server-url http://127.0.0.1:8787 --force
+node dist/cli.cjs upload-manifest /path/to/your/repo
+node dist/cli.cjs analyze /path/to/your/repo
+```
+
+For a hosted analyzer, set `KLAURO_ANALYZER_TOKEN` in the agent environment and use the hosted URL:
+
+```bash
+export KLAURO_ANALYZER_TOKEN=...
+node dist/cli.cjs init /path/to/your/repo --mode remote --server-url https://analyzer.klauro.dev --force
+node dist/cli.cjs upload-manifest /path/to/your/repo
+node dist/cli.cjs analyze /path/to/your/repo
+```
+
+`upload-manifest` shows exactly what would be transmitted before remote analysis. Dirty working-tree updates use `remote-sync`, so local agents can preview uncommitted changes without waiting for a GitHub push.
+
 ## 3. First work packet
 
 ```bash
-npm --silent run agent-work-packet -- /path/to/your/repo --task-type modify --target "the thing you want to change" --compact --json
+npm --silent run agent-work-packet -- /path/to/your/repo --task-type modify --target "the thing you want to change" --response-profile capsule-only --json
 ```
 
-The packet contains the resolved target node, change risk, covering tests, call context, behavioral invariants, and the first files to inspect. From an agent session, the loop is `resolve_agent_analysis` -> `get_agent_start_context` -> `get_agent_work_packet` (see `.claude/skills/klauro/SKILL.md`).
+The capsule-only packet contains the K15 context capsule, K5 execution capsule, selected target, first files, and validation instructions in the smallest prompt-native form. From an agent session, the loop is `resolve_agent_analysis` -> `get_agent_start_context` -> `get_agent_work_packet` with `response_profile: "capsule-only"`; retry with `first-turn` only when the capsules leave a concrete gap (see `.claude/skills/klauro/SKILL.md`).
 
 ## Measured timing
 
@@ -87,6 +125,15 @@ Measured on a mid-size production Angular repository (truckspyui, ~800 TypeScrip
 - `analyze --analysis-focus agent-fast --force`: 12.9s
 - `agent-work-packet --task-type modify`: 2.4s
 - Total install-to-first-packet (excluding one-time `npm install`): ~15s after a one-time npm install and build
+
+The release smoke test for this path is:
+
+```bash
+cd /absolute/path/to/proof-of-concept/apps/mcp-server
+npm run new-user-e2e
+```
+
+It creates a fresh temporary repo, runs the deterministic installer with `--first-value`, verifies the installed CLI, starts a local hosted analyzer, runs remote full analysis, edits the repo, and proves incremental remote sync updates CAS.
 
 ## Operations: analysis memory
 
@@ -101,7 +148,7 @@ Measured on a mid-size production Angular repository (truckspyui, ~800 TypeScrip
 
 ## Optional: workspace instructions
 
-Run `klauro install-agent /path/to/your/repo` to write agent default instructions into the repo, or copy the operating-loop block from `docs/mcp/CLAUDE-MD-PROMPT.md` into the project's `CLAUDE.md`. Adoption measurement (`npm run agent-adoption-measurement`) shows agents use Klauro tools far more reliably when the operating loop is present in workspace instructions.
+Run `klauro install-agent /path/to/your/repo` to write agent default instructions into the repo, or copy the operating-loop block from `docs/mcp/CLAUDE-MD-PROMPT.md` into the project's `CLAUDE.md` or `AGENTS.md`. The install command also writes a portable skill at `.klauro/skills/klauro/SKILL.md`; copy or symlink that skill into Claude, Codex, or another agent skill directory when the agent supports skills. Adoption measurement (`npm run agent-adoption-measurement`) shows agents use Klauro tools far more reliably when the operating loop is present in workspace instructions.
 
 ## Troubleshooting
 

@@ -558,6 +558,10 @@ export class AIService {
     this.logger.info('AI cache cleared');
   }
 
+  async close(): Promise<void> {
+    await this.cache.close();
+  }
+
   getAvailableProviders(): string[] {
     return Array.from(this.providers.entries())
       .filter(([_, provider]) => provider.available)

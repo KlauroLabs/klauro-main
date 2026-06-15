@@ -1,4 +1,3 @@
-#!/usr/bin/env tsx
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 import { analyzeProject, analyzeProjectIncremental, getAnalysis } from './analyzer';
@@ -11,6 +10,7 @@ import { saveGoldenSnapshot } from './storage';
 import { getAgentWorkPacket } from './agent-adoption';
 import type { AgentTask, AgentTaskType } from './agent-adoption';
 import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
+import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 import { buildUploadManifest } from './remote-source';
 import { loadKlauroConfig, writeDefaultKlauroConfig } from './klauro-config';
 import { buildGithubImportPlan } from './github-import';
@@ -21,7 +21,7 @@ import { buildSupportBundle, formatSupportBundleResult } from './support-bundle'
 import { formatFullPurgeReport, formatProjectPurgeReport, purgeAll, purgeProject, resolvePurgeRoots } from './purge';
 import { getAnalysisRunLogPath } from '../../../packages/analyzer-core/src/analyzer/core/run-log';
 import { formatBuildIdentity, getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
-import { isLocalAIProvider } from '../../../packages/analyzer-core/src/config/ai.config';
+import { withAnalysisFocus, type AnalysisFocus } from './analysis-focus';
 import * as fs from 'fs-extra';
 import * as readline from 'readline';
 
@@ -38,7 +38,7 @@ interface ParsedArgs {
   force: boolean;
   mode?: 'local' | 'remote';
   dirtyTree: boolean;
-  analysisFocus?: 'agent-fast' | 'ui-overview' | 'deep-context' | 'full';
+  analysisFocus?: AnalysisFocus;
   projectId?: string;
   organizationId?: string;
   planText?: string;
@@ -51,6 +51,9 @@ interface ParsedArgs {
   baselinePath?: string;
   proposedPath?: string;
   outputPath?: string;
+  host?: string;
+  port?: number;
+  dataDir?: string;
   all: boolean;
   allAiCache: boolean;
   yes: boolean;
@@ -88,7 +91,13 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (args.command === 'analyzer-server') {
+    await runAnalyzerServerCommand(args);
+    return;
+  }
+
   if (![
+    'analyzer-server',
     'init',
     'analyze',
     'upload-manifest',
@@ -407,60 +416,6 @@ async function withLogHandling<T>(json: boolean, quiet: boolean, fn: () => Promi
   }
 }
 
-async function withAnalysisFocus<T>(focus: ParsedArgs['analysisFocus'], fn: () => Promise<T>): Promise<T> {
-  const previous = {
-    interpretation: process.env.KLAURO_AI_INTERPRETATION,
-    interpretationForce: process.env.KLAURO_AI_INTERPRETATION_FORCE,
-    deterministicKeep: process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP,
-    interpretationBudget: process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS,
-    elementBudget: process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS,
-    elementBatchSize: process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE,
-    elements: process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS,
-    embeddings: process.env.KLAURO_EMBEDDING_ENABLED,
-  };
-
-  try {
-    if (focus === 'agent-fast') {
-      process.env.KLAURO_AI_INTERPRETATION = 'false';
-      process.env.KLAURO_AI_INTERPRETATION_FORCE = 'false';
-      process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = 'false';
-      process.env.KLAURO_EMBEDDING_ENABLED = 'false';
-    } else if (focus === 'ui-overview') {
-      // Local providers (ollama qwen-class reasoning models) need a wall budget
-      // that fits one full combined call plus one repair at observed latency
-      // (~35-60s per call with a 120s per-request timeout). Cloud providers
-      // keep the tighter budgets.
-      const localProvider = isLocalAIProvider();
-      process.env.KLAURO_AI_INTERPRETATION = process.env.KLAURO_AI_INTERPRETATION || 'true';
-      process.env.KLAURO_AI_INTERPRETATION_FORCE = process.env.KLAURO_AI_INTERPRETATION_FORCE || 'true';
-      process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP = 'false';
-      process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS = process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS || (localProvider ? '240000' : '45000');
-      process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS || (localProvider ? '240000' : '90000');
-      process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE || '4';
-      process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS || 'true';
-      process.env.KLAURO_EMBEDDING_ENABLED = 'false';
-    } else if (focus === 'deep-context') {
-      process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS || 'false';
-    }
-
-    return await fn();
-  } finally {
-    restoreEnv('KLAURO_AI_INTERPRETATION', previous.interpretation);
-    restoreEnv('KLAURO_AI_INTERPRETATION_FORCE', previous.interpretationForce);
-    restoreEnv('KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP', previous.deterministicKeep);
-    restoreEnv('KLAURO_AI_INTERPRETATION_BUDGET_MS', previous.interpretationBudget);
-    restoreEnv('KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS', previous.elementBudget);
-    restoreEnv('KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE', previous.elementBatchSize);
-    restoreEnv('KLAURO_AI_ELEMENT_DESCRIPTIONS', previous.elements);
-    restoreEnv('KLAURO_EMBEDDING_ENABLED', previous.embeddings);
-  }
-}
-
-function restoreEnv(name: string, value: string | undefined): void {
-  if (value === undefined) delete process.env[name];
-  else process.env[name] = value;
-}
-
 function parseArgs(argv: string[]): ParsedArgs {
   const parsed: ParsedArgs = {
     command: argv[0],
@@ -488,6 +443,9 @@ function parseArgs(argv: string[]): ParsedArgs {
     baselinePath: undefined,
     proposedPath: undefined,
     outputPath: undefined,
+    host: undefined,
+    port: undefined,
+    dataDir: undefined,
     all: false,
     allAiCache: false,
     yes: false,
@@ -536,6 +494,12 @@ function parseArgs(argv: string[]): ParsedArgs {
       parsed.proposedPath = path.resolve(argv[++i]);
     } else if (arg === '--output') {
       parsed.outputPath = argv[++i];
+    } else if (arg === '--host') {
+      parsed.host = argv[++i];
+    } else if (arg === '--port') {
+      parsed.port = Number(argv[++i]);
+    } else if (arg === '--data-dir') {
+      parsed.dataDir = argv[++i];
     } else if (arg === '--mode') {
       parsed.mode = argv[++i] as 'local' | 'remote';
     } else if (arg === '--analysis-focus') {
@@ -554,10 +518,12 @@ function parseArgs(argv: string[]): ParsedArgs {
       parsed.task.task_type = argv[++i] as AgentTaskType;
     } else if (arg === '--target') {
       parsed.task.target = argv[++i];
-    } else if (arg === '--instructions') {
+    } else if (arg === '--instructions' || arg === '--task') {
       parsed.task.instructions = argv[++i];
     } else if (arg === '--success-criterion') {
       parsed.task.success_criteria = [...(parsed.task.success_criteria || []), argv[++i]];
+    } else if (arg === '--response-profile') {
+      parsed.task.response_profile = argv[++i] as AgentTask['response_profile'];
     } else if (!parsed.path) {
       parsed.path = arg;
     } else {
@@ -577,13 +543,14 @@ function printHelp(): void {
     '  klauro purge --all [--yes] [--json]     (wipe all local Klauro data under ~/.klauro)',
     '  klauro --version',
     '  klauro doctor [--json]                  (no path: environment health for this machine)',
+    '  klauro analyzer-server [--host 0.0.0.0] [--port 8787] [--data-dir .klauro-remote-analyzer]',
     '  klauro init [/path/to/repo] [--mode local|remote] [--server-url url] [--project-id id] [--organization-id id] [--force] [--json]',
     '  klauro upload-manifest [/path/to/repo] [--dirty-tree] [--json]',
     '  klauro analyze [/path/to/repo] [--server-url http://127.0.0.1:8787] [--analysis-id id] [--analysis-focus agent-fast|ui-overview|deep-context|full] [--force] [--json]',
     '  klauro install-agent [/path/to/repo] [--json]',
     '  klauro github-import-plan [/path/to/repo] [--json]',
     '  klauro agent-start /path/to/repo [--task-type orient|modify|debug|review|trace|cross-repo|runtime] [--target query] [--json] [--refresh]',
-    '  klauro agent-work-packet /path/to/repo [--task-type orient|modify|debug|review|trace|cross-repo|runtime] [--target query] [--instructions text] [--success-criterion text] [--json] [--compact] [--quiet] [--refresh]',
+    '  klauro agent-work-packet /path/to/repo [--task-type orient|modify|debug|review|trace|cross-repo|runtime] [--target query] [--instructions text|--task text] [--success-criterion text] [--response-profile standard|minimal|first-turn|capsule-only] [--json] [--compact] [--quiet] [--refresh]',
     '  klauro agent-install /path/to/repo [--task-type orient|modify|debug|review|trace|cross-repo|runtime] [--target query] [--json] [--refresh]',
     '  klauro doctor /path/to/repo [--json] [--refresh]   (with path: per-repository analysis readiness)',
     '  klauro save-golden /path/to/repo [--json] [--refresh]',
@@ -599,6 +566,7 @@ function printHelp(): void {
     '',
     'Examples:',
     '  klauro init . --mode remote --server-url https://analyzer.klauro.dev',
+    '  klauro analyzer-server --host 127.0.0.1 --port 8787',
     '  klauro upload-manifest .',
     '  klauro analyze .',
     '  klauro install-agent .',
@@ -618,6 +586,37 @@ function printHelp(): void {
     '  npm --silent run agent-start -- . --json',
     '  npm --silent run agent-install -- . --json',
   ].join('\n') + '\n');
+}
+
+async function runAnalyzerServerCommand(args: ParsedArgs): Promise<void> {
+  const port = args.port || Number(process.env.PORT || process.env.KLAURO_ANALYZER_PORT || 8787);
+  if (!Number.isFinite(port) || port <= 0) throw new Error(`Invalid analyzer server port: ${args.port}`);
+  const host = args.host || process.env.KLAURO_ANALYZER_HOST || '0.0.0.0';
+  const server = createRemoteAnalyzerHttpServer({ dataDir: args.dataDir });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, host, () => {
+      server.off('error', reject);
+      const url = `http://${host}:${port}`;
+      const payload = {
+        status: 'ready',
+        service: 'klauro-remote-analyzer',
+        url,
+        data_dir: args.dataDir || process.env.KLAURO_REMOTE_ANALYZER_DATA || '.klauro-remote-analyzer',
+        auth: process.env.KLAURO_ANALYZER_TOKEN ? 'bearer-token-required' : 'none',
+      };
+      process.stdout.write(args.json ? `${JSON.stringify(payload, null, 2)}\n` : `Klauro remote analyzer listening on ${url}\n`);
+      resolve();
+    });
+  });
+
+  const stop = () => {
+    server.close(() => process.exit(0));
+  };
+  process.once('SIGINT', stop);
+  process.once('SIGTERM', stop);
+  await new Promise(() => undefined);
 }
 
 function formatInitResult(result: Awaited<ReturnType<typeof writeDefaultKlauroConfig>>): string {
@@ -790,6 +789,11 @@ function formatGreenfieldBuildPacket(result: Awaited<ReturnType<typeof buildGree
     `Workspace: ${result.workspace_path}`,
     current ? `Current graph: ${current.graph.nodes} nodes, ${current.graph.edges} edges, ${current.graph.capabilities} capabilities, ${current.graph.files} files` : 'Current graph: none yet',
     '',
+    'G1 build capsule:',
+    '```text',
+    (result as any).agent_build_capsule?.capsule || '',
+    '```',
+    '',
     'Product slice focus:',
     ...(productBehaviors.length ? productBehaviors : ['- one coherent tested vertical slice']),
     stopRule ? `Stop rule: ${stopRule}` : '',
@@ -825,6 +829,7 @@ function formatPreviewPayload(payload: Awaited<ReturnType<typeof getPreviewAnaly
 }
 
 function compactWorkPacket(packet: Awaited<ReturnType<typeof getAgentWorkPacket>>) {
+  if ((packet as any).packet_profile === 'first-turn') return packet;
   const context = packet.work_context as any;
   const nextMcpCalls = packet.next_mcp_calls.filter((step: any, index: number) =>
     index < 8 || step.tool === 'validate_agent_change' || step.tool === 'validate_behavioral_invariants' || step.tool === 'validate_codebase_idioms'
@@ -837,6 +842,13 @@ function compactWorkPacket(packet: Awaited<ReturnType<typeof getAgentWorkPacket>
     default_use: packet.default_use,
     readiness: packet.readiness,
     selected_node: packet.selected_node,
+    execution_brief: (packet as any).execution_brief ? {
+      capsule: (packet as any).execution_brief.capsule,
+      read_first: (packet as any).execution_brief.read_first,
+      edit_scope: (packet as any).execution_brief.edit_scope,
+      validate: (packet as any).execution_brief.validate,
+      stop_rule: (packet as any).execution_brief.stop_rule,
+    } : undefined,
     target_gaps: (packet.target_resolution as any)?.gaps || [],
     file_read_plan: packet.file_read_plan.slice(0, 12).map((item: any) => ({
       file: item.file,
@@ -923,6 +935,26 @@ function summarizeRiskContextForCli(context: any) {
 }
 
 function formatWorkPacket(packet: Awaited<ReturnType<typeof getAgentWorkPacket>>): string {
+  if ((packet as any).packet_profile === 'capsule-only') {
+    const lines = [
+      'Klauro capsule-only work packet',
+      `Estimated tokens: ${(packet as any).estimated_tokens || 'unknown'}`,
+      '',
+      'K15 context:',
+      '```text',
+      (packet as any).context_capsule || '',
+      '```',
+      '',
+      'K5 execution:',
+      '```text',
+      (packet as any).execution_capsule || '',
+      '```',
+      '',
+      `Rule: ${(packet as any).rule || 'Read K15, execute K5, then expand only if blocked.'}`,
+    ];
+    return `${lines.join('\n')}\n`;
+  }
+
   const selected = packet.selected_node
     ? `${packet.selected_node.name || packet.selected_node.id} (${packet.selected_node.file || 'unknown file'})`
     : 'none';

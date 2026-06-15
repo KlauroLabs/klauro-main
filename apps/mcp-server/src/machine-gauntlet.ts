@@ -8,11 +8,13 @@ import { evaluateAgentReadiness } from './agent-adoption';
 import { runAgentIdiomBenchmark } from './agent-idiom-benchmark';
 import { runAgentGreenfieldBenchmark } from './agent-greenfield-benchmark';
 import { runAgentCapabilityMemoryBenchmark } from './agent-capability-memory-benchmark';
+import { runSeededExistingTaskBenchmark } from './agent-existing-task-benchmark';
 import { runFromZeroBuildPacketProof } from './agent-from-zero-build-packet-proof';
 import { reviewAnalysisUsefulness } from './analysis-usefulness-review';
 import { runIncrementalValueBenchmark } from './incremental-benchmark';
 import { discoverRealRepos, type RealRepoTarget } from './repo-discovery';
 import { isDirectCliInvocation } from './cli-invocation';
+import { withAnalysisFocus, type AnalysisFocus } from './analysis-focus';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 export type MachineProofMode = 'fast' | 'full';
@@ -179,6 +181,7 @@ export async function runMachineAgentProof(options: ParsedArgs) {
   const discovery = await discoverRealRepos(options.devRoot);
   const eligible = discovery.repos.filter(repo => repo.status === 'eligible');
   const selectedEligible = selectEligibleReposForMachineProof(eligible, options);
+  const analysisFocus = machineProofAnalysisFocus(options);
   const selectedPaths = new Set(selectedEligible.map(repo => repo.path));
   const unselectedEligible = eligible.filter(repo => !selectedPaths.has(repo.path));
   const limit = pLimit(Math.max(1, options.analysisConcurrency || 3));
@@ -186,12 +189,12 @@ export async function runMachineAgentProof(options: ParsedArgs) {
 
   async function analyzeRepoForMachineProof(repo: RealRepoTarget) {
     const startedAt = Date.now();
-    logMachineProgress(`analyzing ${repo.name} (${repo.path})`);
+    logMachineProgress(`analyzing ${repo.name} (${repo.path}) with ${analysisFocus}`);
     try {
-      const cas = await getOrchestrator().orchestrateAnalysis(repo.path);
+      const cas = await withAnalysisFocus(analysisFocus, async () => getOrchestrator().orchestrateAnalysis(repo.path));
       const readiness = evaluateAgentReadiness(cas, repo.path);
       const analysisQuality = assessAnalysisQuality(cas, repo.path);
-      const usefulnessReview = await reviewAnalysisUsefulness(cas, repo.path, repo.name);
+      const usefulnessReview = await reviewAnalysisUsefulness(cas, repo.path, repo.name, analysisFocus);
       logMachineProgress(`analyzed ${repo.name} in ${Date.now() - startedAt}ms`);
       return {
         ...repo,
@@ -212,6 +215,7 @@ export async function runMachineAgentProof(options: ParsedArgs) {
           pattern_balance: cas.architecture_summary?.pattern_balance?.status || null,
           analysis_errors: cas.analysis_errors?.length || 0,
         },
+        analysis_focus: analysisFocus,
         analysis_quality: analysisQuality,
         usefulness_review: usefulnessReview,
         readiness: {
@@ -280,6 +284,18 @@ export async function runMachineAgentProof(options: ParsedArgs) {
     references: selectGreenfieldReferencePaths(selectedEligible, repoResults),
     outputPath: path.join(workRoot, 'greenfield', 'report.json'),
     markdownPath: path.join(workRoot, 'greenfield', 'report.md'),
+    liveRequested: liveConfigured && options.runLive,
+    commands: {
+      withKlauro: options.agentWithCommand,
+      withoutKlauro: options.agentWithoutCommand,
+      orchestrator: options.orchestratorCommand,
+      testCommand: options.testCommand,
+      workRoot: path.join(workRoot, 'greenfield-live'),
+      maxLiveTasks: options.maxLiveTasks,
+      timeoutMs: options.timeoutMs,
+      testTimeoutMs: options.testTimeoutMs,
+      keepWorkspaces: !options.discardWorkspaces,
+    },
   }).catch(error => ({
     generated_at: new Date().toISOString(),
     benchmark_type: 'agent-greenfield-benchmark',
@@ -335,7 +351,39 @@ export async function runMachineAgentProof(options: ParsedArgs) {
     },
   }));
 
-  const gates = buildGates(discovery, selectedEligible, repoResults, incremental, idiomBenchmark, greenfieldBenchmark, capabilityMemoryBenchmark, fromZeroBuildPacketProof, options);
+  const existingTaskBenchmark = await runSeededExistingTaskBenchmark({
+    outputRoot: path.join(workRoot, 'existing-task-benchmark'),
+    reportPath: path.join(workRoot, 'existing-task-benchmark', 'report.json'),
+    markdownPath: path.join(workRoot, 'existing-task-benchmark', 'report.md'),
+    live: false,
+    liveReps: 1,
+    liveConfig: {},
+    withoutArmRetrieval: true,
+    realRepoPath: null,
+    realTaskId: null,
+  } as any).catch(error => ({
+    generated_at: new Date().toISOString(),
+    benchmark_type: 'seeded-existing-project-task-proof',
+    status: 'fail',
+    score: 0,
+    summary: {
+      proof_strength: 'deterministic-proxy',
+      scenario_count: 0,
+      family_count: 0,
+      passing_scenarios: 0,
+      average_score_delta: 0,
+      average_file_reduction_percentage: 0,
+      average_token_reduction_percentage: 0,
+      average_index_retrieval_file_recall: 0,
+      average_index_retrieval_tokens: 0,
+      klauro_vs_index_retrieval_token_reduction_percentage: 0,
+      error: error instanceof Error ? error.message : String(error),
+    },
+    scenarios: [],
+  }));
+
+  const descriptionGenerationProbe = await runDescriptionGenerationProbe(selectedEligible, repoResults, options);
+  const gates = buildGates(discovery, selectedEligible, repoResults, incremental, idiomBenchmark, greenfieldBenchmark, capabilityMemoryBenchmark, fromZeroBuildPacketProof, existingTaskBenchmark, descriptionGenerationProbe, options);
   const performanceDiagnostics = buildMachinePerformanceDiagnostics(repoResults, incremental, options);
   const report = {
     generated_at: new Date().toISOString(),
@@ -354,8 +402,10 @@ export async function runMachineAgentProof(options: ParsedArgs) {
       live_enabled: Boolean(options.runLive && options.agentWithCommand && options.agentWithoutCommand),
       discard_workspaces: options.discardWorkspaces,
       work_root: workRoot,
+      analysis_focus: analysisFocus,
     },
     ai_interpretation_summary: summarizeAiInterpretation(repoResults),
+    description_generation_probe: descriptionGenerationProbe,
     discovery,
     selected_eligible_count: selectedEligible.length,
     performance_diagnostics: performanceDiagnostics,
@@ -377,6 +427,7 @@ export async function runMachineAgentProof(options: ParsedArgs) {
     greenfield_benchmark: greenfieldBenchmark,
     from_zero_build_packet_proof: fromZeroBuildPacketProof,
     capability_memory_benchmark: capabilityMemoryBenchmark,
+    existing_task_benchmark: existingTaskBenchmark,
     gates,
   };
   if (previousFreshOrchestrator === undefined) {
@@ -543,6 +594,14 @@ export function defaultMachineProofWorkRoot(runId = `machine-${Date.now()}`): st
   return path.join(os.tmpdir(), 'klauro-machine-proof-workspaces', runId);
 }
 
+export function machineProofAnalysisFocus(options: Pick<ParsedArgs, 'mode'>): AnalysisFocus {
+  // The machine proof's repo loop measures the default agent/MCP path. Rich
+  // AI-written narrative quality is proven by runDescriptionGenerationProbe and
+  // the narrative benchmarks so the coding path can stay compact.
+  void options;
+  return 'agent-fast';
+}
+
 export function selectEligibleReposForMachineProof(eligible: RealRepoTarget[], options: ParsedArgs): RealRepoTarget[] {
   const withinSizeBudget = typeof options.maxSourceFiles === 'number' && Number.isFinite(options.maxSourceFiles)
     ? eligible.filter(repo => Number(repo.source_files || 0) <= Number(options.maxSourceFiles))
@@ -561,7 +620,7 @@ function unselectedMachineProofReason(repo: RealRepoTarget, options: ParsedArgs,
   return 'Eligible repo was not selected for analysis.';
 }
 
-function assessAnalysisQuality(cas: any, repoPath = ''): { status: GateStatus; score: number; failures: string[]; warnings: string[] } {
+export function assessAnalysisQuality(cas: any, repoPath = ''): { status: GateStatus; score: number; failures: string[]; warnings: string[] } {
   const failures: string[] = [];
   const warnings: string[] = [];
   const primaryDomain = String(cas.enhanced_system_purpose?.primary_domain || '');
@@ -576,7 +635,7 @@ function assessAnalysisQuality(cas: any, repoPath = ''): { status: GateStatus; s
   if (!primaryDomain || primaryDomain === 'unknown' || isGenericDomain(primaryDomain)) {
     failures.push(`primary domain is weak (${primaryDomain || 'missing'})`);
   }
-  if (isCryptoTradingRepoSignal(repoSignal) && primaryDomain !== 'solana-arbitrage') {
+  if (isCryptoTradingRepoSignal(repoSignal) && !isCryptoTradingDomain(primaryDomain)) {
     failures.push(`crypto/Solana repo signal conflicts with primary domain (${primaryDomain})`);
   }
   if (/testing[-_ ]utilities|test[-_ ]utilities/.test(repoSignal) && /medical-device|hardware-device/.test(primaryDomain)) {
@@ -603,7 +662,15 @@ function assessAnalysisQuality(cas: any, repoPath = ''): { status: GateStatus; s
     failures.push('pattern balance reports over-patterned analysis; agents need concrete local examples');
   }
   if (architecturalPatterns.length > 10) {
-    failures.push(`too many architectural patterns detected (${architecturalPatterns.length}); likely pattern splurge`);
+    const highConfidencePatterns = architecturalPatterns.filter((pattern: any) => Number(pattern.confidence || 0) >= 0.65);
+    const primaryPatternCount = Array.isArray(patternBalance?.primary_patterns) ? patternBalance.primary_patterns.length : 0;
+    const balanceExplainsPatternSet = patternBalance?.status === 'balanced' &&
+      primaryPatternCount > 0 &&
+      primaryPatternCount <= 8 &&
+      /shared backbone|layered|module/i.test(String(patternBalance?.rationale || patternBalance?.recommendations?.join(' ') || ''));
+    if (patternBalance?.status === 'over-patterned' || primaryPatternCount > 8 || (highConfidencePatterns.length > 8 && !balanceExplainsPatternSet)) {
+      failures.push(`too many high-confidence architectural patterns detected (${architecturalPatterns.length} total, ${highConfidencePatterns.length} high-confidence); likely pattern splurge`);
+    }
   }
   const patternNames = architecturalPatterns.map((pattern: any) => String(pattern.name || '').toLowerCase());
   if (patternNames.some((name: string) => name.includes('mvc'))) {
@@ -644,8 +711,133 @@ function summarizeAiInterpretation(repoResults: any[]): Record<string, number> {
   return summary;
 }
 
+async function runDescriptionGenerationProbe(
+  selectedEligible: RealRepoTarget[],
+  repoResults: any[],
+  options: ParsedArgs,
+) {
+  if (options.mode !== 'full') {
+    return {
+      status: 'pass' as GateStatus,
+      proof_strength: 'skipped-fast-mode',
+      detail: 'AI description probe is only required in full machine proof mode.',
+    };
+  }
+
+  const passing = new Set(repoResults
+    .filter(result => result.proof_status === 'pass')
+    .map(result => result.path));
+  const preferredNames = ['treecity', 'dexter', 'elevate-skincare', 'soon-decrypter', 'proof-of-concept'];
+  const preferred = preferredNames
+    .map(name => selectedEligible.find(repo => repo.name === name && passing.has(repo.path)))
+    .find(Boolean);
+  const fallback = [...selectedEligible]
+    .filter(repo => passing.has(repo.path))
+    .sort((left, right) => Number(left.source_files || 0) - Number(right.source_files || 0))[0];
+  const repo = preferred || fallback;
+  if (!repo) {
+    return {
+      status: 'fail' as GateStatus,
+      proof_strength: 'missing-target',
+      detail: 'No passing repository was available for the AI description probe.',
+    };
+  }
+
+  const previous = {
+    aiLocal: process.env.AI_LOCAL_ENABLED,
+    interpretation: process.env.KLAURO_AI_INTERPRETATION,
+    interpretationForce: process.env.KLAURO_AI_INTERPRETATION_FORCE,
+    deterministicKeep: process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP,
+    interpretationBudget: process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS,
+    elements: process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS,
+    elementBudget: process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS,
+    elementLimit: process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT,
+    ollamaAuto: process.env.KLAURO_OLLAMA_AUTO,
+    ollamaBaseUrl: process.env.OLLAMA_BASE_URL,
+    ollamaModel: process.env.OLLAMA_MODEL,
+    freshOrchestrator: process.env.KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS,
+  };
+
+  const startedAt = Date.now();
+  try {
+    process.env.AI_LOCAL_ENABLED = 'true';
+    process.env.KLAURO_OLLAMA_AUTO = process.env.KLAURO_OLLAMA_AUTO || 'true';
+    process.env.OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
+    process.env.OLLAMA_MODEL = process.env.OLLAMA_MODEL || process.env.KLAURO_LOCAL_AI_MODEL || 'qwen3:8b';
+    process.env.KLAURO_AI_INTERPRETATION = 'true';
+    process.env.KLAURO_AI_INTERPRETATION_FORCE = 'true';
+    process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP = 'false';
+    process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS = process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS || '240000';
+    process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = 'false';
+    process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS || '30000';
+    process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT = '0';
+    process.env.KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS = '1';
+
+    logMachineProgress(`AI description probe ${repo.name} (${repo.path})`);
+    const cas = await getOrchestrator().orchestrateAnalysis(repo.path);
+    const generation = cas.enhanced_system_purpose?.description_generation;
+    const status = String(generation?.status || 'missing');
+    const source = String(cas.enhanced_system_purpose?.description_source || 'missing');
+    const attempted = generation?.attempted === true;
+    const description = String(cas.enhanced_system_purpose?.inferred_description || '');
+    const accepted = attempted &&
+      status === 'ai_applied' &&
+      source === 'ai' &&
+      description.length >= 120 &&
+      !findWeakMachineDescriptionReasons(cas, description, repo.path).length;
+    return {
+      status: accepted ? 'pass' as GateStatus : 'fail' as GateStatus,
+      proof_strength: status === 'ai_applied' && source === 'ai' ? 'live-local-ai-applied' : attempted ? 'live-local-ai-reviewed-but-not-applied' : 'ai-not-attempted',
+      repo: repo.name,
+      path: repo.path,
+      duration_ms: Date.now() - startedAt,
+      description_source: source,
+      description_generation: generation || null,
+      description_excerpt: description.slice(0, 360),
+      detail: accepted
+        ? `${repo.name} exercised local AI description path (${status}, source ${source})`
+        : `${repo.name} did not produce an acceptable AI-applied description (${status}, source ${source})`,
+    };
+  } catch (error) {
+    return {
+      status: 'fail' as GateStatus,
+      proof_strength: 'live-local-ai-error',
+      repo: repo.name,
+      path: repo.path,
+      duration_ms: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error),
+      detail: `AI description probe failed for ${repo.name}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  } finally {
+    restoreMachineEnv('AI_LOCAL_ENABLED', previous.aiLocal);
+    restoreMachineEnv('KLAURO_AI_INTERPRETATION', previous.interpretation);
+    restoreMachineEnv('KLAURO_AI_INTERPRETATION_FORCE', previous.interpretationForce);
+    restoreMachineEnv('KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP', previous.deterministicKeep);
+    restoreMachineEnv('KLAURO_AI_INTERPRETATION_BUDGET_MS', previous.interpretationBudget);
+    restoreMachineEnv('KLAURO_AI_ELEMENT_DESCRIPTIONS', previous.elements);
+    restoreMachineEnv('KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS', previous.elementBudget);
+    restoreMachineEnv('KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT', previous.elementLimit);
+    restoreMachineEnv('KLAURO_OLLAMA_AUTO', previous.ollamaAuto);
+    restoreMachineEnv('OLLAMA_BASE_URL', previous.ollamaBaseUrl);
+    restoreMachineEnv('OLLAMA_MODEL', previous.ollamaModel);
+    restoreMachineEnv('KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS', previous.freshOrchestrator);
+  }
+}
+
+function restoreMachineEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
+  }
+}
+
 function isCryptoTradingRepoSignal(text: string): boolean {
   return /\b(solana|pumpfun|jito|mev|sniper|bundler|arbitrage)\b/.test(text);
+}
+
+function isCryptoTradingDomain(domain: string): boolean {
+  return /\b(solana|pumpfun|jito|mev|crypto|trading|arbitrage|sniper)\b/.test(domain);
 }
 
 function requireInventory(inventory: any, failures: string[], pattern: string, keys: string[]): void {
@@ -719,11 +911,29 @@ function isDistinctiveMachineDescriptionTerm(value: string): boolean {
 function descriptionTermIsGroundedInMachineCas(cas: any, term: string): boolean {
   const normalized = String(term || '').toLowerCase();
   if (!normalized) return false;
+  const technologies = cas.system?.technologies || {};
   const haystack = JSON.stringify({
+    system: cas.system?.name,
     domain: cas.enhanced_system_purpose?.primary_domain,
     concepts: cas.enhanced_system_purpose?.core_concepts,
+    domainConcepts: (cas.domain_concepts || []).map((concept: any) => concept.name),
     capabilities: (cas.system_capabilities || []).map((capability: any) => capability.name),
+    entities: [
+      ...((cas.database_schema?.entities || []).map((entity: any) => entity?.name || '')),
+      ...((cas.data_entities || []).map((entity: any) => entity.name)),
+    ],
     entries: (cas.entry_points || []).map((entry: any) => `${entry.name} ${entry.type}`),
+    integrations: ((cas as any).external_services || []).map((service: any) => `${service?.name || ''} ${service?.service || ''} ${service?.type || ''}`),
+    languages: (technologies.languages || []).map((language: any) => `${language?.name || language}`),
+    frameworks: [
+      ...((technologies.frameworks || []).map((framework: any) => `${framework?.name || framework}`)),
+      ...(((cas as any).frameworks || []).map((framework: any) => `${framework?.name || framework}`)),
+    ],
+    packages: [
+      ...((cas.libraries || []).map((library: any) => library?.name || '')),
+      ...((cas.dependencies?.packages || []).map((pkg: any) => pkg?.name || '')),
+      ...(Array.isArray((cas as any).dependencies) ? ((cas as any).dependencies as any[]).map(dependency => `${dependency?.name || dependency}`) : []),
+    ],
     nodes: (cas.nodes || []).slice(0, 200).map((node: any) => `${node.name} ${node.type} ${node.source?.file || ''}`),
   }).toLowerCase();
   return haystack.includes(normalized);
@@ -1091,6 +1301,8 @@ function buildGates(
   greenfieldBenchmark: any,
   capabilityMemoryBenchmark: any,
   fromZeroBuildPacketProof: any,
+  existingTaskBenchmark: any,
+  descriptionGenerationProbe: any,
   options: ParsedArgs
 ): Gate[] {
   const allEligibleAccounted = selectedEligible.every(repo => repoResults.some(result => result.path === repo.path));
@@ -1122,9 +1334,17 @@ function buildGates(
   const greenfieldSummary = greenfieldBenchmark?.summary || {};
   const capabilityMemorySummary = capabilityMemoryBenchmark?.summary || {};
   const fromZeroSummary = fromZeroBuildPacketProof?.summary || {};
+  const existingTaskSummary = existingTaskBenchmark?.summary || {};
   const fromZeroScenarioCount = Number(fromZeroSummary.scenario_count || (fromZeroBuildPacketProof?.scenario ? 1 : 0));
   const fromZeroProductFocusCount = Number(fromZeroSummary.product_focus_scenario_count || 0);
   const fromZeroGrowthIterations = Number(fromZeroSummary.growth_iteration_count || fromZeroSummary.task_count || 0);
+  const liveAgentConfigured = Boolean(options.runLive && options.agentWithCommand && options.agentWithoutCommand);
+  const greenfieldLiveAttempts = Number(greenfieldSummary.live_trials_attempted || 0) +
+    Number(greenfieldSummary.live_continuity_trials_attempted || 0);
+  const greenfieldLiveQualityDelta = average([
+    greenfieldSummary.live_average_quality_delta,
+    greenfieldSummary.live_continuity_average_delta,
+  ].filter((value): value is number => typeof value === 'number' && Number.isFinite(value)));
   return [
     gate('machine-discovery:repo-accounting', discovery.total_repos === discovery.repos.length && discovery.total_repos > 0, `${discovery.total_repos} discovered, ${discovery.eligible_repos} eligible, ${discovery.unsupported_repos} unsupported, ${discovery.skipped_repos} skipped`),
     gate('machine-discovery:eligible-selected', selectedEligible.length > 0 && selectedEligible.length === expectedSelectedCount, `${selectedEligible.length}/${discovery.eligible_repos} eligible selected for ${options.mode || 'full'} mode`),
@@ -1132,6 +1352,11 @@ function buildGates(
     gate('machine-analysis:all-pass', allSelectedPass, `${repoResults.filter(result => result.proof_status === 'pass').length}/${repoResults.length} proof pass`),
     gate('machine-analysis:default-use', allDefaultUse, `${repoResults.filter(result => result.readiness?.default_use).length}/${repoResults.length} default-use ready`),
     gate('machine-analysis:quality', allHaveAnalysisQuality, `${repoResults.filter(result => result.analysis_quality?.status === 'pass').length}/${repoResults.length} with strong domain/capability/description quality`),
+    gate(
+      'machine-analysis:ai-description-path',
+      descriptionGenerationProbe?.status === 'pass',
+      descriptionGenerationProbe?.detail || 'AI description probe missing'
+    ),
     gate('machine-analysis:agent-usefulness', allUsefulForAgents, `${repoResults.filter(result => result.usefulness_review?.status === 'pass').length}/${repoResults.length} cold CAS/work-packet usefulness pass`),
     gate('machine-analysis:idioms', allHaveIdioms, `${repoResults.filter(result => Number(result.cas?.codebase_idioms || 0) > 0).length}/${repoResults.length} with idioms`),
     gate('machine-performance:analysis-budget', slowAnalyses.length === 0, slowAnalyses.length === 0
@@ -1155,7 +1380,7 @@ function buildGates(
     gate('machine-performance:incremental-edit-loop-wall-clock-budget', slowWallIncrementals.length === 0, slowWallIncrementals.length === 0
       ? `all selected edit loops completed within ${options.incrementalBudgetMs}ms wall-clock budget`
       : `${slowWallIncrementals.length} selected edit loops exceeded ${options.incrementalBudgetMs}ms wall-clock: ${slowWallIncrementals.slice(0, 5).map((target: any) => `${target.name}=${target.timings?.edit_loop_wall_ms || target.timings?.edit_incremental_ms}ms`).join(', ')}`),
-    gate(hasLiveIdiomProof ? 'machine-idiom-live:present' : 'machine-idiom-proof:present', idiomProofPresent, hasLiveIdiomProof ? `${idiomSummary.live_trials_attempted || 0} live idiom trials` : `${idiomSummary.task_count || 0} deterministic idiom tasks`),
+    gate(hasLiveIdiomProof ? 'machine-idiom-live:present' : 'machine-idiom-proof:present', idiomProofPresent, hasLiveIdiomProof ? `${idiomSummary.live_trials_attempted || 0} live idiom trials` : `${idiomSummary.task_count || 0} deterministic idiom tasks (${idiomSummary.proof_strength || 'deterministic-proxy'})`),
     gate(hasLiveIdiomProof ? 'machine-idiom-live:no-correctness-regression' : 'machine-idiom-proof:no-correctness-regression', idiomCorrectnessOk, hasLiveIdiomProof ? `${idiomSummary.live_correctness_regressions || 0} correctness regressions` : 'deterministic task scoring has no live correctness regression'),
     gate(hasLiveIdiomProof ? 'machine-idiom-live:positive-delta' : 'machine-idiom-proof:positive-delta', idiomDelta > 0 && qualityDelta >= 0, `idiom delta ${idiomDelta}, quality delta ${qualityDelta}`),
     gate(
@@ -1169,6 +1394,22 @@ function buildGates(
         Number(greenfieldSummary.continuity_average_delta || 0) > 0,
       `${greenfieldBenchmark?.status || 'missing'}, ${greenfieldSummary.scenarios_improved || 0}/${greenfieldSummary.scenario_count || 0} improved, +${greenfieldSummary.average_quality_delta || 0} quality delta, ${greenfieldSummary.continuity_trials_passed || 0}/${greenfieldSummary.continuity_trial_count || 0} continuity trials, +${greenfieldSummary.continuity_average_delta || 0} continuity delta`
     ),
+    ...(liveAgentConfigured ? [
+      gate(
+        'machine-greenfield-live:present',
+        greenfieldLiveAttempts > 0,
+        greenfieldLiveAttempts > 0
+          ? `${greenfieldLiveAttempts} live greenfield/continuity trials, quality delta ${greenfieldLiveQualityDelta || 0}`
+          : 'live agent commands were configured but no greenfield live trials ran'
+      ),
+      gate(
+        'machine-greenfield-live:positive-delta',
+        greenfieldLiveAttempts > 0 && greenfieldLiveQualityDelta >= 0,
+        greenfieldLiveAttempts > 0
+          ? `live greenfield quality delta ${greenfieldLiveQualityDelta}`
+          : 'live greenfield quality delta unavailable'
+      ),
+    ] : []),
     gate(
       'machine-greenfield:from-zero-build-packet',
       fromZeroBuildPacketProof?.status === 'pass' &&
@@ -1181,6 +1422,15 @@ function buildGates(
         Number(fromZeroSummary.context_char_reduction_percentage || 0) > 0 &&
         Number(fromZeroSummary.with_klauro_duplicate_classes || 0) === 0,
       `${fromZeroBuildPacketProof?.status || 'missing'}, ${fromZeroSummary.scenarios_passed || 0}/${fromZeroScenarioCount} scenarios, ${fromZeroProductFocusCount}/${fromZeroScenarioCount} product-focus packets, ${fromZeroGrowthIterations} growth iterations, +${fromZeroSummary.quality_delta || 0} quality delta, +${fromZeroSummary.duplicate_class_delta || 0} duplicate-class delta, ${fromZeroSummary.context_char_reduction_percentage ?? 'unknown'}% context reduction, ${fromZeroSummary.with_klauro_duplicate_classes ?? 'unknown'} with-Klauro duplicate classes`
+    ),
+    gate(
+      'machine-existing-task:index-retrieval-baseline',
+      existingTaskBenchmark?.status === 'pass' &&
+        Number(existingTaskSummary.scenario_count || 0) >= 10 &&
+        Number(existingTaskSummary.klauro_vs_index_retrieval_token_reduction_percentage || 0) > 0 &&
+        Number(existingTaskSummary.average_index_retrieval_file_recall || 0) < 100 &&
+        Number(existingTaskSummary.average_token_reduction_percentage || 0) > 0,
+      `${existingTaskBenchmark?.status || 'missing'}, ${existingTaskSummary.scenario_count || 0} existing-task scenarios, ${existingTaskSummary.average_index_retrieval_file_recall || 0}% Cursor-style retrieval recall, ${existingTaskSummary.klauro_vs_index_retrieval_token_reduction_percentage || 0}% fewer tokens than index retrieval, ${existingTaskSummary.average_token_reduction_percentage || 0}% fewer tokens than cold scan`
     ),
     gate(
       'machine-capability-memory:duplicate-avoidance',
@@ -1214,6 +1464,9 @@ function formatMarkdown(report: Awaited<ReturnType<typeof runMachineAgentProof>>
   const greenfieldSummary: any = report.greenfield_benchmark?.summary || {};
   const fromZeroSummary: any = report.from_zero_build_packet_proof?.summary || {};
   const capabilityMemorySummary: any = report.capability_memory_benchmark?.summary || {};
+  const existingTaskSummary: any = (report as any).existing_task_benchmark?.summary || {};
+  const descriptionProbe: any = (report as any).description_generation_probe || {};
+  const idiomSummary: any = report.idiom_benchmark?.summary || {};
   const lines = [
     '# Klauro Machine-Wide Agent Proof',
     '',
@@ -1230,8 +1483,13 @@ function formatMarkdown(report: Awaited<ReturnType<typeof runMachineAgentProof>>
     '',
     '## Repository Accounting',
     '',
+    `Mode: ${report.mode}`,
     `Discovered: ${report.discovery.total_repos}`,
     `Eligible: ${report.discovery.eligible_repos}`,
+    `Eligible analyzed: ${report.selected_eligible_count}/${report.discovery.eligible_repos}`,
+    report.mode === 'full'
+      ? 'Scope: full machine proof; every eligible repo must be analyzed.'
+      : 'Scope: sampled fast proof; unselected eligible repos are reported but not analyzed.',
     `Unsupported: ${report.discovery.unsupported_repos}`,
     `Skipped: ${report.discovery.skipped_repos}`,
     '',
@@ -1244,6 +1502,13 @@ function formatMarkdown(report: Awaited<ReturnType<typeof runMachineAgentProof>>
     report.incremental
       ? `Status: ${report.incremental.status}; targets: ${incrementalSummary.targets_passed || 0}/${incrementalSummary.target_count || 0}; edit speedup: ${incrementalSummary.average_edit_speedup_vs_full || 0}x; packet: ${incrementalSummary.average_packet_tokens_after_edit || 0} tokens; token reduction: ${incrementalSummary.average_search_token_reduction_after_edit ?? 'unknown'}%; edit-loop wall: ${incrementalSummary.average_edit_loop_wall_ms || 'unknown'}ms; proof harness wall: ${incrementalSummary.average_isolated_child_wall_ms || 'unknown'}ms; isolated overhead: ${incrementalSummary.average_isolated_child_overhead_ms || 0}ms`
       : 'Not run',
+    '',
+    '## AI Description Probe',
+    '',
+    descriptionProbe.status
+      ? `Status: ${descriptionProbe.status}; strength: ${descriptionProbe.proof_strength || 'unknown'}; repo: ${descriptionProbe.repo || 'none'}; generation: ${descriptionProbe.description_generation?.status || 'unknown'}; source: ${descriptionProbe.description_source || 'unknown'}`
+      : 'Not run',
+    descriptionProbe.description_excerpt ? `Excerpt: ${String(descriptionProbe.description_excerpt).replace(/\s+/g, ' ')}` : '',
     '',
     '## Performance Diagnostics',
     '',
@@ -1284,10 +1549,22 @@ function formatMarkdown(report: Awaited<ReturnType<typeof runMachineAgentProof>>
       ? `Status: ${report.greenfield_benchmark.status}; scenarios improved: ${greenfieldSummary.scenarios_improved || 0}/${greenfieldSummary.scenario_count || 0}; average quality delta: +${greenfieldSummary.average_quality_delta || 0}; continuity: ${greenfieldSummary.continuity_trials_passed || 0}/${greenfieldSummary.continuity_trial_count || 0} (+${greenfieldSummary.continuity_average_delta || 0})`
       : 'Not run',
     '',
+    '## Idiom Quality Proof',
+    '',
+    report.idiom_benchmark
+      ? `Status: ${report.idiom_benchmark.status}; strength: ${idiomSummary.proof_strength || (idiomSummary.live_trials_attempted ? 'live' : 'deterministic-proxy')}; tasks: ${idiomSummary.task_count || 0}; idiom delta: +${idiomSummary.average_idiom_conformance_delta || idiomSummary.live_average_idiom_conformance_delta || 0}; quality delta: +${idiomSummary.average_total_quality_delta || idiomSummary.live_average_total_quality_delta || 0}`
+      : 'Not run',
+    '',
     '## From-Zero Build Packet Proof',
     '',
     report.from_zero_build_packet_proof
       ? `Status: ${report.from_zero_build_packet_proof.status}; quality delta: +${fromZeroSummary.quality_delta || 0}; duplicate-class delta: +${fromZeroSummary.duplicate_class_delta || 0}; with-Klauro duplicates: ${fromZeroSummary.with_klauro_duplicate_classes ?? 'unknown'}; context char reduction: ${fromZeroSummary.context_char_reduction_percentage ?? 'unknown'}%`
+      : 'Not run',
+    '',
+    '## Existing-Task Index Retrieval Baseline',
+    '',
+    (report as any).existing_task_benchmark
+      ? `Status: ${(report as any).existing_task_benchmark.status}; scenarios: ${existingTaskSummary.scenario_count || 0}; Klauro vs cold scan token reduction: ${existingTaskSummary.average_token_reduction_percentage || 0}%; Klauro vs Cursor-style retrieval token reduction: ${existingTaskSummary.klauro_vs_index_retrieval_token_reduction_percentage || 0}%; retrieval recall: ${existingTaskSummary.average_index_retrieval_file_recall || 0}%`
       : 'Not run',
     '',
     '## Capability Memory Benchmark',

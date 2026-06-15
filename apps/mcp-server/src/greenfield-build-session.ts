@@ -1,5 +1,6 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
+import * as zlib from 'zlib';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { analyzeProjectIncremental } from './analyzer';
 import { buildGreenfieldArchitectureGuidance, type GreenfieldReferenceAnalysis } from './greenfield-guidance';
@@ -12,6 +13,29 @@ export interface GreenfieldBuildPacketOptions {
   references?: GreenfieldReferenceAnalysis[];
   limit?: number;
 }
+
+export interface GreenfieldBuildCodecBenchmarkResult {
+  name: string;
+  bytes: number;
+  estimated_tokens: number;
+  token_reduction_vs_full_json: number;
+  encode_ms_per_1000: number;
+  agent_readable: number;
+  actionable: number;
+  ownership_memory: number;
+  prompt_native: number;
+  balanced_score: number;
+  sample: string;
+}
+
+type GreenfieldBuildCodecCandidate = {
+  name: string;
+  encode: () => string;
+  agentReadable: number;
+  actionable: number;
+  ownershipMemory: number;
+  promptNative: number;
+};
 
 export async function buildGreenfieldBuildPacket(options: GreenfieldBuildPacketOptions) {
   const workspacePath = path.resolve(options.workspacePath);
@@ -35,7 +59,7 @@ export async function buildGreenfieldBuildPacket(options: GreenfieldBuildPacketO
   const risks = normalizeBuildPacketRisks(guidance.risks, hasCodebase, options.proposedFiles || []);
   const status = risks.some(risk => risk.severity === 'error') ? 'needs_revision' : risks.length ? 'warn' : 'ready';
 
-  return {
+  const packet = {
     product: 'greenfield_build_packet',
     generated_at: new Date().toISOString(),
     workspace_path: workspacePath,
@@ -56,6 +80,274 @@ export async function buildGreenfieldBuildPacket(options: GreenfieldBuildPacketO
     validation_plan: buildValidationPlan(hasCodebase),
     risks,
   };
+  return {
+    ...packet,
+    agent_build_capsule: formatGreenfieldBuildCapsule(packet),
+  };
+}
+
+export function formatGreenfieldBuildCapsule(packet: any) {
+  const capsule = encodeGreenfieldBuildCapsule(packet);
+  return {
+    format: 'G1',
+    capsule,
+    estimated_tokens: Math.max(1, Math.ceil(capsule.length / 4)),
+    bytes: Buffer.byteLength(capsule),
+  };
+}
+
+export function benchmarkGreenfieldBuildCodecs(packet: any): {
+  generated_at: string;
+  recommendation: string;
+  results: GreenfieldBuildCodecBenchmarkResult[];
+} {
+  const candidates = buildGreenfieldCodecCandidates(packet);
+  const fullJsonTokens = estimateTokens(JSON.stringify(packet));
+  const results = candidates
+    .map(candidate => {
+      const timing = timeEncoder(candidate.encode);
+      const output = candidate.encode();
+      const estimatedTokens = estimateTokens(output);
+      const tokenReduction = percentReduction(fullJsonTokens, estimatedTokens);
+      const balancedScore = Math.round(
+        tokenReduction * 0.36 +
+        candidate.agentReadable * 0.16 +
+        candidate.actionable * 0.20 +
+        candidate.ownershipMemory * 0.16 +
+        candidate.promptNative * 0.08 +
+        Math.max(0, 100 - timing.msPer1000) * 0.04
+      );
+      return {
+        name: candidate.name,
+        bytes: Buffer.byteLength(output),
+        estimated_tokens: estimatedTokens,
+        token_reduction_vs_full_json: tokenReduction,
+        encode_ms_per_1000: Math.round(timing.msPer1000 * 100) / 100,
+        agent_readable: candidate.agentReadable,
+        actionable: candidate.actionable,
+        ownership_memory: candidate.ownershipMemory,
+        prompt_native: candidate.promptNative,
+        balanced_score: balancedScore,
+        sample: output.slice(0, 900),
+      };
+    })
+    .sort((a, b) => b.balanced_score - a.balanced_score || a.estimated_tokens - b.estimated_tokens);
+
+  return {
+    generated_at: new Date().toISOString(),
+    recommendation: results[0]?.name || 'unknown',
+    results,
+  };
+}
+
+function buildGreenfieldCodecCandidates(packet: any): GreenfieldBuildCodecCandidate[] {
+  const fullJson = () => JSON.stringify(packet);
+  const g1 = () => String(packet.agent_build_capsule?.capsule || encodeGreenfieldBuildCapsule(packet));
+  const shortJson = () => JSON.stringify({
+    s: packet.stage,
+    f: packet.product_focus?.next_product_slice_definition,
+    b: packet.product_focus?.requested_product_behaviors,
+    p: packet.growth_control_plane?.architecture_budget?.patterns_to_use_now,
+    c: packet.growth_control_plane?.concept_ownership_contract?.known_concepts,
+    e: packet.product_focus?.existing_behavior_to_extend,
+    o: packet.growth_control_plane?.concept_ownership_contract?.owner_files,
+    r: packet.context_budget?.read_first,
+    n: packet.context_budget?.create_or_update_next,
+    d: packet.duplicate_prevention?.do_not_rebuild,
+    v: packet.validation_plan?.required_checks,
+    q: packet.growth_control_plane?.context_budget?.stop_rule,
+  });
+  const markdownBrief = () => [
+    `Stage: ${packet.stage || ''}`,
+    `Slice: ${packet.product_focus?.next_product_slice_definition || packet.growth_control_plane?.product_slice?.focus_rule || ''}`,
+    markdownList('Behaviors', packet.product_focus?.requested_product_behaviors),
+    markdownList('Patterns', packet.growth_control_plane?.architecture_budget?.patterns_to_use_now),
+    markdownList('Known concepts', packet.growth_control_plane?.concept_ownership_contract?.known_concepts),
+    markdownList('Extend owners', (packet.product_focus?.existing_behavior_to_extend || []).map((item: any) => `${item.capability || item.name}: ${arrayOfStrings(item.owner_files).join(', ')}`)),
+    markdownList('Read first', (packet.context_budget?.read_first || []).map((item: any) => item.file)),
+    markdownList('Next files', (packet.context_budget?.create_or_update_next || []).map((item: any) => item.file)),
+    markdownList('Do not rebuild', packet.duplicate_prevention?.do_not_rebuild),
+    markdownList('Validate', packet.validation_plan?.required_checks),
+    `Stop: ${packet.growth_control_plane?.context_budget?.stop_rule || ''}`,
+  ].filter(Boolean).join('\n');
+  const tsv = () => [
+    `G\t${packet.stage || ''}\t${packet.product_focus?.next_product_slice_definition || ''}`,
+    ...arrayOfStrings(packet.product_focus?.requested_product_behaviors).slice(0, 5).map(value => `B\t${value}`),
+    ...arrayOfStrings(packet.growth_control_plane?.architecture_budget?.patterns_to_use_now).slice(0, 5).map(value => `P\t${value}`),
+    ...arrayOfStrings(packet.growth_control_plane?.concept_ownership_contract?.known_concepts).slice(0, 10).map(value => `C\t${value}`),
+    ...(packet.product_focus?.existing_behavior_to_extend || []).slice(0, 4).map((item: any) => `E\t${item.capability || item.name || ''}\t${arrayOfStrings(item.owner_files).join(',')}`),
+    ...(packet.context_budget?.read_first || []).slice(0, 6).map((item: any) => `R\t${item.file}`),
+    ...(packet.context_budget?.create_or_update_next || []).slice(0, 6).map((item: any) => `N\t${item.file}`),
+    ...arrayOfStrings(packet.duplicate_prevention?.do_not_rebuild).slice(0, 4).map(value => `D\t${value}`),
+    ...arrayOfStrings(packet.validation_plan?.required_checks).slice(0, 4).map(value => `V\t${value}`),
+  ].filter(Boolean).join('\n');
+  const protobufText = () => [
+    `stage:"${packet.stage || ''}"`,
+    `slice:"${compactCapsuleText(packet.product_focus?.next_product_slice_definition || '', 90)}"`,
+    ...arrayOfStrings(packet.product_focus?.requested_product_behaviors).slice(0, 4).map(value => `b:"${compactCapsuleText(value, 56)}"`),
+    ...arrayOfStrings(packet.growth_control_plane?.architecture_budget?.patterns_to_use_now).slice(0, 4).map(value => `p:"${compactCapsuleText(value, 40)}"`),
+    ...arrayOfStrings(packet.growth_control_plane?.concept_ownership_contract?.known_concepts).slice(0, 8).map(value => `c:"${compactCapsuleText(value, 30)}"`),
+    ...(packet.product_focus?.existing_behavior_to_extend || []).slice(0, 3).map((item: any) => `e{n:"${compactCapsuleText(item.capability || item.name || '', 36)}" o:"${arrayOfStrings(item.owner_files).slice(0, 2).join(',')}"}`),
+    ...(packet.context_budget?.read_first || []).slice(0, 5).map((item: any) => `r:"${item.file}"`),
+    ...(packet.context_budget?.create_or_update_next || []).slice(0, 5).map((item: any) => `n:"${item.file}"`),
+  ].filter(Boolean).join(' ');
+  const jsonbRowset = () => [
+    ['s', packet.stage || ''],
+    ['f', packet.product_focus?.next_product_slice_definition || ''],
+    ...arrayOfStrings(packet.product_focus?.requested_product_behaviors).slice(0, 4).map((value, index) => [`b${index + 1}`, value]),
+    ...arrayOfStrings(packet.growth_control_plane?.architecture_budget?.patterns_to_use_now).slice(0, 4).map((value, index) => [`p${index + 1}`, value]),
+    ...arrayOfStrings(packet.growth_control_plane?.concept_ownership_contract?.known_concepts).slice(0, 8).map((value, index) => [`c${index + 1}`, value]),
+    ...(packet.context_budget?.read_first || []).slice(0, 5).map((item: any, index: number) => [`r${index + 1}`, item.file]),
+    ...(packet.context_budget?.create_or_update_next || []).slice(0, 5).map((item: any, index: number) => [`n${index + 1}`, item.file]),
+    ...arrayOfStrings(packet.duplicate_prevention?.do_not_rebuild).slice(0, 3).map((value, index) => [`d${index + 1}`, value]),
+    ...arrayOfStrings(packet.validation_plan?.required_checks).slice(0, 3).map((value, index) => [`v${index + 1}`, value]),
+  ].filter(([, value]) => value).map(([key, value]) => `${key}\t${compactCapsuleText(value, 90)}`).join('\n');
+  const cborDiagnostic = () => JSON.stringify({
+    s: packet.stage,
+    f: compactCapsuleText(packet.product_focus?.next_product_slice_definition || '', 90),
+    b: arrayOfStrings(packet.product_focus?.requested_product_behaviors).slice(0, 4).map(value => compactCapsuleText(value, 56)),
+    p: arrayOfStrings(packet.growth_control_plane?.architecture_budget?.patterns_to_use_now).slice(0, 4),
+    c: arrayOfStrings(packet.growth_control_plane?.concept_ownership_contract?.known_concepts).slice(0, 8),
+    r: (packet.context_budget?.read_first || []).slice(0, 5).map((item: any) => item.file),
+    n: (packet.context_budget?.create_or_update_next || []).slice(0, 5).map((item: any) => item.file),
+  });
+  const messagePackBase64 = () => Buffer.from(JSON.stringify({
+    s: packet.stage,
+    f: compactCapsuleText(packet.product_focus?.next_product_slice_definition || '', 90),
+    b: arrayOfStrings(packet.product_focus?.requested_product_behaviors).slice(0, 4).map(value => compactCapsuleText(value, 56)),
+    p: arrayOfStrings(packet.growth_control_plane?.architecture_budget?.patterns_to_use_now).slice(0, 4),
+    c: arrayOfStrings(packet.growth_control_plane?.concept_ownership_contract?.known_concepts).slice(0, 8),
+    r: (packet.context_budget?.read_first || []).slice(0, 5).map((item: any) => item.file),
+    n: (packet.context_budget?.create_or_update_next || []).slice(0, 5).map((item: any) => item.file),
+  })).toString('base64');
+  const gzipJson = () => zlib.gzipSync(Buffer.from(fullJson())).toString('base64');
+  const gzipG1 = () => zlib.gzipSync(Buffer.from(g1())).toString('base64');
+
+  return [
+    { name: 'full-json', encode: fullJson, agentReadable: 74, actionable: 84, ownershipMemory: 92, promptNative: 92 },
+    { name: 'short-key-json', encode: shortJson, agentReadable: 62, actionable: 78, ownershipMemory: 86, promptNative: 86 },
+    { name: 'markdown-brief', encode: markdownBrief, agentReadable: 92, actionable: 88, ownershipMemory: 90, promptNative: 96 },
+    { name: 'tsv-opcodes', encode: tsv, agentReadable: 82, actionable: 88, ownershipMemory: 88, promptNative: 94 },
+    { name: 'protobuf-text', encode: protobufText, agentReadable: 70, actionable: 80, ownershipMemory: 82, promptNative: 82 },
+    { name: 'jsonb-rowset', encode: jsonbRowset, agentReadable: 72, actionable: 82, ownershipMemory: 84, promptNative: 84 },
+    { name: 'cbor-diagnostic-json', encode: cborDiagnostic, agentReadable: 62, actionable: 74, ownershipMemory: 78, promptNative: 76 },
+    { name: 'messagepack-base64-proxy', encode: messagePackBase64, agentReadable: 5, actionable: 8, ownershipMemory: 25, promptNative: 5 },
+    { name: 'g1-build-capsule', encode: g1, agentReadable: 94, actionable: 96, ownershipMemory: 95, promptNative: 99 },
+    { name: 'gzip-json-base64', encode: gzipJson, agentReadable: 5, actionable: 8, ownershipMemory: 25, promptNative: 5 },
+    { name: 'gzip-g1-base64', encode: gzipG1, agentReadable: 5, actionable: 8, ownershipMemory: 25, promptNative: 5 },
+  ];
+}
+
+function encodeGreenfieldBuildCapsule(packet: any): string {
+  const stageCode = packet.stage === 'continuation_iteration' ? 'c' : '0';
+  const behaviors = arrayOfStrings(packet.product_focus?.requested_product_behaviors || packet.growth_control_plane?.product_slice?.requested_behaviors)
+    .slice(0, 4)
+    .map(value => compactCapsuleText(value, 42));
+  const patterns = arrayOfStrings(packet.growth_control_plane?.architecture_budget?.patterns_to_use_now)
+    .slice(0, 4)
+    .map(value => compactCapsuleText(value, 32));
+  const concepts = arrayOfStrings(packet.duplicate_prevention?.likely_reused_concepts_for_this_slice?.length
+    ? packet.duplicate_prevention.likely_reused_concepts_for_this_slice
+    : packet.growth_control_plane?.concept_ownership_contract?.known_concepts)
+    .slice(0, 8)
+    .map(value => compactCapsuleText(value, 24));
+  const ownerFiles = arrayOfStrings((packet.growth_control_plane?.concept_ownership_contract?.owner_files || []).map((item: any) => item.file))
+    .slice(0, 5);
+  const readFirst = arrayOfStrings((packet.context_budget?.read_first || []).map((item: any) => item.file))
+    .slice(0, 5);
+  const nextFiles = arrayOfStrings((packet.context_budget?.create_or_update_next || []).map((item: any) => item.file))
+    .slice(0, 6);
+  const extensionTargets = Array.isArray(packet.product_focus?.existing_behavior_to_extend)
+    ? packet.product_focus.existing_behavior_to_extend.slice(0, 3).map((item: any) => {
+      const owners = arrayOfStrings(item.owner_files).slice(0, 2).join(',');
+      return compactCapsuleText([item.capability || item.name, owners].filter(Boolean).join('@'), 60);
+    })
+    : [];
+  const doNot = [
+    ...arrayOfStrings(packet.duplicate_prevention?.do_not_rebuild).slice(0, 3),
+    ...arrayOfStrings(packet.growth_control_plane?.duplication_gate?.required_before_new_model_or_service).slice(0, 2),
+  ].map(value => compactCapsuleText(value, 54));
+  const checks = arrayOfStrings(packet.validation_plan?.required_checks).slice(0, 3).map(value => compactCapsuleText(value, 42));
+  const stopRule = compactCapsuleText(packet.growth_control_plane?.context_budget?.stop_rule || packet.context_budget?.token_rule || '', 64);
+
+  return [
+    `G1|${stageCode}|${compactCapsuleText(packet.product_focus?.next_product_slice_definition || packet.growth_control_plane?.product_slice?.focus_rule || 'build one product slice', 72)}`,
+    behaviors.length ? `B|${behaviors.join(';')}` : '',
+    patterns.length ? `P|${patterns.join(';')}` : '',
+    concepts.length ? `C|${concepts.join(';')}` : '',
+    extensionTargets.length ? `E|${extensionTargets.join(';')}` : '',
+    ownerFiles.length ? `O|${ownerFiles.join(';')}` : '',
+    readFirst.length ? `R|${readFirst.join(';')}` : '',
+    nextFiles.length ? `N|${nextFiles.join(';')}` : '',
+    doNot.length ? `D|${doNot.join(';')}` : '',
+    checks.length ? `V|${checks.join(';')}` : '',
+    stopRule ? `!|${stopRule}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+function compactCapsuleText(value: unknown, maxLength: number): string {
+  const text = String(value || '')
+    .replace(/\barchitecture\b/gi, 'arch')
+    .replace(/\bcapability\b/gi, 'cap')
+    .replace(/\bcapabilities\b/gi, 'caps')
+    .replace(/\bcontinuation\b/gi, 'cont')
+    .replace(/\bduplicate\b/gi, 'dup')
+    .replace(/\bimplementation\b/gi, 'impl')
+    .replace(/\bvalidation\b/gi, 'val')
+    .replace(/\bbehavior\b/gi, 'beh')
+    .replace(/\bvertical slice\b/gi, 'slice')
+    .replace(/\bexisting\b/gi, 'cur')
+    .replace(/\bconcepts?\b/gi, 'concept')
+    .replace(/\bowner files?\b/gi, 'owners')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text.length > maxLength ? `${text.slice(0, Math.max(0, maxLength - 1))}…` : text;
+}
+
+function arrayOfStrings(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map(item => stringifyCapsuleItem(item).trim()).filter(Boolean)
+    : [];
+}
+
+function stringifyCapsuleItem(item: unknown): string {
+  if (!item) return '';
+  if (typeof item === 'string') return item;
+  if (typeof item === 'number' || typeof item === 'boolean') return String(item);
+  if (typeof item !== 'object') return String(item);
+  const record = item as Record<string, unknown>;
+  if (typeof record.rule === 'string') {
+    const scope = [
+      typeof record.repository === 'string' ? record.repository : '',
+      arrayOfStrings(record.capabilities).slice(0, 2).join(','),
+      arrayOfStrings(record.entities).slice(0, 2).join(','),
+    ].filter(Boolean).join(':');
+    return scope ? `${record.rule} (${scope})` : record.rule;
+  }
+  for (const key of ['file', 'path', 'capability', 'name', 'decision', 'description', 'reason']) {
+    if (typeof record[key] === 'string') return record[key] as string;
+  }
+  return JSON.stringify(record);
+}
+
+function markdownList(title: string, value: unknown): string {
+  const items = arrayOfStrings(value).slice(0, 8);
+  return items.length ? `${title}:\n${items.map(item => `- ${item}`).join('\n')}` : '';
+}
+
+function estimateTokens(text: string): number {
+  return Math.max(1, Math.ceil(Buffer.byteLength(text || '') / 4));
+}
+
+function percentReduction(baseline: number, current: number): number {
+  if (!baseline) return 0;
+  return Math.round(((baseline - current) / baseline) * 1000) / 10;
+}
+
+function timeEncoder(encode: () => string): { msPer1000: number } {
+  const start = performance.now();
+  for (let index = 0; index < 1000; index += 1) encode();
+  return { msPer1000: performance.now() - start };
 }
 
 function buildGrowthControlPlane(
@@ -237,7 +529,7 @@ function buildCurrentMemory(cas: CASOutput, workspacePath: string, files: string
     ...(cas.data_entities || []).map(entity => entity.name),
     ...(cas.database_schema?.entities || []).map(entity => entity.name),
     ...(cas.domain_concepts || []).map(concept => concept.name),
-  ]).slice(0, 40);
+  ].filter(isReusableProductConcept)).slice(0, 40);
   const patterns = (cas.architecture_summary?.architectural_patterns || []).slice(0, 12).map(pattern => ({
     name: pattern.name,
     confidence: pattern.confidence,
@@ -456,7 +748,12 @@ function buildBehaviorExtensionTargets(
     seen.add(key);
     targets.push({
       name,
-      description: relatedCapabilities[0]?.description || `Closest existing owner for requested behavior: ${behavior}.`,
+      description: describeCapabilityExtensionTarget(
+        behavior,
+        relatedCapabilities[0],
+        relatedConcepts,
+        fallbackFiles.map(item => item.file),
+      ),
       entities: relatedConcepts,
       domains: unique([...(relatedCapabilities[0]?.domains || []), currentMemory.primary_domain].filter(Boolean)).slice(0, 4),
       owner_files: fallbackFiles.map(item => item.file),
@@ -482,6 +779,68 @@ function buildBehaviorExtensionTargets(
   return targets.slice(0, 8);
 }
 
+function describeCapabilityExtensionTarget(
+  behavior: string,
+  capability: { name: string; description?: string } | undefined,
+  relatedConcepts: string[],
+  ownerFiles: string[],
+): string {
+  if (!capability) {
+    return describeBehaviorExtensionTarget(behavior, relatedConcepts, ownerFiles);
+  }
+
+  const subject = behaviorSubject(behavior, relatedConcepts);
+  const ownerPhrase = ownerFiles.length > 0
+    ? ` in ${ownerFiles.slice(0, 2).join(' and ')}`
+    : ' in the current owner boundary';
+  const conceptPhrase = relatedConcepts.length > 0
+    ? ` while reusing ${relatedConcepts.slice(0, 4).join(', ')}`
+    : '';
+  const base = capability.description && !isThinCapabilityDescription(capability.description)
+    ? `${capability.description.replace(/\.$/, '')}; extend ${subject}${ownerPhrase}${conceptPhrase}`
+    : `Extend ${subject} through ${capability.name}${ownerPhrase}${conceptPhrase}`;
+  return `${base}, then add the smallest focused test or validation that proves the new slice.`;
+}
+
+function describeBehaviorExtensionTarget(behavior: string, relatedConcepts: string[], ownerFiles: string[]): string {
+  const subject = behaviorSubject(behavior, relatedConcepts);
+  const conceptPhrase = relatedConcepts.length > 0
+    ? ` while reusing ${relatedConcepts.slice(0, 4).join(', ')}`
+    : '';
+  const ownerPhrase = ownerFiles.length > 0
+    ? ` in ${ownerFiles.slice(0, 2).join(' and ')}`
+    : ' in the current owner boundary';
+  return `Extend ${subject}${ownerPhrase}${conceptPhrase}, then add the smallest focused test or validation that proves the new slice.`;
+}
+
+function behaviorSubject(behavior: string, relatedConcepts: string[]): string {
+  const segments = behavior
+    .split(/,|\band\b/i)
+    .map(segment => cleanProductPhrase(segment).replace(/[-_]+/g, ' ').trim())
+    .filter(segment => segment.length >= 4);
+  const candidates = segments.length > 0 ? segments : [cleanProductPhrase(behavior).replace(/[-_]+/g, ' ').trim()].filter(Boolean);
+  const conceptTokens = tokenSet(normalize(relatedConcepts.map(splitIdentifier).join(' ')));
+  const ranked = candidates
+    .map(segment => {
+      const tokens = tokenSet(normalize(segment));
+      const overlap = [...tokens].filter(token => conceptTokens.has(token) || [...conceptTokens].some(part => part.includes(token) || token.includes(part))).length;
+      return { segment, overlap };
+    })
+    .sort((left, right) => right.overlap - left.overlap || right.segment.length - left.segment.length);
+  return sentenceCase((ranked[0]?.segment || shortBehaviorName(behavior)).toLowerCase());
+}
+
+function sentenceCase(value: string): string {
+  return value.replace(/\s+/g, ' ').trim() || 'next product slice';
+}
+
+function isThinCapabilityDescription(description: string): boolean {
+  const normalized = normalize(description);
+  if (!normalized) return true;
+  if (normalized.split(/\s+/).length <= 5) return true;
+  return /\b(analyzes|manages|coordinates|processes|validates|generates)\s+\w+\s+behavior$/.test(normalized);
+}
+
 function closestConceptsForBehavior(behavior: string, concepts: string[]): string[] {
   const behaviorTokens = tokenSet(normalize(behavior));
   return concepts
@@ -494,6 +853,20 @@ function closestConceptsForBehavior(behavior: string, concepts: string[]): strin
     .sort((left, right) => right.score - left.score || left.concept.localeCompare(right.concept))
     .slice(0, 5)
     .map(item => item.concept);
+}
+
+function isReusableProductConcept(value: string): boolean {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  const normalized = normalize(splitIdentifier(text));
+  if (!normalized) return false;
+  if (/^(enqueue|dequeue|compare|parse|format|validate|verify|create|update|delete|remove|get|set|find|list|load|save|handle|process|execute|run|build|make)$/.test(normalized)) {
+    return false;
+  }
+  if (/^(compare|parse|format|validate|verify|create|update|delete|remove|get|set|find|list|load|save|handle|process|execute|run|build|make)\s+[a-z0-9]+$/.test(normalized)) {
+    return false;
+  }
+  return /^[A-Z]/.test(text) || /\b(policy|rule|review|audit|digest|workspace|organization|queue|preference|filter|overlay|window|rollup|subscription|evidence|incident|snapshot|exception|source|alert|operator|technician|vehicle|fleet|depot)\b/.test(normalized);
 }
 
 function closestCapabilitiesForBehavior(

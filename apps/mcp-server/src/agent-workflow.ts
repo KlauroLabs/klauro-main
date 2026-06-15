@@ -63,6 +63,8 @@ export async function openAgentWorkbench(cas: CASOutput, projectPath: string, ta
       selected_node: workPacket.selected_node,
       work_context: workPacket.work_context,
       file_read_plan: workPacket.file_read_plan,
+      execution_brief: workPacket.execution_brief,
+      execution_capsule: workPacket.execution_brief?.capsule,
       validation_plan: workPacket.validation_plan,
       source_reading_rule: workPacket.source_reading_rule,
       gaps: workPacket.gaps,

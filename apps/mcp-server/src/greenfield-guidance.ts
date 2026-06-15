@@ -24,6 +24,7 @@ export function buildGreenfieldArchitectureGuidance(options: GreenfieldGuidanceO
   const capabilityMemory = buildCapabilityMemory(planSignals, referenceSignals, overlap, options.limit || 12);
   const patterns = recommendPatterns(planSignals, referenceSignals);
   const filePlan = buildSuggestedFilePlan(planSignals, patterns, proposedFiles);
+  const architectureContract = buildArchitectureContract(planSignals, filePlan);
   const proposedReview = reviewProposedFiles(planSignals, proposedFiles, patterns, overlap);
   const risks = buildGreenfieldRisks(planSignals, proposedFiles, overlap, patterns);
   const largeScaleBuildStrategy = buildLargeScaleBuildStrategy(planSignals, patterns, capabilityMemory);
@@ -48,11 +49,13 @@ export function buildGreenfieldArchitectureGuidance(options: GreenfieldGuidanceO
     recommended_architecture: {
       patterns,
       file_plan: filePlan,
+      architecture_contract: architectureContract,
       testing: buildTestingGuidance(planSignals, patterns),
       data_and_migrations: buildDataGuidance(planSignals),
       agent_rules: [
         'Before creating a module, compare the proposed capability name against existing_overlap.reused_or_integrated_capabilities.',
         'Use the recommended patterns as defaults only when they are supported by reference evidence or explicit plan needs.',
+        'Preserve every required architecture_contract boundary; do not collapse business logic into route/API files to save tokens.',
         'After proposed files exist, run preview_greenfield_codebase and inspect the generated CAS graph before implementation.',
         'If the project grows by capability, create one vertical slice at a time and re-run preview_greenfield_codebase after each slice.',
       ],
@@ -120,9 +123,13 @@ function extractPlanSignals(planText: string, proposedFiles: Array<{ path: strin
     ...Array.from(lower.matchAll(/\b(auth|tenant|billing|payment|portfolio|trading|report|analytics|notification|user|workspace|project|document|media|audio|search|proposal|preview)\w*\b/g)).map(match => match[0]),
   ]).slice(0, 16);
 
+  const uiText = text.replace(/\bstatus[- ]pages?\b/gi, 'status publishing');
   const needsApi = /\b(api|endpoint|route|controller|requests?|responses?|webhook)\b/i.test(text);
-  const needsUi = /\b(ui|page|component|screen|view|form|dashboard)\b/i.test(text);
-  const needsData = /\b(database|entity|schema|migration|postgres|prisma|sql|repository|persistent|persistence)\b/i.test(text) ||
+  const needsUi = /\b(ui|frontend|front-end|client-side|page|component|screen|view|form|dashboard)\b/i.test(uiText) ||
+    filePaths.some(file => /\.(tsx|jsx|vue|svelte)$/i.test(file) || /(?:^|\/)(pages|components|views|screens)(?:\/|$)/i.test(file));
+  const durableDomainNeedsData = /\b(incident|incidents|timeline|timelines|event|events|runbook|runbooks|audit|analytics|organization|organizations|team|teams|role|roles|permission|permissions|ownership|status[- ]page|notification|notifications|history|record|records|intake|assignment|assignments|state|workflow|workflows)\b/i.test(text);
+  const needsData = durableDomainNeedsData ||
+    /\b(database|entity|schema|migration|postgres|prisma|sql|repository|persistent|persistence|store|stored|durable|model|models)\b/i.test(text) ||
     filePaths.some(file => /model|entity|schema|migration|repository|prisma/i.test(file));
   const needsAuthOrTenant = /\b(auth|login|user|tenant|organization|workspace|permission|role)\b/i.test(text);
   const needsBackgroundWork = /\b(job|queue|worker|scheduled?|schedule|cron|event|message|digest)\b/i.test(text);
@@ -407,6 +414,98 @@ function buildSuggestedFilePlan(
   }
   files.push({ path: 'tests/<capability>.test.ts', role: 'test', guidance: 'Cover the first behavior slice and the highest-risk boundary.' });
   return files.slice(0, 10);
+}
+
+function buildArchitectureContract(
+  planSignals: ReturnType<typeof extractPlanSignals>,
+  filePlan: Array<{ path: string; role: string; guidance: string }>
+) {
+  const boundary = (kind: string, rolePattern: RegExp, fallbackFiles: string[], rule: string, required = true) => {
+    const files = filePlan
+      .filter(file => rolePattern.test(`${file.role} ${file.path}`))
+      .map(file => file.path);
+    return {
+      kind,
+      required,
+      files: uniqueStrings(files.length ? files : fallbackFiles).slice(0, 3),
+      rule,
+    };
+  };
+
+  const boundaries = [
+    boundary(
+      'entry',
+      /entry point|controller|route|api|view\/page|background entry point/i,
+      planSignals.needs_ui ? ['src/pages-or-routes/<feature>.tsx'] : ['src/routes-or-controllers/<capability>.ts'],
+      'Expose transport/UI/worker behavior here and delegate business decisions.'
+    ),
+    boundary(
+      'service',
+      /business logic|service|usecase|interactor/i,
+      ['src/services/<capability>.service.ts'],
+      'Keep capability behavior here so it can be tested without route/UI glue.',
+      planSignals.needs_entry || planSignals.needs_api || planSignals.needs_data || planSignals.needs_background_work
+    ),
+    boundary(
+      'domain_model',
+      /domain model|model|entity|schema/i,
+      ['src/domain/<domain>.models.ts'],
+      'Name core entities once and import those types from other boundaries.',
+      planSignals.needs_data || planSignals.domains.length > 0 || planSignals.capabilities.length > 0
+    ),
+    boundary(
+      'repository',
+      /data access|repository|persistence/i,
+      ['src/repositories/<domain>.repository.ts'],
+      'Isolate persistence/query behavior; route/API files must not own storage logic.',
+      planSignals.needs_data
+    ),
+    boundary(
+      'migration',
+      /migration/i,
+      ['migrations/<timestamp>_<change>.sql'],
+      'Provide schema-change evidence when persistence is part of the slice.',
+      planSignals.needs_data
+    ),
+    boundary(
+      'auth_policy',
+      /auth|policy|guard|permission|tenant/i,
+      ['src/auth-or-policies/<scope>.policy.ts'],
+      'Represent tenant/user/role invariants explicitly before exposing protected behavior.',
+      planSignals.needs_auth_or_tenant
+    ),
+    boundary(
+      'integration_adapter',
+      /integration|client|sdk|adapter|webhook/i,
+      ['src/integrations/<external-service>.client.ts'],
+      'Keep external API/client behavior behind an adapter rather than in services/routes.',
+      planSignals.needs_external_integration
+    ),
+    boundary(
+      'worker',
+      /worker|job|queue|event|background/i,
+      ['src/jobs-or-workers/<capability>.ts'],
+      'Keep scheduled/async triggers thin and idempotent; delegate behavior to services.',
+      planSignals.needs_background_work
+    ),
+    boundary(
+      'test',
+      /test/i,
+      ['tests/<capability>.test.ts'],
+      'Add focused tests for the first externally visible behavior and the riskiest boundary.'
+    ),
+  ].filter(item => item.required);
+
+  return {
+    mode: 'compact_vertical_slice_contract',
+    required_boundaries: boundaries,
+    do_not_collapse: [
+      'Do not put business decisions, persistence, billing/webhook handling, or auth/tenant policy directly in route/API files.',
+      'Do not remove a required boundary just to minimize files; use the smallest coherent file per boundary instead.',
+      'Do not create parallel domain models for the same concept; import the owner model/type.',
+    ],
+    minimality_rule: 'Minimize tokens and files by keeping each required boundary small, not by merging boundary responsibilities.',
+  };
 }
 
 function reviewProposedFiles(

@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as os from 'os';
 import {
+  assessAnalysisQuality,
   buildMachinePerformanceDiagnostics,
   defaultMachineProofWorkRoot,
+  machineProofAnalysisFocus,
   normalizeMachineProofOptions,
   selectEligibleReposForMachineProof,
   type ParsedArgs,
@@ -24,6 +26,7 @@ test('fast machine proof defaults to a bounded resource profile', () => {
   assert.equal(options.incrementalExecutionModel, 'in-process');
   assert.equal(options.analysisBudgetMs, 30_000);
   assert.equal(options.incrementalBudgetMs, 30_000);
+  assert.equal(machineProofAnalysisFocus(options), 'agent-fast');
 });
 
 test('proof scratch workspaces default outside durable Klauro storage', () => {
@@ -54,6 +57,7 @@ test('full machine proof remains explicit and comprehensive by default', () => {
   assert.equal(options.incrementalExecutionModel, 'isolated');
   assert.equal(options.analysisBudgetMs, 120_000);
   assert.equal(options.incrementalBudgetMs, 120_000);
+  assert.equal(machineProofAnalysisFocus(options), 'agent-fast');
 });
 
 test('machine proof selection reports all repos but only analyzes budgeted fast targets', () => {
@@ -84,6 +88,94 @@ test('machine proof selection can start from later eligible batches after size f
   ], options);
 
   assert.deepEqual(selected.map(item => item.name), ['small-c', 'small-d']);
+});
+
+test('machine analysis quality grounds short proper nouns in technologies', () => {
+  const quality = assessAnalysisQuality({
+    system: {
+      name: 'user-service',
+      technologies: {
+        languages: [{ name: 'C#' }],
+        frameworks: [{ name: 'ASP.NET Core' }],
+      },
+    },
+    enhanced_system_purpose: {
+      primary_domain: 'user-identity-management',
+      core_concepts: ['identity', 'security', 'password'],
+      inferred_description: 'A user identity management system built with .NET host, .NET, and ASP.NET Core that coordinates identity and security workflows. It is exercised through HTTP endpoints, message handlers, and lifecycle entry points.',
+      description_generation: { status: 'ai_skipped' },
+    },
+    domain_concepts: [{ name: 'identity' }, { name: 'security' }],
+    system_capabilities: [
+      { name: 'Identity Management' },
+      { name: 'Password Management' },
+    ],
+    entry_points: [{ name: 'LoginController', type: 'http' }],
+    nodes: [{ name: 'LoginController', type: 'controller', source: { file: 'src/Controllers/LoginController.cs' } }],
+    architecture_summary: {
+      architectural_patterns: [],
+      architectural_inventory: {},
+      pattern_balance: { status: 'balanced' },
+    },
+  }, '/tmp/dev/user-service');
+
+  assert.equal(quality.status, 'pass');
+  assert.doesNotMatch(quality.failures.join('\n'), /unexplained short proper-noun/);
+});
+
+test('machine analysis quality accepts rich architectures when pattern balance names primary patterns', () => {
+  const patterns = [
+    'MVC',
+    'Layered Architecture',
+    'Client SDK / API Wrapper',
+    'MVVM',
+    'Feature Modules',
+    'Unit of Work',
+    'Service Layer',
+    'Repository',
+    'Mediator / Handler',
+    'Component/Page UI',
+    'Command Script / Automation',
+    'Singleton / Registry',
+  ].map((name, index) => ({
+    name,
+    confidence: index < 9 ? 0.8 : 0.55,
+  }));
+
+  const quality = assessAnalysisQuality({
+    system: { name: 'clinical-desktop', technologies: { frameworks: [{ name: 'WPF' }] } },
+    nodes: Array.from({ length: 120 }, (_, index) => ({ id: `node-${index}`, name: `Node${index}`, type: 'service' })),
+    enhanced_system_purpose: {
+      primary_domain: 'clinical-testing',
+      core_concepts: ['patient', 'measurement', 'clinical report'],
+      inferred_description: 'A clinical testing desktop system that coordinates patient records, clinical measurements, device connectivity, and reporting workflows for care teams and test operators.',
+      description_generation: { status: 'ai_skipped' },
+    },
+    domain_concepts: [{ name: 'patient' }, { name: 'measurement' }],
+    system_capabilities: [{ name: 'Clinical Measurements' }, { name: 'Patient Records' }],
+    architecture_summary: {
+      architectural_patterns: patterns,
+      architectural_inventory: {
+        controllers: ['controller'],
+        models: ['model'],
+        views: ['view'],
+        view_models: ['view-model'],
+        repositories: ['repository'],
+        mediators: ['mediator'],
+        unit_of_work: ['unit-of-work'],
+        singletons: ['registry'],
+      },
+      pattern_balance: {
+        status: 'balanced',
+        primary_patterns: patterns.slice(0, 6).map(pattern => pattern.name),
+        rationale: 'Detected patterns share a layered or module backbone.',
+      },
+    },
+  }, '/tmp/dev/clinical-desktop');
+
+  assert.equal(quality.status, 'pass');
+  assert.doesNotMatch(quality.failures.join('\n'), /pattern splurge/);
+  assert.doesNotMatch(quality.warnings.join('\n'), /many supporting architectural patterns/);
 });
 
 test('machine performance diagnostics surface slow and weak-token outliers without hiding passing proof', () => {

@@ -136,6 +136,90 @@ test('greenfield creation is not strong when live builds save tokens but do not 
   assert.match(family?.missing.join('\n') || '', /positive initial quality deltas/);
 });
 
+test('greenfield creation is not strong while unacceptable token tradeoff reports are still included as evidence', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-task-family-coverage-tradeoff-'));
+  await writeReport(root, '.klauro-from-zero-build-packet-proof/latest-report.json', {
+    status: 'pass',
+    summary: {
+      scenario_count: 3,
+      growth_iteration_count: 15,
+      quality_delta: 96,
+      duplicate_class_delta: 18,
+      with_klauro_duplicate_classes: 0,
+      without_klauro_duplicate_classes: 18,
+    },
+  });
+  for (const [relative, id] of [
+    ['.klauro-agent-scratch-build-benchmark/live-work-intake-multi-wave-strict-rescored-codex.json', 'work-intake-backend'],
+    ['.klauro-agent-scratch-build-benchmark/live-operations-ui-multi-wave-strict-codex.json', 'operations-command-center-ui'],
+    ['.klauro-agent-scratch-build-benchmark/live-compliance-evidence-multi-wave-growth-control-codex.json', 'compliance-evidence-backend'],
+  ] as const) {
+    await writeReport(root, relative, scratchReport(id, 6));
+  }
+  await writeReport(root, '.klauro-agent-scratch-build-benchmark/live-compliance-evidence-goal-codex-rescored.json', {
+    status: 'warn',
+    score: 86,
+    task: { id: 'compliance-evidence' },
+    comparison: {
+      token_reduction_percentage: -29,
+      live_quality_delta: 8,
+      quality_delta: 0,
+      quality_token_tradeoff_status: 'quality-win-token-regression-too-large',
+    },
+  });
+
+  const report = await buildAgentTaskFamilyCoverage(root);
+  const family = report.families.find(item => item.id === 'greenfield-real-system-creation');
+
+  assert.equal(family?.status, 'partial');
+  assert.match(family?.missing.join('\n') || '', /unacceptable quality\/token tradeoff/);
+  assert.equal(report.status, 'warn');
+});
+
+test('greenfield creation treats older unacceptable tradeoffs as superseded when a newer same-task clear win exists', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-task-family-coverage-superseded-tradeoff-'));
+  await writeReport(root, '.klauro-from-zero-build-packet-proof/latest-report.json', {
+    status: 'pass',
+    summary: {
+      scenario_count: 3,
+      growth_iteration_count: 15,
+      quality_delta: 96,
+      duplicate_class_delta: 18,
+      with_klauro_duplicate_classes: 0,
+      without_klauro_duplicate_classes: 18,
+    },
+  });
+  for (const [relative, id] of [
+    ['.klauro-agent-scratch-build-benchmark/live-work-intake-multi-wave-strict-rescored-codex.json', 'work-intake-backend'],
+    ['.klauro-agent-scratch-build-benchmark/live-operations-ui-multi-wave-strict-codex.json', 'operations-command-center-ui'],
+    ['.klauro-agent-scratch-build-benchmark/live-compliance-evidence-multi-wave-growth-control-codex.json', 'compliance-evidence-backend'],
+  ] as const) {
+    await writeReport(root, relative, {
+      ...(scratchReport(id, 6) as Record<string, unknown>),
+      generated_at: '2026-06-10T00:36:58.980Z',
+    });
+  }
+  await writeReport(root, '.klauro-agent-scratch-build-benchmark/live-compliance-evidence-goal-codex-rescored.json', {
+    status: 'warn',
+    score: 86,
+    generated_at: '2026-06-09T23:50:45.351Z',
+    task: { id: 'compliance-evidence-backend' },
+    comparison: {
+      token_reduction_percentage: -29,
+      live_quality_delta: 8,
+      quality_delta: 0,
+      quality_token_tradeoff_status: 'quality-win-token-regression-too-large',
+    },
+  });
+
+  const report = await buildAgentTaskFamilyCoverage(root);
+  const family = report.families.find(item => item.id === 'greenfield-real-system-creation');
+
+  assert.equal(family?.status, 'strong');
+  assert.doesNotMatch(family?.missing.join('\n') || '', /unacceptable quality\/token tradeoff/);
+  assert.match(family?.evidence.map(item => item.summary).join('\n') || '', /superseded quality-win-token-regression-too-large/);
+});
+
 async function writeReport(root: string, relative: string, data: unknown): Promise<void> {
   const absolute = path.join(root, relative);
   await fs.ensureDir(path.dirname(absolute));

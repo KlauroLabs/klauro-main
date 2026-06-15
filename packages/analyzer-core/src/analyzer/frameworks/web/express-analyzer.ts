@@ -105,6 +105,8 @@ export class ExpressAnalyzer extends BaseAnalyzer {
 
       const packageJson = await fs.readJson(packageJsonPath);
       const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
+      const hasExpressDependency = Object.keys(deps).some(dep => dep === 'express');
+      if (!hasExpressDependency) return false;
 
       // Skip Express analysis if NestJS is present - NestJS analyzer should handle it
       const hasNestJS = Object.keys(deps).some(dep =>
@@ -117,21 +119,23 @@ export class ExpressAnalyzer extends BaseAnalyzer {
         return false; // Defer to NestJS analyzer
       }
 
-      if (Object.keys(deps).includes('express')) {
-        return true;
-      }
-
       const jsFiles = await glob(['**/*.{js,ts}'], {
         cwd: projectPath,
-        ignore: this.getIgnorePatterns({ projectPath }),
+        ignore: [
+          ...this.getIgnorePatterns({ projectPath }),
+          '**/*.test.*',
+          '**/*.spec.*',
+          '**/__tests__/**'
+        ],
         nodir: true
       });
 
       for (const file of jsFiles) {
         const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
-        if (content.includes('require(\'express\')') ||
-            content.includes('from \'express\'') ||
-            content.includes('import express')) {
+        const importsExpress =
+          /^\s*import\s+express\b.*\bfrom\s+['"]express['"]/m.test(content) ||
+          /^\s*(?:const|let|var)\s+\w+\s*=\s*require\(\s*['"]express['"]\s*\)/m.test(content);
+        if (importsExpress && /\bexpress\s*\(\s*\)|\bexpress\s*\.\s*Router\s*\(/.test(content)) {
           return true;
         }
       }

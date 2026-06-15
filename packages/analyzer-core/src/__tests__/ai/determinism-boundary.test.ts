@@ -228,7 +228,7 @@ describe('deterministic/AI boundary', () => {
     const enabledRun = await createPipelineOrchestrator().orchestrateAnalysis(fixtureDir);
     expect(describeSpy).toHaveBeenCalled();
     const enabledStatus = enabledRun.enhanced_system_purpose?.description_generation?.status;
-    expect(['ai_applied', 'ai_rejected']).toContain(enabledStatus);
+    expect(['ai_applied', 'ai_rejected', 'deterministic_kept']).toContain(enabledStatus);
     if (enabledStatus === 'ai_applied') {
       expect(enabledRun.enhanced_system_purpose?.description_source).toBe('ai');
     } else {

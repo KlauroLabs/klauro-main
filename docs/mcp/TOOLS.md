@@ -24,8 +24,32 @@ Focus profiles let agents and UI flows pay for the context they need:
 
 - `agent-fast`: prioritizes graph, entry points, risks, idioms, tests, and work packets; defers AI narrative and embedding-heavy layers.
 - `ui-overview`: prioritizes visualization and AI-written system/capability descriptions; defers embedding-heavy layers.
-- `deep-context`: keeps the core graph and enables deeper semantic/context layers where configured.
+- `deep-context`: keeps the core graph, enables embedding-backed semantic retrieval where configured, allows AI system narrative generation, and still defers bulk element descriptions unless requested.
 - `full`: uses repository and environment defaults.
+
+### `get_analysis_focus_profiles`
+
+Choose the cheapest useful analysis focus before triggering a layer. This is the MCP control point that keeps coding agents on `agent-fast` by default while letting UI and drilldown flows explicitly opt into AI narrative work.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `trigger` | string | no | `mcp`, `cli`, `ui`, `inspector`, `manual-description`, `runtime`, or `unknown` |
+| `task_type` | string | no | Optional task hint such as `modify`, `debug`, `architecture audit`, `visual inspection`, or `description generation` |
+
+**Returns:** A recommendation plus all focus profiles. The recommendation includes `recommended_focus`, `recommended_layer`, `reason`, `token_policy`, and the layers deferred until needed.
+
+Use this when an agent or client is about to analyze or refresh a repo and needs to avoid spending tokens/time on narrative or deep context layers prematurely.
+
+### `get_description_enrichment_targets`
+
+Return the exact descriptions that need AI enrichment next. Use this when UI overview or drilldown text is deterministic, generic, inventory-like, missing, or rejected by the usefulness review.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Absolute path to the analyzed project directory |
+| `limit` | number | no | Maximum targets to return |
+
+**Returns:** `analysis_id`, total target count, and ranked targets. System targets suggest `run_analysis_layer` with `ui-overview-refresh`; capability, service, node, entity, and entry-point targets suggest `generate_element_description` with `target`, `target_kind`, and behavior-level description instructions.
 
 ### `generate_element_description`
 
@@ -60,7 +84,7 @@ Inspect which analysis layers completed, which were deferred, and what each laye
 |-----------|------|----------|-------------|
 | `path` | string | yes | Absolute path to the analyzed project directory |
 
-**Returns:** Analysis id/timestamp, phase status records, and AI description status for the system narrative and top capabilities.
+**Returns:** Analysis id/timestamp, phase status records, AI description status for the system narrative and top capabilities, and `enrichment_targets` for the next weak system/capability descriptions to regenerate.
 
 ### `run_analysis_layer`
 
@@ -196,7 +220,7 @@ Guide a zero-repo or growing greenfield build. This is the MCP surface agents sh
 | `reference_paths` | string[] | no | Existing analyzed repositories to use as external memory |
 | `limit` | number | no | Maximum overlap matches to return |
 
-**Returns:** Stage (`empty_workspace_first_slice` or `continuation_iteration`), current CAS-backed graph memory when files exist, architecture memory with model/boundary/test ownership, `product_focus` guidance for what the agent can now concentrate on, a `growth_control_plane` with product-slice stop rules, architecture budget, concept ownership contract, duplication gate, and next Klauro loop, concepts/capabilities to reuse, duplicate-prevention rules, focused files to read, next files to create/update, validation checks, risks, and the next MCP calls.
+**Returns:** Stage (`empty_workspace_first_slice` or `continuation_iteration`), current CAS-backed graph memory when files exist, architecture memory with model/boundary/test ownership, `product_focus` guidance for what the agent can now concentrate on, a `growth_control_plane` with product-slice stop rules, architecture budget, concept ownership contract, duplication gate, and next Klauro loop, `agent_build_capsule` in compact `G1` format, concepts/capabilities to reuse, duplicate-prevention rules, focused files to read, next files to create/update, validation checks, risks, and the next MCP calls. Agents should read G1 before injecting expanded greenfield JSON.
 
 ### `get_preview_analysis`
 
@@ -530,9 +554,11 @@ One-call task packet for agents. Use this after `get_agent_start_context` when a
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
-| `task` | object | no | Optional task context with `task_type`, `target`, `related_paths`, `runtime_event`, `instructions`, or `success_criteria` |
+| `task` | object | no | Optional task context with `task_type`, `target`, `related_paths`, `runtime_event`, `instructions`, `success_criteria`, or `response_profile` |
 
-**Returns:** Target resolution, selected node, coding context, `capability_memory` for avoiding duplicate/rebuilt behavior, change risk, callers, callees, tests, error contracts for debug tasks, behavioral invariant impact, compact `idiom_context`, representative entry/call-chain context, recommended MCP follow-ups, adoption gaps, a file read plan with concrete source files, bounded line windows, and reasons, and a validation plan with focused test/typecheck/build commands, monorepo package script routing, tests to inspect, manual checks, environment rules, and validation gaps.
+**Returns:** Target resolution, selected node, coding context, `capability_memory` for avoiding duplicate/rebuilt behavior, change risk, callers, callees, tests, error contracts for debug tasks, behavioral invariant impact, compact `idiom_context`, runtime-backed `operational_priorities` for debug/runtime/production-symptom tasks when telemetry exists, representative entry/call-chain context, recommended MCP follow-ups, adoption gaps, a file read plan with concrete source files, bounded line windows, and reasons, an `execution_brief` plus `execution_brief.capsule` for token-minimal first implementation, and a validation plan with focused test/typecheck/build commands, monorepo package script routing, tests to inspect, manual checks, environment rules, and validation gaps.
+
+Set `task.response_profile` to `capsule-only` when an agent needs the smallest useful starting packet. It returns only the `K15` context capsule, `K5` execution capsule, selected target, first files, token estimate, and expansion rule. Set `first-turn` when the agent needs compact JSON fields in addition to the capsules. `K5` includes exact file paths, read/edit role sigils, file-scoped operations for direct-patch work, proof requirements, negative constraints, preservation rules, validation, and stop cues. `K15` is the compact agent context language for orientation, selected node, default extension restoration, role-grouped file dictionary, idioms, reuse, risk, validation, and expansion rules. Set `minimal` when the agent needs compact architecture/risk/test context, or omit it for the full work packet. For edit/debug tasks where token savings matter, agents should read `context_capsule` / `context_capsule.capsule` for orientation, execute `execution_capsule` / `capsule` before opening any other files, then fall back to `first-turn` or full workbench only if the capsules are ambiguous.
 
 ### `get_capability_memory`
 
@@ -661,14 +687,14 @@ Return install-ready default-use instructions for an agent without writing files
 
 ### `install_agent_default_config`
 
-Write `.klauro/agent-defaults.json` and `.klauro/agent-defaults.md` into a repository.
+Write `.klauro/agent-defaults.json`, `.klauro/agent-defaults.md`, and `.klauro/skills/klauro/SKILL.md` into a repository.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
 | `task` | object | no | Optional task context |
 
-**Returns:** The installed config and file paths. Agents can read these files to use Klauro as the default first context path.
+**Returns:** The installed config and file paths. Agents can read these files to use Klauro as the default first context path, or install the generated skill into Claude, Codex, or another skill-aware agent.
 
 ### `evaluate_analysis_truth`
 
@@ -824,7 +850,7 @@ Run the work-quality benchmark layer on top of the agentic benchmark suite.
 | `test_timeout_ms` | number | no | Per-test command timeout in milliseconds |
 | `orchestrator_timeout_ms` | number | no | Evaluator command timeout in milliseconds |
 
-**Returns:** Persisted report metadata, JSON report, Markdown report, success gates, context completeness, projected baseline quality, quality-score delta, token/time/file deltas, and optional live A/B execution results. Live results include copied repo paths, prompt/result/metric files, the with-Klauro work-packet artifact, binary diff paths, changed files, lines added/deleted, wall-clock duration, test status, provider token metrics when reported, deterministic orchestrator scores, optional external-orchestrator scores, and separated patch-quality, hidden-validation, command-completion, and timeout signals.
+**Returns:** Persisted report metadata, JSON report, Markdown report, success gates, context completeness, projected baseline quality, quality-score delta, token/time/file deltas, and optional live A/B execution results. Live results include copied repo paths, prompt/result/metric files, the with-Klauro work-packet artifact, binary diff paths, changed files, lines added/deleted, raw wall-clock duration, test status, provider token metrics when reported, deterministic orchestrator scores, optional external-orchestrator scores, and separated patch-quality, hidden-validation, command-completion, and timeout signals. The live `time_reduction_percentage` metric is time to valid solution: when one arm produces an invalid diff, the valid arm gets credit for reaching a solution instead of comparing raw wall time for an invalid patch. Claude Code live commands are also classified as lean or full-agent measurement mode; use `--safe-mode --no-session-persistence` on both arms when measuring Klauro token savings so unrelated local memory, plugins, hooks, and session persistence do not mask packet savings. When using `--add-dir {workspace}`, put `--` before `"$(cat {prompt_file})"` so Claude does not treat the prompt as another allowed directory.
 
 ### `run_agent_idiom_benchmark`
 

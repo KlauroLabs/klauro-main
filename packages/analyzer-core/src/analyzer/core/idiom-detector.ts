@@ -87,7 +87,7 @@ const EMPTY_CATEGORY_COUNTS: Record<CASIdiomCategory, number> = {
   configuration: 0,
 };
 
-const SOURCE_EXTENSIONS = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|cs|java|php|dart)$/i;
+const SOURCE_EXTENSIONS = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|cs|java|php|dart|tf|tfvars)$/i;
 const TEST_PATH = /(^|\/)(__tests__|tests?|spec|e2e|cypress)(\/|$)|(\.|_|-)(test|spec|cy)\.[a-z0-9]+$/i;
 const MIGRATION_PATH = /(^|\/)(migrations?|db\/migrate|prisma\/migrations)(\/|$)|migration/i;
 const SCHEMA_PATH = /(^|\/)(schema|models?|entities?|database|prisma)(\/|$)|(\.prisma|schema\.sql)$/i;
@@ -407,6 +407,7 @@ function detectModuleBoundaryIdioms(input: IdiomDetectionInput): IdiomDraft[] {
 }
 
 function detectDependencyInjectionIdioms(input: IdiomDetectionInput): IdiomDraft[] {
+  if (isInfrastructureOnlyInput(input)) return [];
   const decoratorNames = input.decorators.map(decorator => decorator.decorator_info.name.toLowerCase());
   const injectableNodes = input.nodes.filter(node =>
     /injectable|controller|module|service|provider/i.test([node.name, node.type, node.source?.raw || '', node.metadata?.annotations?.join(' ') || ''].join(' '))
@@ -458,6 +459,7 @@ function detectDependencyInjectionIdioms(input: IdiomDetectionInput): IdiomDraft
 }
 
 function detectDataAccessIdioms(input: IdiomDetectionInput, files: FileInventory): IdiomDraft[] {
+  if (isInfrastructureOnlyInput(input)) return [];
   const dataNodes = input.nodes.filter(node =>
     /repository|model|entity|schema|prisma|orm|database|dao/i.test([node.name, node.type, node.source?.file || ''].join(' ')) &&
     Boolean(node.source?.file && !isConfigPath(node.source.file) && !isMigrationPath(node.source.file) && !isTestPath(node.source.file))
@@ -583,6 +585,7 @@ function detectValidationIdioms(input: IdiomDetectionInput): IdiomDraft[] {
 }
 
 function detectAuthTenantIdioms(input: IdiomDetectionInput): IdiomDraft[] {
+  if (isInfrastructureOnlyInput(input)) return [];
   const invariants = input.behavioralInvariants.filter(invariant =>
     ['tenant-scope', 'auth-boundary', 'authorization'].includes(invariant.invariant_type)
   );
@@ -748,6 +751,18 @@ function detectAsyncStyleIdioms(input: IdiomDetectionInput): IdiomDraft[] {
       validation: ['Inspect changed I/O paths for awaited async work and preserved return types.'],
     },
   }];
+}
+
+function isInfrastructureOnlyInput(input: IdiomDetectionInput): boolean {
+  const projectPath = normalizePath(input.projectPath);
+  if (/(^|\/)(infra|infrastructure|terraform|opentofu|pulumi|helm|k8s|charts)(\/|$)/i.test(projectPath)) return true;
+  const sourceFiles = unique(input.nodes.map(node => node.source?.file).filter(Boolean) as string[]);
+  if (sourceFiles.length === 0) return false;
+  const infraFiles = sourceFiles.filter(file => /\.(tf|tfvars|hcl|ya?ml)$/i.test(file) || /(^|\/)(terraform|opentofu|pulumi|helm|k8s|charts)(\/|$)/i.test(file));
+  const appFiles = sourceFiles.filter(file => /\.(ts|tsx|js|jsx|py|go|rs|cs|java|php|dart|rb)$/i.test(file));
+  const projectLooksLikeCiInfra = /(^|\/)[^/]*(?:ci|infra|infrastructure|terraform|opentofu|pulumi|helm|k8s|charts)[^/]*(?:\/|$)/i.test(projectPath);
+  return (infraFiles.length >= Math.max(3, sourceFiles.length * 0.7) && appFiles.length === 0) ||
+    (projectLooksLikeCiInfra && infraFiles.length >= Math.max(1, sourceFiles.length * 0.45));
 }
 
 function detectConfigurationIdioms(input: IdiomDetectionInput, files: FileInventory): IdiomDraft[] {

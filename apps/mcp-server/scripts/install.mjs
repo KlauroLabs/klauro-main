@@ -20,6 +20,7 @@ import {
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const bundlePath = path.join(packageRoot, 'dist', 'index.cjs');
+const cliPath = path.join(packageRoot, 'dist', 'cli.cjs');
 
 const options = parseArgs(process.argv.slice(2));
 if (options.help) {
@@ -29,7 +30,7 @@ if (options.help) {
 
 const failures = [];
 let stepNumber = 0;
-const totalSteps = 7;
+const totalSteps = options.firstValue ? 8 : 7;
 
 function step(title) {
   stepNumber += 1;
@@ -80,7 +81,7 @@ if (depsPresent) {
 }
 
 step('Locating the server bundle');
-const distComplete = ['index.cjs', 'server.cjs', 'handshake.json']
+const distComplete = ['index.cjs', 'server.cjs', 'cli.cjs', 'analysis-worker.cjs', 'handshake.json']
   .every(file => fs.existsSync(path.join(packageRoot, 'dist', file)));
 const buildAction = decideBuildAction({ distComplete, rebuildRequested: options.rebuild });
 if (!buildAction.build) {
@@ -182,6 +183,25 @@ if (options.selfCheck) {
   report({ id: 'self-check', status: 'warn', detail: 'Self-check skipped (--skip-self-check).', fix: `Run later: npm --prefix ${packageRoot} run doctor` });
 }
 
+if (options.firstValue) {
+  step('Producing first value');
+  const repoPath = path.resolve(options.smokePath || process.cwd());
+  if (!fs.existsSync(repoPath)) {
+    report({ id: 'first-value', status: 'fail', detail: `Repository path does not exist: ${repoPath}`, fix: 'Pass an existing repository path as [repo-path].' });
+  } else if (!fs.existsSync(cliPath)) {
+    report({ id: 'first-value', status: 'fail', detail: `Bundled CLI missing: ${cliPath}`, fix: `Run npm --prefix ${packageRoot} run build and re-run with --first-value.` });
+  } else {
+    const firstValue = runFirstValue(repoPath);
+    report(firstValue.analysisCheck);
+    report(firstValue.packetCheck);
+    if (firstValue.summary) {
+      print('');
+      print('First value summary:');
+      print(indent(firstValue.summary));
+    }
+  }
+}
+
 finish();
 
 function finish() {
@@ -194,11 +214,115 @@ function finish() {
     process.exit(1);
   }
   print('Klauro install: OK');
-  print('Next steps:');
-  print(`  1. Analyze a repository: npm --prefix ${packageRoot} --silent run analyze -- /path/to/repo --analysis-focus agent-fast`);
-  print(`  2. Environment health:   npm --prefix ${packageRoot} run doctor`);
-  print('  3. In Claude Code, confirm the klauro server with /mcp, then start with resolve_agent_analysis.');
+  if (options.firstValue) {
+    print('Next steps:');
+    print(`  1. Ask your agent to use Klauro before broad source reads.`);
+    print(`  2. Environment health: npm --prefix ${packageRoot} run doctor`);
+    print('  3. In Claude Code, confirm the klauro server with /mcp, then start with resolve_agent_analysis.');
+  } else {
+    print('Next steps:');
+    print(`  1. Get first value now: node ${path.join(packageRoot, 'scripts', 'install.mjs')} /path/to/repo --first-value --no-register`);
+    print(`  2. Analyze a repository: npm --prefix ${packageRoot} --silent run analyze -- /path/to/repo --analysis-focus agent-fast`);
+    print(`  3. Environment health: npm --prefix ${packageRoot} run doctor`);
+    print('  4. In Claude Code, confirm the klauro server with /mcp, then start with resolve_agent_analysis.');
+  }
   process.exit(failures.length > 0 ? 1 : 0);
+}
+
+function runFirstValue(repoPath) {
+  const startedAt = Date.now();
+  const analyze = spawnSync(process.execPath, [
+    cliPath,
+    'analyze',
+    repoPath,
+    '--analysis-focus',
+    'agent-fast',
+    '--quiet',
+    '--json',
+  ], { cwd: packageRoot, encoding: 'utf8', env: process.env, maxBuffer: 64 * 1024 * 1024 });
+  if (analyze.status !== 0) {
+    return {
+      analysisCheck: {
+        id: 'first-value-analysis',
+        status: 'fail',
+        detail: `agent-fast analysis failed: ${trimCommandOutput(analyze.stderr || analyze.stdout)}`,
+        fix: `Run manually: node ${cliPath} analyze ${repoPath} --analysis-focus agent-fast --json`,
+      },
+      packetCheck: { id: 'first-value-work-packet', status: 'fail', detail: 'Skipped because analysis failed.' },
+    };
+  }
+
+  let analyzePayload;
+  try {
+    analyzePayload = JSON.parse(analyze.stdout);
+  } catch {
+    analyzePayload = undefined;
+  }
+
+  const packet = spawnSync(process.execPath, [
+    cliPath,
+    'agent-work-packet',
+    repoPath,
+    '--task-type',
+    'orient',
+    '--target',
+    'system overview',
+    '--response-profile',
+    'capsule-only',
+    '--quiet',
+    '--json',
+  ], { cwd: packageRoot, encoding: 'utf8', env: process.env, maxBuffer: 64 * 1024 * 1024 });
+  if (packet.status !== 0) {
+    return {
+      analysisCheck: {
+        id: 'first-value-analysis',
+        status: 'pass',
+        detail: `agent-fast analysis completed in ${Date.now() - startedAt}ms (${analyzePayload?.output?.nodes?.length || 0} nodes).`,
+      },
+      packetCheck: {
+        id: 'first-value-work-packet',
+        status: 'fail',
+        detail: `work packet failed: ${trimCommandOutput(packet.stderr || packet.stdout)}`,
+        fix: `Run manually: node ${cliPath} agent-work-packet ${repoPath} --task-type orient --target "system overview" --response-profile capsule-only --json`,
+      },
+    };
+  }
+
+  let packetPayload;
+  try {
+    packetPayload = JSON.parse(packet.stdout);
+  } catch {
+    packetPayload = undefined;
+  }
+
+  const output = analyzePayload?.output || {};
+  const firstFiles = packetPayload?.first_files_to_read || packetPayload?.file_plan?.first_files_to_read || [];
+  const totalMs = Date.now() - startedAt;
+  return {
+    analysisCheck: {
+      id: 'first-value-analysis',
+      status: 'pass',
+      detail: `agent-fast analysis completed in ${totalMs}ms (${output.nodes?.length || 0} nodes, ${output.edges?.length || 0} edges, ${output.entry_points?.length || 0} entry points).`,
+    },
+    packetCheck: {
+      id: 'first-value-work-packet',
+      status: packetPayload ? 'pass' : 'warn',
+      detail: packetPayload
+        ? `Generated an agent work packet with ${Array.isArray(firstFiles) ? firstFiles.length : 0} first file(s) and ${packetPayload.token_budget?.estimated_tokens || packetPayload.budget?.estimated_tokens || 'compact'} token budget.`
+        : 'Work packet completed but JSON output could not be parsed.',
+    },
+    summary: [
+      `Repo: ${repoPath}`,
+      `System: ${output.system?.name || path.basename(repoPath)}`,
+      `Graph: ${output.nodes?.length || 0} nodes, ${output.edges?.length || 0} edges, ${output.entry_points?.length || 0} entry points`,
+      `Agent packet: ${packetPayload?.task?.task_type || 'orient'} / ${packetPayload?.task?.target || 'system overview'}`,
+      firstFiles.length ? `First files: ${firstFiles.slice(0, 5).map(file => typeof file === 'string' ? file : file.path || file.file).filter(Boolean).join(', ')}` : 'First files: none reported',
+    ].join('\n'),
+  };
+}
+
+function trimCommandOutput(output) {
+  return String(output || 'unknown error').trim().replace(/\s+/g, ' ').slice(0, 600);
 }
 
 function indent(text) {
@@ -210,6 +334,7 @@ function parseArgs(argv) {
     register: true,
     rebuild: false,
     selfCheck: true,
+    firstValue: false,
     claudeScope: 'user',
     claudeMdRepo: undefined,
     smokePath: undefined,
@@ -220,6 +345,7 @@ function parseArgs(argv) {
     if (arg === '--no-register') parsed.register = false;
     else if (arg === '--rebuild') parsed.rebuild = true;
     else if (arg === '--skip-self-check') parsed.selfCheck = false;
+    else if (arg === '--first-value') parsed.firstValue = true;
     else if (arg === '--claude-scope') parsed.claudeScope = argv[++i];
     else if (arg === '--claude-md') parsed.claudeMdRepo = argv[++i];
     else if (arg === '--smoke-path') parsed.smokePath = argv[++i];
@@ -247,6 +373,7 @@ function printHelp() {
     '  --no-register          Skip claude mcp add; print the command instead',
     '  --rebuild              Force npm run build even when dist/ exists',
     '  --skip-self-check      Skip the handshake and resolve_agent_analysis self-check',
+    '  --first-value          Analyze [repo-path] with the fast agent layer and print an agent work packet summary',
     '  -h, --help             Show this help',
   ].join('\n'));
 }

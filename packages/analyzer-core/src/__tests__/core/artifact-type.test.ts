@@ -114,6 +114,40 @@ describe('classifyArtifactType', () => {
     expect(result.artifactType).toBe('boilerplate');
   });
 
+  test('app with starter wording only in package description stays app when it has page entries', () => {
+    const result = classifyArtifactType(input({
+      manifest: {
+        packageJson: {
+          name: 'customer-portal',
+          description: 'Built from an internal React starter template for customer operations.',
+          isPrivate: true,
+          hasBin: false,
+          hasLibraryEntry: false,
+          dependencyNames: ['react', 'react-router-dom'],
+        },
+      },
+      frameworks: ['React'],
+      entryPointSummary: [{ type: 'page', count: 10 }, { type: 'route', count: 12 }],
+    }));
+    expect(result.artifactType).toBe('app');
+  });
+
+  test('starter wording in package description still classifies non-app templates as boilerplate', () => {
+    const result = classifyArtifactType(input({
+      manifest: {
+        packageJson: {
+          name: 'shared-template',
+          description: 'Reusable starter template for internal packages.',
+          isPrivate: true,
+          hasBin: false,
+          hasLibraryEntry: false,
+          dependencyNames: [],
+        },
+      },
+    }));
+    expect(result.artifactType).toBe('boilerplate');
+  });
+
   test('python console_scripts + click is a cli-tool (yisda-cli shape)', () => {
     const result = classifyArtifactType(input({
       manifest: {

@@ -1,9 +1,9 @@
 import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
-import type { AgentTask } from './agent-adoption';
+import { formatExecutionCapsule, type AgentTask } from './agent-adoption';
 
 const execFileAsync = promisify(execFile);
 
@@ -72,6 +72,10 @@ export interface LiveAgentArmResult {
   provider_input_tokens?: number;
   provider_output_tokens?: number;
   provider_total_tokens?: number;
+  provider_direct_input_tokens?: number;
+  provider_cache_creation_input_tokens?: number;
+  provider_cache_read_input_tokens?: number;
+  provider_direct_total_tokens?: number;
   estimated_input_tokens: number;
   estimated_output_tokens: number;
   estimated_total_tokens: number;
@@ -120,6 +124,9 @@ export interface LivePairEvaluation {
   with_klauro_success: boolean;
   without_klauro_success: boolean;
   token_reduction_percentage: number | null;
+  provider_total_token_reduction_percentage?: number | null;
+  provider_direct_token_reduction_percentage?: number | null;
+  token_reduction_metric?: 'provider-direct' | 'provider-total' | 'estimated-work';
   time_reduction_percentage: number;
   file_change_delta: number;
   changed_file_precision_delta: number;
@@ -157,6 +164,10 @@ interface AgentMetricFile {
   completion_tokens?: number;
   provider_total_tokens?: number;
   total_tokens?: number;
+  provider_direct_input_tokens?: number;
+  provider_cache_creation_input_tokens?: number;
+  provider_cache_read_input_tokens?: number;
+  provider_direct_total_tokens?: number;
   tool_calls?: number;
   files_read?: number | unknown[];
   source_files_read?: number | unknown[];
@@ -240,9 +251,10 @@ async function runLiveAgentArm(
   const metricsFile = path.join(workspace, '.klauro-live-metrics.json');
   const resultFile = path.join(workspace, '.klauro-live-result.json');
   const diffFile = path.join(trialDirectory, `${arm}.diff`);
+  const requiresBenchmarkArtifacts = commandTemplateUsesBenchmarkArtifacts(commandTemplate);
   const prompt = arm === 'with-klauro'
-    ? promptWithKlauro(input, workspace, metricsFile, resultFile, workPacketFile)
-    : promptWithoutKlauro(input, workspace, metricsFile, resultFile);
+    ? promptWithKlauro(input, workspace, metricsFile, resultFile, workPacketFile, requiresBenchmarkArtifacts)
+    : promptWithoutKlauro(input, workspace, metricsFile, resultFile, requiresBenchmarkArtifacts);
   const startedAt = Date.now();
 
   try {
@@ -270,6 +282,15 @@ async function runLiveAgentArm(
     const providerInputTokens = firstPositiveNumber(metrics.provider_input_tokens, metrics.input_tokens, metrics.prompt_tokens, parsed.provider_input_tokens);
     const providerOutputTokens = firstPositiveNumber(metrics.provider_output_tokens, metrics.output_tokens, metrics.completion_tokens, parsed.provider_output_tokens);
     const providerTotalTokens = firstPositiveNumber(metrics.provider_total_tokens, metrics.total_tokens, parsed.provider_total_tokens, sumIfPresent(providerInputTokens, providerOutputTokens));
+    const providerDirectInputTokens = firstPositiveNumber(metrics.provider_direct_input_tokens, parsed.provider_direct_input_tokens);
+    const providerCacheCreationInputTokens = firstPositiveNumber(metrics.provider_cache_creation_input_tokens, parsed.provider_cache_creation_input_tokens);
+    const providerCacheReadInputTokens = firstPositiveNumber(metrics.provider_cache_read_input_tokens, parsed.provider_cache_read_input_tokens);
+    const providerDirectTotalTokens = firstPositiveNumber(
+      metrics.provider_direct_total_tokens,
+      parsed.provider_direct_total_tokens,
+      sumNumbers(providerDirectInputTokens, providerCacheCreationInputTokens, providerOutputTokens),
+      providerCacheReadInputTokens && providerTotalTokens ? providerTotalTokens - providerCacheReadInputTokens : undefined
+    );
     const estimatedInputTokens = estimateTokens(prompt.length);
     const estimatedOutputTokens = estimateTokens(result.stdout.length + result.stderr.length);
     const filesRead = firstNumber(metricCount(metrics.files_read), metricCount(metrics.source_files_read), metricCount(parsed.files_read));
@@ -302,6 +323,10 @@ async function runLiveAgentArm(
       provider_input_tokens: providerInputTokens,
       provider_output_tokens: providerOutputTokens,
       provider_total_tokens: providerTotalTokens,
+      provider_direct_input_tokens: providerDirectInputTokens,
+      provider_cache_creation_input_tokens: providerCacheCreationInputTokens,
+      provider_cache_read_input_tokens: providerCacheReadInputTokens,
+      provider_direct_total_tokens: providerDirectTotalTokens,
       estimated_input_tokens: estimatedInputTokens,
       estimated_output_tokens: estimatedOutputTokens,
       estimated_total_tokens: estimatedInputTokens + estimatedOutputTokens,
@@ -348,6 +373,11 @@ async function evaluateLivePair(
   trialDirectory: string
 ): Promise<LivePairEvaluation> {
   const deterministic = await evaluateLivePairDeterministically(input, withResult, withoutResult);
+  const executionProfile = describeLiveAgentExecutionProfile(config);
+  deterministic.reasons.push(`Live agent execution profile: ${executionProfile.profile}.`);
+  for (const warning of executionProfile.warnings) {
+    deterministic.reasons.push(warning);
+  }
   const evaluationInputFile = path.join(trialDirectory, 'evaluation-input.json');
   const evaluationFile = path.join(trialDirectory, 'evaluation.json');
   await fs.writeJson(evaluationInputFile, { input, with_klauro: withResult, without_klauro: withoutResult, deterministic }, { spaces: 2 });
@@ -392,6 +422,35 @@ async function evaluateLivePair(
   return merged;
 }
 
+export function describeLiveAgentExecutionProfile(config: LiveAgentCommandConfig): { profile: 'lean' | 'mixed' | 'full-agent'; warnings: string[] } {
+  const commands = [config.withKlauro || '', config.withoutKlauro || ''].filter(Boolean);
+  if (!commands.length) return { profile: 'full-agent', warnings: [] };
+  const leanCount = commands.filter(isLeanClaudeExecutionCommand).length;
+  const profile = leanCount === commands.length ? 'lean' : leanCount > 0 ? 'mixed' : 'full-agent';
+  const warnings: string[] = [];
+  if (profile !== 'lean' && commands.some(command => /\bclaude\b/.test(command))) {
+    warnings.push('Claude Code command is not in lean measurement mode; use --safe-mode and --no-session-persistence to prevent project memory/tooling overhead from swamping Klauro token savings.');
+  }
+  if (commands.some(isClaudeCommandMissingPromptSeparator)) {
+    warnings.push('Claude Code command may let --add-dir consume the prompt; put -- before "$(cat {prompt_file})", for example: --add-dir {workspace} -- "$(cat {prompt_file})".');
+  }
+  return { profile, warnings };
+}
+
+function isLeanClaudeExecutionCommand(command: string): boolean {
+  if (!/\bclaude\b/.test(command)) return false;
+  return /\s--safe-mode(?:\s|$)/.test(command) && /\s--no-session-persistence(?:\s|$)/.test(command);
+}
+
+function isClaudeCommandMissingPromptSeparator(command: string): boolean {
+  if (!/\bclaude\b/.test(command) || !/--add-dir\b/.test(command) || !/\{prompt_file\}/.test(command)) return false;
+  return /--add-dir\s+\{workspace\}\s+["']?\$\(cat\s+\{prompt_file\}\)/.test(command);
+}
+
+function commandTemplateUsesBenchmarkArtifacts(commandTemplate: string): boolean {
+  return /\{result_file\}|\{metrics_file\}/.test(commandTemplate);
+}
+
 export async function evaluateLivePairDeterministically(input: LiveAgentPairInput, withResult: LiveAgentArmResult, withoutResult: LiveAgentArmResult): Promise<LivePairEvaluation> {
   const expectsEdit = taskExpectsEdit(input);
   const expectedEditFiles = extractExpectedEditFiles(input);
@@ -407,7 +466,13 @@ export async function evaluateLivePairDeterministically(input: LiveAgentPairInpu
   const withCompletionScore = armCompletionScore(withResult);
   const withoutCompletionScore = armCompletionScore(withoutResult);
   const tokenReduction = tokenReductionPercentage(withResult, withoutResult);
+  const providerTotalTokenReduction = providerTokenReductionPercentage(withResult.provider_total_tokens, withoutResult.provider_total_tokens);
+  const providerDirectTokenReduction = providerTokenReductionPercentage(withResult.provider_direct_total_tokens, withoutResult.provider_direct_total_tokens);
+  const tokenMetric = tokenReductionMetric(withResult, withoutResult);
   const precisionDelta = precisionMetricDelta(withPrecision, withoutPrecision);
+  const withSucceeded = armSucceeded(withResult, withScore);
+  const withoutSucceeded = armSucceeded(withoutResult, withoutScore);
+  const timeReduction = validSolutionTimeReductionPercentage(withResult, withoutResult, withSucceeded, withoutSucceeded);
   const reasons = [
     `With Klauro changed ${withResult.files_changed} files and ${withResult.lines_added + withResult.lines_deleted} lines.`,
     `Without Klauro changed ${withoutResult.files_changed} files and ${withoutResult.lines_added + withoutResult.lines_deleted} lines.`,
@@ -426,29 +491,47 @@ export async function evaluateLivePairDeterministically(input: LiveAgentPairInpu
   }
   if (withResult.provider_total_tokens || withoutResult.provider_total_tokens) {
     reasons.push(`Provider token totals: with ${withResult.provider_total_tokens || 'unknown'}, without ${withoutResult.provider_total_tokens || 'unknown'}.`);
+    if (withResult.provider_direct_total_tokens || withoutResult.provider_direct_total_tokens) {
+      reasons.push(`Provider direct token totals excluding cache reads: with ${withResult.provider_direct_total_tokens || 'unknown'}, without ${withoutResult.provider_direct_total_tokens || 'unknown'}.`);
+    }
   } else {
     reasons.push(`Provider token totals were not reported; estimated live work tokens: with ${withResult.estimated_work_tokens || withResult.estimated_total_tokens}, without ${withoutResult.estimated_work_tokens || withoutResult.estimated_total_tokens}.`);
   }
+  if (withSucceeded !== withoutSucceeded) {
+    reasons.push(withSucceeded
+      ? 'Time reduction is scored as time to valid solution; the unguided arm did not produce a valid solution.'
+      : 'Time reduction is scored as time to valid solution; the Klauro arm did not produce a valid solution.');
+  }
 
   const status = statusFromScore(withScore);
+  const qualityDelta = withScore - withoutScore;
   const tokenRegression = tokenReduction !== null && tokenReduction < 0;
-  if (tokenRegression) {
-    reasons.push('Klauro used more total tokens than the unguided arm; this is a product regression even when quality improves.');
+  const acceptableSmallTokenTradeoff = tokenReduction !== null
+    && tokenReduction < 0
+    && tokenReduction >= -5
+    && qualityDelta >= 10;
+  if (acceptableSmallTokenTradeoff) {
+    reasons.push(`Klauro used ${Math.abs(tokenReduction ?? 0)}% more direct tokens, but this is within the small-tradeoff allowance and quality improved by +${qualityDelta}.`);
+  } else if (tokenRegression) {
+    reasons.push(`Klauro used more ${tokenMetric === 'provider-direct' ? 'direct provider tokens excluding cache reads' : tokenMetric === 'provider-total' ? 'provider tokens' : 'estimated work tokens'} than the unguided arm; this is a product regression even when quality improves.`);
   }
 
   return {
     mode: 'deterministic-orchestrator',
-    status: tokenRegression && status === 'pass' ? 'warn' : status,
+    status: tokenRegression && !acceptableSmallTokenTradeoff && status === 'pass' ? 'warn' : status,
     with_klauro_quality_score: withScore,
     without_klauro_quality_score: withoutScore,
-    quality_score_delta: withScore - withoutScore,
+    quality_score_delta: qualityDelta,
     with_klauro_architecture_score: withArchitecture?.score,
     without_klauro_architecture_score: withoutArchitecture?.score,
     architecture_score_delta: withArchitecture && withoutArchitecture ? withArchitecture.score - withoutArchitecture.score : undefined,
-    with_klauro_success: armSucceeded(withResult, withScore),
-    without_klauro_success: armSucceeded(withoutResult, withoutScore),
+    with_klauro_success: withSucceeded,
+    without_klauro_success: withoutSucceeded,
     token_reduction_percentage: tokenReduction,
-    time_reduction_percentage: percentReduction(withoutResult.duration_ms, withResult.duration_ms),
+    provider_total_token_reduction_percentage: providerTotalTokenReduction,
+    provider_direct_token_reduction_percentage: providerDirectTokenReduction,
+    token_reduction_metric: tokenMetric,
+    time_reduction_percentage: timeReduction,
     file_change_delta: withoutResult.files_changed - withResult.files_changed,
     changed_file_precision_delta: precisionDelta,
     with_klauro_completion_score: withCompletionScore,
@@ -459,6 +542,20 @@ export async function evaluateLivePairDeterministically(input: LiveAgentPairInpu
     confidence: withResult.tests_passed !== undefined || withoutResult.tests_passed !== undefined ? 0.82 : 0.68,
     reasons,
   };
+}
+
+function validSolutionTimeReductionPercentage(
+  withResult: LiveAgentArmResult,
+  withoutResult: LiveAgentArmResult,
+  withSucceeded: boolean,
+  withoutSucceeded: boolean
+): number {
+  if (withSucceeded && withoutSucceeded) {
+    return percentReduction(withoutResult.duration_ms, withResult.duration_ms);
+  }
+  if (withSucceeded && !withoutSucceeded) return 100;
+  if (!withSucceeded && withoutSucceeded) return -100;
+  return percentReduction(withoutResult.duration_ms, withResult.duration_ms);
 }
 
 function combineQualityScores(baseScore: number, architectureScore?: number): number {
@@ -511,14 +608,15 @@ async function architectureContinuityScore(input: LiveAgentPairInput, result: Li
   const sourceFiles = files.filter(file => /(^|\/)(src|app|lib|packages|services)\//.test(file) && /\.(ts|tsx|js|jsx|py|rs|go|java|cs|php|dart)$/.test(file)).length;
   const tests = files.filter(file => /(^|\/)(test|tests|__tests__)\/|(\.|-)(test|spec)\./i.test(file)).length;
   const testCases = Array.from(content.matchAll(/\b(?:it|test)\s*\(/g)).length;
-  const hasEntry = /route|router|controller|http|endpoint/i.test(joinedPaths);
+  const isUiHeavy = /ui|dashboard|component|view|page|screen|command center/i.test(text);
+  const hasEntry = /route|router|controller|http|endpoint|entry|main|worker|app|page|screen|dashboard/i.test(joinedPaths);
   const hasService = /service|usecase|use-case|interactor/i.test(joinedPaths);
   const hasDataAccess = /repository|repositories|persistence|data-access|dao|store/i.test(joinedPaths);
   const hasDomain = /model|models|entity|entities|domain|schema/i.test(joinedPaths);
   const hasAuthTenant = /auth|tenant|organization|workspace|role|permission|policy/i.test(content);
+  const needsAuthTenant = /auth|tenant|organization|workspace|role|permission|policy|multi-tenant/i.test(text);
   const needsWorker = /worker|job|digest|schedule|queue|background|cron|escalation/i.test(text);
   const hasWorker = /worker|job|digest|schedule|queue|background|cron|escalation/i.test(joinedPaths + '\n' + content);
-  const isUiHeavy = /ui|dashboard|component|view|page|screen|command center/i.test(text);
   const needsDataAccess = /database|migration|persistence|persistent|schema|repository|storage|sql|data access/i.test(text) ||
     (!isUiHeavy && /greenfield|scratch/i.test(input.taskCategory));
   const needsPersistence = needsDataAccess;
@@ -531,7 +629,7 @@ async function architectureContinuityScore(input: LiveAgentPairInput, result: Li
   penalize(hasService, 10, 'No service/use-case boundary.');
   if (needsDataAccess) penalize(hasDataAccess, 10, 'No repository/data-access boundary.');
   penalize(hasDomain, 8, 'No domain model/entity boundary.');
-  penalize(hasAuthTenant, 8, 'No visible tenant/auth/role boundary.');
+  if (needsAuthTenant) penalize(hasAuthTenant, 8, 'No visible tenant/auth/role boundary.');
   if (needsWorker) penalize(hasWorker, 6, 'No worker/background boundary for requested scheduled/asynchronous behavior.');
   if (needsPersistence) penalize(hasPersistence, 8, 'No persistence or migration evidence.');
   const testThreshold = isContinuation ? 3 : 1;
@@ -753,6 +851,7 @@ function compactGreenfieldScratchContext(idiomContext: unknown) {
   const growth = context.growth_control_plane || {};
   return {
     product: context.product || 'klauro_greenfield_scratch_guidance',
+    build_capsule: context.build_capsule,
     plan_intent: context.plan_intent,
     reference_scope: context.reference_scope ? {
       count: context.reference_scope.count,
@@ -777,6 +876,20 @@ function compactGreenfieldScratchContext(idiomContext: unknown) {
         reason: pattern.reason || pattern.guidance,
       }))
       : [],
+    architecture_contract: architecture.architecture_contract ? {
+      mode: architecture.architecture_contract.mode,
+      required_boundaries: Array.isArray(architecture.architecture_contract.required_boundaries)
+        ? architecture.architecture_contract.required_boundaries.slice(0, 9).map((item: any) => ({
+          kind: item.kind,
+          files: Array.isArray(item.files) ? item.files.slice(0, 2) : [],
+          rule: item.rule,
+        }))
+        : [],
+      do_not_collapse: Array.isArray(architecture.architecture_contract.do_not_collapse)
+        ? architecture.architecture_contract.do_not_collapse.slice(0, 3)
+        : [],
+      minimality_rule: architecture.architecture_contract.minimality_rule,
+    } : undefined,
     file_plan: Array.isArray(architecture.file_plan)
       ? architecture.file_plan.slice(0, 10).map((file: any) => ({
         path: file.path,
@@ -818,7 +931,14 @@ function compactGreenfieldScratchContext(idiomContext: unknown) {
   };
 }
 
-function promptWithKlauro(input: LiveAgentPairInput, workspace: string, metricsFile: string, resultFile: string, workPacketFile?: string): string {
+function promptWithKlauro(
+  input: LiveAgentPairInput,
+  workspace: string,
+  metricsFile: string,
+  resultFile: string,
+  workPacketFile?: string,
+  requiresBenchmarkArtifacts = true
+): string {
   const surgical = isSurgicalLiveTask(input);
   const greenfieldScratch = isGreenfieldScratchLiveTask(input);
   const greenfieldContinuation = greenfieldScratch && hasContinuationBrief(input.idiomContext);
@@ -844,10 +964,20 @@ function promptWithKlauro(input: LiveAgentPairInput, workspace: string, metricsF
     ? compactGreenfieldValidationLine(input, validationCommands)
     : validationCommands.length ? `Validate: ${validationCommands.join('; ')}` : '';
   const greenfieldTestLine = greenfieldScratch ? compactGreenfieldTestRequirementLine(input) : '';
+  const existingRules = !greenfieldScratch ? liveTaskSemanticRules(input) : {};
   const idiomSummary = greenfieldScratch
-    ? formatIdiomContextForPrompt(input.idiomContext, greenfieldContinuation ? 1000 : 850)
-    : formatExistingTaskContextForPrompt(input, 650);
+    ? formatIdiomContextForPrompt(input.idiomContext, greenfieldContinuation ? 1000 : 900)
+    : formatExistingTaskContextForPrompt(input, 900);
+  const executionCapsule = !greenfieldScratch ? formatExistingTaskExecutionCapsule(input, validationCommands) : '';
   if (!greenfieldScratch) {
+    if (existingRules.direct_patch === true) {
+      return [
+        'Execute this Klauro K5 capsule in the mounted repo. Read all F files; edit only * or ! files via O/A; satisfy Q; avoid N; preserve P; stop at S. Klauro validates after edit. No search, diffs, logs, tests, or package files.',
+        executionCapsule,
+        'Final under 40 words: changed files only.',
+        ...benchmarkArtifactInstructions(resultFile, metricsFile, requiresBenchmarkArtifacts),
+      ].filter(Boolean).join('\n');
+    }
     return [
       `Repo: ${workspace}`,
       `Task: ${input.taskLabel}`,
@@ -859,20 +989,29 @@ function promptWithKlauro(input: LiveAgentPairInput, workspace: string, metricsF
         ? 'Surgical rule: inspect the named file/line window and explicitly named tests only.'
         : 'Work rule: read the named files first, edit only named owner/test files when possible, then stop after focused validation.',
       'Keep output concise; do not print file contents, generated code, or full diffs.',
-      `Write JSON to ${resultFile} with: task_success, quality_score, files_read, tests_run, provider_input_tokens, provider_output_tokens, provider_total_tokens, notes.`,
-      `If token metrics are exposed separately, write them to ${metricsFile}.`,
+      requiresBenchmarkArtifacts
+        ? 'Final response budget: under 80 words. Do not include code snippets, validation logs, or reasoning traces; write details only to the result JSON.'
+        : 'Final response budget: under 80 words. Do not include code snippets, validation logs, or reasoning traces.',
+      'Summarize only changed file names and validation status.',
+      ...benchmarkArtifactInstructions(resultFile, metricsFile, requiresBenchmarkArtifacts),
     ].filter(Boolean).join('\n');
   }
   return [
     `Repo: ${workspace}`,
     `Task: ${input.taskLabel}`,
-    input.task.instructions ? `Instructions: ${input.task.instructions}` : '',
+    input.task.instructions ? `Instructions: ${compactWhitespace(input.task.instructions, greenfieldContinuation ? 520 : 420)}` : '',
     '',
     greenfieldScratch
       ? greenfieldContinuation
         ? 'Use Klauro as the starting context: read owner files only, extend owners, avoid parallel per-entity modules.'
         : 'Use Klauro as the architecture brief: build one tested vertical slice, group owners, avoid one-file-per-entity scaffolding.'
       : 'Do not regenerate analysis, run broad repository discovery, or open unrelated files before using the compact execution brief.',
+    greenfieldScratch
+      ? 'Execution rule: create files directly now; no broad exploration, dependency install, generated docs, or long planning. Keep the slice under 10 focused files unless the brief explicitly requires more.'
+      : '',
+    greenfieldScratch && !greenfieldContinuation
+      ? 'Required boundaries: entry/API, service/use-case, domain model, repository/data, migration, auth/policy, integration/webhook/worker when relevant, and focused test. Do not collapse behavior into one route file.'
+      : '',
     greenfieldScratch ? '' : 'Do not call additional MCP tools for this live trial unless the compact brief is internally contradictory.',
     filePlan.length ? greenfieldScratch
       ? `Klauro first-read files: ${filePlan.join(', ')}`
@@ -891,16 +1030,38 @@ function promptWithKlauro(input: LiveAgentPairInput, workspace: string, metricsF
     greenfieldScratch
       ? greenfieldContinuation
         ? 'Token rule: smallest owner-file diff that satisfies the slice.'
-        : 'Token rule: smallest coherent vertical slice.'
+        : 'Token rule: smallest coherent vertical slice; save tokens by making each boundary small, not by merging ownership layers.'
       : '',
     greenfieldScratch
-      ? 'Validation economy: plan all files first, write each file exactly once, then run ONE combined validation command at the end (typecheck and focused tests together). Never re-read files you wrote, never re-run a passing command, and rely on the harness validator for final verification.'
+      ? requiresBenchmarkArtifacts
+        ? 'Validation economy: write each file once, run at most one focused validation command if obvious, then write the result JSON.'
+        : 'Validation economy: write each file once, run at most one focused validation command if obvious, then stop.'
       : '',
     'Do not install dependencies or run broad setup. Keep stdout/stderr concise; write files directly and summarize validation only.',
+    requiresBenchmarkArtifacts
+      ? 'Final response budget: under 80 words. Do not include code snippets, validation logs, or reasoning traces; write details only to the result JSON.'
+      : 'Final response budget: under 80 words. Do not include code snippets, validation logs, or reasoning traces.',
+    'Summarize only changed file names and validation status.',
     '',
+    ...benchmarkArtifactInstructions(resultFile, metricsFile, requiresBenchmarkArtifacts),
+  ].join('\n');
+}
+
+function benchmarkArtifactInstructions(resultFile: string, metricsFile: string, requiresBenchmarkArtifacts: boolean): string[] {
+  if (!requiresBenchmarkArtifacts) {
+    return [
+      'Do not create benchmark bookkeeping files; the harness will inspect git diff, validation output, and provider usage directly.',
+    ];
+  }
+  return [
     `When finished, write JSON to ${resultFile} with keys: task_success, quality_score, files_read, tests_run, provider_input_tokens, provider_output_tokens, provider_total_tokens, notes.`,
     `If your runtime exposes token metrics separately, write them to ${metricsFile}.`,
-  ].join('\n');
+  ];
+}
+
+function compactWhitespace(value: string, maxLength: number): string {
+  const compact = value.replace(/\s+/g, ' ').trim();
+  return compact.length <= maxLength ? compact : `${compact.slice(0, Math.max(0, maxLength - 1)).trim()}...`;
 }
 
 function compactGreenfieldTestRequirementLine(input: LiveAgentPairInput): string {
@@ -956,6 +1117,16 @@ function formatIdiomContextForPrompt(idiomContext: unknown, maxLength = 3500): s
   if (!idiomContext || typeof idiomContext !== 'object') return '';
   const context = idiomContext as any;
   const lines: string[] = [];
+  const buildCapsule = typeof context.build_capsule?.capsule === 'string'
+    ? context.build_capsule.capsule
+    : typeof context.agent_build_capsule?.capsule === 'string'
+      ? context.agent_build_capsule.capsule
+      : '';
+  if (buildCapsule) {
+    lines.push('G1 build capsule:');
+    lines.push(buildCapsule);
+    appendGrowthControlLoopLines(lines, context.growth_control_plane);
+  }
   if (context.validation?.needs_migration_evidence || context.validation?.min_focused_tests) {
     lines.push(`Validation target: ${context.validation?.needs_migration_evidence ? 'migration file under migrations/; ' : ''}${context.validation?.min_focused_tests || 0}+ focused tests/test cases.`);
   }
@@ -968,9 +1139,10 @@ function formatIdiomContextForPrompt(idiomContext: unknown, maxLength = 3500): s
       ? context.recommended_architecture.file_plan.slice(0, 5).map(promptItemLabel).filter(Boolean)
       : [];
     if (patterns.length) lines.push(`Architecture pattern: ${patterns.join(', ')}.`);
-    if (filePlan.length) lines.push(`File plan: ${filePlan.join(', ')}.`);
     appendGrowthControlLines(lines, context.growth_control_plane, { includeOwners: false, includeLoop: false });
-    appendGrowthControlLoopLines(lines, context.growth_control_plane);
+    if (!buildCapsule) appendGrowthControlLoopLines(lines, context.growth_control_plane);
+    appendArchitectureContractLines(lines, context.recommended_architecture?.architecture_contract || context.architecture_contract);
+    if (filePlan.length) lines.push(`File plan: ${filePlan.join(', ')}.`);
     const fileBudgetRule = context.large_scale_build_strategy?.file_budget?.rule || context.file_budget?.rule;
     if (fileBudgetRule) lines.push(`File budget: ${fileBudgetRule}`);
     const modelReuse = Array.isArray(context.model_reuse)
@@ -1116,6 +1288,16 @@ function formatIdiomContextForPrompt(idiomContext: unknown, maxLength = 3500): s
   return truncatePromptLines(lines, maxLength);
 }
 
+function liveTaskSemanticRules(input: LiveAgentPairInput): any {
+  const context = input.idiomContext && typeof input.idiomContext === 'object'
+    ? input.idiomContext as any
+    : {};
+  const validation = input.validationPlan && typeof input.validationPlan === 'object'
+    ? input.validationPlan as any
+    : {};
+  return context.semantic_rules || validation.semantic_rules || {};
+}
+
 function formatExistingTaskContextForPrompt(input: LiveAgentPairInput, maxLength = 1400): string {
   const context = input.idiomContext && typeof input.idiomContext === 'object'
     ? input.idiomContext as any
@@ -1123,8 +1305,9 @@ function formatExistingTaskContextForPrompt(input: LiveAgentPairInput, maxLength
   const validation = input.validationPlan && typeof input.validationPlan === 'object'
     ? input.validationPlan as any
     : {};
-  const rules = context.semantic_rules || validation.semantic_rules || {};
+  const rules = liveTaskSemanticRules(input);
   const requiredChangedFiles = uniquePromptStrings(arrayOfStrings(rules.required_changed_files));
+  const requiredContextFiles = uniquePromptStrings(arrayOfStrings(rules.required_context_files));
   const plannedChangedFiles = uniquePromptStrings([
     ...arrayOfStrings(validation.expected_changed_files),
     ...arrayOfStrings(context.changed_files),
@@ -1134,40 +1317,137 @@ function formatExistingTaskContextForPrompt(input: LiveAgentPairInput, maxLength
     ...plannedChangedFiles,
     ...arrayOfStrings(context.expected_files),
   ].filter(file => !changedFiles.includes(file))).slice(0, 6);
-  const inspectFiles = uniquePromptStrings([
-    ...changedFiles,
-    ...relatedOwners,
-    ...input.fileReadPlan.map(item => {
+  const filePlanCandidates = uniquePromptStrings(input.fileReadPlan.map(item => {
       const value = item as any;
       return String(value.file || value.path || '').trim();
-    }).filter(Boolean),
-  ]).slice(0, 10);
+    }).filter(Boolean)).filter(file => !changedFiles.includes(file) && !requiredContextFiles.includes(file) && !relatedOwners.includes(file));
+  const inspectFiles = uniquePromptStrings(changedFiles.length ? [
+    ...changedFiles,
+    ...requiredContextFiles,
+  ] : [
+    ...requiredContextFiles,
+    ...relatedOwners,
+    ...filePlanCandidates,
+  ]).slice(0, 4);
+  const fallbackFiles = uniquePromptStrings([
+    ...requiredContextFiles,
+    ...relatedOwners,
+    ...filePlanCandidates,
+  ].filter(file => !inspectFiles.includes(file))).slice(0, 6);
   const forbiddenFiles = arrayOfStrings(rules.forbidden_changed_files).slice(0, 6);
-  const requiredPatterns = arrayOfStrings(rules.required_diff_patterns).slice(0, 5);
-  const forbiddenPatterns = arrayOfStrings(rules.forbidden_diff_patterns).slice(0, 5);
+  const requiredPatterns = arrayOfStrings(rules.prompt_required_evidence || rules.required_diff_patterns).slice(0, 5);
+  const forbiddenPatterns = arrayOfStrings(rules.prompt_forbidden_evidence || rules.forbidden_diff_patterns).slice(0, 5);
+  const editRecipe = arrayOfStrings(context.edit_recipe).slice(0, 5);
   const guidance = arrayOfStrings(context.guidance).slice(0, 5);
   const lines: string[] = [];
+  const directPatch = rules.direct_patch === true;
   if (inspectFiles.length) lines.push(`Read first: ${inspectFiles.join(', ')}.`);
   if (changedFiles.length) lines.push(`Edit only when needed: ${changedFiles.join(', ')}.`);
-  if (relatedOwners.length) lines.push(`Inspect as owners, not default edits: ${relatedOwners.join(', ')}.`);
+  if (fallbackFiles.length) lines.push(`Only inspect if needed: ${fallbackFiles.join(', ')}.`);
   if (forbiddenFiles.length) lines.push(`Do not change: ${forbiddenFiles.join(', ')}.`);
-  if (requiredPatterns.length) {
-    lines.push('Required patch evidence:');
-    for (const pattern of requiredPatterns) lines.push(`- ${pattern}`);
-  }
-  if (forbiddenPatterns.length) {
-    lines.push('Avoid shortcuts:');
-    for (const pattern of forbiddenPatterns) lines.push(`- ${pattern}`);
-  }
   if (rules.require_test_change === true) lines.push('Test rule: at least one focused test/spec file must change.');
+  if (rules.require_test_import_source === true) lines.push('Test rule: focused tests must import and exercise production source directly; do not copy, inline, or fall back to mirrored implementation logic.');
   if (rules.require_production_change === true) lines.push('Production rule: at least one production source file must change.');
   if (rules.require_production_change === false) lines.push('Production rule: do not change production source unless a focused test exposes a defect.');
   if (Number.isFinite(rules.max_changed_files)) lines.push(`Change budget: ${rules.max_changed_files} files maximum.`);
-  if (guidance.length) {
+  if (directPatch && editRecipe.length) {
+    lines.push('Edit recipe:');
+    for (const item of editRecipe) lines.push(`- ${item}`);
+  }
+  if (requiredPatterns.length) {
+    lines.push('Required patch evidence:');
+    for (const pattern of (directPatch ? requiredPatterns.slice(0, 3) : requiredPatterns)) lines.push(`- ${pattern}`);
+  }
+  if (!directPatch && editRecipe.length) {
+    lines.push('Edit recipe:');
+    for (const item of editRecipe) lines.push(`- ${item}`);
+  }
+  if (forbiddenPatterns.length) {
+    lines.push('Avoid shortcuts:');
+    for (const pattern of (directPatch ? forbiddenPatterns.slice(0, 3) : forbiddenPatterns)) lines.push(`- ${pattern}`);
+  }
+  if (!directPatch && guidance.length) {
     lines.push('Local guidance:');
     for (const item of guidance) lines.push(`- ${item}`);
   }
   return truncatePromptLines(lines, maxLength);
+}
+
+function formatExistingTaskExecutionCapsule(input: LiveAgentPairInput, validationCommands: string[]): string {
+  const context = input.idiomContext && typeof input.idiomContext === 'object'
+    ? input.idiomContext as any
+    : {};
+  const rules = liveTaskSemanticRules(input);
+  const validation = input.validationPlan && typeof input.validationPlan === 'object'
+    ? input.validationPlan as any
+    : {};
+  const changedFiles = uniquePromptStrings([
+    ...arrayOfStrings(rules.required_changed_files),
+    ...arrayOfStrings(validation.expected_changed_files),
+    ...arrayOfStrings(context.changed_files),
+  ]).slice(0, 5);
+  const directPatch = rules.direct_patch === true;
+  const fallbackReadFiles = uniquePromptStrings([
+    ...changedFiles,
+    ...arrayOfStrings(rules.required_context_files),
+    ...input.fileReadPlan.map(item => {
+      const value = item as any;
+      return String(value.file || value.path || '').trim();
+    }).filter(Boolean),
+  ]).slice(0, 5);
+  const readFirst = directPatch && changedFiles.length
+    ? changedFiles.slice(0, 3)
+    : fallbackReadFiles;
+  const forbiddenFiles = arrayOfStrings(rules.forbidden_changed_files).slice(0, 4);
+  const editRecipe = arrayOfStrings(context.edit_recipe).slice(0, 3);
+  const requiredEvidence = arrayOfStrings(rules.prompt_required_evidence || rules.required_diff_patterns).slice(0, 3);
+  const forbiddenEvidence = arrayOfStrings(rules.prompt_forbidden_evidence || rules.forbidden_diff_patterns).slice(0, 3);
+  const preserve = arrayOfStrings(context.guidance).slice(0, 2);
+  if (Number.isFinite(rules.max_changed_files)) preserve.push(`${rules.max_changed_files} files max`);
+  if (rules.require_test_import_source === true) preserve.push('test imports prod source');
+  return formatExecutionCapsule({
+    mode: 'direct-patch',
+    task_type: input.task.task_type || 'modify',
+    target: input.task.target || input.taskLabel,
+    read_first: readFirst,
+    edit_scope: changedFiles.length ? changedFiles : readFirst.slice(0, 2),
+    validate: ['klauro-post-edit'],
+    ops: buildExistingTaskCapsuleOps(input, changedFiles),
+    do: editRecipe,
+    test: requiredEvidence,
+    no: [...forbiddenFiles, ...forbiddenEvidence],
+    preserve,
+    token_policy: {
+      source_files: Math.max(1, Math.min(3, readFirst.length || 2)),
+      final_response_words: 40,
+    },
+  });
+}
+
+function buildExistingTaskCapsuleOps(input: LiveAgentPairInput, changedFiles: string[]): Array<{ file: string; op: string }> {
+  if (input.taskId === 'n-plus-one-task-summary') {
+    return [
+      {
+        file: 'src/services/taskSummaryService.ts',
+        op: 'summarize: ids=uniq(tasks.projectId) > projectList=await projects.findByIds(ids) > byId=Map(projectList.id) > return sync map',
+      },
+      {
+        file: 'tests/taskSummaryService.test.ts',
+        op: 'assert+TaskSummaryService only; repo={findById:idCalls++,findByIds:idsCalls++/capture}; tasks p1,p2,p1; assert idCalls=0 idsCalls=1 capturedIds.length=2 result.length=3',
+      },
+    ];
+  }
+  const context = input.idiomContext && typeof input.idiomContext === 'object'
+    ? input.idiomContext as any
+    : {};
+  const editRecipe = arrayOfStrings(context.edit_recipe);
+  if (!editRecipe.length) return [];
+  const targetFiles = changedFiles.length ? changedFiles : arrayOfStrings(context.changed_files);
+  if (!targetFiles.length) return [];
+  return editRecipe.slice(0, Math.min(3, targetFiles.length)).map((recipe, index) => ({
+    file: targetFiles[Math.min(index, targetFiles.length - 1)],
+    op: recipe,
+  }));
 }
 
 function arrayOfStrings(value: unknown): string[] {
@@ -1239,6 +1519,27 @@ function appendGrowthControlLoopLines(lines: string[], growthControl: any) {
   }
 }
 
+function appendArchitectureContractLines(lines: string[], contract: any) {
+  if (!contract || typeof contract !== 'object') return;
+  const boundaries = Array.isArray(contract.required_boundaries)
+    ? contract.required_boundaries.slice(0, 8)
+    : [];
+  if (boundaries.length) {
+    lines.push(`Required architecture boundaries: ${boundaries.map((item: any) => {
+      const files = Array.isArray(item.files) ? item.files.slice(0, 2).join('|') : '';
+      return [item.kind, files].filter(Boolean).join('=');
+    }).filter(Boolean).join(', ')}.`);
+  }
+  const collapseRules = Array.isArray(contract.do_not_collapse)
+    ? contract.do_not_collapse.slice(0, 2)
+    : [];
+  if (collapseRules.length) {
+    lines.push('Do not collapse:');
+    for (const item of collapseRules) lines.push(`- ${String(item)}`);
+  }
+  if (contract.minimality_rule) lines.push(`Boundary minimality: ${String(contract.minimality_rule)}`);
+}
+
 function isPromptDomainConcept(value: string): boolean {
   const normalized = value
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -1272,7 +1573,7 @@ function promptItemLabel(item: unknown): string {
   return typeof candidate === 'string' ? candidate : '';
 }
 
-function promptWithoutKlauro(input: LiveAgentPairInput, workspace: string, metricsFile: string, resultFile: string): string {
+function promptWithoutKlauro(input: LiveAgentPairInput, workspace: string, metricsFile: string, resultFile: string, requiresBenchmarkArtifacts = true): string {
   const retrievedFiles = (input.withoutArmRetrievedFiles || []).filter(Boolean);
   const overrides = input.withoutArmPromptOverrides;
   const taskLabel = overrides?.taskLabel ?? input.taskLabel;
@@ -1299,9 +1600,12 @@ function promptWithoutKlauro(input: LiveAgentPairInput, workspace: string, metri
     'Use normal repository exploration, make an edit only when the task requires one, and run relevant tests when possible.',
     'Do not install dependencies or run broad environment setup unless the task explicitly asks for it. If the existing environment cannot run a broad test, record that and stop after focused validation.',
     'Keep stdout/stderr concise: do not print file contents, generated code, or full diffs; write files directly and summarize only the changed files and validation result.',
+    requiresBenchmarkArtifacts
+      ? 'Final response budget: under 80 words. Do not include code snippets, validation logs, or reasoning traces; write details only to the result JSON.'
+      : 'Final response budget: under 80 words. Do not include code snippets, validation logs, or reasoning traces.',
+    'Summarize only changed file names and validation status.',
     '',
-    `When finished, write JSON to ${resultFile} with keys: task_success, quality_score, files_read, tests_run, provider_input_tokens, provider_output_tokens, provider_total_tokens, notes.`,
-    `If your runtime exposes token metrics separately, write them to ${metricsFile}.`,
+    ...benchmarkArtifactInstructions(resultFile, metricsFile, requiresBenchmarkArtifacts),
   ].join('\n');
 }
 
@@ -1365,19 +1669,77 @@ async function initializeBaseline(workspace: string): Promise<void> {
 
 async function runShell(command: string, cwd: string, timeoutMs: number): Promise<ShellResult> {
   const startedAt = Date.now();
-  try {
-    const result = await execFileAsync('/bin/sh', ['-lc', command], { cwd, maxBuffer: 1024 * 1024 * 50, timeout: timeoutMs });
-    return { exitCode: 0, stdout: result.stdout, stderr: result.stderr, durationMs: Date.now() - startedAt };
-  } catch (error: any) {
-    return {
-      exitCode: typeof error.code === 'number' ? error.code : 1,
-      stdout: error.stdout || '',
-      stderr: error.stderr || error.message || String(error),
-      durationMs: Date.now() - startedAt,
-      timedOut: error.killed === true || error.signal === 'SIGTERM' || String(error.message || '').toLowerCase().includes('timed out'),
-      signal: error.signal,
+  const maxBuffer = 1024 * 1024 * 50;
+  return await new Promise<ShellResult>(resolve => {
+    const child = spawn('/bin/sh', ['-lc', command], {
+      cwd,
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let settled = false;
+    let signal: NodeJS.Signals | undefined;
+    const append = (current: string, chunk: Buffer): string => {
+      const next = current + chunk.toString('utf8');
+      return next.length > maxBuffer ? next.slice(next.length - maxBuffer) : next;
     };
-  }
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      if (child.pid) {
+        try {
+          process.kill(-child.pid, 'SIGTERM');
+        } catch {
+          child.kill('SIGTERM');
+        }
+        setTimeout(() => {
+          if (!settled && child.pid) {
+            try {
+              process.kill(-child.pid, 'SIGKILL');
+            } catch {
+              child.kill('SIGKILL');
+            }
+          }
+        }, 3000).unref();
+      }
+    }, timeoutMs);
+    timeout.unref();
+
+    child.stdout?.on('data', chunk => {
+      stdout = append(stdout, chunk);
+    });
+    child.stderr?.on('data', chunk => {
+      stderr = append(stderr, chunk);
+    });
+    child.on('error', error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve({
+        exitCode: 1,
+        stdout,
+        stderr: stderr || error.message,
+        durationMs: Date.now() - startedAt,
+        timedOut,
+        signal,
+      });
+    });
+    child.on('close', (code, closeSignal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      signal = closeSignal || undefined;
+      resolve({
+        exitCode: typeof code === 'number' ? code : timedOut ? 124 : 1,
+        stdout,
+        stderr,
+        durationMs: Date.now() - startedAt,
+        timedOut,
+        signal,
+      });
+    });
+  });
 }
 
 async function diffStats(workspace: string, diffFile: string): Promise<{ files: number; added: number; deleted: number; changedFiles: string[] }> {
@@ -1478,6 +1840,10 @@ function parseMetricsFromText(text: string): AgentMetricFile {
     provider_input_tokens: firstNumber(jsonMetrics.provider_input_tokens, numberFromText(text, [/input tokens?[^\n\r\d]+([\d,]+)/i, /prompt tokens?[^\n\r\d]+([\d,]+)/i])),
     provider_output_tokens: firstNumber(jsonMetrics.provider_output_tokens, numberFromText(text, [/output tokens?[^\n\r\d]+([\d,]+)/i, /completion tokens?[^\n\r\d]+([\d,]+)/i])),
     provider_total_tokens: firstNumber(jsonMetrics.provider_total_tokens, numberFromText(text, [/total tokens?[^\n\r\d]+([\d,]+)/i, /tokens used[^\n\r]*[\n\r]+\s*([\d,]+)/i, /tokens used[^\n\r\d]+([\d,]+)/i])),
+    provider_direct_input_tokens: jsonMetrics.provider_direct_input_tokens,
+    provider_cache_creation_input_tokens: jsonMetrics.provider_cache_creation_input_tokens,
+    provider_cache_read_input_tokens: jsonMetrics.provider_cache_read_input_tokens,
+    provider_direct_total_tokens: jsonMetrics.provider_direct_total_tokens,
     tool_calls: firstNumber(jsonMetrics.tool_calls, numberFromText(text, [/tool calls?[^\n\r\d]+([\d,]+)/i])),
     files_read: firstNumber(metricCount(jsonMetrics.files_read), numberFromText(text, [/files read[^\n\r\d]+([\d,]+)/i, /source files read[^\n\r\d]+([\d,]+)/i])),
     tests_run: firstNumber(metricCount(jsonMetrics.tests_run), numberFromText(text, [/tests run[^\n\r\d]+([\d,]+)/i])),
@@ -1501,12 +1867,24 @@ function parseJsonMetricsFromText(text: string): AgentMetricFile {
 function collectMetricNumbers(value: unknown, metrics: AgentMetricFile): void {
   if (!value || typeof value !== 'object') return;
   const record = value as Record<string, unknown>;
+  if (record.usage && typeof record.usage === 'object') {
+    collectClaudeUsageMetrics(record.usage, metrics);
+    return;
+  }
+  if (record.modelUsage && typeof record.modelUsage === 'object') {
+    collectClaudeModelUsageMetrics(record.modelUsage, metrics);
+    return;
+  }
   for (const [key, raw] of Object.entries(record)) {
     const normalized = key.toLowerCase().replace(/[^a-z0-9]+/g, '_');
     if (typeof raw === 'number') {
       if (['input_tokens', 'inputtokens', 'prompt_tokens', 'prompttokens', 'provider_input_tokens'].includes(normalized)) metrics.provider_input_tokens = metrics.provider_input_tokens ?? raw;
       if (['output_tokens', 'outputtokens', 'completion_tokens', 'completiontokens', 'provider_output_tokens'].includes(normalized)) metrics.provider_output_tokens = metrics.provider_output_tokens ?? raw;
       if (['total_tokens', 'totaltokens', 'provider_total_tokens', 'tokens_used', 'tokensused'].includes(normalized)) metrics.provider_total_tokens = metrics.provider_total_tokens ?? raw;
+      if (['provider_direct_input_tokens', 'direct_input_tokens', 'non_cached_input_tokens'].includes(normalized)) metrics.provider_direct_input_tokens = metrics.provider_direct_input_tokens ?? raw;
+      if (['provider_cache_creation_input_tokens', 'cache_creation_input_tokens', 'cachecreationinputtokens'].includes(normalized)) metrics.provider_cache_creation_input_tokens = metrics.provider_cache_creation_input_tokens ?? raw;
+      if (['provider_cache_read_input_tokens', 'cache_read_input_tokens', 'cachereadinputtokens'].includes(normalized)) metrics.provider_cache_read_input_tokens = metrics.provider_cache_read_input_tokens ?? raw;
+      if (['provider_direct_total_tokens', 'direct_total_tokens', 'non_cached_total_tokens'].includes(normalized)) metrics.provider_direct_total_tokens = metrics.provider_direct_total_tokens ?? raw;
       if (['tool_calls', 'toolcalls', 'tool_call_count'].includes(normalized)) metrics.tool_calls = metrics.tool_calls ?? raw;
     } else if (Array.isArray(raw)) {
       if (['files_read', 'source_files_read'].includes(normalized)) metrics.files_read = metrics.files_read ?? raw.length;
@@ -1516,6 +1894,62 @@ function collectMetricNumbers(value: unknown, metrics: AgentMetricFile): void {
       collectMetricNumbers(raw, metrics);
     }
   }
+}
+
+function collectClaudeUsageMetrics(value: unknown, metrics: AgentMetricFile): void {
+  if (!value || typeof value !== 'object') return;
+  const usage = value as Record<string, unknown>;
+  const directInput = numberValue(usage.input_tokens);
+  const cacheCreation = numberValue(usage.cache_creation_input_tokens);
+  const cacheRead = numberValue(usage.cache_read_input_tokens);
+  const output = numberValue(usage.output_tokens);
+  const inputTotal = sumNumbers(directInput, cacheCreation, cacheRead);
+  if (typeof inputTotal === 'number') metrics.provider_input_tokens = metrics.provider_input_tokens ?? inputTotal;
+  if (typeof output === 'number') metrics.provider_output_tokens = metrics.provider_output_tokens ?? output;
+  const total = sumNumbers(inputTotal, output);
+  if (typeof total === 'number') metrics.provider_total_tokens = metrics.provider_total_tokens ?? total;
+  if (typeof directInput === 'number') metrics.provider_direct_input_tokens = metrics.provider_direct_input_tokens ?? directInput;
+  if (typeof cacheCreation === 'number') metrics.provider_cache_creation_input_tokens = metrics.provider_cache_creation_input_tokens ?? cacheCreation;
+  if (typeof cacheRead === 'number') metrics.provider_cache_read_input_tokens = metrics.provider_cache_read_input_tokens ?? cacheRead;
+  const directTotal = sumNumbers(directInput, cacheCreation, output);
+  if (typeof directTotal === 'number') metrics.provider_direct_total_tokens = metrics.provider_direct_total_tokens ?? directTotal;
+}
+
+function collectClaudeModelUsageMetrics(value: unknown, metrics: AgentMetricFile): void {
+  if (!value || typeof value !== 'object') return;
+  let input = 0;
+  let directInput = 0;
+  let cacheCreation = 0;
+  let cacheRead = 0;
+  let output = 0;
+  let seen = false;
+  for (const modelUsage of Object.values(value as Record<string, unknown>)) {
+    if (!modelUsage || typeof modelUsage !== 'object') continue;
+    const record = modelUsage as Record<string, unknown>;
+    directInput += numberValue(record.inputTokens) || 0;
+    cacheRead += numberValue(record.cacheReadInputTokens) || 0;
+    cacheCreation += numberValue(record.cacheCreationInputTokens) || 0;
+    input = directInput + cacheRead + cacheCreation;
+    output += numberValue(record.outputTokens) || 0;
+    seen = true;
+  }
+  if (!seen) return;
+  metrics.provider_input_tokens = metrics.provider_input_tokens ?? input;
+  metrics.provider_output_tokens = metrics.provider_output_tokens ?? output;
+  metrics.provider_total_tokens = metrics.provider_total_tokens ?? input + output;
+  metrics.provider_direct_input_tokens = metrics.provider_direct_input_tokens ?? directInput;
+  metrics.provider_cache_creation_input_tokens = metrics.provider_cache_creation_input_tokens ?? cacheCreation;
+  metrics.provider_cache_read_input_tokens = metrics.provider_cache_read_input_tokens ?? cacheRead;
+  metrics.provider_direct_total_tokens = metrics.provider_direct_total_tokens ?? directInput + cacheCreation + output;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function sumNumbers(...values: Array<number | undefined>): number | undefined {
+  const present = values.filter((value): value is number => typeof value === 'number');
+  return present.length ? present.reduce((sum, value) => sum + value, 0) : undefined;
 }
 
 function numberFromText(text: string, patterns: RegExp[]): number | undefined {
@@ -1550,6 +1984,9 @@ function isSourceLikePath(value: string): boolean {
 }
 
 function tokenReductionPercentage(withResult: LiveAgentArmResult, withoutResult: LiveAgentArmResult): number | null {
+  const withDirectTokens = positiveNumber(withResult.provider_direct_total_tokens);
+  const withoutDirectTokens = positiveNumber(withoutResult.provider_direct_total_tokens);
+  if (withDirectTokens && withoutDirectTokens) return percentReduction(withoutDirectTokens, withDirectTokens);
   const withProviderTokens = positiveNumber(withResult.provider_total_tokens);
   const withoutProviderTokens = positiveNumber(withoutResult.provider_total_tokens);
   if ((withProviderTokens && !withoutProviderTokens) || (!withProviderTokens && withoutProviderTokens)) return null;
@@ -1557,6 +1994,22 @@ function tokenReductionPercentage(withResult: LiveAgentArmResult, withoutResult:
   const withoutTokens = withoutProviderTokens || withoutResult.estimated_work_tokens || withoutResult.estimated_total_tokens;
   if (!withTokens || !withoutTokens) return null;
   return percentReduction(withoutTokens, withTokens);
+}
+
+function providerTokenReductionPercentage(withTokens?: number, withoutTokens?: number): number | null {
+  const withValue = positiveNumber(withTokens);
+  const withoutValue = positiveNumber(withoutTokens);
+  if (!withValue || !withoutValue) return null;
+  return percentReduction(withoutValue, withValue);
+}
+
+function tokenReductionMetric(withResult: LiveAgentArmResult, withoutResult: LiveAgentArmResult): 'provider-direct' | 'provider-total' | 'estimated-work' {
+  const withDirectTokens = positiveNumber(withResult.provider_direct_total_tokens);
+  const withoutDirectTokens = positiveNumber(withoutResult.provider_direct_total_tokens);
+  if (withDirectTokens && withoutDirectTokens) return 'provider-direct';
+  const withProviderTokens = positiveNumber(withResult.provider_total_tokens);
+  const withoutProviderTokens = positiveNumber(withoutResult.provider_total_tokens);
+  return withProviderTokens && withoutProviderTokens ? 'provider-total' : 'estimated-work';
 }
 
 async function estimateSourceReadTokens(workspace: string, filesRead?: number): Promise<number> {

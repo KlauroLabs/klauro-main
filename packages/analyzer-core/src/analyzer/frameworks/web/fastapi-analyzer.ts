@@ -946,6 +946,15 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
       if (!functionName) continue;
 
       const routeInfo = this.extractRouteInfo(content, 0, functionName);
+      const functionDependencies = this.extractFunctionDependencies(lines, handlerLine - 1);
+      const dependencies = [...new Set([
+        ...(routeInfo.dependencies || []),
+        ...functionDependencies,
+      ])];
+      const security = [...new Set([
+        ...(routeInfo.security || []),
+        ...dependencies.filter(dependency => this.isSecurityDependency(dependency)),
+      ])];
       const routeParams = this.extractPathParameters(routePath);
 
       routes.push({
@@ -959,15 +968,47 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
         summary: routeInfo.summary,
         description: routeInfo.description,
         tags: routeInfo.tags,
-        dependencies: routeInfo.dependencies,
+        dependencies,
         parameters: [...routeParams, ...routeInfo.parameters],
         requestBody: routeInfo.requestBody,
         responses: routeInfo.responses,
-        security: routeInfo.security
+        security
       });
     }
 
     return routes;
+  }
+
+  private extractFunctionDependencies(lines: string[], functionLineIndex: number): string[] {
+    const dependencies: string[] = [];
+    const signatureLines: string[] = [];
+    let parenDepth = 0;
+
+    for (let i = functionLineIndex; i < Math.min(lines.length, functionLineIndex + 25); i++) {
+      const line = lines[i];
+      signatureLines.push(line);
+      for (const char of line) {
+        if (char === '(') parenDepth++;
+        else if (char === ')') parenDepth--;
+      }
+      if (parenDepth <= 0 && line.trim().endsWith(':')) break;
+    }
+
+    const signature = signatureLines.join('\n');
+    const dependsPattern = /Depends\s*\(\s*([A-Za-z_][A-Za-z0-9_\.]*)\s*\)/g;
+    let match;
+    while ((match = dependsPattern.exec(signature)) !== null) {
+      dependencies.push(match[1].split('.').pop() || match[1]);
+    }
+    return dependencies;
+  }
+
+  private isSecurityDependency(dependency: string): boolean {
+    const normalized = dependency
+      .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+      .toLowerCase();
+    return /\b(auth|authenticate|authenticated|authorization|bearer|jwt|oauth|oidc|sso|token|api_key|apikey|current_user|require_user|require_login|require_session|verify_user|verify_token)\b/.test(normalized) ||
+      /^get_current_(user|account|tenant|organization|organisation|session)$/.test(normalized);
   }
 
   private findHandlerEndLine(lines: string[], startLine: number, functionIndent: number): number {

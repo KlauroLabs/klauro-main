@@ -27,7 +27,29 @@ export class SocketIOAnalyzer extends BaseAnalyzer {
         ...packageJson.devDependencies
       };
 
-      return 'socket.io' in deps || 'socket.io-client' in deps;
+      if (!('socket.io' in deps) && !('socket.io-client' in deps)) return false;
+      if ('@nestjs/websockets' in deps || '@nestjs/platform-socket.io' in deps) return false;
+
+      const sourceFiles = await glob('**/*.{ts,js,tsx,jsx}', {
+        cwd: projectPath,
+        ignore: [
+          ...this.getIgnorePatterns({ projectPath }),
+          '**/*.test.*',
+          '**/*.spec.*',
+          '**/__tests__/**'
+        ],
+        absolute: false,
+        nodir: true
+      });
+
+      for (const relativePath of sourceFiles) {
+        const content = await fs.readFile(path.join(projectPath, relativePath), 'utf-8');
+        if (SOCKET_IO_IMPORT.test(content)) {
+          return true;
+        }
+      }
+
+      return false;
     } catch {
       return false;
     }

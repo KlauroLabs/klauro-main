@@ -214,6 +214,14 @@ export abstract class BaseAnalyzer {
       '**/examples/**',
       'samples/**',
       '**/samples/**',
+      'fixtures/**',
+      '**/fixtures/**',
+      '__fixtures__/**',
+      '**/__fixtures__/**',
+      'testdata/**',
+      '**/testdata/**',
+      'cas-tests/**',
+      '**/cas-tests/**',
       'venv/**',
       '**/venv/**',
       'venv*/**',
@@ -224,8 +232,8 @@ export abstract class BaseAnalyzer {
       '**/.venv*/**',
       'env/**',
       '**/env/**',
-      'env*/**',
-      '**/env*/**',
+      'env[0-9]*/**',
+      '**/env[0-9]*/**',
       'site-packages/**',
       '**/site-packages/**',
       '.tox/**',
@@ -288,6 +296,11 @@ export abstract class BaseAnalyzer {
       '**/Generated/**',
       '**/generated/**'
     ];
+
+    if (process.env.KLAURO_AGENT_FAST_EXCLUDE_LEGACY === 'true' ||
+      process.env.KLAURO_AGENT_FAST_EXCLUDE_LEGACY === '1') {
+      defaultIgnore.push('legacy/**', 'legacy/**/*', '**/legacy/**', '**/legacy/**/*');
+    }
 
     if (context.filters && Array.isArray(context.filters)) {
       return [...defaultIgnore, ...context.filters];

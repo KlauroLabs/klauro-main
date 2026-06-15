@@ -73,6 +73,10 @@ const LIFECYCLE_NAMES = new Set([
 ]);
 const UTILITY_NAME_PATTERN = /^(get|set|is|has|to|from|on|handle|format|parse|find|create(?:Empty)?Default)[A-Z_]/;
 const HOOK_USAGE_PATTERN = /^use[A-Z0-9].*|^use[A-Z0-9].*\susage$|\susage$/;
+const LOWERCASE_UTILITY_NAMES = new Set([
+  'find', 'parse', 'format', 'render', 'setup', 'init', 'handle', 'request', 'response',
+  'data', 'item', 'items', 'state', 'status', 'config', 'options', 'props', 'context',
+]);
 
 function isNoiseTerminalName(raw: string): boolean {
   const name = (raw || '').trim();
@@ -89,8 +93,10 @@ function isNoiseTerminalName(raw: string): boolean {
   if (HTTP_VERB_NAMES.has(lower) || LIFECYCLE_NAMES.has(lower)) return true;
   if (HOOK_USAGE_PATTERN.test(name)) return true;
   if (UTILITY_NAME_PATTERN.test(name)) return true;
-  // Bare lowercase single tokens (find, toString-style camel utilities).
-  if (/^[a-z][a-zA-Z0-9]*$/.test(name) && name.length <= 12) return true;
+  // Bare lowercase utility/framework words are noise, but lowercase domain
+  // nouns from Python/Rails/table-style extraction (order, invoice, portfolio)
+  // must remain eligible terminal evidence.
+  if (LOWERCASE_UTILITY_NAMES.has(lower)) return true;
   return false;
 }
 

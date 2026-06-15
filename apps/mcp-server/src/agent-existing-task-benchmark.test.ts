@@ -29,7 +29,11 @@ test('seeded existing-task benchmark covers non-greenfield engineering families'
   assert.ok(report.summary.average_score_delta > 0);
   assert.ok(report.summary.average_file_reduction_percentage > 0);
   assert.ok(report.summary.average_token_reduction_percentage > 0);
+  assert.ok(report.summary.klauro_vs_index_retrieval_token_reduction_percentage > 0);
   assert.equal(report.summary.live_scenarios, 0);
+  const producerConsumer = report.scenarios.find(scenario => scenario.id === 'producer-consumer-contract-change');
+  assert.equal(producerConsumer?.with_klauro.file_hit_rate, 100);
+  assert.ok((producerConsumer?.score || 0) >= 90);
   assert.deepEqual(
     new Set(report.scenarios.map(scenario => scenario.family)),
     new Set([

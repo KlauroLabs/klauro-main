@@ -38,6 +38,8 @@ import * as greenfieldBuildSession from './greenfield-build-session';
 import * as descriptionEnrichment from './description-enrichment';
 import * as runtimeSimulation from './runtime-simulation';
 import * as telemetryIngestion from './telemetry-ingestion';
+import { getAnalysisFocusProfiles, withAnalysisFocus, type AnalysisFocus } from './analysis-focus';
+import { getDescriptionEnrichmentTargets } from './analysis-usefulness-review';
 import { semanticSearch } from './semantic-search';
 import { pruneKlauroStorage } from './storage-maintenance';
 import { RESPONSE_BUDGET_BYTES, boundToolPayload, boundToolText, serializeToolResponse } from './response-budget';
@@ -48,7 +50,7 @@ const SERVER_INSTRUCTIONS = [
   'In analyzed repositories, call resolve_agent_analysis before reading files;',
   'it reports whether an analysis exists for the path.',
   'When an analysis exists, get_agent_start_context replaces exploratory reading.',
-  'Call get_agent_work_packet before edits and validate_agent_change after.',
+  'Call get_agent_work_packet with response_profile="capsule-only" before edits; read K15 context, execute K5, then validate_agent_change after.',
   'If no analysis exists or a tool errors, fall back to direct file reading.',
 ].join(' ');
 
@@ -173,7 +175,7 @@ function enforceResponseBudget(
 }
 
 const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
-  { label: 'Analysis management', tools: ['analyze_codebase', 'generate_element_description', 'get_element_description', 'get_analysis_phases', 'run_analysis_layer', 'initialize_klauro_project', 'get_klauro_project_config', 'get_upload_manifest', 'get_github_import_plan', 'analyze_codebase_remote', 'sync_codebase_remote', 'list_analyses', 'validate_cas_contract', 'get_storage_health', 'get_storage_maintenance_report', 'prune_storage_artifacts', 'preview_codebase_iteration', 'get_greenfield_architecture_guidance', 'get_greenfield_build_packet', 'preview_greenfield_codebase', 'get_preview_analysis', 'compare_analysis_iterations', 'get_analysis_freshness', 'get_test_discovery_evidence', 'save_cas_golden_snapshot', 'compare_cas_golden_snapshot'] },
+  { label: 'Analysis management', tools: ['analyze_codebase', 'get_analysis_focus_profiles', 'get_description_enrichment_targets', 'generate_element_description', 'get_element_description', 'get_analysis_phases', 'run_analysis_layer', 'initialize_klauro_project', 'get_klauro_project_config', 'get_upload_manifest', 'get_github_import_plan', 'analyze_codebase_remote', 'sync_codebase_remote', 'list_analyses', 'validate_cas_contract', 'get_storage_health', 'get_storage_maintenance_report', 'prune_storage_artifacts', 'preview_codebase_iteration', 'get_greenfield_architecture_guidance', 'get_greenfield_build_packet', 'preview_greenfield_codebase', 'get_preview_analysis', 'compare_analysis_iterations', 'get_analysis_freshness', 'get_test_discovery_evidence', 'save_cas_golden_snapshot', 'compare_cas_golden_snapshot'] },
   { label: 'System understanding and agent workflow', tools: ['get_summary', 'get_system_overview', 'get_architecture_context', 'list_answer_packs', 'get_mcp_demo_flow', 'get_cross_repo_links', 'save_workspace_graph', 'get_workspace_graph', 'list_workspace_graphs', 'verify_workspace_link', 'get_agent_bootstrap', 'get_agent_project_map', 'get_agent_doctor', 'get_agent_default_config', 'install_agent_default_config', 'get_capability_memory', 'get_idiom_aware_work_packet', 'open_agent_workbench', 'preflight_agent_change', 'get_codebase_agent_rules', 'explain_change_shape', 'evaluate_analysis_truth', 'get_semantic_map', 'get_framework_depth_report', 'get_integration_depth_report', 'get_cross_repo_contracts', 'get_runtime_instrumentation_plan', 'get_runtime_event_contract', 'get_runtime_sdk_package', 'evaluate_agent_task_proof', 'evaluate_agent_readiness', 'run_agentic_benchmark', 'get_agentic_benchmark_report', 'get_agent_performance_proof', 'run_agent_quality_benchmark', 'run_agent_idiom_benchmark', 'run_machine_agent_proof', 'run_incremental_value_benchmark', 'get_patterns', 'get_codebase_idioms', 'get_idiom_examples', 'validate_codebase_idioms', 'get_pattern_instances', 'get_perspectives'] },
   { label: 'Navigation and search', tools: ['semantic_search', 'get_embedding_status', 'get_node', 'get_file_nodes', 'get_level'] },
   { label: 'Entry points, routes, and call graph', tools: ['get_entry_points', 'get_exit_points', 'get_route_table', 'get_external_services', 'get_callers', 'get_callees', 'get_call_chain', 'get_method_calls'] },
@@ -313,57 +315,6 @@ function runtimeObservationId(): string {
   return `runtime_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-type AnalysisFocus = 'agent-fast' | 'ui-overview' | 'deep-context' | 'full';
-
-async function withAnalysisFocus<T>(focus: AnalysisFocus | undefined, fn: () => Promise<T>): Promise<T> {
-  const previous = {
-    interpretation: process.env.KLAURO_AI_INTERPRETATION,
-    interpretationForce: process.env.KLAURO_AI_INTERPRETATION_FORCE,
-    deterministicKeep: process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP,
-    interpretationBudget: process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS,
-    elementBudget: process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS,
-    elementBatchSize: process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE,
-    elements: process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS,
-    embeddings: process.env.KLAURO_EMBEDDING_ENABLED,
-  };
-
-  try {
-    if (focus === 'agent-fast') {
-      process.env.KLAURO_AI_INTERPRETATION = 'false';
-      process.env.KLAURO_AI_INTERPRETATION_FORCE = 'false';
-      process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = 'false';
-      process.env.KLAURO_EMBEDDING_ENABLED = 'false';
-    } else if (focus === 'ui-overview') {
-      process.env.KLAURO_AI_INTERPRETATION = process.env.KLAURO_AI_INTERPRETATION || 'true';
-      process.env.KLAURO_AI_INTERPRETATION_FORCE = process.env.KLAURO_AI_INTERPRETATION_FORCE || 'true';
-      process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP = 'false';
-      process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS = process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS || '45000';
-      process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS || '90000';
-      process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE || '4';
-      process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS || 'true';
-      process.env.KLAURO_EMBEDDING_ENABLED = 'false';
-    } else if (focus === 'deep-context') {
-      process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS || 'false';
-    }
-
-    return await fn();
-  } finally {
-    restoreEnv('KLAURO_AI_INTERPRETATION', previous.interpretation);
-    restoreEnv('KLAURO_AI_INTERPRETATION_FORCE', previous.interpretationForce);
-    restoreEnv('KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP', previous.deterministicKeep);
-    restoreEnv('KLAURO_AI_INTERPRETATION_BUDGET_MS', previous.interpretationBudget);
-    restoreEnv('KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS', previous.elementBudget);
-    restoreEnv('KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE', previous.elementBatchSize);
-    restoreEnv('KLAURO_AI_ELEMENT_DESCRIPTIONS', previous.elements);
-    restoreEnv('KLAURO_EMBEDDING_ENABLED', previous.embeddings);
-  }
-}
-
-function restoreEnv(name: string, value: string | undefined): void {
-  if (value === undefined) delete process.env[name];
-  else process.env[name] = value;
-}
-
 function registerTools(server: McpServer) {
 
   // -- Analysis Management --
@@ -405,6 +356,43 @@ function registerTools(server: McpServer) {
   );
 
   server.registerTool(
+    'get_analysis_focus_profiles',
+    {
+      title: 'Get Analysis Focus Profiles',
+      description: 'Choose the cheapest useful Klauro analysis focus for a caller. Use before triggering analysis layers so coding agents default to agent-fast, UI flows request AI narrative only when needed, and deep-context work is explicit.',
+      inputSchema: {
+        trigger: z.enum(['mcp', 'cli', 'ui', 'inspector', 'manual-description', 'runtime', 'unknown']).optional().describe('Where the analysis request came from'),
+        task_type: z.string().optional().describe('Optional task hint such as modify, debug, review, trace, architecture audit, visual inspection, or description generation'),
+      } as any,
+    } as any,
+    async ({ trigger, task_type }: any) => withErrorHandling(async () => {
+      return json(getAnalysisFocusProfiles({ trigger, taskType: task_type }));
+    })
+  );
+
+  server.registerTool(
+    'get_description_enrichment_targets',
+    {
+      title: 'Get Description Enrichment Targets',
+      description: 'Return the exact system, capability, node, service, entity, and entry-point descriptions that need AI enrichment next, with suggested run_analysis_layer or generate_element_description arguments. Use when UI/drilldown text is deterministic, generic, inventory-like, missing, or failed validation.',
+      inputSchema: {
+        path: z.string().describe('Absolute path to the analyzed project directory'),
+        limit: z.number().optional().describe('Maximum targets to return'),
+      } as any,
+    } as any,
+    async ({ path, limit }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      const targets = getDescriptionEnrichmentTargets(cas, path);
+      return json({
+        analysis_id: cas.analysis_id,
+        path,
+        count: targets.length,
+        targets: typeof limit === 'number' ? targets.slice(0, Math.max(0, limit)) : targets,
+      });
+    })
+  );
+
+  server.registerTool(
     'generate_element_description',
     {
       title: 'Generate Element Description',
@@ -417,12 +405,12 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, target, target_kind, instructions }: any) => withErrorHandling(async () => {
-      return json(await descriptionEnrichment.generateElementDescription({
+      return json(await withAnalysisFocus('ui-overview', () => descriptionEnrichment.generateElementDescription({
         projectPath: path,
         target,
         targetKind: target_kind,
         instructions,
-      }));
+      })));
     })
   );
 
@@ -469,6 +457,7 @@ function registerTools(server: McpServer) {
             source: capability.description_source || null,
             generation: capability.description_generation || null,
           })),
+          enrichment_targets: getDescriptionEnrichmentTargets(cas, path).slice(0, 12),
         },
       });
     })
@@ -495,12 +484,12 @@ function registerTools(server: McpServer) {
     async ({ path, layer, target, target_kind, instructions, scenario, event_count, seed, persist, force_full }: any) => withErrorHandling(async () => {
       if (layer === 'manual-element-description') {
         if (!target) throw new Error('manual-element-description requires target');
-        return json(await descriptionEnrichment.generateElementDescription({
+        return json(await withAnalysisFocus('ui-overview', () => descriptionEnrichment.generateElementDescription({
           projectPath: path,
           target,
           targetKind: target_kind,
           instructions,
-        }));
+        })));
       }
 
       if (layer === 'runtime-simulation') {
@@ -874,7 +863,7 @@ function registerTools(server: McpServer) {
     'get_greenfield_build_packet',
     {
       title: 'Get Greenfield Build Packet',
-      description: 'Guide a zero-repo or growing greenfield build. For an empty folder it returns first-slice architecture guidance; after files exist it analyzes the folder and returns CAS-backed memory, duplicate-prevention rules, focused files to read, and next-slice validation steps.',
+      description: 'Guide a zero-repo or growing greenfield build. For an empty folder it returns first-slice architecture guidance; after files exist it analyzes the folder and returns CAS-backed memory, duplicate-prevention rules, focused files to read, next-slice validation steps, and a compact G1 build capsule for low-token agent prompts.',
       inputSchema: {
         workspace_path: z.string().describe('Absolute path to the empty or growing project folder'),
         plan_text: z.string().describe('Current product requirement or next-slice plan'),
@@ -1239,6 +1228,7 @@ function registerTools(server: McpServer) {
           runtime_event: z.record(z.unknown()).optional(),
           instructions: z.string().optional(),
           success_criteria: z.array(z.string()).optional(),
+          response_profile: z.enum(['standard', 'minimal', 'first-turn', 'capsule-only']).optional(),
         }).optional().describe('Optional task context for tailoring the default bootstrap'),
       } as any,
     } as any,
@@ -1262,6 +1252,7 @@ function registerTools(server: McpServer) {
           runtime_event: z.record(z.unknown()).optional(),
           instructions: z.string().optional(),
           success_criteria: z.array(z.string()).optional(),
+          response_profile: z.enum(['standard', 'minimal', 'first-turn', 'capsule-only']).optional(),
         }).optional().describe('Optional task context used to score target matches.'),
         limit: z.number().optional().describe('Maximum candidates to return'),
       } as any,
@@ -1285,6 +1276,7 @@ function registerTools(server: McpServer) {
           runtime_event: z.record(z.unknown()).optional(),
           instructions: z.string().optional(),
           success_criteria: z.array(z.string()).optional(),
+          response_profile: z.enum(['standard', 'minimal', 'first-turn', 'capsule-only']).optional(),
         }).optional().describe('Optional task context used to score the selected analysis'),
       } as any,
     } as any,
@@ -1322,6 +1314,7 @@ function registerTools(server: McpServer) {
           runtime_event: z.record(z.unknown()).optional(),
           instructions: z.string().optional(),
           success_criteria: z.array(z.string()).optional(),
+          response_profile: z.enum(['standard', 'minimal', 'first-turn', 'capsule-only']).optional(),
         }).optional().describe('Optional task context for tailoring default-use instructions'),
       } as any,
     } as any,
@@ -1335,7 +1328,7 @@ function registerTools(server: McpServer) {
     'install_agent_default_config',
     {
       title: 'Install Agent Default Config',
-      description: 'Write .klauro/agent-defaults.json and .klauro/agent-defaults.md into a repository so agents have a default Klauro start path.',
+      description: 'Write .klauro/agent-defaults.json, .klauro/agent-defaults.md, and .klauro/skills/klauro/SKILL.md into a repository so agents have a default Klauro start path and skill-aware agents can learn K15/K5/G1.',
       inputSchema: {
         path: z.string().describe('Project path'),
         task: z.object({
@@ -1345,6 +1338,7 @@ function registerTools(server: McpServer) {
           runtime_event: z.record(z.unknown()).optional(),
           instructions: z.string().optional(),
           success_criteria: z.array(z.string()).optional(),
+          response_profile: z.enum(['standard', 'minimal', 'first-turn', 'capsule-only']).optional(),
         }).optional().describe('Optional task context for tailoring default-use instructions'),
       } as any,
     } as any,
@@ -1368,6 +1362,7 @@ function registerTools(server: McpServer) {
           runtime_event: z.record(z.unknown()).optional(),
           instructions: z.string().optional(),
           success_criteria: z.array(z.string()).optional(),
+          response_profile: z.enum(['standard', 'minimal', 'first-turn', 'capsule-only']).optional(),
         }).optional().describe('Optional task context for tailoring the default MCP path'),
       } as any,
     } as any,
@@ -1414,6 +1409,7 @@ function registerTools(server: McpServer) {
           runtime_event: z.record(z.unknown()).optional(),
           instructions: z.string().optional(),
           success_criteria: z.array(z.string()).optional(),
+          response_profile: z.enum(['standard', 'minimal', 'first-turn', 'capsule-only']).optional().describe('Optional response budget. Use capsule-only when token savings matter most; use first-turn for compact fields plus capsules; use minimal for compact work; omit for the full packet.'),
         }).optional().describe('Task context for building the work packet'),
       } as any,
     } as any,

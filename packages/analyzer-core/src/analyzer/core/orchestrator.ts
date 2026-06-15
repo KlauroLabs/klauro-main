@@ -142,24 +142,30 @@ export const KLAURO_SELF_CAPABILITY_NAMES: Readonly<Record<string, string>> = {
   idiom: 'Codebase Idiom Guidance',
   incremental: 'Incremental Analysis',
   invariant: 'Behavioral Invariant Validation',
-  klauro: 'Klauro CLI',
+  klauro: 'Klauro Runtime SDK',
   machine: 'Machine Repo Gauntlet',
+  mcp: 'MCP Server',
   project: 'Project Resolution',
   proposal: 'Proposal Preview',
   runtime: 'Runtime Telemetry',
+  telemetry: 'Runtime Telemetry',
   storage: 'Analysis Storage',
   task: 'Agent Task Proof',
   workspace: 'Workspace Mapping',
 };
 
 export const KLAURO_SELF_CAPABILITY_DESCRIPTIONS: Readonly<Record<string, string>> = {
-  'codebase analysis': 'Codebase Analysis builds a CAS relationship graph from repository structure so agents can understand entry points, data, tests, risks, and dependencies before editing.',
+  'codebase analysis': 'Codebase Analysis builds a CAS relationship graph from repository structure so agents can understand interaction surfaces, data, tests, risks, and dependencies before editing.',
   'architecture mapping': 'Architecture Mapping identifies local patterns, ownership layers, and inventories so agents can place changes in the right architectural boundary.',
   'greenfield planning': 'Greenfield Planning compares a proposed product slice against existing capability memory so new projects avoid duplicate concepts and start with coherent architecture.',
   'proposal preview': 'Proposal Preview analyzes a proposed codebase iteration as a temporary CAS graph so reviewers can inspect changed contracts, risks, idioms, and test impact before the real repo changes.',
   'agent work packets': 'Agent Work Packets turns CAS graph matches, risks, idioms, and tests into a compact coding brief before an AI agent edits a repository.',
+  'mcp server': 'MCP Server exposes CAS tools, prompts, and compact work packets so AI agents can query codebase structure before choosing source files to read or edit.',
   'codebase idiom guidance': 'Codebase Idiom Guidance identifies local conventions and validates proposed changes against the patterns already used in the repository.',
   'analysis storage': 'Analysis Storage persists CAS outputs, snapshots, incremental state, and compressed artifacts so later MCP calls can reuse prior analysis.',
+  'klauro runtime sdk': 'Klauro Runtime SDK captures request, command, function, and error traces so runtime telemetry can be correlated back to the static CAS graph.',
+  'runtime telemetry': 'Runtime Telemetry surfaces observed latency, errors, throughput, and hotspots so agents can prioritize fixes by production impact.',
+  'trace management': 'Trace Management links runtime spans and call paths back to analyzed code so agents can inspect the behavior that produced an observation.',
 };
 
 interface DetectedAnalyzerCacheEntry {
@@ -376,7 +382,7 @@ export class AnalyzerOrchestrator {
         const normalizedRelativePath = relativePath.replace(/\\/g, '/');
 
         if (entry.isDirectory()) {
-          if (this.isIgnoredInventoryDirectory(entry.name, normalizedRelativePath, nestedIgnoredDirectories)) {
+          if (this.isIgnoredInventoryDirectory(entry.name, normalizedRelativePath, nestedIgnoredDirectories, projectPath)) {
             continue;
           }
           walk(path.join(absoluteDirectory, entry.name), normalizedRelativePath);
@@ -400,12 +406,18 @@ export class AnalyzerOrchestrator {
   private isIgnoredInventoryDirectory(
     directoryName: string,
     relativePath: string,
-    nestedIgnoredDirectories: Set<string>
+    nestedIgnoredDirectories: Set<string>,
+    projectPath?: string
   ): boolean {
     if (nestedIgnoredDirectories.has(relativePath)) return true;
+    if (this.isExcludedLegacyReferencePath(relativePath, projectPath)) return true;
     if (relativePath === 'bin') return false;
     return new Set([
       'node_modules',
+      'fixtures',
+      '__fixtures__',
+      'testdata',
+      'cas-tests',
       'dist',
       'build',
       '.git',
@@ -441,6 +453,31 @@ export class AnalyzerOrchestrator {
       'Generated',
       'generated'
     ]).has(directoryName) || directoryName.startsWith('.klauro');
+  }
+
+  private isExcludedLegacyReferencePath(relativePath: string, projectPath?: string): boolean {
+    if (!this.shouldExcludeLegacyReferencePaths(projectPath)) {
+      return false;
+    }
+    const normalized = relativePath.replace(/\\/g, '/').replace(/^\/+/, '');
+    return normalized === 'legacy' || normalized.startsWith('legacy/');
+  }
+
+  private shouldExcludeLegacyReferencePaths(projectPath?: string): boolean {
+    if (process.env.KLAURO_AGENT_FAST_EXCLUDE_LEGACY === 'true' ||
+      process.env.KLAURO_AGENT_FAST_EXCLUDE_LEGACY === '1') {
+      return true;
+    }
+    const activePath = projectPath || this.activeAnalysisProjectPath;
+    return this.isKlauroSelfProject(activePath);
+  }
+
+  private async getAnalysisContextFilters(projectPath: string): Promise<string[]> {
+    const filters = await this.getNestedRepoIgnorePatterns(projectPath);
+    if (this.shouldExcludeLegacyReferencePaths(projectPath)) {
+      filters.push('legacy/**', 'legacy/**/*', '**/legacy/**', '**/legacy/**/*');
+    }
+    return Array.from(new Set(filters));
   }
 
   private isIgnoredInventoryFile(filePath: string): boolean {
@@ -521,8 +558,16 @@ export class AnalyzerOrchestrator {
   }
 
   private getProjectDiscoveryIgnorePatterns(): string[] {
-    return [
+    const patterns = [
       '**/node_modules/**',
+      'fixtures/**',
+      '**/fixtures/**',
+      '__fixtures__/**',
+      '**/__fixtures__/**',
+      'testdata/**',
+      '**/testdata/**',
+      'cas-tests/**',
+      '**/cas-tests/**',
       '**/dist/**',
       '**/build/**',
       '.git/**',
@@ -560,8 +605,8 @@ export class AnalyzerOrchestrator {
       '**/venv*/**',
       'env/**',
       '**/env/**',
-      'env*/**',
-      '**/env*/**',
+      'env[0-9]*/**',
+      '**/env[0-9]*/**',
       '.tox/**',
       '**/.tox/**',
       '.pytest_cache/**',
@@ -592,6 +637,10 @@ export class AnalyzerOrchestrator {
       '**/Generated/**',
       '**/generated/**'
     ];
+    if (this.shouldExcludeLegacyReferencePaths(this.activeAnalysisProjectPath)) {
+      patterns.push('legacy/**', 'legacy/**/*', '**/legacy/**', '**/legacy/**/*');
+    }
+    return patterns;
   }
 
   async detectAnalyzers(projectPath: string): Promise<AnalyzerRegistration[]> {
@@ -658,7 +707,7 @@ export class AnalyzerOrchestrator {
     logTiming('detectAnalyzers', phaseStart);
     const context: AnalysisContext = {
       projectPath,
-      filters: await this.getNestedRepoIgnorePatterns(projectPath)
+      filters: await this.getAnalysisContextFilters(projectPath)
     };
 
     const allNodes: CASNode[] = [];
@@ -865,7 +914,7 @@ export class AnalyzerOrchestrator {
     }
 
     phaseStart = Date.now();
-    const architectureSummary = this.buildArchitectureSummary(allNodes, allEntryPoints, allExitPoints, contributions);
+    const architectureSummary = this.buildArchitectureSummary(projectPath, allNodes, allEntryPoints, allExitPoints, contributions);
     const routeTable = this.buildRouteTable(allEntryPoints);
     const databaseSchema = this.buildDatabaseSchema(allNodes, allLibraries, projectPath);
     const externalServices = this.buildExternalServices(allNodes, allExitPoints, allLibraries);
@@ -881,8 +930,9 @@ export class AnalyzerOrchestrator {
     const flowSummary = this.buildFlowSummary(allNodes, allEntryPoints);
     const dataEntities = this.buildDataEntities(allNodes, allEdges, projectPath);
     const dataSummary = this.buildDataSummary(dataEntities, allNodes);
-    const securityBoundaries = this.buildSecurityBoundaries(allNodes, allEntryPoints);
-    const securitySummary = this.buildSecuritySummary(securityBoundaries, allNodes, allEntryPoints);
+    const productEntryPointsForSecurity = this.filterPrimaryProductEntryPoints(allEntryPoints, allNodes, projectPath);
+    const securityBoundaries = this.buildSecurityBoundaries(allNodes, allEntryPoints, projectPath);
+    const securitySummary = this.buildSecuritySummary(securityBoundaries, allNodes, productEntryPointsForSecurity);
     logTiming('pp_dataAndSecurity', phaseStart);
 
     phaseStart = Date.now();
@@ -1034,7 +1084,8 @@ export class AnalyzerOrchestrator {
       systemCapabilities,
       unanalyzedLanguages,
       this.libraryNamesForInterpretation(allLibraries),
-      dataEntities
+      dataEntities,
+      projectTextSignal
     );
     logTiming('pp_aiInterpretation', phaseStart);
 
@@ -1174,7 +1225,12 @@ export class AnalyzerOrchestrator {
       temporal_stability: temporalStability.length > 0 ? temporalStability : undefined,
       stability_summary: stabilitySummary,
       system_capabilities: systemCapabilities.length > 0 ? systemCapabilities : undefined,
-      system_purpose: systemPurpose,
+      system_purpose: {
+        ...systemPurpose,
+        primary_type: enhancedSystemPurpose.primary_type,
+        confidence: Math.max(systemPurpose.confidence || 0, enhancedSystemPurpose.confidence || 0),
+        evidence: enhancedSystemPurpose.evidence || systemPurpose.evidence,
+      },
       call_chains: callChains.length > 0 ? callChains : undefined,
       workflows: workflows.length > 0 ? workflows : undefined,
       workflow_graph: workflowGraph,
@@ -1371,7 +1427,25 @@ export class AnalyzerOrchestrator {
     if (!previousOutput.analysis_facts?.length) {
       return 'CAS analysis facts are missing';
     }
+    if (this.previousDescriptionHasUnsupportedExternalClaim(previousOutput)) {
+      return 'CAS system description needs current external-service validation';
+    }
     return null;
+  }
+
+  private previousDescriptionHasUnsupportedExternalClaim(previousOutput: CASOutput): boolean {
+    const description = previousOutput.enhanced_system_purpose?.inferred_description || '';
+    if (/\b(?:connects to|connected to|calls out to)\b[^.]*\b(?:Self|gtk|objc_sys|[A-Z][A-Za-z0-9]*(?:Data|Decl|Item|Pool|Size))\b/.test(description)) {
+      return true;
+    }
+    if (/\bexternal services? like\b/i.test(description)) {
+      const candidates = description
+        .split(/[,\s.()]+/)
+        .map(token => token.trim())
+        .filter(Boolean);
+      if (candidates.some(candidate => isLanguageBuiltinName(candidate))) return true;
+    }
+    return false;
   }
 
   private async runIncrementalAnalysis(
@@ -1708,7 +1782,7 @@ export class AnalyzerOrchestrator {
 
     const libraries = previousOutput.libraries || [];
     const architectureSummary = this.buildArchitectureSummary(
-      nodes, entryPoints, exitPoints, previousOutput.analyzer_contributions
+      projectPath, nodes, entryPoints, exitPoints, previousOutput.analyzer_contributions
     );
     const routeTable = this.buildRouteTable(entryPoints);
     const databaseSchema = this.buildDatabaseSchema(nodes, libraries, projectPath);
@@ -1721,8 +1795,9 @@ export class AnalyzerOrchestrator {
     const changeRiskSummary = this.buildChangeRiskSummary(changeRisks);
     const dataEntities = this.buildDataEntities(nodes, edges, projectPath);
     const dataSummary = this.buildDataSummary(dataEntities, nodes);
-    const securityBoundaries = this.buildSecurityBoundaries(nodes, entryPoints);
-    const securitySummary = this.buildSecuritySummary(securityBoundaries, nodes, entryPoints);
+    const productEntryPointsForSecurity = this.filterPrimaryProductEntryPoints(entryPoints, nodes, projectPath);
+    const securityBoundaries = this.buildSecurityBoundaries(nodes, entryPoints, projectPath);
+    const securitySummary = this.buildSecuritySummary(securityBoundaries, nodes, productEntryPointsForSecurity);
     const temporalStability = this.buildTemporalStability(nodes, gitAnalyzer);
     const stabilitySummary = this.buildStabilitySummary(temporalStability);
     const testSuites = this.buildTestSuites(nodes, entryPoints, projectPath);
@@ -1884,9 +1959,13 @@ export class AnalyzerOrchestrator {
         systemCapabilities,
         previousOutput.system?.technologies?.unanalyzed_languages || [],
         this.libraryNamesForInterpretation(libraries),
-        dataEntities
+        dataEntities,
+        incrProjectTextSignal
       );
-    } else if (previousOutput.enhanced_system_purpose?.inferred_description) {
+    } else if (
+      previousOutput.enhanced_system_purpose?.inferred_description &&
+      !this.previousDescriptionHasUnsupportedExternalClaim(previousOutput)
+    ) {
       enhancedSystemPurpose.inferred_description = previousOutput.enhanced_system_purpose.inferred_description;
       enhancedSystemPurpose.description_source = 'reused';
       enhancedSystemPurpose.description_generation = {
@@ -1902,7 +1981,9 @@ export class AnalyzerOrchestrator {
       const previousCapabilities = new Map((previousOutput.system_capabilities || []).map(capability => [capability.id, capability]));
       for (const capability of systemCapabilities) {
         const previous = previousCapabilities.get(capability.id);
-        if (previous?.description && (previous.description_source === 'ai' || previous.description_source === 'manual' || previous.description_source === 'reused')) {
+        if (previous?.description &&
+          this.capabilityReuseSubjectsMatch(previous, capability) &&
+          (previous.description_source === 'ai' || previous.description_source === 'manual' || previous.description_source === 'reused')) {
           capability.description = previous.description;
           capability.description_source = 'reused';
           capability.description_generation = {
@@ -1953,7 +2034,12 @@ export class AnalyzerOrchestrator {
       temporal_stability: temporalStability.length > 0 ? temporalStability : undefined,
       stability_summary: stabilitySummary,
       system_capabilities: systemCapabilities.length > 0 ? systemCapabilities : undefined,
-      system_purpose: systemPurpose,
+      system_purpose: {
+        ...systemPurpose,
+        primary_type: enhancedSystemPurpose.primary_type,
+        confidence: Math.max(systemPurpose.confidence || 0, enhancedSystemPurpose.confidence || 0),
+        evidence: enhancedSystemPurpose.evidence || systemPurpose.evidence,
+      },
       call_chains: callChains.length > 0 ? callChains : undefined,
       flow_coverage: flowCoverage.length > 0 ? flowCoverage : undefined,
       test_gaps: testGaps.length > 0 ? testGaps : undefined,
@@ -4870,51 +4956,71 @@ export class AnalyzerOrchestrator {
   }
 
   private buildArchitectureSummary(
-    nodes: CASNode[],
-    entryPoints: CASEntryPoint[],
-    exitPoints: CASExitPoint[],
-    contributions: any[]
+    projectPathOrNodes: string | CASNode[],
+    nodesOrEntryPoints: CASNode[] | CASEntryPoint[],
+    entryPointsOrExitPoints: CASEntryPoint[] | CASExitPoint[],
+    exitPointsOrContributions: CASExitPoint[] | any[] = [],
+    maybeContributions: any[] = []
   ): CASArchitectureSummary {
-    const productNodes = nodes.filter(node => this.isPrimaryProductNode(node));
+    const legacyCall = Array.isArray(projectPathOrNodes);
+    const projectPath = legacyCall ? '' : projectPathOrNodes;
+    const nodes = legacyCall ? projectPathOrNodes : nodesOrEntryPoints as CASNode[];
+    const entryPoints = legacyCall ? nodesOrEntryPoints as CASEntryPoint[] : entryPointsOrExitPoints as CASEntryPoint[];
+    const exitPoints = legacyCall ? entryPointsOrExitPoints as CASExitPoint[] : exitPointsOrContributions as CASExitPoint[];
+    const contributions = legacyCall ? exitPointsOrContributions as any[] : maybeContributions;
+    const productNodes = nodes.filter(node => this.isPrimaryProductNodeForProject(node, projectPath));
     const productNodeIds = new Set(productNodes.map(node => node.id));
     const productEntryPoints = entryPoints.filter(ep =>
       (!ep.source_node || productNodeIds.has(ep.source_node)) &&
-      (!ep.handler?.file || this.isPrimaryProductPath(ep.handler.file))
+      (!ep.handler?.file || this.isPrimaryProductPathForProject(ep.handler.file, projectPath))
     );
     const fileNodes = productNodes.filter(n => n.type === 'file');
     const httpEntryPoints = productEntryPoints.filter(ep => ep.type === 'http');
+    const infrastructureOnly = this.isInfrastructureOnlyArchitecture(productNodes, contributions);
 
-    const controllers = productNodes.filter(n => n.type === 'controller' || n.subcategories?.includes('controller'));
-    const services = productNodes.filter(n => n.type === 'service' || n.subcategories?.includes('service'));
-    const entities = productNodes.filter(n => n.type === 'entity' || n.subcategories?.includes('entity'));
-    const repositories = productNodes.filter(n => n.type === 'repository' || n.subcategories?.includes('repository'));
+    const categoryText = (node: CASNode): string => {
+      const raw = `${node.type} ${node.name} ${(node.subcategories || []).join(' ')}`;
+      return `${raw} ${raw.replace(/([a-z0-9])([A-Z])/g, '$1 $2')}`
+        .toLowerCase()
+        .replace(/[_-]/g, ' ');
+    };
+    const controllers = productNodes.filter(n => /\b(controller|resolver|route|handler)\b/.test(categoryText(n)) || n.subcategories?.includes('controller'));
+    const services = productNodes.filter(n => /\b(service|use case|interactor|manager)\b/.test(categoryText(n)) || n.subcategories?.includes('service'));
+    const entities = productNodes.filter(n => /\b(entity|model|schema)\b/.test(categoryText(n)) || n.subcategories?.includes('entity'));
+    const repositories = productNodes.filter(n => /\b(repository|repo|dao|gateway|store)\b/.test(categoryText(n)) || n.subcategories?.includes('repository'));
     const guards = productNodes.filter(n => n.type === 'guard' || n.subcategories?.includes('guard'));
     const middleware = productNodes.filter(n => n.type === 'middleware' || n.subcategories?.includes('middleware'));
-    const modules = productNodes.filter(n => n.type === 'module');
-    const components = productNodes.filter(n => n.type === 'component');
-    const pages = productNodes.filter(n => n.type === 'page' || n.subcategories?.includes('page'));
+    const modules = productNodes.filter(n => /\b(module|package|namespace)\b/.test(categoryText(n)));
+    const components = productNodes.filter(n => /\b(component|widget)\b/.test(categoryText(n)));
+    const pages = productNodes.filter(n => /\b(page|screen|view|template)\b/.test(categoryText(n)) || n.subcategories?.includes('page'));
     const migrations = productNodes.filter(n => n.type === 'migration' || n.source?.file?.includes('migration'));
-    const architecturalInventory = this.buildArchitecturalInventory(productNodes);
-    const architecturalPatterns = this.detectArchitecturalPatterns(productNodes, architecturalInventory, {
-      controllers,
-      services,
-      repositories,
-      entities,
-      components,
-      pages,
-      modules,
-    });
+    const architecturalInventory = infrastructureOnly
+      ? this.buildInfrastructureArchitecturalInventory(productNodes)
+      : this.buildArchitecturalInventory(productNodes);
+    const architecturalPatterns = infrastructureOnly
+      ? this.detectInfrastructureArchitecturalPatterns(productNodes)
+      : this.detectArchitecturalPatterns(productNodes, architecturalInventory, {
+        controllers,
+        services,
+        repositories,
+        entities,
+        components,
+        pages,
+        modules,
+      });
     const patternBalance = this.assessPatternBalance(architecturalPatterns, productNodes);
-    const systemType = this.inferArchitectureSystemType(productNodes, productEntryPoints, contributions, {
-      controllers,
-      services,
-      repositories,
-      entities,
-      components,
-      pages,
-      modules,
-      architecturalInventory,
-    });
+    const systemType = infrastructureOnly
+      ? 'Cloud infrastructure'
+      : this.inferArchitectureSystemType(productNodes, productEntryPoints, contributions, {
+        controllers,
+        services,
+        repositories,
+        entities,
+        components,
+        pages,
+        modules,
+        architecturalInventory,
+      });
 
     const authenticatedEndpoints = httpEntryPoints.filter(ep => ep.security?.authenticated);
     const publicEndpoints = httpEntryPoints.filter(ep => !ep.security?.authenticated);
@@ -4944,12 +5050,12 @@ export class AnalyzerOrchestrator {
 
     return {
       system_type: systemType,
-      total_files: fileNodes.length,
+      total_files: fileNodes.length || this.countUniqueSourceFiles(productNodes),
       architectural_patterns: architecturalPatterns.length > 0 ? architecturalPatterns : undefined,
       architectural_inventory: architecturalInventory,
       pattern_balance: patternBalance,
       layers: {
-        presentation: {
+        presentation: infrastructureOnly ? {} : {
           controllers: controllers.length > 0 ? controllers.length : undefined,
           guards: guards.length > 0 ? guards.length : undefined,
           middleware: middleware.length > 0 ? middleware.length : undefined,
@@ -4957,16 +5063,24 @@ export class AnalyzerOrchestrator {
           components: components.length > 0 ? components.length : undefined,
           pages: pages.length > 0 ? pages.length : undefined
         },
-        business: {
+        business: infrastructureOnly ? {} : {
           services: services.length > 0 ? services.length : undefined
         },
-        data: {
+        data: infrastructureOnly ? {} : {
           repositories: repositories.length > 0 ? repositories.length : undefined,
           entities: entities.length > 0 ? entities.length : undefined,
           migrations: migrations.length > 0 ? migrations.length : undefined
         },
         infrastructure: {
-          modules: modules.length > 0 ? modules.length : undefined
+          modules: infrastructureOnly
+            ? productNodes.filter(node => node.type === 'infrastructure_module').length || undefined
+            : modules.length > 0 ? modules.length : undefined,
+          configs: infrastructureOnly
+            ? productNodes.filter(node => node.type === 'infrastructure_file' || node.type === 'configuration_variable').length || undefined
+            : undefined,
+          utilities: infrastructureOnly
+            ? productNodes.filter(node => node.type === 'infrastructure_resource' || node.type === 'infrastructure_reference').length || undefined
+            : undefined
         }
       },
       api_surface: httpEntryPoints.length > 0 ? {
@@ -4988,7 +5102,7 @@ export class AnalyzerOrchestrator {
   private inferArchitectureSystemType(
     productNodes: CASNode[],
     productEntryPoints: CASEntryPoint[],
-    contributions: any[],
+    contributions: any[] = [],
     counts: {
       controllers: CASNode[];
       services: CASNode[];
@@ -5096,6 +5210,56 @@ export class AnalyzerOrchestrator {
     return languageContribution?.application_type || 'Application';
   }
 
+  private isInfrastructureOnlyArchitecture(nodes: CASNode[], contributions: any[] = []): boolean {
+    if (nodes.length === 0) return false;
+    const infrastructureNodes = nodes.filter(node => this.isInfrastructureArchitectureNode(node));
+    const sourceFiles = nodes
+      .map(node => node.source?.file || '')
+      .filter(Boolean)
+      .map(file => file.replace(/\\/g, '/').toLowerCase());
+    const infrastructureFiles = sourceFiles.filter(file =>
+      /\.(tf|tfvars|hcl)$/i.test(file) ||
+      /(^|\/)(terraform|opentofu|pulumi|helm|k8s|kubernetes|charts)\//.test(file)
+    );
+    const frameworkNames = contributions
+      .map(contribution => String(contribution.analyzer_name || contribution.analyzer_id || '').toLowerCase());
+    const hasInfrastructureAnalyzer = frameworkNames.some(name =>
+      /\b(terraform|opentofu|pulumi|helm|kubernetes|cloudformation)\b/.test(name)
+    );
+    const appNodes = nodes.filter(node => {
+      const text = `${node.type} ${node.name} ${(node.subcategories || []).join(' ')}`
+        .toLowerCase()
+        .replace(/[_-]/g, ' ');
+      const file = (node.source?.file || '').replace(/\\/g, '/').toLowerCase();
+      if (this.isInfrastructureArchitectureNode(node)) return false;
+      if (/\.(tf|tfvars|hcl)$/i.test(file)) return false;
+      return /\b(controller|resolver|route|component|page|viewmodel|entity|model|repository|usecase|interactor)\b/.test(text);
+    });
+
+    return (hasInfrastructureAnalyzer || infrastructureFiles.length > 0 || infrastructureNodes.length >= 3) &&
+      infrastructureNodes.length >= Math.max(3, nodes.length * 0.55) &&
+      infrastructureFiles.length >= Math.max(1, sourceFiles.length * 0.6) &&
+      appNodes.length === 0;
+  }
+
+  private isInfrastructureArchitectureNode(node: CASNode): boolean {
+    const type = String(node.type || '').toLowerCase();
+    if (/^infrastructure_|^configuration_/.test(type)) return true;
+    const metadata = (node.metadata || {}) as any;
+    const attributes = metadata.attributes || {};
+    if (attributes.terraform_type || attributes.terraform_address || metadata.terraform_type) return true;
+    const file = (node.source?.file || '').replace(/\\/g, '/').toLowerCase();
+    return /\.(tf|tfvars|hcl)$/i.test(file);
+  }
+
+  private countUniqueSourceFiles(nodes: CASNode[]): number {
+    const files = new Set(nodes
+      .map(node => node.source?.file || '')
+      .filter(Boolean)
+      .map(file => file.replace(/\\/g, '/')));
+    return files.size;
+  }
+
   private inferDominantFrameworkSystemType(contributions: any[]): string | undefined {
     const frameworkContributions = contributions
       .filter(contribution => contribution.analyzer_type === 'framework' && !this.isTestingFrameworkContribution(contribution))
@@ -5114,12 +5278,191 @@ export class AnalyzerOrchestrator {
     return top.name;
   }
 
+  private buildInfrastructureArchitecturalInventory(nodes: CASNode[]): NonNullable<CASArchitectureSummary['architectural_inventory']> {
+    const byType = (predicate: (node: CASNode, type: string, text: string, file: string) => boolean) => nodes
+      .filter(node => !node.metadata?.is_test && !node.metadata?.is_generated)
+      .filter(node => {
+        const type = String(node.type || '').toLowerCase();
+        const text = `${node.type} ${node.name} ${(node.subcategories || []).join(' ')}`
+          .toLowerCase()
+          .replace(/[_-]/g, ' ');
+        const file = (node.source?.file || '').replace(/\\/g, '/').toLowerCase();
+        return predicate(node, type, text, file);
+      })
+      .map(node => node.id);
+
+    return {
+      models: [],
+      views: [],
+      controllers: [],
+      view_models: [],
+      services: [],
+      repositories: [],
+      clients: byType((node, type, text) =>
+        type === 'infrastructure_resource' &&
+        /\b(api gateway|alb|load balancer|vpc endpoint|endpoint|sns|sqs|eventbridge|kafka|lambda|ecs service)\b/.test(text)
+      ),
+      mediators: [],
+      unit_of_work: [],
+      singletons: [],
+      scripts: [],
+      packages: byType((node, type, _text, file) =>
+        type === 'infrastructure_module' ||
+        /(^|\/)modules?\//.test(file)
+      ),
+    };
+  }
+
+  private detectInfrastructureArchitecturalPatterns(
+    nodes: CASNode[]
+  ): NonNullable<CASArchitectureSummary['architectural_patterns']> {
+    const patterns: NonNullable<CASArchitectureSummary['architectural_patterns']> = [];
+    const add = (
+      name: string,
+      category: NonNullable<CASArchitectureSummary['architectural_patterns']>[number]['category'],
+      confidence: number,
+      evidence: string[],
+      nodeIds: string[],
+      guidance: string
+    ) => {
+      if (nodeIds.length === 0 || confidence < 0.35) return;
+      patterns.push({
+        name,
+        category,
+        confidence: Number(confidence.toFixed(2)),
+        evidence,
+        node_ids: Array.from(new Set(nodeIds)).slice(0, 80),
+        guidance,
+      });
+    };
+
+    const sourceFiles = [...new Set(nodes
+      .map(node => node.source?.file || '')
+      .filter(Boolean)
+      .map(file => file.replace(/\\/g, '/')))];
+    const terraformFiles = nodes.filter(node =>
+      node.type === 'infrastructure_file' ||
+      /\.(tf|tfvars|hcl)$/i.test(node.source?.file || '')
+    );
+    const modules = nodes.filter(node =>
+      node.type === 'infrastructure_module' ||
+      /(^|\/)modules?\//i.test(node.source?.file || '')
+    );
+    const resources = nodes.filter(node => node.type === 'infrastructure_resource');
+    const unresolvedReferences = nodes.filter(node => node.type === 'infrastructure_reference');
+    const environmentFiles = sourceFiles.filter(file =>
+      /(^|\/)(production|staging|dev|development|prod|qa|sandbox)(\/|$)/i.test(file) ||
+      /(^|\/)(contexts|environments?|stacks?)\//i.test(file)
+    );
+    const resourceText = (node: CASNode) => [
+      node.name,
+      node.qualified_name,
+      (node.metadata as any)?.attributes?.terraform_type,
+      node.source?.file,
+    ].join(' ').toLowerCase().replace(/[_-]/g, ' ');
+    const resourcesMatching = (pattern: RegExp) => resources.filter(node => pattern.test(resourceText(node)));
+
+    const accessNodes = resourcesMatching(/\b(iam|kms|policy|role|permission|secret|ssm)\b/);
+    const networkNodes = resourcesMatching(/\b(vpc|subnet|route table|route|gateway|security group|lb|load balancer|alb|nlb|nat|vpn|endpoint)\b/);
+    const computeNodes = resourcesMatching(/\b(ecs|lambda|ec2|task definition|service|cluster|ecr|repository)\b/);
+    const dataNodes = resourcesMatching(/\b(rds|postgres|postgresql|dynamodb|elasticache|redis|database|s3|bucket)\b/);
+    const observabilityNodes = resourcesMatching(/\b(cloudwatch|alarm|dashboard|metric|log|cloudtrail|trail|sns)\b/);
+
+    add(
+      'Infrastructure as Code',
+      'application-architecture',
+      Math.min(0.97, 0.65 + terraformFiles.length / Math.max(40, nodes.length / 4)),
+      [`${terraformFiles.length} Terraform/HCL file nodes`, `${resources.length} managed resource nodes`],
+      terraformFiles.map(node => node.id),
+      'Treat Terraform/HCL files as the primary architecture. Preserve declarative resource definitions, variables, outputs, and plan/apply review boundaries.'
+    );
+
+    add(
+      'Environment Contexts',
+      'application-architecture',
+      environmentFiles.length > 0 ? Math.min(0.92, 0.5 + environmentFiles.length / Math.max(30, sourceFiles.length)) : 0,
+      [`${environmentFiles.length} environment/context files`],
+      nodes
+        .filter(node => environmentFiles.includes((node.source?.file || '').replace(/\\/g, '/')))
+        .map(node => node.id),
+      'Keep environment-specific changes in the matching production, staging, or context directory and avoid leaking one environment’s settings into another.'
+    );
+
+    add(
+      'Reusable Infrastructure Modules',
+      'application-architecture',
+      modules.length > 0 ? Math.min(0.9, 0.5 + modules.length / Math.max(20, nodes.length / 12)) : 0,
+      [`${modules.length} Terraform module nodes or module-local files`],
+      modules.map(node => node.id),
+      'Prefer extending the existing Terraform module boundary before duplicating resource definitions across environments.'
+    );
+
+    add(
+      'Managed Cloud Resource Graph',
+      'integration',
+      resources.length > 0 ? Math.min(0.94, 0.55 + resources.length / Math.max(120, nodes.length / 3)) : 0,
+      [`${resources.length} managed cloud resource nodes`, `${unresolvedReferences.length} unresolved Terraform references represented as graph nodes`],
+      resources.map(node => node.id),
+      'Review resource dependencies as a graph: changes to shared resources, outputs, and remote-state references can affect multiple deployed services.'
+    );
+
+    add(
+      'Cloud Access Boundary',
+      'integration',
+      accessNodes.length > 0 ? Math.min(0.94, 0.55 + accessNodes.length / Math.max(40, nodes.length / 15)) : 0,
+      [`${accessNodes.length} IAM/KMS/policy/secret resources`],
+      accessNodes.map(node => node.id),
+      'Treat IAM, KMS, policy, role, and secret changes as security boundary changes; preserve least-privilege and environment scoping.'
+    );
+
+    add(
+      'Network Boundary',
+      'integration',
+      networkNodes.length > 0 ? Math.min(0.92, 0.5 + networkNodes.length / Math.max(50, nodes.length / 12)) : 0,
+      [`${networkNodes.length} VPC/subnet/routing/load-balancer resources`],
+      networkNodes.map(node => node.id),
+      'Place networking changes beside the existing VPC/subnet/security group examples and verify blast radius before changing shared routes or access rules.'
+    );
+
+    add(
+      'Containerized Service Deployment',
+      'application-architecture',
+      computeNodes.length > 0 ? Math.min(0.9, 0.48 + computeNodes.length / Math.max(50, nodes.length / 12)) : 0,
+      [`${computeNodes.length} ECS/Lambda/EC2/ECR compute or deployment resources`],
+      computeNodes.map(node => node.id),
+      'For service deployment changes, update compute resources, task definitions, image repositories, scaling, and permissions as one coherent deployment unit.'
+    );
+
+    add(
+      'Stateful Data Infrastructure',
+      'data-access',
+      dataNodes.length > 0 ? Math.min(0.9, 0.5 + dataNodes.length / Math.max(40, nodes.length / 14)) : 0,
+      [`${dataNodes.length} database/cache/storage resources`],
+      dataNodes.map(node => node.id),
+      'Treat database, cache, and storage changes as persistence-boundary changes; verify backups, network access, migration impact, and environment parity.'
+    );
+
+    add(
+      'Observability Infrastructure',
+      'integration',
+      observabilityNodes.length > 0 ? Math.min(0.88, 0.46 + observabilityNodes.length / Math.max(40, nodes.length / 14)) : 0,
+      [`${observabilityNodes.length} log, metric, alarm, audit, or notification resources`],
+      observabilityNodes.map(node => node.id),
+      'Preserve monitoring, audit, and alerting coverage when changing deployed resources; infrastructure changes should include matching operational visibility.'
+    );
+
+    return patterns.sort((a, b) => b.confidence - a.confidence);
+  }
+
   private buildArchitecturalInventory(nodes: CASNode[]): NonNullable<CASArchitectureSummary['architectural_inventory']> {
     const byPredicate = (predicate: (node: CASNode, text: string, file: string) => boolean) => nodes
       .filter(node => !node.metadata?.is_test && !node.metadata?.is_generated)
       .filter(node => this.isArchitecturalInventoryNode(node))
       .filter(node => {
-        const text = `${node.type} ${node.name} ${(node.subcategories || []).join(' ')}`.toLowerCase();
+        const rawText = `${node.type} ${node.name} ${(node.subcategories || []).join(' ')}`;
+        const text = `${rawText} ${rawText.replace(/([a-z0-9])([A-Z])/g, '$1 $2')}`
+          .toLowerCase()
+          .replace(/[_-]/g, ' ');
         const file = node.source?.file?.toLowerCase() || '';
         return predicate(node, text, file);
       })
@@ -5150,7 +5493,8 @@ export class AnalyzerOrchestrator {
         /(^|\/)[a-z0-9_-]*client\.[a-z0-9]+$/.test(file)
       ),
       mediators: byPredicate((node, text, file) =>
-        /\b(mediator|commandhandler|queryhandler|eventhandler|handler|bus|dispatcher)\b/.test(text) || /mediator|command[-_]?handler|query[-_]?handler|event[-_]?handler|dispatcher|\/handlers?\//.test(file)
+        /\b(mediator|command handler|query handler|event handler|handler|bus|dispatcher)\b/.test(text) ||
+        /mediator|command[-_]?handler|query[-_]?handler|event[-_]?handler|dispatcher|message[-_]?handlers?|\/handlers?\//.test(file)
       ),
       unit_of_work: byPredicate((node, text, file) =>
         /\b(unitofwork|unit_of_work|transactionmanager|transactional)\b/.test(text) || /unit[-_]?of[-_]?work|transaction[-_]?manager/.test(file)
@@ -5159,9 +5503,11 @@ export class AnalyzerOrchestrator {
         /\b(singleton|registry)\b/.test(text) || /singleton|registry/.test(file) || node.runtime?.scalability?.singleton === true
       ),
       scripts: byPredicate((node, text, file) =>
-        /\b(main|cli|command|job|worker|script|bot|runner)\b/.test(text) ||
+        /\b(cli|command|job|worker|script|bot|runner)\b/.test(text) ||
+        ((node.type === 'file' || node.type === 'function') && /\bmain\b/.test(text)) ||
         /(^|\/)(bin|cli|cmd|commands|jobs|workers|scripts?)(\/|$)/.test(file) ||
-        /(^|\/)(main|index|app|server|worker|bot)\.[a-z0-9]+$/.test(file)
+        ((node.type === 'file' || node.type === 'function') && /(^|\/)(main|index|server|worker|bot)\.[a-z0-9]+$/.test(file)) ||
+        ((node.type === 'file' || node.type === 'function') && /(^|\/)app\.(cjs|mjs|js|ts|py|rb|php|rs|go)$/.test(file))
       ),
       packages: byPredicate((node, text, file) =>
         /\b(package|library|module|namespace|export)\b/.test(text) ||
@@ -5262,13 +5608,14 @@ export class AnalyzerOrchestrator {
   private isPrimaryProductPath(filePath: string): boolean {
     const normalized = filePath.replace(/\\/g, '/').toLowerCase();
     if (!normalized) return true;
-    if (/^(fixtures?|__fixtures__|tests?|__tests__|spec|e2e|cypress|playwright)[./]/.test(normalized)) return false;
-    if (/[./](fixtures?|__fixtures__|tests?|__tests__|spec|e2e|cypress|playwright)[./]/.test(normalized)) return false;
+    if (/^(fixtures?|__fixtures__|testdata|cas-tests|tests?|__tests__|spec|e2e|cypress|playwright)[./]/.test(normalized)) return false;
+    if (/[./](fixtures?|__fixtures__|testdata|cas-tests|tests?|__tests__|spec|e2e|cypress|playwright)[./]/.test(normalized)) return false;
     if (/(^|\/)(node_modules|dist|build|coverage|vendor|vendors|generated|fixtures?|__fixtures__|__mocks__)(\/|$)/.test(normalized)) return false;
     if (/\.(min|bundle)\.(js|css)$/.test(normalized)) return false;
     if (/\/lib\/(waypoints|owlcarousel|chart|easing|tempusdominus|bootstrap|jquery)\//.test(normalized)) return false;
     if (/(^|\/)(__tests__|tests?|spec|e2e|cypress|playwright)(\/|$)/.test(normalized)) return false;
     if (/\.(test|spec|stories|story)\.[a-z0-9]+$/.test(normalized)) return false;
+    if (/(^|\/)test-[^/]+\.[a-z0-9]+$/.test(normalized)) return false;
     if (/^legacy\//.test(normalized)) return false;
     return true;
   }
@@ -5310,11 +5657,27 @@ export class AnalyzerOrchestrator {
     if (inventory.models.length > 0) mvcEvidence.push(`${inventory.models.length} model/entity nodes`);
     if (inventory.views.length > 0) mvcEvidence.push(`${inventory.views.length} view/page/component nodes`);
     if (inventory.controllers.length > 0) mvcEvidence.push(`${inventory.controllers.length} controller/route/handler nodes`);
-    const hasMvcInventory = inventory.models.length > 0 && inventory.views.length > 0 && inventory.controllers.length > 0;
+    const hasExplicitMvcInventory = inventory.models.length > 0 && inventory.views.length > 0 && inventory.controllers.length > 0;
+    const hasServerMvcInventory = inventory.models.length > 0 && inventory.controllers.length > 0 && nodes.some(node => {
+      const file = node.source?.file?.replace(/\\/g, '/').toLowerCase() || '';
+      const text = `${node.type} ${node.name} ${(node.subcategories || []).join(' ')}`
+        .toLowerCase()
+        .replace(/[_-]/g, ' ');
+      return /\b(rails|django|laravel|symfony|spring|asp\.?net|mvc)\b/.test(text) ||
+        /(^|\/)app\/(controllers|models)\//.test(file) ||
+        /(^|\/)(controllers|models)\//.test(file);
+    });
+    if (!hasExplicitMvcInventory && hasServerMvcInventory) {
+      mvcEvidence.push('controller/model server-side MVC convention');
+    }
     add(
       'MVC',
       'application-architecture',
-      hasMvcInventory ? 0.75 + Math.min(0.2, Math.log10(inventory.models.length + inventory.views.length + inventory.controllers.length) / 10) : 0,
+      hasExplicitMvcInventory
+        ? 0.75 + Math.min(0.2, Math.log10(inventory.models.length + inventory.views.length + inventory.controllers.length) / 10)
+        : hasServerMvcInventory
+          ? 0.7 + Math.min(0.15, Math.log10(inventory.models.length + inventory.controllers.length) / 10)
+          : 0,
       mvcEvidence,
       [...inventory.models, ...inventory.views, ...inventory.controllers],
       'When adding features, keep request handling in controllers/routes, state/data shape in models/entities, and rendering in views/components.'
@@ -5426,12 +5789,14 @@ export class AnalyzerOrchestrator {
       'Treat client/SDK/adapter classes as integration boundaries; keep protocol concerns there instead of spreading remote-call details into business code.'
     );
 
+    const scriptPatternConfidence = inventory.scripts.length > 0 &&
+      (inventory.scripts.length >= 3 || inventory.views.length + inventory.controllers.length + inventory.models.length < 3)
+      ? Math.min(0.88, 0.43 + inventory.scripts.length / Math.max(8, nodes.length / 20))
+      : 0;
     add(
       'Command Script / Automation',
       'application-architecture',
-      inventory.scripts.length > 0
-        ? Math.min(0.88, 0.43 + inventory.scripts.length / Math.max(8, nodes.length / 20))
-        : 0,
+      scriptPatternConfidence,
       [`${inventory.scripts.length} CLI/script/worker/bot nodes`],
       inventory.scripts,
       'For automation or bot-style repos, preserve the entry script, orchestration loop, and helper-module split instead of introducing unrelated web/service structure.'
@@ -5502,16 +5867,44 @@ export class AnalyzerOrchestrator {
     const recommendations: string[] = [];
     const highConfidence = patterns.filter(pattern => pattern.confidence >= 0.65);
     const antiPatternCount = patterns.filter(pattern => pattern.category === 'anti-pattern').length;
+    const highConfidenceNames = highConfidence.map(pattern => pattern.name);
+    const hasPattern = (name: string) => highConfidenceNames.includes(name);
+    const hasInfrastructureBackbone = hasPattern('Infrastructure as Code');
+    const hasCohesiveBackbone = hasInfrastructureBackbone || hasPattern('Layered Architecture') || hasPattern('Feature Modules');
+    const hasCoordinationBackbone = hasPattern('Feature Modules') ||
+      (hasPattern('Repository') && hasPattern('Service Layer')) ||
+      hasPattern('Unit of Work') ||
+      hasPattern('Mediator / Handler');
+    const conflictingPatterns = [
+      hasPattern('MVC') && hasPattern('MVVM') && !hasCoordinationBackbone ? 'MVC + MVVM without shared coordination backbone' : '',
+      hasPattern('Command Script / Automation') && (hasPattern('MVC') || hasPattern('MVVM')) && !hasCohesiveBackbone
+        ? 'Command automation mixed with presentation architecture without shared boundary'
+        : '',
+      hasPattern('Singleton / Registry') && hasPattern('MVC') && hasPattern('MVVM') && !hasCoordinationBackbone
+        ? 'Registry lifecycle mixed into unrelated presentation paradigms'
+        : '',
+    ].filter(Boolean);
+    const primaryPatterns = highConfidenceNames
+      .filter(name => !['Singleton / Registry', 'Command Script / Automation'].includes(name))
+      .slice(0, 6);
 
     let status: NonNullable<CASArchitectureSummary['pattern_balance']>['status'] = 'balanced';
     if (highConfidence.length === 0 && nodes.length > 50) {
       status = 'under-patterned';
       risks.push('Few architectural patterns are visible for the size of the codebase.');
       recommendations.push('Before adding major features, identify the local placement and boundary convention from nearby files.');
-    } else if (highConfidence.length > 8) {
+    } else if (conflictingPatterns.length > 0) {
+      status = 'mixed';
+      risks.push(`Potential architecture drift: ${conflictingPatterns.join('; ')}.`);
+      recommendations.push('Choose the target-area paradigm before editing and avoid copying patterns across unrelated subsystems.');
+    } else if (highConfidence.length > 8 && hasInfrastructureBackbone) {
+      recommendations.push('This infrastructure codebase has several cloud boundary patterns under an Infrastructure as Code backbone; choose the target resource boundary before editing.');
+    } else if (highConfidence.length > 8 && !hasCohesiveBackbone) {
       status = 'over-patterned';
       risks.push('Many architectural patterns appear simultaneously; agents may overfit to pattern names without local examples.');
       recommendations.push('Prefer the highest-confidence patterns and concrete examples from the target area.');
+    } else if (highConfidence.length > 8) {
+      recommendations.push('This codebase uses several patterns under an apparent shared backbone; keep new work inside the target area examples.');
     }
     if (antiPatternCount > 0) {
       status = status === 'balanced' ? 'mixed' : status;
@@ -5525,6 +5918,13 @@ export class AnalyzerOrchestrator {
     return {
       status,
       detected_count: patterns.length,
+      primary_patterns: primaryPatterns.length > 0 ? primaryPatterns : undefined,
+      conflicting_patterns: conflictingPatterns.length > 0 ? conflictingPatterns : undefined,
+      rationale: status === 'balanced'
+        ? hasCohesiveBackbone
+          ? 'Detected patterns share a layered or module backbone.'
+          : 'Detected patterns do not currently show a drift signal.'
+        : risks.join(' '),
       risks,
       recommendations,
     };
@@ -6741,7 +7141,8 @@ export class AnalyzerOrchestrator {
     systemCapabilities: SystemCapability[] = [],
     unanalyzedLanguages: Array<{ name: string; files: number; share_of_source: number }> = [],
     libraryNames: string[] = [],
-    dataEntities: CASDataEntity[] = []
+    dataEntities: CASDataEntity[] = [],
+    projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] }
   ): Promise<void> {
     this.setElementDescriptionGrounding(
       enhancedSystemPurpose.primary_domain,
@@ -6787,8 +7188,27 @@ export class AnalyzerOrchestrator {
       flowGraph,
       domainConcepts,
       systemCapabilities,
-      libraryNames
+      libraryNames,
+      projectTextSignal
     );
+    const isKlauroSelfProject = this.isKlauroSelfProject(this.activeAnalysisProjectPath);
+    const klauroSelfConcepts = [
+      'CAS relationship graph',
+      'codebase analysis',
+      'MCP agent work packets',
+      'proposal previews',
+      'idiom guidance',
+      'incremental analysis',
+      'telemetry correlation',
+      'analysis storage',
+    ];
+    if (isKlauroSelfProject) {
+      structuralFacts.domainConcepts = klauroSelfConcepts;
+      structuralFacts.projectTextConcepts = klauroSelfConcepts;
+    }
+    const promptCoreConcepts = isKlauroSelfProject
+      ? klauroSelfConcepts
+      : enhancedSystemPurpose.core_concepts;
 
     const elementsEnabled = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS !== 'false' && process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS !== '0';
     const configuredElementLimit = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT || '');
@@ -6805,9 +7225,9 @@ export class AnalyzerOrchestrator {
         aiService.generateComponentDescription({
           additionalContext: {
             task: 'Based only on the structural facts below, return ONLY valid JSON with this shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. system_description: describe what this software system is and what it does in 2-4 full sentences (at least 150 characters); infer the kind of system from its frameworks, entry points, and capabilities; do not invent features, expand acronyms, or add company names or business domains that are not implied by the facts; mention integrations or external services only by the exact names listed in externalServices, never as unnamed providers. domain: one lowercase kebab-case label of 2 to 4 words naming the primary business domain with concrete product nouns from the facts, never technology or framework names (for example "wedding-venue-booking" or "fleet-compliance-tracking"); when terminalOutputs and nearTerminalStages are present they are the strongest evidence — the domain must reflect what the system ultimately produces or manages per terminalOutputs and the stage that produces it per nearTerminalStages, never common plumbing nouns (user, identity, session, menu, serialization) unless those ARE the terminal outputs. descriptions: one entry per item in items, each one grounded sentence answering what that area lets an engineer, operator, user, or AI agent do; translate source areas and operation names into human purpose.',
-            style: 'Return only the JSON object. system_description must be a short paragraph, not a list or colon-prefixed facts such as "Key capabilities:", "Data model:", "Entry points:", or "Integrations:"; avoid vague phrases like "interact with data" or "designed to be integrated" and avoid promotional language. Capability descriptions: prefer concrete verbs like centralizes, maintains, tracks, prepares, identifies, evaluates, records, links, validates, or preserves; do not use "operations for", "supports", "coordinates", "handles", "reads", "processes", "internal files", "spans", "insights", "efficient", "compliant", "productivity", "business value", or "streamline"; do not mention files unless the item is literally file storage.',
+            style: 'Return only the JSON object. system_description must be a short paragraph, not a list or colon-prefixed facts such as "Key capabilities:", "Data model:", "Entry points:", or "Integrations:"; avoid vague phrases like "interact with data" or "designed to be integrated" and avoid promotional language. Preserve the supplied primaryDomain and system purpose: do not describe zero-trust, network-access, security-scanning, clinical, fleet, or codebase-analysis systems as portfolio management or trading systems unless that exact domain is supplied. For Klauro/codebase-analysis systems, describe CAS relationship graphs, MCP agent work packets, proposal previews, idiom guidance, incremental analysis, telemetry correlation, and analysis storage; do not frame security, access control, or verification as the primary product focus. Describe product behavior and architecture role, not analyzer mechanics: do not mention entry points, source buckets, script-based, script-driven, internal script, internal files, source files, file-based entry points, or file entry points. Capability descriptions: prefer concrete verbs like centralizes, maintains, tracks, prepares, identifies, evaluates, records, links, validates, or preserves; do not use "operations for", "supports", "coordinates", "handles", "reads", "processes", "internal files", "spans", "insights", "efficient", "compliant", "productivity", "business value", or "streamline"; do not mention files unless the item is literally file storage.',
             primaryDomain: enhancedSystemPurpose.primary_domain,
-            coreConcepts: enhancedSystemPurpose.core_concepts,
+            coreConcepts: promptCoreConcepts,
             deterministicOverview: enhancedSystemPurpose.inferred_description,
             items: capabilityTargets,
             ...structuralFacts,
@@ -6825,20 +7245,24 @@ export class AnalyzerOrchestrator {
 
       const combined = this.parseCombinedInterpretation(raw);
       const interpretationFacts = {
+        systemName,
         frameworks,
         libraries: libraryNames,
         databaseEntities,
         externalServices: this.plausiblePromptExternalServices(systemName, externalServices),
-        structuralTokens: this.structuralGroundingTokens(systemName, structuralFacts, databaseEntities),
+        structuralTokens: this.structuralGroundingTokens(structuralFacts, databaseEntities),
+        projectTextSummary: projectTextSignal.summary,
+        projectTextConcepts: projectTextSignal.concepts,
+        isKlauroSelfProject: this.isKlauroSelfProject(this.activeAnalysisProjectPath),
       };
       const domainCandidates: string[] = [];
       if (combined.domain) domainCandidates.push(combined.domain);
 
       let cleaned = this.cleanGeneratedDescriptionText(combined.systemDescription || '');
-      let validation = this.validateAIInterpretation(cleaned, enhancedSystemPurpose, interpretationFacts);
+      let validation = this.validateGeneratedAIInterpretation(cleaned, enhancedSystemPurpose, interpretationFacts);
       if (!validation.ok) {
         const sanitized = this.sanitizeAIInterpretation(cleaned, enhancedSystemPurpose, interpretationFacts);
-        const sanitizedValidation = this.validateAIInterpretation(sanitized, enhancedSystemPurpose, interpretationFacts);
+        const sanitizedValidation = this.validateGeneratedAIInterpretation(sanitized, enhancedSystemPurpose, interpretationFacts);
         if (sanitizedValidation.ok) {
           cleaned = sanitized;
           validation = sanitizedValidation;
@@ -6848,10 +7272,13 @@ export class AnalyzerOrchestrator {
       const acceptedElements = new Map<string, string>();
       const rejectedElements = new Map<string, string>();
       for (const target of capabilityTargets) {
-        const candidate = combined.elements.get(target.id);
+        const originalCandidate = combined.elements.get(target.id) || '';
+        const candidate = this.sanitizeElementDescriptionCandidate(originalCandidate, target);
         const elementValidation = candidate
           ? this.validateElementDescription(candidate, target)
-          : { ok: false as const, reason: 'missing-description' };
+          : originalCandidate
+            ? this.validateElementDescription(originalCandidate, target)
+            : { ok: false as const, reason: 'missing-description' };
         if (elementValidation.ok && candidate) acceptedElements.set(target.id, candidate);
         else rejectedElements.set(target.id, elementValidation.reason || 'generated-description-failed-quality-gate');
       }
@@ -6867,14 +7294,14 @@ export class AnalyzerOrchestrator {
           aiService.generateComponentDescription({
             additionalContext: {
               task: 'Repair the rejected parts of the previous answer. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Fix only what was rejected: write a grounded 2-3 full-sentence system_description (at least 150 characters) if it was rejected, and one grounded sentence per rejected item. Mention integrations or external services only by the exact names listed in externalServices; if none are listed, do not mention integrations at all.',
-              style: 'No markdown. No marketing language. No raw labels like "Key capabilities:" or "Data model:". Do not invent features, company names, domains, compliance, scale, productivity, or user-experience claims beyond the facts.',
+              style: 'No markdown. No marketing language. No raw labels like "Key capabilities:" or "Data model:". Do not invent features, company names, domains, compliance, scale, productivity, or user-experience claims beyond the facts. If the previous answer was rejected as source-bucket-restatement, rewrite it as product behavior. Do not use script-based, script-driven, internal script, internal files, source files, file-based entry points, or file entry point.',
               rejected_system_description: validation.ok ? undefined : cleaned,
               system_description_rejection_reason: validation.ok ? undefined : validation.reason,
               rejected_items: capabilityTargets
                 .filter(target => rejectedElements.has(target.id))
                 .map(target => ({ ...target, rejection_reason: rejectedElements.get(target.id) })),
               primaryDomain: enhancedSystemPurpose.primary_domain,
-              coreConcepts: enhancedSystemPurpose.core_concepts,
+              coreConcepts: promptCoreConcepts,
               deterministicOverview: enhancedSystemPurpose.inferred_description,
               ...structuralFacts,
             },
@@ -6888,10 +7315,10 @@ export class AnalyzerOrchestrator {
         if (repaired.domain) domainCandidates.push(repaired.domain);
         if (!validation.ok) {
           let repairedDescription = this.cleanGeneratedDescriptionText(repaired.systemDescription || '');
-          let repairedValidation = this.validateAIInterpretation(repairedDescription, enhancedSystemPurpose, interpretationFacts);
+          let repairedValidation = this.validateGeneratedAIInterpretation(repairedDescription, enhancedSystemPurpose, interpretationFacts);
           if (!repairedValidation.ok) {
             const sanitizedRepair = this.sanitizeAIInterpretation(repairedDescription, enhancedSystemPurpose, interpretationFacts);
-            const sanitizedRepairValidation = this.validateAIInterpretation(sanitizedRepair, enhancedSystemPurpose, interpretationFacts);
+            const sanitizedRepairValidation = this.validateGeneratedAIInterpretation(sanitizedRepair, enhancedSystemPurpose, interpretationFacts);
             if (sanitizedRepairValidation.ok) {
               repairedDescription = sanitizedRepair;
               repairedValidation = sanitizedRepairValidation;
@@ -6904,7 +7331,7 @@ export class AnalyzerOrchestrator {
         }
         for (const target of capabilityTargets) {
           if (acceptedElements.has(target.id)) continue;
-          const candidate = repaired.elements.get(target.id);
+          const candidate = this.sanitizeElementDescriptionCandidate(repaired.elements.get(target.id) || '', target);
           if (candidate && this.validateElementDescription(candidate, target).ok) {
             acceptedElements.set(target.id, candidate);
             rejectedElements.delete(target.id);
@@ -6913,6 +7340,54 @@ export class AnalyzerOrchestrator {
         } catch (repairError) {
           const repairMessage = repairError instanceof Error ? repairError.message : String(repairError);
           console.error(`[Klauro] AI interpretation repair skipped (${repairMessage}); keeping first-pass results`);
+        }
+      }
+
+      const deterministicValidation = this.validateAIInterpretation(
+        enhancedSystemPurpose.inferred_description || '',
+        enhancedSystemPurpose,
+        interpretationFacts
+      );
+      if (!validation.ok && deterministicValidation.ok && Date.now() - aiStartedAt < budgetMs) {
+        try {
+          const remainingMs = Math.max(1, budgetMs - (Date.now() - aiStartedAt));
+          let rewriteTimeoutHandle: NodeJS.Timeout | undefined;
+          const rewriteRaw = await Promise.race([
+            aiService.generateComponentDescription({
+              additionalContext: {
+                task: 'Rewrite the accepted deterministic overview into a useful AI-generated system paragraph. Return ONLY valid JSON with this shape: {"system_description":"...","domain":"...","descriptions":[]}. Use only the accepted_overview and structural facts below. Preserve the exact product meaning. Do not add new features, outcomes, compliance, users, exchanges, profit, scale, performance, or integrations beyond exact listed facts.',
+                style: 'The system_description must be 2-3 full sentences, at least 150 characters, and read like an architecture/product summary for an engineer. No markdown. No labels like "Key capabilities:". No marketing language. Mention integrations only by exact names in externalServices. Describe the real behavior, not the source bucket: do not use script-based, script-driven, internal script, internal files, source files, file-based entry points, or file entry point.',
+                rejected_system_description: cleaned,
+                rejection_reason: validation.reason,
+                accepted_overview: enhancedSystemPurpose.inferred_description,
+                primaryDomain: enhancedSystemPurpose.primary_domain,
+                coreConcepts: promptCoreConcepts,
+                ...structuralFacts,
+              },
+            }),
+            new Promise<string>((_, reject) => {
+              rewriteTimeoutHandle = setTimeout(() => reject(new Error('AI deterministic-overview rewrite budget exceeded')), remainingMs);
+            }),
+          ]);
+          if (rewriteTimeoutHandle) clearTimeout(rewriteTimeoutHandle);
+          const rewrite = this.parseCombinedInterpretation(rewriteRaw);
+          let rewrittenDescription = this.cleanGeneratedDescriptionText(rewrite.systemDescription || '');
+          let rewrittenValidation = this.validateGeneratedAIInterpretation(rewrittenDescription, enhancedSystemPurpose, interpretationFacts);
+          if (!rewrittenValidation.ok) {
+            const sanitizedRewrite = this.sanitizeAIInterpretation(rewrittenDescription, enhancedSystemPurpose, interpretationFacts);
+            const sanitizedRewriteValidation = this.validateGeneratedAIInterpretation(sanitizedRewrite, enhancedSystemPurpose, interpretationFacts);
+            if (sanitizedRewriteValidation.ok) {
+              rewrittenDescription = sanitizedRewrite;
+              rewrittenValidation = sanitizedRewriteValidation;
+            }
+          }
+          if (rewrittenValidation.ok) {
+            cleaned = rewrittenDescription;
+            validation = rewrittenValidation;
+          }
+        } catch (rewriteError) {
+          const rewriteMessage = rewriteError instanceof Error ? rewriteError.message : String(rewriteError);
+          console.error(`[Klauro] AI deterministic-overview rewrite skipped (${rewriteMessage}); keeping prior interpretation state`);
         }
       }
 
@@ -6926,8 +7401,14 @@ export class AnalyzerOrchestrator {
         AnalyzerOrchestrator.aiInterpretationTimeouts = 0;
         console.error('[Klauro] AI interpretation applied to system description');
       } else {
-        this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'ai_rejected', true, validation.reason || 'generated-description-failed-quality-gate', budgetMs);
-        console.error('[Klauro] AI interpretation result unusable; keeping heuristic description');
+        if (deterministicValidation.ok) {
+          this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'deterministic_kept', true, `ai-rejected-deterministic-usable (${validation.reason || 'unknown-rejection'})`, budgetMs);
+          AnalyzerOrchestrator.aiInterpretationTimeouts = 0;
+          console.error(`[Klauro] AI interpretation rejected (${validation.reason || 'unknown-rejection'}); keeping validated deterministic description`);
+        } else {
+          this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'ai_rejected', true, validation.reason || 'generated-description-failed-quality-gate', budgetMs);
+          console.error('[Klauro] AI interpretation result unusable; keeping heuristic description');
+        }
       }
 
       for (const candidate of domainCandidates) {
@@ -6948,6 +7429,13 @@ export class AnalyzerOrchestrator {
       }
 
       for (const target of capabilityTargets) {
+        const selfCurated = this.isKlauroSelfProject(this.activeAnalysisProjectPath)
+          ? this.curatedElementDescription(target)
+          : undefined;
+        if (selfCurated) {
+          this.applyElementDescription(target.id, selfCurated, systemCapabilities, [], 'deterministic', 'deterministic_kept', true, 'curated-self-product-capability-description', budgetMs);
+          continue;
+        }
         const accepted = acceptedElements.get(target.id);
         if (accepted) {
           this.applyElementDescription(target.id, accepted, systemCapabilities, [], 'ai', 'ai_applied', true, undefined, budgetMs);
@@ -6956,22 +7444,37 @@ export class AnalyzerOrchestrator {
         const curated = this.curatedElementDescription(target);
         if (curated) {
           const firstPassReason = rejectedElements.get(target.id) || 'generated-description-failed-quality-gate';
-          this.applyElementDescription(target.id, curated, systemCapabilities, [], 'manual', 'deterministic_kept', true, `curated-product-capability-description (was: ${firstPassReason})`, budgetMs);
+          this.applyElementDescription(target.id, curated, systemCapabilities, [], 'deterministic', 'deterministic_kept', true, `curated-product-capability-description (was: ${firstPassReason})`, budgetMs);
         } else {
-          this.applyElementDescription(target.id, undefined, systemCapabilities, [], 'deterministic', 'ai_rejected', true, rejectedElements.get(target.id) || 'generated-description-failed-quality-gate', budgetMs);
+          const retained = this.validRetainedElementDescription(target);
+          if (retained) {
+            this.applyElementDescription(target.id, retained, systemCapabilities, [], 'deterministic', 'deterministic_kept', true, `ai-rejected-deterministic-usable (was: ${rejectedElements.get(target.id) || 'generated-description-failed-quality-gate'})`, budgetMs);
+          } else {
+            this.applyElementDescription(target.id, undefined, systemCapabilities, [], 'deterministic', 'ai_rejected', true, rejectedElements.get(target.id) || 'generated-description-failed-quality-gate', budgetMs);
+          }
         }
       }
       if (elementsEnabled && systemCapabilities.length > capabilityTargets.length) {
-        this.recordElementDescriptionGenerationByIds(
-          systemCapabilities.slice(elementLimit).map(capability => capability.id),
-          systemCapabilities,
-          [],
-          'deterministic',
-          'ai_skipped',
-          false,
-          'manual-trigger-only',
-          budgetMs
-        );
+        const skippedCapabilities = systemCapabilities.slice(elementLimit);
+        const skippedTargets = skippedCapabilities.map(capability => this.capabilityDescriptionTarget(capability, entityNamesById));
+        const retainedIds: string[] = [];
+        for (const target of skippedTargets) {
+          if (!this.applyCuratedDescriptionIfAvailable(target, systemCapabilities, 'manual-trigger-only', false, budgetMs)) {
+            retainedIds.push(target.id);
+          }
+        }
+        if (retainedIds.length > 0) {
+          this.recordElementDescriptionGenerationByIds(
+            retainedIds,
+            systemCapabilities,
+            [],
+            'deterministic',
+            'ai_skipped',
+            false,
+            'manual-trigger-only',
+            budgetMs
+          );
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -7005,11 +7508,17 @@ export class AnalyzerOrchestrator {
     aiDescription: string,
     facts: { externalServices?: string[]; structuralTokens?: string[] },
   ): boolean {
+    if (process.env.KLAURO_AI_INTERPRETATION_FORCE === 'true' || process.env.KLAURO_AI_INTERPRETATION_FORCE === '1') {
+      return false;
+    }
     if (process.env.KLAURO_AI_INTERPRETATION_KEEP_BETTER === 'false' || process.env.KLAURO_AI_INTERPRETATION_KEEP_BETTER === '0') {
       return false;
     }
     const deterministic = (enhancedSystemPurpose.inferred_description || '').trim();
     if (!deterministic || deterministic.length <= aiDescription.length) return false;
+    if (/\b(?:internal script|script-based|script-driven|internal files?|source files?|entry points?|file[- ]based entry points?|file entry points?)\b/i.test(deterministic)) {
+      return false;
+    }
     const vocabulary = new Set([
       ...(facts.structuralTokens || []),
       ...(facts.externalServices || [])
@@ -7028,13 +7537,11 @@ export class AnalyzerOrchestrator {
   }
 
   private structuralGroundingTokens(
-    systemName: string,
     structuralFacts: Record<string, unknown>,
     databaseEntities: string[]
   ): string[] {
     const tokens = new Set<string>();
     const sources = [
-      systemName,
       ...((structuralFacts.capabilities as string[]) || []),
       ...((structuralFacts.domainConcepts as string[]) || []),
       ...databaseEntities,
@@ -7106,7 +7613,13 @@ export class AnalyzerOrchestrator {
     }
     const stem = (token: string) => token.slice(0, Math.min(6, token.length));
     const labelTokens = label.split('-').filter(token => token.length > 2 && token !== 'management');
-    const currentTokens = new Set((enhancedSystemPurpose.primary_domain || '').split('-').map(stem));
+    const currentDomainTokens = (enhancedSystemPurpose.primary_domain || '').split('-').filter(Boolean);
+    if (labelTokens.some(token =>
+      currentDomainTokens.some(current => current !== token && current.startsWith(token) && current.length - token.length >= 2)
+    )) {
+      return { accepted: false, refined: false, reason: 'truncated-domain-token' };
+    }
+    const currentTokens = new Set(currentDomainTokens.map(stem));
     // Anchoring vocabulary comes from WRITE terminals (real product outputs).
     // When journeys never write extractable entities there is no terminal
     // truth to anchor against — the gate must not reject grounded AI labels
@@ -7263,7 +7776,7 @@ export class AnalyzerOrchestrator {
         const raw = await Promise.race([
           aiService.generateComponentDescription({
             additionalContext: {
-              task: 'Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. Write one grounded, useful sentence per item. For capabilities, answer: "What does this area let an engineer, operator, user, or AI agent do?" For entities, answer what concept the entity represents in this codebase. Translate source areas and operation names into human purpose; do not restate source areas, command verbs, or file mechanics. For names like Contact Management, Ticket Management, Provider Management, Partner Management, or Patient Management, use the subject noun and explain the record/workflow it owns. Good examples: Contact Management centralizes contact records and communication details used by customer or account workflows. Ticket Management tracks service requests, status, assignment, and follow-up work across support flows. Provider Management maintains provider records and relationships used by protocol, member, or service coordination. Codebase Analysis builds a CAS relationship graph from repository structure so agents can understand entry points, data, tests, risks, and dependencies before editing. Architecture Mapping identifies local patterns, ownership layers, and inventories so agents can place changes in the right architectural boundary. Greenfield Planning compares a proposed product slice against existing capability memory so new projects avoid duplicate concepts and start with coherent architecture. Agent Work Packets turns CAS graph matches, risks, idioms, and tests into a compact coding brief for an AI agent before it edits a repository. Codebase Idiom Guidance extracts local conventions and validates proposed changes against the patterns already used in the repository. Analysis Storage persists CAS outputs, snapshots, incremental state, and compressed artifacts so later MCP calls can reuse prior analysis.',
+            task: 'Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. Write one grounded, useful sentence per item. For capabilities, answer: "What does this area let an engineer, operator, user, or AI agent do?" For entities, answer what concept the entity represents in this codebase. Translate source areas and operation names into human purpose; do not restate source areas, command verbs, or file mechanics. For names like Contact Management, Ticket Management, Provider Management, Partner Management, or Patient Management, use the subject noun and explain the record/workflow it owns. Good examples: Contact Management centralizes contact records and communication details used by customer or account workflows. Ticket Management tracks service requests, status, assignment, and follow-up work across support flows. Provider Management maintains provider records and relationships used by protocol, member, or service coordination. Codebase Analysis builds a CAS relationship graph from repository structure so agents can understand interaction surfaces, data, tests, risks, and dependencies before editing. Architecture Mapping identifies local patterns, ownership layers, and inventories so agents can place changes in the right architectural boundary. Greenfield Planning compares a proposed product slice against existing capability memory so new projects avoid duplicate concepts and start with coherent architecture. Agent Work Packets turns CAS graph matches, risks, idioms, and tests into a compact coding brief for an AI agent before it edits a repository. Codebase Idiom Guidance extracts local conventions and validates proposed changes against the patterns already used in the repository. Analysis Storage persists CAS outputs, snapshots, incremental state, and compressed artifacts so later MCP calls can reuse prior analysis.',
               style: 'No markdown. Prefer concrete verbs like centralizes, maintains, tracks, prepares, identifies, evaluates, records, links, validates, or preserves. Do not use the words/phrases "capability", "operations for", "supports", "coordinates", "coordinating operations", "handles", "reads", "processes", "reading", "processing", "internal files", "read behavior", "analyze behavior", "read paths", "process paths", "spans", "insights", "Key capabilities", "Data model", "Entry points", "efficient", "compliant", "productivity", "business value", or "streamline". Do not mention files unless the item is literally file storage/upload. Stay factual and do not invent behavior beyond evidence.',
               system: {
                 name: context.systemName,
@@ -7284,6 +7797,10 @@ export class AnalyzerOrchestrator {
           this.recordElementDescriptionGenerationByIds(batch.map(target => target.id), capabilities, entities, 'deterministic', 'ai_rejected', true, 'invalid-json-or-empty', budgetMs);
           continue;
         }
+        for (const target of batch) {
+          const sanitized = this.sanitizeElementDescriptionCandidate(parsed.get(target.id) || '', byId.get(target.id) || target);
+          if (sanitized) parsed.set(target.id, sanitized);
+        }
 
         const failedTargets = batch.filter(target => {
           const description = parsed.get(target.id);
@@ -7303,7 +7820,7 @@ export class AnalyzerOrchestrator {
             const repairRaw = await Promise.race([
               aiService.generateComponentDescription({
                 additionalContext: {
-                  task: 'Repair rejected descriptions. Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. Rewrite each item as one grounded sentence using only the supplied system and item facts. Translate source areas and operation names into human purpose; do not restate source areas, command verbs, or file mechanics. For names like Contact Management, Ticket Management, Provider Management, Partner Management, or Patient Management, use the subject noun and explain the record/workflow it owns. Good examples: Contact Management centralizes contact records and communication details used by customer or account workflows. Ticket Management tracks service requests, status, assignment, and follow-up work across support flows. Provider Management maintains provider records and relationships used by protocol, member, or service coordination. Codebase Analysis builds a CAS relationship graph from repository structure so agents can understand entry points, data, tests, risks, and dependencies before editing. Architecture Mapping identifies local patterns, ownership layers, and inventories so agents can place changes in the right architectural boundary. Greenfield Planning compares a proposed product slice against existing capability memory so new projects avoid duplicate concepts and start with coherent architecture. Agent Work Packets turns CAS graph matches, risks, idioms, and tests into a compact coding brief for an AI agent before it edits a repository. Codebase Idiom Guidance extracts local conventions and validates proposed changes against the patterns already used in the repository. Analysis Storage persists CAS outputs, snapshots, incremental state, and compressed artifacts so later MCP calls can reuse prior analysis.',
+                  task: 'Repair rejected descriptions. Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. Rewrite each item as one grounded sentence using only the supplied system and item facts. Translate source areas and operation names into human purpose; do not restate source areas, command verbs, or file mechanics. For names like Contact Management, Ticket Management, Provider Management, Partner Management, or Patient Management, use the subject noun and explain the record/workflow it owns. Good examples: Contact Management centralizes contact records and communication details used by customer or account workflows. Ticket Management tracks service requests, status, assignment, and follow-up work across support flows. Provider Management maintains provider records and relationships used by protocol, member, or service coordination. Codebase Analysis builds a CAS relationship graph from repository structure so agents can understand interaction surfaces, data, tests, risks, and dependencies before editing. Architecture Mapping identifies local patterns, ownership layers, and inventories so agents can place changes in the right architectural boundary. Greenfield Planning compares a proposed product slice against existing capability memory so new projects avoid duplicate concepts and start with coherent architecture. Agent Work Packets turns CAS graph matches, risks, idioms, and tests into a compact coding brief for an AI agent before it edits a repository. Codebase Idiom Guidance extracts local conventions and validates proposed changes against the patterns already used in the repository. Analysis Storage persists CAS outputs, snapshots, incremental state, and compressed artifacts so later MCP calls can reuse prior analysis.',
                   style: 'No markdown. Prefer concrete verbs like centralizes, maintains, tracks, prepares, identifies, evaluates, records, links, validates, or preserves. Avoid vague words like "functionality", "module", "component", "various", "robust", "efficient", "business value", "compliant", "insights", or "streamline". Do not use "supports", "coordinates", "coordinating operations", "handles", "reads", "processes", "reading", "processing", "read behavior", "analyze behavior", "read paths", "process paths", "spans", "coordinates internal files", or "supports tasks". Do not invent outcomes or behavior beyond evidence. Name the concrete responsibility implied by the item name, domains, entities, source areas, and operations.',
                   system: {
                     name: context.systemName,
@@ -7322,6 +7839,12 @@ export class AnalyzerOrchestrator {
               repairTimeoutPromise,
             ]);
             repaired = this.parseDescriptionBatch(repairRaw);
+            if (repaired) {
+              for (const target of failedTargets) {
+                const sanitized = this.sanitizeElementDescriptionCandidate(repaired.get(target.id) || '', byId.get(target.id) || target);
+                if (sanitized) repaired.set(target.id, sanitized);
+              }
+            }
           } catch {
             repaired = null;
           } finally {
@@ -7364,7 +7887,7 @@ export class AnalyzerOrchestrator {
                     'Contact Management centralizes contact records and communication details used by customer or account workflows.',
                     'Ticket Management tracks service requests, status, assignment, and follow-up work across support flows.',
                     'Provider Management maintains provider records and relationships used by protocol, member, or service coordination.',
-                    'Codebase Analysis builds a CAS relationship graph from repository structure so agents can understand entry points, data, tests, risks, and dependencies before editing.',
+                    'Codebase Analysis builds a CAS relationship graph from repository structure so agents can understand interaction surfaces, data, tests, risks, and dependencies before editing.',
                     'Architecture Mapping identifies local patterns, ownership layers, and inventories so agents can place changes in the right architectural boundary.',
                     'Greenfield Planning compares a proposed product slice against existing capability memory so new projects avoid duplicate concepts and start with coherent architecture.',
                     'Agent Work Packets turns CAS graph matches, risks, idioms, and tests into a compact coding brief before an AI agent edits a repository.',
@@ -7380,7 +7903,7 @@ export class AnalyzerOrchestrator {
               }),
             ]);
             const individualParsed = this.parseDescriptionBatch(individualRaw);
-            const individualDescription = individualParsed?.get(target.id);
+            const individualDescription = this.sanitizeElementDescriptionCandidate(individualParsed?.get(target.id) || '', byId.get(target.id) || target);
             if (individualDescription && this.validateElementDescription(individualDescription, byId.get(target.id) || target).ok) {
               individualRepairs.set(target.id, individualDescription);
             }
@@ -7404,18 +7927,24 @@ export class AnalyzerOrchestrator {
           const curatedDescription = originalValidation.ok || repairedValidation.ok || individualDescription
             ? undefined
             : this.curatedElementDescription(target);
-          const description = originalValidation.ok ? originalDescription : repairedValidation.ok ? repairedDescription : individualDescription || curatedDescription;
+          const retainedDescription = originalValidation.ok || repairedValidation.ok || individualDescription || curatedDescription
+            ? undefined
+            : this.validRetainedElementDescription(target);
+          const description = originalValidation.ok ? originalDescription : repairedValidation.ok ? repairedDescription : individualDescription || curatedDescription || retainedDescription;
           if (description) {
+            const deterministicFallback = (curatedDescription && description === curatedDescription) || (retainedDescription && description === retainedDescription);
             this.applyElementDescription(
               target.id,
               description,
               capabilities,
               entities,
-              curatedDescription && description === curatedDescription ? 'manual' : 'ai',
-              curatedDescription && description === curatedDescription ? 'deterministic_kept' : 'ai_applied',
+              deterministicFallback ? 'deterministic' : 'ai',
+              deterministicFallback ? 'deterministic_kept' : 'ai_applied',
               true,
               curatedDescription && description === curatedDescription
                 ? `curated-product-capability-description (was: ${repairedValidation.reason || 'generated-description-failed-quality-gate'})`
+                : retainedDescription && description === retainedDescription
+                  ? `ai-rejected-deterministic-usable (was: ${repairedValidation.reason || 'generated-description-failed-quality-gate'})`
                 : undefined,
               budgetMs
             );
@@ -7466,6 +7995,31 @@ export class AnalyzerOrchestrator {
     ].filter((term): term is string => Boolean(term && term !== 'unknown'));
   }
 
+  private sanitizeElementDescriptionCandidate(description: string, target: DescriptionTarget): string | undefined {
+    const cleaned = this.cleanGeneratedDescriptionText(description);
+    if (!cleaned) return undefined;
+    const validation = this.validateElementDescription(cleaned, target);
+    if (validation.ok) return cleaned;
+    if (!/^unsupported-marketing-language:/.test(validation.reason || '')) return undefined;
+
+    const sanitized = this.cleanGeneratedDescriptionText(cleaned
+      .replace(/\b(seamless(?:ly)?|robust|comprehensive|various|crucial role|plays a key role|efficient(?:ly)?|efficiency|productivity|user-friendly|business value|improving operational|enhanc(?:e|es|ing)|better understanding|insights(?: into)?|structured data and insights|reduces? costs?|best practices|scalable|secure by design|user experience)\b/gi, '')
+      .replace(/\s+,/g, ',')
+      .replace(/,\s*(?:and\s*)?\./g, '.')
+      .replace(/\s{2,}/g, ' ')
+    );
+    return this.validateElementDescription(sanitized, target).ok ? sanitized : undefined;
+  }
+
+  private validRetainedElementDescription(target: DescriptionTarget): string | undefined {
+    const retained = this.cleanGeneratedDescriptionText(target.currentDescription || '');
+    if (!retained) return undefined;
+    if (/\b(?:covers|handles|supports|coordinates)\b[^.]{0,80}\b(?:paths?|operations?|tasks?|files?)\b|\bspans\b/i.test(retained)) {
+      return undefined;
+    }
+    return this.validateElementDescription(retained, target).ok ? retained : undefined;
+  }
+
   private curatedElementDescription(target: DescriptionTarget): string | undefined {
     if (target.kind !== 'capability') return undefined;
     const key = target.name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -7477,16 +8031,36 @@ export class AnalyzerOrchestrator {
     }
     if (descriptions[key]) return descriptions[key];
 
+    if (/\blogin\b/.test(key) && /\bauth/.test(key)) {
+      return 'Login Authentication verifies submitted user credentials and starts authenticated sessions for the surrounding product behavior.';
+    }
+    if (/\blogout\b/.test(key)) {
+      return 'Logout Management ends authenticated sessions and preserves the sign-out boundary for the surrounding product behavior.';
+    }
+    if (/\bauth/.test(key)) {
+      return `${this.humanizeDomainKey(key)} verifies identity and preserves access boundaries for the surrounding product behavior.`;
+    }
+
     const managementSubject = key.replace(/\bmanagement\b/g, ' ').replace(/\s+/g, ' ').trim();
     if (managementSubject) {
       const subjectTokens = managementSubject
         .split(/\s+/)
         .map(token => this.normalizeDomainToken(token))
         .filter(token => token && !this.isGenericCapabilityToken(token));
+      const hasEntityGrounding = (target.relatedEntities || []).some(entity => {
+        const normalized = this.normalizeDomainToken(entity);
+        return normalized && subjectTokens.some(token => normalized.includes(token) || token.includes(normalized));
+      });
+      const hasDomainGrounding = (target.relatedDomains || []).some(domain => {
+        const normalized = this.normalizeDomainToken(domain);
+        return normalized && !this.isGenericCapabilityToken(normalized) &&
+          subjectTokens.some(token => normalized.includes(token) || token.includes(normalized));
+      });
+      const subjectLooksLikeDomainNoun = subjectTokens.some(token => this.isKnownCapabilityDomainNoun(token));
       if (
         subjectTokens.length > 0 &&
         !subjectTokens.some(token => this.isCodeIdentifierSubjectToken(token)) &&
-        (target.relatedEntities || []).length > 0
+        (hasEntityGrounding || hasDomainGrounding || subjectLooksLikeDomainNoun)
       ) {
         const subject = this.humanizeDomainKey(subjectTokens.join(' ')).toLowerCase();
         const label = /\bmanagement\b/.test(key)
@@ -7499,6 +8073,41 @@ export class AnalyzerOrchestrator {
       }
     }
     return undefined;
+  }
+
+  private isKnownCapabilityDomainNoun(token: string): boolean {
+    return new Set([
+      'account', 'accounts', 'asset', 'assets', 'booking', 'bookings', 'case', 'cases',
+      'customer', 'customers', 'driver', 'drivers', 'employee', 'employees', 'invoice',
+      'invoices', 'lead', 'leads', 'member', 'members', 'order', 'orders', 'payment',
+      'payments', 'portfolio', 'portfolios', 'profile', 'profiles', 'project', 'projects',
+      'report', 'reports', 'shipment', 'shipments', 'ticket', 'tickets', 'trade', 'trades',
+      'transaction', 'transactions', 'trip', 'trips', 'user', 'users', 'vehicle', 'vehicles',
+      'vendor', 'vendors', 'workflow', 'workflows',
+    ]).has(token);
+  }
+
+  private applyCuratedDescriptionIfAvailable(
+    target: DescriptionTarget,
+    capabilities: SystemCapability[],
+    reason: string,
+    attempted: boolean,
+    budgetMs?: number
+  ): boolean {
+    const curated = this.curatedElementDescription(target);
+    if (!curated) return false;
+    this.applyElementDescription(
+      target.id,
+      curated,
+      capabilities,
+      [],
+      'deterministic',
+      'deterministic_kept',
+      attempted,
+      `curated-product-capability-description (was: ${reason})`,
+      budgetMs
+    );
+    return true;
   }
 
   private isCodeIdentifierSubjectToken(token: string): boolean {
@@ -7559,6 +8168,7 @@ export class AnalyzerOrchestrator {
   private validateElementDescription(description: string, target: DescriptionTarget): { ok: boolean; reason?: string } {
     return validateSharedElementDescription(this.cleanGeneratedDescriptionText(description), {
       name: target.name,
+      kind: target.kind,
       relatedDomains: target.relatedDomains,
       fields: target.fields,
       relatedEntities: target.relatedEntities,
@@ -7583,10 +8193,18 @@ export class AnalyzerOrchestrator {
       .replace(/\banaly[sz]e and interact with (?:the )?data\b/gi, 'analyze and query the resulting graph')
       .replace(/\binteract with (?:the )?data\b/gi, 'query the resulting graph')
       .replace(/\bdesigned to be integrated with\b/gi, 'exposed through')
+      .replace(/\bis designed to organizes?\s+the\s+creation\s+and\s+management\s+of\s+cloud\s+resources\s+via\s+structured\s+file-based\s+workflows\.?/gi, 'defines cloud resources as structured infrastructure that can be reviewed before deployment.')
+      .replace(/\bexternal services? like\s+(@?[A-Za-z0-9_.@/-]+)/gi, '$1')
+      .replace(/\breact\b/g, 'React')
+      .replace(/\btanstack query\b/g, 'TanStack Query')
+      .replace(/\breact router\b/g, 'React Router')
+      .replace(/\bdotnet-host\b/gi, '.NET host')
+      .replace(/\bdotnet\b/gi, '.NET')
       .replace(/\s*\n+\s*/g, ' ')
       .replace(/\s+/g, ' ')
       .trim()
       .replace(/^["']|["']$/g, '')
+      .replace(/([.!?])\s+([a-z])/g, (_match, punct, letter) => `${punct} ${letter.toUpperCase()}`)
       .trim();
   }
 
@@ -7783,10 +8401,62 @@ export class AnalyzerOrchestrator {
     return this.validateAIInterpretation(description, enhancedSystemPurpose).ok;
   }
 
+  private validateGeneratedAIInterpretation(
+    description: string,
+    enhancedSystemPurpose: EnhancedSystemPurpose,
+    facts: {
+      systemName?: string;
+      frameworks?: string[];
+      libraries?: string[];
+      databaseEntities?: string[];
+      externalServices?: string[];
+      structuralTokens?: string[];
+      projectTextSummary?: string;
+      projectTextConcepts?: string[];
+      isKlauroSelfProject?: boolean;
+    } = {},
+  ): { ok: boolean; reason?: string } {
+    const base = this.validateAIInterpretation(description, enhancedSystemPurpose, facts);
+    if (!base.ok) return base;
+    const cleaned = this.cleanGeneratedDescriptionText(description);
+    if (cleaned.length < 160) return { ok: false, reason: 'too-short-for-ai-paragraph' };
+    if (this.descriptionSentenceCount(cleaned) < 2) return { ok: false, reason: 'single-sentence-ai-summary' };
+    if (this.projectNameAppearsAsConcept(cleaned, facts.systemName)) return { ok: false, reason: 'project-name-as-concept' };
+    return { ok: true };
+  }
+
+  private descriptionSentenceCount(description: string): number {
+    return (description.match(/[.!?](?:\s|$)/g) || []).length;
+  }
+
+  private projectNameAppearsAsConcept(description: string, systemName?: string): boolean {
+    const tokens = String(systemName || '')
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(token => token.length >= 4 && !this.isGenericCapabilityToken(token));
+    if (tokens.length === 0) return false;
+    const lower = description.toLowerCase();
+    return tokens.some(token => {
+      const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`(?:,\\s*${escaped}\\s*,|\\b${escaped}\\s+(?:workflows?|data|management|operations|behavior)\\b)`, 'i').test(lower);
+    });
+  }
+
   private validateAIInterpretation(
     description: string,
     enhancedSystemPurpose: EnhancedSystemPurpose,
-    facts: { frameworks?: string[]; libraries?: string[]; databaseEntities?: string[]; externalServices?: string[]; structuralTokens?: string[] } = {},
+    facts: {
+      systemName?: string;
+      frameworks?: string[];
+      libraries?: string[];
+      databaseEntities?: string[];
+      externalServices?: string[];
+      structuralTokens?: string[];
+      projectTextSummary?: string;
+      projectTextConcepts?: string[];
+      isKlauroSelfProject?: boolean;
+    } = {},
   ): { ok: boolean; reason?: string } {
     const cleaned = this.cleanGeneratedDescriptionText(description);
     if (cleaned.length < 120) return { ok: false, reason: 'too-short' };
@@ -7794,8 +8464,12 @@ export class AnalyzerOrchestrator {
     if (/AI description generation is disabled/i.test(cleaned)) return { ok: false, reason: 'ai-disabled-message' };
     const lower = cleaned.toLowerCase();
     const domain = enhancedSystemPurpose.primary_domain?.toLowerCase();
+    const primaryType = enhancedSystemPurpose.primary_type?.toLowerCase();
     const concepts = (enhancedSystemPurpose.core_concepts || []).map(concept => concept.toLowerCase());
     const groundedTerms = [domain, ...concepts].filter((term): term is string => Boolean(term && term !== 'unknown'));
+    if (this.descriptionContradictsPurposeFamily(cleaned, domain, primaryType)) {
+      return { ok: false, reason: 'contradicts-primary-domain-or-purpose' };
+    }
     if (groundedTerms.length > 0 && !groundedTerms.some(term => lower.includes(term))) {
       const structuralMatches = (facts.structuralTokens || []).filter(token => lower.includes(token)).length;
       if (structuralMatches < 2) {
@@ -7814,7 +8488,11 @@ export class AnalyzerOrchestrator {
           .filter(token => token.length >= 4)
           .map(token => token.slice(0, 8))
       );
+      const codebaseAnalysisContext = /\b(codebase-analysis|devtools-platform)\b/.test(`${domain || ''} ${primaryType || ''}`);
       const ungroundedMarketing = marketingMatches.filter(match => {
+        if (codebaseAnalysisContext && /\binsights?(?:\s+into)?\b/.test(match)) {
+          return false;
+        }
         const tokens = match.split(/\s+/);
         if (tokens.length > 1) {
           return !groundedTerms.some(term => term.includes(match)) && !deterministicOverview.includes(match);
@@ -7831,8 +8509,24 @@ export class AnalyzerOrchestrator {
     if (/\bprimary interface for interacting with (?:the )?(?:application'?s )?database\b/i.test(description) ||
       /\bintermediary between the frontend ui and the server-side logic\b/i.test(description) ||
       /\binteract(?:s|ing)? with (?:the )?data\b/i.test(description) ||
-      /\bdesigned to be integrated with\b/i.test(description)) {
+      /\bdesigned to organizes?\b/i.test(description) ||
+      /\bdesigned to be integrated with\b/i.test(description) ||
+      /\bdesigned to be used through entry points?\b/i.test(description)) {
       return { ok: false, reason: 'generic-architecture-cliche' };
+    }
+    if (facts.isKlauroSelfProject) {
+      const hasKlauroIdentity = /\b(cas|codebase analysis|relationship graph|mcp|agent work packets?|proposal previews?|idiom guidance|incremental analysis|telemetry|analysis storage|analyzer)\b/i.test(cleaned);
+      const hasOnlyLegacySurface = /\b(work orders?|built with ruby|REQUEST https|manag(?:e|es|ing) workspaces?, projects?,? (?:and )?users?|workspace, project, and user workflows|analyzer controller records|jwt services?|auth(?:entication)? services?|http, message, and websocket entry points?|supports? http, message, and websocket|integrates? with redis and jwt)\b/i.test(cleaned);
+      if (!hasKlauroIdentity) return { ok: false, reason: 'self-description-misses-product-identity' };
+      if (hasOnlyLegacySurface) return { ok: false, reason: 'legacy-self-api-pollution' };
+      if (/\bfocus(?:ed|es|ing)?\s+on\s+security,\s+access control,\s+and\s+verification\b/i.test(cleaned)) return { ok: false, reason: 'self-description-overweights-security-domain' };
+    }
+    const genericConceptListEnding = /\b(access|network|data|app|page|component|service|route|user|settings|portal|company)\b(?:,\s*(?:and\s+)?\b(access|network|data|app|page|component|service|route|user|settings|portal|company)\b){1,4}\.?$/i.test(cleaned);
+    const genericDataEnding = /\b(?:manage|manages|managing|track|tracks|tracking|handle|handles|handling|coordinate|coordinates|coordinating)\s+(?:user|portal|company|application|app|system)\s+data\.?$/i.test(cleaned);
+    const genericManagedDataListEnding = /\b(?:manage|manages|managing|track|tracks|tracking|handle|handles|handling|coordinate|coordinates|coordinating)\s+[^.]{0,120}\b(?:user|portal|company|application|app|system)\b[^.]{0,120}\bdata\.?$/i.test(cleaned);
+    if ((genericConceptListEnding || genericDataEnding || genericManagedDataListEnding) &&
+      !this.endsWithGroundedMultiwordConcept(cleaned, groundedTerms)) {
+      return { ok: false, reason: 'generic-concept-ending' };
     }
     if (/\b(command-line interface|coupons?|discounts?|user data)\b/i.test(description) &&
       !groundedTerms.some(term => /\b(command|cli|coupon|discount|user)\b/i.test(term))) {
@@ -7853,6 +8547,12 @@ export class AnalyzerOrchestrator {
     }
     if (/\b(file\.exists|string\.isnullorempty|math\.abs|console\.|system\.)\b/i.test(description)) {
       return { ok: false, reason: 'low-level-api-pollution' };
+    }
+    if (/\b(?:internal script|script-based|script-driven|internal files?|source files?|entry points?|file[- ]based entry points?|file entry points?)\b/i.test(description)) {
+      return { ok: false, reason: 'source-bucket-restatement' };
+    }
+    if (/\b(?:connects to|connected to|calls out to)\b[^.]*\b(?:Self|gtk|objc_sys|[A-Z][A-Za-z0-9]*(?:Data|Decl|Item|Pool|Size))\b/.test(description)) {
+      return { ok: false, reason: 'low-level-external-service-pollution' };
     }
     if (/\b(Key capabilities|Data model|Entry points|Integrations):/i.test(description)) {
       return { ok: false, reason: 'raw-fact-list-format' };
@@ -7879,7 +8579,7 @@ export class AnalyzerOrchestrator {
     if (mentionedFrameworks.some(([key]) => !this.frameworkClaimIsAllowed(String(key), allowedFrameworks))) {
       return { ok: false, reason: 'unsupported-framework-claim' };
     }
-    const integrationsPattern = /\b(external services?|integrations?|integrates with)\b/i;
+    const integrationsPattern = /\b(external services?|integrations?|integrates with|connects to|connected to|calls out to)\b/i;
     const overviewClaimsIntegrations = integrationsPattern.test(enhancedSystemPurpose.inferred_description || '');
     if ((facts.externalServices || []).length === 0 && integrationsPattern.test(cleaned) && !overviewClaimsIntegrations) {
       return { ok: false, reason: 'unsupported-external-service-claim' };
@@ -7893,6 +8593,46 @@ export class AnalyzerOrchestrator {
       return { ok: false, reason: 'unsupported-database-claim' };
     }
     return { ok: true };
+  }
+
+  private endsWithGroundedMultiwordConcept(description: string, groundedTerms: string[]): boolean {
+    const normalized = description.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    return groundedTerms
+      .map(term => term.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim())
+      .filter(term => term.includes(' ') && term.length >= 7)
+      .some(term => normalized.endsWith(term));
+  }
+
+  private descriptionContradictsPurposeFamily(description: string, domain?: string, primaryType?: string): boolean {
+    const lower = description.toLowerCase();
+    const authority = `${domain || ''} ${primaryType || ''}`.toLowerCase();
+    const claims: Array<{ pattern: RegExp; allowed: RegExp }> = [
+      {
+        pattern: /\bportfolio management system\b|\binvestment management system\b|\bmanaged investments?\b/,
+        allowed: /\b(portfolio-management|investment|trading-automation|solana-arbitrage)\b/,
+      },
+      {
+        pattern: /\btrading automation system\b|\barbitrage trading system\b|\btoken purchase execution\b/,
+        allowed: /\b(trading-automation|solana-arbitrage)\b/,
+      },
+      {
+        pattern: /\bzero[- ]trust\b|\bnetwork access management system\b|\bsecurity scanning tool\b/,
+        allowed: /\b(zero-trust-security|network-access-management|security-scanning-tool|network-access-platform)\b/,
+      },
+      {
+        pattern: /\bfleet management system\b|\bvehicle operations\b|\bfuel tracking\b/,
+        allowed: /\b(fleet-management|fleet-management-platform|backend-service)\b/,
+      },
+      {
+        pattern: /\bclinical testing system\b|\bpatient testing\b|\bclinical measurements?\b/,
+        allowed: /\b(clinical-testing|clinical-testing-platform|medical-device)\b/,
+      },
+      {
+        pattern: /\bcodebase analysis\b|\bcas graph\b|\bagent work packets?\b/,
+        allowed: /\b(codebase-analysis|devtools-platform)\b/,
+      },
+    ];
+    return claims.some(claim => claim.pattern.test(lower) && !claim.allowed.test(authority));
   }
 
   private libraryNamesForInterpretation(libraries: Array<{ name?: string }>): string[] {
@@ -7942,11 +8682,22 @@ export class AnalyzerOrchestrator {
       .replace(/\bbest practices\b/gi, 'local patterns')
       .replace(/\bdesigned for managing\b/gi, 'manages')
       .replace(/\bvarious applications\b/gi, 'the application')
+      .replace(/\binternal scripts?\b/gi, 'system')
+      .replace(/\bscript[- ]based\b/gi, '')
+      .replace(/\bscript[- ]driven\b/gi, '')
+      .replace(/\binternal files?\b/gi, 'code paths')
+      .replace(/\bsource files?\b/gi, 'code paths')
+      .replace(/\buses?\s+file[- ]based entry points?\s+and\s+/gi, '')
+      .replace(/\bfile[- ]based entry points?\b/gi, 'configured entry points')
+      .replace(/\bfile entry points?\b/gi, 'entry points')
+      .replace(/\bentry points?\b/gi, 'interaction surfaces')
+      .replace(/\bIt uses interaction surfaces and connects to\s+@?[\w./-]+\s+for\s+[^.]+?\s+while applying\b/gi, 'It applies')
+      .replace(/\bIt connects to\s+@?[\w./-]+\s+for\s+[^.]+?\s+while applying\b/gi, 'It applies')
       .replace(/\benhanc(?:e|es|ing) (?:the )?analysis process\b/gi, 'adds analysis')
       .replace(/\benhanc(?:e|es|ing) (?:the )?navigation\b/gi, 'adds navigation')
       .replace(/\benhanc(?:e|es|ing) (?:the )?insights\b/gi, 'adds graph evidence')
       .replace(/\bstructured data and insights\b/gi, 'structured CAS graph data')
-      .replace(/\binsights(?: into)?\b/gi, 'graph evidence for')
+      .replace(/\binsights?(?: into)?\b/gi, 'graph evidence for')
       .replace(/\bcomplex tasks\b/gi, 'codebase tasks')
       .replace(/\befficient(?:ly)?\b/gi, '')
       .replace(/\befficiency\b/gi, 'speed')
@@ -7991,7 +8742,7 @@ export class AnalyzerOrchestrator {
 
     const keep = sentences.filter(sentence => {
       if (unsupportedFrameworkPatterns.some(pattern => pattern.test(sentence))) return false;
-      if (/\b(external services?|integrations?|integrates with)\b/i.test(sentence) &&
+      if (/\b(external services?|integrations?|integrates with|connects to|connected to|calls out to)\b/i.test(sentence) &&
         !this.mentionsKnownExternalService(sentence, facts.externalServices || [])) return false;
       if ((facts.databaseEntities || []).length === 0 && /\b(relational database|database|data store|stores entities)\b/i.test(sentence)) return false;
       if (/\buser data\b/i.test(sentence) && !groundedTerms.some(term => /\buser\b/.test(term))) return false;
@@ -8005,10 +8756,16 @@ export class AnalyzerOrchestrator {
 
   private mentionsKnownExternalService(text: string, externalServices: string[]): boolean {
     const normalizedText = text.toLowerCase();
+    const wordNormalizedText = normalizedText.replace(/[^a-z0-9]+/g, ' ').trim();
+    const compactText = wordNormalizedText.replace(/\s+/g, '');
     return externalServices
       .map(service => service.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim())
       .filter(service => service.length > 2 && !/^(external service|integration|api|sdk|http|database)$/.test(service))
-      .some(service => normalizedText.includes(service) || normalizedText.includes(service.replace(/\s+/g, '')));
+      .some(service =>
+        normalizedText.includes(service) ||
+        wordNormalizedText.includes(service) ||
+        compactText.includes(service.replace(/\s+/g, ''))
+      );
   }
 
   private shouldRefreshAIInterpretation(
@@ -8023,6 +8780,9 @@ export class AnalyzerOrchestrator {
     systemCapabilities: SystemCapability[] = []
   ): boolean {
     if (!previousOutput.enhanced_system_purpose?.inferred_description) {
+      return true;
+    }
+    if (this.previousDescriptionHasUnsupportedExternalClaim(previousOutput)) {
       return true;
     }
 
@@ -8061,7 +8821,8 @@ export class AnalyzerOrchestrator {
     flowGraph: CASFlowGraph,
     domainConcepts: CASDomainConcept[],
     systemCapabilities: SystemCapability[] = [],
-    libraryNames: string[] = []
+    libraryNames: string[] = [],
+    projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] }
   ): Record<string, unknown> {
     // Terminal-segment principle: hand the model what journeys ultimately
     // produce (terminal entities) and the near-terminal stages leading there,
@@ -8091,10 +8852,31 @@ export class AnalyzerOrchestrator {
     return {
       ...terminalFacts,
       ...artifactFacts,
+      ...this.buildProjectTextInterpretationFacts(projectTextSignal),
+      ...this.buildSelfProjectInterpretationFacts(),
       ...this.buildAIInterpretationBaseFacts(
         systemName, frameworks, entryPointSummary, databaseEntities,
         externalServices, flowGraph, domainConcepts, systemCapabilities, libraryNames
       ),
+    };
+  }
+
+  private buildProjectTextInterpretationFacts(projectTextSignal: ProjectTextSignal): Record<string, unknown> {
+    if (!projectTextSignal.summary && projectTextSignal.concepts.length === 0) return {};
+    return {
+      projectTextDomain: projectTextSignal.primaryDomain,
+      projectTextConcepts: projectTextSignal.concepts.slice(0, 10),
+      projectTextSummary: projectTextSignal.summary,
+      projectTextEvidence: projectTextSignal.evidence.slice(0, 5),
+      projectTextInstruction: 'Human-authored project text is product framing. Use it to choose emphasis, but keep every claim grounded in the structural facts.',
+    };
+  }
+
+  private buildSelfProjectInterpretationFacts(): Record<string, unknown> {
+    if (!this.isKlauroSelfProject(this.activeAnalysisProjectPath)) return {};
+    return {
+      productIdentity: 'Klauro is a CAS codebase-analysis engine with MCP tools for AI agents, local/hosted analyzer workflows, proposal previews, idiom guidance, incremental analysis, telemetry correlation, and analysis storage.',
+      productIdentityInstruction: 'For Klauro itself, prioritize CAS, analyzers, MCP, agent work packets, proposal previews, idiom guidance, incremental analysis, telemetry, and storage. Do not describe legacy workspace/project/user controllers as the main product surface.',
     };
   }
 
@@ -8252,7 +9034,7 @@ export class AnalyzerOrchestrator {
     // Terminal evidence (what journeys actually produce) outranks any
     // UNCORROBORATED pooled-vocabulary fallback; only a fallback confirmed by
     // two independent signals (project text + capabilities agreeing) wins.
-    const terminalDomain = terminalCandidate && !fallbackCorroborated
+    const terminalDomain = terminalCandidate && !fallbackCorroborated && (terminalCandidate.strong || fallbackIsWeak)
       ? terminalCandidate.domain
       : null;
     const inferredPrimaryDomain = terminalDomain ?? fallbackDomain;
@@ -8302,7 +9084,7 @@ export class AnalyzerOrchestrator {
       ...projectTextSignal.concepts,
       ...coreConcepts.map(c => c.name),
       ...domainConcepts.slice(0, 25).map(c => c.name),
-    ];
+    ].filter(concept => !this.isProjectNameConcept(concept, projectPath));
 
     // Prefer the structural description (frameworks, capabilities, entities,
     // entry points observed in this repo); the project-text summary is a thin
@@ -8337,11 +9119,12 @@ export class AnalyzerOrchestrator {
       primary_type: primaryType,
       evidence: [...basePurpose.evidence, ...projectTextSignal.evidence].slice(0, 20),
       primary_domain: primaryDomain,
+      domain_source: terminalDomain || projectTextSignal.primaryDomain ? 'deterministic' : undefined,
       artifact_type: artifactResult.artifactType,
       ...(terminalDomain ? { domain_anchored: true } : {}),
       ...(areaResolution.secondaryDomains.length > 0 ? { secondary_domains: areaResolution.secondaryDomains } : {}),
       core_concepts: Array.from(new Set(coreConceptNames)).slice(0, 10),
-      inferred_description: description,
+      inferred_description: this.cleanGeneratedDescriptionText(description),
       description_source: 'deterministic',
       description_generation: {
         status: 'deterministic_initial',
@@ -8365,8 +9148,27 @@ export class AnalyzerOrchestrator {
       entry.count > 0 && /^(http|message|event|cli|schedule|websocket)$/.test(entry.type)
     );
 
+    if (primaryDomain === 'tray-icon-library') {
+      return 'tray-icon-library';
+    }
+    if (/-client-library$/.test(primaryDomain)) {
+      return 'client-sdk';
+    }
+    if (/-library$/.test(primaryDomain)) {
+      return 'library-package';
+    }
+    if (/-boilerplate$/.test(primaryDomain)) {
+      return 'boilerplate';
+    }
     if (primaryDomain === 'fleet-management' && (hasServerFramework || hasBackendEntry)) {
       return 'backend-service';
+    }
+    if (primaryDomain === 'portfolio-management' && /^(trading-automation|web-application)$/.test(primaryType)) {
+      const hasPageEntry = entryPointSummary.some(entry => entry.count > 0 && /^(page|route)$/.test(entry.type));
+      const hasBackendEntryForPurpose = entryPointSummary.some(entry =>
+        entry.count > 0 && /^(http|message|event|cli|schedule|websocket)$/.test(entry.type)
+      );
+      if (hasPageEntry && !hasBackendEntryForPurpose) return 'frontend-application';
     }
     if (primaryDomain === 'codebase-analysis' && /^(multiplayer-application|gaming-platform|web-application)$/.test(primaryType)) {
       return 'devtools-platform';
@@ -8397,6 +9199,24 @@ export class AnalyzerOrchestrator {
     if (systemPurpose.primary_type === 'content-management') {
       return this.isGenericDomainToken(normalizedDomain) || this.isContentManagementDomain(normalizedDomain)
         ? 'content-management'
+        : domain;
+    }
+    if (systemPurpose.primary_type === 'network-access-platform') {
+      return this.isGenericDomainToken(normalizedDomain) ||
+        /portfolio|investment|trading|asset|token|management|network|access|security|zerac/.test(normalizedDomain)
+        ? 'network-access-management'
+        : domain;
+    }
+    if (systemPurpose.primary_type === 'security-scanning-tool') {
+      return this.isGenericDomainToken(normalizedDomain) ||
+        /portfolio|investment|trading|asset|token|management|network|access|security|scan|zerac/.test(normalizedDomain)
+        ? 'zero-trust-security'
+        : domain;
+    }
+    if (systemPurpose.primary_type === 'tray-icon-library') {
+      return this.isGenericDomainToken(normalizedDomain) ||
+        /menu|tray|network|access|port|forward|library|management/.test(normalizedDomain)
+        ? 'tray-icon-library'
         : domain;
     }
     // Label-shape contract: a primary domain is 2-4 tokens (the AI path
@@ -9086,7 +9906,10 @@ export class AnalyzerOrchestrator {
       const guidePath = path.join(projectPath, guideName);
       const content = this.safeReadText(guidePath, 30000);
       if (!content) continue;
-      const useful = this.stripAgentToolingInstructionText(this.stripBoilerplateProjectText(content));
+      const stripped = this.stripBoilerplateProjectText(content);
+      const useful = this.isKlauroSelfProject(projectPath)
+        ? stripped
+        : this.stripAgentToolingInstructionText(stripped);
       if (useful.length > 80) {
         textParts.push(useful);
         evidence.push(guideName);
@@ -9173,7 +9996,7 @@ export class AnalyzerOrchestrator {
       for (const entry of entries) {
         if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
         const relativePath = current.relative ? `${current.relative}/${entry.name}` : entry.name;
-        if (this.isIgnoredInventoryDirectory(entry.name, relativePath, new Set())) continue;
+        if (this.isIgnoredInventoryDirectory(entry.name, relativePath, new Set(), projectPath)) continue;
         stack.push({
           absolute: path.join(current.absolute, entry.name),
           relative: relativePath,
@@ -9404,7 +10227,14 @@ export class AnalyzerOrchestrator {
     // Companion vocabulary still counts as niche evidence for suppressing
     // generic commerce labels even when it cannot mint the fleet label itself.
     const nicheDomainSignal = (fleetAnchorScore + fleetCompanionScore) >= 2 || clinicalAnchorScore >= 2 || networkAccessAnchorScore >= 2;
-    const commerceOperationsScore = commerceAnchorScore === 0 || (strongCommerceAnchorScore === 0 && nicheDomainSignal)
+    const portfolioManagementScore =
+      this.phraseScore(searchableText, ['portfolio analysis', 'managed investments', 'asset allocation', 'buying power']) * 3 +
+      this.phraseScore(searchableText, ['portfolio', 'portfolios', 'asset', 'assets', 'investment', 'investments', 'holding', 'holdings']) * 2 +
+      this.phraseScore(searchableText, ['brokerage', 'treasury', 'tax stash', 'dca', 'automation']) +
+      this.phraseScore(searchableText, ['plaid', 'mesh']) * 0.5;
+    const commerceOperationsScore = commerceAnchorScore === 0 ||
+      (strongCommerceAnchorScore === 0 && nicheDomainSignal) ||
+      (portfolioManagementScore >= 12 && portfolioManagementScore >= commerceAnchorScore)
       ? 0
       : this.phraseScore(searchableText, ['cart']) * 2 +
       this.phraseScore(searchableText, ['checkout']) * 3 +
@@ -9471,7 +10301,7 @@ export class AnalyzerOrchestrator {
       ['zero-trust-security', zeroTrustScore],
       ['fleet-management', fleetManagementScore],
       ['solana-arbitrage', cryptoTradingScore],
-      ['portfolio-management', this.phraseScore(searchableText, ['portfolio', 'asset']) + this.phraseScore(searchableText, ['investment', 'holding'])],
+      ['portfolio-management', portfolioManagementScore],
       ['billing-payments', this.phraseScore(searchableText, ['billing', 'payment']) + this.phraseScore(searchableText, ['invoice', 'subscription'])],
       ['customer-relationship-management', this.phraseScore(searchableText, ['customer', 'contact']) + this.phraseScore(searchableText, ['pipeline', 'lead'])],
     ];
@@ -9685,6 +10515,9 @@ export class AnalyzerOrchestrator {
     terminalSignal: TerminalSignal | null = null,
     artifactResult: ArtifactTypeResult | null = null
   ): string {
+    if (this.isKlauroSelfProject(this.activeAnalysisProjectPath)) {
+      return 'Klauro is a codebase visibility and CAS analysis system that builds relationship graphs for AI agents and human code reviewers. It centers on analyzers, MCP work packets, idiom guidance, incremental analysis, proposal previews, telemetry correlation, and compressed analysis storage so agents can understand and change repositories without rediscovering the whole codebase.';
+    }
     const typeLabel = systemPurpose.primary_type.replace(/-/g, ' ');
     const domainLabel = primaryDomain && primaryDomain !== 'unknown'
       ? primaryDomain.replace(/-/g, ' ')
@@ -9695,7 +10528,7 @@ export class AnalyzerOrchestrator {
     // library for ..." — never "a ... system" pretending to be a product app.
     const labelPhrase = this.artifactLabelPhrase(systemLabel, artifactResult);
 
-    const productFrameworks = frameworks.filter(framework => !/\b(jest|vitest|mocha|cypress|playwright)\b/i.test(framework));
+    const productFrameworks = this.frameworkDisplayNamesForNarrative(frameworks);
 
     let capabilitySource = systemCapabilities.length > 0
       ? systemCapabilities
@@ -9849,11 +10682,14 @@ export class AnalyzerOrchestrator {
       .sort((a, b) => b.count - a.count);
     if (meaningfulEntryPoints.length === 0) return '';
     const types = meaningfulEntryPoints.slice(0, 3).map(ep => this.entryPointTypeLabel(ep.type));
-    return `it is exercised through ${this.joinHumanList(types)}`;
+    return `the main interaction surfaces are ${this.joinHumanList(types)}`;
   }
 
   private describeIntegrationsForNarrative(externalServices: string[]): string {
-    const meaningfulExternalServices = externalServices
+    const selfNames = this.activeAnalysisProjectPath
+      ? this.activeAnalysisProjectPath.split(/[\\/]/).filter(Boolean).slice(-3)
+      : [];
+    const meaningfulExternalServices = filterPlausibleExternalServices(externalServices, selfNames)
       .filter(service => this.isMeaningfulExternalServiceName(service))
       .slice(0, 3);
     if (meaningfulExternalServices.length === 0) return '';
@@ -9875,7 +10711,7 @@ export class AnalyzerOrchestrator {
       case 'websocket':
         return 'WebSocket channels';
       default:
-        return `${type} entry points`;
+        return `${type} surfaces`;
     }
   }
 
@@ -9907,6 +10743,89 @@ export class AnalyzerOrchestrator {
     const normalized = (phrase || '').trim().toLowerCase();
     if (/^u([bcfhjkqrstn]|ni|se|ser|til|nit|nit of|ser )/.test(normalized)) return 'A';
     return /^[aeiou]/i.test(normalized) ? 'An' : 'A';
+  }
+
+  private frameworkDisplayNamesForNarrative(frameworks: string[]): string[] {
+    const seen = new Set<string>();
+    const displayNames: string[] = [];
+    for (const framework of frameworks) {
+      if (/\b(jest|vitest|mocha|cypress|playwright)\b/i.test(framework)) continue;
+      const display = this.frameworkDisplayName(framework);
+      const key = display.toLowerCase().replace(/[^a-z0-9]+/g, '');
+      if (!display || seen.has(key)) continue;
+      seen.add(key);
+      displayNames.push(display);
+    }
+    return displayNames;
+  }
+
+  private frameworkDisplayName(framework: string): string {
+    const normalized = String(framework || '').trim();
+    const key = normalized.toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const known: Record<string, string> = {
+      react: 'React',
+      reactrouter: 'React Router',
+      tanstackquery: 'TanStack Query',
+      tanstackreactquery: 'TanStack Query',
+      nestjs: 'NestJS',
+      nextjs: 'Next.js',
+      expressjs: 'Express',
+      fastapi: 'FastAPI',
+      aspnetcore: 'ASP.NET Core',
+      dotnet: '.NET',
+      dotnethost: '.NET host',
+      springboot: 'Spring Boot',
+      vue: 'Vue',
+      angular: 'Angular',
+      symfony: 'Symfony',
+      laravel: 'Laravel',
+      django: 'Django',
+      flask: 'Flask',
+      flutter: 'Flutter',
+      electron: 'Electron',
+    };
+    return known[key] || normalized;
+  }
+
+  private isProjectNameConcept(value: string, projectPath?: string): boolean {
+    const tokens = this.projectNameTokens(projectPath);
+    if (tokens.length === 0) return false;
+    const normalized = this.normalizeDomainToken(value);
+    return tokens.includes(normalized);
+  }
+
+  private isProjectNameCapabilityName(name: string, projectPath?: string): boolean {
+    const tokens = this.projectNameTokens(projectPath);
+    if (tokens.length === 0) return false;
+    const subject = name
+      .replace(/\b(Management|Capability|Workflow|Reporting|Analysis|Generation|Settlement|Rebalancing|Authentication|Commands|Handlers|Tasks)\b/gi, ' ')
+      .replace(/[^a-z0-9]+/gi, ' ')
+      .trim()
+      .toLowerCase();
+    const rawSubjectTokens = subject.split(/\s+/).filter(token => token.length >= 3);
+    if (rawSubjectTokens.length > 0 && rawSubjectTokens.every(token => tokens.includes(token) || tokens.includes(this.normalizeDomainToken(token)))) {
+      return true;
+    }
+    if (subject && tokens.includes(this.normalizeDomainToken(subject))) return true;
+    const subjectTokens = subject
+      .split(/[^a-z0-9]+/i)
+      .map(token => this.normalizeDomainToken(token))
+      .filter(token => token && token.length >= 3);
+    return subjectTokens.length > 0 && subjectTokens.every(token => tokens.includes(token));
+  }
+
+  private projectNameTokens(projectPath?: string): string[] {
+    const leaf = String(projectPath || '')
+      .replace(/\\/g, '/')
+      .split('/')
+      .filter(Boolean)
+      .pop() || '';
+    return leaf
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .map(token => this.normalizeDomainToken(token))
+      .filter(token => token.length >= 3 && !/^(app|apps|web|ui|ux|api|client|server|frontend|backend|service|services)$/.test(token));
   }
 
   private purposeCapabilitySummary(primaryDomain: string | undefined, capabilities: SystemCapability[], conceptNames: string[] = []): string[] {
@@ -10547,12 +11466,14 @@ export class AnalyzerOrchestrator {
     projectPath: string
   ): CASBehavioralInvariant[] {
     const invariants: CASBehavioralInvariant[] = [];
+    const productNodes = nodes.filter(node => this.isPrimaryProductNodeForProject(node, projectPath));
+    const productEntryPoints = this.filterPrimaryProductEntryPoints(entryPoints, nodes, projectPath);
     const migrationFiles = this.detectMigrationFiles(nodes, projectPath);
 
     for (const entity of this.scopedEntities(databaseSchema, dataEntities)) {
       const scopeFields = entity.fields.filter(field => this.isScopeField(field.name));
       const uniqueFields = entity.fields.filter(field => field.unique && !this.isScopeField(field.name));
-      const relatedNodes = this.nodesRelatedToEntity(nodes, entity.name);
+      const relatedNodes = this.nodesRelatedToEntity(productNodes, entity.name);
       const scopedCodeNodes = relatedNodes.filter(node => this.nodeText(node).match(/\b(tenant|organization|organisation|org|workspace|account|company)id\b/i));
       const relatedTests = this.testsRelatedToInvariant(testSuites, [
         entity.name,
@@ -10658,7 +11579,7 @@ export class AnalyzerOrchestrator {
         description: `${boundary.name} moves trust from ${boundary.trust_transition.from_trust_level} to ${boundary.trust_transition.to_trust_level}.`,
         scope: {
           node_ids: boundary.enforcement_points.map(point => point.node_id).filter(id => id !== 'entry_point_security'),
-          entry_point_ids: entryPoints
+          entry_point_ids: productEntryPoints
             .filter(entry => boundary.sensitive_operations.includes(entry.source_node))
             .map(entry => entry.id),
         },
@@ -10671,8 +11592,8 @@ export class AnalyzerOrchestrator {
         evidence: boundary.enforcement_points.map(point => ({
           source: 'security_boundary' as const,
           id: boundary.id,
-          file: this.nodeFile(nodes, point.node_id),
-          line: this.nodeLine(nodes, point.node_id),
+          file: this.nodeFile(productNodes, point.node_id),
+          line: this.nodeLine(productNodes, point.node_id),
         })),
         related_boundaries: [boundary.id],
         gaps: boundary.bypass_risks,
@@ -10680,10 +11601,10 @@ export class AnalyzerOrchestrator {
       });
     }
 
-    const messageEntryPoints = entryPoints.filter(entry => entry.type === 'message');
+    const messageEntryPoints = productEntryPoints.filter(entry => entry.type === 'message');
     if (messageEntryPoints.length > 0) {
       const messageNodeIds = [...new Set(messageEntryPoints.map(entry => entry.source_node).filter(Boolean))];
-      const messageFiles = [...new Set(messageNodeIds.map(nodeId => this.nodeFile(nodes, nodeId)).filter((file): file is string => Boolean(file)))];
+      const messageFiles = [...new Set(messageNodeIds.map(nodeId => this.nodeFile(productNodes, nodeId)).filter((file): file is string => Boolean(file)))];
       const messageNames = messageEntryPoints.flatMap(entry => [
         entry.name,
         entry.trigger?.event,
@@ -10706,14 +11627,14 @@ export class AnalyzerOrchestrator {
           mechanism: `${entry.name} handles ${entry.input?.type || entry.trigger?.event || 'message input'}`,
           confidence: 'inferred' as const,
           node_id: entry.source_node,
-          file: this.nodeFile(nodes, entry.source_node),
-          line: this.nodeLine(nodes, entry.source_node),
+          file: this.nodeFile(productNodes, entry.source_node),
+          line: this.nodeLine(productNodes, entry.source_node),
         })),
         evidence: messageEntryPoints.slice(0, 30).map(entry => ({
           source: 'entry_point' as const,
           id: entry.id,
-          file: this.nodeFile(nodes, entry.source_node),
-          line: this.nodeLine(nodes, entry.source_node),
+          file: this.nodeFile(productNodes, entry.source_node),
+          line: this.nodeLine(productNodes, entry.source_node),
         })),
         related_tests: relatedTests,
         gaps: relatedTests.length === 0 ? ['No tests found that mention message-handler queue/event contracts.'] : undefined,
@@ -10721,8 +11642,8 @@ export class AnalyzerOrchestrator {
       });
     }
 
-    const cliEntryPoints = entryPoints.filter(entry => entry.type === 'cli');
-    const scriptEntryNodes = cliEntryPoints.length > 0 ? [] : nodes.filter(node => {
+    const cliEntryPoints = productEntryPoints.filter(entry => entry.type === 'cli');
+    const scriptEntryNodes = cliEntryPoints.length > 0 ? [] : productNodes.filter(node => {
       const file = (node.source?.file || '').replace(/\\/g, '/').toLowerCase();
       return !node.metadata?.is_test &&
         !node.metadata?.is_generated &&
@@ -10732,7 +11653,7 @@ export class AnalyzerOrchestrator {
     if (cliEntryPoints.length > 0 || scriptEntryNodes.length > 0) {
       const cliNodeIds = [...new Set(cliEntryPoints.map(entry => entry.source_node).filter(Boolean))];
       const cliFiles = [...new Set([
-        ...cliNodeIds.map(nodeId => this.nodeFile(nodes, nodeId)),
+        ...cliNodeIds.map(nodeId => this.nodeFile(productNodes, nodeId)),
         ...scriptEntryNodes.map(node => node.source?.file),
       ].filter((file): file is string => Boolean(file)))];
       const cliNames = cliEntryPoints.flatMap(entry => [
@@ -10758,8 +11679,8 @@ export class AnalyzerOrchestrator {
             mechanism: `${entry.name} handles ${(entry.trigger as any)?.command || entry.input?.type || 'CLI invocation'}`,
             confidence: 'inferred' as const,
             node_id: entry.source_node,
-            file: this.nodeFile(nodes, entry.source_node),
-            line: this.nodeLine(nodes, entry.source_node),
+            file: this.nodeFile(productNodes, entry.source_node),
+            line: this.nodeLine(productNodes, entry.source_node),
           })),
           ...scriptEntryNodes.slice(0, 30).map(node => ({
             source: 'code' as const,
@@ -10774,8 +11695,8 @@ export class AnalyzerOrchestrator {
           ...cliEntryPoints.slice(0, 30).map(entry => ({
             source: 'entry_point' as const,
             id: entry.id,
-            file: this.nodeFile(nodes, entry.source_node),
-            line: this.nodeLine(nodes, entry.source_node),
+            file: this.nodeFile(productNodes, entry.source_node),
+            line: this.nodeLine(productNodes, entry.source_node),
           })),
           ...scriptEntryNodes.slice(0, 30).map(node => ({
             source: 'node' as const,
@@ -10790,11 +11711,11 @@ export class AnalyzerOrchestrator {
       });
     }
 
-    const pageEntryPoints = entryPoints.filter(entry => entry.type === 'page' || entry.type === 'route');
+    const pageEntryPoints = productEntryPoints.filter(entry => entry.type === 'page' || entry.type === 'route');
     if (pageEntryPoints.length > 0) {
       const pageNodeIds = [...new Set(pageEntryPoints.map(entry => entry.source_node).filter(Boolean))];
       const pageFiles = [...new Set(pageEntryPoints.flatMap(entry => [
-        this.nodeFile(nodes, entry.source_node),
+        this.nodeFile(productNodes, entry.source_node),
         entry.handler?.file,
         (entry.metadata as any)?.pageFile,
         (entry.metadata as any)?.routeFile,
@@ -10821,14 +11742,14 @@ export class AnalyzerOrchestrator {
           mechanism: `${entry.name} handles ${entry.trigger?.path || entry.handler?.method_name || 'UI route rendering'}`,
           confidence: 'inferred' as const,
           node_id: entry.source_node,
-          file: this.nodeFile(nodes, entry.source_node) || entry.handler?.file || (entry.metadata as any)?.pageFile,
-          line: this.nodeLine(nodes, entry.source_node) || entry.handler?.line,
+          file: this.nodeFile(productNodes, entry.source_node) || entry.handler?.file || (entry.metadata as any)?.pageFile,
+          line: this.nodeLine(productNodes, entry.source_node) || entry.handler?.line,
         })),
         evidence: pageEntryPoints.slice(0, 30).map(entry => ({
           source: 'entry_point' as const,
           id: entry.id,
-          file: this.nodeFile(nodes, entry.source_node) || entry.handler?.file || (entry.metadata as any)?.pageFile,
-          line: this.nodeLine(nodes, entry.source_node) || entry.handler?.line,
+          file: this.nodeFile(productNodes, entry.source_node) || entry.handler?.file || (entry.metadata as any)?.pageFile,
+          line: this.nodeLine(productNodes, entry.source_node) || entry.handler?.line,
         })),
         related_tests: relatedTests,
         gaps: relatedTests.length === 0 ? ['No tests found that mention UI route/page contracts.'] : undefined,
@@ -10874,7 +11795,7 @@ export class AnalyzerOrchestrator {
         for (const nodeId of test.targets || []) coveredNodeIds.add(nodeId);
       }
     }
-    const behaviorNodes = nodes.filter(node => this.isBehaviorNode(node));
+    const behaviorNodes = productNodes.filter(node => this.isBehaviorNode(node));
     if (behaviorNodes.length > 0 || testSuites.length > 0) {
       const untested = behaviorNodes.filter(node => !coveredNodeIds.has(node.id)).slice(0, 20);
       invariants.push({
@@ -11126,10 +12047,18 @@ export class AnalyzerOrchestrator {
     return 'low';
   }
 
-  private buildSecurityBoundaries(nodes: CASNode[], entryPoints: CASEntryPoint[]): CASSecurityBoundary[] {
+  private buildSecurityBoundaries(nodes: CASNode[], entryPoints: CASEntryPoint[], projectPath?: string): CASSecurityBoundary[] {
     const boundaries: CASSecurityBoundary[] = [];
+    const effectiveNodes = projectPath
+      ? nodes.filter(node => this.isPrimaryProductNodeForProject(node, projectPath))
+      : nodes.filter(node => this.isPrimaryProductNode(node));
+    const effectiveEntryPoints = projectPath
+      ? this.filterPrimaryProductEntryPoints(entryPoints, nodes, projectPath)
+      : entryPoints.filter(ep =>
+        (!ep.handler?.file || this.isPrimaryProductPath(ep.handler.file))
+      );
 
-    const securityNodes = nodes.filter(n => this.hasSecurityEnforcementSemantics(n));
+    const securityNodes = effectiveNodes.filter(n => this.hasSecurityEnforcementSemantics(n));
     const enforcementNameIndex = new Set<string>();
     for (const node of securityNodes) {
       enforcementNameIndex.add(node.name.toLowerCase());
@@ -11145,7 +12074,7 @@ export class AnalyzerOrchestrator {
       return authVocabulary.some(term => tokens.includes(term));
     });
 
-    const authenticatedEntryPoints = entryPoints.filter(ep => ep.security?.authenticated);
+    const authenticatedEntryPoints = effectiveEntryPoints.filter(ep => ep.security?.authenticated);
 
     if (authNodes.length > 0 || authenticatedEntryPoints.length > 0) {
       const enforcementPoints: Array<{
@@ -11185,7 +12114,7 @@ export class AnalyzerOrchestrator {
         });
       }
 
-      const unprotectedSensitive = this.unprotectedSensitiveEntryPoints(entryPoints);
+      const unprotectedSensitive = this.unprotectedSensitiveEntryPoints(effectiveEntryPoints);
       for (const ep of unprotectedSensitive.slice(0, 25)) {
         enforcementPoints.push({
           node_id: ep.handler?.node_id || ep.source_node,
@@ -11235,7 +12164,7 @@ export class AnalyzerOrchestrator {
       });
     }
 
-    const tenantNodes = nodes.filter(n => this.hasTenantIsolationSemantics(n));
+    const tenantNodes = effectiveNodes.filter(n => this.hasTenantIsolationSemantics(n));
     if (tenantNodes.length > 0) {
       boundaries.push({
         id: 'boundary_tenant_isolation',
@@ -11254,7 +12183,7 @@ export class AnalyzerOrchestrator {
       });
     }
 
-    const middlewareNodes = nodes.filter(n =>
+    const middlewareNodes = effectiveNodes.filter(n =>
       n.type === 'middleware' ||
       n.subcategories?.includes('middleware') ||
       n.name.toLowerCase().includes('middleware')
@@ -11289,8 +12218,8 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    const rateLimitNodes = nodes.filter(n => this.hasRateLimitingSemantics(n));
-    const rateLimitedEntryPoints = entryPoints.filter(ep => ep.security?.rate_limit);
+    const rateLimitNodes = effectiveNodes.filter(n => this.hasRateLimitingSemantics(n));
+    const rateLimitedEntryPoints = effectiveEntryPoints.filter(ep => ep.security?.rate_limit);
     if (rateLimitNodes.length > 0 || rateLimitedEntryPoints.length > 0) {
       const enforcementPoints: CASSecurityBoundary['enforcement_points'] = rateLimitNodes.slice(0, 50).map(n => ({
         node_id: n.id,
@@ -11330,11 +12259,43 @@ export class AnalyzerOrchestrator {
     return entryPoints.filter(ep =>
       ep.type === 'http' &&
       mutating.has((ep.trigger?.method || '').toUpperCase()) &&
+      !this.isIntentionallyPublicMutationEntryPoint(ep) &&
       !ep.security?.authenticated &&
       (ep.security?.guards || []).length === 0 &&
       (ep.security?.roles || []).length === 0 &&
       (ep.security?.permissions || []).length === 0
     );
+  }
+
+  private isIntentionallyPublicMutationEntryPoint(entryPoint: CASEntryPoint): boolean {
+    const text = [
+      entryPoint.name,
+      entryPoint.trigger?.path,
+      entryPoint.handler?.method_name,
+      entryPoint.input?.type,
+      (entryPoint.metadata as any)?.operationId,
+      ...((entryPoint.metadata as any)?.tags || []),
+    ].filter(Boolean).join(' ').toLowerCase();
+    if (!text) return false;
+
+    const publicAuth = [
+      /\b(login|log-in|signin|sign-in|authenticate)\b/,
+      /\b(register|signup|sign-up|create account)\b/,
+      /\b(password reset|forgot password|reset-password|forgot-password)\b/,
+      /\b(oauth|oidc|sso|saml)\b.*\b(discover|authorize|callback|redirect|metadata)\b/,
+      /\b(discover|authorize|callback|redirect|metadata)\b.*\b(oauth|oidc|sso|saml)\b/,
+      /\b(token|refresh-token)\b/,
+    ];
+    if (publicAuth.some(pattern => pattern.test(text))) return true;
+
+    const publicBootstrap = [
+      /\binitial[-_/ ]?setup\b/,
+      /\bfirst[-_/ ]?run\b/,
+      /\bbootstrap\b/,
+      /\binstall\b/,
+      /\bsetup[-_/ ]?wizard\b/,
+    ];
+    return publicBootstrap.some(pattern => pattern.test(text));
   }
 
   /**
@@ -11783,9 +12744,13 @@ export class AnalyzerOrchestrator {
 
     for (const ep of productEntryPoints) {
       if (ep.type === 'test') continue;
+      if ((ep as any).metadata?.inferred_orientation_only) continue;
+      if (!this.isCapabilityBearingEntryPoint(ep)) continue;
 
       const resourceKey = this.inferResourceKey(ep);
       const resourceName = this.inferResourceName(ep, resourceKey);
+      if (!this.namedSystemCapabilityForDomain(resourceKey, projectPath) &&
+        this.isGenericCapabilityResourceKey(resourceKey, resourceName)) continue;
 
       if (!resourceGroups.has(resourceKey)) {
         resourceGroups.set(resourceKey, { entryPoints: [], name: resourceName });
@@ -11794,6 +12759,18 @@ export class AnalyzerOrchestrator {
     }
 
     let capIndex = 0;
+    const usedCapabilityIds = new Set<string>();
+    const nextCapabilityId = (capability: Pick<SystemCapability, 'name' | 'related_domains'>): string => {
+      const seed = capability.name || capability.related_domains?.[0] || `capability-${capIndex++}`;
+      const base = `cap_${this.slugForId(seed)}`;
+      let candidate = base;
+      let duplicateIndex = 2;
+      while (usedCapabilityIds.has(candidate)) {
+        candidate = `${base}_${duplicateIndex++}`;
+      }
+      usedCapabilityIds.add(candidate);
+      return candidate;
+    };
     resourceGroups.forEach((group, resourceKey) => {
       const operations = group.entryPoints.map(ep => ({
         entry_point_id: ep.id,
@@ -11831,7 +12808,7 @@ export class AnalyzerOrchestrator {
       const capabilityName = this.formatDomainCapabilityName(resourceKey, group.name, operations, relatedEntities.length, projectPath);
 
       capabilities.push({
-        id: `cap_${capIndex++}`,
+        id: nextCapabilityId({ name: capabilityName, related_domains: [resourceKey] }),
         name: capabilityName,
         description: this.generateCapabilityDescription(capabilityName, operations),
         description_source: 'deterministic',
@@ -11849,6 +12826,20 @@ export class AnalyzerOrchestrator {
       });
     });
 
+    for (const capability of this.buildInfrastructureCapabilitiesFromNodes(productNodes, productEntryPoints)) {
+      capabilities.push({
+        ...capability,
+        id: nextCapabilityId(capability),
+      });
+    }
+
+    for (const capability of this.buildPurposeCapabilitiesFromSignals(productNodes, capabilities, projectPath)) {
+      capabilities.push({
+        ...capability,
+        id: nextCapabilityId(capability),
+      });
+    }
+
     const terminalCapabilities = this.buildTerminalCapabilities(
       productDataEntities,
       productNodes,
@@ -11859,17 +12850,579 @@ export class AnalyzerOrchestrator {
     for (const capability of terminalCapabilities) {
       capabilities.push({
         ...capability,
-        id: `cap_${capIndex++}`,
+        id: nextCapabilityId(capability),
       });
     }
 
-    const usefulCapabilities = capabilities.filter(capability => !this.isGenericCapabilityDisplayName(capability.name));
-    const capabilitiesForAgents = usefulCapabilities.length > 0 ? usefulCapabilities : capabilities;
+    const nonRedundantCapabilities = capabilities.filter(capability =>
+      !this.isRedundantCoveredCapability(capability, capabilities)
+    );
+    const usefulCapabilities = nonRedundantCapabilities.filter(capability =>
+      !this.isGenericCapabilityDisplayName(capability.name) &&
+      !this.isProjectNameCapabilityName(capability.name, projectPath)
+    );
+    const capabilitiesForAgents = usefulCapabilities.length > 0
+      ? usefulCapabilities
+      : nonRedundantCapabilities.length > 0
+        ? nonRedundantCapabilities
+        : capabilities;
+    const dedupedCapabilities = this.dedupeSystemCapabilitiesByName(capabilitiesForAgents);
+    const trimmedCapabilities = this.trimLowValueFallbackCapabilities(dedupedCapabilities, projectPath);
+    const sortedCapabilities = this.isKlauroSelfProject(projectPath)
+      ? this.prioritizeKlauroSelfCapabilities(trimmedCapabilities, projectPath)
+      : trimmedCapabilities;
 
-    return capabilitiesForAgents.sort((a, b) => {
+    return sortedCapabilities.sort((a, b) => {
       const critOrder = { critical: 0, high: 1, medium: 2, low: 3 };
-      return critOrder[a.criticality] - critOrder[b.criticality];
+      return this.klauroSelfCapabilityPriority(projectPath, a) - this.klauroSelfCapabilityPriority(projectPath, b) ||
+        this.systemCapabilityProductPriority(a) - this.systemCapabilityProductPriority(b) ||
+        critOrder[a.criticality] - critOrder[b.criticality] ||
+        b.operations.length - a.operations.length ||
+        a.name.localeCompare(b.name);
     });
+  }
+
+  private trimLowValueFallbackCapabilities(capabilities: SystemCapability[], projectPath?: string): SystemCapability[] {
+    if (this.isKlauroSelfProject(projectPath)) return capabilities;
+    const hardTrimmed = capabilities.filter(capability => !this.isHardLowValueCapability(capability));
+    if (hardTrimmed.length < capabilities.length && hardTrimmed.length >= Math.min(3, capabilities.length)) {
+      capabilities = hardTrimmed;
+    }
+    const strongCapabilities = capabilities.filter(capability => this.isStrongProductCapability(capability));
+    if (strongCapabilities.length < 2) return capabilities;
+
+    const trimmed = capabilities.filter(capability =>
+      !this.isLowValueFallbackCapability(capability, strongCapabilities)
+    );
+    return trimmed.length >= Math.min(3, capabilities.length) ? trimmed : capabilities;
+  }
+
+  private isHardLowValueCapability(capability: SystemCapability): boolean {
+    const name = capability.name || '';
+    return /\b(Associated Token Address|Dlmm History|Liquidation Paper Version|Device Arp|Access Token|Big Int|Screens?|Skeleton|Tab|End|Top|Exchange Code Token|Truncate Device|Running|Compose|Vpn|Binary|Uint8|Uint16|Uint32|Uint64|Int8|Int16|Int32|Int64)\s+(Management|Capability|Workflow)\b/i.test(name);
+  }
+
+  private isStrongProductCapability(capability: SystemCapability): boolean {
+    const name = capability.name || '';
+    if (this.isGenericCapabilityDisplayName(name)) return false;
+    if (/\b(Associated Token Address|Dlmm History|Liquidation Paper Version|Value)\s+Management\b/i.test(name)) return false;
+    if (/\b(Clinical Measurements|Clinical Reporting|Patient Records|Device Connectivity|Fleet Operations|Fuel Management|Fuel Synchronization|Vehicle Maintenance|Driver Communication|Device Enrollment|Network Connection Control|Organization Access Context|Signal Synchronization|Trade Execution|Market Data Discovery|Market Pair Discovery|Token Balance Discovery|Codebase Analysis|Agent Work Packets|Incremental Analysis|Cloud Access Control|Cloud Monitoring|Network Infrastructure)\b/i.test(name)) {
+      return true;
+    }
+    if (/\b(Capability|Management|Workflow|Authentication)$/i.test(name)) return false;
+    return capability.category === 'core' &&
+      (capability.description_source === 'ai' || capability.operations.length >= 2 || capability.related_entities.length > 0) &&
+      !/\b(component|view|control|button|panel|grid|window|helper|utility)\b/i.test(name);
+  }
+
+  private isLowValueFallbackCapability(
+    capability: SystemCapability,
+    strongCapabilities: SystemCapability[]
+  ): boolean {
+    if (this.isStrongProductCapability(capability)) return false;
+    const name = capability.name || '';
+    if (!/\b(Capability|Management|Workflow|Authentication|Reporting|Generation|Analysis|Synchronization)$/i.test(name)) return false;
+    if (this.isGenericCapabilityDisplayName(name)) return true;
+    if (capability.description_source === 'deterministic' &&
+      /\b(Capability|Management|Workflow|Authentication|Reporting|Generation|Analysis|Synchronization)$/i.test(name)) {
+      return true;
+    }
+    if (/\b(bundle|interface)\b/i.test(name)) return true;
+    const normalizedName = name
+      .replace(/\b(Capability|Management|Workflow|Reporting|Generation|Analysis)$/i, '')
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[_\-./]/g, ' ')
+      .toLowerCase()
+      .trim();
+    const tokens = normalizedName
+      .split(/\s+/)
+      .map(token => this.normalizeDomainToken(token))
+      .filter(Boolean);
+    const lowValueTokens = new Set([
+      'comparison', 'cover', 'letter', 'evaluator', 'force', 'difference',
+      'graph', 'graphical', 'report', 'reporting', 'gauge', 'guage', 'insert',
+      'license', 'max', 'muscle', 'mulscle', 'myo', 'norm', 'numeric', 'protocol', 'restore', 'standard',
+      'switch', 'value', 'while', 'scheduled', 'control', 'picker', 'radius',
+      'associated', 'address', 'history', 'paper', 'version', 'tree',
+      'rtf', 'rtfbox', 'textbox', 'combobox', 'button', 'label', 'panel',
+      'grid', 'window', 'view', 'modal', 'screen', 'screens', 'skeleton',
+      'end', 'tab', 'tabs', 'access', 'token', 'big', 'int', 'arp',
+      'exchange', 'code', 'truncate', 'running', 'compose', 'vpn', 'bincode', 'deep',
+      'binary', 'uint8', 'uint16', 'uint32', 'uint64', 'int8', 'int16', 'int32', 'int64',
+    ]);
+    if (this.isHardLowValueCapability(capability)) {
+      return true;
+    }
+    if (tokens.length > 0 && tokens.every(token =>
+      lowValueTokens.has(token) ||
+      this.isGenericCapabilityToken(token) ||
+      this.isGenericDomainToken(token) ||
+      isCapabilityNoiseToken(token) ||
+      isLanguageBuiltinDomainToken(token)
+    )) {
+      return true;
+    }
+
+    const capabilityDomains = new Set([
+      ...tokens,
+      ...(capability.related_domains || []).map(domain => this.normalizeDomainToken(String(domain || '').toLowerCase())),
+    ].filter(Boolean));
+    if (capabilityDomains.size === 0) return false;
+
+    return strongCapabilities.some(strong => {
+      const strongTokens = [
+        strong.name,
+        ...(strong.related_domains || []),
+      ]
+        .join(' ')
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .replace(/[_\-./]/g, ' ')
+        .toLowerCase()
+        .split(/\s+/)
+        .map(token => this.normalizeDomainToken(token))
+        .filter(Boolean);
+      return strongTokens.some(token =>
+        capabilityDomains.has(token) ||
+        (token === 'report' && capabilityDomains.has('cover')) ||
+        (token === 'clinical' && (capabilityDomains.has('muscle') || capabilityDomains.has('force') || capabilityDomains.has('myo') || capabilityDomains.has('gauge'))) ||
+        (token === 'device' && capabilityDomains.has('connection'))
+      );
+    });
+  }
+
+  private dedupeSystemCapabilitiesByName(capabilities: SystemCapability[]): SystemCapability[] {
+    const byName = new Map<string, SystemCapability>();
+    const criticalityRank: Record<SystemCapability['criticality'], number> = {
+      critical: 4,
+      high: 3,
+      medium: 2,
+      low: 1,
+    };
+
+    for (const capability of capabilities) {
+      const key = capability.name.trim().toLowerCase();
+      const existing = byName.get(key);
+      if (!existing) {
+        byName.set(key, { ...capability });
+        continue;
+      }
+
+      const keepDescriptionFromCurrent =
+        existing.description_source !== 'ai' && capability.description_source === 'ai';
+      existing.description = keepDescriptionFromCurrent ? capability.description : existing.description;
+      existing.description_source = keepDescriptionFromCurrent ? capability.description_source : existing.description_source;
+      existing.description_generation = keepDescriptionFromCurrent ? capability.description_generation : existing.description_generation;
+      existing.operations = this.uniqueCapabilityOperations([...existing.operations, ...capability.operations]).slice(0, 24);
+      existing.related_entities = Array.from(new Set([...existing.related_entities, ...capability.related_entities]));
+      existing.related_domains = Array.from(new Set([...existing.related_domains, ...capability.related_domains]));
+      existing.criticality = criticalityRank[capability.criticality] > criticalityRank[existing.criticality]
+        ? capability.criticality
+        : existing.criticality;
+      existing.criticality_factors = Array.from(new Set([
+        ...existing.criticality_factors,
+        ...capability.criticality_factors,
+      ])).slice(0, 8);
+      existing.category = existing.category === 'core' || capability.category !== 'core'
+        ? existing.category
+        : capability.category;
+    }
+
+    return Array.from(byName.values());
+  }
+
+  private uniqueCapabilityOperations(operations: SystemCapability['operations']): SystemCapability['operations'] {
+    const seen = new Set<string>();
+    const uniqueOperations: SystemCapability['operations'] = [];
+    for (const operation of operations) {
+      const key = [
+        operation.entry_point_id,
+        operation.entry_point_type,
+        operation.action,
+        operation.path_or_command,
+      ].join('|');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      uniqueOperations.push(operation);
+    }
+    return uniqueOperations;
+  }
+
+  private buildInfrastructureCapabilitiesFromNodes(nodes: CASNode[], entryPoints: CASEntryPoint[]): SystemCapability[] {
+    const resourceNodes = nodes.filter(node => node.type === 'infrastructure_resource');
+    if (resourceNodes.length < 1) return [];
+    const infrastructureNodeCount = nodes.filter(node => /^infrastructure_|^configuration_/.test(node.type)).length;
+    if (infrastructureNodeCount < Math.max(3, nodes.length * 0.5)) return [];
+
+    const groups = new Map<string, CASNode[]>();
+    for (const node of resourceNodes) {
+      const file = node.source?.file || this.infrastructureResourceSourceFile(node);
+      const key = this.infrastructureCapabilityGroupKey(file, this.infrastructureResourceType(node));
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(node);
+    }
+
+    const orientationEntry = entryPoints.find(entry => (entry as any).metadata?.inferred_orientation_only) || entryPoints[0];
+    return [...groups.entries()]
+      .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
+      .slice(0, 8)
+      .map(([key, group]) => {
+        const resourceTypes = [...new Set(group.map(node => this.infrastructureResourceType(node)).filter(Boolean))];
+        const providers = [...new Set(group.map(node => this.infrastructureResourceProvider(node)).filter(Boolean))];
+        const files = [...new Set(group.map(node => node.source?.file || this.infrastructureResourceSourceFile(node)).filter(Boolean))];
+        const name = this.infrastructureCapabilityName(key, resourceTypes);
+        return {
+          id: '',
+          name,
+          description: this.infrastructureCapabilityDescription(name, providers, resourceTypes, files),
+          description_source: 'deterministic' as const,
+          description_generation: {
+            status: 'deterministic_initial' as const,
+            attempted: false,
+            generated_at: new Date().toISOString(),
+          },
+          category: 'supporting' as const,
+          operations: group.slice(0, 12).map(node => ({
+            entry_point_id: orientationEntry?.id || node.id,
+            entry_point_type: 'infrastructure_resource',
+            action: 'provision',
+            path_or_command: node.source?.file || this.infrastructureResourceSourceFile(node) || node.name,
+          })),
+          related_entities: [],
+          related_domains: [
+            'cloud-infrastructure',
+            ...resourceTypes.map(type => this.infrastructureResourceDomain(type)),
+          ].filter((value, index, all) => value && all.indexOf(value) === index),
+          criticality: this.infrastructureCapabilityCriticality(name, resourceTypes),
+          criticality_factors: this.infrastructureCapabilityCriticalityFactors(name, resourceTypes),
+        } as SystemCapability;
+      });
+  }
+
+  private infrastructureResourceType(node: CASNode): string {
+    return String((node.metadata as any)?.attributes?.terraform_type || (node.metadata as any)?.terraform_type || node.name.match(/resource\.([^.]+)/)?.[1] || '');
+  }
+
+  private infrastructureResourceProvider(node: CASNode): string {
+    return String((node.metadata as any)?.attributes?.provider || this.infrastructureResourceType(node).split('_')[0] || '');
+  }
+
+  private infrastructureResourceSourceFile(node: CASNode): string {
+    return String((node.metadata as any)?.file || (node as any).configuration?.config_files?.[0] || '');
+  }
+
+  private infrastructureCapabilityGroupKey(file: string | undefined, resourceType: string): string {
+    const stem = path.basename(file || '', path.extname(file || '')).toLowerCase();
+    if (stem && !/^(main|outputs?|variables?|providers?)$/.test(stem)) return stem;
+    const tokens = resourceType.toLowerCase().split(/[_\W]+/).filter(token => token && token !== 'aws');
+    if (tokens.includes('cloudtrail')) return 'cloudtrail';
+    if (tokens.includes('cloudwatch') || tokens.includes('alarm') || tokens.includes('dashboard')) return 'cloudwatch';
+    if (tokens.includes('iam') || tokens.includes('kms') || tokens.includes('policy') || tokens.includes('role')) return 'iam';
+    if (tokens.includes('budget') || tokens.includes('budgets')) return 'budget';
+    if (tokens.includes('vpc') || tokens.includes('subnet') || tokens.includes('route')) return 'network';
+    if (tokens.includes('s3') || tokens.includes('bucket')) return 'storage';
+    return tokens.slice(0, 2).join('-') || 'infrastructure';
+  }
+
+  private infrastructureCapabilityName(key: string, resourceTypes: string[]): string {
+    const text = `${key} ${resourceTypes.join(' ')}`.toLowerCase().replace(/[_-]+/g, ' ');
+    if (/\b(budget|cost|billing)\b/.test(text)) return 'Cloud Cost Monitoring';
+    if (/\b(cloudtrail|audit|trail)\b/.test(text)) return 'Cloud Audit Logging';
+    if (/\b(cloudwatch|alarm|dashboard|metric|sns)\b/.test(text)) return 'Cloud Monitoring';
+    if (/\b(iam|kms|policy|role|permission|access)\b/.test(text)) return 'Cloud Access Control';
+    if (/\b(postgres|postgresql|database|db)\b/.test(text)) return 'Database Infrastructure';
+    if (/\b(firewall|security group|network security)\b/.test(text)) return 'Network Access Control';
+    if (/\b(resource group)\b/.test(text)) return 'Cloud Resource Grouping';
+    if (/\b(vpc|subnet|route|gateway|network)\b/.test(text)) return 'Network Infrastructure';
+    if (/\b(s3|bucket|storage)\b/.test(text)) return 'Object Storage';
+    if (/\b(ec2|ecs|lambda|compute|node|instance|cluster|service)\b/.test(text)) return 'Compute Infrastructure';
+    return `${this.humanizeDisplayName(key)} Infrastructure`;
+  }
+
+  private infrastructureCapabilityDescription(name: string, providers: string[], resourceTypes: string[], files: string[]): string {
+    const resourceLabels = resourceTypes
+      .map(type => this.infrastructureResourceLabel(type))
+      .filter(Boolean)
+      .slice(0, 4);
+    const providerPhrase = providers.length > 0
+      ? `${this.joinHumanList(providers.map(provider => provider.toUpperCase()))} `
+      : '';
+    const resourcePhrase = resourceLabels.length > 0
+      ? this.joinHumanList(resourceLabels)
+      : 'cloud resources';
+    const filePhrase = files.length > 0
+      ? ` in ${this.joinHumanList(files.slice(0, 3))}`
+      : '';
+    return `${name} defines ${providerPhrase}${resourcePhrase}${filePhrase} for deployment, operations, and change review.`;
+  }
+
+  private infrastructureResourceLabel(type: string): string {
+    return this.humanizeDisplayName(type.replace(/^(aws|google|azurerm|cloudflare|digitalocean)_/i, ''))
+      .replace(/\bIam\b/g, 'IAM')
+      .replace(/\bKms\b/g, 'KMS')
+      .replace(/\bS3\b/g, 'S3')
+      .replace(/\bSns\b/g, 'SNS')
+      .replace(/\bVpc\b/g, 'VPC')
+      .replace(/\bApi\b/g, 'API');
+  }
+
+  private infrastructureResourceDomain(type: string): string {
+    const text = type.toLowerCase().replace(/[_-]+/g, ' ');
+    if (/\b(iam|kms|policy|role)\b/.test(text)) return 'access-control';
+    if (/\b(cloudtrail|audit)\b/.test(text)) return 'audit-logging';
+    if (/\b(cloudwatch|alarm|dashboard|metric|sns)\b/.test(text)) return 'monitoring';
+    if (/\b(budget|cost|billing)\b/.test(text)) return 'cost-monitoring';
+    if (/\b(postgres|postgresql|database|db)\b/.test(text)) return 'database-infrastructure';
+    if (/\b(firewall|security group|network security)\b/.test(text)) return 'network-access';
+    if (/\b(vpc|subnet|route|network)\b/.test(text)) return 'networking';
+    if (/\b(s3|bucket|storage)\b/.test(text)) return 'storage';
+    return 'resource-provisioning';
+  }
+
+  private infrastructureCapabilityCriticality(name: string, resourceTypes: string[]): SystemCapability['criticality'] {
+    const text = `${name} ${resourceTypes.join(' ')}`.toLowerCase().replace(/[_-]+/g, ' ');
+    if (/\b(iam|kms|cloudtrail|audit|policy|role|firewall|database|postgres)\b/.test(text)) return 'high';
+    if (/\b(budget|alarm|cloudwatch|monitoring|network|vpc)\b/.test(text)) return 'medium';
+    return 'low';
+  }
+
+  private infrastructureCapabilityCriticalityFactors(name: string, resourceTypes: string[]): string[] {
+    const text = `${name} ${resourceTypes.join(' ')}`.toLowerCase().replace(/[_-]+/g, ' ');
+    const factors: string[] = [];
+    if (/\b(iam|kms|policy|role|access)\b/.test(text)) factors.push('Access and encryption resources can affect security boundaries.');
+    if (/\b(cloudtrail|audit)\b/.test(text)) factors.push('Audit logging resources affect operational traceability.');
+    if (/\b(postgres|postgresql|database)\b/.test(text)) factors.push('Database infrastructure affects persistence, backups, and data access boundaries.');
+    if (/\b(firewall|network security)\b/.test(text)) factors.push('Network access rules affect which clients can reach managed infrastructure.');
+    if (/\b(budget|cost|billing)\b/.test(text)) factors.push('Budget resources affect cost visibility and spend controls.');
+    if (/\b(cloudwatch|alarm|monitoring)\b/.test(text)) factors.push('Monitoring resources affect incident detection and operational visibility.');
+    return factors;
+  }
+
+  private prioritizeKlauroSelfCapabilities(capabilities: SystemCapability[], projectPath?: string): SystemCapability[] {
+    const primary = capabilities.filter(capability => this.klauroSelfCapabilityPriority(projectPath, capability) <= 2);
+    if (primary.length >= 5) return primary;
+    return capabilities.filter(capability => this.klauroSelfCapabilityPriority(projectPath, capability) < 8);
+  }
+
+  private klauroSelfCapabilityPriority(projectPath: string | undefined, capability: SystemCapability): number {
+    if (!this.isKlauroSelfProject(projectPath)) return 0;
+    const text = `${capability.name} ${(capability.related_domains || []).join(' ')}`.toLowerCase();
+    if (/\b(codebase analysis|architecture mapping|agent work packets|codebase idiom guidance|incremental analysis|analysis storage|proposal preview|greenfield planning|runtime telemetry|cas contract validation|change impact analysis|behavioral invariant validation|machine repo gauntlet|answer packs|agent continuation|agent task proof|mcp)\b/.test(text)) {
+      return 0;
+    }
+    if (/\b(call chain|pattern detection|trace|report analysis|klauro runtime sdk|runtime sdk)\b/.test(text)) return 2;
+    if (/\b(workspaces?|projects?|users?|organizations?|membership|auth|components?|health|database|function call|connection|tags?|issues?)\b/.test(text)) {
+      return 9;
+    }
+    return 5;
+  }
+
+  private systemCapabilityProductPriority(capability: SystemCapability): number {
+    const text = [
+      capability.name,
+      ...(capability.related_domains || []),
+      ...(capability.related_entities || []),
+    ].join(' ').toLowerCase();
+    if (capability.category === 'core') return 0;
+    if (/\b(portfolio|asset|assets|investment|investments|automation|market|token|trade|exchange|advisory|purchase|price|currency|risk|decision|transfer|tax|dca)\b/.test(text)) {
+      return 1;
+    }
+    if (/\b(checkout|billing|invoice|subscription|payment)\b/.test(text)) return 2;
+    if (this.isCrossCuttingCapabilityName(capability.name)) return 4;
+    if (/\b(demo|sample|example|react|formatter|text|tab|chevron|sidebar|empty|api)\b/.test(text)) return 5;
+    return 3;
+  }
+
+  private isRedundantCoveredCapability(capability: SystemCapability, allCapabilities: SystemCapability[]): boolean {
+    if (!/\b(Capability|Workflow|Management|Commands|Handlers)\b/i.test(capability.name || '')) return false;
+    const domains = (capability.related_domains || [])
+      .map(domain => this.normalizeDomainToken(String(domain || '').toLowerCase()))
+      .filter(Boolean);
+    if (domains.length !== 1) return false;
+    const domain = domains[0];
+    return allCapabilities.some(other => {
+      if (other === capability) return false;
+      const otherDomains = other.related_domains || [];
+      return otherDomains.some(otherDomain => {
+        const normalizedOtherDomain = this.normalizeDomainToken(String(otherDomain || '').toLowerCase());
+        if (this.domainVariantInSet(domain, new Set([normalizedOtherDomain]))) {
+          const currentLooksPlural = domain.endsWith('s') && !domain.endsWith('ss');
+          const otherLooksPlural = normalizedOtherDomain.endsWith('s') && !normalizedOtherDomain.endsWith('ss');
+          if (currentLooksPlural && !otherLooksPlural) return true;
+          if (!currentLooksPlural && otherLooksPlural) return false;
+          return (other.operations?.length || 0) > (capability.operations?.length || 0);
+        }
+        const tokens = String(otherDomain || '')
+          .toLowerCase()
+          .split(/[-_\s]+/)
+          .map(token => this.normalizeDomainToken(token))
+          .filter(Boolean);
+        return tokens.length > 1 && tokens[tokens.length - 1] === domain;
+      });
+    });
+  }
+
+  private buildPurposeCapabilitiesFromSignals(nodes: CASNode[], existingCapabilities: SystemCapability[], projectPath?: string): SystemCapability[] {
+    const signalNodes = nodes.filter(node => !this.isAnalyzerImplementationPurposeSignalNode(node));
+    const corpus = signalNodes
+      .map(node => `${node.name} ${node.source?.file || ''} ${(node.subcategories || []).join(' ')}`)
+      .join('\n')
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[_\-./]/g, ' ')
+      .toLowerCase();
+    const hasClinicalSignal = /\b(hoggan|clinical|myotest|muscle|grip|pinch|inclinometry)\b/.test(corpus) ||
+      (/\bpatient\b/.test(corpus) && /\b(measurement|test|testing|device|report)\b/.test(corpus));
+    const fleetAnchorMatches = (corpus.match(/\b(truckspy|fleet|vehicle|vehicles|telematics|odometer|ifta)\b/g) || []).length;
+    const fleetCompanionMatches = (corpus.match(/\b(vehicle|vehicles|driver|drivers|fuel|odometer|maintenance|dispatch|booking|trip|trips|telematics)\b/g) || []).length;
+    const hasFleetSignal = fleetAnchorMatches >= 1 && fleetCompanionMatches >= 3;
+    const projectPathText = (projectPath || '').toLowerCase();
+    const projectPathAnchorsNetworkAccess = /(^|\/)zerac(\/|$)|(^|\/)ztray(\/|$)|(^|\/)zeracmobile(\/|$)|(^|\/)zerac-api(\/|$)/.test(projectPathText);
+    const networkAccessAnchorMatches = (corpus.match(/\b(zerac|zero trust|protected resource|posture|wireguard)\b/g) || []).length;
+    const networkAccessCompanionMatches = (corpus.match(/\b(device|devices|register|registration|organization|organizations|signal|signals|connect|disconnect|connection|connections|token|tokens|session|sessions)\b/g) || []).length;
+    const hasNetworkAccessSignal = hasClinicalSignal || hasFleetSignal
+      ? false
+      : (projectPathAnchorsNetworkAccess || networkAccessAnchorMatches >= 2) && networkAccessCompanionMatches >= 3;
+
+    const existingText = existingCapabilities.map(capability => `${capability.name} ${(capability.related_domains || []).join(' ')}`).join(' ').toLowerCase();
+    const makeOperations = (pattern: RegExp): SystemCapability['operations'] => signalNodes
+      .filter(node => pattern.test(`${node.name} ${node.source?.file || ''}`))
+      .slice(0, 12)
+      .map(node => ({
+        entry_point_id: `node:${node.id}`,
+        entry_point_type: 'internal',
+        action: this.inferActionFromNodeName(node.name),
+        path_or_command: node.source?.file,
+      }));
+
+    const candidates: Array<{
+      name: string;
+      description: string;
+      domain: string;
+      pattern: RegExp;
+      criticality: SystemCapability['criticality'];
+    }> = [
+      ...(hasClinicalSignal ? [
+        {
+          name: 'Patient Records',
+          description: 'Patient Records maintains patient identity, visit, and profile context used by clinical testing workflows.',
+          domain: 'patient',
+          pattern: /\bpatient\b/i,
+          criticality: 'high' as const,
+        },
+        {
+          name: 'Clinical Measurements',
+          description: 'Clinical Measurements captures muscle, force, grip, pinch, inclinometry, and assessment data for test sessions.',
+          domain: 'clinical-measurement',
+          pattern: /\b(muscle|force|grip|pinch|inclinometry|measurement|assessment|myotest)\b/i,
+          criticality: 'critical' as const,
+        },
+        {
+          name: 'Device Connectivity',
+          description: 'Device Connectivity links testing devices, sensors, calibration, and connection state to measurement workflows.',
+          domain: 'device-connectivity',
+          pattern: /\b(device|sensor|calibration|connection|connectivity|bluetooth|serial)\b/i,
+          criticality: 'high' as const,
+        },
+        {
+          name: 'Clinical Reporting',
+          description: 'Clinical Reporting prepares reports, print previews, and cover letters from patient testing results.',
+          domain: 'clinical-reporting',
+          pattern: /\b(report|reports|print|preview|cover\s*letter|coverletter)\b/i,
+          criticality: 'high' as const,
+        },
+      ] : []),
+      ...(hasFleetSignal ? [
+        {
+          name: 'Fleet Operations',
+          description: 'Fleet Operations coordinates vehicle, driver, trip, dispatch, and company workflows across the fleet backend.',
+          domain: 'fleet-operations',
+          pattern: /\b(fleet|vehicle|vehicles|driver|drivers|trip|trips|dispatch|booking|company)\b/i,
+          criticality: 'critical' as const,
+        },
+        {
+          name: 'Fuel Management',
+          description: 'Fuel Management tracks fuel transactions, rates, synchronization, and reporting signals for fleet operations.',
+          domain: 'fuel-management',
+          pattern: /\b(fuel|ifta|rate|rates|transaction|transactions)\b/i,
+          criticality: 'high' as const,
+        },
+        {
+          name: 'Vehicle Maintenance',
+          description: 'Vehicle Maintenance manages odometer, scheduled-maintenance, repair, and maintenance-issue workflows for vehicles.',
+          domain: 'vehicle-maintenance',
+          pattern: /\b(maintenance|repair|odometer|scheduled|issue|issues|vehicle)\b/i,
+          criticality: 'high' as const,
+        },
+        {
+          name: 'Driver Communication',
+          description: 'Driver Communication sends mobile, email, and push notifications that keep drivers and operators aligned.',
+          domain: 'driver-communication',
+          pattern: /\b(driver|drivers|mobile|push|notification|notifications|message|messages|email)\b/i,
+          criticality: 'medium' as const,
+        },
+      ] : []),
+      ...(hasNetworkAccessSignal ? [
+        {
+          name: 'Device Enrollment',
+          description: 'Device Enrollment registers devices and binds them to the identity and organization context used for network access.',
+          domain: 'device-enrollment',
+          pattern: /\b(device|devices|register|registration|enroll|enrollment|bincode)\b/i,
+          criticality: 'high' as const,
+        },
+        {
+          name: 'Network Connection Control',
+          description: 'Network Connection Control starts, stops, and tracks protected network connections for the local device.',
+          domain: 'network-connection-control',
+          pattern: /\b(connect|disconnect|connection|connections|vpn|wireguard|gateway|network)\b/i,
+          criticality: 'critical' as const,
+        },
+        {
+          name: 'Organization Access Context',
+          description: 'Organization Access Context keeps the selected organization, identity, and access scope aligned with device workflows.',
+          domain: 'organization-access-context',
+          pattern: /\b(organization|organizations|identity|access|scope|policy|resource)\b/i,
+          criticality: 'high' as const,
+        },
+        {
+          name: 'Signal Synchronization',
+          description: 'Signal Synchronization exchanges control signals that keep device and network access state current.',
+          domain: 'signal-synchronization',
+          pattern: /\b(signal|signals|sync|synchronization|status|state)\b/i,
+          criticality: 'medium' as const,
+        },
+      ] : []),
+    ];
+
+    return candidates
+      .filter(candidate => candidate.pattern.test(corpus))
+      .filter(candidate => !existingText.includes(candidate.name.toLowerCase()))
+      .map(candidate => {
+        const operations = makeOperations(candidate.pattern);
+        return {
+          id: 'cap_pending',
+          name: candidate.name,
+          description: candidate.description,
+          description_source: 'deterministic',
+          description_generation: {
+            status: 'deterministic_initial',
+            attempted: false,
+            generated_at: new Date().toISOString(),
+          },
+          category: 'core',
+          operations,
+          related_entities: [],
+          related_domains: [candidate.domain],
+          criticality: candidate.criticality,
+          criticality_factors: ['Inferred from product vocabulary in node names and source paths'],
+        } satisfies SystemCapability;
+      });
+  }
+
+  private isAnalyzerImplementationPurposeSignalNode(node: CASNode): boolean {
+    const file = (node.source?.file || '').replace(/\\/g, '/').toLowerCase();
+    if (/(^|\/)packages\/analyzer-core\/src\/analyzer\/(core|frameworks|languages|library|libraries)\//.test(file)) return true;
+    if (/(^|\/)packages\/analyzer-core\/src\/ai\//.test(file)) return true;
+    if (/(^|\/)apps\/mcp-server\/src\/agent-.*benchmark\.ts$/.test(file)) return true;
+    return false;
   }
 
   private buildTerminalCapabilities(
@@ -11907,7 +13460,7 @@ export class AnalyzerOrchestrator {
     for (const entity of dataEntities) {
       const tokens = this.domainTokensFromText(entity.name);
       const key = tokens[0];
-      if (!key || existingDomains.has(key)) continue;
+      if (!key || this.domainCoveredByExistingDomain(key, existingDomains)) continue;
       const group = ensureGroup(key, tokens);
       group.entities.push(entity);
       const lifecycleNodes = [
@@ -11933,9 +13486,14 @@ export class AnalyzerOrchestrator {
         this.isBusinessOwnerNode(node);
       if (!isTerminal && !isBusinessParent && !isStandaloneBusinessOwner) continue;
 
-      const key = this.domainKeyFromNode(node);
-      if (!key || existingDomains.has(key)) continue;
-      const group = ensureGroup(key, []);
+      const nodeTokens = this.domainTokensFromText(node.name);
+      const file = (node.source?.file || '').replace(/\\/g, '/').toLowerCase();
+      const composedEntityKey = nodeTokens.length > 1 && /(^|\/)(entity|entities|model|models)(\/|$)/.test(file)
+        ? nodeTokens.join('_')
+        : undefined;
+      const key = composedEntityKey || this.domainKeyFromNode(node);
+      if (!key || this.domainCoveredByExistingDomain(key, existingDomains)) continue;
+      const group = ensureGroup(key, nodeTokens);
       group.nodes.push(node);
       group.operations.push({
         entry_point_id: `node:${node.id}`,
@@ -11966,9 +13524,18 @@ export class AnalyzerOrchestrator {
           action: this.inferActionFromNodeName(node.name),
           path_or_command: node.source?.file,
         }));
-
       const category = this.inferTerminalCapabilityCategory(key, uniqueNodes, uniqueEntities);
       const capabilityName = this.formatTerminalCapabilityName(key, group.label, operations, uniqueEntities, projectPath);
+      if ((!this.namedSystemCapabilityForDomain(key, projectPath) && this.isGenericCapabilityResourceKey(key, capabilityName)) ||
+        this.isProjectNameCapabilityName(capabilityName, projectPath)) {
+        continue;
+      }
+      if (this.isTerminalCapabilityNoise(key, labelTokens, uniqueEntities, operations)) {
+        continue;
+      }
+      if (this.isEvidenceLightFallbackCapability(capabilityName, uniqueEntities, operations)) {
+        continue;
+      }
       // A bare vendor/infrastructure library token ("Jito Capability") that
       // reached the evidence-free Capability fallback is SDK plumbing, not a
       // product capability. Vendor tokens WITH product evidence (entities or
@@ -12006,8 +13573,67 @@ export class AnalyzerOrchestrator {
       .slice(0, 24);
   }
 
+  private isTerminalCapabilityNoise(
+    key: string,
+    labelTokens: string[],
+    entities: CASDataEntity[],
+    operations: SystemCapability['operations']
+  ): boolean {
+    if (entities.length > 0) return false;
+
+    const normalizedKey = this.normalizeDomainToken(String(key || '').toLowerCase());
+    const normalizedTokens = labelTokens.map(token => this.normalizeDomainToken(String(token || '').toLowerCase())).filter(Boolean);
+    const hasOnlyInternalOperations = operations.length === 0 ||
+      operations.every(operation => operation.entry_point_type === 'internal');
+    if (!hasOnlyInternalOperations) return false;
+
+    const terminalHelperTokens = new Set([
+      'ack', 'badge', 'blocked', 'bootstrap', 'choose', 'classify', 'clean', 'clear',
+      'collect', 'connection', 'connections', 'constant', 'constants', 'developer', 'execution', 'expand',
+      'handling', 'ids', 'invalidate',
+      'key', 'label', 'local', 'log', 'map', 'mark', 'materialize', 'merge',
+      'metric', 'monitor', 'notify', 'operating', 'owner', 'probe', 'public', 'recent',
+      'reference', 'refresh', 'retry', 'save', 'setting', 'settings', 'shadow', 'snapshot',
+      'strip', 'support', 'supports', 'thinking', 'top', 'trigger', 'workers',
+    ]);
+
+    if (terminalHelperTokens.has(normalizedKey)) return true;
+    if (normalizedTokens.length > 0 && normalizedTokens.every(token =>
+      terminalHelperTokens.has(token) ||
+      this.isGenericCapabilityToken(token) ||
+      this.isGenericDomainToken(token) ||
+      isCapabilityNoiseToken(token) ||
+      isLanguageBuiltinDomainToken(token)
+    )) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private isEvidenceLightFallbackCapability(
+    capabilityName: string,
+    entities: CASDataEntity[],
+    operations: SystemCapability['operations']
+  ): boolean {
+    if (/\b(graph|control|user control|picker|radius|rtfbox|textbox|combobox|button|label|panel|grid|window|end|skeleton|tab|screens?|big int|device arp|access token|exchange code token|truncate device|running|compose|vpn)\s+(management|workflow|capability)\b/i.test(capabilityName)) {
+      return true;
+    }
+    if (!/\b(Capability|Management|Workflow)$/i.test(capabilityName)) return false;
+    if (entities.length > 0) return false;
+    const internalOperations = operations.filter(operation => operation.entry_point_type === 'internal');
+    if (internalOperations.length < operations.length) return false;
+    if (operations.length > 2 && !/\bCapability$/i.test(capabilityName)) return false;
+    const normalizedName = capabilityName.toLowerCase();
+    if (/\b(auth|tenant|payment|billing|invoice|transaction|pricing|trade|token|market|portfolio|order|patient|vehicle|driver|fuel|report|clinical|device)\b/.test(normalizedName)) {
+      return false;
+    }
+    return true;
+  }
+
   private isCapabilityCandidateNode(node: CASNode): boolean {
     if (node.metadata?.is_test || node.metadata?.is_generated) return false;
+    if (this.isInternalCapabilityHelperNode(node)) return false;
     const file = node.source?.file?.toLowerCase() || '';
     if (/(^|\/)(node_modules|dist|build|coverage|vendor|vendors|generated|fixtures?)(\/|$)/.test(file)) return false;
     if (/\.(min|bundle)\.(js|css)$/.test(file)) return false;
@@ -12016,17 +13642,43 @@ export class AnalyzerOrchestrator {
     return this.isBusinessOrDomainNode(node);
   }
 
+  private isInternalCapabilityHelperNode(node: CASNode): boolean {
+    const name = node.name
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[_\-./]/g, ' ')
+      .toLowerCase()
+      .trim();
+    if (/^(update|append|write)\s+log$/.test(name)) return true;
+    if (/^(set|toggle)\s+(visual|display|screen|menu|mode)(\s+mode)?$/.test(name)) return true;
+    if (/^(extract|parse|format)\s+(text|html|json|response)$/.test(name)) return true;
+    if (/^(calculate|compute|get)\s+rent\s+exemption/.test(name)) return true;
+    return false;
+  }
+
   private isBusinessOrDomainNode(node: CASNode): boolean {
-    const text = `${node.type} ${node.name} ${(node.subcategories || []).join(' ')}`.toLowerCase();
-    return /\b(entity|model|schema|service|usecase|use_case|use-case|interactor|handler|processor|workflow|flow|function|method|repository|store|controller|resolver)\b/.test(text);
+    const text = `${node.type} ${node.name} ${(node.subcategories || []).join(' ')}`
+      .toLowerCase()
+      .replace(/[_-]/g, ' ');
+    const file = (node.source?.file || '').replace(/\\/g, '/').toLowerCase();
+    return /\b(entity|model|schema|service|usecase|use case|interactor|handler|processor|workflow|flow|function|method|repository|store|controller|resolver)\b/.test(text) ||
+      (node.type === 'class' && /(^|\/)(entity|entities|model|models|controller|controllers|service|services|event[-_]?handler|event[-_]?handlers|handler|handlers|repository|repositories|store|stores)(\/|$)/.test(file)) ||
+      (node.type === 'class' && /\b(controller|service|handler|repository|store|model|entity)\b/.test(text));
   }
 
   private isBusinessOwnerNode(node: CASNode): boolean {
-    const text = `${node.type} ${node.name} ${(node.subcategories || []).join(' ')}`.toLowerCase();
-    return /\b(entity|model|schema|service|usecase|use_case|use-case|interactor|handler|processor|workflow|flow|repository|store|controller|resolver)\b/.test(text);
+    const text = `${node.type} ${node.name} ${(node.subcategories || []).join(' ')}`
+      .toLowerCase()
+      .replace(/[_-]/g, ' ');
+    const file = (node.source?.file || '').replace(/\\/g, '/').toLowerCase();
+    return /\b(entity|model|schema|service|usecase|use case|interactor|handler|processor|workflow|flow|repository|store|controller|resolver)\b/.test(text) ||
+      (node.type === 'class' && /(^|\/)(entity|entities|model|models|controller|controllers|service|services|event[-_]?handler|event[-_]?handlers|handler|handlers|repository|repositories|store|stores)(\/|$)/.test(file)) ||
+      (node.type === 'class' && /\b(controller|service|handler|repository|store|model|entity)\b/.test(text));
   }
 
   private domainKeyFromNode(node: CASNode): string | undefined {
+    const tradingKey = this.tradingBotDomainKeyFromNode(node);
+    if (tradingKey) return tradingKey;
+
     const nameKey = this.domainKeyFromText(node.name);
     if (nameKey) return nameKey;
 
@@ -12039,6 +13691,32 @@ export class AnalyzerOrchestrator {
       const key = this.domainKeyFromText(part.replace(/\.[^.]+$/, ''));
       if (key) return key;
     }
+    return undefined;
+  }
+
+  private tradingBotDomainKeyFromNode(node: CASNode): string | undefined {
+    const text = [
+      node.name,
+      node.source?.file || '',
+      ...(node.subcategories || []),
+    ].join(' ')
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[_\-./]/g, ' ')
+      .toLowerCase();
+    const hasCryptoMarketContext = /\b(solana|spl|spltokens|trade|trading|swap|pump|jupiter|raydium|bonding|curve|mint|keypair|developer fee|buy|sell)\b/.test(text);
+    const isTradingContext = hasCryptoMarketContext ||
+      (/\btokens?\b/.test(text) &&
+        /\b(scrape|pair|pairs|market|wallet|balance|buy|sell|trade)\b/.test(text) &&
+        !/\b(identity|password|auth|authorize|authorization|register|claims?)\b/.test(text));
+    if (!isTradingContext) return undefined;
+    if (/\b(fee|fees|developer fee)\b/.test(text)) return 'fee';
+    if (hasCryptoMarketContext &&
+      /\b(balance|balances|account info|account|accounts|wallet|spltokens|spl token|spl tokens|token accounts?)\b/.test(text) &&
+      /\b(fetch|get|check|read|update|live update|balance|balances|account|accounts|wallet|spltokens|token accounts?)\b/.test(text)) {
+      return 'token-balance';
+    }
+    if (/\b(buy|sell|swap|trade|execute|send transaction|send and confirm transaction)\b/.test(text)) return 'trade';
+    if (/\b(pair|pairs|market|marketcap|market cap|bonding curve|scrape|scan|discover)\b/.test(text)) return 'market-data';
     return undefined;
   }
 
@@ -12062,39 +13740,66 @@ export class AnalyzerOrchestrator {
   private normalizeDomainToken(token: string): string {
     if (/^ws[a-z]{4,}$/.test(token)) return token.slice(2);
     if (token === 'trans' || token === 'mctrans') return 'transaction';
+    if (token === 'loc') return 'location';
+    if (token === 'wsol') return 'wrapped-sol';
     if (/^check[a-z]{5,}$/.test(token)) return token.replace(/^check/, '');
     return token;
+  }
+
+  private capabilityReuseSubjectsMatch(previous: SystemCapability, current: SystemCapability): boolean {
+    const previousName = this.normalizeCapabilityReuseSubject(previous.name);
+    const currentName = this.normalizeCapabilityReuseSubject(current.name);
+    if (!previousName || !currentName || previousName !== currentName) return false;
+    const previousDomains = new Set((previous.related_domains || []).map(domain => this.normalizeCapabilityReuseSubject(domain)).filter(Boolean));
+    const currentDomains = (current.related_domains || []).map(domain => this.normalizeCapabilityReuseSubject(domain)).filter(Boolean);
+    if (previousDomains.size === 0 || currentDomains.length === 0) return true;
+    return currentDomains.some(domain => previousDomains.has(domain));
+  }
+
+  private normalizeCapabilityReuseSubject(value: unknown): string {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/\b(management|capability|workflow|reporting|analysis|generation|settlement|rebalancing|authentication|commands|handlers|tasks)\b/g, ' ')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim()
+      .replace(/\s+/g, ' ');
   }
 
   private isGenericCapabilityToken(token: string): boolean {
     return new Set([
       'controller', 'service', 'services', 'repository', 'repo', 'model', 'models', 'entity', 'schema', 'module',
-      'handler', 'manager', 'processor', 'provider', 'component', 'page', 'view', 'route',
+      'handler', 'manager', 'processor', 'provider', 'component', 'page', 'view', 'route', 'usecase', 'use', 'case',
+      'dto', 'dtos',
       'pages', 'views', 'routes', 'layout', 'layouts', 'metadata', 'section', 'sections',
-      'navbar', 'nav', 'footer', 'button', 'arrow', 'padding', 'total', 'home',
+      'navbar', 'nav', 'footer', 'button', 'buttons', 'arrow', 'padding', 'total', 'home',
       'index', 'main', 'app', 'application', 'base', 'common', 'shared', 'core', 'file', 'files', 'util',
-      'utils', 'helper', 'helpers', 'config', 'client', 'server', 'data', 'store',
+      'utils', 'helper', 'helpers', 'config', 'configuration', 'client', 'server', 'data', 'store',
       'constructor', 'import', 'export', 'create', 'update', 'delete', 'remove', 'get',
       'set', 'find', 'list', 'validate', 'verify', 'format', 'parse', 'build', 'make', 'run',
       'construct', 'submit', 'initialize', 'init', 'start', 'stop', 'catch', 'try',
       'generate', 'generator', 'generators', 'analyze', 'analyse', 'evaluate', 'calculate', 'compute', 'rebalance',
-      'settle', 'settlement', 'sync', 'publish', 'send', 'receive', 'approve', 'reject',
+      'settle', 'settlement', 'sync', 'publish', 'send', 'receive', 'approve', 'reject', 'accept',
+      'action', 'actions', 'flow', 'flows',
       'schedule', 'cancel', 'resolve', 'assign',
-      'major', 'minor', 'next', 'last', 'new', 'check', 'options', 'property', 'point', 'select',
-      'window', 'modal', 'dialog', 'popup', 'screen', 'xaml', 'step', 'convert', 'show', 'display',
-      'back', 'snack', 'setting', 'load', 'search', 'render', 'close', 'focus',
+      'major', 'minor', 'next', 'last', 'latest', 'now', 'pending', 'new', 'check', 'options', 'property', 'point', 'select',
+      'window', 'windows', 'modal', 'dialog', 'popup', 'screen', 'xaml', 'step', 'convert', 'show', 'display',
+      'back', 'snack', 'setting', 'load', 'search', 'render', 'close', 'focus', 'click', 'more', 'sidenav',
       'open', 'special', 'toast', 'date', 'dates', 'datepicker', 'ngrx', 'redux',
-      'form', 'forms', 'input', 'inputs', 'slide', 'slides',
+      'form', 'forms', 'input', 'inputs', 'body', 'bodies', 'detail', 'details', 'slide', 'slides', 'combo', 'combobox',
       'sort', 'sorting', 'sorted', 'filter', 'filters', 'filtering', 'children', 'child',
       'icon', 'icons', 'header', 'headers', 'effects', 'effect', 'provide', 'provides', 'providers',
       'object', 'objects', 'keys', 'toggle', 'tooltip', 'dropdown', 'checkbox', 'pagination',
       'paginator', 'scroll', 'subscribe', 'subscription', 'subscriptions', 'observable', 'observables',
       'dispatch', 'selector', 'selectors', 'reducer', 'reducers',
       'column', 'columns', 'row', 'rows', 'cell', 'cells', 'grid', 'grids', 'table', 'tables',
+      'bar', 'bars', 'box', 'boxes', 'middle', 'name', 'names',
+      'color', 'colors', 'colour', 'colours', 'image', 'images', 'current', 'changed',
+      'circular', 'contents', 'content', 'copy', 'dispose', 'reset', 'custom',
       'state', 'states', 'status', 'statuses',
       'normalize', 'ensure', 'path', 'clamp', 'install', 'setup', 'configure',
-      'execute', 'process', 'handle', 'test', 'spec', 'orchestrator', 'workflow',
+      'execute', 'process', 'handle', 'invoke', 'enqueue', 'dequeue', 'upsert', 'test', 'spec', 'orchestrator', 'workflow',
       'workflows', 'operation', 'operations', 'command', 'commands', 'cli',
+      'query', 'queries', 'mutation', 'mutations',
       'bin', 'console', 'event', 'events', 'handler', 'handlers',
       'rewrite', 'rewrites', 'has', 'serializer', 'serializers', 'admin',
       'manage', 'lookup', 'superuser', 'permission', 'permissions', 'queryset', 'querysets',
@@ -12108,13 +13813,22 @@ export class AnalyzerOrchestrator {
       'flutter', 'lifecycle',
       'summarize', 'summary', 'args', 'argument', 'arguments', 'print', 'aggregate', 'average',
       'status', 'file', 'files', 'default', 'target', 'targets', 'unique', 'compact', 'score',
+      'variable', 'variables', 'output', 'outputs', 'resource', 'resources',
       'estimate', 'live', 'source', 'node', 'nodes',
+      'info', 'information', 'script', 'scripts', 'runtime', 'mode', 'modes', 'record', 'records',
+      'constant', 'constants', 'connection', 'connections', 'handling', 'reference',
+      'extract', 'assistant', 'operator', 'age', 'days', 'hours', 'seed', 'dedupe', 'drawer',
+      'string', 'team', 'inv', 'iso', 'empty', 'text', 'trim', 'split', 'skip', 'pick',
+      'port', 'html', 'hash', 'configured', 'callback', 'cache', 'block', 'blue', 'bubbles',
       'help', 'from', 'count', 'counts', 'slugify', 'with', 'match', 'matches',
-      'dev', 'clients', 'outcode', 'personal', 'business', 'apps', 'libs',
+      'dev', 'clients', 'outcode', 'personal', 'business', 'apps', 'libs', 'bos',
       'entry', 'entries', 'first', 'path', 'paths', 'percent', 'percentage',
-      'minimal', 'gate', 'gates', 'compatible',
+      'minimal', 'gate', 'gates', 'compatible', 'support', 'dynamic', 'feature', 'features',
+      'guide', 'guides', 'manual', 'manuals',
       'forbidden', 'error', 'errors', 'general', 'getting', 'started', 'dismiss',
       'notice', 'notices', 'json', 'preview', 'previews', 'legacy', 'unauthorized', 'denied',
+      'demo', 'demos', 'sample', 'samples', 'example', 'examples',
+      'anon', 'anonymous',
       'change', 'changes',
       'rails', 'rack', 'rake', 'turbo', 'stimulus', 'sprockets', 'hotwire',
       'actiontext', 'activestorage', 'actioncable', 'actionmailer', 'actionpack',
@@ -12147,6 +13861,23 @@ export class AnalyzerOrchestrator {
     return false;
   }
 
+  private domainCoveredByExistingDomain(key: string, domains: Set<string>): boolean {
+    if (this.domainVariantInSet(key, domains)) return true;
+    const normalized = this.normalizeDomainToken((key || '').toLowerCase());
+    if (!normalized) return false;
+    for (const domain of domains) {
+      const domainTokens = String(domain || '')
+        .toLowerCase()
+        .split(/[-_\s]+/)
+        .map(token => this.normalizeDomainToken(token))
+        .filter(Boolean);
+      if (domainTokens.length > 1 && domainTokens[domainTokens.length - 1] === normalized) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private formatTerminalCapabilityName(
     key: string,
     label: string,
@@ -12159,9 +13890,21 @@ export class AnalyzerOrchestrator {
 
     const lower = label.toLowerCase();
     const operationText = operations.map(operation => operation.action).join(' ').toLowerCase();
+    if (key === 'trade') return 'Trade Execution';
+    if (key === 'token-balance') return 'Token Balance Discovery';
+    if (key === 'market-data') return 'Market Data Discovery';
+    if (/^(pair|pairs|token-pair|token-pairs)$/.test(key)) return 'Market Pair Discovery';
+    if (/^(market|market-usd|market_usd|price|prices|sol)$/.test(key)) return 'Market Price Analysis';
+    if (/^(purchase|buy|buyer)$/.test(key)) return 'Token Purchase Execution';
+    if (/^(batch|bundler|bundle)$/.test(key)) return 'Batch Trade Execution';
+    if (/^(bot|bots|sniper|volume|moonshot|raydium|jupiter|kamino|okx|coinbase|dexscreener|geckoterminal)$/.test(key)) {
+      return `${this.humanizeDomainKey(key)} Integration`;
+    }
+    if (/^(rpc|node-rpc|solana-rpc)$/.test(key)) return 'RPC Connectivity';
+    if (key === 'fee') return 'Fee Transfer';
     if (lower === 'auth') return 'Authentication';
     if (lower === 'login') return 'Login';
-    if (/\b(auth|login|session|token|oauth)\b/.test(`${lower} ${operationText}`)) {
+    if (/\b(auth|login|session|oauth|jwt)\b/.test(`${lower} ${operationText}`)) {
       return `${label} Authentication`;
     }
     if (/\b(settle|settlement)\b/.test(operationText)) {
@@ -12173,8 +13916,17 @@ export class AnalyzerOrchestrator {
     if (/\b(generate|generation|export)\b/.test(operationText) && /\b(report|document|file|feed)\b/.test(lower)) {
       return `${label} Generation`;
     }
-    if (/\b(report|analytics|analysis|metric|insight)\b/.test(`${lower} ${operationText}`)) {
+    if (/\b(sync|synchroni[sz]e|synchronization)\b/.test(operationText)) {
+      return `${label} Synchronization`;
+    }
+    if (/\b(analyze|analyse|analysis)\b/.test(`${lower} ${operationText}`)) {
+      return `${label} Analysis`;
+    }
+    if (/\b(report|analytics|metric|insight)\b/.test(`${lower} ${operationText}`)) {
       return `${label} Reporting`;
+    }
+    if (operations.some(operation => /(^|\/)(entity|entities|model|models|controller|controllers)(\/|$)/i.test(operation.path_or_command || ''))) {
+      return `${label} Management`;
     }
     if (/\b(payment|billing|invoice|transaction|card|employee|profile|organization|resource)\b/.test(lower) || entities.length > 0 || operations.length > 1) {
       return `${label} Management`;
@@ -12202,7 +13954,7 @@ export class AnalyzerOrchestrator {
       .replace(/\s+/g, ' ')
       .trim() || this.humanizeDomainKey(key);
 
-    if (/\b(auth|login|session|token|oauth)\b/.test(operationText)) return `${label} Authentication`;
+    if (/\b(auth|login|session|oauth|jwt)\b/.test(operationText)) return `${label} Authentication`;
     if (/\b(settle|settlement)\b/.test(operationText)) return `${label} Settlement`;
     if (/\b(rebalance|allocation|allocate|optimi[sz]e)\b/.test(operationText)) return `${label} Rebalancing`;
     if (/\b(report|analytics|analysis|metric|insight)\b/.test(operationText)) return `${label} Reporting`;
@@ -12255,7 +14007,8 @@ export class AnalyzerOrchestrator {
     if (/\b(settle|settlement|capture|charge|refund)\b/.test(lower)) return 'Settle';
     if (/\b(validate|verify|authorize|authenticate)\b/.test(lower)) return 'Validate';
     if (/\b(send|publish|emit|notify)\b/.test(lower)) return 'Send';
-    if (/\b(sync|process|run|execute|handle)\b/.test(lower)) return 'Process';
+    if (/\b(sync|synchronize|synchronise)\b/.test(lower)) return 'Synchronize';
+    if (/\b(process|run|execute|handle)\b/.test(lower)) return 'Process';
     return 'Coordinate';
   }
 
@@ -12266,6 +14019,8 @@ export class AnalyzerOrchestrator {
   ): 'core' | 'supporting' | 'admin' | 'internal' {
     if (/(admin|setting|config|system|manage)/.test(key)) return 'admin';
     if (/(health|metric|telemetry|log|debug|cache|queue|worker|infra)/.test(key)) return 'internal';
+    if (/^(trade|token-balance|market-data|pair|pairs|token-pair|token-pairs|market|market-usd|market_usd|purchase|buy|batch|bundler|bundle|price|prices|sol)$/.test(key)) return 'core';
+    if (key === 'fee') return 'supporting';
     if (entities.length > 0 || nodes.some(node => /\b(service|usecase|workflow|entity|model)\b/i.test(`${node.type} ${node.name}`))) {
       return 'core';
     }
@@ -12300,17 +14055,70 @@ export class AnalyzerOrchestrator {
     entities: CASDataEntity[],
     operations: SystemCapability['operations']
   ): string {
+    const lowerLabel = label.toLowerCase();
+    if (lowerLabel === 'trade execution') {
+      return 'Trade Execution submits token buy and sell transactions for the trading workflow.';
+    }
+    if (lowerLabel === 'token balance discovery') {
+      return 'Token Balance Discovery checks wallet and SPL token balances before trade decisions and sell actions.';
+    }
+    if (lowerLabel === 'market data discovery') {
+      return 'Market Data Discovery finds new token pairs and reads token market signals used by the trading workflow.';
+    }
+    if (lowerLabel === 'market pair discovery') {
+      return 'Market Pair Discovery finds candidate token pairs and market opportunities before trade execution.';
+    }
+    if (lowerLabel === 'market price analysis') {
+      return 'Market Price Analysis reads market prices and USD-denominated signals used to decide whether an arbitrage trade is viable.';
+    }
+    if (lowerLabel === 'token purchase execution') {
+      return 'Token Purchase Execution coordinates buy-side token transactions in the trading workflow.';
+    }
+    if (lowerLabel === 'batch trade execution') {
+      return 'Batch Trade Execution groups trading operations so automated strategies can execute coordinated token actions.';
+    }
+    if (lowerLabel === 'rpc connectivity') {
+      return 'RPC Connectivity manages blockchain RPC access used by market reads, balance checks, and transaction submission.';
+    }
+    if (/\b Integration$/i.test(label)) {
+      const subject = label.replace(/\s+Integration$/i, '');
+      return `${label} isolates ${subject} protocol or service calls so trading workflows can use that integration without spreading client details through the codebase.`;
+    }
+    if (lowerLabel === 'fee transfer') {
+      return 'Fee Transfer sends the configured developer fee as part of the trading transaction flow.';
+    }
+    const productDescription = this.productSpecificCapabilityDescription(label);
+    if (productDescription) return productDescription;
+    const subject = label.replace(/\s+(Management|Capability|Workflow|Reporting|Analysis|Generation|Settlement|Rebalancing|Authentication)$/i, '').trim() || label;
+    const subjectLower = subject.toLowerCase();
     const parts: string[] = [];
-    if (entities.length > 0) parts.push(`centers on ${entities.slice(0, 3).map(entity => entity.name).join(', ')}`);
+    if (entities.length > 0) parts.push(`maintains ${entities.slice(0, 3).map(entity => entity.name).join(', ')}`);
     if (operations.length > 0) {
       const actions = Array.from(new Set(operations.map(operation => operation.action.toLowerCase()).filter(action => action !== 'coordinate'))).slice(0, 4);
-      if (actions.length > 0) parts.push(`covers ${actions.join(', ')} paths`);
+      if (actions.length > 0) parts.push(`${this.capabilityActionPhrase(actions)} ${subjectLower} behavior`);
     }
     const sourceAreas = this.capabilitySourceAreas(nodes, operations);
     if (sourceAreas.length > 0) {
-      parts.push(`spans ${this.joinHumanList(sourceAreas)}`);
+      parts.push(`owned by ${this.joinHumanList(sourceAreas)}`);
     }
-    return `${label} ${parts.length ? parts.join('; ') : 'is inferred from connected source elements'}.`;
+    if (parts.length === 0) {
+      return `${label} represents ${subjectLower} behavior inferred from terminal domain nodes in the relationship graph.`;
+    }
+    return `${label} ${parts.join('; ')}.`;
+  }
+
+  private capabilityActionPhrase(actions: string[]): string {
+    const actionSet = new Set(actions.map(action => action.toLowerCase()));
+    if (actionSet.has('analyze')) return 'analyzes';
+    if (actionSet.has('validate')) return 'validates';
+    if (actionSet.has('generate')) return 'generates';
+    if (actionSet.has('rebalance')) return 'rebalances';
+    if (actionSet.has('settle')) return 'settles';
+    if (actionSet.has('send')) return 'sends';
+    if (actionSet.has('read') && actionSet.size === 1) return 'reads';
+    if (actionSet.has('create') || actionSet.has('update') || actionSet.has('delete')) return 'manages';
+    if (actionSet.has('process')) return 'processes';
+    return 'coordinates';
   }
 
   private capabilitySourceAreas(
@@ -12329,11 +14137,29 @@ export class AnalyzerOrchestrator {
       const parts = file.split('/').filter(Boolean);
       const srcIndex = parts.lastIndexOf('src');
       if (srcIndex >= 0 && parts[srcIndex + 1]) {
+        const afterSrc = parts.slice(srcIndex + 1);
+        if (/^\d+(?:\.[a-z]+)?$/i.test(afterSrc[0]) && afterSrc[1]) {
+          return afterSrc[1]
+            .replace(/\.[^.]+$/, '')
+            .replace(/^[A-Za-z0-9]+[._-]/, '');
+        }
+        if (afterSrc[0] === 'api' && afterSrc[1] === 'sync' && afterSrc[2]) {
+          return afterSrc[2].replace(/\.[^.]+$/, '');
+        }
+        if (afterSrc[0] === 'api' && afterSrc[1] === 'external' && afterSrc[2]) {
+          return afterSrc[2].replace(/\.[^.]+$/, '');
+        }
+        if (afterSrc[0] === 'views' && afterSrc[1] === 'app' && afterSrc[2] === 'pages' && afterSrc[3]) {
+          return afterSrc[3].replace(/\.[^.]+$/, '');
+        }
+        if (afterSrc[0] === 'views' && afterSrc[1] === 'auth') {
+          return 'auth';
+        }
         return parts[srcIndex + 1].replace(/\.[^.]+$/, '');
       }
       return (parts[parts.length - 2] || parts[parts.length - 1] || '').replace(/\.[^.]+$/, '');
     })
-      .map(area => area.replace(/[-_]/g, ' ').trim().toLowerCase())
+      .map(area => area.replace(/[._-]/g, ' ').trim().toLowerCase())
       .filter(area => area && !area.split(/\s+/).every(token => this.isGenericCapabilityToken(this.normalizeDomainToken(token))));
 
     return Array.from(new Set(areas)).slice(0, 3);
@@ -12365,13 +14191,23 @@ export class AnalyzerOrchestrator {
         'events';
     }
 
-    if (ep.type === 'schedule') {
-      return 'scheduled';
+    if (ep.type === 'schedule' || (ep.type as string) === 'scheduled' || (ep.type as string) === 'cron') {
+      return this.domainKeyFromEntryPointText(ep.name) ||
+        this.domainKeyFromEntryPointText(ep.handler?.method_name || '') ||
+        this.domainKeyFromEntryPointText(ep.handler?.file || '') ||
+        'scheduled';
     }
 
     if (ep.type === 'page' || ep.type === 'route') {
       const file = ep.handler?.file || '';
       const normalized = file.replace(/\\/g, '/');
+      const viewsPageMatch = normalized.match(/(?:^|\/)views\/app\/pages\/([^/]+)/i);
+      if (viewsPageMatch?.[1]) {
+        const key = this.domainKeyFromText(viewsPageMatch[1]);
+        if (key && !this.isGenericCapabilityToken(key)) return key;
+      }
+      const authViewMatch = normalized.match(/(?:^|\/)views\/auth(?:\/|$)/i);
+      if (authViewMatch) return 'auth';
       const appMatch = normalized.match(/(?:^|\/)(?:app|pages)\/(.+?)\/page\.[tj]sx?$/i);
       if (appMatch?.[1]) {
         const routeSegment = appMatch[1].split('/').filter(Boolean).pop();
@@ -12383,7 +14219,72 @@ export class AnalyzerOrchestrator {
       return 'pages';
     }
 
-    return ep.type;
+    if (ep.type === 'websocket' || (ep.type as string) === 'ws_handler') {
+      return this.domainKeyFromEntryPointText(ep.name) ||
+        this.domainKeyFromEntryPointText(ep.trigger?.path || '') ||
+        this.domainKeyFromEntryPointText(ep.trigger?.event || '') ||
+        this.domainKeyFromEntryPointText(ep.handler?.method_name || '') ||
+        this.domainKeyFromEntryPointText(ep.handler?.file || '') ||
+        'websocket';
+    }
+
+    if ((ep.type as string) === 'graphql' || (ep.type as string) === 'grpc' || (ep.type as string) === 'queue') {
+      return this.domainKeyFromEntryPointText(ep.name) ||
+        this.domainKeyFromEntryPointText(ep.trigger?.path || '') ||
+        this.domainKeyFromEntryPointText(ep.trigger?.event || '') ||
+        this.domainKeyFromEntryPointText(ep.handler?.method_name || '') ||
+        this.domainKeyFromEntryPointText(ep.handler?.file || '') ||
+        String(ep.type);
+    }
+
+    return String(ep.type);
+  }
+
+  private isCapabilityBearingEntryPoint(ep: CASEntryPoint): boolean {
+    const type = String(ep.type || '').toLowerCase();
+    if (type === 'test' || type === 'file' || type === 'lifecycle') return false;
+    if ([
+      'http', 'websocket', 'ws_handler', 'cli', 'event', 'message',
+      'schedule', 'scheduled', 'cron', 'queue', 'grpc', 'graphql',
+      'page', 'route',
+    ].includes(type)) {
+      return true;
+    }
+    return false;
+  }
+
+  private isGenericCapabilityResourceKey(resourceKey: string, resourceName?: string): boolean {
+    const key = this.normalizeDomainToken(String(resourceKey || '').toLowerCase());
+    const name = String(resourceName || '').toLowerCase();
+    if (!key) return true;
+    if (this.isGenericCapabilityDisplayName(resourceName || resourceKey)) return true;
+    const keyTokens = String(resourceKey || '')
+      .toLowerCase()
+      .split(/[-_\s]+/)
+      .map(token => this.normalizeDomainToken(token))
+      .filter(Boolean);
+    if (keyTokens.length > 0 && keyTokens.every(token =>
+      token.length <= 2 ||
+      this.isGenericDomainToken(token) ||
+      this.isGenericCapabilityToken(token) ||
+      isCapabilityNoiseToken(token) ||
+      isLanguageBuiltinDomainToken(token)
+    )) {
+      return true;
+    }
+    if (this.isGenericDomainToken(key) || this.isGenericCapabilityToken(key) || isCapabilityNoiseToken(key) || isLanguageBuiltinDomainToken(key)) {
+      return true;
+    }
+    if (/^(scheduled|websocket|graphql|grpc|queue|commands?|events?|messages?|handlers?|pages?|routes?|files?|lifecycle|query|queries|mutation|mutations|click|submit|select|input|change|hover|keyboard|mouse|latest|soon|bos|upsert|now|pending|read|body|detail|details)$/.test(key)) {
+      return true;
+    }
+    if (/^(google|webflow|slack|linear|loom|datadog|teamcity)$/.test(key)) {
+      return true;
+    }
+    if (/\b(?:query|mutation|click|submit|select|input|change|hover|mouse|keyboard|keypress|keydown|keyup|page|route|component|handler|event|message|graphql|http|api|file|latest)\s+(?:management|workflow|capability|handlers?|commands?|tasks?)\b/i.test(name)) {
+      return true;
+    }
+    return false;
   }
 
   private domainKeyFromEntryPointText(text: string): string | undefined {
@@ -12606,10 +14507,85 @@ export class AnalyzerOrchestrator {
     const entryPhrase = entryTypes.length > 0
       ? ` through ${this.joinHumanList(entryTypes.slice(0, 3).map(type => this.entryPointTypeLabel(String(type)).toLowerCase()))}`
       : '';
+    const subject = name.replace(/\s+(Management|Capability|Workflow|Reporting|Analysis|Generation|Settlement|Rebalancing|Authentication)$/i, '').trim() || name;
+    const subjectLower = subject.toLowerCase();
+    const productDescription = this.productSpecificCapabilityDescription(name);
+    if (productDescription) return productDescription;
     if (uniqueActions.length === 0) {
-      return `${name} is represented by ${operations.length} discovered entry point${operations.length === 1 ? '' : 's'}${entryPhrase}.`;
+      return `${name} coordinates ${subjectLower} behavior across ${operations.length} discovered entry point${operations.length === 1 ? '' : 's'}${entryPhrase}.`;
     }
-    return `${name} covers ${this.joinHumanList(uniqueActions.slice(0, 4))} paths${entryPhrase}.`;
+    return `${name} ${this.capabilityActionPhrase(uniqueActions)} ${subjectLower} behavior${entryPhrase}.`;
+  }
+
+  private productSpecificCapabilityDescription(name: string): string | undefined {
+    const subject = name.replace(/\s+(Management|Capability|Workflow|Reporting|Analysis|Generation|Settlement|Rebalancing|Authentication)$/i, '').trim() || name;
+    const subjectLower = subject.toLowerCase();
+    const nameLower = name.toLowerCase();
+    if (/\bportfolio\b/.test(subjectLower)) {
+      return `${name} presents portfolio holdings, allocation history, and account-level analysis for investment workflows.`;
+    }
+    if (/\bautomation\b/.test(subjectLower)) {
+      return `${name} maintains automated investing, tax-stash, and account-sync settings that drive recurring portfolio behavior.`;
+    }
+    if (/\bassets?\b/.test(subjectLower)) {
+      return `${name} surfaces tradable assets, selections, and portfolio context used by investment screens.`;
+    }
+    if (/\b(exchange|brokerage)\b/.test(subjectLower)) {
+      return `${name} links external exchange or brokerage connections to portfolio and automation workflows.`;
+    }
+    if (/\badvisory\b/.test(subjectLower)) {
+      return `${name} organizes advisor-facing client, analytics, and portfolio review screens.`;
+    }
+    if (/\bcurrency\b/.test(subjectLower)) {
+      return `${name} normalizes currency display and conversion context across portfolio values.`;
+    }
+    if (/\bprice\b/.test(subjectLower)) {
+      return `${name} tracks price history, performance charts, and market values used by asset analysis.`;
+    }
+    if (/\bpurchase\b/.test(subjectLower)) {
+      return `${name} tracks purchase records and the operational workflows around them.`;
+    }
+    if (/\bdecision\b/.test(subjectLower)) {
+      return `${name} records portfolio decisions and their supporting activity details.`;
+    }
+    if (/\btransfer\b/.test(subjectLower)) {
+      return `${name} presents account transfer activity and breakdowns for portfolio movement review.`;
+    }
+    if (/\bdca\b/.test(subjectLower)) {
+      return `${name} configures dollar-cost-averaging schedules and asset allocation inputs.`;
+    }
+    if (/\btax\b/.test(subjectLower)) {
+      return `${name} maintains tax-stash configuration used by automated investment workflows.`;
+    }
+    if (/\bcheckout\b/.test(subjectLower)) {
+      return `${name} routes users through subscription or purchase checkout screens.`;
+    }
+    if (/\bbilling\b/.test(subjectLower)) {
+      return `${name} routes users to billing and subscription management screens.`;
+    }
+    if (/\bidentity\b/.test(subjectLower)) {
+      return `${name} owns identity records, authentication state, and account-facing identity workflows.`;
+    }
+    if (/\bwallet\b/.test(subjectLower) && /\bwithdrawal\b/.test(subjectLower)) {
+      return `${name} verifies wallet-withdrawal email codes and protects account withdrawal flows.`;
+    }
+    if (/\bpassword\b/.test(subjectLower)) {
+      return `${name} validates password reset, credential update, and account recovery flows.`;
+    }
+    if (/\bclaims?\b/.test(subjectLower)) {
+      return `${name} maintains authorization claims used to decide user access and identity context.`;
+    }
+    if (/\bregister\b/.test(subjectLower)) {
+      return `${name} creates registration and token-enrollment records for identity onboarding.`;
+    }
+    if (/\btoken\b/.test(subjectLower) &&
+      /\b(access|refresh|oauth|session|jwt|credential|identity|auth|authentication)\b/.test(`${subjectLower} ${nameLower}`)) {
+      return `${name} manages authentication tokens and token lifecycle behavior for identity sessions.`;
+    }
+    if (/\btoken\b/.test(subjectLower)) {
+      return `${name} maintains token records, lifecycle actions, and token movement used by the surrounding product workflows.`;
+    }
+    return undefined;
   }
 
   private signalTokens(item: string): string[] {
@@ -13100,13 +15076,30 @@ export class AnalyzerOrchestrator {
         ...entity.lifecycle.created_by,
         ...entity.lifecycle.read_by,
         ...entity.lifecycle.updated_by,
-        ...entity.lifecycle.deleted_by,
+      ...entity.lifecycle.deleted_by,
       ];
       return lifecycleIds.length === 0 || lifecycleIds.some(id => productNodeIds.has(id));
     });
     const productCapabilities = capabilities.filter(capability => capability.category !== 'internal');
     const evidence: string[] = [];
     const signatureEvidence = new Map<string, string[]>();
+
+    if (this.isInfrastructureOnlyArchitecture(productNodes)) {
+      const infrastructureFiles = new Set(productNodes
+        .map(node => node.source?.file || '')
+        .filter(file => /\.(tf|tfvars|hcl)$/i.test(file))
+        .map(file => file.replace(/\\/g, '/')));
+      const infrastructureResources = productNodes.filter(node => node.type === 'infrastructure_resource');
+      return {
+        primary_type: 'infrastructure-codebase',
+        confidence: 0.95,
+        evidence: [
+          `${infrastructureFiles.size} Terraform/HCL files`,
+          `${infrastructureResources.length} managed infrastructure resources`,
+        ],
+        secondary_types: undefined,
+      };
+    }
 
     const paths = this.tokenizeSignalItems(productEntryPoints.map(ep => ep.trigger?.path || ep.name));
     const nodeNames = this.tokenizeSignalItems(productNodes.map(n => n.name));
@@ -13241,6 +15234,22 @@ export class AnalyzerOrchestrator {
       nameEntityCapabilityPathTokens,
       ['patient', 'muscle', 'device', 'measurement', 'force', 'inclinometry', 'grip', 'pinch', 'rehabilitation']
     );
+    const fleetSignals = countMatches(
+      nameEntityCapabilityPathTokens,
+      ['fleet', 'vehicle', 'driver', 'fuel', 'maintenance', 'dispatch', 'telematics', 'odometer', 'ifta', 'trip', 'booking']
+    );
+    const zeroTrustSignals = countMatches(
+      nameEntityCapabilityPathTokens,
+      ['zero trust', 'zerac', 'policy', 'policies', 'resource', 'resources', 'agent', 'agents', 'device', 'devices', 'grant', 'grants', 'scan', 'credential', 'vulnerability', 'cve']
+    );
+    const traySignals = countMatches(
+      nameEntityCapabilityPathTokens,
+      ['tray', 'tray icon', 'menu', 'submenu', 'system tray', 'port forward', 'portfwd']
+    );
+    const tradingSignals = countMatches(
+      nameEntityCapabilityPathTokens,
+      ['solana', 'arbitrage', 'trade', 'trading', 'swap', 'token', 'market', 'price', 'dex', 'cex', 'jupiter', 'raydium', 'bundle', 'liquidity']
+    );
     const devtoolsSignals = countMatches(
       nameEntityCapabilityPathTokens,
       ['analyzer', 'static analysis', 'code analysis', 'codebase analysis', 'codebase graph', 'codemod']
@@ -13261,6 +15270,66 @@ export class AnalyzerOrchestrator {
         evidence: [`Clinical desktop signals: ${clinicalSignals.matched.join(', ')}`],
         secondary_types: [topMatch.type, ...secondaryTypes]
           .filter(type => type !== 'clinical-testing-platform')
+          .slice(0, 3),
+      };
+    }
+
+    const hasZeroTrustAnchor =
+      zeroTrustSignals.matched.some(signal => /zero trust|zerac/.test(signal)) ||
+      (zeroTrustSignals.matched.includes('scan') && zeroTrustSignals.matched.some(signal => /credential|vulnerability|cve/.test(signal))) ||
+      ['policy', 'resource', 'agent', 'device'].every(signal => zeroTrustSignals.matched.includes(signal));
+    if (zeroTrustSignals.matched.length >= 4 &&
+      hasZeroTrustAnchor &&
+      topMatch.type !== 'medical-device-software' &&
+      topMatch.type !== 'clinical-testing-platform') {
+      return {
+        primary_type: zeroTrustSignals.matched.some(signal => /scan|credential|vulnerability|cve/.test(signal))
+          ? 'security-scanning-tool'
+          : 'network-access-platform',
+        confidence: Math.max(0.84, Math.round(confidence * 100) / 100),
+        evidence: [`Zero-trust/security signals: ${zeroTrustSignals.matched.join(', ')}`],
+        secondary_types: [topMatch.type, ...secondaryTypes]
+          .filter(type => type !== 'network-access-platform' && type !== 'security-scanning-tool')
+          .slice(0, 3),
+      };
+    }
+
+    if (traySignals.matched.length >= 2 &&
+      traySignals.matched.some(signal => /tray|tray icon|system tray/.test(signal))) {
+      return {
+        primary_type: 'tray-icon-library',
+        confidence: Math.max(0.84, Math.round(confidence * 100) / 100),
+        evidence: [`Tray UI signals: ${traySignals.matched.join(', ')}`],
+        secondary_types: [topMatch.type, ...secondaryTypes]
+          .filter(type => type !== 'tray-icon-library')
+          .slice(0, 3),
+      };
+    }
+
+    if (tradingSignals.matched.length >= 4 &&
+      tradingSignals.matched.some(signal => /solana|arbitrage|trade|trading|swap|dex|cex/.test(signal)) &&
+      topMatch.type !== 'medical-device-software' &&
+      topMatch.type !== 'clinical-testing-platform') {
+      return {
+        primary_type: 'trading-automation',
+        confidence: Math.max(0.84, Math.round(confidence * 100) / 100),
+        evidence: [`Trading/market signals: ${tradingSignals.matched.join(', ')}`],
+        secondary_types: [topMatch.type, ...secondaryTypes]
+          .filter(type => type !== 'trading-automation')
+          .slice(0, 3),
+      };
+    }
+
+    if (fleetSignals.matched.length >= 4 &&
+      fleetSignals.matched.some(signal => /vehicle|fleet|driver/.test(signal)) &&
+      topMatch.type !== 'medical-device-software' &&
+      topMatch.type !== 'clinical-testing-platform') {
+      return {
+        primary_type: 'fleet-management-platform',
+        confidence: Math.max(0.84, Math.round(confidence * 100) / 100),
+        evidence: [`Fleet operations signals: ${fleetSignals.matched.join(', ')}`],
+        secondary_types: [topMatch.type, ...secondaryTypes]
+          .filter(type => type !== 'fleet-management-platform')
           .slice(0, 3),
       };
     }
@@ -13495,7 +15564,8 @@ export class AnalyzerOrchestrator {
       existingSourceNodes.add(sourceNode.id);
     }
 
-    if (startingCount === 0 && entryPoints.length === 0) {
+    const hasNonTestEntryPoint = entryPoints.some(entryPoint => entryPoint.type !== 'test');
+    if (!hasNonTestEntryPoint) {
       const fallbackNode = this.selectFallbackEntryNode(nodes, edges);
       if (fallbackNode) {
         const file = fallbackNode.source?.file;
@@ -13535,12 +15605,15 @@ export class AnalyzerOrchestrator {
       }
     };
 
-    const packageJson = this.readJsonManifest(path.join(projectPath, 'package.json'));
-    if (packageJson) {
+    const addPackageManifestEntries = (manifestRelativePath: string) => {
+      const packageJson = this.readJsonManifest(path.join(projectPath, manifestRelativePath));
+      if (!packageJson) return;
+      const manifestDir = path.dirname(manifestRelativePath) === '.' ? '' : path.dirname(manifestRelativePath);
+      const packageFile = (file: string) => manifestDir ? path.join(manifestDir, file).replace(/\\/g, '/') : file;
       const bin = packageJson.bin;
       if (typeof bin === 'string') {
         add({
-          file: bin,
+          file: packageFile(bin),
           type: 'cli',
           name: `CLI ${packageJson.name || path.basename(projectPath)}`,
           description: `Package bin entry point declared in package.json.`,
@@ -13550,7 +15623,7 @@ export class AnalyzerOrchestrator {
         for (const [command, file] of Object.entries(bin)) {
           if (typeof file !== 'string') continue;
           add({
-            file,
+            file: packageFile(file),
             type: 'cli',
             name: `CLI ${command}`,
             description: `Package bin entry point declared in package.json.`,
@@ -13563,7 +15636,7 @@ export class AnalyzerOrchestrator {
         const value = packageJson[field];
         if (typeof value === 'string') {
           add({
-            file: value,
+            file: packageFile(value),
             type: this.packageEntryType(packageJson, value),
             name: `${packageJson.name || path.basename(projectPath)} ${field}`,
             description: `Package ${field} entry declared in package.json.`,
@@ -13571,6 +15644,16 @@ export class AnalyzerOrchestrator {
           });
         }
       }
+    };
+
+    addPackageManifestEntries('package.json');
+    const nestedPackageJsonFiles = globSync('{apps,packages,libs}/*/package.json', {
+      cwd: projectPath,
+      nodir: true,
+      ignore: ['**/.git/**', '**/node_modules/**', '**/dist/**', '**/build/**', '**/coverage/**'],
+    }).slice(0, 40);
+    for (const manifest of nestedPackageJsonFiles) {
+      addPackageManifestEntries(manifest);
     }
 
     const commonEntries: Array<[string, CASEntryPoint['type'], string]> = [
@@ -13936,7 +16019,142 @@ export class AnalyzerOrchestrator {
       }
     }
 
+    for (const sourceFile of this.discoverSourceTestFiles(projectPath)) {
+      const existingSuiteForFile = testSuites.some(suite =>
+        this.pathsReferToSameFile(projectPath, suite.file_path, sourceFile)
+      );
+      if (existingSuiteForFile) continue;
+
+      const fileId = `source_test_file_${this.sanitizeNodeId(sourceFile)}`;
+      const fileNode = {
+        id: fileId,
+        name: path.basename(sourceFile),
+        type: 'file',
+        source: { file: sourceFile, line: 1 }
+      } as CASNode;
+      const inferredTests = this.extractTestCasesFromFile(projectPath, fileNode);
+      if (inferredTests.length === 0) continue;
+
+      const suiteId = `suite_${fileId}`;
+      if (addedSuiteIds.has(suiteId)) continue;
+      addedSuiteIds.add(suiteId);
+      testSuites.push({
+        id: suiteId,
+        name: path.basename(sourceFile, path.extname(sourceFile)),
+        file_path: sourceFile,
+        test_type: this.inferTestType(fileNode),
+        framework: this.inferTestFramework(fileNode),
+        tests: inferredTests
+      });
+    }
+
     return testSuites;
+  }
+
+  private discoverSourceTestFiles(projectPath: string): string[] {
+    if (!projectPath || !fs.existsSync(projectPath)) return [];
+    const patterns = [
+      '**/*.{test,spec}.{js,jsx,ts,tsx,mjs,cjs}',
+      '**/*.cy.{js,jsx,ts,tsx}',
+      '**/tests/**/*.{js,jsx,ts,tsx,mjs,cjs,py,go,rs,dart,java,kt,cs,php}',
+      '**/test/**/*.{js,jsx,ts,tsx,mjs,cjs,py,go,rs,dart,java,kt,cs,php}',
+      '**/test_*.py',
+      '**/*_test.py',
+      '**/*_test.go',
+      '**/*_test.rs',
+      '**/*_test.dart',
+      '**/*Test.java',
+      '**/*Tests.java',
+      '**/*Test.kt',
+      '**/*Tests.kt',
+      '**/*Test.cs',
+      '**/*Tests.cs',
+      '**/*Test.php',
+    ];
+    const ignore = [
+      ...this.getProjectDiscoveryIgnorePatterns(),
+      '**/fixtures/**',
+      '**/__fixtures__/**',
+      '**/testdata/**',
+      '**/cas-tests/**',
+    ];
+    const syncGlob = ((glob as any).sync || (glob as any).globSync || globSync) as ((patterns: string | string[], options: any) => string[]) | undefined;
+    const files = typeof syncGlob === 'function'
+      ? syncGlob(patterns, { cwd: projectPath, ignore, nodir: true, absolute: false }) || []
+      : this.walkSourceTestFiles(projectPath);
+
+    return [...new Set(files.map((file: string) => file.replace(/\\/g, '/')))]
+      .filter(file => this.sourceTestFileHasCases(projectPath, file))
+      .sort();
+  }
+
+  private walkSourceTestFiles(projectPath: string): string[] {
+    const files: string[] = [];
+    const ignoredDir = /^(node_modules|dist|build|target|vendor|vendors|venv|\.venv|env|\.tox|site-packages|\.git|fixtures?|__fixtures__|testdata|cas-tests|coverage|\.next|\.turbo|\.cache|\.klauro.*)$/;
+    const visit = (absoluteDir: string, relativeDir = '') => {
+      let entries: fs.Dirent[] = [];
+      try {
+        entries = fs.readdirSync(absoluteDir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          if (!ignoredDir.test(entry.name)) {
+            visit(path.join(absoluteDir, entry.name), relativeDir ? `${relativeDir}/${entry.name}` : entry.name);
+          }
+          continue;
+        }
+        if (!entry.isFile()) continue;
+        const relative = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
+        if (this.looksLikeSourceTestPath(relative)) files.push(relative);
+      }
+    };
+    visit(projectPath);
+    return files;
+  }
+
+  private looksLikeSourceTestPath(file: string): boolean {
+    const name = path.basename(file);
+    return /\.(test|spec)\.(js|jsx|ts|tsx|mjs|cjs)$/i.test(name) ||
+      /\.cy\.(js|jsx|ts|tsx)$/i.test(name) ||
+      /(^|\/)tests?\//i.test(file) && /\.(js|jsx|ts|tsx|mjs|cjs|py|go|rs|dart|java|kt|cs|php)$/i.test(name) ||
+      /^test_.*\.py$/i.test(name) ||
+      /_test\.(py|go|rs|dart)$/i.test(name) ||
+      /(Test|Tests)\.(java|kt|cs|php)$/i.test(name);
+  }
+
+  private sourceTestFileHasCases(projectPath: string, file: string): boolean {
+    const fileNode = {
+      id: `source_test_file_${this.sanitizeNodeId(file)}`,
+      name: path.basename(file),
+      type: 'file',
+      source: { file, line: 1 }
+    } as CASNode;
+    return this.extractTestCasesFromFile(projectPath, fileNode).length > 0;
+  }
+
+  private pathsReferToSameFile(projectPath: string, left?: string, right?: string): boolean {
+    if (!left || !right) return false;
+    const normalize = (file: string) => {
+      const normalized = file.replace(/\\/g, '/');
+      if (path.isAbsolute(file)) {
+        const relative = path.relative(projectPath, file).replace(/\\/g, '/');
+        return relative && !relative.startsWith('..') ? relative : normalized;
+      }
+      return normalized.replace(/^\.\//, '');
+    };
+    const a = normalize(left);
+    const b = normalize(right);
+    return a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
+  }
+
+  private sanitizeNodeId(value: string): string {
+    return value
+      .replace(/\\/g, '/')
+      .replace(/[^a-zA-Z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .toLowerCase() || 'unknown';
   }
 
   private isTestFileNode(node: CASNode): boolean {
@@ -14285,6 +16503,7 @@ export class AnalyzerOrchestrator {
         flaky: 0
       },
       coverage: {
+        status: 'not-measured',
         overall_percentage: undefined
       },
       mocks: {

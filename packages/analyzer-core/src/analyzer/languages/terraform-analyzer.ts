@@ -179,6 +179,28 @@ export class TerraformAnalyzer extends BaseAnalyzer {
       for (const dependency of this.extractDependsOn(block.body)) {
         const targetId = generateNodeId('terraform_ref', relativePath, dependency);
         const existingTarget = nodes.find(candidate => candidate.metadata?.attributes?.terraform_address === dependency);
+        if (!existingTarget && !nodes.some(candidate => candidate.id === targetId)) {
+          nodes.push({
+            id: targetId,
+            name: dependency,
+            qualified_name: dependency,
+            type: 'infrastructure_reference',
+            category: 'infrastructure',
+            level: 4,
+            analyzers: [this.id],
+            primaryAnalyzer: this.id,
+            description: `Terraform reference to ${dependency}. The referenced block was not resolved inside ${relativePath}.`,
+            source: { file: relativePath, line: block.line, end_line: block.endLine },
+            metadata: {
+              language: 'Terraform/HCL',
+              paradigm: 'declarative-infrastructure',
+              attributes: {
+                terraform_address: dependency,
+                unresolved_reference: true,
+              },
+            },
+          });
+        }
         edges.push({
           id: generateEdgeId(node.id, existingTarget?.id || targetId, 'depends_on'),
           source: node.id,

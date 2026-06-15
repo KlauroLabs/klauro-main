@@ -7,6 +7,7 @@ import { dominantUnanalyzedLanguage, getAgentWorkPacket } from './agent-adoption
 import { classifyAnalysisProfile, type AnalysisProfile } from './analysis-profile';
 import { discoverRealRepos, type RealRepoTarget } from './repo-discovery';
 import { isDirectCliInvocation } from './cli-invocation';
+import { withAnalysisFocus, type AnalysisFocus } from './analysis-focus';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 
@@ -41,6 +42,18 @@ export interface AnalysisUsefulnessReview {
   };
 }
 
+export interface DescriptionEnrichmentTarget {
+  target_kind: 'system' | 'node' | 'service' | 'entity' | 'capability' | 'entry_point' | 'exit_point';
+  target: string;
+  target_id?: string;
+  priority: 'critical' | 'high' | 'medium';
+  reasons: string[];
+  current_source?: string;
+  generation_status?: string;
+  suggested_tool: 'run_analysis_layer' | 'generate_element_description';
+  suggested_args: Record<string, unknown>;
+}
+
 interface ReviewTarget {
   name?: string;
   path: string;
@@ -65,8 +78,6 @@ interface ParsedArgs {
   outputPath: string;
   markdownPath: string;
 }
-
-type AnalysisFocus = 'agent-fast' | 'ui-overview' | 'deep-context' | 'full';
 
 const GENERIC_TERMS = new Set([
   'app',
@@ -312,67 +323,6 @@ async function reviewTarget(target: ReviewTarget, analysisFocus: AnalysisFocus):
   };
 }
 
-async function withAnalysisFocus<T>(focus: AnalysisFocus, fn: () => Promise<T>): Promise<T> {
-  const previous = {
-    interpretation: process.env.KLAURO_AI_INTERPRETATION,
-    interpretationForce: process.env.KLAURO_AI_INTERPRETATION_FORCE,
-    deterministicKeep: process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP,
-    interpretationBudget: process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS,
-    elementBudget: process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS,
-    elementBatchSize: process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE,
-    elementLimit: process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT,
-    elements: process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS,
-    embeddings: process.env.KLAURO_EMBEDDING_ENABLED,
-    ollamaAuto: process.env.KLAURO_OLLAMA_AUTO,
-    ollamaBaseUrl: process.env.OLLAMA_BASE_URL,
-    ollamaModel: process.env.OLLAMA_MODEL,
-  };
-
-  try {
-    if (focus === 'agent-fast') {
-      process.env.KLAURO_AI_INTERPRETATION = 'false';
-      process.env.KLAURO_AI_INTERPRETATION_FORCE = 'false';
-      process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = 'false';
-      process.env.KLAURO_EMBEDDING_ENABLED = 'false';
-    } else if (focus === 'ui-overview') {
-      process.env.KLAURO_AI_INTERPRETATION = 'true';
-      process.env.KLAURO_AI_INTERPRETATION_FORCE = 'true';
-      process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP = 'false';
-      process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS = process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS || '90000';
-      process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS || '150000';
-      process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE || '4';
-      process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT || '8';
-      process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = 'true';
-      process.env.KLAURO_EMBEDDING_ENABLED = 'false';
-      process.env.KLAURO_OLLAMA_AUTO = process.env.KLAURO_OLLAMA_AUTO || 'true';
-      process.env.OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
-      process.env.OLLAMA_MODEL = process.env.OLLAMA_MODEL || process.env.KLAURO_LOCAL_AI_MODEL || 'qwen3:8b';
-    } else if (focus === 'deep-context') {
-      process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS || 'false';
-    }
-
-    return await fn();
-  } finally {
-    restoreEnv('KLAURO_AI_INTERPRETATION', previous.interpretation);
-    restoreEnv('KLAURO_AI_INTERPRETATION_FORCE', previous.interpretationForce);
-    restoreEnv('KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP', previous.deterministicKeep);
-    restoreEnv('KLAURO_AI_INTERPRETATION_BUDGET_MS', previous.interpretationBudget);
-    restoreEnv('KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS', previous.elementBudget);
-    restoreEnv('KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE', previous.elementBatchSize);
-    restoreEnv('KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT', previous.elementLimit);
-    restoreEnv('KLAURO_AI_ELEMENT_DESCRIPTIONS', previous.elements);
-    restoreEnv('KLAURO_EMBEDDING_ENABLED', previous.embeddings);
-    restoreEnv('KLAURO_OLLAMA_AUTO', previous.ollamaAuto);
-    restoreEnv('OLLAMA_BASE_URL', previous.ollamaBaseUrl);
-    restoreEnv('OLLAMA_MODEL', previous.ollamaModel);
-  }
-}
-
-function restoreEnv(name: string, value: string | undefined): void {
-  if (value === undefined) delete process.env[name];
-  else process.env[name] = value;
-}
-
 function scoreDomainPurpose(cas: CASOutput, profile: AnalysisProfile): UsefulnessGate {
   const domain = clean(cas.enhanced_system_purpose?.primary_domain);
   const description = clean(cas.enhanced_system_purpose?.inferred_description || cas.system?.description);
@@ -426,7 +376,7 @@ export function scoreDescriptionQuality(cas: CASOutput, profile: AnalysisProfile
   } else if (systemDescription.length >= 120 && systemWeakReasons.length === 0) score += 25;
   else details.push(`system description weak: ${systemWeakReasons.join(', ') || 'too short for orientation'}`);
 
-  if (isTrustedDescriptionSource(systemSource)) score += 15;
+  if (isTrustedDescriptionSource(systemSource) || isAIReviewedDeterministicDescription(systemSource, systemGeneration)) score += 15;
   else if (systemGeneration?.attempted === false && systemSource === 'deterministic') {
     score += 5;
     details.push('system description is deterministic because AI was not attempted');
@@ -437,6 +387,9 @@ export function scoreDescriptionQuality(cas: CASOutput, profile: AnalysisProfile
   if (systemGeneration && isBadDescriptionGeneration(systemGeneration)) {
     details.push(`system description generation ${systemGeneration.status}${systemGeneration.reason ? ` (${systemGeneration.reason})` : ''}`);
     hardCap = Math.min(hardCap, 50);
+  }
+  if (systemWeakReasons.some(reason => /inventory|framework-template|regurgitates/.test(reason))) {
+    hardCap = Math.min(hardCap, 55);
   }
 
   if (relevantCapabilities.length === 0) {
@@ -450,8 +403,14 @@ export function scoreDescriptionQuality(cas: CASOutput, profile: AnalysisProfile
       generation: capability.description_generation,
     }));
     const usable = capabilityAssessments.filter(item => item.reasons.length === 0 && clean(item.capability.description).length >= 50);
-    const trusted = capabilityAssessments.filter(item => isTrustedDescriptionSource(item.source));
+    const trusted = capabilityAssessments.filter(item =>
+      isTrustedDescriptionSource(item.source) ||
+      isAIReviewedDeterministicDescription(item.source, item.generation)
+    );
     const badGeneration = capabilityAssessments.filter(item => item.generation && isBadDescriptionGeneration(item.generation));
+    const overNarrow = capabilityAssessments.filter(item =>
+      item.reasons.some(reason => reason.includes('over-narrow source-area claim'))
+    );
     const usableRequired = Math.max(requiredCapabilities, Math.ceil(relevantCapabilities.length * 0.6));
     const trustedRequired = Math.max(requiredCapabilities, Math.ceil(relevantCapabilities.length * 0.5));
 
@@ -467,7 +426,7 @@ export function scoreDescriptionQuality(cas: CASOutput, profile: AnalysisProfile
     }
     if (trusted.length < trustedRequired) {
       const sourceExamples = capabilityAssessments
-        .filter(item => !isTrustedDescriptionSource(item.source))
+        .filter(item => !isTrustedDescriptionSource(item.source) && !isAIReviewedDeterministicDescription(item.source, item.generation))
         .slice(0, 5)
         .map(item => `${clean(item.capability.name) || item.capability.id}: ${item.source || 'missing-source'}`);
       details.push(`capability descriptions lack AI/manual/reused provenance (${trusted.length}/${trustedRequired}): ${sourceExamples.join('; ')}`);
@@ -479,6 +438,13 @@ export function scoreDescriptionQuality(cas: CASOutput, profile: AnalysisProfile
       details.push(`capability AI generation failed or was rejected: ${badExamples.join('; ')}`);
       hardCap = Math.min(hardCap, badGeneration.length >= Math.max(1, requiredCapabilities) ? 60 : 70);
     }
+    if (overNarrow.length > 0) {
+      const examples = overNarrow
+        .slice(0, 5)
+        .map(item => clean(item.capability.name) || item.capability.id);
+      details.push(`capability descriptions make over-narrow source-area claims: ${examples.join('; ')}`);
+      hardCap = Math.min(hardCap, 65);
+    }
   }
 
   score += 10;
@@ -486,12 +452,235 @@ export function scoreDescriptionQuality(cas: CASOutput, profile: AnalysisProfile
 
   const aiNeverAttempted = systemGeneration?.attempted === false
     && !capabilities.some(capability => capability.description_generation?.attempted);
-  if (aiNeverAttempted && score < 75) {
-    score = 75;
-    details.push('descriptions are deterministic by configuration (AI off); run description enrichment for narrative quality');
+  if (aiNeverAttempted) {
+    score = Math.min(score, 65);
+    details.push('descriptions are deterministic by configuration (AI off); run ui-overview analysis or description enrichment for narrative quality');
   }
 
   return gate('description-quality', score, details.length ? details.join('; ') : 'AI-backed system and capability descriptions are useful');
+}
+
+export function getDescriptionEnrichmentTargets(cas: CASOutput, projectPath?: string): DescriptionEnrichmentTarget[] {
+  const profile = classifyAnalysisProfile(cas, projectPath || cas.system?.root_path || cas.system?.name || '');
+  const targets: DescriptionEnrichmentTarget[] = [];
+  const systemDescription = clean(cas.enhanced_system_purpose?.inferred_description || cas.system?.description);
+  const systemSource = clean(cas.enhanced_system_purpose?.description_source);
+  const systemGeneration = cas.enhanced_system_purpose?.description_generation;
+  const systemReasons = [
+    ...findWeakDescriptionReasons(cas, profile, systemDescription),
+    ...(!isTrustedDescriptionSource(systemSource) && !isAIReviewedDeterministicDescription(systemSource, systemGeneration)
+      ? [`source is ${systemSource || 'missing'}`]
+      : []),
+    ...(systemGeneration && isBadDescriptionGeneration(systemGeneration)
+      ? [`generation ${systemGeneration.status}${systemGeneration.reason ? ` (${systemGeneration.reason})` : ''}`]
+      : []),
+  ];
+
+  if (systemReasons.length > 0) {
+    targets.push({
+      target_kind: 'system',
+      target: 'system narrative',
+      priority: systemReasons.some(reason => /deterministic|missing|regurgitates|inventory|framework-template|ai_failed|ai_rejected/.test(reason))
+        ? 'critical'
+        : 'high',
+      reasons: Array.from(new Set(systemReasons)),
+      current_source: systemSource || undefined,
+      generation_status: systemGeneration?.status,
+      suggested_tool: 'run_analysis_layer',
+      suggested_args: {
+        layer: 'ui-overview-refresh',
+        force_full: false,
+      },
+    });
+  }
+
+  const capabilities = (cas.system_capabilities || [])
+    .filter(capability => isUsefulCapabilityName(capability.name))
+    .sort((a, b) => capabilityPriority(b) - capabilityPriority(a));
+  for (const capability of capabilities) {
+    const source = clean(capability.description_source);
+    const generation = capability.description_generation;
+    const reasons = [
+      ...findWeakCapabilityDescriptionReasons(capability),
+      ...(!isTrustedDescriptionSource(source) && !isAIReviewedDeterministicDescription(source, generation)
+        ? [`source is ${source || 'missing'}`]
+        : []),
+      ...(generation && isBadDescriptionGeneration(generation)
+        ? [`generation ${generation.status}${generation.reason ? ` (${generation.reason})` : ''}`]
+        : []),
+    ];
+    if (reasons.length === 0) continue;
+    targets.push({
+      target_kind: 'capability',
+      target: clean(capability.name) || capability.id,
+      target_id: capability.id,
+      priority: capability.category === 'core' || capability.criticality === 'critical'
+        ? 'high'
+        : 'medium',
+      reasons: Array.from(new Set(reasons)),
+      current_source: source || undefined,
+      generation_status: generation?.status,
+      suggested_tool: 'generate_element_description',
+      suggested_args: {
+        target: capability.id,
+        target_kind: 'capability',
+        instructions: 'Write a behavior-level description for human engineers and AI coding agents. Explain what this capability lets an agent, user, operator, or developer do. Do not mention files, helper functions, routes, graph counts, or ownership.',
+      },
+    });
+    if (targets.length >= 12) break;
+  }
+
+  appendManualElementDescriptionTargets(cas, targets);
+
+  return targets;
+}
+
+function appendManualElementDescriptionTargets(cas: CASOutput, targets: DescriptionEnrichmentTarget[]): void {
+  const existing = new Set(targets.map(target => `${target.target_kind}:${target.target_id || target.target}`));
+  const add = (target: DescriptionEnrichmentTarget) => {
+    const key = `${target.target_kind}:${target.target_id || target.target}`;
+    if (existing.has(key)) return;
+    existing.add(key);
+    targets.push(target);
+  };
+
+  for (const node of highValueDescriptionNodes(cas)) {
+    const reasons = elementDescriptionReasons(node);
+    if (reasons.length === 0) continue;
+    const kind = node.type === 'service' ? 'service' : 'node';
+    add({
+      target_kind: kind,
+      target: clean(node.name) || node.id,
+      target_id: node.id,
+      priority: isHighValueNode(node) ? 'high' : 'medium',
+      reasons,
+      current_source: clean((node as any).description_source) || undefined,
+      generation_status: (node as any).description_generation?.status,
+      suggested_tool: 'generate_element_description',
+      suggested_args: {
+        target: node.id,
+        target_kind: kind,
+        instructions: 'Write a behavior-level drilldown description for this exact code element. Explain its responsibility in the product flow and how agents should think about changing it. Do not mention file names, graph counts, or parser internals.',
+      },
+    });
+    if (targets.length >= 18) return;
+  }
+
+  for (const entity of highValueDescriptionEntities(cas)) {
+    const reasons = elementDescriptionReasons(entity);
+    if (reasons.length === 0) continue;
+    add({
+      target_kind: 'entity',
+      target: clean(entity.name) || entity.id,
+      target_id: entity.id,
+      priority: entity.sensitive || entity.is_sensitive ? 'high' : 'medium',
+      reasons,
+      current_source: clean(entity.description_source) || undefined,
+      generation_status: entity.description_generation?.status,
+      suggested_tool: 'generate_element_description',
+      suggested_args: {
+        target: entity.id,
+        target_kind: 'entity',
+        instructions: 'Write a behavior-level data description. Explain what this entity represents, why it matters, and which changes should preserve its invariants. Do not list raw fields unless they clarify the product concept.',
+      },
+    });
+    if (targets.length >= 22) return;
+  }
+
+  for (const entryPoint of highValueDescriptionEntryPoints(cas)) {
+    const reasons = elementDescriptionReasons(entryPoint);
+    if (reasons.length === 0) continue;
+    add({
+      target_kind: 'entry_point',
+      target: clean(entryPoint.name) || clean(entryPoint.trigger?.path) || entryPoint.id,
+      target_id: entryPoint.id,
+      priority: entryPoint.security?.requires_auth === false ? 'high' : 'medium',
+      reasons,
+      current_source: clean(entryPoint.description_source) || undefined,
+      generation_status: entryPoint.description_generation?.status,
+      suggested_tool: 'generate_element_description',
+      suggested_args: {
+        target: entryPoint.id,
+        target_kind: 'entry_point',
+        instructions: 'Write a behavior-level entry-point description. Explain what action starts here, who or what calls it, and what downstream responsibility it protects. Do not restate route mechanics alone.',
+      },
+    });
+    if (targets.length >= 24) return;
+  }
+}
+
+function highValueDescriptionNodes(cas: CASOutput): any[] {
+  const degree = new Map<string, number>();
+  for (const edge of cas.edges || []) {
+    degree.set(edge.source, (degree.get(edge.source) || 0) + 1);
+    degree.set(edge.target, (degree.get(edge.target) || 0) + 1);
+  }
+  const usefulTypes = new Set(['service', 'controller', 'component', 'model', 'repository', 'class', 'module']);
+  return [...(cas.nodes || [])]
+    .filter(node => usefulTypes.has(clean(node.type)))
+    .filter(node => !/\b(test|spec|fixture|mock|generated|vendor|node_modules)\b/i.test(`${node.name || ''} ${node.source?.file || ''}`))
+    .sort((left, right) => descriptionNodeScore(right, degree) - descriptionNodeScore(left, degree))
+    .slice(0, 8);
+}
+
+function descriptionNodeScore(node: any, degree: Map<string, number>): number {
+  let score = degree.get(node.id) || 0;
+  if (isHighValueNode(node)) score += 8;
+  if (node.type === 'service') score += 6;
+  if (node.type === 'controller') score += 5;
+  if (node.type === 'repository') score += 4;
+  if (node.type === 'component') score += 3;
+  return score;
+}
+
+function isHighValueNode(node: any): boolean {
+  return /\b(service|controller|repository|module)\b/i.test(clean(node.type));
+}
+
+function highValueDescriptionEntities(cas: CASOutput): any[] {
+  return [...(cas.data_entities || [])]
+    .filter(entity => clean(entity.name))
+    .sort((left, right) => descriptionEntityScore(right) - descriptionEntityScore(left))
+    .slice(0, 6);
+}
+
+function descriptionEntityScore(entity: any): number {
+  return (entity.sensitive || entity.is_sensitive ? 20 : 0) +
+    (Array.isArray(entity.relationships) ? entity.relationships.length * 2 : 0) +
+    (Array.isArray(entity.fields) ? Math.min(10, entity.fields.length) : 0);
+}
+
+function highValueDescriptionEntryPoints(cas: CASOutput): any[] {
+  return [...(cas.entry_points || [])]
+    .filter(entryPoint => clean(entryPoint.name) || clean(entryPoint.trigger?.path))
+    .sort((left, right) => descriptionEntryPointScore(right) - descriptionEntryPointScore(left))
+    .slice(0, 4);
+}
+
+function descriptionEntryPointScore(entryPoint: any): number {
+  return (entryPoint.security?.requires_auth === false ? 20 : 0) +
+    (entryPoint.criticality === 'critical' ? 10 : entryPoint.criticality === 'high' ? 6 : 0) +
+    (entryPoint.trigger?.type === 'http' ? 3 : 0);
+}
+
+function elementDescriptionReasons(element: any): string[] {
+  const description = clean(element.description);
+  const source = clean(element.description_source);
+  const generation = element.description_generation;
+  const reasons: string[] = [];
+  if (description.length < 50) reasons.push(description ? 'description is too short for drilldown orientation' : 'description is missing');
+  if (/\b[\w.-]+\.(?:ts|tsx|js|jsx|py|php|rb|go|rs|java|cs|dart|swift|kt|sql|tf|tfvars|hcl|yaml|yml|json)\b/i.test(description) ||
+    /\borientation entry\b/i.test(description)) {
+    reasons.push('source artifact restatement');
+  }
+  if (description && /\b(?:operations for|functionality|specific functions?|helper functions?|internal files?|graph structure|coordinates? operations|handles? operations|supports? tasks|[A-Z][a-z]+ Management covers)\b/i.test(description)) {
+    reasons.push('description is structural or generic');
+  }
+  if (!isTrustedDescriptionSource(source)) reasons.push(`source is ${source || 'missing'}`);
+  if (generation && isBadDescriptionGeneration(generation)) {
+    reasons.push(`generation ${generation.status}${generation.reason ? ` (${generation.reason})` : ''}`);
+  }
+  return Array.from(new Set(reasons));
 }
 
 function descriptionAcknowledgesCoverageGap(description: string, languageName: string): boolean {
@@ -1156,6 +1345,12 @@ export function findWeakDescriptionReasons(cas: CASOutput, profile: AnalysisProf
   if (/project text identifies the main concepts as/i.test(text) && distinctiveConcepts.length < 3) {
     reasons.push('description is a weak project-text fallback without enough distinctive concepts');
   }
+  if (looksLikeCasInventorySummary(text)) {
+    reasons.push('description regurgitates CAS inventory instead of explaining system behavior');
+  }
+  if (/^a\s+\S+\s+system built with\b/i.test(text) && /key capabilities:/i.test(text)) {
+    reasons.push('description uses a framework-template summary instead of a product paragraph');
+  }
   if (/\b(access|network|data|app|page|component|service|route|user|settings)\b(?:,\s*\b(access|network|data|app|page|component|service|route|user|settings)\b){0,3}\.?$/i.test(text)) {
     reasons.push('description ends with generic concepts rather than product behavior');
   }
@@ -1191,6 +1386,20 @@ export function findWeakDescriptionReasons(cas: CASOutput, profile: AnalysisProf
   return Array.from(new Set(reasons));
 }
 
+function looksLikeCasInventorySummary(description: string): boolean {
+  const labels = [
+    /\bKey capabilities:/i,
+    /\bData model:/i,
+    /\bEntry points:/i,
+    /\bIntegrations:/i,
+    /\bSystem Health\b/i,
+    /\bSee Diagram\b/i,
+  ];
+  const labelCount = labels.filter(pattern => pattern.test(description)).length;
+  if (labelCount >= 2) return true;
+  return /\bbuilt with [^.]+\. Key capabilities:/i.test(description);
+}
+
 function findWeakCapabilityDescriptionReasons(capability: any): string[] {
   const reasons: string[] = [];
   const name = clean(capability?.name);
@@ -1201,16 +1410,38 @@ function findWeakCapabilityDescriptionReasons(capability: any): string[] {
     reasons.push('too short');
     return reasons;
   }
+  if (/\b(?:mutation|query|handler|controller|route|page|component|command|function|method|file|event|message|http|api|graphql|click|submit|select|input|change|hover|mouse|keyboard|keypress|keydown|keyup)\s+management\b/i.test(name) &&
+    description.toLowerCase().startsWith(name.toLowerCase())) {
+    reasons.push('generic analyzer-derived capability name restatement');
+  }
   if (description.length < 85 && /\b(?:covers|handles|manages|supports|coordinates|processes|reads|writes)\b/i.test(description)) {
     reasons.push('short generic capability phrasing');
   }
-  if (/\b(?:operations for|functionality|centers on|graph endpoint|graph structure|coordinat(?:e|es|ing) operations|internal files?|supports? tasks|agent-driven operations|operations and insights|structured data and insights|better understanding|insights into|enhanc(?:e|es|ing)|robust|various|efficient|business value|streamline)\b/i.test(description)) {
+  if (/\b(?:operations for|functionality|centers on|graph endpoint|graph structure|coordinat(?:e|es|ing) operations|internal files?|supports? tasks|agent-driven operations|operations and insights|structured data and insights|better understanding|insights into|enhanc(?:e|es|ing)|robust|various|efficient|business value|streamline|codebase decision|specific codebase decision|before a codebase decision|within the platform interactions?|system components?|different system components?|executing tasks?|execute tasks?|runtime behavior)\b/i.test(description)) {
     reasons.push('generic structural or marketing phrase');
   }
   if (/\b(?:read|process|coordinate|analyze|delete) behavior\b/i.test(description) ||
     /\b(?:read|process|analyze|delete) paths?\b/i.test(description) ||
     /\b(?:reads?|processes?|coordinates?) internal files?\b/i.test(description)) {
     reasons.push('describes parser operations instead of product behavior');
+  }
+  if (/\b(?:specific functions?|helper functions?|parseArgs|formatTable|renderRow|argument parsing|table formatting|row rendering|process and structure data|structured data handling)\b/i.test(description)) {
+    reasons.push('implementation-function-restatement');
+  }
+  if (/\b[a-z][a-z0-9]+[A-Z][A-Za-z0-9]*\b/.test(description) || /\bcoordinates?\s+(?:scripts?|functions?|helpers?|files?|modules?|operations?)\b/i.test(description)) {
+    reasons.push('implementation detail restatement');
+  }
+  if (/\bthrough\s+[^.]{0,140}\b(?:handlers?|controllers?|routes?|pages?|components?|ws operations)\b/i.test(description) ||
+    /\bacross\s+(?:pages?|routes?|handlers?|controllers?|components?)\b/i.test(description) ||
+    /\bacross\s+[^.]{0,120}\b(?:pages?|routes?|handlers?|controllers?|components?|connectors?)\b/i.test(description) ||
+    /\bmutating\s+state\s+through\s+(?:api\s+)?integrations?\b/i.test(description) ||
+    /\bclick events?\b|\bnavigate and interact\b|\bpages?\s+[A-Z][A-Za-z0-9 ]+\b/i.test(description) ||
+    /\b[A-Za-z][A-Za-z0-9 ]+\s+WS operations\b/i.test(description)) {
+    reasons.push('implementation surface restatement');
+  }
+  if (/\b(?:terms and conditions|legal agreements?|commercial contracts?|contractual obligations?|agreements? between systems)\b/i.test(description) &&
+    !/\b(?:legal|commercial|billing|subscription|customer contract|terms of service)\b/i.test(`${name} ${capability?.related_domains?.join(' ') || ''}`)) {
+    reasons.push('unsupported legal-contract interpretation');
   }
   if (/^(?:supports?|coordinates?|reads?|processes?|handles?|manages?)\b/i.test(description)) {
     reasons.push('starts with a generic verb');
@@ -1226,11 +1457,40 @@ function findWeakCapabilityDescriptionReasons(capability: any): string[] {
   if (/\b(?:bin\/console|events handlers|message handlers|http handlers)\b/i.test(`${name} ${description}`)) {
     reasons.push('generated framework bucket masquerades as a primary capability');
   }
+  if (hasOverNarrowCapabilitySourceClaim(description, capability)) {
+    reasons.push('over-narrow source-area claim for broad capability');
+  }
   if (description.includes('[object Object]')) {
     reasons.push('contains unserialized object output');
   }
 
   return Array.from(new Set(reasons));
+}
+
+function hasOverNarrowCapabilitySourceClaim(description: string, capability: any): boolean {
+  const operations = Array.isArray(capability?.operations) ? capability.operations : [];
+  if (operations.length < 4) return false;
+
+  const extensionNames = new Set<string>();
+  for (const operation of operations) {
+    const command = clean(operation?.path_or_command).replace(/\\/g, '/').toLowerCase();
+    const match = command.match(/(?:^|\/)extensions\/([^/]+)/);
+    if (match?.[1]) extensionNames.add(match[1].replace(/[^a-z0-9]+/g, ''));
+  }
+  if (extensionNames.size < 4) return false;
+
+  const lowerDescription = clean(description).toLowerCase().replace(/[^a-z0-9]+/g, ' ');
+  const subjectText = [
+    capability?.name,
+    ...(Array.isArray(capability?.related_domains) ? capability.related_domains : []),
+  ].join(' ').toLowerCase().replace(/[^a-z0-9]+/g, ' ');
+
+  for (const extensionName of extensionNames) {
+    if (extensionName.length < 4) continue;
+    if (subjectText.includes(extensionName)) continue;
+    if (lowerDescription.includes(extensionName)) return true;
+  }
+  return false;
 }
 
 export function findDomainBreadthProblems(cas: CASOutput, profile: AnalysisProfile, domain: string): string[] {
@@ -1317,6 +1577,9 @@ function isLikelyTestPath(file: string): boolean {
 }
 
 function isUsefulCapabilityName(name: string): boolean {
+  if (/\b(?:mutation|query|handler|controller|route|page|component|command|function|method|file|event|message|http|api|graphql|click|submit|select|input|change|hover|mouse|keyboard|keypress|keydown|keyup)\s+management\b/i.test(clean(name))) {
+    return false;
+  }
   const subject = clean(name)
     .toLowerCase()
     .replace(/\b(management|capability|authentication|reporting|commands|handlers|tasks)\b/g, ' ')
@@ -1329,6 +1592,18 @@ function isUsefulCapabilityName(name: string): boolean {
 
 function isTrustedDescriptionSource(source: string): boolean {
   return source === 'ai' || source === 'manual' || source === 'reused';
+}
+
+function isAIReviewedDeterministicDescription(source: string, generation: any): boolean {
+  return source === 'deterministic'
+    && generation?.attempted === true
+    && generation?.status === 'deterministic_kept'
+    && (
+      generation?.reason === 'deterministic-retained-stronger' ||
+      generation?.reason === 'ai-rejected-deterministic-usable' ||
+      /^curated-(?:self-)?product-capability-description\b/.test(String(generation?.reason || '')) ||
+      /^ai-rejected-deterministic-usable\b/.test(String(generation?.reason || ''))
+    );
 }
 
 function isBadDescriptionGeneration(generation: any): boolean {

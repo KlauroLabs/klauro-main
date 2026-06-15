@@ -60,6 +60,10 @@ const EXCLUDED_DIRS = new Set([
   'vendors',
   'Generated',
   'generated',
+  'fixtures',
+  '__fixtures__',
+  'testdata',
+  'cas-tests',
 ]);
 
 const GENERATED_NAME_PATTERNS = [

@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from 'child_process';
 import { readFileSync, writeFileSync } from 'fs';
+import { chmodSync } from 'fs';
 import { build } from 'esbuild';
 import { createRequire } from 'module';
 import * as path from 'path';
@@ -91,6 +92,15 @@ await build({
   external: ['./server.cjs'],
 });
 
+await build({
+  ...sharedOptions,
+  entryPoints: ['src/cli.ts'],
+  outfile: 'dist/cli.cjs',
+  banner: { js: '#!/usr/bin/env node' },
+  plugins: [nativeExternals],
+});
+chmodSync(path.join(packageRoot, 'dist', 'cli.cjs'), 0o755);
+
 const CAPTURED_LIST_METHODS = ['tools/list', 'prompts/list', 'resources/list', 'resources/templates/list'];
 
 function captureHandshake(profile) {
@@ -160,4 +170,4 @@ const handshake = {
 };
 writeFileSync(path.join(packageRoot, 'dist', 'handshake.json'), JSON.stringify(handshake));
 const toolCount = profile => handshake[profile].methods['tools/list'].result.tools.length;
-console.log(`Built dist/index.cjs (bootstrap), dist/server.cjs, dist/handshake.json (core: ${toolCount('core')} tools, full: ${toolCount('full')} tools, build ${packageVersion}+${buildGitSha} at ${buildTime})`);
+console.log(`Built dist/index.cjs (bootstrap), dist/server.cjs, dist/cli.cjs, dist/handshake.json (core: ${toolCount('core')} tools, full: ${toolCount('full')} tools, build ${packageVersion}+${buildGitSha} at ${buildTime})`);

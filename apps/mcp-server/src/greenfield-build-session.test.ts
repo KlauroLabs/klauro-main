@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
-import { buildGreenfieldBuildPacket } from './greenfield-build-session';
+import { benchmarkGreenfieldBuildCodecs, buildGreenfieldBuildPacket } from './greenfield-build-session';
 
 test('greenfield build packet starts from a truly empty folder without source exploration', async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-empty-greenfield-'));
@@ -15,6 +15,10 @@ test('greenfield build packet starts from a truly empty folder without source ex
 
   assert.equal(packet.product, 'greenfield_build_packet');
   assert.equal(packet.stage, 'empty_workspace_first_slice');
+  assert.equal(packet.agent_build_capsule.format, 'G1');
+  assert.match(packet.agent_build_capsule.capsule, /^G1\|0\|/);
+  assert.match(packet.agent_build_capsule.capsule, /^N\|/m);
+  assert.ok(packet.agent_build_capsule.estimated_tokens < Math.ceil(JSON.stringify(packet).length / 4));
   assert.equal(packet.current_analysis, null);
   assert.equal(packet.architecture_memory.stage, 'no_code_yet');
   assert.ok(packet.architecture_memory.decision_ledger.some((item: any) => item.decision.includes('Name core domain concepts once')));
@@ -24,11 +28,61 @@ test('greenfield build packet starts from a truly empty folder without source ex
   assert.equal(packet.growth_control_plane.mode, 'first_slice_bootstrap');
   assert.match(packet.growth_control_plane.purpose, /agent can spend more effort on product behavior/);
   assert.equal(packet.growth_control_plane.context_budget.max_first_reads, 0);
+  assert.ok(packet.recommended_architecture.architecture_contract.required_boundaries.some((item: any) => item.kind === 'entry'));
+  assert.ok(packet.recommended_architecture.architecture_contract.required_boundaries.some((item: any) => item.kind === 'service'));
+  assert.ok(packet.recommended_architecture.architecture_contract.required_boundaries.some((item: any) => item.kind === 'domain_model'));
+  assert.ok(packet.recommended_architecture.architecture_contract.do_not_collapse.some((item: string) => item.includes('route/API files')));
   assert.ok(packet.growth_control_plane.product_slice.done_when.some((item: string) => item.includes('Core domain concepts are named once')));
   assert.ok(packet.growth_control_plane.next_klauro_loop.some((item: string) => item.includes('preview_greenfield_codebase')));
   assert.match(packet.context_budget.token_rule, /Do not spend tokens exploring the empty folder/);
   assert.ok(packet.next_agent_steps.some(step => step.includes('vertical slice')));
   assert.ok(packet.validation_plan.klauro_checks.includes('preview_greenfield_codebase'));
+
+  const codecReport = benchmarkGreenfieldBuildCodecs(packet);
+  assert.equal(codecReport.recommendation, 'g1-build-capsule');
+  assert.equal(codecReport.results[0].name, 'g1-build-capsule');
+  assert.ok(codecReport.results[0].estimated_tokens < codecReport.results.find(result => result.name === 'full-json')!.estimated_tokens);
+  assert.ok(codecReport.results[0].balanced_score > codecReport.results.find(result => result.name === 'messagepack-base64-proxy')!.balanced_score);
+});
+
+test('greenfield build packet keeps backend incident platforms backend-first even with UI-heavy references', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-backend-greenfield-'));
+  const packet = await buildGreenfieldBuildPacket({
+    workspacePath: workspace,
+    planText: [
+      'Build a multi-tenant incident response operations platform for SaaS engineering teams.',
+      'It needs organizations, teams, role-based access, incident intake, timeline events, service ownership, runbooks, external status-page publishing, Slack notifications, audit logs, and analytics.',
+      'It should support adding more integrations later without duplicating incident workflow logic.',
+      'Start with a coherent backend/service architecture and tests, not a broad placeholder skeleton.',
+    ].join(' '),
+    references: [{
+      path: '/reference/ui-heavy',
+      name: 'ui-heavy-reference',
+      cas: uiHeavyReferenceCas(),
+    }],
+  });
+
+  const patternNames = packet.recommended_architecture.patterns.map((pattern: any) => pattern.name);
+  const filePlan = packet.recommended_architecture.file_plan.map((file: any) => file.path);
+  const boundaries = packet.recommended_architecture.architecture_contract.required_boundaries.map((boundary: any) => boundary.kind);
+
+  assert.ok(patternNames.includes('Service Layer'));
+  assert.ok(patternNames.includes('Repository/Data Access Boundary'));
+  assert.ok(!patternNames.includes('Component/Page UI'));
+  assert.ok(filePlan.some((file: string) => file.includes('src/routes-or-controllers')));
+  assert.ok(filePlan.some((file: string) => file.includes('src/services')));
+  assert.ok(filePlan.some((file: string) => file.includes('src/domain')));
+  assert.ok(filePlan.some((file: string) => file.includes('src/repositories')));
+  assert.ok(filePlan.some((file: string) => file.includes('migrations/')));
+  assert.ok(!filePlan.some((file: string) => file.includes('src/pages-or-routes')));
+  assert.ok(!filePlan.some((file: string) => file.includes('src/components')));
+  assert.ok(boundaries.includes('repository'));
+  assert.ok(boundaries.includes('migration'));
+  assert.ok(boundaries.includes('auth_policy'));
+  assert.ok(boundaries.includes('integration_adapter'));
+  assert.ok(packet.recommended_architecture.data_and_migrations.every((item: string) => !/No data layer/i.test(item)));
+  assert.match(packet.agent_build_capsule.capsule, /Repository\/Data Access Boundary/);
+  assert.doesNotMatch(packet.agent_build_capsule.capsule, /Component\/Page UI/);
 });
 
 test('greenfield build packet turns an existing scratch project into CAS-backed continuation memory', async () => {
@@ -65,6 +119,10 @@ test('placeholder', () => assert.equal(1, 1));
   });
 
   assert.equal(packet.stage, 'continuation_iteration');
+  assert.equal(packet.agent_build_capsule.format, 'G1');
+  assert.match(packet.agent_build_capsule.capsule, /^G1\|c\|/);
+  assert.match(packet.agent_build_capsule.capsule, /Workspace|Dashboard|Widget/);
+  assert.match(packet.agent_build_capsule.capsule, /dashboard-service\.ts|domain\.ts/);
   assert.ok(packet.current_analysis);
   assert.equal(packet.architecture_memory.stage, 'cas_backed_continuation');
   assert.match(packet.product_focus.objective, /architecture map/);
@@ -85,7 +143,48 @@ test('placeholder', () => assert.equal(1, 1));
   assert.ok(packet.duplicate_prevention.likely_reused_concepts_for_this_slice.some(concept => /Workspace|Dashboard|Widget/i.test(concept)));
   assert.ok(packet.context_budget.read_first.some((item: any) => item.file.includes('domain.ts')));
   assert.ok(packet.validation_plan.klauro_checks.includes('analyze_codebase with incremental state'));
+
+  const codecReport = benchmarkGreenfieldBuildCodecs(packet);
+  assert.equal(codecReport.recommendation, 'g1-build-capsule');
+  assert.equal(codecReport.results[0].name, 'g1-build-capsule');
+  assert.ok(codecReport.results[0].token_reduction_vs_full_json > 80);
+  assert.ok(codecReport.results[0].balanced_score > codecReport.results.find(result => result.name === 'messagepack-base64-proxy')!.balanced_score);
 });
+
+function uiHeavyReferenceCas(): any {
+  return {
+    cas_version: '1.10.0',
+    analysis_timestamp: new Date().toISOString(),
+    analysis_id: 'ui-heavy-reference',
+    system: {
+      id: 'ui-heavy-reference',
+      name: 'UI Heavy Reference',
+      type: 'frontend',
+      root_path: '/reference/ui-heavy',
+      description: 'Reference application with many pages and components.',
+    },
+    nodes: [
+      { id: 'page-1', name: 'DashboardPage', type: 'page', file_path: 'src/pages/dashboard.tsx' },
+      { id: 'component-1', name: 'DashboardWidget', type: 'component', file_path: 'src/components/dashboard-widget.tsx' },
+    ],
+    edges: [],
+    analyzer_contributions: [],
+    system_capabilities: [],
+    architecture_summary: {
+      architectural_patterns: [{
+        name: 'Component/Page UI',
+        category: 'presentation',
+        confidence: 0.95,
+        evidence: ['95 page/component/template nodes'],
+        guidance: 'Place UI changes beside the nearest page/component/template examples.',
+      }],
+      architectural_inventory: {
+        pages: [{ name: 'DashboardPage', file: 'src/pages/dashboard.tsx' }],
+        components: [{ name: 'DashboardWidget', file: 'src/components/dashboard-widget.tsx' }],
+      },
+    },
+  };
+}
 
 test('greenfield build packet prioritizes domain folders as first-read memory', async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-domain-folder-greenfield-'));
@@ -144,6 +243,9 @@ test('placeholder', () => assert.equal(1, 1));
   assert.ok(extensionTargets.some((item: any) => item.owner_files?.includes('src/services/signal-operations.service.ts')));
   assert.ok(extensionTargets.some((item: any) => item.entities?.some((entity: string) => /Workspace|SignalDigest/i.test(entity))));
   assert.ok(extensionTargets.every((item: any) => item.agent_guidance));
+  assert.ok(extensionTargets.every((item: any) => !JSON.stringify(item.entities || []).includes('compareRule')));
+  assert.ok(extensionTargets.every((item: any) => !/Closest existing owner/.test(String(item.description || ''))));
+  assert.ok(extensionTargets.some((item: any) => /smallest focused test/.test(String(item.description || ''))));
 });
 
 test('greenfield build packet ignores agent worktrees and fixtures for owner-file memory', async () => {

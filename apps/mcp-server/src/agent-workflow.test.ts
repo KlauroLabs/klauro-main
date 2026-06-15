@@ -11,7 +11,9 @@ import {
   preflightAgentChange,
   validateAgentChange,
 } from './agent-workflow';
-import { buildArchitectureContextForAgent, evaluateAgentReadiness, getAgentStartContext, getAgentToolPlan, getAgentWorkPacket } from './agent-adoption';
+import { buildArchitectureContextForAgent, evaluateAgentReadiness, formatExecutionCapsule, getAgentStartContext, getAgentToolPlan, getAgentWorkPacket } from './agent-adoption';
+import { benchmarkAgentContextCodecs, formatAgentContextCapsule, parseAgentContextCapsule } from './agent-context-codec';
+import { ingestTelemetryBatch } from './telemetry-ingestion';
 
 test('openAgentWorkbench returns a product-level packet for agent work', async () => {
   await withWorkspace(async workspace => {
@@ -33,11 +35,261 @@ test('openAgentWorkbench returns a product-level packet for agent work', async (
     assert.ok(packet.task_packet.work_context.risk_context.target_risk);
     assert.equal(packet.task_packet.work_context.risk_context.target_risk.name, 'UsersService');
     assert.ok(packet.task_packet.work_context.risk_context.agent_rules.some((rule: string) => rule.includes('assess_change_risk')));
+    assert.equal(packet.task_packet.execution_brief.mode, 'minimal-execution');
+    assert.ok(packet.task_packet.execution_brief.read_first.includes('src/users/users.service.ts'));
+    assert.ok(packet.task_packet.execution_brief.token_policy.source_files <= 5);
+    assert.match(packet.task_packet.execution_brief.stop_rule, /stop/i);
+    assert.match(packet.task_packet.execution_brief.capsule, /^K5\|m\|/);
+    assert.ok(packet.task_packet.execution_brief.capsule.length < JSON.stringify(packet.task_packet.execution_brief).length / 2);
     assert.ok(packet.agent_rules.idiom_rules.some((rule: any) => rule.category === 'testing'));
     assert.equal(packet.signal_quality.overall, 'partial');
     assert.ok(packet.signal_quality.warnings.some((warning: string) => warning.includes('reusable patterns')));
     assert.ok(packet.evidence_policy.must_confirm_in_source.length > 0);
   });
+});
+
+test('first-turn work packets include a compact K15 context capsule that agents can execute without broad JSON', async () => {
+  await withWorkspace(async workspace => {
+    const packet = await getAgentWorkPacket(fixtureCas(), workspace, {
+      task_type: 'modify',
+      target: 'UsersService',
+      instructions: 'Change tenant-scoped user creation behavior.',
+      response_profile: 'first-turn',
+    }) as any;
+
+    assert.equal(packet.context_capsule.format, 'K15');
+    assert.match(packet.context_capsule.capsule, /^K15m[A-Za-z0-9]* UsersService/m);
+    assert.match(packet.context_capsule.capsule, /^I/m);
+    assert.match(packet.context_capsule.capsule, /^V/m);
+    assert.ok(packet.context_capsule.estimated_tokens < Math.ceil(JSON.stringify(packet).length / 4));
+
+    const parsed = parseAgentContextCapsule(packet.context_capsule.capsule);
+    assert.equal(parsed.version, 'K15');
+    assert.ok(parsed.files.some(file => file.includes('src/users/users.service.ts')));
+    assert.ok(parsed.rules.some(rule => /idioms|risk|reuse|F/i.test(rule)));
+  });
+});
+
+test('capsule-only work packets avoid expanded JSON when token savings matter most', async () => {
+  await withWorkspace(async workspace => {
+    const firstTurn = await getAgentWorkPacket(fixtureCas(), workspace, {
+      task_type: 'modify',
+      target: 'UsersService',
+      instructions: 'Change tenant-scoped user creation behavior.',
+      response_profile: 'first-turn',
+    }) as any;
+    const capsuleOnly = await getAgentWorkPacket(fixtureCas(), workspace, {
+      task_type: 'modify',
+      target: 'UsersService',
+      instructions: 'Change tenant-scoped user creation behavior.',
+      response_profile: 'capsule-only',
+    }) as any;
+
+    assert.equal(capsuleOnly.packet_profile, 'capsule-only');
+    assert.match(capsuleOnly.context_capsule, /^K15m[A-Za-z0-9]* UsersService/m);
+    assert.match(capsuleOnly.execution_capsule, /^K5\|m\|UsersService/m);
+    assert.ok(Array.isArray(capsuleOnly.files));
+    assert.ok(!('work_context' in capsuleOnly));
+    assert.ok(!('file_read_plan' in capsuleOnly));
+    assert.ok(capsuleOnly.estimated_tokens < Math.ceil(JSON.stringify(firstTurn).length / 4) / 2);
+  });
+});
+
+test('agent work packets include telemetry-backed operational priorities for debug/runtime tasks', async () => {
+  await withWorkspace(async workspace => {
+    const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-agent-runtime-storage-'));
+    const previousStorage = process.env.KLAURO_STORAGE_PATH;
+    try {
+      process.env.KLAURO_STORAGE_PATH = storageRoot;
+      const cas = fixtureCas();
+      cas.system.root_path = workspace;
+      cas.runtime_static_links = [{
+        id: 'runtime-users-create',
+        kind: 'entry-point',
+        static_id: 'entry-users-create',
+        runtime_signal: 'http:POST:/users',
+        telemetry_status: 'instrumentable',
+        confidence: 0.9,
+      } as any];
+
+      await ingestTelemetryBatch(cas, workspace, [{
+        kind: 'error',
+        name: 'http:POST:/users',
+        method: 'POST',
+        route: '/users',
+        status: 500,
+        duration_ms: 1800,
+        file_hint: 'src/users/users.service.ts',
+        function_hint: 'UsersService',
+        volume: 42,
+        error: {
+          type: 'TenantScopeError',
+          message: 'User creation lost tenant context',
+          stack_top_frames: [{ file: 'src/users/users.service.ts', line: 1, function: 'UsersService' }],
+        },
+      }], { persist: true });
+
+      const packet = await getAgentWorkPacket(cas, workspace, {
+        task_type: 'debug',
+        target: 'what bugs should I address today',
+        instructions: 'Use runtime impact to pick the most important bug and preserve local idioms.',
+      }) as any;
+
+      assert.equal(packet.work_context.operational_priorities.status, 'ready');
+      assert.equal(packet.work_context.operational_priorities.sources.ingested, 1);
+      assert.equal(packet.work_context.operational_priorities.priorities[0].source, 'ingested');
+      assert.equal(packet.work_context.operational_priorities.priorities[0].runtime.errors, 1);
+      assert.equal(packet.work_context.operational_priorities.priorities[0].runtime.estimated_volume, 42);
+      const operationalTarget = packet.work_context.operational_priorities.priorities[0].static_target ||
+        packet.work_context.operational_priorities.priorities[0].target;
+      assert.match(operationalTarget.file, /users\.service\.ts/);
+      assert.ok(packet.next_mcp_calls.some((call: any) => call.tool === 'get_operational_priorities'));
+
+      const capsuleOnly = await getAgentWorkPacket(cas, workspace, {
+        task_type: 'debug',
+        target: 'what bugs should I address today',
+        instructions: 'Use runtime impact to pick the most important bug and preserve local idioms.',
+        response_profile: 'capsule-only',
+      }) as any;
+      assert.match(capsuleOnly.context_capsule, /ops .*runtime/);
+      assert.match(capsuleOnly.context_capsule, /1err/);
+    } finally {
+      if (previousStorage === undefined) delete process.env.KLAURO_STORAGE_PATH;
+      else process.env.KLAURO_STORAGE_PATH = previousStorage;
+      fs.rmSync(storageRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+test('K15 agent context language beats JSON-like and binary cache formats on balanced agent-use score', () => {
+  const compact = {
+    packet_profile: 'first-turn',
+    task: 'modify: UsersService tenant-scoped user creation',
+    selected: { name: 'UsersService', type: 'service', file: 'src/users/users.service.ts', line: 12 },
+    files: ['src/users/users.service.ts', 'tests/users/users.service.test.ts', 'src/users/users.controller.ts'],
+    candidates: ['src/users/entities/user.entity.ts', 'src/users/dto/create-user.dto.ts'],
+    terms: ['tenant', 'users', 'creation'],
+    idioms: [
+      'dependency-injection: use constructor-injected repositories',
+      'testing: focused service test imports production source',
+    ],
+    risks: ['risk high: tenant scope boundary', 'validate authorization invariant'],
+    reuse: ['reuse Tenant-scoped user management before adding parallel behavior'],
+    execution: {
+      read: ['src/users/users.service.ts'],
+      edit: ['src/users/users.service.ts', 'tests/users/users.service.test.ts'],
+      validate: ['npm test -- tests/users/users.service.test.ts'],
+    },
+    rule: 'Read files in order. Preserve idioms. Expand only if blocked.',
+  };
+
+  const benchmark = benchmarkAgentContextCodecs(compact);
+  assert.equal(benchmark.recommendation, 'k15-agent-context-language');
+  const k15 = benchmark.results.find(result => result.name === 'k15-agent-context-language')!;
+  const k14 = benchmark.results.find(result => result.name === 'k14-agent-context-language')!;
+  const k13 = benchmark.results.find(result => result.name === 'k13-agent-context-language')!;
+  const k12 = benchmark.results.find(result => result.name === 'k12-agent-context-language')!;
+  const k11 = benchmark.results.find(result => result.name === 'k11-agent-context-language')!;
+  const k10 = benchmark.results.find(result => result.name === 'k10-agent-context-language')!;
+  const k9 = benchmark.results.find(result => result.name === 'k9-agent-context-language')!;
+  const k8 = benchmark.results.find(result => result.name === 'k8-agent-context-language')!;
+  const k7 = benchmark.results.find(result => result.name === 'k7-agent-context-language')!;
+  const k6 = benchmark.results.find(result => result.name === 'k6-context-capsule')!;
+  const minJson = benchmark.results.find(result => result.name === 'min-json')!;
+  const gzip = benchmark.results.find(result => result.name === 'gzip-k7-base64')!;
+  const messagePack = benchmark.results.find(result => result.name === 'messagepack-base64-proxy')!;
+
+  assert.ok(k15.estimated_tokens < minJson.estimated_tokens);
+  assert.ok(k15.estimated_tokens < k14.estimated_tokens);
+  assert.ok(k15.estimated_tokens < k13.estimated_tokens);
+  assert.ok(k15.estimated_tokens < k12.estimated_tokens);
+  assert.ok(k15.estimated_tokens < k11.estimated_tokens);
+  assert.ok(k15.estimated_tokens < k10.estimated_tokens);
+  assert.ok(k15.estimated_tokens < k9.estimated_tokens);
+  assert.ok(k15.estimated_tokens < k8.estimated_tokens);
+  assert.ok(k15.estimated_tokens < k7.estimated_tokens);
+  assert.ok(k15.estimated_tokens < k6.estimated_tokens);
+  assert.ok(k15.token_reduction_vs_min_json > k14.token_reduction_vs_min_json);
+  assert.ok(k15.promptish_tokens < minJson.promptish_tokens);
+  assert.ok(k15.promptish_tokens < k14.promptish_tokens);
+  assert.ok(k15.promptish_tokens < k13.promptish_tokens);
+  assert.ok(k15.promptish_tokens < k12.promptish_tokens);
+  assert.ok(k15.promptish_tokens < k11.promptish_tokens);
+  assert.ok(k15.promptish_token_reduction_vs_min_json > k14.promptish_token_reduction_vs_min_json);
+  assert.ok(k15.context_slots_per_100_promptish_tokens > k14.context_slots_per_100_promptish_tokens);
+  assert.ok(k15.balanced_score > gzip.balanced_score);
+  assert.ok(k15.balanced_score > messagePack.balanced_score);
+});
+
+test('execution capsule packs first-action context into a compact agent-readable line set', () => {
+  const capsule = formatExecutionCapsule({
+    mode: 'minimal-execution',
+    task_type: 'modify',
+    target: 'Fix N+1 project summary lookup without changing contracts',
+    read_first: [
+      'src/services/taskSummaryService.ts',
+      'tests/taskSummaryService.test.ts',
+      'src/repositories/projectRepository.ts',
+    ],
+    edit_scope: [
+      'src/services/taskSummaryService.ts',
+      'tests/taskSummaryService.test.ts',
+    ],
+    validate: ['node /tmp/validator.cjs'],
+    preserve: [
+      'repository boundary: batch behind repository, not controller',
+      'testing: focused production-source test',
+      'risk: public summary contract',
+    ],
+    token_policy: {
+      source_files: 2,
+      final_response_words: 80,
+    },
+    stop_rule: 'After validation, stop.',
+  });
+
+  assert.match(capsule, /^K5\|m\|Fix N\+1/);
+  assert.match(capsule, /F\|1\*:src\/services\/taskSummaryService\.ts;2\*:tests\/taskSummaryService\.test\.ts;3:src\/repositories\/projectRepository\.ts/);
+  assert.match(capsule, /P\|repo boundary/);
+  assert.match(capsule, /V\|node \/tmp\/validator\.cjs/);
+  assert.match(capsule, /B\|f2,w80/);
+  assert.ok(capsule.length < 390, capsule);
+});
+
+test('execution capsule supports file-scoped executable operations', () => {
+  const capsule = formatExecutionCapsule({
+    task_type: 'debug',
+    target: 'task summary performance regression',
+    read_first: [
+      'src/services/taskSummaryService.ts',
+      'tests/taskSummaryService.test.ts',
+    ],
+    edit_scope: [
+      'src/services/taskSummaryService.ts',
+      'tests/taskSummaryService.test.ts',
+    ],
+    ops: [
+      {
+        file: 'src/services/taskSummaryService.ts',
+        op: 'summarize: ids=uniq(tasks.projectId) > projects=findByIds(ids) > byId=Map(projects.id) > map sync',
+      },
+      {
+        file: 'tests/taskSummaryService.test.ts',
+        op: 'node:assert + TaskSummaryService only; inline repo counts findById/findByIds/capturedIds',
+      },
+    ],
+    validate: ['node /tmp/validator.cjs'],
+    token_policy: {
+      source_files: 2,
+      final_response_words: 40,
+    },
+  });
+
+  assert.match(capsule, /^K5\|d\|task summary performance regression/);
+  assert.match(capsule, /F\|1\*:src\/services\/taskSummaryService\.ts;2\*:tests\/taskSummaryService\.test\.ts/);
+  assert.match(capsule, /O\|1:summarize: ids=uniq\(tasks\.projectId\)/);
+  assert.match(capsule, /;2:node:assert \+ TaskSummaryService only/);
+  assert.ok(capsule.length < 470, capsule);
 });
 
 test('agent work packet exposes compact risk context for broad tasks before a node is selected', async () => {
@@ -188,6 +440,62 @@ test('architecture context does not promote unrelated global patterns for a targ
   assert.ok(context.global_architecture_budget?.includes('MVC'));
   assert.ok(context.pattern_decision_matrix.every((item: any) => item.pattern !== 'MVC'));
   assert.ok(context.inventory_examples.controllers.every((item: any) => item.name !== 'LegacyReportsController'));
+});
+
+test('agent work packet scopes architecture examples to selected target even when task hints add related files', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    cas.system = { ...cas.system, root_path: workspace } as any;
+    cas.nodes.push(
+      node('auth-service', 'AuthService', 'service', 'src/auth/auth.service.ts', 1),
+      node('session-policy', 'SessionPolicy', 'class', 'src/auth/session.policy.ts', 1),
+    );
+    cas.entry_points![0] = {
+      ...cas.entry_points![0],
+      handler: {
+        ...(cas.entry_points![0] as any).handler,
+        file: 'src/users/users.service.ts',
+        line: 1,
+      },
+    } as any;
+    cas.architecture_summary!.architectural_patterns = [
+      ...(cas.architecture_summary!.architectural_patterns || []),
+      {
+        name: 'Service Layer',
+        category: 'business-logic',
+        confidence: 0.91,
+        evidence: ['service inventory'],
+        node_ids: ['users-service', 'auth-service', 'session-policy'],
+        guidance: 'Keep business rules in selected service owners.',
+      },
+    ] as any;
+    cas.architecture_summary!.architectural_inventory = {
+      ...cas.architecture_summary!.architectural_inventory!,
+      services: ['users-service', 'auth-service'],
+      models: [
+        ...(cas.architecture_summary!.architectural_inventory!.models || []),
+        'session-policy',
+      ],
+    };
+
+    const packet = await getAgentWorkPacket(cas, workspace, {
+      task_type: 'modify',
+      target: 'UsersService',
+      instructions: 'Adjust authenticated user creation while preserving auth/session policy boundaries.',
+    }) as any;
+
+    assert.match(packet.file_read_plan[0].reason, /selected target/);
+    assert.match(packet.file_read_plan[0].reason, /representative entry point/);
+    assert.ok(packet.file_read_plan.some((item: any) => item.file === 'src/auth/auth.service.ts' && /task hint/.test(item.reason)));
+
+    const examples = [
+      ...Object.values(packet.work_context.architecture_context.inventory_examples || {}).flatMap((items: any) => items || []),
+      ...Object.values(packet.work_context.architecture_context.relevant_inventory || {}).flatMap((items: any) => items || []),
+      ...packet.work_context.architecture_context.pattern_decision_matrix.flatMap((row: any) => row.examples || []),
+    ] as any[];
+    assert.ok(examples.some((example: any) => String(example.file || '').includes('users/users.service.ts')));
+    assert.ok(examples.every((example: any) => !String(example.file || '').includes('auth/')));
+  });
 });
 
 test('architecture context scopes file-targeted analyzer work away from legacy API patterns', () => {
@@ -519,6 +827,33 @@ test('agent work packet honors explicit file path targets before semantic fallba
   });
 });
 
+test('agent work packet surfaces target-scoped AI description enrichment only when narrative is weak', async () => {
+  await withWorkspace(async workspace => {
+    const packet = await getAgentWorkPacket(fixtureCas(), workspace, {
+      task_type: 'modify',
+      target: 'UsersService',
+      instructions: 'Explain and adjust user creation behavior without broad exploration.',
+    }) as any;
+
+    assert.equal(packet.work_context.description_context.status, 'target-description-needs-ai');
+    assert.equal(packet.work_context.description_context.target.id, 'users-service');
+    assert.ok(packet.work_context.description_context.reasons.some((reason: string) => /missing|source/.test(reason)));
+    assert.ok(packet.next_mcp_calls.some((call: any) =>
+      call.tool === 'generate_element_description' &&
+      call.args.target === 'users-service' &&
+      call.args.target_kind === 'service'
+    ));
+
+    const capsule = await getAgentWorkPacket(fixtureCas(), workspace, {
+      task_type: 'modify',
+      target: 'UsersService',
+      instructions: 'Explain and adjust user creation behavior without broad exploration.',
+      response_profile: 'capsule-only',
+    }) as any;
+    assert.match(capsule.context_capsule, /desc UsersService/);
+  });
+});
+
 test('agent work packet ignores generic capability suffixes when resolving targets', async () => {
   await withWorkspace(async workspace => {
     const cas = fixtureCas();
@@ -555,6 +890,32 @@ test('agent work packet prefers active analyzer source over legacy lexical match
 
     assert.equal(packet.selected_node?.name, 'buildQuickDescription');
     assert.equal(packet.file_read_plan[0].file, 'packages/analyzer-core/src/analyzer/core/orchestrator.ts');
+  });
+});
+
+test('agent work packet resolves exact module filenames from the working tree before stale semantic matches', async () => {
+  await withWorkspace(async workspace => {
+    fs.mkdirSync(path.join(workspace, 'apps', 'mcp-server', 'src'), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, 'apps', 'mcp-server', 'src', 'description-enrichment.ts'),
+      'export async function generateElementDescription() { return "description"; }\n',
+    );
+
+    const cas = fixtureCas();
+    cas.nodes.push(
+      node('legacy-description-method', 'description', 'method', 'packages/analyzer-core/src/database/entities/component-connection.entity.ts', 182) as any,
+      node('legacy-description-service', 'DescriptionService', 'service', 'legacy/api/description.service.ts', 12) as any,
+    );
+
+    const packet = await getAgentWorkPacket(cas, workspace, {
+      task_type: 'modify',
+      target: 'description-enrichment',
+      instructions: 'Improve manual AI description enrichment without broad file exploration.',
+    });
+
+    assert.equal(packet.file_read_plan[0].file, 'apps/mcp-server/src/description-enrichment.ts');
+    assert.equal(packet.selected_node, null);
+    assert.ok(packet.target_resolution.gaps.some((gap: string) => gap.includes('no CAS node resolved')));
   });
 });
 

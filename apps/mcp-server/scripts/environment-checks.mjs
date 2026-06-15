@@ -35,12 +35,13 @@ export function evaluateNodeVersion(versionString, minimumMajor = MINIMUM_NODE_M
 }
 
 export function evaluateBundleState(input) {
-  const { bundleExists, serverExists, handshakeExists, workerExists, bundleMtimeMs, newestSourceMtimeMs, packageRoot } = input;
+  const { bundleExists, serverExists, cliExists, handshakeExists, workerExists, bundleMtimeMs, newestSourceMtimeMs, packageRoot } = input;
   const buildFix = `Run: npm --prefix ${packageRoot} run build (skip while a live run is using dist/).`;
-  if (!bundleExists || !serverExists || !handshakeExists || workerExists === false) {
+  if (!bundleExists || !serverExists || cliExists === false || !handshakeExists || workerExists === false) {
     const missing = [
       !bundleExists ? 'dist/index.cjs' : null,
       !serverExists ? 'dist/server.cjs' : null,
+      cliExists === false ? 'dist/cli.cjs' : null,
       !handshakeExists ? 'dist/handshake.json' : null,
       workerExists === false ? 'dist/analysis-worker.cjs' : null,
     ].filter(Boolean).join(', ');
@@ -52,7 +53,7 @@ export function evaluateBundleState(input) {
       `dist/index.cjs is older than the newest source file by ~${ageMinutes} minute(s); the bundle may not include recent changes.`,
       buildFix);
   }
-  return checkResult('bundle', 'pass', 'dist/index.cjs, dist/server.cjs, and dist/handshake.json are present and newer than the sources.');
+  return checkResult('bundle', 'pass', 'dist/index.cjs, dist/server.cjs, dist/cli.cjs, and dist/handshake.json are present and newer than the sources.');
 }
 
 export function newestMtimeMs(rootDir) {
@@ -96,6 +97,7 @@ export function inspectBundle({ packageRoot, sourceDirs }) {
   return evaluateBundleState({
     bundleExists,
     serverExists: fs.existsSync(serverPath),
+    cliExists: fs.existsSync(path.join(packageRoot, 'dist', 'cli.cjs')),
     handshakeExists: fs.existsSync(handshakePath),
     workerExists: fs.existsSync(path.join(packageRoot, 'dist', 'analysis-worker.cjs')),
     bundleMtimeMs: bundleExists ? fs.statSync(bundlePath).mtimeMs : null,

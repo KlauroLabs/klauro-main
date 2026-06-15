@@ -8,7 +8,15 @@ import {
 } from './agent-adoption';
 
 export async function getAgentBootstrap(cas: CASOutput, path: string, task: AgentTask = {}) {
-  const normalizedTask = { task_type: task.task_type || 'orient', target: task.target, related_paths: task.related_paths, runtime_event: task.runtime_event };
+  const normalizedTask: AgentTask = {
+    task_type: task.task_type || 'orient',
+    target: task.target,
+    related_paths: task.related_paths,
+    runtime_event: task.runtime_event,
+    instructions: task.instructions,
+    success_criteria: task.success_criteria,
+    response_profile: task.response_profile || 'capsule-only',
+  };
   const start = getAgentStartContext(cas, path, normalizedTask);
   const plan = getAgentToolPlan(cas, { path, task: normalizedTask });
   const packet = await getAgentWorkPacket(cas, path, normalizedTask);
@@ -45,6 +53,7 @@ export function buildAgentBootstrapPrompt(
   sections.push('## Operating Rule');
   sections.push(start.default_rule);
   sections.push(plan.rule);
+  sections.push('For edit/debug/review work, prefer `get_agent_work_packet` with `task.response_profile="capsule-only"`, read `K15`, and execute `K5` before broad file reads. Use `first-turn` only when capsule-only leaves a concrete gap.');
 
   sections.push('');
   sections.push('## System');
@@ -72,18 +81,46 @@ export function buildAgentBootstrapPrompt(
     sections.push(`   args: ${JSON.stringify(stepValue.args)}`);
   }
 
-  if (packet.selected_node) {
+  if ((packet as any).context_capsule) {
     sections.push('');
-    sections.push('## Selected Target');
-    sections.push(`${packet.selected_node.name} (${packet.selected_node.type})`);
-    if (packet.selected_node.file) sections.push(`File: ${packet.selected_node.file}:${packet.selected_node.line || 1}`);
+    sections.push('## K15 Context Capsule');
+    sections.push('```text');
+    sections.push(typeof (packet as any).context_capsule === 'string'
+      ? (packet as any).context_capsule
+      : (packet as any).context_capsule.capsule);
+    sections.push('```');
   }
 
-  if (packet.file_read_plan.length > 0) {
+  if ((packet as any).capsule || (packet as any).execution_capsule) {
+    sections.push('');
+    sections.push('## K5 Execution Capsule');
+    sections.push('```text');
+    sections.push((packet as any).capsule || (packet as any).execution_capsule);
+    sections.push('```');
+  }
+
+  if ((packet as any).selected_node || (packet as any).selected) {
+    const selected = (packet as any).selected_node || (packet as any).selected;
+    sections.push('');
+    sections.push('## Selected Target');
+    sections.push(`${selected.name || selected.id || 'unknown'} (${selected.type || 'unknown'})`);
+    if (selected.file) sections.push(`File: ${selected.file}:${selected.line || 1}`);
+  }
+
+  const filePlan = Array.isArray((packet as any).file_read_plan)
+    ? (packet as any).file_read_plan
+    : Array.isArray((packet as any).files)
+      ? (packet as any).files
+      : [];
+  if (filePlan.length > 0) {
     sections.push('');
     sections.push('## File Read Plan');
-    for (const item of packet.file_read_plan) {
-      sections.push(`- ${item.file}${item.line ? `:${item.line}` : ''} - ${item.reason}`);
+    for (const item of filePlan) {
+      if (typeof item === 'string') {
+        sections.push(`- ${item}`);
+      } else {
+        sections.push(`- ${item.file || item.path}${item.line ? `:${item.line}` : ''} - ${item.reason || item.role || 'read first'}`);
+      }
     }
   }
 

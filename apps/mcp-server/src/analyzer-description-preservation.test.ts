@@ -94,12 +94,12 @@ test('AI capability descriptions are carried forward by capability id on AI-off 
   const previous = outputWith(
     { description_source: 'ai', description_generation: { status: 'ai_applied', attempted: true } },
     [
-      { id: 'cap_orders', description: 'Maintains order intake and fulfillment records.', description_source: 'ai' },
+      { id: 'cap_orders', name: 'Order Management', related_domains: ['order'], description: 'Order Management lets operators maintain order intake and fulfillment records for customer orders.', description_source: 'ai' },
       { id: 'cap_misc', description: 'Deterministic capability text.', description_source: 'deterministic' },
     ],
   );
   const next = outputWith({}, [
-    { id: 'cap_orders', description: 'Order operations.', description_source: 'deterministic' },
+    { id: 'cap_orders', name: 'Order Management', related_domains: ['order'], description: 'Order operations.', description_source: 'deterministic' },
     { id: 'cap_misc', description: 'Other deterministic text.', description_source: 'deterministic' },
   ]);
 
@@ -108,8 +108,27 @@ test('AI capability descriptions are carried forward by capability id on AI-off 
   const orders = capabilities.find(capability => capability.id === 'cap_orders')!;
   const misc = capabilities.find(capability => capability.id === 'cap_misc')!;
 
-  assert.equal(orders.description, 'Maintains order intake and fulfillment records.');
+  assert.equal(orders.description, 'Order Management lets operators maintain order intake and fulfillment records for customer orders.');
   assert.equal(orders.description_source, 'reused');
   assert.equal(misc.description, 'Other deterministic text.');
   assert.equal(misc.description_source, 'deterministic');
+});
+
+test('AI capability descriptions are not carried across reused ids with different subjects', () => {
+  const previous = outputWith(
+    { description_source: 'ai', description_generation: { status: 'ai_applied', attempted: true } },
+    [
+      { id: 'cap_1', name: 'Slack Management', related_domains: ['slack'], description: 'Slack Management sends Slack notifications for approval workflows.', description_source: 'ai' },
+    ],
+  );
+  const next = outputWith({}, [
+    { id: 'cap_1', name: 'Google Management', related_domains: ['google'], description: 'Google operations.', description_source: 'deterministic' },
+  ]);
+
+  const result = preservePreviousAIDescriptions(previous, next);
+  const capabilities = result.system_capabilities as Array<{ id: string; description: string; description_source?: string }>;
+  const google = capabilities.find(capability => capability.id === 'cap_1')!;
+
+  assert.equal(google.description, 'Google operations.');
+  assert.equal(google.description_source, 'deterministic');
 });

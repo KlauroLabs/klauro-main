@@ -16,6 +16,30 @@ This runs the CAS pipeline: language detection, framework detection, library det
 
 Results and analysis support files are stored under `~/.klauro/analyses/` unless `KLAURO_STORAGE_PATH` is configured.
 
+Use `get_analysis_focus_profiles` before refreshing a repository when the caller is not sure which layer to pay for. Coding and review agents should normally follow its `agent-fast` recommendation, then request `get_agent_work_packet` with `response_profile: "capsule-only"`. Retry with `first-turn` only when the capsules leave a concrete gap. Human overview surfaces and drilldowns should explicitly request `ui-overview` or `manual-element-description` through `run_analysis_layer`, while runtime/audit work should request `deep-context` only after the fast graph exists. `deep-context` enables semantic retrieval and AI system narrative when configured, but it does not generate bulk element descriptions; those stay manual so agent work never pays that cost by default.
+
+For human-facing narrative quality, call `get_description_enrichment_targets` after analysis. It returns the weak system, capability, service, node, entity, and entry-point descriptions that should be regenerated next, with ready-to-use `run_analysis_layer` or `generate_element_description` arguments. This keeps the fast agent graph cheap while giving the UI a concrete queue for AI-written descriptions instead of accepting deterministic or inventory-style text.
+
+To verify the focus-layer cost model itself, run:
+
+```bash
+cd apps/mcp-server
+npm run analysis-focus-benchmark -- --output .klauro-analysis-focus-benchmark/latest-report.json --markdown .klauro-analysis-focus-benchmark/latest-report.md
+```
+
+The report proves that `agent-fast` enables only core graph plus agent context, that UI and deep-context layers are explicitly separated, and that default MCP/CLI coding routes do not pay for AI narrative, bulk element descriptions, or embeddings.
+
+To verify the description layer itself, run:
+
+```
+npm run description-quality-benchmark -- --output .klauro-description-quality-benchmark/latest-report.json --markdown .klauro-description-quality-benchmark/latest-report.md
+```
+
+The benchmark simulates bad local-model first drafts, verifies the repair prompt
+stores AI-sourced service/capability/entity/entry-point descriptions, and
+rejects inventory summaries, file coordination summaries, marketing filler, and
+unserialized object leaks.
+
 If the analyzers are hosted instead of installed locally, use the remote analyzer path:
 
 ```
@@ -50,7 +74,7 @@ Use preview_greenfield_codebase with plan_text="..." and proposed_files=[...].
 
 Agents should include the returned advisory verdict, private preview URL, changed contracts, required checks, and uncertainty in the plan output. A `needs_revision` or `high_risk` verdict is not a hard blocker in v1, but it must be surfaced before implementation.
 
-For large greenfield builds, first call `get_greenfield_build_packet` against the empty target folder. It returns first-slice architecture guidance without wasting tokens exploring an empty tree. After the first slice exists, call it again against the same folder; Klauro analyzes the new codebase as normal CAS and returns graph memory, architecture memory, model ownership, boundary ownership, test memory, product-focus guidance, a growth control plane, concepts to reuse, focused files to read, duplicate-prevention rules, and validation checks for the next slice. The `product_focus` and `growth_control_plane` sections are the agent-facing shift in responsibility: they name the requested product behaviors, the architecture decisions Klauro is carrying, the product-slice stop rule, the architecture budget, concept ownership, duplication gates, what not to spend time rediscovering, and the next product slice definition. Treat each vertical slice as a normal codebase iteration: packet, build, preview/analyze, packet again. The live scratch harness now passes this compact growth-control context into with-Klauro agents for both empty-folder and continuation waves. The `agent-greenfield-benchmark` includes a continuity trial that proves this behavior by comparing a baseline that rebuilds `User`, `Workspace`, `Project`, and route boundaries against a Klauro-guided slice that reuses the existing models, services, migrations, and tests. The `agent-from-zero-build-packet-proof` now runs three-iteration empty-folder builds across multiple domains and compares Klauro-guided growth against baselines that pass tests while duplicating domain concepts.
+For large greenfield builds, first call `get_greenfield_build_packet` against the empty target folder. It returns first-slice architecture guidance without wasting tokens exploring an empty tree. After the first slice exists, call it again against the same folder; Klauro analyzes the new codebase as normal CAS and returns graph memory, architecture memory, model ownership, boundary ownership, test memory, product-focus guidance, a growth control plane, concepts to reuse, focused files to read, duplicate-prevention rules, and validation checks for the next slice. The packet also includes `agent_build_capsule` in `G1` format, a compact prompt-native build language for agents. `G1|0` is the empty-folder first slice and `G1|c` is continuation; its lines carry requested behaviors, architecture patterns, concepts to reuse, owner files, read-first files, next files, do-not-rebuild rules, validation, and the stop rule. Use the G1 capsule first, then expand to full greenfield JSON only when the capsule leaves a concrete gap. The `product_focus` and `growth_control_plane` sections are the expanded agent-facing shift in responsibility: they name the requested product behaviors, the architecture decisions Klauro is carrying, the product-slice stop rule, the architecture budget, concept ownership, duplication gates, what not to spend time rediscovering, and the next product slice definition. Treat each vertical slice as a normal codebase iteration: packet, build, preview/analyze, packet again. The live scratch harness now passes this compact growth-control context into with-Klauro agents for both empty-folder and continuation waves. The `agent-greenfield-benchmark` includes a continuity trial that proves this behavior by comparing a baseline that rebuilds `User`, `Workspace`, `Project`, and route boundaries against a Klauro-guided slice that reuses the existing models, services, migrations, and tests. The `agent-from-zero-build-packet-proof` now runs multi-slice empty-folder builds across multiple domains and compares Klauro-guided growth against baselines that pass tests while duplicating domain concepts.
 
 CLI equivalents:
 
@@ -121,6 +145,14 @@ Use get_agent_work_packet with path="/repo" and task={ "task_type": "modify", "t
 ```
 
 The work packet resolves the target, includes coding context, architecture context, risk, callers, callees, tests, behavioral invariant impact, entry/call-chain context, and returns a concrete file read plan. Agents should inspect those files first before expanding to broader source reads. The architecture context is intentionally compact: it names the system type, architecture budget, local patterns such as MVC, MVVM, repository, service layer, mediator, unit of work, and singleton where present, inventory examples, target-relevant owners, a pattern decision matrix, pattern-balance risks, and rules for preserving the codebase's existing shape.
+
+For the first agent turn, especially when token savings must beat codebase-index retrieval, request the smallest packet:
+
+```json
+{ "task_type": "modify", "target": "auth", "response_profile": "capsule-only" }
+```
+
+The `capsule-only` profile gives K15/K5 capsules, selected target, first files, token estimate, and validation in the smallest prompt-native form. Ask for `first-turn` when the capsules leave a concrete gap and the agent needs compact JSON fields.
 
 The CLI mirrors this behavior. `npm --silent run agent-work-packet -- /repo --json --compact --quiet` includes each file plan's `line_window`, and the plain-text output prints the same line range so CLI-first agents can avoid reading whole files by default. Use `npm --silent` and `--quiet` for machine-readable JSON so npm's command banner and analyzer maintenance logs do not pollute stdout. Work packets are token-bounded by default; ask follow-up MCP tools for deeper context only when the focused packet proves insufficient.
 
@@ -482,6 +514,25 @@ Use get_runtime_trace with path="/repo" and trace_id="<trace-id>"
 
 Runtime events can include `signal`, `static_id`, `node_id`, `entry_point_id`, `exit_point_id`, `call_chain_id`, route details, status, duration, error message, stack trace, and arbitrary attributes.
 
+To ask "what bugs should I address today" with production signal, first ingest or record runtime observations, then use:
+
+```
+Use get_operational_priorities with path="/repo"
+Use get_agent_work_packet with path="/repo" and task={ "task_type": "debug", "target": "<top static_target.file>", "response_profile": "capsule-only" }
+```
+
+`get_operational_priorities` ranks stored ingested telemetry by error count,
+latency, traffic volume, static risk, missing tests, and CAS correlation. The
+work packet keeps the runtime priority compact in K15/K5 while still requiring
+normal idiom, invariant, and test validation before edits.
+
+To verify that runtime context changes agent priority without bloating prompt
+context:
+
+```
+npm run runtime-impact-benchmark -- --output .klauro-runtime-impact-benchmark/latest-report.json --markdown .klauro-runtime-impact-benchmark/latest-report.md
+```
+
 To generate instrumentation payloads from CAS:
 
 ```
@@ -634,6 +685,37 @@ Patch quality answers whether the resulting diff solved the requested behavior. 
 
 See `docs/mcp/AGENT-PERFORMANCE-PROOF.md` for the current tracked proof summary, including copied-repo live A/B results, deterministic benchmark results, and incremental edit-loop results.
 
+To cold-review the actual product output from the latest machine proof, without re-analyzing every repository:
+
+```
+npm run analysis-output-cold-review -- --output .klauro-analysis-output-cold-review/latest-report.json --markdown .klauro-analysis-output-cold-review/latest-report.md
+```
+
+This samples large apps, infrastructure repos, library/SDK repos, small/simple repos, and Klauro itself from `.klauro-agent-proof-machine/latest-report.json`. It scores agent-context usefulness separately from human-facing narrative quality. A `warn` result is useful evidence: it means MCP packets are helping agents, but the UI/human description layer still needs AI enrichment before claiming the analysis output is fully polished.
+
+To turn that cold-review debt into an explicit enrichment queue:
+
+```
+npm run analysis-narrative-enrichment-proof -- --output .klauro-analysis-narrative-enrichment-proof/latest-report.json --markdown .klauro-analysis-narrative-enrichment-proof/latest-report.md
+```
+
+This loads the cold-review output, checks every narrative-debt analysis can be
+routed to `run_analysis_layer` or `generate_element_description`, verifies AI
+description mechanics, and proves `agent-fast` still has zero optional
+enrichment work while UI overview pays for narrative quality explicitly.
+
+To execute a bounded slice of that queue with the configured AI provider, run:
+
+```bash
+npm run analysis-narrative-enrichment-runner -- --max-targets 5 --max-targets-per-repo 1 --output .klauro-analysis-narrative-enrichment-runner/latest-report.json --markdown .klauro-analysis-narrative-enrichment-runner/latest-report.md
+```
+
+The runner records attempted targets, generated targets, generated-but-still-weak
+targets, target removals from the queue, before/after narrative target counts,
+and the generated descriptions. Use `--dry-run` first when checking the queue
+shape, and keep this on the `ui-overview` path so default agent-fast MCP packets
+do not pay for narrative generation.
+
 Agent command templates may use:
 
 - `{workspace}` - copied repo path for that arm
@@ -727,6 +809,37 @@ npm run agent-proof-fast
 npm run agent-proof-machine -- --agent-with-cmd "agent-with --workspace {workspace} --prompt-file {prompt_file}" --agent-without-cmd "agent-without --workspace {workspace} --prompt-file {prompt_file}" --max-live-tasks 6
 ```
 
+For Claude Code live proof or MCP-guided execution, prefer a lean command so the measured token delta reflects the Klauro packet and source reads instead of unrelated local memory, hooks, plugins, or session persistence:
+
+```
+claude -p --safe-mode --no-session-persistence --permission-mode bypassPermissions --add-dir {workspace} --output-format json -- "$(cat {prompt_file})"
+```
+
+Use the same lean mode for both with-Klauro and without-Klauro arms. Keep the `--` before the prompt so Claude does not treat the prompt as another `--add-dir` value. Benchmark reports label non-lean Claude commands as `full-agent` and keep provider-token regressions visible.
+
+For normal agent work, call `get_agent_work_packet` with `task.response_profile="capsule-only"` when the agent needs to start cheaply. The response includes `context_capsule` in Klauro Agent Context Language (`K15`) format, `execution_capsule` in Klauro Execution Capsule (`K5`) format, selected target, first files, token estimate, and the expansion rule. Use `first-turn` only when the capsule-only response leaves a concrete gap and the agent needs compact JSON fields. Agents should read K15 for orientation, restore default file extensions, execute K5 before broad file exploration or full-packet follow-up calls, and expand only when the capsules are ambiguous or source evidence proves the target moved. `K15` carries compact orientation, selected node, default extension restoration, indexed file roles, idioms, reuse, risk, validation, and expansion rules. `K5` carries exact path dictionaries with read/edit sigils plus file-scoped operations for known-fix/direct-patch work. See `docs/mcp/EXECUTION-CAPSULE.md`.
+
+For new-codebase work, call `get_greenfield_build_packet` and read
+`agent_build_capsule.capsule` before creating files. The G1 capsule is the
+greenfield equivalent of K15/K5: it compresses first-slice or continuation
+guidance into behavior, pattern, owner, next-file, validation, and
+do-not-rebuild lines so the agent can spend tokens on product code instead of
+rediscovering architecture.
+
+To verify that greenfield prompt compression is still working:
+
+```
+npm run greenfield-build-codec-benchmark -- --output /tmp/klauro-greenfield-build-codec-benchmark.json
+```
+
+To verify the compact MCP packet against an indexed-codebase baseline:
+
+```
+npm run competitor-baseline-benchmark -- --output .klauro-competitor-baseline-benchmark/latest-report.json --markdown .klauro-competitor-baseline-benchmark/latest-report.md
+```
+
+This compares Klauro against a local BM25-style lexical index-retrieval proxy. It is not a vendor claim about Cursor itself; it is a repeatable proxy for "an agent asks an indexed codebase for likely files." The report must show both quality lift and token reduction before final acceptance treats the proof as passing.
+
 Use `agent-proof-fast` for normal local development. It still discovers every real Git repo under `/Users/michaelshattuck/dev` and reports every repo as passed, failed, unsupported, or skipped with a reason, but it analyzes a bounded sample with source-file and timing budgets so the proof does not monopolize the workstation.
 
 Use `agent-proof-machine` or `analysis-perfection-gauntlet` only when you intentionally want the full local-machine proof. The full mode excludes generated benchmark/live-trial copies and dependency/cache/build directories, includes nested standalone Git repos, and runs analysis/readiness/idiom checks, incremental edit-loop checks, and idiom proof for eligible repos. Full mode is CPU/disk heavy on large repo sets by design; prefer it before releases or after analyzer changes that could affect many languages/frameworks.
@@ -760,7 +873,7 @@ To enforce the complete non-UI product bar from the latest proof artifacts:
 npm run agent-vision-acceptance
 ```
 
-This fails if the recent CAS mastery, default-agent-readiness, real-repo vision, deterministic usefulness, deterministic quality, copied-repo live A/B proof, live idiom-quality proof, machine-wide repo accounting, or incremental edit-loop reports no longer support default agent use. It is the quick acceptance gate for proving that Klauro is materially useful to agents before relying on MCP by default.
+This fails if the recent CAS mastery, default-agent-readiness, real-repo vision, deterministic usefulness, deterministic quality, indexed-codebase baseline proof, copied-repo live A/B proof, live idiom-quality proof, machine-wide repo accounting, or incremental edit-loop reports no longer support default agent use. It is the quick acceptance gate for proving that Klauro is materially useful to agents before relying on MCP by default.
 
 To regenerate the proof from scratch and then enforce the same gate:
 
@@ -768,7 +881,7 @@ To regenerate the proof from scratch and then enforce the same gate:
 npm run agent-proof-full
 ```
 
-This runs MCP typecheck/tests, the analysis mastery gauntlet, default-agent-readiness gauntlet, real-repo vision gauntlet, deterministic usefulness benchmark, deterministic quality benchmark, incremental edit-loop benchmark, and final acceptance gate in sequence.
+This runs MCP typecheck/tests, the analysis mastery gauntlet, default-agent-readiness gauntlet, real-repo vision gauntlet, deterministic usefulness benchmark, deterministic quality benchmark, incremental edit-loop benchmark, analysis focus proof, indexed-codebase baseline proof, compact context proof, runtime impact proof, and final acceptance gate in sequence.
 
 ### Running the vision gauntlet
 

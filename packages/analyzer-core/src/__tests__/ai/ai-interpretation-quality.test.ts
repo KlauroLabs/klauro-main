@@ -36,6 +36,149 @@ describe('shared element description validator', () => {
     expect(result.reason).toBe('generic-structural-phrase');
   });
 
+  it('rejects short API endpoint restatements for capabilities', () => {
+    const result = validateElementDescription(
+      'Customer Management manages Customer records through API endpoints.',
+      { name: 'Customer Management', relatedDomains: ['customer'] },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('api-endpoint-restatement');
+  });
+
+  it('rejects generic creation-and-management phrasing for capability descriptions', () => {
+    const result = validateElementDescription(
+      'Codebase Analysis handles the creation and management of AnalysisResult and AnalysisRun entities through scripts inside the MCP server.',
+      { name: 'Codebase Analysis', relatedDomains: ['analysis', 'codebase'] },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('generic-structural-phrase');
+  });
+
+  it('rejects source-bucket restatements for capability descriptions', () => {
+    const result = validateElementDescription(
+      'Visual Capability enables script-based visualization of system behavior and state.',
+      { name: 'Visual Capability', relatedDomains: ['visual'] },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('source-bucket-restatement');
+  });
+
+  it('rejects file coordination restatements for capability descriptions', () => {
+    const result = validateElementDescription(
+      'Agent Work Packets manages the creation and coordination of files related to agent adoption and measurement.',
+      { name: 'Agent Work Packets', relatedDomains: ['agent'] },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('generic-structural-phrase');
+  });
+
+  it('rejects descriptions that name implementation source files', () => {
+    const result = validateElementDescription(
+      'Agent Work Packets prepares coding briefs for agents by coordinating agent-adoption.ts and agent-adoption-measurement.ts.',
+      { name: 'Agent Work Packets', relatedDomains: ['agent'] },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('source-file-restatement');
+  });
+
+  it('rejects Terraform source-file restatements for infrastructure entry descriptions', () => {
+    const result = validateElementDescription(
+      'Orientation entry platform/modules/vpc/variables.tf helps engineers configure VPC settings before deploying cloud infrastructure.',
+      { name: 'Orientation entry platform/modules/vpc/variables.tf', kind: 'entry_point', relatedDomains: ['infrastructure'] },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('source-file-restatement');
+  });
+
+  it('cleans broken infrastructure boilerplate grammar from system summaries', () => {
+    const cleaned = orch.cleanGeneratedDescriptionText(
+      'soon-infra is a cloud infrastructure system. The system is designed to organizes the creation and management of cloud resources via structured file-based workflows.'
+    );
+
+    expect(cleaned).toBe(
+      'soon-infra is a cloud infrastructure system. The system defines cloud resources as structured infrastructure that can be reviewed before deployment.'
+    );
+  });
+
+  it('rejects capability descriptions that summarize implementation functions', () => {
+    const result = validateElementDescription(
+      'Agent Work Packets coordinates and generates functions to process and format data for structured output.',
+      { name: 'Agent Work Packets', kind: 'capability', relatedDomains: ['agent'] },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('implementation-function-restatement');
+  });
+
+  it('rejects capability descriptions that list helper function examples', () => {
+    const result = validateElementDescription(
+      'Agent Work Packets organizes and executes specific functions like parseArgs, formatTable, and renderRow to process and structure data.',
+      { name: 'Agent Work Packets', kind: 'capability', relatedDomains: ['agent'] },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('implementation-function-restatement');
+  });
+
+  it('rejects capability descriptions that leak internal code identifiers', () => {
+    const result = validateElementDescription(
+      'CAS Contract Validation helps engineers coordinate parseCasVersion, estimateCasSourceTokens, scoreCasOrganization, and other CAS-related functions before proceeding with codebase analysis tasks.',
+      { name: 'CAS Contract Validation', kind: 'capability', relatedDomains: ['cas'] },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('implementation-identifier-restatement');
+  });
+
+  it('rejects capability descriptions that coordinate scripts instead of naming product behavior', () => {
+    const result = validateElementDescription(
+      'Usage Management helps engineers coordinate scripts model usage and read agents usage before creating or importing components.',
+      { name: 'Usage Management', kind: 'capability', relatedDomains: ['usage'] },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('generic-structural-phrase');
+  });
+
+  it('rejects local-model implementation summaries for capability cards', () => {
+    const badSummaries = [
+      'Runtime Telemetry provides codebase performance by collecting and exposing metrics like memory leaks, bottlenecks, and hotspots through HTTP endpoints.',
+      'MCP Server coordinates the setup and maintenance of analysis environments, supporting agent adoption and task benchmarking through script execution and configuration.',
+      'Klauro Runtime SDK provides tools for developers to integrate and extend analysis capabilities, supporting agent workflows and codebase interaction through Python-based SDKs.',
+      'Klauro Runtime SDK provides tools for AI agents to interact with codebases, enabling them to analyze, modify, and generate code based on predefined guidelines.',
+      'Trace Management handles the collection and processing of trace data, enabling the construction of call and flow graphs to visualize code execution paths.',
+      'Trace Management captures and processes trace data, supporting detailed analysis of code execution paths and interactions between components.',
+      'Codebase Analysis generates and maintains AnalysisResults and AnalysisRuns to provide structured code structure and behavior for review and modification.',
+      'Web Authentication lets engineers manage company, discount, device, invoice, location, partner, and user records through HTTP endpoints.',
+      'Charge Workflow covers handle paths through message handlers.',
+      'Latest Management spans scripts.',
+      'Connection Capability spans configuration support.',
+      'Record Management centralizes the coordination of arbitrage strategies, execution scripts, and optimization logic across CEX, DEX, and liquidity pools.',
+    ];
+
+    for (const description of badSummaries) {
+      const result = validateElementDescription(
+        description,
+        { name: description.split(' ').slice(0, 3).join(' '), kind: 'capability', relatedDomains: ['analysis'] },
+      );
+      expect(result.ok).toBe(false);
+      expect(['generic-structural-phrase', 'implementation-surface-restatement', 'too-short']).toContain(result.reason);
+    }
+  });
+
+  it('rejects legal-contract hallucinations for schema or API contract capabilities', () => {
+    const result = validateElementDescription(
+      'CAS Contract Validation ensures that agreements between systems are accurate and checks that terms and conditions are properly defined and enforced.',
+      { name: 'CAS Contract Validation', kind: 'capability', relatedDomains: ['cas'], domainVocabulary: ['code analysis specification', 'schema validation'] },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('unsupported-legal-contract-claim');
+  });
+
+  it('keeps concise descriptions when they are specific to the capability subject', () => {
+    const result = validateElementDescription(
+      'Order Reconciliation manages order settlement across payment providers.',
+      { name: 'Order Reconciliation', relatedDomains: ['order', 'payment'] },
+    );
+    expect(result.ok).toBe(true);
+  });
+
   it('rejects descriptions that never reference the target subject', () => {
     const result = validateElementDescription(
       'This area maintains records and relationships used by the rest of the product so workflows stay consistent over time.',
@@ -85,7 +228,7 @@ describe('curated capability fallback honesty', () => {
     }
   });
 
-  it('suppresses the template when no related entities ground the records claim', () => {
+  it('keeps the management template when the subject itself is a useful domain noun', () => {
     expect(orch.curatedElementDescription({
       id: 'cap_x',
       name: 'Payment Management',
@@ -93,6 +236,17 @@ describe('curated capability fallback honesty', () => {
       operations: [],
       relatedEntities: [],
       relatedDomains: ['payment'],
+    })).toBe('Payment Management maintains payment records, workflows, and relationships used by payment behavior.');
+  });
+
+  it('suppresses management templates for ungrounded infrastructure/process nouns', () => {
+    expect(orch.curatedElementDescription({
+      id: 'cap_x',
+      name: 'Pipeline Management',
+      kind: 'capability',
+      operations: [],
+      relatedEntities: [],
+      relatedDomains: [],
     })).toBeUndefined();
   });
 
@@ -134,6 +288,9 @@ describe('external service plausibility filter', () => {
     expect(isPlausibleExternalServiceName('api.telematics.example.com', ['fleet-api'])).toBe(true);
     expect(isPlausibleExternalServiceName('CollectService', ['soon-sync'])).toBe(true);
     expect(isPlausibleExternalServiceName('MeshPortfolioService', ['soon-sync'])).toBe(true);
+    expect(isPlausibleExternalServiceName('Pusher', ['chat-api'])).toBe(true);
+    expect(isPlausibleExternalServiceName('Taxjar', ['commerce-api'])).toBe(true);
+    expect(isPlausibleExternalServiceName('Geocodio', ['location-api'])).toBe(true);
   });
 
   it('feeds only plausible names into the combined interpretation prompt facts', () => {
@@ -193,7 +350,7 @@ describe('AI interpretation budgets for local providers', () => {
     delete process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS;
 
     const spy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
-      system_description: 'A code analysis service that builds CAS relationship graphs from repositories and exposes analysis context so coding agents can navigate code structure safely.',
+      system_description: 'A code analysis service builds CAS relationship graphs from repositories for coding agents. It exposes analysis context so agents can navigate code structure, risks, and tests before editing.',
       domain: '',
       descriptions: [],
     }));
@@ -250,8 +407,9 @@ describe('keep-better policy and rejection-reason telemetry in the combined path
   }
 
   it('retains a stronger deterministic system description with reason deterministic-retained-stronger', async () => {
+    delete process.env.KLAURO_AI_INTERPRETATION_FORCE;
     const spy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
-      system_description: 'A payment and order coordination system built for account workflows that manages payment connections through HTTP endpoints and database operations in the platform.',
+      system_description: 'A payment and order coordination system manages account payment connections through HTTP endpoints. It keeps account payments tied to order records for backend workflows without covering the wider portfolio lifecycle.',
       domain: '',
       descriptions: [],
     }));
@@ -290,9 +448,48 @@ describe('keep-better policy and rejection-reason telemetry in the combined path
     }));
   });
 
+  it('rejects AI without retaining deterministic summaries that use analyzer jargon', async () => {
+    const spy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
+      system_description: 'An order management system built with Angular that coordinates company, offer, suggestion, and upload workflows. It connects to HTTP API Connection and apollo-angular to manage user, portal, and company data.',
+      domain: '',
+      descriptions: [],
+    }));
+    const purpose: any = {
+      primary_type: 'frontend-app',
+      confidence: 0.88,
+      evidence: [],
+      primary_domain: 'order-management',
+      core_concepts: ['company', 'offer', 'suggestion', 'upload'],
+      inferred_description: 'An order management system built with Angular that coordinates company, offer, suggestion, and upload workflows. It is exercised through route entry points and lifecycle entry points, and it connects to HTTP API Connection, jose, and apollo-angular.',
+      supporting_workflow_ids: [],
+    };
+
+    try {
+      await orch.applyAIInterpretation(
+        purpose,
+        'internalPortal',
+        ['Angular'],
+        [{ type: 'route', count: 20 }],
+        [],
+        ['HTTP API Connection', 'jose', 'apollo-angular'],
+        flowGraphWith('Offer Management'),
+        [{ id: 'c1', name: 'offer', classification: 'core', frequency: 9 }],
+      );
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(purpose.description_source).toBe('deterministic');
+    expect(purpose.description_generation).toEqual(expect.objectContaining({
+      status: 'ai_rejected',
+      attempted: true,
+      reason: expect.stringContaining('generic-concept-ending'),
+    }));
+  });
+
   it('still applies AI when it is at least as grounded as the deterministic description', async () => {
     const spy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
-      system_description: 'An order payment management system that records payment, order, spending, and decision log activity, and links CollectService and MeshPortfolioService portfolio operations to account workflows over HTTP.',
+      system_description: 'An order payment management system records payment, order, spending, and decision log activity for account workflows. It links CollectService and MeshPortfolioService portfolio operations to HTTP-facing payment behavior.',
       domain: '',
       descriptions: [],
     }));
@@ -325,9 +522,46 @@ describe('keep-better policy and rejection-reason telemetry in the combined path
     expect(purpose.description_generation.status).toBe('ai_applied');
   });
 
+  it('keeps AI-sourced descriptions after removing source-bucket wording from small CLI repos', async () => {
+    const spy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
+      system_description: 'A script-based solana arbitrage bot watches new token pairs, bonding curve progress, and market-cap signals before choosing when to buy or sell. It uses file-based entry points and connects to @solana/web3.js for chain access while applying profit target, stop-loss, and curve thresholds around trading decisions.',
+      domain: '',
+      descriptions: [],
+    }));
+    const purpose: any = {
+      primary_type: 'automation-tool',
+      confidence: 0.9,
+      evidence: [],
+      primary_domain: 'solana-arbitrage',
+      core_concepts: ['solana', 'arbitrage', 'trading', 'token pairs'],
+      inferred_description: 'A solana arbitrage system that coordinates trade execution and pairs workflows.',
+      supporting_workflow_ids: [],
+    };
+
+    try {
+      await orch.applyAIInterpretation(
+        purpose,
+        'treecity',
+        [],
+        [{ type: 'cli', count: 1 }],
+        [],
+        ['@solana/web3.js'],
+        flowGraphWith('Trade Execution'),
+        [{ id: 'c1', name: 'solana arbitrage', classification: 'core', frequency: 9 }],
+      );
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(purpose.description_source).toBe('ai');
+    expect(purpose.description_generation.status).toBe('ai_applied');
+    expect(purpose.inferred_description).toContain('solana arbitrage bot watches new token pairs');
+    expect(purpose.inferred_description).not.toMatch(/script[- ]based|internal script|source files?|file[- ]based entry points?/i);
+  });
+
   it('preserves the original validator rejection reason when the curated fallback replaces a capability description', async () => {
     const spy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
-      system_description: 'An order payment management system that coordinates payment and order workflows for accounts, exercised through HTTP endpoints and backed by payment and order records.',
+      system_description: 'An order payment management system maintains payment and order workflows for account activity. It is exercised through HTTP endpoints and backed by payment and order records.',
       domain: '',
       descriptions: [
         { id: 'cap-0', description: 'This area facilitates the interaction between services to support secure data transmission across the platform.' },
@@ -378,7 +612,7 @@ describe('keep-better policy and rejection-reason telemetry in the combined path
 
   it('keeps the honest deterministic line when the curated template is suppressed for identifier subjects', async () => {
     const spy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
-      system_description: 'A zero trust security gateway that manages session and packet workflows for network access decisions, exercised through socket entry points and policy checks.',
+      system_description: 'A zero trust security gateway manages session and packet workflows for network access decisions. It is exercised through socket entry points and policy checks.',
       domain: '',
       descriptions: [
         { id: 'cap-0', description: 'This area facilitates the interaction between modules to support secure data transmission for the gateway.' },
@@ -430,6 +664,72 @@ describe('keep-better policy and rejection-reason telemetry in the combined path
   });
 });
 
+describe('self-analysis AI description guardrails', () => {
+  const purpose: any = {
+    primary_type: 'developer-tool',
+    confidence: 0.9,
+    evidence: [],
+    primary_domain: 'codebase-analysis',
+    core_concepts: ['CAS', 'MCP', 'codebase analysis', 'agent work packets'],
+    inferred_description: 'Klauro builds CAS relationship graphs for AI agents and human codebase inspection.',
+    supporting_workflow_ids: [],
+  };
+
+  it('rejects stale legacy API summaries for the Klauro repo itself', () => {
+    const result = orch.validateGeneratedAIInterpretation(
+      'A codebase analysis system built with Ruby that coordinates workspace, project, and user workflows to produce analyzer controller records. It manages workspaces, projects, and users through HTTP endpoints.',
+      purpose,
+      { isKlauroSelfProject: true, structuralTokens: ['codebase', 'analysis', 'workspace', 'project'] },
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'legacy-self-api-pollution' });
+  });
+
+  it('rejects self summaries centered on stale auth and route surfaces', () => {
+    const result = orch.validateGeneratedAIInterpretation(
+      'Klauro is a codebase analysis system that builds relationship graphs for AI agents and human code reviewers. It focuses on analyzing codebases, validating contracts, storing analysis results, and providing telemetry data to help agents understand and modify repositories. The system integrates with Redis and JWT services for caching and authentication, and it supports HTTP, message, and WebSocket entry points for communication.',
+      purpose,
+      { isKlauroSelfProject: true, structuralTokens: ['codebase', 'analysis', 'agent', 'telemetry'] },
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'legacy-self-api-pollution' });
+  });
+
+  it('accepts self descriptions that lead with CAS, MCP, agent guidance, and analysis storage', () => {
+    const result = orch.validateGeneratedAIInterpretation(
+      'Klauro builds CAS relationship graphs from repositories so AI agents can understand codebase structure before editing. It exposes MCP work packets, idiom guidance, proposal previews, incremental analysis, telemetry correlation, and analysis storage for development workflows.',
+      purpose,
+      { isKlauroSelfProject: true, structuralTokens: ['codebase', 'analysis', 'agent', 'storage'] },
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('prioritizes current Klauro analyzer and MCP capabilities over legacy API residue', () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    jest.spyOn(localOrch, 'isKlauroSelfProject').mockReturnValue(true);
+    const capabilities = [
+      { name: 'Workspaces Management', related_domains: ['workspace'] },
+      { name: 'Projects Management', related_domains: ['project'] },
+      { name: 'Codebase Analysis', related_domains: ['analysis'] },
+      { name: 'Agent Work Packets', related_domains: ['agent'] },
+      { name: 'Proposal Preview', related_domains: ['proposal'] },
+      { name: 'Codebase Idiom Guidance', related_domains: ['idiom'] },
+      { name: 'Analysis Storage', related_domains: ['storage'] },
+    ];
+
+    const prioritized = localOrch.prioritizeKlauroSelfCapabilities(capabilities, '/tmp/klauro');
+
+    expect(prioritized.map((capability: any) => capability.name)).toEqual([
+      'Codebase Analysis',
+      'Agent Work Packets',
+      'Proposal Preview',
+      'Codebase Idiom Guidance',
+      'Analysis Storage',
+    ]);
+  });
+});
+
 describe('element description grounding parity with the system validator', () => {
   it('allows marketing-flagged words grounded in the system domain vocabulary', () => {
     const subject = {
@@ -467,6 +767,22 @@ describe('element description grounding parity with the system validator', () =>
     expect(result.reason).toContain('unsupported-marketing-language');
     expect(result.reason).toContain('enhancing');
     expect(result.reason).toContain('efficiency');
+  });
+
+  it('sanitizes removable marketing words in otherwise grounded AI descriptions', () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const target = {
+      id: 'cap_terraform',
+      name: 'ECR Registry',
+      kind: 'capability',
+      currentDescription: 'ECR Registry maintains ECR repository resources, access policy relationships, and API image registry settings used by cloud infrastructure behavior.',
+      relatedDomains: ['cloud-infrastructure', 'resource', 'ecr'],
+      relatedEntities: ['AwsEcrRepository'],
+    };
+    const text = 'ECR Registry maintains ECR repository resources and access policies efficiently for cloud infrastructure behavior.';
+
+    expect(localOrch.validateElementDescription(text, target).reason).toContain('unsupported-marketing-language');
+    expect(localOrch.sanitizeElementDescriptionCandidate(text, target)).toBe('ECR Registry maintains ECR repository resources and access policies for cloud infrastructure behavior.');
   });
 
   it('allows grounded multi-word marketing phrases when the domain vocabulary states them', () => {

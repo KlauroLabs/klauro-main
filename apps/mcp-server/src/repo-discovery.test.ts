@@ -59,3 +59,27 @@ resource "aws_s3_bucket" "ignored_cache" {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('repo discovery excludes nested fixture manifests from real repo accounting', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-repo-discovery-fixtures-'));
+  const repo = path.join(root, 'analysis-product');
+  fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+  fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'package.json'), '{"name":"analysis-product"}\n');
+  fs.writeFileSync(path.join(repo, 'src', 'index.ts'), 'export const product = true;\n');
+  fs.mkdirSync(path.join(repo, 'fixtures', 'sample'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'fixtures', 'sample', 'package.json'), '{"name":"fixture"}\n');
+  fs.writeFileSync(path.join(repo, 'fixtures', 'sample', 'fixture.ts'), 'export const fixture = true;\n');
+  fs.mkdirSync(path.join(repo, 'cas-tests'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'cas-tests', 'Cargo.toml'), '[package]\nname = "fixture"\nversion = "0.1.0"\n');
+
+  try {
+    const report = await discoverRealRepos(root);
+    const found = report.repos.find(item => item.path === repo);
+    assert.equal(found?.status, 'eligible');
+    assert.deepEqual(found?.manifests, ['package.json']);
+    assert.equal(found?.source_files, 1);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

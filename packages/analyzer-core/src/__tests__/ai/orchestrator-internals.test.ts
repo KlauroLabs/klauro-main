@@ -68,6 +68,47 @@ describe('orchestrator exit-point filtering', () => {
   });
 });
 
+describe('orchestrator test-suite fallback discovery', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-test-suite-fallback-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const write = (relative: string, content: string) => {
+    const full = path.join(root, relative);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, content);
+  };
+
+  it('creates CAS test suites from executable source test files when analyzer nodes are missing', () => {
+    write('alpha_engine/tests/unit/test_risk_manager.py', [
+      'def test_blocks_oversized_position():',
+      '    assert True',
+    ].join('\n'));
+    write('apps/android/app/src/test/java/ai/openclaw/android/WakeWordsTest.kt', [
+      'import org.junit.Test',
+      'class WakeWordsTest {',
+      '  @Test fun extractsWakeWord() {}',
+      '}',
+    ].join('\n'));
+    write('fixtures/demo/tests/ignored.test.ts', "test('fixture smoke', () => {});\n");
+
+    const suites = orch.buildTestSuites([], [], root);
+
+    expect(suites.map((suite: any) => suite.file_path).sort()).toEqual([
+      'alpha_engine/tests/unit/test_risk_manager.py',
+      'apps/android/app/src/test/java/ai/openclaw/android/WakeWordsTest.kt',
+    ]);
+    expect(suites.find((suite: any) => suite.file_path.endsWith('test_risk_manager.py')).framework).toBe('pytest');
+    expect(suites.find((suite: any) => suite.file_path.endsWith('WakeWordsTest.kt')).framework).toBe('junit');
+  });
+});
+
 describe('isLocalModuleSpecifier', () => {
   it.each([
     ['./foo', true],
@@ -184,6 +225,65 @@ describe('source inventory analyzer detection', () => {
       const inventory = await localOrch.getSourceFileInventory(root);
       expect(inventory.files).toContain('src/UserService.ts');
       expect(inventory.files).not.toContain('.claude/worktrees/stale/ghost.ts');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('excludes nested fixture and testdata projects without hiding an explicit fixture root', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-inventory-fixtures-'));
+    try {
+      fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'package.json'), '{"name":"product"}');
+      fs.writeFileSync(path.join(root, 'src', 'ProductService.ts'), 'export class ProductService {}');
+
+      const fixtureRoot = path.join(root, 'fixtures', 'sample-app');
+      fs.mkdirSync(path.join(fixtureRoot, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(fixtureRoot, 'package.json'), '{"name":"fixture"}');
+      fs.writeFileSync(path.join(fixtureRoot, 'src', 'FixtureService.ts'), 'export class FixtureService {}');
+
+      fs.mkdirSync(path.join(root, 'testdata', 'synthetic'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'testdata', 'synthetic', 'NoiseService.ts'), 'export class NoiseService {}');
+      fs.mkdirSync(path.join(root, 'cas-tests'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'cas-tests', 'test-hoggan-analysis.ts'), 'export const clinicalNoise = true;');
+
+      const localOrch = new AnalyzerOrchestrator() as any;
+      const productInventory = await localOrch.getSourceFileInventory(root);
+      expect(productInventory.files).toContain('package.json');
+      expect(productInventory.files).toContain('src/ProductService.ts');
+      expect(productInventory.files).not.toContain('fixtures/sample-app/package.json');
+      expect(productInventory.files).not.toContain('fixtures/sample-app/src/FixtureService.ts');
+      expect(productInventory.files).not.toContain('testdata/synthetic/NoiseService.ts');
+      expect(productInventory.files).not.toContain('cas-tests/test-hoggan-analysis.ts');
+
+      const explicitFixtureInventory = await localOrch.getSourceFileInventory(fixtureRoot);
+      expect(explicitFixtureInventory.files).toContain('package.json');
+      expect(explicitFixtureInventory.files).toContain('src/FixtureService.ts');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('excludes root-level legacy reference apps from Klauro self project discovery', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-inventory-legacy-'));
+    try {
+      fs.writeFileSync(path.join(root, 'package.json'), '{"name":"@klauro/monorepo"}');
+      fs.mkdirSync(path.join(root, 'apps', 'mcp-server', 'src'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'apps', 'mcp-server', 'package.json'), '{"name":"mcp-server"}');
+      fs.writeFileSync(path.join(root, 'apps', 'mcp-server', 'src', 'server.ts'), 'export const server = true;');
+
+      fs.mkdirSync(path.join(root, 'legacy', 'web', 'src'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'legacy', 'web', 'package.json'), '{"dependencies":{"react":"18.0.0","next":"14.0.0"}}');
+      fs.writeFileSync(path.join(root, 'legacy', 'web', 'src', 'App.tsx'), 'export function App() { return <div />; }');
+
+      const localOrch = new AnalyzerOrchestrator() as any;
+      const inventory = await localOrch.getSourceFileInventory(root);
+      const roots = await localOrch.discoverProjectRoots(root);
+
+      expect(inventory.files).toContain('apps/mcp-server/package.json');
+      expect(inventory.files).not.toContain('legacy/web/package.json');
+      expect(inventory.files.some((file: string) => file.startsWith('legacy/'))).toBe(false);
+      expect(roots.map((projectRoot: string) => path.relative(root, projectRoot).replace(/\\/g, '/'))).not.toContain('legacy/web');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -585,6 +685,130 @@ describe('architecture and capability inference', () => {
     expect(names).toEqual(expect.arrayContaining(['Report Generation', 'Portfolio Rebalancing', 'Invoice Settlement']));
   });
 
+  it('does not expose action-only queues as capabilities and describes analysis behavior in product terms', () => {
+    const nodes: CASNode[] = [
+      node({ id: 'queue-fn', name: 'enqueue', type: 'function', source: { file: 'src/services/operations-service.js' } }),
+      node({ id: 'ops-service', name: 'SignalOperationsService', type: 'service', source: { file: 'src/services/operations-service.js' } }),
+      node({ id: 'rule-model', name: 'SignalRule', type: 'model', source: { file: 'src/domain/concepts.js' } }),
+      node({ id: 'rule-analyzer', name: 'analyzeRule', type: 'function', source: { file: 'src/services/operations-service.js' } }),
+    ];
+    const edges: CASEdge[] = [
+      { id: 'e0', source: 'ops-service', target: 'rule-analyzer', type: 'calls' },
+      { id: 'e1', source: 'rule-analyzer', target: 'rule-model', type: 'uses' },
+    ];
+
+    const capabilities = orch.buildSystemCapabilities([], [], nodes, edges);
+    const names = capabilities.map((capability: any) => capability.name);
+    const ruleCapability = capabilities.find((capability: any) => capability.name === 'Rule Analysis');
+
+    expect(names).not.toContain('Enqueue Capability');
+    expect(ruleCapability?.description).toContain('analyzes rule behavior');
+    expect(ruleCapability?.description).not.toContain('covers analyze paths');
+    expect(ruleCapability?.description).not.toContain('inferred from connected source elements');
+  });
+
+  it('groups trading bot script terminals into product capabilities instead of helper/source buckets', () => {
+    const nodes: CASNode[] = [
+      node({ id: 'buy', name: 'pumpFunBuy', type: 'function', source: { file: 'script.mjs' } }),
+      node({ id: 'sell', name: 'pumpFunSell', type: 'function', source: { file: 'script.mjs' } }),
+      node({ id: 'sell-all', name: 'sellAllTokens', type: 'function', source: { file: 'sell.js' } }),
+      node({ id: 'tokens', name: 'fetchSPLTokens', type: 'function', source: { file: 'script.mjs' } }),
+      node({ id: 'pairs', name: 'fetchNewPairs', type: 'function', source: { file: 'script.mjs' } }),
+      node({ id: 'scrape', name: 'scrapeTokenInfo', type: 'function', source: { file: 'script.mjs' } }),
+      node({ id: 'fee', name: 'sendDeveloperFee', type: 'function', source: { file: 'script.mjs' } }),
+      node({ id: 'log', name: 'updateLog', type: 'function', source: { file: 'script.mjs' } }),
+      node({ id: 'visual', name: 'setVisualMode', type: 'function', source: { file: 'script.mjs' } }),
+    ];
+    const edges: CASEdge[] = [
+      { id: 'e1', source: 'buy', target: 'sell', type: 'calls' },
+      { id: 'e2', source: 'sell', target: 'tokens', type: 'calls' },
+      { id: 'e3', source: 'pairs', target: 'scrape', type: 'calls' },
+      { id: 'e4', source: 'buy', target: 'fee', type: 'calls' },
+    ];
+
+    const capabilities = orch.buildSystemCapabilities([], [], nodes, edges);
+    const names = capabilities.map((capability: any) => capability.name);
+    const byName = new Map<string, any>(capabilities.map((capability: any) => [capability.name, capability]));
+
+    expect(names).toEqual(expect.arrayContaining(['Trade Execution', 'Token Balance Discovery', 'Market Data Discovery', 'Fee Transfer']));
+    expect(names).not.toContain('Pump Management');
+    expect(names).not.toContain('Spltokens Management');
+    expect(names).not.toContain('Visual Capability');
+    expect(names).not.toContain('Log Capability');
+    expect(byName.get('Trade Execution')?.description).toContain('buy and sell transactions');
+    expect(byName.get('Token Balance Discovery')?.description).toContain('SPL token balances');
+  });
+
+  it('does not treat blockchain token domains as identity authentication', () => {
+    const nodes: CASNode[] = [
+      node({ id: 'balance', name: 'getAssociatedTokenAddress', type: 'function', source: { file: 'src/solana/token-accounts.ts' } }),
+      node({ id: 'wallet', name: 'readTokenBalance', type: 'function', source: { file: 'src/solana/token-accounts.ts' } }),
+    ];
+    const edges: CASEdge[] = [
+      { id: 'e1', source: 'wallet', target: 'balance', type: 'calls' },
+    ];
+
+    const capabilities = orch.buildSystemCapabilities([], [], nodes, edges);
+    const names = capabilities.map((capability: any) => capability.name);
+
+    expect(names).toContain('Token Balance Discovery');
+    expect(names.some((name: string) => /Authentication/.test(name))).toBe(false);
+  });
+
+  it('filters DTO and source-support terminal buckets out of primary capabilities', () => {
+    const nodes: CASNode[] = [
+      node({ id: 'dto', name: 'CreateVehicleDto', type: 'class', source: { file: 'src/vehicles/dto/create-vehicle.dto.ts' } }),
+      node({ id: 'constants', name: 'Constants', type: 'object', source: { file: 'src/config/constants.ts' } }),
+      node({ id: 'handling', name: 'ErrorHandling', type: 'function', source: { file: 'src/support/error-handling.ts' } }),
+      node({ id: 'connection', name: 'Connection', type: 'class', source: { file: 'src/support/connection.ts' } }),
+      node({ id: 'support', name: 'Support', type: 'class', source: { file: 'src/support/index.ts' } }),
+      node({ id: 'vehicle', name: 'Vehicle', type: 'entity', source: { file: 'src/vehicles/vehicle.entity.ts' } }),
+      node({ id: 'vehicle-service', name: 'VehicleMaintenanceService', type: 'service', source: { file: 'src/vehicles/vehicle-maintenance.service.ts' } }),
+      node({ id: 'schedule', name: 'scheduleVehicleMaintenance', type: 'method', source: { file: 'src/vehicles/vehicle-maintenance.service.ts' } }),
+    ];
+    const edges: CASEdge[] = [
+      { id: 'e1', source: 'vehicle-service', target: 'schedule', type: 'calls' },
+      { id: 'e2', source: 'schedule', target: 'vehicle', type: 'uses' },
+    ];
+    const entities: CASDataEntity[] = [{
+      id: 'entity-vehicle',
+      name: 'Vehicle',
+      type: 'entity',
+      fields: [],
+      lifecycle: { created_by: [], read_by: ['schedule'], updated_by: ['schedule'], deleted_by: [] },
+      relationships: [],
+    } as any];
+
+    const capabilities = orch.buildSystemCapabilities([], entities, nodes, edges);
+    const names = capabilities.map((capability: any) => capability.name);
+
+    expect(names).toContain('Vehicle Management');
+    expect(names).not.toContain('Dto Management');
+    expect(names).not.toContain('Constants Capability');
+    expect(names).not.toContain('Handling Capability');
+    expect(names).not.toContain('Connection Capability');
+    expect(names).not.toContain('Support Capability');
+  });
+
+  it('expands common source abbreviations before naming capabilities', () => {
+    const nodes: CASNode[] = [
+      node({ id: 'loc-service', name: 'LocService', type: 'service', source: { file: 'src/locations/loc.service.php' } }),
+      node({ id: 'loc-method', name: 'syncLoc', type: 'method', source: { file: 'src/locations/loc.service.php' } }),
+    ];
+    const edges: CASEdge[] = [
+      { id: 'e1', source: 'loc-service', target: 'loc-method', type: 'calls' },
+    ];
+
+    const capabilities = orch.buildSystemCapabilities([], [], nodes, edges);
+    const names = capabilities.map((capability: any) => capability.name);
+    const domains = capabilities.flatMap((capability: any) => capability.related_domains);
+
+    expect(names).toContain('Location Synchronization');
+    expect(domains).toContain('location');
+    expect(names).not.toContain('Loc Workflow');
+    expect(names).not.toContain('Loc Capability');
+  });
+
   it('uses product-surface capability names and filters helper buckets when analyzing Klauro itself', () => {
     const klauroRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-self-naming-'));
     fs.writeFileSync(
@@ -656,7 +880,7 @@ describe('architecture and capability inference', () => {
         'Machine Repo Gauntlet',
         'Greenfield Planning',
         'Proposal Preview',
-        'Klauro CLI',
+        'Klauro Runtime SDK',
         'Analysis Storage',
       ];
       for (const name of klauroVocabulary) {
@@ -809,6 +1033,7 @@ describe('architecture and capability inference', () => {
     expect(orch.isGenericCapabilityDisplayName('All Management')).toBe(true);
     expect(orch.isGenericCapabilityDisplayName('Response Management')).toBe(true);
     expect(orch.isGenericCapabilityDisplayName('Configure Management')).toBe(true);
+    expect(orch.isGenericCapabilityDisplayName('Script Capability')).toBe(true);
     expect(orch.isGenericCapabilityDisplayName('Bin/console Commands')).toBe(true);
     expect(orch.isGenericCapabilityDisplayName('Events Handlers')).toBe(true);
     expect(orch.isGenericCapabilityDisplayName('Message Handlers')).toBe(true);
@@ -1124,7 +1349,7 @@ describe('architecture and capability inference', () => {
     }
 
     expect(capabilities[0].description).toBe('Invoice Settlement maintains invoice records, workflows, and relationships used by invoice behavior.');
-    expect(capabilities[0].description_source).toBe('manual');
+    expect(capabilities[0].description_source).toBe('deterministic');
     expect(capabilities[0].description_generation).toEqual(expect.objectContaining({
       status: 'deterministic_kept',
       attempted: true,
@@ -1166,7 +1391,49 @@ describe('architecture and capability inference', () => {
     }
 
     expect(capabilities[0].description).toBe('Infrastructure Definition captures resource files, variables, modules, and provider relationships so agents can understand what cloud resources the stack manages.');
-    expect(capabilities[0].description_source).toBe('manual');
+    expect(capabilities[0].description_source).toBe('deterministic');
+    expect(capabilities[0].description_generation).toEqual(expect.objectContaining({
+      status: 'deterministic_kept',
+      attempted: true,
+      reason: expect.stringMatching(/^curated-product-capability-description \(was: .+\)$/),
+    }));
+  });
+
+  it('uses curated subject descriptions even when entity links are missing', async () => {
+    const previousLocal = process.env.AI_LOCAL_ENABLED;
+    process.env.AI_LOCAL_ENABLED = 'true';
+    const spy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
+      descriptions: [
+        { id: 'cap_0', description: 'This crucial component provides robust operations for various application functionality.' },
+      ],
+    }));
+    const capabilities: any[] = [{
+      id: 'cap_0',
+      name: 'Customer Management',
+      description: 'supports customer operations',
+      description_source: 'deterministic',
+      description_generation: { status: 'deterministic_initial', attempted: false },
+      category: 'core',
+      operations: [],
+      related_entities: [],
+      related_domains: [],
+      criticality: 'high',
+      criticality_factors: [],
+    }];
+
+    try {
+      await orch.applyAIElementDescriptions(capabilities, [], { systemName: 'customer-api' });
+    } finally {
+      spy.mockRestore();
+      if (previousLocal === undefined) {
+        delete process.env.AI_LOCAL_ENABLED;
+      } else {
+        process.env.AI_LOCAL_ENABLED = previousLocal;
+      }
+    }
+
+    expect(capabilities[0].description).toBe('Customer Management maintains customer records, workflows, and relationships used by the surrounding product behavior.');
+    expect(capabilities[0].description_source).toBe('deterministic');
     expect(capabilities[0].description_generation).toEqual(expect.objectContaining({
       status: 'deterministic_kept',
       attempted: true,
@@ -1596,6 +1863,58 @@ describe('architecture and capability inference', () => {
     expect(orch.domainKeyFromText('vehicleInspection')).toBe('vehicle');
   });
 
+  it('does not promote UI interaction and data-fetching mechanics into product capabilities', () => {
+    const nodes = [
+      node({ id: 'approval-page', name: 'ApprovalPage', type: 'component', source: { file: 'src/views/app/pages/approvals/index.tsx' } }),
+      node({ id: 'click-handler', name: 'handleClick', type: 'function', source: { file: 'src/views/app/pages/approvals/index.tsx' } }),
+      node({ id: 'mutation-fn', name: 'mutationFn', type: 'function', source: { file: 'src/views/app/pages/approvals/index.tsx' } }),
+      node({ id: 'latest-hook', name: 'useLatest', type: 'function', source: { file: 'src/hooks/useLatest.ts' } }),
+    ];
+    const entryPoints = [
+      {
+        id: 'entry-approval-page',
+        type: 'page',
+        name: 'ApprovalPage',
+        source_node: 'approval-page',
+        handler: { node_id: 'approval-page', method_name: 'ApprovalPage', file: 'src/views/app/pages/approvals/index.tsx' },
+      },
+      {
+        id: 'entry-click',
+        type: 'click',
+        name: 'Click',
+        source_node: 'click-handler',
+        handler: { node_id: 'click-handler', method_name: 'handleClick', file: 'src/views/app/pages/approvals/index.tsx' },
+      },
+      {
+        id: 'entry-mutation',
+        type: 'mutation',
+        name: 'Mutation',
+        source_node: 'mutation-fn',
+        handler: { node_id: 'mutation-fn', method_name: 'mutationFn', file: 'src/views/app/pages/approvals/index.tsx' },
+      },
+      {
+        id: 'entry-latest',
+        type: 'graphql',
+        name: 'Latest',
+        source_node: 'latest-hook',
+        handler: { node_id: 'latest-hook', method_name: 'useLatest', file: 'src/hooks/useLatest.ts' },
+      },
+    ];
+
+    const capabilities = orch.buildSystemCapabilities(entryPoints as any, [], nodes, [], '/tmp/soon-ui');
+    const names = capabilities.map((capability: any) => capability.name);
+    const approvalCapability = capabilities.find((capability: any) => /approval/i.test(capability.name));
+
+    expect(names.some((name: string) => /approval/i.test(name))).toBe(true);
+    expect(approvalCapability?.id).toMatch(/^cap_approval/);
+    expect(names).not.toContain('Click Management');
+    expect(names).not.toContain('Mutation Management');
+    expect(names).not.toContain('Query Management');
+    expect(names).not.toContain('Latest Management');
+    expect(names).not.toContain('Soon Management');
+    expect(names.join('\n')).not.toMatch(/\b(click|mutation|query|latest)\s+(management|workflow|capability)\b/i);
+  });
+
   it('does not classify marketing UI cards and video players as a gaming platform', () => {
     const nodes: CASNode[] = [
       node({ id: 'video-player', name: 'VideoPlayer', type: 'component', source: { file: 'src/app/video-player.tsx' } }),
@@ -1877,6 +2196,143 @@ describe('architecture and capability inference', () => {
     )).toBe('commerce-operations-portal');
   });
 
+  it('keeps portfolio-heavy applications out of generic commerce when checkout is supporting flow', () => {
+    expect(orch.inferDomainFromProjectText(
+      'A React portfolio automation app with portfolio analysis, crypto asset tables, managed investments, brokerage connections, tax stash automation, DCA investing, checkout, and billing screens.',
+      '/tmp/soon-ui'
+    )).toBe('portfolio-management');
+  });
+
+  it('uses React feature page folders before hook/library vocabulary for page capability keys', () => {
+    expect(orch.inferResourceKey({
+      type: 'page',
+      name: 'PortfolioAnalysisPage',
+      handler: { file: 'src/views/app/pages/portfolio-analysis/index.tsx' },
+    })).toBe('portfolio');
+    expect(orch.inferResourceKey({
+      type: 'page',
+      name: 'VerifyEmailView',
+      handler: { file: 'src/views/auth/verify-email.tsx' },
+    })).toBe('auth');
+  });
+
+  it('prioritizes product capabilities over cross-cutting auth and billing cards', () => {
+    const ordered = [
+      { name: 'User Management', category: 'supporting', criticality: 'high', operations: [], related_domains: ['user'], related_entities: [] },
+      { name: 'Checkout Management', category: 'supporting', criticality: 'medium', operations: [], related_domains: ['checkout'], related_entities: [] },
+      { name: 'Portfolio Management', category: 'supporting', criticality: 'medium', operations: [], related_domains: ['portfolio'], related_entities: [] },
+      { name: 'Token Balance Discovery', category: 'core', criticality: 'medium', operations: [], related_domains: ['token-balance'], related_entities: [] },
+    ].sort((a: any, b: any) => orch.systemCapabilityProductPriority(a) - orch.systemCapabilityProductPriority(b));
+
+    expect(ordered.map((capability: any) => capability.name)).toEqual([
+      'Token Balance Discovery',
+      'Portfolio Management',
+      'Checkout Management',
+      'User Management',
+    ]);
+  });
+
+  it('writes product-facing descriptions for terminal portfolio capabilities', () => {
+    expect(orch.generateTerminalCapabilityDescription('Automation Management', [], [], [
+      { action: 'Read', path_or_command: 'src/api/sync/automation/useAutomationConfig.ts' },
+    ])).toContain('automated investing');
+    expect(orch.generateTerminalCapabilityDescription('Portfolio Management', [], [], [
+      { action: 'Read', path_or_command: 'src/api/sync/portfolio/usePortfolioSummary.ts' },
+    ])).toContain('allocation history');
+    expect(orch.generateTerminalCapabilityDescription('Exchange Management', [], [], [
+      { action: 'Coordinate', path_or_command: 'src/common/components/exchange-logo.tsx' },
+    ])).toContain('exchange or brokerage connections');
+  });
+
+  it('does not summarize the repo name as a product capability or core concept', () => {
+    expect(orch.isProjectNameCapabilityName('Soon Management', '/tmp/soon-ui')).toBe(true);
+    expect(orch.isProjectNameConcept('soon', '/tmp/soon-ui')).toBe(true);
+    expect(orch.isProjectNameCapabilityName('Portfolio Management', '/tmp/soon-ui')).toBe(false);
+  });
+
+  it('normalizes common framework names in deterministic overview copy', () => {
+    expect(orch.frameworkDisplayNamesForNarrative(['react', 'tanstack query', 'tanstack-query', 'react router'])).toEqual([
+      'React',
+      'TanStack Query',
+      'React Router',
+    ]);
+    expect(orch.frameworkDisplayNamesForNarrative(['dotnet', 'dotnet-host'])).toEqual(['.NET', '.NET host']);
+    expect(orch.cleanGeneratedDescriptionText('a system built with dotnet and dotnet-host. it records tests.')).toBe('a system built with .NET and .NET host. It records tests.');
+  });
+
+  it('treats UI-control vocabulary as capability noise', () => {
+    for (const token of ['buttons', 'changed', 'circular', 'color', 'combo', 'contents', 'current', 'custom', 'dispose', 'image', 'bar', 'box', 'middle', 'name', 'action', 'flow', 'runtime', 'mode', 'record', 'extract', 'assistant', 'operator', 'seed', 'dedupe', 'drawer', 'string']) {
+      expect(orch.isGenericCapabilityToken(token)).toBe(true);
+    }
+  });
+
+  it('adds purpose-level clinical capabilities when UI implementation nodes dominate', () => {
+    const nodes: any[] = [
+      { id: 'n1', name: 'PatientViewModel', source: { file: 'ViewModels/PatientViewModel.cs' }, subcategories: ['model'] },
+      { id: 'n2', name: 'GripForceAssessment', source: { file: 'Modules/GripForceAssessment.cs' }, subcategories: ['method'] },
+      { id: 'n3', name: 'DeviceCalibrationConnection', source: { file: 'Devices/Calibration.cs' }, subcategories: ['service'] },
+      { id: 'n4', name: 'CoverLetterReportPreview', source: { file: 'Reports/CoverLetterReportPreview.cs' }, subcategories: ['method'] },
+    ];
+
+    expect(orch.buildPurposeCapabilitiesFromSignals(nodes, []).map((capability: any) => capability.name)).toEqual([
+      'Patient Records',
+      'Clinical Measurements',
+      'Device Connectivity',
+      'Clinical Reporting',
+    ]);
+  });
+
+  it('does not add clinical capabilities for ordinary reporting and device words', () => {
+    const nodes: any[] = [
+      { id: 'n1', name: 'DeviceConnectionStatus', source: { file: 'src/views/app/pages/connections/device-status.tsx' }, subcategories: ['function'] },
+      { id: 'n2', name: 'PurchaseReportWidget', source: { file: 'src/views/app/pages/reports/purchase-report.tsx' }, subcategories: ['function'] },
+      { id: 'n3', name: 'assessChangeRisk', source: { file: 'apps/mcp-server/src/agent-adoption.ts' }, subcategories: ['function'] },
+      { id: 'n4', name: 'forceFullAnalysis', source: { file: 'apps/mcp-server/src/server.ts' }, subcategories: ['function'] },
+      { id: 'n5', name: 'isClinicalOrDeviceDomain', source: { file: 'packages/analyzer-core/src/analyzer/core/orchestrator.ts' }, subcategories: ['method'] },
+    ];
+
+    expect(orch.buildPurposeCapabilitiesFromSignals(nodes, [])).toEqual([]);
+  });
+
+  it('does not describe generic connection management as an exchange integration', () => {
+    expect(orch.productSpecificCapabilityDescription('Connection Management')).toBeUndefined();
+    expect(orch.productSpecificCapabilityDescription('Exchange Connection Management')).toBe(
+      'Exchange Connection Management links external exchange or brokerage connections to portfolio and automation workflows.'
+    );
+  });
+
+  it('treats CAS harness files as non-product source', () => {
+    expect(orch.isPrimaryProductPath('packages/analyzer-core/cas-tests/test-hoggan-analysis.ts')).toBe(false);
+    expect(orch.isPrimaryProductPath('src/test-hoggan-analysis.ts')).toBe(false);
+    expect(orch.isPrimaryProductPath('packages/analyzer-core/src/analyzer/core/orchestrator.ts')).toBe(true);
+  });
+
+  it('uses product subfolders instead of generic api/source areas in terminal descriptions', () => {
+    expect(orch.capabilitySourceAreas([], [
+      { action: 'Read', path_or_command: 'src/api/sync/automation/useAutomationConfig.ts' },
+      { action: 'Read', path_or_command: 'src/views/app/pages/portfolio-analysis/index.tsx' },
+      { action: 'Read', path_or_command: 'src/views/auth/verify-email.tsx' },
+      { action: 'Read', path_or_command: 'src/1.Domain/Identity.Domain.Actions/RegisterNewToken.cs' },
+    ])).toEqual(['automation', 'portfolio analysis', 'auth']);
+  });
+
+  it('does not treat identity auth tokens as Solana token-balance capabilities', () => {
+    expect(orch.tradingBotDomainKeyFromNode({
+      id: 'n1',
+      name: 'RegisterNewToken',
+      source: { file: 'src/1.Domain/Identity.Domain.Actions/RegisterNewToken.cs' },
+      subcategories: ['method'],
+    })).toBeUndefined();
+    expect(orch.tradingBotDomainKeyFromNode({
+      id: 'n2',
+      name: 'VerifyWalletWithdrawal',
+      source: { file: 'src/4.Presentation/Identity.Presentation.WepApi/Controllers/WalletWithdrawalController.cs' },
+      subcategories: ['method'],
+    })).toBeUndefined();
+    expect(orch.productSpecificCapabilityDescription('Token Authentication')).toContain('authentication tokens');
+    expect(orch.productSpecificCapabilityDescription('Wallet Withdrawal Management')).toContain('withdrawal email codes');
+  });
+
   it('accepts AI descriptions grounded in structural facts when the inferred domain seed is wrong', () => {
     const purpose = { primary_domain: 'cloud-infrastructure', core_concepts: ['terraform', 'module'] };
     const description = 'A laundry service booking application where customers schedule pickups, track washing orders, and manage delivery preferences for their household laundry.';
@@ -1885,6 +2341,27 @@ describe('architecture and capability inference', () => {
     expect(orch.validateAIInterpretation(description, purpose, {
       structuralTokens: ['laundry', 'booking', 'pickup', 'delivery'],
     }).ok).toBe(true);
+  });
+
+  it('requires generated AI overviews to be paragraph-style, not a single compressed sentence', () => {
+    const purpose = { primary_domain: 'portfolio-management', core_concepts: ['portfolio', 'automation', 'market'] };
+    const oneSentence = 'soon-ui is a portfolio management system that coordinates portfolio data, market discovery, and automation workflows using React and TanStack Query.';
+    const paragraph = 'soon-ui is a portfolio management system that presents account holdings, market data, and automation settings through a React interface. It connects portfolio analysis, exchange setup, and recurring investment workflows so agents can understand where product behavior lives before editing.';
+
+    expect(orch.validateAIInterpretation(oneSentence, purpose, { frameworks: ['React'], libraries: ['@tanstack/react-query'] }).ok).toBe(true);
+    expect(orch.validateGeneratedAIInterpretation(oneSentence, purpose, { frameworks: ['React'], libraries: ['@tanstack/react-query'] }).reason).toBe('too-short-for-ai-paragraph');
+    expect(orch.validateGeneratedAIInterpretation(paragraph, purpose, { frameworks: ['React'], libraries: ['@tanstack/react-query'] }).ok).toBe(true);
+  });
+
+  it('rejects AI overviews that leak the repo name as a capability concept', () => {
+    const purpose = { primary_domain: 'portfolio-management', core_concepts: ['portfolio', 'automation', 'market data'] };
+    const leaked = 'soon-ui is a portfolio management system that coordinates portfolio, soon, market data discovery, and automation workflows using React. It presents assets, activity, and payments through portfolio screens.';
+
+    expect(orch.validateGeneratedAIInterpretation(leaked, purpose, {
+      systemName: 'soon-ui',
+      frameworks: ['React'],
+      structuralTokens: ['portfolio', 'market', 'automation', 'asset'],
+    }).reason).toBe('project-name-as-concept');
   });
 
   it('accepts framework mentions backed by detected libraries instead of framework analyzers', () => {
@@ -2063,6 +2540,26 @@ describe('architecture and capability inference', () => {
     )).toBe(false);
   });
 
+  it('rejects AI system descriptions that end in generic concept lists', () => {
+    const result = orch.validateAIInterpretation(
+      'An order management system built with Angular that coordinates company, offer, suggestion, and upload workflows. It connects to HTTP API Connection and apollo-angular to manage user, portal, and company data.',
+      { primary_domain: 'order-management', core_concepts: ['company', 'offer', 'suggestion'] },
+      { frameworks: ['Angular'], externalServices: ['HTTP API Connection', 'apollo-angular'] }
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'generic-concept-ending' });
+  });
+
+  it('allows generic-looking words when they are part of a grounded multiword concept', () => {
+    const result = orch.validateAIInterpretation(
+      'A Solana arbitrage system that checks SPL token balances before submitting buy and sell transactions. It uses @solana/web3.js for Solana network access and focuses its decisions on trade execution and market data.',
+      { primary_domain: 'solana-arbitrage', core_concepts: ['trade execution', 'token balance', 'market data'] },
+      { externalServices: ['@solana/web3.js'] }
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
   it('names the offending marketing terms in the rejection reason so repair prompts can target them', () => {
     const result = orch.validateAIInterpretation(
       'The fleet system seamlessly tracks vehicles and improves productivity for dispatchers across fleet operations, covering trip assignment and vehicle status updates.',
@@ -2115,7 +2612,7 @@ describe('architecture and capability inference', () => {
         descriptions: [],
       }))
       .mockResolvedValueOnce(JSON.stringify({
-        system_description: 'The mcp-server analyzes source repositories into CAS relationship graphs and exposes MCP work packets so coding agents can navigate entry points, tests, and risks before editing.',
+        system_description: 'The mcp-server analyzes source repositories into CAS relationship graphs for coding agents. It exposes MCP work packets so agents can navigate entry points, tests, and risks before editing.',
         domain: '',
         descriptions: [],
       }));
@@ -2166,7 +2663,7 @@ describe('architecture and capability inference', () => {
 
     expect(callsBeforeRestore).toBe(2);
     expect(purpose.description_source).toBe('ai');
-    expect(purpose.inferred_description).toBe('The mcp-server analyzes source repositories into CAS relationship graphs and exposes MCP work packets so coding agents can navigate entry points, tests, and risks before editing.');
+    expect(purpose.inferred_description).toBe('The mcp-server analyzes source repositories into CAS relationship graphs for coding agents. It exposes MCP work packets so agents can navigate interaction surfaces, tests, and risks before editing.');
     expect(purpose.primary_domain).toBe('code-analysis');
     expect(purpose.domain_source).toBeUndefined();
   });
@@ -2179,7 +2676,7 @@ describe('architecture and capability inference', () => {
 
     const spy = jest.spyOn(aiService, 'generateComponentDescription')
       .mockResolvedValueOnce(JSON.stringify({
-        system_description: 'The mcp-server analyzes source repositories into CAS relationship graphs and exposes MCP work packets so coding agents can navigate entry points, tests, and risks before editing. It is built with NestJS and manages user data through a relational database.',
+        system_description: 'The mcp-server analyzes source repositories into CAS relationship graphs for coding agents. It exposes MCP work packets so agents can navigate entry points, tests, and risks before editing. It is built with NestJS and manages user data through a relational database.',
         domain: 'code-analysis-agent',
         descriptions: [],
       }));
@@ -2231,7 +2728,7 @@ describe('architecture and capability inference', () => {
 
     expect(callsBeforeRestore).toBe(2);
     expect(purpose.description_source).toBe('ai');
-    expect(purpose.inferred_description).toBe('The mcp-server analyzes source repositories into CAS relationship graphs and exposes MCP work packets so coding agents can navigate entry points, tests, and risks before editing.');
+    expect(purpose.inferred_description).toBe('The mcp-server analyzes source repositories into CAS relationship graphs for coding agents. It exposes MCP work packets so agents can navigate interaction surfaces, tests, and risks before editing.');
     expect(purpose.primary_domain).toBe('code-analysis-agent');
     expect(purpose.domain_source).toBe('ai-refined');
   });
@@ -2317,6 +2814,12 @@ resource "aws_s3_bucket_policy" "analysis_artifacts" {
   bucket = aws_s3_bucket.analysis_artifacts.id
   depends_on = [aws_s3_bucket.analysis_artifacts]
 }
+
+variable "location" { type = string }
+variable "admin_username" { type = string }
+variable "admin_password" { type = string }
+variable "retention_days" { type = number }
+variable "allowed_ip_range" { type = string }
 `);
 
     try {
@@ -2342,6 +2845,66 @@ resource "aws_s3_bucket_policy" "analysis_artifacts" {
         'aws_s3_bucket',
         'aws_s3_bucket_policy',
       ]));
+
+      const capabilities = orch.buildSystemCapabilities(contribution.entry_points || [], [], nodes, edges, root);
+      expect(capabilities.map((capability: any) => capability.name)).toEqual(expect.arrayContaining([
+        'Object Storage',
+      ]));
+      expect(capabilities.some((capability: any) => capability.name === 'File Workflow')).toBe(false);
+      expect(capabilities[0].operations.length).toBeGreaterThan(0);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('infers capabilities for variable-heavy Terraform modules with few resources', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-terraform-sparse-resource-analysis-'));
+    fs.mkdirSync(path.join(root, 'modules/postgres'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'main.tf'), `
+resource "azurerm_resource_group" "soon_rg" {
+  name     = "soon-rg"
+  location = var.location
+}
+`);
+    fs.writeFileSync(path.join(root, 'modules/postgres/main.tf'), `
+resource "azurerm_postgresql_server" "postgres" {
+  name                = var.postgres_server_name
+  resource_group_name = var.resource_group_name
+  location            = var.location
+}
+
+resource "azurerm_postgresql_firewall_rule" "allow_access" {
+  name                = "allow-access"
+  resource_group_name = var.resource_group_name
+  server_name         = azurerm_postgresql_server.postgres.name
+  start_ip_address    = var.allowable_ip_range
+  end_ip_address      = var.allowable_ip_range
+}
+`);
+    fs.writeFileSync(path.join(root, 'modules/postgres/variables.tf'), `
+variable "location" { type = string }
+variable "resource_group_name" { type = string }
+variable "postgres_server_name" { type = string }
+variable "postgres_admin_username" { type = string }
+variable "postgres_admin_password" { type = string }
+variable "postgres_version" { type = string }
+variable "environment" { type = string }
+variable "postgres_storage_mb" { type = number }
+variable "backup_retention_days" { type = number }
+variable "allowable_ip_range" { type = string }
+`);
+
+    try {
+      const analyzer = new TerraformAnalyzer();
+      const contribution = await analyzer.analyze({ projectPath: root, config: {} } as any);
+      const capabilities = orch.buildSystemCapabilities(contribution.entry_points || [], [], contribution.nodes || [], contribution.edges || [], root);
+      const names = capabilities.map((capability: any) => capability.name);
+
+      expect(names).toEqual(expect.arrayContaining([
+        'Database Infrastructure',
+      ]));
+      expect(names).not.toContain('File Workflow');
+      expect(capabilities.every((capability: any) => capability.operations.length > 0)).toBe(true);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -2557,6 +3120,56 @@ describe('capability noise floor and terminal capability labels', () => {
     expect(names).not.toContain('Line Item Management');
     expect(names).toContain('Stock Management');
   });
+
+  it('suppresses terminal helper clusters that have no entity or entry-point evidence', () => {
+    const helperNode = (name: string, file: string): CASNode => ({
+      id: `node_${name}`,
+      name,
+      type: 'function',
+      source: { file },
+      metadata: {},
+    } as CASNode);
+    const nodes = [
+      { id: 'owner', name: 'AgentService', type: 'service', source: { file: 'src/agents/service.ts' }, metadata: {} } as CASNode,
+      helperNode('bootstrapFiles', 'src/agents/bootstrap-files.ts'),
+      helperNode('cleanPayload', 'src/agents/schema/clean-for-gemini.ts'),
+      helperNode('collectTargets', 'src/channels/channel.ts'),
+      helperNode('materializeArtifacts', 'src/operating-artifacts.ts'),
+      helperNode('saveConfig', 'src/infra/json-file.ts'),
+      helperNode('mergeAccountIds', 'src/accounts/store.ts'),
+      helperNode('thinkingBudget', 'src/auto-reply/thinking.ts'),
+      { id: 'order-service', name: 'OrderService', type: 'service', source: { file: 'src/orders/service.ts' }, metadata: {} } as CASNode,
+    ];
+    const edges: CASEdge[] = [
+      { id: 'e1', source: 'owner', target: 'node_bootstrapFiles', type: 'calls' },
+      { id: 'e2', source: 'owner', target: 'node_cleanPayload', type: 'calls' },
+      { id: 'e3', source: 'owner', target: 'node_collectTargets', type: 'calls' },
+      { id: 'e4', source: 'owner', target: 'node_materializeArtifacts', type: 'calls' },
+      { id: 'e5', source: 'owner', target: 'node_saveConfig', type: 'calls' },
+      { id: 'e6', source: 'owner', target: 'node_mergeAccountIds', type: 'calls' },
+      { id: 'e7', source: 'owner', target: 'node_thinkingBudget', type: 'calls' },
+      { id: 'e8', source: 'owner', target: 'order-service', type: 'calls' },
+    ] as any;
+    const orderEntity: CASDataEntity = {
+      id: 'entity_order',
+      name: 'Order',
+      lifecycle: { created_by: ['order-service'], read_by: ['order-service'], updated_by: [], deleted_by: [] },
+      fields: [],
+      relationships: [],
+    } as any;
+
+    const capabilities = orch.buildTerminalCapabilities([orderEntity], nodes, edges, new Set<string>());
+    const names = capabilities.map((capability: { name: string }) => capability.name);
+
+    expect(names).toContain('Order Management');
+    expect(names).not.toContain('Bootstrap Management');
+    expect(names).not.toContain('Clean Management');
+    expect(names).not.toContain('Collect Management');
+    expect(names).not.toContain('Materialize Management');
+    expect(names).not.toContain('Save Management');
+    expect(names).not.toContain('Merge Management');
+    expect(names).not.toContain('Thinking Management');
+  });
 });
 
 describe('evidence-driven security boundaries and summary', () => {
@@ -2653,6 +3266,27 @@ describe('evidence-driven security boundaries and summary', () => {
     expect(summary.unprotected_sensitive_ops).toEqual(['open-handler']);
     expect(summary.assumed_vs_enforced.missing).toBeGreaterThanOrEqual(1);
     expect(summary.assumed_vs_enforced.enforced).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not classify public auth bootstrap mutations as missing auth', () => {
+    const nodes = [node({ id: 'auth-guard', name: 'JwtAuthGuard', type: 'guard' })];
+    const entryPoints = [
+      httpEntry({ id: 'ep-login', source_node: 'login-handler', method: 'POST', path: '/auth/login' }),
+      httpEntry({ id: 'ep-register', source_node: 'register-handler', method: 'POST', path: '/auth/register' }),
+      httpEntry({ id: 'ep-sso', source_node: 'sso-handler', method: 'POST', path: '/auth/sso/discover' }),
+      httpEntry({ id: 'ep-setup', source_node: 'setup-handler', method: 'POST', path: '/initial-setup' }),
+      httpEntry({ id: 'ep-open', source_node: 'open-handler', method: 'POST', path: '/orders' }),
+    ];
+
+    const boundaries = orch.buildSecurityBoundaries(nodes, entryPoints);
+    const auth = boundaries.find((b: any) => b.boundary_type === 'authentication');
+    const missingMechanisms = auth.enforcement_points
+      .filter((point: any) => point.confidence === 'missing')
+      .map((point: any) => point.mechanism);
+    expect(missingMechanisms).toEqual(['No authentication detected on sensitive operation POST /orders']);
+
+    const summary = orch.buildSecuritySummary(boundaries, nodes, entryPoints);
+    expect(summary.unprotected_sensitive_ops).toEqual(['open-handler']);
   });
 
   it('reports zero unprotected sensitive ops when every mutating entry is guarded', () => {
@@ -3412,5 +4046,35 @@ describe('vendor-lib terminal capabilities require product evidence', () => {
     const capabilities = orch.buildTerminalCapabilities([], nodes, edges, new Set<string>());
     const names = capabilities.map((capability: { name: string }) => capability.name);
     expect(names.some((name: string) => name.startsWith('Pricing'))).toBe(true);
+  });
+
+  it('drops terminal single-token leftovers already covered by composed capabilities', () => {
+    const nodes: CASNode[] = [
+      vendorNode({ id: 'balance-service', name: 'BalanceService', type: 'service', source: { file: 'src/balance.ts' } }),
+      vendorNode({ id: 'balance-caller', name: 'TokenBalanceDiscovery', type: 'service', source: { file: 'src/token-balance.ts' } }),
+    ];
+    const edges: CASEdge[] = [
+      { id: 'e1', source: 'balance-caller', target: 'balance-service', type: 'calls' },
+    ] as CASEdge[];
+
+    const capabilities = orch.buildTerminalCapabilities([], nodes, edges, new Set<string>(['token-balance']));
+    const names = capabilities.map((capability: { name: string }) => capability.name);
+    expect(names).not.toContain('Balance Capability');
+  });
+
+  it('drops entrypoint single-token leftovers already covered by composed capabilities', () => {
+    const covered = {
+      name: 'Token Balance Discovery',
+      related_domains: ['token-balance'],
+      operations: [{ entry_point_id: 'entry-token-balance', entry_point_type: 'file', action: 'Process' }],
+    };
+    const redundant = {
+      name: 'Balance Capability',
+      related_domains: ['balance'],
+      operations: [{ entry_point_id: 'entry-balance', entry_point_type: 'file', action: 'Process' }],
+    };
+
+    expect(orch.isRedundantCoveredCapability(redundant, [covered, redundant])).toBe(true);
+    expect(orch.isRedundantCoveredCapability(covered, [covered, redundant])).toBe(false);
   });
 });

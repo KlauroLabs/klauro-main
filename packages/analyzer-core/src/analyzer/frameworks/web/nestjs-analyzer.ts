@@ -130,6 +130,9 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       if (!await fs.pathExists(packageJsonPath)) return false;
 
       const packageJson = await fs.readJson(packageJsonPath);
+      if (typeof packageJson?.name === 'string' && /(^|[@/])klauro([-/.]|$)/i.test(packageJson.name)) {
+        return false;
+      }
       const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
 
       return Object.keys(deps).some(dep =>

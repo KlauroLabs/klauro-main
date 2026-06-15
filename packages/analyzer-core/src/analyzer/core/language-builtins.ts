@@ -40,6 +40,8 @@ const LANGUAGE_BUILTIN_NAMES = new Set([
   'vec', 'format_args', 'write', 'writeln', 'DefaultHasher', 'RandomState',
   'ErrorKind', 'Formatter', 'Arguments', 'Pin', 'Waker', 'Context', 'Poll',
   'Future', 'CStr', 'CString', 'ipaddr', 'RateLimiter',
+  // Python modules that are pure in-process coordination for analysis purposes.
+  'asyncio', 'logging',
   // .NET base class library
   'System', 'Console', 'Task', 'Thread', 'Timer', 'Directory',
   'MemoryStream', 'FileStream', 'DateTime', 'TimeSpan', 'Guid', 'Uri',
@@ -113,6 +115,7 @@ const LANGUAGE_MODULE_TOKENS = new Set([
   'dataclasses', 'contextlib', 'argparse', 'shutil', 'tempfile', 'glob',
   'hashlib', 'hmac', 'uuid', 'urllib', 'inspect', 'traceback', 'warnings',
   'weakref', 'queue', 'heapq', 'bisect', 'pickle', 'textwrap', 'codecs',
+  'dict', 'list', 'tuple',
   // Platform module names used for OS-specific source files
   'linux', 'windows', 'macos', 'darwin', 'unix', 'posix', 'win32', 'android',
   'native',
