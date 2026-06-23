@@ -1015,6 +1015,23 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
     // catalog before the narrative/description passes run, so they describe the
     // merged capabilities rather than the noisy name-deduped union.
     graph.workspace_capabilities = await aiMergeWorkspaceCapabilities(graph);
+    // Realign the deterministic narrative's capability list to the merged catalog
+    // so the description and the capability list never disagree (e.g. description
+    // saying "Trade Execution" while the list shows "Manage Trading"), even if the
+    // AI narrative is later rejected and we fall back to the deterministic one.
+    const mergedCoreNames = graph.workspace_capabilities.filter(capability => capability.semantic_role === 'core').map(capability => capability.name);
+    if (mergedCoreNames.length > 0) {
+      const sentence = ` Its core capabilities are ${joinHumanReadableList(mergedCoreNames.slice(0, 5))}.`;
+      const realign = (narrative: WorkspaceNarrative | undefined) => {
+        if (!narrative) return;
+        narrative.key_capabilities = mergedCoreNames.slice(0, 12);
+        if (typeof narrative.description === 'string' && / Its core capabilities are [^.]*\./.test(narrative.description)) {
+          narrative.description = narrative.description.replace(/ Its core capabilities are [^.]*\./, sentence);
+        }
+      };
+      realign(graph.workspace_narrative);
+      realign(graph.deterministic_narrative);
+    }
     if (useSmallWorkspaceAiDefaultPasses()) {
       return await enrichWorkspaceAnalysisNarrativeWithSmallPasses(graph, deterministicNarrative);
     }

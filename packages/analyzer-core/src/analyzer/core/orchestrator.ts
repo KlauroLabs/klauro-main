@@ -7280,21 +7280,23 @@ export class AnalyzerOrchestrator {
     budgetMs: number;
   }): Promise<SystemCapability[]> {
     const purpose = input.enhancedSystemPurpose || ({} as EnhancedSystemPurpose);
+    // Bundle sizes are tuned to keep the per-repo extraction call small enough to
+    // fit a multi-repo workspace within a modest daily token budget (e.g. Groq
+    // free tier 100k TPD) while preserving enough signal for a good catalog.
     const journeys = (input.userJourneys || [])
       .filter(journey => journey.journey_kind === 'user-facing' || journey.criticality === 'critical' || journey.criticality === 'high')
-      .slice(0, 24)
+      .slice(0, 16)
       .map(journey => ({
         name: journey.name,
-        criticality: journey.criticality,
-        writes: (journey.terminal_effects?.entities_written || []).slice(0, 4),
-        terminal: (journey.terminal_entities || []).slice(0, 4).map((entity: { name: string; access: string }) => `${entity.name}:${entity.access}`),
+        writes: (journey.terminal_effects?.entities_written || []).slice(0, 3),
+        terminal: (journey.terminal_entities || []).slice(0, 3).map((entity: { name: string; access: string }) => `${entity.name}:${entity.access}`),
       }));
     const entities = [...(input.dataEntities || [])]
       .sort((left, right) => (right.fields?.length || 0) - (left.fields?.length || 0))
-      .slice(0, 30)
-      .map(entity => ({ name: entity.name, fields: (entity.fields || []).slice(0, 8).map(field => field.name) }));
-    const candidateAreas = input.candidateCapabilities.map(capability => capability.name).slice(0, 40);
-    const services = (input.externalServices || []).slice(0, 14);
+      .slice(0, 22)
+      .map(entity => ({ name: entity.name, fields: (entity.fields || []).slice(0, 6).map(field => field.name) }));
+    const candidateAreas = input.candidateCapabilities.map(capability => capability.name).slice(0, 30);
+    const services = (input.externalServices || []).slice(0, 12);
 
     const aiBudget = Math.max(8000, Math.floor(input.budgetMs * 0.45));
     let timeoutHandle: NodeJS.Timeout | undefined;
