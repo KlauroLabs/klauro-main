@@ -7329,6 +7329,9 @@ export class AnalyzerOrchestrator {
     }
 
     const catalog = this.parseCapabilityCatalog(raw);
+    if (process.env.KLAURO_DEBUG_CATALOG) {
+      console.error('[catalog-debug] raw.length=', (raw || '').length, 'parsed=', catalog.length, 'rawHead=', JSON.stringify(String(raw || '').slice(0, 300)));
+    }
     if (!catalog.length) return [];
 
     const entityIdByName = new Map(input.dataEntities.map(entity => [entity.name.toLowerCase(), entity.id]));
@@ -7436,11 +7439,6 @@ export class AnalyzerOrchestrator {
       this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'ai_skipped', false, 'cooldown-active');
       return;
     }
-    if (this.shouldKeepDeterministicSystemDescription(enhancedSystemPurpose)) {
-      this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'deterministic_kept', false, 'deterministic-description-is-useful');
-      return;
-    }
-
     const configuredBudget = Number(process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS || '');
     const budgetMs = Number.isFinite(configuredBudget) && configuredBudget > 0
       ? configuredBudget
@@ -7453,9 +7451,10 @@ export class AnalyzerOrchestrator {
     // AI EXTRACTS the capability catalog (the business value) from the
     // deterministic fact bundle — user journeys, entities, route areas, services.
     // Capabilities are an interpretation of facts, not a route grouping; the
-    // deterministic groups are only candidate hints. On success, replaces
-    // systemCapabilities in place (each linked back to the operations/entities
-    // that evidence it), so the rest of this pass and the output use the catalog.
+    // deterministic groups are only candidate hints. This runs INDEPENDENTLY of the
+    // system-description decision below (a useful deterministic system description
+    // must not skip capability extraction). On success, replaces systemCapabilities
+    // in place (each linked back to the operations/entities that evidence it).
     if (systemCapabilities.length > 0 || userJourneys.length > 0) {
       try {
         const extracted = await this.aiExtractCapabilityCatalog({
@@ -7475,6 +7474,11 @@ export class AnalyzerOrchestrator {
       } catch {
         // Non-fatal: keep the deterministic candidate capabilities if extraction fails.
       }
+    }
+
+    if (this.shouldKeepDeterministicSystemDescription(enhancedSystemPurpose)) {
+      this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'deterministic_kept', false, 'deterministic-description-is-useful');
+      return;
     }
 
     const structuralFacts = this.buildAIInterpretationFacts(
