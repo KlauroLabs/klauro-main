@@ -1011,6 +1011,10 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
 
   try {
     await configureWorkspaceAiProviderDefaults();
+    // Merge the per-codebase capability catalogs into one coherent workspace
+    // catalog before the narrative/description passes run, so they describe the
+    // merged capabilities rather than the noisy name-deduped union.
+    graph.workspace_capabilities = await aiMergeWorkspaceCapabilities(graph);
     if (useSmallWorkspaceAiDefaultPasses()) {
       return await enrichWorkspaceAnalysisNarrativeWithSmallPasses(graph, deterministicNarrative);
     }
@@ -1146,6 +1150,93 @@ async function generateWorkspaceAiText(additionalContext: Record<string, unknown
     return await generateWorkspaceOllamaJson(additionalContext);
   }
   return await aiService.generateComponentDescription({ additionalContext });
+}
+
+/**
+ * AI-merges the per-codebase capability catalogs into ONE coherent workspace
+ * catalog. The deterministic layer only name-dedups the union, which leaves
+ * near-duplicates ("Manage Orders" vs "Trade Execution", three Risk/Security
+ * variants) and too many "core". This asks the model to collapse them into the
+ * product's real capabilities. Each merged capability is salted with evidence
+ * from the deterministic sources it merges — involved codebases, entities, and
+ * deployables — so the catalog stays grounded in the graph, not the model.
+ */
+async function aiMergeWorkspaceCapabilities(graph: WorkspaceAnalysisGraph): Promise<WorkspaceCapability[]> {
+  const capabilities = graph.workspace_capabilities || [];
+  if (capabilities.length < 4) return capabilities;
+  const codebaseNameById = new Map((graph.codebases || []).map(codebase => [codebase.id, codebase.name]));
+  const entitiesOf = (capability: WorkspaceCapability) => mergeStrings([], [
+    ...capability.evidence.filter(item => item.startsWith('entity:')).map(item => item.replace(/^entity:/, '')),
+    ...(capability.terminal_evidence || []).filter(item => item.startsWith('entity:')).map(item => item.replace(/^entity:/, '')),
+  ]).slice(0, 6);
+  const bundle = capabilities.map(capability => ({
+    name: capability.name,
+    description: capability.description,
+    role: capability.semantic_role || 'supporting',
+    codebases: capability.project_ids.map(id => codebaseNameById.get(id) || id),
+    entities: entitiesOf(capability),
+  }));
+
+  let raw: string;
+  try {
+    raw = await withWorkspaceAiTimeout(generateWorkspaceAiText({
+      task: 'These capabilities were detected across the codebases of ONE product workspace. Merge them into the single coherent WORKSPACE capability catalog. Collapse duplicates and overlapping capabilities into one (e.g. "Manage Orders" + "Trade Execution"; the several Risk/Security variants). Keep as "core" ONLY the capabilities that are the product\'s actual value; demote supporting/admin/CRUD to "supporting". For each merged capability return: title, description (plain product language — what users can do), category (core|supporting), and source_names (the exact input capability names it merges). Return ONLY valid JSON: {"capabilities":[{"title":"...","description":"...","category":"core|supporting","source_names":["..."]}]}. Aim for 6-12 core capabilities plus a few supporting; ordered most-core first.',
+      style: 'Plain product language. No markdown. Value verbs (lets, gives, tracks, surfaces, manages, secures, settles, enforces). No CRUD verbs, no "lifecycle", no fluff. Each description names the concrete product concept.',
+      capabilities: bundle,
+      product_name: graph.name,
+      product_domain: (graph.workspace_narrative?.product_value_summary || '').slice(0, 200),
+    }));
+  } catch {
+    return capabilities;
+  }
+
+  let parsed: Array<Record<string, unknown>>;
+  try {
+    let text = String(raw || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start >= 0 && end > start) text = text.slice(start, end + 1);
+    const obj = JSON.parse(text);
+    parsed = Array.isArray(obj?.capabilities) ? obj.capabilities : [];
+  } catch {
+    return capabilities;
+  }
+  if (parsed.length < 3) return capabilities;
+
+  const byName = new Map(capabilities.map(capability => [capability.name.toLowerCase(), capability]));
+  const merged: WorkspaceCapability[] = [];
+  const seen = new Set<string>();
+  for (const item of parsed) {
+    const title = String(item.title || '').replace(/\s+/g, ' ').trim();
+    const description = String(item.description || '').replace(/\s+/g, ' ').trim();
+    if (!title || description.length < 20) continue;
+    const key = title.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const sources = (Array.isArray(item.source_names) ? item.source_names : [])
+      .map((value: unknown) => byName.get(String(value || '').toLowerCase()))
+      .filter((value: WorkspaceCapability | undefined): value is WorkspaceCapability => Boolean(value));
+    const role: WorkspaceSemanticRole = item.category === 'core' ? 'core' : 'supporting';
+    merged.push({
+      id: `workspace-capability:${slugify(title)}`,
+      name: title,
+      description,
+      description_source: 'ai',
+      ai_required: true,
+      generation_pass: 'default-summary',
+      semantic_role: role,
+      terminal_score: sources.length ? Math.max(...sources.map(source => source.terminal_score || 0)) : undefined,
+      terminal_evidence: mergeStrings([], sources.flatMap(source => source.terminal_evidence || [])).slice(0, 8),
+      // Evidence salted from the deterministic sources this capability merges:
+      // involved codebases, deployables, and entity/operation references.
+      project_ids: mergeStrings([], sources.flatMap(source => source.project_ids)),
+      deployable_ids: mergeStrings([], sources.flatMap(source => source.deployable_ids)),
+      criticality: role === 'core' ? 'high' : 'medium',
+      evidence: mergeStrings([], sources.flatMap(source => source.evidence)).slice(0, 12),
+    });
+  }
+  if (merged.length < 3) return capabilities;
+  return merged.slice(0, 24);
 }
 
 function useDirectOllamaWorkspaceAi(): boolean {
