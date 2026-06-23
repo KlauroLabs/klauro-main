@@ -8541,7 +8541,13 @@ export class AnalyzerOrchestrator {
         const domain = target.relatedDomains?.[0] && !this.isGenericCapabilityToken(target.relatedDomains[0])
           ? this.humanizeDomainKey(target.relatedDomains[0]).toLowerCase()
           : 'the surrounding product';
-        return `${label} maintains ${subject} records, workflows, and relationships used by ${domain} behavior.`;
+        const groundingEntities = (target.relatedEntities || [])
+          .filter(entity => entity && !this.isGenericCapabilityToken(this.normalizeDomainToken(entity)))
+          .slice(0, 3);
+        if (groundingEntities.length > 0) {
+          return `${label} manages ${groundingEntities.join(', ')} for ${domain} workflows.`;
+        }
+        return `${label} owns ${subject} data and workflows used by ${domain}.`;
       }
     }
     return undefined;
