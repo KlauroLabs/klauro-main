@@ -15646,6 +15646,9 @@ export class AnalyzerOrchestrator {
       if (this.isEvidenceLightFallbackCapability(capabilityName, uniqueEntities, operations)) {
         continue;
       }
+      if (uniqueEntities.length === 0 && this.isStructurallyMalformedCapabilityName(capabilityName)) {
+        continue;
+      }
       // A bare vendor/infrastructure library token ("Jito Capability") that
       // reached the evidence-free Capability fallback is SDK plumbing, not a
       // product capability. Vendor tokens WITH product evidence (entities or
@@ -15718,6 +15721,35 @@ export class AnalyzerOrchestrator {
       return true;
     }
 
+    return false;
+  }
+
+  /**
+   * Reject capability names that are STRUCTURALLY not capability nouns — without
+   * any domain vocabulary. A capability is a noun phrase naming business value;
+   * these shapes betray a function/identifier that leaked into a "<Noun> X" title:
+   *  - an imperative-verb FIRST WORD ("Register New Token Management" from a split
+   *    `registerNewToken`) — a verb-form subject is an operation, not a capability;
+   *  - a single fragment token <=3 chars ("Sat") — too short to name a domain.
+   * Only applied to evidence-light (no-entity) candidates, so real short nouns
+   * backed by a data entity are never touched. The verb test matches the WHOLE
+   * first word (not a prefix), so real nouns that merely start with verb letters
+   * ("Gateway", "Settings", "Listing", "Building", "Authentication") are kept.
+   */
+  private isStructurallyMalformedCapabilityName(capabilityName: string): boolean {
+    const core = capabilityName.replace(/\s+(Management|Capability|Workflow|Service|Processing|Handling)$/i, '').trim();
+    if (!core) return true;
+    const tokens = core.split(/\s+/);
+    if (tokens.length === 1 && tokens[0].length <= 3) return true;
+    // Imperative-verb subject (exact first word, grammatical not domain-specific):
+    // an action verb names an operation, not a business capability.
+    const IMPERATIVE_VERBS = new Set([
+      'register', 'get', 'set', 'fetch', 'create', 'update', 'delete', 'remove', 'handle',
+      'process', 'list', 'find', 'init', 'initialize', 'make', 'build', 'run', 'send', 'load',
+      'parse', 'validate', 'ensure', 'compute', 'calculate', 'generate', 'resolve', 'apply',
+      'check', 'emit', 'dispatch', 'refresh', 'toggle', 'enable', 'disable',
+    ]);
+    if (tokens.length > 1 && IMPERATIVE_VERBS.has(tokens[0].toLowerCase())) return true;
     return false;
   }
 
@@ -15836,6 +15868,10 @@ export class AnalyzerOrchestrator {
 
   private domainTokensFromText(text: string): string[] {
     return text
+      // Split acronym boundaries first ("AIInsights" -> "AI Insights",
+      // "MLMetadata" -> "ML Metadata") so consecutive capitals don't squash into a
+      // single garbage token ("Aiinsights"); then the normal camelCase boundary.
+      .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
       .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
       .replace(/[_\-./]/g, ' ')
       .toLowerCase()

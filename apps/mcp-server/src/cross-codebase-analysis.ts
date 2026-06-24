@@ -6180,6 +6180,20 @@ function buildWorkspaceEntities(
     const key = slugify(pathItem.entity_name);
     pathsByEntity.set(key, [...(pathsByEntity.get(key) || []), pathItem]);
   }
+  // Drop any entity whose name still looks like a raw CAS id (`entity_<slug>`) and
+  // duplicates a real entity — defends the output even if a new ref path appears.
+  for (const [key, entity] of entities) {
+    const rawIdMatch = /^entity[_:-](.+)$/i.exec(entity.name);
+    if (!rawIdMatch) continue;
+    const canonical = entities.get(slugify(rawIdMatch[1]));
+    if (canonical && canonical !== entity) {
+      canonical.project_ids = mergeStrings(canonical.project_ids, entity.project_ids);
+      canonical.related_capability_ids = mergeStrings(canonical.related_capability_ids, entity.related_capability_ids);
+      canonical.related_workflow_ids = mergeStrings(canonical.related_workflow_ids, entity.related_workflow_ids);
+      entities.delete(key);
+    }
+  }
+
   return {
     entities: [...entities.values()]
       .map(entity => ({
@@ -6941,10 +6955,24 @@ function inferRelatedWorkspaceEntityNames(
   evidence: string[],
   entities: Map<string, WorkspaceEntity>,
 ): string[] {
+  // Resolve an explicit evidence reference to a real entity NAME. CAS emits entity
+  // refs by id (e.g. `entity_decisionlog`); returning that verbatim would mint a
+  // duplicate display entity named `entity_decisionlog` alongside the real
+  // `DecisionLog`. Map the ref to an existing entity (raw, or with the `entity_`
+  // id prefix stripped); drop unresolvable raw ids rather than create a fake.
+  const resolveExplicitRef = (raw: string): string | undefined => {
+    for (const candidate of [raw, raw.replace(/^entity[_:-]/i, '')]) {
+      const hit = entities.get(slugify(candidate));
+      if (hit) return hit.name;
+    }
+    return /^entity[_:-]/i.test(raw) ? undefined : raw;
+  };
   const explicit = evidence
     .filter(item => item.startsWith('entity:'))
     .map(item => item.replace(/^entity:/, ''))
-    .filter(Boolean);
+    .filter(Boolean)
+    .map(resolveExplicitRef)
+    .filter((value): value is string => Boolean(value));
   const haystack = normalizeAiItemName([name, description, evidence.join(' ')].join(' '));
   const fuzzy = [...entities.values()]
     .filter(entity => {
