@@ -1862,6 +1862,10 @@ function applyAiDomainDescriptions(domains: WorkspaceDomain[], aiItems: Array<{ 
 function applyAiCapabilityDescriptions(capabilities: WorkspaceCapability[], aiItems: Array<{ name: string; description?: string }>, generatedAt: string): WorkspaceCapability[] {
   const byName = fuzzyAiItemMap(aiItems);
   return capabilities.map(capability => {
+    // Capabilities produced by aiMergeWorkspaceCapabilities already carry a final,
+    // grounded AI description. Do not let the narrative pass's fuzzy name-matching
+    // re-describe (and sometimes cross-wire) them — the merge output is authoritative.
+    if (capability.description_source === 'ai') return capability;
     const item = findAiItem(byName, capability.name);
     if (!isGroundedAiWorkspaceItemDescription(capability, item?.description, 'capability')) {
       if (item?.description) {
