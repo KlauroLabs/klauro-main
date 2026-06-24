@@ -8824,7 +8824,7 @@ function inferWorkspaceProductValueSummary(
     /\btrading?\b/,
   ]);
   if (codebaseSignals >= 4) {
-    return `${productName} appears to be a codebase-intelligence workspace that turns repo analyses into graph, risk, idiom, and work-packet context for humans and AI agents.`;
+    return `${productName} is a codebase-intelligence workspace that turns repo analyses into graph, risk, idiom, and work-packet context for humans and AI agents.`;
   }
   // Crypto / digital-asset frame is decided before the generic finance frame.
   // Blockchain RPC ports (8545/8546/30303/8899...) and blockchain-node
@@ -8845,7 +8845,7 @@ function inferWorkspaceProductValueSummary(
   const cryptoFrameLikely = hasBlockchainRpcPort || hasBlockchainNode || cryptoStrongSignals >= 2;
   if (cryptoFrameLikely) {
     const chainText = detectedChains.length ? ` across ${detectedChains.slice(0, 4).join(', ')} node connections` : ' across blockchain node connections';
-    return `${productName} appears to be a crypto / digital-asset workspace that manages on-chain assets, wallets and custody, trading, liquidation, and portfolio flows${chainText}, fronted by user-facing surfaces, APIs, and background workers.`;
+    return `${productName} is a crypto / digital-asset workspace that manages on-chain assets, wallets and custody, trading, liquidation, and portfolio flows${chainText}, fronted by user-facing surfaces, APIs, and background workers.`;
   }
   const secureAccessFrameLikely = accessSignals >= 4 && hasSecureNetworkAccessSignal(text);
   const financeFrameLikely = financeSignals >= 3 && (
@@ -8856,7 +8856,7 @@ function inferWorkspaceProductValueSummary(
     return `${productName} appears to be a financial application workspace that coordinates account, portfolio, transaction, payment, and reporting flows across user-facing surfaces, APIs, workers, and data stores.`;
   }
   if (secureAccessFrameLikely) {
-    return `${productName} appears to be a secure network-access workspace that coordinates users, devices, policies, gateways, agents, and API control surfaces so access can be requested, brokered, and enforced across desktop and service deployables.`;
+    return `${productName} is a secure network-access workspace that coordinates users, devices, policies, gateways, agents, and API control surfaces so access can be requested, brokered, and enforced across desktop and service deployables.`;
   }
   const topCapabilities = capabilities.slice(0, 3).map(capability => capability.name.toLowerCase()).join(', ');
   return `${productName} appears to coordinate ${topCapabilities || 'the primary product capabilities'} across the analyzed deployables, APIs, data entities, and runtime infrastructure.`;
