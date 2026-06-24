@@ -1226,7 +1226,20 @@ async function aiMergeWorkspaceCapabilities(graph: WorkspaceAnalysisGraph): Prom
   const seenDescriptions = new Set<string>();
   for (const item of parsed) {
     const title = String(item.title || '').replace(/\s+/g, ' ').trim();
-    const description = String(item.description || '').replace(/\s+/g, ' ').trim();
+    const itemEntityNamesEarly = (Array.isArray(item.entities) ? item.entities : []).map((value: unknown) => String(value || '')).filter(Boolean);
+    // Strip route/path/mechanism leakage the model occasionally emits despite the
+    // prompt (e.g. "... through API routes like Create:/portfolio/portfolios").
+    let description = String(item.description || '')
+      .replace(/\s+(?:through|using|via)\s+(?:the\s+)?(?:api\s+)?routes?(?:\s+like)?[^.]*/gi, '')
+      .replace(/\b[a-z]+:\/[^\s.]*/gi, '')
+      .replace(/\s+/g, ' ').trim();
+    // If sanitizing left it too thin, rebuild a clean product-meaning description
+    // from the title and the entities it manages.
+    if (description.length < 25) {
+      description = itemEntityNamesEarly.length
+        ? `${title} manages ${itemEntityNamesEarly.slice(0, 4).join(', ')}.`
+        : '';
+    }
     if (!title || description.length < 20) continue;
     const key = title.toLowerCase();
     if (seen.has(key)) continue;
