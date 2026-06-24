@@ -7344,6 +7344,15 @@ export class AnalyzerOrchestrator {
     const entityIdByName = new Map(input.dataEntities.map(entity => [entity.name.toLowerCase(), entity.id]));
     const entityNameById = new Map(input.dataEntities.map(entity => [entity.id, entity.name]));
     const out: SystemCapability[] = [];
+    // Connective words of the "<Noun> Management/Analysis/..." capability-naming
+    // grammar — NOT domain vocabulary. Excluded from capability<->candidate
+    // matching so two unrelated caps don't link purely because both end in
+    // "Management" (which pasted boilerplate routes across every capability).
+    const GENERIC_CAPABILITY_NAME_TOKENS = new Set([
+      'management', 'analysis', 'reporting', 'processing', 'handling', 'control',
+      'service', 'services', 'system', 'data', 'manager', 'provides', 'manages',
+      'handles', 'enforces', 'surfaces', 'tracks', 'exposes', 'secures', 'monitors',
+    ]);
     const seen = new Set<string>();
     for (const item of catalog) {
       const name = String(item.name || '').replace(/\s+/g, ' ').trim();
@@ -7368,14 +7377,18 @@ export class AnalyzerOrchestrator {
       const relatedEntities = itemEntityNames
         .map((entityName: string) => entityIdByName.get(entityName))
         .filter((value: string | undefined): value is string => Boolean(value));
-      // Link to the deterministic operations (with file paths) of any candidate
-      // area that shares an entity or a name token, so the catalog stays navigable.
-      const nameTokens = new Set(key.split(/\s+/).filter(token => token.length > 3));
+      // Link to the deterministic operations (with file paths) of the candidate
+      // areas this capability actually covers, so the catalog stays navigable.
+      // Match on a SHARED ENTITY or a shared DOMAIN token — never on the generic
+      // capability-template connective words ("management", "analysis", ...), which
+      // otherwise cross-wire every "<Noun> Management" cap to every other one and
+      // paste the same boilerplate routes across unrelated capabilities.
+      const nameTokens = new Set(key.split(/\s+/).filter(token => token.length > 3 && !GENERIC_CAPABILITY_NAME_TOKENS.has(token)));
       const entityNameSet = new Set(itemEntityNames);
       const operations: SystemCapability['operations'] = [];
       for (const candidate of input.candidateCapabilities) {
         const candidateEntityNames = candidate.related_entities.map(id => (entityNameById.get(id) || id).toLowerCase());
-        const candidateTokens = candidate.name.toLowerCase().split(/\s+/);
+        const candidateTokens = candidate.name.toLowerCase().split(/\s+/).filter(token => token.length > 3 && !GENERIC_CAPABILITY_NAME_TOKENS.has(token));
         const entityOverlap = candidateEntityNames.some(entityName => entityNameSet.has(entityName));
         const nameOverlap = candidateTokens.some(token => nameTokens.has(token));
         if (entityOverlap || nameOverlap) operations.push(...candidate.operations);
