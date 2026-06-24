@@ -325,6 +325,13 @@ export async function runWorkspaceAgentBenchmark(options: { devRoot?: string; fr
   return {
     generated_at: new Date().toISOString(),
     benchmark_type: 'workspace-agent-quality-ab',
+    methodology: 'projected',
+    methodology_note:
+      'With-Klauro arm uses the real WorkspaceAgentPacket (selected surfaces, ' +
+      'source-backed connections, packet token budget). Without-Klauro arm is a ' +
+      'MODEL-BASED PROJECTION of grep-across-all-repos search cost (documented ' +
+      'per-file/grep token and time constants), not a live agent run. It measures ' +
+      'how much context a workspace map removes, not measured end-to-end latency.',
     status: allTrials.every(trial => trial.status !== 'fail') ? 'pass' : 'warn',
     summary,
     workspaces,
@@ -336,7 +343,9 @@ function formatMarkdown(report: Awaited<ReturnType<typeof runWorkspaceAgentBench
   const lines = [
     '# Workspace Agent Benchmark (Klauro WAS vs no-Klauro multi-repo search)',
     '',
-    `Status: ${report.status.toUpperCase()}  |  Generated: ${report.generated_at}`,
+    `Status: ${report.status.toUpperCase()}  |  Generated: ${report.generated_at}  |  Methodology: ${report.methodology}`,
+    '',
+    `> ${report.methodology_note}`,
     '',
     `- Workspaces: ${s.workspace_count}  |  Cross-repo tasks: ${s.cross_repo_task_count}`,
     `- Mean quality (with Klauro): ${s.mean_quality_score}/100`,
