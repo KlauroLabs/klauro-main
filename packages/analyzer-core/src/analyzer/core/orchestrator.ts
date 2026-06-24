@@ -7390,7 +7390,9 @@ export class AnalyzerOrchestrator {
     if (start >= 0 && end > start) text = text.slice(start, end + 1);
     try {
       const parsed = JSON.parse(text);
-      const list = Array.isArray(parsed?.capabilities) ? parsed.capabilities : Array.isArray(parsed) ? parsed : [];
+      const list = Array.isArray(parsed?.capabilities) ? parsed.capabilities
+        : Array.isArray(parsed?.key_capabilities) ? parsed.key_capabilities
+        : Array.isArray(parsed) ? parsed : [];
       return list.filter((item: unknown) => item && typeof item === 'object');
     } catch {
       return [];

@@ -1214,7 +1214,13 @@ async function aiMergeWorkspaceCapabilities(graph: WorkspaceAnalysisGraph): Prom
     const end = text.lastIndexOf('}');
     if (start >= 0 && end > start) text = text.slice(start, end + 1);
     const obj = JSON.parse(text);
-    parsed = Array.isArray(obj?.capabilities) ? obj.capabilities : [];
+    // Models vary the wrapper key ("capabilities" vs "key_capabilities") and
+    // sometimes return a bare array; accept all so the merge doesn't silently
+    // fall back to the noisy deterministic union.
+    parsed = Array.isArray(obj?.capabilities) ? obj.capabilities
+      : Array.isArray(obj?.key_capabilities) ? obj.key_capabilities
+      : Array.isArray(obj) ? obj
+      : [];
   } catch {
     return capabilities;
   }
@@ -1229,7 +1235,11 @@ async function aiMergeWorkspaceCapabilities(graph: WorkspaceAnalysisGraph): Prom
     const itemEntityNamesEarly = (Array.isArray(item.entities) ? item.entities : []).map((value: unknown) => String(value || '')).filter(Boolean);
     // Strip route/path/mechanism leakage the model occasionally emits despite the
     // prompt (e.g. "... through API routes like Create:/portfolio/portfolios").
-    let description = String(item.description || '')
+    let description = String(item.description || '');
+    // A model occasionally nests JSON into the description field; treat that as
+    // empty so we rebuild a clean description from the title and entities.
+    if (description.includes('{') || /"description"\s*:|key_capabilities/i.test(description)) description = '';
+    description = description
       .replace(/\s+(?:through|using|via)\s+(?:the\s+)?(?:api\s+)?routes?(?:\s+like)?[^.]*/gi, '')
       .replace(/\b[a-z]+:\/[^\s.]*/gi, '')
       .replace(/\s+/g, ' ').trim();
