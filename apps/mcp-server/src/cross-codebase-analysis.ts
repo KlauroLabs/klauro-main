@@ -1197,7 +1197,7 @@ async function aiMergeWorkspaceCapabilities(graph: WorkspaceAnalysisGraph): Prom
   let raw: string;
   try {
     raw = await withWorkspaceAiTimeout(generateWorkspaceAiText({
-      task: 'These capabilities were detected across the codebases of ONE product workspace. Merge them into the single coherent WORKSPACE capability catalog. Collapse duplicates and overlapping capabilities into one (e.g. "Manage Orders" + "Trade Execution"; the several Risk/Security variants). Keep as "core" ONLY the capabilities that are the product\'s actual value; demote supporting/admin/CRUD to "supporting". For each merged capability return: title, description (plain product language — what users can do), category (core|supporting), and source_names (the exact input capability names it merges). Return ONLY valid JSON: {"capabilities":[{"title":"...","description":"...","category":"core|supporting","source_names":["..."]}]}. Aim for 6-12 core capabilities plus a few supporting; ordered most-core first.',
+      task: 'These capabilities were detected across the codebases of ONE product workspace. Merge them into the single coherent WORKSPACE capability catalog. Rules: (1) Collapse duplicates and overlapping capabilities into ONE — never split the same thing into a "manage" and a "monitor"/"track" variant (e.g. "Manage Orders" + "Trade Execution" -> one; "Manage Portfolio" + "Monitor Portfolio Performance" -> one; the several Risk/Security variants -> one). (2) EXCLUDE internal/infrastructure capabilities entirely — feature flags/entitlements, adapter or service health, config, caching, logging, webhooks, generic CRUD — unless that concern is the product\'s actual value. Do NOT promote a single internal entity (e.g. FeatureAccess, AdapterHealth, MonteCarloResults) into a standalone capability. (3) Category "core" ONLY for the product\'s real value; "supporting" for necessary-but-not-the-value. (4) Every capability needs a DISTINCT description that actually describes IT (never reuse another capability\'s text). (5) Use consistent verb-first product titles ("Manage Portfolio", "Execute Trades", "Analyze Risk"). For each return: title, description (plain product language — what users can do), category, source_names (exact input names it merges). Return ONLY valid JSON: {"capabilities":[{"title":"...","description":"...","category":"core|supporting","source_names":["..."]}]}. Aim for 6-10 core plus a few supporting; ordered most-core first.',
       style: 'Plain product language. No markdown. Value verbs (lets, gives, tracks, surfaces, manages, secures, settles, enforces). No CRUD verbs, no "lifecycle", no fluff. Each description names the concrete product concept.',
       capabilities: bundle,
       product_name: graph.name,
@@ -1223,13 +1223,20 @@ async function aiMergeWorkspaceCapabilities(graph: WorkspaceAnalysisGraph): Prom
   const byName = new Map(capabilities.map(capability => [capability.name.toLowerCase(), capability]));
   const merged: WorkspaceCapability[] = [];
   const seen = new Set<string>();
+  const seenDescriptions = new Set<string>();
   for (const item of parsed) {
     const title = String(item.title || '').replace(/\s+/g, ' ').trim();
     const description = String(item.description || '').replace(/\s+/g, ' ').trim();
     if (!title || description.length < 20) continue;
     const key = title.toLowerCase();
     if (seen.has(key)) continue;
+    // Drop capabilities that reuse another capability's description verbatim — a
+    // common model copy-paste error (e.g. "Benchmark Analysis" given Risk
+    // Analysis's text); the description must actually describe the capability.
+    const descKey = normalizeAiItemName(description).slice(0, 60);
+    if (seenDescriptions.has(descKey)) continue;
     seen.add(key);
+    seenDescriptions.add(descKey);
     const sources = (Array.isArray(item.source_names) ? item.source_names : [])
       .map((value: unknown) => byName.get(String(value || '').toLowerCase()))
       .filter((value: WorkspaceCapability | undefined): value is WorkspaceCapability => Boolean(value));
