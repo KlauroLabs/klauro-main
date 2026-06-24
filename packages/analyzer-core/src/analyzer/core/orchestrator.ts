@@ -7342,7 +7342,18 @@ export class AnalyzerOrchestrator {
     const seen = new Set<string>();
     for (const item of catalog) {
       const name = String(item.name || '').replace(/\s+/g, ' ').trim();
-      const description = String(item.description || '').replace(/\s+/g, ' ').trim();
+      const itemEntityNamesRaw = (Array.isArray(item.entities) ? item.entities : []).map((value: unknown) => String(value || '')).filter(Boolean);
+      // Strip route/path/JSON mechanism leakage the model sometimes emits despite
+      // the prompt; rebuild from the entities the capability touches if too thin.
+      let description = String(item.description || '');
+      if (description.includes('{') || /"description"\s*:|key_capabilities/i.test(description)) description = '';
+      description = description
+        .replace(/\s+(?:through|using|via)\s+(?:the\s+)?[^.]*?\b(?:api|apis|routes?|endpoints?|operations?|controllers?)\b[^.]*/gi, '')
+        .replace(/\b[a-z]+:\/[^\s.]*/gi, '')
+        .replace(/\s+/g, ' ').trim();
+      if (description.length < 25 && itemEntityNamesRaw.length) {
+        description = `${name} manages ${itemEntityNamesRaw.slice(0, 4).join(', ')}.`;
+      }
       if (!name || description.length < 20) continue;
       const key = name.toLowerCase();
       if (seen.has(key)) continue;
