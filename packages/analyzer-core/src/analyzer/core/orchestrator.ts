@@ -7298,7 +7298,12 @@ export class AnalyzerOrchestrator {
     const candidateAreas = input.candidateCapabilities.map(capability => capability.name).slice(0, 30);
     const services = (input.externalServices || []).slice(0, 12);
 
-    const aiBudget = Math.max(8000, Math.floor(input.budgetMs * 0.45));
+    // A cold hosted-70B catalog call (large fact bundle in, 6-14 JSON capabilities
+    // out) realistically takes ~15-35s. The old 8s floor guaranteed a race-timeout
+    // on every interactive run, silently dropping the catalog and leaving the noisy
+    // deterministic candidate union. Floor at 45s so one real attempt completes;
+    // genuinely hung calls still fall back to the deterministic candidates.
+    const aiBudget = Math.max(45000, Math.floor(input.budgetMs * 0.6));
     let timeoutHandle: NodeJS.Timeout | undefined;
     let raw: string;
     try {
@@ -7470,6 +7475,9 @@ export class AnalyzerOrchestrator {
     // system-description decision below (a useful deterministic system description
     // must not skip capability extraction). On success, replaces systemCapabilities
     // in place (each linked back to the operations/entities that evidence it).
+    if (process.env.KLAURO_DEBUG_CATALOG) {
+      console.error('[catalog-debug] reached catalog block: caps=', systemCapabilities.length, 'journeys=', userJourneys.length, 'budgetMs=', budgetMs);
+    }
     if (systemCapabilities.length > 0 || userJourneys.length > 0) {
       try {
         const extracted = await this.aiExtractCapabilityCatalog({
@@ -7483,10 +7491,16 @@ export class AnalyzerOrchestrator {
           flowGraph,
           budgetMs,
         });
+        if (process.env.KLAURO_DEBUG_CATALOG) {
+          console.error('[catalog-debug] extracted.length=', extracted.length);
+        }
         if (extracted.length > 0) {
           systemCapabilities.splice(0, systemCapabilities.length, ...extracted);
         }
-      } catch {
+      } catch (error) {
+        if (process.env.KLAURO_DEBUG_CATALOG) {
+          console.error('[catalog-debug] extraction threw:', error instanceof Error ? error.message : String(error));
+        }
         // Non-fatal: keep the deterministic candidate capabilities if extraction fails.
       }
     }
