@@ -1240,8 +1240,11 @@ async function aiMergeWorkspaceCapabilities(graph: WorkspaceAnalysisGraph): Prom
     // empty so we rebuild a clean description from the title and entities.
     if (description.includes('{') || /"description"\s*:|key_capabilities/i.test(description)) description = '';
     description = description
-      .replace(/\s+(?:through|using|via)\s+(?:the\s+)?(?:api\s+)?routes?(?:\s+like)?[^.]*/gi, '')
+      // Strip any "through/using/via … <api|routes|endpoints|operations|deployables>…" mechanism tail.
+      .replace(/\s+(?:through|using|via)\s+(?:the\s+)?[^.]*?\b(?:api|apis|routes?|endpoints?|operations?|deployables?|controllers?)\b[^.]*/gi, '')
+      .replace(/\s+(?:and|with)\s+related\s+entit[^.]*/gi, '')
       .replace(/\b[a-z]+:\/[^\s.]*/gi, '')
+      .replace(/^owns\s+/i, 'manages ')
       .replace(/\s+/g, ' ').trim();
     // If sanitizing left it too thin, rebuild a clean product-meaning description
     // from the title and the entities it manages.
