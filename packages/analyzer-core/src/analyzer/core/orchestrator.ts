@@ -7394,6 +7394,11 @@ export class AnalyzerOrchestrator {
         if (entityOverlap || nameOverlap) operations.push(...candidate.operations);
       }
       const dedupedOps = Array.from(new Map(operations.map(op => [op.entry_point_id, op])).values()).slice(0, 12);
+      // Drop ungrounded filler: a supporting capability that resolved to NO entity
+      // and NO operation has zero evidence in the deterministic facts — it is a
+      // model guess ("Monitors System Health", "Secures Communication"), not a
+      // capability we can stand behind or let an agent navigate to.
+      if (category !== 'core' && relatedEntities.length === 0 && dedupedOps.length === 0) continue;
       out.push({
         id: `capability_${key.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')}`,
         name,
