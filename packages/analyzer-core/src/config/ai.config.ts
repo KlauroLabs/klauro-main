@@ -169,7 +169,11 @@ export function getAIConfig(): AIConfig {
         process.env.AZURE_OPENAI_MODEL ||
         (openAICompatibleBaseURL?.includes('127.0.0.1:11434') || openAICompatibleBaseURL?.includes('localhost:11434') ? 'qwen3:8b' : 'gpt-4o-mini'),
       maxTokens: parseInt(process.env.OPENAI_MAX_TOKENS || '2000'),
-      temperature: parseFloat(process.env.OPENAI_TEMPERATURE || '0.3'),
+      // Klauro interprets/extracts from deterministic facts — determinism is
+      // always desired. temp 0 dramatically stabilizes structured capability
+      // extraction/merge (high-temp samples leak routes, vary wrapper keys, and
+      // make the merge fall back). Override with OPENAI_TEMPERATURE if needed.
+      temperature: parseFloat(process.env.OPENAI_TEMPERATURE || '0'),
       timeout: parseInt(process.env.AI_TIMEOUT || defaultRequestTimeoutMs()),
       maxRetries: parseInt(process.env.AI_MAX_RETRIES || '3'),
       rateLimit: {
