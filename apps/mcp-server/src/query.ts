@@ -923,6 +923,26 @@ export function getParadigmConformance(
   };
 }
 
+/**
+ * Order data-lineage access sites so the most authoritative producers/consumers
+ * come first: repositories and services (where the entity is really persisted or
+ * orchestrated) above controllers, above UI stores, above tests. An entity whose
+ * only writer is a test or a UI store reads as "untraceable" to an onboarding
+ * agent — surface the real backend site instead.
+ */
+function rankLineageSites<T extends { file?: string }>(sites: T[]): T[] {
+  const rank = (file: string | undefined): number => {
+    const f = (file || '').toLowerCase();
+    if (/\.(test|spec)\.[a-z]+$|(^|\/)(tests?|__tests__|fixtures?)\//.test(f)) return 5;
+    if (/(^|\/)(ui|frontend|client|web|app)\/.*\/(stores?|components?|pages?|hooks?)\//.test(f) || /\.(store|component|page|hook)\.[a-z]+$/.test(f)) return 4;
+    if (/repositor|persistence|\/dao\/|\/entities\//.test(f)) return 0;
+    if (/service/.test(f)) return 1;
+    if (/controller|handler|route|resolver/.test(f)) return 2;
+    return 3;
+  };
+  return [...sites].sort((a, b) => rank(a.file) - rank(b.file));
+}
+
 export function getDataLineage(
   cas: CASOutput,
   opts: { entityId?: string; sensitiveOnly?: boolean; limit?: number; offset?: number } = {}
@@ -976,8 +996,10 @@ export function getDataLineage(
       reader_count: item.readers.length,
       // Surface the actual writer/reader SITES (file + how), not just counts —
       // otherwise the lineage is unnavigable ("who writes User?" -> a number).
-      writers: item.writers.slice(0, 6).map(writer => ({ file: writer.file, via: writer.via, node_id: writer.node_id })),
-      readers: item.readers.slice(0, 6).map(reader => ({ file: reader.file, via: reader.via, node_id: reader.node_id })),
+      // Rank persistence/service/controller sites above tests and UI stores so the
+      // first results point at where the entity is really produced/consumed.
+      writers: rankLineageSites(item.writers).slice(0, 6).map(writer => ({ file: writer.file, via: writer.via, node_id: writer.node_id })),
+      readers: rankLineageSites(item.readers).slice(0, 6).map(reader => ({ file: reader.file, via: reader.via, node_id: reader.node_id })),
       external_recipients: item.external_recipients.map(recipient => recipient.service),
       boundaries_crossed: item.boundaries_crossed,
       journey_count: item.journeys_carrying.length,

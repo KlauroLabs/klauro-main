@@ -6075,7 +6075,12 @@ export class AnalyzerOrchestrator {
 
     return httpEntryPoints.map(ep => {
       const metadata = ep.metadata || {};
-      const controllerName = metadata.controller as string || 'Unknown';
+      // Fall back to the handler file's module (e.g. devices.rs -> "devices") when a
+      // framework has no controller class (axum/express handlers), so route -> source
+      // navigation works instead of showing "Unknown".
+      const handlerFile = ep.handler?.file || metadata.file as string | undefined;
+      const moduleFromFile = handlerFile ? handlerFile.split(/[\\/]/).pop()?.replace(/\.[a-z]+$/i, '') : undefined;
+      const controllerName = (metadata.controller as string) || moduleFromFile || 'Unknown';
       const handlerName = metadata.handler as string || metadata.method_name as string || ep.name;
 
       return {
