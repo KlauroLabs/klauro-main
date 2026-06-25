@@ -7299,11 +7299,12 @@ export class AnalyzerOrchestrator {
     const services = (input.externalServices || []).slice(0, 12);
 
     // A cold hosted-70B catalog call (large fact bundle in, 6-14 JSON capabilities
-    // out) realistically takes ~15-35s. The old 8s floor guaranteed a race-timeout
-    // on every interactive run, silently dropping the catalog and leaving the noisy
-    // deterministic candidate union. Floor at 45s so one real attempt completes;
-    // genuinely hung calls still fall back to the deterministic candidates.
-    const aiBudget = Math.max(45000, Math.floor(input.budgetMs * 0.6));
+    // out) is HIGHLY variable on shared inference (15s to 60s+). The catalog
+    // succeeding is what curates 40 noisy candidates down to ~12 real product
+    // capabilities, so a timeout here visibly degrades the result. Floor at 75s so
+    // even a slow attempt completes; genuinely hung calls still fall back. Caching
+    // means this latency is paid once per repo.
+    const aiBudget = Math.max(75000, Math.floor(input.budgetMs * 0.6));
     let timeoutHandle: NodeJS.Timeout | undefined;
     let raw: string;
     try {

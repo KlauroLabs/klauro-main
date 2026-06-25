@@ -152,9 +152,10 @@ export function isLocalAIProvider(): boolean {
 function defaultRequestTimeoutMs(): string {
   // Hosted 70B catalog/narrative calls send a large fact bundle and return
   // structured JSON; a 30s timeout was below real latency, so the SDK aborted and
-  // burned its retry budget (3 x 30s) before any result. 60s lets one attempt
-  // finish on the happy path, so retries are reserved for genuine transient errors.
-  return isLocalAIProvider() ? '120000' : '60000';
+  // burned its retry budget (3 x 30s) before any result. 90s lets one attempt
+  // finish even on a slow shared-inference moment (the catalog race budget is 75s,
+  // so this never cuts a call the race would otherwise allow to finish).
+  return isLocalAIProvider() ? '120000' : '90000';
 }
 
 export function getAIConfig(): AIConfig {
