@@ -19,6 +19,13 @@ export OPENAI_BASE_URL="https://api.groq.com/openai/v1"   # example
 export OPENAI_API_KEY="sk-..."
 export OPENAI_MODEL="llama-3.3-70b-versatile"             # or qwen2.5-72b-instruct
 
+# Optional but RECOMMENDED for reliability: a faster, cheaper model for the
+# structured-extraction calls (capability catalog + workspace merge). These are
+# dedup/classify/format-to-JSON tasks an 8B model handles well, and a fast model
+# avoids the timeouts that variable shared-70B latency causes on those calls.
+# Prose descriptions/narrative still use OPENAI_MODEL.
+export OPENAI_STRUCTURED_MODEL="meta-llama/Meta-Llama-3.1-8B-Instruct"  # example (DeepInfra)
+
 # Fallback: local CPU model (no GPU). ONNX is the zero-dependency default;
 # Ollama gives better prose if installed.
 export AI_LOCAL_MODEL="onnx-community/Qwen2.5-0.5B-Instruct"   # default, $0
