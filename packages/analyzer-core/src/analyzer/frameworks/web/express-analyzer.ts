@@ -4,6 +4,7 @@ import {
   CASDocumentation, CASComment, CASTodo, CASImplementationStatus, CASPerspective
 } from "../../../types/cas.types";
 import { AnalyzerError } from '../../core/errors';
+import { classifyGuardKind, isAuthenticationGuardName } from '../../core/guard-classification';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
@@ -363,6 +364,16 @@ export class ExpressAnalyzer extends BaseAnalyzer {
               'exposes'
             ));
 
+            // Auth/guard model from the route's + router's middleware chain
+            // (express has no decorators, so middleware names are the signal).
+            // Keep only real middleware identifiers — the route regex sometimes
+            // captures inline handler-signature fragments ("(_req: Request") as
+            // middleware; those are not guards.
+            const allMiddleware = [...new Set([...(router.middleware || []), ...(route.middleware || [])])]
+              .map(name => name.trim())
+              .filter(name => /^[\w$.]+(\(.*\))?$/.test(name));
+            const authMiddleware = allMiddleware.filter(name => isAuthenticationGuardName(name) || classifyGuardKind(name) === 'authorization');
+
             entryPoints.push({
               id: `entry_${routeId}`,
               name: `${route.method.toUpperCase()} ${fullPath}`,
@@ -372,10 +383,23 @@ export class ExpressAnalyzer extends BaseAnalyzer {
                 method: route.method.toUpperCase(),
                 path: fullPath
               },
+              // The router file is where this route is defined and handled — the
+              // navigable "where do I edit this endpoint" pointer.
+              handler: {
+                node_id: routeId,
+                method_name: route.handler,
+                file: router.filePath
+              },
+              security: {
+                authenticated: authMiddleware.length > 0,
+                guards: allMiddleware,
+                authorized_roles: []
+              },
               metadata: {
                 method: route.method.toUpperCase(),
                 path: fullPath,
                 handler: route.handler,
+                handler_file: router.filePath,
                 middleware: route.middleware,
                 router: routerName
               }
