@@ -347,11 +347,11 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
       this.callGraphExtractor = new EnhancedCallGraphExtractor(context.projectPath);
 
-      const sourceFiles = (await glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
+      const sourceFiles = this.capAndPrioritizeSourceFiles((await glob(['**/*.{js,jsx,ts,tsx,mjs,cjs}'], {
         cwd: context.projectPath,
         ignore: this.getLanguageIgnorePatterns(context),
         nodir: true
-      })).sort();
+      })).sort(), 'TypeScript/JavaScript files');
       tsTimings['glob'] = Date.now() - tsStart;
 
       tsStart = Date.now();
@@ -612,12 +612,38 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       const fileId = `file_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
       const lines = content.split('\n');
 
-      const todoComments = extraction.comments.filter(c =>
-        /\b(TODO|FIXME|HACK|XXX|NOTE|WARNING)\b/i.test(c.text)
-      );
-      const fileTodos = todoComments.map(c => this.commentToTodo(c, fullPath));
+      // TODO/FIXME markers: scan file content directly. Tree-sitter comment
+      // extraction is sparse (misses most line comments), so deriving todos only
+      // from extraction.comments lost nearly all of them. A direct line scan is
+      // robust and language-agnostic for the common comment styles.
+      const fileTodos: CASTodo[] = [];
+      const TODO_RE = /(?:\/\/+|\/\*+|^\s*\*|#|<!--)\s*(TODO|FIXME|HACK|XXX|NOTE|WARNING|OPTIMIZE|REFACTOR)\b\s*:?\s*(.*?)(?:\s*\*\/|\s*-->)?\s*$/i;
+      for (let i = 0; i < lines.length; i++) {
+        const m = lines[i].match(TODO_RE);
+        if (!m) continue;
+        const todoType = m[1].toUpperCase() as CASTodo['type'];
+        fileTodos.push({
+          id: `todo_${this.todoCounter++}`,
+          type: todoType,
+          text: (m[2] || '').trim() || lines[i].trim(),
+          priority: todoType === 'FIXME' || todoType === 'HACK' ? 'high' : todoType === 'WARNING' ? 'medium' : 'low',
+          location: { file: fullPath, line: i + 1 },
+        });
+      }
+      // Comments in the canonical CASComment shape (text/location/purpose), not the
+      // ad-hoc {content,line,file} shape the readers don't understand.
+      const fileComments: CASComment[] = extraction.comments.map(c => ({
+        id: `comment_${this.commentCounter++}`,
+        type: (c.type === 'block' ? 'block' : c.type === 'jsdoc' ? 'docstring' : 'single-line') as CASComment['type'],
+        style: (c.type === 'block' || c.type === 'jsdoc' ? '/* */' : '//') as CASComment['style'],
+        text: c.text,
+        purpose: (/\btodo\b/i.test(c.text) ? 'todo' : /\b(fixme|hack)\b/i.test(c.text) ? 'hack' : /\bwarning\b/i.test(c.text) ? 'warning' : /\bnote\b/i.test(c.text) ? 'note' : 'explanation') as CASComment['purpose'],
+        location: { file: fullPath, line: c.line },
+      }));
 
-      nodes.push(this.createNode(
+      // Comments and todos are TOP-LEVEL CASNode fields, not metadata — that is
+      // where get_comments / get_todos / the todos summary read them.
+      const fileNode = this.createNode(
         fileId,
         path.basename(relativePath),
         'file',
@@ -629,18 +655,13 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           relativePath,
           extension: path.extname(relativePath),
           isTypeScript: relativePath.endsWith('.ts') || relativePath.endsWith('.tsx'),
-          commentCount: extraction.comments.length,
+          commentCount: fileComments.length,
           todoCount: fileTodos.length,
-          comments: extraction.comments.length > 0 ? extraction.comments.map(c => ({
-            id: `comment_${this.commentCounter++}`,
-            type: c.type as 'line' | 'block' | 'jsdoc',
-            content: c.text,
-            line: c.line,
-            file: fullPath
-          })) : undefined,
-          todos: fileTodos.length > 0 ? fileTodos : undefined
         }
-      ));
+      );
+      if (fileComments.length > 0) fileNode.comments = fileComments;
+      if (fileTodos.length > 0) fileNode.todos = fileTodos;
+      nodes.push(fileNode);
 
       this.processTreeSitterImports(extraction, relativePath, fileId, nodes, edges, exitPoints);
       const extractedFunctions = this.processTreeSitterFunctions(extraction, relativePath, fileId, nodes, edges, entryPoints);
@@ -675,12 +696,38 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       const fileId = `file_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
       const lines = content.split('\n');
 
-      const todoComments = extraction.comments.filter(c =>
-        /\b(TODO|FIXME|HACK|XXX|NOTE|WARNING)\b/i.test(c.text)
-      );
-      const fileTodos = todoComments.map(c => this.commentToTodo(c, fullPath));
+      // TODO/FIXME markers: scan file content directly. Tree-sitter comment
+      // extraction is sparse (misses most line comments), so deriving todos only
+      // from extraction.comments lost nearly all of them. A direct line scan is
+      // robust and language-agnostic for the common comment styles.
+      const fileTodos: CASTodo[] = [];
+      const TODO_RE = /(?:\/\/+|\/\*+|^\s*\*|#|<!--)\s*(TODO|FIXME|HACK|XXX|NOTE|WARNING|OPTIMIZE|REFACTOR)\b\s*:?\s*(.*?)(?:\s*\*\/|\s*-->)?\s*$/i;
+      for (let i = 0; i < lines.length; i++) {
+        const m = lines[i].match(TODO_RE);
+        if (!m) continue;
+        const todoType = m[1].toUpperCase() as CASTodo['type'];
+        fileTodos.push({
+          id: `todo_${this.todoCounter++}`,
+          type: todoType,
+          text: (m[2] || '').trim() || lines[i].trim(),
+          priority: todoType === 'FIXME' || todoType === 'HACK' ? 'high' : todoType === 'WARNING' ? 'medium' : 'low',
+          location: { file: fullPath, line: i + 1 },
+        });
+      }
+      // Comments in the canonical CASComment shape (text/location/purpose), not the
+      // ad-hoc {content,line,file} shape the readers don't understand.
+      const fileComments: CASComment[] = extraction.comments.map(c => ({
+        id: `comment_${this.commentCounter++}`,
+        type: (c.type === 'block' ? 'block' : c.type === 'jsdoc' ? 'docstring' : 'single-line') as CASComment['type'],
+        style: (c.type === 'block' || c.type === 'jsdoc' ? '/* */' : '//') as CASComment['style'],
+        text: c.text,
+        purpose: (/\btodo\b/i.test(c.text) ? 'todo' : /\b(fixme|hack)\b/i.test(c.text) ? 'hack' : /\bwarning\b/i.test(c.text) ? 'warning' : /\bnote\b/i.test(c.text) ? 'note' : 'explanation') as CASComment['purpose'],
+        location: { file: fullPath, line: c.line },
+      }));
 
-      nodes.push(this.createNode(
+      // Comments and todos are TOP-LEVEL CASNode fields, not metadata — that is
+      // where get_comments / get_todos / the todos summary read them.
+      const fileNode = this.createNode(
         fileId,
         path.basename(relativePath),
         'file',
@@ -692,18 +739,13 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           relativePath,
           extension: path.extname(relativePath),
           isTypeScript: relativePath.endsWith('.ts') || relativePath.endsWith('.tsx'),
-          commentCount: extraction.comments.length,
+          commentCount: fileComments.length,
           todoCount: fileTodos.length,
-          comments: extraction.comments.length > 0 ? extraction.comments.map(c => ({
-            id: `comment_${this.commentCounter++}`,
-            type: c.type as 'line' | 'block' | 'jsdoc',
-            content: c.text,
-            line: c.line,
-            file: fullPath
-          })) : undefined,
-          todos: fileTodos.length > 0 ? fileTodos : undefined
         }
-      ));
+      );
+      if (fileComments.length > 0) fileNode.comments = fileComments;
+      if (fileTodos.length > 0) fileNode.todos = fileTodos;
+      nodes.push(fileNode);
 
       this.processTreeSitterImportsForSingleFile(extraction, relativePath, fileId, nodes, edges, exitPoints, imports);
       const extractedFunctions = this.processTreeSitterFunctions(extraction, relativePath, fileId, nodes, edges, entryPoints);

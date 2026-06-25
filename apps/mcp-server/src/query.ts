@@ -1772,7 +1772,34 @@ export function getTodos(cas: CASOutput) {
 }
 
 export function getDependencies(cas: CASOutput) {
-  return cas.dependencies || null;
+  // Package-manager dependencies are parsed into cas.libraries (name/version/type/
+  // package_manager); the cas.dependencies summary is rarely populated. Build the
+  // real dependency view from the manifest-backed libraries so the tool returns
+  // versions + counts instead of null.
+  const libs = (cas.libraries || []) as Array<{ name?: string; version?: string; type?: string; package_manager?: string; security?: { vulnerabilities?: unknown[] }; license?: string }>;
+  const manifestDeps = libs.filter(lib => lib.package_manager && lib.version);
+  if (manifestDeps.length === 0) return cas.dependencies || { direct_count: 0, total_count: 0, packages: [] };
+  const byType = (t: string) => manifestDeps.filter(d => (d.type || 'production') === t);
+  const packages = manifestDeps
+    .map(d => ({
+      name: d.name,
+      version: d.version,
+      type: d.type || 'production',
+      package_manager: d.package_manager,
+      license: d.license,
+      vulnerabilities: d.security?.vulnerabilities?.length || 0,
+    }))
+    .sort((a, b) => (a.type === b.type ? String(a.name).localeCompare(String(b.name)) : a.type.localeCompare(b.type)));
+  return {
+    direct_count: byType('production').length,
+    dev_count: byType('development').length,
+    peer_count: byType('peer').length,
+    total_count: manifestDeps.length,
+    critical_vulnerabilities: packages.reduce((sum, p) => sum + p.vulnerabilities, 0),
+    package_managers: [...new Set(manifestDeps.map(d => d.package_manager))],
+    packages,
+    summary: cas.dependencies,
+  };
 }
 
 export function getLibraries(cas: CASOutput, opts: { query?: string; limit?: number; offset?: number } = {}) {
@@ -3346,9 +3373,10 @@ export async function getHotSpots(
   opts: {
     since?: string;
     limit?: number;
-    metric: 'change-count' | 'churn-lines' | 'bug-fix-rate';
-  }
+    metric?: 'change-count' | 'churn-lines' | 'bug-fix-rate';
+  } = {}
 ): Promise<HeatMapData> {
+  const metric = opts.metric || 'change-count';
   const history = await loadChangeHistory(projectPath, {
     since: opts.since,
     limit: 1000,
@@ -3382,7 +3410,7 @@ export async function getHotSpots(
 
   for (const [filePath, stats] of fileStats) {
     let raw: number;
-    switch (opts.metric) {
+    switch (metric) {
       case 'change-count':
         raw = stats.changeCount;
         break;
@@ -3410,8 +3438,8 @@ export async function getHotSpots(
   const topData = data.slice(0, limit);
 
   return {
-    type: opts.metric === 'change-count' ? 'churn'
-        : opts.metric === 'churn-lines' ? 'churn'
+    type: metric === 'change-count' ? 'churn'
+        : metric === 'churn-lines' ? 'churn'
         : 'bugs',
     resolution: 'file',
     data: topData,
@@ -3423,8 +3451,8 @@ export async function getHotSpots(
     hotSpots: topData.slice(0, 5).map(d => ({
       id: d.id,
       value: d.raw,
-      reason: opts.metric === 'change-count' ? `${d.raw} changes`
-            : opts.metric === 'churn-lines' ? `${d.raw} lines churned`
+      reason: metric === 'change-count' ? `${d.raw} changes`
+            : metric === 'churn-lines' ? `${d.raw} lines churned`
             : `${(d.raw * 100).toFixed(1)}% bug fix rate`,
     })),
   };
