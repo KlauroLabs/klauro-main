@@ -122,6 +122,39 @@ export abstract class BaseAnalyzer {
     return [...this.analysisWarnings];
   }
 
+  protected capAndPrioritizeSourceFiles(files: string[], purpose = 'source files'): string[] {
+    const configuredLimit = Number(process.env.KLAURO_MAX_FILES_PER_ANALYZER || '');
+    if (!Number.isFinite(configuredLimit) || configuredLimit <= 0 || files.length <= configuredLimit) {
+      return files;
+    }
+
+    const ranked = [...files].sort((left, right) => {
+      const scoreDelta = this.analysisFilePriorityScore(left) - this.analysisFilePriorityScore(right);
+      return scoreDelta || left.localeCompare(right);
+    });
+    this.addAnalysisWarning(
+      `${this.analyzerName} analyzed ${configuredLimit} of ${files.length} ${purpose} for ${process.env.KLAURO_ANALYSIS_FOCUS || 'default'} focus; run deep-context/full analysis for exhaustive per-file detail`
+    );
+    return ranked.slice(0, configuredLimit).sort();
+  }
+
+  private analysisFilePriorityScore(relativePath: string): number {
+    const normalized = relativePath.replace(/\\/g, '/').toLowerCase();
+    let score = 0;
+
+    if (/(^|\/)(src|app|apps|packages|products|server|frontend|backend|api|web|services|lib)\//.test(normalized)) score -= 8;
+    if (/(^|\/)(controllers?|routes?|pages?|app|models?|entities|schemas?|services?|repositories?|workers?|jobs?|consumers?|commands?|views?|components?|hooks|stores?|state|domains?)\//.test(normalized)) score -= 6;
+    if (/(^|\/)(posthog|saleor|medusa|supabase|appwrite|ghost|immich|mastodon|nocodb|budibase|outline|cal\.com)\//.test(normalized)) score -= 4;
+    if (/(\b|\/)(index|main|app|server|bootstrap|router|routes?|schema|models?|entities|controller|service|repository)\.[^.]+$/.test(normalized)) score -= 5;
+
+    if (/(^|\/)(docs?|documentation|examples?|samples?|fixtures?|__fixtures__|testdata|benchmark|benchmarks|storybook|playwright|cypress)(\/|$)/.test(normalized)) score += 25;
+    if (/(^|\/)(tests?|__tests__|spec|e2e)(\/|$)|\.(test|spec|stories|story|cy|e2e)\./.test(normalized)) score += 18;
+    if (/(^|\/)(generated|dist|build|coverage|vendor|vendors|public|static|assets?)(\/|$)|\.(generated|gen)\./.test(normalized)) score += 40;
+    if (/\.(min|bundle)\.(js|css)$/.test(normalized)) score += 50;
+
+    return score;
+  }
+
   protected getFrameworkVersion(projectPath: string, frameworkName: string): Promise<string | undefined> {
     return this.getPackageVersion(projectPath, frameworkName);
   }
@@ -189,6 +222,14 @@ export abstract class BaseAnalyzer {
       '**/build/**',
       'target/**',
       '**/target/**',
+      'build-out/**',
+      '**/build-out/**',
+      'build_out/**',
+      '**/build_out/**',
+      'cmake-build-debug/**',
+      '**/cmake-build-debug/**',
+      'cmake-build-release/**',
+      '**/cmake-build-release/**',
       'vendor/**',
       '**/vendor/**',
       'vendors/**',
