@@ -963,6 +963,7 @@ export class AnalyzerOrchestrator {
     this.applyCanonicalOrdering(allNodes, allEdges, allEntryPoints, allExitPoints, allLibraries);
     this.linkRouteHandlers(allNodes, allEdges, allEntryPoints);
     this.addDiscoveredEntryPoints(projectPath, allNodes, allEntryPoints, allEdges);
+    this.dedupeHttpEntryPoints(allEntryPoints);
     this.normalizeNodeMetrics(allNodes);
     this.applyCanonicalOrdering(allNodes, allEdges, allEntryPoints, allExitPoints, allLibraries);
     logTiming('pp_linkRouteHandlers', phaseStart);
@@ -18309,6 +18310,43 @@ export class AnalyzerOrchestrator {
           existingEdgeIds.add(edgeId);
         }
       }
+    }
+  }
+
+  /**
+   * Collapse duplicate HTTP route entry points in place. The same route can be
+   * emitted more than once — by overlapping framework passes, by a route declared
+   * in multiple router compositions, or by builder-API extraction — which makes a
+   * route table look noisy and untrustworthy. Dedupe by method+path+handler-file
+   * (distinct handlers for the same path, e.g. an SPA page vs a server endpoint,
+   * are legitimately kept); when merging, keep the richest record (one that has a
+   * handler file and a security/auth model).
+   */
+  private dedupeHttpEntryPoints(entryPoints: CASEntryPoint[]): void {
+    const isHttp = (entry: CASEntryPoint) => entry.type === 'http' || entry.type === 'route';
+    const keyOf = (entry: CASEntryPoint) => {
+      const method = (entry.metadata?.method || entry.trigger?.method || '').toString().toUpperCase();
+      const path = (entry.metadata?.path || entry.trigger?.path || entry.trigger?.pattern || '').toString();
+      const file = (entry.handler?.file || entry.metadata?.file || '').toString();
+      return `${method} ${path} :: ${file}`;
+    };
+    const richness = (entry: CASEntryPoint) =>
+      (entry.handler?.file ? 2 : 0) + (entry.handler?.line ? 1 : 0) + (entry.security ? 2 : 0) + (entry.description ? 1 : 0);
+    const bestByKey = new Map<string, CASEntryPoint>();
+    const removals = new Set<CASEntryPoint>();
+    for (const entry of entryPoints) {
+      if (!isHttp(entry)) continue;
+      const key = keyOf(entry);
+      const existing = bestByKey.get(key);
+      if (!existing) { bestByKey.set(key, entry); continue; }
+      const loser = richness(entry) > richness(existing) ? existing : entry;
+      const winner = loser === existing ? entry : existing;
+      bestByKey.set(key, winner);
+      removals.add(loser);
+    }
+    if (removals.size === 0) return;
+    for (let i = entryPoints.length - 1; i >= 0; i--) {
+      if (removals.has(entryPoints[i])) entryPoints.splice(i, 1);
     }
   }
 
