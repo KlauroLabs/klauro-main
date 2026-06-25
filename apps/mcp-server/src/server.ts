@@ -48,14 +48,19 @@ import { resolveWorkspaceInputPaths, type WorkspaceSkippedInput } from './worksp
 import { RESPONSE_BUDGET_BYTES, boundToolPayload, boundToolText, serializeToolResponse } from './response-budget';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 
-const SERVER_INSTRUCTIONS = [
-  'Klauro serves a precomputed code analysis (CAS) for analyzed repositories.',
-  'In analyzed repositories, call resolve_agent_analysis before reading files;',
-  'it reports whether an analysis exists for the path.',
-  'When an analysis exists, get_agent_start_context replaces exploratory reading.',
-  'Call get_agent_work_packet with response_profile="capsule-only" before edits; read K15 context, execute K5, then validate_agent_change after.',
-  'If no analysis exists or a tool errors, fall back to direct file reading.',
-].join(' ');
+const SERVER_INSTRUCTIONS = `Klauro serves a precomputed analysis of this repository — call graph, routes, data flows, entry points, conventions, and tests, queryable directly. Default to it over grep/Read: a query returns real call sites and blast radius, not guesses. The value is the sequence below; each tool's own description has the detail.
+
+Orient (once per repo): resolve_agent_analysis(path) confirms an analysis exists and selects the right one (not an embedded sub-fixture); if none, analyze_codebase. get_summary gives domain, capabilities, and entry points in one call.
+
+Find (instead of grep): search_nodes / semantic_search rank nodes by name+meaning with file:line and risk flags. get_route_table for routes (method/path/handler/auth); get_entry_points and get_exit_points for CLI, events, and queues; get_file_nodes for what a file defines.
+
+Understand before editing (highest value): get_coding_context(target) returns the node plus conventions, layer boundaries, callers, callees, and the exact tests to run — one call instead of read-file + trace-callers + find-tests. get_callers shows each call site's actual arguments; get_call_chain traces a request end to end; get_data_lineage tracks an entity's reads and writes; get_intent / get_conventions / get_modification_guide explain why it exists and how to change it safely.
+
+Change, then verify: assess_change_risk and get_error_contracts before; validate_agent_change after, to surface ripple (e.g. a dropped DTO field breaking its service and entity) instead of finding it one compile error at a time.
+
+Cross-repo work (ui -> api -> worker is one product): run_workspace_analysis, then get_workspace_summary / get_workspace_capability_map / get_cross_repo_links.
+
+Trust, then verify: every result is stamped to a commit/branch. If get_file_nodes returns nothing for a file you can see on disk, it is likely on an unmerged branch — re-analyze or read that one file. On any tool error, fall back to reading. Don't lean on a single tool; no one view is the whole picture.`;
 
 export type ToolProfile = 'core' | 'core-no-pillars' | 'full';
 
