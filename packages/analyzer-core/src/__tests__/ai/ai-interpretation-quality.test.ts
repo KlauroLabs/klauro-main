@@ -331,9 +331,12 @@ describe('AI interpretation budgets for local providers', () => {
     }
   });
 
-  it('defaults the per-request timeout to 120s for local ollama and 30s for cloud', () => {
+  it('defaults the per-request timeout to 120s for local ollama and 60s for cloud', () => {
     const { getAIConfig } = require('../../config/ai.config');
-    expect(getAIConfig().openai.timeout).toBe(30000);
+    // Cloud default is 60s: a hosted-70B catalog/narrative call sends a large
+    // fact bundle and returns structured JSON, which a 30s timeout cut off,
+    // burning the retry budget before any result.
+    expect(getAIConfig().openai.timeout).toBe(60000);
     process.env.KLAURO_OLLAMA_AUTO = 'true';
     expect(getAIConfig().openai.timeout).toBe(120000);
     process.env.AI_TIMEOUT = '45000';

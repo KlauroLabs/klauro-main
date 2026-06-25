@@ -12988,9 +12988,77 @@ export class AnalyzerOrchestrator {
     // `Payment` domain object. Derive those, deduped by core noun, so the entity
     // model reflects the real domain instead of just the few ORM-decorated classes.
     const existingEntityNames = new Set(entities.map(entity => entity.name.toLowerCase()));
-    entities.push(...this.deriveEntitiesFromDataShapeNodes(nodes, propertyIndex, existingEntityNames, projectPath));
+    entities.push(...this.deriveEntitiesFromDataShapeNodes(nodes, edgesByNode, nodesById, propertyIndex, existingEntityNames, projectPath));
+
+    // Many real readers/writers are service/controller methods that reference an
+    // entity only by TYPE in their signature (createPayment(dto: CreatePaymentDto))
+    // or by core noun in their name (getStrategies) — neither produces a
+    // traversable edge to the entity node, so edge-only lifecycle stays empty for
+    // both ORM and DTO entities. Attribute those accessors here, uniformly.
+    const accessorIndex = this.buildEntityAccessorIndexByNoun(nodes);
+    for (const entity of entities) {
+      const noun = this.singularizeNoun(entity.name.toLowerCase());
+      const accessors = accessorIndex.get(noun);
+      if (!accessors) continue;
+      const lifecycle = entity.lifecycle || { created_by: [], read_by: [], updated_by: [], deleted_by: [] };
+      entity.lifecycle = {
+        created_by: [...new Set([...lifecycle.created_by, ...accessors.create])],
+        read_by: [...new Set([...lifecycle.read_by, ...accessors.read])],
+        updated_by: [...new Set([...lifecycle.updated_by, ...accessors.update])],
+        deleted_by: [...new Set([...lifecycle.deleted_by, ...accessors.delete])],
+      };
+    }
 
     return entities;
+  }
+
+  /** Lightweight English singularizer for matching method-name nouns to entities. */
+  private singularizeNoun(token: string): string {
+    return token.replace(/ies$/, 'y').replace(/(ses|xes|zes|ches|shes)$/, match => match.slice(0, -2)).replace(/s$/, '');
+  }
+
+  /**
+   * Index accessor nodes (controllers/services/methods/functions) by the entity
+   * core noun they read or write, attributing CRUD from the method's verb. Two
+   * signals: (a) precise — the method types one of an entity's DTOs in its
+   * params/return; (b) broad — a CRUD-verb method whose name carries the entity
+   * core noun as a whole word. Each accessor node carries a source file, so the
+   * resulting lifecycle is navigable.
+   */
+  private buildEntityAccessorIndexByNoun(nodes: CASNode[]): Map<string, { create: Set<string>; read: Set<string>; update: Set<string>; delete: Set<string> }> {
+    const index = new Map<string, { create: Set<string>; read: Set<string>; update: Set<string>; delete: Set<string> }>();
+    const bucket = (noun: string) => {
+      let entry = index.get(noun);
+      if (!entry) { entry = { create: new Set(), read: new Set(), update: new Set(), delete: new Set() }; index.set(noun, entry); }
+      return entry;
+    };
+    // dto/type name -> entity core noun (CreatePaymentDto -> payment).
+    const dtoNounByTypeName = new Map<string, string>();
+    for (const node of nodes) {
+      if (node.type !== 'dto' && node.type !== 'entity' && node.type !== 'model') continue;
+      const core = this.dataShapeAffix(node.name || '').core;
+      if (core && core.length >= 3) dtoNounByTypeName.set((node.name || '').toLowerCase(), this.singularizeNoun(core.toLowerCase()));
+    }
+    const ACCESSOR_TYPES = new Set(['method', 'function', 'controller', 'service']);
+    for (const node of nodes) {
+      if (!ACCESSOR_TYPES.has(node.type)) continue;
+      const op = this.crudBucketFromAccessorName(node.name || '');
+      const signatureTypes = [
+        ...((node.signature?.parameters || []) as Array<{ type?: string } | string>).map(param => typeof param === 'string' ? param : param?.type || ''),
+        node.signature?.return_type || '',
+      ].join(' ');
+      for (const token of new Set((signatureTypes.match(/[A-Za-z_][A-Za-z0-9_]*/g) || []).map(value => value.toLowerCase()))) {
+        const noun = dtoNounByTypeName.get(token);
+        if (!noun) continue;
+        const sigOp = op || this.dataShapeAffix(token).op;
+        if (sigOp === 'create' || sigOp === 'read' || sigOp === 'update' || sigOp === 'delete') bucket(noun)[sigOp].add(node.id);
+      }
+      if (!op) continue;
+      for (const token of new Set((node.name || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(part => part.length >= 4).map(part => this.singularizeNoun(part)))) {
+        bucket(token)[op].add(node.id);
+      }
+    }
+    return index;
   }
 
   private dataShapeAffix(name: string): { core: string; op: 'create' | 'read' | 'update' | 'delete' | 'other' } {
@@ -13010,8 +13078,67 @@ export class AnalyzerOrchestrator {
     return { core, op };
   }
 
+  /** CRUD bucket for an access edge type (creates/reads/updates/deletes/...). */
+  private crudBucketFromEdgeType(edgeType: string): 'create' | 'read' | 'update' | 'delete' | undefined {
+    if (edgeType === 'creates') return 'create';
+    if (edgeType === 'updates' || edgeType === 'writes' || edgeType === 'persists' || edgeType === 'saves' || edgeType === 'mutates') return 'update';
+    if (edgeType === 'deletes') return 'delete';
+    if (edgeType === 'reads' || edgeType === 'queries') return 'read';
+    return undefined;
+  }
+
+  /** CRUD bucket inferred from an accessor node's name verb (createX, getX, ...). */
+  private crudBucketFromAccessorName(name: string): 'create' | 'read' | 'update' | 'delete' | undefined {
+    const words = name.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    const hasAny = (...verbs: string[]) => words.some(word => verbs.includes(word));
+    if (hasAny('create', 'creates', 'created', 'add', 'adds', 'added', 'insert', 'inserts', 'register', 'registers')) return 'create';
+    if (hasAny('get', 'gets', 'find', 'finds', 'read', 'reads', 'fetch', 'fetches', 'list', 'lists', 'show', 'index', 'load', 'loads', 'query', 'search')) return 'read';
+    if (hasAny('update', 'updates', 'set', 'sets', 'modify', 'modifies', 'save', 'saves', 'patch', 'edit', 'edits')) return 'update';
+    if (hasAny('delete', 'deletes', 'remove', 'removes', 'destroy', 'destroys', 'revoke', 'revokes')) return 'delete';
+    return undefined;
+  }
+
+  /**
+   * Attribute who creates/reads/updates/deletes an entity by scanning the edges
+   * touching its anchor node(s) — the services/controllers/methods that consume
+   * it. Used for DTO-derived entities (whose lifecycle would otherwise be empty)
+   * so data-lineage reflects real accessors, not just which DTO shapes exist.
+   */
+  private attributeLifecycleFromEdges(
+    anchorIds: Set<string>,
+    edgesByNode: Map<string, CASEdge[]>,
+    nodesById: Map<string, CASNode>,
+  ): { created_by: string[]; read_by: string[]; updated_by: string[]; deleted_by: string[] } {
+    const buckets = { create: new Set<string>(), read: new Set<string>(), update: new Set<string>(), delete: new Set<string>() };
+    const STRUCTURAL = new Set(['has_field', 'has_attribute', 'imports', 'inherits', 'exposes', 'maps_to', 'wraps', 'relates_to', 'contains']);
+    for (const anchorId of anchorIds) {
+      for (const edge of edgesByNode.get(anchorId) || []) {
+        const isTarget = edge.target === anchorId;
+        if (isTarget) {
+          const viaType = this.crudBucketFromEdgeType(edge.type);
+          if (viaType) { buckets[viaType].add(edge.source); continue; }
+        }
+        if (STRUCTURAL.has(edge.type)) continue;
+        const otherId = isTarget ? edge.source : edge.target;
+        if (anchorIds.has(otherId)) continue;
+        const related = nodesById.get(otherId);
+        if (!related) continue;
+        const viaName = this.crudBucketFromAccessorName(related.name);
+        if (viaName) buckets[viaName].add(related.id);
+      }
+    }
+    return {
+      created_by: [...buckets.create],
+      read_by: [...buckets.read],
+      updated_by: [...buckets.update],
+      deleted_by: [...buckets.delete],
+    };
+  }
+
   private deriveEntitiesFromDataShapeNodes(
     nodes: CASNode[],
+    edgesByNode: Map<string, CASEdge[]>,
+    nodesById: Map<string, CASNode>,
     propertyIndex: EntityPropertyIndex,
     existingNames: Set<string>,
     projectPath?: string,
@@ -13046,7 +13173,14 @@ export class AnalyzerOrchestrator {
         }
       }
       const fields = [...fieldMap.values()].slice(0, 40);
-      const ids = (op: string) => group.nodes.filter(node => this.dataShapeAffix(node.name || '').op === op).map(node => node.id);
+      // The DTO variant nodes themselves are weak evidence (a CreatePaymentDto
+      // implies a create path). The strong evidence is the services/controllers
+      // that CONSUME these DTOs — attribute their reads/writes by scanning edges
+      // touching the DTO nodes, then merge with the affix signal so lifecycle is
+      // populated even when consumer edges are sparse.
+      const affix = (op: string) => group.nodes.filter(node => this.dataShapeAffix(node.name || '').op === op).map(node => node.id);
+      const anchorIds = new Set(group.nodes.map(node => node.id));
+      const edgeLifecycle = this.attributeLifecycleFromEdges(anchorIds, edgesByNode, nodesById);
       const coreName = this.dataShapeAffix(group.rep.name || '').core;
       derived.push({
         id: `entity_${this.dataShapeAffix(group.rep.name || '').core.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`,
@@ -13054,10 +13188,10 @@ export class AnalyzerOrchestrator {
         schema_source: group.rep.source?.file,
         fields: fields.length > 0 ? fields : undefined,
         lifecycle: {
-          created_by: ids('create'),
-          read_by: ids('read'),
-          updated_by: ids('update'),
-          deleted_by: ids('delete'),
+          created_by: [...new Set([...edgeLifecycle.created_by, ...affix('create')])],
+          read_by: [...new Set([...edgeLifecycle.read_by, ...affix('read')])],
+          updated_by: [...new Set([...edgeLifecycle.updated_by, ...affix('update')])],
+          deleted_by: [...new Set([...edgeLifecycle.deleted_by, ...affix('delete')])],
         },
       });
     }
