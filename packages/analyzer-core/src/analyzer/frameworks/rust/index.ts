@@ -1,10 +1,12 @@
 export { ActixAnalyzer } from './actix-analyzer';
 export { RocketAnalyzer } from './rocket-analyzer';
+export { AxumAnalyzer } from './axum-analyzer';
 
 // Framework registry for automatic detection
 export const RUST_FRAMEWORKS = [
   'actix-analyzer',
-  'rocket-analyzer'
+  'rocket-analyzer',
+  'axum-analyzer'
 ];
 
 export const FRAMEWORK_DETECTORS = [

@@ -842,7 +842,9 @@ export class RustAnalyzer extends BaseAnalyzer {
       const impls = await this.extractImpls(content, relativePath, nodes, edges);
       const functions = await this.extractFunctions(content, relativePath, nodes, entryPoints);
       this.extractCliSubcommands(content, relativePath, nodes, entryPoints);
-      this.extractAxumRoutes(content, relativePath, nodes, entryPoints);
+      // Axum routes are emitted by the dedicated AxumAnalyzer (frameworks/rust),
+      // which also resolves tower-layer auth and nest() prefixes. Keeping it here
+      // too would double-emit (the framework analyzer composes this Rust analyzer).
       const constants = await this.extractConstants(content, relativePath, nodes);
       const statics = await this.extractStatics(content, relativePath, nodes);
       const types = await this.extractTypes(content, relativePath, nodes);
@@ -1910,53 +1912,6 @@ export class RustAnalyzer extends BaseAnalyzer {
    * handler function. Local (un-nested) paths — cross-file `.nest()` prefixing is
    * not resolved, which is noted in metadata.
    */
-  private extractAxumRoutes(content: string, relativePath: string, nodes: CASNode[], entryPoints: CASEntryPoint[]): void {
-    if (!/\.route\s*\(/.test(content) || !/\bRouter::|axum/.test(content)) return;
-    const lines = content.split('\n');
-    const lineStartOffsets: number[] = [];
-    let offset = 0;
-    for (const line of lines) { lineStartOffsets.push(offset); offset += line.length + 1; }
-    const lineForIndex = (index: number): number => {
-      let low = 0, high = lineStartOffsets.length - 1, result = 0;
-      while (low <= high) { const mid = (low + high) >> 1; if (lineStartOffsets[mid] <= index) { result = mid; low = mid + 1; } else { high = mid - 1; } }
-      return result + 1;
-    };
-    const routeCall = /\.route\(\s*"([^"]+)"\s*,/g;
-    const methodHandler = /\b(get|post|put|delete|patch|head|options|trace|any)\s*\(\s*(?:move\s*\|[^|]*\|\s*)?([A-Za-z_][A-Za-z0-9_]*)/g;
-    const seen = new Set<string>();
-    let match: RegExpExecArray | null;
-    while ((match = routeCall.exec(content)) !== null) {
-      const routePath = match[1];
-      // Bound the method-router argument to before the next `.route(` or 240 chars.
-      const argStart = match.index + match[0].length;
-      const nextRoute = content.indexOf('.route(', argStart);
-      const argEnd = nextRoute === -1 ? Math.min(content.length, argStart + 240) : nextRoute;
-      const argSegment = content.slice(argStart, argEnd);
-      const lineNo = lineForIndex(match.index);
-      methodHandler.lastIndex = 0;
-      let mh: RegExpExecArray | null;
-      while ((mh = methodHandler.exec(argSegment)) !== null) {
-        const method = mh[1].toUpperCase();
-        const handlerFn = mh[2];
-        const dedupeKey = `${method}:${routePath}:${handlerFn}`;
-        if (seen.has(dedupeKey)) continue;
-        seen.add(dedupeKey);
-        const nodeId = `function:${relativePath}:${handlerFn}`;
-        entryPoints.push(this.createEntryPoint(
-          `entry:http:${relativePath}:${handlerFn}:${method}:${routePath}`,
-          nodeId,
-          'http',
-          `${method} ${routePath}`,
-          `HTTP route handled by ${handlerFn}`,
-          { method, path: routePath },
-          undefined,
-          { framework: 'axum', method, path: routePath, handler: handlerFn, nested_prefix_unresolved: content.includes('.nest(') },
-          { node_id: nodeId, method_name: handlerFn, file: relativePath, line: lineNo }
-        ));
-      }
-    }
-  }
-
   private extractCliSubcommands(content: string, relativePath: string, nodes: CASNode[], entryPoints: CASEntryPoint[]): void {
     if (!this.clapDetected && !this.structoptDetected) return;
 

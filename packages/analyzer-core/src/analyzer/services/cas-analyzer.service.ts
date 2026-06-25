@@ -13,6 +13,8 @@ import { PHPAnalyzer } from '../languages/php-analyzer';
 import { RubyAnalyzer } from '../languages/ruby-analyzer';
 import { DartAnalyzer } from '../languages/dart-analyzer';
 import { TerraformAnalyzer } from '../languages/terraform-analyzer';
+import { DockerComposeAnalyzer, DockerfileAnalyzer, KubernetesManifestAnalyzer } from '../languages/container-topology-analyzer';
+import { DistributionArtifactAnalyzer } from '../languages/distribution-artifact-analyzer';
 
 import {
   NestJSAnalyzer,
@@ -32,13 +34,16 @@ import {
 
 import { JestAnalyzer, CypressAnalyzer } from '../frameworks/testing';
 import { WPFAnalyzer, AspNetCoreAnalyzer } from '../frameworks/dotnet';
+import { ActixAnalyzer, RocketAnalyzer, AxumAnalyzer } from '../frameworks/rust';
 import {
   PrismaAnalyzer,
   SocketIOAnalyzer,
   ReactRouterAnalyzer,
   ReduxAnalyzer,
   ZustandAnalyzer,
-  TanStackQueryAnalyzer
+  TanStackQueryAnalyzer,
+  ReqwestAnalyzer,
+  architectureLibraryAnalyzerDefinitions
 } from '../libraries';
 
 import * as fs from 'fs-extra';
@@ -340,6 +345,50 @@ export class CASAnalyzerService {
           content: [/\.tf$/, /\.tfvars$/]
         },
         analyzer: new TerraformAnalyzer()
+      },
+      {
+        id: 'dockerfile',
+        name: 'Dockerfile Analyzer',
+        type: 'language',
+        version: '1.0.0',
+        detectPatterns: {
+          files: ['Dockerfile', 'Dockerfile.*', '*.Dockerfile'],
+          content: [/^FROM\s+/m]
+        },
+        analyzer: new DockerfileAnalyzer()
+      },
+      {
+        id: 'docker-compose',
+        name: 'Docker Compose Analyzer',
+        type: 'language',
+        version: '1.0.0',
+        detectPatterns: {
+          files: ['compose.yml', 'compose.yaml', 'docker-compose.yml', 'docker-compose.yaml', 'docker-compose.*.yml', 'docker-compose.*.yaml'],
+          content: [/^services:\s*$/m]
+        },
+        analyzer: new DockerComposeAnalyzer()
+      },
+      {
+        id: 'kubernetes-manifest',
+        name: 'Kubernetes Manifest Analyzer',
+        type: 'language',
+        version: '1.0.0',
+        detectPatterns: {
+          files: ['k8s/**/*.yaml', 'k8s/**/*.yml', 'kubernetes/**/*.yaml', 'kubernetes/**/*.yml', 'deploy/**/*.yaml', 'deploy/**/*.yml'],
+          content: [/^apiVersion:\s+/m, /^kind:\s+(Deployment|Service|Ingress|StatefulSet|Job|CronJob|ConfigMap|Secret)/m]
+        },
+        analyzer: new KubernetesManifestAnalyzer()
+      },
+      {
+        id: 'distribution-artifacts',
+        name: 'Distribution Artifact Analyzer',
+        type: 'language',
+        version: '1.0.0',
+        detectPatterns: {
+          files: ['*.sh', '*.bash', '*.zsh', '*.ps1', '*.psm1', '*.bat', '*.cmd', '*.nsi', '*.wxs', '*.desktop', '*.service'],
+          content: [/systemctl|launchctl|makensis|msiexec|pkgbuild|create-dmg|SERVICE_NAME|BINARY_NAME|DOWNLOAD_PREFIX|manifest\.json/i]
+        },
+        analyzer: new DistributionArtifactAnalyzer()
       }
     ];
 
@@ -558,6 +607,45 @@ export class CASAnalyzerService {
         },
         requires: ['typescript-javascript'],
         analyzer: new NextJSAnalyzer()
+      },
+      {
+        id: 'actix-web',
+        name: 'Actix-web Analyzer',
+        type: 'framework',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['actix-web', 'actix_web'],
+          files: ['Cargo.toml'],
+          content: [/actix_web::/, /#\[(get|post|put|delete|patch)\("/, /HttpServer::/]
+        },
+        requires: ['rust'],
+        analyzer: new ActixAnalyzer()
+      },
+      {
+        id: 'rocket',
+        name: 'Rocket Analyzer',
+        type: 'framework',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['rocket', 'rocket_dyn_templates', 'rocket_sync'],
+          files: ['Cargo.toml'],
+          content: [/rocket::/, /#\[(get|post|put|delete|patch)\("/, /rocket::build/]
+        },
+        requires: ['rust'],
+        analyzer: new RocketAnalyzer()
+      },
+      {
+        id: 'axum',
+        name: 'Axum Analyzer',
+        type: 'framework',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['axum'],
+          files: ['Cargo.toml'],
+          content: [/axum::/, /Router::new\s*\(/, /\.route\s*\(\s*"/]
+        },
+        requires: ['rust'],
+        analyzer: new AxumAnalyzer()
       }
     ];
 
@@ -635,7 +723,27 @@ export class CASAnalyzerService {
         },
         requires: ['typescript-javascript'],
         analyzer: new TanStackQueryAnalyzer()
-      }
+      },
+      {
+        id: 'reqwest',
+        name: 'Reqwest HTTP Client Analyzer',
+        type: 'library',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['reqwest'],
+          files: ['Cargo.toml']
+        },
+        requires: ['rust'],
+        analyzer: new ReqwestAnalyzer()
+      },
+      ...architectureLibraryAnalyzerDefinitions().map(definition => ({
+        id: definition.id,
+        name: definition.name,
+        type: 'library' as const,
+        version: '1.0.0',
+        detectPatterns: { dependencies: definition.dependencies },
+        analyzer: definition.analyzer,
+      }))
     ];
 
     registrations.forEach(registration => {

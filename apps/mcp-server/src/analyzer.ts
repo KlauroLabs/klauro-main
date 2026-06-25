@@ -10,6 +10,8 @@ import { PHPAnalyzer } from '../../../packages/analyzer-core/src/analyzer/langua
 import { RubyAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/ruby-analyzer';
 import { DartAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/dart-analyzer';
 import { TerraformAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/terraform-analyzer';
+import { DockerComposeAnalyzer, DockerfileAnalyzer, KubernetesManifestAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/container-topology-analyzer';
+import { DistributionArtifactAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/distribution-artifact-analyzer';
 import {
   NestJSAnalyzer,
   SpringBootAnalyzer,
@@ -27,13 +29,16 @@ import {
 } from '../../../packages/analyzer-core/src/analyzer/frameworks/web';
 import { JestAnalyzer, CypressAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/testing';
 import { WPFAnalyzer, AspNetCoreAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/dotnet';
+import { ActixAnalyzer, RocketAnalyzer, AxumAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/rust';
 import {
   PrismaAnalyzer,
   SocketIOAnalyzer,
   ReactRouterAnalyzer,
   ReduxAnalyzer,
   ZustandAnalyzer,
-  TanStackQueryAnalyzer
+  TanStackQueryAnalyzer,
+  ReqwestAnalyzer,
+  architectureLibraryAnalyzerDefinitions
 } from '../../../packages/analyzer-core/src/analyzer/libraries';
 import type { AnalyzerRegistration } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
 import * as fs from 'fs-extra';
@@ -188,6 +193,50 @@ export function createOrchestrator(): AnalyzerOrchestrator {
       },
       analyzer: new TerraformAnalyzer(),
     },
+    {
+      id: 'dockerfile',
+      name: 'Dockerfile Analyzer',
+      type: 'language',
+      version: '1.0.0',
+      detectPatterns: {
+        files: ['Dockerfile', 'Dockerfile.*', '*.Dockerfile'],
+        content: [/^FROM\s+/m],
+      },
+      analyzer: new DockerfileAnalyzer(),
+    },
+    {
+      id: 'docker-compose',
+      name: 'Docker Compose Analyzer',
+      type: 'language',
+      version: '1.0.0',
+      detectPatterns: {
+        files: ['compose.yml', 'compose.yaml', 'docker-compose.yml', 'docker-compose.yaml', 'docker-compose.*.yml', 'docker-compose.*.yaml'],
+        content: [/^services:\s*$/m],
+      },
+      analyzer: new DockerComposeAnalyzer(),
+    },
+    {
+      id: 'kubernetes-manifest',
+      name: 'Kubernetes Manifest Analyzer',
+      type: 'language',
+      version: '1.0.0',
+      detectPatterns: {
+        files: ['k8s/**/*.yaml', 'k8s/**/*.yml', 'kubernetes/**/*.yaml', 'kubernetes/**/*.yml', 'deploy/**/*.yaml', 'deploy/**/*.yml'],
+        content: [/^apiVersion:\s+/m, /^kind:\s+(Deployment|Service|Ingress|StatefulSet|Job|CronJob|ConfigMap|Secret)/m],
+      },
+      analyzer: new KubernetesManifestAnalyzer(),
+    },
+    {
+      id: 'distribution-artifacts',
+      name: 'Distribution Artifact Analyzer',
+      type: 'language',
+      version: '1.0.0',
+      detectPatterns: {
+        files: ['*.sh', '*.bash', '*.zsh', '*.ps1', '*.psm1', '*.bat', '*.cmd', '*.nsi', '*.wxs', '*.desktop', '*.service'],
+        content: [/systemctl|launchctl|makensis|msiexec|pkgbuild|create-dmg|SERVICE_NAME|BINARY_NAME|DOWNLOAD_PREFIX|manifest\.json/i],
+      },
+      analyzer: new DistributionArtifactAnalyzer(),
+    },
   ];
 
   const frameworkRegistrations: AnalyzerRegistration[] = [
@@ -208,6 +257,9 @@ export function createOrchestrator(): AnalyzerOrchestrator {
     { id: 'wpf', name: 'WPF Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.xaml', '**/*.csproj'], content: [/PresentationFramework/, /System\.Windows/, /<UseWPF>true<\/UseWPF>/] }, requires: ['csharp'], analyzer: new WPFAnalyzer() },
     { id: 'aspnet-core', name: 'ASP.NET Core Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.csproj'], content: [/Microsoft\.AspNetCore/, /Microsoft\.NET\.Sdk\.Web/] }, requires: ['csharp'], analyzer: new AspNetCoreAnalyzer() },
     { id: 'nextjs', name: 'Next.js Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['next'], files: ['next.config.js', 'next.config.mjs', 'next.config.ts'] }, requires: ['typescript-javascript'], analyzer: new NextJSAnalyzer() },
+    { id: 'actix-web', name: 'Actix-web Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['actix-web', 'actix_web'], files: ['Cargo.toml'], content: [/actix_web::/, /#\[(get|post|put|delete|patch)\("/, /HttpServer::/] }, requires: ['rust'], analyzer: new ActixAnalyzer() },
+    { id: 'rocket', name: 'Rocket Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['rocket', 'rocket_dyn_templates', 'rocket_sync'], files: ['Cargo.toml'], content: [/rocket::/, /#\[(get|post|put|delete|patch)\("/, /rocket::build/] }, requires: ['rust'], analyzer: new RocketAnalyzer() },
+    { id: 'axum', name: 'Axum Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['axum'], files: ['Cargo.toml'], content: [/axum::/, /Router::new\s*\(/, /\.route\s*\(\s*"/] }, requires: ['rust'], analyzer: new AxumAnalyzer() },
   ];
 
   const libraryRegistrations: AnalyzerRegistration[] = [
@@ -217,6 +269,15 @@ export function createOrchestrator(): AnalyzerOrchestrator {
     { id: 'redux', name: 'Redux/RTK Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@reduxjs/toolkit', 'redux'] }, requires: ['typescript-javascript'], analyzer: new ReduxAnalyzer() },
     { id: 'zustand', name: 'Zustand Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['zustand'] }, requires: ['typescript-javascript'], analyzer: new ZustandAnalyzer() },
     { id: 'tanstack-query', name: 'TanStack Query Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@tanstack/react-query', 'react-query', '@tanstack/vue-query', '@tanstack/svelte-query'] }, requires: ['typescript-javascript'], analyzer: new TanStackQueryAnalyzer() },
+    { id: 'reqwest', name: 'Reqwest HTTP Client Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['reqwest'], files: ['Cargo.toml'] }, requires: ['rust'], analyzer: new ReqwestAnalyzer() },
+    ...architectureLibraryAnalyzerDefinitions().map(definition => ({
+      id: definition.id,
+      name: definition.name,
+      type: 'library' as const,
+      version: '1.0.0',
+      detectPatterns: { dependencies: definition.dependencies },
+      analyzer: definition.analyzer,
+    })),
   ];
 
   for (const reg of [...languageRegistrations, ...frameworkRegistrations, ...libraryRegistrations]) {
@@ -360,6 +421,7 @@ export function preservePreviousAIDescriptions(
     const previous = previousCapabilities.get(capability.id);
     if (previous?.description &&
       capabilityReuseSubjectsMatch(previous, capability) &&
+      !hasCapabilityDescriptionDomainMismatch(previous.description, output) &&
       validateDescription(previous.description, { kind: 'capability', name: capability.name, target: capability }, output).ok &&
       (previous.description_source === 'ai' || previous.description_source === 'manual' || previous.description_source === 'reused')) {
       capability.description = previous.description;
@@ -379,6 +441,7 @@ export function preservePreviousAIDescriptions(
     return output;
   }
   if (hasLowLevelExternalServicePollution(previousPurpose.inferred_description) ||
+    hasStaleNarrativePattern(previousPurpose.inferred_description, previousPurpose.primary_domain, output) ||
     hasProductDomainDescriptionMismatch(previousPurpose.inferred_description, output)) {
     return output;
   }
@@ -407,6 +470,21 @@ function capabilityReuseSubjectsMatch(previous: any, current: any): boolean {
   const currentDomains = (current?.related_domains || []).map((domain: unknown) => normalizeCapabilityReuseSubject(domain)).filter(Boolean);
   if (previousDomains.size === 0 || currentDomains.length === 0) return true;
   return currentDomains.some((domain: string) => previousDomains.has(domain));
+}
+
+function hasCapabilityDescriptionDomainMismatch(description: string, output: CASOutput): boolean {
+  const domain = String(output.enhanced_system_purpose?.primary_domain || '').toLowerCase();
+  const text = String(description || '').toLowerCase();
+  if (/zero-trust|network-access|webauthn/.test(domain) && /\b(commerce|cart|checkout|order fulfillment|merchandising)\b/.test(text)) {
+    return true;
+  }
+  if (/website|marketing/.test(domain) && /\b(database schema|backend service|trading|portfolio holdings|wallet)\b/.test(text)) {
+    return true;
+  }
+  if (/solana|trading|portfolio/.test(domain) && /\b(marketing page|careers|company page|contact page)\b/.test(text)) {
+    return true;
+  }
+  return false;
 }
 
 function normalizeCapabilityReuseSubject(value: unknown): string {
@@ -442,6 +520,39 @@ function hasProductDomainDescriptionMismatch(description: string, output: CASOut
 
   if (/\b(solana|arbitrage|dex|cex|liquidity|trading)\b/.test(productText) &&
     /\btoken authentication\b|\bauthentication tokens\b|\bidentity sessions?\b/.test(lower)) {
+    return true;
+  }
+
+  return false;
+}
+
+function hasStaleNarrativePattern(description: string, previousDomain: string | undefined, output: CASOutput): boolean {
+  const lower = description.toLowerCase();
+  const nextDomain = output.enhanced_system_purpose?.primary_domain || '';
+  if (/\b(?:manages|coordinates?)\s+[^.]{3,140}\s+workflows\b/i.test(description)) return true;
+  if (/\bworkflows?\s+to\s+produce\s+and\s+manage\b/i.test(description)) return true;
+  if (/\bmain (?:grounded |product )?concepts are\b/i.test(description)) return true;
+  if (/\bservice records?\b/i.test(description)) return true;
+  if (/\bzero[- ]trust security system\b/i.test(description) && !/\bzero[- ]trust|network-access|security\b/i.test(nextDomain)) return true;
+
+  const previous = previousDomain || '';
+  if (previous && nextDomain && previous !== nextDomain) {
+    const previousTokens = new Set(previous.split(/[-_\s]+/).filter(Boolean));
+    const nextTokens = nextDomain.split(/[-_\s]+/).filter(Boolean);
+    const overlaps = nextTokens.some(token => previousTokens.has(token));
+    if (!overlaps) return true;
+  }
+
+  if (nextDomain === 'user-identity-management' &&
+    /\b(document collaboration|collection organization|knowledge base|wallet withdrawal|decrypt|encrypt|proxy)\b/i.test(description)) {
+    return true;
+  }
+  if (/^(solana-trading|solana-arbitrage|portfolio-management)$/.test(nextDomain) &&
+    /\bzero[- ]trust|commerce platform|product catalog|cart and checkout|order fulfillment|knowledge base\b/i.test(lower)) {
+    return true;
+  }
+  if (nextDomain === 'fleet-management' &&
+    /\bcommerce platform|product catalog|cart and checkout|order fulfillment|knowledge base\b/i.test(lower)) {
     return true;
   }
 
