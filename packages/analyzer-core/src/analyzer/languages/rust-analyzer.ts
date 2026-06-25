@@ -402,11 +402,11 @@ export class RustAnalyzer extends BaseAnalyzer {
       const libraries: any[] = [];
       await this.extractDependencies(context.projectPath, libraries);
 
-      const rustFiles = (await glob(['**/*.rs'], {
+      const rustFiles = this.capAndPrioritizeSourceFiles((await glob(['**/*.rs'], {
         cwd: context.projectPath,
         ignore: this.getIgnorePatterns(context),
         nodir: true
-      })).sort();
+      })).sort(), 'Rust files');
 
       const extractions: RustFileExtraction[] = [];
       for (const file of rustFiles) {
@@ -416,9 +416,15 @@ export class RustAnalyzer extends BaseAnalyzer {
         if (extraction) extractions.push(extraction);
       }
 
-      const edgeIds = new Set(edges.map(edge => edge.id));
-      for (const extraction of extractions) {
-        this.linkFileElements(extraction, nodes, edges, edgeIds, exitPoints, methodCalls);
+      if (this.shouldBuildExpensiveLanguageCallGraph(rustFiles.length)) {
+        const edgeIds = new Set(edges.map(edge => edge.id));
+        for (const extraction of extractions) {
+          this.linkFileElements(extraction, nodes, edges, edgeIds, exitPoints, methodCalls);
+        }
+      } else {
+        this.addAnalysisWarning(
+          `Rust cross-file linking deferred for ${process.env.KLAURO_ANALYSIS_FOCUS || 'default'} focus after ${rustFiles.length} prioritized files; run deep-context/full analysis for exhaustive Rust call edges`
+        );
       }
 
       this.createExitPointsForLibraries(libraries, exitPoints, nodes);
@@ -559,6 +565,13 @@ export class RustAnalyzer extends BaseAnalyzer {
       case 5: return 'implementation';
       default: return `level_${level}`;
     }
+  }
+
+  private shouldBuildExpensiveLanguageCallGraph(fileCount: number): boolean {
+    const focus = process.env.KLAURO_ANALYSIS_FOCUS;
+    if (focus === 'agent-fast' || focus === 'ui-overview') return fileCount <= 350;
+    if (focus === 'deep-context') return fileCount <= 2000;
+    return true;
   }
 
   private async detectProjectType(projectPath: string): Promise<void> {
@@ -829,6 +842,7 @@ export class RustAnalyzer extends BaseAnalyzer {
       const impls = await this.extractImpls(content, relativePath, nodes, edges);
       const functions = await this.extractFunctions(content, relativePath, nodes, entryPoints);
       this.extractCliSubcommands(content, relativePath, nodes, entryPoints);
+      this.extractAxumRoutes(content, relativePath, nodes, entryPoints);
       const constants = await this.extractConstants(content, relativePath, nodes);
       const statics = await this.extractStatics(content, relativePath, nodes);
       const types = await this.extractTypes(content, relativePath, nodes);
@@ -1887,6 +1901,62 @@ export class RustAnalyzer extends BaseAnalyzer {
            dbFunctions.some(f => lowerFunc.includes(f));
   }
 
+  /**
+   * Extract Axum routes. Unlike actix/rocket (decorator-based), axum declares
+   * routes with the builder API `Router::new().route("/path", get(handler))`,
+   * so they are not attached to a function as an attribute and were invisible.
+   * Scan `.route("path", method(handler))` calls (including chained methods and
+   * `move ||` closures) and emit one HTTP entry point per method, pointing at the
+   * handler function. Local (un-nested) paths — cross-file `.nest()` prefixing is
+   * not resolved, which is noted in metadata.
+   */
+  private extractAxumRoutes(content: string, relativePath: string, nodes: CASNode[], entryPoints: CASEntryPoint[]): void {
+    if (!/\.route\s*\(/.test(content) || !/\bRouter::|axum/.test(content)) return;
+    const lines = content.split('\n');
+    const lineStartOffsets: number[] = [];
+    let offset = 0;
+    for (const line of lines) { lineStartOffsets.push(offset); offset += line.length + 1; }
+    const lineForIndex = (index: number): number => {
+      let low = 0, high = lineStartOffsets.length - 1, result = 0;
+      while (low <= high) { const mid = (low + high) >> 1; if (lineStartOffsets[mid] <= index) { result = mid; low = mid + 1; } else { high = mid - 1; } }
+      return result + 1;
+    };
+    const routeCall = /\.route\(\s*"([^"]+)"\s*,/g;
+    const methodHandler = /\b(get|post|put|delete|patch|head|options|trace|any)\s*\(\s*(?:move\s*\|[^|]*\|\s*)?([A-Za-z_][A-Za-z0-9_]*)/g;
+    const seen = new Set<string>();
+    let match: RegExpExecArray | null;
+    while ((match = routeCall.exec(content)) !== null) {
+      const routePath = match[1];
+      // Bound the method-router argument to before the next `.route(` or 240 chars.
+      const argStart = match.index + match[0].length;
+      const nextRoute = content.indexOf('.route(', argStart);
+      const argEnd = nextRoute === -1 ? Math.min(content.length, argStart + 240) : nextRoute;
+      const argSegment = content.slice(argStart, argEnd);
+      const lineNo = lineForIndex(match.index);
+      methodHandler.lastIndex = 0;
+      let mh: RegExpExecArray | null;
+      while ((mh = methodHandler.exec(argSegment)) !== null) {
+        const method = mh[1].toUpperCase();
+        const handlerFn = mh[2];
+        const dedupeKey = `${method}:${routePath}:${handlerFn}`;
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
+        const nodeId = `function:${relativePath}:${handlerFn}`;
+        entryPoints.push(this.createEntryPoint(
+          `entry:http:${relativePath}:${handlerFn}:${method}:${routePath}`,
+          nodeId,
+          'http',
+          `${method} ${routePath}`,
+          `HTTP route handled by ${handlerFn}`,
+          { method, path: routePath },
+          undefined,
+          { framework: 'axum', method, path: routePath, handler: handlerFn, nested_prefix_unresolved: content.includes('.nest(') },
+          { node_id: nodeId, method_name: handlerFn, file: relativePath, line: lineNo }
+        ));
+      }
+    }
+  }
+
   private extractCliSubcommands(content: string, relativePath: string, nodes: CASNode[], entryPoints: CASEntryPoint[]): void {
     if (!this.clapDetected && !this.structoptDetected) return;
 
@@ -2436,6 +2506,36 @@ export class RustAnalyzer extends BaseAnalyzer {
       const sourceNodeId = this.findRustFunctionNodeId(nodes, func);
       if (!sourceNodeId) continue;
 
+      for (const call of this.extractReqwestHttpCalls(func)) {
+        const uniqueKey = `${sourceNodeId}:reqwest:${call.method}:${call.endpoint}`;
+        if (seenCalls.has(uniqueKey)) continue;
+        seenCalls.add(uniqueKey);
+        const exitPointId = `reqwest_call:${filePath}:${call.line}:${call.method}:${call.endpoint}`.replace(/[^a-zA-Z0-9_:/.-]/g, '_');
+        exitPoints.push(this.createExitPoint(
+          exitPointId,
+          sourceNodeId,
+          'api',
+          `${call.method.toUpperCase()} ${call.endpoint}`,
+          `Reqwest HTTP client call to ${call.endpoint}`,
+          {
+            service_id: call.serviceAlias || 'reqwest',
+            endpoint: call.endpoint,
+            resource: call.endpoint,
+          },
+          {
+            method: call.method.toUpperCase(),
+            action: call.method,
+            async: func.isAsync,
+          },
+          {
+            library: 'reqwest',
+            service_aliases: call.serviceAlias ? [call.serviceAlias] : [],
+            caller_function: func.name,
+            call_line: call.line,
+          }
+        ));
+      }
+
       for (const call of func.calls) {
         if (!call.isExternal) continue;
         if (!call.targetModule) continue;
@@ -2472,6 +2572,81 @@ export class RustAnalyzer extends BaseAnalyzer {
         ));
       }
     }
+  }
+
+  private extractReqwestHttpCalls(func: RustFunction): Array<{ method: string; endpoint: string; serviceAlias?: string; line: number }> {
+    const body = func.body || '';
+    if (!body || !/(?:\.get|\.post|\.put|\.patch|\.delete|\.head)\s*\(|\.url\s*(?:\.\s*clone\s*\(\s*\))?\s*\.\s*join\s*\(/.test(body)) return [];
+    const calls: Array<{ method: string; endpoint: string; serviceAlias?: string; line: number }> = [];
+    const localServiceAlias = this.serviceAliasFromRustFile(func.filePath);
+    const directUrlCall = /\.(get|post|put|patch|delete|head)\s*\(\s*["']([^"']+)["']/g;
+    const joinCall = /\.(get|post|put|patch|delete|head)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\.\s*clone\s*\(\s*\))?\s*\.\s*join\s*\(\s*["']([^"']+)["']/g;
+    const localJoinThenCall = /\blet\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*self\.url\s*(?:\.\s*clone\s*\(\s*\))?\s*\.\s*join\s*\(\s*(?:&?\s*format!\s*\(\s*)?["']([^"']+)["'][\s\S]{0,900}?\.(get|post|put|patch|delete|head)\s*\(\s*\1(?:\.as_str\s*\(\s*\))?/g;
+    let match: RegExpExecArray | null;
+
+    while ((match = directUrlCall.exec(body)) !== null) {
+      if (!/^https?:\/\//.test(match[2])) continue;
+      calls.push({
+        method: match[1],
+        endpoint: match[2],
+        serviceAlias: this.serviceAliasFromEndpoint(match[2]),
+        line: func.lineStart + body.slice(0, match.index).split(/\r?\n/).length - 1,
+      });
+    }
+
+    while ((match = joinCall.exec(body)) !== null) {
+      const serviceAlias = this.serviceAliasFromVariable(match[2]) || localServiceAlias;
+      const pathPart = match[3];
+      calls.push({
+        method: match[1],
+        endpoint: serviceAlias ? `http://${serviceAlias}/${pathPart.replace(/^\/+/, '')}` : `/${pathPart.replace(/^\/+/, '')}`,
+        serviceAlias,
+        line: func.lineStart + body.slice(0, match.index).split(/\r?\n/).length - 1,
+      });
+    }
+
+    while ((match = localJoinThenCall.exec(body)) !== null) {
+      const pathPart = match[2];
+      calls.push({
+        method: match[3],
+        endpoint: localServiceAlias ? `http://${localServiceAlias}/${pathPart.replace(/^\/+/, '')}` : `/${pathPart.replace(/^\/+/, '')}`,
+        serviceAlias: localServiceAlias,
+        line: func.lineStart + body.slice(0, match.index).split(/\r?\n/).length - 1,
+      });
+    }
+
+    return calls;
+  }
+
+  private serviceAliasFromVariable(variable: string): string | undefined {
+    const normalized = variable.replace(/_(url|base|host|endpoint)$/i, '').toLowerCase();
+    return this.normalizeServiceAlias(normalized);
+  }
+
+  private serviceAliasFromRustFile(filePath: string): string | undefined {
+    const normalized = filePath.toLowerCase().replace(/\\/g, '/');
+    const parts = normalized.split('/');
+    const namedSegment = parts.find((part, index) =>
+      ['bin', 'apps', 'services', 'crates', 'packages'].includes(parts[index - 1] || '') &&
+      /[a-z0-9]/.test(part)
+    );
+    return this.normalizeServiceAlias(namedSegment || path.basename(normalized, path.extname(normalized)));
+  }
+
+  private normalizeServiceAlias(value: string | undefined): string | undefined {
+    const normalized = String(value || '')
+      .replace(/[_\s]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .toLowerCase();
+    if (!normalized || /^(url|base|host|endpoint|api|client|server|service|src|lib|main|mod)$/.test(normalized)) return undefined;
+    if (/^(admin|user|internal|public|mcp)$/.test(normalized)) return `${normalized}-api`;
+    if (/^(admin|user|internal|public|mcp)-api$/.test(normalized)) return normalized;
+    if (/(api|server|service|worker|agent|client|coordinator|gateway|broker|relay|daemon)$/.test(normalized)) return normalized;
+    return undefined;
+  }
+
+  private serviceAliasFromEndpoint(endpoint: string): string | undefined {
+    return endpoint.match(/^https?:\/\/([A-Za-z0-9_.-]+)/)?.[1];
   }
 
   private findRustFunctionNodeId(nodes: CASNode[], func: RustFunction): string | undefined {
