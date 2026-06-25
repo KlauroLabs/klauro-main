@@ -7305,38 +7305,54 @@ export class AnalyzerOrchestrator {
     // even a slow attempt completes; genuinely hung calls still fall back. Caching
     // means this latency is paid once per repo.
     const aiBudget = Math.max(75000, Math.floor(input.budgetMs * 0.6));
-    let timeoutHandle: NodeJS.Timeout | undefined;
-    let raw: string;
-    try {
-      raw = await Promise.race([
-        aiService.generateComponentDescription({
-          additionalContext: {
-            task: 'You are cataloging the BUSINESS VALUE of a codebase. From the deterministic facts (user journeys, data entities, candidate route areas, external services), return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","entities":["..."],"journeys":["..."]}]}. Rules: (1) Each capability is something the product lets its USERS or OPERATORS do, in plain product language, grounded in the journeys and entities it touches — NOT a CRUD/route/lifecycle mechanism. (2) MERGE related route areas and journeys into real capabilities; do not emit one per route. (3) EXCLUDE purely supporting or infrastructural concerns (authentication, session/token handling, logging, notifications, caching, message brokering, generic CRUD, health checks, config) UNLESS that concern is the product\'s actual value. (4) category="core" only for the capabilities that ARE the product\'s value proposition; "supporting" for necessary-but-not-the-value. (5) entities/journeys must be names copied from the supplied facts. Return 6 to 14 capabilities, ordered most-core first.',
-            style: 'Write like a product engineer or PM. Plain language. No markdown. Value verbs (lets, gives, tracks, surfaces, exposes, manages, monitors, secures, settles, enforces). No CRUD verbs, no "lifecycle", no route counts, no file paths, no marketing fluff. Each description names the concrete user-facing concept the entities point to.',
-            product: {
-              name: input.systemName,
-              domain: purpose.primary_domain,
-              concepts: (purpose.core_concepts || []).slice(0, 12),
-              description: purpose.inferred_description,
-              frameworks: (input.frameworks || []).slice(0, 6),
+    const requestCatalog = async (): Promise<string> => {
+      let timeoutHandle: NodeJS.Timeout | undefined;
+      try {
+        return await Promise.race([
+          aiService.generateComponentDescription({
+            additionalContext: {
+              task: 'You are cataloging the BUSINESS VALUE of a codebase. From the deterministic facts (user journeys, data entities, candidate route areas, external services), return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","entities":["..."],"journeys":["..."]}]}. Rules: (1) Each capability is something the product lets its USERS or OPERATORS do, in plain product language, grounded in the journeys and entities it touches — NOT a CRUD/route/lifecycle mechanism. (2) MERGE related route areas and journeys into real capabilities; do not emit one per route. (3) EXCLUDE purely supporting or infrastructural concerns (authentication, session/token handling, logging, notifications, caching, message brokering, generic CRUD, health checks, config) UNLESS that concern is the product\'s actual value. (4) category="core" only for the capabilities that ARE the product\'s value proposition; "supporting" for necessary-but-not-the-value. (5) entities/journeys must be names copied from the supplied facts. Return 6 to 14 capabilities, ordered most-core first.',
+              style: 'Write like a product engineer or PM. Plain language. No markdown. Value verbs (lets, gives, tracks, surfaces, exposes, manages, monitors, secures, settles, enforces). No CRUD verbs, no "lifecycle", no route counts, no file paths, no marketing fluff. Each description names the concrete user-facing concept the entities point to.',
+              product: {
+                name: input.systemName,
+                domain: purpose.primary_domain,
+                concepts: (purpose.core_concepts || []).slice(0, 12),
+                description: purpose.inferred_description,
+                frameworks: (input.frameworks || []).slice(0, 6),
+              },
+              facts: {
+                user_journeys: journeys,
+                data_entities: entities,
+                candidate_route_areas: candidateAreas,
+                external_services: services,
+              },
             },
-            facts: {
-              user_journeys: journeys,
-              data_entities: entities,
-              candidate_route_areas: candidateAreas,
-              external_services: services,
-            },
-          },
-        }),
-        new Promise<string>((_, reject) => {
-          timeoutHandle = setTimeout(() => reject(new Error('capability extraction budget exceeded')), aiBudget);
-        }),
-      ]);
-    } finally {
-      if (timeoutHandle) clearTimeout(timeoutHandle);
-    }
+          }),
+          new Promise<string>((_, reject) => {
+            timeoutHandle = setTimeout(() => reject(new Error('capability extraction budget exceeded')), aiBudget);
+          }),
+        ]);
+      } finally {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+      }
+    };
 
-    const catalog = this.parseCapabilityCatalog(raw);
+    // Shared-inference latency is variable enough that a single attempt can exceed
+    // even a generous budget. The catalog is the difference between ~13 curated
+    // capabilities and 40 noisy candidates, so make TWO attempts before falling
+    // back to the deterministic candidates.
+    let catalog: Array<Record<string, unknown>> = [];
+    let raw = '';
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        raw = await requestCatalog();
+        catalog = this.parseCapabilityCatalog(raw);
+      } catch (error) {
+        if (process.env.KLAURO_DEBUG_CATALOG) console.error(`[catalog-debug] attempt ${attempt} failed:`, error instanceof Error ? error.message : String(error));
+        catalog = [];
+      }
+      if (catalog.length) break;
+    }
     if (process.env.KLAURO_DEBUG_CATALOG) {
       console.error('[catalog-debug] raw.length=', (raw || '').length, 'parsed=', catalog.length, 'rawHead=', JSON.stringify(String(raw || '').slice(0, 300)));
     }
