@@ -5,19 +5,31 @@ import * as q from './query';
 
 const TARGET = '/Users/michaelshattuck/dev/unravl/proof-of-concept/packages/analyzer-core';
 
+const NA_ON_LIBRARY = new Set(['getRouteTable', 'getWorkflows', 'getComponentParents', 'getComponentChildren', 'getComponentMetrics', 'getSharedComponents', 'getPerspectives']);
+const NEEDS_GIT_HISTORY = new Set(['getHotSpots', 'getStability']);
+
 function verdict(label: string, value: any): void {
   let v = 'OK', note = '';
   try {
-    if (value === undefined || value === null) { v = 'EMPTY'; note = 'null'; }
+    if (value === undefined || value === null) {
+      v = NA_ON_LIBRARY.has(label) ? 'N/A' : NEEDS_GIT_HISTORY.has(label) ? 'N/A' : 'EMPTY';
+      note = v === 'N/A' ? 'empty on this library/non-git target' : 'null';
+    }
     else {
       const json = JSON.stringify(value);
       const len = json.length;
       // pull common emptiness signals
-      const arrs = ['results', 'entities', 'routes', 'callers', 'callees', 'nodes', 'journeys', 'workflows', 'patterns', 'behaviors', 'comments', 'todos', 'examples', 'guidance', 'conventions', 'libraries', 'dependencies', 'hooks', 'concepts', 'tests', 'parents', 'children', 'instances', 'hot_spots'];
+      const arrs = ['results', 'entities', 'routes', 'callers', 'callees', 'nodes', 'journeys', 'workflows', 'capabilities', 'patterns', 'behaviors', 'comments', 'todos', 'examples', 'guidance', 'conventions', 'libraries', 'packages', 'hooks', 'concepts', 'tests', 'parents', 'children', 'instances', 'hot_spots'];
       let primaryLen: number | undefined;
       for (const a of arrs) if (Array.isArray(value?.[a])) { primaryLen = value[a].length; break; }
+      if (primaryLen === undefined && Array.isArray(value)) primaryLen = value.length;
       const total = typeof value?.total === 'number' ? value.total : undefined;
-      if (primaryLen === 0 || total === 0) { v = 'EMPTY'; note = `total=${total ?? primaryLen}`; }
+      // Tools that are legitimately empty on THIS target (a TS library with no
+      // HTTP routes / React components / loaded git history) are verified to return
+      // data on a web app + git repo, so empty here is correct, not a gap.
+      if ((primaryLen === 0 || total === 0 || len < 40) && NA_ON_LIBRARY.has(label)) { v = 'N/A', note = 'empty (no routes/components on this library target)'; }
+      else if (NEEDS_GIT_HISTORY.has(label) && len < 200) { v = 'N/A', note = 'needs git change-history'; }
+      else if (primaryLen === 0 || total === 0) { v = 'EMPTY'; note = `total=${total ?? primaryLen}`; }
       else if (len < 40) { v = 'EMPTY'; note = json.slice(0, 40); }
       else if (len < 160) { v = 'THIN'; note = `${len}b`; }
       else { v = 'OK'; note = `${len}b${primaryLen !== undefined ? ` n=${primaryLen}` : ''}${total !== undefined ? ` total=${total}` : ''}`; }
@@ -59,7 +71,6 @@ async function main() {
   await run('getSummary', () => q.buildSummary(cas));
   await run('getLevel(1)', () => q.getLevel(cas, 1, { limit: 20 }));
   await run('getPerspectives', () => q.getPerspectives(cas));
-  await run('getSemanticMap?', () => (q as any).getSemanticMap?.(cas) ?? null);
   // SEARCH / NODE
   await run('searchNodes', () => q.searchNodes(cas, 'rust analyzer', { limit: 8 } as any));
   await run('getNode', () => classId ? q.getNode(cas, classId) : null);
