@@ -587,6 +587,19 @@ export class EnhancedCallGraphExtractor {
   }
 
   private resolveTarget(target: string, scope: ScopeInfo): ResolvedTarget {
+    // `this.method()` / `self.method()` is a call to a method on the SAME class —
+    // resolve it to the local method instead of treating it as external. Without
+    // this, every intra-class call (the bulk of the call graph in class-heavy
+    // code) is dropped, so get_callees/get_method_calls come back empty.
+    if (target.startsWith('this.') || target.startsWith('self.')) {
+      const methodName = target.slice(target.indexOf('.') + 1);
+      const localMethod = this.functions.get(methodName) ||
+        this.functions.get(`${this.currentFile}::${methodName}`) ||
+        [...this.functions.values()].find(f => f.name === methodName && f.file === this.currentFile);
+      if (localMethod) {
+        return { file: localMethod.file, functionName: localMethod.name, isExternal: false, isBuiltin: false };
+      }
+    }
     // Check if it's an imported function
     const importName = target.split('.')[0];
     if (scope.imports.has(importName)) {
@@ -1173,12 +1186,18 @@ export class EnhancedCallGraphExtractor {
   }
 
   private resolveTargetToFunctionId(target: string): string | null {
-    // Simple resolution - in production this would be more sophisticated
+    // Strip a `this.`/`self.` receiver so an intra-class call resolves to the
+    // method's own function id (prefer the one in the current file on collision).
+    const bare = (target.startsWith('this.') || target.startsWith('self.'))
+      ? target.slice(target.indexOf('.') + 1)
+      : target;
+    let fallback: string | null = null;
     for (const [funcId, func] of this.functions) {
-      if (func.name === target || funcId.endsWith(`::${target}`)) {
-        return funcId;
+      if (func.name === bare || funcId.endsWith(`::${bare}`)) {
+        if (func.file === this.currentFile) return funcId;
+        fallback = fallback || funcId;
       }
     }
-    return null;
+    return fallback;
   }
 }

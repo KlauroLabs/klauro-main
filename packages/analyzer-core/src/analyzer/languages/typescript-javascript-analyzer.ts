@@ -1264,16 +1264,42 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       lower.includes('knex');
   }
 
-  private findNodeIdByNameIndexed(targetName: string): string | undefined {
-    if (this.callTargetResolutionCache.has(targetName)) {
-      return this.callTargetResolutionCache.get(targetName);
+  private findNodeIdByNameIndexed(targetName: string, sourceFile?: string, sourceClassName?: string): string | undefined {
+    // A `this.method()` call resolves to a method on the CALLER's own class, so it
+    // cannot be cached by target name alone (the same "this.x" means different
+    // methods in different classes). Cache only receiver-free / cross-object names.
+    const isThisCall = targetName.startsWith('this.') || targetName.startsWith('self.');
+    const cacheKey = isThisCall ? `${sourceFile}::${sourceClassName}::${targetName}` : targetName;
+    if (this.callTargetResolutionCache.has(cacheKey)) {
+      return this.callTargetResolutionCache.get(cacheKey);
     }
-    const resolved = this.findNodeIdByNameIndexedUncached(targetName);
-    this.callTargetResolutionCache.set(targetName, resolved);
+    const resolved = this.findNodeIdByNameIndexedUncached(targetName, sourceFile, sourceClassName);
+    this.callTargetResolutionCache.set(cacheKey, resolved);
     return resolved;
   }
 
-  private findNodeIdByNameIndexedUncached(targetName: string): string | undefined {
+  private findNodeIdByNameIndexedUncached(targetName: string, sourceFile?: string, sourceClassName?: string): string | undefined {
+    // Direct `this.method()` / `self.method()` — a call to a sibling method on the
+    // caller's own class. This is the bulk of intra-class calls; without it the
+    // call graph (and get_callees/get_method_calls) is almost empty for methods.
+    const thisMethodMatch = /^(?:this|self)\.([A-Za-z_$][\w$]*)$/.exec(targetName);
+    if (thisMethodMatch) {
+      const methodName = thisMethodMatch[1];
+      const candidates = this.nodesByName.get(methodName)?.filter(n => n.type === 'method') || [];
+      if (candidates.length > 0) {
+        if (sourceClassName) {
+          const inClass = candidates.find(n => {
+            const parent = n.parent ? this.nodeById.get(n.parent) : undefined;
+            return parent?.name === sourceClassName;
+          });
+          if (inClass) return inClass.id;
+        }
+        const inFile = candidates.find(n => n.source?.file === sourceFile);
+        if (inFile) return inFile.id;
+        return candidates[0].id;
+      }
+      return undefined;
+    }
     if (this.isRepositoryCall(targetName)) {
       const parts = targetName.split('.');
       if (parts.length >= 3 && parts[0] === 'this') {
@@ -1447,7 +1473,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         }
 
         if (call.targetType === 'abstract') {
-          const targetNodeId = this.findNodeIdByNameIndexed(call.target);
+          const targetNodeId = this.findNodeIdByNameIndexed(call.target, filePath, func.className);
 
           if (sourceNodeId && targetNodeId) {
             this.addCallEdge(edges, {
@@ -1468,7 +1494,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         }
 
         if (call.injectionType) {
-          const targetNodeId = this.findNodeIdByNameIndexed(call.target);
+          const targetNodeId = this.findNodeIdByNameIndexed(call.target, filePath, func.className);
 
           if (sourceNodeId && targetNodeId) {
             this.addCallEdge(edges, {
@@ -1488,7 +1514,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         }
 
         if (call.targetType === 'method' || call.targetType === 'function') {
-          const targetNodeId = this.findNodeIdByNameIndexed(call.target);
+          const targetNodeId = this.findNodeIdByNameIndexed(call.target, filePath, func.className);
 
           if (sourceNodeId && targetNodeId && sourceNodeId !== targetNodeId) {
             this.addCallEdge(edges, {
