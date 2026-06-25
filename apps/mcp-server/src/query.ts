@@ -974,6 +974,10 @@ export function getDataLineage(
       sensitive_fields: item.sensitive_fields,
       writer_count: item.writers.length,
       reader_count: item.readers.length,
+      // Surface the actual writer/reader SITES (file + how), not just counts —
+      // otherwise the lineage is unnavigable ("who writes User?" -> a number).
+      writers: item.writers.slice(0, 6).map(writer => ({ file: writer.file, via: writer.via, node_id: writer.node_id })),
+      readers: item.readers.slice(0, 6).map(reader => ({ file: reader.file, via: reader.via, node_id: reader.node_id })),
       external_recipients: item.external_recipients.map(recipient => recipient.service),
       boundaries_crossed: item.boundaries_crossed,
       journey_count: item.journeys_carrying.length,
