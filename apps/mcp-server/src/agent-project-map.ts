@@ -155,6 +155,19 @@ function candidateScore(input: {
   if (input.target && input.targetMatches.length > 0) score += Math.min(35, input.targetMatches.length * 8);
   if (input.profile.kind === 'empty' || input.profile.kind === 'infrastructure') score -= 20;
   if (input.entry.node_count === 0 || input.entry.edge_count === 0) score -= 25;
+  // A test fixture that happens to live inside the requested tree is never the
+  // product the agent is working on. Without this an embedded fixture (a
+  // descendant, +18) outranks the real ancestor analysis (−10) — a reported
+  // footgun where a worktree of a large repo resolved to a rails fixture.
+  if (/(^|\/)(fixtures?|__fixtures__|test[-_]?fixtures|analysis-truth|testdata)(\/|$)/.test(input.entry.path.replace(/\\/g, '/'))) {
+    score -= 60;
+  }
+  // For a large repo whose only analysis sits at an ancestor (e.g. when the agent
+  // is in a worktree subpath), that ancestor IS the product — don't penalize a
+  // substantial, passing ancestor the way a thin/stale one is penalized.
+  if (input.relation === 'ancestor' && input.readiness.status === 'pass' && (input.entry.node_count || 0) >= 500) {
+    score += 14;
+  }
   return Math.round(score);
 }
 

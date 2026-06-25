@@ -411,7 +411,7 @@ export function getNode(cas: CASOutput, nodeId: string) {
   };
 }
 
-export function getFileNodes(cas: CASOutput, filePath: string) {
+export function getFileNodes(cas: CASOutput, filePath: string, projectPath?: string) {
   const normalizedPath = filePath.replace(/\\/g, '/');
   const fileNodes = cas.nodes.filter(n =>
     n.source?.file && n.source.file.replace(/\\/g, '/').endsWith(normalizedPath)
@@ -422,6 +422,23 @@ export function getFileNodes(cas: CASOutput, filePath: string) {
     nodeIds.has(e.source) && nodeIds.has(e.target)
   ).map(trimEdge);
 
+  // Empty result is ambiguous: a wrong path vs. a real file that simply isn't in
+  // the analyzed revision (e.g. it lives on an unmerged worktree branch). When the
+  // file DOES exist on disk but has no analyzed nodes, say so explicitly and stamp
+  // the analyzed revision — this is exactly the trust-then-verify gap agents hit.
+  let hint: string | undefined;
+  if (fileNodes.length === 0) {
+    const rev = cas.system?.repository;
+    const revStamp = rev?.commit || rev?.branch ? ` (analysis @ ${[rev?.branch, rev?.commit?.slice(0, 8)].filter(Boolean).join('/')})` : '';
+    let onDisk = false;
+    if (projectPath) {
+      try { onDisk = require('fs').existsSync(require('path').resolve(projectPath, filePath)); } catch { /* ignore */ }
+    }
+    hint = onDisk
+      ? `0 nodes — this file exists in the working tree but is not present in the analyzed revision${revStamp}; your working tree may differ. Re-analyze the current branch to include it.`
+      : `0 nodes — no analyzed file matches "${filePath}"${revStamp}. Check the path, or the file may not be in the analyzed revision.`;
+  }
+
   return {
     nodes: fileNodes.map(n => ({
       id: n.id, name: n.name, type: n.type, category: n.category,
@@ -429,6 +446,7 @@ export function getFileNodes(cas: CASOutput, filePath: string) {
       description: n.description, parent: n.parent, children: n.children,
     })),
     edges: internalEdges,
+    ...(hint ? { hint, analyzed_revision: cas.system?.repository } : {}),
   };
 }
 

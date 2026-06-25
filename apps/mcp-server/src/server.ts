@@ -1,8 +1,9 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { appendFileSync } from 'fs';
+import * as nodePath from 'path';
 import { getAnalysis, runAnalysis } from './analyzer';
-import { getAnalysisEntry, getStorageHealth, listAgenticBenchmarkReports, listAnalyses, listWorkspaceGraphs, loadAgenticBenchmarkReport, loadGoldenSnapshot, loadLatestAgenticBenchmarkReportByType, loadRuntimeObservations, loadWorkspaceGraph, saveAgenticBenchmarkReport, saveGoldenSnapshot, saveRuntimeObservation, saveWorkspaceGraph } from './storage';
+import { getAnalysisEntry, getStorageHealth, listAgenticBenchmarkReports, listAnalyses, listCrossCodebaseSystemGraphs, listWorkspaceGraphs, loadAgenticBenchmarkReport, loadCrossCodebaseSystemGraph, loadGoldenSnapshot, loadLatestAgenticBenchmarkReportByType, loadRuntimeObservations, loadWorkspaceGraph, saveAgenticBenchmarkReport, saveCrossCodebaseSystemGraph, saveGoldenSnapshot, saveRuntimeObservation, saveWorkspaceGraph } from './storage';
 import * as query from './query';
 import * as watcher from './watcher';
 import * as product from './product';
@@ -16,6 +17,7 @@ import * as freshness from './freshness';
 import * as runtimeSdk from './runtime-sdk';
 import * as agentDoctor from './agent-doctor';
 import * as workspaceGraph from './workspace-graph';
+import * as crossCodebaseAnalysis from './cross-codebase-analysis';
 import * as agentDefaults from './agent-defaults';
 import * as integrationDepth from './integration-depth';
 import * as invariantValidation from './invariant-validation';
@@ -42,6 +44,7 @@ import { getAnalysisFocusProfiles, withAnalysisFocus, type AnalysisFocus } from 
 import { getDescriptionEnrichmentTargets } from './analysis-usefulness-review';
 import { semanticSearch } from './semantic-search';
 import { pruneKlauroStorage } from './storage-maintenance';
+import { resolveWorkspaceInputPaths, type WorkspaceSkippedInput } from './workspace-inputs';
 import { RESPONSE_BUDGET_BYTES, boundToolPayload, boundToolText, serializeToolResponse } from './response-budget';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 
@@ -176,7 +179,7 @@ function enforceResponseBudget(
 
 const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
   { label: 'Analysis management', tools: ['analyze_codebase', 'get_analysis_focus_profiles', 'get_description_enrichment_targets', 'generate_element_description', 'get_element_description', 'get_analysis_phases', 'run_analysis_layer', 'initialize_klauro_project', 'get_klauro_project_config', 'get_upload_manifest', 'get_github_import_plan', 'analyze_codebase_remote', 'sync_codebase_remote', 'list_analyses', 'validate_cas_contract', 'get_storage_health', 'get_storage_maintenance_report', 'prune_storage_artifacts', 'preview_codebase_iteration', 'get_greenfield_architecture_guidance', 'get_greenfield_build_packet', 'preview_greenfield_codebase', 'get_preview_analysis', 'compare_analysis_iterations', 'get_analysis_freshness', 'get_test_discovery_evidence', 'save_cas_golden_snapshot', 'compare_cas_golden_snapshot'] },
-  { label: 'System understanding and agent workflow', tools: ['get_summary', 'get_system_overview', 'get_architecture_context', 'list_answer_packs', 'get_mcp_demo_flow', 'get_cross_repo_links', 'save_workspace_graph', 'get_workspace_graph', 'list_workspace_graphs', 'verify_workspace_link', 'get_agent_bootstrap', 'get_agent_project_map', 'get_agent_doctor', 'get_agent_default_config', 'install_agent_default_config', 'get_capability_memory', 'get_idiom_aware_work_packet', 'open_agent_workbench', 'preflight_agent_change', 'get_codebase_agent_rules', 'explain_change_shape', 'evaluate_analysis_truth', 'get_semantic_map', 'get_framework_depth_report', 'get_integration_depth_report', 'get_cross_repo_contracts', 'get_runtime_instrumentation_plan', 'get_runtime_event_contract', 'get_runtime_sdk_package', 'evaluate_agent_task_proof', 'evaluate_agent_readiness', 'run_agentic_benchmark', 'get_agentic_benchmark_report', 'get_agent_performance_proof', 'run_agent_quality_benchmark', 'run_agent_idiom_benchmark', 'run_machine_agent_proof', 'run_incremental_value_benchmark', 'get_patterns', 'get_codebase_idioms', 'get_idiom_examples', 'validate_codebase_idioms', 'get_pattern_instances', 'get_perspectives'] },
+  { label: 'System understanding and agent workflow', tools: ['get_summary', 'get_system_overview', 'get_architecture_context', 'list_answer_packs', 'get_mcp_demo_flow', 'get_cross_repo_links', 'run_workspace_analysis', 'resolve_workspace_analysis', 'get_workspace_summary', 'get_workspace_analysis', 'get_workspace_agent_packet', 'get_workspace_freshness', 'validate_was_contract', 'get_workspace_health', 'get_workspace_risk_packet', 'get_workspace_capability_map', 'get_workspace_entity_map', 'get_workspace_workflow', 'list_workspace_analyses', 'run_cross_codebase_analysis', 'get_cross_codebase_analysis', 'list_cross_codebase_analyses', 'save_workspace_graph', 'get_workspace_graph', 'list_workspace_graphs', 'verify_workspace_link', 'get_agent_bootstrap', 'get_agent_project_map', 'get_agent_doctor', 'get_agent_default_config', 'install_agent_default_config', 'get_capability_memory', 'get_idiom_aware_work_packet', 'open_agent_workbench', 'preflight_agent_change', 'get_codebase_agent_rules', 'explain_change_shape', 'evaluate_analysis_truth', 'get_semantic_map', 'get_framework_depth_report', 'get_integration_depth_report', 'get_cross_repo_contracts', 'get_runtime_instrumentation_plan', 'get_runtime_event_contract', 'get_runtime_sdk_package', 'evaluate_agent_task_proof', 'evaluate_agent_readiness', 'run_agentic_benchmark', 'get_agentic_benchmark_report', 'get_agent_performance_proof', 'run_agent_quality_benchmark', 'run_agent_idiom_benchmark', 'run_machine_agent_proof', 'run_incremental_value_benchmark', 'get_patterns', 'get_codebase_idioms', 'get_idiom_examples', 'validate_codebase_idioms', 'get_pattern_instances', 'get_perspectives'] },
   { label: 'Navigation and search', tools: ['semantic_search', 'get_embedding_status', 'get_node', 'get_file_nodes', 'get_level'] },
   { label: 'Entry points, routes, and call graph', tools: ['get_entry_points', 'get_exit_points', 'get_route_table', 'get_external_services', 'get_callers', 'get_callees', 'get_call_chain', 'get_method_calls'] },
   { label: 'Component hierarchy', tools: ['get_component_parents', 'get_component_children', 'get_component_metrics', 'get_shared_components'] },
@@ -265,6 +268,27 @@ function json(data: unknown): { content: Array<{ type: 'text'; text: string }> }
   return { content: [{ type: 'text', text: serializeToolResponse(data) }] };
 }
 
+function compactText(value: unknown, max = 180): string | undefined {
+  const text = String(value || '').trim();
+  if (!text) return undefined;
+  return text.length > max ? `${text.slice(0, Math.max(0, max - 15)).trimEnd()}...[truncated]` : text;
+}
+
+function compactWorkspaceSemanticItem(item: any): Record<string, unknown> {
+  return {
+    id: item.id,
+    name: item.name,
+    description: compactText(item.description, 190),
+    description_source: item.description_source,
+    criticality: item.criticality,
+    semantic_role: item.semantic_role,
+    confidence: item.confidence,
+    project_ids: Array.isArray(item.project_ids) ? item.project_ids.slice(0, 4) : undefined,
+    deployable_ids: Array.isArray(item.deployable_ids) ? item.deployable_ids.slice(0, 4) : undefined,
+    evidence: Array.isArray(item.evidence) ? item.evidence.slice(0, 3) : undefined,
+  };
+}
+
 function errorResponse(error: unknown): { content: Array<{ type: 'text'; text: string }>; isError: true } {
   const message = error instanceof Error ? error.message : String(error);
   return { content: [{ type: 'text', text: JSON.stringify({ error: message }) }], isError: true };
@@ -309,6 +333,133 @@ async function loadRepositoryAnalyses(paths?: string[]): Promise<Array<{ path: s
   }
 
   return repositories;
+}
+
+async function loadWorkspaceRepositoryAnalyses(options: {
+  paths?: string[];
+  workspaceRoot?: string;
+  exclude?: string[];
+} = {}): Promise<{
+  repositories: Array<{ path: string; name: string; cas: Awaited<ReturnType<typeof getAnalysis>> }>;
+  skippedInputs: WorkspaceSkippedInput[];
+  inputPolicy?: any;
+}> {
+  const resolved = await resolveWorkspaceInputPaths({
+    paths: options.paths,
+    workspaceRoot: options.workspaceRoot,
+    exclude: options.exclude,
+  });
+  const repositories = await loadRepositoryAnalyses(resolved.includedPaths);
+  return {
+    repositories,
+    skippedInputs: resolved.skippedInputs,
+    inputPolicy: {
+      workspace_root: resolved.workspaceRoot,
+      ...resolved.policy,
+    },
+  };
+}
+
+function markWorkspaceAiEnrichmentSkipped(graph: crossCodebaseAnalysis.CrossCodebaseSystemGraph): crossCodebaseAnalysis.CrossCodebaseSystemGraph {
+  const deterministicNarrative = graph.deterministic_narrative;
+  graph.workspace_narrative = {
+    ...graph.workspace_narrative,
+    source: 'ai-required-degraded',
+    degraded_reason: 'Workspace AI enrichment was intentionally skipped for fast deterministic generation.',
+  };
+  graph.deterministic_narrative = deterministicNarrative;
+  return graph;
+}
+
+async function resolveWorkspaceAnalysisForPaths(paths: string[] = []): Promise<{
+  selected: any | null;
+  alternatives: Array<{ id: string; name: string; score: number; matched_paths: string[]; generated_at?: string; saved_at?: string }>;
+}> {
+  const requested = paths.map(item => nodePath.resolve(item));
+  const summaries = await listCrossCodebaseSystemGraphs();
+  const alternatives = [];
+  for (const summary of summaries) {
+    const inputPaths = ((summary as any).inputs || []).map((input: any) => nodePath.resolve(input.repo_path || input.path || '')).filter(Boolean);
+    const matched = requested.length === 0
+      ? inputPaths
+      : inputPaths.filter((inputPath: string) => requested.some(requestPath =>
+        requestPath === inputPath ||
+        requestPath.startsWith(`${inputPath}${nodePath.sep}`) ||
+        inputPath.startsWith(`${requestPath}${nodePath.sep}`)
+      ));
+    const score = requested.length === 0 ? Math.min(1, inputPaths.length / 10) : matched.length / Math.max(requested.length, 1);
+    alternatives.push({
+      id: summary.id,
+      name: summary.name,
+      score,
+      matched_paths: matched,
+      generated_at: summary.generated_at,
+      saved_at: summary.saved_at,
+    });
+  }
+  alternatives.sort((left, right) => right.score - left.score || String(right.saved_at || right.generated_at || '').localeCompare(String(left.saved_at || left.generated_at || '')));
+  const selectedSummary = alternatives.find(item => item.score > 0) || alternatives[0] || null;
+  const selected = selectedSummary ? await loadCrossCodebaseSystemGraph(selectedSummary.id) : null;
+  return {
+    selected,
+    alternatives: alternatives.slice(0, 10),
+  };
+}
+
+async function buildWorkspaceFreshness(graph: any): Promise<{
+  status: 'fresh' | 'stale' | 'unknown';
+  stale_inputs: Array<{ project_id: string; repo_path: string; was_input_at?: string; current_analysis_at?: string; reason: string }>;
+  checked_inputs: number;
+}> {
+  const staleInputs = [];
+  for (const input of graph.inputs || []) {
+    const repoPath = input.repo_path || input.path;
+    if (!repoPath) continue;
+    const entry = await getAnalysisEntry(repoPath);
+    if (!entry) {
+      staleInputs.push({ project_id: input.project_id || input.codebase_id, repo_path: repoPath, was_input_at: input.cas_generated_at, reason: 'No current CAS index entry exists for this WAS input.' });
+      continue;
+    }
+    if (input.cas_generated_at && entry.analyzed_at && new Date(entry.analyzed_at).getTime() > new Date(input.cas_generated_at).getTime()) {
+      staleInputs.push({ project_id: input.project_id || input.codebase_id, repo_path: repoPath, was_input_at: input.cas_generated_at, current_analysis_at: entry.analyzed_at, reason: 'Repo CAS was re-analyzed after this WAS was generated.' });
+    }
+  }
+  return {
+    status: staleInputs.length ? 'stale' : (graph.inputs || []).length ? 'fresh' : 'unknown',
+    stale_inputs: staleInputs,
+    checked_inputs: (graph.inputs || []).length,
+  };
+}
+
+function validateWasGraph(graph: any, freshnessResult?: Awaited<ReturnType<typeof buildWorkspaceFreshness>>) {
+  const missing = [
+    graph?.projects?.length ? '' : 'projects',
+    graph?.deployables?.length ? '' : 'deployables',
+    Array.isArray(graph?.interfaces) ? '' : 'interfaces',
+    graph?.runtime_topology ? '' : 'runtime_topology',
+    graph?.detail_views?.overview ? '' : 'detail_views.overview',
+    graph?.workspace_narrative ? '' : 'workspace_narrative',
+    graph?.health ? '' : 'health',
+  ].filter(Boolean);
+  const degradedAi = graph?.workspace_narrative?.source !== 'ai';
+  const stale = freshnessResult?.status === 'stale';
+  const failingQualityFlags = (graph?.quality_flags || []).filter((flag: any) => flag.severity === 'fail');
+  const warningQualityFlags = (graph?.quality_flags || []).filter((flag: any) => flag.severity === 'warn');
+  const score = Math.max(0, 100 - missing.length * 18 - (degradedAi ? 15 : 0) - (stale ? 15 : 0) - failingQualityFlags.length * 20 - Math.min(15, warningQualityFlags.length * 5) - Math.min(20, (graph?.unmatched_interfaces?.length || 0)));
+  return {
+    status: missing.length || stale || degradedAi || warningQualityFlags.length || failingQualityFlags.length ? 'warn' : 'pass',
+    score,
+    conforms_to_was: missing.length === 0 && !stale,
+    missing_required_sections: missing,
+    ai_enrichment: {
+      required: true,
+      default_summary_status: graph?.workspace_narrative?.source === 'ai' ? 'applied' : 'degraded',
+      reason: graph?.workspace_narrative?.degraded_reason || null,
+    },
+    quality_flags: graph?.quality_flags || [],
+    freshness: freshnessResult || null,
+    validation: graph?.validation || null,
+  };
 }
 
 function runtimeObservationId(): string {
@@ -1145,6 +1296,551 @@ function registerTools(server: McpServer) {
   );
 
   server.registerTool(
+    'run_workspace_analysis',
+    {
+      title: 'Run Workspace Analysis',
+      description: 'Build and persist a WAS-compliant Workspace analysis after every associated project/repo already has a CAS analysis. This composes completed CAS outputs only: projects, deployables, distribution units, interfaces, runtime topology, infrastructure overlay, integration links, data-flow paths, inferred insights, unmatched interfaces, workspace capabilities, entity indexes, health, risk, and AI-required workspace narrative.',
+      inputSchema: {
+        name: z.string().optional().describe('Workspace analysis name. Defaults to analyzed-workspace.'),
+        paths: z.array(z.string()).optional().describe('Analyzed project paths to include. Omit to use all analyzed repositories.'),
+        workspace_root: z.string().optional().describe('Optional workspace folder. When provided, include analyzed repos under this root and honor its .klaurorc source.exclude and .klauroignore policy.'),
+        exclude: z.array(z.string()).optional().describe('Optional additional workspace exclude patterns, e.g. ["desktop-tray/**", "archives/**"].'),
+        ai_enrichment: z.boolean().optional().describe('Defaults to true. Set false for fast deterministic WAS generation; the returned narrative is marked AI-required degraded.'),
+      } as any,
+    } as any,
+    async ({ name, paths, workspace_root, exclude, ai_enrichment }: any) => withErrorHandling(async () => {
+      const { repositories, skippedInputs, inputPolicy } = await loadWorkspaceRepositoryAnalyses({ paths, workspaceRoot: workspace_root, exclude });
+      const graphName = name || 'analyzed-workspace';
+      const baseGraph = crossCodebaseAnalysis.buildWorkspaceAnalysis(graphName, repositories);
+      const graph = ai_enrichment === false
+        ? markWorkspaceAiEnrichmentSkipped(baseGraph)
+        : await crossCodebaseAnalysis.enrichWorkspaceAnalysisNarrative(baseGraph);
+      const saved = await saveCrossCodebaseSystemGraph(graph);
+      return json({
+        saved,
+        summary: crossCodebaseAnalysis.summarizeWorkspaceAnalysis(graph),
+        input_policy: inputPolicy,
+        skipped_inputs: skippedInputs,
+        next_mcp_calls: [
+          { tool: 'get_workspace_analysis', args: { analysis_id_or_name: saved.id, detail_level: 'overview' } },
+          { tool: 'get_workspace_agent_packet', args: { analysis_id_or_name: saved.id, task: { task_type: 'cross-repo' } } },
+          { tool: 'get_workspace_analysis', args: { analysis_id_or_name: saved.id, detail_level: 'evidence' } },
+        ],
+      });
+    })
+  );
+
+  server.registerTool(
+    'resolve_workspace_analysis',
+    {
+      title: 'Resolve Workspace Analysis',
+      description: 'Find the best persisted WAS analysis for one or more local paths. Use this before cross-repo work when the agent has a workspace folder but not a workspace analysis id.',
+      inputSchema: {
+        path: z.string().optional().describe('Workspace, repo, or subfolder path to resolve.'),
+        paths: z.array(z.string()).optional().describe('Optional set of repo/workspace paths to match against WAS inputs.'),
+      } as any,
+    } as any,
+    async ({ path, paths }: any) => withErrorHandling(async () => {
+      const selectedPaths = [...(path ? [path] : []), ...(paths || [])];
+      const result = await resolveWorkspaceAnalysisForPaths(selectedPaths);
+      if (!result.selected) return json({ selected: null, alternatives: result.alternatives, error: 'No workspace analyses found.' });
+      const freshnessResult = await buildWorkspaceFreshness(result.selected);
+      return json({
+        selected: {
+          id: result.selected.id,
+          name: result.selected.name,
+          generated_at: result.selected.generated_at,
+          composition: result.selected.composition,
+          health: result.selected.health,
+          freshness: freshnessResult,
+        },
+        alternatives: result.alternatives,
+        next_mcp_calls: [
+          { tool: 'get_workspace_agent_packet', args: { analysis_id_or_name: result.selected.id, task: { task_type: 'cross-repo' } } },
+          { tool: 'get_workspace_analysis', args: { analysis_id_or_name: result.selected.id, detail_level: 'overview' } },
+        ],
+      });
+    })
+  );
+
+  server.registerTool(
+    'get_workspace_summary',
+    {
+      title: 'Get Workspace Summary',
+      description: 'Return a compact WAS human/agent summary: AI-required narrative status, product value, composition, health, capabilities, workflows, domains, entities, infrastructure overlay, risk, and freshness.',
+      inputSchema: {
+        analysis_id_or_name: z.string().describe('Workspace analysis id or name'),
+      } as any,
+    } as any,
+    async ({ analysis_id_or_name }: any) => withErrorHandling(async () => {
+      const graph = await loadCrossCodebaseSystemGraph(analysis_id_or_name);
+      if (!graph) return json({ error: `Workspace analysis not found: ${analysis_id_or_name}` });
+      const freshnessResult = await buildWorkspaceFreshness(graph);
+      return json({
+        id: graph.id,
+        name: graph.name,
+        generated_at: graph.generated_at,
+        narrative: {
+          source: graph.workspace_narrative.source,
+          confidence: graph.workspace_narrative.confidence,
+          title: graph.workspace_narrative.title,
+          product_value_summary: graph.workspace_narrative.product_value_summary,
+          description: compactText(graph.workspace_narrative.description, 480),
+          domains: graph.workspace_narrative.domains?.slice(0, 8),
+          key_capabilities: graph.workspace_narrative.key_capabilities?.slice(0, 8),
+          relationship_summary: graph.workspace_narrative.relationship_summary?.slice(0, 8),
+          ai_required: graph.workspace_narrative.ai_required,
+          generation_pass: graph.workspace_narrative.generation_pass,
+          degraded_reason: graph.workspace_narrative.degraded_reason,
+        },
+        composition: graph.composition,
+        health: graph.health,
+        freshness: freshnessResult,
+        domains: (graph.workspace_domains || []).slice(0, 8).map(compactWorkspaceSemanticItem),
+        capabilities: (graph.workspace_capabilities || []).slice(0, 8).map(compactWorkspaceSemanticItem),
+        workflows: (graph.workspace_workflows || []).slice(0, 6).map(compactWorkspaceSemanticItem),
+        entities: (graph.workspace_entities || []).slice(0, 8).map(compactWorkspaceSemanticItem),
+        infrastructure_overlay: graph.infrastructure_overlay ? {
+          status: graph.infrastructure_overlay.status,
+          summary: graph.infrastructure_overlay.summary,
+          environments: graph.infrastructure_overlay.environments.slice(0, 6).map((environment: any) => ({
+            name: environment.name,
+            provider: environment.provider,
+            type: environment.type,
+            resource_count: environment.resource_count,
+            deployable_ids: environment.deployable_ids?.slice?.(0, 5),
+            infrastructure_kinds: environment.infrastructure_kinds?.slice?.(0, 5),
+          })),
+          shared_resources: graph.infrastructure_overlay.shared_resources.slice(0, 6).map((resource: any) => ({
+            name: resource.name,
+            kind: resource.kind,
+            usage: resource.usage,
+            environment: resource.environment,
+            project_ids: resource.project_ids?.slice?.(0, 4),
+          })),
+          gaps: graph.infrastructure_overlay.gaps.slice(0, 4).map((gap: any) => ({
+            kind: gap.kind,
+            message: compactText(gap.message || gap.description || gap.name, 160),
+            evidence: gap.evidence?.slice?.(0, 2),
+          })),
+        } : undefined,
+        risk_areas: (graph.risk_areas || []).slice(0, 6).map((risk: any) => ({
+          id: risk.id,
+          title: risk.title,
+          severity: risk.severity,
+          description: compactText(risk.description, 180),
+          project_ids: risk.project_ids?.slice?.(0, 4),
+          deployable_ids: risk.deployable_ids?.slice?.(0, 4),
+          evidence: risk.evidence?.slice?.(0, 3),
+        })),
+        activity: graph.activity,
+        telemetry: graph.telemetry,
+      });
+    })
+  );
+
+  server.registerTool(
+    'get_workspace_analysis',
+    {
+      title: 'Get Workspace Analysis',
+      description: 'Load a persisted WAS-compliant Workspace analysis by id or name. Use detail_level=overview for the compact repo/app map, connections for deployable links and insights, evidence for interface/runtime evidence, or full for the complete graph.',
+      inputSchema: {
+        analysis_id_or_name: z.string().describe('Workspace analysis id or name'),
+        detail_level: z.enum(['overview', 'connections', 'evidence', 'full']).optional().describe('Retrieval depth. Defaults to overview for MCP/API efficiency.'),
+      } as any,
+    } as any,
+    async ({ analysis_id_or_name, detail_level }: any) => withErrorHandling(async () => {
+      const graph = await loadCrossCodebaseSystemGraph(analysis_id_or_name);
+      if (!graph) return json({ error: `Workspace analysis not found: ${analysis_id_or_name}` });
+      return json(crossCodebaseAnalysis.selectWorkspaceAnalysisDetail(graph, detail_level || 'overview'));
+    })
+  );
+
+  server.registerTool(
+    'get_workspace_agent_packet',
+    {
+      title: 'Get Workspace Agent Packet',
+      description: 'Load a compact WAS-backed packet for cross-repo agent work. Use before broad multi-repo exploration: selected surfaces with deployable flags, source-backed runtime links, package/topology/inferred candidates, isolated surfaces, token budget, agent read-next guidance, and follow-up MCP calls.',
+      inputSchema: {
+        analysis_id_or_name: z.string().describe('Workspace analysis id or name'),
+        task: z.object({
+          task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional(),
+          target: z.string().optional(),
+          instructions: z.string().optional(),
+          max_apps: z.number().optional(),
+          max_connections: z.number().optional(),
+          max_external_dependencies: z.number().optional(),
+        }).optional().describe('Task context for selecting compact workspace facts.'),
+      } as any,
+    } as any,
+    async ({ analysis_id_or_name, task }: any) => withErrorHandling(async () => {
+      const graph = await loadCrossCodebaseSystemGraph(analysis_id_or_name);
+      if (!graph) return json({ error: `Workspace analysis not found: ${analysis_id_or_name}` });
+      return json(crossCodebaseAnalysis.buildWorkspaceAgentPacket(graph, task || {}));
+    })
+  );
+
+  server.registerTool(
+    'get_workspace_freshness',
+    {
+      title: 'Get Workspace Freshness',
+      description: 'Check whether a persisted WAS is current against the CAS analyses for its input repos.',
+      inputSchema: {
+        analysis_id_or_name: z.string().describe('Workspace analysis id or name'),
+      } as any,
+    } as any,
+    async ({ analysis_id_or_name }: any) => withErrorHandling(async () => {
+      const graph = await loadCrossCodebaseSystemGraph(analysis_id_or_name);
+      if (!graph) return json({ error: `Workspace analysis not found: ${analysis_id_or_name}` });
+      return json(await buildWorkspaceFreshness(graph));
+    })
+  );
+
+  server.registerTool(
+    'validate_was_contract',
+    {
+      title: 'Validate WAS Contract',
+      description: 'Score a persisted WAS for required sections, freshness, AI-required narrative enrichment, and relationship evidence readiness.',
+      inputSchema: {
+        analysis_id_or_name: z.string().describe('Workspace analysis id or name'),
+      } as any,
+    } as any,
+    async ({ analysis_id_or_name }: any) => withErrorHandling(async () => {
+      const graph = await loadCrossCodebaseSystemGraph(analysis_id_or_name);
+      if (!graph) return json({ error: `Workspace analysis not found: ${analysis_id_or_name}` });
+      const freshnessResult = await buildWorkspaceFreshness(graph);
+      return json(validateWasGraph(graph, freshnessResult));
+    })
+  );
+
+  server.registerTool(
+    'get_workspace_health',
+    {
+      title: 'Get Workspace Health',
+      description: 'Return workspace health, activity, telemetry, trust, and highest-priority risk areas from WAS.',
+      inputSchema: {
+        analysis_id_or_name: z.string().describe('Workspace analysis id or name'),
+      } as any,
+    } as any,
+    async ({ analysis_id_or_name }: any) => withErrorHandling(async () => {
+      const graph = await loadCrossCodebaseSystemGraph(analysis_id_or_name);
+      if (!graph) return json({ error: `Workspace analysis not found: ${analysis_id_or_name}` });
+      return json({ health: graph.health, activity: graph.activity, telemetry: graph.telemetry, priority_work_items: graph.priority_work_items || [], risk_areas: (graph.risk_areas || []).slice(0, 12) });
+    })
+  );
+
+  server.registerTool(
+    'get_workspace_risk_packet',
+    {
+      title: 'Get Workspace Risk Packet',
+      description: 'Return WAS risk areas filtered by project, deployable, interface, severity, or target text, with MCP follow-up calls.',
+      inputSchema: {
+        analysis_id_or_name: z.string().describe('Workspace analysis id or name'),
+        target: z.string().optional().describe('Optional project/deployable/interface/risk text filter.'),
+        severity: z.enum(['critical', 'high', 'medium', 'low']).optional(),
+        limit: z.number().optional(),
+      } as any,
+    } as any,
+    async ({ analysis_id_or_name, target, severity, limit }: any) => withErrorHandling(async () => {
+      const graph = await loadCrossCodebaseSystemGraph(analysis_id_or_name);
+      if (!graph) return json({ error: `Workspace analysis not found: ${analysis_id_or_name}` });
+      const terms = String(target || '').toLowerCase();
+      const risks = (graph.risk_areas || [])
+        .filter((risk: any) => !severity || risk.severity === severity)
+        .filter((risk: any) => !terms || JSON.stringify(risk).toLowerCase().includes(terms))
+        .slice(0, Number(limit) || 20);
+      return json({ analysis_id: graph.id, risks, health: graph.health });
+    })
+  );
+
+  server.registerTool(
+    'get_workspace_capability_map',
+    {
+      title: 'Get Workspace Capability Map',
+      description: 'Return whole-workspace domains, primary capabilities, workflows, and linked deployables from WAS.',
+      inputSchema: {
+        analysis_id_or_name: z.string().describe('Workspace analysis id or name'),
+        target: z.string().optional().describe('Optional capability/domain/workflow text filter.'),
+        limit: z.number().optional(),
+      } as any,
+    } as any,
+    async ({ analysis_id_or_name, target, limit }: any) => withErrorHandling(async () => {
+      const graph = await loadCrossCodebaseSystemGraph(analysis_id_or_name);
+      if (!graph) return json({ error: `Workspace analysis not found: ${analysis_id_or_name}` });
+      const terms = String(target || '').toLowerCase();
+      const bounded = (items: any[]) => items.filter(item => !terms || JSON.stringify(item).toLowerCase().includes(terms)).slice(0, Number(limit) || 30);
+      return json({
+        analysis_id: graph.id,
+        domains: bounded(graph.workspace_domains || []),
+        capabilities: bounded(graph.workspace_capabilities || []),
+        workflows: bounded(graph.workspace_workflows || []),
+      });
+    })
+  );
+
+  server.registerTool(
+    'get_workspace_entity_map',
+    {
+      title: 'Get Workspace Entity Map',
+      description: 'Return whole-workspace entity concepts and entity paths assembled from repo-level CAS data entities, lineage, workflows, capabilities, and cross-repo flows. Repo-local entity details stay in CAS; use next_mcp_calls to drill down.',
+      inputSchema: {
+        analysis_id_or_name: z.string().describe('Workspace analysis id or name'),
+        target: z.string().optional().describe('Optional entity, project, workflow, capability, field, or service text filter.'),
+        include_paths: z.boolean().optional().describe('Include entity paths. Defaults to true.'),
+        detail_level: z.enum(['summary', 'evidence', 'full']).optional().describe('summary returns compact traversal context; evidence adds bounded refs/evidence; full returns the legacy shape and may be large.'),
+        limit: z.number().optional(),
+      } as any,
+    } as any,
+    async ({ analysis_id_or_name, target, include_paths, detail_level, limit }: any) => withErrorHandling(async () => {
+      const graph = await loadCrossCodebaseSystemGraph(analysis_id_or_name);
+      if (!graph) return json({ error: `Workspace analysis not found: ${analysis_id_or_name}` });
+      const terms = String(target || '').toLowerCase();
+      const max = Number(limit) || 30;
+      const matches = (item: any) => !terms || JSON.stringify(item).toLowerCase().includes(terms);
+      const projectById = new Map<string, any>((graph.codebases || []).map((codebase: any) => [String(codebase.id), codebase]));
+      const compactRefs = (refs: any[] = [], refLimit = 4) => refs.slice(0, refLimit).map((ref: any) => ({
+        project_id: ref.project_id,
+        project_path: projectById.get(ref.project_id)?.path || ref.project_id,
+        entity_id: ref.entity_id,
+        file: ref.file,
+        role: ref.role,
+      }));
+      const lineageCalls = (refs: any[] = [], callLimit = 4) => refs.slice(0, callLimit).map((ref: any) => ({
+        tool: 'get_data_lineage',
+        args: { path: projectById.get(ref.project_id)?.path || ref.project_id, entity_id: ref.entity_id },
+      }));
+      const compactEntity = (entity: any) => {
+        if (detail_level === 'full') {
+          return {
+            ...entity,
+            next_mcp_calls: lineageCalls(entity.entity_refs || [], 6),
+          };
+        }
+        const refs = entity.entity_refs || [];
+        const compact: any = {
+          id: entity.id,
+          name: entity.name,
+          description: entity.description,
+          description_source: entity.description_source,
+          confidence: entity.confidence,
+          project_ids: (entity.project_ids || []).slice(0, 8),
+          project_count: (entity.project_ids || []).length,
+          entity_ref_count: refs.length,
+          path_count: entity.path_count || 0,
+          related_workflow_count: (entity.related_workflow_ids || []).length,
+          related_capability_count: (entity.related_capability_ids || []).length,
+          sensitive_fields: (entity.sensitive_fields || []).slice(0, 8),
+          next_mcp_calls: lineageCalls(refs, 4),
+        };
+        if (detail_level === 'evidence') {
+          compact.entity_refs = compactRefs(refs, 8);
+          compact.related_workflow_ids = (entity.related_workflow_ids || []).slice(0, 8);
+          compact.related_capability_ids = (entity.related_capability_ids || []).slice(0, 8);
+        }
+        return compact;
+      };
+      const compactPath = (pathItem: any) => {
+        if (detail_level === 'full') return pathItem;
+        const refs = pathItem.entity_refs || [];
+        const steps = (pathItem.steps || []).slice(0, detail_level === 'evidence' ? 6 : 3).map((step: any) => ({
+          sequence: step.sequence,
+          project_id: step.project_id,
+          deployable_id: step.deployable_id,
+          role: step.role,
+          label: step.label,
+          edge_type: step.edge_type,
+          evidence_quality: step.evidence_quality,
+          file: step.file,
+          node_id: detail_level === 'evidence' ? step.node_id : undefined,
+        }));
+        const compact: any = {
+          id: pathItem.id,
+          name: pathItem.name,
+          entity_name: pathItem.entity_name,
+          path_type: pathItem.path_type,
+          description: pathItem.description,
+          source: compactPathEndpoint(pathItem.source),
+          target: compactPathEndpoint(pathItem.target),
+          steps,
+          step_count: (pathItem.steps || []).length,
+          project_ids: (pathItem.project_ids || []).slice(0, 8),
+          project_count: (pathItem.project_ids || []).length,
+          via: steps.length ? undefined : (pathItem.via || []).slice(0, 4).map((hop: any) => ({
+            project_id: hop.project_id,
+            deployable_id: hop.deployable_id,
+            role: hop.role,
+            label: hop.label,
+            file: hop.file,
+            node_id: detail_level === 'evidence' ? hop.node_id : undefined,
+          })),
+          sensitive: Boolean(pathItem.sensitive),
+          confidence: pathItem.confidence,
+          evidence_quality: pathItem.evidence_quality,
+          next_mcp_calls: (pathItem.next_mcp_calls || []).slice(0, 3),
+        };
+        if (detail_level === 'evidence') {
+          compact.evidence = (pathItem.evidence || []).slice(0, 8);
+          compact.entity_refs = compactRefs(refs, 6);
+        }
+        return compact;
+      };
+      const compactPathEndpoint = (endpoint: any) => endpoint ? {
+        project_id: endpoint.project_id,
+        deployable_id: endpoint.deployable_id,
+        role: endpoint.role,
+        label: endpoint.label,
+        file: endpoint.file,
+        node_id: endpoint.node_id,
+      } : undefined;
+      const matchingEntities = (graph.workspace_entities || []).filter(matches);
+      const matchingPaths = (graph.workspace_entity_paths || []).filter(matches);
+      const topEntities = [...(graph.workspace_entities || [])]
+        .sort((left: any, right: any) =>
+          ((right.path_count || 0) + (right.related_workflow_ids || []).length + (right.related_capability_ids || []).length + (right.entity_refs || []).length) -
+          ((left.path_count || 0) + (left.related_workflow_ids || []).length + (left.related_capability_ids || []).length + (left.entity_refs || []).length) ||
+          String(left.name || '').localeCompare(String(right.name || ''))
+        );
+      const entitySpecific = Boolean(terms && matchingEntities.length > 0);
+      const selectedEntities = entitySpecific
+        ? matchingEntities
+        : [...matchingEntities, ...topEntities.filter((entity: any) => !matchingEntities.some((match: any) => match.id === entity.id))];
+      const selectedEntityNames = new Set(selectedEntities.slice(0, max).map((entity: any) => String(entity.name || '').toLowerCase()));
+      const entities = selectedEntities
+        .slice(0, max)
+        .map(compactEntity);
+      const selectedPaths = entitySpecific
+        ? matchingPaths
+        : [...matchingPaths, ...(graph.workspace_entity_paths || []).filter((pathItem: any) => selectedEntityNames.has(String(pathItem.entity_name || '').toLowerCase()))];
+      const paths = include_paths === false ? [] : selectedPaths
+        .slice(0, max)
+        .map(compactPath);
+      return json({
+        analysis_id: graph.id,
+        detail_level: detail_level || 'summary',
+        totals: {
+          workspace_entities: (graph.workspace_entities || []).length,
+          workspace_entity_paths: (graph.workspace_entity_paths || []).length,
+          matching_entities: matchingEntities.length,
+          matching_entity_paths: matchingPaths.length,
+          returned_entities: entities.length,
+          returned_entity_paths: paths.length,
+          fallback_top_entities_included: !entitySpecific && terms ? entities.length - matchingEntities.length : 0,
+          truncated: selectedEntities.length > entities.length || (include_paths !== false && selectedPaths.length > paths.length),
+        },
+        entities,
+        entity_paths: paths,
+        guidance: [
+          'This is a compact index. Use totals to decide whether to narrow target or request another page/target slice.',
+          'Workspace entities are an index over repo-level CAS entities and lineage, not a duplicate source of truth.',
+          'Use the included get_data_lineage calls to drill into repo-local readers, writers, boundaries, and tests before editing.',
+        ],
+      });
+    })
+  );
+
+  server.registerTool(
+    'get_workspace_workflow',
+    {
+      title: 'Get Workspace Workflow',
+      description: 'Return a specific WAS workflow with connected deployables, interfaces, evidence, and repo-level drilldown calls.',
+      inputSchema: {
+        analysis_id_or_name: z.string().describe('Workspace analysis id or name'),
+        workflow_id_or_name: z.string().describe('Workflow id or name'),
+      } as any,
+    } as any,
+    async ({ analysis_id_or_name, workflow_id_or_name }: any) => withErrorHandling(async () => {
+      const graph = await loadCrossCodebaseSystemGraph(analysis_id_or_name);
+      if (!graph) return json({ error: `Workspace analysis not found: ${analysis_id_or_name}` });
+      const key = String(workflow_id_or_name || '').toLowerCase();
+      const workflow = (graph.workspace_workflows || []).find((item: any) => String(item.id).toLowerCase() === key || String(item.name).toLowerCase().includes(key));
+      if (!workflow) return json({ error: `Workspace workflow not found: ${workflow_id_or_name}` });
+      const apps = (graph.applications || []).filter((app: any) => workflow.deployable_ids?.includes(app.id));
+      return json({
+        workflow,
+        deployables: apps,
+        interfaces: (graph.interfaces || []).filter((item: any) => workflow.interface_ids?.includes(item.id)),
+        next_mcp_calls: apps.map((app: any) => ({ tool: 'get_agent_work_packet', args: { path: app.codebase_path, workspace_analysis_id: graph.id, task: { task_type: 'trace', target: workflow.name } } })),
+      });
+    })
+  );
+
+  server.registerTool(
+    'list_workspace_analyses',
+    {
+      title: 'List Workspace Analyses',
+      description: 'List persisted WAS-compliant Workspace analyses.',
+      inputSchema: {} as any,
+    } as any,
+    async () => withErrorHandling(async () => {
+      return json(await listCrossCodebaseSystemGraphs());
+    })
+  );
+
+  server.registerTool(
+    'run_cross_codebase_analysis',
+    {
+      title: 'Run Cross-Codebase Analysis',
+      description: 'Deprecated name for run_workspace_analysis. Builds a WAS-compliant Workspace analysis from completed CAS outputs.',
+      inputSchema: {
+        name: z.string().optional().describe('Workspace analysis name. Defaults to analyzed-workspace.'),
+        paths: z.array(z.string()).optional().describe('Analyzed project paths to include. Omit to use all analyzed repositories.'),
+        workspace_root: z.string().optional().describe('Optional workspace folder. When provided, include analyzed repos under this root and honor its .klaurorc source.exclude and .klauroignore policy.'),
+        exclude: z.array(z.string()).optional().describe('Optional additional workspace exclude patterns.'),
+        ai_enrichment: z.boolean().optional().describe('Defaults to true. Set false for fast deterministic WAS generation.'),
+      } as any,
+    } as any,
+    async ({ name, paths, workspace_root, exclude, ai_enrichment }: any) => withErrorHandling(async () => {
+      const { repositories, skippedInputs, inputPolicy } = await loadWorkspaceRepositoryAnalyses({ paths, workspaceRoot: workspace_root, exclude });
+      const graphName = name || 'analyzed-workspace';
+      const baseGraph = crossCodebaseAnalysis.buildWorkspaceAnalysis(graphName, repositories);
+      const graph = ai_enrichment === false
+        ? markWorkspaceAiEnrichmentSkipped(baseGraph)
+        : await crossCodebaseAnalysis.enrichWorkspaceAnalysisNarrative(baseGraph);
+      const saved = await saveCrossCodebaseSystemGraph(graph);
+      return json({
+        saved,
+        summary: crossCodebaseAnalysis.summarizeWorkspaceAnalysis(graph),
+        input_policy: inputPolicy,
+        skipped_inputs: skippedInputs,
+        next_mcp_calls: [
+          { tool: 'get_workspace_analysis', args: { analysis_id_or_name: saved.id, detail_level: 'overview' } },
+          { tool: 'get_workspace_agent_packet', args: { analysis_id_or_name: saved.id, task: { task_type: 'cross-repo' } } },
+          { tool: 'get_workspace_analysis', args: { analysis_id_or_name: saved.id, detail_level: 'evidence' } },
+        ],
+      });
+    })
+  );
+
+  server.registerTool(
+    'get_cross_codebase_analysis',
+    {
+      title: 'Get Cross-Codebase Analysis',
+      description: 'Deprecated name for get_workspace_analysis. Loads a persisted WAS-compliant Workspace analysis by id or name.',
+      inputSchema: {
+        analysis_id_or_name: z.string().describe('Workspace analysis id or name'),
+        detail_level: z.enum(['overview', 'connections', 'evidence', 'full']).optional().describe('Retrieval depth. Defaults to overview for MCP/API efficiency.'),
+      } as any,
+    } as any,
+    async ({ analysis_id_or_name, detail_level }: any) => withErrorHandling(async () => {
+      const graph = await loadCrossCodebaseSystemGraph(analysis_id_or_name);
+      if (!graph) return json({ error: `Workspace analysis not found: ${analysis_id_or_name}` });
+      return json(crossCodebaseAnalysis.selectWorkspaceAnalysisDetail(graph, detail_level || 'overview'));
+    })
+  );
+
+  server.registerTool(
+    'list_cross_codebase_analyses',
+    {
+      title: 'List Cross-Codebase Analyses',
+      description: 'Deprecated name for list_workspace_analyses. Lists persisted WAS-compliant Workspace analyses.',
+      inputSchema: {} as any,
+    } as any,
+    async () => withErrorHandling(async () => {
+      return json(await listCrossCodebaseSystemGraphs());
+    })
+  );
+
+  server.registerTool(
     'save_workspace_graph',
     {
       title: 'Save Workspace Graph',
@@ -1221,6 +1917,7 @@ function registerTools(server: McpServer) {
       description: 'Single default agent-start payload. Returns readiness, start context, tool plan, work packet, and a ready-to-use prompt for Codex, Claude, Cursor, or any coding agent.',
       inputSchema: {
         path: z.string().describe('Project path'),
+        workspace_analysis_id: z.string().optional().describe('Optional WAS id/name. When provided, include compact workspace context alongside repo CAS context.'),
         task: z.object({
           task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional(),
           target: z.string().optional(),
@@ -1413,9 +2110,14 @@ function registerTools(server: McpServer) {
         }).optional().describe('Task context for building the work packet'),
       } as any,
     } as any,
-    async ({ path, task }: any) => withErrorHandling(async () => {
+    async ({ path, workspace_analysis_id, task }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      return json(await agentAdoption.getAgentWorkPacket(cas, path, task || {}));
+      const packet = await agentAdoption.getAgentWorkPacket(cas, path, task || {});
+      const workspaceGraph = workspace_analysis_id ? await loadCrossCodebaseSystemGraph(workspace_analysis_id) : null;
+      return json(workspaceGraph ? {
+        ...packet,
+        workspace_context: crossCodebaseAnalysis.buildWorkspaceAgentPacket(workspaceGraph, task || { target: path }),
+      } : packet);
     })
   );
 
@@ -1452,6 +2154,7 @@ function registerTools(server: McpServer) {
       description: 'One-call agent work packet with compact repo-local idiom context. Use for edits where matching local naming, placement, boundaries, testing, migrations, and framework style matters.',
       inputSchema: {
         path: z.string().describe('Project path'),
+        workspace_analysis_id: z.string().optional().describe('Optional WAS id/name for compact workspace context.'),
         task: z.object({
           task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional(),
           target: z.string().optional(),
@@ -1462,12 +2165,14 @@ function registerTools(server: McpServer) {
         }).optional().describe('Task context for building the work packet'),
       } as any,
     } as any,
-    async ({ path, task }: any) => withErrorHandling(async () => {
+    async ({ path, workspace_analysis_id, task }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       const packet = await agentAdoption.getAgentWorkPacket(cas, path, task || {});
+      const workspaceGraph = workspace_analysis_id ? await loadCrossCodebaseSystemGraph(workspace_analysis_id) : null;
       return json({
         ...packet,
         idiom_context: (packet.work_context as any).idiom_context,
+        ...(workspaceGraph ? { workspace_context: crossCodebaseAnalysis.buildWorkspaceAgentPacket(workspaceGraph, task || { target: path }) } : {}),
       });
     })
   );
@@ -1479,6 +2184,7 @@ function registerTools(server: McpServer) {
       description: 'Product-level agent workspace for a task: orientation, target resolution, file-read plan, repo rules, evidence policy, validation plan, and next MCP calls. Use before broad source exploration.',
       inputSchema: {
         path: z.string().describe('Project path'),
+        workspace_analysis_id: z.string().optional().describe('Optional WAS id/name for compact workspace context.'),
         task: z.object({
           task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional(),
           target: z.string().optional(),
@@ -1493,9 +2199,14 @@ function registerTools(server: McpServer) {
         }).optional().describe('Task context for the agent workbench'),
       } as any,
     } as any,
-    async ({ path, task }: any) => withErrorHandling(async () => {
+    async ({ path, workspace_analysis_id, task }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      return json(await agentWorkflow.openAgentWorkbench(cas, path, task || {}));
+      const workbench = await agentWorkflow.openAgentWorkbench(cas, path, task || {});
+      const workspaceGraph = workspace_analysis_id ? await loadCrossCodebaseSystemGraph(workspace_analysis_id) : null;
+      return json(workspaceGraph ? {
+        ...workbench,
+        workspace_context: crossCodebaseAnalysis.buildWorkspaceAgentPacket(workspaceGraph, task || { target: path }),
+      } : workbench);
     })
   );
 
@@ -1506,6 +2217,7 @@ function registerTools(server: McpServer) {
       description: 'Before an agent edits or presents a plan, evaluate whether the proposed change fits the codebase model, idioms, invariants, tests, migrations, auth/tenant boundaries, and risk surface.',
       inputSchema: {
         path: z.string().describe('Project path'),
+        workspace_analysis_id: z.string().optional().describe('Optional WAS id/name for cross-repo blast-radius context.'),
         target: z.string().optional().describe('Node id, file path, or natural language target'),
         plan_text: z.string().optional().describe('Agent plan text to evaluate'),
         diff_text: z.string().optional().describe('Optional unified diff to evaluate'),
@@ -1522,16 +2234,25 @@ function registerTools(server: McpServer) {
         }).optional().describe('Optional task context'),
       } as any,
     } as any,
-    async ({ path, target, plan_text, diff_text, files, task }: any) => withErrorHandling(async () => {
+    async ({ path, workspace_analysis_id, target, plan_text, diff_text, files, task }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      return json(await agentWorkflow.preflightAgentChange(cas, path, {
+      const preflight = await agentWorkflow.preflightAgentChange(cas, path, {
         target,
         planText: plan_text,
         diffText: diff_text,
         files,
         task,
         includeWorkingTree: false,
-      }));
+      });
+      const workspaceGraph = workspace_analysis_id ? await loadCrossCodebaseSystemGraph(workspace_analysis_id) : null;
+      return json(workspaceGraph ? {
+        ...preflight,
+        workspace_context: crossCodebaseAnalysis.buildWorkspaceAgentPacket(workspaceGraph, {
+          task_type: task?.task_type || 'modify',
+          target: target || task?.target,
+          instructions: plan_text || task?.instructions,
+        }),
+      } : preflight);
     })
   );
 
@@ -2284,7 +3005,7 @@ function registerTools(server: McpServer) {
     } as any,
     async ({ path, file_path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      return json(query.getFileNodes(cas, file_path));
+      return json(query.getFileNodes(cas, file_path, path));
     })
   );
 
@@ -3742,6 +4463,27 @@ function registerResources(server: McpServer) {
       const graph = await loadWorkspaceGraph(String(params.workspace_id_or_name));
       if (!graph) return { contents: [{ uri: uri.href, text: JSON.stringify({ error: 'Workspace graph not found' }) }] };
       return { contents: [{ uri: uri.href, text: JSON.stringify({ summary: workspaceGraph.summarizeWorkspaceGraph(graph), graph }) }] };
+    }
+  );
+
+  server.registerResource(
+    'workspace-analyses-list',
+    'klauro://workspace-analyses',
+    { title: 'Workspace Analyses', description: 'Persisted WAS-compliant Workspace analyses generated from completed CAS analyses.', mimeType: 'application/json' } as any,
+    async () => {
+      const graphs = await listCrossCodebaseSystemGraphs();
+      return { contents: [{ uri: 'klauro://workspace-analyses', text: JSON.stringify(graphs) }] };
+    }
+  );
+
+  server.registerResource(
+    'workspace-analysis',
+    new ResourceTemplate('klauro://workspace-analysis/{analysis_id_or_name}', { list: undefined }),
+    { title: 'Workspace Analysis', description: 'Persisted WAS-compliant Workspace analysis with projects, deployables, interfaces, integration links, runtime topology, insights, and unmatched interfaces.', mimeType: 'application/json' } as any,
+    async (uri, params) => {
+      const graph = await loadCrossCodebaseSystemGraph(String(params.analysis_id_or_name));
+      if (!graph) return { contents: [{ uri: uri.href, text: JSON.stringify({ error: 'Workspace analysis not found' }) }] };
+      return { contents: [{ uri: uri.href, text: JSON.stringify({ summary: crossCodebaseAnalysis.summarizeWorkspaceAnalysis(graph), graph }) }] };
     }
   );
 
