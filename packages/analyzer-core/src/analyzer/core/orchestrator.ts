@@ -989,6 +989,10 @@ export class AnalyzerOrchestrator {
     const externalServices = this.buildExternalServices(allNodes, allExitPoints, allLibraries);
     logTiming('pp_architecture', phaseStart);
 
+    // Structural design-pattern detection. Per-language analyzers rarely emit
+    // design patterns (get_patterns was empty on every TS/JS codebase); detect the
+    // common ones from node/edge structure so the tool returns real signal.
+    allPatterns.push(...this.detectDesignPatterns(allNodes, allEdges));
     logTiming('pp_detectPatterns', Date.now());
 
     phaseStart = Date.now();
@@ -6909,6 +6913,50 @@ export class AnalyzerOrchestrator {
         recommendation: 'Break the cycle by introducing an interface or restructuring dependencies'
       }))
     });
+  }
+
+  /**
+   * Detect common design/architectural patterns from node + edge structure. This
+   * is deliberately conservative (name conventions + structural shape), so it
+   * complements rather than replaces deeper per-language detection.
+   */
+  private detectDesignPatterns(nodes: CASNode[], edges: CASEdge[]): CASPattern[] {
+    const patterns: CASPattern[] = [];
+    const classLike = nodes.filter(n => n.type === 'class' || n.type === 'interface' || n.type === 'service');
+    const byId = new Map(nodes.map(n => [n.id, n]));
+    const nameMatches = (re: RegExp) => classLike.filter(n => re.test(n.name));
+    const add = (id: string, name: string, type: CASPattern['type'], description: string, instances: CASNode[], confidence: number, benefits?: string[]) => {
+      if (instances.length === 0) return;
+      patterns.push({ id: `pattern_${id}`, type, name, description, confidence, instances: instances.slice(0, 40).map(n => n.id), metadata: { language_specific: false, benefits } });
+    };
+
+    // Name-convention patterns.
+    add('repository', 'Repository', 'design-pattern', 'Classes that encapsulate data access behind a collection-like interface (names ending in Repository).', nameMatches(/Repository$/), 0.85, ['Decouples domain from persistence']);
+    add('builder', 'Builder', 'design-pattern', 'Step-by-step construction of complex objects (names ending in Builder).', nameMatches(/Builder$/), 0.8, ['Readable construction of complex objects']);
+    add('factory', 'Factory', 'design-pattern', 'Object creation delegated to factory types/methods (names ending in Factory).', nameMatches(/Factory$/), 0.8);
+    add('service', 'Service Layer', 'architectural-pattern', 'Business logic organized into service classes (names ending in Service).', nameMatches(/Service$/), 0.75);
+    add('controller', 'Controller', 'architectural-pattern', 'Request handlers organized into controller classes (names ending in Controller).', nameMatches(/Controller$/), 0.8);
+    add('middleware', 'Middleware/Chain', 'design-pattern', 'Cross-cutting behavior applied as a chain (middleware nodes / names ending in Middleware).', nodes.filter(n => n.type === 'middleware' || /Middleware$/.test(n.name)), 0.7);
+    add('observer', 'Observer / Pub-Sub', 'design-pattern', 'Event subscription and notification (subscribe/emit/publish/notify methods).', nodes.filter(n => (n.type === 'method' || n.type === 'function') && /^(subscribe|unsubscribe|emit|publish|notify|addEventListener|on[A-Z])/.test(n.name)), 0.6);
+
+    // Singleton: a static accessor returning the single instance.
+    add('singleton', 'Singleton', 'design-pattern', 'A single shared instance exposed via a static accessor (getInstance/instance).', nodes.filter(n => (n.type === 'method' || n.type === 'property') && /^(getInstance|instance|shared|default)$/.test(n.name) && /static/i.test((n.subcategories || []).join(' ') + JSON.stringify(n.metadata || {}))), 0.6);
+
+    // Strategy / Template Method: an abstract/base type with >= 3 subtypes.
+    const inheritEdges = edges.filter(e => e.type === 'inherits' || e.type === 'implements' || e.type === 'extends');
+    const childrenByBase = new Map<string, CASNode[]>();
+    for (const e of inheritEdges) {
+      const base = byId.get(e.target); const child = byId.get(e.source);
+      if (!base || !child) continue;
+      childrenByBase.set(e.target, [...(childrenByBase.get(e.target) || []), child]);
+    }
+    for (const [baseId, children] of childrenByBase) {
+      if (children.length < 3) continue;
+      const base = byId.get(baseId);
+      add(`strategy_${baseId}`, `Strategy/Polymorphism (${base?.name})`, 'design-pattern', `${children.length} interchangeable implementations of ${base?.name} selected at runtime.`, [base!, ...children], 0.7, ['Open/closed: add behavior without modifying callers']);
+    }
+
+    return patterns;
   }
 
   private buildIntents(nodes: CASNode[]): CASIntent[] {
