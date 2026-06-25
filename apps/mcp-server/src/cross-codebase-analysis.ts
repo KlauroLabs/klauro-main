@@ -1166,7 +1166,10 @@ async function generateWorkspaceAiText(additionalContext: Record<string, unknown
   if (useDirectOllamaWorkspaceAi()) {
     return await generateWorkspaceOllamaJson(additionalContext);
   }
-  return await aiService.generateComponentDescription({ additionalContext });
+  // Workspace text (capability merge + narrative) is structured/grounded; allow it
+  // to use the faster, more reliable structured model when configured.
+  const model = (additionalContext.model as string) || process.env.OPENAI_STRUCTURED_MODEL || undefined;
+  return await aiService.generateComponentDescription({ additionalContext: { ...additionalContext, model } });
 }
 
 /**

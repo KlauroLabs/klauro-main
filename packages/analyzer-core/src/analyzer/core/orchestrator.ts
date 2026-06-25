@@ -7283,9 +7283,13 @@ export class AnalyzerOrchestrator {
     // Bundle sizes are tuned to keep the per-repo extraction call small enough to
     // fit a multi-repo workspace within a modest daily token budget (e.g. Groq
     // free tier 100k TPD) while preserving enough signal for a good catalog.
+    // Bundles are kept tight: the dominant cost of this call is OUTPUT generation
+    // on shared 70B inference, so a smaller prompt + a hard cap on description
+    // length keeps the call reliably under the timeout budget (a long catalog
+    // would otherwise take 90-175s and time out).
     const journeys = (input.userJourneys || [])
       .filter(journey => journey.journey_kind === 'user-facing' || journey.criticality === 'critical' || journey.criticality === 'high')
-      .slice(0, 16)
+      .slice(0, 12)
       .map(journey => ({
         name: journey.name,
         writes: (journey.terminal_effects?.entities_written || []).slice(0, 3),
@@ -7293,9 +7297,9 @@ export class AnalyzerOrchestrator {
       }));
     const entities = [...(input.dataEntities || [])]
       .sort((left, right) => (right.fields?.length || 0) - (left.fields?.length || 0))
-      .slice(0, 22)
+      .slice(0, 18)
       .map(entity => ({ name: entity.name, fields: (entity.fields || []).slice(0, 6).map(field => field.name) }));
-    const candidateAreas = input.candidateCapabilities.map(capability => capability.name).slice(0, 30);
+    const candidateAreas = input.candidateCapabilities.map(capability => capability.name).slice(0, 24);
     const services = (input.externalServices || []).slice(0, 12);
 
     // A cold hosted-70B catalog call (large fact bundle in, 6-14 JSON capabilities
@@ -7311,7 +7315,10 @@ export class AnalyzerOrchestrator {
         return await Promise.race([
           aiService.generateComponentDescription({
             additionalContext: {
-              task: 'You are cataloging the BUSINESS VALUE of a codebase. From the deterministic facts (user journeys, data entities, candidate route areas, external services), return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","entities":["..."],"journeys":["..."]}]}. Rules: (1) Each capability is something the product lets its USERS or OPERATORS do, in plain product language, grounded in the journeys and entities it touches — NOT a CRUD/route/lifecycle mechanism. (2) MERGE related route areas and journeys into real capabilities; do not emit one per route. (3) EXCLUDE purely supporting or infrastructural concerns (authentication, session/token handling, logging, notifications, caching, message brokering, generic CRUD, health checks, config) UNLESS that concern is the product\'s actual value. (4) category="core" only for the capabilities that ARE the product\'s value proposition; "supporting" for necessary-but-not-the-value. (5) entities/journeys must be names copied from the supplied facts. Return 6 to 14 capabilities, ordered most-core first.',
+              // Structured extraction tolerates a smaller/faster model well and
+              // benefits from its reliability; opt in via OPENAI_STRUCTURED_MODEL.
+              model: process.env.OPENAI_STRUCTURED_MODEL || undefined,
+              task: 'You are cataloging the BUSINESS VALUE of a codebase. From the deterministic facts (user journeys, data entities, candidate route areas, external services), return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","entities":["..."],"journeys":["..."]}]}. Rules: (1) Each capability is something the product lets its USERS or OPERATORS do, in plain product language, grounded in the journeys and entities it touches — NOT a CRUD/route/lifecycle mechanism. (2) MERGE related route areas and journeys into real capabilities; do not emit one per route. (3) EXCLUDE purely supporting or infrastructural concerns (authentication, session/token handling, logging, notifications, caching, message brokering, generic CRUD, health checks, config) UNLESS that concern is the product\'s actual value. (4) category="core" only for the capabilities that ARE the product\'s value proposition; "supporting" for necessary-but-not-the-value. (5) entities/journeys must be names copied from the supplied facts. (6) Each description is ONE concise sentence, 8-16 words — no clauses, no lists. Return 6 to 12 capabilities, ordered most-core first.',
               style: 'Write like a product engineer or PM. Plain language. No markdown. Value verbs (lets, gives, tracks, surfaces, exposes, manages, monitors, secures, settles, enforces). No CRUD verbs, no "lifecycle", no route counts, no file paths, no marketing fluff. Each description names the concrete user-facing concept the entities point to.',
               product: {
                 name: input.systemName,

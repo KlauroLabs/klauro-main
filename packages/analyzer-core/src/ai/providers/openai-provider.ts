@@ -94,12 +94,20 @@ export class OpenAIProvider implements AIProvider {
 
   async generateDescription(context: AIAnalysisContext): Promise<string> {
     const prompt = prompts.generateDescriptionPrompt(context);
+    const requestedMaxTokens = Number(context.additionalContext?.maxTokens || context.additionalContext?.max_tokens || '');
+    const responseFormat = context.additionalContext?.responseFormat === 'json' || context.additionalContext?.response_format === 'json'
+      ? 'json'
+      : 'text';
     
     try {
       const response = await this.makeRequest(prompt, {
         temperature: 0.3,
-        maxTokens: 500,
-        systemPrompt: prompts.systemPrompts.description
+        maxTokens: Number.isFinite(requestedMaxTokens) && requestedMaxTokens > 0
+          ? requestedMaxTokens
+          : Math.max(500, this.config.openai.maxTokens),
+        systemPrompt: prompts.systemPrompts.description,
+        responseFormat,
+        model: typeof context.additionalContext?.model === 'string' ? context.additionalContext.model : undefined,
       });
 
       return this.extractContent(response);
@@ -177,13 +185,15 @@ export class OpenAIProvider implements AIProvider {
       maxTokens?: number;
       systemPrompt?: string;
       responseFormat?: 'text' | 'json';
+      model?: string;
     } = {}
   ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
     const {
       temperature = this.config.openai.temperature,
       maxTokens = this.config.openai.maxTokens,
       systemPrompt,
-      responseFormat = 'text'
+      responseFormat = 'text',
+      model
     } = options;
 
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
@@ -200,8 +210,12 @@ export class OpenAIProvider implements AIProvider {
       content: prompt
     });
 
+    // Per-call model override: structured-extraction calls (capability catalog /
+    // workspace merge) can point at a faster, more reliable model than the prose
+    // model via options.model, since shared 70B inference latency is highly
+    // variable and those calls are on the analysis critical path.
     const requestParams: OpenAI.Chat.Completions.ChatCompletionCreateParams = {
-      model: this.config.openai.model,
+      model: model || this.config.openai.model,
       messages,
       temperature,
       max_tokens: maxTokens,
@@ -237,7 +251,7 @@ export class OpenAIProvider implements AIProvider {
         return response;
       },
       {
-        retries: this.config.openai.maxRetries,
+        retries: Math.max(0, Number(process.env.KLAURO_OLLAMA_MAX_RETRIES ?? this.config.openai.maxRetries)),
         onFailedAttempt: (error) => {
           this.logger.warn(`OpenAI request attempt ${error.attemptNumber} failed:`, error.message);
         },
@@ -326,7 +340,7 @@ export class OpenAIProvider implements AIProvider {
         } as OpenAI.Chat.Completions.ChatCompletion;
       },
       {
-        retries: this.config.openai.maxRetries,
+        retries: Math.max(0, Number(process.env.KLAURO_OLLAMA_MAX_RETRIES ?? this.config.openai.maxRetries)),
         onFailedAttempt: (error) => {
           this.logger.warn(`Ollama request attempt ${error.attemptNumber} failed:`, error.message);
         },
