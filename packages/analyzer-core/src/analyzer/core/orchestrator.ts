@@ -6959,6 +6959,29 @@ export class AnalyzerOrchestrator {
         });
       }
 
+      // Structural-role intent: an architectural unit (class/service/controller/
+      // interface/repository/gateway/module) has an inferable purpose from its role
+      // and description even with no comments — and these are exactly the nodes an
+      // agent most often asks intent about. Without this, get_intent is empty for
+      // central classes. Bounded to architectural types to avoid per-method noise.
+      const ARCHITECTURAL_INTENT_TYPES = new Set(['class', 'service', 'controller', 'interface', 'repository', 'gateway', 'module']);
+      const rolePurpose = node.description || node.documentation?.summary;
+      let synthesizedPurpose: string | undefined;
+      if (evidence.length === 0 && ARCHITECTURAL_INTENT_TYPES.has(node.type)) {
+        // Architectural nodes rarely carry a generated description, but their
+        // purpose is still inferable from role + name + location. Synthesize one
+        // so get_intent is useful for the nodes agents ask about most.
+        const dir = (node.source?.file || '').replace(/\\/g, '/').split('/').slice(-2, -1)[0];
+        synthesizedPurpose = rolePurpose ||
+          `${this.humanizeDomainKey(node.name)} — ${node.type}${dir ? ` in the ${dir} layer` : ''}`;
+        evidence.push({
+          type: 'naming_convention',
+          source: node.source?.file || 'unknown',
+          excerpt: `${node.type} role: ${synthesizedPurpose.substring(0, 200)}`,
+          confidence_contribution: rolePurpose ? 0.3 : 0.2
+        });
+      }
+
       if (evidence.length > 0) {
         const totalConfidence = evidence.reduce((sum, e) => sum + e.confidence_contribution, 0);
         const confidence: 'high' | 'medium' | 'low' =
@@ -6967,7 +6990,7 @@ export class AnalyzerOrchestrator {
 
         const intent: CASIntent = {
           node_id: node.id,
-          inferred_purpose: node.description || node.documentation?.summary,
+          inferred_purpose: node.description || node.documentation?.summary || synthesizedPurpose,
           confidence,
           workaround_indicator: isWorkaround ? {
             is_workaround: true,
