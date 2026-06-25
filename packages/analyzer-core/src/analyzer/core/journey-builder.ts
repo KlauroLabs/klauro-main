@@ -112,6 +112,17 @@ const UTILITY_CLASS_NAME = /(helper|helpers|extension|extensions|util|utils|util
 // (GetIntOrDefault). The following character must be uppercase/underscore so
 // ordinary words (Settings, Together, Formatting) never match.
 const ACCESSOR_METHOD_NAME = /^_?(?:[Gg]et|[Ss]et|[Ii]s|[Hh]as|[Tt]o|[Ff]rom|[Oo]n|[Hh]andle|[Ff]ormat|[Pp]arse|[Ff]ind|[Tt]ry|[Ii]nit)[A-Z_]/;
+// Bare std/trait/iterator method names (Rust, Go, etc.) that surface as terminal
+// nodes but are never a business outcome — "Create device -> into" is noise.
+// Exact-match only, so a real method like `insertOrder`/`findUser` is unaffected.
+const STD_TRAIT_METHOD_NAMES = new Set([
+  'into', 'from', 'find', 'insert', 'remove', 'push', 'pop', 'write', 'read', 'clone',
+  'collect', 'iter', 'iter_mut', 'into_iter', 'map', 'filter', 'fold', 'next', 'take',
+  'unwrap', 'expect', 'ok_or', 'and_then', 'or_else', 'as_str', 'as_ref', 'as_mut',
+  'to_string', 'to_owned', 'borrow', 'deref', 'default', 'len', 'is_empty', 'contains',
+  'extend', 'drain', 'clear', 'replace', 'swap', 'fmt', 'hash', 'eq', 'cmp', 'clamp',
+  'as_kebab', 'as_kebab_case', 'as_snake_case', 'to_snake_case', 'serialize', 'deserialize',
+]);
 
 /** Lifecycle methods, hooks, widget builders, HTTP-verb handler names. */
 function isFrameworkPlumbingName(rawName: string): boolean {
@@ -130,6 +141,7 @@ function isUtilityNodeName(rawName: string): boolean {
   if (!name) return false;
   if (UTILITY_CLASS_NAME.test(name)) return true;
   if (ACCESSOR_METHOD_NAME.test(name)) return true;
+  if (STD_TRAIT_METHOD_NAMES.has(name.toLowerCase())) return true;
   return false;
 }
 
