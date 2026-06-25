@@ -13083,8 +13083,21 @@ export class AnalyzerOrchestrator {
         if (sigOp === 'create' || sigOp === 'read' || sigOp === 'update' || sigOp === 'delete') bucket(noun)[sigOp].add(node.id);
       }
       if (!op) continue;
-      for (const token of new Set((node.name || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(part => part.length >= 4).map(part => this.singularizeNoun(part)))) {
-        bucket(token)[op].add(node.id);
+      // Attribute by core noun in the method name, but only the DIRECT object — skip
+      // the leading verb and any noun that is a prepositional object ("...ForUser",
+      // "...ByOwner"): revokeAllForUser revokes tokens FOR a user, it does not delete
+      // the User entity. Without this, generic per-user/per-tenant helpers get
+      // mis-attributed and produce nonsense lineage ("logout -> User deleted").
+      const PREPOSITIONS = new Set(['for', 'by', 'with', 'from', 'to', 'of', 'per', 'on', 'in', 'into', 'at', 'as', 'via']);
+      const orderedTokens = (node.name || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+      const attributedNouns = new Set<string>();
+      for (let i = 1; i < orderedTokens.length; i++) {
+        if (orderedTokens[i].length < 4) continue;
+        if (PREPOSITIONS.has(orderedTokens[i - 1])) continue;
+        const noun = this.singularizeNoun(orderedTokens[i]);
+        if (attributedNouns.has(noun)) continue;
+        attributedNouns.add(noun);
+        bucket(noun)[op].add(node.id);
       }
     }
     return index;
