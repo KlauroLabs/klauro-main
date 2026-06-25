@@ -1114,6 +1114,13 @@ export class AnalyzerOrchestrator {
     });
     logTiming('pp_userJourneys', phaseStart);
 
+    // No per-language analyzer emits behaviors, so get_behaviors was empty even on
+    // request-driven apps. A user journey IS a named system behavior with an
+    // execution flow — synthesize behaviors from journeys when none were detected.
+    if (allBehaviors.length === 0 && userJourneyResult.journeys.length > 0) {
+      allBehaviors.push(...this.synthesizeBehaviorsFromJourneys(userJourneyResult.journeys));
+    }
+
     phaseStart = Date.now();
     const productEntryPointsForPurpose = this.filterPrimaryProductEntryPoints(allEntryPoints, allNodes, projectPath);
     const entryPointSummary = this.summarizeEntryPoints(productEntryPointsForPurpose);
@@ -6957,6 +6964,32 @@ export class AnalyzerOrchestrator {
     }
 
     return patterns;
+  }
+
+  /** A user journey is a named system behavior with an execution flow. */
+  private synthesizeBehaviorsFromJourneys(journeys: CASUserJourney[]): CASBehavior[] {
+    return journeys.slice(0, 100).map(journey => {
+      const steps = (journey.steps || []).slice(0, 24);
+      const flow = steps.slice(0, -1).map((step, i) => ({
+        from: step.node_id,
+        to: steps[i + 1].node_id,
+        action: steps[i + 1].name || 'calls',
+      }));
+      const writes = journey.terminal_effects?.entities_written || [];
+      return {
+        id: `behavior_${journey.id}`,
+        name: journey.name,
+        description: `${journey.journey_kind} behavior from ${journey.entry?.name || 'entry'}${writes.length ? ` writing ${writes.slice(0, 3).join(', ')}` : ''}.`,
+        nodes: steps.map(step => step.node_id),
+        flow,
+        metadata: {
+          journey_kind: journey.journey_kind,
+          criticality: journey.criticality,
+          entry_point_id: journey.entry_point_id,
+          derived_from: 'user_journey',
+        },
+      };
+    });
   }
 
   private buildIntents(nodes: CASNode[]): CASIntent[] {
