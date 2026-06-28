@@ -488,7 +488,7 @@ export function getDescriptionEnrichmentTargets(cas: CASOutput, projectPath?: st
       generation_status: systemGeneration?.status,
       suggested_tool: 'run_analysis_layer',
       suggested_args: {
-        layer: 'ui-overview-refresh',
+        layer: 'agent-fast-refresh',
         force_full: false,
       },
     });
@@ -700,21 +700,22 @@ function scoreLayeredDescriptionPolicy(cas: CASOutput): UsefulnessGate {
     systemGeneration,
     ...capabilityGenerations,
   ].filter(generation => generation?.attempted).length;
+  const requiredTargets = 1 + Math.min(capabilities.length, 8);
   const phases = cas.analysis_phases || [];
   const aiPhase = phases.find((phase: any) => phase.id === 'ai-enrichment' || phase.purpose === 'ai-enrichment');
   const details: string[] = [];
   let score = 0;
 
   if (clean(cas.enhanced_system_purpose?.inferred_description || cas.system?.description).length >= 40) score += 25;
-  else details.push('missing compact deterministic system orientation');
+  else details.push('missing compact system orientation');
   if (capabilities.length > 0) score += 25;
   else details.push('missing capabilities for fast agent orientation');
-  if (aiApplied === 0) score += 25;
-  else details.push(`agent-fast applied ${aiApplied} AI descriptions instead of deferring UI narrative work`);
-  if (attempted === 0 || aiPhase?.status === 'deferred' || aiPhase?.status === 'skipped') score += 25;
-  else details.push('AI enrichment was not clearly deferred for agent-fast focus');
+  if (aiApplied >= Math.min(requiredTargets, attempted || requiredTargets)) score += 25;
+  else details.push(`required AI summary/capability pass incomplete (${aiApplied}/${requiredTargets} applied)`);
+  if (aiPhase?.status === 'complete' || aiPhase?.status === 'partial' || attempted > 0) score += 25;
+  else details.push('required AI summary/capability enrichment was not attempted or recorded');
 
-  return gate('description-layering', score, details.length ? details.join('; ') : 'agent-fast defers AI descriptions while preserving compact orientation');
+  return gate('description-layering', score, details.length ? details.join('; ') : 'agent-fast includes required AI summary/capability descriptions while deferring deeper element descriptions');
 }
 
 function scoreCapabilityMap(cas: CASOutput, profile: AnalysisProfile): UsefulnessGate {

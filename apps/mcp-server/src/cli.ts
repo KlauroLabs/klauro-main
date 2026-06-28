@@ -6,7 +6,7 @@ import { getAgentBootstrap } from './agent-bootstrap';
 import { writeAgentDefaultConfig } from './agent-defaults';
 import { getAgentDoctor } from './agent-doctor';
 import { buildCASGoldenSnapshot } from './cas-contract';
-import { saveGoldenSnapshot } from './storage';
+import { listCrossCodebaseSystemGraphs, loadCrossCodebaseSystemGraph, saveCrossCodebaseSystemGraph, saveGoldenSnapshot } from './storage';
 import { getAgentWorkPacket } from './agent-adoption';
 import type { AgentTask, AgentTaskType } from './agent-adoption';
 import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
@@ -22,6 +22,7 @@ import { formatFullPurgeReport, formatProjectPurgeReport, purgeAll, purgeProject
 import { getAnalysisRunLogPath } from '../../../packages/analyzer-core/src/analyzer/core/run-log';
 import { formatBuildIdentity, getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { withAnalysisFocus, type AnalysisFocus } from './analysis-focus';
+import { buildCrossCodebaseSystemGraph, selectWorkspaceAnalysisDetail, summarizeCrossCodebaseSystemGraph, type WorkspaceDetailLevel } from './cross-codebase-analysis';
 import * as fs from 'fs-extra';
 import * as readline from 'readline';
 
@@ -54,6 +55,7 @@ interface ParsedArgs {
   host?: string;
   port?: number;
   dataDir?: string;
+  detailLevel?: WorkspaceDetailLevel;
   all: boolean;
   allAiCache: boolean;
   yes: boolean;
@@ -116,6 +118,12 @@ async function main(): Promise<void> {
     'greenfield-build-packet',
     'preview-get',
     'compare-iterations',
+    'workspace-analysis',
+    'workspace-get',
+    'workspace-list',
+    'cross-codebase-analysis',
+    'cross-codebase-get',
+    'cross-codebase-list',
     'support-bundle',
   ].includes(args.command)) {
     throw new Error(`Unknown command: ${args.command}`);
@@ -123,7 +131,7 @@ async function main(): Promise<void> {
   if (!args.path && ['init', 'analyze', 'upload-manifest', 'install-agent', 'github-import-plan'].includes(args.command)) {
     args.path = '.';
   }
-  if (!args.path && !['greenfield-preview', 'greenfield-guidance', 'greenfield-build-packet', 'preview-get', 'compare-iterations', 'support-bundle'].includes(args.command)) {
+  if (!args.path && !['greenfield-preview', 'greenfield-guidance', 'greenfield-build-packet', 'preview-get', 'compare-iterations', 'workspace-analysis', 'workspace-get', 'workspace-list', 'cross-codebase-analysis', 'cross-codebase-get', 'cross-codebase-list', 'support-bundle'].includes(args.command)) {
     throw new Error(`${args.command} requires a project path`);
   }
 
@@ -298,6 +306,38 @@ async function main(): Promise<void> {
       diffText: loadOptionalTextArg(args.diffText, args.diffFile),
     });
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
+  if (args.command === 'workspace-analysis' || args.command === 'cross-codebase-analysis') {
+    const selectedPaths = [...(args.path ? [projectPath] : []), ...args.referencePaths];
+    if (selectedPaths.length < 1) throw new Error('workspace-analysis requires at least one analyzed path. Pass a path plus --reference-path for each associated codebase.');
+    const repositories = [];
+    for (const selectedPath of selectedPaths) {
+      const absolute = path.resolve(selectedPath);
+      const cas = await withLogHandling(args.json, args.quiet, () => loadOrAnalyze(absolute, args.refresh));
+      repositories.push({ path: absolute, name: cas.system?.name || path.basename(absolute), cas });
+    }
+    const graph = buildCrossCodebaseSystemGraph(args.task.target || 'analyzed-system', repositories);
+    const saved = await saveCrossCodebaseSystemGraph(graph);
+    const result = { saved, summary: summarizeCrossCodebaseSystemGraph(graph), graph };
+    process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatWorkspaceAnalysisResult(result));
+    return;
+  }
+
+  if (args.command === 'workspace-get' || args.command === 'cross-codebase-get') {
+    const graph = await loadCrossCodebaseSystemGraph(args.previewId || args.task.target || 'analyzed-system');
+    if (!graph) throw new Error(`Workspace analysis not found: ${args.previewId || args.task.target || 'analyzed-system'}`);
+    const result = args.detailLevel && args.detailLevel !== 'full'
+      ? selectWorkspaceAnalysisDetail(graph, args.detailLevel)
+      : { summary: summarizeCrossCodebaseSystemGraph(graph), graph };
+    process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatWorkspaceAnalysisResult(result));
+    return;
+  }
+
+  if (args.command === 'workspace-list' || args.command === 'cross-codebase-list') {
+    const graphs = await listCrossCodebaseSystemGraphs();
+    process.stdout.write(args.json ? `${JSON.stringify(graphs, null, 2)}\n` : formatWorkspaceAnalysisList(graphs));
     return;
   }
 
@@ -500,6 +540,10 @@ function parseArgs(argv: string[]): ParsedArgs {
       parsed.port = Number(argv[++i]);
     } else if (arg === '--data-dir') {
       parsed.dataDir = argv[++i];
+    } else if (arg === '--detail-level') {
+      const value = argv[++i] as WorkspaceDetailLevel;
+      if (!['overview', 'connections', 'evidence', 'full'].includes(value)) throw new Error('--detail-level must be overview, connections, evidence, or full');
+      parsed.detailLevel = value;
     } else if (arg === '--mode') {
       parsed.mode = argv[++i] as 'local' | 'remote';
     } else if (arg === '--analysis-focus') {
@@ -560,6 +604,9 @@ function printHelp(): void {
     '  klauro greenfield-guidance --plan-file plan.md [--reference-path /existing/repo] [--proposed-files files.json] [--json]',
     '  klauro greenfield-build-packet [/empty/or/current/project] --plan-file plan.md [--reference-path /existing/repo] [--proposed-files files.json] [--json]',
     '  klauro greenfield-preview --plan-file plan.md --proposed-files files.json [--server-url app-url] [--json]',
+    '  klauro workspace-analysis /path/to/repo-a [--reference-path /path/to/repo-b] [--reference-path /path/to/repo-c] [--target name] [--json] [--refresh]',
+    '  klauro workspace-get --preview-id id-or-name [--detail-level overview|connections|evidence|full] [--json]',
+    '  klauro workspace-list [--json]',
     '  klauro support-bundle [/path/to/repo] [--output bundle.tar.gz] [--json]',
     '  klauro preview-get [--preview-id id] [--json]',
     '  klauro compare-iterations [--preview-id id] [--baseline-path /repo] [--proposed-path /repo-copy] [--json]',
@@ -582,6 +629,7 @@ function printHelp(): void {
     '  klauro greenfield-guidance --plan "Create a portfolio reporting service" --reference-path ~/dev/zerac/zerac-api',
     '  klauro greenfield-build-packet /tmp/new-app --plan "Build an operations command center" --json',
     '  klauro greenfield-preview --plan-file plan.md --proposed-files proposed-files.json',
+    '  klauro workspace-analysis ~/dev/soon/soon-ui --reference-path ~/dev/soon/soon-sync --target soon-workspace',
     '  klauro agent-start ~/dev/klauro/proof-of-concept --task-type debug --target auth',
     '  npm --silent run agent-start -- . --json',
     '  npm --silent run agent-install -- . --json',
@@ -814,6 +862,43 @@ function formatGreenfieldBuildPacket(result: Awaited<ReturnType<typeof buildGree
     ...result.next_agent_steps.map((step: string) => `- ${step}`),
     '',
   ].join('\n');
+}
+
+function formatWorkspaceAnalysisResult(result: any): string {
+  const summary = result.summary || (result.graph ? summarizeCrossCodebaseSystemGraph(result.graph) : {});
+  if (result.level === 'overview') {
+    return [
+      `Klauro workspace analysis: ${summary.name}`,
+      `Detail level: overview`,
+      `Projects: ${result.projects?.length || summary.codebase_count || 0}`,
+      `Deployables: ${result.deployables?.length || summary.application_count || 0}`,
+      `Connections: ${result.connections?.length || summary.application_link_count || summary.link_count || 0}`,
+      `External dependencies: ${result.external_dependencies?.length || 0}`,
+      `Isolated deployables: ${result.isolated_deployables?.length || summary.isolated_deployable_count || 0}`,
+      '',
+    ].filter(Boolean).join('\n');
+  }
+  return [
+    `Klauro workspace analysis: ${summary.name}`,
+    result.saved ? `Saved: ${result.saved.file}` : undefined,
+    `Codebases: ${summary.codebase_count}`,
+    `Applications: ${summary.application_count}`,
+    `Interfaces: ${summary.interface_count}`,
+    `Links: ${summary.link_count}`,
+    `Data-flow paths: ${summary.data_flow_path_count}`,
+    `Unmatched interfaces: ${summary.unmatched_interface_count}`,
+    '',
+  ].filter(Boolean).join('\n');
+}
+
+function formatWorkspaceAnalysisList(graphs: Awaited<ReturnType<typeof listCrossCodebaseSystemGraphs>>): string {
+  if (graphs.length === 0) return 'No workspace analyses saved.\n';
+  return graphs.map(graph => [
+    `${graph.name} (${graph.id})`,
+    `  saved: ${graph.saved_at || graph.generated_at || 'unknown'}`,
+    `  codebases: ${graph.codebase_count || 0}, interfaces: ${graph.interface_count || 0}, links: ${graph.link_count || 0}, unmatched: ${graph.unmatched_interface_count || 0}`,
+    `  file: ${graph.file}`,
+  ].join('\n')).join('\n\n') + '\n';
 }
 
 function formatPreviewPayload(payload: Awaited<ReturnType<typeof getPreviewAnalysis>>): string {

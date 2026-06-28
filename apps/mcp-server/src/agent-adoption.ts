@@ -420,11 +420,11 @@ function buildDescriptionContextForAgent(
       description_source: cas.enhanced_system_purpose?.description_source || null,
       reasons,
       guidance: reasons.length > 0
-        ? 'For UI/drilldown planning, refresh the ui-overview layer before relying on this narrative. For coding work, continue with structural CAS context first.'
+        ? 'Refresh the default agent-fast analysis layer before relying on this narrative; default CAS analysis requires AI system and primary capability descriptions. Continue with structural CAS context only as degraded fallback.'
         : 'System narrative is usable; do not spend description-generation tokens unless the user asks for a better explanation.',
       suggested_tool: reasons.length > 0 ? {
         tool: 'run_analysis_layer',
-        args: { path, layer: 'ui-overview-refresh', force_full: false },
+        args: { path, layer: 'agent-fast-refresh', force_full: false },
       } : null,
     };
   }
@@ -2262,7 +2262,7 @@ function compactTinyRisk(risk: any) {
     compact.target_file_changed_since_analysis = risk.target_file_changed_since_analysis;
   }
   const riskLevel = risk.risk?.risk_level || risk.risk_level;
-  if (riskLevel && riskLevel !== 'low') compact.risk_level = riskLevel;
+  if (riskLevel) compact.risk_level = riskLevel;
   const factors = Array.isArray(risk.risk?.risk_factors) ? risk.risk.risk_factors.slice(0, 1) : [];
   if (factors.length > 0) compact.factors = factors;
   return Object.keys(compact).length > 0 ? compact : null;
@@ -2514,6 +2514,7 @@ function compactTokenMinimalWorkPacket<T extends Record<string, any>>(packet: T)
     },
     selected_node: packet.selected_node,
     work_context: {
+      coding_context: compactTinyCodingContext(context.coding_context),
       architecture_context: architectureContext,
       risk: compactMinimalRisk(context.risk),
       risk_context: compactMinimalRiskContext(context.risk_context),

@@ -14,8 +14,23 @@ interface StepResult {
 const packageRoot = path.resolve(__dirname, '..');
 const fixturePath = path.join(packageRoot, 'fixtures', 'analysis-truth', 'fastapi-sqlalchemy');
 const maxTotalMs = Number(process.env.KLAURO_NEW_USER_E2E_MAX_MS || 10 * 60 * 1000);
+const DEFAULT_OUTPUT_PATH = path.join(packageRoot, '.klauro-new-user-e2e', 'latest-report.json');
+
+interface Options {
+  outputPath: string | null;
+}
+
+interface NewUserE2EReport {
+  generated_at: string;
+  status: 'pass' | 'fail';
+  total_ms: number;
+  max_total_ms: number;
+  workspace: string;
+  steps: StepResult[];
+}
 
 async function main(): Promise<void> {
+  const options = parseArgs(process.argv.slice(2));
   const startedAt = Date.now();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-new-user-e2e-'));
   const repo = path.join(root, 'repo');
@@ -108,7 +123,12 @@ async function main(): Promise<void> {
       throw new Error(`New-user E2E exceeded ${maxTotalMs}ms: ${totalMs}ms`);
     }
 
-    process.stdout.write(formatReport(results, totalMs, root));
+    const report = buildReport(results, totalMs, root);
+    if (options.outputPath) {
+      fs.mkdirSync(path.dirname(options.outputPath), { recursive: true });
+      fs.writeFileSync(options.outputPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+    }
+    process.stdout.write(formatReport(report));
   } finally {
     if (process.env.KLAURO_KEEP_NEW_USER_E2E !== 'true') {
       fs.rmSync(root, { recursive: true, force: true });
@@ -220,14 +240,48 @@ function parseJson(text: string): any {
   }
 }
 
-function formatReport(results: StepResult[], totalMs: number, root: string): string {
+function parseArgs(argv: string[]): Options {
+  let outputPath: string | null = DEFAULT_OUTPUT_PATH;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--output') {
+      outputPath = path.resolve(argv[++i]);
+    } else if (arg === '--no-output') {
+      outputPath = null;
+    } else if (arg === '--help' || arg === '-h') {
+      process.stdout.write([
+        'Usage: npm run new-user-e2e -- [options]',
+        '',
+        'Options:',
+        '  --output /path/report.json  Write JSON report (default: .klauro-new-user-e2e/latest-report.json)',
+        '  --no-output                 Do not write a JSON report.',
+      ].join('\n') + '\n');
+      process.exit(0);
+    }
+  }
+  return { outputPath };
+}
+
+function buildReport(results: StepResult[], totalMs: number, root: string): NewUserE2EReport {
   const failed = results.filter(result => !result.ok);
+  return {
+    generated_at: new Date().toISOString(),
+    status: failed.length ? 'fail' : 'pass',
+    total_ms: totalMs,
+    max_total_ms: maxTotalMs,
+    workspace: process.env.KLAURO_KEEP_NEW_USER_E2E === 'true' ? root : 'deleted',
+    steps: results,
+  };
+}
+
+function formatReport(report: NewUserE2EReport): string {
+  const failed = report.steps.filter(result => !result.ok);
   const lines = [
     `Klauro new-user E2E: ${failed.length ? 'FAIL' : 'PASS'}`,
-    `Total: ${totalMs}ms`,
-    `Workspace: ${process.env.KLAURO_KEEP_NEW_USER_E2E === 'true' ? root : 'deleted'}`,
+    `Total: ${report.total_ms}ms`,
+    `Workspace: ${report.workspace}`,
     '',
-    ...results.map(result => `${result.ok ? 'PASS' : 'FAIL'} ${result.name} (${result.ms}ms): ${result.detail}`),
+    ...report.steps.map(result => `${result.ok ? 'PASS' : 'FAIL'} ${result.name} (${result.ms}ms): ${result.detail}`),
     '',
   ];
   if (failed.length > 0) {

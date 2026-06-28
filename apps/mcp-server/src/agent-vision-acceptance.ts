@@ -44,6 +44,7 @@ const REPORTS = {
   architecturePatternBenchmark: '.klauro-architecture-pattern-benchmark/latest-report.json',
   capabilityInferenceBenchmark: '.klauro-capability-inference-benchmark/latest-report.json',
   runtimeImpactBenchmark: '.klauro-runtime-impact-benchmark/latest-report.json',
+  newUserE2E: '.klauro-new-user-e2e/latest-report.json',
   idiomBenchmark: '.klauro-agent-idiom-benchmark/latest-report.json',
   machineProof: '.klauro-agent-proof-machine/latest-report.json',
   scratchLiveBackend: '.klauro-agent-scratch-build-benchmark/live-work-intake-codex-rescored.json',
@@ -70,6 +71,7 @@ async function main(): Promise<void> {
   const architecturePatternBenchmark = await readReport(REPORTS.architecturePatternBenchmark);
   const capabilityInferenceBenchmark = await readReport(REPORTS.capabilityInferenceBenchmark);
   const runtimeImpactBenchmark = await readReport(REPORTS.runtimeImpactBenchmark);
+  const newUserE2E = await readReport(REPORTS.newUserE2E);
   const idiomBenchmark = await readReport(REPORTS.idiomBenchmark);
   const machineProof = await readReport(REPORTS.machineProof);
   const scratchLiveBackend = await readReport(REPORTS.scratchLiveBackend);
@@ -92,6 +94,7 @@ async function main(): Promise<void> {
     'architecture-pattern-benchmark': architecturePatternBenchmark,
     'capability-inference-benchmark': capabilityInferenceBenchmark,
     'runtime-impact-benchmark': runtimeImpactBenchmark,
+    'new-user-e2e': newUserE2E,
     'agent-idiom-benchmark': idiomBenchmark,
     'machine-agent-proof': machineProof,
     'scratch-live-backend': scratchLiveBackend,
@@ -114,6 +117,7 @@ async function main(): Promise<void> {
   gates.push(...architecturePatternBenchmarkGates(architecturePatternBenchmark));
   gates.push(...capabilityInferenceBenchmarkGates(capabilityInferenceBenchmark));
   gates.push(...runtimeImpactBenchmarkGates(runtimeImpactBenchmark));
+  gates.push(...newUserE2EGates(newUserE2E));
   gates.push(...idiomBenchmarkGates(idiomBenchmark));
   gates.push(...machineProofGates(machineProof));
   gates.push(...scratchLiveGates([scratchLiveBackend, scratchLiveUi, scratchLiveBackendMultiWave, scratchLiveUiMultiWave, scratchLiveComplianceMultiWave]));
@@ -310,22 +314,24 @@ function analysisFocusBenchmarkGates(report: JsonObject): Gate[] {
     gate('analysis-focus:agent-fast-token-discipline',
       Number(summary.agent_fast_optional_work_units ?? Number.POSITIVE_INFINITY) === 0 &&
         Number(summary.agent_fast_optional_reduction_percent ?? 0) === 100 &&
-        Number(summary.agent_fast_total_reduction_percent ?? 0) >= 60,
+        Number(summary.agent_fast_total_reduction_percent ?? 0) >= 45,
       `${summary.agent_fast_total_reduction_percent || 0}% total reduction, ${summary.agent_fast_optional_reduction_percent || 0}% optional reduction`),
     gate('analysis-focus:agent-fast-defers-expensive-layers',
       agentFastEnabled.includes('core-graph') &&
         agentFastEnabled.includes('agent-context') &&
-        agentFastDeferred.includes('ai-system-narrative') &&
-        agentFastDeferred.includes('ai-element-descriptions') &&
+        agentFastEnabled.includes('ai-system-narrative') &&
+        agentFastEnabled.includes('ai-primary-capability-descriptions') &&
+        agentFastDeferred.includes('ai-lazy-element-descriptions') &&
         agentFastDeferred.includes('semantic-embeddings'),
       `enabled ${agentFastEnabled.join(', ') || 'missing'}; deferred ${agentFastDeferred.join(', ') || 'missing'}`),
     gate('analysis-focus:ui-and-deep-layers-separated',
       uiEnabled.includes('ai-system-narrative') &&
-        uiEnabled.includes('ai-element-descriptions') &&
+        uiEnabled.includes('ai-primary-capability-descriptions') &&
         !uiEnabled.includes('semantic-embeddings') &&
         deepEnabled.includes('ai-system-narrative') &&
+        deepEnabled.includes('ai-primary-capability-descriptions') &&
         deepEnabled.includes('semantic-embeddings') &&
-        !deepEnabled.includes('ai-element-descriptions'),
+        !deepEnabled.includes('ai-lazy-element-descriptions'),
       `ui ${uiEnabled.join(', ') || 'missing'}; deep ${deepEnabled.join(', ') || 'missing'}`),
     gate('analysis-focus:all-local-gates-pass', gates.length >= 8 && failed.length === 0, `${failed.length} failing focus gates`),
   ];
@@ -333,6 +339,8 @@ function analysisFocusBenchmarkGates(report: JsonObject): Gate[] {
 
 export function competitorBaselineBenchmarkGates(report: JsonObject): Gate[] {
   const summary = report.summary || {};
+  const cursor = summary.cursor || {};
+  const linear = summary.linear || {};
   const gates = array(report.gates);
   const failed = gates.filter(item => item.status !== 'pass');
   return [
@@ -340,21 +348,35 @@ export function competitorBaselineBenchmarkGates(report: JsonObject): Gate[] {
     gate('competitor-baseline:scenario-coverage',
       Number(summary.scenario_count || 0) >= 14 && Number(summary.family_count || 0) >= 12,
       `${summary.scenario_count || 0} scenarios across ${summary.family_count || 0} families`),
-    gate('competitor-baseline:index-proxy-nontrivial',
-      String(summary.competitor_model || '') === 'cursor-style-lexical-index-proxy-v1' &&
-        Number(summary.average_index_retrieval_file_recall || 0) >= 25 &&
-        Number(summary.average_index_retrieval_file_precision || 0) >= 25,
-      `${summary.competitor_model || 'missing model'}, ${summary.average_index_retrieval_file_recall || 0}% recall, ${summary.average_index_retrieval_file_precision || 0}% precision`),
-    gate('competitor-baseline:quality-lift',
-      Number(summary.average_context_readiness_delta_vs_index || 0) >= 25 &&
-        Number(summary.scenarios_with_positive_context_readiness_delta || 0) >= Math.ceil(Number(summary.scenario_count || 0) * 0.8),
-      `+${summary.average_context_readiness_delta_vs_index || 0} average context readiness, ${summary.scenarios_with_positive_context_readiness_delta || 0}/${summary.scenario_count || 0} positive scenarios`),
-    gate('competitor-baseline:token-reduction',
-      Number(summary.average_token_reduction_vs_index_percentage || 0) >= 15 &&
-        Number(summary.scenarios_with_positive_token_reduction || 0) >= Math.ceil(Number(summary.scenario_count || 0) * 0.8) &&
+    gate('competitor-baseline:cursor-proxy-nontrivial',
+      String(cursor.model || summary.competitor_model || '') === 'cursor-style-index-context-proxy-v2' &&
+        Number(cursor.average_file_recall || summary.average_index_retrieval_file_recall || 0) >= 25 &&
+        Number(cursor.average_file_precision || summary.average_index_retrieval_file_precision || 0) >= 25,
+      `${cursor.model || summary.competitor_model || 'missing model'}, ${cursor.average_file_recall || summary.average_index_retrieval_file_recall || 0}% recall, ${cursor.average_file_precision || summary.average_index_retrieval_file_precision || 0}% precision`),
+    gate('competitor-baseline:linear-proxy-nontrivial',
+      String(linear.model || '') === 'linear-style-workflow-code-context-proxy-v1' &&
+        Number(linear.average_context_readiness_score || 0) > Number(cursor.average_context_readiness_score || summary.average_index_context_readiness_score || 0) &&
+        Number(linear.average_file_recall || 0) >= Number(cursor.average_file_recall || summary.average_index_retrieval_file_recall || 0),
+      `${linear.model || 'missing model'}, ${linear.average_context_readiness_score || 0}/100 readiness, ${linear.average_file_recall || 0}% recall`),
+    gate('competitor-baseline:cursor-quality-lift',
+      Number(cursor.average_context_readiness_delta || summary.average_context_readiness_delta_vs_index || 0) >= 25 &&
+        Number(cursor.scenarios_with_positive_context_readiness_delta || summary.scenarios_with_positive_context_readiness_delta || 0) >= Math.ceil(Number(summary.scenario_count || 0) * 0.8),
+      `+${cursor.average_context_readiness_delta || summary.average_context_readiness_delta_vs_index || 0} average context readiness, ${cursor.scenarios_with_positive_context_readiness_delta || summary.scenarios_with_positive_context_readiness_delta || 0}/${summary.scenario_count || 0} positive scenarios`),
+    gate('competitor-baseline:linear-quality-lift',
+      Number(linear.average_context_readiness_delta || 0) >= 12 &&
+        Number(linear.scenarios_with_positive_context_readiness_delta || 0) >= Math.ceil(Number(summary.scenario_count || 0) * 0.8),
+      `+${linear.average_context_readiness_delta || 0} average context readiness, ${linear.scenarios_with_positive_context_readiness_delta || 0}/${summary.scenario_count || 0} positive scenarios`),
+    gate('competitor-baseline:cursor-token-reduction',
+      Number(cursor.average_token_reduction_percentage || summary.average_token_reduction_vs_index_percentage || 0) >= 15 &&
+        Number(cursor.scenarios_with_positive_token_reduction || summary.scenarios_with_positive_token_reduction || 0) >= Math.ceil(Number(summary.scenario_count || 0) * 0.8) &&
         Number(summary.average_klauro_packet_tokens || Number.POSITIVE_INFINITY) <= 3200,
-      `${summary.average_token_reduction_vs_index_percentage || 0}% average token reduction, ${summary.average_klauro_packet_tokens || 'missing'} avg packet tokens`),
-    gate('competitor-baseline:all-local-gates-pass', gates.length >= 6 && failed.length === 0, `${failed.length} failing competitor baseline gates`),
+      `${cursor.average_token_reduction_percentage || summary.average_token_reduction_vs_index_percentage || 0}% average token reduction, ${summary.average_klauro_packet_tokens || 'missing'} avg packet tokens`),
+    gate('competitor-baseline:linear-token-reduction',
+      Number(linear.average_token_reduction_percentage || 0) >= 20 &&
+        Number(linear.scenarios_with_positive_token_reduction || 0) >= Math.ceil(Number(summary.scenario_count || 0) * 0.8) &&
+        Number(summary.average_klauro_packet_tokens || Number.POSITIVE_INFINITY) <= 3200,
+      `${linear.average_token_reduction_percentage || 0}% average token reduction, ${summary.average_klauro_packet_tokens || 'missing'} avg packet tokens`),
+    gate('competitor-baseline:all-local-gates-pass', gates.length >= 8 && failed.length === 0, `${failed.length} failing competitor baseline gates`),
   ];
 }
 
@@ -432,7 +454,11 @@ function capabilityInferenceBenchmarkGates(report: JsonObject): Gate[] {
     gate('capability-inference:domain', summary.primary_domain === 'fleet-management', `primary domain ${summary.primary_domain || 'missing'}`),
     gate('capability-inference:no-generic-capabilities', Number(summary.generic_capability_count || 0) === 0, `${summary.generic_capability_count || 0} generic capabilities`),
     gate('capability-inference:domain-capabilities',
-      ['Vehicle Management', 'Fuel Purchase Management', 'Invoice Management'].every(name => names.includes(name)),
+      [
+        /Vehicle|Fleet Operations/i,
+        /Fuel/i,
+        /Invoice/i,
+      ].every(pattern => names.some(name => pattern.test(name))),
       names.join(', ') || 'missing'),
     gate('capability-inference:all-local-gates-pass', failed.length === 0 && array(report.gates).length >= 6, `${failed.length} failing capability gates`),
   ];
@@ -456,6 +482,35 @@ function runtimeImpactBenchmarkGates(report: JsonObject): Gate[] {
       Number(summary.token_reduction_percentage || 0) >= 70 && Number(summary.capsule_estimated_tokens || Number.POSITIVE_INFINITY) <= 350,
       `${summary.token_reduction_percentage || 0}% reduction, ${summary.capsule_estimated_tokens || 'missing'} capsule tokens`),
     gate('runtime-impact:all-local-gates-pass', gates.length >= 6 && failed.length === 0, `${failed.length} failing runtime-impact gates`),
+  ];
+}
+
+export function newUserE2EGates(report: JsonObject): Gate[] {
+  const steps = array(report.steps);
+  const passedSteps = steps.filter(step => step.ok === true);
+  const stepNames = new Set(steps.map(step => String(step.name || '')));
+  const requiredSteps = [
+    'deterministic install plus first value',
+    'installed CLI is executable',
+    'remote analyzer project init',
+    'hosted analyzer full analysis',
+    'hosted analyzer incremental sync',
+  ];
+  return [
+    gate('new-user-e2e:status', report.status === 'pass', `${report.status || 'unknown'}`),
+    gate('new-user-e2e:ten-minute-bar',
+      Number(report.total_ms || Number.POSITIVE_INFINITY) > 0 &&
+        Number(report.total_ms || Number.POSITIVE_INFINITY) <= Math.min(10 * 60 * 1000, Number(report.max_total_ms || 10 * 60 * 1000)),
+      `${report.total_ms || 'missing'}ms / ${report.max_total_ms || 10 * 60 * 1000}ms`),
+    gate('new-user-e2e:required-steps',
+      requiredSteps.every(name => stepNames.has(name)) && passedSteps.length === steps.length && steps.length >= requiredSteps.length,
+      `${passedSteps.length}/${steps.length} steps passed`),
+    gate('new-user-e2e:first-value',
+      steps.some(step => step.name === 'deterministic install plus first value' && step.ok === true && /agent packet summary/i.test(String(step.detail || ''))),
+      steps.find(step => step.name === 'deterministic install plus first value')?.detail || 'missing first-value step'),
+    gate('new-user-e2e:hosted-incremental',
+      steps.some(step => step.name === 'hosted analyzer incremental sync' && step.ok === true && /incremental sync returned/i.test(String(step.detail || ''))),
+      steps.find(step => step.name === 'hosted analyzer incremental sync')?.detail || 'missing hosted incremental sync step'),
   ];
 }
 

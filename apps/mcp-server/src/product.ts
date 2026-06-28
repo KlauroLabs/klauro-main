@@ -135,6 +135,9 @@ export interface RuntimeEventInput {
   method?: string;
   route?: string;
   path?: string;
+  /** For `exit` (outbound) events: the external endpoint/target the call hit. */
+  endpoint?: string;
+  target?: string;
   status_code?: number;
   duration_ms?: number;
   error_message?: string;
@@ -596,6 +599,184 @@ export function buildCrossRepoRouteDrift(
     if (right.confidence !== left.confidence) return right.confidence - left.confidence;
     return left.path.localeCompare(right.path);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Cross-repo, field-level contract drift.
+//
+// buildCrossRepositoryLinks already fuses a consumer fetch in one repo to the
+// provider route in another (the seam). buildCrossRepoContractDrift goes one
+// layer deeper: at a confirmed seam it resolves the typed data-shape on EACH
+// side (from each repo's deterministically-extracted data_entities, which carry
+// {name, type} per field) and diffs them field-by-field. A field whose type
+// changed, was renamed, or was dropped between producer and consumer is a
+// contract drift at the seam. This is a WAS-level capability: a single-repo
+// indexer never sees both shapes at once, so it cannot compute the diff.
+//
+// Honest capability boundary: field NAMES and field TYPES are sourced from the
+// data_entities the analyzer already emits for class/model/entity declarations.
+// Plain TS `interface`/`type` DTOs that the analyzer does not classify as an
+// entity contribute no shape and are silently skipped (no fabricated drift).
+// ---------------------------------------------------------------------------
+
+export type ContractDriftKind = 'type-changed' | 'field-renamed' | 'field-removed' | 'field-added';
+
+export interface ContractFieldDrift {
+  field: string;
+  producer_type?: string;
+  consumer_type?: string;
+  kind: ContractDriftKind;
+}
+
+export interface CrossRepoContractDrift {
+  seam: {
+    method?: string;
+    endpoint?: string;
+    consumer_repo: string;
+    producer_repo: string;
+    contract: string;
+  };
+  drift: ContractFieldDrift[];
+  confidence: number;
+}
+
+interface EntityShape {
+  name: string;
+  fields: Map<string, { type: string; sensitive: boolean }>;
+}
+
+function entityShapes(cas: CASOutput): EntityShape[] {
+  const shapes: EntityShape[] = [];
+  for (const entity of cas.data_entities || []) {
+    if (!entity.fields || entity.fields.length === 0) continue;
+    const fields = new Map<string, { type: string; sensitive: boolean }>();
+    for (const field of entity.fields) {
+      fields.set(field.name, { type: (field.type || 'unknown'), sensitive: Boolean(field.is_sensitive) });
+    }
+    shapes.push({ name: entity.name, fields });
+  }
+  return shapes;
+}
+
+/** Singularize the last meaningful segment of a route to a candidate entity name. */
+function contractNameFromRoute(route: string): string | undefined {
+  const segments = routeSegments(normalizeRoute(route)).filter(
+    seg => seg && seg !== 'api' && !/^v\d+$/.test(seg) && seg !== ':param' && !seg.startsWith(':')
+  );
+  const noun = segments[segments.length - 1];
+  if (!noun) return undefined;
+  // accounts -> account, entries -> entry, addresses -> address
+  if (/ies$/i.test(noun)) return noun.replace(/ies$/i, 'y');
+  if (/(s|sh|ch|x|z)es$/i.test(noun)) return noun.replace(/es$/i, '');
+  if (/s$/i.test(noun) && !/ss$/i.test(noun)) return noun.replace(/s$/i, '');
+  return noun;
+}
+
+function matchShapeByName(shapes: EntityShape[], contract: string): EntityShape | undefined {
+  const target = contract.toLowerCase();
+  return (
+    shapes.find(shape => shape.name.toLowerCase() === target) ||
+    shapes.find(shape => shape.name.toLowerCase().replace(/(dto|entity|model|response|record)$/i, '') === target) ||
+    shapes.find(shape => shape.name.toLowerCase().includes(target))
+  );
+}
+
+function diffShapes(producer: EntityShape, consumer: EntityShape): ContractFieldDrift[] {
+  const drift: ContractFieldDrift[] = [];
+
+  for (const [name, producerField] of producer.fields) {
+    const consumerField = consumer.fields.get(name);
+    if (!consumerField) {
+      // Field exists on producer but not consumer. Distinguish a rename (a
+      // consumer-only field whose type matches an unmatched producer field) from
+      // an outright removal, so we report the more specific kind.
+      drift.push({ field: name, producer_type: producerField.type, kind: 'field-removed' });
+      continue;
+    }
+    if (
+      producerField.type !== 'unknown' &&
+      consumerField.type !== 'unknown' &&
+      producerField.type !== consumerField.type
+    ) {
+      drift.push({
+        field: name,
+        producer_type: producerField.type,
+        consumer_type: consumerField.type,
+        kind: 'type-changed',
+      });
+    }
+  }
+
+  for (const [name, consumerField] of consumer.fields) {
+    if (producer.fields.has(name)) continue;
+    drift.push({ field: name, consumer_type: consumerField.type, kind: 'field-added' });
+  }
+
+  // Promote removed+added pairs that share a type into a rename, which is the
+  // truer description of what changed at the seam.
+  const removed = drift.filter(d => d.kind === 'field-removed');
+  const added = drift.filter(d => d.kind === 'field-added');
+  for (const r of removed) {
+    const match = added.find(a => a.consumer_type && a.consumer_type === r.producer_type);
+    if (!match) continue;
+    drift.push({
+      field: `${r.field} -> ${match.field}`,
+      producer_type: r.producer_type,
+      consumer_type: match.consumer_type,
+      kind: 'field-renamed',
+    });
+    r.kind = '__consumed' as ContractDriftKind;
+    match.kind = '__consumed' as ContractDriftKind;
+  }
+
+  return drift.filter(d => (d.kind as string) !== '__consumed');
+}
+
+export function buildCrossRepoContractDrift(
+  repositories: Array<{ path: string; name: string; cas: CASOutput }>
+): CrossRepoContractDrift[] {
+  const findings: CrossRepoContractDrift[] = [];
+  const links = buildCrossRepositoryLinks(repositories).links.filter(link => link.type === 'api');
+  const byPath = new Map(repositories.map(repo => [repo.path, repo]));
+  const seen = new Set<string>();
+
+  for (const link of links) {
+    const consumer = byPath.get(link.source_repository?.path || '');
+    const producer = byPath.get(link.target_repository?.path || '');
+    if (!consumer || !producer) continue;
+
+    const endpoint = link.connection?.endpoint;
+    const method = link.connection?.method ? String(link.connection.method).toUpperCase() : undefined;
+    const contract = endpoint ? contractNameFromRoute(endpoint) : undefined;
+    if (!contract) continue;
+
+    const dedupeKey = `${consumer.path}->${producer.path}:${method || '*'}:${endpoint}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
+    const producerShape = matchShapeByName(entityShapes(producer.cas), contract);
+    const consumerShape = matchShapeByName(entityShapes(consumer.cas), contract);
+    // Field-level drift needs a typed shape on BOTH sides. If either side did not
+    // surface a typed entity for this contract, we cannot honestly diff it.
+    if (!producerShape || !consumerShape) continue;
+
+    const drift = diffShapes(producerShape, consumerShape);
+    if (drift.length === 0) continue;
+
+    findings.push({
+      seam: {
+        method,
+        endpoint,
+        consumer_repo: consumer.name,
+        producer_repo: producer.name,
+        contract,
+      },
+      drift,
+      confidence: link.metadata?.confidence ?? 0.8,
+    });
+  }
+
+  return findings.sort((a, b) => (a.seam.endpoint || '').localeCompare(b.seam.endpoint || ''));
 }
 
 function isRouteDriftCandidate(value: string): boolean {
@@ -1453,6 +1634,9 @@ export function correlateRuntimeEvent(cas: CASOutput, event: RuntimeEventInput):
   const routeMatch = matchRuntimeRoute(cas, event);
   if (routeMatch) matches.push(routeMatch);
 
+  const exitMatch = matchRuntimeExit(cas, event);
+  if (exitMatch) matches.push(exitMatch);
+
   const stackMatches = matchStackFrames(cas, event.stack);
   matches.push(...stackMatches);
 
@@ -1664,6 +1848,28 @@ function matchRuntimeRoute(cas: CASOutput, event: RuntimeEventInput): EvidenceRe
   return entryPoint ? entryPointRef(entryPoint, 0.9) : undefined;
 }
 
+/**
+ * Correlate an `exit` (outbound) runtime event — a call your service made to an
+ * external API/DB/queue — to the static EXIT POINT it exercised, by endpoint +
+ * method. The mirror of matchRuntimeRoute for the outbound side: "which external
+ * dependency is hot / failing" fused to where the code calls it.
+ */
+function matchRuntimeExit(cas: CASOutput, event: RuntimeEventInput): EvidenceRef | undefined {
+  if (event.type !== 'exit') return undefined;
+  const endpoint = normalizeRoute(event.endpoint || event.target || event.route || event.path || '');
+  if (!endpoint) return undefined;
+  const method = event.method?.toUpperCase();
+  const exit = (cas.exit_points || []).find(candidate => {
+    const candidateEndpoint = normalizeRoute(
+      (candidate.target as any)?.endpoint || (candidate.metadata as any)?.endpoint || candidate.name || ''
+    );
+    const candidateMethod = (candidate.operation as any)?.method?.toUpperCase();
+    const methodMatches = !method || !candidateMethod || candidateMethod === method;
+    return methodMatches && candidateEndpoint && routesCompatible(endpoint, candidateEndpoint);
+  });
+  return exit ? exitPointEvidence([exit])[0] : undefined;
+}
+
 function matchStackFrames(cas: CASOutput, stack?: string): EvidenceRef[] {
   if (!stack) return [];
   const fileMatches = [...stack.matchAll(/(?:at\s+.*\()?([/\w.-]+\.(?:ts|tsx|js|jsx|py|rs|go|java|cs|php)):(\d+):\d+\)?/g)];
@@ -1671,11 +1877,23 @@ function matchStackFrames(cas: CASOutput, stack?: string): EvidenceRef[] {
   for (const match of fileMatches.slice(0, 5)) {
     const file = match[1];
     const line = Number(match[2]);
-    const node = cas.nodes.find(candidate =>
-      candidate.source?.file &&
-      pathsCompatible(candidate.source.file, file) &&
-      (!candidate.source.line || !candidate.source.end_line || (candidate.source.line <= line && candidate.source.end_line >= line))
-    ) || cas.nodes.find(candidate => candidate.source?.file && pathsCompatible(candidate.source.file, file));
+    // Among every node in this file whose line range covers the frame, prefer the
+    // TIGHTEST enclosing one — a function/method, not the whole file/module — so a
+    // stack frame resolves to the symbol that actually threw, not its container.
+    const enclosing = cas.nodes
+      .filter(candidate =>
+        candidate.source?.file &&
+        pathsCompatible(candidate.source.file, file) &&
+        candidate.source.line && candidate.source.end_line &&
+        candidate.source.line <= line && candidate.source.end_line >= line)
+      .sort((a, b) => {
+        const symbolic = (n: any) => /function|method|constructor|class/.test(String(n.type)) ? 0 : 1;
+        const bySymbol = symbolic(a) - symbolic(b);
+        if (bySymbol !== 0) return bySymbol;
+        return (a.source!.end_line! - a.source!.line!) - (b.source!.end_line! - b.source!.line!);
+      });
+    const node = enclosing[0]
+      || cas.nodes.find(candidate => candidate.source?.file && pathsCompatible(candidate.source.file, file));
 
     if (node) refs.push(nodeRef(node, 0.75));
   }
@@ -2118,12 +2336,30 @@ function findCrossRepoLinkConflicts(links: CASCrossRepositoryLink[]): Array<{ id
       const competing = candidates.filter(link => (link.metadata?.confidence || 0) >= maxConfidence - 0.05);
       return [key, competing] as const;
     })
-    .filter(([, candidates]) => new Set(candidates.map(link => link.target_repository?.path || '')).size > 1)
+    .filter(([, candidates]) => hasMultipleIndependentTargets(candidates))
     .map(([key, candidates]) => ({
       id: `conflict:${normalizeTopic(key)}`,
       link_ids: candidates.map(link => link.id),
       reason: 'One consumed contract maps to multiple target repositories with compatible certainty.',
     }));
+}
+
+function hasMultipleIndependentTargets(candidates: CASCrossRepositoryLink[]): boolean {
+  const paths = [...new Set(candidates.map(link => link.target_repository?.path || '').filter(Boolean))]
+    .map(normalizeRepoPathForComparison);
+  if (paths.length <= 1) return false;
+  const independentRoots = paths.filter(candidate =>
+    !paths.some(other => other !== candidate && isNestedRepoPath(candidate, other))
+  );
+  return independentRoots.length > 1;
+}
+
+function normalizeRepoPathForComparison(value: string): string {
+  return value.replace(/\\/g, '/').replace(/\/+$/g, '');
+}
+
+function isNestedRepoPath(candidate: string, other: string): boolean {
+  return candidate.startsWith(`${other}/`) || other.startsWith(`${candidate}/`);
 }
 
 function normalizeTopic(value: string): string {

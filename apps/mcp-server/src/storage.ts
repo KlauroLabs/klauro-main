@@ -805,6 +805,154 @@ export async function listWorkspaceGraphs(): Promise<Array<{
   return graphs.sort((left, right) => String(right.saved_at || right.generated_at || '').localeCompare(String(left.saved_at || left.generated_at || '')));
 }
 
+function workspaceAnalysisMetadataPath(directory: string, id: string): string {
+  return path.join(directory, `${id}.meta.json`);
+}
+
+function isWorkspaceAnalysisDataFile(file: string): boolean {
+  if (file.endsWith('.meta.json')) return false;
+  return file.endsWith('.json') || file.endsWith('.json.zst') || file.endsWith('.json.br');
+}
+
+function workspaceAnalysisIdFromFile(file: string): string {
+  return file
+    .replace(/\.json\.zst$/, '')
+    .replace(/\.json\.br$/, '')
+    .replace(/\.json$/, '');
+}
+
+function summarizeWorkspaceAnalysisInputs(inputs: any[]): Array<{ project_id?: string; codebase_id?: string; repo_path?: string; path?: string; cas_generated_at?: string }> {
+  return inputs.slice(0, 200).map(input => ({
+    project_id: input.project_id,
+    codebase_id: input.codebase_id,
+    repo_path: input.repo_path,
+    path: input.path,
+    cas_generated_at: input.cas_generated_at,
+  }));
+}
+
+function buildCrossCodebaseSystemGraphMetadata(graph: any, file: string) {
+  return {
+    id: graph.id,
+    name: graph.name,
+    generated_at: graph.generated_at,
+    saved_at: graph.saved_at,
+    codebase_count: graph.codebase_count,
+    interface_count: graph.interfaces?.length || 0,
+    link_count: graph.links?.length || 0,
+    unmatched_interface_count: graph.unmatched_interfaces?.length || 0,
+    inputs: summarizeWorkspaceAnalysisInputs(graph.inputs || []),
+    file,
+  };
+}
+
+async function readWorkspaceAnalysisMetadata(directory: string, filePath: string): Promise<ReturnType<typeof buildCrossCodebaseSystemGraphMetadata> | null> {
+  const id = workspaceAnalysisIdFromFile(path.basename(filePath));
+  const metadataPath = workspaceAnalysisMetadataPath(directory, id);
+  if (!(await fs.pathExists(metadataPath))) return null;
+  try {
+    const metadata = await fs.readJson(metadataPath);
+    return {
+      ...metadata,
+      file: filePath,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function saveCrossCodebaseSystemGraph(graph: { id: string; name: string; generated_at: string }): Promise<{
+  id: string;
+  saved_at: string;
+  file: string;
+}> {
+  const storagePath = await ensureStorageDir();
+  const directory = path.join(storagePath, 'workspace-analyses');
+  const id = graph.id || slugify(graph.name) || 'system-analysis';
+  const file = path.join(directory, `${id}.json`);
+  const savedAt = new Date().toISOString();
+  const payload = {
+    ...graph,
+    id,
+    saved_at: savedAt,
+  };
+  await writeJsonAtomic(file, payload);
+  await writeJsonAtomic(workspaceAnalysisMetadataPath(directory, id), buildCrossCodebaseSystemGraphMetadata(payload, file));
+  return { id, saved_at: savedAt, file };
+}
+
+export async function loadCrossCodebaseSystemGraph(idOrName: string): Promise<any | null> {
+  const storagePath = await ensureStorageDir();
+  const directory = path.join(storagePath, 'workspace-analyses');
+  const directPath = path.join(directory, `${slugify(idOrName)}.json`);
+  if (await resolveJsonStoragePath(directPath)) {
+    const graph = await readJsonMaybeCompressed(directPath);
+    await writeJsonAtomic(workspaceAnalysisMetadataPath(directory, graph.id || slugify(idOrName)), buildCrossCodebaseSystemGraphMetadata(graph, directPath)).catch(() => undefined);
+    return graph;
+  }
+  for (const candidateDirectory of [directory, path.join(storagePath, 'cross-codebase-analyses')]) {
+    if (!(await fs.pathExists(candidateDirectory))) continue;
+    const files = await fs.readdir(candidateDirectory);
+    for (const file of files.filter(isWorkspaceAnalysisDataFile)) {
+      const filePath = path.join(candidateDirectory, file);
+      const metadata = await readWorkspaceAnalysisMetadata(candidateDirectory, filePath);
+      if (metadata && metadata.id !== idOrName && metadata.name !== idOrName && slugify(metadata.name || '') !== slugify(idOrName)) {
+        continue;
+      }
+      if (!metadata && workspaceAnalysisIdFromFile(file) !== slugify(idOrName)) {
+        continue;
+      }
+      const graph = await readJsonMaybeCompressed(filePath);
+      if (graph.id === idOrName || graph.name === idOrName || slugify(graph.name || '') === slugify(idOrName)) {
+        await writeJsonAtomic(workspaceAnalysisMetadataPath(candidateDirectory, graph.id || workspaceAnalysisIdFromFile(file)), buildCrossCodebaseSystemGraphMetadata(graph, filePath)).catch(() => undefined);
+        return graph;
+      }
+    }
+  }
+  return null;
+}
+
+export async function listCrossCodebaseSystemGraphs(): Promise<Array<{
+  id: string;
+  name: string;
+  generated_at?: string;
+  saved_at?: string;
+  codebase_count?: number;
+  interface_count?: number;
+  link_count?: number;
+  unmatched_interface_count?: number;
+  inputs?: Array<{ project_id?: string; codebase_id?: string; repo_path?: string; path?: string; cas_generated_at?: string }>;
+  file: string;
+}>> {
+  const storagePath = await ensureStorageDir();
+  const directory = path.join(storagePath, 'workspace-analyses');
+  if (!(await fs.pathExists(directory))) return [];
+
+  const files = await fs.readdir(directory);
+  const graphs = [];
+  for (const file of files.filter(isWorkspaceAnalysisDataFile)) {
+    const filePath = path.join(directory, file);
+    const metadata = await readWorkspaceAnalysisMetadata(directory, filePath);
+    if (metadata) {
+      graphs.push(metadata);
+      continue;
+    }
+    const stat = await fs.stat(filePath).catch(() => null);
+    graphs.push({
+      id: workspaceAnalysisIdFromFile(file),
+      name: workspaceAnalysisIdFromFile(file),
+      generated_at: stat?.mtime.toISOString(),
+      saved_at: stat?.mtime.toISOString(),
+      file: filePath,
+    });
+  }
+  return graphs.sort((left, right) => String(right.saved_at || right.generated_at || '').localeCompare(String(left.saved_at || left.generated_at || '')));
+}
+
+export const saveWorkspaceAnalysis = saveCrossCodebaseSystemGraph;
+export const loadWorkspaceAnalysis = loadCrossCodebaseSystemGraph;
+export const listWorkspaceAnalyses = listCrossCodebaseSystemGraphs;
+
 export async function saveAgenticBenchmarkReport(report: { id?: string; generated_at?: string; generatedAt?: string }): Promise<{
   id: string;
   saved_at: string;

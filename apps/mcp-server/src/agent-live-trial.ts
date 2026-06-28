@@ -2174,3 +2174,25 @@ function slugify(input: string | undefined): string {
     .toLowerCase()
     .substring(0, 80) || 'target';
 }
+
+// ---------------------------------------------------------------------------
+// Internal engine helpers re-exported for the multi-arm gauntlet runner
+// (src/gauntlet/multi-arm-trial.ts). These are the same primitives the
+// with/without-Klauro pair uses, exposed so additional arms (ctags, embeddings,
+// cursor-style index) run through identical measurement, not a parallel path.
+// ---------------------------------------------------------------------------
+export {
+  copyRepo as _copyRepo,
+  initializeBaseline as _initializeBaseline,
+  runShell as _runShell,
+  diffStats as _diffStats,
+  readMetricFile as _readMetricFile,
+  renderCommand as _renderCommand,
+  parseMetricsFromText as _parseMetricsFromText,
+  estimateSourceReadTokens as _estimateSourceReadTokens,
+  firstPositiveNumber as _firstPositiveNumber,
+  estimateTokens as _estimateTokens,
+  promptWithoutKlauro as _promptWithoutKlauro,
+  promptWithKlauro as _promptWithKlauro,
+  buildLiveWorkPacket as _buildLiveWorkPacket,
+};

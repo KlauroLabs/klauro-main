@@ -9028,7 +9028,11 @@ function matchInterfaces(source: SystemInterface, target: SystemInterface): Pick
       !interfaceMatchesHost(target, sourceHost) &&
       !hostMatchesSourceInterface(source, sourceHost)
     ) return null;
-    if (source.codebase_id !== target.codebase_id && isRelativeHttpEndpoint(source.endpoint)) return null;
+    if (
+      source.codebase_id !== target.codebase_id &&
+      isRelativeHttpEndpoint(source.endpoint) &&
+      !hasSpecificCrossRepoRouteSeam(source, target)
+    ) return null;
     if (hasLikelyExternalTemplatedBase(source.endpoint)) return null;
     if (!httpCompatible(source, target)) return null;
     return { kind: 'http-call', mode: source.mode === 'async' ? 'async' : target.mode, confidence: routeMatchConfidence(source, target) };
@@ -9061,6 +9065,77 @@ function isRelativeHttpEndpoint(endpoint: string | undefined): boolean {
   const value = String(endpoint || '').trim();
   return value.startsWith('/') || value.startsWith('./') || value.startsWith('../');
 }
+
+/**
+ * A relative consumer endpoint (e.g. `fetch('/orders')`) carries no host, so it
+ * cannot be attributed to a service by hostname. But when its route shape shares
+ * a specific literal segment with a provider's route in another codebase
+ * (`app.get('/orders')`), that pairing IS the cross-repo seam — the same fusion
+ * product.ts's buildCrossRepositoryLinks performs. We allow the cross-codebase
+ * link only for such specific seams, so generic relative routes (`/`, `/api`,
+ * `/users`, `/health`) still stay suppressed across unrelated repos.
+ */
+function hasSpecificCrossRepoRouteSeam(source: SystemInterface, target: SystemInterface): boolean {
+  const sourceCandidates = routeSegmentCandidates(normalizeRoute(source.endpoint || source.key));
+  const targetCandidates = routeSegmentCandidates(normalizeRoute(target.endpoint || target.key));
+  for (const left of sourceCandidates) {
+    for (const right of targetCandidates) {
+      if (!routePartsCompatible(left, right)) continue;
+      const hasSpecificSharedSegment = left.some((part, index) =>
+        part !== ':param' && right[index] === part && isSpecificRouteSegment(part));
+      if (hasSpecificSharedSegment) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * A route segment specific enough to anchor a cross-repo seam on its own: not a
+ * version/api stub, not a short generic word that collides across unrelated
+ * services (users, health, status, login, ...).
+ */
+function isSpecificRouteSegment(segment: string): boolean {
+  if (!segment || segment === ':param') return false;
+  if (/^(api|v\d+)$/.test(segment)) return false;
+  if (segment.length < 4) return false;
+  return !GENERIC_ROUTE_SEGMENTS.has(segment);
+}
+
+const GENERIC_ROUTE_SEGMENTS = new Set([
+  'health',
+  'healthz',
+  'status',
+  'ping',
+  'ready',
+  'readyz',
+  'live',
+  'livez',
+  'login',
+  'logout',
+  'auth',
+  'callback',
+  'webhook',
+  'webhooks',
+  'user',
+  'users',
+  'me',
+  'admin',
+  'public',
+  'static',
+  'assets',
+  'index',
+  'home',
+  'data',
+  'list',
+  'items',
+  'item',
+  'object',
+  'objects',
+  'metrics',
+  'version',
+  'config',
+  'settings',
+]);
 
 function concreteEndpointHost(endpoint: string | undefined): string | undefined {
   const value = String(endpoint || '').trim();

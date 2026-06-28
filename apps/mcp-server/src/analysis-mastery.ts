@@ -10,6 +10,7 @@ export interface AnalysisTruthExpectation {
   name?: string;
   frameworks?: string[];
   languages?: string[];
+  libraries?: string[];
   routes?: Array<{ method?: string; path: string; handler?: string; controller?: string }>;
   nodes?: Array<{ name: string; type?: string; file?: string }>;
   data_entities?: string[];
@@ -47,6 +48,7 @@ export function evaluateAnalysisTruth(cas: CASOutput, expectation: AnalysisTruth
   const checks: MasteryCheck[] = [
     ...checkNames('framework', expectation.frameworks || [], detectedFrameworks(cas)),
     ...checkNames('language', expectation.languages || [], detectedLanguages(cas)),
+    ...checkNames('library', expectation.libraries || [], detectedLibraries(cas)),
     ...checkRoutes(cas, expectation.routes || []),
     ...checkNodes(cas, expectation.nodes || []),
     ...checkNames('data-entity', expectation.data_entities || [], dataEntityNames(cas)),
@@ -381,7 +383,7 @@ export async function evaluateAgentTaskProof(cas: CASOutput, pathValue: string, 
       simpleCheck('target-resolved', Boolean(packet.selected_node), packet.selected_node?.id || 'no selected node'),
       simpleCheck('file-read-plan', packet.file_read_plan.length > 0, `${packet.file_read_plan.length} files`),
       simpleCheck('coding-context', Boolean(packet.work_context.coding_context && !('error' in (packet.work_context.coding_context as Record<string, unknown>))), 'coding context'),
-      simpleCheck('risk-context', Boolean(packet.work_context.risk), 'risk context'),
+      simpleCheck('risk-context', Boolean(packet.work_context.risk || packet.work_context.risk_context), 'risk context'),
       simpleCheck('test-context', Boolean(packet.work_context.tests), 'test context'),
       simpleCheck('mcp-followups', packet.next_mcp_calls.length > 0, `${packet.next_mcp_calls.length} calls`),
     ];
@@ -604,6 +606,23 @@ function detectedFrameworks(cas: CASOutput): string[] {
 
 function detectedLanguages(cas: CASOutput): string[] {
   return cas.system.technologies?.languages?.map(language => language.name).filter(Boolean) || [];
+}
+
+function detectedLibraries(cas: CASOutput): string[] {
+  const names = new Set<string>();
+  for (const library of cas.libraries || []) {
+    if (library.name) names.add(library.name);
+    if (library.category) names.add(library.category);
+  }
+  for (const contribution of cas.analyzer_contributions || []) {
+    if (contribution.contribution_type !== 'library') continue;
+    const name = contribution.analyzer_name
+      .replace(/\s+Analyzer$/i, '')
+      .replace(/\s+ORM$/i, '')
+      .trim();
+    if (name) names.add(name);
+  }
+  return [...names];
 }
 
 function dataEntityNames(cas: CASOutput): string[] {

@@ -69,25 +69,37 @@ test('ui-overview focus respects explicitly configured local model and restores 
   });
 });
 
-test('agent-fast focus disables expensive enrichment', async () => {
+test('agent-fast focus keeps required AI summary and capability enrichment while disabling heavier layers', async () => {
   await withCleanFocusEnv(async () => {
     const seen = await withAnalysisFocus('agent-fast', async () => ({
       focus: process.env.KLAURO_ANALYSIS_FOCUS,
       interpretation: process.env.KLAURO_AI_INTERPRETATION,
       force: process.env.KLAURO_AI_INTERPRETATION_FORCE,
+      deterministicKeep: process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP,
+      interpretationBudget: process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS,
+      elementLimit: process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT,
+      elementBatchSize: process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE,
       elements: process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS,
       embeddings: process.env.KLAURO_EMBEDDING_ENABLED,
       excludeLegacy: process.env.KLAURO_AGENT_FAST_EXCLUDE_LEGACY,
       ollamaAuto: process.env.KLAURO_OLLAMA_AUTO,
+      ollamaBaseUrl: process.env.OLLAMA_BASE_URL,
+      ollamaModel: process.env.OLLAMA_MODEL,
     }));
 
     assert.equal(seen.focus, 'agent-fast');
-    assert.equal(seen.interpretation, 'false');
-    assert.equal(seen.force, 'false');
-    assert.equal(seen.elements, 'false');
+    assert.equal(seen.interpretation, 'true');
+    assert.equal(seen.force, 'true');
+    assert.equal(seen.deterministicKeep, 'false');
+    assert.equal(seen.interpretationBudget, '240000');
+    assert.equal(seen.elements, 'true');
+    assert.equal(seen.elementLimit, '8');
+    assert.equal(seen.elementBatchSize, '4');
     assert.equal(seen.embeddings, 'false');
     assert.equal(seen.excludeLegacy, 'true');
-    assert.equal(seen.ollamaAuto, undefined);
+    assert.equal(seen.ollamaAuto, 'true');
+    assert.equal(seen.ollamaBaseUrl, 'http://127.0.0.1:11434');
+    assert.equal(seen.ollamaModel, 'qwen3:8b');
   });
 });
 
@@ -111,8 +123,8 @@ test('deep-context focus enables semantic depth without bulk element description
     assert.equal(seen.force, 'false');
     assert.equal(seen.deterministicKeep, 'false');
     assert.equal(seen.interpretationBudget, '240000');
-    assert.equal(seen.elementLimit, '0');
-    assert.equal(seen.elements, 'false');
+    assert.equal(seen.elementLimit, '8');
+    assert.equal(seen.elements, 'true');
     assert.equal(seen.embeddings, 'true');
     assert.equal(seen.ollamaAuto, 'true');
     assert.equal(seen.ollamaModel, 'qwen3:8b');
@@ -125,7 +137,8 @@ test('focus recommendation defaults MCP coding work to agent-fast', () => {
   assert.equal(result.recommendation.recommended_focus, 'agent-fast');
   assert.equal(result.recommendation.recommended_layer, 'agent-fast-refresh');
   assert.equal(result.recommendation.token_policy, 'minimize-first-turn');
-  assert.ok(result.recommendation.deferred_until_needed.includes('AI-written system narrative'));
+  assert.ok(result.profiles.find(profile => profile.focus === 'agent-fast')?.produces.includes('AI-written system narrative'));
+  assert.ok(result.recommendation.deferred_until_needed.includes('lazy AI entity/flow/node descriptions'));
   assert.ok(result.profiles.some(profile => profile.focus === 'ui-overview'));
 });
 

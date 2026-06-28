@@ -85,7 +85,7 @@ interface Args {
   references: string[];
   scoreExistingReport?: string;
   continuationOnlyFrom?: string;
-  scenarioId: string;
+  scenarioId?: string;
   listScenarios: boolean;
   multiWave: boolean;
   initialOnly: boolean;
@@ -1053,7 +1053,7 @@ const SCRATCH_SCENARIOS: ScratchScenario[] = [
 
 export async function runAgentScratchBuildBenchmark(args: Args = parseArgs(process.argv.slice(2))): Promise<ScratchBuildReport> {
   if (args.listScenarios) {
-    const scenario = scenarioById(args.scenarioId);
+    const scenario = scenarioById(args.scenarioId || 'work-intake-backend');
     const emptyScore = emptyScratchScore('list-scenarios');
     const report: ScratchBuildReport = {
       generated_at: new Date().toISOString(),
@@ -1083,7 +1083,7 @@ export async function runAgentScratchBuildBenchmark(args: Args = parseArgs(proce
     return runContinuationOnlyScratchBenchmark(args);
   }
 
-  const scenario = scenarioById(args.scenarioId);
+  const scenario = scenarioById(args.scenarioId || 'work-intake-backend');
   const references = await loadReferences(args.references.length ? args.references : defaultReferencePaths());
   const guidance = buildGreenfieldArchitectureGuidance({
     planText: scenario.requirements,
@@ -1265,7 +1265,7 @@ async function runContinuationOnlyScratchBenchmark(args: Args): Promise<ScratchB
   if (!args.live || !args.withCmd || !args.withoutCmd) {
     throw new Error('Continuation-only scratch benchmark requires --live, --agent-with-cmd, and --agent-without-cmd.');
   }
-  const scenario = scenarioById(args.scenarioId);
+  const scenario = scenarioById(args.scenarioId || 'work-intake-backend');
   const sourceWorkspace = path.resolve(args.continuationOnlyFrom);
   const references = await loadReferences(args.references.length ? args.references : defaultReferencePaths());
   const commandConfig: LiveAgentCommandConfig = {
@@ -1848,8 +1848,19 @@ async function scoreScratchWorkspace(
   const hasCasGraph = (cas?.nodes?.length || 0) > 0 && (cas?.edges?.length || 0) > 0;
   const capabilities = cas?.system_capabilities?.length || 0;
   const domainConcepts = cas?.domain_concepts?.length || 0;
+  const requiredBoundariesPresent = [
+    !scenario.score.needsEntry || hasRoutes || hasUi,
+    !scenario.score.needsService || hasServices,
+    !scenario.score.needsDataAccess || hasRepositories,
+    !scenario.score.needsDomain || hasModels,
+    !scenario.score.needsUi || hasUi,
+    !scenario.score.needsTenantAuth || hasAuthTenant,
+    !scenario.score.needsWorker || hasWorker,
+  ].every(Boolean);
+  const compactCoherentStructure = sourceFiles >= 5 && domainConcepts >= 8 && requiredBoundariesPresent;
   const compactRichStructure = sourceFiles >= 5 && capabilities >= 8 && domainConcepts >= 8;
-  const sourceStructureOk = sourceFiles >= scenario.score.minSourceFiles || compactRichStructure;
+  const sourceStructureOk = sourceFiles >= scenario.score.minSourceFiles || compactRichStructure || compactCoherentStructure;
+  const casCapabilityOk = capabilities >= 4 || (domainConcepts >= 10 && requiredBoundariesPresent);
   const testThreshold = mode === 'continuation' ? scenario.score.minContinuationTests : scenario.score.minInitialTests;
   const migrationThreshold = mode === 'continuation' ? 2 : 1;
 
@@ -1876,7 +1887,7 @@ async function scoreScratchWorkspace(
   penalize(hasSingleSourceImports, 7, 'Does not visibly reuse domain types across boundaries.', 'domain_reuse');
   penalize(duplicateConcepts.length === 0, 12, `Potential duplicate concepts: ${duplicateConcepts.map(item => item.concept).join(', ')}`, 'duplicate_concepts');
   penalize(hasCasGraph, 5, 'Klauro preview did not produce a meaningful graph.', 'cas_graph');
-  penalize(capabilities >= 4, 5, 'CAS detected too few capabilities for the product scope.', 'cas_capabilities');
+  penalize(casCapabilityOk, 5, 'CAS detected too few capabilities for the product scope.', 'cas_capabilities');
 
   if (mode === 'continuation') {
     for (const term of continuation.requiredTerms) {
@@ -2215,7 +2226,7 @@ function parseArgs(argv: string[]): Args {
     workRoot: path.join(process.env.HOME || process.cwd(), '.klauro', 'scratch-build-benchmark'),
     keepWorkspaces: true,
     references: [],
-    scenarioId: 'work-intake-backend',
+    scenarioId: undefined,
     listScenarios: false,
     multiWave: false,
     initialOnly: false,

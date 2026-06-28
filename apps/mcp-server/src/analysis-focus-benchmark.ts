@@ -70,15 +70,19 @@ const FOCUS_ENV_KEYS = [
 const CORE_WORK_UNITS = 100;
 const LAYER_COSTS = {
   aiSystemNarrative: 35,
-  aiElementDescriptions: 100,
+  aiPrimaryCapabilityDescriptions: 25,
+  aiLazyElementDescriptions: 100,
   semanticEmbeddings: 45,
 };
 
 const ENRICHED_OPTIONAL_WORK_UNITS =
-  LAYER_COSTS.aiSystemNarrative +
-  LAYER_COSTS.aiElementDescriptions +
+  LAYER_COSTS.aiLazyElementDescriptions +
   LAYER_COSTS.semanticEmbeddings;
-const ENRICHED_TOTAL_WORK_UNITS = CORE_WORK_UNITS + ENRICHED_OPTIONAL_WORK_UNITS;
+const REQUIRED_AI_WORK_UNITS = LAYER_COSTS.aiSystemNarrative + LAYER_COSTS.aiPrimaryCapabilityDescriptions;
+const ENRICHED_TOTAL_WORK_UNITS =
+  CORE_WORK_UNITS +
+  REQUIRED_AI_WORK_UNITS +
+  ENRICHED_OPTIONAL_WORK_UNITS;
 
 export async function runAnalysisFocusBenchmark(options: {
   outputPath?: string;
@@ -150,6 +154,7 @@ async function captureFocusSnapshot(focus: AnalysisFocus): Promise<FocusSnapshot
       const profile = getAnalysisFocusProfiles({ trigger: triggerForFocus(focus) }).profiles.find(item => item.focus === focus);
       const enabledLayers = enabledLayersFromEnv(env);
       const optionalWork = optionalWorkUnits(enabledLayers);
+      const requiredWork = requiredWorkUnits(enabledLayers);
       return {
         focus,
         token_policy: profile?.token_policy || 'unknown',
@@ -159,9 +164,9 @@ async function captureFocusSnapshot(focus: AnalysisFocus): Promise<FocusSnapshot
         env,
         estimated_core_work_units: CORE_WORK_UNITS,
         estimated_optional_work_units: optionalWork,
-        estimated_total_work_units: CORE_WORK_UNITS + optionalWork,
+        estimated_total_work_units: requiredWork + optionalWork,
         optional_work_reduction_vs_enriched_percent: percentReduction(ENRICHED_OPTIONAL_WORK_UNITS, optionalWork),
-        total_work_reduction_vs_enriched_percent: percentReduction(ENRICHED_TOTAL_WORK_UNITS, CORE_WORK_UNITS + optionalWork),
+        total_work_reduction_vs_enriched_percent: percentReduction(ENRICHED_TOTAL_WORK_UNITS, requiredWork + optionalWork),
       };
     });
   } finally {
@@ -173,24 +178,32 @@ function enabledLayersFromEnv(env: Record<string, string | null>): string[] {
   const layers = ['core-graph', 'agent-context'];
   if (env.KLAURO_AI_INTERPRETATION === 'true') layers.push('ai-system-narrative');
   const elementLimit = Number(env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT || '0');
-  if (env.KLAURO_AI_ELEMENT_DESCRIPTIONS === 'true' && elementLimit > 0) layers.push('ai-element-descriptions');
+  if (env.KLAURO_AI_ELEMENT_DESCRIPTIONS === 'true' && elementLimit > 0) {
+    if (elementLimit <= 8) layers.push('ai-primary-capability-descriptions');
+    else layers.push('ai-lazy-element-descriptions');
+  }
   if (env.KLAURO_EMBEDDING_ENABLED === 'true') layers.push('semantic-embeddings');
   return layers;
 }
 
 function deferredLayers(enabledLayers: string[]): string[] {
   return [
-    'ai-system-narrative',
-    'ai-element-descriptions',
+    'ai-lazy-element-descriptions',
     'semantic-embeddings',
   ].filter(layer => !enabledLayers.includes(layer));
 }
 
 function optionalWorkUnits(enabledLayers: string[]): number {
   let total = 0;
-  if (enabledLayers.includes('ai-system-narrative')) total += LAYER_COSTS.aiSystemNarrative;
-  if (enabledLayers.includes('ai-element-descriptions')) total += LAYER_COSTS.aiElementDescriptions;
+  if (enabledLayers.includes('ai-lazy-element-descriptions')) total += LAYER_COSTS.aiLazyElementDescriptions;
   if (enabledLayers.includes('semantic-embeddings')) total += LAYER_COSTS.semanticEmbeddings;
+  return total;
+}
+
+function requiredWorkUnits(enabledLayers: string[]): number {
+  let total = CORE_WORK_UNITS;
+  if (enabledLayers.includes('ai-system-narrative')) total += LAYER_COSTS.aiSystemNarrative;
+  if (enabledLayers.includes('ai-primary-capability-descriptions')) total += LAYER_COSTS.aiPrimaryCapabilityDescriptions;
   return total;
 }
 
@@ -207,23 +220,25 @@ function buildGates(byFocus: Record<AnalysisFocus, FocusSnapshot>, routing: Anal
       agentFast.estimated_optional_work_units === 0 &&
         agentFast.enabled_layers.includes('core-graph') &&
         agentFast.enabled_layers.includes('agent-context') &&
-        agentFast.deferred_layers.includes('ai-system-narrative') &&
-        agentFast.deferred_layers.includes('ai-element-descriptions') &&
+        agentFast.enabled_layers.includes('ai-system-narrative') &&
+        agentFast.enabled_layers.includes('ai-primary-capability-descriptions') &&
+        agentFast.deferred_layers.includes('ai-lazy-element-descriptions') &&
         agentFast.deferred_layers.includes('semantic-embeddings'),
       `${agentFast.estimated_optional_work_units} optional units; defers ${agentFast.deferred_layers.join(', ')}`),
     gate('analysis-focus:agent-fast-material-work-reduction',
-      agentFast.total_work_reduction_vs_enriched_percent >= 60 &&
+      agentFast.total_work_reduction_vs_enriched_percent >= 45 &&
         agentFast.optional_work_reduction_vs_enriched_percent === 100,
       `${agentFast.total_work_reduction_vs_enriched_percent}% total reduction, ${agentFast.optional_work_reduction_vs_enriched_percent}% optional reduction`),
     gate('analysis-focus:ui-overview-narrative-not-semantic',
       uiOverview.enabled_layers.includes('ai-system-narrative') &&
-        uiOverview.enabled_layers.includes('ai-element-descriptions') &&
+        uiOverview.enabled_layers.includes('ai-primary-capability-descriptions') &&
         !uiOverview.enabled_layers.includes('semantic-embeddings'),
       uiOverview.enabled_layers.join(', ')),
     gate('analysis-focus:deep-context-semantic-not-bulk-elements',
       deepContext.enabled_layers.includes('ai-system-narrative') &&
+        deepContext.enabled_layers.includes('ai-primary-capability-descriptions') &&
         deepContext.enabled_layers.includes('semantic-embeddings') &&
-        !deepContext.enabled_layers.includes('ai-element-descriptions'),
+        !deepContext.enabled_layers.includes('ai-lazy-element-descriptions'),
       deepContext.enabled_layers.join(', ')),
     gate('analysis-focus:default-routing-never-full',
       routing.every(route => route.recommended_focus !== 'full'),

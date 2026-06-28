@@ -241,7 +241,7 @@ async function collectOrphanAnalysisStorageArtifacts(analysesRoot: string, optio
   const index = await fs.readJson(indexPath).catch(() => null) as AnalysisIndex | null;
   const analyses = index?.analyses || {};
   const indexedDirs = new Set(Object.keys(analyses).map(projectPath => projectSlug(projectPath)));
-  const specialDirs = new Set(['agentic-benchmarks', 'proposal-previews', 'workspace-graphs']);
+  const specialDirs = new Set(['agentic-benchmarks', 'proposal-previews', 'workspace-graphs', 'workspace-analyses', 'cross-codebase-analyses']);
   const entries = await fs.readdir(analysesRoot).catch(() => []);
   const artifacts: PrunableArtifact[] = [];
 

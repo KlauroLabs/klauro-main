@@ -238,3 +238,83 @@ test('buildAnalysisEntry records the stored cas_version and keeps legacy section
   assert.equal(entry.conformance.present, true);
   assert.equal(entry.product_map.present, true);
 });
+
+function crossCodebaseGraphFixture(): any {
+  return {
+    id: 'orders-system',
+    name: 'orders-system',
+    generated_at: '2026-06-19T00:00:00.000Z',
+    codebases: [
+      { id: 'repo-orders-app', name: 'orders-app', path: '/repo/orders-app', languages: ['Ruby'], frameworks: ['Rails'] },
+      { id: 'repo-billing-app', name: 'billing-app', path: '/repo/billing-app', languages: ['TypeScript'], frameworks: ['NestJS'] },
+    ],
+    interfaces: [
+      { id: 'orders-consumer', codebase_id: 'repo-orders-app', role: 'consumer', kind: 'http-api', mode: 'sync', name: 'POST /payments', method: 'POST', endpoint: '/payments', refs: [{ file: 'app/services/payment_client.rb' }] },
+      { id: 'billing-provider', codebase_id: 'repo-billing-app', role: 'provider', kind: 'http-api', mode: 'sync', name: 'POST /payments', method: 'POST', endpoint: '/payments', refs: [{ file: 'src/payments.controller.ts' }] },
+    ],
+    links: [
+      { id: 'link-payments', kind: 'http-call', mode: 'sync', source_interface_id: 'orders-consumer', target_interface_id: 'billing-provider', source_codebase_id: 'repo-orders-app', target_codebase_id: 'repo-billing-app', confidence: 0.96, evidence: ['orders-app:POST /payments', 'billing-app:POST /payments'] },
+    ],
+    data_flow_paths: [
+      { id: 'flow-payments', mode: 'sync', source_codebase_id: 'repo-orders-app', target_codebase_id: 'repo-billing-app', source_interface_id: 'orders-consumer', target_interface_id: 'billing-provider', via: ['POST /payments', 'POST /payments'], description: 'Orders payment request reaches billing payments endpoint.', confidence: 0.96 },
+    ],
+    runtime_components: [
+      { id: 'orders-web', codebase_id: 'repo-orders-app', name: 'orders-web', service_aliases: ['orders-web'], ports: ['3000'], refs: [] },
+      { id: 'orders-db', codebase_id: 'repo-orders-app', name: 'postgres', service_aliases: ['postgres'], ports: ['5432'], refs: [] },
+    ],
+    runtime_links: [
+      { id: 'runtime-db', codebase_id: 'repo-orders-app', source_component_id: 'orders-web', target_component_id: 'orders-db', kind: 'http-call', mode: 'sync', confidence: 0.88, evidence: ['compose depends_on'] },
+    ],
+    unmatched_interfaces: [
+      { interface_id: 'unused-route', codebase_id: 'repo-billing-app', kind: 'http-api', role: 'provider', mode: 'sync', name: 'GET /unused', reason: 'No analyzed consumer matched this provided interface.' },
+    ],
+  };
+}
+
+test('projectOverviewData builds project cards, interfaces, and data-flow paths from persisted system graph facts', () => {
+  const ordersCas = pillarCas();
+  ordersCas.workflows = [{ id: 'workflow_checkout', name: 'Checkout flow', description: 'Places an order.', type: 'http', file: 'app/controllers/orders_controller.rb' }];
+  ordersCas.external_services = [{ name: 'stripe', type: 'payments', description: 'Payment processor.' }];
+  const billingCas = {
+    ...pillarCas(),
+    system: { name: 'billing-app', type: 'service', root_path: '/repo/billing-app', technologies: { languages: ['typescript'], frameworks: ['NestJS'] } },
+    cross_repo_links: [
+      { name: 'Orders payment webhook', source: 'orders-app', target: 'billing-app', kind: 'webhook', evidence: ['config/routes.ts'], confidence: 0.91 },
+    ],
+  };
+  const entries = [
+    inspector.buildAnalysisEntry(ordersCas, indexEntry, '/repo/orders-app'),
+    inspector.buildAnalysisEntry(billingCas, { ...indexEntry, name: 'billing-app', file: 'billing-app-abc123.json' }, '/repo/billing-app'),
+  ];
+  const project = inspector.projectOverviewData(entries, [crossCodebaseGraphFixture()]);
+  assert.equal(project.counts.codebases, 2);
+  assert.ok(project.counts.nodes >= 0);
+  assert.equal(project.counts.links, 1);
+  assert.equal(project.counts.runtime_links, 1);
+  assert.equal(project.counts.unmatched, 1);
+  assert.ok(project.interfaces.some((item: any) => item.name === 'POST /payments'));
+  assert.ok(project.data_flows.some((item: any) => item.destination === 'billing-app'));
+  assert.equal(project.links.length, 1);
+  assert.equal(project.links[0].source, 'orders-app');
+  assert.equal(project.links[0].target, 'billing-app');
+  assert.equal(project.runtime_links[0].source, 'orders-web');
+  assert.ok(project.notices[0].includes('persisted Klauro Workspace analysis'));
+
+  const withoutExplicitLinks = inspector.projectOverviewData([entries[0]]);
+  assert.equal(withoutExplicitLinks.links.length, 0);
+  assert.ok(withoutExplicitLinks.notices[0].includes('No persisted Workspace analysis'));
+});
+
+test('renderHtml embeds the multi-codebase project overview views', () => {
+  const ordersCas = pillarCas();
+  ordersCas.workflows = [{ id: 'workflow_checkout', name: 'Checkout flow', description: 'Places an order.', type: 'http' }];
+  ordersCas.external_services = [{ name: 'stripe', type: 'payments', description: 'Payment processor.' }];
+  const entry = inspector.buildAnalysisEntry(ordersCas, indexEntry, '/repo/orders-app');
+  const html = inspector.renderHtml({ generated_at: new Date().toISOString(), analysis_count: 1, analyses: [entry], project_overview: inspector.projectOverviewData([entry], [crossCodebaseGraphFixture()]) });
+  for (const marker of ['Workspace Overview', 'Communication Interfaces', 'Data-Flow Paths', 'Workspace Links', 'Runtime Topology', 'project_overview', 'projectMap', 'renderProjectDetail']) {
+    assert.ok(html.includes(marker), marker);
+  }
+  assert.ok(html.includes('persisted Klauro Workspace analysis'));
+  assert.ok(html.includes('POST /payments'));
+  assert.ok(html.includes('orders-web'));
+});

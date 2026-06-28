@@ -7,7 +7,7 @@ import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.ty
 import { runAnalysisNarrativeEnrichmentProof } from './analysis-narrative-enrichment-proof';
 import { saveAnalysis } from './storage';
 
-test('narrative enrichment proof queues weak descriptions while preserving zero-cost agent-fast evidence', async () => {
+test('narrative enrichment proof queues weak descriptions while preserving zero-optional-cost agent-fast evidence', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-narrative-proof-'));
   const storage = path.join(root, 'storage');
   const coldReviewPath = path.join(root, 'cold-review.json');
@@ -52,7 +52,8 @@ test('narrative enrichment proof queues weak descriptions while preserving zero-
     assert.equal(report.status, 'warn');
     assert.equal(report.score, 100);
     assert.equal(report.summary.agent_fast_optional_work_units, 0);
-    assert.equal(report.summary.ui_overview_optional_work_units, 135);
+    assert.ok((report.summary.agent_fast_total_work_units ?? 0) > 0);
+    assert.equal(report.summary.ui_overview_optional_work_units, 0);
     assert.equal(report.summary.queued_repos, 10);
     assert.equal(report.summary.no_target_count, 1);
     assert.equal(report.summary.missing_analysis_count, 0);

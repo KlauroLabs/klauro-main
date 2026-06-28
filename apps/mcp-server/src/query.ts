@@ -5,6 +5,8 @@ import type {
   CASTestSuite, ChangeHistoryEntry, ChangeAggregate, HeatMapData, ImpactAnalysis,
 } from '../../../packages/analyzer-core/src/types/cas.types';
 import { diffBehavior } from '../../../packages/analyzer-core/src/analyzer/core/behavior-diff';
+import { detectCommunities } from '../../../packages/analyzer-core/src/analyzer/core/community-detection';
+import { findNearClones } from '../../../packages/analyzer-core/src/analyzer/core/minhash-clone-detection';
 import { isAuthenticationGuardName } from '../../../packages/analyzer-core/src/analyzer/core/guard-classification';
 import { buildProductMap } from '../../../packages/analyzer-core/src/analyzer/core/product-map';
 import type { CASProductMap } from '../../../packages/analyzer-core/src/types/cas.types';
@@ -13,6 +15,7 @@ import {
   journeyDetailMarkdown,
   journeyHeadline,
   journeyListMarkdown,
+  journeyStepPhrase,
   journeyTitle,
   storedJourneyNameHeadline,
   storedJourneyNameParts,
@@ -898,6 +901,11 @@ export function getUserJourneys(
       entities_written: journey.terminal_effects?.entities_written || [],
       external_services: journey.terminal_effects?.external_services || [],
       step_count: journey.steps?.length || 0,
+      // Compact source->sink reaching-chain so the cross-function path is visible
+      // without a second per-journey detail call. Reuses the same compression-bounded
+      // step-name phrase as the markdown/detail views (leading + "(N intermediate)" +
+      // trailing), keeping this token-bounded even for long chains.
+      path: journeyStepPhrase(journey) || undefined,
       security_boundary_count: journey.security_boundaries?.length || 0,
       test_count: journey.tests_covering?.length || 0,
     })),
@@ -1382,6 +1390,77 @@ export function getPatterns(cas: CASOutput) {
     patterns,
     categories: cas.categories || {},
     behaviors_count: (cas.behaviors || []).length,
+  };
+}
+
+/** Louvain functional modules over the call graph — structural parity with
+ *  codebase-memory's community detection, computed from the final CAS graph. */
+export function getCommunities(cas: CASOutput) {
+  const communities = detectCommunities(
+    (cas.nodes || []).map(n => n.id),
+    (cas.edges || [])
+      .filter(e => e.type === 'calls' || e.type === 'uses' || e.type === 'depends_on')
+      .map(e => ({ source: e.source, target: e.target })),
+  );
+  const byId = new Map((cas.nodes || []).map(n => [n.id, n]));
+  return {
+    total: communities.length,
+    communities: communities.map(c => ({
+      id: c.id,
+      size: c.members.length,
+      internal_edges: c.internal_edges,
+      members: c.members.map(id => byId.get(id)?.name || id).slice(0, 50),
+    })),
+  };
+}
+
+/** MinHash near-clone groups over function/method bodies — structural parity with
+ *  codebase-memory's SIMILAR_TO edge. */
+export function getClones(cas: CASOutput, opts: { threshold?: number } = {}) {
+  const items = (cas.nodes || [])
+    .filter(n => /function|method/.test(String(n.type)) && n.source?.raw)
+    .map(n => ({ id: n.id, text: String(n.source!.raw) }));
+  const byId = new Map((cas.nodes || []).map(n => [n.id, n]));
+  const pairs = findNearClones(items, { threshold: opts.threshold ?? 0.8 });
+  return {
+    total: pairs.length,
+    clones: pairs.map(p => ({
+      a: byId.get(p.a)?.name || p.a,
+      b: byId.get(p.b)?.name || p.b,
+      similarity: Math.round(p.similarity * 100) / 100,
+    })),
+  };
+}
+
+/** Dead code: functions/methods with zero callers in the call graph, excluding
+ *  entry points and tests — structural parity with codebase-memory's dead-code
+ *  detection. (Exported-but-uncalled symbols are reported; they are API surface
+ *  the caller can vet, the same simple definition the competition uses.) */
+export function getDeadCode(cas: CASOutput) {
+  const called = new Set(
+    (cas.edges || [])
+      .filter(e => e.type === 'calls' || e.type === 'uses' || e.type === 'depends_on')
+      .map(e => e.target),
+  );
+  const entryIds = new Set(
+    (cas.entry_points || []).map((e: any) => e?.node_id || e?.id).filter(Boolean),
+  );
+  const dead = (cas.nodes || []).filter(
+    n =>
+      /function|method/.test(String(n.type)) &&
+      !called.has(n.id) &&
+      !entryIds.has(n.id) &&
+      !(n.metadata as any)?.is_entry_point &&
+      !n.metadata?.is_test,
+  );
+  return {
+    total: dead.length,
+    functions: dead.slice(0, 500).map(n => ({
+      name: n.name,
+      type: n.type,
+      file: n.source?.file,
+      line: n.source?.line,
+    })),
   };
 }
 

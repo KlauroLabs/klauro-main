@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
+import * as http from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -71,3 +72,53 @@ test('remote analyzer supports full source upload and dirty-tree incremental syn
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('remote analyzer honors hosted request body limit from environment', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-remote-limit-test-'));
+  const previousMaxBody = process.env.KLAURO_MAX_BODY_MB;
+  process.env.KLAURO_MAX_BODY_MB = '0.001';
+
+  const server = createRemoteAnalyzerHttpServer({ dataDir: root });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+
+  try {
+    const result = await postJson(address.port, '/v1/analyze', { payload: 'x'.repeat(2048) });
+    assert.equal(result.statusCode, 500);
+    assert.match(result.body, /Request body exceeds/);
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    if (previousMaxBody === undefined) {
+      delete process.env.KLAURO_MAX_BODY_MB;
+    } else {
+      process.env.KLAURO_MAX_BODY_MB = previousMaxBody;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+async function postJson(port: number, route: string, body: unknown): Promise<{ statusCode: number; body: string }> {
+  const payload = JSON.stringify(body);
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      hostname: '127.0.0.1',
+      port,
+      path: route,
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(payload),
+      },
+    }, response => {
+      let responseBody = '';
+      response.setEncoding('utf8');
+      response.on('data', chunk => {
+        responseBody += chunk;
+      });
+      response.on('end', () => resolve({ statusCode: response.statusCode || 0, body: responseBody }));
+    });
+    request.on('error', reject);
+    request.end(payload);
+  });
+}

@@ -43,6 +43,7 @@ const FOCUS_ENV_KEYS = [
   'KLAURO_AI_ELEMENT_DESCRIPTIONS',
   'KLAURO_EMBEDDING_ENABLED',
   'KLAURO_AGENT_FAST_EXCLUDE_LEGACY',
+  'KLAURO_MAX_FILES_PER_ANALYZER',
   'KLAURO_OLLAMA_AUTO',
   'OLLAMA_BASE_URL',
   'OLLAMA_MODEL',
@@ -62,12 +63,13 @@ const FOCUS_PROFILES: AnalysisFocusProfile[] = [
       'risks',
       'idioms',
       'tests',
+      'AI-written system narrative',
+      'AI primary capability descriptions',
       'K15/K5 capsule-only work packets',
       'freshness and incremental state',
     ],
     defers: [
-      'AI-written system narrative',
-      'AI element descriptions',
+      'lazy AI entity/flow/node descriptions',
       'embedding-heavy semantic layers',
       'visual polish enrichment',
     ],
@@ -82,7 +84,7 @@ const FOCUS_PROFILES: AnalysisFocusProfile[] = [
     cost_tier: 'moderate',
     produces: [
       'AI-written system narrative',
-      'AI capability descriptions',
+      'AI primary capability descriptions',
       'manual element descriptions',
       'visualization-friendly summaries',
     ],
@@ -101,12 +103,13 @@ const FOCUS_PROFILES: AnalysisFocusProfile[] = [
     cost_tier: 'higher',
     produces: [
       'embedding-backed semantic retrieval where configured',
-      'AI system narrative when a provider is available',
+      'AI-written system narrative',
+      'AI primary capability descriptions',
       'runtime correlation readiness',
       'audit-grade relationship context',
     ],
     defers: [
-      'bulk AI element descriptions unless manually requested',
+      'lazy AI entity/flow/node descriptions unless manually requested',
     ],
     recommended_layers: ['deep-context-refresh', 'runtime-simulation'],
     next_tool: 'run_analysis_layer',
@@ -159,7 +162,7 @@ export function recommendAnalysisFocus(input: {
       task_type: input.taskType,
       recommended_focus: 'ui-overview',
       recommended_layer: trigger === 'manual-description' ? 'ui-overview-refresh' : 'ui-overview-refresh',
-      reason: 'Human-facing inspection needs AI narrative and visualization-friendly descriptions; keep it out of the default coding path.',
+      reason: 'Human-facing inspection needs the required AI narrative plus visualization-friendly lazy descriptions.',
       token_policy: profile.token_policy,
       deferred_until_needed: profile.defers,
     };
@@ -184,7 +187,7 @@ export function recommendAnalysisFocus(input: {
     task_type: input.taskType,
     recommended_focus: 'agent-fast',
     recommended_layer: 'agent-fast-refresh',
-    reason: 'Agent coding and capsule-only MCP context should minimize prompt and analysis cost while preserving graph, idioms, risks, tests, and K15/K5 work packets.',
+    reason: 'Agent coding and capsule-only MCP context should minimize prompt and analysis cost while still producing the required AI system narrative and primary capability descriptions.',
     token_policy: profile.token_policy,
     deferred_until_needed: profile.defers,
   };
@@ -229,11 +232,22 @@ export function applyAnalysisFocus(
 ): void {
   if (focus === 'agent-fast') {
     process.env.KLAURO_ANALYSIS_FOCUS = 'agent-fast';
-    process.env.KLAURO_AI_INTERPRETATION = 'false';
-    process.env.KLAURO_AI_INTERPRETATION_FORCE = 'false';
-    process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = 'false';
+    applyLocalOllamaDefaults();
+    const localProvider = isLocalAIProvider();
+    process.env.KLAURO_AI_INTERPRETATION = process.env.KLAURO_AI_INTERPRETATION || 'true';
+    process.env.KLAURO_AI_INTERPRETATION_FORCE = process.env.KLAURO_AI_INTERPRETATION_FORCE || 'true';
+    process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP = 'false';
+    process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS = process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS ||
+      options.interpretationBudgetMs ||
+      (localProvider ? '240000' : '30000');
+    process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS || 'true';
+    process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT ||
+      options.elementDescriptionLimit ||
+      '8';
+    process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE || '4';
     process.env.KLAURO_EMBEDDING_ENABLED = 'false';
     process.env.KLAURO_AGENT_FAST_EXCLUDE_LEGACY = 'true';
+    process.env.KLAURO_MAX_FILES_PER_ANALYZER = process.env.KLAURO_MAX_FILES_PER_ANALYZER || '300';
     return;
   }
 
@@ -256,6 +270,7 @@ export function applyAnalysisFocus(
       '8';
     process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS || 'true';
     process.env.KLAURO_EMBEDDING_ENABLED = 'false';
+    process.env.KLAURO_MAX_FILES_PER_ANALYZER = process.env.KLAURO_MAX_FILES_PER_ANALYZER || '400';
     return;
   }
 
@@ -269,11 +284,12 @@ export function applyAnalysisFocus(
     process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS = process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS ||
       options.interpretationBudgetMs ||
       (localProvider ? '240000' : '60000');
-    process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS || 'false';
+    process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS || 'true';
     process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT ||
       options.elementDescriptionLimit ||
-      '0';
+      '8';
     process.env.KLAURO_EMBEDDING_ENABLED = process.env.KLAURO_EMBEDDING_ENABLED || 'true';
+    process.env.KLAURO_MAX_FILES_PER_ANALYZER = process.env.KLAURO_MAX_FILES_PER_ANALYZER || '5000';
     return;
   }
 

@@ -243,6 +243,64 @@ export function parseIgnorePatterns(content: string): string[] {
     .filter(line => line && !line.startsWith('#'));
 }
 
+export function allSourceExcludePatterns(loaded: LoadedKlauroConfig, extraExcludePatterns: string[] = []): string[] {
+  return [
+    ...(loaded.config.source.exclude || []),
+    ...(loaded.ignorePatterns || []),
+    ...extraExcludePatterns,
+  ];
+}
+
+export function sourcePatternListMatches(filePath: string, patterns: string[]): boolean {
+  return patterns.some(pattern => sourceGlobLikeMatches(filePath, pattern));
+}
+
+export function sourceGlobLikeMatches(filePath: string, pattern: string): boolean {
+  const normalizedPath = normalizeSourcePatternPath(filePath);
+  const normalizedPattern = normalizeSourcePatternPath(pattern);
+  if (!normalizedPath || !normalizedPattern) return false;
+  if (normalizedPattern === '**/*' || normalizedPattern === '**') return true;
+  const directPattern = normalizedPattern.startsWith('**/')
+    ? normalizedPattern.slice(3)
+    : normalizedPattern;
+  const regex = new RegExp(`^${sourceGlobToRegex(normalizedPattern)}$`);
+  if (regex.test(normalizedPath)) return true;
+  if (!normalizedPattern.includes('/')) {
+    return normalizedPath.split('/').some(part => new RegExp(`^${sourceGlobToRegex(normalizedPattern)}$`).test(part));
+  }
+  if (normalizedPattern.startsWith('**/')) {
+    return new RegExp(`(^|/)${sourceGlobToRegex(directPattern)}$`).test(normalizedPath);
+  }
+  return false;
+}
+
+export function normalizeSourcePatternPath(filePath: string): string {
+  return filePath.replace(/\\/g, '/').replace(/^\/+/, '');
+}
+
+function sourceGlobToRegex(pattern: string): string {
+  let out = '';
+  for (let i = 0; i < pattern.length; i++) {
+    const char = pattern[i];
+    const next = pattern[i + 1];
+    if (char === '*' && next === '*') {
+      out += '.*';
+      i++;
+    } else if (char === '*') {
+      out += '[^/]*';
+    } else if (char === '?') {
+      out += '.';
+    } else {
+      out += escapeRegex(char);
+    }
+  }
+  return out;
+}
+
+function escapeRegex(char: string): string {
+  return /[\\^$+?.()|[\]{}]/.test(char) ? `\\${char}` : char;
+}
+
 export function resolveAnalyzerUrl(loaded: LoadedKlauroConfig, explicitUrl?: string): string | undefined {
   return explicitUrl || loaded.config.analyzer.serverUrl || process.env.KLAURO_ANALYZER_URL;
 }

@@ -800,7 +800,7 @@ test('description quality gate warns when the description ignores a dominant una
   assert.match(gate.detail, /description does not acknowledge that Ruby \(79% of source\) is not analyzed/);
 });
 
-test('agent-fast usefulness review treats AI descriptions as intentionally deferred', () => {
+test('agent-fast usefulness review requires default AI summary and capability descriptions', () => {
   const review = reviewAnalysisUsefulnessStatic({
     system: { name: 'fast-api', type: 'service' },
     nodes: [
@@ -816,30 +816,30 @@ test('agent-fast usefulness review treats AI descriptions as intentionally defer
         id: 'ai-enrichment',
         name: 'AI Enrichment',
         priority: 4,
-        status: 'deferred',
+        status: 'complete',
         purpose: 'ai-enrichment',
-        default_phase: false,
-        description: 'Deferred in agent-fast focus',
+        default_phase: true,
+        description: 'Required default AI summary and primary capability pass',
         outputs: ['enhanced_system_purpose.inferred_description', 'system_capabilities.description'],
-        agent_value: 'Optional narrative polish',
-        visualization_value: 'UI descriptions',
-        can_run_later: true,
+        agent_value: 'Grounded system and capability orientation',
+        visualization_value: 'Overview descriptions',
+        can_run_later: false,
       },
     ],
     enhanced_system_purpose: {
       primary_domain: 'order-management',
       inferred_description: 'An order management API that exposes order routes, service behavior, and validation context for focused agent edits.',
       core_concepts: ['order', 'route'],
-      description_source: 'deterministic',
-      description_generation: { status: 'deterministic_initial', attempted: false },
+      description_source: 'ai',
+      description_generation: { status: 'ai_applied', attempted: true },
     },
     system_capabilities: [
       {
         id: 'orders',
         name: 'Order Management',
-        description: 'Order Management covers order behavior.',
-        description_source: 'deterministic',
-        description_generation: { status: 'deterministic_initial', attempted: false },
+        description: 'Order Management coordinates order reads through the route and service boundary so agents can change order behavior without scanning unrelated modules.',
+        description_source: 'ai',
+        description_generation: { status: 'ai_applied', attempted: true },
         category: 'core',
         criticality: 'high',
         criticality_factors: [],
@@ -1277,7 +1277,7 @@ test('description enrichment targets point UI and agents at the next weak narrat
 
   assert.equal(targets[0].target_kind, 'system');
   assert.equal(targets[0].suggested_tool, 'run_analysis_layer');
-  assert.equal(targets[0].suggested_args.layer, 'ui-overview-refresh');
+  assert.equal(targets[0].suggested_args.layer, 'agent-fast-refresh');
   assert.match(targets[0].reasons.join('\n'), /regurgitates CAS inventory/);
 
   const capability = targets.find(target => target.target_id === 'cap_packets');

@@ -195,6 +195,18 @@ test('getUserJourneys list mode includes title and headline per journey', () => 
   assert.equal(result.journeys[0].name, truckspy.name, 'stored name stays available');
 });
 
+test('getUserJourneys list mode carries a compact source->sink path so no second detail call is needed', () => {
+  const result = getUserJourneys(casWithJourneys()) as any;
+  const item = result.journeys[0];
+  // The reaching-chain (source=entry -> path=steps -> sink=terminal_entities) is
+  // visible in the list item itself, matching the compression-bounded detail phrase.
+  assert.equal(item.path, journeyStepPhrase(truckspy));
+  assert.ok(item.path.startsWith('create company -> company manager -> validate company name'));
+  // Token-bounded: long chains stay compressed, never the raw 24-step dump.
+  assert.ok(item.path.includes('intermediate steps)'), 'long chains stay compressed in the list');
+  assert.ok(!item.path.includes('method_src_'), 'raw node ids never leak into the path');
+});
+
 test('getUserJourneys markdown mode renders a readable journey brief', () => {
   const result = getUserJourneys(casWithJourneys(), { format: 'markdown' }) as any;
   assert.ok(result.markdown.startsWith('# User Journeys'));

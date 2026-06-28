@@ -338,7 +338,11 @@ async function scoreTask(cas: CASOutput, projectPath: string, benchmarkTask: Ben
     gate('selected-file-included', !selectedFile || planFiles.some(file => pathsCompatible(file, selectedFile)), selectedFile || 'no selected file'),
     gate('mcp-followups-present', packet.next_mcp_calls.length > 0, `${packet.next_mcp_calls.length} calls`),
     gate('coding-context-present', task.task_type === 'orient' || Boolean(packet.work_context.coding_context), packet.work_context.coding_context ? 'coding context' : 'no coding context'),
-    gate('risk-context-present', task.task_type === 'orient' || Boolean(packet.work_context.risk), packet.work_context.risk ? 'risk context' : 'no risk context'),
+    gate(
+      'risk-context-present',
+      task.task_type === 'orient' || Boolean(packet.work_context.risk || packet.work_context.risk_context),
+      packet.work_context.risk ? 'risk context' : packet.work_context.risk_context ? 'risk context summary' : 'no risk context'
+    ),
     gate('beats-cold-repo-read', beatsColdRepoRead(filesInRepo, planFiles.length, reduction), `${reduction}% fewer files`),
   ];
   const score = Math.round(gates.reduce((sum, result) => sum + result.score, 0) / gates.length);

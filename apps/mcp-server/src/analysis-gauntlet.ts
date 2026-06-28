@@ -138,12 +138,12 @@ async function analyzeTarget(target: Target): Promise<TargetReport> {
     ...runtimePlan.gaps,
     ...agentTaskProof.tasks
       .filter(task => task.status !== 'pass')
-      .flatMap(task => task.gaps.map(gap => `agent:${task.task.task_type || 'orient'}:${gap}`)),
+      .flatMap(task => (task.gaps || []).map(gap => `agent:${task.task.task_type || 'orient'}:${gap}`)),
     ...(semanticMap.files.length === 0 ? ['semantic-map: no files resolved'] : []),
   ].slice(0, 25);
   const observations = agentTaskProof.tasks
     .filter(task => task.status === 'pass')
-    .flatMap(task => task.gaps.map(gap => `agent:${task.task.task_type || 'orient'}:${gap}`))
+    .flatMap(task => (task.gaps || []).map(gap => `agent:${task.task.task_type || 'orient'}:${gap}`))
     .slice(0, 25);
   const status: GateStatus = truth.status === 'fail' || agentTaskProof.status === 'fail' || semanticMap.files.length === 0
     ? 'fail'

@@ -1,10 +1,16 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { listAnalysesFiltered, DEFAULT_LIMIT, MAX_LIMIT } from './analysis-listing';
+import { listWorkspaceAnalysesFiltered } from './workspace-listing';
+import { installGauntletWatcher, listGauntletWatchers, stopGauntletWatcher } from './gauntlet/gauntlet-watcher';
+import { runIncrementalGauntlet, listIncrementalRecords } from './gauntlet/incremental-gauntlet';
 import { appendFileSync } from 'fs';
 import * as nodePath from 'path';
 import { getAnalysis, runAnalysis } from './analyzer';
 import { getAnalysisEntry, getStorageHealth, listAgenticBenchmarkReports, listAnalyses, listCrossCodebaseSystemGraphs, listWorkspaceGraphs, loadAgenticBenchmarkReport, loadCrossCodebaseSystemGraph, loadGoldenSnapshot, loadLatestAgenticBenchmarkReportByType, loadRuntimeObservations, loadWorkspaceGraph, saveAgenticBenchmarkReport, saveCrossCodebaseSystemGraph, saveGoldenSnapshot, saveRuntimeObservation, saveWorkspaceGraph } from './storage';
 import * as query from './query';
+import * as adrStore from './adr-store';
+import { queryGraph } from './graph-query';
 import * as watcher from './watcher';
 import * as product from './product';
 import * as agentAdoption from './agent-adoption';
@@ -194,7 +200,7 @@ const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
   { label: 'Behaviors, testing, data, and health', tools: ['get_behaviors', 'get_lifecycle_hooks', 'get_test_summary', 'get_database_schema', 'get_implementation_health', 'get_system_health', 'get_documentation_coverage', 'get_todos'] },
   { label: 'Dependencies', tools: ['get_dependencies', 'get_libraries'] },
   { label: 'Change history', tools: ['get_changes_since', 'get_changes_between', 'get_changes_for_node', 'get_changes_for_file', 'get_changes_for_entry_point', 'get_change_summary', 'get_hot_spots', 'get_analysis_at', 'get_analysis_snapshots'] },
-  { label: 'Watch mode', tools: ['start_watch', 'stop_watch', 'get_watch_status', 'list_watches', 'poll_watch_changes'] },
+  { label: 'Watch mode', tools: ['start_watch', 'stop_watch', 'get_watch_status', 'list_watches', 'poll_watch_changes', 'install_gauntlet_watcher', 'list_gauntlet_watchers', 'stop_gauntlet_watcher', 'run_incremental_gauntlet'] },
 ];
 
 function buildGatewayDescription(registry: Map<string, RegisteredToolEntry>, profile: ToolProfile): string {
@@ -839,13 +845,24 @@ function registerTools(server: McpServer) {
     'list_analyses',
     {
       title: 'List Analyses',
-      description: 'List all previously analyzed codebases with metadata.',
-      inputSchema: {} as any,
+      description: 'List previously analyzed codebases, with narrowing and pagination. A machine can hold thousands of analyses, so this never dumps them all: filter by name/path, framework, system_type, or min_nodes/min_edges; sort by nodes (default), edges, name, or recent; dedupe re-analyses by name or path; and page with limit/offset. The response reports total_indexed, matched, has_more, and next_offset.',
+      inputSchema: {
+        limit: z.number().int().optional().describe(`Page size (default ${DEFAULT_LIMIT}, max ${MAX_LIMIT}).`),
+        offset: z.number().int().optional().describe('Page offset (default 0). Use next_offset from a prior call.'),
+        name: z.string().optional().describe('Case-insensitive substring matched against analysis name AND path.'),
+        framework: z.string().optional().describe('Case-insensitive substring matched against any detected framework.'),
+        system_type: z.string().optional().describe('Case-insensitive substring matched against system_type.'),
+        min_nodes: z.number().int().optional().describe('Keep only analyses with at least this many graph nodes.'),
+        min_edges: z.number().int().optional().describe('Keep only analyses with at least this many graph edges.'),
+        dedupe_by: z.enum(['name', 'path', 'none']).optional().describe("Collapse re-analyses: keep the largest entry per 'name' or per 'path'. Default 'none'."),
+        sort: z.enum(['nodes', 'edges', 'name', 'recent']).optional().describe("Sort order. Default 'nodes' (desc)."),
+        compact: z.boolean().optional().describe('Return a compact projection (default true). Set false for the full AnalysisEntry.'),
+      } as any,
     } as any,
-    async () => {
+    async (query: any) => withErrorHandling(async () => {
       const analyses = await listAnalyses();
-      return json(analyses);
-    }
+      return json(listAnalysesFiltered(analyses, query || {}));
+    })
   );
 
   server.registerTool(
@@ -1769,15 +1786,27 @@ function registerTools(server: McpServer) {
     })
   );
 
+  const workspaceListSchema = {
+    limit: z.number().int().optional().describe(`Page size (default ${50}, max ${200}).`),
+    offset: z.number().int().optional().describe('Page offset (default 0). Use next_offset from a prior call.'),
+    name: z.string().optional().describe('Case-insensitive substring matched against workspace name AND id.'),
+    min_repos: z.number().int().optional().describe('Keep only workspaces with at least this many member repos.'),
+    dedupe_by: z.enum(['name', 'none']).optional().describe("Collapse re-runs to the richest entry per workspace name. Default 'name'."),
+    sort: z.enum(['repos', 'recent', 'name']).optional().describe("Sort order. Default 'repos' (desc)."),
+    compact: z.boolean().optional().describe('Compact projection with member repo names (default true).'),
+    max_members: z.number().int().optional().describe('Max member-repo names per workspace in the compact shape (default 20).'),
+  };
+  const listWorkspacesDescription = 'List persisted WAS-compliant Workspace analyses, with narrowing and pagination. Re-runs of the same workspace are collapsed to the richest entry per name by default, so a few real workspaces are not buried under hundreds of duplicates. Filter by name or min_repos; sort by repos (default), recent, or name; page with limit/offset. Reports total_indexed, matched, has_more, next_offset.';
+
   server.registerTool(
     'list_workspace_analyses',
     {
       title: 'List Workspace Analyses',
-      description: 'List persisted WAS-compliant Workspace analyses.',
-      inputSchema: {} as any,
+      description: listWorkspacesDescription,
+      inputSchema: workspaceListSchema as any,
     } as any,
-    async () => withErrorHandling(async () => {
-      return json(await listCrossCodebaseSystemGraphs());
+    async (query: any) => withErrorHandling(async () => {
+      return json(listWorkspaceAnalysesFiltered(await listCrossCodebaseSystemGraphs(), query || {}));
     })
   );
 
@@ -1837,11 +1866,11 @@ function registerTools(server: McpServer) {
     'list_cross_codebase_analyses',
     {
       title: 'List Cross-Codebase Analyses',
-      description: 'Deprecated name for list_workspace_analyses. Lists persisted WAS-compliant Workspace analyses.',
-      inputSchema: {} as any,
+      description: `Deprecated name for list_workspace_analyses. ${listWorkspacesDescription}`,
+      inputSchema: workspaceListSchema as any,
     } as any,
-    async () => withErrorHandling(async () => {
-      return json(await listCrossCodebaseSystemGraphs());
+    async (query: any) => withErrorHandling(async () => {
+      return json(listWorkspaceAnalysesFiltered(await listCrossCodebaseSystemGraphs(), query || {}));
     })
   );
 
@@ -2789,6 +2818,98 @@ function registerTools(server: McpServer) {
     async ({ path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getPatterns(cas));
+    })
+  );
+
+  server.registerTool(
+    'get_communities',
+    {
+      title: 'Get Communities',
+      description: 'Louvain functional modules: clusters of tightly call-connected functions/classes, discovered by community detection over the call graph. Surfaces de-facto modules an agent should treat as a unit. Each community lists member nodes and internal cohesion.',
+      inputSchema: { path: z.string().describe('Project path') } as any,
+    } as any,
+    async ({ path }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(query.getCommunities(cas));
+    })
+  );
+
+  server.registerTool(
+    'get_clones',
+    {
+      title: 'Get Clones',
+      description: 'Near-duplicate (copy-paste) function/method groups via MinHash + Jaccard over structure-normalized code — catches renamed clones (Type-2). Each pair reports the two functions and an estimated similarity. Refactor and divergence-risk signal.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        threshold: z.number().optional().describe('Minimum estimated Jaccard similarity to report (0-1, default 0.8)'),
+      } as any,
+    } as any,
+    async ({ path, threshold }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(query.getClones(cas, { threshold }));
+    })
+  );
+
+  server.registerTool(
+    'get_dead_code',
+    {
+      title: 'Get Dead Code',
+      description: 'Functions/methods with zero callers in the call graph, excluding entry points and tests. Surfaces unreachable or unused code (and exported-but-uncalled API surface) for cleanup or review.',
+      inputSchema: { path: z.string().describe('Project path') } as any,
+    } as any,
+    async ({ path }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(query.getDeadCode(cas));
+    })
+  );
+
+  server.registerTool(
+    'get_adrs',
+    {
+      title: 'Get ADRs',
+      description: 'List Architecture Decision Records persisted for this project across sessions: the decisions, their status, context, and consequences.',
+      inputSchema: { path: z.string().describe('Project path') } as any,
+    } as any,
+    async ({ path }: any) => withErrorHandling(async () => {
+      return json(await adrStore.getAdrs(path));
+    })
+  );
+
+  server.registerTool(
+    'manage_adr',
+    {
+      title: 'Manage ADR',
+      description: 'Create or update an Architecture Decision Record (persisted across sessions). Provide title + decision; optionally context, consequences, status, and the id of an ADR this supersedes.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        title: z.string().describe('Short decision title'),
+        decision: z.string().describe('The decision made'),
+        context: z.string().optional().describe('Why the decision was needed'),
+        consequences: z.string().optional().describe('Resulting trade-offs'),
+        status: z.enum(['proposed', 'accepted', 'deprecated', 'superseded']).optional(),
+        supersedes: z.string().optional().describe('id of an ADR this replaces'),
+        id: z.string().optional().describe('Existing ADR id to update'),
+      } as any,
+    } as any,
+    async ({ path, title, decision, context, consequences, status, supersedes, id }: any) => withErrorHandling(async () => {
+      return json(await adrStore.saveAdr(path, { title, decision, context, consequences, status, supersedes, id }));
+    })
+  );
+
+  server.registerTool(
+    'query_graph',
+    {
+      title: 'Query Graph',
+      description: "Cypher-lite query over the code graph. Supports MATCH (a)[-[:TYPE]->(b)] [WHERE a.field = 'value'] RETURN a|b — e.g. \"MATCH (a)-[:CALLS]->(b) WHERE b.name = 'save' RETURN a\" (callers of save), or \"MATCH (n) WHERE n.type = 'function' RETURN n\". Fields: name, type, id, file, qualified_name.",
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        query: z.string().describe('Cypher-lite query'),
+        limit: z.number().optional().describe('Max nodes per RETURN variable (default 200)'),
+      } as any,
+    } as any,
+    async ({ path, query: q, limit }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(queryGraph(cas, q, { limit }));
     })
   );
 
@@ -4428,6 +4549,70 @@ function registerTools(server: McpServer) {
       const changes = watcher.pollWatchChanges(watch_id, since);
       if (!changes) return json({ error: `Watch session not found: ${watch_id}` });
       return json(changes);
+    })
+  );
+
+  server.registerTool(
+    'install_gauntlet_watcher',
+    {
+      title: 'Install Gauntlet Watcher',
+      description: 'Install a watcher on a repository that automatically runs the incremental-change gauntlet whenever the code changes — measuring Klauro\'s advantage on understanding each change (quality/token/speed delta over time). The watcher is persisted and auto-resumes when the gauntlet UI server restarts.',
+      inputSchema: {
+        repo_path: z.string().describe('Absolute path to the repository to watch (must have a stored analysis).'),
+      } as any,
+    } as any,
+    async ({ repo_path }: any) => withErrorHandling(async () => {
+      return json(await installGauntletWatcher(repo_path));
+    })
+  );
+
+  server.registerTool(
+    'list_gauntlet_watchers',
+    {
+      title: 'List Gauntlet Watchers',
+      description: 'List installed gauntlet watchers with their live status, recent changes, and how many incremental gauntlet runs each has produced.',
+      inputSchema: {} as any,
+    } as any,
+    async () => withErrorHandling(async () => {
+      return json(await listGauntletWatchers());
+    })
+  );
+
+  server.registerTool(
+    'stop_gauntlet_watcher',
+    {
+      title: 'Stop Gauntlet Watcher',
+      description: 'Stop and disable an installed gauntlet watcher by id.',
+      inputSchema: {
+        id: z.string().describe('Gauntlet watcher id from list_gauntlet_watchers.'),
+      } as any,
+    } as any,
+    async ({ id }: any) => withErrorHandling(async () => {
+      return json(await stopGauntletWatcher(id));
+    })
+  );
+
+  server.registerTool(
+    'run_incremental_gauntlet',
+    {
+      title: 'Run Incremental Gauntlet',
+      description: 'Run the incremental-change gauntlet for one repository on demand: projects Klauro vs every competitor arm on understanding a change and records the quality/token/speed delta. Returns the record and appends it to the repo\'s incremental history.',
+      inputSchema: {
+        repo_name: z.string().describe('Analysis name of the repository.'),
+        files_changed: z.number().optional().describe('Number of files changed (for change-magnitude).'),
+        nodes_added: z.number().optional(),
+        nodes_modified: z.number().optional(),
+        nodes_deleted: z.number().optional(),
+        risk_level: z.string().optional(),
+      } as any,
+    } as any,
+    async ({ repo_name, files_changed, nodes_added, nodes_modified, nodes_deleted, risk_level }: any) => withErrorHandling(async () => {
+      const change = (files_changed || nodes_added || nodes_modified || nodes_deleted)
+        ? { filesChanged: files_changed || 0, nodesAdded: nodes_added || 0, nodesModified: nodes_modified || 0, nodesDeleted: nodes_deleted || 0, riskLevel: risk_level }
+        : undefined;
+      const record = await runIncrementalGauntlet({ repoName: repo_name, change });
+      const history = await listIncrementalRecords(repo_name, 20);
+      return json({ record, history_length: history.length });
     })
   );
 }

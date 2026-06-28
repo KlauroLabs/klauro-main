@@ -9,7 +9,7 @@ import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-
 import { isDirectCliInvocation } from './cli-invocation';
 
 const DEFAULT_PORT = 8787;
-const MAX_BODY_BYTES = 100 * 1024 * 1024;
+const DEFAULT_MAX_BODY_BYTES = 100 * 1024 * 1024;
 
 interface RemoteAnalyzerServiceOptions {
   dataDir?: string;
@@ -26,7 +26,7 @@ interface RateLimitBucket {
 export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOptions = {}): http.Server {
   const dataDir = path.resolve(options.dataDir || process.env.KLAURO_REMOTE_ANALYZER_DATA || path.join(process.cwd(), '.klauro-remote-analyzer'));
   const token = options.token ?? process.env.KLAURO_ANALYZER_TOKEN;
-  const maxBodyBytes = options.maxBodyBytes || MAX_BODY_BYTES;
+  const maxBodyBytes = options.maxBodyBytes || resolveMaxBodyBytes();
   const rateLimitPerMinute = options.rateLimitPerMinute ?? Number(process.env.KLAURO_ANALYZER_RATE_LIMIT_PER_MINUTE || 120);
   const buckets = new Map<string, RateLimitBucket>();
 
@@ -132,6 +132,15 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
       writeJson(response, 500, { status: 'error', error: message });
     }
   });
+}
+
+function resolveMaxBodyBytes(): number {
+  const raw = process.env.KLAURO_MAX_BODY_MB || process.env.KLAURO_MAX_UPLOAD_MB;
+  const parsed = raw ? Number(raw) : NaN;
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return Math.floor(parsed * 1024 * 1024);
+  }
+  return DEFAULT_MAX_BODY_BYTES;
 }
 
 async function handleProposalPreview(dataDir: string, request: RemoteProposalPreviewRequest): Promise<unknown> {

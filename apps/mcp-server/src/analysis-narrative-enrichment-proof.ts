@@ -49,6 +49,7 @@ interface NarrativeEnrichmentProofReport {
     critical_targets: number;
     mechanics_status: string;
     focus_status: string;
+    agent_fast_total_work_units: number | null;
     agent_fast_optional_work_units: number | null;
     ui_overview_optional_work_units: number | null;
   };
@@ -92,6 +93,7 @@ export async function runAnalysisNarrativeEnrichmentProof(options: {
       critical_targets: queue.reduce((sum, item) => sum + item.critical_count, 0),
       mechanics_status: String((mechanics as any).status || 'unknown'),
       focus_status: String((focus as any).status || 'unknown'),
+      agent_fast_total_work_units: numberOrNull((focus as any).summary?.agent_fast_total_work_units),
       agent_fast_optional_work_units: numberOrNull((focus as any).summary?.agent_fast_optional_work_units),
       ui_overview_optional_work_units: numberOrNull((focus as any).summary?.ui_overview_optional_work_units),
     },
@@ -183,7 +185,7 @@ function buildGates(coldReview: any, queue: QueueItem[], mechanics: any, focus: 
   const routingOk = queued.every(item => item.first_targets.every(target => {
     if (target.target_kind === 'system') {
       return target.suggested_tool === 'run_analysis_layer' &&
-        (target.suggested_args as any).layer === 'ui-overview-refresh';
+        (target.suggested_args as any).layer === 'agent-fast-refresh';
     }
     return target.suggested_tool === 'generate_element_description';
   }));
@@ -207,7 +209,7 @@ function buildGates(coldReview: any, queue: QueueItem[], mechanics: any, focus: 
       debtCount === 0 || (routingOk && queued.length > 0),
       debtCount === 0
         ? 'no enrichment routing needed for current sampled cold review'
-        : routingOk ? 'system narrative routes to ui-overview-refresh; elements route to generate_element_description' : 'bad enrichment routing'),
+        : routingOk ? 'system narrative routes to agent-fast-refresh; lazy elements route to generate_element_description' : 'bad enrichment routing'),
     gate('narrative-enrichment:ai-mechanics',
       mechanics.status === 'pass' &&
         ['service', 'capability', 'entity', 'entry_point'].every(kind => generatedKinds.has(kind)),
@@ -215,8 +217,8 @@ function buildGates(coldReview: any, queue: QueueItem[], mechanics: any, focus: 
     gate('narrative-enrichment:agent-fast-cost-isolated',
       focus.status === 'pass' &&
         Number(focusSummary.agent_fast_optional_work_units) === 0 &&
-        Number(focusSummary.ui_overview_optional_work_units) > 0,
-      `agent-fast optional ${focusSummary.agent_fast_optional_work_units ?? 'missing'}, ui-overview optional ${focusSummary.ui_overview_optional_work_units ?? 'missing'}`),
+        Number(focusSummary.agent_fast_total_work_units) > 0,
+      `agent-fast optional ${focusSummary.agent_fast_optional_work_units ?? 'missing'}, agent-fast total ${focusSummary.agent_fast_total_work_units ?? 'missing'}`),
   ];
 }
 
