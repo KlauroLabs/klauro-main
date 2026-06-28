@@ -75,7 +75,7 @@ cd /absolute/path/to/proof-of-concept/apps/mcp-server
 npm --silent run analyze -- /path/to/your/repo --analysis-focus agent-fast
 ```
 
-`agent-fast` skips AI narrative generation, AI element descriptions, and embeddings, producing the structural graph agents need at full speed. Run `--analysis-focus full` later if you also want the UI narrative layers.
+`agent-fast` includes the required AI system narrative and primary capability summaries, but skips lazy entity/flow/node descriptions and embeddings so agents get the structural graph and product orientation without paying for heavy enrichment. Run `--analysis-focus full` later if you also want every deeper enrichment layer.
 
 From inside an agent session the equivalent is the `analyze_codebase` tool with `analysis_focus: "agent-fast"`.
 
@@ -133,7 +133,7 @@ cd /absolute/path/to/proof-of-concept/apps/mcp-server
 npm run new-user-e2e
 ```
 
-It creates a fresh temporary repo, runs the deterministic installer with `--first-value`, verifies the installed CLI, starts a local hosted analyzer, runs remote full analysis, edits the repo, and proves incremental remote sync updates CAS.
+It creates a fresh temporary repo, runs the deterministic installer with `--first-value`, verifies the installed CLI, starts a local hosted analyzer, runs remote full analysis, edits the repo, and proves incremental remote sync updates CAS. It writes `.klauro-new-user-e2e/latest-report.json`, and `npm run agent-proof-full` now requires that report through `agent-vision-acceptance`.
 
 ## Operations: analysis memory
 

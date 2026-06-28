@@ -81,7 +81,7 @@ AZURE_OPENAI_API_VERSION=2024-10-21
 
 When `OLLAMA_BASE_URL` is set, Klauro uses Ollama's native chat endpoint with `think: false` by default so Qwen3-style reasoning models return concise description text instead of hidden reasoning blocks. Set `OLLAMA_THINK=true` only for ad hoc experimentation, not normal analysis.
 
-`AZURE_OPENAI_API_KEY` alone is not enough; Klauro needs the endpoint and deployment name to call Azure OpenAI. If no AI provider is configured, `analysis_phases` reports `ai-system-narrative` as deferred and description provenance remains explicit.
+`AZURE_OPENAI_API_KEY` alone is not enough; Klauro needs the endpoint and deployment name to call Azure OpenAI. If no AI provider is configured, default CAS/WAS analysis must mark the system narrative and primary capability descriptions as degraded or failed with explicit provenance; deterministic text is not equivalent to the required AI enrichment.
 
 ## Claude Code Configuration
 

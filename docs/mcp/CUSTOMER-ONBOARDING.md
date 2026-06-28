@@ -54,6 +54,12 @@ Tokens are not stored in `.klaurorc`. Customers should authenticate through logi
 export KLAURO_ANALYZER_TOKEN=...
 ```
 
+Use this as the default commercial path. Customers install the thin CLI/MCP
+client locally, review the upload manifest, and send filtered source snapshots
+or dirty-tree deltas to the hosted analyzer. The analyzer implementation remains
+server-side, and returned CAS is cached locally so agents can work quickly after
+sync.
+
 ## Self-Hosted Analyzer
 
 Enterprise customers can run the analyzer container in their own network:
@@ -83,6 +89,19 @@ Set `.klaurorc` policy gates:
   }
 }
 ```
+
+Use this path when the customer cannot send source to Klauro-hosted
+infrastructure. It preserves the same local-agent workflow, but the analyzer
+image runs inside the customer's network.
+
+## Deployment Options
+
+| Option | Who runs analyzers | Analyzer IP exposure | Best for | Status |
+| --- | --- | --- | --- | --- |
+| Local analyzer | Customer machine | Highest; analyzer code is local | Internal development and early demos | Implemented and tested |
+| Hosted analyzer | Klauro infrastructure | Lowest; customer receives thin client only | Default commercial deployment | Implemented locally; pending live deploy |
+| Self-hosted analyzer | Customer infrastructure | Medium; analyzer image is shipped, not source | Enterprise/security-sensitive customers | Docker path implemented |
+| GitHub import | Klauro infrastructure | Lowest | Hosted main-branch analysis and PR checks | Planned integration path; local dirty-tree sync still required |
 
 ## GitHub Import
 
@@ -117,6 +136,8 @@ npm run new-user-e2e
 ```
 
 Passing means a fresh temp repo can install Klauro, get first value, start a local hosted analyzer, run full remote analysis, and sync an incremental dirty-tree change without mutating the source repo beyond `.klaurorc`/`.klauroignore` when explicitly initialized.
+
+The command writes `.klauro-new-user-e2e/latest-report.json`. Full product acceptance (`npm run agent-proof-full`) includes this check before `agent-vision-acceptance`, so release readiness fails if the ten-minute install-to-value path or hosted incremental sync breaks.
 
 ## Buyer Proof
 

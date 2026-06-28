@@ -51,6 +51,8 @@ This specification defines:
 - Query interfaces for information retrieval
 - Extension mechanisms for future capabilities
 
+CAS is scoped to a single project, repo, folder, or codebase analysis. Multi-project composition is defined by the Workspace Analysis Specification (WAS), which is generated after all associated CAS outputs complete and MUST be derivable from those CAS outputs without source-code reads.
+
 This specification does NOT define:
 - Visualization or presentation formats
 - Analysis algorithms or techniques
@@ -112,7 +114,7 @@ interface CASOutput {
   exit_points: ExitPoint[];        // Added in v1.1.0
   external_services: ExternalService[]; // Added in v1.1.0, filtered in v1.5.0
 
-  repository_links?: CrossRepositoryLink[];
+  repository_links?: CrossRepositoryLink[]; // Legacy/repo-local declared integration hints; cross-CAS composition belongs in WAS
   cross_repository_links?: CrossRepositoryLink[]; // Backward-compatible alias
   dependencies?: Dependencies;
   disclosure?: DisclosureHints;     // Added in v1.1.0
@@ -160,6 +162,7 @@ interface CASOutput {
   runtime?: CASRuntime;                          // Deployment, monitoring, and instrumentation readiness
   runtime_static_links?: CASRuntimeStaticLink[]; // Static objects mapped to runtime signals
   analysis_facts?: CASAnalysisFact[];            // Evidence-backed claims behind CAS objects
+  distribution_units?: CASDistributionUnit[];     // Install/release/deployment units that ship components together
 
   // v1.9.0 Codebase Idiom Intelligence
   codebase_idioms?: CASCodebaseIdiom[];           // Repo-local conventions with evidence and guidance
@@ -810,7 +813,7 @@ interface ExternalService {
 ```
 
 #### CrossRepositoryLink
-Deterministic links between this analysis and another repository or system boundary:
+Legacy deterministic hints between this analysis and another repository or system boundary. New analyzers SHOULD prefer repo-local interfaces (`entry_points`, `exit_points`, `external_services`, `dependencies`, `runtime`, `configuration`, `analysis_facts`) and allow WAS to compose actual cross-project links after all associated CAS outputs are available.
 
 ```typescript
 interface CrossRepositoryLink {
@@ -886,6 +889,29 @@ interface CASRuntime {
 }
 ```
 
+#### Runtime Topology Metadata
+
+Repo-level CAS is responsible for emitting the runtime and infrastructure facts that WAS later composes. Nodes discovered from Docker, Docker Compose, Kubernetes, Terraform, CI/CD, deployment manifests, or similar runtime surfaces SHOULD include:
+
+```typescript
+metadata: {
+  topology_surface: 'docker' | 'docker-compose' | 'kubernetes' | 'terraform' | 'ci-cd' | string;
+  environment?: 'local' | 'development' | 'staging' | 'production' | string;
+  service_aliases?: string[];
+  deployment_service_name?: string;
+  attributes?: {
+    provider?: string;
+    terraform_type?: string;
+    terraform_address?: string;
+    ports?: string[];
+    depends_on?: string[];
+    environment?: string;
+  };
+}
+```
+
+CAS MUST distinguish provisioned/wired infrastructure from source-level usage. Docker/Compose/Terraform/CI facts may create runtime topology nodes and configuration evidence, but they MUST NOT be treated as source-backed usage unless source code, SDK calls, data access, messaging, or explicit runtime observations prove usage. External SDK services such as Auth0, Stripe, Datadog, Sentry, cloud SDKs, and messaging clients SHOULD be emitted through `external_services`, `dependencies`, or exit points even when they do not expose an HTTP endpoint.
+
 #### CASRuntimeStaticLink
 Bridge between a static CAS object and the runtime signal that would validate it:
 
@@ -931,6 +957,36 @@ interface CASAnalysisFact {
   evidence: CASFactEvidence[];
 }
 ```
+
+#### CASDistributionUnit
+Evidence-backed grouping for artifacts that are installed, released, or deployed as one unit while still preserving their separate runtime/process surfaces:
+
+```typescript
+interface CASDistributionUnit {
+  id: string;
+  name: string;
+  kind: 'desktop-app' | 'mobile-app' | 'server-bundle' | 'installer' |
+        'container-stack' | 'package' | 'deployment-unit';
+  platforms: string[];
+  component_names: string[];
+  component_node_ids: string[];
+  artifact_node_ids: string[];
+  artifact_paths: string[];
+  install_paths?: string[];
+  evidence: Array<{
+    source: 'installer' | 'install-script' | 'release-script' | 'service-unit' |
+            'desktop-entry' | 'package-manifest' | 'container-topology' | 'ci' | 'inferred';
+    file?: string;
+    line?: number;
+    claim: string;
+    confidence: number;
+  }>;
+  confidence: number;
+  agent_guidance?: string;
+}
+```
+
+CASDistributionUnit MUST NOT collapse component nodes, entry points, or runtime surfaces. For example, a tray UI and a daemon may ship in one desktop installer, but they remain separate CAS nodes/deployable surfaces. The distribution unit records the install/release relationship so WAS, MCP, and agents know that changes to one component may require installer, service, desktop-entry, release-manifest, or signing updates.
 
 ### 4.8 Pattern Detection with Variations (v1.5.0)
 
@@ -1436,7 +1492,7 @@ interface CASAnalysisPhase {
 }
 ```
 
-Default analysis MUST prioritize `core-graph` and `agent-context` before heavier enrichment. AI MUST be used for the system narrative and primary capability descriptions when an AI provider is configured. Per-node, service, entity, entry point, and exit point descriptions SHOULD be deferred and generated only by explicit enrichment requests so default analysis stays fast and token-efficient.
+Default analysis MUST prioritize `core-graph` and `agent-context` before heavier enrichment. AI enrichment is required for the system narrative and primary capability descriptions in every default CAS analysis. If no AI provider is available, CAS MUST mark those descriptions as degraded or failed with explicit `description_source` / `description_generation` provenance; deterministic text MUST NOT be presented as equivalent to AI-written narrative. Per-node, service, entity, entry point, and exit point descriptions SHOULD be deferred and generated only by explicit enrichment requests so default analysis stays fast and token-efficient.
 
 #### CASIntent
 Inferred purpose and architectural intent:
@@ -2194,10 +2250,11 @@ Capability detection strategies MUST vary based on the detected system type:
 - Capabilities are the functionality domains the exports provide
 - Group related exports into capability domains
 
-Capability descriptions MUST be AI-generated when an AI provider is configured. If AI is unavailable or rejected by the quality gate, CAS MUST retain provenance in `description_source` and `description_generation` so UI and MCP consumers can expose the gap instead of pretending deterministic text is equivalent.
+Capability descriptions MUST be AI-generated or AI-reviewed in the default summary pass. If AI is unavailable or rejected by the quality gate, CAS MUST retain provenance in `description_source` and `description_generation` so UI and MCP consumers can expose the gap instead of pretending deterministic text is equivalent.
 
 ### 5.23 Runtime-to-Static Correlation (v1.8.0+)
 
+- Runtime topology facts SHOULD be produced at CAS time for Docker, Docker Compose, Kubernetes, Terraform, CI/CD, and deployment configuration so Workspace analysis can be generated from CAS only.
 - `runtime_static_links` MUST reference existing entry points, exit points, call chains, external services, or telemetry hooks.
 - `runtime_signal` MUST name the runtime metric, route, operation, service, or event stream that validates the static object.
 - `telemetry_status` MUST be `observed` only when runtime evidence is present.
@@ -2899,7 +2956,7 @@ All versions maintain backward compatibility:
 
 - **v1.10.0** (2026-06-08): Layered Analysis and Description Enrichment
   - `analysis_phases` explains which analysis layers ran, which are deferred, and what each layer provides to UI and agents
-  - AI system narrative and primary capability descriptions are treated as default high-leverage enrichment when an AI provider is configured
+  - AI system narrative and primary capability descriptions are required default enrichment; unavailable AI is recorded as degraded provenance, not accepted as equivalent deterministic text
   - Per-element descriptions for nodes, services, entities, capabilities, entry points, and exit points are manually triggered enrichment outputs
   - Generated descriptions carry provenance, timestamps, and invalidation metadata so stale drilldown text is not trusted after source changes
   - MCP tools can request focused description enrichment without re-running the full analyzer or paying token cost for every element

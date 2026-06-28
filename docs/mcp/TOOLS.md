@@ -22,14 +22,14 @@ Run CAS analysis on a local directory. Uses incremental analysis by default when
 
 Focus profiles let agents and UI flows pay for the context they need:
 
-- `agent-fast`: prioritizes graph, entry points, risks, idioms, tests, and work packets; defers AI narrative and embedding-heavy layers.
-- `ui-overview`: prioritizes visualization and AI-written system/capability descriptions; defers embedding-heavy layers.
-- `deep-context`: keeps the core graph, enables embedding-backed semantic retrieval where configured, allows AI system narrative generation, and still defers bulk element descriptions unless requested.
+- `agent-fast`: prioritizes graph, entry points, risks, idioms, tests, required AI system/capability summaries, and compact work packets; defers lazy entity/flow/node descriptions and embedding-heavy layers.
+- `ui-overview`: prioritizes visualization, required AI system/capability summaries, and selected human-facing lazy descriptions; defers embedding-heavy layers.
+- `deep-context`: keeps the core graph and required AI system/capability summaries, enables embedding-backed semantic retrieval where configured, and still defers bulk entity/flow/node descriptions unless requested.
 - `full`: uses repository and environment defaults.
 
 ### `get_analysis_focus_profiles`
 
-Choose the cheapest useful analysis focus before triggering a layer. This is the MCP control point that keeps coding agents on `agent-fast` by default while letting UI and drilldown flows explicitly opt into AI narrative work.
+Choose the cheapest useful analysis focus before triggering a layer. This is the MCP control point that keeps coding agents on `agent-fast` by default with required AI system/capability summaries, while letting UI and drilldown flows explicitly opt into lazy entity/flow/node descriptions.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -49,7 +49,7 @@ Return the exact descriptions that need AI enrichment next. Use this when UI ove
 | `path` | string | yes | Absolute path to the analyzed project directory |
 | `limit` | number | no | Maximum targets to return |
 
-**Returns:** `analysis_id`, total target count, and ranked targets. System targets suggest `run_analysis_layer` with `ui-overview-refresh`; capability, service, node, entity, and entry-point targets suggest `generate_element_description` with `target`, `target_kind`, and behavior-level description instructions.
+**Returns:** `analysis_id`, total target count, and ranked targets. System targets suggest `run_analysis_layer` with `agent-fast-refresh` because default CAS requires AI system/capability summaries; capability, service, node, entity, and entry-point targets suggest `generate_element_description` with `target`, `target_kind`, and behavior-level description instructions.
 
 ### `generate_element_description`
 
@@ -446,6 +446,152 @@ Discover deterministic links across analyzed repositories.
 
 **Returns:** Cross-repository links for API calls, external services, env/configured base URLs, GraphQL/OpenAPI/protobuf/gRPC shared schemas, shared databases, message contracts, webhooks, and shared internal libraries, with evidence, confidence, certainty counts, and conflict reports.
 
+### `run_workspace_analysis`
+
+Build and persist a WAS-compliant Workspace analysis from completed CAS analyses only. Workspace analysis is generated after repo/project analysis; it composes projects, deployables, interfaces, runtime topology, deployable links, data-flow paths, unmatched interfaces, deterministic insights, health, risk, activity, telemetry, workspace domains, and AI-required narrative without reading source code in the workspace layer. When `workspace_root` is provided, `.klauroignore`, `.klaurorc` `source.exclude`, and explicit `exclude` patterns are applied before WAS input selection so intentionally ignored folders do not become projects, deployables, or links.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | no | Workspace analysis name, default `analyzed-workspace` |
+| `paths` | string[] | no | Analyzed project paths to include. Omit to use all analyzed repositories |
+| `workspace_root` | string | no | Workspace folder used to select analyzed repos under the root and apply local `.klaurorc` / `.klauroignore` policy |
+| `exclude` | string[] | no | Additional workspace exclude patterns, e.g. `["desktop-tray/**", "archives/**"]` |
+| `ai_enrichment` | boolean | no | Defaults to `true`. Set `false` for fast deterministic WAS generation; narrative is marked AI-required degraded until refreshed |
+
+**Returns:** Save metadata, compact WAS summary, applied input policy, skipped inputs with reasons, and next MCP calls. Agents should retrieve needed slices with `get_workspace_analysis` or `get_workspace_agent_packet`; this tool does not dump the full WAS artifact.
+
+### `resolve_workspace_analysis`
+
+Find the best persisted WAS analysis for a local path or set of paths. Use this before cross-repo work when the agent has a workspace folder but does not know the Workspace analysis id.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | no | Workspace, repo, or subfolder path to resolve |
+| `paths` | string[] | no | Optional set of repo/workspace paths to match against WAS inputs |
+
+**Returns:** Selected Workspace analysis id/name, composition, health, freshness, alternatives, and recommended next MCP calls.
+
+### `get_workspace_summary`
+
+Return a compact human/agent summary from WAS.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `analysis_id_or_name` | string | yes | Workspace analysis id or name |
+
+**Returns:** AI-required workspace narrative status, composition, health, freshness, workspace domains, primary capabilities, workflows, risk areas, activity, and telemetry.
+
+### `get_workspace_analysis`
+
+Load a persisted WAS-compliant Workspace analysis by id or name.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `analysis_id_or_name` | string | yes | Workspace analysis id or name |
+| `detail_level` | string | no | `overview`, `connections`, `evidence`, or `full`. Defaults to `overview` |
+
+**Returns:** At `overview`, a compact repo/app map with composition classification, health, activity, telemetry, risks, capabilities, workflows, environments, simple sync/async/passive/stream connections, major external dependencies, and isolated deployables. `composition.kind` tells clients whether the workspace is primarily an `interconnected-system`, `composed-application-architecture`, `hybrid-system-and-architecture`, `library-collection`, or `disconnected-collection`; `recommended_primary_view` tells agents/UI whether to prefer a system map, architecture map, both, or inventory. External dependencies include `usage` (`source-backed`, `topology-only`, or `declared`) and `used`; agents should treat `topology-only` Redis/Postgres/MinIO/etc. as provisioned/wired infrastructure, not source-proven usage. Isolated deployables include a reason category (`validated-standalone`, `weak-cas-signal`, `unresolved-candidate`, or `no-evidence`) so agents do not confuse valid standalone surfaces with possible analysis gaps. Deeper levels add links, runtime evidence, interfaces, unmatched surfaces, validation, Terraform/Docker/Compose/CI infrastructure details, or the complete graph.
+
+### `get_workspace_agent_packet`
+
+Load a compact WAS-backed packet for cross-repo agent work. This is the preferred agent entrypoint after `run_workspace_analysis` when a task spans multiple repos, apps, deployables, SDKs, messages, runtime dependencies, or infrastructure.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `analysis_id_or_name` | string | yes | Workspace analysis id or name |
+| `task` | object | no | Task selector with `task_type`, `target`, `instructions`, `max_apps`, `max_connections`, and `max_external_dependencies` |
+
+**Returns:** Composition classification, selected workspace surfaces with stable ids, explicit `deployable` flags, `surface_kind`, and absolute project paths; source-backed runtime connections with stable ids/interface ids; candidate/package/topology connections with `runtime_behavior`, `connection_nature`, and `inferred_reason`; source-backed/topology-only/declared external dependencies; isolated surfaces; compact system summary; health/risk/activity/telemetry/capability/workflow context; token-budget estimate and signal quality; validation guidance; `agent_should_read_next`; and next MCP calls. Agents should use this before broad multi-repo source exploration, then call repo-level `get_agent_work_packet` for each selected project before editing. If `workspace_narrative.source` is `ai-required-degraded`, the artifact is usable for evidence but should be refreshed with AI enrichment before customer-facing interpretation.
+
+### `get_workspace_freshness`
+
+Check whether a persisted WAS is current against its input CAS analyses.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `analysis_id_or_name` | string | yes | Workspace analysis id or name |
+
+**Returns:** Fresh/stale/unknown status, stale input list, and checked input count.
+
+### `validate_was_contract`
+
+Score a persisted WAS for required sections, freshness, required AI enrichment, and relationship evidence readiness.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `analysis_id_or_name` | string | yes | Workspace analysis id or name |
+
+**Returns:** Pass/warn status, score, missing sections, AI enrichment status, freshness, and embedded WAS validation.
+
+### `get_workspace_health`
+
+Return workspace health and priority work items.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `analysis_id_or_name` | string | yes | Workspace analysis id or name |
+
+**Returns:** Health, activity, telemetry, priority work items, and top risk areas.
+
+### `get_workspace_risk_packet`
+
+Return workspace risks filtered by target or severity.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `analysis_id_or_name` | string | yes | Workspace analysis id or name |
+| `target` | string | no | Optional project/deployable/interface/risk text filter |
+| `severity` | string | no | `critical`, `high`, `medium`, or `low` |
+| `limit` | number | no | Maximum risks |
+
+**Returns:** Focused risk areas with evidence and next MCP calls.
+
+### `get_workspace_capability_map`
+
+Return whole-workspace domains, capabilities, and workflows.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `analysis_id_or_name` | string | yes | Workspace analysis id or name |
+| `target` | string | no | Optional capability/domain/workflow text filter |
+| `limit` | number | no | Maximum records per section |
+
+**Returns:** Workspace domains, primary capabilities, and workflows with project/deployable ids, description provenance, and evidence.
+
+### `get_workspace_entity_map`
+
+Return whole-workspace entity concepts and entity paths assembled from repo-level CAS entities, data lineage, workflows, capabilities, and cross-repo flows. This is an index and drilldown guide; repo-local entity details remain in CAS.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `analysis_id_or_name` | string | yes | Workspace analysis id or name |
+| `target` | string | no | Optional entity, project, workflow, capability, field, or service text filter |
+| `include_paths` | boolean | no | Include entity paths. Defaults to `true` |
+| `limit` | number | no | Maximum entities/paths |
+
+**Returns:** Workspace entity concepts, entity paths, sensitive-field hints, lifecycle counts, and repo-level `get_data_lineage` drilldown calls.
+
+### `get_workspace_workflow`
+
+Return a specific WAS workflow with deployables, interfaces, evidence, and repo-level drilldown calls.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `analysis_id_or_name` | string | yes | Workspace analysis id or name |
+| `workflow_id_or_name` | string | yes | Workflow id or name |
+
+**Returns:** Workflow, connected deployables, connected interfaces, and repo-level `get_agent_work_packet` calls.
+
+### `list_workspace_analyses`
+
+List persisted WAS-compliant Workspace analyses.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| (none) | | | |
+
+**Returns:** Array of Workspace analysis metadata with id, name, timestamps, project count, deployable count, integration-link count, and storage file.
+
 ### `save_workspace_graph`
 
 Build and persist a multi-repository workspace graph.
@@ -554,9 +700,10 @@ One-call task packet for agents. Use this after `get_agent_start_context` when a
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
+| `workspace_analysis_id` | string | no | Optional WAS id/name to include compact workspace context alongside repo CAS context |
 | `task` | object | no | Optional task context with `task_type`, `target`, `related_paths`, `runtime_event`, `instructions`, `success_criteria`, or `response_profile` |
 
-**Returns:** Target resolution, selected node, coding context, `capability_memory` for avoiding duplicate/rebuilt behavior, change risk, callers, callees, tests, error contracts for debug tasks, behavioral invariant impact, compact `idiom_context`, runtime-backed `operational_priorities` for debug/runtime/production-symptom tasks when telemetry exists, representative entry/call-chain context, recommended MCP follow-ups, adoption gaps, a file read plan with concrete source files, bounded line windows, and reasons, an `execution_brief` plus `execution_brief.capsule` for token-minimal first implementation, and a validation plan with focused test/typecheck/build commands, monorepo package script routing, tests to inspect, manual checks, environment rules, and validation gaps.
+**Returns:** Target resolution, selected node, coding context, `capability_memory` for avoiding duplicate/rebuilt behavior, change risk, callers, callees, tests, error contracts for debug tasks, behavioral invariant impact, compact `idiom_context`, optional WAS `workspace_context`, runtime-backed `operational_priorities` for debug/runtime/production-symptom tasks when telemetry exists, representative entry/call-chain context, recommended MCP follow-ups, adoption gaps, a file read plan with concrete source files, bounded line windows, and reasons, an `execution_brief` plus `execution_brief.capsule` for token-minimal first implementation, and a validation plan with focused test/typecheck/build commands, monorepo package script routing, tests to inspect, manual checks, environment rules, and validation gaps.
 
 Set `task.response_profile` to `capsule-only` when an agent needs the smallest useful starting packet. It returns only the `K15` context capsule, `K5` execution capsule, selected target, first files, token estimate, and expansion rule. Set `first-turn` when the agent needs compact JSON fields in addition to the capsules. `K5` includes exact file paths, read/edit role sigils, file-scoped operations for direct-patch work, proof requirements, negative constraints, preservation rules, validation, and stop cues. `K15` is the compact agent context language for orientation, selected node, default extension restoration, role-grouped file dictionary, idioms, reuse, risk, validation, and expansion rules. Set `minimal` when the agent needs compact architecture/risk/test context, or omit it for the full work packet. For edit/debug tasks where token savings matter, agents should read `context_capsule` / `context_capsule.capsule` for orientation, execute `execution_capsule` / `capsule` before opening any other files, then fall back to `first-turn` or full workbench only if the capsules are ambiguous.
 
@@ -582,6 +729,7 @@ One-call task packet that surfaces the same agent work packet with top-level idi
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
+| `workspace_analysis_id` | string | no | Optional WAS id/name to include compact workspace context |
 | `task` | object | no | Optional task context with `task_type`, `target`, `related_paths`, `runtime_event`, `instructions`, or `success_criteria` |
 
 **Returns:** The normal agent work packet plus top-level `idiom_context` with selected idioms, local examples, do/avoid guidance, validation instructions, and likely violations.
@@ -593,6 +741,7 @@ Product-level agent workspace for a task. Use this before broad source explorati
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
+| `workspace_analysis_id` | string | no | Optional WAS id/name to include compact workspace context |
 | `task` | object | no | Optional task context with `task_type`, `target`, `instructions`, `success_criteria`, `change_type`, `files`, `diff_text`, or `plan_text` |
 
 **Returns:** Orientation, target resolution, file-read plan, validation plan, repo-local agent rules, `signal_quality`, evidence policy, stop conditions, and next MCP calls. `signal_quality` tells the agent when tests, patterns, idioms, invariants, purpose confidence, or analyzer coverage are thin so the packet is treated as guidance instead of complete truth.
@@ -604,6 +753,7 @@ Before an agent edits or presents a plan, evaluate whether the proposed change f
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
+| `workspace_analysis_id` | string | no | Optional WAS id/name for cross-repo blast-radius context |
 | `target` | string | no | Node id, file path, or natural language target |
 | `plan_text` | string | no | Agent plan text to evaluate |
 | `diff_text` | string | no | Unified diff to evaluate |

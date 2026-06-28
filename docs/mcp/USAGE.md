@@ -27,7 +27,7 @@ cd apps/mcp-server
 npm run analysis-focus-benchmark -- --output .klauro-analysis-focus-benchmark/latest-report.json --markdown .klauro-analysis-focus-benchmark/latest-report.md
 ```
 
-The report proves that `agent-fast` enables only core graph plus agent context, that UI and deep-context layers are explicitly separated, and that default MCP/CLI coding routes do not pay for AI narrative, bulk element descriptions, or embeddings.
+The report proves that `agent-fast` enables the core graph, agent context, required AI system narrative, and primary capability summaries, while default MCP/CLI coding routes do not pay for lazy entity/flow/node descriptions or embeddings.
 
 To verify the description layer itself, run:
 
@@ -75,6 +75,12 @@ Use preview_greenfield_codebase with plan_text="..." and proposed_files=[...].
 Agents should include the returned advisory verdict, private preview URL, changed contracts, required checks, and uncertainty in the plan output. A `needs_revision` or `high_risk` verdict is not a hard blocker in v1, but it must be surfaced before implementation.
 
 For large greenfield builds, first call `get_greenfield_build_packet` against the empty target folder. It returns first-slice architecture guidance without wasting tokens exploring an empty tree. After the first slice exists, call it again against the same folder; Klauro analyzes the new codebase as normal CAS and returns graph memory, architecture memory, model ownership, boundary ownership, test memory, product-focus guidance, a growth control plane, concepts to reuse, focused files to read, duplicate-prevention rules, and validation checks for the next slice. The packet also includes `agent_build_capsule` in `G1` format, a compact prompt-native build language for agents. `G1|0` is the empty-folder first slice and `G1|c` is continuation; its lines carry requested behaviors, architecture patterns, concepts to reuse, owner files, read-first files, next files, do-not-rebuild rules, validation, and the stop rule. Use the G1 capsule first, then expand to full greenfield JSON only when the capsule leaves a concrete gap. The `product_focus` and `growth_control_plane` sections are the expanded agent-facing shift in responsibility: they name the requested product behaviors, the architecture decisions Klauro is carrying, the product-slice stop rule, the architecture budget, concept ownership, duplication gates, what not to spend time rediscovering, and the next product slice definition. Treat each vertical slice as a normal codebase iteration: packet, build, preview/analyze, packet again. The live scratch harness now passes this compact growth-control context into with-Klauro agents for both empty-folder and continuation waves. The `agent-greenfield-benchmark` includes a continuity trial that proves this behavior by comparing a baseline that rebuilds `User`, `Workspace`, `Project`, and route boundaries against a Klauro-guided slice that reuses the existing models, services, migrations, and tests. The `agent-from-zero-build-packet-proof` now runs multi-slice empty-folder builds across multiple domains and compares Klauro-guided growth against baselines that pass tests while duplicating domain concepts.
+
+For multi-project products, run repo/project CAS analysis first for every associated codebase, then call `run_workspace_analysis`. Use `.klauroignore` or `.klaurorc` `source.exclude` when a local workspace contains archived/generated repos or intentionally irrelevant tools. Workspace analysis follows WAS: it composes completed CAS outputs into projects, deployables, interfaces, integration links, runtime topology, data-flow paths, unmatched interfaces, insights, health, risk, activity, telemetry, domains, primary capabilities, workflows, and AI-required narrative. It must not read source code at the workspace layer; missing workspace relationships are repo-level CAS gaps to fix.
+
+Agents should start cross-repo work with `resolve_workspace_analysis` for the handed folder/path, then `get_workspace_agent_packet` before broad exploration. The packet selects relevant workspace surfaces/connections/dependencies, includes stable ids and absolute repo paths, explicitly says whether each selected surface is deployable, separates source-backed runtime connections from package/code dependencies and inferred candidates, includes health/risk/activity/telemetry/capability/workflow context, estimates token savings against full WAS injection, and tells the agent what to read next through `agent_should_read_next` plus repo-level `get_agent_work_packet` calls. Repo-level `get_agent_work_packet`, `get_idiom_aware_work_packet`, `open_agent_workbench`, and `preflight_agent_change` can receive `workspace_analysis_id` so the agent keeps WAS context while working inside a specific CAS.
+
+Check `composition.kind` and `recommended_primary_view` first: interconnected systems need app-to-app topology, composed application architectures need package/library/component architecture, hybrids need both, and disconnected collections should not have fake links invented. Use `get_workspace_freshness` and `validate_was_contract` before trusting older workspace artifacts. Use `get_workspace_analysis` with `detail_level=evidence` only when the packet leaves a concrete evidence gap. Read `overview.external_dependencies[].usage` before acting on infrastructure: `source-backed` means code evidence exists, while `topology-only` or `declared` means deployment/config evidence exists but source usage has not been proven. If `workspace_narrative.source` is `ai-required-degraded`, the graph facts are still usable, but the workspace should be refreshed with AI enrichment before using the description or primary capabilities as polished product interpretation.
 
 CLI equivalents:
 
@@ -832,13 +838,27 @@ To verify that greenfield prompt compression is still working:
 npm run greenfield-build-codec-benchmark -- --output /tmp/klauro-greenfield-build-codec-benchmark.json
 ```
 
-To verify the compact MCP packet against an indexed-codebase baseline:
+To verify the compact MCP packet against competitor-shaped agent context baselines:
 
 ```
 npm run competitor-baseline-benchmark -- --output .klauro-competitor-baseline-benchmark/latest-report.json --markdown .klauro-competitor-baseline-benchmark/latest-report.md
 ```
 
-This compares Klauro against a local BM25-style lexical index-retrieval proxy. It is not a vendor claim about Cursor itself; it is a repeatable proxy for "an agent asks an indexed codebase for likely files." The report must show both quality lift and token reduction before final acceptance treats the proof as passing.
+This compares Klauro against two explicit proxies: a Cursor-style editor/index retrieval baseline and a Linear-style issue/workflow/code-context baseline. It is not a private vendor-product measurement; it is a repeatable proof that Klauro's CAS/MCP packet beats both "indexed code likely files" and "issue plus repo context plus review workflow" shapes on context readiness and token discipline. The report must show quality lift and token reduction against both baselines before final acceptance treats the proof as passing.
+
+To run true installed-tool comparisons after Cursor, Linear, or another competitor exposes a local command:
+
+```
+npm run competitor-live-benchmark -- \
+  --klauro-cmd "YOUR_KLAURO_ENABLED_AGENT_COMMAND" \
+  --cursor-cmd "YOUR_CURSOR_AGENT_COMMAND" \
+  --linear-cmd "YOUR_LINEAR_AGENT_COMMAND" \
+  --max-live-tasks 3 \
+  --output .klauro-true-competitor-benchmark/latest-report.json \
+  --markdown .klauro-true-competitor-benchmark/latest-report.md
+```
+
+This uses the copied-repo live A/B harness, not a proxy. Each command receives the same seeded engineering task in its own repo copy. The Klauro arm receives the compact CAS/MCP work packet; the competitor arm receives the task and may use whatever the installed product actually provides. The harness captures wall time, git diff, changed files, validator result, stdout/stderr tails, and token metrics when the tool exposes them. Command templates may include `{workspace}`, `{prompt_file}`, `{metrics_file}`, `{result_file}`, `{arm}`, and `{task_id}`. For fair token proof, adapters should write `provider_input_tokens`, `provider_output_tokens`, and `provider_total_tokens` to `{metrics_file}` when available.
 
 Use `agent-proof-fast` for normal local development. It still discovers every real Git repo under `/Users/michaelshattuck/dev` and reports every repo as passed, failed, unsupported, or skipped with a reason, but it analyzes a bounded sample with source-file and timing budgets so the proof does not monopolize the workstation.
 

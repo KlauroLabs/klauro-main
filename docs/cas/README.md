@@ -6,7 +6,9 @@
 
 ## Overview
 
-The Code Analysis Specification (CAS) is Klauro's source-of-truth format for understanding software systems. CAS represents a codebase as a complete relationship graph that can be inspected by humans in the UI and queried by AI agents through MCP.
+The Code Analysis Specification (CAS) is Klauro's source-of-truth format for understanding one project, repo, folder, or codebase. CAS represents that codebase as a complete relationship graph that can be inspected by humans in the UI and queried by AI agents through MCP.
+
+Workspace-level understanding is specified separately by the [Workspace Analysis Specification (WAS)](../was/SPECIFICATION.md). WAS is generated after all associated project/repo CAS analyses finish, and it composes those completed CAS outputs into a product/system map. WAS must not require source-code reads; if a workspace relationship cannot be generated from CAS outputs, that is a repo-level CAS analyzer gap.
 
 CAS exists so Klauro can answer behavior-level questions:
 
@@ -55,7 +57,7 @@ CAS supports progressive disclosure through levels and targeted query surfaces. 
 - Multiple analyzer perspectives with independent hierarchies
 - Rich documentation and purpose tracking
 - External service classification and tracking
-- Cross-repository linking capabilities
+- Repo-local interface and integration hints for later WAS composition
 - Dependency and package management information
 - Security context and access control metadata
 - Quality metrics and code coverage
@@ -114,7 +116,7 @@ CAS supports progressive disclosure through levels and targeted query surfaces. 
 - Runtime-to-static correlation
 - Evidence-backed analysis facts
 - Semantic change impact
-- Cross-repository link confidence
+- Repo-local integration confidence for later WAS composition
 
 ### [v1.9.0](./v1.9.0-rfp.md) - Codebase Idiom Intelligence
 
