@@ -1,0 +1,2 @@
+{ "task": "route-auth", "expected_protected": ["POST /users", "DELETE /users/:id"],
+  "note": "Symfony #[IsGranted('ROLE_USER')]/('ROLE_ADMIN') on POST/DELETE methods; GET open. Per-method security attribute. 9th auth framework / PHP." }

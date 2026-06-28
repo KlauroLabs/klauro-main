@@ -1,0 +1,2 @@
+{ "task": "di-graph", "expected_injections": ["AppComponent injects UserService", "UserService injects UserRepository"],
+  "note": "Angular constructor DI: component + service inject collaborators via constructor params. depends_on edge tagged dependency_type:injection. 4th DI framework (after NestJS/Spring/FastAPI)." }

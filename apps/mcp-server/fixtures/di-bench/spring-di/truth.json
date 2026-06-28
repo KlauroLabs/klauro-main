@@ -1,0 +1,1 @@
+{"task": "di-graph", "expected_injections": ["UserController injects UserService", "UserService injects UserRepository"], "note": "WON (Spring constructor injection). extractFieldDependencies now captures ctor params (not just @Autowired fields); depends_on edges tagged dependency_type:injection."}

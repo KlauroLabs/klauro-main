@@ -1,0 +1,2 @@
+{ "task": "component-tree", "expected_tree": ["AppComponent renders UserCardComponent"],
+  "note": "Angular component tree: AppComponent template uses <app-user-card> selector -> UserCardComponent. Selector-to-component resolution (not import). 4th component framework after react/vue/svelte." }

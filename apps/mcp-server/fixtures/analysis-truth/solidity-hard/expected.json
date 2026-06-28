@@ -1,0 +1,1 @@
+{ "stack": "solidity", "types": ["SafeMath","Ownable","Vault"], "functions": ["add","onlyOwner","init","setup","deposit","record"], "calls": [["setup","init"],["deposit","record"],["deposit","add"]] }

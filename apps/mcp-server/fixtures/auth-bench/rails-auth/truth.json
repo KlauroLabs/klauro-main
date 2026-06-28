@@ -1,0 +1,2 @@
+{ "task": "route-auth", "expected_protected": ["POST /users", "DELETE /users/:id"],
+  "note": "Rails before_action :authenticate_user!, only: [:create, :destroy] — scoped per-action auth; GET /users (index) open. Tests only:/except: scoping. 5th auth framework." }

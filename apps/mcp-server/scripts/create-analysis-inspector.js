@@ -633,6 +633,30 @@ function productMapData(cas) {
   };
 }
 
+function explicitCrossCodebaseData(cas) {
+  const rawLinks = [
+    ...arr(cas.cross_repo_links),
+    ...arr(cas.cross_codebase_links),
+    ...arr(cas.workspace_connections),
+    ...arr(cas.project_connections),
+    ...arr(cas.cross_repo_contracts?.links),
+    ...arr(cas.cross_repo_contracts?.provided_contracts),
+    ...arr(cas.cross_repo_contracts?.consumed_contracts),
+  ];
+  return {
+    links: rawLinks.slice(0, 80).map(link => ({
+      id: clean(link.id || link.link_id || link.contract_id || link.name || link.source || link.provider || link.consumer),
+      name: nameOf(link) || clean(link.contract || link.endpoint || link.topic || link.database || link.library) || 'Workspace link',
+      source: clean(link.source || link.provider || link.from || link.source_codebase || link.repository),
+      target: clean(link.target || link.consumer || link.to || link.target_codebase || link.remote_repository),
+      kind: clean(link.kind || link.type || link.contract_type || link.protocol || link.interface_type),
+      evidence: arr(link.evidence).slice(0, 6).map(e => typeof e === 'string' ? clean(e) : clean(e.file || e.detail || e.name || JSON.stringify(e).slice(0, 160))),
+      confidence: link.confidence,
+      description: truncate(link.description || link.summary || link.reason || link.endpoint || link.topic || link.database || link.library, 260),
+    })).filter(link => link.name || link.source || link.target),
+  };
+}
+
 function buildAnalysisEntry(cas, entry, projectPath) {
   const capabilities = topCapabilities(cas);
   const description = sanitizeDescription(cas.enhanced_system_purpose?.inferred_description || cas.system?.description || cas.architecture_summary?.summary || '', capabilities, cas);
@@ -647,22 +671,289 @@ function buildAnalysisEntry(cas, entry, projectPath) {
     lineage: lineageData(cas),
     conformance: conformanceData(cas),
     product_map: productMapData(cas),
+    cross_codebase: explicitCrossCodebaseData(cas),
+  };
+}
+
+function readStoredCrossCodebaseGraphs(root) {
+  const directories = ['workspace-analyses', 'cross-codebase-analyses']
+    .map(name => path.join(root, name))
+    .filter(directory => fs.existsSync(directory));
+  return directories
+    .flatMap(directory => fs.readdirSync(directory)
+      .filter(file => file.endsWith('.json') || file.endsWith('.json.zst') || file.endsWith('.json.br'))
+      .map(file => {
+        try {
+          return readJsonMaybeCompressed(path.join(directory, file));
+        } catch {
+          return null;
+        }
+      }))
+    .filter(Boolean)
+    .sort((a, b) => clean(b.saved_at || b.generated_at).localeCompare(clean(a.saved_at || a.generated_at)));
+}
+
+function compactCrossCodebaseGraph(graph) {
+  const codebaseName = new Map(arr(graph.codebases).map(codebase => [clean(codebase.id), clean(codebase.name || codebase.id)]));
+  const applicationName = new Map(arr(graph.applications).map(app => [clean(app.id), clean(app.name || app.id)]));
+  const interfaces = new Map(arr(graph.interfaces).map(item => [clean(item.id), item]));
+  const runtimeComponents = new Map(arr(graph.runtime_components).map(item => [clean(item.id), item]));
+  const links = arr(graph.links).slice(0, 120).map(link => {
+    const source = interfaces.get(clean(link.source_interface_id));
+    const target = interfaces.get(clean(link.target_interface_id));
+    return {
+      id: clean(link.id),
+      name: `${clean(source?.name || link.source_interface_id)} → ${clean(target?.name || link.target_interface_id)}`,
+      description: `${clean(link.kind)} over ${clean(link.mode)} from ${applicationName.get(clean(link.source_application_id)) || codebaseName.get(clean(link.source_codebase_id)) || clean(link.source_codebase_id)} to ${applicationName.get(clean(link.target_application_id)) || codebaseName.get(clean(link.target_codebase_id)) || clean(link.target_codebase_id)}.`,
+      source: codebaseName.get(clean(link.source_codebase_id)) || clean(link.source_codebase_id),
+      target: codebaseName.get(clean(link.target_codebase_id)) || clean(link.target_codebase_id),
+      source_application: applicationName.get(clean(link.source_application_id)) || '',
+      target_application: applicationName.get(clean(link.target_application_id)) || '',
+      source_interface: clean(source?.name || link.source_interface_id),
+      target_interface: clean(target?.name || link.target_interface_id),
+      kind: clean(link.kind),
+      mode: clean(link.mode),
+      confidence: link.confidence,
+      evidence: arr(link.evidence).slice(0, 6).map(clean),
+    };
+  });
+  const runtimeLinks = arr(graph.runtime_links).slice(0, 160).map(link => {
+    const source = runtimeComponents.get(clean(link.source_component_id));
+    const target = runtimeComponents.get(clean(link.target_component_id));
+    return {
+      id: clean(link.id),
+      name: `${clean(source?.name || link.source_component_id)} → ${clean(target?.name || link.target_component_id)}`,
+      description: `${clean(link.kind)} within ${codebaseName.get(clean(link.codebase_id)) || clean(link.codebase_id)} runtime topology.`,
+      codebase_name: codebaseName.get(clean(link.codebase_id)) || clean(link.codebase_id),
+      source: clean(source?.name || link.source_component_id),
+      target: clean(target?.name || link.target_component_id),
+      kind: clean(link.kind),
+      mode: clean(link.mode),
+      confidence: link.confidence,
+      evidence: arr(link.evidence).slice(0, 6).map(clean),
+    };
+  });
+  const applicationLinks = arr(graph.application_links || graph.integration_links).slice(0, 180).map(link => ({
+    id: clean(link.id),
+    name: `${applicationName.get(clean(link.source_application_id)) || clean(link.source_application_id)} → ${applicationName.get(clean(link.target_application_id)) || clean(link.target_application_id)}`,
+    description: `${clean(link.kind)} over ${clean(link.mode)} from ${applicationName.get(clean(link.source_application_id)) || codebaseName.get(clean(link.source_codebase_id)) || clean(link.source_codebase_id)} to ${applicationName.get(clean(link.target_application_id)) || codebaseName.get(clean(link.target_codebase_id)) || clean(link.target_codebase_id)}.`,
+    source: codebaseName.get(clean(link.source_codebase_id)) || clean(link.source_codebase_id),
+    target: codebaseName.get(clean(link.target_codebase_id)) || clean(link.target_codebase_id),
+    source_application: applicationName.get(clean(link.source_application_id)) || '',
+    target_application: applicationName.get(clean(link.target_application_id)) || '',
+    kind: clean(link.kind),
+    mode: clean(link.mode),
+    confidence: link.confidence,
+    evidence: arr(link.evidence).slice(0, 6).map(clean),
+  }));
+  return {
+    id: clean(graph.id),
+    name: clean(graph.name),
+    generated_at: clean(graph.generated_at),
+    saved_at: clean(graph.saved_at),
+    counts: {
+      codebases: arr(graph.codebases).length,
+      applications: arr(graph.applications).length,
+      interfaces: arr(graph.interfaces).length,
+      links: Math.max(arr(graph.links).length, applicationLinks.length),
+      data_flows: arr(graph.data_flow_paths).length,
+      runtime_components: arr(graph.runtime_components).length,
+      runtime_links: arr(graph.runtime_links).length,
+      application_links: applicationLinks.length,
+      unmatched: arr(graph.unmatched_interfaces).length,
+    },
+    codebases: arr(graph.codebases).map(codebase => ({
+      id: clean(codebase.id),
+      name: clean(codebase.name || codebase.id),
+      path: clean(codebase.path),
+      languages: arr(codebase.languages).slice(0, 6).map(clean),
+      frameworks: arr(codebase.frameworks).slice(0, 6).map(clean),
+    })),
+    applications: arr(graph.applications).map(app => ({
+      id: clean(app.id),
+      codebase_id: clean(app.codebase_id),
+      codebase_name: codebaseName.get(clean(app.codebase_id)) || clean(app.codebase_id),
+      name: clean(app.name || app.id),
+      kind: clean(app.kind),
+      path_hint: clean(app.path_hint),
+      service_aliases: arr(app.service_aliases).slice(0, 8).map(clean),
+      ports: arr(app.ports).slice(0, 8).map(clean),
+      interface_count: arr(app.interface_ids).length,
+      runtime_component_count: arr(app.runtime_component_ids).length,
+    })),
+    interfaces: arr(graph.interfaces).slice(0, 240).map(item => ({
+      id: clean(item.id),
+      codebase_id: clean(item.codebase_id),
+      codebase_name: codebaseName.get(clean(item.codebase_id)) || clean(item.codebase_id),
+      application_name: applicationName.get(clean(item.application_id)) || '',
+      direction: clean(item.role),
+      kind: clean(item.kind),
+      mode: clean(item.mode),
+      name: clean(item.name),
+      description: clean([item.method, item.endpoint || item.topic || item.package_name || item.resource].filter(Boolean).join(' ')),
+      evidence: arr(item.refs).map(ref => clean(ref.file || ref.name || ref.id)).filter(Boolean).slice(0, 3).join(', '),
+    })),
+    data_flows: arr(graph.data_flow_paths).slice(0, 160).map(flow => ({
+      id: clean(flow.id),
+      codebase_id: clean(flow.source_codebase_id),
+      codebase_name: codebaseName.get(clean(flow.source_codebase_id)) || clean(flow.source_codebase_id),
+      entity: clean(flow.description || flow.id),
+      path: arr(flow.via).map(clean).filter(Boolean),
+      destination: codebaseName.get(clean(flow.target_codebase_id)) || clean(flow.target_codebase_id),
+      source_application: applicationName.get(clean(flow.source_application_id)) || '',
+      target_application: applicationName.get(clean(flow.target_application_id)) || '',
+      sensitivity: clean(flow.mode),
+      guard: `${Math.round(Number(flow.confidence || 0) * 100)}% confidence`,
+      evidence: clean(flow.target_interface_id),
+    })),
+    links: links.length ? links : applicationLinks,
+    application_links: applicationLinks,
+    runtime_links: runtimeLinks,
+    unmatched: arr(graph.unmatched_interfaces).slice(0, 160).map(item => ({
+      id: clean(item.interface_id),
+      name: clean(item.name),
+      codebase_name: codebaseName.get(clean(item.codebase_id)) || clean(item.codebase_id),
+      kind: clean(item.kind),
+      role: clean(item.role),
+      mode: clean(item.mode),
+      reason: clean(item.reason),
+    })),
+  };
+}
+
+function projectOverviewData(analyses, crossCodebaseGraphs = []) {
+  const codebases = arr(analyses).map(analysis => ({
+    id: clean(analysis.id),
+    name: clean(analysis.name),
+    path: clean(analysis.path),
+    system_type: clean(analysis.system_type),
+    description: truncate(analysis.description, 260),
+    framework: clean(arr(analysis.tech?.frameworks)[0] || analysis.system_type || 'analysis'),
+    language: clean(arr(analysis.tech?.languages)[0] || ''),
+    counts: {
+      nodes: analysis.counts?.nodes || 0,
+      edges: analysis.counts?.edges || 0,
+      entry_points: analysis.counts?.entry_points || 0,
+      exit_points: analysis.counts?.exit_points || 0,
+      tests: analysis.counts?.tests || 0,
+      capabilities: analysis.counts?.capabilities || 0,
+    },
+    capabilities: arr(analysis.capabilities).slice(0, 4).map(capability => ({ name: capability.name, description: truncate(capability.description, 160) })),
+    risks: arr(analysis.risks).slice(0, 3).map(risk => ({ name: risk.name, severity: risk.severity || risk.type || '' })),
+  }));
+  const systemGraphs = arr(crossCodebaseGraphs).map(compactCrossCodebaseGraph);
+  const primarySystemGraph = systemGraphs[0] || null;
+  const interfaces = primarySystemGraph ? [...primarySystemGraph.interfaces] : [];
+  const dataFlows = primarySystemGraph ? [...primarySystemGraph.data_flows] : [];
+  const links = primarySystemGraph ? [...primarySystemGraph.links] : [];
+  const runtimeLinks = primarySystemGraph ? [...primarySystemGraph.runtime_links] : [];
+  for (const analysis of arr(analyses)) {
+    const codebaseId = clean(analysis.id);
+    const codebaseName = clean(analysis.name);
+    for (const entry of arr(analysis.flows).slice(0, 10)) {
+      interfaces.push({
+        id: `${codebaseId}:flow:${interfaces.length}`,
+        codebase_id: codebaseId,
+        codebase_name: codebaseName,
+        direction: 'entry',
+        kind: clean(entry.type || 'workflow'),
+        name: clean(entry.name),
+        description: truncate(entry.description, 220),
+        evidence: clean(entry.file || entry.severity || ''),
+      });
+    }
+    for (const service of arr(analysis.integrations).slice(0, 10)) {
+      interfaces.push({
+        id: `${codebaseId}:integration:${interfaces.length}`,
+        codebase_id: codebaseId,
+        codebase_name: codebaseName,
+        direction: 'external',
+        kind: clean(service.type || service.category || 'integration'),
+        name: clean(service.name),
+        description: truncate(service.description, 220),
+        evidence: clean(service.file || service.severity || ''),
+      });
+    }
+    for (const lineage of arr(analysis.lineage?.items).slice(0, 12)) {
+      for (const recipient of arr(lineage.external_recipients)) {
+        dataFlows.push({
+          id: `${codebaseId}:lineage:${dataFlows.length}`,
+          codebase_id: codebaseId,
+          codebase_name: codebaseName,
+          entity: clean(lineage.entity_name),
+          path: [clean(lineage.entity_name), clean(recipient.via_node), clean(recipient.service)].filter(Boolean),
+          destination: clean(recipient.service),
+          sensitivity: lineage.exposure?.sensitive ? 'sensitive' : 'standard',
+          guard: lineage.exposure?.unguarded_paths ? `${lineage.exposure.unguarded_paths} unguarded paths` : 'guarded or not recorded',
+          evidence: clean(recipient.exit_point_id || recipient.via_node),
+        });
+      }
+    }
+    for (const journey of arr(analysis.journeys?.items).slice(0, 8)) {
+      for (const external of arr(journey.effects?.external)) {
+        dataFlows.push({
+          id: `${codebaseId}:journey:${dataFlows.length}`,
+          codebase_id: codebaseId,
+          codebase_name: codebaseName,
+          entity: clean(journey.title || journey.name),
+          path: [clean(journey.entry?.path_or_trigger || journey.entry?.name), clean(journey.title || journey.name), clean(external)].filter(Boolean),
+          destination: clean(external),
+          sensitivity: 'behavior',
+          guard: arr(journey.boundaries).length ? 'entry boundary recorded' : 'no entry guards recorded',
+          evidence: clean(journey.provenance?.entry_point_id),
+        });
+      }
+    }
+    if (!primarySystemGraph) for (const link of arr(analysis.cross_codebase?.links)) {
+      links.push({ ...link, codebase_id: codebaseId, codebase_name: codebaseName });
+    }
+  }
+  return {
+    title: 'Workspace Overview',
+    counts: {
+      codebases: codebases.length,
+      nodes: codebases.reduce((sum, item) => sum + item.counts.nodes, 0),
+      edges: codebases.reduce((sum, item) => sum + item.counts.edges, 0),
+      entry_points: codebases.reduce((sum, item) => sum + item.counts.entry_points, 0),
+      exit_points: codebases.reduce((sum, item) => sum + item.counts.exit_points, 0),
+      tests: codebases.reduce((sum, item) => sum + item.counts.tests, 0),
+      interfaces: interfaces.length,
+      data_flows: dataFlows.length,
+      links: links.length,
+      applications: primarySystemGraph?.counts.applications || 0,
+      runtime_components: primarySystemGraph?.counts.runtime_components || 0,
+      runtime_links: runtimeLinks.length,
+      unmatched: primarySystemGraph?.counts.unmatched || 0,
+    },
+    codebases,
+    applications: primarySystemGraph ? primarySystemGraph.applications : [],
+    system_graph: primarySystemGraph,
+    system_graphs: systemGraphs.slice(0, 12),
+    interfaces,
+    data_flows: dataFlows,
+    links,
+    runtime_links: runtimeLinks,
+    notices: primarySystemGraph
+      ? [`Project view is using persisted Klauro Workspace analysis "${primarySystemGraph.name}" generated ${primarySystemGraph.generated_at || 'unknown time'}.`]
+      : (links.length ? [] : ['No persisted Workspace analysis was found. Run run_workspace_analysis or the workspace analysis gauntlet so this view can show matched project and runtime links without browser-side guessing.']),
   };
 }
 
 function renderHtml(payload, options = {}) {
   const generatorCommandPath = options.generatorCommandPath || __filename;
+  const htmlPayload = { ...payload, project_overview: payload.project_overview || projectOverviewData(payload.analyses || []) };
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Klauro Analysis Dashboard</title><style>
 :root{--bg:#22242b;--sidebar:#2a2c36;--card:#2a2c36;--card2:#303340;--deep:#12131a;--stroke:#3f414a;--stroke2:#45455a;--text:#fff;--muted:#9ba3c0;--muted2:#717680;--purple:#8b5cf6;--pink:#ff3d66;--green:#7ed957;--blue:#3fa7ff;--amber:#ffb74d;--red:#ff4f6d;--radius:12px;--font:Urbanist,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;letter-spacing:0}.app{display:grid;grid-template-columns:258px 1fr;min-height:100vh}.side{background:var(--sidebar);border-right:.5px solid rgba(69,69,90,.35);min-height:100vh;display:flex;flex-direction:column;justify-content:space-between;position:sticky;top:0}.side-top{padding:32px 16px 24px}.brand{display:flex;align-items:center;gap:8px;padding:0 8px 28px;border-bottom:.5px solid var(--stroke2);margin:0 -16px 20px 0}.brand-mark{width:29px;height:30px;border-radius:8px;background:linear-gradient(135deg,#ff494f,#c13bff);position:relative}.brand-text{font-weight:800;font-size:24px}.nav{display:flex;flex-direction:column;gap:2px}.nav-row{height:40px;border-radius:6px;display:flex;align-items:center;gap:10px;padding:8px 12px;color:#a4a7ae}.nav-row.active{background:var(--stroke2);color:#fff;font-weight:700}.nav-icon{width:16px;height:16px;border:1.5px solid currentColor;border-radius:4px;opacity:.8}.badge{margin-left:auto;border:1px solid var(--stroke2);border-radius:16px;min-width:24px;height:24px;display:grid;place-items:center;font-size:12px;font-weight:700}.work-label{font-size:11px;color:#717680;text-transform:uppercase;margin:26px 8px 8px}.repo-search{width:100%;background:#23252e;border:1px solid var(--stroke);color:#fff;border-radius:8px;padding:10px 12px;margin:0 0 10px}.repo-list{display:flex;flex-direction:column;gap:6px;max-height:56vh;overflow:auto}.repo{border:0;background:transparent;color:#a4a7ae;text-align:left;border-radius:6px;padding:8px 10px;cursor:pointer}.repo.active{background:#45455a;color:#fff}.repo b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.repo span{font-size:11px;color:#828690}.side-bottom{padding:20px 16px}.main{padding:24px 32px 48px;max-width:1500px}.crumb{display:flex;gap:10px;align-items:center;color:#828690;font-size:12px;margin-bottom:24px}.crumb .current{color:#a78bfa;background:#342f52;border-radius:4px;padding:2px 6px}.topbar{display:flex;justify-content:space-between;gap:20px;align-items:start;margin-bottom:28px}.status{font-size:11px;color:var(--green);margin-bottom:6px}.title{display:flex;align-items:center;gap:10px}.title h1{font-size:30px;line-height:1.08;margin:0}.source-pill{border:1px solid var(--stroke2);border-radius:16px;padding:4px 9px;color:#fff;font-size:12px}.desc{color:#d9dce7;line-height:1.45;max-width:920px;margin-top:10px}.actions{display:flex;gap:12px;flex-wrap:wrap;justify-content:flex-end}.btn{border:0;border-radius:24px;padding:10px 16px;font-weight:700;color:#fff;background:#353743;cursor:pointer}.btn.primary{background:var(--purple)}.btn.small{padding:7px 10px;border-radius:12px;font-size:12px}.reanalyze-panel{display:none;background:#303340;border:.5px solid var(--stroke);border-radius:12px;margin:-10px 0 24px;padding:18px}.reanalyze-panel.active{display:block}.reanalyze-panel h3{margin:0 0 8px}.reanalyze-panel p{color:#9ba3c0;line-height:1.45;margin:0 0 12px}.command-row{display:flex;gap:10px;align-items:center}.cmd{flex:1;background:#171922;border:.5px solid var(--stroke);border-radius:8px;padding:10px 12px;color:#dfe3f0;white-space:nowrap;overflow:auto}.bridge-status{font-size:12px;color:#9ba3c0;margin-top:10px}.summary{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px}.summary-card{background:var(--card);border:.5px solid var(--stroke);border-radius:12px;padding:20px}.eyebrow{font-size:11px;color:var(--green);font-weight:800;text-transform:uppercase;margin-bottom:10px}.summary-card.alt .eyebrow{color:#79c7ff}.summary-card h2{font-size:21px;margin:0 0 8px}.summary-card p{margin:0;color:#9ba3c0;line-height:1.45}.tabs{display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap}.tab{border:0;background:#2a2c36;color:#a4a7ae;border-radius:999px;padding:9px 14px;cursor:pointer}.tab.active{background:#45455a;color:#fff}.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}.card{background:var(--card);border:.5px solid var(--stroke);border-radius:12px;padding:24px;overflow:hidden}.card.dark{background:var(--deep)}.span-3{grid-column:span 3}.span-4{grid-column:span 4}.span-5{grid-column:span 5}.span-6{grid-column:span 6}.span-7{grid-column:span 7}.span-8{grid-column:span 8}.span-12{grid-column:span 12}.card-head{display:flex;align-items:center;gap:8px;margin-bottom:18px}.card-head h2{font-size:22px;margin:0}.card-head small{color:#9ba3c0}.mini-icon{width:18px;height:18px;border-radius:4px;border:1.5px solid var(--pink)}.cap-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}.cap{background:transparent;border-radius:10px;padding:8px;min-height:126px;cursor:pointer}.cap:hover{background:rgba(69,69,90,.35)}.cap .icon{width:18px;height:18px;border-radius:5px;background:rgba(139,92,246,.18);color:var(--purple);display:grid;place-items:center;font-size:11px;margin-bottom:10px}.cap h3{font-size:15px;margin:0 0 6px}.cap p{font-size:12px;line-height:1.4;color:#9ba3c0;margin:0}.health{display:flex;justify-content:space-between;margin-top:14px;font-size:11px;color:#9ba3c0}.health b{color:#d5ffe1}.entity-row{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}.entity{background:#303340;border:.5px solid var(--stroke);border-radius:8px;padding:14px;cursor:pointer}.entity:hover{border-color:#6f58d9}.entity h3{font-size:14px;margin:0 0 8px}.entity .tag{display:inline-block;color:#d9b4ff;background:rgba(139,92,246,.14);font-size:11px;border-radius:999px;padding:3px 7px}.entity-stats{display:flex;gap:20px;margin-top:18px;font-size:11px;color:#828690}.composition{display:grid;grid-template-columns:280px 1fr;gap:20px}.metric{display:grid;grid-template-columns:1fr auto;gap:10px;padding:7px 0;border-bottom:.5px solid rgba(69,69,90,.6);color:#9ba3c0}.metric b{color:#fff}.bars{margin:18px 0}.bar{height:5px;background:#45455a;border-radius:99px;overflow:hidden;margin:7px 0 12px}.bar i{display:block;height:100%;background:linear-gradient(90deg,#f7c1a1,#e7f6d4,#7dd3fc)}.diagram{height:280px;background:#101118;border-radius:12px;position:relative;overflow:hidden}.nodebox{position:absolute;min-width:120px;background:#151821;border:.5px solid #30394a;border-radius:8px;padding:10px 12px}.nodebox b{font-size:12px}.nodebox span{display:block;font-size:10px;color:#828690;margin-top:4px}.nodebox.green{border-color:#285d3c}.nodebox.blue{border-color:#245f85}.nodebox.purple{border-color:#5b4489}.nodebox.amber{border-color:#74592d}.link{position:absolute;height:1px;background:#454b5a;transform-origin:left center}.integration-tabs{display:flex;gap:18px;border-bottom:.5px solid var(--stroke);margin:0 -24px 18px;padding:0 24px}.integration-tabs span{padding:0 0 12px;color:#a4a7ae}.integration-tabs .active{color:#fff;border-bottom:2px solid #fff}.item-list{display:grid;gap:10px}.item{background:#303340;border-left:3px solid var(--purple);border-radius:8px;padding:12px;cursor:pointer}.item.red{border-left-color:var(--red)}.item.amber{border-left-color:var(--amber)}.item.green{border-left-color:var(--green)}.item.blue{border-left-color:var(--blue)}.item h3{margin:0 0 5px;font-size:15px}.item p{margin:0;color:#9ba3c0;line-height:1.4}.item .meta{font-size:11px;color:#828690;margin-top:8px}.detail{display:none}.detail.active{display:block}.back{color:#a78bfa;cursor:pointer;margin-bottom:18px;display:inline-block}.detail-hero{background:var(--card);border:.5px solid var(--stroke);border-radius:12px;padding:28px;margin-bottom:18px}.detail-hero h1{margin:0 0 10px}.table{width:100%;border-collapse:collapse}.table th,.table td{border-bottom:.5px solid var(--stroke);text-align:left;padding:10px;color:#d9dce7}.table th{color:#828690;font-size:11px;text-transform:uppercase}.graph{height:620px;background:#101118;border-radius:12px;border:.5px solid var(--stroke);overflow:hidden}.graph svg{width:100%;height:100%}.edge{stroke:#454b5a;stroke-width:1;opacity:.6}.node-label{fill:#dfe3f0;font-size:10px;pointer-events:none}.empty{color:#828690;font-style:italic}.kbd{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .notice{background:rgba(255,183,77,.1);border:.5px solid #74592d;color:#ffd9a0;border-radius:8px;padding:14px;line-height:1.5;margin:0 0 16px}
 .journey{background:#303340;border:.5px solid var(--stroke);border-radius:10px;padding:16px;margin-bottom:14px}.journey h3{margin:0 0 8px;font-size:16px}.journey .headline{font-size:13px;color:#aeb6cf;margin:0 0 10px;line-height:1.5}.steps .step.marker{border-style:dashed;color:#8d93a5;font-style:italic}.fullchain{margin:2px 0 8px}.fullchain summary{font-size:11px;color:#828690;cursor:pointer}.journey .pills{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}.pill{border:1px solid var(--stroke2);border-radius:999px;padding:2px 8px;font-size:11px;color:#c9cede}.pill.crit{border-color:#8a3040;color:#ff9cae}.pill.guard{border-color:#285d3c;color:#a9e8b9}.pill.kindpill{border-color:#5b4489;color:#d9b4ff}.steps{font-size:12px;line-height:2;color:#c9cede;margin:6px 0 10px}.steps .step{background:#23252e;border:.5px solid var(--stroke);border-radius:6px;padding:2px 7px;white-space:nowrap}.steps .step.entry{border-color:#245f85}.steps .step.business{border-color:#5b4489}.steps .step.data{border-color:#285d3c}.steps .step.infrastructure{border-color:#74592d}.steps .arrow{color:#717680;padding:0 3px}.effects{font-size:12px;color:#9ba3c0;line-height:1.6}.effects b{color:#d5ffe1}.effects .read b{color:#a8d2ff}.provenance{font-size:11px;color:#828690;margin-top:10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all}
 .lineage-flags{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}.flag{border-radius:6px;padding:2px 8px;font-size:11px}.flag.sensitive{background:rgba(255,79,109,.14);color:#ff9cae}.flag.external{background:rgba(255,183,77,.14);color:#ffd9a0}.flag.unguarded{background:rgba(255,79,109,.1);color:#ffb3c0}.flag.guarded{background:rgba(126,217,87,.12);color:#a9e8b9}
-.adoption-rate{font-size:26px;font-weight:800}.adoption-rate small{font-size:12px;color:#9ba3c0;font-weight:400}
-</style></head><body><div class="app"><aside class="side"><div class="side-top"><div class="brand"><div class="brand-mark"></div><div class="brand-text">klauro</div></div><nav class="nav"><div class="nav-row"><span class="nav-icon"></span>Dashboard</div><div class="nav-row"><span class="nav-icon"></span>Inbox<span class="badge">10</span></div><div class="nav-row"><span class="nav-icon"></span>Activity</div></nav><div class="work-label">Workspace</div><div class="nav-row active"><span class="nav-icon"></span>Local Analyses<span class="badge" id="analysisCount"></span></div><input id="search" class="repo-search" placeholder="Search repositories"><div id="repoList" class="repo-list"></div></div><div class="side-bottom"><div class="nav-row"><span class="nav-icon"></span>Help</div><div class="nav-row"><span class="nav-icon"></span>Settings</div></div></aside><main class="main"><section id="dashboard"></section><section id="detail" class="detail"></section></main></div><script id="payload" type="application/json">${JSON.stringify(payload).replace(/</g,'\\u003c')}</script><script>
+.adoption-rate{font-size:26px;font-weight:800}.adoption-rate small{font-size:12px;color:#9ba3c0;font-weight:400}.project-hero{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(320px,.85fr);gap:16px;margin-bottom:16px}.project-card-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.project-card{background:#303340;border:.5px solid var(--stroke);border-radius:10px;padding:16px;cursor:pointer;min-height:172px}.project-card:hover{border-color:#6f58d9}.project-card h3{margin:0 0 8px;font-size:17px}.project-card p{margin:0;color:#9ba3c0;line-height:1.4}.project-card .meta{font-size:11px;color:#828690;margin-top:12px}.project-map{height:420px;background:#101118;border-radius:12px;border:.5px solid var(--stroke);position:relative;overflow:auto}.project-node{position:absolute;width:210px;min-height:112px;background:#171b25;border:.5px solid #475166;border-left:4px solid var(--blue);border-radius:8px;padding:12px;cursor:pointer}.project-node:nth-child(3n+1){border-left-color:var(--green)}.project-node:nth-child(3n+2){border-left-color:var(--amber)}.project-node h3{font-size:14px;margin:0 0 5px}.project-node p{font-size:12px;color:#aeb6cf;margin:0}.project-node .meta{font-size:11px;color:#828690;margin-top:8px}.pathline{font-size:12px;color:#cbd2e6;line-height:1.7}.pathline .hop{display:inline-block;background:#23252e;border:.5px solid var(--stroke);border-radius:6px;padding:2px 7px;margin:2px}.project-notice{background:rgba(63,167,255,.09);border:.5px solid #245f85;color:#b8ddff;border-radius:8px;padding:14px;line-height:1.5;margin-bottom:16px}@media(max-width:1100px){.project-hero,.project-card-grid{grid-template-columns:1fr}.project-map{height:auto;min-height:580px}.project-node{position:relative!important;left:auto!important;top:auto!important;margin:12px}}
+</style></head><body><div class="app"><aside class="side"><div class="side-top"><div class="brand"><div class="brand-mark"></div><div class="brand-text">klauro</div></div><nav class="nav"><div class="nav-row"><span class="nav-icon"></span>Dashboard</div><div class="nav-row"><span class="nav-icon"></span>Inbox<span class="badge">10</span></div><div class="nav-row"><span class="nav-icon"></span>Activity</div></nav><div class="work-label">Workspace</div><div class="nav-row active"><span class="nav-icon"></span>Local Analyses<span class="badge" id="analysisCount"></span></div><input id="search" class="repo-search" placeholder="Search repositories"><div id="repoList" class="repo-list"></div></div><div class="side-bottom"><div class="nav-row"><span class="nav-icon"></span>Help</div><div class="nav-row"><span class="nav-icon"></span>Settings</div></div></aside><main class="main"><section id="dashboard"></section><section id="detail" class="detail"></section></main></div><script id="payload" type="application/json">${JSON.stringify(htmlPayload).replace(/</g,'\\u003c')}</script><script>
 const DATA=JSON.parse(document.getElementById('payload').textContent);let current=DATA.analyses[0];let view='overview';const $=s=>document.querySelector(s);const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const num=v=>Number(v||0).toLocaleString();const pct=v=>Math.round(Number(v||0)*100)+'%';
-function route(){const parts=location.hash.replace(/^#/,'').split('/').filter(Boolean);if(parts[0]==='analysis'){current=DATA.analyses.find(a=>a.id===parts[1])||current;view=parts[2]||'overview';if(parts[3])return renderDetail(parts[2],Number(parts[3]));}renderDashboard()}
+function route(){const parts=location.hash.replace(/^#/,'').split('/').filter(Boolean);if(parts[0]==='project'){view=parts[1]||'overview';if(parts[2])return renderProjectDetail(parts[1],Number(parts[2]));return renderProject()}if(parts[0]==='analysis'){current=DATA.analyses.find(a=>a.id===parts[1])||current;view=parts[2]||'overview';if(parts[3])return renderDetail(parts[2],Number(parts[3]));}renderDashboard()}
 function setRoute(nextView,index){location.hash='analysis/'+current.id+'/'+nextView+(index!==undefined?'/'+index:'')}
-function repos(){const q=$('#search').value.toLowerCase();$('#analysisCount').textContent=DATA.analysis_count;$('#repoList').innerHTML=DATA.analyses.filter(a=>(a.name+' '+a.path+' '+(a.tech?.frameworks||[]).join(' ')).toLowerCase().includes(q)).map(a=>'<button class="repo '+(a.id===current.id?'active':'')+'" data-id="'+esc(a.id)+'"><b>'+esc(a.name)+'</b><span>'+num(a.counts.nodes)+' nodes · '+esc((a.tech?.frameworks||[])[0]||a.system_type||'analysis')+'</span></button>').join('');document.querySelectorAll('.repo').forEach(b=>b.onclick=()=>{current=DATA.analyses.find(a=>a.id===b.dataset.id);setRoute('overview')})}
+function setProjectRoute(nextView,index){location.hash='project/'+nextView+(index!==undefined?'/'+index:'')}
+function repos(){const q=$('#search').value.toLowerCase();const projectActive=location.hash.startsWith('#project');$('#analysisCount').textContent=DATA.analysis_count;const overview='<button class="repo '+(projectActive?'active':'')+'" data-project="1"><b>Workspace Overview</b><span>'+num(DATA.project_overview?.counts?.codebases||DATA.analysis_count)+' codebases · '+num(DATA.project_overview?.counts?.interfaces||0)+' interfaces</span></button>';$('#repoList').innerHTML=overview+DATA.analyses.filter(a=>(a.name+' '+a.path+' '+(a.tech?.frameworks||[]).join(' ')).toLowerCase().includes(q)).map(a=>'<button class="repo '+(!projectActive&&a.id===current.id?'active':'')+'" data-id="'+esc(a.id)+'"><b>'+esc(a.name)+'</b><span>'+num(a.counts.nodes)+' nodes · '+esc((a.tech?.frameworks||[])[0]||a.system_type||'analysis')+'</span></button>').join('');document.querySelectorAll('.repo').forEach(b=>b.onclick=()=>{if(b.dataset.project){setProjectRoute('overview');return;}current=DATA.analyses.find(a=>a.id===b.dataset.id);setRoute('overview')})}
 function pillList(items){return (items||[]).slice(0,6).map(x=>'<span class="source-pill">'+esc(x)+'</span>').join('')||'<span class="empty">None detected</span>'}
 function metrics(rows){return rows.map(([k,v])=>'<div class="metric"><span>'+esc(k)+'</span><b>'+esc(v)+'</b></div>').join('')}
 function bars(rows){const max=Math.max(1,...(rows||[]).map(r=>r.count));return (rows||[]).map(r=>'<div class="metric"><span>'+esc(r.name)+'</span><b>'+num(r.count)+'</b></div><div class="bar"><i style="width:'+Math.max(4,r.count/max*100)+'%"></i></div>').join('')}
@@ -688,21 +979,33 @@ function deviationRows(devs){return (devs||[]).map(d=>'<tr><td>'+esc(d.severity)
 function conformanceCard(p){const a=p.adoption||{};return '<div class="journey"><h3>'+esc(p.paradigm)+'</h3><p class="desc" style="margin-top:0">'+esc(p.description)+'</p><div class="adoption-rate">'+pct(a.adoption_rate)+' <small>'+num(a.following_count)+' of '+num(a.comparable_count)+' comparable implementations follow this norm</small></div>'+((a.evidence_files||[]).length?'<div class="provenance">evidence: '+esc(a.evidence_files.join(', '))+'</div>':'')+((p.deviations||[]).length?'<h3 style="margin-top:16px">Deviations ('+num(p.deviation_count)+')</h3><table class="table"><thead><tr><th>Severity</th><th>Kind</th><th>File</th><th>Detail</th></tr></thead><tbody>'+deviationRows(p.deviations)+'</tbody></table>':'<div class="effects" style="margin-top:10px">No deviations recorded.</div>')+'</div>'}
 function conformanceView(){const c=current.conformance||{};if(!c.present)return '<div class="grid"><div class="card span-12"><div class="card-head"><span class="mini-icon"></span><h2>Paradigm Conformance</h2></div>'+pillarFallback(c,'paradigm conformance')+'</div></div>';return '<div class="grid"><div class="card span-12"><div class="card-head"><span class="mini-icon"></span><h2>Paradigm Conformance</h2><small>'+num((c.items||[]).length)+' codebase norms with adoption evidence and deviations</small></div>'+(c.items||[]).map(conformanceCard).join('')+'</div></div>'}
 function productView(){const p=current.product_map||{};if(!p.present)return '<div class="grid"><div class="card span-12"><div class="card-head"><span class="mini-icon"></span><h2>Product Map</h2></div>'+pillarFallback(p,'a stored product map')+'</div></div>';const m=p.map;const id=m.identity||{};const caps=(m.capabilities||[]).map(c=>'<tr><td>'+esc(c.name)+'</td><td>'+esc(c.category)+'</td><td>'+esc(c.criticality)+'</td><td>'+esc(c.risk_level)+'</td><td>'+(c.tests_present?'yes':'no')+'</td><td>'+esc(c.description)+'</td></tr>').join('');const topJourneys=(m.journeys.top||[]).map(j=>'<div class="item" style="cursor:default"><h3>'+esc(j.title||j.name)+'</h3>'+(j.headline&&j.headline!==(j.title||j.name)?'<p>'+esc(j.headline)+'</p>':'')+'<div class="meta">'+esc([j.kind,j.criticality,(j.boundaries||[]).length?'guarded ('+(j.boundaries||[]).join(', ')+')':'unguarded',j.tests===0?'no tests':num(j.tests)+' test'+(j.tests===1?'':'s')].join(' · '))+'</div></div>').join('');const exposure=(m.data.exposure_highlights||[]).map(x=>'<div class="journey"><h3>'+esc(x.entity)+'</h3><div class="effects">Sensitive fields: <b>'+esc((x.sensitive_fields||[]).join(', ')||'none listed')+'</b></div><div class="lineage-flags">'+(x.unguarded_paths?'<span class="flag unguarded">'+num(x.unguarded_paths)+' unguarded paths'+(x.non_auth_guarded_paths?' ('+num(x.non_auth_guarded_paths)+' with non-auth guards only)':'')+'</span>':'')+(x.external_transfer?'<span class="flag external">external transfer'+((x.external_recipients||[]).length?' → '+esc(x.external_recipients.join(', ')):'')+'</span>':'')+'</div></div>').join('');const paradigms=(m.conventions.paradigms||[]).map(x=>'<div class="metric"><span>'+esc(x.paradigm)+'</span><b>'+pct(x.adoption_rate)+' ('+num(x.following_count)+'/'+num(x.comparable_count)+')</b></div>').join('');const dev=m.conventions.open_deviations||{};const h=m.health||{};const risksHtml=(h.top_risks||[]).map(r=>'<div class="item red" style="cursor:default"><h3>'+esc(r.name)+'</h3><p>'+esc(r.recommendation)+'</p><div class="meta">'+esc([r.type,r.level].join(' · '))+'</div></div>').join('');const caveats=(m.coverage_caveats||[]).map(x=>'<div class="notice">'+esc(x)+'</div>').join('');const unanalyzed=(id.unanalyzed_languages||[]).map(l=>esc(l.name)+' ('+num(l.files)+' files, '+pct(l.share_of_source)+')').join(', ');return '<div class="grid">'+(caveats?'<div class="span-12">'+caveats+'</div>':'')+'<div class="card span-7"><div class="card-head"><span class="mini-icon"></span><h2>Identity</h2><small>'+esc(id.domain)+' · domain source: '+esc(id.domain_source)+'</small></div><p class="desc" style="margin-top:0">'+esc(id.description)+'</p><div class="provenance">description source: '+esc(id.description_source)+(unanalyzed?' · unanalyzed languages: '+unanalyzed:'')+'</div></div><div class="card span-5"><div class="card-head"><span class="mini-icon"></span><h2>Journeys</h2></div>'+metrics([['Total',num(m.journeys.total)],['User-facing',num(m.journeys.user_facing)],['System',num(m.journeys.system)],['Scheduled',num(m.journeys.scheduled)]])+'</div><div class="card span-12"><div class="card-head"><span class="mini-icon"></span><h2>Capability Spec</h2><small>'+num((m.capabilities||[]).length)+' capabilities</small></div><table class="table"><thead><tr><th>Capability</th><th>Category</th><th>Criticality</th><th>Risk</th><th>Tests</th><th>Description</th></tr></thead><tbody>'+caps+'</tbody></table></div><div class="card span-6"><div class="card-head"><span class="mini-icon"></span><h2>Top Journeys</h2></div><div class="item-list">'+(topJourneys||'<div class="empty">None listed.</div>')+'</div></div><div class="card span-6"><div class="card-head"><span class="mini-icon"></span><h2>Data Exposure</h2><small>'+num(m.data.entities)+' entities · sensitive: '+esc((m.data.sensitive||[]).join(', ')||'none')+'</small></div>'+(exposure||'<div class="empty">No exposure highlights.</div>')+'</div><div class="card span-6"><div class="card-head"><span class="mini-icon"></span><h2>Conventions</h2><small>open deviations: '+num(dev.error)+' error · '+num(dev.warning)+' warning · '+num(dev.info)+' info</small></div>'+(paradigms||'<div class="empty">No paradigms recorded.</div>')+'</div><div class="card span-6"><div class="card-head"><span class="mini-icon"></span><h2>Health</h2><small>'+esc(h.status||'unknown')+(h.score!==undefined&&h.score!==null?' · score '+esc(h.score):'')+'</small></div>'+metrics([['Tests',num((h.tests||{}).total)],['Passing',num((h.tests||{}).passing)],['Failing',num((h.tests||{}).failing)],['Implementation complete',num((h.implementation||{}).complete)],['Partial',num((h.implementation||{}).partial)],['Stubs',num((h.implementation||{}).stubs)]])+(risksHtml?'<h3>Top Risks</h3><div class="item-list">'+risksHtml+'</div>':'')+'</div></div>'}
+function projectStats(){const p=DATA.project_overview||{counts:{}};return metrics([['Codebases',num(p.counts.codebases)],['Apps / services',num(p.counts.applications)],['CAS nodes',num(p.counts.nodes)],['CAS relationships',num(p.counts.edges)],['Entry points',num(p.counts.entry_points)],['Exit points',num(p.counts.exit_points)],['Interfaces',num(p.counts.interfaces)],['Data-flow paths',num(p.counts.data_flows)],['Workspace links',num(p.counts.links)],['Runtime components',num(p.counts.runtime_components)],['Runtime links',num(p.counts.runtime_links)],['Unmatched surfaces',num(p.counts.unmatched)]])}
+function projectCodebaseCards(){const p=DATA.project_overview||{};return (p.codebases||[]).map((c,i)=>'<div class="project-card" onclick="current=DATA.analyses.find(a=>a.id===\\''+esc(c.id)+'\\')||current;setRoute(\\'overview\\')"><h3>'+esc(c.name)+'</h3><p>'+esc(c.description||'No summary available.')+'</p><div class="meta">'+esc([c.framework,c.language,c.system_type].filter(Boolean).join(' · '))+'</div><div class="entity-stats"><span>'+num(c.counts.nodes)+' nodes</span><span>'+num(c.counts.entry_points)+' entry</span><span>'+num(c.counts.exit_points)+' exit</span></div></div>').join('')||'<div class="empty">No analyzed codebases in the payload.</div>'}
+function projectMap(){const apps=(DATA.project_overview?.applications||[]);const nodes=apps.length?apps:(DATA.project_overview?.codebases||[]);if(!nodes.length)return '<div class="empty">No apps or codebases to render.</div>';const cols=Math.ceil(Math.sqrt(nodes.length));const graph=DATA.project_overview?.system_graph;const linkRows=(DATA.project_overview?.links||[]).slice(0,10).map(l=>'<div class="pathline"><span class="hop">'+esc(l.source_application||l.source)+'</span> → <span class="hop">'+esc(l.target_application||l.target)+'</span> '+esc(l.kind)+' · '+esc(l.mode||'')+'</div>').join('');return '<div class="project-map">'+nodes.map((c,i)=>{const col=i%cols,row=Math.floor(i/cols);const name=c.name||c.codebase_name;const meta=c.codebase_name?esc(c.codebase_name)+' · '+num(c.interface_count||0)+' interfaces · '+num(c.runtime_component_count||0)+' runtime':num(c.counts.nodes)+' nodes · '+num(c.counts.tests)+' tests';return '<div class="project-node" style="left:'+(32+col*250)+'px;top:'+(30+row*150)+'px"><h3>'+esc(name)+'</h3><p>'+esc(c.kind||c.framework||'Analyzed surface')+'</p><div class="meta">'+meta+'</div></div>'}).join('')+'</div>'+(graph?'<div class="notice" style="margin-top:12px">Graph: '+esc(graph.name)+' · '+num(graph.counts.applications||0)+' apps/services · '+num(graph.counts.links)+' cross-codebase links · '+num(graph.counts.runtime_links)+' runtime links</div>':'')+(linkRows?'<div style="margin-top:12px">'+linkRows+'</div>':'')}
+function projectInterfaceRow(item,i){return '<div class="item blue" onclick="setProjectRoute(\\'interfaces\\','+i+')"><h3>'+esc(item.name||'Interface')+'</h3><p>'+esc(item.description||item.kind||'Interface evidence from the analysis payload.')+'</p><div class="meta">'+esc([item.codebase_name,item.direction,item.kind,item.evidence].filter(Boolean).join(' · '))+'</div></div>'}
+function projectFlowRow(item,i){const path=(item.path||[]).map(h=>'<span class="hop">'+esc(h)+'</span>').join(' ');return '<div class="item green" onclick="setProjectRoute(\\'flows\\','+i+')"><h3>'+esc(item.entity||'Data path')+'</h3><div class="pathline">'+(path||esc(item.destination||'No path detail recorded'))+'</div><div class="meta">'+esc([item.codebase_name,item.sensitivity,item.guard,item.evidence].filter(Boolean).join(' · '))+'</div></div>'}
+function projectLinkRow(item,i){return '<div class="item amber" onclick="setProjectRoute(\\'links\\','+i+')"><h3>'+esc(item.name||'Workspace link')+'</h3><p>'+esc(item.description||'Matched relationship from the persisted Klauro Workspace analysis.')+'</p><div class="meta">'+esc([item.source,item.target,item.kind,item.mode,item.confidence!==undefined?Math.round(item.confidence*100)+'% confidence':''].filter(Boolean).join(' · '))+'</div></div>'}
+function projectRuntimeRow(item,i){return '<div class="item blue" onclick="setProjectRoute(\\'runtime\\','+i+')"><h3>'+esc(item.name||'Runtime link')+'</h3><p>'+esc(item.description||'Runtime topology relationship from container or deployment analysis.')+'</p><div class="meta">'+esc([item.codebase_name,item.kind,item.mode,item.confidence!==undefined?Math.round(item.confidence*100)+'% confidence':''].filter(Boolean).join(' · '))+'</div></div>'}
+function projectOverviewHtml(){const p=DATA.project_overview||{counts:{},notices:[]};const notices=(p.notices||[]).map(n=>'<div class="project-notice">'+esc(n)+'</div>').join('');return '<div class="crumb">Workspace / <span class="current">Overview</span></div><div class="topbar"><div><div class="status">Workspace analysis · Generated '+esc(new Date(DATA.generated_at).toLocaleString())+'</div><div class="title"><h1>'+esc(p.title||'Workspace Overview')+'</h1><span class="source-pill">'+num(p.counts?.codebases)+' codebases</span></div><div class="desc">A local prototype view over stored CAS analyses plus persisted Klauro Workspace analysiss: codebase drilldown, matched communication interfaces, runtime topology, and data-flow evidence.</div></div><div class="actions"><button class="btn" onclick="setProjectRoute(\\'interfaces\\')">Interfaces</button><button class="btn" onclick="setProjectRoute(\\'runtime\\')">Runtime</button><button class="btn primary" onclick="setProjectRoute(\\'links\\')">Workspace Links</button></div></div>'+notices+'<div class="tabs">'+['overview','interfaces','flows','links','runtime'].map(v=>'<button class="tab '+(view===v?'active':'')+'" onclick="setProjectRoute(\\''+v+'\\')">'+(v==='flows'?'Data Flows':v==='links'?'Workspace Links':v.replace(/^./,c=>c.toUpperCase()))+'</button>').join('')+'</div>'+projectViewHtml()}
+function projectViewHtml(){const p=DATA.project_overview||{};if(view==='interfaces')return '<div class="grid"><div class="card span-12"><div class="card-head"><span class="mini-icon"></span><h2>Communication Interfaces</h2><small>'+num((p.interfaces||[]).length)+' provided, consumed, published, listened, and shared surfaces from Klauro graph facts</small></div><div class="item-list">'+((p.interfaces||[]).map(projectInterfaceRow).join('')||'<div class="empty">No communication interfaces found in the payload.</div>')+'</div></div></div>';if(view==='flows')return '<div class="grid"><div class="card span-12"><div class="card-head"><span class="mini-icon"></span><h2>Data-Flow Paths</h2><small>'+num((p.data_flows||[]).length)+' workspace paths from matched graph links</small></div><div class="item-list">'+((p.data_flows||[]).map(projectFlowRow).join('')||'<div class="empty">No data-flow paths found in the payload.</div>')+'</div></div></div>';if(view==='links')return '<div class="grid"><div class="card span-12"><div class="card-head"><span class="mini-icon"></span><h2>Workspace Links</h2><small>'+num((p.links||[]).length)+' matched deployable and project relationships from persisted Klauro analysis</small></div><div class="item-list">'+((p.links||[]).map(projectLinkRow).join('')||'<div class="empty">No Workspace links found. Run the Workspace analysis first.</div>')+'</div></div></div>';if(view==='runtime')return '<div class="grid"><div class="card span-12"><div class="card-head"><span class="mini-icon"></span><h2>Runtime Topology</h2><small>'+num((p.runtime_links||[]).length)+' links across containers, compose services, and deployment surfaces</small></div><div class="item-list">'+((p.runtime_links||[]).map(projectRuntimeRow).join('')||'<div class="empty">No runtime topology links found in the persisted Workspace analysis.</div>')+'</div></div></div>';return '<div class="project-hero"><div class="card"><div class="card-head"><span class="mini-icon"></span><h2>Workspace Map</h2><small>Codebase nodes and matched system links from Klauro</small></div>'+projectMap()+'</div><div class="card"><div class="card-head"><span class="mini-icon"></span><h2>Workspace Facts</h2></div>'+projectStats()+'</div></div><div class="card"><div class="card-head"><span class="mini-icon"></span><h2>Codebases</h2><small>Open any node to drill into its normal analysis dashboard</small></div><div class="project-card-grid">'+projectCodebaseCards()+'</div></div>'}
+function renderProject(){repos();$('#detail').classList.remove('active');$('#dashboard').style.display='block';$('#dashboard').innerHTML=projectOverviewHtml()}
+function renderProjectDetail(type,index){repos();$('#dashboard').style.display='none';$('#detail').classList.add('active');const p=DATA.project_overview||{};const map={interfaces:p.interfaces||[],flows:p.data_flows||[],links:p.links||[],runtime:p.runtime_links||[]};const item=(map[type]||[])[index]||{};const back=type==='flows'?'flows':type==='links'?'links':type==='runtime'?'runtime':'interfaces';const evidence=Array.isArray(item.evidence)?item.evidence:(item.evidence?[item.evidence]:[]);$('#detail').innerHTML='<span class="back" onclick="setProjectRoute(\\''+back+'\\')">← Back</span><div class="detail-hero"><div class="status">Project '+esc(type)+'</div><h1>'+esc(item.name||item.entity||'Project detail')+'</h1><p class="desc">'+esc(item.description||item.destination||'Detail supplied by the persisted Klauro project graph.')+'</p><div style="margin-top:16px">'+pillList([item.codebase_name,item.direction,item.kind,item.mode,item.sensitivity,item.guard].filter(Boolean))+'</div></div><div class="grid"><div class="card span-7"><div class="card-head"><span class="mini-icon"></span><h2>Path and Evidence</h2></div>'+((item.path||[]).length?'<div class="pathline">'+item.path.map(h=>'<span class="hop">'+esc(h)+'</span>').join(' ')+'</div>':'')+(item.source_interface||item.target_interface?'<div class="pathline"><span class="hop">'+esc(item.source_interface||item.source)+'</span> → <span class="hop">'+esc(item.target_interface||item.target)+'</span></div>':'')+(evidence.length?'<table class="table"><tbody>'+evidence.map(e=>'<tr><td>'+esc(e)+'</td></tr>').join('')+'</tbody></table>':'<p class="desc">No additional evidence recorded in compact payload.</p>')+'</div><div class="card span-5"><div class="card-head"><span class="mini-icon"></span><h2>Source Codebase</h2></div>'+metrics([['Codebase',item.codebase_name||item.source||'unknown'],['Target',item.target||item.destination||'not recorded'],['Type',item.kind||type],['Mode',item.mode||'not recorded']])+'</div></div>'}
 function diagram(){const c=current.composition||{};return '<div class="diagram"><div class="nodebox green" style="left:36px;top:108px"><b>Web App</b><span>Primary client</span></div><div class="nodebox blue" style="left:230px;top:70px"><b>Controllers</b><span>'+num(c.controllers)+' REST/API</span></div><div class="nodebox blue" style="left:230px;top:160px"><b>Auth Guards</b><span>Access boundaries</span></div><div class="nodebox purple" style="left:430px;top:116px"><b>Services</b><span>'+num(c.services)+' business logic</span></div><div class="nodebox amber" style="left:630px;top:116px"><b>Repositories</b><span>'+num(c.repositories)+' data access</span></div><div class="nodebox purple" style="right:36px;top:78px"><b>Data Store</b><span>'+num(c.entities)+' entities</span></div><div class="nodebox purple" style="right:36px;top:174px"><b>External APIs</b><span>'+(current.tech.external.length||0)+' integrations</span></div><div class="link" style="left:156px;top:130px;width:74px"></div><div class="link" style="left:350px;top:138px;width:80px"></div><div class="link" style="left:550px;top:138px;width:80px"></div><div class="link" style="left:750px;top:138px;width:130px"></div></div>'}
 function dashboardHtml(){return '<div class="crumb">⌂ › '+esc(current.name)+' › <span class="current">Backend</span></div><div class="topbar"><div><div class="status">● Analysis complete · Updated '+esc(new Date(current.analyzed_at).toLocaleString())+(current.cas_version?' · CAS '+esc(current.cas_version):'')+'</div><div class="title"><h1>'+esc(current.name)+'</h1><span class="source-pill">'+esc((current.tech.frameworks||[])[0]||current.system_type)+'</span></div><div class="desc">'+esc(current.description||'No description found in this analysis.')+'</div></div><div class="actions"><button class="btn" onclick="showReanalysisPanel()">Reanalyze</button><button class="btn" onclick="setRoute(\\'quality\\')">System Health</button><button class="btn primary" onclick="setRoute(\\'graph\\')">See Diagram</button></div></div>'+reanalyzePanel()+'<div class="summary"><div class="summary-card"><div class="eyebrow">What it does</div><h2>'+esc(current.capabilities[0]?.name||'Mapped codebase behavior')+'</h2><p>'+esc(current.capabilities[0]?.description||current.description)+'</p></div><div class="summary-card alt"><div class="eyebrow">How it fits</div><h2>'+esc(current.architecture?.patterns?.[0]?.name||current.system_type||'Application structure')+'</h2><p>'+esc(current.architecture?.summary||'CAS mapped the code structure, entities, flows, and boundaries for agent and human inspection.')+'</p></div></div><div class="tabs">'+['overview','capabilities','entities','journeys','lineage','conformance','product','architecture','quality','graph'].map(v=>'<button class="tab '+(view===v?'active':'')+'" onclick="setRoute(\\''+v+'\\')">'+(v==='product'?'Product Map':v.replace(/^./,c=>c.toUpperCase()))+'</button>').join('')+'</div>'+viewHtml()}
 function viewHtml(){if(view==='capabilities')return '<div class="grid"><div class="card span-12"><div class="card-head"><span class="mini-icon"></span><h2>Primary Capabilities</h2><small>Core business functions, not infrastructure plumbing</small></div><div class="cap-grid">'+current.capabilities.map((c,i)=>'<div class="cap" onclick="setRoute(\\'capabilities\\','+i+')"><div class="icon">↗</div><h3>'+esc(c.name)+'</h3><p>'+esc(c.description)+'</p><div class="health"><span>♡ '+c.health+'% healthy</span><span>'+esc(c.severity||'')+'</span></div></div>').join('')+'</div></div></div>';if(view==='entities')return '<div class="grid"><div class="card span-12"><div class="card-head"><span class="mini-icon"></span><h2>Key Entities</h2><small>'+num(current.entities.length)+' concepts</small></div><div class="entity-row">'+current.entities.map((e,i)=>'<div class="entity" onclick="setRoute(\\'entities\\','+i+')"><h3>'+esc(e.name)+'</h3><span class="tag">'+esc(e.type||'Core')+'</span><p>'+esc(e.description||'Entity from CAS graph.')+'</p><div class="entity-stats"><span>'+num(e.fields||e.references?.length||0)+' fields</span><span>'+num(e.relations||0)+' rel</span></div></div>').join('')+'</div></div></div>';if(view==='journeys')return journeysView();if(view==='lineage')return lineageView();if(view==='conformance')return conformanceView();if(view==='product')return productView();if(view==='architecture')return '<div class="grid"><div class="card span-7"><div class="card-head"><span class="mini-icon"></span><h2>Architecture</h2></div><p class="desc">'+esc(current.architecture.summary||'No architecture summary present.')+'</p><h3>Patterns</h3>'+itemList(current.architecture.patterns,'architecture')+'</div><div class="card span-5"><div class="card-head"><span class="mini-icon"></span><h2>Idioms</h2></div><p class="desc">'+esc(current.idioms.summary||'Repo-local conventions and agent guidance.')+'</p>'+itemList(current.idioms.items,'idioms')+'</div></div>';if(view==='quality')return '<div class="grid"><div class="card span-4"><div class="card-head"><span class="mini-icon"></span><h2>Test Health</h2></div>'+metrics([['Tests / Suites',num(current.tests.total)],['Coverage',current.tests.coverage]])+'<h3>Suites</h3>'+itemList(current.tests.suites,'tests')+'</div><div class="card span-4"><div class="card-head"><span class="mini-icon"></span><h2>Risks</h2></div>'+itemList(current.risks,'risks')+'</div><div class="card span-4"><div class="card-head"><span class="mini-icon"></span><h2>Test Gaps</h2></div>'+itemList(current.tests.gaps,'gaps')+'</div></div>';if(view==='graph')return '<div class="grid"><div class="card span-12"><div class="card-head"><span class="mini-icon"></span><h2>Codebase Graph</h2><small>Top connected nodes</small></div><div class="graph"><svg id="graphSvg"></svg></div><div id="nodeInfo" class="desc"></div></div></div>';return '<div class="grid"><div class="card span-12"><div class="card-head"><span class="mini-icon"></span><h2>Primary Capabilities</h2><small>Core business functions, not infrastructure plumbing</small></div><div class="cap-grid">'+capCards()+'</div></div><div class="card span-12"><div class="card-head"><span class="mini-icon"></span><h2>Key Entities</h2><small>These entities represent the fundamental concepts that drive the system value.</small></div><div class="entity-row">'+entityCards()+'</div></div><div class="card span-4"><div class="card-head"><span class="mini-icon"></span><h2>System Composition</h2></div>'+bars(current.composition.nodeTypes)+'</div><div class="card span-4"><div class="card-head"><span class="mini-icon"></span><h2>Behavior Pillars</h2><small>Journeys, lineage, conformance, product map</small></div>'+metrics(pillarSummaryRows())+((current.journeys&&current.journeys.notice)?'<div class="notice" style="margin-top:14px">'+esc(current.journeys.notice)+'</div>':'')+'</div><div class="card span-4 dark"><div class="card-head"><span class="mini-icon"></span><h2>Codebase Visualization</h2><button class="btn primary" style="margin-left:auto" onclick="setRoute(\\'graph\\')">See Diagram</button></div>'+diagram()+'</div><div class="card span-12"><div class="card-head"><span class="mini-icon"></span><h2>Integrations</h2><small>Core business functions, not infrastructure plumbing</small></div><div class="integration-tabs"><span class="active">Upstream '+(current.integrations.length||current.tech.external.length)+'</span><span>Downstream</span><span>Workspace Connections</span></div><div class="entity-row">'+(current.integrations.length?current.integrations:current.tech.external.map(x=>({name:x,description:'External integration'}))).slice(0,5).map((x,i)=>'<div class="entity" onclick="setRoute(\\'integrations\\','+i+')"><h3>'+esc(x.name)+'</h3><p>'+esc(x.description||x.type||'External system')+'</p></div>').join('')+'</div></div></div>'}
 function renderDashboard(){repos();$('#detail').classList.remove('active');$('#dashboard').style.display='block';$('#dashboard').innerHTML=dashboardHtml();if(view==='graph')setTimeout(drawGraph,0)}
 function renderDetail(type,index){repos();$('#dashboard').style.display='none';$('#detail').classList.add('active');const map={capabilities:current.capabilities,entities:current.entities,risks:current.risks,gaps:current.tests.gaps,tests:current.tests.suites,architecture:current.architecture.patterns,idioms:current.idioms.items,integrations:current.integrations};const item=(map[type]||[])[index]||{};$('#detail').innerHTML='<span class="back" onclick="setRoute(\\''+(type==='gaps'||type==='risks'||type==='tests'?'quality':type)+'\\')">← Back</span><div class="detail-hero"><div class="status">'+esc(type)+'</div><h1>'+esc(item.name||'Detail')+'</h1><p class="desc">'+esc(item.description||'No description available.')+'</p><div style="margin-top:16px">'+pillList([item.type,item.severity,item.confidence!==undefined?Math.round(item.confidence*100)+'% confidence':''].filter(Boolean))+'</div></div><div class="grid"><div class="card span-7"><div class="card-head"><span class="mini-icon"></span><h2>Evidence and References</h2></div>'+((item.references||[]).length?'<table class="table"><tbody>'+item.references.slice(0,20).map(r=>'<tr><td>'+esc(typeof r==='string'?r:(r.name||r.id||r.kind||JSON.stringify(r).slice(0,80)))+'</td></tr>').join('')+'</tbody></table>':'<div class="empty">No direct references in compact payload.</div>')+'</div><div class="card span-5"><div class="card-head"><span class="mini-icon"></span><h2>Source</h2></div><p class="kbd">'+esc(item.file||current.path)+'</p>'+metrics([['Repository',current.name],['Nodes',num(current.counts.nodes)],['Edges',num(current.counts.edges)]])+'</div></div>'}
 function drawGraph(){const svg=$('#graphSvg');if(!svg)return;const g=current.graph||{nodes:[],edges:[]};const w=svg.clientWidth||1000,h=svg.clientHeight||620;svg.setAttribute('viewBox','0 0 '+w+' '+h);svg.innerHTML='';const nodes=g.nodes.map((node,i)=>({...node,x:w/2+Math.cos(i/g.nodes.length*Math.PI*2)*(w*.39),y:h/2+Math.sin(i/g.nodes.length*Math.PI*2)*(h*.39)}));const byId=new Map(nodes.map(n=>[n.id,n]));for(const e of g.edges||[]){const s=byId.get(e.source),t=byId.get(e.target);if(!s||!t)continue;const line=document.createElementNS('http://www.w3.org/2000/svg','line');line.setAttribute('x1',s.x);line.setAttribute('y1',s.y);line.setAttribute('x2',t.x);line.setAttribute('y2',t.y);line.setAttribute('class','edge');svg.appendChild(line)}for(const node of nodes){const color=/entity|model/i.test(node.type)?'#7ed957':/controller/i.test(node.type)?'#3fa7ff':/service|class/i.test(node.type)?'#8b5cf6':'#ffb74d';const c=document.createElementNS('http://www.w3.org/2000/svg','circle');c.setAttribute('cx',node.x);c.setAttribute('cy',node.y);c.setAttribute('r',Math.max(4,Math.min(13,4+(node.score||0)/22)));c.setAttribute('fill',color);c.style.cursor='pointer';c.onclick=()=>{$('#nodeInfo').textContent=node.name+' · '+node.type+' · '+(node.file||'')};svg.appendChild(c);const label=document.createElementNS('http://www.w3.org/2000/svg','text');label.setAttribute('x',node.x+8);label.setAttribute('y',node.y+3);label.setAttribute('class','node-label');label.textContent=node.name.slice(0,34);svg.appendChild(label)}}
-window.addEventListener('hashchange',route);$('#search').addEventListener('input',repos);if(!location.hash)location.hash='analysis/'+current.id+'/overview';else route();
+window.addEventListener('hashchange',route);$('#search').addEventListener('input',repos);if(!location.hash)location.hash=(DATA.analysis_count===1?'analysis/'+current.id+'/overview':'project/overview');else route();
 </script></body></html>`;
 }
 
 function parseArgs(argv) {
-  const options = { projects: [], out: '' };
+  const options = { projects: [], out: '', systemGraph: '' };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--project' && argv[i + 1]) { options.projects.push(argv[++i]); continue; }
     if (argv[i] === '--out' && argv[i + 1]) { options.out = argv[++i]; continue; }
+    if (argv[i] === '--system-graph' && argv[i + 1]) { options.systemGraph = argv[++i]; continue; }
   }
   return options;
 }
@@ -712,10 +1015,16 @@ function main(argv = process.argv.slice(2)) {
   const root = process.env.KLAURO_STORAGE_PATH || path.join(process.env.HOME, '.klauro', 'analyses');
   const outPath = options.out || path.join(root, 'analysis-inspector.html');
   const index = JSON.parse(fs.readFileSync(path.join(root, 'index.json'), 'utf8'));
+  const crossCodebaseGraphs = readStoredCrossCodebaseGraphs(root);
+  const selectedGraphs = options.systemGraph
+    ? crossCodebaseGraphs.filter(graph => clean(graph.id) === options.systemGraph || clean(graph.name) === options.systemGraph)
+    : crossCodebaseGraphs;
+  const selectedGraphPaths = new Set(arr(selectedGraphs[0]?.codebases).map(codebase => clean(codebase.path)).filter(Boolean));
 
   const analyses = [];
   for (const [projectPath, entry] of Object.entries(index.analyses || {})) {
     if (options.projects.length && !options.projects.some(p => projectPath.includes(p))) continue;
+    if (selectedGraphPaths.size && !selectedGraphPaths.has(projectPath)) continue;
     try {
       const cas = readJsonMaybeCompressed(path.join(root, entry.file));
       analyses.push(buildAnalysisEntry(cas, entry, projectPath));
@@ -724,7 +1033,12 @@ function main(argv = process.argv.slice(2)) {
     }
   }
   analyses.sort((a,b)=>b.counts.nodes-a.counts.nodes);
-  const payload = { generated_at: new Date().toISOString(), analysis_count: analyses.length, analyses };
+  const payload = {
+    generated_at: new Date().toISOString(),
+    analysis_count: analyses.length,
+    analyses,
+    project_overview: projectOverviewData(analyses, selectedGraphs),
+  };
   const html = renderHtml(payload);
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
   fs.writeFileSync(outPath, html, 'utf8');
@@ -745,6 +1059,10 @@ module.exports = {
   lineageData,
   conformanceData,
   productMapData,
+  explicitCrossCodebaseData,
+  readStoredCrossCodebaseGraphs,
+  compactCrossCodebaseGraph,
+  projectOverviewData,
   buildAnalysisEntry,
   renderHtml,
   main,

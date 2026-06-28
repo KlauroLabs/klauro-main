@@ -1,0 +1,1 @@
+{ "task": "messaging-wiring", "expected": ["produces emails", "consumes notifications"], "note": "BullMQ new Queue(emails).add() producer + new Worker(notifications) consumer." }

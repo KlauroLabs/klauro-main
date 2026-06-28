@@ -1,0 +1,1 @@
+{ "task": "route-auth", "expected_protected": ["POST /users", "DELETE /users/:id"], "note": "Echo per-route middleware e.POST(path, handler, AuthRequired); middleware after handler; GET open. Go." }

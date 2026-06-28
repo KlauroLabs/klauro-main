@@ -1,0 +1,2 @@
+{ "task": "component-tree", "expected_tree": ["App renders UserCard"],
+  "note": "WON (Svelte component tree, out-category). svelte-analyzer only had a `uses` IMPORT edge (App imports UserCard, the Camp-B fact). Added renderedComponents (PascalCase <Tag> in stripped markup) + a renders edge for components actually USED in the template — the Camp-C render fact (additive; the uses import edge stays)." }

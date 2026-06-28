@@ -1,0 +1,13 @@
+{ "task": "telemetry-hotpath",
+  "expected_top": "FETCH /inventory/items",
+  "events": [
+    { "event": { "type": "exit", "endpoint": "/inventory/items", "duration_ms": 2400 } },
+    { "event": { "type": "exit", "endpoint": "/inventory/items", "duration_ms": 2100 } },
+    { "event": { "type": "exit", "endpoint": "/inventory/items", "duration_ms": 1900 } },
+    { "event": { "type": "exit", "endpoint": "/inventory/items", "duration_ms": 2600 } },
+    { "event": { "type": "exit", "endpoint": "/inventory/items", "duration_ms": 2000 } },
+    { "event": { "type": "exit", "endpoint": "/inventory/items", "duration_ms": 1800 } },
+    { "event": { "type": "exit", "endpoint": "/payments/charges", "duration_ms": 40 } },
+    { "event": { "type": "exit", "endpoint": "/payments/charges", "duration_ms": 35 } }
+  ]
+}

@@ -1,0 +1,1 @@
+{"task": "di-graph", "expected_injections": ["UsersController injects UserService"], "note": "ASP.NET Core constructor injection (IUserService -> UserService). depends_on edge tagged dependency_type:injection must reference the surviving merged class_* node ids, not the framework controller_/service_ ids (which the orchestrator dedups away)."}

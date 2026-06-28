@@ -1,0 +1,57 @@
+{
+  "name": "architecture-libraries-truth-fixture",
+  "frameworks": ["Express"],
+  "languages": ["TypeScript/JavaScript"],
+  "libraries": [
+    "orm",
+    "auth",
+    "payments",
+    "queue",
+    "message-broker",
+    "cache",
+    "observability",
+    "ai-sdk",
+    "dependency-injection",
+    "mediator-cqrs",
+    "actor-system",
+    "workflow-engine",
+    "state-machine",
+    "service-sdk"
+  ],
+  "routes": [
+    { "method": "POST", "path": "/webhooks/stripe" }
+  ],
+  "nodes": [
+    { "name": "Invoice" },
+    { "name": "Payments SDK: webhook handling" },
+    { "name": "BullMQ Job Queue: job producer" },
+    { "name": "Kafka Message Broker: producer" },
+    { "name": "Redis: cache get/set" },
+    { "name": "Observability SDK: tracing setup" },
+    { "name": "AI SDK: model call" },
+    { "name": "JavaScript DI Container: container binding" },
+    { "name": "NestJS CQRS Bus: command dispatch" },
+    { "name": "Akka Actor System: actor creation" },
+    { "name": "Temporal Workflow Engine: workflow definition" },
+    { "name": "XState State Machine: machine definition" },
+    { "name": "AWS SDK Boundary: sdk operation call" }
+  ],
+  "exit_points": [
+    { "type": "webhook", "name": "Payments SDK: webhook handling" },
+    { "type": "message", "name": "BullMQ Job Queue: job producer" },
+    { "type": "message", "name": "Kafka Message Broker: producer" },
+    { "type": "cache", "name": "Redis: cache get/set" },
+    { "type": "analytics", "name": "Observability SDK: tracing setup" },
+    { "type": "sdk", "name": "AI SDK: model call" },
+    { "type": "message", "name": "NestJS CQRS Bus: command dispatch" },
+    { "type": "message", "name": "Akka Actor System: message send" },
+    { "type": "message", "name": "Temporal Workflow Engine: workflow signal/query" },
+    { "type": "sdk", "name": "AWS SDK Boundary: sdk operation call" }
+  ],
+  "minimums": {
+    "nodes": 18,
+    "entry_points": 1,
+    "exit_points": 10,
+    "runtime_static_links": 1
+  }
+}

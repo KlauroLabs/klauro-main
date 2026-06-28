@@ -1,0 +1,1 @@
+{ "task": "route-auth", "expected_protected": ["POST /users", "DELETE /users/:id"], "note": "Axum single-file local routers: protected_routes() applies .layer(middleware::from_fn(require_auth)) inside its own chain body, merged into app(); GET /users open. Rust." }

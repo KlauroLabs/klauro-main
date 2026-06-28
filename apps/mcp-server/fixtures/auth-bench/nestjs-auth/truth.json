@@ -1,0 +1,1 @@
+{ "task": "route-auth", "expected_protected": ["POST /users", "DELETE /users/:id"] }

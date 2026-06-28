@@ -1,0 +1,1 @@
+{ "stack": "solidity", "types": ["IERC20","Token"], "functions": ["transfer","_move"], "calls": [["transfer","_move"]] }

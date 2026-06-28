@@ -1,0 +1,2 @@
+{ "task": "graphql-wiring", "expected_fields": ["users", "user", "posts"],
+  "note": "type-graphql @ResolveField field resolver (User.posts) alongside @Query roots. parseTypeGraphQL extended to capture ResolveField/FieldResolver methods." }

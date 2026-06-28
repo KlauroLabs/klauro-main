@@ -1,0 +1,2 @@
+{ "task": "route-auth", "expected_protected": ["POST /users", "DELETE /users/:id"],
+  "note": "Flask-Login @login_required on POST/DELETE views; GET open. Per-view auth from stacked decorators. 6th auth framework." }

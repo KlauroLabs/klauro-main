@@ -1,0 +1,6 @@
+{
+  "stack": "kotlin",
+  "types": ["PriceCalculator", "Cart"],
+  "functions": ["total", "applyTax", "checkout", "finalize", "main"],
+  "calls": [["total", "applyTax"], ["checkout", "total"], ["checkout", "finalize"], ["main", "checkout"]]
+}

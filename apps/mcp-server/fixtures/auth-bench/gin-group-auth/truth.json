@@ -1,0 +1,1 @@
+{ "task": "route-auth", "expected_protected": ["GET /admin/users", "DELETE /admin/users/:id"], "note": "Gin group .Use(AuthRequired()) — group-wide auth on /admin subtree; root GET /users open. Go." }

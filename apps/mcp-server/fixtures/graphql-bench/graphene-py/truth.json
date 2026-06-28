@@ -1,0 +1,1 @@
+{ "task": "graphql-wiring", "expected_fields": ["user", "users", "me"], "note": "Python Graphene class Query(graphene.ObjectType) with resolve_<field> methods. 7th GraphQL style / Python. parseGraphene." }

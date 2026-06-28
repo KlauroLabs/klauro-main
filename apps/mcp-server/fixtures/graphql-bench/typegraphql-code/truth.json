@@ -1,0 +1,2 @@
+{ "task": "graphql-wiring", "expected_fields": ["user", "users", "createUser"],
+  "note": "Code-first type-graphql: @Query/@Mutation decorators on resolver methods. parseTypeGraphQL emits resolved_by per decorated method (4th GraphQL style after apollo map + named-resolver shorthand)." }

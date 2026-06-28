@@ -1,0 +1,1 @@
+{ "stack": "swift", "types": ["Repository","UserStore","Coordinator"], "functions": ["fetch","load","refresh","run"], "calls": [["fetch","load"],["refresh","fetch"],["run","refresh"],["run","fetch"]] }

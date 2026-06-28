@@ -1,0 +1,12 @@
+{ "task": "telemetry-hotpath",
+  "expected_top": "DELETE /users/:id",
+  "events": [
+    { "event": { "type": "error", "method": "DELETE", "path": "/users/42", "status_code": 500, "error_message": "boom" } },
+    { "event": { "type": "error", "method": "DELETE", "path": "/users/43", "status_code": 500, "error_message": "boom" } },
+    { "event": { "type": "error", "method": "DELETE", "path": "/users/44", "status_code": 500, "error_message": "boom" } },
+    { "event": { "type": "error", "method": "DELETE", "path": "/users/45", "status_code": 500, "error_message": "boom" } },
+    { "event": { "type": "error", "method": "DELETE", "path": "/users/46", "status_code": 500, "error_message": "boom" } },
+    { "event": { "type": "error", "method": "DELETE", "path": "/users/47", "status_code": 500, "error_message": "boom" } },
+    { "event": { "type": "request", "method": "GET", "path": "/users" } }
+  ]
+}

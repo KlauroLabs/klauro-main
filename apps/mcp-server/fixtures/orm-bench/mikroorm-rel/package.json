@@ -1,0 +1,1 @@
+{ "name":"mikroorm-fixture","dependencies":{"@mikro-orm/core":"^6.0.0"} }

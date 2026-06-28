@@ -1,0 +1,1 @@
+{ "task": "messaging-wiring", "expected": ["produces orders", "consumes shipments"], "note": "Python kafka-python producer.send(orders) + KafkaConsumer(shipments). 2nd language for messaging." }

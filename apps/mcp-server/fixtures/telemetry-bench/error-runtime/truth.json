@@ -1,0 +1,6 @@
+{ "task": "telemetry-correlation",
+  "events": [
+    { "event": { "type": "error", "error_message": "negative balance", "stack": "Error: negative balance\n    at persist (service.ts:3:5)\n    at main (index.ts:2:1)" }, "expect_function": "persist" },
+    { "event": { "type": "error", "error_message": "boom", "stack": "Error: boom\n    at mystery (ghost.ts:9:1)" }, "expect": "unmatched" }
+  ]
+}

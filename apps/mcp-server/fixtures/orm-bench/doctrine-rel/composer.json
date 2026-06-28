@@ -1,0 +1,1 @@
+{ "name": "doctrine/fixture", "require": { "doctrine/orm": "^3.0", "symfony/framework-bundle": "^7.0" } }

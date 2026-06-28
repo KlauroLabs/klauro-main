@@ -1,0 +1,7 @@
+{ "task": "telemetry-correlation",
+  "events": [
+    { "event": { "type": "exit", "endpoint": "/payments/charges" }, "expect_exit": "/payments/charges" },
+    { "event": { "type": "exit", "endpoint": "/inventory/items" }, "expect_exit": "/inventory/items" },
+    { "event": { "type": "exit", "endpoint": "/ghost/nowhere" }, "expect": "unmatched" }
+  ]
+}

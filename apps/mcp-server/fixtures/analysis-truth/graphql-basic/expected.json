@@ -1,0 +1,1 @@
+{ "stack": "graphql", "entities": ["User"], "routes": ["user","createUser"] }

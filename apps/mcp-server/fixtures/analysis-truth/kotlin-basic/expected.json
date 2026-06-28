@@ -1,0 +1,1 @@
+{ "stack": "kotlin", "types": ["Repo","UserService","User"], "functions": ["find","load","fetch","main"], "calls": [["load","fetch"]] }

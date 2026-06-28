@@ -1,0 +1,2 @@
+{ "task": "route-auth", "expected_protected": ["POST /users", "DELETE /users/:id"],
+  "note": "ASP.NET Core [Authorize] attribute on POST (plain) + DELETE (Roles=Admin); GET open. Per-action authorize attribute. 7th auth framework / C#." }

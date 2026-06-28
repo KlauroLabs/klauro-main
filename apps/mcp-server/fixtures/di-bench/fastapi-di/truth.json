@@ -1,0 +1,1 @@
+{"task": "di-graph", "expected_injections": ["list_users injects get_service", "remove_user injects get_service"], "note": "WON (FastAPI Depends() DI, Python). fastapi-analyzer now tags handler->Depends edges dependency_type:injection (route-level DI: list_users/remove_user inject get_service)."}

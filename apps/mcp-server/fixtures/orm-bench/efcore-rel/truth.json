@@ -1,0 +1,1 @@
+{ "task": "orm-relations", "expected_relations": ["User 1:N Order", "Order N:1 User"], "note": "EF Core navigation properties + fluent HasMany/WithOne (C#). relation edges with relationType. 10th ORM / C#." }

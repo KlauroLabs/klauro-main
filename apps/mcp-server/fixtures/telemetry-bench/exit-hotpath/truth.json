@@ -1,0 +1,12 @@
+{ "task": "telemetry-hotpath",
+  "expected_top": "FETCH /payments/charges",
+  "events": [
+    { "event": { "type": "exit", "endpoint": "/payments/charges", "status_code": 500, "error_message": "timeout" } },
+    { "event": { "type": "exit", "endpoint": "/payments/charges", "status_code": 500, "error_message": "timeout" } },
+    { "event": { "type": "exit", "endpoint": "/payments/charges", "status_code": 500, "error_message": "timeout" } },
+    { "event": { "type": "exit", "endpoint": "/payments/charges", "status_code": 500, "error_message": "timeout" } },
+    { "event": { "type": "exit", "endpoint": "/payments/charges", "status_code": 500, "error_message": "timeout" } },
+    { "event": { "type": "exit", "endpoint": "/payments/charges", "status_code": 500, "error_message": "timeout" } },
+    { "event": { "type": "exit", "endpoint": "/inventory/items" } }
+  ]
+}

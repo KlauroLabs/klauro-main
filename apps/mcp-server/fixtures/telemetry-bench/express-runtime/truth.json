@@ -1,0 +1,7 @@
+{ "task": "telemetry-correlation",
+  "events": [
+    { "event": { "type": "request", "method": "GET", "path": "/users" }, "expect_method": "GET", "expect_path": "/users" },
+    { "event": { "type": "request", "method": "DELETE", "path": "/users/42" }, "expect_method": "DELETE", "expect_path": "/users/:id" },
+    { "event": { "type": "request", "method": "PATCH", "path": "/ghost" }, "expect": "unmatched" }
+  ]
+}

@@ -1,0 +1,1 @@
+{ "stack": "sqlalchemy-pydantic", "entities": ["User","Post","UserCreate"], "relations": [["User","Post"],["Post","User"]] }

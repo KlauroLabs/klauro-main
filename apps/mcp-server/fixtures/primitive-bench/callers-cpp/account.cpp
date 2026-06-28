@@ -1,0 +1,3 @@
+struct Account {
+    void save() {}
+};

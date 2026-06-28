@@ -1,0 +1,2 @@
+{ "task": "route-auth", "expected_protected": ["POST /users", "DELETE /users/:id"],
+  "note": "Laravel ->middleware('auth') / ->middleware('auth:sanctum') on POST/DELETE; GET open. Per-route middleware auth. 8th auth framework / PHP." }

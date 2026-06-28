@@ -1,0 +1,1 @@
+{ "task": "di-graph", "expected_injections": ["UserService injects UserRepository"], "note": "Quarkus CDI @Inject field injection (Java). depends_on tagged dependency_type:injection, cross-file resolved. 6th DI framework." }

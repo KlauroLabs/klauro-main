@@ -1,0 +1,2 @@
+{ "task": "orm-relations", "expected_relations": ["User 1:N Post", "Post N:1 User"],
+  "note": "Laravel Eloquent method-based relations: User hasMany Post, Post belongsTo User. Wired eloquent_relation nodes into database_schema.relationships_summary. 8th ORM / PHP." }

@@ -1,0 +1,1 @@
+{ "stack": "cpp", "types": ["Shape","Circle"], "functions": ["area","scale","main"], "calls": [["area","scale"],["main","area"]] }

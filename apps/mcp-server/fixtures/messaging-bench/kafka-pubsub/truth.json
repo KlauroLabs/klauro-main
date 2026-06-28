@@ -1,0 +1,1 @@
+{ "task": "messaging-wiring", "expected": ["produces orders", "consumes shipments"], "note": "KafkaJS producer.send({topic:orders}) + consumer.subscribe({topic:shipments}). Klauro emits produces/consumes edges to topic nodes." }

@@ -1,0 +1,1 @@
+{ "task": "di-graph", "expected_injections": ["UserController injects UserService", "UserService injects UserRepository"] }

@@ -1,0 +1,1 @@
+{ "task": "di-graph", "expected_injections": ["UserService injects UserRepository"], "note": "Micronaut @Singleton constructor injection (Java). depends_on tagged dependency_type:injection, target resolved cross-file. 5th DI framework." }

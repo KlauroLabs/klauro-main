@@ -1,0 +1,2 @@
+{ "task": "component-tree", "expected_tree": ["App renders UserCard"],
+  "note": "React Native component composition: App renders <UserCard/> (a component, not an RN primitive). rendersComponents -> renders edge post-pass. 6th component framework." }

@@ -1,0 +1,1 @@
+{ "task": "orm-relations", "expected_relations": ["User 1:1 Profile", "Profile 1:1 User"], "note": "JPA @OneToOne bidirectional (Java). 1:1 cardinality." }

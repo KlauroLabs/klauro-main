@@ -1,0 +1,2 @@
+{ "task": "route-auth", "expected_protected": ["DELETE /users/:id"],
+  "note": "DRF function-view auth: @permission_classes([IsAuthenticated]) on user_detail (DELETE) only; users (GET/POST) open. Per-view auth precision for Django." }

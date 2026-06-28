@@ -1,0 +1,1 @@
+{ "task": "graphql-wiring", "expected_fields": ["user", "users", "create_user"], "note": "Python Strawberry @strawberry.field/@strawberry.mutation decorators. 6th GraphQL style / 2nd language (Python). New parseStrawberry + .py scanning + python detection in graphql-analyzer." }

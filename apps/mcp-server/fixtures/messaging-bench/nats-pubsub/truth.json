@@ -1,0 +1,1 @@
+{ "task": "messaging-wiring", "expected": ["produces orders", "consumes shipments"], "note": "NATS nc.publish(orders) + nc.subscribe(shipments). Subject graph." }

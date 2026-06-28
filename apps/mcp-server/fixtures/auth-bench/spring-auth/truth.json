@@ -1,0 +1,2 @@
+{ "task": "route-auth", "expected_protected": ["POST /users", "DELETE /users/:id"],
+  "note": "Spring Security method-level @PreAuthorize — only POST (annotation before @PostMapping) and DELETE (annotation after @DeleteMapping) are protected; GET /users is open. Tests per-method auth precision (file-level @PreAuthorize check would wrongly include GET)." }

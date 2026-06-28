@@ -1,0 +1,1 @@
+{ "task": "component-tree", "expected_tree": ["App renders UserCard"] }

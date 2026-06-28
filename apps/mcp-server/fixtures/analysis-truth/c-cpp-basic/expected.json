@@ -1,0 +1,7 @@
+{
+  "stack": "c-cpp",
+  "functions": ["add", "sub", "neg", "run", "helper", "main"],
+  "classes": ["Calc"],
+  "calls": [["sub","add"], ["sub","neg"], ["run","add"], ["run","helper"], ["main","run"]],
+  "includes": [["math.c","math.h"], ["app.cpp","math.h"]]
+}

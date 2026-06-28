@@ -1,0 +1,1 @@
+{"task": "graphql-wiring", "expected_fields": ["user", "users", "createUser"], "note": "WON (named resolver functions referenced via shorthand Query:{user,users}). graphql-analyzer parseResolverMaps now captures property-shorthand fields (comma/boundary-anchored), not just inline arrows/methods."}

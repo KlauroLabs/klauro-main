@@ -1,0 +1,2 @@
+{ "task": "component-tree", "expected_tree": ["App renders UserCard"],
+  "note": "Qwik component$ JSX child usage <UserCard/>. 5th component framework after react/vue/svelte/angular." }

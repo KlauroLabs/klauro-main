@@ -1,0 +1,1 @@
+{ "task": "route-auth", "expected_protected": ["POST /users", "DELETE /users/:id"], "note": "Fiber per-route middleware app.Post(path, AuthRequired, handler); GET open. Go." }

@@ -1,0 +1,1 @@
+{ "task": "graphql-wiring", "expected_fields": ["user", "users", "createUser"], "note": "Java Spring-for-GraphQL: SDL .graphql + @QueryMapping/@MutationMapping methods." }

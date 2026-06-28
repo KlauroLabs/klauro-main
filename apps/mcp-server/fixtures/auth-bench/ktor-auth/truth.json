@@ -1,0 +1,1 @@
+{ "task": "route-auth", "expected_protected": ["POST /users", "DELETE /users/:id"], "note": "Ktor authenticate(\"auth-jwt\") { } scope wraps POST/DELETE; GET open. Brace-depth auth scope. 10th auth framework / Kotlin." }

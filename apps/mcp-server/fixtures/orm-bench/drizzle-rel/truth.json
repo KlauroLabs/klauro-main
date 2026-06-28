@@ -1,0 +1,1 @@
+{"task": "orm-relations", "expected_relations": ["users 1:N posts", "posts N:1 users"], "note": "WON (Drizzle relations + FK). Fixed: one() was emitted OneToOne -> now ManyToOne (one() is the belongs-to/N:1 side, pairs with many()=1:N). Entity names are Drizzle table vars (users/posts)."}

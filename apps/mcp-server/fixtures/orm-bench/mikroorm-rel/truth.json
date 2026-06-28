@@ -1,0 +1,1 @@
+{ "task": "orm-relations", "expected_relations": ["User 1:N Post", "Post N:1 User"], "note": "MikroORM @OneToMany/@ManyToOne decorators (TS). 11th ORM." }

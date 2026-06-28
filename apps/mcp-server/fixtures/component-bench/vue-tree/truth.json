@@ -1,0 +1,2 @@
+{ "task": "component-tree", "expected_tree": ["App renders UserCard"],
+  "note": "WON (Vue 3 SFC component tree, out-category — import/structural graphs say App IMPORTS UserCard, only Klauro says App RENDERS UserCard). TWO vue-analyzer fixes: (1) extractComponentName matched a bare name: regex that hit data props (const user={name:Ada}) -> scoped to defineOptions/export default name, else filename; (2) added extractChildComponents (PascalCase <Tag> in <template>) + a post-pass emitting renders edges parent->child." }

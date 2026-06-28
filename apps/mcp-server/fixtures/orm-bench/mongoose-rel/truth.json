@@ -1,0 +1,1 @@
+{"task": "orm-relations", "expected_relations": ["User 1:N Post", "Post N:1 User"], "note": "WON (Mongoose document refs, no analyzer fix \u2014 mongoose-analyzer already emits relations from ref: in schema)."}

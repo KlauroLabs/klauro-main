@@ -1,0 +1,1 @@
+{ "stack": "protobuf", "entities": ["HelloRequest","HelloReply"], "routes": ["SayHello","SayBye"] }

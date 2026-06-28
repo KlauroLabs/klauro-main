@@ -1,0 +1,1 @@
+{ "task": "graphql-wiring", "expected_fields": ["user", "users", "createUser"], "note": "Go gqlgen: SDL .graphql + *queryResolver/*mutationResolver methods." }

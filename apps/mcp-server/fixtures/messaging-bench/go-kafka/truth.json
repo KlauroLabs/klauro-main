@@ -1,0 +1,1 @@
+{ "task": "messaging-wiring", "expected": ["produces orders", "consumes shipments"] }
