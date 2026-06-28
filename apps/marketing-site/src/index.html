@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Klauro | Codebase Clarity</title>
+    <meta name="description" content="Clarity to navigate any codebase with confidence" />
+    <meta property="og:title" content="Klauro | Codebase Clarity" />
+    <meta property="og:description" content="Clarity to navigate any codebase with confidence" />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="/assets/og-image.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="/assets/og-image.png" />
+    <link rel="icon" href="/assets/favicon.png" />
+    <link rel="apple-touch-icon" href="/assets/favicon.png" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#hero" aria-label="Klauro home">
+        <img src="/assets/klauro-logo.png" alt="Klauro" width="115" height="30" />
+      </a>
+      <button class="menu-button" type="button" data-menu-button aria-expanded="false" aria-controls="site-nav">
+        <span></span>
+        <span></span>
+      </button>
+      <nav id="site-nav" class="nav" data-nav data-open="false">
+        <a href="#features">Features</a>
+        <a href="#benefits">Benefits</a>
+        <a href="#contact">Contact</a>
+        <a href="#faq">FAQ</a>
+        <a href="#contact" class="nav-cta">Contact us</a>
+      </nav>
+    </header>
+
+    <main>
+      <section id="hero" class="hero section">
+        <div class="hero-copy">
+          <h1>Your million-line system, now it fits in your head.</h1>
+          <p class="hero-lede">
+            Every good change starts with understanding the system, and that's where engineers and AI agents 
+            lose the most time. Klauro analyzes it once, then gives agents compact work packets and humans 
+            a simple way to see how it all fits together.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="#contact">Contact us</a>
+          </div>
+        </div>
+      </section>
+
+      <section id="features" class="section">
+        <div class="section-heading">
+          <p class="eyebrow">Features</p>
+          <h2>Not a file index. A behavior graph.</h2>
+          <p>
+            CAS captures domains, entry points, services, data models, tests, risks, patterns, idioms,
+            runtime signals, and change impact.
+          </p>
+        </div>
+        <div class="feature-grid">
+          <article>
+            <h3>Up to 97% fewer tokens</h3>
+            <p>Compact work packets replace broad source scans with targeted graph context.</p>
+          </article>
+          <article>
+            <h3>Up to 88% faster</h3>
+            <p>Agents start from domains, files, risks, tests, and conventions instead of rediscovering them.</p>
+          </article>
+          <article>
+            <h3>Better codebase fit</h3>
+            <p>Idiom and invariant checks keep changes aligned with local architecture and practices.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="benefits" class="section benefits">
+        <div class="benefit-center">
+          <h2>One truth layer for humans and agents</h2>
+          <a class="button secondary" href="#features">See agent workflow</a>
+        </div>
+        <div class="feature-grid">
+          <article>
+            <h3>Proposal previews</h3>
+            <p>Analyze planned changes as real codebase iterations with graph, contract, risk, and test impact.</p>
+          </article>
+          <article>
+            <h3>Runtime-aware roadmap</h3>
+            <p>Telemetry will connect traffic, errors, traces, and bottlenecks back to the static CAS graph.</p>
+          </article>
+          <article>
+            <h3>Hosted or local</h3>
+            <p>Run the MCP locally while hosted analyzers protect proprietary analysis logic and scale heavier work.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="contact" class="section contact">
+        <div class="section-heading">
+          <p class="eyebrow">Contact</p>
+          <h2>Contact Klauro</h2>
+          <p>Tell us about your repositories, agents, and what you want to prove. We will follow up directly.</p>
+        </div>
+        <form class="contact-form" action="https://formsubmit.co/mike.shattuck@klauro.com" method="POST">
+          <input type="hidden" name="_subject" value="Klauro contact request" />
+          <input type="hidden" name="_template" value="table" />
+          <input type="hidden" name="_captcha" value="false" />
+          <label>
+            Name
+            <input name="name" type="text" autocomplete="name" required />
+          </label>
+          <label>
+            Work email
+            <input name="email" type="email" autocomplete="email" required />
+          </label>
+          <label>
+            Company
+            <input name="company" type="text" autocomplete="organization" />
+          </label>
+          <label>
+            What should Klauro help with?
+            <textarea name="message" rows="5" required></textarea>
+          </label>
+          <input class="hidden-field" type="text" name="_honey" tabindex="-1" autocomplete="off" />
+          <button class="button primary" type="submit">Send request</button>
+          <p class="form-note">
+            This form sends requests to mike.shattuck@klauro.com. The first submission may require email
+            confirmation for delivery.
+          </p>
+        </form>
+      </section>
+
+      <section class="section cta">
+        <h2>Give your agents visualization and context before they build.</h2>
+        <p>Klauro helps teams see what AI built, guide what agents change next, and keep large systems coherent as they grow.</p>
+        <a class="button primary" href="#contact">Contact us</a>
+      </section>
+
+      <section id="faq" class="section faq">
+        <div class="section-heading">
+          <p class="eyebrow">FAQ</p>
+          <h2>Questions teams ask first.</h2>
+        </div>
+        <div class="faq-list">
+          <article>
+            <h3>Does Klauro replace my coding agent?</h3>
+            <p>No. Klauro is the codebase map and MCP context layer your agent uses before and during engineering work.</p>
+          </article>
+          <article>
+            <h3>Does source code have to leave my machine?</h3>
+            <p>No. Klauro supports local analysis by default, with hosted and self-hosted analyzer paths for teams that want them.</p>
+          </article>
+          <article>
+            <h3>What does Klauro give agents?</h3>
+            <p>Compact work packets with target files, flows, risks, tests, idioms, invariants, and validation guidance.</p>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="brand">
+        <img src="/assets/klauro-logo.png" alt="Klauro" width="115" height="30" />
+      </div>
+      <nav>
+        <a href="#features">Features</a>
+        <a href="#benefits">Benefits</a>
+        <a href="#contact">Contact</a>
+        <a href="#faq">FAQ</a>
+      </nav>
+      <a class="button primary footer-button" href="#contact">Contact us</a>
+      <p>© 2026 Klauro.</p>
+    </footer>
+
+    <script src="/main.js" type="module"></script>
+    <script src="/consent.js" type="module"></script>
+  </body>
+</html>
