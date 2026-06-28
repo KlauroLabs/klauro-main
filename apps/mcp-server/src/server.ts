@@ -3974,6 +3974,8 @@ function registerTools(server: McpServer) {
           path: z.string().optional().describe('Raw request path'),
           status: z.number().optional().describe('HTTP status code'),
           duration_ms: z.number().optional(),
+          p95_ms: z.number().optional().describe('Observed or pre-aggregated p95 latency for this signal'),
+          p99_ms: z.number().optional().describe('Observed or pre-aggregated p99 latency for this signal'),
           function_hint: z.string().optional().describe('Function or method name the event originated from'),
           file_hint: z.string().optional().describe('Source file the event originated from'),
           error: z.object({
@@ -3985,6 +3987,8 @@ function registerTools(server: McpServer) {
             ])).optional().describe('Top stack frames, most specific first'),
           }).optional(),
           volume: z.number().optional().describe('Pre-aggregated event count this entry represents'),
+          rate_per_min: z.number().optional().describe('Pre-aggregated throughput for this event stream'),
+          window_ms: z.number().optional().describe('Aggregation window size in milliseconds'),
           attributes: z.record(z.unknown()).optional(),
         })).describe('Batch of runtime events, max 1000 per call'),
         persist: z.boolean().optional().describe('Store ingested observations. Defaults to true; set false for dry-run correlation.'),

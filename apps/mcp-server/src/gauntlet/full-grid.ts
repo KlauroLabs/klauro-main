@@ -60,6 +60,7 @@ import { runComponentTreeBench } from './component-bench';
 import { runPatternFactsBench } from './pattern-bench';
 import { runRouteAuthBench } from './auth-bench';
 import { runTelemetryCorrelationBench } from './telemetry-bench';
+import { runArchitectureLibraryBench } from './architecture-library-bench';
 import { buildCampALangsReport } from './camp-a-langs-bench';
 import type { ArmResult, WinVerdict } from './report-schema';
 
@@ -430,6 +431,7 @@ export async function buildFullGrid(): Promise<FullGridReport> {
     { group: 'pattern-bench', metric: 'design-pattern', run: runPatternFactsBench },
     { group: 'auth-bench', metric: 'route-auth', run: runRouteAuthBench },
     { group: 'telemetry-bench', metric: 'telemetry-correlation', run: runTelemetryCorrelationBench },
+    { group: 'architecture-library-bench', metric: 'architecture-library-boundaries', run: runArchitectureLibraryBench },
   ];
   for (const lb of libraryBenches) {
     const dirs = await fixtureDirs(lb.group);

@@ -44,10 +44,14 @@ export interface OverlaySpan {
   route?: string;
   endpoint?: string;
   duration_ms?: number;
+  p95_ms?: number;
+  p99_ms?: number;
   error?: boolean;
   error_message?: string;
   stack?: string;
   count?: number;
+  error_rate?: number;
+  rate_per_min?: number;
 }
 
 export interface OverlayTraces {
@@ -122,11 +126,18 @@ function normPath(p: string): string {
 /** Map an idiomatic runtime span to a Klauro RuntimeEventInput. */
 export function spanToEvent(span: OverlaySpan): RuntimeEventInput {
   const kind = span.kind || (span.endpoint ? 'exit' : 'request');
+  const attributes = {
+    ...(typeof span.count === 'number' ? { count: span.count, volume: span.count } : {}),
+    ...(typeof span.p95_ms === 'number' ? { p95_ms: span.p95_ms } : {}),
+    ...(typeof span.p99_ms === 'number' ? { p99_ms: span.p99_ms } : {}),
+    ...(typeof span.error_rate === 'number' ? { error_rate: span.error_rate } : {}),
+    ...(typeof span.rate_per_min === 'number' ? { rate_per_min: span.rate_per_min } : {}),
+  };
   if (kind === 'exit') {
-    return { type: 'exit', endpoint: span.endpoint, method: span.method, duration_ms: span.duration_ms };
+    return { type: 'exit', endpoint: span.endpoint, method: span.method, duration_ms: span.duration_ms, attributes };
   }
   if (kind === 'error') {
-    return { type: 'error', error_message: span.error_message, stack: span.stack };
+    return { type: 'error', error_message: span.error_message, stack: span.stack, attributes };
   }
   return {
     type: 'request',
@@ -134,6 +145,7 @@ export function spanToEvent(span: OverlaySpan): RuntimeEventInput {
     path: span.route,
     duration_ms: span.duration_ms,
     status_code: span.error ? 500 : 200,
+    attributes,
   };
 }
 
@@ -144,8 +156,9 @@ export function spanToEvent(span: OverlaySpan): RuntimeEventInput {
  */
 export function deriveFact(span: OverlaySpan): OverlayFact {
   if (span.error || span.kind === 'error') return 'error';
-  if (Number(span.duration_ms || 0) >= 1000) return 'slow';
-  if (Number(span.count || 0) >= 100) return 'hot';
+  if (Number(span.error_rate || 0) >= 0.01) return 'error';
+  if (Number(span.p99_ms || 0) >= 2000 || Number(span.p95_ms || 0) >= 1000 || Number(span.duration_ms || 0) >= 1000) return 'slow';
+  if (Number(span.rate_per_min || 0) >= 100 || Number(span.count || 0) >= 100) return 'hot';
   return 'unused';
 }
 

@@ -95,7 +95,7 @@ test('ingestTelemetryBatch correlates events and reports unmatched hints instead
   await withTempStorage(async root => {
     const cas = buildCas(root);
     const events: TelemetryEvent[] = [
-      { kind: 'request', method: 'POST', route: '/invoices', status: 201, duration_ms: 120, trace_id: 'trace-a' },
+      { kind: 'request', method: 'POST', route: '/invoices', status: 201, duration_ms: 120, p95_ms: 150, p99_ms: 2400, rate_per_min: 18, trace_id: 'trace-a' },
       { kind: 'request', method: 'POST', route: '/invoices', status: 201, duration_ms: 90, trace_id: 'trace-b' },
       {
         kind: 'error',
@@ -123,6 +123,8 @@ test('ingestTelemetryBatch correlates events and reports unmatched hints instead
     assert.equal(result.unmatched.count, 2);
     assert.ok(result.unmatched.top_hints.some(entry => entry.hint.includes('/ghost-route')));
     assert.ok(result.matched_targets.length > 0);
+    assert.equal(result.matched_targets[0].latency.p99_ms, 2400);
+    assert.equal(result.matched_targets[0].rates.throughput_per_min, 18);
     assert.ok(result.observations.every(observation => observation.source === 'ingested'));
 
     const stored = await loadIngestedTelemetry(root);

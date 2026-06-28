@@ -145,6 +145,24 @@ export interface RuntimeEventInput {
   attributes?: Record<string, unknown>;
 }
 
+export interface RuntimeImpactStats {
+  observations: number;
+  errors: number;
+  slow_events: number;
+  estimated_volume: number;
+  traces: number;
+  latency: {
+    avg_ms?: number;
+    max_ms?: number;
+    p95_ms?: number;
+    p99_ms?: number;
+  };
+  rates: {
+    error_rate: number;
+    throughput_per_min?: number;
+  };
+}
+
 export type RuntimeObservationSource = 'ingested' | 'simulated';
 
 export interface RuntimeObservation {
@@ -186,6 +204,8 @@ export interface OperationalPriority {
     slow_events: number;
     estimated_volume: number;
     traces: number;
+    latency?: RuntimeImpactStats['latency'];
+    rates?: RuntimeImpactStats['rates'];
   };
   static_risk: {
     system_health_risk?: string;
@@ -614,9 +634,9 @@ export function buildCrossRepoRouteDrift(
 // indexer never sees both shapes at once, so it cannot compute the diff.
 //
 // Honest capability boundary: field NAMES and field TYPES are sourced from the
-// data_entities the analyzer already emits for class/model/entity declarations.
-// Plain TS `interface`/`type` DTOs that the analyzer does not classify as an
-// entity contribute no shape and are silently skipped (no fabricated drift).
+// data_entities the analyzer already emits for class/model/entity declarations
+// and DTO-like interface/type declarations. Non-DTO interfaces still contribute
+// no shape (no fabricated drift).
 // ---------------------------------------------------------------------------
 
 export type ContractDriftKind = 'type-changed' | 'field-renamed' | 'field-removed' | 'field-added';
@@ -1679,10 +1699,8 @@ export function buildOperationalPriorities(cas: CASOutput, observations: Runtime
 
   const priorities = [...groups.entries()].map(([key, items]) => {
     const best = pickStaticTarget(cas, items);
-    const errors = items.filter(item => item.event.type === 'error' || Number(item.event.status_code || 0) >= 500 || item.event.error_message).length;
-    const slowEvents = items.filter(item => Number(item.event.duration_ms || 0) >= 1000).length;
-    const traces = new Set(items.map(item => item.event.trace_id).filter(Boolean)).size;
-    const estimatedVolume = items.reduce((total, item) => total + Number(item.event.attributes?.volume || item.event.attributes?.count || 1), 0);
+    const stats = runtimeImpactStats(items);
+    const { errors, slow_events: slowEvents, traces, estimated_volume: estimatedVolume } = stats;
     const staticRiskId = runtimeStaticTargetId(cas, best?.id) || best?.id || key;
     const healthRisk = matchingSystemHealthRisk(cas, staticRiskId);
     const changeRisk = matchingChangeRisk(cas, staticRiskId);
@@ -1694,6 +1712,8 @@ export function buildOperationalPriorities(cas: CASOutput, observations: Runtime
       errors * 18 +
       slowEvents * 8 +
       Math.log10(Math.max(1, estimatedVolume)) * 12 +
+      (stats.rates.error_rate >= 0.05 ? 14 : stats.rates.error_rate >= 0.01 ? 8 : 0) +
+      (Number(stats.latency.p99_ms || 0) >= 2000 ? 10 : Number(stats.latency.p95_ms || 0) >= 1000 ? 6 : 0) +
       traces * 3 +
       staticWeight +
       (untested ? 12 : 0)
@@ -1718,6 +1738,8 @@ export function buildOperationalPriorities(cas: CASOutput, observations: Runtime
         slow_events: slowEvents,
         estimated_volume: estimatedVolume,
         traces,
+        latency: stats.latency,
+        rates: stats.rates,
       },
       static_risk: {
         system_health_risk: healthRisk?.title,
@@ -1747,6 +1769,66 @@ export function buildOperationalPriorities(cas: CASOutput, observations: Runtime
       'Use Klauro runtime correlation as a triage map; source edits still need the normal CAS work packet and validation loop.',
     ],
   };
+}
+
+export function runtimeImpactStats(items: RuntimeObservation[]): RuntimeImpactStats {
+  const durations = items
+    .map(item => Number(item.event.duration_ms || item.event.attributes?.duration_ms || 0))
+    .filter(value => Number.isFinite(value) && value > 0)
+    .sort((left, right) => left - right);
+  const errors = items.filter(item =>
+    item.event.type === 'error' ||
+    Number(item.event.status_code || 0) >= 500 ||
+    Boolean(item.event.error_message)
+  ).length;
+  const slowEvents = items.filter(item => {
+    const p95 = Number(item.event.attributes?.p95_ms || 0);
+    const p99 = Number(item.event.attributes?.p99_ms || 0);
+    const duration = Number(item.event.duration_ms || 0);
+    return p99 >= 2000 || p95 >= 1000 || duration >= 1000;
+  }).length;
+  const estimatedVolume = items.reduce((total, item) => total + Math.max(1, Number(item.event.attributes?.volume || item.event.attributes?.count || 1)), 0);
+  const traces = new Set(items.map(item => item.event.trace_id).filter(Boolean)).size;
+  const errorVolume = items.reduce((total, item) => {
+    const isError = item.event.type === 'error' || Number(item.event.status_code || 0) >= 500 || Boolean(item.event.error_message);
+    return total + (isError ? Math.max(1, Number(item.event.attributes?.volume || item.event.attributes?.count || 1)) : 0);
+  }, 0);
+  const explicitThroughput = items
+    .map(item => Number(item.event.attributes?.rate_per_min || item.event.attributes?.throughput_per_min || 0))
+    .filter(value => Number.isFinite(value) && value > 0);
+  const latency: RuntimeImpactStats['latency'] = {};
+  if (durations.length > 0) {
+    latency.avg_ms = Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length);
+    latency.max_ms = durations[durations.length - 1];
+    latency.p95_ms = percentile(durations, 0.95);
+    latency.p99_ms = percentile(durations, 0.99);
+  }
+  const explicitP95 = maxAttribute(items, 'p95_ms');
+  const explicitP99 = maxAttribute(items, 'p99_ms');
+  if (explicitP95) latency.p95_ms = Math.max(latency.p95_ms || 0, explicitP95);
+  if (explicitP99) latency.p99_ms = Math.max(latency.p99_ms || 0, explicitP99);
+  return {
+    observations: items.length,
+    errors,
+    slow_events: slowEvents,
+    estimated_volume: estimatedVolume,
+    traces,
+    latency,
+    rates: {
+      error_rate: estimatedVolume > 0 ? Math.round((errorVolume / estimatedVolume) * 10000) / 10000 : 0,
+      ...(explicitThroughput.length > 0 ? { throughput_per_min: Math.round(explicitThroughput.reduce((sum, value) => sum + value, 0)) } : {}),
+    },
+  };
+}
+
+function percentile(sortedValues: number[], p: number): number {
+  if (sortedValues.length === 0) return 0;
+  const index = Math.min(sortedValues.length - 1, Math.max(0, Math.ceil(sortedValues.length * p) - 1));
+  return sortedValues[index];
+}
+
+function maxAttribute(items: RuntimeObservation[], name: string): number {
+  return Math.max(0, ...items.map(item => Number(item.event.attributes?.[name] || 0)).filter(value => Number.isFinite(value)));
 }
 
 export function buildMcpDemoFlow(cas: CASOutput, path: string, relatedPaths: string[] = []) {

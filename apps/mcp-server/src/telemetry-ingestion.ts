@@ -5,6 +5,7 @@ import type { CASOutput, CASNode } from '../../../packages/analyzer-core/src/typ
 import {
   correlateRuntimeEvent,
   pathsCompatible,
+  runtimeImpactStats,
   runtimeObservationSource,
   type RuntimeEventInput,
   type RuntimeObservation,
@@ -38,6 +39,8 @@ export interface TelemetryEvent {
   path?: string;
   status?: number;
   duration_ms?: number;
+  p95_ms?: number;
+  p99_ms?: number;
   function_hint?: string;
   file_hint?: string;
   error?: {
@@ -46,6 +49,8 @@ export interface TelemetryEvent {
     stack_top_frames?: Array<TelemetryStackFrame | string>;
   };
   volume?: number;
+  rate_per_min?: number;
+  window_ms?: number;
   attributes?: Record<string, unknown>;
 }
 
@@ -69,6 +74,16 @@ export interface TelemetryIngestionResult {
     errors: number;
     slow_events: number;
     estimated_volume: number;
+    latency: {
+      avg_ms?: number;
+      max_ms?: number;
+      p95_ms?: number;
+      p99_ms?: number;
+    };
+    rates: {
+      error_rate: number;
+      throughput_per_min?: number;
+    };
   }>;
   unmatched: {
     count: number;
@@ -176,6 +191,10 @@ export function normalizeTelemetryEvent(cas: CASOutput, event: TelemetryEvent): 
     attributes: {
       ...event.attributes,
       volume: volumeFor(event),
+      ...(typeof event.p95_ms === 'number' ? { p95_ms: event.p95_ms } : {}),
+      ...(typeof event.p99_ms === 'number' ? { p99_ms: event.p99_ms } : {}),
+      ...(typeof event.rate_per_min === 'number' ? { rate_per_min: event.rate_per_min } : {}),
+      ...(typeof event.window_ms === 'number' ? { window_ms: event.window_ms } : {}),
       ...(event.file_hint ? { file_hint: event.file_hint } : {}),
       ...(event.function_hint ? { function_hint: event.function_hint } : {}),
     },
@@ -258,15 +277,18 @@ function summarizeMatchedTargets(observations: RuntimeObservation[]): TelemetryI
 
   return [...groups.entries()].map(([id, items]) => {
     const best = items[0].correlation.best_match!;
+    const stats = runtimeImpactStats(items);
     return {
       id,
       label: best.label,
       type: best.type,
       file: best.file,
       observations: items.length,
-      errors: items.filter(item => item.event.type === 'error' || Number(item.event.status_code || 0) >= 500).length,
-      slow_events: items.filter(item => Number(item.event.duration_ms || 0) >= 1000).length,
-      estimated_volume: items.reduce((total, item) => total + Number(item.event.attributes?.volume || 1), 0),
+      errors: stats.errors,
+      slow_events: stats.slow_events,
+      estimated_volume: stats.estimated_volume,
+      latency: stats.latency,
+      rates: stats.rates,
     };
   }).sort((left, right) => right.errors - left.errors || right.estimated_volume - left.estimated_volume);
 }

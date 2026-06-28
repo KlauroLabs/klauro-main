@@ -143,6 +143,7 @@ export interface TSExtractedProperty {
 
 export interface TSExtractedClass {
   name: string;
+  kind?: 'class' | 'interface' | 'type';
   extends?: string;
   implements: string[];
   methods: TSExtractedFunction[];
@@ -779,10 +780,18 @@ export class TreeSitterTSExtractor {
 
   private extractClasses(root: any): TSExtractedClass[] {
     const classes: TSExtractedClass[] = [];
-    const classNodes = this.collectByType(root, 'class_declaration');
+    const classNodes = this.collectByTypes(root, new Set([
+      'class_declaration',
+      'interface_declaration',
+      'type_alias_declaration',
+    ]));
 
     for (const cls of classNodes) {
-      const extracted = this.extractClass(cls);
+      const extracted = cls.type === 'interface_declaration'
+        ? this.extractInterface(cls)
+        : cls.type === 'type_alias_declaration'
+          ? this.extractTypeAliasShape(cls)
+          : this.extractClass(cls);
       if (extracted) {
         classes.push(extracted);
       }
@@ -850,6 +859,7 @@ export class TreeSitterTSExtractor {
 
     return {
       name: className,
+      kind: 'class',
       extends: extendsClause,
       implements: implementsClause,
       methods,
@@ -861,6 +871,64 @@ export class TreeSitterTSExtractor {
       decorators,
       documentation
     };
+  }
+
+  private extractInterface(intf: any): TSExtractedClass | null {
+    const nameNode = intf.childForFieldName('name') || this.findFirst(intf, 'type_identifier');
+    const name = nameNode?.text;
+    if (!name) return null;
+
+    const body = intf.childForFieldName('body') || this.findFirst(intf, 'interface_body');
+    const properties = body ? this.extractTypeShapeProperties(body) : [];
+
+    return {
+      name,
+      kind: 'interface',
+      implements: [],
+      methods: [],
+      properties,
+      lineStart: intf.startPosition.row + 1,
+      lineEnd: intf.endPosition.row + 1,
+      isExported: intf.parent?.type === 'export_statement',
+      isAbstract: false,
+      decorators: [],
+      documentation: this.extractDocumentation(intf),
+    };
+  }
+
+  private extractTypeAliasShape(alias: any): TSExtractedClass | null {
+    const nameNode = alias.childForFieldName('name') || this.findFirst(alias, 'type_identifier');
+    const name = nameNode?.text;
+    if (!name) return null;
+
+    const value = alias.childForFieldName('value') || this.findFirst(alias, 'object_type');
+    if (!value || value.type !== 'object_type') return null;
+    const properties = this.extractTypeShapeProperties(value);
+    if (properties.length === 0) return null;
+
+    return {
+      name,
+      kind: 'type',
+      implements: [],
+      methods: [],
+      properties,
+      lineStart: alias.startPosition.row + 1,
+      lineEnd: alias.endPosition.row + 1,
+      isExported: alias.parent?.type === 'export_statement',
+      isAbstract: false,
+      decorators: [],
+      documentation: this.extractDocumentation(alias),
+    };
+  }
+
+  private extractTypeShapeProperties(body: any): TSExtractedProperty[] {
+    const properties: TSExtractedProperty[] = [];
+    const signatures = this.collectByType(body, 'property_signature');
+    for (const signature of signatures) {
+      const prop = this.extractProperty(signature);
+      if (prop) properties.push(prop);
+    }
+    return properties;
   }
 
   private extractProperty(prop: any): TSExtractedProperty | null {

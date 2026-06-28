@@ -1,0 +1,27 @@
+{
+  "task": "architecture-library-boundaries",
+  "expected_categories": [
+    "actor-system",
+    "workflow-engine",
+    "state-machine",
+    "dependency-injection",
+    "service-sdk",
+    "ai-sdk"
+  ],
+  "expected_packages": [
+    "akkajs",
+    "@temporalio/client",
+    "@temporalio/worker",
+    "xstate",
+    "inversify",
+    "@aws-sdk/client-s3",
+    "openai"
+  ],
+  "expected_exit_actions": [
+    "actor-message",
+    "workflow-signal",
+    "activity-dispatch",
+    "sdk-call",
+    "model-call"
+  ]
+}

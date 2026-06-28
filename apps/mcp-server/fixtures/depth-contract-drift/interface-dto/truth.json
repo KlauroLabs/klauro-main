@@ -1,0 +1,8 @@
+{
+  "expected_links": ["web -> api GET /api/wallets/:id", "web -> api GET /api/invoices/:id"],
+  "seam": { "consumer_repo": "interface-web", "producer_repo": "interface-api" },
+  "drift": [
+    { "field": "status", "producer_type": "string", "consumer_type": "number", "kind": "type-changed", "contract": "wallet" }
+  ],
+  "control_no_drift": [{ "contract": "invoice" }]
+}

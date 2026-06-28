@@ -13144,7 +13144,8 @@ export class AnalyzerOrchestrator {
         n.type === 'entity' ||
         n.type === 'model' ||
         n.subcategories?.includes('entity') ||
-        (n.type === 'class' && n.source?.file?.includes('/entities/'))
+        (n.type === 'class' && n.source?.file?.includes('/entities/')) ||
+        (this.isDtoLikeDataShapeNode(n) && n.source?.file?.includes('/entities/'))
       )
     );
 
@@ -13441,12 +13442,13 @@ export class AnalyzerOrchestrator {
     const GENERIC = /^(pagination|paginated|response|error|base|common|list|meta|page|sort|filter|query|param|option|config|result|success|status|health|ping|api|data|item|value|generic|wrapper|envelope|dto|input|output|payload|request|body|args|count|info|detail|map|record|enum|type|abstract|sortby|orderby|where|select)s?$/i;
     const groups = new Map<string, { rep: CASNode; nodes: CASNode[]; ops: Set<string> }>();
     for (const node of nodes) {
-      if (node.type !== 'dto') continue;
+      if (!this.isDtoLikeDataShapeNode(node)) continue;
       if (projectPath && !this.isPrimaryProductNodeForProject(node, projectPath)) continue;
       const { core, op } = this.dataShapeAffix(node.name || '');
       if (!core || core.length < 3) continue;
       const key = core.toLowerCase();
       if (GENERIC.test(key) || existingNames.has(key)) continue;
+      if (!this.dataShapeNodeHasFieldEvidence(node, propertyIndex)) continue;
       let group = groups.get(key);
       if (!group) { group = { rep: node, nodes: [], ops: new Set() }; groups.set(key, group); }
       group.nodes.push(node);
@@ -13463,7 +13465,9 @@ export class AnalyzerOrchestrator {
       for (const node of group.nodes) {
         for (const prop of this.entityPropertyNodesFromIndex(propertyIndex, node)) {
           if (!fieldMap.has(prop.name)) {
-            fieldMap.set(prop.name, { name: prop.name, type: prop.signature?.return_type || 'unknown', is_sensitive: sensitive.test(prop.name) });
+            const metadataType = (prop.metadata as Record<string, unknown> | undefined)?.type;
+            const declaredType = typeof metadataType === 'string' ? metadataType : undefined;
+            fieldMap.set(prop.name, { name: prop.name, type: prop.signature?.return_type || declaredType || 'unknown', is_sensitive: sensitive.test(prop.name) });
           }
         }
       }
@@ -13492,11 +13496,26 @@ export class AnalyzerOrchestrator {
     }
     // Keep the entities with the most field/shape evidence; cap to avoid DTO noise.
     return derived
-      .sort((left, right) => (right.fields?.length || 0) - (left.fields?.length || 0))
-      .slice(0, 60);
+	      .sort((left, right) => (right.fields?.length || 0) - (left.fields?.length || 0))
+	      .slice(0, 60);
+	  }
+
+  private isDtoLikeDataShapeNode(node: CASNode): boolean {
+    if (node.type === 'dto') return true;
+    if (node.type !== 'interface' && node.type !== 'type') return false;
+    const name = String(node.name || '');
+    const file = String(node.source?.file || '').replace(/\\/g, '/').toLowerCase();
+    if (/(Dto|Vo|Model|Schema|Entity|Payload|Input|Output|Response|Request|Params?|Body|Query|Args|Result|Record)$/i.test(name)) {
+      return true;
+    }
+    return /\/(?:dto|dtos|types|schemas|contracts|entities|models)\//.test(file);
   }
 
-  private enrichCuratedProductDataEntities(
+  private dataShapeNodeHasFieldEvidence(node: CASNode, propertyIndex: EntityPropertyIndex): boolean {
+    return this.entityPropertyNodesFromIndex(propertyIndex, node).length > 0;
+  }
+
+	  private enrichCuratedProductDataEntities(
     entities: CASDataEntity[],
     systemName: string,
     nodes: CASNode[],

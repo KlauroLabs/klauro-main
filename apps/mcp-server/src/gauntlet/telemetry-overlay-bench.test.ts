@@ -26,7 +26,11 @@ const fixtures = fs.existsSync(ROOT)
 test('telemetry-overlay: fact derivation reflects runtime observation, not fabrication', () => {
   assert.equal(deriveFact({ name: 'x', error: true }), 'error');
   assert.equal(deriveFact({ name: 'x', kind: 'error' }), 'error');
+  assert.equal(deriveFact({ name: 'x', error_rate: 0.02, duration_ms: 20 }), 'error');
+  assert.equal(deriveFact({ name: 'x', p95_ms: 1100, duration_ms: 20 }), 'slow');
+  assert.equal(deriveFact({ name: 'x', p99_ms: 2200, duration_ms: 20 }), 'slow');
   assert.equal(deriveFact({ name: 'x', duration_ms: 1500 }), 'slow');
+  assert.equal(deriveFact({ name: 'x', rate_per_min: 140 }), 'hot');
   assert.equal(deriveFact({ name: 'x', count: 200 }), 'hot');
   assert.equal(deriveFact({ name: 'x', duration_ms: 10, count: 2 }), 'unused');
 });
@@ -37,6 +41,8 @@ test('telemetry-overlay: span -> RuntimeEventInput mapping is correct per kind',
   assert.equal(spanToEvent({ name: 'r', method: 'GET', route: '/x' }).type, 'request');
   // an exit is inferable from an endpoint even without explicit kind
   assert.equal(spanToEvent({ name: 'e2', endpoint: '/y' }).type, 'exit');
+  assert.equal(spanToEvent({ name: 'r', method: 'GET', route: '/x', p99_ms: 2200, count: 4 }).attributes?.p99_ms, 2200);
+  assert.equal(spanToEvent({ name: 'r', method: 'GET', route: '/x', p99_ms: 2200, count: 4 }).attributes?.volume, 4);
 });
 
 for (const fixture of fixtures) {

@@ -107,6 +107,7 @@ import {
   withProjectAnalysisLock
 } from './storage';
 import { loadKlauroConfig, validateEmbeddingConfig } from './klauro-config';
+import { clearFreshnessSummaryCache } from './freshness';
 import { createEmbeddingProvider } from '../../../packages/analyzer-core/src/analyzer/embedding/embedding-provider-factory';
 import { createVectorStore } from '../../../packages/analyzer-core/src/analyzer/embedding/vector-store-factory';
 import type { VectorStoreSetting } from '../../../packages/analyzer-core/src/analyzer/embedding/vector-store-factory';
@@ -724,6 +725,7 @@ export async function analyzeProject(projectPath: string): Promise<CASOutput> {
     ));
 
     await saveAnalysis(projectPath, result);
+    clearFreshnessSummaryCache();
     await saveAnalysisSnapshot(projectPath, result);
 
     return result;
@@ -937,6 +939,7 @@ async function runIncrementalAnalysis(projectPath: string): Promise<IncrementalA
     debug('initial-orchestrate-full', phaseStartedAt);
     phaseStartedAt = Date.now();
     await saveAnalysis(projectPath, result);
+    clearFreshnessSummaryCache();
     debug('initial-save-analysis', phaseStartedAt);
 
     phaseStartedAt = Date.now();
@@ -985,6 +988,7 @@ async function runIncrementalAnalysis(projectPath: string): Promise<IncrementalA
   if (outputChanged) {
     phaseStartedAt = Date.now();
     await saveAnalysis(projectPath, result.output);
+    clearFreshnessSummaryCache();
     debug('save-analysis', phaseStartedAt);
   }
   phaseStartedAt = Date.now();

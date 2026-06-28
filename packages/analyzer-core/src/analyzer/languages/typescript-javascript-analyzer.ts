@@ -1216,6 +1216,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     if (decorators.includes('Module')) return 'module';
 
     if (this.isDtoLikeClass(cls.name, filePath)) return 'dto';
+    if (cls.kind === 'interface') return 'interface';
+    if (cls.kind === 'type') return 'type';
     if (filePath.includes('/controllers/') || filePath.includes('.controller.')) return 'controller';
     if (filePath.includes('/services/') || filePath.includes('.service.')) return 'service';
     if (filePath.includes('/entities/') || filePath.includes('.entity.')) return 'entity';

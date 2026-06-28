@@ -27,8 +27,16 @@ interface ProofArm {
   };
   duplicate_classes: string[];
   reused_required_concepts: string[];
+  leaked_required_concepts: Record<string, string[]>;
+  parallel_feature_modules: string[];
   focused_context_files: number;
   context_char_budget: number;
+  quality_breakdown: {
+    required_concept_coverage: number;
+    ownership_coherence: number;
+    boundary_coherence: number;
+    test_relevance: number;
+  };
   score: number;
   findings: string[];
 }
@@ -203,16 +211,18 @@ export async function runFromZeroBuildPacketProof(args: Args = parseArgs(process
     duplicate_class_delta: sum(scenarioReports.map(report => report.comparison.duplicate_class_delta)),
     focused_context_file_reduction: sum(scenarioReports.map(report => report.comparison.focused_context_file_reduction)),
     context_char_reduction_percentage: average(scenarioReports.map(report => report.comparison.context_char_reduction_percentage)),
+    positive_quality_delta_scenarios: scenarioReports.filter(report => report.comparison.quality_delta > 0).length,
   };
   const withKlauroDuplicateClasses = sum(scenarioReports.map(report => report.with_klauro.duplicate_classes.length));
   const withoutKlauroDuplicateClasses = sum(scenarioReports.map(report => report.without_klauro.duplicate_classes.length));
   const allProductFocusPresent = scenarioReports.every(report => scenarioHasProductFocus(report.scenario));
   const allScenariosPass = scenarioReports.every(report => report.status === 'pass');
+  const requiredPositiveQualityScenarios = Math.ceil(scenarioReports.length / 2);
   const report = {
     id: `from-zero-build-packet-proof-${Date.now()}`,
     generated_at: new Date().toISOString(),
     benchmark_type: 'from-zero-build-packet-proof',
-    status: allScenariosPass && allProductFocusPresent ? 'pass' : 'fail',
+    status: allScenariosPass && allProductFocusPresent && comparison.positive_quality_delta_scenarios >= requiredPositiveQualityScenarios ? 'pass' : 'fail',
     score: Math.max(0, Math.min(100, Math.round(70 + comparison.quality_delta))),
     scenario: scenarioReports[0]?.scenario,
     scenarios: scenarioReports.map(report => report.scenario),
@@ -226,9 +236,13 @@ export async function runFromZeroBuildPacketProof(args: Args = parseArgs(process
       growth_iteration_count: scenarioReports.length * 5,
       product_focus_scenario_count: scenarioReports.filter(report => scenarioHasProductFocus(report.scenario)).length,
       quality_delta: comparison.quality_delta,
+      positive_quality_delta_scenarios: comparison.positive_quality_delta_scenarios,
+      required_positive_quality_delta_scenarios: requiredPositiveQualityScenarios,
       duplicate_class_delta: comparison.duplicate_class_delta,
       with_klauro_duplicate_classes: withKlauroDuplicateClasses,
       without_klauro_duplicate_classes: withoutKlauroDuplicateClasses,
+      with_klauro_parallel_feature_modules: sum(scenarioReports.map(report => report.with_klauro.parallel_feature_modules.length)),
+      without_klauro_parallel_feature_modules: sum(scenarioReports.map(report => report.without_klauro.parallel_feature_modules.length)),
       focused_context_file_reduction: comparison.focused_context_file_reduction,
       context_char_reduction_percentage: comparison.context_char_reduction_percentage,
     },
@@ -1269,15 +1283,37 @@ async function scoreArm(projectPath: string, contextFiles: string[], requiredReu
   const testsPassed = await runTests(projectPath).then(() => true, () => false);
   const analysis = (await analyzeProjectIncremental(projectPath)).output;
   const duplicateClasses = await findDuplicateClasses(projectPath);
+  const conceptDefinitionFiles = await findConceptDefinitionFiles(projectPath, requiredReuse);
+  const leakedConcepts: Record<string, string[]> = {};
+  for (const [concept, files] of conceptDefinitionFiles.entries()) {
+    const leakedFiles = files.filter(file => file !== 'src/domain/concepts.js');
+    if (leakedFiles.length) leakedConcepts[concept] = leakedFiles;
+  }
+  const parallelFeatureModules = await findParallelFeatureModules(projectPath);
   const sourceText = await readContext(projectPath, contextFiles);
   const reused = requiredReuse.filter(concept => !duplicateClasses.includes(concept) && sourceText.includes(concept));
   const findings = [];
   if (!testsPassed) findings.push('Tests failed.');
   if (duplicateClasses.length) findings.push(`Duplicate class definitions: ${duplicateClasses.join(', ')}.`);
+  for (const [concept, files] of Object.entries(leakedConcepts)) {
+    findings.push(`Required concept ownership leaked outside src/domain/concepts.js: ${concept} in ${files.join(', ')}.`);
+  }
+  if (parallelFeatureModules.length) findings.push(`Parallel feature modules bypassed the existing service/domain boundary: ${parallelFeatureModules.join(', ')}.`);
   for (const concept of requiredReuse) {
     if (!reused.includes(concept)) findings.push(`Required concept not cleanly reused: ${concept}.`);
   }
-  const score = Math.max(0, 100 - duplicateClasses.length * 12 - (requiredReuse.length - reused.length) * 4 - (testsPassed ? 0 : 30));
+  const requiredConceptCoverage = requiredReuse.length ? reused.length / requiredReuse.length : 1;
+  const ownershipCoherence = requiredReuse.length ? 1 - Math.min(1, Object.keys(leakedConcepts).length / requiredReuse.length) : 1;
+  const boundaryCoherence = Math.max(0, 1 - parallelFeatureModules.length / 6);
+  const testRelevance = testsPassed && analysis.test_summary?.total_tests ? 1 : 0;
+  const score = Math.max(0, Math.round(
+    requiredConceptCoverage * 30 +
+    ownershipCoherence * 25 +
+    boundaryCoherence * 20 +
+    testRelevance * 15 +
+    (testsPassed ? 10 : 0) -
+    duplicateClasses.length * 8
+  ));
   return {
     project_path: projectPath,
     tests_passed: testsPassed,
@@ -1289,8 +1325,16 @@ async function scoreArm(projectPath: string, contextFiles: string[], requiredReu
     },
     duplicate_classes: duplicateClasses,
     reused_required_concepts: reused,
+    leaked_required_concepts: leakedConcepts,
+    parallel_feature_modules: parallelFeatureModules,
     focused_context_files: contextFiles.length,
     context_char_budget: sourceText.length,
+    quality_breakdown: {
+      required_concept_coverage: roundRatio(requiredConceptCoverage),
+      ownership_coherence: roundRatio(ownershipCoherence),
+      boundary_coherence: roundRatio(boundaryCoherence),
+      test_relevance: roundRatio(testRelevance),
+    },
     score,
     findings,
   };
@@ -1310,6 +1354,35 @@ async function findDuplicateClasses(projectPath: string): Promise<string[]> {
     }
   }
   return [...counts.entries()].filter(([, count]) => count > 1).map(([name]) => name).sort();
+}
+
+async function findConceptDefinitionFiles(projectPath: string, concepts: string[]): Promise<Map<string, string[]>> {
+  const conceptSet = new Set(concepts);
+  const files = await listSourceFiles(projectPath);
+  const definitions = new Map<string, string[]>();
+  for (const file of files) {
+    if (!file.startsWith('src/')) continue;
+    const content = await fs.readFile(path.join(projectPath, file), 'utf8');
+    for (const match of content.matchAll(/\bclass\s+([A-Z][A-Za-z0-9_]*)/g)) {
+      if (!conceptSet.has(match[1])) continue;
+      const existing = definitions.get(match[1]) || [];
+      existing.push(file);
+      definitions.set(match[1], existing);
+    }
+  }
+  return definitions;
+}
+
+async function findParallelFeatureModules(projectPath: string): Promise<string[]> {
+  const files = await listSourceFiles(projectPath);
+  return files.filter(file =>
+    /^src\/[^/]+\.(js|ts|tsx|jsx)$/.test(file) &&
+    file !== 'src/domain/concepts.js'
+  ).sort();
+}
+
+function roundRatio(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 async function listSourceFiles(projectPath: string): Promise<string[]> {
@@ -1363,6 +1436,7 @@ function formatMarkdown(report: any): string {
     '## Comparison',
     '',
     `- Quality delta: ${report.comparison.quality_delta}`,
+    `- Positive quality scenarios: ${report.summary?.positive_quality_delta_scenarios ?? 0}/${report.summary?.scenario_count ?? 0}`,
     `- Duplicate class delta: ${report.comparison.duplicate_class_delta}`,
     `- Focused context file reduction: ${report.comparison.focused_context_file_reduction}`,
     `- Context char reduction: ${report.comparison.context_char_reduction_percentage}%`,
@@ -1376,11 +1450,13 @@ function formatMarkdown(report: any): string {
     '',
     `- Example score: ${report.with_klauro?.score ?? 'unknown'}`,
     `- Total duplicate classes: ${report.summary?.with_klauro_duplicate_classes ?? 'unknown'}`,
+    `- Parallel feature modules: ${report.summary?.with_klauro_parallel_feature_modules ?? 'unknown'}`,
     '',
     '## Without Klauro',
     '',
     `- Example score: ${report.without_klauro?.score ?? 'unknown'}`,
     `- Total duplicate classes: ${report.summary?.without_klauro_duplicate_classes ?? 'unknown'}`,
+    `- Parallel feature modules: ${report.summary?.without_klauro_parallel_feature_modules ?? 'unknown'}`,
     '',
   ].join('\n');
 }

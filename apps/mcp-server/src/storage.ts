@@ -28,6 +28,7 @@ const DEFAULT_STORAGE_PATH = path.join(
   '.klauro',
   'analyses'
 );
+let resolvedDefaultStoragePath: string | null = null;
 
 interface AnalysisIndex {
   version?: string;
@@ -159,7 +160,17 @@ export interface ProposalPreviewArtifact {
 }
 
 function getStoragePath(): string {
-  return process.env.KLAURO_STORAGE_PATH || DEFAULT_STORAGE_PATH;
+  if (process.env.KLAURO_STORAGE_PATH) return process.env.KLAURO_STORAGE_PATH;
+  if (resolvedDefaultStoragePath) return resolvedDefaultStoragePath;
+  try {
+    fs.ensureDirSync(DEFAULT_STORAGE_PATH);
+    fs.accessSync(DEFAULT_STORAGE_PATH, fs.constants.W_OK);
+    resolvedDefaultStoragePath = DEFAULT_STORAGE_PATH;
+  } catch {
+    const userId = typeof process.getuid === 'function' ? String(process.getuid()) : 'user';
+    resolvedDefaultStoragePath = path.join(os.tmpdir(), `klauro-analyses-${userId}`);
+  }
+  return resolvedDefaultStoragePath;
 }
 
 function slugify(input: string): string {

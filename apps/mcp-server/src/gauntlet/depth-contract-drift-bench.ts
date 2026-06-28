@@ -18,11 +18,12 @@
  *  - The SEAM (consumer fetch ↔ provider route, with method + endpoint) is real
  *    and was already proven by the WAS cross-repo link layer.
  *  - FIELD NAMES and FIELD TYPES come from data_entities, which the analyzer
- *    emits for class/model/entity declarations (the property type annotation is
- *    sourced from node.metadata.type — see the surgical orchestrator deepening).
+ *    emits for class/model/entity declarations and DTO-like TypeScript
+ *    interface/type shapes (the property type annotation is sourced from
+ *    node.metadata.type — see the surgical orchestrator deepening).
  *  - A field whose TYPE changed, was RENAMED, or was REMOVED across the seam is
- *    reported. Plain TS `interface`/`type` DTOs that the analyzer does not
- *    classify as an entity contribute no shape and are skipped — never faked.
+ *    reported. Untyped or non-DTO structural interfaces still contribute no
+ *    shape — never faked.
  *
  * codebase-memory: out-of-category. It indexes ONE repo, has no cross-repo
  * fusion, and no field-level contract concept. It is driven at its best (index
@@ -48,7 +49,7 @@ import { codebaseMemoryPath } from './real-camp-arms';
 
 const FIXTURE_ROOT = path.join(__dirname, '..', '..', 'fixtures', 'depth-contract-drift');
 
-const CASES = ['type-change', 'field-rename', 'field-removed'] as const;
+const CASES = ['type-change', 'field-rename', 'field-removed', 'interface-dto'] as const;
 
 interface TruthDrift {
   field: string;
