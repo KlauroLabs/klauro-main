@@ -1,0 +1,9 @@
+{
+  "case": "auth-removed",
+  "language": "typescript",
+  "control": false,
+  "description": "BEFORE: POST /admin/users/promote sits behind the requireAuth guard. AFTER: the guard is removed, so the privileged admin mutation is reachable unauthenticated. The route still exists (textually a one-line deletion) but its BEHAVIOR changed: an auth boundary was lost.",
+  "behavioral_changes": [
+    { "kind": "auth-removed", "detail": "POST /admin/users/promote lost its auth boundary (requireAuth guard removed)" }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "case": "control-rename",
+  "language": "typescript",
+  "control": true,
+  "description": "CONTROL: AFTER is a pure local-variable rename (userId->uid, bio->biography) plus whitespace/comment reformatting of BEFORE. Same route, same auth guard, same handler -> saveProfile -> UPDATE users sink. A textual git diff shows changes, but BEHAVIOR is identical. No behavioral change must be flagged.",
+  "behavioral_changes": []
+}

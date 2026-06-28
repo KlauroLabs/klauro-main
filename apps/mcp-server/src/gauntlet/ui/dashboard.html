@@ -1,0 +1,1790 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Klauro Gauntlet</title>
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #131823; --panel2: #1a2030; --line: #232a3a;
+    --text: #e6ebf5; --muted: #8b97ad; --dim: #5c6680;
+    --klauro: #6ee7b7; --win: #34d399; --loss: #f87171; --warn: #fbbf24;
+    --bar-base: #2a3346; --accent: #7aa2ff;
+    --noTools: #64748b; --other: #a78bfa;
+    --sidebar-w: 208px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* layout */
+  .layout { display: flex; min-height: 100vh; }
+  .sidebar { width: var(--sidebar-w); flex: 0 0 var(--sidebar-w); background: var(--panel);
+    border-right: 1px solid var(--line); position: fixed; top: 0; left: 0; bottom: 0; overflow-y: auto; z-index: 10; }
+  .sb-brand { padding: 18px 18px 14px; border-bottom: 1px solid var(--line); }
+  .sb-brand h1 { font-size: 16px; margin: 0; letter-spacing: .3px; }
+  .sb-brand h1 .k { color: var(--klauro); }
+  .sb-brand .sub { color: var(--dim); font-size: 11px; margin-top: 3px; }
+  .nav { padding: 8px 0; }
+  .nav a { display: flex; align-items: center; gap: 9px; padding: 8px 18px; color: var(--muted);
+    font-size: 13px; border-left: 2px solid transparent; }
+  .nav a:hover { color: var(--text); background: #161c2a; text-decoration: none; }
+  .nav a.active { color: var(--klauro); border-left-color: var(--klauro); background: rgba(110,231,183,.05); }
+  .nav a .ico { width: 16px; text-align: center; opacity: .8; }
+  .nav a .ncount { margin-left: auto; font-size: 10px; color: var(--dim); background: var(--panel2);
+    padding: 1px 6px; border-radius: 999px; }
+  .nav .nav-sec { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: .6px;
+    padding: 14px 18px 5px; }
+
+  .content { flex: 1; margin-left: var(--sidebar-w); min-width: 0; }
+  header { padding: 14px 24px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap; position: sticky; top: 0; background: var(--bg); z-index: 5; }
+  header .crumb { font-size: 13px; color: var(--muted); }
+  header .crumb b { color: var(--text); font-weight: 600; }
+  .spacer { flex: 1; }
+  .badge { font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line);
+    color: var(--muted); white-space: nowrap; }
+  .badge.mode { color: var(--accent); border-color: #2c3a5e; }
+  .verdict { font-size: 13px; font-weight: 600; padding: 5px 14px; border-radius: 8px; }
+  .verdict.win { background: rgba(52,211,153,.12); color: var(--win); border: 1px solid rgba(52,211,153,.35); }
+  .verdict.loss { background: rgba(248,113,113,.12); color: var(--loss); border: 1px solid rgba(248,113,113,.35); }
+  .verdict.pending { background: var(--panel2); color: var(--muted); border: 1px solid var(--line); }
+  button { background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 7px 14px; font-size: 13px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: rgba(110,231,183,.12); border-color: rgba(110,231,183,.4); color: var(--klauro); }
+  .progress { height: 4px; background: var(--panel2); }
+  .progress > div { height: 100%; background: linear-gradient(90deg, var(--klauro), var(--accent)); transition: width .4s; width: 0; }
+  main { padding: 22px 24px 60px; max-width: 1500px; }
+
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 20px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+  .card .lbl { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
+  .card .val { font-size: 28px; font-weight: 700; margin-top: 6px; }
+  .card .val.win { color: var(--win); } .card .val.loss { color: var(--loss); }
+  .card .hint { color: var(--dim); font-size: 11px; margin-top: 4px; }
+  .card.clickable { cursor: pointer; } .card.clickable:hover { border-color: var(--accent); }
+
+  /* delta panels */
+  .delta-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 22px; }
+  .dpanel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+  .dpanel .dphead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .dpanel .dptitle { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  .dmetric { display: flex; align-items: baseline; justify-content: space-between; padding: 5px 0; border-top: 1px solid var(--line); }
+  .dmetric:first-of-type { border-top: none; }
+  .dmetric .dm-lbl { color: var(--dim); font-size: 12px; }
+  .dmetric .dm-val { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .dm-val.pos { color: var(--win); } .dm-val.neg { color: var(--loss); }
+
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; overflow: hidden; }
+  th, td { padding: 0; text-align: left; }
+  thead th { background: var(--panel2); color: var(--muted); font-weight: 600; font-size: 12px;
+    padding: 11px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  thead th.klcol { color: var(--klauro); }
+  tbody tr { border-bottom: 1px solid var(--line); }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: #161c2a; }
+  tbody tr.rowlink { cursor: pointer; }
+  td.tdpad { padding: 11px 14px; vertical-align: middle; }
+  td.tdpad.num { font-variant-numeric: tabular-nums; text-align: right; }
+  .scell { padding: 13px 14px; vertical-align: top; min-width: 200px; }
+  .scell .name { font-weight: 600; }
+  .scell .task { color: var(--muted); font-size: 12px; margin-top: 3px; max-width: 320px; }
+  .scell .grp { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: .5px; margin-top: 5px; }
+  .armcell { padding: 11px 14px; vertical-align: top; border-left: 1px solid var(--line); min-width: 150px; }
+  .armcell.kl { background: rgba(110,231,183,.045); }
+  .metric { display: flex; align-items: center; gap: 7px; margin: 4px 0; font-size: 12px; }
+  .metric .m-lbl { color: var(--dim); width: 16px; }
+  .metric .m-val { width: 62px; text-align: right; font-variant-numeric: tabular-nums; }
+  .bar { flex: 1; height: 5px; background: var(--bar-base); border-radius: 3px; overflow: hidden; min-width: 30px; }
+  .bar > div { height: 100%; border-radius: 3px; }
+  .vcell { padding: 11px 14px; border-left: 1px solid var(--line); vertical-align: top; min-width: 130px; }
+  .pill { display: inline-block; font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 6px; }
+  .pill.win { background: rgba(52,211,153,.14); color: var(--win); }
+  .pill.loss { background: rgba(248,113,113,.14); color: var(--loss); }
+  .pill.run { background: var(--panel2); color: var(--warn); }
+  .pill.pend { background: var(--panel2); color: var(--dim); }
+  .pill.ok { background: rgba(52,211,153,.14); color: var(--win); }
+  .pill.no { background: rgba(248,113,113,.14); color: var(--loss); }
+  .pill.tie { background: rgba(122,162,255,.15); color: var(--accent); }
+  .pill.outcat { background: rgba(167,139,250,.16); color: var(--other); }
+  /* camps page */
+  .camps-grid { display: grid; grid-template-columns: 1fr; gap: 18px; margin-bottom: 20px; }
+  .camp-sec { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+  .camp-sec .ch { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+  .camp-sec .ch .cn { font-size: 15px; font-weight: 700; }
+  .camp-sec .ch .cv { font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 999px; }
+  .camp-sec .ch .cv.dom { background: rgba(52,211,153,.14); color: var(--win); }
+  .camp-sec .ch .cv.tie { background: rgba(122,162,255,.15); color: var(--accent); }
+  .camp-sec .ch .cv.out { background: rgba(167,139,250,.16); color: var(--other); }
+  .camp-sec .csub { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+  .qbar { display: inline-flex; align-items: center; gap: 8px; width: 150px; }
+  .qbar .bar { flex: 1; height: 6px; }
+  .qbar .qv { width: 38px; text-align: right; font-variant-numeric: tabular-nums; font-size: 12px; }
+  /* full grid matrix swatches */
+  .gmatrix { display: flex; flex-wrap: wrap; gap: 3px; margin: 4px 0 2px; }
+  .gcell { width: 13px; height: 13px; border-radius: 3px; display: inline-block; }
+  .breadth-tile { display: flex; align-items: center; gap: 24px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 20px 24px; margin-bottom: 20px; }
+  .breadth-tile .big { font-size: 52px; font-weight: 800; color: var(--klauro); line-height: 1; font-variant-numeric: tabular-nums; }
+  .breadth-tile .blbl { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
+  .breadth-tile .langs { color: var(--dim); font-size: 11px; line-height: 1.7; max-height: 80px; overflow: auto; }
+  .tag { display: inline-block; font-size: 10px; padding: 2px 7px; border-radius: 5px; background: var(--panel2);
+    color: var(--muted); margin: 1px 3px 1px 0; border: 1px solid var(--line); }
+  .reasons { margin-top: 8px; font-size: 11px; color: var(--muted); }
+  .reasons .r { margin: 3px 0; padding-left: 12px; position: relative; }
+  .reasons .r::before { content: "›"; position: absolute; left: 0; color: var(--dim); }
+  .reasons .r.bad { color: var(--loss); }
+  .modeflag { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: .5px; }
+  .section-title { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px;
+    margin: 28px 0 12px; display: flex; align-items: center; gap: 10px; }
+  .section-title .st-act { margin-left: auto; }
+  .losses { background: rgba(248,113,113,.06); border: 1px solid rgba(248,113,113,.25); border-radius: 12px; padding: 6px 0; }
+  .loss-row { padding: 10px 16px; border-bottom: 1px solid rgba(248,113,113,.12); font-size: 13px; }
+  .loss-row:last-child { border-bottom: none; }
+  .loss-row .sid { color: var(--loss); font-weight: 600; }
+  .empty { color: var(--win); padding: 14px 16px; font-size: 13px; }
+  .empty.neutral { color: var(--muted); }
+  .emptybox { background: var(--panel); border: 1px dashed var(--line); border-radius: 12px; padding: 30px;
+    text-align: center; color: var(--muted); font-size: 13px; }
+  .loading { color: var(--dim); padding: 30px; text-align: center; font-size: 13px; }
+  .foot { color: var(--dim); font-size: 11px; margin-top: 24px; }
+  .legend { display: flex; gap: 16px; font-size: 11px; color: var(--muted); margin: 0 0 14px; flex-wrap: wrap; }
+  .legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+
+  /* page header block */
+  .phead { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 8px; flex-wrap: wrap; }
+  .phead h2 { font-size: 20px; margin: 0; }
+  .phead .ppath { color: var(--dim); font-size: 12px; font-family: ui-monospace, Menlo, monospace; margin-top: 4px; word-break: break-all; }
+  .phead .pact { margin-left: auto; display: flex; gap: 8px; }
+  .pdeltas { display: flex; gap: 18px; flex-wrap: wrap; margin: 6px 0 18px; align-items: center; }
+  .pdeltas .pd { font-size: 13px; }
+  .pdeltas .pd .pdl { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .4px; display: block; }
+  .pdeltas .pd .pdv { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  /* facts panel */
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin-bottom: 8px; }
+  .fact .fl { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
+  .fact .fv { font-size: 18px; font-weight: 600; margin-top: 3px; }
+  .fact .fv.small { font-size: 13px; font-weight: 400; }
+
+  /* JSON tree */
+  details.jtree { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; }
+  details.jtree > summary { cursor: pointer; padding: 10px 14px; font-size: 12px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .4px; user-select: none; }
+  details.jtree > summary:hover { color: var(--text); }
+  .jbody { max-height: 420px; overflow: auto; padding: 4px 14px 14px; }
+  .jnode { font-family: ui-monospace, Menlo, monospace; font-size: 12px; line-height: 1.5; }
+  .jnode details { margin-left: 14px; }
+  .jnode summary { cursor: pointer; color: var(--accent); }
+  .jnode .jk { color: var(--klauro); }
+  .jnode .jv-str { color: var(--warn); }
+  .jnode .jv-num { color: var(--accent); }
+  .jnode .jv-bool { color: var(--other); }
+  .jnode .jv-null { color: var(--dim); }
+  .jleaf { margin-left: 14px; }
+
+  /* forms */
+  .form { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; max-width: 720px; margin-bottom: 22px; }
+  .form .field { margin-bottom: 14px; }
+  .form label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+  .form input[type=text], .form textarea, .form select {
+    width: 100%; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+    color: var(--text); padding: 9px 12px; font-size: 13px; font-family: inherit; }
+  .form textarea { min-height: 90px; resize: vertical; }
+  .form input:focus, .form textarea:focus, .form select:focus { outline: none; border-color: var(--accent); }
+  .form .row { display: flex; gap: 14px; flex-wrap: wrap; }
+  .form .row > .field { flex: 1; min-width: 160px; }
+  .form .err { color: var(--loss); font-size: 12px; margin-top: 6px; }
+  .form .ok { color: var(--win); font-size: 12px; margin-top: 6px; }
+  .checks { display: flex; flex-wrap: wrap; gap: 8px; }
+  .checks label { display: flex; align-items: center; gap: 6px; background: var(--panel2); border: 1px solid var(--line);
+    border-radius: 7px; padding: 6px 10px; font-size: 12px; color: var(--text); cursor: pointer; margin: 0; }
+
+  /* docket / search toolbar */
+  .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+  .toolbar input[type=text], .toolbar select {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px; color: var(--text);
+    padding: 8px 12px; font-size: 13px; }
+  .toolbar input[type=text] { flex: 1; min-width: 200px; }
+  .toolbar input:focus, .toolbar select:focus { outline: none; border-color: var(--accent); }
+  .toolbar .summary { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .docket-btn { background: var(--panel2); color: var(--muted); border: 1px solid var(--line); border-radius: 7px;
+    padding: 6px 11px; font-size: 12px; cursor: pointer; }
+  .docket-btn:hover { color: var(--text); border-color: var(--accent); }
+  .area { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 14px; overflow: hidden; }
+  .area-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; background: var(--panel2); }
+  .area-head .area-name { font-weight: 600; font-size: 13px; }
+  .area-head .area-stat { color: var(--dim); font-size: 12px; }
+  .file-block { border-top: 1px solid var(--line); }
+  .file-head { display: flex; align-items: center; gap: 8px; padding: 9px 16px 9px 22px; cursor: pointer; }
+  .file-head:hover { background: #161c2a; }
+  .file-head .caret { color: var(--dim); width: 10px; transition: transform .15s; display: inline-block; }
+  .file-head.open .caret { transform: rotate(90deg); }
+  .file-head .fname { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--accent); }
+  .file-head .fcount { margin-left: auto; color: var(--dim); font-size: 11px; }
+  .test-list { display: none; padding: 2px 16px 10px 40px; }
+  .test-list.open { display: block; }
+  .test-item { font-size: 12px; color: var(--muted); padding: 3px 0; display: flex; gap: 8px; align-items: baseline; }
+  .test-item .tnum { color: var(--dim); font-variant-numeric: tabular-nums; min-width: 26px; text-align: right; }
+  .test-item .tname { color: var(--text); }
+  .test-item.skipped .tname { color: var(--warn); text-decoration: line-through; opacity: .7; }
+  .test-item .tskip { font-size: 10px; color: var(--warn); }
+  .hidden { display: none !important; }
+
+  /* test status dots + trend (docket upgrades) */
+  .tdot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: 0 0 8px; }
+  .tdot.pass { background: var(--win); } .tdot.fail { background: var(--loss); } .tdot.skip { background: var(--warn); }
+  .trend { display: inline-flex; gap: 2px; margin-left: auto; align-items: center; }
+  .trend i { width: 6px; height: 6px; border-radius: 1px; background: var(--bar-base); display: inline-block; }
+  .trend i.pass { background: var(--win); } .trend i.fail { background: var(--loss); } .trend i.skip { background: var(--warn); }
+  .runsummary { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 12px 16px; margin-bottom: 14px; }
+  .runsummary .rs-msg { color: var(--muted); font-size: 13px; }
+  .runsummary .rs-act { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+
+  /* watcher rows + incremental chart */
+  .wrow { cursor: pointer; }
+  .wrow.sel { background: rgba(110,231,183,.06); }
+  .qchart { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin-bottom: 14px; }
+  .qchart svg { display: block; width: 100%; height: 120px; overflow: visible; }
+  .qchart .qc-pt { fill: var(--klauro); }
+  .qchart .qc-zero { stroke: var(--line); stroke-dasharray: 3 3; }
+  /* coverage chips */
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+  .chip { background: var(--panel2); border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; font-size: 12px; color: var(--text); }
+  .chip b { color: var(--klauro); }
+  .chip.backlog { border-style: dashed; color: var(--muted); }
+  .chip .modeflag { margin-left: 4px; }
+  .chip.cov-fwchip { cursor: pointer; }
+  .chip.cov-fwchip:hover { border-color: var(--accent); }
+  /* coverage interactive toolbar */
+  .cov-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 4px 0 14px; }
+  .cov-toolbar .docket-filter { flex: 1 1 240px; min-width: 200px; }
+  .cov-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); }
+  .cov-segbtn { background: transparent; border: none; color: var(--muted); padding: 7px 12px; font-size: 12px; cursor: pointer; border-right: 1px solid var(--line); }
+  .cov-segbtn:last-child { border-right: none; }
+  .cov-segbtn:hover { color: var(--text); }
+  .cov-segbtn.active { background: var(--panel2); color: var(--klauro); }
+  .card.clickable { cursor: pointer; }
+  .card.clickable:hover { border-color: var(--accent); }
+  .cov-type { display: inline-block; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .4px; padding: 2px 8px; border-radius: 6px; }
+  .cov-language { background: rgba(122,162,255,.15); color: var(--accent); }
+  .cov-framework { background: rgba(110,231,183,.14); color: var(--klauro); }
+  .cov-library { background: rgba(167,139,250,.16); color: var(--other); }
+  .cov-row { cursor: pointer; }
+  .cov-row:hover { background: #161c2a; }
+  .cov-row .caret { color: var(--dim); display: inline-block; width: 10px; }
+  tr.cov-detail { background: var(--panel); }
+  .cov-dgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 18px; padding: 4px 0 8px; }
+  .cov-d { font-size: 12px; color: var(--muted); }
+  .cov-d .cov-dl { color: var(--dim); text-transform: uppercase; font-size: 10px; letter-spacing: .4px; margin-right: 6px; }
+  .cov-d code { background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; font-size: 11px; color: var(--text); margin-right: 4px; display: inline-block; }
+  .cov-drillbtn { margin-top: 8px; }
+  /* coverage drill-down modal */
+  .cov-drill { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 50; align-items: flex-start; justify-content: center; padding: 60px 24px; }
+  .cd-modal { background: var(--bg); border: 1px solid var(--line); border-radius: 14px; width: 100%; max-width: 920px; max-height: 80vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+  .cd-head { display: flex; align-items: center; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+  .cd-title { font-size: 15px; font-weight: 600; }
+  .cd-head .docket-btn { margin-left: auto; }
+  .cd-body { padding: 14px 20px 20px; overflow: auto; }
+  .cd-sub { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="sb-brand">
+      <h1><span class="k">Klauro</span> Gauntlet</h1>
+      <div class="sub">scenarios × arms × metrics</div>
+    </div>
+    <nav class="nav" id="nav">
+      <a href="#/overview" data-route="overview"><span class="ico">◆</span>Overview</a>
+      <div class="nav-sec">Corpus</div>
+      <a href="#/workspaces" data-route="workspaces"><span class="ico">▣</span>Workspaces <span class="ncount" id="ncWorkspaces"></span></a>
+      <a href="#/repos" data-route="repos"><span class="ico">▤</span>Repos <span class="ncount" id="ncRepos"></span></a>
+      <a href="#/coverage" data-route="coverage"><span class="ico">◳</span>Coverage <span class="ncount" id="ncCoverage"></span></a>
+      <a href="#/camps" data-route="camps"><span class="ico">⚔</span>Camps <span class="ncount" id="ncCamps"></span></a>
+      <a href="#/grid" data-route="grid"><span class="ico">▦</span>Grid <span class="ncount" id="ncGrid"></span></a>
+      <div class="nav-sec">Benchmark</div>
+      <a href="#/scenarios" data-route="scenarios"><span class="ico">▦</span>Scenarios <span class="ncount" id="ncScenarios"></span></a>
+      <a href="#/runs" data-route="runs"><span class="ico">↻</span>Runs <span class="ncount" id="ncRuns"></span></a>
+      <a href="#/watchers" data-route="watchers"><span class="ico">◎</span>Watchers <span class="ncount" id="ncWatchers"></span></a>
+      <a href="#/tests" data-route="tests"><span class="ico">✓</span>Test docket <span class="ncount" id="ncTests"></span></a>
+      <div class="nav-sec">Author</div>
+      <a href="#/new-project" data-route="new-project"><span class="ico">＋</span>New project</a>
+      <a href="#/proposals" data-route="proposals"><span class="ico">✎</span>Proposals</a>
+    </nav>
+  </aside>
+
+  <div class="content">
+    <header>
+      <div class="crumb" id="crumb">Klauro Gauntlet</div>
+      <div class="spacer"></div>
+      <span class="badge mode" id="modeBadge">—</span>
+      <span class="badge" id="runBadge">no run yet</span>
+      <div class="verdict pending" id="overallVerdict">awaiting report</div>
+    </header>
+    <div class="progress"><div id="progressBar"></div></div>
+    <main id="view"><div class="loading">loading…</div></main>
+  </div>
+</div>
+
+<script>
+// ============================== helpers ==============================
+const $ = id => document.getElementById(id);
+const fmtNum = n => n == null ? '—' : (n >= 1000 ? (n/1000).toFixed(n>=100000?0:1)+'k' : Math.round(n));
+const fmtMs = ms => ms == null ? '—' : (ms >= 1000 ? (ms/1000).toFixed(1)+'s' : Math.round(ms)+'ms');
+function escapeHtml(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function armColor(arm) {
+  const k = arm.kind || (arm.isKlauro ? 'klauro' : '');
+  if (k === 'klauro') return 'var(--klauro)';
+  if (k === 'no-tools') return 'var(--noTools)';
+  return 'var(--other)';
+}
+// fraction -> "+31%"; returns {txt, cls}
+function fmtFrac(x) {
+  if (x == null || isNaN(x)) return { txt: '—', cls: '' };
+  const pct = Math.round(x * 100);
+  return { txt: (pct >= 0 ? '+' : '') + pct + '%', cls: pct >= 0 ? 'pos' : 'neg' };
+}
+function fracSpan(x) { const f = fmtFrac(x); return '<span class="dm-val ' + f.cls + '">' + f.txt + '</span>'; }
+function winBadge(win) {
+  return win
+    ? '<span class="pill win">✓ WIN</span>'
+    : '<span class="pill loss">✗ LOSS</span>';
+}
+function deltaInline(d) {
+  d = d || {};
+  return '<div class="pdeltas">' +
+    pd('Quality lead', d.quality) + pd('Token saving', d.tokens) + pd('Speed-up', d.time) +
+    '<div class="pd">' + winBadge(!!d.win) + '</div></div>';
+}
+function pd(lbl, x) {
+  const f = fmtFrac(x);
+  return '<div class="pd"><span class="pdl">' + lbl + '</span><span class="pdv ' +
+    (f.cls === 'pos' ? '' : f.cls === 'neg' ? '' : '') + '" style="color:' +
+    (f.cls === 'pos' ? 'var(--win)' : f.cls === 'neg' ? 'var(--loss)' : 'var(--muted)') + '">' + f.txt + '</span></div>';
+}
+async function getJSON(url) {
+  try { const r = await fetch(url); if (!r.ok) return null; return await r.json(); }
+  catch (e) { return null; }
+}
+function deltaCells(d) {
+  d = d || {};
+  const q = fmtFrac(d.quality), t = fmtFrac(d.tokens);
+  return '<td class="tdpad num"><span style="color:' + (q.cls==='pos'?'var(--win)':q.cls==='neg'?'var(--loss)':'var(--muted)') + '">' + q.txt + '</span></td>' +
+         '<td class="tdpad num"><span style="color:' + (t.cls==='pos'?'var(--win)':t.cls==='neg'?'var(--loss)':'var(--muted)') + '">' + t.txt + '</span></td>' +
+         '<td class="tdpad">' + winBadge(!!d.win) + '</td>';
+}
+// scenario delta table (quality/token/time + win) shared by workspace & repo detail
+function scenarioDeltaTable(scenarios) {
+  if (!scenarios || !scenarios.length) return '<div class="emptybox">No per-scenario deltas available.</div>';
+  let rows = scenarios.map(s => {
+    const d = s.delta || {};
+    const q = fmtFrac(d.quality), t = fmtFrac(d.tokens), ti = fmtFrac(d.time);
+    const c = (f) => '<td class="tdpad num"><span style="color:' + (f.cls==='pos'?'var(--win)':f.cls==='neg'?'var(--loss)':'var(--muted)') + '">' + f.txt + '</span></td>';
+    return '<tr><td class="tdpad"><div class="name" style="font-weight:600">' + escapeHtml(s.label||s.id) + '</div>' +
+      '<div class="grp" style="font-size:10px;color:var(--dim);text-transform:uppercase">' + escapeHtml(s.group||'') + '</div></td>' +
+      c(q) + c(t) + c(ti) + '<td class="tdpad">' + winBadge(!!d.win) + '</td></tr>';
+  }).join('');
+  return '<table><thead><tr><th>Scenario</th><th>Quality</th><th>Tokens</th><th>Time</th><th>Verdict</th></tr></thead><tbody>' + rows + '</tbody></table>';
+}
+// arms metrics table shared by workspace & repo detail
+function armsTable(arms) {
+  if (!arms || !arms.length) return '<div class="emptybox">No arm results available.</div>';
+  let rows = arms.map(a => {
+    const m = a.metrics || {};
+    const isKl = a.mode === 'klauro' || /klauro/i.test(a.arm_id||'');
+    return '<tr' + (isKl ? ' style="background:rgba(110,231,183,.045)"' : '') + '>' +
+      '<td class="tdpad">' + escapeHtml(a.arm_id) + (isKl ? ' <span class="tag" style="color:var(--klauro)">klauro</span>' : '') + '</td>' +
+      '<td class="tdpad"><span class="modeflag">' + escapeHtml(a.mode||'') + '</span></td>' +
+      '<td class="tdpad num">' + (m.quality != null ? m.quality : '—') + '</td>' +
+      '<td class="tdpad num">' + fmtNum(m.tokens) + '</td>' +
+      '<td class="tdpad num">' + fmtMs(m.time_ms) + '</td>' +
+      '<td class="tdpad">' + (a.attempted ? '<span class="pill ok">attempted</span>' : '<span class="pill pend">n/a</span>') + '</td></tr>';
+  }).join('');
+  return '<table><thead><tr><th>Arm</th><th>Mode</th><th>Quality</th><th>Tokens</th><th>Time</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>';
+}
+
+// recursive JSON tree (collapsible, scroll-safe)
+function jsonTree(val, depth) {
+  depth = depth || 0;
+  if (depth > 8) return '<span class="jv-str">…</span>';
+  if (val === null) return '<span class="jv-null">null</span>';
+  if (typeof val === 'string') return '<span class="jv-str">"' + escapeHtml(val.length > 400 ? val.slice(0,400)+'…' : val) + '"</span>';
+  if (typeof val === 'number') return '<span class="jv-num">' + val + '</span>';
+  if (typeof val === 'boolean') return '<span class="jv-bool">' + val + '</span>';
+  if (Array.isArray(val)) {
+    if (!val.length) return '<span class="jv-null">[]</span>';
+    const open = depth < 1 ? ' open' : '';
+    let inner = val.slice(0, 200).map((v, i) =>
+      '<div class="jleaf"><span class="jk">' + i + '</span>: ' + jsonTree(v, depth+1) + '</div>').join('');
+    if (val.length > 200) inner += '<div class="jleaf jv-null">… ' + (val.length-200) + ' more</div>';
+    return '<details' + open + '><summary>Array(' + val.length + ')</summary>' + inner + '</details>';
+  }
+  if (typeof val === 'object') {
+    const keys = Object.keys(val);
+    if (!keys.length) return '<span class="jv-null">{}</span>';
+    const open = depth < 1 ? ' open' : '';
+    const inner = keys.slice(0, 200).map(k =>
+      '<div class="jleaf"><span class="jk">' + escapeHtml(k) + '</span>: ' + jsonTree(val[k], depth+1) + '</div>').join('');
+    return '<details' + open + '><summary>Object(' + keys.length + ')</summary>' + inner + '</details>';
+  }
+  return '<span>' + escapeHtml(String(val)) + '</span>';
+}
+
+// ============================== global state ==============================
+let lastReport = null;     // latest GauntletReport (live)
+let viewingReport = null;  // a specific run being viewed in the matrix
+let catalog = null;        // {scenarios, arms}
+let counts = { repos: null, workspaces: null, scenarios: null, runs: null, watchers: null, coverage: null, camps: null, grid: null };
+
+const SCEN_TASK = {
+  'cold-onboarding': 'Describe a repo cold — what it is, does, how it is built.',
+  'repo-change': 'Implement a small feature and pass tests.',
+  'repo-bug': 'Locate + diagnose a bug root cause.',
+  'workspace-orientation': 'Describe a multi-repo workspace and how repos fit.',
+  'cross-repo-change': 'Change a contract across an API and its consumers.',
+  'cross-repo-bug': 'Trace a bug across repo boundaries.',
+  'cross-repo-analysis': 'Answer how N repos compose into one product.',
+  'incremental-change': 'After a diff, find what changed and its ripple.',
+  'security-audit': 'Find auth boundaries, input sinks, secret handling.',
+  'test-authoring': 'Write meaningful tests for an under-tested module.',
+  'refactor-safety': 'Refactor a core function safely with full blast radius.',
+  'dependency-impact': 'Assess what a shared-entity change ripples into.',
+  'api-contract-drift': 'Find where an API and its consumers drifted.',
+  'onboarding-depth': 'Answer deep how-does-X-work questions with evidence.',
+  'analysis-readiness': 'Does the analysis meet objective quality gates?',
+};
+
+// ============================== top bar verdict ==============================
+function updateTopBar(report) {
+  const r = report || lastReport;
+  $('modeBadge').textContent = (r && r.mode) || '—';
+  $('runBadge').textContent = (r && r.run_id) ? ('run ' + r.run_id) : 'no run';
+  const ov = $('overallVerdict');
+  if (!r || !r.summary) { ov.className = 'verdict pending'; ov.textContent = 'awaiting report'; return; }
+  const sum = r.summary;
+  if (r.status !== 'done') { ov.className = 'verdict pending'; ov.textContent = 'running…'; }
+  else if (sum.klauro_wins_all) { ov.className = 'verdict win'; ov.textContent = '✓ Klauro wins all ' + (sum.scenarios_won||0); }
+  else { ov.className = 'verdict loss'; ov.textContent = '✗ ' + (sum.scenarios_lost||0) + ' loss' + ((sum.scenarios_lost===1)?'':'es'); }
+  const p = r.progress || { total_scenarios: 1, completed: 0 };
+  $('progressBar').style.width = (100 * (p.completed||0) / Math.max(1, p.total_scenarios||1)) + '%';
+}
+
+// ============================== Scenarios matrix (preserved logic) ==============================
+function reportFromCatalog(cat) {
+  if (!cat || !cat.scenarios) return null;
+  return {
+    schema_version: 1, run_id: '', generated_at: '', mode: 'projected', status: 'pending',
+    progress: { total_scenarios: cat.scenarios.length, completed: 0, running: 0, pending: cat.scenarios.length, errored: 0 },
+    arms: cat.arms,
+    scenarios: cat.scenarios.map(s => ({
+      scenario_id: s.id, label: s.label, group: s.group, status: 'pending',
+      execution: s.execution, arms: [], verdict: undefined,
+    })),
+    summary: { klauro_wins_all: false, scenarios_won: 0, scenarios_lost: 0, losses: [] },
+  };
+}
+function maxAcross(report, getter) {
+  let m = 0;
+  for (const s of report.scenarios) for (const a of (s.arms||[])) {
+    const v = getter(a); if (typeof v === 'number' && v > m) m = v;
+  }
+  return m || 1;
+}
+function renderCardsHtml(report) {
+  const sum = report.summary || {};
+  const adv = (x) => x == null ? '—' : (x>=0?'+':'') + Math.round(x*100) + '%';
+  const cards = [
+    { lbl: 'Verdict', val: sum.klauro_wins_all ? 'WIN' : (report.status==='done'?'LOSS':'…'),
+      cls: sum.klauro_wins_all ? 'win' : (report.status==='done'?'loss':''),
+      hint: (sum.scenarios_won||0)+' won · '+(sum.scenarios_lost||0)+' lost' },
+    { lbl: 'Avg quality lead', val: adv(sum.avg_quality_advantage), hint: 'vs best competitor' },
+    { lbl: 'Avg token saving', val: adv(sum.avg_token_advantage), hint: 'fewer tokens' },
+    { lbl: 'Avg speed-up', val: adv(sum.avg_time_advantage), hint: 'faster' },
+  ];
+  return '<div class="cards">' + cards.map(c =>
+    '<div class="card"><div class="lbl">'+c.lbl+'</div><div class="val '+(c.cls||'')+'">'+c.val+'</div><div class="hint">'+c.hint+'</div></div>'
+  ).join('') + '</div>';
+}
+function renderMatrixHtml(report, arms) {
+  const maxQ = 100;
+  const maxT = maxAcross(report, a => a.metrics && a.metrics.time_ms);
+  const maxK = maxAcross(report, a => a.metrics && a.metrics.tokens);
+  let head = '<tr><th>Scenario</th>';
+  for (const arm of arms) head += '<th class="'+(arm.kind==='klauro'||arm.isKlauro?'klcol':'')+'">'+escapeHtml(arm.label)+'</th>';
+  head += '<th>Verdict</th></tr>';
+  let rows = '';
+  for (const s of report.scenarios) {
+    rows += '<tr>';
+    rows += '<td class="scell"><div class="name">'+escapeHtml(s.label)+'</div>'+
+            '<div class="task">'+escapeHtml(SCEN_TASK[s.scenario_id]||'')+'</div>'+
+            '<div class="grp">'+escapeHtml(s.group)+' · '+escapeHtml(s.execution||'')+(s.target?(' · '+escapeHtml(s.target)):'')+'</div></td>';
+    const armById = {}; for (const a of (s.arms||[])) armById[a.arm_id] = a;
+    for (const arm of arms) {
+      const a = armById[arm.id];
+      if (!a || !a.attempted) {
+        rows += '<td class="armcell '+(arm.kind==='klauro'||arm.isKlauro?'kl':'')+'"><span class="modeflag">n/a</span></td>';
+        continue;
+      }
+      const m = a.metrics; const col = armColor(arm);
+      const bar = (val, max, invert) => {
+        if (val == null) return '<div class="bar"></div>';
+        let frac = Math.min(1, val/max);
+        return '<div class="bar"><div style="width:'+(Math.max(4,frac*100))+'%;background:'+col+(invert?';opacity:.6':'')+'"></div></div>';
+      };
+      rows += '<td class="armcell '+(arm.kind==='klauro'||arm.isKlauro?'kl':'')+'">'+
+        '<div class="metric"><span class="m-lbl">Q</span>'+bar(m.quality,maxQ)+'<span class="m-val">'+(m.quality??'—')+'</span></div>'+
+        '<div class="metric"><span class="m-lbl">T</span>'+bar(m.time_ms,maxT,true)+'<span class="m-val">'+fmtMs(m.time_ms)+'</span></div>'+
+        '<div class="metric"><span class="m-lbl">K</span>'+bar(m.tokens,maxK,true)+'<span class="m-val">'+fmtNum(m.tokens)+'</span></div>'+
+        '<span class="modeflag">'+escapeHtml(a.mode)+'</span>'+
+      '</td>';
+    }
+    rows += '<td class="vcell">' + verdictCell(s) + '</td></tr>';
+  }
+  return '<table><thead>'+head+'</thead><tbody>'+rows+'</tbody></table>';
+}
+function verdictCell(s) {
+  if (s.status === 'pending') return '<span class="pill pend">pending</span>';
+  if (s.status === 'running') return '<span class="pill run">running…</span>';
+  if (s.status === 'error') return '<span class="pill loss">error</span><div class="reasons"><div class="r bad">'+escapeHtml(s.error||'')+'</div></div>';
+  const v = s.verdict; if (!v) return '—';
+  const pill = v.klauro_wins ? '<span class="pill win">✓ win</span>' : '<span class="pill loss">✗ loss</span>';
+  let reasons = '';
+  if (v.reasons && v.reasons.length) {
+    reasons = '<div class="reasons">' + v.reasons.slice(0,4).map(r => {
+      const bad = /NOT won|below|missing/.test(r);
+      return '<div class="r'+(bad?' bad':'')+'">'+escapeHtml(r)+'</div>';
+    }).join('') + '</div>';
+  }
+  return pill + reasons;
+}
+function renderLossesHtml(report) {
+  const losses = (report.summary && report.summary.losses) || [];
+  if (!losses.length) {
+    return report.status==='done'
+      ? '<div class="empty">✓ No losses — Klauro wins every scored scenario.</div>'
+      : '<div class="empty neutral">— run in progress —</div>';
+  }
+  return '<div class="losses">' + losses.map(l =>
+    '<div class="loss-row"><span class="sid">'+escapeHtml(l.scenario_id)+'</span> — '+escapeHtml(l.summary)+
+    ' <span class="modeflag">[lost: '+(l.losing_metrics||[]).join(', ')+']</span></div>'
+  ).join('') + '</div>';
+}
+
+// ============================== Test docket (preserved logic) ==============================
+function renderTestDocketHtml(inv) {
+  let html = '';
+  for (const area of inv.areas) {
+    html += '<div class="area" data-area="'+escapeHtml(area.area)+'">';
+    html += '<div class="area-head"><span class="area-name">'+escapeHtml(area.area)+'</span>'+
+            '<span class="area-stat">'+area.test_count+' tests · '+area.file_count+' files</span></div>';
+    for (const f of area.files) {
+      const fid = 'f_' + f.file.replace(/[^a-z0-9]/gi,'_');
+      html += '<div class="file-block" data-file="'+escapeHtml(f.file)+'">';
+      html += '<div class="file-head" data-target="'+fid+'"><span class="caret">▸</span>'+
+              '<span class="fname">'+escapeHtml(f.file)+'</span>'+
+              '<span class="fcount">'+f.count+(f.skipped?(' · '+f.skipped+' skip'):'')+'</span></div>';
+      html += '<div class="test-list" id="'+fid+'">';
+      f.tests.forEach((t, i) => {
+        const dot = t.status ? '<span class="tdot '+escapeHtml(t.status)+'"></span>' : '';
+        let trend = '';
+        if (Array.isArray(t.history) && t.history.length) {
+          trend = '<span class="trend">' + t.history.slice(-10).map(h => '<i class="'+escapeHtml(h)+'"></i>').join('') + '</span>';
+        }
+        html += '<div class="test-item'+(t.skipped?' skipped':'')+'" data-name="'+escapeHtml((t.name||'').toLowerCase())+'">'+
+                dot+'<span class="tnum">'+(i+1)+'</span><span class="tname">'+escapeHtml(t.name)+'</span>'+
+                (t.skipped?'<span class="tskip">skip</span>':'')+trend+'</div>';
+      });
+      html += '</div></div>';
+    }
+    html += '</div>';
+  }
+  return html;
+}
+function wireDocket() {
+  document.querySelectorAll('#view .file-head').forEach(h => h.addEventListener('click', () => {
+    h.classList.toggle('open');
+    const t = $(h.dataset.target); if (t) t.classList.toggle('open');
+  }));
+}
+function filterDocket(q) {
+  q = (q||'').trim().toLowerCase();
+  const docket = $('testDocket'); if (!docket) return;
+  docket.querySelectorAll('.file-block').forEach(fb => {
+    const fname = fb.dataset.file.toLowerCase();
+    let anyVisible = false;
+    fb.querySelectorAll('.test-item').forEach(ti => {
+      const match = !q || ti.dataset.name.includes(q) || fname.includes(q);
+      ti.classList.toggle('hidden', !match);
+      if (match) anyVisible = true;
+    });
+    fb.classList.toggle('hidden', !anyVisible);
+    if (q && anyVisible) {
+      fb.querySelector('.file-head').classList.add('open');
+      fb.querySelector('.test-list').classList.add('open');
+    }
+  });
+  docket.querySelectorAll('.area').forEach(a => {
+    const anyFile = [...a.querySelectorAll('.file-block')].some(fb => !fb.classList.contains('hidden'));
+    a.classList.toggle('hidden', !anyFile);
+  });
+}
+function setAllExpanded(open) {
+  document.querySelectorAll('#testDocket .file-head').forEach(h => h.classList.toggle('open', open));
+  document.querySelectorAll('#testDocket .test-list').forEach(l => l.classList.toggle('open', open));
+}
+
+// ============================== run actions ==============================
+async function triggerRun(body) {
+  try { await fetch('/api/run', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body||{}) }); }
+  catch (e) {}
+}
+
+// ============================== ROUTER ==============================
+const routes = {};
+function parseHash() {
+  let h = location.hash.replace(/^#\/?/, '');
+  if (!h) return { name: 'overview', arg: null };
+  const parts = h.split('/');
+  return { name: parts[0], arg: parts[1] ? decodeURIComponent(parts.slice(1).join('/')) : null };
+}
+function setActiveNav(name) {
+  document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('active', a.dataset.route === name));
+}
+function setCrumb(html) { $('crumb').innerHTML = html; }
+function setView(html) { $('view').innerHTML = html; }
+function loadingView(label) { setView('<div class="loading">' + (label||'loading…') + '</div>'); }
+
+async function router() {
+  const { name, arg } = parseHash();
+  const handler = routes[name] || routes['overview'];
+  setActiveNav(routes[name] ? name : 'overview');
+  window.scrollTo(0, 0);
+  await handler(arg);
+}
+
+// ---------- Overview ----------
+routes['overview'] = async () => {
+  setCrumb('Overview');
+  loadingView();
+  const ov = await getJSON('/api/overview');
+  if (!ov) { setView('<div class="emptybox">Overview unavailable. The benchmark may not have run yet.</div>'); return; }
+  const t = ov.totals || {};
+  counts.repos = t.repos; counts.workspaces = t.workspaces; counts.scenarios = t.scenarios; counts.runs = t.runs;
+  refreshNavCounts();
+  const statCard = (lbl, val, route) =>
+    '<div class="card clickable" data-go="' + route + '"><div class="lbl">' + lbl + '</div><div class="val">' + (val==null?'—':val) + '</div></div>';
+  const dpanel = (title, d) => {
+    d = d || {};
+    return '<div class="dpanel"><div class="dphead"><span class="dptitle">' + title + '</span>' + winBadge(!!d.win) + '</div>' +
+      '<div class="dmetric"><span class="dm-lbl">Quality lead</span>' + fracSpan(d.quality) + '</div>' +
+      '<div class="dmetric"><span class="dm-lbl">Token saving</span>' + fracSpan(d.tokens) + '</div>' +
+      '<div class="dmetric"><span class="dm-lbl">Speed-up</span>' + fracSpan(d.time) + '</div></div>';
+  };
+  let lastRun = '';
+  if (ov.last_run) {
+    const lr = ov.last_run;
+    lastRun = '<div class="section-title">Last run</div>' +
+      '<div class="dpanel" style="max-width:640px"><div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">' +
+      '<b>' + escapeHtml(lr.run_id||'') + '</b>' +
+      '<span class="badge mode">' + escapeHtml(lr.mode||'') + '</span>' +
+      '<span class="modeflag">' + escapeHtml(lr.generated_at||'') + '</span>' +
+      (lr.wins_all ? '<span class="pill win">✓ wins all</span>' : '<span class="pill loss">✗ ' + (lr.lost||0) + ' lost</span>') +
+      '<span class="modeflag">' + (lr.scenarios||0) + ' scenarios · ' + (lr.won||0) + ' won · ' + (lr.lost||0) + ' lost</span>' +
+      '<a href="#/runs" style="margin-left:auto">View runs →</a></div></div>';
+  } else {
+    lastRun = '<div class="section-title">Last run</div><div class="emptybox">No runs yet. Trigger one from <a href="#/scenarios">Scenarios</a>.</div>';
+  }
+  setView(
+    '<div class="cards">' +
+      statCard('Repos', t.repos, '#/repos') + statCard('Workspaces', t.workspaces, '#/workspaces') +
+      statCard('Scenarios', t.scenarios, '#/scenarios') + statCard('Runs', t.runs, '#/runs') +
+    '</div>' +
+    '<div class="delta-grid">' + dpanel('Overall', ov.overall_delta) + dpanel('Per-workspace', ov.workspace_delta) + dpanel('Per-repo', ov.repo_delta) + '</div>' +
+    lastRun
+  );
+  document.querySelectorAll('#view .card[data-go]').forEach(c => c.addEventListener('click', () => location.hash = c.dataset.go));
+};
+
+// ---------- Workspaces ----------
+routes['workspaces'] = async () => {
+  setCrumb('Workspaces');
+  loadingView();
+  const data = await getJSON('/api/workspaces');
+  const list = (data && data.workspaces) || [];
+  counts.workspaces = list.length; refreshNavCounts();
+  if (!list.length) { setView('<div class="emptybox">No workspaces analyzed yet.</div>'); return; }
+  let rows = list.map(w =>
+    '<tr class="rowlink" data-go="#/workspace/' + encodeURIComponent(w.name) + '">' +
+    '<td class="tdpad"><b>' + escapeHtml(w.name) + '</b></td>' +
+    '<td class="tdpad num">' + (w.repo_count||0) + '</td>' +
+    '<td class="tdpad num">' + fmtNum(w.total_nodes) + '</td>' +
+    deltaCells(w.delta) + '</tr>'
+  ).join('');
+  setView('<table><thead><tr><th>Workspace</th><th>Repos</th><th>Nodes</th><th>Quality</th><th>Tokens</th><th>Verdict</th></tr></thead><tbody>' + rows + '</tbody></table>');
+  wireRowLinks();
+};
+
+// ---------- Workspace detail ----------
+routes['workspace'] = async (nameArg) => {
+  setCrumb('<a href="#/workspaces">Workspaces</a> / <b>' + escapeHtml(nameArg||'') + '</b>');
+  loadingView();
+  const w = await getJSON('/api/workspace?name=' + encodeURIComponent(nameArg||''));
+  if (!w || w.found === false) { setView('<div class="emptybox">Workspace <b>' + escapeHtml(nameArg||'') + '</b> not found.</div>'); return; }
+  const repos = (w.repos||[]).map(r =>
+    '<tr class="rowlink" data-go="#/repo/' + encodeURIComponent(r.name) + '"><td class="tdpad"><a href="#/repo/' + encodeURIComponent(r.name) + '">' + escapeHtml(r.name) + '</a></td><td class="tdpad num">' + fmtNum(r.nodes) + '</td></tr>'
+  ).join('');
+  const unresolved = (w.unresolved && w.unresolved.length)
+    ? '<div class="section-title">Unresolved members</div><div class="emptybox neutral" style="text-align:left">' + w.unresolved.map(u=>'<span class="tag">'+escapeHtml(u)+'</span>').join('') + '</div>'
+    : '';
+  setView(
+    '<div class="phead"><div><h2>' + escapeHtml(w.name) + '</h2></div>' +
+      '<div class="pact"><button class="primary" id="wsRun">Run live on this workspace</button></div></div>' +
+    '<div class="ok hidden" id="wsRunNote" style="margin-bottom:12px">run started — see <a href="#/scenarios">Scenarios</a></div>' +
+    deltaInline(w.delta) +
+    '<div class="section-title">Member repos (' + (w.repos||[]).length + ')</div>' +
+    (repos ? '<table><thead><tr><th>Repo</th><th>Nodes</th></tr></thead><tbody>' + repos + '</tbody></table>' : '<div class="emptybox">No resolved member repos.</div>') +
+    unresolved +
+    '<div class="section-title">Per-scenario deltas</div>' + scenarioDeltaTable(w.scenarios) +
+    '<div class="section-title">Arms</div>' + armsTable(w.arms)
+  );
+  wireRowLinks();
+  const btn = $('wsRun');
+  if (btn) btn.addEventListener('click', async () => {
+    btn.disabled = true; btn.textContent = 'run started…';
+    await triggerRun({ targetWorkspace: w.name, live: true });
+    const note = $('wsRunNote'); if (note) note.classList.remove('hidden');
+  });
+};
+
+// ---------- Repos (searchable, paginated) ----------
+const reposState = { q: '', framework: '', sort: 'nodes', limit: 40, offset: 0, items: [], total: 0, has_more: false, next_offset: 0, frameworks: new Set() };
+let reposDebounce = null;
+async function fetchRepos(reset) {
+  if (reset) { reposState.offset = 0; reposState.items = []; }
+  const p = new URLSearchParams();
+  if (reposState.q) p.set('q', reposState.q);
+  if (reposState.framework) p.set('framework', reposState.framework);
+  p.set('sort', reposState.sort); p.set('limit', reposState.limit); p.set('offset', reposState.offset);
+  const data = await getJSON('/api/repos?' + p.toString());
+  if (!data) return;
+  reposState.total = data.total; reposState.has_more = data.has_more; reposState.next_offset = data.next_offset;
+  reposState.items = reposState.items.concat(data.repos || []);
+  (data.repos||[]).forEach(r => (r.frameworks||[]).forEach(f => reposState.frameworks.add(f)));
+  counts.repos = data.total; refreshNavCounts();
+}
+function reposRowsHtml() {
+  if (!reposState.items.length) return '';
+  return reposState.items.map(r =>
+    '<tr class="rowlink" data-go="#/repo/' + encodeURIComponent(r.name) + '">' +
+    '<td class="tdpad"><b>' + escapeHtml(r.name) + '</b></td>' +
+    '<td class="tdpad"><span class="modeflag">' + escapeHtml(r.system_type||'') + '</span></td>' +
+    '<td class="tdpad">' + ((r.frameworks||[]).slice(0,4).map(f=>'<span class="tag">'+escapeHtml(f)+'</span>').join('') || '—') + '</td>' +
+    '<td class="tdpad num">' + fmtNum(r.nodes) + '</td>' +
+    '<td class="tdpad num">' + fmtNum(r.edges) + '</td>' +
+    deltaCells(r.delta) + '</tr>'
+  ).join('');
+}
+function renderReposTable() {
+  const body = $('reposBody');
+  if (body) {
+    body.innerHTML = reposState.items.length ? reposRowsHtml() : '<tr><td class="tdpad" colspan="8"><div class="loading">No repos match.</div></td></tr>';
+    wireRowLinks();
+  }
+  const more = $('loadMoreWrap');
+  if (more) more.innerHTML = reposState.has_more ? '<button id="loadMore">Load more (' + (reposState.total - reposState.items.length) + ' remaining)</button>' : '';
+  const lm = $('loadMore');
+  if (lm) lm.addEventListener('click', async () => { reposState.offset = reposState.next_offset; await fetchRepos(false); renderReposTable(); });
+  const summary = $('reposSummary');
+  if (summary) summary.textContent = 'showing ' + reposState.items.length + ' of ' + reposState.total;
+  const sel = $('fwSelect');
+  if (sel && sel.options.length <= 1) {
+    [...reposState.frameworks].sort().forEach(f => { const o = document.createElement('option'); o.value = f; o.textContent = f; sel.appendChild(o); });
+    sel.value = reposState.framework;
+  }
+}
+routes['repos'] = async () => {
+  setCrumb('Repos');
+  loadingView();
+  await fetchRepos(true);
+  setView(
+    '<div class="toolbar">' +
+      '<input type="text" id="repoQ" placeholder="Search repos by name…" value="' + escapeHtml(reposState.q) + '" />' +
+      '<select id="fwSelect"><option value="">All frameworks</option></select>' +
+      '<select id="sortSelect"><option value="nodes">Sort: nodes</option><option value="name">Sort: name</option><option value="quality">Sort: quality</option></select>' +
+      '<span class="summary" id="reposSummary"></span>' +
+    '</div>' +
+    '<table><thead><tr><th>Repo</th><th>Type</th><th>Frameworks</th><th>Nodes</th><th>Edges</th><th>Quality</th><th>Tokens</th><th>Verdict</th></tr></thead><tbody id="reposBody"></tbody></table>' +
+    '<div id="loadMoreWrap" style="margin-top:14px"></div>'
+  );
+  $('sortSelect').value = reposState.sort;
+  renderReposTable();
+  $('repoQ').addEventListener('input', e => {
+    reposState.q = e.target.value;
+    clearTimeout(reposDebounce);
+    reposDebounce = setTimeout(async () => { await fetchRepos(true); renderReposTable(); }, 280);
+  });
+  $('fwSelect').addEventListener('change', async e => { reposState.framework = e.target.value; await fetchRepos(true); renderReposTable(); });
+  $('sortSelect').addEventListener('change', async e => { reposState.sort = e.target.value; await fetchRepos(true); renderReposTable(); });
+};
+
+// ---------- Repo detail ----------
+routes['repo'] = async (nameArg) => {
+  setCrumb('<a href="#/repos">Repos</a> / <b>' + escapeHtml(nameArg||'') + '</b>');
+  loadingView();
+  const r = await getJSON('/api/repo?name=' + encodeURIComponent(nameArg||''));
+  if (!r || r.found === false) { setView('<div class="emptybox">Repo <b>' + escapeHtml(nameArg||'') + '</b> not found.' + (r&&r.error?' ('+escapeHtml(r.error)+')':'') + '</div>'); return; }
+  const f = r.facts || {};
+  const factHtml =
+    '<div class="facts">' +
+      '<div class="fact"><div class="fl">Nodes</div><div class="fv">' + fmtNum(f.nodes) + '</div></div>' +
+      '<div class="fact"><div class="fl">Edges</div><div class="fv">' + fmtNum(f.edges) + '</div></div>' +
+      '<div class="fact"><div class="fl">Entry points</div><div class="fv">' + fmtNum(f.entry_points) + '</div></div>' +
+      '<div class="fact"><div class="fl">Languages</div><div class="fv small">' + ((f.languages||[]).map(escapeHtml).join(', ') || '—') + '</div></div>' +
+      '<div class="fact"><div class="fl">Frameworks</div><div class="fv small">' + ((f.frameworks||[]).map(x=>'<span class="tag">'+escapeHtml(x)+'</span>').join('') || '—') + '</div></div>' +
+    '</div>';
+  let trees = '';
+  if (f.summary != null) trees += '<details class="jtree"><summary>facts.summary</summary><div class="jbody"><div class="jnode">' + jsonTree(f.summary) + '</div></div></details>';
+  if (f.overview != null) trees += '<details class="jtree"><summary>facts.overview</summary><div class="jbody"><div class="jnode">' + jsonTree(f.overview) + '</div></div></details>';
+  setView(
+    '<div class="phead"><div><h2>' + escapeHtml(r.name) + '</h2>' + (r.path ? '<div class="ppath">' + escapeHtml(r.path) + '</div>' : '') + '</div>' +
+      '<div class="pact"><button class="primary" id="repoRun">Run live on this repo</button></div></div>' +
+    '<div class="ok hidden" id="repoRunNote" style="margin-bottom:12px">run started — see <a href="#/scenarios">Scenarios</a></div>' +
+    deltaInline(r.delta) +
+    '<div class="section-title">Analysis facts <span class="modeflag" style="margin-left:8px">verify the analysis</span></div>' +
+    factHtml + trees +
+    '<div class="section-title">Per-scenario deltas</div>' + scenarioDeltaTable(r.scenarios) +
+    '<div class="section-title">Arms</div>' + armsTable(r.arms)
+  );
+  const rbtn = $('repoRun');
+  if (rbtn) rbtn.addEventListener('click', async () => {
+    rbtn.disabled = true; rbtn.textContent = 'run started…';
+    await triggerRun({ targetRepo: r.name, live: true });
+    const note = $('repoRunNote'); if (note) note.classList.remove('hidden');
+  });
+};
+
+// ---------- Scenarios (matrix, preserved) ----------
+routes['scenarios'] = async () => {
+  const viewing = viewingReport;
+  setCrumb(viewing ? ('<a href="#/runs">Runs</a> / <b>viewing run ' + escapeHtml(viewing.run_id||'') + '</b>') : 'Scenarios');
+  if (!catalog) catalog = await getJSON('/api/catalog');
+  let report = viewing || lastReport;
+  if (!report || !report.scenarios || !report.scenarios.length) report = reportFromCatalog(catalog);
+  if (!report) { setView('<div class="emptybox">No scenarios available.</div>'); return; }
+  const arms = (report.arms && report.arms.length) ? report.arms : (catalog ? catalog.arms : []);
+  counts.scenarios = report.scenarios.length; refreshNavCounts();
+  const viewingBanner = viewing
+    ? '<div class="dpanel" style="margin-bottom:14px;display:flex;align-items:center;gap:12px"><b>Viewing run ' + escapeHtml(viewing.run_id||'') + '</b><span class="modeflag">' + escapeHtml(viewing.generated_at||'') + '</span><button id="exitView" style="margin-left:auto">Back to live</button></div>'
+    : '';
+  setView(
+    viewingBanner +
+    renderCardsHtml(report) +
+    '<div class="legend">' +
+      '<span><span class="sw" style="background:var(--klauro)"></span>Klauro</span>' +
+      '<span><span class="sw" style="background:var(--noTools)"></span>No tools</span>' +
+      '<span><span class="sw" style="background:var(--other)"></span>Other indexer</span>' +
+      '<span>Q = quality (higher better) · T = time · K = tokens (lower better)</span>' +
+    '</div>' +
+    '<div class="section-title">Matrix<span class="st-act">' + (viewing ? '' : '<button class="primary" id="runBtn">Run gauntlet</button>') + '</span></div>' +
+    '<div id="matrixWrap">' + renderMatrixHtml(report, arms) + '</div>' +
+    '<div class="section-title">Losses — Klauro bugs to fix</div>' + renderLossesHtml(report) +
+    '<div class="foot">generated ' + escapeHtml(report.generated_at||'') + ' · ' + arms.length + ' arms · ' + report.scenarios.length + ' scenarios · projected numbers are grounded estimates; run --live to measure</div>'
+  );
+  const rb = $('runBtn');
+  if (rb) rb.addEventListener('click', async () => { rb.disabled = true; rb.textContent = 'running…'; await triggerRun({}); setTimeout(()=>{ rb.disabled=false; rb.textContent='Run gauntlet'; }, 4000); });
+  const ev = $('exitView');
+  if (ev) ev.addEventListener('click', () => { viewingReport = null; router(); });
+};
+
+// ---------- Runs ----------
+routes['runs'] = async () => {
+  setCrumb('Runs');
+  loadingView();
+  const data = await getJSON('/api/runs?limit=100');
+  const runs = (data && data.runs) || [];
+  counts.runs = runs.length; refreshNavCounts();
+  if (!runs.length) { setView('<div class="emptybox">No run history yet. Start one from <a href="#/scenarios">Scenarios</a>.</div>'); return; }
+  let rows = runs.map(r =>
+    '<tr class="rowlink" data-run="' + escapeHtml(r.run_id) + '">' +
+    '<td class="tdpad"><b>' + escapeHtml(r.run_id) + '</b></td>' +
+    '<td class="tdpad"><span class="modeflag">' + escapeHtml(r.generated_at||'') + '</span></td>' +
+    '<td class="tdpad"><span class="badge mode">' + escapeHtml(r.mode||'') + '</span></td>' +
+    '<td class="tdpad"><span class="modeflag">' + escapeHtml(r.status||'') + '</span></td>' +
+    '<td class="tdpad num">' + (r.scenarios||0) + '</td>' +
+    '<td class="tdpad num">' + (r.won||0) + '</td>' +
+    '<td class="tdpad num">' + (r.lost||0) + '</td>' +
+    '<td class="tdpad">' + (r.wins_all ? '<span class="pill win">✓ wins all</span>' : '<span class="pill loss">✗ loss</span>') + '</td></tr>'
+  ).join('');
+  setView('<table><thead><tr><th>Run</th><th>Time</th><th>Mode</th><th>Status</th><th>Scenarios</th><th>Won</th><th>Lost</th><th>Verdict</th></tr></thead><tbody>' + rows + '</tbody></table>');
+  document.querySelectorAll('#view tr[data-run]').forEach(tr => tr.addEventListener('click', async () => {
+    const rep = await getJSON('/api/run?id=' + encodeURIComponent(tr.dataset.run));
+    if (rep && rep.scenarios) { viewingReport = rep; location.hash = '#/scenarios'; }
+  }));
+};
+
+// ---------- Watchers (incremental gauntlet) ----------
+function incrDeltaCell(x) {
+  const f = fmtFrac(x);
+  return '<td class="tdpad num"><span style="color:' + (f.cls==='pos'?'var(--win)':f.cls==='neg'?'var(--loss)':'var(--muted)') + '">' + f.txt + '</span></td>';
+}
+function incrChangeText(ch) {
+  if (!ch) return '—';
+  const files = ch.filesChanged != null ? ch.filesChanged + 'f' : '';
+  const nodes = [];
+  if (ch.nodesAdded) nodes.push('+' + ch.nodesAdded);
+  if (ch.nodesModified) nodes.push('~' + ch.nodesModified);
+  if (ch.nodesDeleted) nodes.push('-' + ch.nodesDeleted);
+  const risk = ch.riskLevel ? ' <span class="tag">' + escapeHtml(ch.riskLevel) + '</span>' : '';
+  return escapeHtml([files, nodes.join('/')].filter(Boolean).join(' · ') || '—') + risk;
+}
+// minimalist inline svg quality-delta line chart (qualityΔ as %)
+function qualitySparkSvg(series) {
+  const pts = (series || []).filter(p => p && p.at != null).slice().sort((a,b) => new Date(a.at) - new Date(b.at));
+  if (!pts.length) return '<div class="emptybox">No quality-delta points yet.</div>';
+  const W = 600, H = 100, padX = 6, padY = 10;
+  const vals = pts.map(p => (p.quality == null || isNaN(p.quality)) ? 0 : p.quality);
+  let lo = Math.min(0, ...vals), hi = Math.max(0, ...vals);
+  if (lo === hi) { lo -= 0.05; hi += 0.05; }
+  const n = pts.length;
+  const x = i => n === 1 ? W/2 : padX + (i * (W - 2*padX) / (n - 1));
+  const y = v => padY + (1 - (v - lo) / (hi - lo)) * (H - 2*padY);
+  const yZero = y(0);
+  const dots = pts.map((p, i) => '<circle class="qc-pt" cx="' + x(i).toFixed(1) + '" cy="' + y(vals[i]).toFixed(1) + '" r="3"></circle>').join('');
+  let poly = '';
+  if (n >= 2) poly = '<polyline points="' + pts.map((p,i) => x(i).toFixed(1) + ',' + y(vals[i]).toFixed(1)).join(' ') +
+    '" fill="none" stroke="var(--klauro)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></polyline>';
+  const last = vals[vals.length-1];
+  const f = fmtFrac(last);
+  return '<div class="qchart"><div class="dptitle" style="margin-bottom:8px">Quality delta over time' +
+    ' <span style="color:' + (f.cls==='pos'?'var(--win)':f.cls==='neg'?'var(--loss)':'var(--muted)') + ';font-weight:600">' + f.txt + ' latest</span></div>' +
+    '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' +
+    '<line class="qc-zero" x1="' + padX + '" y1="' + yZero.toFixed(1) + '" x2="' + (W-padX) + '" y2="' + yZero.toFixed(1) + '"></line>' +
+    poly + dots + '</svg></div>';
+}
+async function loadIncrementalDetail(repoName) {
+  const wrap = $('incrDetail');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="loading">loading ' + escapeHtml(repoName) + ' changes…</div>';
+  const [inc, ser] = await Promise.all([
+    getJSON('/api/incremental?repo=' + encodeURIComponent(repoName) + '&limit=50'),
+    getJSON('/api/incremental-series?repo=' + encodeURIComponent(repoName)),
+  ]);
+  const records = (inc && inc.records) || [];
+  const chart = qualitySparkSvg((ser && ser.series) || []);
+  let table;
+  if (!records.length) {
+    table = '<div class="emptybox">No incremental runs recorded for <b>' + escapeHtml(repoName) + '</b> yet. They appear after the repo changes.</div>';
+  } else {
+    const rows = records.map(r => {
+      const d = r.delta || {};
+      return '<tr><td class="tdpad"><span class="modeflag">' + escapeHtml(r.at||'') + '</span></td>' +
+        '<td class="tdpad">' + incrChangeText(r.change) + '</td>' +
+        incrDeltaCell(d.quality) + incrDeltaCell(d.tokens) + incrDeltaCell(d.time) +
+        '<td class="tdpad">' + winBadge(!!d.win) + '</td></tr>';
+    }).join('');
+    table = '<table><thead><tr><th>At</th><th>Change</th><th>Quality Δ</th><th>Token Δ</th><th>Time Δ</th><th>Verdict</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+  wrap.innerHTML = '<div class="section-title">Incremental detail — ' + escapeHtml(repoName) + '</div>' + chart + table;
+}
+routes['watchers'] = async (repoArg) => {
+  setCrumb(repoArg ? ('<a href="#/watchers">Watchers</a> / <b>' + escapeHtml(repoArg) + '</b>') : 'Watchers');
+  loadingView();
+  const [wdata, repoData] = await Promise.all([
+    getJSON('/api/watchers'),
+    getJSON('/api/repos?limit=135&sort=name'),
+  ]);
+  const watchers = (wdata && wdata.watchers) || [];
+  counts.watchers = watchers.length; refreshNavCounts();
+  const repos = (repoData && repoData.repos) || [];
+  const repoOpts = repos.map(r => '<option value="' + escapeHtml(r.path||'') + '">' + escapeHtml(r.name) + '</option>').join('');
+  const intro = '<div class="phead"><div><h2>Watchers</h2>' +
+    '<div class="ppath" style="font-family:inherit;color:var(--muted)">Incremental gauntlet — auto-runs when a watched repo changes; tracks Klauro\'s advantage on understanding each change over time.</div></div></div>';
+  const form =
+    '<form class="form" id="watchForm">' +
+      '<div class="row">' +
+        '<div class="field"><label>Repo to watch</label><select id="watchRepo">' +
+          (repoOpts || '<option value="">no repos available</option>') + '</select></div>' +
+        '<div class="field" style="flex:0 0 auto;display:flex;align-items:flex-end"><button class="primary" type="submit" id="watchSubmit">Install watcher</button></div>' +
+      '</div>' +
+      '<div class="err hidden" id="watchErr"></div><div class="ok hidden" id="watchOk"></div>' +
+    '</form>';
+  let listHtml;
+  if (!watchers.length) {
+    listHtml = '<div class="emptybox" style="text-align:left">' +
+      'No watchers installed yet. Pick a repo above and click <b>Install watcher</b> to start the incremental gauntlet.<br>' +
+      '<span class="modeflag">You can also install one via the MCP tool <b>install_gauntlet_watcher</b>.</span></div>';
+  } else {
+    const rows = watchers.map(w => {
+      const enabled = w.enabled !== false;
+      const status = w.status || (enabled ? 'active' : 'stopped');
+      const recent = (w.recentChanges && w.recentChanges.length) || 0;
+      const sel = repoArg && w.repoName === repoArg ? ' sel' : '';
+      return '<tr class="wrow' + sel + '" data-repo="' + escapeHtml(w.repoName||'') + '">' +
+        '<td class="tdpad"><b>' + escapeHtml(w.repoName||w.repoPath||'') + '</b></td>' +
+        '<td class="tdpad"><span class="pill ' + (status==='active'?'ok':(status==='paused'?'run':'no')) + '">' + escapeHtml(status) + '</span></td>' +
+        '<td class="tdpad num">' + (w.runs||0) + '</td>' +
+        '<td class="tdpad num">' + recent + '</td>' +
+        '<td class="tdpad">' + (enabled ? '<button class="docket-btn wstop" data-id="' + escapeHtml(w.id||'') + '">Stop</button>' : '<span class="modeflag">stopped</span>') + '</td></tr>';
+    }).join('');
+    listHtml = '<div class="section-title">Installed watchers (' + watchers.length + ')</div>' +
+      '<table><thead><tr><th>Repo</th><th>Status</th><th>Runs</th><th>Changes</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+  setView(intro + form + listHtml + '<div id="incrDetail"></div>');
+  // install
+  $('watchForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const err = $('watchErr'), ok = $('watchOk'); err.classList.add('hidden'); ok.classList.add('hidden');
+    const repoPath = $('watchRepo').value;
+    if (!repoPath) { err.textContent = 'Pick a repo to watch.'; err.classList.remove('hidden'); return; }
+    const btn = $('watchSubmit'); btn.disabled = true; btn.textContent = 'installing…';
+    const res = await fetch('/api/watchers', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ repoPath }) }).then(r=>r.json()).catch(()=>null);
+    btn.disabled = false; btn.textContent = 'Install watcher';
+    if (res && !res.error) { ok.textContent = 'Watcher installed ✓ — refreshing…'; ok.classList.remove('hidden'); setTimeout(router, 600); }
+    else { err.textContent = (res && res.error) || 'Failed to install watcher.'; err.classList.remove('hidden'); }
+  });
+  // stop buttons
+  document.querySelectorAll('#view .wstop').forEach(b => b.addEventListener('click', async e => {
+    e.stopPropagation();
+    b.disabled = true; b.textContent = 'stopping…';
+    await fetch('/api/watchers/stop', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id: b.dataset.id }) }).catch(()=>{});
+    setTimeout(router, 500);
+  }));
+  // row click -> incremental detail
+  document.querySelectorAll('#view tr.wrow').forEach(tr => tr.addEventListener('click', e => {
+    if (e.target.closest('button')) return;
+    location.hash = '#/watchers/' + encodeURIComponent(tr.dataset.repo);
+  }));
+  if (repoArg) loadIncrementalDetail(repoArg);
+};
+
+// ---------- Tests (docket, preserved) ----------
+routes['tests'] = async () => {
+  setCrumb('Test docket');
+  loadingView();
+  const inv = await getJSON('/api/tests');
+  if (!inv || !inv.areas) { setView('<div class="emptybox">Test inventory unavailable.</div>'); return; }
+  counts.tests = inv.total_tests;
+  $('ncTests').textContent = inv.total_tests;
+  const lr = inv.last_run;
+  const lrSummary = lr
+    ? 'Last run: ' + (lr.passed||0) + '/' + (lr.total||0) + ' passed' +
+      (lr.failed ? ' · ' + lr.failed + ' failed' : '') +
+      (lr.skipped ? ' · ' + lr.skipped + ' skipped' : '') +
+      (lr.started_at ? ' · ' + lr.started_at : '')
+    : 'No test run recorded yet.';
+  setView(
+    '<div class="runsummary"><span class="rs-msg" id="runMsg">' + escapeHtml(lrSummary) + '</span>' +
+      '<span class="rs-act"><button class="primary" id="runTestsBtn">Run tests</button></span></div>' +
+    '<div class="toolbar">' +
+      '<input type="text" id="testFilter" placeholder="Filter tests by name or file…" />' +
+      '<span class="summary" id="testSummary">' + inv.total_tests + ' tests · ' + inv.total_files + ' files · ' + inv.areas.length + ' areas' + (inv.total_skipped ? ' · ' + inv.total_skipped + ' skipped' : '') + '</span>' +
+      '<button id="expandAll" class="docket-btn">Expand all</button>' +
+      '<button id="collapseAll" class="docket-btn">Collapse all</button>' +
+    '</div>' +
+    '<div id="testDocket">' + renderTestDocketHtml(inv) + '</div>'
+  );
+  wireDocket();
+  $('testFilter').addEventListener('input', e => filterDocket(e.target.value));
+  $('expandAll').addEventListener('click', () => setAllExpanded(true));
+  $('collapseAll').addEventListener('click', () => setAllExpanded(false));
+  // enrich summary with run history count from /api/test-runs (non-blocking)
+  getJSON('/api/test-runs?limit=10').then(tr => {
+    const hist = (tr && tr.history) || [];
+    const msg = $('runMsg');
+    if (msg && hist.length) msg.textContent = msg.textContent + ' · ' + hist.length + ' run' + (hist.length===1?'':'s') + ' on record';
+  });
+  const rtb = $('runTestsBtn');
+  if (rtb) rtb.addEventListener('click', async () => {
+    rtb.disabled = true; rtb.textContent = 'running… (~2-3 min)';
+    const msg = $('runMsg'); if (msg) msg.textContent = 'Test run started… results arrive in ~2-3 min.';
+    try { await fetch('/api/run-tests', { method: 'POST' }); } catch (e) {}
+    // re-fetch the docket after a delay; SSE 'report' also re-renders if on this page
+    setTimeout(() => { if (parseHash().name === 'tests') router(); }, 150000);
+  });
+};
+
+// ---------- New Project ----------
+function projectBuildResult(b) {
+  if (!b) return '';
+  const arms = (b.arms||[]).map(a => {
+    const isKl = /klauro/i.test(a.arm_id||'');
+    return '<tr' + (isKl ? ' style="background:rgba(110,231,183,.045)"' : '') + '>' +
+      '<td class="tdpad">' + escapeHtml(a.arm_id) + (isKl ? ' <span class="tag" style="color:var(--klauro)">klauro</span>' : '') + '</td>' +
+      '<td class="tdpad num">' + (a.quality != null ? a.quality : '—') + '</td>' +
+      '<td class="tdpad">' + (a.success ? '<span class="pill ok">✓</span>' : '<span class="pill no">✗</span>') + '</td>' +
+      '<td class="tdpad num">' + fmtMs(a.time_ms) + '</td>' +
+      '<td class="tdpad num">' + fmtNum(a.tokens) + '</td></tr>';
+  }).join('');
+  return '<div class="dpanel" style="margin-bottom:14px"><div class="dphead"><span class="dptitle">' + escapeHtml(b.prompt||'(build)') + '</span>' + winBadge(!!b.win) + '</div>' +
+    '<div class="modeflag" style="margin-bottom:8px">' + escapeHtml(b.size||'') + ' · ' + escapeHtml(b.mode||'') + ' · ' + escapeHtml(b.status||'') + ' · ' + escapeHtml(b.created_at||'') + (b.note?(' · '+escapeHtml(b.note)):'') + '</div>' +
+    (arms ? '<table><thead><tr><th>Arm</th><th>Quality</th><th>Success</th><th>Time</th><th>Tokens</th></tr></thead><tbody>' + arms + '</tbody></table>' : '<div class="modeflag">no arm results</div>') + '</div>';
+}
+routes['new-project'] = async () => {
+  setCrumb('New project');
+  setView(
+    '<div class="phead"><div><h2>New project build</h2><div class="ppath">Greenfield build benchmark — Klauro vs competitors on a from-scratch project</div></div></div>' +
+    '<form class="form" id="pbForm">' +
+      '<div class="field"><label>Prompt</label><textarea id="pbPrompt" placeholder="Describe the project to build…"></textarea></div>' +
+      '<div class="row"><div class="field"><label>Size</label><select id="pbSize"><option value="tiny">tiny</option><option value="small" selected>small</option><option value="medium">medium</option><option value="large">large</option></select></div>' +
+      '<div class="field" style="display:flex;align-items:flex-end"><button class="primary" type="submit" id="pbSubmit">Build &amp; benchmark</button></div></div>' +
+      '<div class="err hidden" id="pbErr"></div>' +
+    '</form>' +
+    '<div id="pbResult"></div>' +
+    '<div class="section-title">Previous builds</div><div id="pbList"><div class="loading">loading…</div></div>'
+  );
+  async function loadList() {
+    const data = await getJSON('/api/project-builds');
+    const builds = (data && data.builds) || [];
+    $('pbList').innerHTML = builds.length ? builds.map(projectBuildResult).join('') : '<div class="emptybox">No builds yet.</div>';
+  }
+  loadList();
+  $('pbForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const prompt = $('pbPrompt').value.trim();
+    const err = $('pbErr');
+    if (!prompt) { err.textContent = 'Prompt is required.'; err.classList.remove('hidden'); return; }
+    err.classList.add('hidden');
+    const btn = $('pbSubmit'); btn.disabled = true; btn.textContent = 'building…';
+    const res = await fetch('/api/project-builds', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ prompt, size: $('pbSize').value }) }).then(r=>r.json()).catch(()=>null);
+    btn.disabled = false; btn.textContent = 'Build & benchmark';
+    if (res && !res.error) { $('pbResult').innerHTML = '<div class="section-title">Result</div>' + projectBuildResult(res); $('pbPrompt').value=''; loadList(); }
+    else { err.textContent = (res && res.error) || 'Build failed.'; err.classList.remove('hidden'); }
+  });
+};
+
+// ---------- Proposals ----------
+routes['proposals'] = async () => {
+  setCrumb('Proposals');
+  if (!catalog) catalog = await getJSON('/api/catalog');
+  const arms = (catalog && catalog.arms) || [];
+  const scenarios = (catalog && catalog.scenarios) || [];
+  const armChecks = arms.map(a =>
+    '<label><input type="checkbox" class="armChk" value="' + escapeHtml(a.id) + '" />' + escapeHtml(a.label) + (a.isKlauro?' <span class="tag" style="color:var(--klauro)">klauro</span>':'') + '</label>'
+  ).join('');
+  setView(
+    '<div class="phead"><div><h2>Propose a scenario</h2><div class="ppath">Add a benchmark scenario to the catalog</div></div></div>' +
+    '<form class="form" id="scForm">' +
+      '<div class="field"><label>Label *</label><input type="text" id="scLabel" placeholder="Short scenario name" /></div>' +
+      '<div class="field"><label>Task *</label><textarea id="scTask" placeholder="What the agent must accomplish…"></textarea></div>' +
+      '<div class="row">' +
+        '<div class="field"><label>Group</label><select id="scGroup"><option value="repo">repo</option><option value="workspace">workspace</option><option value="cross-repo">cross-repo</option><option value="security">security</option><option value="quality">quality</option></select></div>' +
+        '<div class="field"><label>Klauro edge (optional)</label><input type="text" id="scEdge" placeholder="Why Klauro wins this" /></div>' +
+      '</div>' +
+      '<div class="field"><label>Arms (optional)</label><div class="checks">' + (armChecks || '<span class="modeflag">no arms in catalog</span>') + '</div></div>' +
+      '<button class="primary" type="submit" id="scSubmit">Propose scenario</button>' +
+      '<div class="err hidden" id="scErr"></div><div class="ok hidden" id="scOk"></div>' +
+    '</form>' +
+    '<div class="section-title">Catalog scenarios (' + scenarios.length + ')</div>' +
+    '<table><thead><tr><th>Scenario</th><th>Group</th><th>Klauro edge</th></tr></thead><tbody id="scBody">' +
+      (scenarios.length ? scenarios.map(s =>
+        '<tr><td class="tdpad"><b>' + escapeHtml(s.label||s.id) + '</b><div class="task" style="color:var(--muted);font-size:12px">' + escapeHtml(s.task||'') + '</div></td>' +
+        '<td class="tdpad"><span class="tag">' + escapeHtml(s.group||'') + '</span></td>' +
+        '<td class="tdpad" style="color:var(--muted);font-size:12px;max-width:320px">' + escapeHtml(s.klauroEdge||'') + '</td></tr>').join('')
+      : '<tr><td class="tdpad" colspan="3"><div class="loading">No scenarios in catalog.</div></td></tr>') +
+    '</tbody></table>'
+  );
+  $('scForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const label = $('scLabel').value.trim(); const task = $('scTask').value.trim();
+    const err = $('scErr'); const ok = $('scOk'); err.classList.add('hidden'); ok.classList.add('hidden');
+    if (!label || !task) { err.textContent = 'Label and task are required.'; err.classList.remove('hidden'); return; }
+    const selectedArms = [...document.querySelectorAll('.armChk:checked')].map(c => c.value);
+    const body = { label, task, group: $('scGroup').value, klauroEdge: $('scEdge').value.trim() || undefined };
+    if (selectedArms.length) body.arms = selectedArms;
+    const btn = $('scSubmit'); btn.disabled = true;
+    const res = await fetch('/api/scenarios', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) }).then(r=>r.json()).catch(()=>null);
+    btn.disabled = false;
+    if (res && res.ok) { ok.textContent = 'Scenario proposed ✓ — refreshing catalog…'; ok.classList.remove('hidden'); catalog = await getJSON('/api/catalog'); setTimeout(router, 700); }
+    else { err.textContent = (res && res.error) || 'Failed to propose scenario.'; err.classList.remove('hidden'); }
+  });
+};
+
+// ============================== nav counts + row links ==============================
+function refreshNavCounts() {
+  if (counts.workspaces != null) $('ncWorkspaces').textContent = counts.workspaces;
+  if (counts.repos != null) $('ncRepos').textContent = counts.repos;
+  if (counts.scenarios != null) $('ncScenarios').textContent = counts.scenarios;
+  if (counts.runs != null) $('ncRuns').textContent = counts.runs;
+  if (counts.watchers != null && $('ncWatchers')) $('ncWatchers').textContent = counts.watchers;
+  if (counts.coverage != null && $('ncCoverage')) $('ncCoverage').textContent = counts.coverage;
+  if (counts.camps != null && $('ncCamps')) $('ncCamps').textContent = counts.camps;
+  if (counts.grid != null && $('ncGrid')) $('ncGrid').textContent = counts.grid;
+}
+
+// ---------- Coverage (interactive) ----------
+let covData = null;
+let covState = { q: '', type: 'all', sync: 'all', verdict: 'all' };
+const covExpanded = new Set();
+
+function covDetectStr(d) {
+  const parts = [];
+  if (d.dependencies && d.dependencies.length) parts.push('deps: ' + d.dependencies.slice(0,4).join(', '));
+  if (d.files && d.files.length) parts.push('files: ' + d.files.slice(0,3).join(', '));
+  if (d.content && d.content.length) parts.push('content: ' + d.content.length + ' patterns');
+  return parts.join(' · ');
+}
+function covVerdictPill(a) {
+  if (a.verdict === 'supported') return '<span class="pill win">✓ measured</span>';
+  if (a.verdict === 'thin') return '<span class="pill run">~ thin</span>';
+  if (a.verdict === 'blind') return '<span class="pill loss">✗ blind</span>';
+  return '<span class="modeflag">—</span>';
+}
+function covMatches(a) {
+  const s = covState;
+  if (s.type !== 'all' && a.type !== s.type) return false;
+  if (s.sync === 'inc' && !a.incremental) return false;
+  if (s.sync === 'full' && a.incremental) return false;
+  if (s.verdict === 'measured' && a.verdict !== 'supported') return false;
+  if (s.verdict === 'blind' && a.verdict !== 'blind') return false;
+  if (s.q) {
+    const q = s.q.toLowerCase();
+    const hay = (a.id + ' ' + a.name + ' ' + (a.requires||[]).join(' ') + ' ' + covDetectStr(a.detect)).toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  return true;
+}
+function renderCovList() {
+  const rows = covData.analyzers.filter(covMatches);
+  const typeBadge = ty => '<span class="cov-type cov-' + ty + '">' + ty + '</span>';
+  let html = rows.map(a => {
+    const open = covExpanded.has(a.id);
+    let r = '<tr class="cov-row" data-id="' + escapeHtml(a.id) + '">' +
+      '<td class="tdpad">' + typeBadge(a.type) + '</td>' +
+      '<td class="tdpad"><span class="caret">' + (open ? '▾' : '▸') + '</span> <span class="fname">' + escapeHtml(a.id) + '</span>' +
+        (a.measured ? ' <span class="modeflag">' + escapeHtml(a.measured.repo) + ' ' + fmtNum(a.measured.nodes) + ' nodes</span>' : '') + '</td>' +
+      '<td class="tdpad" style="color:var(--muted);font-size:12px">' + escapeHtml(covDetectStr(a.detect) || '—') + '</td>' +
+      '<td class="tdpad" style="text-align:center">' + (a.incremental ? '<span class="pill win">inc</span>' : '<span class="modeflag">full</span>') + '</td>' +
+      '<td class="tdpad">' + covVerdictPill(a) + '</td></tr>';
+    if (open) {
+      const d = a.detect;
+      const line = (lbl, arr) => (arr && arr.length) ? '<div class="cov-d"><span class="cov-dl">' + lbl + '</span> <code>' + arr.map(escapeHtml).join('</code> <code>') + '</code></div>' : '';
+      const drill = (a.type === 'framework' || a.type === 'library')
+        ? '<button class="docket-btn cov-drillbtn" data-stack="' + escapeHtml(a.id) + '">View repos using this →</button>'
+        : '';
+      r += '<tr class="cov-detail"><td></td><td colspan="4" class="tdpad">' +
+        '<div class="cov-dgrid">' +
+        '<div class="cov-d"><span class="cov-dl">name</span> ' + escapeHtml(a.name) + '</div>' +
+        '<div class="cov-d"><span class="cov-dl">requires</span> ' + ((a.requires&&a.requires.length)?a.requires.map(escapeHtml).join(', '):'—') + '</div>' +
+        line('deps', d.dependencies) + line('files', d.files) + line('content', d.content) +
+        '</div>' + drill + '</td></tr>';
+    }
+    return r;
+  }).join('');
+  if (!rows.length) html = '<tr><td colspan="5" class="tdpad" style="color:var(--muted)">No analyzers match these filters.</td></tr>';
+  $('covCount').textContent = 'showing ' + rows.length + ' of ' + covData.analyzers.length;
+  $('covTableBody').innerHTML = html;
+  $('covTableBody').querySelectorAll('tr.cov-row').forEach(tr => tr.addEventListener('click', () => {
+    const id = tr.dataset.id;
+    if (covExpanded.has(id)) covExpanded.delete(id); else covExpanded.add(id);
+    renderCovList();
+  }));
+  $('covTableBody').querySelectorAll('.cov-drillbtn').forEach(b => b.addEventListener('click', e => {
+    e.stopPropagation(); openCovDrill(b.dataset.stack);
+  }));
+}
+function covSeg(group, options) {
+  return '<div class="cov-seg" data-group="' + group + '">' +
+    options.map(o => '<button class="cov-segbtn' + (covState[group] === o.v ? ' active' : '') + '" data-v="' + o.v + '">' + o.t + '</button>').join('') + '</div>';
+}
+async function openCovDrill(stack) {
+  const ov = $('covDrill'); if (!ov) return;
+  ov.style.display = 'flex';
+  ov.querySelector('.cd-body').innerHTML = '<div class="loading">loading repos using ' + escapeHtml(stack) + '…</div>';
+  ov.querySelector('.cd-title').textContent = 'Repos using ' + stack;
+  const d = await getJSON('/api/coverage/stack?stack=' + encodeURIComponent(stack));
+  if (!d || !d.matched) {
+    ov.querySelector('.cd-body').innerHTML = '<div class="emptybox">No analyzed repos in your corpus use ' + escapeHtml(stack) + ' yet.</div>';
+    return;
+  }
+  ov.querySelector('.cd-title').textContent = stack + ' — ' + d.matched + ' of ' + d.total_repos + ' repos';
+  const sub = '<div class="cd-sub">Mean projected lead: quality ' + fmtFrac(d.delta.quality).txt + ' · tokens ' + fmtFrac(d.delta.tokens).txt + ' · speed ' + fmtFrac(d.delta.time).txt + ' ' + winBadge(d.delta.win) + '</div>';
+  let rows = d.repos.map(r =>
+    '<tr class="rowlink" data-go="#/repo/' + encodeURIComponent(r.name) + '"><td class="tdpad"><a href="#/repo/' + encodeURIComponent(r.name) + '">' + escapeHtml(r.name) + '</a>' +
+      ' <span class="modeflag">' + escapeHtml(r.frameworks.join(', ')) + '</span></td>' +
+    '<td class="tdpad num">' + fmtNum(r.nodes) + '</td>' +
+    '<td class="tdpad">' + fracSpan(r.delta.quality) + '</td>' +
+    '<td class="tdpad">' + fracSpan(r.delta.tokens) + '</td>' +
+    '<td class="tdpad">' + winBadge(r.delta.win) + '</td></tr>'
+  ).join('');
+  ov.querySelector('.cd-body').innerHTML = sub +
+    '<table><thead><tr><th>Repo</th><th>Nodes</th><th>Quality Δ</th><th>Tokens Δ</th><th>Verdict</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  ov.querySelectorAll('.cd-body tr.rowlink').forEach(tr => tr.addEventListener('click', e => {
+    if (e.target.tagName === 'A') return; location.hash = tr.dataset.go; closeCovDrill();
+  }));
+}
+function closeCovDrill() { const ov = $('covDrill'); if (ov) ov.style.display = 'none'; }
+routes['coverage'] = async () => {
+  setCrumb('Coverage');
+  loadingView();
+  const c = await getJSON('/api/coverage');
+  if (!c) { setView('<div class="emptybox">Coverage data unavailable.</div>'); return; }
+  covData = c; counts.coverage = c.totals.total; refreshNavCounts();
+  covState = { q: '', type: 'all', sync: 'all', verdict: 'all' };
+  covExpanded.clear();
+  const t = c.totals;
+  const card = (lbl, val, hint, ty) => '<div class="card clickable" data-covtype="' + (ty||'') + '"><div class="lbl">' + lbl + '</div><div class="val">' + val + '</div><div class="hint">' + (hint||'') + '</div></div>';
+
+  let html = '<div class="cards">' +
+    card('Languages', t.languages, 'click to filter', 'language') +
+    card('Frameworks', t.frameworks, 'click to filter', 'framework') +
+    card('Libraries', t.libraries, 'click to filter', 'library') +
+    card('Incremental', t.incremental + '/' + t.total, 'single-file incremental', '') +
+    (c.quality ? card('Measured F1', c.quality.mean_f1, c.quality.fixtures.length + ' truth fixtures', '') : '') +
+    '</div>';
+
+  if (c.quality && c.quality.fixtures.length) {
+    html += '<div class="section-title">Measured analyzer quality — precision/recall/F1 vs hand-curated truth fixtures</div><div class="chips">' +
+      c.quality.fixtures.slice().sort((a,b)=>a.f1-b.f1).map(f => {
+        const color = f.f1 >= 0.95 ? '#1a7f37' : (f.f1 >= 0.8 ? '#9a6700' : '#cf222e');
+        return '<span class="chip" style="border-color:' + color + ';color:' + color + '" title="precision ' + f.precision + ' · recall ' + f.recall + '">' +
+          escapeHtml(f.fixture) + ' <b>F1 ' + f.f1.toFixed(2) + '</b></span>';
+      }).join('') + '</div>';
+  }
+
+  html += '<div class="cov-toolbar">' +
+    '<input id="covSearch" class="docket-filter" placeholder="Search analyzers, deps, files…" />' +
+    covSeg('type', [{v:'all',t:'All'},{v:'language',t:'Lang'},{v:'framework',t:'Framework'},{v:'library',t:'Library'}]) +
+    covSeg('sync', [{v:'all',t:'Any sync'},{v:'inc',t:'Incremental'},{v:'full',t:'Full'}]) +
+    covSeg('verdict', [{v:'all',t:'Any verdict'},{v:'measured',t:'Measured'},{v:'blind',t:'Blind'}]) +
+    '<span class="docket-summary" id="covCount"></span>' +
+    '<button class="docket-btn" id="covReset">Reset</button></div>';
+
+  html += '<table><thead><tr><th>Type</th><th>Analyzer</th><th>Detected by</th><th style="text-align:center">Sync</th><th>Verdict</th></tr></thead><tbody id="covTableBody"></tbody></table>';
+
+  if (c.corpus && c.corpus.frameworks.length) {
+    html += '<div class="section-title">In your corpus (' + c.corpus.repos + ' repos) — click to filter</div><div class="chips">' +
+      c.corpus.frameworks.map(f => '<span class="chip cov-fwchip" data-fw="' + escapeHtml(f.name) + '">' + escapeHtml(f.name) + ' <b>' + f.repos + '</b></span>').join('') + '</div>';
+  }
+  if (c.backlog && c.backlog.length) {
+    html += '<div class="section-title">Backlog — not yet covered</div><div class="chips">' +
+      c.backlog.map(b => '<span class="chip backlog">' + escapeHtml(b.name) + (b.note ? ' <span class="modeflag">' + escapeHtml(b.note) + '</span>' : '') + '</span>').join('') + '</div>';
+  }
+  html += '<div class="cov-drill" id="covDrill"><div class="cd-modal"><div class="cd-head"><span class="cd-title"></span><button class="docket-btn" id="cdClose">✕ Close</button></div><div class="cd-body"></div></div></div>';
+  setView(html);
+
+  // wire controls
+  $('covSearch').addEventListener('input', e => { covState.q = e.target.value; renderCovList(); });
+  $('cdClose').addEventListener('click', closeCovDrill);
+  $('covDrill').addEventListener('click', e => { if (e.target.id === 'covDrill') closeCovDrill(); });
+  document.querySelectorAll('#view .cov-seg').forEach(seg => seg.addEventListener('click', e => {
+    const btn = e.target.closest('.cov-segbtn'); if (!btn) return;
+    covState[seg.dataset.group] = btn.dataset.v;
+    seg.querySelectorAll('.cov-segbtn').forEach(b => b.classList.toggle('active', b === btn));
+    renderCovList();
+  }));
+  document.querySelectorAll('#view .card[data-covtype]').forEach(card2 => card2.addEventListener('click', () => {
+    const ty = card2.dataset.covtype || 'all';
+    covState.type = ty || 'all';
+    document.querySelectorAll('#view .cov-seg[data-group="type"] .cov-segbtn').forEach(b => b.classList.toggle('active', b.dataset.v === covState.type));
+    renderCovList();
+  }));
+  document.querySelectorAll('#view .cov-fwchip').forEach(chip => chip.addEventListener('click', () => {
+    openCovDrill(chip.dataset.fw);
+  }));
+  $('covReset').addEventListener('click', () => {
+    covState = { q:'', type:'all', sync:'all', verdict:'all' };
+    $('covSearch').value = '';
+    document.querySelectorAll('#view .cov-segbtn').forEach(b => b.classList.toggle('active', b.dataset.v === 'all'));
+    renderCovList();
+  });
+  renderCovList();
+};
+// ---------- Camps (A embeddings / B structural / C comprehension + breadth) ----------
+function qualityBar(f1) {
+  if (f1 == null) return '<div class="qbar"><div class="bar"></div><span class="qv">—</span></div>';
+  const pct = Math.round(f1 * 100);
+  const col = pct >= 95 ? 'var(--win)' : (pct >= 50 ? 'var(--warn)' : 'var(--loss)');
+  return '<div class="qbar"><div class="bar"><div style="width:' + Math.max(4, pct) + '%;background:' + col + '"></div></div>' +
+    '<span class="qv">' + pct + '%</span></div>';
+}
+function saveCell(frac) {
+  if (frac == null) return '<span class="modeflag">n/a</span>';
+  const pct = Math.round(frac * 100);
+  return '<span style="color:' + (pct > 0 ? 'var(--win)' : 'var(--muted)') + ';font-variant-numeric:tabular-nums">−' + pct + '%</span>';
+}
+function renderCamps(data) {
+  // ---- Camp A ----
+  let campA = '<div class="camp-sec"><div class="ch"><span class="cn">Camp A · Embeddings RAG</span>' +
+    '<span class="cv ' + (data.campA.available ? 'dom' : 'tie') + '">' + (data.campA.available ? 'DOMINATED' : 'unavailable') + '</span></div>' +
+    '<div class="csub">' + escapeHtml(data.campA.note) + '</div>';
+  if (data.campA.available && data.campA.arms.length) {
+    campA += '<table><thead><tr><th>Model</th><th class="klcol">Klauro F1</th><th>Competitor F1</th><th>Verdict</th></tr></thead><tbody>' +
+      data.campA.arms.map(a =>
+        '<tr><td class="tdpad">' + escapeHtml(a.arm) + '</td>' +
+        '<td class="tdpad">' + qualityBar(a.klauroF1) + '</td>' +
+        '<td class="tdpad">' + qualityBar(a.competitorF1) + '</td>' +
+        '<td class="tdpad">' + (a.klauroOutQualities ? '<span class="pill win">✓ out-qualified</span>' : '<span class="pill loss">✗ check</span>') + '</td></tr>'
+      ).join('') + '</tbody></table>';
+  } else {
+    campA += '<div class="empty neutral">Ollama / embedding models not installed → skipped (honest, not faked).</div>';
+  }
+  campA += '</div>';
+
+  // ---- Camp A · top languages (structural vs embedding, per-language) ----
+  const al = data.campALangs;
+  let campALangs = '';
+  if (al && al.aggregate) {
+    campALangs = '<div class="camp-sec"><div class="ch"><span class="cn">Camp A · Top languages</span>' +
+      '<span class="cv dom">' + al.aggregate.languages + ' LANGS · ' + Math.round((al.aggregate.klauroWinRate || 0) * 100) + '% WIN</span></div>' +
+      '<div class="csub">Per-language structural-vs-embedding head-to-head. Klauro resolves the decoy-proof caller structurally; the embedding model only fuzzy-matches text. ' +
+      'Mean Klauro F1 ' + Math.round(al.aggregate.meanKlauroF1 * 100) + '% vs embeddings ' + Math.round(al.aggregate.meanEmbeddingF1 * 100) + '% across ' + al.aggregate.languages + ' of the top ~50 languages.</div>';
+    if (al.perLanguage && al.perLanguage.length) {
+      campALangs += '<table><thead><tr><th>Lang</th><th>Rank</th><th class="klcol">Klauro F1</th><th>Embedding F1</th><th>Verdict</th></tr></thead><tbody>' +
+        al.perLanguage.map(p =>
+          '<tr><td class="tdpad"><b>' + escapeHtml(p.lang) + '</b></td>' +
+          '<td class="tdpad num">' + p.rank + '</td>' +
+          '<td class="tdpad">' + qualityBar(p.klauroF1) + '</td>' +
+          '<td class="tdpad">' + (p.available ? qualityBar(p.embeddingF1) : '<span class="modeflag">— no ollama</span>') + '</td>' +
+          '<td class="tdpad">' + (p.klauroWins ? '<span class="pill win">✓ out-qualified</span>' : '<span class="pill loss">✗ check</span>') + '</td></tr>'
+        ).join('') + '</tbody></table>';
+    }
+    campALangs += '</div>';
+  }
+
+  // ---- Camp B ----
+  let campB = '<div class="camp-sec"><div class="ch"><span class="cn">Camp B · Structural indexers</span>' +
+    '<span class="cv tie">CEILING TIE · WON ON COVERAGE + TOKENS</span></div>' +
+    '<div class="csub">A compiler-accurate tool ties Klauro at the quality ceiling on TS who-calls — recorded honestly. Klauro wins on tokens and on every language these tools cannot index.</div>';
+  campB += '<table><thead><tr><th>Tool</th><th class="klcol">Klauro F1</th><th>Competitor F1</th><th>Tie?</th><th>Tokens (K / comp)</th><th>Saving</th><th>Coverage</th></tr></thead><tbody>' +
+    data.campB.rows.map(r => {
+      if (!r.available) {
+        return '<tr><td class="tdpad">' + escapeHtml(r.tool) + '</td>' +
+          '<td class="tdpad" colspan="5" style="color:var(--muted)"><span class="pill pend">not installed → skipped</span></td>' +
+          '<td class="tdpad" style="color:var(--muted);font-size:12px">' + escapeHtml(r.coverageNote) + '</td></tr>';
+      }
+      const tie = r.ceilingTie ? '<span class="pill tie">≡ ceiling tie</span>'
+        : (r.klauroF1 >= r.competitorF1 ? '<span class="pill win">✓ win</span>' : '<span class="pill loss">✗ loss</span>');
+      const toks = (r.klauroTokens != null && r.competitorTokens != null)
+        ? fmtNum(r.klauroTokens) + ' / ' + fmtNum(r.competitorTokens) : '<span class="modeflag">—</span>';
+      return '<tr><td class="tdpad">' + escapeHtml(r.tool) + '</td>' +
+        '<td class="tdpad">' + qualityBar(r.klauroF1) + '</td>' +
+        '<td class="tdpad">' + qualityBar(r.competitorF1) + '</td>' +
+        '<td class="tdpad">' + tie + '</td>' +
+        '<td class="tdpad num">' + toks + '</td>' +
+        '<td class="tdpad num">' + saveCell(r.tokenSaving) + '</td>' +
+        '<td class="tdpad" style="color:var(--muted);font-size:12px;max-width:280px">' + escapeHtml(r.coverageNote) + '</td></tr>';
+    }).join('') + '</tbody></table></div>';
+
+  // ---- Camp B · per-language structural head-to-head vs the REAL codebase-memory binary ----
+  const bs = data.campBStructural;
+  let campBStruct = '';
+  if (bs && bs.available && bs.aggregate) {
+    const a = bs.aggregate;
+    campBStruct = '<div class="camp-sec" style="grid-column:1/-1"><div class="ch"><span class="cn">Camp B · Structural vs codebase-memory (per language, real binary)</span>' +
+      '<span class="cv ' + (a.losses === 0 ? 'tie' : 'loss') + '">' + a.languages + ' LANGS · ' + Math.round(a.winRate * 100) + '% WIN-OR-TIE · ' + a.losses + ' LOSSES</span></div>' +
+      '<div class="csub">Klauro vs the actual installed codebase-memory binary on generic structural extraction (symbols/calls/imports). ' +
+      a.klauroWins + ' wins (codebase-memory indexed nothing for that language) · ' + a.ceilingTies + ' ceiling-ties (symbol-name parity — codebase-memory read the same symbols) · <b>' + a.losses + ' losses</b>. ' +
+      'Mean tokens Klauro ' + Math.round(a.meanKlauroTokens) + ' vs codebase-memory ' + Math.round(a.meanCbmTokens) + ' → ~' + (a.meanCbmTokens / Math.max(1, a.meanKlauroTokens)).toFixed(1) + '× cheaper. Tie only where its indexer is genuinely accurate; win on coverage + always on tokens.</div>';
+    const wins = bs.perLanguage.filter(function (r) { return r.verdict === 'win'; });
+    campBStruct += '<div class="csub" style="margin-top:8px;color:var(--fg)">Coverage wins (' + wins.length + ') — codebase-memory indexes no symbols, Klauro does:</div>' +
+      '<div class="langs">' + wins.map(function (r) { return escapeHtml(r.lang); }).join(' · ') + '</div>';
+  }
+
+  // ---- Camp C ----
+  const agg = data.campC.aggregate;
+  let campC = '<div class="camp-sec"><div class="ch"><span class="cn">Camp C · Comprehension (route tables)</span>' +
+    '<span class="cv out">OUT-OF-CATEGORY</span></div>' +
+    '<div class="csub">Klauro emits a structured route table (method + path). Embeddings and structural indexers have no route abstraction — they can only hand you code to read. ' +
+    agg.fixtures + ' framework fixtures · mean Klauro F1 ' + Math.round(agg.meanKlauroF1 * 100) + '% · mean token saving −' + Math.round(agg.meanTokenSaving * 100) + '%.</div>';
+  campC += '<table><thead><tr><th>Framework</th><th>Language</th><th class="klcol">Klauro F1</th><th>Routes</th><th>Tokens (K / comp)</th><th>Saving</th><th>Verdict</th></tr></thead><tbody>' +
+    data.campC.rows.map(r =>
+      '<tr><td class="tdpad"><b>' + escapeHtml(r.framework) + '</b></td>' +
+      '<td class="tdpad">' + escapeHtml(r.language) + '</td>' +
+      '<td class="tdpad">' + qualityBar(r.klauroF1) + '</td>' +
+      '<td class="tdpad num">' + r.routes + '</td>' +
+      '<td class="tdpad num">' + fmtNum(r.klauroTokens) + ' / ' + fmtNum(r.competitorTokens) + '</td>' +
+      '<td class="tdpad num">' + saveCell(r.tokenSaving) + '</td>' +
+      '<td class="tdpad"><span class="pill outcat">✓ only Klauro answers</span></td></tr>'
+    ).join('') + '</tbody></table>';
+  if (data.campC.pending && data.campC.pending.length) {
+    campC += '<div class="reasons"><div class="r">Pending (in-progress grammar): ' +
+      data.campC.pending.map(escapeHtml).join(', ') + '</div></div>';
+  }
+  campC += '</div>';
+
+  // ---- Camp C · routes head-to-head vs the REAL codebase-memory binary ----
+  const cr = data.campCRoutesVsCbm;
+  if (cr && cr.available && cr.aggregate) {
+    const ca = cr.aggregate;
+    campC += '<div class="camp-sec" style="grid-column:1/-1;margin-top:10px"><div class="ch"><span class="cn">Camp C · Routes vs codebase-memory (real binary, it claims routes)</span>' +
+      '<span class="cv ' + (ca.losses === 0 ? 'tie' : 'loss') + '">' + ca.frameworks + ' FW · ' + Math.round(ca.winRate * 100) + '% WIN-OR-TIE · ' + ca.losses + ' LOSSES</span></div>' +
+      '<div class="csub">A genuine head-to-head — codebase-memory carries a <code>Route</code> label and extracts routes for a few frameworks. Given its best read: Klauro mean route F1 <b>' + ca.meanKlauroF1.toFixed(2) + '</b> vs codebase-memory <b>' + ca.meanCbmF1.toFixed(2) + '</b>. ' +
+      ca.klauroWins + ' wins · ' + ca.ties + ' ceiling-ties (it matched) · <b>' + ca.losses + ' losses</b>. It surfaced routes for ~4 mainstream frameworks (tie on fastapi; wrong facts → win on flask/spring/quarkus) and nothing for the other ~30.</div></div>';
+  }
+
+  // ---- DEPTH-1 · cross-function source→sink (taint) vs the real codebase-memory binary ----
+  const dt = data.depthTaint;
+  if (dt && dt.available && dt.aggregate) {
+    const da = dt.aggregate;
+    campC += '<div class="camp-sec" style="grid-column:1/-1;margin-top:10px;border-color:var(--accent)"><div class="ch"><span class="cn">Camp C · DEPTH — taint / data-flow (source→sink, cross-function)</span>' +
+      '<span class="cv out">' + da.cases + ' CASES · ' + Math.round(da.winRate * 100) + '% WIN · ' + da.losses + ' LOSSES</span></div>' +
+      '<div class="csub">The deepest axis: does tainted/sensitive data flow from a user-input source through the call chain to a SQL / fs / external-HTTP sink? Klauro emits the structured source→path→sink fact (user_journeys entry→steps→terminal + data_lineage) and drops the non-reaching decoy. codebase-memory at its best (trace_path) returns call adjacency only — no source binding, no value-flow. Klauro mean F1 <b>' + da.meanKlauroF1.toFixed(2) + '</b> vs codebase-memory <b>' + da.meanCbmF1.toFixed(2) + '</b>, ~' + Math.round(da.tokenSaving * 100) + '% fewer tokens.</div></div>';
+  }
+
+  // ---- DEPTH-4 dispatch (interface->impl) vs codebase-memory's Hybrid-LSP ----
+  const dd = data.depthDispatch;
+  if (dd && dd.available && dd.aggregate) {
+    const dda = dd.aggregate;
+    campC += '<div class="camp-sec" style="grid-column:1/-1;margin-top:10px"><div class="ch"><span class="cn">Camp C - DEPTH: interface->impl dispatch (the one axis cbm LSP competes)</span>' +
+      '<span class="cv ' + (dda.losses === 0 ? 'tie' : 'loss') + '">' + dda.cases + ' CASES &middot; ' + dda.ties + ' CEILING-TIE &middot; ' + dda.losses + ' LOSSES</span></div>' +
+      '<div class="csub">Resolve which concrete impl a polymorphic call dispatches to (class-hierarchy analysis over Klauro structural edges). The honest hard fight - codebase-memory Hybrid-LSP does real type resolution on its 11 langs. Result: ceiling-tie where cbm is also accurate (java-shapes), win where Klauro narrows via constructor binding / cbm graph misses a method / the lang is outside cbm LSP set. Klauro mean F1 <b>' + dda.meanKlauroF1.toFixed(2) + '</b> vs codebase-memory <b>' + dda.meanCbmF1.toFixed(2) + '</b>, <b>' + dda.losses + ' losses</b>.</div></div>';
+  }
+
+  // ---- DEPTH-2 cross-repo contract drift + DEPTH-3 behavioral diff ----
+  const cd = data.depthContractDrift;
+  if (cd && cd.available && cd.aggregate) {
+    const cda = cd.aggregate;
+    campC += '<div class="camp-sec" style="grid-column:1/-1;margin-top:10px"><div class="ch"><span class="cn">Camp C - DEPTH: cross-repo contract drift (field-level)</span>' +
+      '<span class="cv out">' + cda.cases + ' CASES &middot; ' + Math.round(cda.winRate * 100) + '% WIN &middot; ' + cda.losses + ' LOSSES</span></div>' +
+      '<div class="csub">Field-level type mismatch between a producer and consumer ACROSS repos (provider returns id:string, client expects id:number). WAS fuses the seam + joins typed entity shapes both sides. codebase-memory analyzes one repo - no cross-repo fusion, no field-level contract. Klauro F1 <b>' + cda.meanKlauroF1.toFixed(2) + '</b> vs cbm <b>' + cda.meanCbmF1.toFixed(2) + '</b>, ~' + Math.round(cda.tokenSaving * 100) + '% fewer tokens.</div></div>';
+  }
+  const bd = data.depthBehavioralDiff;
+  if (bd && bd.available && bd.aggregate) {
+    const bda = bd.aggregate;
+    campC += '<div class="camp-sec" style="grid-column:1/-1;margin-top:10px"><div class="ch"><span class="cn">Camp C - DEPTH: behavioral / semantic diff (is the change moving the right direction?)</span>' +
+      '<span class="cv out">' + bda.cases + ' CASES &middot; ' + Math.round(bda.winRate * 100) + '% WIN &middot; ' + bda.losses + ' LOSSES</span></div>' +
+      '<div class="csub">What changed in BEHAVIOR between two versions - auth guard removed (route now public), a journey that stopped reaching its payment sink, a capability added - while staying silent on a behavior-preserving rename. codebase-memory detect_changes only lists changed files. Klauro F1 <b>' + bda.meanKlauroF1.toFixed(2) + '</b> vs cbm <b>' + bda.meanCbmF1.toFixed(2) + '</b>, ~' + Math.round(bda.tokenSaving * 100) + '% fewer tokens.</div></div>';
+  }
+  const to = data.telemetryOverlay;
+  if (to && to.cases > 0) {
+    campC += '<div class="camp-sec" style="grid-column:1/-1;margin-top:10px;border-color:var(--accent)"><div class="ch"><span class="cn">Camp C - DEPTH: telemetry overlay (&quot;how it is running&quot;) - the historically un-won axis</span>' +
+      '<span class="cv out">' + to.cases + ' CASES &middot; ' + Math.round(to.winRate * 100) + '% WIN &middot; ' + to.losses + ' LOSSES</span></div>' +
+      '<div class="csub">Runtime trace spans (duration/error/count) correlated to the exact static node they exercised (route / exit / error->function) -> a &quot;how it is running&quot; fact (hot/slow/error), rejecting the decoy span as unmatched. codebase-memory has an ingest_traces tool but it is a STUB (&quot;Runtime edge creation from traces not yet implemented&quot;) - it stores traces, makes zero correlations. Klauro correlation F1 <b>' + to.meanKlauroF1.toFixed(2) + '</b> vs cbm <b>' + to.meanCbmF1.toFixed(2) + '</b>. Honest limits: batch ingest (not live stream), coarse thresholds (no p95/p99).</div></div>';
+  }
+
+  // ---- Camp C · FULL comprehension taxonomy (C1–C11, 2 modes) ----
+  const cf = data.campCFull;
+  let campCFull = '';
+  if (cf && cf.dimensions && cf.dimensions.length) {
+    const h2h = cf.dimensions.filter(d => d.mode === 'head-to-head');
+    const emi = cf.dimensions.filter(d => d.mode === 'emission-coverage');
+    const ca = cf.aggregate;
+    campCFull = '<div class="camp-sec" style="grid-column:1/-1"><div class="ch"><span class="cn">Camp C · Full comprehension (C1–C11)</span>' +
+      '<span class="cv out">' + cf.dimensions.length + ' DIMENSIONS · SOLE TENANT</span></div>' +
+      '<div class="csub">Camp C is the whole comprehension layer — what the system <i>is / does / how built / how running / why</i> — not just routes. ' +
+      (ca ? ca.headToHead.dimensions + ' head-to-head dims (mean Klauro F1 ' + Math.round(ca.headToHead.meanKlauroF1 * 100) + '%, −' + Math.round(ca.headToHead.meanTokenSaving * 100) + '% tokens, ' + (ca.headToHead.allWin ? 'all win/tie' : 'check') + ') + ' + ca.emissionCoverage.dimensions + ' emission-coverage dims (' + ca.emissionCoverage.totalEmitted + ' structured facts Camp A/B cannot produce at all).' : '') + '</div>';
+    campCFull += '<div class="csub" style="margin-top:10px;color:var(--fg)"><b>Head-to-head</b> — a real competitor tries and scores 0; Klauro emits the structured fact:</div>';
+    campCFull += '<table><thead><tr><th>Dimension</th><th class="klcol">Klauro F1</th><th>Saving</th><th>Fixtures</th><th>Camp A/B cannot…</th></tr></thead><tbody>' +
+      h2h.map(d =>
+        '<tr><td class="tdpad"><b>' + escapeHtml(d.label) + '</b></td>' +
+        '<td class="tdpad">' + qualityBar(d.meanKlauroF1) + '</td>' +
+        '<td class="tdpad num">' + saveCell(d.meanTokenSaving) + '</td>' +
+        '<td class="tdpad num">' + d.fixtures + '</td>' +
+        '<td class="tdpad" style="color:var(--muted);font-size:12px;max-width:360px">' + escapeHtml(d.campABCannot) + '</td></tr>'
+      ).join('') + '</tbody></table>';
+    campCFull += '<div class="csub" style="margin-top:12px;color:var(--fg)"><b>Emission-coverage</b> — nobody else produces these at all; the count is structured facts emitted with provenance:</div>';
+    campCFull += '<table><thead><tr><th>Dimension</th><th>Emitted</th><th>Examples</th><th>Camp A/B cannot…</th></tr></thead><tbody>' +
+      emi.map(d =>
+        '<tr><td class="tdpad"><b>' + escapeHtml(d.label) + '</b></td>' +
+        '<td class="tdpad num"><span class="pill outcat">' + d.emitted + '</span></td>' +
+        '<td class="tdpad" style="color:var(--muted);font-size:12px;max-width:300px">' + (d.examples || []).slice(0, 3).map(escapeHtml).join(', ') + '</td>' +
+        '<td class="tdpad" style="color:var(--muted);font-size:12px;max-width:320px">' + escapeHtml(d.campABCannot) + '</td></tr>'
+      ).join('') + '</tbody></table></div>';
+  }
+
+  // ---- WAS · Workspace Analysis (cross-repo) · FIRST-CLASS ----
+  const w = data.campWAS;
+  let campWAS = '';
+  if (w && w.dimensions && w.dimensions.length) {
+    campWAS = '<div class="camp-sec" style="grid-column:1/-1;border-color:var(--accent)"><div class="ch"><span class="cn">WAS · Workspace Analysis (cross-repo) — the biggest moat</span>' +
+      '<span class="cv out">OUT-OF-CATEGORY · SOLE TENANT</span></div>' +
+      '<div class="csub">Every competitor (scip, stack-graphs, codebase-memory, embeddings) analyzes <b>one repo</b>. WAS understands the whole <b>workspace</b> — ui → api → worker → infra — as one product. ' +
+      escapeHtml(w.campABCannot || '') + ' Measured on <b>' + escapeHtml(w.workspace || 'workspace') + '</b> (' + w.repos + ' repos, ' + w.aggregate.reposCrossed + ' crossed): <b>' + w.aggregate.totalEmitted + '</b> cross-repo facts across ' + w.dimensions.filter(d => d.emitted > 0).length + '/' + w.dimensions.length + ' dimensions.</div>';
+    campWAS += '<table><thead><tr><th>W</th><th>Dimension</th><th>Emitted</th><th>Examples</th><th>Single-repo tools cannot…</th></tr></thead><tbody>' +
+      w.dimensions.map(d =>
+        '<tr><td class="tdpad"><b>' + escapeHtml(d.group) + '</b></td>' +
+        '<td class="tdpad"><b>' + escapeHtml(d.label) + '</b></td>' +
+        '<td class="tdpad num">' + (d.emitted > 0 ? '<span class="pill outcat">' + d.emitted + '</span>' : '<span class="modeflag">0</span>') + '</td>' +
+        '<td class="tdpad" style="color:var(--muted);font-size:12px;max-width:300px">' + (d.examples || []).slice(0, 3).map(escapeHtml).join(', ') + '</td>' +
+        '<td class="tdpad" style="color:var(--muted);font-size:12px;max-width:320px">' + escapeHtml(d.campABCannot) + '</td></tr>'
+      ).join('') + '</tbody></table></div>';
+  }
+
+  // ---- Breadth tile ----
+  const b = data.breadth;
+  const breadth = '<div class="breadth-tile"><div><div class="big">' + b.supportedLanguageCount + '</div>' +
+    '<div class="blbl">supported languages</div></div>' +
+    '<div style="flex:1"><div class="blbl" style="margin-bottom:6px">' + b.supportedLanguageCount + ' of ' + b.totalSpecs +
+    ' language specs have a loadable grammar (wasm or native)</div>' +
+    '<div class="langs">' + b.languages.map(escapeHtml).join(' · ') + '</div></div></div>';
+
+  return breadth + '<div class="camps-grid">' + campA + campALangs + campB + campBStruct + campC + campCFull + campWAS + '</div>';
+}
+routes['camps'] = async () => {
+  setCrumb('Camps');
+  loadingView('measuring camps — running real indexers, may take a moment…');
+  const data = await getJSON('/api/camps');
+  if (!data) { setView('<div class="emptybox">Camps report unavailable.</div>'); return; }
+  counts.camps = data.breadth ? data.breadth.supportedLanguageCount : null;
+  refreshNavCounts();
+  setView(renderCamps(data));
+};
+
+// ============================== FULL GRID (honest matrix) ==============================
+// One explicit verdict per (row × metric) cell, measured from the real benches and
+// folding in the 46+ camp-a-langs structural-retrieval wins. Honest by construction:
+// uncovered cells are surfaced as the to-build queue, never hidden as wins.
+function gridVerdictPill(v) {
+  if (v === 'win') return '<span class="pill win">✓ win</span>';
+  if (v === 'ceiling-tie') return '<span class="pill tie">≡ ceiling tie</span>';
+  if (v === 'loss') return '<span class="pill loss">✗ loss</span>';
+  return '<span class="pill pend">uncovered</span>';
+}
+function gridCellSwatch(v) {
+  const col = v === 'win' ? 'var(--win)' : v === 'ceiling-tie' ? 'var(--accent)'
+    : v === 'loss' ? 'var(--loss)' : 'var(--bar-base)';
+  return '<span class="gcell" title="' + escapeHtml(v) + '" style="background:' + col + '"></span>';
+}
+function renderGridKindTable(grid, kind, title) {
+  const cells = grid.cells.filter(c => c.rowKind === kind);
+  if (!cells.length) return '';
+  const covered = cells.filter(c => c.verdict !== 'uncovered').length;
+  // Matrix swatch strip (verdict-colored) for a quick visual scan of the whole kind.
+  const strip = '<div class="gmatrix">' + cells.map(c => gridCellSwatch(c.verdict)).join('') + '</div>';
+  // Detail table: only the covered cells carry numbers; uncovered live in the queue.
+  const rows = cells.filter(c => c.verdict !== 'uncovered').map(c =>
+    '<tr><td class="tdpad"><b>' + escapeHtml(c.row) + '</b></td>' +
+    '<td class="tdpad"><span class="tag">' + escapeHtml(c.metric) + '</span></td>' +
+    '<td class="tdpad">' + qualityBar(c.klauroF1) + '</td>' +
+    '<td class="tdpad">' + qualityBar(c.competitorBestF1) + '</td>' +
+    '<td class="tdpad num">' + saveCell(c.tokenSaving) + '</td>' +
+    '<td class="tdpad">' + gridVerdictPill(c.verdict) + '</td>' +
+    '<td class="tdpad" style="color:var(--muted);font-size:12px;max-width:280px">' + escapeHtml(c.note || (c.armsRan||[]).join(', ')) + '</td></tr>'
+  ).join('');
+  return '<div class="camp-sec" style="grid-column:1/-1"><div class="ch"><span class="cn">' + escapeHtml(title) + '</span>' +
+    '<span class="cv dom">' + covered + ' / ' + cells.length + ' COVERED</span></div>' +
+    '<div class="csub">Every supported ' + escapeHtml(kind) + ' × metric cell with an explicit, measured verdict.</div>' +
+    strip +
+    (rows ? '<table style="margin-top:10px"><thead><tr><th>Row</th><th>Metric</th><th class="klcol">Klauro F1</th><th>Competitor best F1</th><th>Saving</th><th>Verdict</th><th>Arms / note</th></tr></thead><tbody>' + rows + '</tbody></table>'
+      : '<div class="empty neutral">No covered cells in this kind yet.</div>') +
+    '</div>';
+}
+function renderGrid(grid) {
+  if (!grid || !grid.aggregate) return '<div class="emptybox">Full grid unavailable.</div>';
+  const a = grid.aggregate;
+  const pct = x => Math.round((x || 0) * 100) + '%';
+  // ---- Headline cards ----
+  const card = (lbl, val, cls, hint) =>
+    '<div class="card"><div class="lbl">' + lbl + '</div><div class="val ' + (cls||'') + '">' + val + '</div>' +
+    (hint ? '<div class="hint">' + hint + '</div>' : '') + '</div>';
+  const headline = '<div class="cards">' +
+    card('Coverage', pct(a.coverage), '', (a.total - a.uncovered) + ' / ' + a.total + ' cells') +
+    card('Win-rate on covered', pct(a.winRate), 'win', a.won + ' won · ' + a.ceilingTied + ' ceiling-tied') +
+    card('Covered', (a.total - a.uncovered), '', a.total + ' total · ' + a.uncovered + ' uncovered') +
+    card('Losses', a.losses, a.losses > 0 ? 'loss' : 'win', a.losses > 0 ? 'Klauro bugs — fix, do not hide' : 'zero losses') +
+    '</div>';
+  // ---- rows-by-kind summary ----
+  const r = grid.rows || {};
+  const rowsLine = '<div class="chips">' +
+    '<span class="chip">languages <b>' + (r.languages?r.languages.covered:0) + '</b> / ' + (r.languages?r.languages.total:0) + '</span>' +
+    '<span class="chip">frameworks <b>' + (r.frameworks?r.frameworks.covered:0) + '</b> / ' + (r.frameworks?r.frameworks.total:0) + '</span>' +
+    '<span class="chip">libraries <b>' + (r.libraries?r.libraries.covered:0) + '</b> / ' + (r.libraries?r.libraries.total:0) + '</span>' +
+    '</div>';
+  // ---- legend ----
+  const legend = '<div class="legend">' +
+    '<span><span class="sw" style="background:var(--win)"></span>win</span>' +
+    '<span><span class="sw" style="background:var(--accent)"></span>ceiling-tie</span>' +
+    '<span><span class="sw" style="background:var(--bar-base)"></span>uncovered</span>' +
+    '<span><span class="sw" style="background:var(--loss)"></span>loss</span></div>';
+  // ---- per-kind matrices ----
+  const matrices = '<div class="camps-grid">' +
+    renderGridKindTable(grid, 'language', 'Languages') +
+    renderGridKindTable(grid, 'framework', 'Frameworks') +
+    renderGridKindTable(grid, 'library', 'Libraries') +
+    '</div>';
+  // ---- to-build queue (the honest gaps) ----
+  const q = grid.uncoveredList || [];
+  let queue = '<div class="section-title">To-build queue · ' + q.length + ' uncovered cells (the honest gaps)</div>';
+  if (!q.length) {
+    queue += '<div class="empty">✓ Nothing uncovered — every supported cell is measured.</div>';
+  } else {
+    queue += '<div class="camps-grid">';
+    for (const kind of ['language','framework','library']) {
+      const inKind = q.filter(u => u.rowKind === kind);
+      if (!inKind.length) continue;
+      queue += '<div class="camp-sec"><div class="ch"><span class="cn">' + kind + ' gaps</span>' +
+        '<span class="cv tie">' + inKind.length + '</span></div><div class="csub">' +
+        inKind.map(u => '<span class="tag">' + escapeHtml(u.row) + ' · ' + escapeHtml(u.metric) + '</span>').join(' ') +
+        '</div></div>';
+    }
+    queue += '</div>';
+  }
+  // ---- losses (loud, if any) ----
+  let losses = '';
+  if (grid.losses && grid.losses.length) {
+    losses = '<div class="section-title">Losses — Klauro bugs (fix, do not hide)</div><div class="losses">' +
+      grid.losses.map(l => '<div class="loss-row"><span class="sid">' + escapeHtml(l.rowKind + '/' + l.row) + '</span> [' +
+        escapeHtml(l.metric) + '] — klauro ' + pct(l.klauroF1) + ' vs best ' + pct(l.competitorBestF1) +
+        (l.note ? ' <span class="modeflag">(' + escapeHtml(l.note) + ')</span>' : '') + '</div>').join('') + '</div>';
+  }
+  return headline + rowsLine + legend + matrices + queue + losses;
+}
+routes['grid'] = async () => {
+  setCrumb('Full grid');
+  loadingView('measuring the full grid — running real benches, may take a moment…');
+  const data = await getJSON('/api/grid');
+  const grid = data && data.aggregate ? data : null;
+  if (!grid) { setView('<div class="emptybox">Full grid unavailable.</div>'); return; }
+  counts.grid = grid.aggregate ? (grid.aggregate.total - grid.aggregate.uncovered) : null;
+  refreshNavCounts();
+  setView(renderGrid(grid));
+};
+function wireRowLinks() {
+  document.querySelectorAll('#view tr.rowlink[data-go]').forEach(tr => tr.addEventListener('click', e => {
+    if (e.target.tagName === 'A') return;
+    location.hash = tr.dataset.go;
+  }));
+}
+
+// ============================== boot ==============================
+window.addEventListener('hashchange', router);
+// Bulletproof in-app navigation: force hash + render on any internal #/ link
+// click, so a single render path serves nav links, breadcrumbs, and row links
+// regardless of default-action quirks.
+document.addEventListener('click', e => {
+  const a = e.target.closest && e.target.closest('a[href^="#/"]');
+  if (!a) return;
+  e.preventDefault();
+  const target = a.getAttribute('href').slice(1); // strip leading #
+  if (location.hash.slice(1) === target) router(); else location.hash = target;
+});
+
+// SSE — keep live report flowing; refresh matrix view if it's on screen and not viewing a past run.
+const es = new EventSource('/api/events');
+es.addEventListener('report', e => {
+  try {
+    const rep = JSON.parse(e.data);
+    lastReport = rep;
+    updateTopBar(rep);
+    const cur = parseHash().name;
+    if (cur === 'scenarios' && !viewingReport) router();
+    else if (cur === 'tests') router();
+  } catch (err) {}
+});
+es.onerror = () => {};
+
+// initial prefetch (non-blocking) for catalog + report + top bar
+(async () => {
+  catalog = await getJSON('/api/catalog');
+  const rep = await getJSON('/api/report');
+  if (rep && rep.scenarios && rep.scenarios.length) { lastReport = rep; updateTopBar(rep); }
+  else updateTopBar(reportFromCatalog(catalog));
+  if (catalog && catalog.scenarios) { counts.scenarios = catalog.scenarios.length; refreshNavCounts(); }
+  // prime overview totals for nav counts even if user lands elsewhere
+  const ov = await getJSON('/api/overview');
+  if (ov && ov.totals) { counts.repos = ov.totals.repos; counts.workspaces = ov.totals.workspaces; counts.runs = ov.totals.runs; refreshNavCounts(); }
+})();
+
+router();
+</script>
+</body>
+</html>

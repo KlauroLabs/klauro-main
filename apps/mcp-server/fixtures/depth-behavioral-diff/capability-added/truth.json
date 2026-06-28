@@ -1,0 +1,9 @@
+{
+  "case": "capability-added",
+  "language": "typescript",
+  "control": false,
+  "description": "BEFORE: only GET /orders exists. AFTER: a new POST /orders/refund capability + journey reaches a new Refund sink. A capability (and its journey) was added.",
+  "behavioral_changes": [
+    { "kind": "capability-added", "detail": "New refund capability + POST /orders/refund journey reaching the Refund sink" }
+  ]
+}

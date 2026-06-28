@@ -1,0 +1,8 @@
+{
+  "service": "checkout",
+  "spans": [
+    { "name": "POST /payments/charges", "kind": "exit", "endpoint": "/payments/charges", "duration_ms": 1800, "error": false, "count": 40 },
+    { "name": "GET /inventory/items", "kind": "exit", "endpoint": "/inventory/items", "duration_ms": 120, "error": true, "count": 25 },
+    { "name": "GET /ghost/nowhere", "kind": "exit", "endpoint": "/ghost/nowhere", "duration_ms": 90, "error": false, "count": 2 }
+  ]
+}

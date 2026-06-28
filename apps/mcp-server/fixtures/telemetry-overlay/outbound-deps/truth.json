@@ -1,0 +1,9 @@
+{
+  "task": "telemetry-overlay",
+  "correlations": [
+    { "runtime_span": "POST /payments/charges", "static_node": { "kind": "exit", "endpoint": "/payments/charges" }, "fact": "slow" },
+    { "runtime_span": "GET /inventory/items", "static_node": { "kind": "exit", "endpoint": "/inventory/items" }, "fact": "error" },
+    { "runtime_span": "GET /ghost/nowhere", "static_node": null, "fact": "unmatched" }
+  ],
+  "hot_answer": "POST /payments/charges"
+}

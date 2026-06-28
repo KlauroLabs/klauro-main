@@ -1,0 +1,11 @@
+{
+  "task": "interface-to-impl-dispatch",
+  "language": "java",
+  "lsp_lang": true,
+  "description": "render(Shape shape) calls shape.area(); shape is statically typed to the interface Shape, so the call dispatches to every concrete Shape implementation. The same-named TaxForm.area is a decoy that does NOT implement Shape and must be excluded.",
+  "call_site": { "caller": "Renderer.render", "method": "area", "receiver_type": "Shape", "line": 36 },
+  "interface": "Shape",
+  "implementations": ["Circle", "Square"],
+  "decoy_class": "TaxForm",
+  "resolves_to": ["Circle.area", "Square.area"]
+}

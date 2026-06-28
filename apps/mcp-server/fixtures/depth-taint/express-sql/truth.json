@@ -1,0 +1,16 @@
+{
+  "task": "cross-function-source-to-sink",
+  "language": "typescript",
+  "description": "req.body.id flows from the POST /users/lookup handler through getUser and buildUserQuery into the pool.query SQL sink. Classic SQL-injection taint path across 3 functions.",
+  "flows": [
+    {
+      "source": "POST /users/lookup",
+      "sink": "runQuery",
+      "path": ["getUser", "buildUserQuery", "runQuery"],
+      "sink_kind": "sql"
+    }
+  ],
+  "decoys": [],
+  "entry_functions": ["getUser"],
+  "sink_functions": ["runQuery"]
+}

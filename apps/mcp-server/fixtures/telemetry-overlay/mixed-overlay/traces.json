@@ -1,0 +1,9 @@
+{
+  "service": "storefront",
+  "spans": [
+    { "name": "POST /checkout", "kind": "request", "method": "POST", "route": "/checkout", "duration_ms": 1500, "error": false, "count": 80 },
+    { "name": "POST /external/charge", "kind": "exit", "endpoint": "/external/charge", "duration_ms": 1900, "error": true, "count": 70 },
+    { "name": "GET /health", "kind": "request", "method": "GET", "route": "/health", "duration_ms": 5, "error": false, "count": 500 },
+    { "name": "GET /admin/secret", "kind": "request", "method": "GET", "route": "/admin/secret", "duration_ms": 60, "error": false, "count": 4 }
+  ]
+}

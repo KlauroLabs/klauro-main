@@ -1,0 +1,9 @@
+{
+  "case": "journey-broken",
+  "language": "typescript",
+  "control": false,
+  "description": "BEFORE: POST /checkout reaches the Payment sink via settleOrder -> recordPayment. AFTER: the handler no longer calls settleOrder, so the journey no longer reaches the payment sink. The route still exists but the source->sink journey is broken / removed.",
+  "behavioral_changes": [
+    { "kind": "journey-broken", "detail": "POST /checkout no longer reaches the Payment sink (journey removed)" }
+  ]
+}

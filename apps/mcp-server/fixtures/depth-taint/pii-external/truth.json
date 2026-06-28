@@ -1,0 +1,16 @@
+{
+  "task": "cross-function-source-to-sink",
+  "language": "typescript",
+  "description": "PII (req.body.email) flows from POST /signup through trackSignup and buildTrackingEvent into the axios.post external-analytics HTTP sink. PII-exfiltration taint path across 3 functions.",
+  "flows": [
+    {
+      "source": "POST /signup",
+      "sink": "sendToAnalytics",
+      "path": ["trackSignup", "buildTrackingEvent", "sendToAnalytics"],
+      "sink_kind": "external-http"
+    }
+  ],
+  "decoys": [],
+  "entry_functions": ["trackSignup"],
+  "sink_functions": ["sendToAnalytics"]
+}

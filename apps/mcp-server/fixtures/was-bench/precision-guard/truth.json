@@ -1,0 +1,1 @@
+{ "task": "cross-repo-links", "expected_links": ["ui -> api GET /shipments"], "note": "Precision: /users is a generic low-affinity route (suppressed by isGenericApiRoute); only domain-specific /shipments links. Tests over-link guard." }

@@ -1,0 +1,7 @@
+{
+  "service": "ledger",
+  "spans": [
+    { "name": "error:negative balance", "kind": "error", "error_message": "negative balance", "stack": "Error: negative balance\n    at persist (service.ts:2:5)\n    at settle (service.ts:7:10)", "count": 30 },
+    { "name": "error:phantom", "kind": "error", "error_message": "boom", "stack": "Error: boom\n    at mystery (ghost.ts:9:1)", "count": 1 }
+  ]
+}

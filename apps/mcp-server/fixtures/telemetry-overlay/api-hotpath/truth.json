@@ -1,0 +1,10 @@
+{
+  "task": "telemetry-overlay",
+  "correlations": [
+    { "runtime_span": "DELETE /users/:id", "static_node": { "kind": "route", "method": "DELETE", "path": "/users/:id" }, "fact": "error" },
+    { "runtime_span": "GET /orders", "static_node": { "kind": "route", "method": "GET", "path": "/orders" }, "fact": "slow" },
+    { "runtime_span": "GET /users", "static_node": { "kind": "route", "method": "GET", "path": "/users" }, "fact": "hot" },
+    { "runtime_span": "PATCH /ghost", "static_node": null, "fact": "unmatched" }
+  ],
+  "hot_answer": "DELETE /users/:id"
+}

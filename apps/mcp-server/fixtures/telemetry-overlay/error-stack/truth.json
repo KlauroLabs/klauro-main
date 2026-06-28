@@ -1,0 +1,8 @@
+{
+  "task": "telemetry-overlay",
+  "correlations": [
+    { "runtime_span": "error:negative balance", "static_node": { "kind": "function", "name": "persist" }, "fact": "error" },
+    { "runtime_span": "error:phantom", "static_node": null, "fact": "unmatched" }
+  ],
+  "hot_answer": "persist"
+}

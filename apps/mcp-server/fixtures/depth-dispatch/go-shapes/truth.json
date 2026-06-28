@@ -1,0 +1,11 @@
+{
+  "task": "interface-to-impl-dispatch",
+  "language": "go",
+  "lsp_lang": true,
+  "description": "Render(shape Shape) calls shape.Area(); the parameter is the interface Shape, so the call dispatches to every concrete implementor of Shape. TaxForm.Area is a same-named decoy that is not consumed through the interface and must be excluded.",
+  "call_site": { "caller": "Render", "method": "Area", "receiver_type": "Shape", "line": 25 },
+  "interface": "Shape",
+  "implementations": ["Circle", "Square"],
+  "decoy_class": "TaxForm",
+  "resolves_to": ["Circle.Area", "Square.Area"]
+}

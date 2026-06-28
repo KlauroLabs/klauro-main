@@ -1,0 +1,11 @@
+{
+  "task": "interface-to-impl-dispatch",
+  "language": "ruby",
+  "lsp_lang": false,
+  "description": "Dispatcher#send_all calls @channel.deliver; @channel is a Notifier, so the call dispatches to every class that includes the Notifier module (EmailNotifier, SmsNotifier). PizzaShop#deliver is a same-named decoy that does not include Notifier and must be excluded. Ruby is outside cbm's Hybrid-LSP set (out-of-category).",
+  "call_site": { "caller": "Dispatcher.send_all", "method": "deliver", "receiver_type": "Notifier", "line": 34 },
+  "interface": "Notifier",
+  "implementations": ["EmailNotifier", "SmsNotifier"],
+  "decoy_class": "PizzaShop",
+  "resolves_to": ["EmailNotifier.deliver", "SmsNotifier.deliver"]
+}

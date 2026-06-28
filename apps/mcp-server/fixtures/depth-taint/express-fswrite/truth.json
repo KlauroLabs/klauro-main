@@ -1,0 +1,16 @@
+{
+  "task": "cross-function-source-to-sink",
+  "language": "typescript",
+  "description": "req.body.filename/content flows from POST /reports through saveReport and resolveReportPath into the fs.writeFileSync filesystem sink. Path-traversal / arbitrary-write taint path across 3 functions.",
+  "flows": [
+    {
+      "source": "POST /reports",
+      "sink": "persistToDisk",
+      "path": ["saveReport", "resolveReportPath", "persistToDisk"],
+      "sink_kind": "fs-write"
+    }
+  ],
+  "decoys": [],
+  "entry_functions": ["saveReport"],
+  "sink_functions": ["persistToDisk"]
+}

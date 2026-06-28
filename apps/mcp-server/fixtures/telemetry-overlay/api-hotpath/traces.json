@@ -1,0 +1,9 @@
+{
+  "service": "api-gateway",
+  "spans": [
+    { "name": "DELETE /users/:id", "method": "DELETE", "route": "/users/42", "duration_ms": 1400, "error": true, "count": 60 },
+    { "name": "GET /orders", "method": "GET", "route": "/orders", "duration_ms": 1300, "error": false, "count": 12 },
+    { "name": "GET /users", "method": "GET", "route": "/users", "duration_ms": 40, "error": false, "count": 200 },
+    { "name": "PATCH /ghost", "method": "PATCH", "route": "/ghost", "duration_ms": 80, "error": false, "count": 3 }
+  ]
+}

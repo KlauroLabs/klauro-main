@@ -1,0 +1,8 @@
+{
+  "expected_links": ["web -> api GET /api/profiles/:id", "web -> api GET /api/settings/:id"],
+  "seam": { "consumer_repo": "users-web", "producer_repo": "users-api" },
+  "drift": [
+    { "field": "email -> emailAddress", "producer_type": "string", "consumer_type": "string", "kind": "field-renamed", "contract": "profile" }
+  ],
+  "control_no_drift": [{ "contract": "setting" }]
+}

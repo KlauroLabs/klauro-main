@@ -1,0 +1,23 @@
+{
+  "task": "cross-function-source-to-sink",
+  "language": "typescript",
+  "description": "req.body.id flows from POST /sessions/delete through deleteSession and buildDeleteQuery into the pool.query SQL sink (REAL flow). A same-named req.query.id in GET /sessions/label only reaches formatLabel and is echoed back -> it does NOT reach any sink (DECOY). A correct answer must claim the real flow and must NOT claim a source->sink flow for the decoy.",
+  "flows": [
+    {
+      "source": "POST /sessions/delete",
+      "sink": "execSql",
+      "path": ["deleteSession", "buildDeleteQuery", "execSql"],
+      "sink_kind": "sql"
+    }
+  ],
+  "decoys": [
+    {
+      "source": "GET /sessions/label",
+      "shared_var": "id",
+      "reaches": "formatLabel",
+      "does_not_reach_sink": true
+    }
+  ],
+  "entry_functions": ["deleteSession"],
+  "sink_functions": ["execSql"]
+}

@@ -1,0 +1,10 @@
+{
+  "task": "telemetry-overlay",
+  "correlations": [
+    { "runtime_span": "POST /checkout", "static_node": { "kind": "route", "method": "POST", "path": "/checkout" }, "fact": "slow" },
+    { "runtime_span": "POST /external/charge", "static_node": { "kind": "exit", "endpoint": "/external/charge" }, "fact": "error" },
+    { "runtime_span": "GET /health", "static_node": { "kind": "route", "method": "GET", "path": "/health" }, "fact": "hot" },
+    { "runtime_span": "GET /admin/secret", "static_node": null, "fact": "unmatched" }
+  ],
+  "hot_answer": "POST /external/charge"
+}

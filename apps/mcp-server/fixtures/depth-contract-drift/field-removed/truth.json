@@ -1,0 +1,8 @@
+{
+  "expected_links": ["web -> api GET /api/orders/:id", "web -> api GET /api/coupons/:id"],
+  "seam": { "consumer_repo": "orders-web", "producer_repo": "orders-api" },
+  "drift": [
+    { "field": "verified", "producer_type": "boolean", "consumer_type": null, "kind": "field-removed", "contract": "order" }
+  ],
+  "control_no_drift": [{ "contract": "coupon" }]
+}

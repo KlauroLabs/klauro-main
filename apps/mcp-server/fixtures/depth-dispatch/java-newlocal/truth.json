@@ -1,0 +1,11 @@
+{
+  "task": "interface-to-impl-dispatch",
+  "language": "java",
+  "lsp_lang": true,
+  "description": "Checkout.run constructs `PaymentGateway gw = new StripeGateway()` then calls gw.charge(). The precise runtime impl is StripeGateway.charge ONLY (the constructor pins the type); PaypalGateway.charge is a sibling impl that this site never reaches, and Battery.charge is an unrelated decoy.",
+  "call_site": { "caller": "Checkout.run", "method": "charge", "receiver_type": "PaymentGateway", "constructed_as": "StripeGateway", "line": 29 },
+  "interface": "PaymentGateway",
+  "implementations": ["StripeGateway", "PaypalGateway"],
+  "decoy_class": "Battery",
+  "resolves_to": ["StripeGateway.charge"]
+}
