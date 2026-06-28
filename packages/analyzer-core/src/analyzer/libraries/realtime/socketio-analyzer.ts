@@ -60,12 +60,12 @@ export class SocketIOAnalyzer extends BaseAnalyzer {
     const ignorePatterns = this.getIgnorePatterns(context);
     const nodes: CASNode[] = [];
 
-    const sourceFiles = await glob('**/*.{ts,js,tsx,jsx}', {
+    const sourceFiles = this.capAndPrioritizeSourceFiles(await glob('**/*.{ts,js,tsx,jsx}', {
       cwd: projectPath,
       ignore: [...ignorePatterns, '**/*.test.*', '**/*.spec.*'],
       absolute: false,
       nodir: true
-    });
+    }), 'Socket.io candidate files');
 
     const entryPoints: CASEntryPoint[] = [];
     const exitPoints: CASExitPoint[] = [];

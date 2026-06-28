@@ -1780,15 +1780,20 @@ export class PHPAnalyzer extends BaseAnalyzer {
       const line = lines[i].trim();
 
       if (this.isMethodDeclaration(line)) {
-        const methodMatch = line.match(/(public|private|protected)(?:\s+(static|abstract|final))?\s+function\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*:\s*([^{]+))?/);
+        // Visibility is OPTIONAL in PHP — a bare `function name()` inside a class
+        // is implicitly public. Capture any leading modifiers as a prefix and
+        // parse them (order-independent: `public static` or `static public`),
+        // defaulting visibility to public when none is written.
+        const methodMatch = line.match(/^((?:(?:public|private|protected|static|abstract|final|readonly)\s+)*)function\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*:\s*([^{]+))?/);
         if (methodMatch) {
-          const visibility = methodMatch[1];
-          const modifier = methodMatch[2];
-          const methodName = methodMatch[3];
-          const paramsStr = methodMatch[4];
-          const returnType = methodMatch[5]?.trim();
+          const mods = methodMatch[1].trim().split(/\s+/).filter(Boolean);
+          const visibility = mods.find(m => m === 'public' || m === 'private' || m === 'protected') || 'public';
+          const modifier = mods.find(m => m === 'static' || m === 'abstract' || m === 'final');
+          const methodName = methodMatch[2];
+          const paramsStr = methodMatch[3];
+          const returnType = methodMatch[4]?.trim();
 
-          const modifiers = [visibility];
+          const modifiers: string[] = [visibility];
           if (modifier) modifiers.push(modifier);
 
           const docComment = this.extractDocComment(lines, i);
@@ -2314,6 +2319,28 @@ export class PHPAnalyzer extends BaseAnalyzer {
     return builtinNamespaces.some(builtin => namespace === builtin || namespace.startsWith(builtin));
   }
 
+  /**
+   * Map each in-scope variable to its declared class within a method's line
+   * range, so a `$recv->method()` call resolves to $recv's class only (not the
+   * containing class, and not every same-name method). Sources: typed params
+   * (`Account $a`) and `$x = new Type()`.
+   */
+  private buildPhpReceiverTypes(lines: string[], startLine: number, endLine: number): Map<string, string> {
+    const m = new Map<string, string>();
+    const baseType = (t: string) => t.replace(/^[?\\]+/, '').split('\\').pop()!.trim();
+    const lo = Math.max(0, startLine - 1);
+    const hi = Math.min(lines.length, endLine);
+    for (let i = lo; i < hi; i++) {
+      const ln = lines[i];
+      for (const pm of ln.matchAll(/[(,]\s*(?:\.\.\.)?([A-Za-z_\\][\w\\]*)\s+&?(?:\.\.\.)?\$(\w+)/g)) {
+        const t = baseType(pm[1]);
+        if (/^[A-Z]/.test(t)) m.set(pm[2], t);
+      }
+      for (const vm of ln.matchAll(/\$(\w+)\s*=\s*new\s+\\?([A-Za-z_\\][\w\\]*)/g)) m.set(vm[1], baseType(vm[2]));
+    }
+    return m;
+  }
+
   private async analyzeCallGraph(projectPath: string, nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[]): Promise<void> {
     const phpFiles = await glob(['**/*.php'], {
       cwd: projectPath,
@@ -2402,11 +2429,12 @@ export class PHPAnalyzer extends BaseAnalyzer {
       const currentNamespace = ast.namespace || 'global';
 
       if (ast.calls) {
+        const fileLines = (await this.readFileCached(fullPath)).split('\n');
+        const recvTypesByMethodId = new Map<string, Map<string, string>>();
         for (const call of ast.calls) {
-          const callerMethod = call.method
-            ? firstMethodByFileAndName(fullPath, call.method)
-            : (methodNodesByFile.get(fullPath) || []).find(n =>
-              n.source?.file === fullPath &&
+          // The caller is the method whose body spans this call's line — NOT a
+          // same-named method (call.method is the TARGET, not the caller).
+          const callerMethod = (methodNodesByFile.get(fullPath) || []).find(n =>
               n.source?.line !== undefined && n.source.line <= call.line &&
               n.source?.end_line !== undefined && n.source.end_line >= call.line
             );
@@ -2415,18 +2443,31 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
           let targetMethod: CASNode | undefined;
 
-          if (call.class) {
-            const targetClass = firstClassByName(call.class);
-            if (targetClass && call.method) {
-              targetMethod = firstMethodInClass(targetClass.id, call.method);
+          if (call.receiver !== undefined) {
+            // Member call `$recv->method()`: resolve $recv to its class. `$this`
+            // (and `self`/`static`) means the containing class, captured by the
+            // parser as call.class; any other var is type-resolved from scope.
+            let recvType: string | undefined;
+            if (call.receiver === 'this' || call.receiver === 'self' || call.receiver === 'static') {
+              recvType = call.class;
+            } else {
+              let map = recvTypesByMethodId.get(callerMethod.id);
+              if (!map) {
+                map = this.buildPhpReceiverTypes(fileLines, callerMethod.source?.line ?? 1, callerMethod.source?.end_line ?? fileLines.length);
+                recvTypesByMethodId.set(callerMethod.id, map);
+              }
+              recvType = map.get(call.receiver);
             }
+            if (recvType && call.method) {
+              const targetClass = firstClassByName(recvType);
+              targetMethod = targetClass ? firstMethodInClass(targetClass.id, call.method) : undefined;
+            }
+          } else if (call.class && call.method) {
+            // Static/scoped call `Foo::bar()` — call.class IS the target class.
+            const targetClass = firstClassByName(call.class);
+            if (targetClass) targetMethod = firstMethodInClass(targetClass.id, call.method);
           } else if (call.function) {
             targetMethod = firstMethodByName(call.function);
-          } else if (call.method && call.class) {
-            const containingClass = firstClassByName(call.class);
-            if (containingClass) {
-              targetMethod = firstMethodInClass(containingClass.id, call.method);
-            }
           }
 
           if (targetMethod && targetMethod.id !== callerMethod.id) {

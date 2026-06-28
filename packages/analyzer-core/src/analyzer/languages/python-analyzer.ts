@@ -217,11 +217,11 @@ export class PythonAnalyzer extends BaseAnalyzer {
 
       const ignorePatterns = this.getIgnorePatterns(context);
       const pythonIgnorePatterns = [...ignorePatterns, '**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**'];
-      const pythonFiles = await glob(['**/*.py'], {
+      const pythonFiles = this.capAndPrioritizeSourceFiles(await glob(['**/*.py'], {
         cwd: context.projectPath,
         ignore: pythonIgnorePatterns,
         nodir: true
-      });
+      }), 'Python files');
       pythonFiles.sort();
 
       const modules = new Map<string, string[]>();
@@ -234,7 +234,13 @@ export class PythonAnalyzer extends BaseAnalyzer {
       this.buildModuleHierarchy(modules, nodes, edges);
       this.detectFrameworkPatterns(nodes, edges, entryPoints);
       this.buildInheritanceRelationships(nodes, edges);
-      this.buildCallGraph(nodes, edges, entryPoints, exitPoints);
+      if (this.shouldBuildExpensiveLanguageCallGraph(pythonFiles.length)) {
+        this.buildCallGraph(nodes, edges, entryPoints, exitPoints);
+      } else {
+        this.addAnalysisWarning(
+          `Python cross-file call graph deferred for ${process.env.KLAURO_ANALYSIS_FOCUS || 'default'} focus after ${pythonFiles.length} prioritized files; run deep-context/full analysis for exhaustive Python call edges`
+        );
+      }
 
       const warnings = this.collectAnalysisWarnings();
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
@@ -257,6 +263,13 @@ export class PythonAnalyzer extends BaseAnalyzer {
         'PYTHON_ANALYSIS_ERROR'
       );
     }
+  }
+
+  private shouldBuildExpensiveLanguageCallGraph(fileCount: number): boolean {
+    const focus = process.env.KLAURO_ANALYSIS_FOCUS;
+    if (focus === 'agent-fast' || focus === 'ui-overview') return fileCount <= 900;
+    if (focus === 'deep-context') return fileCount <= 2500;
+    return true;
   }
 
   private async detectProjectType(projectPath: string): Promise<void> {

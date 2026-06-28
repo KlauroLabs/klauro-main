@@ -29,6 +29,17 @@ interface DartFunction {
   file: string;
   line: number;
   ownerClass?: string;
+  /** Raw parameter list text, e.g. "Account a, int n". */
+  params?: string;
+  /** Method body text (for call extraction). */
+  body?: string;
+}
+
+interface DartPendingCall {
+  callerId: string;
+  receiverType: string;
+  methodName: string;
+  line: number;
 }
 
 export class DartAnalyzer extends BaseAnalyzer {
@@ -69,6 +80,7 @@ export class DartAnalyzer extends BaseAnalyzer {
     const pubspec = await this.readPubspec(context.projectPath);
     const isFlutterProject = Boolean(pubspec.match(/\bflutter\s*:/) || pubspec.includes('sdk: flutter'));
 
+    const pendingCalls: DartPendingCall[] = [];
     this.analyzeDartFile({
       projectPath: context.projectPath,
       relativeFile: context.relativePath,
@@ -79,7 +91,11 @@ export class DartAnalyzer extends BaseAnalyzer {
       edges,
       entryPoints,
       exitPoints,
+      pendingCalls,
     });
+    // Single-file mode: only same-file receiver types resolve (cross-file targets
+    // are linked on the next full analysis).
+    this.resolveDartCallEdges(pendingCalls, nodes, edges);
 
     const imports = this.extractImports(content);
     const classes = this.extractClasses(content, context.relativePath);
@@ -116,6 +132,7 @@ export class DartAnalyzer extends BaseAnalyzer {
       const pubspec = await this.readPubspec(context.projectPath);
       const isFlutterProject = Boolean(pubspec.match(/\bflutter\s*:/) || pubspec.includes('sdk: flutter'));
 
+      const pendingCalls: DartPendingCall[] = [];
       for (const relativeFile of files.sort()) {
         const fullPath = path.join(context.projectPath, relativeFile);
         const content = await fs.readFile(fullPath, 'utf8');
@@ -129,8 +146,13 @@ export class DartAnalyzer extends BaseAnalyzer {
           edges,
           entryPoints,
           exitPoints,
+          pendingCalls,
         });
       }
+
+      // Cross-file call resolution: link each `recv.method()` site to the method
+      // node on the receiver's resolved type (excludes same-name decoys).
+      this.resolveDartCallEdges(pendingCalls, nodes, edges);
 
       const warnings = this.collectAnalysisWarnings();
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
@@ -180,8 +202,9 @@ export class DartAnalyzer extends BaseAnalyzer {
     edges: CASEdge[];
     entryPoints: CASEntryPoint[];
     exitPoints: CASExitPoint[];
+    pendingCalls: DartPendingCall[];
   }): void {
-    const { relativeFile, fullPath, content, isFlutterProject, nodes, edges, entryPoints, exitPoints } = input;
+    const { relativeFile, fullPath, content, isFlutterProject, nodes, edges, entryPoints, exitPoints, pendingCalls } = input;
     const lines = content.split(/\r?\n/);
     const fileId = `file_${this.sanitizeId(relativeFile)}`;
     const isTest = this.isDartTestFile(relativeFile);
@@ -289,6 +312,8 @@ export class DartAnalyzer extends BaseAnalyzer {
         .build());
       if (ownerId) edges.push(this.createEdge(`${ownerId}_has_${functionId}`, ownerId, functionId, fn.ownerClass ? 'has_method' : 'contains'));
 
+      this.collectDartCalls(fn, functionId, pendingCalls);
+
       if (!fn.ownerClass && fn.name === 'main') {
         entryPoints.push(this.createEntryPoint(
           `entry_dart_main_${this.sanitizeId(relativeFile)}`,
@@ -394,6 +419,57 @@ export class DartAnalyzer extends BaseAnalyzer {
     return classes;
   }
 
+  /** Resolve a receiver variable to its declared class within a method body:
+   *  typed params (`Account a`) and constructor locals (`var a = Account()`,
+   *  `final a = Account()`, `Account a = Account()`). */
+  private dartReceiverTypes(fn: DartFunction): Map<string, string> {
+    const m = new Map<string, string>();
+    for (const p of (fn.params || '').split(',')) {
+      const pm = p.trim().match(/^(?:required\s+)?([A-Z][A-Za-z0-9_]*(?:<[^>]+>)?)\s+(\w+)\s*$/);
+      if (pm) m.set(pm[2], pm[1].replace(/<.*$/, ''));
+    }
+    const body = fn.body || '';
+    for (const vm of body.matchAll(/\b(?:var|final|late)\s+(\w+)\s*=\s*([A-Z][A-Za-z0-9_]*)\s*\(/g)) m.set(vm[1], vm[2]);
+    for (const vm of body.matchAll(/\b([A-Z][A-Za-z0-9_]*)\s+(\w+)\s*=\s*[A-Z][A-Za-z0-9_]*\s*\(/g)) m.set(vm[2], vm[1]);
+    return m;
+  }
+
+  /** Extract `recv.method()` call sites in a method body, type-resolving the
+   *  receiver so cross-file resolution links only the receiver's class method. */
+  private collectDartCalls(fn: DartFunction, callerId: string, pending: DartPendingCall[]): void {
+    if (!fn.body) return;
+    const recvTypes = this.dartReceiverTypes(fn);
+    for (const cm of fn.body.matchAll(/(?:^|[^\w.$])([a-z_]\w*)\.([a-z_]\w*)\s*\(/g)) {
+      const receiver = cm[1];
+      const methodName = cm[2];
+      const recvType = receiver === 'this' ? fn.ownerClass : recvTypes.get(receiver);
+      if (!recvType) continue;
+      pending.push({ callerId, receiverType: recvType, methodName, line: fn.line });
+    }
+  }
+
+  /** Index method nodes by `owner_class:name` and emit a call edge per resolved
+   *  pending call. */
+  private resolveDartCallEdges(pending: DartPendingCall[], nodes: CASNode[], edges: CASEdge[]): void {
+    const methodByOwnerName = new Map<string, CASNode>();
+    for (const node of nodes) {
+      if (node.type !== 'method') continue;
+      const owner = (node.metadata as any)?.attributes?.owner_class;
+      if (owner) methodByOwnerName.set(`${owner}:${node.name}`, node);
+    }
+    const seen = new Set<string>();
+    for (const call of pending) {
+      const target = methodByOwnerName.get(`${call.receiverType}:${call.methodName}`);
+      if (!target || target.id === call.callerId) continue;
+      const edgeId = `${call.callerId}_calls_${target.id}_line_${call.line}`;
+      if (seen.has(edgeId)) continue;
+      seen.add(edgeId);
+      edges.push(this.createEdge(edgeId, call.callerId, target.id, 'calls', 'behavior', {
+        attributes: { line: call.line, callType: 'method', targetClass: call.receiverType, targetMethod: call.methodName },
+      }));
+    }
+  }
+
   private extractFunctions(content: string, file: string, classes: DartClass[]): DartFunction[] {
     const functions: DartFunction[] = [];
     const classRanges = classes.map(cls => {
@@ -409,12 +485,22 @@ export class DartAnalyzer extends BaseAnalyzer {
       const name = match[2];
       if (['if', 'for', 'while', 'switch', 'catch'].includes(name)) continue;
       const owner = classRanges.find(range => match!.index > range.bodyStart && match!.index < range.bodyEnd);
+      const paramsMatch = match[0].match(/\(([^;{}]*)\)/);
+      // Body spans the matched `{` to its matching brace (block bodies only).
+      let body: string | undefined;
+      const braceIndex = match.index + match[0].length - 1;
+      if (content[braceIndex] === '{') {
+        const bodyEnd = this.findMatchingBrace(content, braceIndex);
+        if (bodyEnd > braceIndex) body = content.slice(braceIndex + 1, bodyEnd);
+      }
       functions.push({
         name,
         returnType: match[1],
         file,
         line: this.lineAt(content, match.index),
         ownerClass: owner?.cls.name,
+        params: paramsMatch?.[1],
+        body,
       });
     }
     return functions;

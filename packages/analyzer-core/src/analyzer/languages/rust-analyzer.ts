@@ -1857,6 +1857,11 @@ export class RustAnalyzer extends BaseAnalyzer {
       while ((match = plainCallPattern.exec(trimmedLine)) !== null) {
         const funcName = match[1];
 
+        // A function/method DECLARATION (`fn save(...)`) is not a call to itself.
+        // Without this guard the signature line yields a phantom self-call that
+        // cross-links every same-name method (e.g. Logger::save -> Account::save).
+        if (/\bfn\s+$/.test(trimmedLine.slice(0, match.index))) continue;
+
         const keywords = ['if', 'while', 'for', 'match', 'return', 'Some', 'None', 'Ok', 'Err', 'Box', 'Vec', 'println', 'print', 'eprintln', 'eprint', 'format', 'panic', 'assert', 'debug_assert', 'cfg', 'derive', 'include', 'include_str', 'include_bytes', 'env', 'option_env', 'concat', 'stringify', 'line', 'column', 'file', 'module_path'];
         if (keywords.includes(funcName)) continue;
 
@@ -2216,7 +2221,9 @@ export class RustAnalyzer extends BaseAnalyzer {
     }
 
     const functionNodeMap = new Map<string, string[]>();
+    const nodeById = new Map<string, CASNode>();
     for (const node of nodes) {
+      nodeById.set(node.id, node);
       if (node.type === 'function' || node.type === 'method') {
         const funcName = node.name;
         if (!functionNodeMap.has(funcName)) {
@@ -2226,7 +2233,35 @@ export class RustAnalyzer extends BaseAnalyzer {
       }
     }
 
+    // A method node's owning type = the name of its parent struct/enum/trait node.
+    // Used to type-resolve `recv.method()` calls to the ONE method on the
+    // receiver's type, excluding same-name methods on other types (the decoy).
+    const nodeIdToImplType = new Map<string, string>();
+    for (const node of nodes) {
+      if (node.type === 'method' && node.parent) {
+        const parent = nodeById.get(node.parent);
+        if (parent?.name) nodeIdToImplType.set(node.id, parent.name);
+      }
+    }
+
     for (const func of functions) {
+      // Map each in-scope receiver variable to its declared base type, so a
+      // `recv.method()` call resolves to recv's type only: params (`a: &Account`),
+      // typed lets (`let x: T`), struct literals (`let x = T{}`), and
+      // constructors (`let x = T::new()`).
+      const receiverTypes = new Map<string, string>();
+      for (const p of func.parameters || []) {
+        if (p.isSelf || !p.type) continue;
+        const t = this.baseTypeName(p.type);
+        if (t && /^[A-Z]/.test(t)) receiverTypes.set(p.name, t);
+      }
+      if (func.body) {
+        for (const m of func.body.matchAll(/\blet\s+(?:mut\s+)?(\w+)\s*:\s*([&\w:<>\s]+?)\s*[=;]/g)) {
+          const t = this.baseTypeName(m[2]); if (t && /^[A-Z]/.test(t)) receiverTypes.set(m[1], t);
+        }
+        for (const m of func.body.matchAll(/\blet\s+(?:mut\s+)?(\w+)\s*=\s*([A-Z]\w*)\s*\{/g)) receiverTypes.set(m[1], m[2]);
+        for (const m of func.body.matchAll(/\blet\s+(?:mut\s+)?(\w+)\s*=\s*([A-Z]\w*)::\w+\s*\(/g)) receiverTypes.set(m[1], m[2]);
+      }
       const callerNode = nodes.find(n =>
         (n.type === 'function' || n.type === 'method') &&
         n.name === func.name &&
@@ -2273,7 +2308,18 @@ export class RustAnalyzer extends BaseAnalyzer {
           continue;
         }
 
-        const targetNodeIds = functionNodeMap.get(call.targetFunction) || [];
+        let targetNodeIds = functionNodeMap.get(call.targetFunction) || [];
+        // Type-resolve the receiver: `recv.method()` where recv's type is known
+        // links ONLY to that type's method, not every same-name method. If the
+        // receiver type is known and at least one method matches, narrow to it;
+        // otherwise keep the name-based set (never lose a real edge).
+        if (call.isMethodCall && call.targetModule) {
+          const recvType = receiverTypes.get(call.targetModule);
+          if (recvType) {
+            const typed = targetNodeIds.filter(id => nodeIdToImplType.get(id) === recvType);
+            if (typed.length) targetNodeIds = typed;
+          }
+        }
         for (const targetNodeId of targetNodeIds) {
           if (targetNodeId !== callerNodeId) {
             const edgeId = `call:${callerNodeId}:${targetNodeId}:${call.callLine}`;

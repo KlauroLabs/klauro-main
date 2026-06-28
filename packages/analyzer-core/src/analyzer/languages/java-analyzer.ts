@@ -1738,6 +1738,36 @@ export class JavaAnalyzer extends BaseAnalyzer {
     return match ? match[1].trim() : null;
   }
 
+  /** Map a Java method's local variable names to their bare class types, from
+   *  the method's parameters (`Type name`) and local declarations
+   *  (`Type x = ...`, `var x = new Type(...)`). Used to resolve a method-call
+   *  receiver to the right class so same-name methods on different classes don't
+   *  collide. Java types precede the name (unlike Go). */
+  private buildJavaReceiverTypeMap(content: string, startLine?: number, endLine?: number): Map<string, string> {
+    const map = new Map<string, string>();
+    if (!content || !startLine) return map;
+    const lines = content.split('\n');
+    const text = lines.slice(startLine - 1, (endLine && endLine >= startLine) ? endLine : startLine).join('\n');
+    const bare = (t: string) => t.replace(/<.*$/, '').replace(/\[\]/g, '').replace(/\.\.\.$/, '').trim().split('.').pop() || t;
+    // Parameters: the `( ... )` of the method signature (before the body).
+    const header = text.split('{')[0];
+    const pm = header.match(/\(([^)]*)\)/);
+    if (pm && pm[1].trim()) {
+      for (const part of pm[1].split(',')) {
+        const toks = part.trim().replace(/\bfinal\b/g, '').trim().split(/\s+/).filter(Boolean);
+        if (toks.length >= 2) {
+          const name = toks[toks.length - 1];
+          const type = bare(toks[toks.length - 2]);
+          if (/^[A-Z]/.test(type)) map.set(name, type);
+        }
+      }
+    }
+    // Local declarations: `Type name = ...` / `Type name;` and `var x = new Type(`.
+    for (const m of text.matchAll(/\b([A-Z][A-Za-z0-9_]*)(?:<[^>]*>)?(?:\[\])?\s+([a-z_]\w*)\s*[=;]/g)) map.set(m[2], bare(m[1]));
+    for (const m of text.matchAll(/\bvar\s+(\w+)\s*=\s*new\s+([A-Z][A-Za-z0-9_]*)/g)) map.set(m[1], bare(m[2]));
+    return map;
+  }
+
   private async analyzeCallGraph(projectPath: string, nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[]): Promise<void> {
     const javaFiles = await glob(['**/*.java'], {
       cwd: projectPath,
@@ -1754,6 +1784,9 @@ export class JavaAnalyzer extends BaseAnalyzer {
       const content = await fs.readFile(fullPath, 'utf-8');
       const lines = content.split('\n');
       const packageName = this.extractPackage(content) || 'default';
+      // Receiver var -> declared type, per caller method (cached), so `l.save()`
+      // (l: Logger) resolves to Logger.save, not whichever `save` is first.
+      const varTypeCache = new Map<string, Map<string, string>>();
 
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
@@ -1808,16 +1841,29 @@ export class JavaAnalyzer extends BaseAnalyzer {
                 );
               }
             } else {
-              targetMethod = methodNodes.find(n => n.name === methodName);
-
+              // Type-aware: resolve the receiver var to its declared type, then
+              // find `methodName` on THAT class (excludes same-name methods on
+              // other classes). Falls back to the class named by the receiver
+              // (e.g. a static `ClassName.method()` call).
+              let varTypes = varTypeCache.get(callerMethod.id);
+              if (!varTypes) {
+                varTypes = this.buildJavaReceiverTypeMap(content, callerMethod.source?.line, callerMethod.source?.end_line);
+                varTypeCache.set(callerMethod.id, varTypes);
+              }
+              const recvType = varTypes.get(objectOrClass) || objectOrClass;
+              const targetClass = classNodes.find(c => c.name === recvType);
+              if (targetClass) {
+                targetMethod = methodNodes.find(n =>
+                  n.name === methodName &&
+                  edges.some(e => e.source === targetClass.id && e.target === n.id && e.type === 'has_method')
+                );
+              }
+              // Unambiguous fallback: exactly ONE method has this name -> use it
+              // (preserves recall where the receiver type can't be resolved;
+              // never guesses when ambiguous, so the decoy stays excluded).
               if (!targetMethod) {
-                const targetClass = classNodes.find(c => c.name === objectOrClass);
-                if (targetClass) {
-                  targetMethod = methodNodes.find(n =>
-                    n.name === methodName &&
-                    edges.some(e => e.source === targetClass.id && e.target === n.id && e.type === 'has_method')
-                  );
-                }
+                const named = methodNodes.filter(n => n.name === methodName);
+                if (named.length === 1) targetMethod = named[0];
               }
             }
 

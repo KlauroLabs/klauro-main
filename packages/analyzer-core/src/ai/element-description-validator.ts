@@ -73,6 +73,11 @@ const FILLER_PHRASE_PATTERN = new RegExp([
   '\\blets engineers manage [^.]{0,180}\\bthrough (?:HTTP|API) endpoints?\\b',
   '\\b(?:covers?|spans?) [^.]{0,80}\\bpaths?\\b',
   '\\bspans scripts?\\b',
+  '\\brecords?, lists?, or screen state\\b',
+  '\\bscreen state\\b',
+  '\\bworkflow state\\b',
+  '\\bcurrent product context\\b',
+  '\\bsurrounding product workflows?\\b',
   '\\bconfiguration support\\b',
   '\\bcentralizes? the coordination of [^.]{0,140}\\bscripts?\\b',
 ].join('|'), 'i');

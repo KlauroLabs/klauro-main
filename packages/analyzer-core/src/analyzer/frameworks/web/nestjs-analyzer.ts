@@ -130,7 +130,8 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       if (!await fs.pathExists(packageJsonPath)) return false;
 
       const packageJson = await fs.readJson(packageJsonPath);
-      if (typeof packageJson?.name === 'string' && /(^|[@/])klauro([-/.]|$)/i.test(packageJson.name)) {
+      const packageName = typeof packageJson?.name === 'string' ? packageJson.name : '';
+      if (['@klauro/analyzer-core', '@unravl/analyzer-core'].includes(packageName)) {
         return false;
       }
       const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
@@ -230,11 +231,11 @@ export class NestJSAnalyzer extends BaseAnalyzer {
         '**/*.test.ts'
       ];
 
-      const nestFiles = await glob(['**/*.{ts,js}'], {
+      const nestFiles = this.capAndPrioritizeSourceFiles(await glob(['**/*.{ts,js}'], {
         cwd: context.projectPath,
         ignore: ignorePatterns,
         nodir: true
-      });
+      }), 'NestJS source files');
       timings['glob'] = Date.now() - t;
 
       t = Date.now();

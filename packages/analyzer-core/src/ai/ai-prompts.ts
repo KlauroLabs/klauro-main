@@ -189,7 +189,10 @@ Component Details:
     }
 
     if (additionalContext) {
-      prompt += `\n\nAdditional Context:\n${JSON.stringify(additionalContext, null, 2)}`;
+      const serializedContext = additionalContext.compactPrompt === true || additionalContext.compact_prompt === true
+        ? JSON.stringify(additionalContext)
+        : JSON.stringify(additionalContext, null, 2);
+      prompt += `\n\nAdditional Context:\n${serializedContext}`;
     }
 
     const taskText = typeof additionalContext?.task === 'string' ? additionalContext.task : '';

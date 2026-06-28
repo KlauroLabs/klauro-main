@@ -54,8 +54,26 @@ export class ReactRouterAnalyzer extends BaseAnalyzer {
     const exitPoints: CASExitPoint[] = [];
     const seenRoutes = new Set<string>();
     const seenExitIds = new Set<string>();
-    const content = await fs.readFile(context.filePath, 'utf-8');
-    const stat = await fs.stat(context.filePath);
+    let content: string;
+    let stat: { mtimeMs: number };
+    try {
+      content = await fs.readFile(context.filePath, 'utf-8');
+      stat = await fs.stat(context.filePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      return this.createFileAnalysisResult(
+        context.filePath,
+        context.relativePath,
+        context.contentHash || this.computeContentHash(''),
+        Date.now(),
+        nodes,
+        edges,
+        entryPoints,
+        exitPoints,
+        [],
+        []
+      );
+    }
 
     if (this.hasRouterUsage(content)) {
       const fileNodeId = this.findFileNodeId(context.relativePath, context.existingAnalysis);
@@ -85,12 +103,12 @@ export class ReactRouterAnalyzer extends BaseAnalyzer {
     const { projectPath } = context;
     const ignorePatterns = this.getIgnorePatterns(context);
 
-    const sourceFiles = await glob('**/*.{ts,tsx,js,jsx}', {
+    const sourceFiles = this.capAndPrioritizeSourceFiles(await glob('**/*.{ts,tsx,js,jsx}', {
       cwd: projectPath,
       ignore: [...ignorePatterns, '**/*.test.*', '**/*.spec.*'],
       absolute: false,
       nodir: true
-    });
+    }), 'React Router candidate files');
 
     const nodes: CASNode[] = [];
     const edges: CASEdge[] = [];
@@ -101,7 +119,13 @@ export class ReactRouterAnalyzer extends BaseAnalyzer {
 
     for (const relativePath of sourceFiles) {
       const absolutePath = path.join(projectPath, relativePath);
-      const content = await fs.readFile(absolutePath, 'utf-8');
+      let content: string;
+      try {
+        content = await fs.readFile(absolutePath, 'utf-8');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw error;
+      }
 
       if (!this.hasRouterUsage(content)) continue;
 

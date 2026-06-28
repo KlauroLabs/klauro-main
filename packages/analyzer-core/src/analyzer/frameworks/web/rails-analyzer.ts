@@ -378,6 +378,11 @@ export class RailsAnalyzer extends BaseAnalyzer {
         const related = models.find(candidate => candidate.name === association.className);
         if (!related) continue;
         const relatedId = this.modelNodeId(related);
+        // Cardinality for the database_schema relation graph: has_many -> 1:N,
+        // belongs_to -> N:1, has_one -> 1:1, HABTM -> N:M.
+        const relationType = association.type === 'has_many' ? 'OneToMany' :
+          association.type === 'belongs_to' ? 'ManyToOne' :
+          association.type === 'has_and_belongs_to_many' ? 'ManyToMany' : 'OneToOne';
         edges.push(this.createEdge(
           this.generateEdgeId(modelId, relatedId, `relates_to_${association.type}_${association.name}`),
           modelId,
@@ -387,7 +392,8 @@ export class RailsAnalyzer extends BaseAnalyzer {
           {
             association_type: association.type,
             association_name: association.name,
-            foreign_key: association.foreignKey
+            foreign_key: association.foreignKey,
+            attributes: { relationType, field: association.name }
           }
         ));
       }

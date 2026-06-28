@@ -38,6 +38,8 @@ interface VueComponent {
   exports: string[];
   slots: string[];
   emits: string[];
+  /** Child components used in this component's <template> (the render tree). */
+  childComponents: string[];
 }
 
 interface VueComposable {
@@ -142,11 +144,11 @@ export class VueAnalyzer extends BaseAnalyzer {
 
     try {
       const ignorePatterns = this.getIgnorePatterns(context);
-      const vueFiles = await glob(['**/*.{vue,ts,js}'], {
+      const vueFiles = this.capAndPrioritizeSourceFiles(await glob(['**/*.{vue,ts,js}'], {
         cwd: context.projectPath,
         ignore: [...ignorePatterns, '**/*.test.*', '**/*.spec.*'],
         nodir: true
-      });
+      }), 'Vue source files');
 
       const application = await this.analyzeApplication(context.projectPath, nodes);
       const components = await this.analyzeComponents(vueFiles, context.projectPath, nodes, edges);
@@ -381,6 +383,27 @@ export class VueAnalyzer extends BaseAnalyzer {
         } catch (error) {
           console.warn(`Failed to parse Vue component ${file}:`, error);
         }
+      }
+    }
+
+    // Render tree: link each component to the child components it uses in its
+    // <template> (the Camp-C fact that import/structural graphs cannot express —
+    // App IMPORTS UserCard, but only Klauro says App RENDERS UserCard).
+    const idByName = new Map(
+      components.map(c => [c.name, this.generateId('component', c.filePath, c.name)])
+    );
+    for (const parent of components) {
+      const parentId = this.generateId('component', parent.filePath, parent.name);
+      for (const child of new Set(parent.childComponents)) {
+        const childId = idByName.get(child);
+        if (!childId || childId === parentId) continue;
+        edges.push(this.createEdge(
+          this.generateEdgeId(parentId, childId, 'renders'),
+          parentId,
+          childId,
+          'renders',
+          'structural'
+        ));
       }
     }
 
@@ -737,8 +760,19 @@ export class VueAnalyzer extends BaseAnalyzer {
       imports: this.extractImports(content),
       exports: this.extractExports(content),
       slots: this.extractSlots(content),
-      emits: this.extractEmits(content)
+      emits: this.extractEmits(content),
+      childComponents: this.extractChildComponents(content)
     };
+  }
+
+  /** Child components rendered in the <template>: PascalCase tags (the Vue
+   *  convention for components) — distinct from native lowercase HTML elements. */
+  private extractChildComponents(content: string): string[] {
+    const tpl = /<template>([\s\S]*?)<\/template>/.exec(content);
+    if (!tpl) return [];
+    const found = new Set<string>();
+    for (const m of tpl[1].matchAll(/<([A-Z][A-Za-z0-9_]*)[\s/>]/g)) found.add(m[1]);
+    return [...found];
   }
 
   private extractComposables(content: string, filePath: string): VueComposable[] {
@@ -845,10 +879,14 @@ export class VueAnalyzer extends BaseAnalyzer {
   private extractComponentName(content: string, filePath: string): string | null {
     const fileName = path.basename(filePath, path.extname(filePath));
 
-    const namePattern = /name:\s*['"`]([^'"`]+)['"`]/;
-    const match = namePattern.exec(content);
-
-    return match ? match[1] : fileName;
+    // Only an EXPLICIT component-name option counts — a bare `name:` regex also
+    // matches data properties like `const user = { name: 'Ada' }`, so scope it to
+    // `defineOptions({ name })` / `export default { name }`. Otherwise the SFC is
+    // referenced by its filename (the Vue convention), so default to that.
+    const explicit =
+      /defineOptions\s*\(\s*\{[^}]*?\bname:\s*['"`]([^'"`]+)['"`]/.exec(content) ||
+      /export\s+default\s*\{[^]*?\bname:\s*['"`]([^'"`]+)['"`]/.exec(content);
+    return explicit ? explicit[1] : fileName;
   }
 
   private extractProps(content: string): Array<{ name: string; type: string; required: boolean; defaultValue?: string }> {

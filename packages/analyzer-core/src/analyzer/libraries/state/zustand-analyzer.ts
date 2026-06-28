@@ -34,12 +34,12 @@ export class ZustandAnalyzer extends BaseAnalyzer {
     const { projectPath } = context;
     const ignorePatterns = this.getIgnorePatterns(context);
 
-    const sourceFiles = await glob('**/*.{ts,tsx,js,jsx}', {
+    const sourceFiles = this.capAndPrioritizeSourceFiles(await glob('**/*.{ts,tsx,js,jsx}', {
       cwd: projectPath,
       ignore: [...ignorePatterns, '**/*.test.*', '**/*.spec.*'],
       absolute: false,
       nodir: true
-    });
+    }), 'Zustand candidate files');
 
     const nodes: CASNode[] = [];
     const edges: CASEdge[] = [];
@@ -48,7 +48,13 @@ export class ZustandAnalyzer extends BaseAnalyzer {
 
     for (const relativePath of sourceFiles) {
       const absolutePath = path.join(projectPath, relativePath);
-      const content = await fs.readFile(absolutePath, 'utf-8');
+      let content: string;
+      try {
+        content = await fs.readFile(absolutePath, 'utf-8');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw error;
+      }
 
       if (!this.hasZustandUsage(content)) continue;
 

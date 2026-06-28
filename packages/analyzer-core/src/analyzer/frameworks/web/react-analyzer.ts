@@ -123,7 +123,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
       });
 
       for (const file of tsFiles) {
-        const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
+        const content = await this.readTextFileIfExists(path.join(projectPath, file));
+        if (content === null) continue;
         if (content.includes('from react') || content.includes('import React') || content.includes('React.')) {
           return true;
         }
@@ -137,6 +138,15 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
   supportsIncrementalAnalysis(): boolean {
     return true;
+  }
+
+  private async readTextFileIfExists(filePath: string): Promise<string | null> {
+    try {
+      return await fs.readFile(filePath, 'utf-8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
   }
 
   async getRelevantFiles(projectPath: string): Promise<string[]> {
@@ -157,7 +167,21 @@ export class ReactAnalyzer extends BaseAnalyzer {
     const entryPoints: CASEntryPoint[] = [];
     const exitPoints: CASExitPoint[] = [];
     const file = context.relativePath;
-    const content = await fs.readFile(context.filePath, 'utf-8');
+    const content = await this.readTextFileIfExists(context.filePath);
+    if (content === null) {
+      return this.createFileAnalysisResult(
+        context.filePath,
+        file,
+        context.contentHash || this.computeContentHash(''),
+        Date.now(),
+        nodes,
+        edges,
+        entryPoints,
+        exitPoints,
+        [],
+        []
+      );
+    }
     const stat = await fs.stat(context.filePath);
 
     const localNodes: CASNode[][] = [[], [], [], [], [], [], []];
@@ -221,11 +245,11 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
     try {
       const ignorePatterns = this.getIgnorePatterns(context);
-      const reactFiles = await glob(['**/*.{ts,tsx,js,jsx}'], {
+      const reactFiles = this.capAndPrioritizeSourceFiles(await glob(['**/*.{ts,tsx,js,jsx}'], {
         cwd: context.projectPath,
         ignore: [...ignorePatterns, '**/*.test.*', '**/*.spec.*'],
         nodir: true
-      });
+      }), 'React source files');
       timings['glob'] = Date.now() - t;
 
       t = Date.now();
@@ -381,7 +405,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
     for (const file of files) {
       const fullPath = path.join(projectPath, file);
-      const content = await fs.readFile(fullPath, 'utf-8');
+      const content = await this.readTextFileIfExists(fullPath);
+      if (content === null) continue;
 
       if (this.isReactComponent(content)) {
         try {
@@ -477,7 +502,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
     for (const file of files) {
       const fullPath = path.join(projectPath, file);
-      const content = await fs.readFile(fullPath, 'utf-8');
+      const content = await this.readTextFileIfExists(fullPath);
+      if (content === null) continue;
 
       if (this.isCustomHook(content)) {
         try {
@@ -543,7 +569,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
     for (const file of files) {
       const fullPath = path.join(projectPath, file);
-      const content = await fs.readFile(fullPath, 'utf-8');
+      const content = await this.readTextFileIfExists(fullPath);
+      if (content === null) continue;
 
       if (content.includes('createContext') || content.includes('Context')) {
         try {
@@ -597,7 +624,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
     for (const file of files) {
       const fullPath = path.join(projectPath, file);
-      const content = await fs.readFile(fullPath, 'utf-8');
+      const content = await this.readTextFileIfExists(fullPath);
+      if (content === null) continue;
 
       if (content.includes('Route') || content.includes('Router') || content.includes('routing')) {
         try {
@@ -665,7 +693,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
     for (const file of files) {
       const fullPath = path.join(projectPath, file);
-      const content = await fs.readFile(fullPath, 'utf-8');
+      const content = await this.readTextFileIfExists(fullPath);
+      if (content === null) continue;
 
       if (this.isStoreFile(content)) {
         try {
@@ -720,7 +749,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
     for (const file of pageFiles) {
       const fullPath = path.join(projectPath, file);
-      const content = await fs.readFile(fullPath, 'utf-8');
+      const content = await this.readTextFileIfExists(fullPath);
+      if (content === null) continue;
 
       if (this.isReactComponent(content)) {
         const pageName = this.extractPageName(file);
@@ -845,7 +875,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
     for (const file of utilFiles) {
       const fullPath = path.join(projectPath, file);
-      const content = await fs.readFile(fullPath, 'utf-8');
+      const content = await this.readTextFileIfExists(fullPath);
+      if (content === null) continue;
 
       if (!this.isReactComponent(content)) {
         try {
@@ -888,9 +919,26 @@ export class ReactAnalyzer extends BaseAnalyzer {
   }
 
   private isReactComponent(content: string): boolean {
-    return (content.includes('React') || content.includes('jsx') || content.includes('tsx')) &&
-           (content.includes('export') || content.includes('function') || content.includes('class')) &&
-           (content.includes('return') && (content.includes('<') || content.includes('createElement')));
+    const hasDeclaration =
+      content.includes('export') || content.includes('function') || content.includes('class');
+    if (!hasDeclaration) return false;
+
+    // Classic runtime: the file imports/uses React or calls createElement directly.
+    if ((content.includes('React') || content.includes('createElement')) && content.includes('return')) {
+      return true;
+    }
+
+    // Automatic JSX runtime (React 17+ / Next.js app router): components render JSX
+    // without ever importing React, so the literal "React" token is absent. Fall back
+    // to detecting real JSX element syntax — the same signal shouldParseJsx trusts.
+    return this.containsJsxSyntax(content);
+  }
+
+  /** True when the content contains a real JSX element (component or intrinsic tag) or fragment. */
+  private containsJsxSyntax(content: string): boolean {
+    return /<[A-Z][A-Za-z0-9]*(?:\.[A-Z][A-Za-z0-9]*)*(?:\s|>|\/)/.test(content) ||
+      /<[a-z][A-Za-z0-9:-]*(?:\s|>|\/)/.test(content) ||
+      /<>/.test(content);
   }
 
   private isCustomHook(content: string): boolean {
@@ -2989,8 +3037,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
   private shouldParseJsx(filePath: string, content?: string): boolean {
     if (/\.(jsx|tsx)$/i.test(filePath)) return true;
     if (/\.js$/i.test(filePath) && content) {
-      return /<[A-Z][A-Za-z0-9]*(?:\.[A-Z][A-Za-z0-9]*)*(?:\s|>|\/)/.test(content) ||
-        /<[a-z][A-Za-z0-9:-]*(?:\s|>|\/)/.test(content);
+      return this.containsJsxSyntax(content);
     }
     return false;
   }

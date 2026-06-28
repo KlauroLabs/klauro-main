@@ -130,6 +130,8 @@ export interface PHPASTNode {
     class?: string;
     method?: string;
     function?: string;
+    /** Receiver variable for a member call `$recv->method()` (without `$`). */
+    receiver?: string;
     line: number;
   }>;
   uses?: Array<{

@@ -37,6 +37,10 @@ interface AngularComponent {
   imports: string[];
   exports: string[];
   standalone: boolean;
+  /** Custom-element selectors used inside this component's inline template. */
+  childSelectors: string[];
+  /** Constructor-injected collaborator types (Angular DI). */
+  dependencies: string[];
 }
 
 interface AngularService {
@@ -182,6 +186,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
       const application = await this.analyzeApplication(context.projectPath, nodes);
       const components = await this.analyzeComponents(angularFiles, context.projectPath, nodes, edges);
       const services = await this.analyzeServices(angularFiles, context.projectPath, nodes, edges);
+      this.buildInjectionEdges(components, services, edges);
       const modules = await this.analyzeModules(angularFiles, context.projectPath, nodes, edges);
       const directives = await this.analyzeDirectives(angularFiles, context.projectPath, nodes, edges);
       const pipes = await this.analyzePipes(angularFiles, context.projectPath, nodes, edges);
@@ -313,6 +318,9 @@ export class AngularAnalyzer extends BaseAnalyzer {
     edges: CASEdge[]
   ): Promise<AngularComponent[]> {
     const components: AngularComponent[] = [];
+    // selector -> component node id, to resolve template child tags to components.
+    const selectorToId = new Map<string, string>();
+    const componentIdByName = new Map<string, string>();
 
     for (const file of files) {
       const fullPath = path.join(projectPath, file);
@@ -327,6 +335,8 @@ export class AngularAnalyzer extends BaseAnalyzer {
             components.push(component);
 
             const componentId = this.generateId('component', component.filePath, component.name);
+            if (component.selector) selectorToId.set(component.selector.toLowerCase(), componentId);
+            componentIdByName.set(component.name, componentId);
             const componentNode = this.createNodeBuilder(componentId, component.name, 'angular_component')
               .withLevel(2, 'architectural')
               .withCategory('component', ['angular', 'ui'])
@@ -356,7 +366,58 @@ export class AngularAnalyzer extends BaseAnalyzer {
       }
     }
 
+    // Post-pass: parent renders child — resolve each template's child selectors
+    // to the component that declares that selector, emit a `renders` edge.
+    for (const component of components) {
+      const parentId = componentIdByName.get(component.name);
+      if (!parentId) continue;
+      for (const sel of component.childSelectors) {
+        const childId = selectorToId.get(sel);
+        if (!childId || childId === parentId) continue;
+        edges.push({
+          id: this.generateEdgeId(parentId, childId, 'renders'),
+          source: parentId,
+          target: childId,
+          type: 'renders',
+          metadata: { framework: 'angular', via_selector: sel }
+        } as CASEdge);
+      }
+    }
+
     return components;
+  }
+
+  /**
+   * Angular DI graph: a component/service's constructor params are the
+   * collaborators its injector supplies. Emit a `depends_on` edge tagged
+   * dependency_type:injection per resolved collaborator — the Camp-C fact
+   * structural indexers can't see (they read imports/usages, not injection).
+   */
+  private buildInjectionEdges(
+    components: AngularComponent[],
+    services: AngularService[],
+    edges: CASEdge[]
+  ): void {
+    const idByType = new Map<string, string>();
+    for (const c of components) idByType.set(c.name, this.generateId('component', c.filePath, c.name));
+    for (const s of services) idByType.set(s.name, this.generateId('service', s.filePath, s.name));
+
+    const link = (ownerId: string, deps: string[]): void => {
+      for (const dep of deps) {
+        const targetId = idByType.get(dep);
+        if (!targetId || targetId === ownerId) continue;
+        edges.push({
+          id: this.generateEdgeId(ownerId, targetId, 'depends_on'),
+          source: ownerId,
+          target: targetId,
+          type: 'depends_on',
+          metadata: { framework: 'angular', dependency_type: 'injection' }
+        } as CASEdge);
+      }
+    };
+
+    for (const c of components) link(this.generateId('component', c.filePath, c.name), c.dependencies);
+    for (const s of services) link(this.generateId('service', s.filePath, s.name), s.dependencies);
   }
 
   private async analyzeServices(
@@ -916,8 +977,29 @@ export class AngularAnalyzer extends BaseAnalyzer {
       lifecycle: this.extractLifecycle(content),
       imports: this.extractImports(content),
       exports: this.extractExports(content),
-      standalone: content.includes('standalone: true')
+      standalone: content.includes('standalone: true'),
+      childSelectors: this.extractChildSelectors(content),
+      dependencies: this.extractDependencies(content)
     };
+  }
+
+  /**
+   * Custom-element tags used inside the component's inline template are its
+   * rendered children. We resolve each tag back to the component whose
+   * `selector` matches, building the component tree (the Camp-C fact embeddings
+   * and structural indexers can't produce — they see imports, not renders).
+   */
+  private extractChildSelectors(content: string): string[] {
+    const tplMatch = content.match(/template:\s*([`'"])([\s\S]*?)\1/);
+    if (!tplMatch) return [];
+    const template = tplMatch[2];
+    const selectors = new Set<string>();
+    const tagRe = /<([a-z][a-z0-9]*(?:-[a-z0-9]+)+)\b/gi;
+    let m: RegExpExecArray | null;
+    while ((m = tagRe.exec(template)) !== null) {
+      selectors.add(m[1].toLowerCase());
+    }
+    return [...selectors];
   }
 
   private extractAngularService(ast: any, content: string, filePath: string): AngularService | null {

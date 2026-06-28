@@ -478,6 +478,7 @@ export class LaravelAnalyzer extends BaseAnalyzer {
                   attributes: {
                     relation_type: relation.type,
                     related_model: relation.model,
+                    owner_model: model.name,
                     foreign_key: relation.foreignKey
                   }
                 })
@@ -1282,7 +1283,7 @@ export class LaravelAnalyzer extends BaseAnalyzer {
         method,
         uri,
         controller: controller.includes('@') ? controller : undefined,
-        middleware: this.extractRouteMiddleware(content, uri),
+        middleware: this.extractRouteMiddleware(content, uri, method),
         where: this.extractRouteWhere(content, uri),
         parameters: this.extractRouteParameters(uri),
         name: this.extractRouteName(content, uri)
@@ -1660,12 +1661,15 @@ export class LaravelAnalyzer extends BaseAnalyzer {
     return foreignKeys;
   }
 
-  private extractRouteMiddleware(content: string, uri: string): string[] {
+  private extractRouteMiddleware(content: string, uri: string, method?: string): string[] {
     const middleware: string[] = [];
     const escapedUri = uri.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+    // Constrain to THIS route's verb: GET /users and POST /users share a URI, so a
+    // URI-only match leaked POST's ->middleware('auth') onto the open GET route.
+    const verb = method ? method.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '\\w+';
     const routeBlockPattern = new RegExp(
-      `Route::\\w+\\(\\s*['"\`]${escapedUri}['"\`][^;]*->middleware\\(([^)]+)\\)`,
+      `Route::${verb}\\(\\s*['"\`]${escapedUri}['"\`][^;]*->middleware\\(([^)]+)\\)`,
       'g'
     );
 

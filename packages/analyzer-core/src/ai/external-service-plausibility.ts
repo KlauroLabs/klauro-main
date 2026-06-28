@@ -33,7 +33,6 @@ const CODE_TYPE_TOKENS = new Set([
   'self',
 ]);
 
-const SERVICE_SHAPED_SUFFIX_PATTERN = /(?:Service|Client|Api|Gateway|Sdk|Bus|Broker|Provider)s?$/;
 const PASCAL_CASE_MULTIWORD_PATTERN = /^[A-Z][a-z0-9]*(?:[A-Z][a-z0-9]*)+$/;
 
 function normalizeServiceName(name: string): string {
@@ -53,11 +52,13 @@ export function isPlausibleExternalServiceName(name: string, selfNames: string[]
 
   if (KNOWN_SERVICE_NAMES.has(norm)) return true;
   if (/^[A-Za-z][A-Za-z ]*:\s/.test(trimmed)) return false;
+  if (/\boperations?\s+via\b/i.test(trimmed)) return false;
   if (/_/.test(trimmed)) return false;
   if (/\.(?:js|jsx|ts|tsx|mjs|cjs|dart|rs|go|py|php|rb|java|cs)$/i.test(trimmed)) return false;
+  if (/^(?:@\/|~\/|\.{1,2}\/|\/)/.test(trimmed)) return false;
+  if (/^@[^/]+\/.+\/.+/.test(trimmed)) return false;
   if (/^@?[\w.-]+\/[\w./-]+$/.test(trimmed) && !/:\/\//.test(trimmed)) return false;
   if (/\.|:\/\//.test(trimmed)) return true;
-  if (SERVICE_SHAPED_SUFFIX_PATTERN.test(trimmed)) return true;
   if (PASCAL_CASE_MULTIWORD_PATTERN.test(trimmed)) return false;
   if (CODE_TYPE_TOKENS.has(norm)) return false;
   return false;

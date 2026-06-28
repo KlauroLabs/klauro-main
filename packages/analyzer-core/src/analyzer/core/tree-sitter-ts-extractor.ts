@@ -119,6 +119,13 @@ export interface TSExtractedFunction {
   complexity: number;
   decorators: string[];
   documentation?: string;
+  /**
+   * True for a nameless arrow/function-expression callback extracted only to
+   * carry its outbound calls (e.g. an Express route handler at module scope).
+   * Consumers should NOT emit a graph node for these — they exist so calls made
+   * directly inside the callback (fetch/axios) are not silently dropped.
+   */
+  isAnonymousCallback?: boolean;
 }
 
 export interface TSExtractedProperty {
@@ -389,6 +396,23 @@ export class TreeSitterTSExtractor {
       funcType = 'function';
     }
 
+    // Nameless arrow/function-expression callbacks passed as call arguments —
+    // e.g. an Express route handler `app.get('/orders', (req, res) => { fetch(...) })`
+    // — carry no name and would be dropped, taking their outbound calls with
+    // them (a server that is also an API client then shows zero exit points).
+    // Extract such a callback as an `anonymous` carrier ONLY when it sits at
+    // module scope: a callback nested inside another function is already covered
+    // because that function's extractCalls() collects the whole subtree, so
+    // extracting it here too would double-count the call.
+    let isAnonymousCallback = false;
+    if (!funcName &&
+        (func.type === 'arrow_function' || func.type === 'function_expression') &&
+        func.parent?.type === 'arguments' &&
+        !this.hasEnclosingFunction(func)) {
+      funcName = 'anonymous';
+      isAnonymousCallback = true;
+    }
+
     if (!funcName) return null;
 
     let parent = func.parent;
@@ -442,8 +466,26 @@ export class TreeSitterTSExtractor {
       calls,
       complexity,
       decorators,
-      documentation
+      documentation,
+      isAnonymousCallback
     };
+  }
+
+  /** Whether `node` is lexically nested inside any function-like ancestor. */
+  private hasEnclosingFunction(node: any): boolean {
+    const fnTypes = new Set([
+      'function_declaration',
+      'method_definition',
+      'arrow_function',
+      'function_expression',
+      'generator_function_declaration'
+    ]);
+    let parent = node.parent;
+    while (parent) {
+      if (fnTypes.has(parent.type)) return true;
+      parent = parent.parent;
+    }
+    return false;
   }
 
   private extractParameters(func: any): TSExtractedParameter[] {

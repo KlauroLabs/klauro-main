@@ -32,6 +32,10 @@ export interface CASOutput {
   // Legacy structures for backward compatibility
   behaviors?: CASBehavior[];
   patterns?: CASPattern[];
+  /** Louvain functional modules (clustering of the call graph). Structural
+   *  parity with codebase-memory's community detection; Klauro layers domain
+   *  meaning on top. */
+  communities?: CASCommunity[];
   categories?: CASCategories;
   tags?: CASTag[];
   index?: CASIndex;
@@ -74,6 +78,7 @@ export interface CASOutput {
   flow_graph?: CASFlowGraph;
   runtime_static_links?: CASRuntimeStaticLink[];
   analysis_facts?: CASAnalysisFact[];
+  distribution_units?: CASDistributionUnit[];
 
   // v1.9.0+ Codebase Idiom Intelligence
   codebase_idioms?: CASCodebaseIdiom[];
@@ -109,6 +114,49 @@ export interface CASEmbeddingIndex {
   };
   degraded?: boolean;
   degraded_reason?: string;
+}
+
+export type CASDistributionUnitKind =
+  | 'desktop-app'
+  | 'mobile-app'
+  | 'server-bundle'
+  | 'installer'
+  | 'container-stack'
+  | 'package'
+  | 'deployment-unit';
+
+export type CASDistributionEvidenceSource =
+  | 'installer'
+  | 'install-script'
+  | 'release-script'
+  | 'service-unit'
+  | 'desktop-entry'
+  | 'package-manifest'
+  | 'container-topology'
+  | 'ci'
+  | 'inferred';
+
+export interface CASDistributionEvidence {
+  source: CASDistributionEvidenceSource;
+  file?: string;
+  line?: number;
+  claim: string;
+  confidence: number;
+}
+
+export interface CASDistributionUnit {
+  id: string;
+  name: string;
+  kind: CASDistributionUnitKind;
+  platforms: string[];
+  component_names: string[];
+  component_node_ids: string[];
+  artifact_node_ids: string[];
+  artifact_paths: string[];
+  install_paths?: string[];
+  evidence: CASDistributionEvidence[];
+  confidence: number;
+  agent_guidance?: string;
 }
 
 export interface CASPerspective {
@@ -457,6 +505,14 @@ export interface CASPatternDeviation {
   description: string;
   affected_instances: string[];
   recommendation?: string;
+}
+
+/** A Louvain functional module: a cluster of tightly call-connected nodes. */
+export interface CASCommunity {
+  id: number;
+  member_ids: string[];
+  size: number;
+  internal_edges: number;
 }
 
 export interface CASPattern {

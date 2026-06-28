@@ -4,6 +4,7 @@ import {
   CASDocumentation, CASComment, CASTodo, CASImplementationStatus, FileAnalysisResult
 } from '../../types/cas.types';
 import { AnalyzerError } from '../core/errors';
+import { isAuthenticationGuardName } from '../core/guard-classification';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
 import { TreeSitterParser } from '../core/tree-sitter-parser';
@@ -217,11 +218,11 @@ export class GoAnalyzer extends BaseAnalyzer {
       await this.detectProjectType(context.projectPath);
       await this.extractDependencies(context.projectPath, libraries);
 
-      const goFiles = await glob(['**/*.go'], {
+      const goFiles = this.capAndPrioritizeSourceFiles(await glob(['**/*.go'], {
         cwd: context.projectPath,
         ignore: this.getIgnorePatterns(context),
         nodir: true
-      });
+      }), 'Go files');
       goFiles.sort();
 
       const packages = new Map<string, string[]>();
@@ -235,7 +236,13 @@ export class GoAnalyzer extends BaseAnalyzer {
       this.detectFrameworkPatterns(nodes, edges, entryPoints);
       this.buildTypeRelationships(nodes, edges);
 
-      await this.analyzeCallGraph(context.projectPath, nodes, edges, exitPoints);
+      if (this.shouldBuildExpensiveLanguageCallGraph(goFiles.length)) {
+        await this.analyzeCallGraph(context.projectPath, nodes, edges, exitPoints);
+      } else {
+        this.addAnalysisWarning(
+          `Go cross-file call graph deferred for ${process.env.KLAURO_ANALYSIS_FOCUS || 'default'} focus after ${goFiles.length} prioritized files; run deep-context/full analysis for exhaustive Go call edges`
+        );
+      }
 
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
         framework_specific: {
@@ -257,6 +264,13 @@ export class GoAnalyzer extends BaseAnalyzer {
         'GO_ANALYSIS_ERROR'
       );
     }
+  }
+
+  private shouldBuildExpensiveLanguageCallGraph(fileCount: number): boolean {
+    const focus = process.env.KLAURO_ANALYSIS_FOCUS;
+    if (focus === 'agent-fast' || focus === 'ui-overview') return fileCount <= 900;
+    if (focus === 'deep-context') return fileCount <= 2500;
+    return true;
   }
 
   private async detectProjectType(projectPath: string): Promise<void> {
@@ -441,6 +455,11 @@ export class GoAnalyzer extends BaseAnalyzer {
         .withComments(fileComments.length > 0 ? fileComments : undefined)
         .withTodos(fileTodos.length > 0 ? fileTodos : undefined)
         .build());
+
+      // HTTP routes from Go web frameworks (Gin / Echo / Gorilla mux / net/http) —
+      // the Camp-C route fact Camp A/B can't produce. Emitted as http entry points
+      // with a trigger so buildRouteTable surfaces method + path.
+      this.extractGoHttpRoutes(content, fileId, relativePath, entryPoints);
 
       for (const imp of imports) {
         const importId = `import_${fileId}_${this.sanitizeId(imp.path)}`;
@@ -1570,6 +1589,103 @@ export class GoAnalyzer extends BaseAnalyzer {
     }
   }
 
+  /**
+   * Extract HTTP routes from the common Go web frameworks. Gin/Echo/Fiber expose a
+   * `router.METHOD("/path", handler)` builder; Gorilla mux uses
+   * `router.HandleFunc("/path", h).Methods("GET", ...)`. Both name the verb + path
+   * explicitly — the route fact embeddings/structural indexers can't produce.
+   */
+  private extractGoHttpRoutes(content: string, fileId: string, relativePath: string, entryPoints: any[]): void {
+    // Gate on a web-framework signal so an arbitrary `cfg.GET("key")` call in
+    // non-routing code can't masquerade as a route.
+    if (!/gin-gonic\/gin|labstack\/echo|gofiber\/fiber|gorilla\/mux|net\/http|chi\b|\bRouter\b/.test(content)) return;
+    const seen = new Set<string>();
+    const push = (method: string, rawPath: string, authed = false) => {
+      const m = method.toUpperCase();
+      // Gorilla `{id}` / `{id:[0-9]+}` and Gin `:id` both canonicalize to `:id`.
+      const path = rawPath
+        .replace(/\{(\w+)(?::[^}]*)?\}/g, ':$1')
+        .replace(/\/+$/,'') || '/';
+      const key = `${m} ${path}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      entryPoints.push({
+        id: `entry_go_route_${this.sanitizeId(relativePath)}_${m}_${this.sanitizeId(path)}`,
+        source_node: fileId,
+        type: 'http',
+        name: `${m} ${path}`,
+        trigger: { method: m, path },
+        security: { authenticated: authed },
+        metadata: { framework: 'go', kind: 'route', file: relativePath, language: 'go' },
+      });
+    };
+
+    // Router groups: `v1 := r.Group("/api/v1")` (Gin) / `e.Group("/api")` (Echo)
+    // mount routes under a prefix. Resolve each group var's full prefix
+    // (transitively for nested groups) so a `v1.GET("/users")` is "/api/v1/users".
+    const groupParent = new Map<string, { parent: string; local: string }>();
+    for (const g of content.matchAll(/\b(\w+)\s*:=\s*(\w+)\.Group\s*\(\s*"([^"]*)"/g)) {
+      groupParent.set(g[1], { parent: g[2], local: g[3] });
+    }
+    // Gorilla subrouters: `api := r.PathPrefix("/api").Subrouter()` mount routes
+    // under a prefix, same prefix-resolution shape as Gin groups.
+    for (const g of content.matchAll(/\b(\w+)\s*:=\s*(\w+)\.PathPrefix\s*\(\s*"([^"]*)"\s*\)\s*\.Subrouter\s*\(\s*\)/g)) {
+      groupParent.set(g[1], { parent: g[2], local: g[3] });
+    }
+    const resolvePrefix = (v: string): string => {
+      const parts: string[] = [];
+      const seen = new Set<string>();
+      let cur = v;
+      while (groupParent.has(cur) && !seen.has(cur)) {
+        seen.add(cur);
+        const g = groupParent.get(cur)!;
+        parts.unshift(g.local);
+        cur = g.parent;
+      }
+      return parts.join('');
+    };
+
+    // Group-wide auth: `admin.Use(AuthRequired())` protects every route registered
+    // on that group (and its nested children). Track which group vars carry auth.
+    const groupAuthed = new Set<string>();
+    for (const u of content.matchAll(/\b(\w+)\.Use\s*\(([^)]*(?:\([^)]*\))?[^)]*)\)/g)) {
+      if ([...u[2].matchAll(/\b([A-Za-z_]\w*)\b/g)].some(id => isAuthenticationGuardName(id[1]))) {
+        groupAuthed.add(u[1]);
+      }
+    }
+    const inheritsAuth = (v: string): boolean => {
+      const seen = new Set<string>();
+      let cur = v;
+      while (cur && !seen.has(cur)) {
+        if (groupAuthed.has(cur)) return true;
+        seen.add(cur);
+        cur = groupParent.get(cur)?.parent || '';
+      }
+      return false;
+    };
+
+    // Gin/Echo all-caps `r.GET(...)`, Fiber PascalCase `app.Get(...)`. Capture
+    // receiver (group prefix) + the arg tail (per-route auth mw).
+    const builderRe = /\b(\w+)\.(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|Get|Post|Put|Delete|Patch|Head|Options)\s*\(\s*"([^"]+)"\s*((?:,[^)]*)?)\)/g;
+    let m: RegExpExecArray | null;
+    while ((m = builderRe.exec(content)) !== null) {
+      const recv = m[1];
+      const argsTail = m[4] || '';
+      const authed = inheritsAuth(recv) || [...argsTail.matchAll(/\b([A-Za-z_]\w*)\b/g)]
+        .some(id => isAuthenticationGuardName(id[1]));
+      push(m[2], resolvePrefix(recv) + m[3], authed);
+    }
+
+    // Gorilla mux: `r.HandleFunc("/users", h).Methods("GET", "POST")`. Capture the
+    // receiver so a subrouter's PathPrefix is prepended.
+    const gorillaRe = /\b(\w+)\.HandleFunc\s*\(\s*"([^"]+)"[^)]*\)\s*\.Methods\s*\(([^)]*)\)/g;
+    while ((m = gorillaRe.exec(content)) !== null) {
+      const path = resolvePrefix(m[1]) + m[2];
+      const authed = inheritsAuth(m[1]);
+      for (const verb of m[3].matchAll(/"([A-Za-z]+)"/g)) push(verb[1], path, authed);
+    }
+  }
+
   private detectFrameworkPatterns(nodes: CASNode[], _edges: CASEdge[], entryPoints: any[]): void {
     const frameworkPatterns = {
       gin: ['gin.Engine', 'gin.Context', 'gin.HandlerFunc'],
@@ -1693,6 +1809,8 @@ export class GoAnalyzer extends BaseAnalyzer {
     structNodes: CASNode[]
   ): Promise<void> {
     const currentPackage = ast.package || 'main';
+    let fileContent = '';
+    try { fileContent = fs.readFileSync(fullPath, 'utf-8'); } catch { /* best effort */ }
 
     for (const child of ast.children || []) {
       if (child.type === 'Function' && child.calls) {
@@ -1703,23 +1821,43 @@ export class GoAnalyzer extends BaseAnalyzer {
 
         if (!callerFunction) continue;
 
+        // Receiver var -> declared type, so `l.Save()` (l: *Logger) resolves to
+        // Logger.Save, not whichever Save method happens to be first. Built from
+        // the caller's signature (receiver + params) and simple local decls.
+        const recvTypes = this.buildGoReceiverTypeMap(
+          fileContent, callerFunction.source?.line, callerFunction.source?.end_line
+        );
+
         for (const call of child.calls) {
           let targetFunction: CASNode | undefined;
 
           if (call.package) {
+            const stripPtr = (s: string) => String(s || '').replace(/^[\*&]+/, '');
+            const recvType = stripPtr(recvTypes.get(call.package) || call.package);
+
+            // 1) Type-aware: a method named `function` whose receiver IS this type.
             targetFunction = functionNodes.find(n =>
-              n.name === call.function &&
-              (n.type === 'method' || n.metadata?.attributes?.receiver?.type === call.package)
+              n.type === 'method' && n.name === call.function &&
+              stripPtr(n.metadata?.attributes?.receiver?.type as string) === recvType
             );
 
+            // 2) Struct named by the resolved type -> its method.
             if (!targetFunction) {
-              const targetStruct = structNodes.find(s => s.name === call.package);
+              const targetStruct = structNodes.find(s => s.name === recvType);
               if (targetStruct) {
                 targetFunction = functionNodes.find(n =>
                   n.name === call.function &&
                   edges.some(e => e.source === targetStruct.id && e.target === n.id && e.type === 'has_method')
                 );
               }
+            }
+
+            // 3) Unambiguous fallback: exactly ONE method has this name -> use it
+            //    (preserves recall where the receiver type couldn't be resolved;
+            //    when ambiguous and unresolved, we do NOT guess — no false edge).
+            if (!targetFunction) {
+              const named = functionNodes.filter(n => n.type === 'method' && n.name === call.function);
+              if (named.length === 1) targetFunction = named[0];
             }
           } else {
             targetFunction = functionNodes.find(n =>
@@ -1919,6 +2057,28 @@ export class GoAnalyzer extends BaseAnalyzer {
         }
       }
     }
+  }
+
+  /** Map a Go function's local variable names to their bare struct types, from
+   *  the caller's signature (receiver + params) and simple local declarations
+   *  (`x := Foo{}`, `x := &Foo{}`, `var x Foo`). Used to resolve a method-call
+   *  receiver (`l` in `l.Save()`) to the right type so same-name methods on
+   *  different structs don't collide. */
+  private buildGoReceiverTypeMap(content: string, startLine?: number, endLine?: number): Map<string, string> {
+    const map = new Map<string, string>();
+    if (!content || !startLine) return map;
+    const lines = content.split('\n');
+    const text = lines.slice(startLine - 1, (endLine && endLine >= startLine) ? endLine : startLine).join('\n');
+    const bare = (t: string) => t.replace(/^[\*&\[\]]+/, '').replace(/\[\]/g, '').split('.').pop() || t;
+    const header = text.split('{')[0];
+    for (const m of header.matchAll(/\(([^()]*)\)/g)) {
+      for (const p of this.extractFunctionParameters(m[1])) {
+        if (p.name && p.type) map.set(p.name, bare(p.type));
+      }
+    }
+    for (const m of text.matchAll(/\b([A-Za-z_]\w*)\s*:=\s*&?([A-Za-z_][\w.]*)\s*\{/g)) map.set(m[1], bare(m[2]));
+    for (const m of text.matchAll(/\bvar\s+([A-Za-z_]\w*)\s+\*?([A-Za-z_][\w.]*)/g)) map.set(m[1], bare(m[2]));
+    return map;
   }
 
   private extractGoCallsFromLine(line: string, structNodes: CASNode[]): Array<{target: string, method?: string, isGoroutine: boolean, isDefer: boolean, isChannel: boolean}> {

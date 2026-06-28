@@ -15,6 +15,10 @@ interface AspNetController {
   filters: string[];
   dependencies: string[];
   isApiController: boolean;
+  /** Id of the surviving CAS node for this controller (the merged `class_*`
+   * node when the C# language analyzer already emitted one, else the framework
+   * id). DI edges MUST reference this so endpoints resolve to a real node. */
+  nodeId?: string;
 }
 
 interface AspNetRoute {
@@ -41,6 +45,8 @@ interface AspNetService {
   interfaces: string[];
   lifetime: 'singleton' | 'scoped' | 'transient' | 'unknown';
   methods: Array<{ name: string; returnType?: string; parameters: string[] }>;
+  /** Id of the surviving CAS node (merged `class_*` node or framework id). */
+  nodeId?: string;
 }
 
 interface AspNetDbContext {
@@ -48,6 +54,8 @@ interface AspNetDbContext {
   filePath: string;
   dbSets: Array<{ name: string; entityType: string }>;
   connectionString?: string;
+  /** Id of the surviving CAS node (merged `class_*` node or framework id). */
+  nodeId?: string;
 }
 
 interface AspNetHub {
@@ -219,6 +227,9 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
           const routes = this.extractRoutes(content, basePath);
           const filters = this.extractFilters(content);
           const dependencies = this.extractConstructorDependencies(content, controllerName);
+          // Class-level attributes (e.g. a controller-wide [Authorize]) apply to
+          // every action unless an action opts out with [AllowAnonymous].
+          const controllerAttributes = this.extractClassAttributes(content, controllerName);
 
           const controllerInfo: AspNetController = {
             name: controllerName,
@@ -278,6 +289,10 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
             newNodes.push(node);
           }
 
+          // Record the surviving node id so DI edges resolve to a real node
+          // instead of a dangling framework id (see buildDependencyInjectionRelationships).
+          controllerInfo.nodeId = controllerNodeId;
+
           for (const route of routes) {
             const routeId = this.generateId('route', file, `${controllerName}_${route.method}_${route.handlerName}`);
             const routeNode = this.createNodeBuilder(routeId, `${route.method.toUpperCase()} ${route.path}`, 'route')
@@ -311,7 +326,7 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
               `${route.method.toUpperCase()} ${route.path}`,
               `${controllerName}.${route.handlerName}`,
               { method: route.method.toUpperCase(), path: route.path },
-              undefined,
+              this.aspnetSecurity(route.attributes, controllerAttributes),
               {
                 framework: 'aspnet-core',
                 http_method: route.method,
@@ -549,6 +564,9 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
               .build();
             newNodes.push(node);
           }
+
+          // Record the surviving node id so DI edges resolve to a real node.
+          serviceInfo.nodeId = existingNode ? existingNode.id : serviceId;
         }
       } catch {}
     }
@@ -634,6 +652,9 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
               .build();
             newNodes.push(node);
           }
+
+          // Record the surviving node id so DI edges resolve to a real node.
+          dbContextInfo.nodeId = existingNode ? existingNode.id : contextId;
 
           for (const dbSet of dbSets) {
             exitPoints.push(this.createExitPoint(
@@ -794,8 +815,15 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
     dbContexts: AspNetDbContext[],
     edges: CASEdge[]
   ): void {
+    // Resolve to the SURVIVING node id captured during node reconciliation.
+    // The orchestrator dedups the framework `controller_*`/`service_*`/`dbcontext_*`
+    // nodes away in favour of the C# language analyzer's `class_*` nodes, so the
+    // framework `generateId(...)` would produce DANGLING edge endpoints that no
+    // consumer can resolve back to a node name. `nodeId` is the id that actually
+    // survives (the merged `class_*` node, or the framework id when no class
+    // node existed). Fall back to the framework id defensively.
     for (const controller of controllers) {
-      const controllerId = this.generateId('controller', controller.filePath, controller.name);
+      const controllerId = controller.nodeId ?? this.generateId('controller', controller.filePath, controller.name);
 
       for (const dep of controller.dependencies) {
         const service = services.find(s =>
@@ -803,29 +831,31 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
         );
 
         if (service) {
-          const serviceId = this.generateId('service', service.filePath, service.name);
-          edges.push(this.createEdgeBuilder(
-            this.generateEdgeId(controllerId, serviceId, 'injects'),
-            controllerId, serviceId, 'injects'
-          ).withMetadata({ attributes: { relationship: 'dependency-injection', injected_type: dep } }).build());
+          const serviceId = service.nodeId ?? this.generateId('service', service.filePath, service.name);
+          edges.push(this.createEdge(
+            this.generateEdgeId(controllerId, serviceId, 'depends_on'),
+            controllerId, serviceId, 'depends_on', 'data',
+            { dependency_type: 'injection', attributes: { relationship: 'dependency-injection', injected_type: dep } }
+          ));
         }
 
         const dbContext = dbContexts.find(d => d.name === dep);
         if (dbContext) {
-          const contextId = this.generateId('dbcontext', dbContext.filePath, dbContext.name);
-          edges.push(this.createEdgeBuilder(
-            this.generateEdgeId(controllerId, contextId, 'injects'),
-            controllerId, contextId, 'injects'
-          ).withMetadata({ attributes: { relationship: 'dependency-injection', injected_type: dep } }).build());
+          const contextId = dbContext.nodeId ?? this.generateId('dbcontext', dbContext.filePath, dbContext.name);
+          edges.push(this.createEdge(
+            this.generateEdgeId(controllerId, contextId, 'depends_on'),
+            controllerId, contextId, 'depends_on', 'data',
+            { dependency_type: 'injection', attributes: { relationship: 'dependency-injection', injected_type: dep } }
+          ));
         }
       }
     }
 
     for (const service of services) {
-      const serviceId = this.generateId('service', service.filePath, service.name);
+      const serviceId = service.nodeId ?? this.generateId('service', service.filePath, service.name);
 
       for (const dbContext of dbContexts) {
-        const contextId = this.generateId('dbcontext', dbContext.filePath, dbContext.name);
+        const contextId = dbContext.nodeId ?? this.generateId('dbcontext', dbContext.filePath, dbContext.name);
         const serviceNameLower = service.name.toLowerCase();
 
         if (serviceNameLower.includes('repository') || serviceNameLower.includes('data')) {
@@ -976,9 +1006,12 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
       const params = match[5];
 
       const method = httpAttr.replace('Http', '').toLowerCase();
-      const fullPath = routeTemplate
+      let fullPath = routeTemplate
         ? `${basePath}/${routeTemplate}`.replace(/\/+/g, '/')
         : basePath;
+      // Canonical absolute path: [Route("users")] yields a slash-less prefix, but
+      // the route table (and every other framework) emits "/users".
+      if (!fullPath.startsWith('/')) fullPath = `/${fullPath}`;
 
       const parameters = this.extractRouteParameters(params);
       const attributes = this.extractMethodAttributes(content, handlerName);
@@ -1020,6 +1053,34 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
     }
 
     return parameters;
+  }
+
+  /** Attribute names on the controller class itself (e.g. [Authorize], [Route]). */
+  private extractClassAttributes(content: string, controllerName: string): string[] {
+    const attributes: string[] = [];
+    const re = new RegExp(`((?:\\[[^\\]]*\\]\\s*)+)(?:public\\s+)?class\\s+${controllerName}\\b`);
+    const match = re.exec(content);
+    if (match) {
+      const block = match[1];
+      const single = /\[(\w+)/g;
+      let m;
+      while ((m = single.exec(block)) !== null) attributes.push(m[1]);
+    }
+    return attributes;
+  }
+
+  /**
+   * Per-endpoint auth: [Authorize] (action or controller-wide) protects an
+   * endpoint; an action-level [AllowAnonymous] opts it back out. Camp A/B see no
+   * route, let alone its protection state.
+   */
+  private aspnetSecurity(
+    actionAttributes: string[] = [],
+    controllerAttributes: string[] = []
+  ): { authenticated: boolean; guards: string[] } {
+    if (actionAttributes.includes('AllowAnonymous')) return { authenticated: false, guards: [] };
+    const guards = [...new Set([...controllerAttributes, ...actionAttributes])].filter(a => a === 'Authorize');
+    return { authenticated: guards.length > 0, guards };
   }
 
   private extractMethodAttributes(content: string, methodName: string): string[] {

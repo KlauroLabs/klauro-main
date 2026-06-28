@@ -74,6 +74,7 @@ function buildCapabilities(cas: CASOutput): CASProductMapCapability[] {
   const journeys = cas.user_journeys || [];
   const terminalNamesByJourney = new Map(journeys.map(journey => [journey.id, journeyTerminalNames(journey)]));
   const entityNameById = new Map((cas.data_entities || []).map(entity => [entity.id, entity.name]));
+  const capabilityOrder = new Map((cas.system_capabilities || []).map((capability, index) => [capability.name, index]));
 
   const capabilities = (cas.system_capabilities || []).map(capability => {
     const entityNames = (capability.related_entities || []).map(reference => entityNameById.get(reference) || reference);
@@ -96,7 +97,11 @@ function buildCapabilities(cas: CASOutput): CASProductMapCapability[] {
   });
 
   return capabilities.sort(
-    (a, b) => criticalityRank(a.criticality) - criticalityRank(b.criticality) || a.name.localeCompare(b.name)
+    (a, b) =>
+      (capabilityOrder.get(a.name) ?? Number.MAX_SAFE_INTEGER) -
+        (capabilityOrder.get(b.name) ?? Number.MAX_SAFE_INTEGER) ||
+      criticalityRank(a.criticality) - criticalityRank(b.criticality) ||
+      a.name.localeCompare(b.name)
   );
 }
 

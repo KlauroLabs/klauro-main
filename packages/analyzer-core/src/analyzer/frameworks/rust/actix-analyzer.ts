@@ -1,7 +1,9 @@
-import { BaseAnalyzer } from '../../core/base-analyzer';
-import { AnalysisContext, CASContribution } from '../../types/cas.types';
+import { AnalysisContext, BaseAnalyzer } from '../../core/base-analyzer';
+import { CASContribution } from '../../../types/cas.types';
 import { RustAnalyzer } from '../../languages/rust-analyzer';
-import { generateNodeId } from '../../utils/id-generator';
+import * as fs from 'fs-extra';
+import * as path from 'path';
+import { glob } from 'glob';
 
 /**
  * Actix-web framework analyzer
@@ -11,21 +13,17 @@ export class ActixAnalyzer extends BaseAnalyzer {
   private rustAnalyzer: RustAnalyzer;
   
   constructor() {
-    super();
-    this.analyzerId = 'actix-web-analyzer';
-    this.analyzerName = 'Actix-web Framework Analyzer';
-    this.analyzerVersion = '1.0.0';
-    this.analyzerType = 'framework';
+    super('actix-web', 'Actix-web Framework Analyzer', '1.0.0', 'framework');
     this.rustAnalyzer = new RustAnalyzer();
   }
 
   async canAnalyze(projectPath: string): Promise<boolean> {
     // Check if this is a Rust project that uses Actix-web
-    const hasCargoToml = await this.fileExists(`${projectPath}/Cargo.toml`);
+    const hasCargoToml = await this.fileExists(path.join(projectPath, 'Cargo.toml'));
     if (!hasCargoToml) return false;
 
     try {
-      const cargoContent = await this.readFileContent(`${projectPath}/Cargo.toml`);
+      const cargoContent = await this.readFileContent(path.join(projectPath, 'Cargo.toml'));
       const hasActixDep = cargoContent.includes('actix-web') || 
                              cargoContent.includes('actix_web') ||
                              cargoContent.includes('actix');
@@ -49,8 +47,8 @@ export class ActixAnalyzer extends BaseAnalyzer {
   async analyze(context: AnalysisContext): Promise<CASContribution> {
     // Get existing analysis from Rust analyzer
     const rustContribution = await this.rustAnalyzer.analyze(context);
-    const nodes = [...rustContribution.nodes];
-    const edges = [...rustContribution.edges];
+    const nodes = [...(rustContribution.nodes || [])];
+    const edges = [...(rustContribution.edges || [])];
     const entryPoints = [...(rustContribution.entry_points || [])];
     const exitPoints = [...(rustContribution.exit_points || [])];
 
@@ -262,7 +260,7 @@ export class ActixAnalyzer extends BaseAnalyzer {
         trigger: {
           method: route.method,
           path: route.path,
-          parameters: (route.parameters || []).map(param => ({
+          parameters: (route.parameters || []).map((param: string) => ({
             name: param,
             type: 'path',
             required: true,
@@ -385,31 +383,19 @@ export class ActixAnalyzer extends BaseAnalyzer {
   }
 
   private async findRustFiles(projectPath: string): Promise<string[]> {
-    const glob = require('glob');
-    return new Promise((resolve, reject) => {
-      glob('**/*.rs', { 
-        cwd: projectPath, 
-        ignore: this.getIgnorePatterns({ projectPath }),
-        nodir: true
-      }, (err, files) => {
-        if (err) reject(err);
-        else resolve(files.map(f => `${projectPath}/${f}`));
-      });
+    const files = await glob('**/*.rs', {
+      cwd: projectPath,
+      ignore: this.getIgnorePatterns({ projectPath }),
+      nodir: true
     });
+    return files.map(file => path.join(projectPath, file));
   }
 
   private async fileExists(filePath: string): Promise<boolean> {
-    const fs = require('fs').promises;
-    try {
-      await fs.access(filePath);
-      return true;
-    } catch {
-      return false;
-    }
+    return fs.pathExists(filePath);
   }
 
   private async readFileContent(filePath: string): Promise<string> {
-    const fs = require('fs').promises;
-    return await fs.readFile(filePath, 'utf-8');
+    return fs.readFile(filePath, 'utf-8');
   }
 }

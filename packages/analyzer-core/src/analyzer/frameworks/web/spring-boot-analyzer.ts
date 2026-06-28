@@ -307,18 +307,21 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
               'exposes'
             ));
 
-            entryPoints.push({
-              id: `entry_${endpointId}`,
-              name: `${endpoint.method.toUpperCase()} ${fullPath}`,
-              type: 'rest_api',
-              source_node: endpointId,
-              metadata: {
-                method: endpoint.method,
-                path: fullPath,
-                controller: className,
-                authenticated: endpoint.authenticated
-              }
-            });
+            // Canonical HTTP entry point so the orchestrator's buildRouteTable
+            // (filters ep.type==='http', reads trigger.method/path + security)
+            // surfaces Spring routes in get_route_table, like Express/NestJS.
+            // Normalize Spring's `{id}` path params to the `:id` route convention.
+            const canonicalPath = fullPath.replace(/\{([^}]+)\}/g, ':$1');
+            entryPoints.push(this.createEntryPoint(
+              `entry_${endpointId}`,
+              endpointId,
+              'http',
+              `${endpoint.method.toUpperCase()} ${canonicalPath}`,
+              `Spring Boot HTTP endpoint: ${endpoint.method.toUpperCase()} ${canonicalPath}`,
+              { method: endpoint.method.toUpperCase(), path: canonicalPath },
+              { authenticated: endpoint.authenticated },
+              { method: endpoint.method, path: canonicalPath, controller: className, handler: endpoint.handlerName, authenticated: endpoint.authenticated }
+            ));
           });
         }
       }
@@ -626,12 +629,30 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
   private extractEndpoints(content: string): SpringEndpoint[] {
     const endpoints: SpringEndpoint[] = [];
     const methodPattern = /@(Get|Post|Put|Delete|Patch)Mapping\s*(?:\(\s*["']([^"']+)["'])?[\s\S]*?public\s+\w+\s+(\w+)\s*\([^)]*\)/g;
+    // A class-level @PreAuthorize/@Secured/@RolesAllowed (declared above the class
+    // declaration) protects every endpoint. Method-level ones protect only their
+    // own endpoint. Class-level = a security annotation appearing before `class`.
+    const classDeclIdx = content.search(/\bclass\s+\w/);
+    const classHeader = classDeclIdx >= 0 ? content.slice(0, classDeclIdx) : '';
+    const classGuarded = /@(?:PreAuthorize|Secured|RolesAllowed)\b/.test(classHeader);
 
     let match;
+    let prevEnd = 0;
     while ((match = methodPattern.exec(content)) !== null) {
       const method = match[1].toLowerCase();
       const path = match[2] || '';
       const handlerName = match[3];
+
+      // Per-endpoint auth: a security annotation in the window from the previous
+      // endpoint's end through this endpoint's signature guards THIS method only —
+      // whether it sits just before the @…Mapping or between the mapping and
+      // `public`. File-level inclusion would wrongly mark sibling open endpoints.
+      const windowStart = endpoints.length === 0
+        ? Math.max(0, content.lastIndexOf('}', match.index) + 1, prevEnd)
+        : prevEnd;
+      const window = content.slice(windowStart, match.index + match[0].length);
+      const methodGuarded = /@(?:PreAuthorize|Secured|RolesAllowed)\b/.test(window);
+      prevEnd = match.index + match[0].length;
 
       endpoints.push({
         method,
@@ -641,7 +662,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
         responseType: 'Object',
         produces: [],
         consumes: [],
-        authenticated: content.includes('@PreAuthorize') || content.includes('@Secured')
+        authenticated: classGuarded || methodGuarded
       });
     }
 
@@ -649,15 +670,30 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
   }
 
   private extractFieldDependencies(content: string): string[] {
-    const dependencies: string[] = [];
-    const fieldPattern = /@Autowired[\s\S]*?private\s+(\w+)\s+\w+;/g;
+    const dependencies = new Set<string>();
 
+    // Field injection: @Autowired private Type field;
+    const fieldPattern = /@Autowired[\s\S]*?private\s+(\w+)\s+\w+;/g;
     let match;
     while ((match = fieldPattern.exec(content)) !== null) {
-      dependencies.push(match[1]);
+      dependencies.add(match[1]);
     }
 
-    return dependencies;
+    // Constructor injection (the modern Spring idiom, no @Autowired needed): the
+    // ctor parameters of the component are its injected collaborators.
+    const className = this.extractClassName(content);
+    if (className) {
+      const ctor = new RegExp(`(?:public\\s+)?${className}\\s*\\(([^)]*)\\)`).exec(content);
+      if (ctor && ctor[1].trim()) {
+        for (const param of ctor[1].split(',')) {
+          // `final Type name` / `Type name` / `@Qualifier(..) Type name` -> Type.
+          const pm = param.trim().match(/(?:@\w+(?:\([^)]*\))?\s+)*(?:final\s+)?([A-Z]\w*)\s+\w+\s*$/);
+          if (pm) dependencies.add(pm[1]);
+        }
+      }
+    }
+
+    return [...dependencies];
   }
 
   private extractMethods(content: string): Array<{ name: string; parameters: any[]; returnType: string; transactional: boolean }> {
@@ -847,7 +883,9 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
           `${controllerId}_depends_on_${serviceId}`,
           controllerId,
           serviceId,
-          'depends_on'
+          'depends_on',
+          'data',
+          { dependency_type: 'injection' }
         ));
       });
     });
@@ -861,7 +899,9 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
           `${serviceId}_depends_on_${depServiceId}`,
           serviceId,
           depServiceId,
-          'depends_on'
+          'depends_on',
+          'data',
+          { dependency_type: 'injection' }
         ));
       });
     });

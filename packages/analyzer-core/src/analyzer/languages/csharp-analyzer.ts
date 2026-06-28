@@ -2354,6 +2354,30 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     };
   }
 
+  /**
+   * Map each in-scope local/parameter variable to its declared C# type within a
+   * method's line range, so a `recv.Method()` call resolves to recv's type only
+   * (excluding same-name methods on other classes — the decoy). Sources:
+   * parameters (`Account a`), `var x = new T()`, and `T x = …`.
+   */
+  private buildCSharpReceiverTypes(lines: string[], startLine: number, endLine: number): Map<string, string> {
+    const m = new Map<string, string>();
+    const lo = Math.max(0, startLine - 1);
+    const hi = Math.min(lines.length, endLine);
+    const baseType = (t: string) => t.replace(/<.*$/, '').split('.').pop()!.trim();
+    for (let i = lo; i < hi; i++) {
+      const ln = lines[i];
+      // parameters: `(Type name`, `, Type name`, with optional ref/out/in/params
+      for (const pm of ln.matchAll(/[(,]\s*(?:ref\s+|out\s+|in\s+|params\s+)?([A-Z][A-Za-z0-9_]*(?:<[^>)]+>)?)\s+([a-z_]\w*)\s*[,)]/g)) {
+        m.set(pm[2], baseType(pm[1]));
+      }
+      // `var x = new T(` and `T x = new T(` / `T x = ` (declared type wins)
+      for (const vm of ln.matchAll(/\bvar\s+(\w+)\s*=\s*new\s+([A-Z]\w*)/g)) m.set(vm[1], vm[2]);
+      for (const vm of ln.matchAll(/\b([A-Z][A-Za-z0-9_]*(?:<[^>)]+>)?)\s+(\w+)\s*=\s*new\s+/g)) m.set(vm[2], baseType(vm[1]));
+    }
+    return m;
+  }
+
   private async analyzeCallGraphFallback(
     fullPath: string,
     file: string,
@@ -2379,6 +2403,8 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       classByMethodId
     } = localIndex;
     const methodsInFile = methodsInFileByPath.get(fullPath) || [];
+    // Lazily-built per-caller-method receiver variable -> declared type map.
+    const receiverTypesByMethod = new Map<string, Map<string, string>>();
 
     const callerForLine = (line: number) => methodsInFile.find(n =>
       n.source?.line !== undefined && n.source.line <= line &&
@@ -2511,12 +2537,24 @@ export class CSharpAnalyzer extends BaseAnalyzer {
                 targetMethod = (methodsByClassId.get(targetClass.id) || []).find(n => n.metadata?.attributes?.isConstructor);
               }
             } else {
-              targetMethod = firstMethodByName(methodName);
-
-              if (!targetMethod) {
-                const targetClass = firstClassByName(objectOrClass);
-                if (targetClass) {
-                  targetMethod = firstMethodInClass(targetClass.id, methodName);
+              // Receiver-type resolution: if `objectOrClass` is a local/param whose
+              // declared type we know, resolve to THAT type's method only (excludes
+              // same-name decoys). Else if it names a class, treat as a static call.
+              // Else fall back to name resolution (never lose a real edge).
+              const recvMap = receiverTypesByMethod.get(callerMethod.id)
+                || (receiverTypesByMethod.set(callerMethod.id,
+                    this.buildCSharpReceiverTypes(lines, callerMethod.source?.line ?? 1, callerMethod.source?.end_line ?? lines.length)),
+                    receiverTypesByMethod.get(callerMethod.id)!);
+              const recvType = recvMap.get(objectOrClass);
+              if (recvType) {
+                const targetClass = firstClassByName(recvType);
+                targetMethod = targetClass ? firstMethodInClass(targetClass.id, methodName) : undefined;
+              } else {
+                const asClass = firstClassByName(objectOrClass);
+                if (asClass) {
+                  targetMethod = firstMethodInClass(asClass.id, methodName);
+                } else {
+                  targetMethod = firstMethodByName(methodName);
                 }
               }
             }

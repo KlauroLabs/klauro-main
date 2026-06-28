@@ -85,6 +85,7 @@ import { buildDataLineage } from './data-lineage';
 import { isLanguageBuiltinName, isLanguageBuiltinExitPoint, isLanguageBuiltinDomainToken, isCapabilityNoiseToken, isVendorLibDomainToken } from './language-builtins';
 import { buildProductMap } from './product-map';
 import { relativizeProjectPaths } from './relativize-project-paths';
+import { isRegisteredManifest, isRegisteredSourceExtension } from './language-registry';
 import { CallGraphBuilder } from './call-graph-builder';
 import { DomainExtractor } from './domain-extractor';
 import { WorkflowDetector } from './workflow-detector';
@@ -271,6 +272,38 @@ export class AnalyzerOrchestrator {
   registerAnalyzer(registration: AnalyzerRegistration): void {
     this.analyzers.set(registration.id, registration);
     this.detectedAnalyzerCache.clear();
+  }
+
+  /**
+   * Metadata for every registered analyzer — what Klauro can analyze and how it
+   * detects each stack. Used by the coverage surface (and tooling) to show the
+   * full language/framework/library reach. RegExps are stringified for transport.
+   */
+  listRegisteredAnalyzers(): Array<{
+    id: string;
+    name: string;
+    type: string;
+    requires: string[];
+    detect: { dependencies?: string[]; files?: string[]; content?: string[] };
+    incremental: boolean;
+  }> {
+    const out: Array<{ id: string; name: string; type: string; requires: string[]; detect: { dependencies?: string[]; files?: string[]; content?: string[] }; incremental: boolean }> = [];
+    for (const reg of this.analyzers.values()) {
+      const dp = (reg.detectPatterns || {}) as { dependencies?: string[]; files?: string[]; content?: Array<RegExp | string> };
+      out.push({
+        id: reg.id,
+        name: reg.name,
+        type: reg.type,
+        requires: Array.isArray(reg.requires) ? reg.requires : [],
+        detect: {
+          dependencies: dp.dependencies,
+          files: dp.files,
+          content: (dp.content || []).map(c => (c instanceof RegExp ? c.source : String(c))),
+        },
+        incremental: Boolean(reg.analyzer?.supportsIncrementalAnalysis?.()),
+      });
+    }
+    return out.sort((a, b) => a.type.localeCompare(b.type) || a.id.localeCompare(b.id));
   }
 
   configureEmbedding(config: EmbeddingPhaseConfig | null): void {
@@ -576,26 +609,15 @@ export class AnalyzerOrchestrator {
     ].includes(basename)) return true;
     if (/^(next|jest|cypress)\.config\.(js|ts|mjs|cjs)$/.test(basename)) return true;
     if (filePath.toLowerCase().endsWith('prisma/schema.prisma')) return true;
-    return /\.(js|jsx|ts|tsx|mjs|cjs|py|java|cs|go|rs|php|dart|tf|tfvars|xaml)$/i.test(filePath);
+    // Per-language source extensions live in LANGUAGE_REGISTRY (language-registry.ts);
+    // adding a language is one entry there, not an edit to this regex.
+    return isRegisteredSourceExtension(filePath);
   }
 
   private isManifestFile(filePath: string): boolean {
-    const basename = path.basename(filePath).toLowerCase();
-    if (basename === 'package.json') return true;
-    if (/^requirements.*\.txt$/.test(basename)) return true;
-    if (basename === 'setup.py') return true;
-    if (basename === 'pyproject.toml') return true;
-    if (basename === 'pipfile') return true;
-    if (basename === 'pom.xml') return true;
-    if (basename === 'build.gradle') return true;
-    if (basename === 'build.gradle.kts') return true;
-    if (basename === 'cargo.toml') return true;
-    if (basename === 'composer.json') return true;
-    if (basename === 'gemfile') return true;
-    if (basename === 'gemfile.lock') return true;
-    if (basename === 'go.mod') return true;
-    if (basename === 'pubspec.yaml') return true;
-    return /\.(csproj|fsproj|vbproj|sln)$/i.test(filePath);
+    // Per-language build/manifest files live in LANGUAGE_REGISTRY (language-registry.ts);
+    // adding a language is one entry there, not a new `if` clause here.
+    return isRegisteredManifest(filePath);
   }
 
   private async getNestedRepoIgnorePatterns(projectPath: string): Promise<string[]> {
@@ -985,7 +1007,7 @@ export class AnalyzerOrchestrator {
     phaseStart = Date.now();
     const architectureSummary = this.buildArchitectureSummary(projectPath, allNodes, allEntryPoints, allExitPoints, contributions);
     const routeTable = this.buildRouteTable(allEntryPoints);
-    const databaseSchema = this.buildDatabaseSchema(allNodes, allLibraries, projectPath);
+    const databaseSchema = this.buildDatabaseSchema(allNodes, allLibraries, projectPath, allEdges);
     const externalServices = this.buildExternalServices(allNodes, allExitPoints, allLibraries);
     logTiming('pp_architecture', phaseStart);
 
@@ -1282,7 +1304,7 @@ export class AnalyzerOrchestrator {
       }),
       architecture_summary: architectureSummary,
       route_table: routeTable.length > 0 ? routeTable : undefined,
-      database_schema: databaseSchema.entities.length > 0 ? databaseSchema : undefined,
+      database_schema: (databaseSchema.entities.length > 0 || databaseSchema.relationships_summary.length > 0) ? databaseSchema : undefined,
       nodes: allNodes,
       edges: allEdges,
       entry_points: allEntryPoints,
@@ -1890,7 +1912,7 @@ export class AnalyzerOrchestrator {
       projectPath, nodes, entryPoints, exitPoints, previousOutput.analyzer_contributions
     );
     const routeTable = this.buildRouteTable(entryPoints);
-    const databaseSchema = this.buildDatabaseSchema(nodes, libraries, projectPath);
+    const databaseSchema = this.buildDatabaseSchema(nodes, libraries, projectPath, edges);
     const externalServices = this.buildExternalServices(nodes, exitPoints, libraries);
 
     const detectedPatterns = this.detectPatterns(nodes, edges);
@@ -2127,7 +2149,7 @@ export class AnalyzerOrchestrator {
       index,
       architecture_summary: architectureSummary,
       route_table: routeTable.length > 0 ? routeTable : undefined,
-      database_schema: databaseSchema.entities.length > 0 ? databaseSchema : undefined,
+      database_schema: (databaseSchema.entities.length > 0 || databaseSchema.relationships_summary.length > 0) ? databaseSchema : undefined,
       external_services: externalServices.length > 0 ? externalServices : undefined,
       repository_links: repositoryLinks.length > 0 ? repositoryLinks : undefined,
       cross_repository_links: repositoryLinks.length > 0 ? repositoryLinks : undefined,
@@ -6096,7 +6118,12 @@ export class AnalyzerOrchestrator {
 
       return {
         method: ep.trigger?.method?.toUpperCase() || 'GET',
-        path: ep.trigger?.path || '/',
+        // Canonicalize path params to the `:name` convention so the route table is
+        // uniform across frameworks: FastAPI/Spring `{id}` and Flask/Django
+        // `<int:id>`/`<id>` both -> `:id` (the converter prefix is dropped).
+        path: (ep.trigger?.path || '/')
+          .replace(/\{([^}:]+)\}/g, ':$1')
+          .replace(/<(?:[^>:]+:)?([^>]+)>/g, ':$1'),
         controller: controllerName,
         handler: handlerName,
         auth: ep.security?.authenticated || false,
@@ -6110,7 +6137,7 @@ export class AnalyzerOrchestrator {
     });
   }
 
-  private buildDatabaseSchema(nodes: CASNode[], libraries: any[], projectPath?: string): CASDatabaseSchema {
+  private buildDatabaseSchema(nodes: CASNode[], libraries: any[], projectPath?: string, edges: CASEdge[] = []): CASDatabaseSchema {
     const entities: CASDatabaseEntity[] = [];
     const relationships: string[] = [];
 
@@ -6142,6 +6169,8 @@ export class AnalyzerOrchestrator {
         n.type === 'model' ||
         n.subcategories?.includes('entity') ||
         n.metadata?.annotations?.some(a => a.includes('Entity')) ||
+        // Some analyzers (Java) store class-level annotations under attributes.
+        (n.metadata as any)?.attributes?.annotations?.some((a: string) => a.includes('Entity')) ||
         (n.type === 'class' && n.source?.file?.includes('/entities/'))
       )
     );
@@ -6176,6 +6205,29 @@ export class AnalyzerOrchestrator {
           if (targetMatch) relTarget = targetMatch[1];
         }
 
+        // Attribute-shape ORMs (Doctrine/Symfony) store the relation kind +
+        // target on the property's metadata.attributes ({relation_type,
+        // target_entity}) rather than a textual annotation. Read that too.
+        if (!relationType) {
+          const relAttr = String((prop.metadata as any)?.attributes?.relation_type || '');
+          if (/OneToMany|ManyToOne|OneToOne|ManyToMany/.test(relAttr)) {
+            relationType = relAttr;
+            const targetAttr = (prop.metadata as any)?.attributes?.target_entity;
+            if (targetAttr && targetAttr !== 'unknown') relTarget = String(targetAttr).split('\\').pop();
+          }
+        }
+
+        // JPA/Hibernate (and other annotation ORMs) name no `() => Target`
+        // lambda — the related entity is the field's declared TYPE. For
+        // collection sides (`List<Post>`, `Set<Post>`) take the generic arg;
+        // for single sides (`User`) take the type itself.
+        if (relationType && !relTarget) {
+          const declaredType = String((prop.metadata as any)?.type || '');
+          const generic = declaredType.match(/<\s*([A-Za-z_]\w*)\s*>/);
+          const bare = declaredType.match(/^([A-Za-z_]\w*)$/);
+          relTarget = generic ? generic[1] : (bare ? bare[1] : undefined);
+        }
+
         if (relationType && relTarget) {
           entityRelationships.push({
             type: relationType as any,
@@ -6208,10 +6260,59 @@ export class AnalyzerOrchestrator {
       });
     });
 
+    // Edge-based relations: ORMs that model relations as EDGES rather than
+    // property decorators (Prisma, Drizzle, …) carry the cardinality in the
+    // edge's `relationType`. Read those too so the relation graph is complete
+    // for every ORM, not just decorator-based TypeORM.
+    const entityById = new Map(entityNodes.map(n => [n.id, n]));
+    for (const edge of edges) {
+      const relType = (edge.metadata as any)?.attributes?.relationType as string | undefined;
+      if (!relType) continue;
+      const src = entityById.get(edge.source);
+      const tgt = entityById.get(edge.target);
+      if (!src || !tgt) continue;
+      const cardinality = relType === 'OneToMany' ? '1:N' :
+        relType === 'ManyToOne' ? 'N:1' :
+        relType === 'ManyToMany' ? 'N:M' : '1:1';
+      const field = (edge.metadata as any)?.attributes?.field;
+      relationships.push(`${src.name} ${cardinality} ${tgt.name}${field ? ` (via ${field})` : ''}`);
+    }
+
+    // Method-based relations: Laravel Eloquent declares relations as model methods
+    // (`hasMany`/`belongsTo`/…) captured on `eloquent_relation` nodes, not decorators
+    // or typed edges. Read those so the relation graph is complete for Eloquent too.
+    const eloquentCardinality: Record<string, string> = {
+      hasMany: '1:N', hasOne: '1:1', belongsTo: 'N:1', belongsToMany: 'N:M',
+      morphMany: '1:N', morphOne: '1:1', morphTo: 'N:1', morphToMany: 'N:M',
+    };
+    for (const node of nodes) {
+      if (node.type !== 'eloquent_relation') continue;
+      const attrs = (node.metadata as any)?.attributes || {};
+      const owner = attrs.owner_model as string | undefined;
+      const relatedRaw = attrs.related_model as string | undefined;
+      const relType = attrs.relation_type as string | undefined;
+      if (!owner || !relatedRaw || !relType) continue;
+      // `Post::class` / `'App\\Models\\Post'` -> `Post`.
+      const related = relatedRaw.replace(/::class$/, '').replace(/['"]/g, '').split('\\').pop()!.trim();
+      const cardinality = eloquentCardinality[relType] || '1:1';
+      relationships.push(`${owner} ${cardinality} ${related} (via ${node.name})`);
+    }
+
+    // Dedupe by the structural relation (src|cardinality|tgt), ignoring the
+    // via-field, so decorator + edge descriptions of the SAME relation collapse.
+    const relSeen = new Set<string>();
+    const dedupedRelationships: string[] = [];
+    for (const rel of relationships) {
+      const key = rel.replace(/\s*\(via[^)]*\)\s*$/, '').toLowerCase().trim();
+      if (relSeen.has(key)) continue;
+      relSeen.add(key);
+      dedupedRelationships.push(rel);
+    }
+
     return {
       orm,
       entities,
-      relationships_summary: [...new Set(relationships)]
+      relationships_summary: dedupedRelationships
     };
   }
 
@@ -6929,7 +7030,16 @@ export class AnalyzerOrchestrator {
    */
   private detectDesignPatterns(nodes: CASNode[], edges: CASEdge[]): CASPattern[] {
     const patterns: CASPattern[] = [];
-    const classLike = nodes.filter(n => n.type === 'class' || n.type === 'interface' || n.type === 'service');
+    // Class-like = any type-level declaration. The analyzer ROLE-TYPES classes
+    // (a UserRepository becomes type 'repository', a UserController 'controller'),
+    // so a plain class/interface/service filter silently drops them and the
+    // name-convention patterns below never see them. Include the role types.
+    const CLASS_LIKE_TYPES = new Set([
+      'class', 'interface', 'service', 'repository', 'controller', 'middleware',
+      'component', 'model', 'entity', 'guard', 'provider', 'module', 'resolver',
+      'gateway', 'handler', 'factory', 'builder',
+    ]);
+    const classLike = nodes.filter(n => CLASS_LIKE_TYPES.has(n.type));
     const byId = new Map(nodes.map(n => [n.id, n]));
     const nameMatches = (re: RegExp) => classLike.filter(n => re.test(n.name));
     const add = (id: string, name: string, type: CASPattern['type'], description: string, instances: CASNode[], confidence: number, benefits?: string[]) => {
@@ -6945,6 +7055,13 @@ export class AnalyzerOrchestrator {
     add('controller', 'Controller', 'architectural-pattern', 'Request handlers organized into controller classes (names ending in Controller).', nameMatches(/Controller$/), 0.8);
     add('middleware', 'Middleware/Chain', 'design-pattern', 'Cross-cutting behavior applied as a chain (middleware nodes / names ending in Middleware).', nodes.filter(n => n.type === 'middleware' || /Middleware$/.test(n.name)), 0.7);
     add('observer', 'Observer / Pub-Sub', 'design-pattern', 'Event subscription and notification (subscribe/emit/publish/notify methods).', nodes.filter(n => (n.type === 'method' || n.type === 'function') && /^(subscribe|unsubscribe|emit|publish|notify|addEventListener|on[A-Z])/.test(n.name)), 0.6);
+    add('adapter', 'Adapter', 'design-pattern', 'Wraps an incompatible interface to a target one (names ending in Adapter).', nameMatches(/Adapter$/), 0.75, ['Reuse existing classes behind a target interface']);
+    add('facade', 'Facade', 'design-pattern', 'A simplified entry point over a complex subsystem (names ending in Facade).', nameMatches(/Facade$/), 0.75, ['Hides subsystem complexity behind one surface']);
+    add('decorator', 'Decorator', 'design-pattern', 'Wraps a component to add behavior, sharing its interface (names ending in Decorator).', nameMatches(/Decorator$/), 0.7, ['Add responsibilities without subclassing']);
+    add('command', 'Command', 'design-pattern', 'Requests encapsulated as objects with an execute() method (names ending in Command).', nameMatches(/Command$/), 0.7, ['Queue, log, and undo operations uniformly']);
+    add('proxy', 'Proxy', 'design-pattern', 'A surrogate controlling access to another object, sharing its interface (names ending in Proxy).', nameMatches(/Proxy$/), 0.7, ['Lazy-load, cache, or guard access to the real subject']);
+    add('visitor', 'Visitor', 'design-pattern', 'Operations externalized into visitor types that traverse an object structure (names ending in Visitor).', nameMatches(/Visitor$/), 0.7, ['Add operations over a structure without changing its types']);
+    add('mediator', 'Mediator', 'design-pattern', 'Centralizes how a set of objects interact, decoupling them from each other (names ending in Mediator).', nameMatches(/Mediator$/), 0.7, ['Reduces direct coupling between collaborating objects']);
 
     // Singleton: a static accessor returning the single instance.
     add('singleton', 'Singleton', 'design-pattern', 'A single shared instance exposed via a static accessor (getInstance/instance).', nodes.filter(n => (n.type === 'method' || n.type === 'property') && /^(getInstance|instance|shared|default)$/.test(n.name) && /static/i.test((n.subcategories || []).join(' ') + JSON.stringify(n.metadata || {}))), 0.6);
@@ -6961,6 +7078,26 @@ export class AnalyzerOrchestrator {
       if (children.length < 3) continue;
       const base = byId.get(baseId);
       add(`strategy_${baseId}`, `Strategy/Polymorphism (${base?.name})`, 'design-pattern', `${children.length} interchangeable implementations of ${base?.name} selected at runtime.`, [base!, ...children], 0.7, ['Open/closed: add behavior without modifying callers']);
+    }
+
+    // Some analyzers (TS/JS) record inheritance as a class metadata field
+    // (attributes.implements/extends interface NAMES) rather than as graph edges.
+    // Group by base NAME too so Strategy/Polymorphism is detected there as well.
+    const childrenByBaseName = new Map<string, CASNode[]>();
+    for (const n of nodes) {
+      const attrs: any = (n.metadata as any)?.attributes || {};
+      const bases = [
+        ...(Array.isArray(attrs.implements) ? attrs.implements : []),
+        ...(attrs.extends ? [attrs.extends] : []),
+      ].map((b: any) => String(b)).filter(b => b && b !== 'unknown');
+      for (const base of bases) {
+        childrenByBaseName.set(base, [...(childrenByBaseName.get(base) || []), n]);
+      }
+    }
+    for (const [baseName, children] of childrenByBaseName) {
+      const uniq = [...new Map(children.map(c => [c.id, c])).values()];
+      if (uniq.length < 3) continue;
+      add(`strategy_name_${baseName}`, `Strategy/Polymorphism (${baseName})`, 'design-pattern', `${uniq.length} interchangeable implementations of ${baseName} selected at runtime.`, uniq, 0.7, ['Open/closed: add behavior without modifying callers']);
     }
 
     return patterns;
@@ -13052,9 +13189,16 @@ export class AnalyzerOrchestrator {
         const analyzerFlag = (prop.metadata?.attributes as Record<string, unknown> | undefined)?.sensitive;
         const isSensitive = analyzerFlag === true || sensitivePatterns.some(p => nameLower.includes(p));
 
+        // Field type: prefer an explicit return-type signature; otherwise fall back
+        // to the property's declared type annotation, which language analyzers (e.g.
+        // the TS/JS AST analyzer) record on metadata.type. Without this fallback the
+        // typed-field shape collapses to "unknown" and downstream consumers (cross-repo
+        // contract-drift) cannot see field-level type changes.
+        const metadataType = (prop.metadata as Record<string, unknown> | undefined)?.type;
+        const declaredType = typeof metadataType === 'string' ? metadataType : undefined;
         fields.push({
           name: prop.name,
-          type: prop.signature?.return_type || 'unknown',
+          type: prop.signature?.return_type || declaredType || 'unknown',
           is_sensitive: isSensitive
         });
       }

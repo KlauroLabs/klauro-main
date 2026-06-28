@@ -396,19 +396,19 @@ export class FlaskAnalyzer extends BaseAnalyzer {
             ));
 
             route.methods.forEach(method => {
-              entryPoints.push({
-                id: `entry_${routeId}_${method}`,
-                name: `${method.toUpperCase()} ${fullPath}`,
-                type: 'http',
-                source_node: routeId,
-                metadata: {
-                  method: method.toUpperCase(),
-                  path: fullPath,
-                  blueprint: blueprintName,
-                  endpoint: route.endpoint,
-                  viewFunction: route.viewFunction
-                }
-              });
+              // Canonical HTTP entry point: buildRouteTable filters type==='http'
+              // and reads trigger.method/path (not metadata) — without trigger it
+              // defaulted every route to "GET /".
+              entryPoints.push(this.createEntryPoint(
+                `entry_${routeId}_${method}`,
+                routeId,
+                'http',
+                `${method.toUpperCase()} ${fullPath}`,
+                `Flask route: ${method.toUpperCase()} ${fullPath}`,
+                { method: method.toUpperCase(), path: fullPath },
+                this.flaskSecurity(route.decorators),
+                { method: method.toUpperCase(), path: fullPath, blueprint: blueprintName, endpoint: route.endpoint, handler: route.viewFunction }
+              ));
             });
           });
         }
@@ -492,18 +492,18 @@ export class FlaskAnalyzer extends BaseAnalyzer {
           ));
 
           route.methods.forEach(method => {
-            entryPoints.push({
-              id: `entry_${routeId}_${method}`,
-              name: `${method.toUpperCase()} ${route.pattern}`,
-              type: 'http',
-              source_node: routeId,
-              metadata: {
-                method: method.toUpperCase(),
-                path: route.pattern,
-                viewFunction: route.viewFunction,
-                endpoint: route.endpoint
-              }
-            });
+            // Canonical HTTP entry point (trigger, not metadata) so buildRouteTable
+            // surfaces the real method+path instead of defaulting to "GET /".
+            entryPoints.push(this.createEntryPoint(
+              `entry_${routeId}_${method}`,
+              routeId,
+              'http',
+              `${method.toUpperCase()} ${route.pattern}`,
+              `Flask route: ${method.toUpperCase()} ${route.pattern}`,
+              { method: method.toUpperCase(), path: route.pattern },
+              this.flaskSecurity(route.decorators),
+              { method: method.toUpperCase(), path: route.pattern, handler: route.viewFunction, endpoint: route.endpoint }
+            ));
           });
         });
       });
@@ -948,6 +948,13 @@ export class FlaskAnalyzer extends BaseAnalyzer {
     return forms;
   }
 
+  /** Per-view auth from Flask decorators (flask-login / flask-jwt-extended / flask-security). */
+  private flaskSecurity(decorators: string[] = []): { authenticated: boolean; guards: string[] } {
+    const AUTH = /^(login_required|fresh_login_required|jwt_required|jwt_optional|roles_required|roles_accepted|permission_required|auth_required|token_required|requires_auth)$/i;
+    const guards = decorators.filter(d => AUTH.test(d));
+    return { authenticated: guards.length > 0, guards };
+  }
+
   private extractRouteDecorators(content: string, position: number): string[] {
     const decorators: string[] = [];
     const lines = content.substring(0, position).split('\n');
@@ -964,7 +971,21 @@ export class FlaskAnalyzer extends BaseAnalyzer {
       }
     }
 
-    return decorators;
+    // Decorators stacked BELOW @app.route but above the `def` (e.g.
+    // `@app.route(...)` then `@login_required` then `def`) also apply to the
+    // view — scan forward to the handler so auth/guard decorators aren't lost.
+    const forward = content.substring(position).split('\n');
+    for (let i = 1; i < forward.length; i++) {
+      const line = forward[i].trim();
+      if (line.startsWith('def') || line.startsWith('async def')) break;
+      if (line.startsWith('@')) {
+        const m = line.match(/@[\w.]*?(\w+)\s*(?:\(|$)/);
+        if (m) decorators.push(m[1]);
+      }
+      // Other lines (multiline @app.route args) are skipped, not terminal.
+    }
+
+    return [...new Set(decorators)];
   }
 
   private extractRouteParameters(pattern: string): Array<{ name: string; type: string; converter?: string }> {

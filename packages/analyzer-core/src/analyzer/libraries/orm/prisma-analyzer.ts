@@ -150,18 +150,21 @@ export class PrismaAnalyzer extends BaseAnalyzer {
 
   private parseFields(modelBody: string): PrismaField[] {
     const fields: PrismaField[] = [];
-    const fieldRegex = /\s+(\w+)\s+(\w+)(\[\])?\s*(.*)/g;
-
-    let match;
-    while ((match = fieldRegex.exec(modelBody)) !== null) {
+    // Per-LINE parsing: a single multiline regex with `\s*(.*)` would let one
+    // field's trailing whitespace span the newline and swallow the next field
+    // line (dropping relations like `author User @relation(...)`).
+    for (const rawLine of modelBody.split('\n')) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('//') || line.startsWith('@@')) continue;
+      const match = line.match(/^(\w+)\s+(\w+)(\[\])?(\?)?\s*(.*)$/);
+      if (!match) continue;
       const name = match[1];
       const type = match[2];
       const isArray = !!match[3];
-      const modifiers = match[4] || '';
+      const isOptional = !!match[4];
+      const modifiers = match[5] || '';
 
-      if (name === 'model' || name === '@@') {
-        continue;
-      }
+      if (name === 'model') continue;
 
       fields.push({
         name,
@@ -169,7 +172,7 @@ export class PrismaAnalyzer extends BaseAnalyzer {
         isArray,
         isPrimary: modifiers.includes('@id'),
         isUnique: modifiers.includes('@unique'),
-        isOptional: modifiers.includes('?'),
+        isOptional,
         isRelation: modifiers.includes('@relation')
       });
     }

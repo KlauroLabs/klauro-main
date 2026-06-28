@@ -304,7 +304,7 @@ export class TreeSitterParser {
       ]);
       const callExpressions = collectByTypes(root, callTypes);
 
-      const calls: Array<{ class?: string; method?: string; function?: string; line: number }> = [];
+      const calls: Array<{ class?: string; method?: string; function?: string; receiver?: string; line: number }> = [];
 
       for (const expr of callExpressions) {
         const line = expr.startPosition.row + 1;
@@ -324,9 +324,14 @@ export class TreeSitterParser {
         } else if (expr.type === 'member_call_expression') {
           const name = expr.childForFieldName('name');
           if (name) {
+            // Capture the RECEIVER (`$a` in `$a->save()`) so the analyzer can
+            // type-resolve it to the receiver's class — not the containing class.
+            const object = expr.childForFieldName('object');
+            const receiver = object?.text?.replace(/^\$/, '');
             calls.push({
               class: containingClass?.name,
               method: name.text,
+              receiver,
               line
             });
           }

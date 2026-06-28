@@ -464,12 +464,17 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
               nodes.push(calleeNode);
             }
 
-            const edgeType = call.callType === 'dependency' ? 'depends_on' : 'calls';
+            const isInjection = call.callType === 'dependency';
+            const edgeType = isInjection ? 'depends_on' : 'calls';
             edges.push(this.createEdge(
               `${handlerId}_${edgeType}_${calleeId}_${call.line}`,
               handlerId,
               calleeId,
-              edgeType
+              edgeType,
+              isInjection ? 'data' : undefined,
+              // FastAPI `Depends(get_x)` is constructor-style DI: the container
+              // resolves and injects the dependency factory's result.
+              isInjection ? { dependency_type: 'injection' } : undefined
             ));
           }
 

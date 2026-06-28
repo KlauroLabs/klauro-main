@@ -99,6 +99,9 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private todoCounter = 0;
   private commentCounter = 0;
   private importSourceMap = new Map<string, string>();
+  /** local import name -> original exported name, for `import { Account as Acct }`
+   *  so a receiver typed `Acct` resolves to the class `Account`. */
+  private importAliasMap = new Map<string, string>();
   private classFieldTypes = new Map<string, { typeName: string; library?: string }>();
   private repositoryPropertyTypes = new Map<string, string>();
   private prismaModelNames = new Map<string, string>();
@@ -212,6 +215,10 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         const specifiers = this.getImportSpecifiers(node);
         specifiers.forEach((spec: { name: string; imported: string }) => {
           this.importSourceMap.set(spec.name, importSource);
+          if (spec.imported && spec.imported !== spec.name &&
+              spec.imported !== 'default' && spec.imported !== '*') {
+            this.importAliasMap.set(spec.name, spec.imported);
+          }
         });
 
         nodes.push(this.createNode(
@@ -335,6 +342,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     const perspectives: CASPerspective[] = [];
 
     this.importSourceMap.clear();
+    this.importAliasMap.clear();
     this.classFieldTypes.clear();
     this.repositoryPropertyTypes.clear();
     this.prismaModelNames.clear();
@@ -393,6 +401,21 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       this.exitPointIds = new Set(exitPoints.map(exitPoint => exitPoint.id));
       this.callTargetResolutionCache.clear();
       tsTimings['buildIndexes'] = Date.now() - tsStart;
+
+      // Build the import-alias map (local name -> original export) from the
+      // emitted import nodes, so typed-receiver resolution can map `x: Acct`
+      // (import { Account as Acct }) back to the class Account.
+      for (const n of nodes) {
+        if (n.type !== 'import') continue;
+        const specs = (n.metadata as any)?.specifiers;
+        if (!Array.isArray(specs)) continue;
+        for (const s of specs) {
+          if (s && s.name && s.imported && s.imported !== s.name &&
+              s.imported !== 'default' && s.imported !== '*') {
+            this.importAliasMap.set(s.name, s.imported);
+          }
+        }
+      }
 
       tsStart = Date.now();
       for (const { extractedFunctions, relativePath } of deferredCallGraphData) {
@@ -954,6 +977,10 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     ];
 
     extraction.functions.forEach((func, index) => {
+      // Anonymous callback carriers (e.g. module-scope route handlers) exist only
+      // to attribute their outbound calls; they get no graph node of their own.
+      if ((func as any).isAnonymousCallback) return;
+
       const funcId = `function_${filePath}_${func.name}_${index}`;
 
       const documentation = func.documentation ? this.parseJSDoc(func.documentation, func.lineStart - 1, func.lineStart) : undefined;
@@ -1403,6 +1430,58 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
+  /** Resolve a `receiver.method` call directly to the target method's node id
+   *  when the receiver is a typed parameter of the enclosing function. Type-aware
+   *  and alias-aware (`x: Acct` with `import { Account as Acct }` -> Account.save),
+   *  so it excludes same-name methods on other classes. Returns undefined (never
+   *  throws) for anything it can't confidently resolve, so callers fall back to
+   *  the existing name-based resolution. */
+  private resolveTypedReceiverCall(target: string, func: any): string | undefined {
+    if (!target || typeof target !== 'string') return undefined;
+    const dot = target.indexOf('.');
+    if (dot <= 0 || target.indexOf('.') !== target.lastIndexOf('.')) return undefined;
+    const recv = target.slice(0, dot);
+    const methodName = target.slice(dot + 1);
+    if (!methodName || recv === 'this' || recv === 'self') return undefined;
+    const params = func && func.parameters;
+    if (!Array.isArray(params)) return undefined;
+    const p = params.find((pp: any) => pp && pp.name === recv);
+    if (!p || !p.type) return undefined;
+    const m = /^([A-Za-z_$][\w$]*)/.exec(String(p.type).trim());
+    if (!m) return undefined;
+    const className = this.importAliasMap.get(m[1]) || m[1];
+    const classNodes = this.nodesByName.get(className);
+    if (!classNodes) return undefined;
+    for (const classNode of classNodes) {
+      if (!this.isClassLikeNode(classNode)) continue;
+      const methodNode = this.methodsByParent.get(classNode.id)?.find(mm => mm.name === methodName);
+      if (methodNode) return methodNode.id;
+    }
+    return undefined;
+  }
+
+  /**
+   * Outbound calls (fetch/axios) inside an ANONYMOUS arrow/function-expression
+   * callback — e.g. an Express route handler
+   * `app.get('/orders', async (req, res) => { await fetch('/tasks') })` — are not
+   * attributed to any extracted named function (the call belongs to a synthetic
+   * `anonymous` scope), so `resolveSourceNodeIdIndexed` returns undefined and the
+   * api exit point would be dropped. A server that is also an API client would
+   * then report zero outbound calls, breaking cross-repo consumer->producer
+   * fusion. Attribute such calls to their enclosing container (the file/module
+   * node) so the `type:'api'` exit point is still emitted with its endpoint.
+   * Returns undefined for anything but unattributed anonymous callbacks, so
+   * named-function resolution is unaffected.
+   */
+  private resolveAnonymousContainerNodeIdIndexed(
+    filePath: string,
+    func: ExtractedFunction
+  ): string | undefined {
+    if (!func || func.name !== 'anonymous') return undefined;
+    const fileId = `file_${filePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    return this.nodeById.has(fileId) ? fileId : undefined;
+  }
+
   private resolveSourceNodeIdIndexed(
     filePath: string,
     func: ExtractedFunction
@@ -1453,6 +1532,10 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       const sourceNodeId = this.resolveSourceNodeIdIndexed(filePath, func);
       this.addConstructedEntityPersistEdges(edges, sourceNodeId, func);
       func.calls.forEach((call: any) => {
+        // Type-aware receiver resolution: `x.save()` with `x: Acct`
+        // (import { Account as Acct }) resolves directly to Account.save — precise,
+        // alias-aware, and not subject to the substring heuristic below.
+        const typedTargetId = this.resolveTypedReceiverCall(call.target, func);
         if (call.httpMethod && call.httpPath) {
           if (sourceNodeId) {
             entryPoints.push({
@@ -1473,7 +1556,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         }
 
         if (call.targetType === 'abstract') {
-          const targetNodeId = this.findNodeIdByNameIndexed(call.target, filePath, func.className);
+          const targetNodeId = typedTargetId || this.findNodeIdByNameIndexed(call.target, filePath, func.className);
 
           if (sourceNodeId && targetNodeId) {
             this.addCallEdge(edges, {
@@ -1494,7 +1577,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         }
 
         if (call.injectionType) {
-          const targetNodeId = this.findNodeIdByNameIndexed(call.target, filePath, func.className);
+          const targetNodeId = typedTargetId || this.findNodeIdByNameIndexed(call.target, filePath, func.className);
 
           if (sourceNodeId && targetNodeId) {
             this.addCallEdge(edges, {
@@ -1514,7 +1597,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         }
 
         if (call.targetType === 'method' || call.targetType === 'function') {
-          const targetNodeId = this.findNodeIdByNameIndexed(call.target, filePath, func.className);
+          const targetNodeId = typedTargetId || this.findNodeIdByNameIndexed(call.target, filePath, func.className);
 
           if (sourceNodeId && targetNodeId && sourceNodeId !== targetNodeId) {
             this.addCallEdge(edges, {
@@ -1585,13 +1668,17 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
                 }
               });
             }
-          } else if (sourceNodeId && !targetNodeId && this.isApiCall(call.target, call.callExpression)) {
+          } else if (!targetNodeId && (sourceNodeId || this.resolveAnonymousContainerNodeIdIndexed(filePath, func)) && this.isApiCall(call.target, call.callExpression)) {
+            // Fall back to the enclosing module node for outbound api calls made
+            // directly inside anonymous route-handler callbacks, which carry no
+            // named function node of their own (see resolveAnonymousContainerNodeIdIndexed).
+            const apiSourceNodeId = sourceNodeId || this.resolveAnonymousContainerNodeIdIndexed(filePath, func)!;
             const apiInfo = this.parseApiCall(call.target, call.callExpression);
             if (apiInfo) {
               const exitPointId = `exit_api_${func.name}_${apiInfo.method}_${call.line}`;
               this.addExitPoint(exitPoints, {
                   id: exitPointId,
-                  source_node: sourceNodeId,
+                  source_node: apiSourceNodeId,
                   type: 'api',
                   name: `${apiInfo.method.toUpperCase()} ${apiInfo.endpoint || 'external'}`,
                   target: {
@@ -1610,8 +1697,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
                   }
                 });
               this.addCallEdge(edges, {
-                id: `call_${sourceNodeId}_${exitPointId}`,
-                source: sourceNodeId,
+                id: `call_${apiSourceNodeId}_${exitPointId}`,
+                source: apiSourceNodeId,
                 target: exitPointId,
                 type: 'calls',
                 category: 'behavior',
@@ -1772,6 +1859,10 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         const specifiers = this.getImportSpecifiers(node);
         specifiers.forEach((spec: { name: string; imported: string }) => {
           this.importSourceMap.set(spec.name, importSource);
+          if (spec.imported && spec.imported !== spec.name &&
+              spec.imported !== 'default' && spec.imported !== '*') {
+            this.importAliasMap.set(spec.name, spec.imported);
+          }
         });
 
         nodes.push(this.createNode(

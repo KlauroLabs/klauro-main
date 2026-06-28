@@ -848,29 +848,78 @@ export class ExpressAnalyzer extends BaseAnalyzer {
 
   private extractRoutes(content: string): ExpressRoute[] {
     const routes: ExpressRoute[] = [];
-    const routePattern = /(?:router|app)\.(\w+)\s*\(\s*['"]([^'"]+)['"](?:,\s*([^,)]+))*,\s*([^,)]+)\s*\)/g;
+    // Match the method + path, then parse the REMAINING args with a balanced
+    // scanner. A single regex cannot do this: middleware and handlers are
+    // arrow/inline functions that contain commas and parentheses, so a
+    // `[^,)]+` arg matcher captures fragments (it used to return the handler as
+    // "res" and silently drop guards like `requireAuth`).
+    const head = /(?:router|app)\.(get|post|put|delete|patch|head|options)\s*\(\s*(['"`])([^'"`]+)\2\s*/g;
 
     let match;
-    while ((match = routePattern.exec(content)) !== null) {
+    while ((match = head.exec(content)) !== null) {
       const method = match[1];
-      const path = match[2];
-      const middleware = match[3] ? [match[3].trim()] : [];
-      const handler = match[4];
+      const path = match[3];
+      const args = this.parseRemainingCallArgs(content, head.lastIndex);
+      // Last arg is the route handler; everything before it is the middleware
+      // chain. Keep only real identifier guards (e.g. `requireAuth`,
+      // `auth.required`) — not inline `(req, res) => …` handlers.
+      const middleware = args
+        .slice(0, -1)
+        .map(a => a.trim())
+        .filter(a => this.isMiddlewareIdentifier(a));
+      const handler = (args[args.length - 1] || '').trim();
 
-      if (['get', 'post', 'put', 'delete', 'patch', 'head', 'options'].includes(method)) {
-        const parameters = this.extractRouteParameters(path);
-
-        routes.push({
-          method,
-          path,
-          handler: handler.trim(),
-          middleware,
-          parameters
-        });
-      }
+      routes.push({
+        method,
+        path,
+        handler,
+        middleware,
+        parameters: this.extractRouteParameters(path)
+      });
     }
 
     return routes;
+  }
+
+  /**
+   * Parse the arguments of a `router.METHOD('path', …)` call starting just after
+   * the path string (i.e. inside the call, depth 1). Splits on top-level commas
+   * while respecting nested parens/brackets/braces and string literals, so arrow
+   * functions and object args stay intact. Returns the args AFTER the path.
+   */
+  private parseRemainingCallArgs(content: string, pos: number): string[] {
+    const args: string[] = [];
+    let depth = 1; // already inside the route call's '('
+    let cur = '';
+    let inStr: string | null = null;
+    for (let i = pos; i < content.length; i++) {
+      const ch = content[i];
+      if (inStr) {
+        cur += ch;
+        if (ch === inStr && content[i - 1] !== '\\') inStr = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === '`') { inStr = ch; cur += ch; continue; }
+      if (ch === '(' || ch === '[' || ch === '{') { depth++; cur += ch; continue; }
+      if (ch === ')' || ch === ']' || ch === '}') {
+        depth--;
+        if (depth === 0) { if (cur.trim()) args.push(cur.trim()); break; }
+        cur += ch;
+        continue;
+      }
+      if (ch === ',' && depth === 1) { if (cur.trim()) args.push(cur.trim()); cur = ''; continue; }
+      cur += ch;
+    }
+    return args;
+  }
+
+  /** A middleware reference is a bare identifier or member access (`requireAuth`,
+   *  `auth.required`, `passport.authenticate(...)`) — not an inline function. */
+  private isMiddlewareIdentifier(arg: string): boolean {
+    if (!arg || /=>/.test(arg)) return false;
+    if (/^(async\s+)?function\b/.test(arg)) return false;
+    // identifier, member access, or a guard factory call: name(...) / a.b(...)
+    return /^[A-Za-z_$][\w$.]*(\s*\([^)]*\))?$/.test(arg);
   }
 
   private extractRouteParameters(path: string): Array<{ name: string; type: string; source: string }> {

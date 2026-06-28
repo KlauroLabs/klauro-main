@@ -35,6 +35,16 @@ import {
 import { JestAnalyzer, CypressAnalyzer } from '../frameworks/testing';
 import { WPFAnalyzer, AspNetCoreAnalyzer } from '../frameworks/dotnet';
 import { ActixAnalyzer, RocketAnalyzer, AxumAnalyzer } from '../frameworks/rust';
+import { PhoenixAnalyzer } from '../frameworks/elixir/phoenix-analyzer';
+import { VaporAnalyzer } from '../frameworks/swift';
+import { GoRouterAnalyzer } from '../frameworks/dart';
+import { Http4sAnalyzer } from '../frameworks/scala';
+import { KemalAnalyzer } from '../frameworks/crystal';
+import { GenieAnalyzer } from '../frameworks/julia';
+import { CompojureAnalyzer } from '../frameworks/clojure';
+import { DreamAnalyzer } from '../frameworks/ocaml';
+import { ApexRestAnalyzer } from '../frameworks/apex';
+import { MojoliciousAnalyzer } from '../frameworks/perl';
 import {
   PrismaAnalyzer,
   SocketIOAnalyzer,
@@ -496,6 +506,18 @@ export class CASAnalyzerService {
         analyzer: new RailsAnalyzer()
       },
       {
+        id: 'phoenix',
+        name: 'Phoenix Analyzer',
+        type: 'framework',
+        version: '1.0.0',
+        detectPatterns: {
+          files: ['mix.exs'],
+          dependencies: ['phoenix']
+        },
+        requires: ['elixir'],
+        analyzer: new PhoenixAnalyzer()
+      },
+      {
         id: 'express',
         name: 'Express.js Analyzer',
         type: 'framework',
@@ -646,6 +668,123 @@ export class CASAnalyzerService {
         },
         requires: ['rust'],
         analyzer: new AxumAnalyzer()
+      },
+      {
+        id: 'vapor',
+        name: 'Vapor Analyzer',
+        type: 'framework',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['vapor'],
+          files: ['Package.swift', '**/*.swift'],
+          content: [/import\s+Vapor/, /\.grouped\s*\(/, /\.(get|post|put|delete|patch)\s*\(/]
+        },
+        requires: ['swift'],
+        analyzer: new VaporAnalyzer()
+      },
+      {
+        id: 'mojolicious',
+        name: 'Mojolicious Analyzer',
+        type: 'framework',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['Mojolicious'],
+          files: ['cpanfile', 'Makefile.PL', '**/*.pl', '**/*.pm'],
+          content: [/use\s+Mojolicious/, /^\s*(get|post|put|patch|del|options|any)\s+['"]/m, /->(get|post|put|patch|del|options|any|under)\s*\(/]
+        },
+        requires: ['perl'],
+        analyzer: new MojoliciousAnalyzer()
+      },
+      {
+        id: 'gorouter',
+        name: 'GoRouter Analyzer',
+        type: 'framework',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['go_router'],
+          files: ['pubspec.yaml', '**/*.dart'],
+          content: [/GoRouter\s*\(/, /GoRoute\s*\(/, /package:go_router/]
+        },
+        requires: ['dart'],
+        analyzer: new GoRouterAnalyzer()
+      },
+      {
+        id: 'http4s',
+        name: 'http4s Analyzer',
+        type: 'framework',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['http4s', 'http4s-dsl'],
+          files: ['build.sbt', '**/*.scala'],
+          content: [/org\.http4s/, /HttpRoutes\.of/, /AuthedRoutes\.of/]
+        },
+        requires: ['scala'],
+        analyzer: new Http4sAnalyzer()
+      },
+      {
+        id: 'kemal',
+        name: 'Kemal Analyzer',
+        type: 'framework',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['kemal'],
+          files: ['shard.yml', '**/*.cr'],
+          content: [/require\s+"kemal"/, /^\s*(get|post|put|patch|delete|options|head|ws)\s+"/m]
+        },
+        requires: ['crystal'],
+        analyzer: new KemalAnalyzer()
+      },
+      {
+        id: 'genie',
+        name: 'Genie Analyzer',
+        type: 'framework',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['Genie'],
+          files: ['Project.toml', '**/*.jl'],
+          content: [/Genie/, /\broute\s*\(/, /@(get|post|put|patch|delete)\s*\(/]
+        },
+        requires: ['julia'],
+        analyzer: new GenieAnalyzer()
+      },
+      {
+        id: 'compojure',
+        name: 'Compojure Analyzer',
+        type: 'framework',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['compojure'],
+          files: ['deps.edn', 'project.clj', '**/*.clj', '**/*.cljs', '**/*.cljc'],
+          content: [/compojure\.core/, /\(defroutes\b/, /\(context\b/, /\((?:GET|POST|PUT|DELETE|PATCH|ANY)\s+"/]
+        },
+        requires: ['clojure'],
+        analyzer: new CompojureAnalyzer()
+      },
+      {
+        id: 'dream',
+        name: 'Dream Analyzer',
+        type: 'framework',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['dream'],
+          files: ['dune-project', 'dune', '**/*.ml'],
+          content: [/Dream\.router/, /Dream\.(get|post|put|patch|delete|options|head)\s+"/, /Dream\.scope/]
+        },
+        requires: ['ocaml'],
+        analyzer: new DreamAnalyzer()
+      },
+      {
+        id: 'apexrest',
+        name: 'Apex REST Analyzer',
+        type: 'framework',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: [],
+          files: ['sfdx-project.json', '**/*.cls'],
+          content: [/@RestResource\b/, /@Http(Get|Post|Put|Patch|Delete)\b/]
+        },
+        requires: ['apex'],
+        analyzer: new ApexRestAnalyzer()
       }
     ];
 

@@ -11,7 +11,7 @@ import { detectSyntaxDegradation } from '../core/syntax-degradation';
 interface RubyMethodCall {
   name: string;
   receiver?: string;
-  receiverKind: 'none' | 'self' | 'constant' | 'ivar';
+  receiverKind: 'none' | 'self' | 'constant' | 'ivar' | 'local';
   line: number;
 }
 
@@ -24,6 +24,7 @@ interface RubyMethod {
   lineEnd: number;
   calls: RubyMethodCall[];
   ivarTypes: Record<string, string>;
+  localVarTypes: Record<string, string>;
 }
 
 interface RubyStateTransition {
@@ -132,6 +133,8 @@ const MACHINE_TRANSITION_PATTERN = /^transitions?\b[\s(]/;
 const TRANSITION_HOOK_PATTERN = /^(?:before|after|around)_transition\b/;
 const STATES_REF_PATTERN = /\bstates\[:(\w+)\]/g;
 const IVAR_ASSIGNMENT_PATTERN = /@(\w+)\s*(?:\|\|)?=\s*(?:::)?([A-Z]\w*(?:::[A-Z]\w*)*)/;
+// `a = Account.new` / `a = Account.build` — a local var bound to a class instance.
+const LOCAL_VAR_ASSIGNMENT_PATTERN = /(?:^|[^\w.@$])([a-z_]\w*)\s*=\s*(?:::)?([A-Z]\w*(?:::[A-Z]\w*)*)\.(?:new|build|create|instance)\b/;
 const RECEIVER_CALL_PATTERN = /(?:^|[^\w.:@])(@?[A-Za-z_]\w*(?:::\w+)*)\.([a-z_]\w*[?!]?)/g;
 const PAREN_CALL_PATTERN = /(?:^|[^\w.:@!$])([a-z_]\w*[?!]?)\(/g;
 const LEADING_BARE_CALL_PATTERN = /^([a-z_]\w*[?!]?)(?:\s|$)/;
@@ -589,7 +592,8 @@ export class RubyAnalyzer extends BaseAnalyzer {
           lineStart: lineNumber,
           lineEnd: lineNumber,
           calls: [],
-          ivarTypes: {}
+          ivarTypes: {},
+          localVarTypes: {}
         };
 
         const ownerClass = enclosingClass();
@@ -764,6 +768,11 @@ export class RubyAnalyzer extends BaseAnalyzer {
       method.ivarTypes[ivarAssignment[1]] = ivarAssignment[2];
     }
 
+    const localAssignment = code.match(LOCAL_VAR_ASSIGNMENT_PATTERN);
+    if (localAssignment && !(localAssignment[1] in method.localVarTypes)) {
+      method.localVarTypes[localAssignment[1]] = localAssignment[2];
+    }
+
     RECEIVER_CALL_PATTERN.lastIndex = 0;
     for (const match of code.matchAll(RECEIVER_CALL_PATTERN)) {
       const receiver = match[1];
@@ -777,6 +786,9 @@ export class RubyAnalyzer extends BaseAnalyzer {
         method.calls.push({ name, receiverKind: 'self', line });
       } else if (/^[A-Z]/.test(receiver)) {
         method.calls.push({ name, receiver, receiverKind: 'constant', line });
+      } else if (/^[a-z_]\w*$/.test(receiver)) {
+        // Local-variable receiver (`a.save`) — resolved to its class in buildCallEdges.
+        method.calls.push({ name, receiver, receiverKind: 'local', line });
       }
     }
 
@@ -1196,6 +1208,17 @@ export class RubyAnalyzer extends BaseAnalyzer {
             const ivarType = method.ivarTypes[call.receiver!] || classIvarTypes[call.receiver!];
             if (!ivarType) continue;
             const targetOwner = resolveOwner(ivarType);
+            if (!targetOwner) continue;
+            const targetMethod = targetOwner.methods.find(candidate => candidate.name === call.name && !candidate.isSingleton);
+            if (targetMethod) {
+              pushCallEdge(callerId, this.methodNodeIdFor(targetOwner, targetMethod), call, 'method', targetOwner);
+            }
+          }
+
+          if (call.receiverKind === 'local') {
+            const localType = method.localVarTypes[call.receiver!];
+            if (!localType) continue;
+            const targetOwner = resolveOwner(localType);
             if (!targetOwner) continue;
             const targetMethod = targetOwner.methods.find(candidate => candidate.name === call.name && !candidate.isSingleton);
             if (targetMethod) {

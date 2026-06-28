@@ -78,7 +78,9 @@ export class TerraformAnalyzer extends BaseAnalyzer {
     const result = await this.analyzeTerraformFile(context.projectPath, context.relativePath);
     const absolutePath = `${context.projectPath}/${context.relativePath}`;
     const stat = fs.statSync(absolutePath);
-    const content = fs.readFileSync(absolutePath, 'utf8');
+    const content = context.relativePath.endsWith('.tfplan')
+      ? fs.readFileSync(absolutePath)
+      : fs.readFileSync(absolutePath, 'utf8');
     return {
       filePath: context.relativePath,
       contentHash: context.contentHash || crypto.createHash('sha256').update(content).digest('hex'),
@@ -116,9 +118,13 @@ export class TerraformAnalyzer extends BaseAnalyzer {
 
   private async analyzeTerraformFile(projectPath: string, relativePath: string) {
     const absolutePath = `${projectPath}/${relativePath}`;
+    if (relativePath.endsWith('.tfplan')) {
+      return this.analyzeTerraformPlanArtifact(projectPath, relativePath);
+    }
     const content = fs.readFileSync(absolutePath, 'utf8');
     const blocks = this.extractBlocks(content);
     const fileId = generateNodeId('terraform_file', relativePath, relativePath);
+    const environment = this.inferEnvironment(relativePath);
     const fileNode: CASNode = {
       id: fileId,
       name: relativePath.split('/').pop() || relativePath,
@@ -133,11 +139,14 @@ export class TerraformAnalyzer extends BaseAnalyzer {
       metadata: {
         language: 'Terraform/HCL',
         paradigm: 'declarative-infrastructure',
+        topology_surface: 'terraform',
+        environment,
         attributes: {
           block_count: blocks.length,
           providers: this.extractProviderNames(blocks),
+          environment,
         },
-      },
+      } as any,
       configuration: {
         config_files: [relativePath],
         environment_variables: [],
@@ -224,9 +233,63 @@ export class TerraformAnalyzer extends BaseAnalyzer {
         continue;
       }
       if (!entry.isFile()) continue;
-      if (!entry.name.endsWith('.tf') && !entry.name.endsWith('.tfvars')) continue;
+      if (!entry.name.endsWith('.tf') && !entry.name.endsWith('.tfvars') && !entry.name.endsWith('.tfplan') && !this.isTerraformBackendConfig(projectPath, currentPath, entry.name)) continue;
       files.push(pathRelative(projectPath, `${currentPath}/${entry.name}`));
     }
+  }
+
+  private isTerraformBackendConfig(projectPath: string, currentPath: string, fileName: string): boolean {
+    if (!fileName.endsWith('.conf')) return false;
+    const relativeDir = pathRelative(projectPath, currentPath).toLowerCase();
+    return relativeDir === 'environments' || relativeDir.includes('/environments') || fileName.toLowerCase().includes('backend');
+  }
+
+  private analyzeTerraformPlanArtifact(projectPath: string, relativePath: string) {
+    const absolutePath = `${projectPath}/${relativePath}`;
+    const stat = fs.statSync(absolutePath);
+    const environment = this.inferEnvironment(relativePath);
+    const nodeId = generateNodeId('terraform_plan', relativePath, relativePath);
+    const node: CASNode = {
+      id: nodeId,
+      name: relativePath.split('/').pop() || relativePath,
+      qualified_name: relativePath,
+      type: 'infrastructure_plan',
+      category: 'infrastructure',
+      level: 1,
+      analyzers: [this.id],
+      primaryAnalyzer: this.id,
+      description: `Terraform plan artifact ${relativePath}`,
+      source: { file: relativePath, line: 1, end_line: 1 },
+      metadata: {
+        language: 'Terraform plan',
+        paradigm: 'declarative-infrastructure',
+        topology_surface: 'terraform',
+        environment,
+        attributes: {
+          artifact_kind: 'terraform-plan',
+          binary: true,
+          bytes: stat.size,
+          environment,
+        },
+      } as any,
+      configuration: {
+        config_files: [relativePath],
+        environment_variables: [],
+        required_services: ['terraform'],
+      },
+    };
+    const entryPoint: CASEntryPoint = {
+      id: generateNodeId('entry', relativePath, 'terraform-plan'),
+      source_node: nodeId,
+      source_analyzer: this.id,
+      type: 'file',
+      name: `Terraform plan ${relativePath}`,
+      description: 'Terraform can apply this saved plan artifact for an environment-specific deployment.',
+      handler: { node_id: nodeId, method_name: 'terraform apply', file: relativePath, line: 1 },
+      connected_nodes: [nodeId],
+      metadata: { language: 'Terraform plan', environment },
+    };
+    return { nodes: [node], edges: [], entry_points: [entryPoint], exit_points: [] };
   }
 
   private nodeFromBlock(relativePath: string, block: TerraformBlock): CASNode {
@@ -245,6 +308,8 @@ export class TerraformAnalyzer extends BaseAnalyzer {
       metadata: {
         language: 'Terraform/HCL',
         paradigm: 'declarative-infrastructure',
+        topology_surface: 'terraform',
+        environment: this.inferEnvironment(relativePath),
         attributes: {
           block_kind: block.kind,
           terraform_type: block.type,
@@ -252,8 +317,9 @@ export class TerraformAnalyzer extends BaseAnalyzer {
           terraform_address: address,
           provider: this.providerForBlock(block),
           depends_on: this.extractDependsOn(block.body),
+          environment: this.inferEnvironment(relativePath),
         },
-      },
+      } as any,
       configuration: {
         config_files: [relativePath],
         required_services: this.providerForBlock(block) ? [this.providerForBlock(block)!] : [],
@@ -282,6 +348,17 @@ export class TerraformAnalyzer extends BaseAnalyzer {
       connected_nodes: [node.id],
       metadata: { file: relativePath, provider, terraform_type: block.type },
     };
+  }
+
+  private inferEnvironment(relativePath: string): string | undefined {
+    const normalized = relativePath.toLowerCase();
+    if (/(^|\/)(prod|production)(\/|\.|-|_)/.test(normalized)) return 'production';
+    if (/(^|\/)(stage|staging)(\/|\.|-|_)/.test(normalized)) return 'staging';
+    if (/(^|\/)(dev|development)(\/|\.|-|_)/.test(normalized)) return 'development';
+    if (/(^|\/)(demo)(\/|\.|-|_)/.test(normalized)) return 'demo';
+    if (/(^|\/)(internal)(\/|\.|-|_)/.test(normalized)) return 'internal';
+    if (/(^|\/)(local)(\/|\.|-|_)/.test(normalized)) return 'local';
+    return undefined;
   }
 
   private extractBlocks(content: string): TerraformBlock[] {

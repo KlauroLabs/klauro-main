@@ -54,6 +54,51 @@ describe('RustAnalyzer', () => {
     });
   });
 
+  describe('HTTP service alias inference', () => {
+    test('derives service aliases from generic variable names and Rust service paths', async () => {
+      setupMockFileSystem([
+        createMockRustFile('bin/drop-server/src/client.rs', `
+          pub async fn call_admin(client: &reqwest::Client, admin_api_url: url::Url) {
+              client
+                  .post(admin_api_url.join("/v1/users").unwrap())
+                  .send()
+                  .await
+                  .unwrap();
+          }
+
+          pub struct DropBroker {
+              url: url::Url,
+          }
+
+          impl DropBroker {
+              pub async fn forward(&self, client: &reqwest::Client) {
+                  let request_url = self.url.clone().join("/drops").unwrap();
+                  client
+                      .post(request_url.as_str())
+                      .send()
+                      .await
+                      .unwrap();
+              }
+          }
+        `),
+        createMockCargoToml(['reqwest'])
+      ]);
+
+      const result = await analyzer.analyze(testContext) as any;
+      const reqwestExits = result.exit_points.filter((exit: any) => exit.metadata?.library === 'reqwest');
+
+      expect(reqwestExits.some((exit: any) =>
+        exit.target?.service_id === 'admin-api' &&
+        exit.target?.endpoint === 'http://admin-api/v1/users'
+      )).toBe(true);
+
+      expect(reqwestExits.some((exit: any) =>
+        exit.target?.service_id === 'drop-server' &&
+        exit.target?.endpoint === 'http://drop-server/drops'
+      )).toBe(true);
+    });
+  });
+
   describe('Struct Analysis', () => {
     test('should extract struct information correctly', async () => {
       const rustCode = `

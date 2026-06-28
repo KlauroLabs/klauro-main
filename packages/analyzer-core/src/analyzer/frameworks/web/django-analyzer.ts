@@ -1045,7 +1045,11 @@ export class DjangoAnalyzer extends BaseAnalyzer {
           ? url.methods
           : matchingView?.type === 'class'
             ? (matchingView.methods.length > 0 ? matchingView.methods : ['GET'])
-            : ['GET', 'POST'];
+            // Function view: prefer its @api_view verbs; only fall back to GET+POST
+            // when none were declared.
+            : (matchingView?.methods && matchingView.methods.length > 0
+                ? matchingView.methods
+                : ['GET', 'POST']);
 
         for (const method of httpMethods) {
           const entryPointId = `entry_${urlId}_${method.toLowerCase()}`;
@@ -2618,7 +2622,9 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         filePath,
         type: 'function',
         owningClass,
-        methods: [],
+        // DRF `@api_view(['GET','POST'])` declares the HTTP verbs a function view
+        // serves — without this every function view defaulted to GET+POST.
+        methods: this.extractApiViewMethods(content, functionStart),
         decorators,
         permissions: this.extractPermissions(decorators),
         serializerReferences,
@@ -2721,6 +2727,20 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     }
 
     return views;
+  }
+
+  /** Parse the HTTP verbs from a DRF `@api_view(['GET','POST'])` decorator sitting
+   *  immediately above a function view. Returns [] when there is none. */
+  private extractApiViewMethods(content: string, functionStart: number): string[] {
+    const before = content.substring(Math.max(0, functionStart - 600), functionStart);
+    // Take the CLOSEST @api_view above this function (last match in the window),
+    // not the first — an earlier view's decorator must not leak onto this one.
+    const matches = [...before.matchAll(/@api_view\s*\(\s*\[([^\]]*)\]/g)];
+    if (matches.length === 0) return [];
+    return matches[matches.length - 1][1]
+      .split(',')
+      .map(s => s.trim().replace(/['"]/g, '').toUpperCase())
+      .filter(Boolean);
   }
 
   private extractClassDecorators(content: string, classStart: number): string[] {
@@ -3159,7 +3179,11 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i].trim();
       if (line.startsWith('@')) {
-        const decoratorMatch = line.match(/@(\w+)/);
+        // Keep the decorator's arguments, not just its name: DRF auth lives in the
+        // args (`@permission_classes([IsAuthenticated])`), and hasAuthDecorator /
+        // extractGuardsFromDecorators match on substrings, so dropping the args
+        // made every @permission_classes look unauthenticated.
+        const decoratorMatch = line.match(/@(\w+(?:\s*\([\s\S]*?\))?)/);
         if (decoratorMatch) {
           decorators.unshift(decoratorMatch[1]);
         }
