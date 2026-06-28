@@ -12,6 +12,8 @@ CAS analysis, agent-facing MCP context, hosted analyzers, proposal previews, inc
 - `docs/` - CAS, MCP, customer onboarding, and architecture documentation.
 - `infrastructure/` - deployment and hosted analyzer infrastructure when present at the repository parent.
 
+See [docs/mcp/ANALYZER-COVERAGE.md](/Users/michaelshattuck/dev/unravl/proof-of-concept/docs/mcp/ANALYZER-COVERAGE.md) for the current language, framework, and architecture-defining library coverage.
+
 ## Current Product Center
 
 The current non-UI product center is `apps/mcp-server` plus `packages/analyzer-core`.

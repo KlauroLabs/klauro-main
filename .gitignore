@@ -45,3 +45,13 @@ packages/analyzer-core/test-cas-analysis.ts
 docs/VISUALIZATION_AUDIT.md
 docs/VISUALIZATION_IMPLEMENTATION_PLAN.md
 packages/analyzer-core/cas-tests
+
+# Session working artifacts (agent bench reports / notes — not source)
+scratchpad/
+apps/mcp-server/.tmp/
+
+# Build artifacts / stray bench reports (not source)
+apps/marketing-site/dist/
+apps/marketing-site/node_modules/
+**/obj/
+breadth-codex*.md
