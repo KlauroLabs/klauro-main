@@ -1,0 +1,2 @@
+{ "task": "route-facts", "true_routes": ["GET /users", "POST /users", "DELETE /users/:id"],
+  "note": "WON (FastAPI, Python — 5th web framework, out-category). fastapi-analyzer already emitted http entry points but kept FastAPI {id} path style. FIX (general, DRY): orchestrator buildRouteTable now canonicalizes {name} path params to :name so the route table is uniform across frameworks; idempotent for Spring/Express/Rails/NestJS." }

@@ -1,0 +1,2 @@
+{ "task": "route-facts", "true_routes": ["GET /users", "POST /users", "DELETE /users/:id"],
+  "note": "WON (Spring Boot, Java — 3rd web framework, out-category vs Camp A/B). spring-boot-analyzer pushed a raw entry point with type:rest_api + metadata.{method,path}; buildRouteTable filters ep.type===http and reads trigger.method/path + security. Switched to createEntryPoint(type:http, trigger:{method,path}, security:{authenticated}) and normalized Spring {id} path params to :id." }

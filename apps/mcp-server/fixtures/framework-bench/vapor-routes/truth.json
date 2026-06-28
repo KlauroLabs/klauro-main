@@ -1,0 +1,1 @@
+{ "task": "route-facts", "true_routes": ["GET /health", "POST /login", "GET /users", "GET /users/:id", "GET /me", "DELETE /users/:id"], "note": "Vapor app.get(path, use:) / grouped(prefix) / grouped(authenticator) (Swift). Out-of-category route-table win; 1st Swift framework." }

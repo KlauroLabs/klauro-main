@@ -1,0 +1,1 @@
+{ "task": "route-facts", "true_routes": ["GET /login", "GET /", "GET /users/:id", "GET /users/:id/edit", "GET /dashboard", "GET /settings"], "note": "GoRouter (Flutter) route tree: GoRoute(path:, builder:, routes:) nesting + ShellRoute + top-level redirect auth guard. GET-style navigation (no HTTP verbs). Out-of-category route-table win; 1st Dart framework." }

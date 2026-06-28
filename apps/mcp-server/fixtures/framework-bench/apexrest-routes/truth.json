@@ -1,0 +1,11 @@
+{
+  "task": "route-facts",
+  "true_routes": [
+    "GET /users",
+    "POST /users",
+    "DELETE /users",
+    "GET /accounts",
+    "PUT /accounts",
+    "PATCH /accounts"
+  ]
+}

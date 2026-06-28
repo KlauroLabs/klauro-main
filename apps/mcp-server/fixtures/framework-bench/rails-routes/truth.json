@@ -1,0 +1,2 @@
+{ "task": "route-facts", "true_routes": ["GET /users", "POST /users", "DELETE /users/:id"],
+  "note": "WON (Rails, Ruby — 4th web framework, out-category). rails-analyzer already emits canonical HTTP entry points from config/routes.rb (get/post/delete to controller#action) — no analyzer fix needed; fixture adds enforced coverage." }

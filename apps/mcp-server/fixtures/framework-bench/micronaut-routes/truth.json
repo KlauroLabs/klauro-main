@@ -1,0 +1,2 @@
+{ "task": "route-facts", "true_routes": ["GET /users", "POST /users", "DELETE /users/:id"],
+  "note": "Micronaut @Controller + @Get/@Post/@Delete (Java). 14th web framework. @Delete('/{id}') -> :id." }

@@ -1,6 +1,25 @@
 export * from './web';
 export * from './testing';
 export * from './mobile';
+export * from './swift';
+export * from './dart';
+export * from './scala';
+export * from './crystal';
+export * from './julia';
+export * from './clojure';
+export * from './ocaml';
+export * from './apex';
+export * from './perl';
+
+import { VaporAnalyzer } from './swift';
+import { GoRouterAnalyzer } from './dart';
+import { Http4sAnalyzer } from './scala';
+import { KemalAnalyzer } from './crystal';
+import { GenieAnalyzer } from './julia';
+import { CompojureAnalyzer } from './clojure';
+import { DreamAnalyzer } from './ocaml';
+import { ApexRestAnalyzer } from './apex';
+import { MojoliciousAnalyzer } from './perl';
 
 import {
   NestJSAnalyzer,
@@ -110,6 +129,78 @@ export const FRAMEWORK_ANALYZERS: FrameworkAnalyzerInfo[] = [
     priority: 85
   },
   {
+    name: 'Vapor',
+    analyzer: VaporAnalyzer,
+    category: 'web',
+    languages: ['swift'],
+    frameworks: ['vapor'],
+    priority: 112
+  },
+  {
+    name: 'Mojolicious',
+    analyzer: MojoliciousAnalyzer,
+    category: 'web',
+    languages: ['perl'],
+    frameworks: ['mojolicious', 'Mojolicious::Lite'],
+    priority: 112
+  },
+  {
+    name: 'GoRouter',
+    analyzer: GoRouterAnalyzer,
+    category: 'web',
+    languages: ['dart'],
+    frameworks: ['go_router', 'gorouter'],
+    priority: 112
+  },
+  {
+    name: 'http4s',
+    analyzer: Http4sAnalyzer,
+    category: 'web',
+    languages: ['scala'],
+    frameworks: ['http4s', 'http4s-dsl'],
+    priority: 112
+  },
+  {
+    name: 'kemal',
+    analyzer: KemalAnalyzer,
+    category: 'web',
+    languages: ['crystal'],
+    frameworks: ['kemal'],
+    priority: 112
+  },
+  {
+    name: 'Genie',
+    analyzer: GenieAnalyzer,
+    category: 'web',
+    languages: ['julia'],
+    frameworks: ['Genie'],
+    priority: 112
+  },
+  {
+    name: 'Compojure',
+    analyzer: CompojureAnalyzer,
+    category: 'web',
+    languages: ['clojure'],
+    frameworks: ['compojure'],
+    priority: 112
+  },
+  {
+    name: 'dream',
+    analyzer: DreamAnalyzer,
+    category: 'web',
+    languages: ['ocaml'],
+    frameworks: ['dream'],
+    priority: 112
+  },
+  {
+    name: 'ApexREST',
+    analyzer: ApexRestAnalyzer,
+    category: 'web',
+    languages: ['apex'],
+    frameworks: ['apex-rest'],
+    priority: 112
+  },
+  {
     name: 'Jest',
     analyzer: JestAnalyzer,
     category: 'testing',
@@ -177,6 +268,42 @@ export async function detectFrameworkFromFiles(
 
   if (files.some(f => f === 'manage.py')) {
     detectedFrameworks.push('django');
+  }
+
+  if (files.some(f => f === 'Package.swift' || f.endsWith('.swift'))) {
+    detectedFrameworks.push('vapor');
+  }
+
+  if (files.some(f => f === 'cpanfile' || f.endsWith('.pl') || f.endsWith('.pm'))) {
+    detectedFrameworks.push('mojolicious');
+  }
+
+  if (files.some(f => f === 'pubspec.yaml' || f.endsWith('.dart'))) {
+    detectedFrameworks.push('go_router');
+  }
+
+  if (files.some(f => f === 'build.sbt' || f.endsWith('.scala'))) {
+    detectedFrameworks.push('http4s');
+  }
+
+  if (files.some(f => f === 'shard.yml' || f.endsWith('.cr'))) {
+    detectedFrameworks.push('kemal');
+  }
+
+  if (files.some(f => f === 'Project.toml' || f.endsWith('.jl'))) {
+    detectedFrameworks.push('Genie');
+  }
+
+  if (files.some(f => f === 'deps.edn' || f === 'project.clj' || f.endsWith('.clj') || f.endsWith('.cljs') || f.endsWith('.cljc'))) {
+    detectedFrameworks.push('compojure');
+  }
+
+  if (files.some(f => f === 'dune-project' || f === 'dune' || f.endsWith('.ml'))) {
+    detectedFrameworks.push('dream');
+  }
+
+  if (files.some(f => f === 'sfdx-project.json' || f.endsWith('.cls'))) {
+    detectedFrameworks.push('apex-rest');
   }
 
   if (files.some(f => f === 'artisan' || f.includes('laravel'))) {

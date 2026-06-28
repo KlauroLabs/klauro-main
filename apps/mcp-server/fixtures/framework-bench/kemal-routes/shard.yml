@@ -1,0 +1,11 @@
+name: kemal-routes
+version: 0.1.0
+
+dependencies:
+  kemal:
+    github: kemalcr/kemal
+    version: ~> 1.5.0
+
+crystal: ">= 1.10.0"
+
+license: MIT

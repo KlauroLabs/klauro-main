@@ -1,0 +1,2 @@
+{ "task": "route-facts", "true_routes": ["GET /users", "POST /users", "DELETE /users/:id"],
+  "note": "ASP.NET Core attribute routing ([Route] + [HttpGet/Post/Delete]). C# — 10th web framework / 6th language." }

@@ -1,0 +1,1 @@
+{ "task": "route-facts", "true_routes": ["GET /users", "GET /users/:id", "POST /login", "GET /health", "GET /me", "DELETE /users/:id"], "note": "http4s HttpRoutes.of[IO] pattern-matching DSL (case METHOD -> Root / seg) + AuthedRoutes.of[User,IO] (auth). Scala FP; out-of-category route-table win; 1st Scala framework." }

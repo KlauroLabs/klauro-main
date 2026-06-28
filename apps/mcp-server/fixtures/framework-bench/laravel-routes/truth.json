@@ -1,0 +1,2 @@
+{ "task": "route-facts", "true_routes": ["GET /users", "POST /users", "DELETE /users/:id"],
+  "note": "Laravel Route::get/post/delete in routes/api.php (PHP). 12th web framework / 7th language. {id} -> :id." }

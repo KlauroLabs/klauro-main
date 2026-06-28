@@ -1,0 +1,1 @@
+{ "task": "route-facts", "true_routes": ["GET /users", "POST /users", "DELETE /users/:id"], "note": "Actix-web #[get/post/delete(path)] attribute macros (Rust). 17th web framework. {id} -> :id." }

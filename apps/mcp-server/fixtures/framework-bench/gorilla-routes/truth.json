@@ -1,0 +1,1 @@
+{ "task": "route-facts", "true_routes": ["GET /users", "POST /users", "DELETE /users/:id"], "note": "Gorilla mux HandleFunc(path,h).Methods(verb) (Go). 21st web framework. {id} -> :id." }

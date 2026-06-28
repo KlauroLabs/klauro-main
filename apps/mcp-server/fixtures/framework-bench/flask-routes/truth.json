@@ -1,0 +1,2 @@
+{ "task": "route-facts", "true_routes": ["GET /users", "POST /users", "DELETE /users/:id"],
+  "note": "WON (Flask, Python — 6th web framework). TWO fixes: (1) flask-analyzer pushed raw http entry points with metadata.{method,path} (no trigger) in BOTH analyzeViews AND analyzeBlueprints -> buildRouteTable defaulted to GET /; switched both to createEntryPoint(type:http, trigger). (2) buildRouteTable path-param canonicalizer extended to Flask/Django <int:id>/<id> -> :id (drops converter)." }

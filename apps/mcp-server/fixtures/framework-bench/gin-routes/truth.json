@@ -1,0 +1,1 @@
+{ "task": "route-facts", "true_routes": ["GET /users", "POST /users", "DELETE /users/:id"], "note": "Gin router.GET/POST/DELETE builder (Go). 19th web framework / 10th language. New extractGoHttpRoutes in go-analyzer." }

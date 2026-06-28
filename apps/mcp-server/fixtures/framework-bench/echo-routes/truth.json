@@ -1,0 +1,1 @@
+{ "task": "route-facts", "true_routes": ["GET /users", "POST /users", "DELETE /users/:id"], "note": "Echo e.GET/POST/DELETE builder (Go). 20th web framework." }

@@ -1,0 +1,2 @@
+{ "task": "route-facts", "true_routes": ["GET /users", "POST /users", "DELETE /users/:id"],
+  "note": "Symfony #[Route] attributes (class prefix + method verbs). PHP. 13th web framework. Method-level #[Route('/{id}')] -> :id." }

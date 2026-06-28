@@ -1,0 +1,1 @@
+{ "task": "route-facts", "true_routes": ["GET /api/v1/users", "POST /api/v1/users", "DELETE /api/v1/users/:id"], "note": "Gin router group r.Group(\"/api/v1\") prefix resolution. Go." }

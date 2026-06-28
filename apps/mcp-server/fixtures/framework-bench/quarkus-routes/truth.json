@@ -1,0 +1,2 @@
+{ "task": "route-facts", "true_routes": ["GET /users", "POST /users", "DELETE /users/:id"],
+  "note": "Quarkus JAX-RS @Path resource + @GET/@POST/@DELETE methods (Java). 11th web framework. Method-level @Path('/{id}') -> :id." }

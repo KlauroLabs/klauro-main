@@ -1,0 +1,1 @@
+{ "task": "route-facts", "true_routes": ["GET /users", "POST /users", "DELETE /users/:id"], "note": "Axum Router::new().route(path, method(handler)) (Rust). 16th web framework / 9th language." }

@@ -1,0 +1,1 @@
+{ "task": "route-facts", "true_routes": ["GET /users", "POST /users", "DELETE /users/:id"], "note": "Rocket #[get/post/delete(path)] route macros (Rust). 18th web framework. <id> -> :id." }
