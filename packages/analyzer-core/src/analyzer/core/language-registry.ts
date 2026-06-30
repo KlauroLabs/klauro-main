@@ -54,6 +54,11 @@ export const LANGUAGE_REGISTRY: LanguageRegistryEntry[] = [
     manifests: ['pom.xml', 'build.gradle', 'build.gradle.kts']
   },
   {
+    id: 'kotlin',
+    extensions: ['kt', 'kts'],
+    manifests: ['build.gradle', 'build.gradle.kts', 'pom.xml', 'settings.gradle', 'settings.gradle.kts']
+  },
+  {
     // .NET family: C#/F#/VB sources + XAML, project/solution files are manifests.
     id: 'csharp',
     extensions: ['cs', 'xaml'],

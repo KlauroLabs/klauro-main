@@ -3,6 +3,8 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { loadKlauroConfig, type LoadedKlauroConfig } from './klauro-config';
+import { detectRemoteProvider, type RemoteProviderInfo } from './remote-provider';
+import { isRegisteredManifest, isRegisteredSourceExtension } from '../../../packages/analyzer-core/src/analyzer/core/language-registry';
 
 export interface RemoteSourceFile {
   path: string;
@@ -28,7 +30,7 @@ export interface SourceSnapshot {
   manifest: SourceManifest;
 }
 
-export interface WorkingTreeChangePacket {
+export interface WorkingTreeChangeContext {
   project_name: string;
   base_commit?: string;
   git_diff?: string;
@@ -39,6 +41,12 @@ export interface WorkingTreeChangePacket {
 export interface SourceManifest {
   generated_at: string;
   root: string;
+  git_remote?: string;
+  remote_provider?: RemoteProviderInfo;
+  branch?: string;
+  base_commit?: string;
+  dirty?: boolean;
+  transfer_recommendation?: SourceTransferRecommendation;
   file_count: number;
   total_bytes: number;
   excluded_directories: string[];
@@ -70,6 +78,9 @@ export interface UploadManifest {
   config_file?: string;
   ignore_file?: string;
   mode: 'full' | 'dirty-tree';
+  branch?: string;
+  commit?: string;
+  dirty?: boolean;
   summary: {
     included_files: number;
     included_bytes: number;
@@ -77,8 +88,34 @@ export interface UploadManifest {
     changed_files?: number;
     deleted_files?: number;
   };
+  remote_provider?: RemoteProviderInfo;
+  transfer_recommendation?: SourceTransferRecommendation;
+  workspace_recommendation?: WorkspaceRecommendation;
   included_files: UploadManifestFile[];
   excluded: UploadManifestExclusion[];
+}
+
+export interface SourceTransferRecommendation {
+  operation: 'submit_commit_analysis' | 'prepare_local_working_copy_context' | 'use_self_hosted_analyzer';
+  status: 'active' | 'available' | 'fallback';
+  reason: string;
+  next_action?: string;
+}
+
+export interface WorkspaceCandidate {
+  path: string;
+  kind: 'git-repo' | 'klauro-project';
+  name?: string;
+  project_id?: string;
+  organization_id?: string;
+  remote_provider?: RemoteProviderInfo;
+}
+
+export interface WorkspaceRecommendation {
+  recommended: boolean;
+  reason: string;
+  rule: 'workspace-cannot-contain-workspace';
+  candidates: WorkspaceCandidate[];
 }
 
 const EXCLUDED_DIRECTORIES = new Set([
@@ -168,6 +205,10 @@ const IMPORTANT_EXTENSIONLESS = new Set([
 export async function buildSourceSnapshot(projectPath: string): Promise<SourceSnapshot> {
   const root = path.resolve(projectPath);
   const loaded = await loadKlauroConfig(root);
+  const head = readGitHead(root);
+  if (isGitRepository(root) && listGitChanges(root).length > 0) {
+    throw new Error('Shared Klauro project analysis runs on committed source. Commit or stash uncommitted changes before remote analysis. Use klauro index --dirty-tree for private local agent assistance.');
+  }
   const files: RemoteSourceFile[] = [];
   await walkConfiguredSourceFiles(root, loaded, async absolutePath => {
     const file = await readRemoteSourceFile(root, absolutePath, loaded);
@@ -176,13 +217,13 @@ export async function buildSourceSnapshot(projectPath: string): Promise<SourceSn
 
   return {
     project_name: loaded.config.project.name || path.basename(root),
-    base_commit: readGitHead(root),
+    base_commit: head,
     files: files.sort((left, right) => left.path.localeCompare(right.path)),
     manifest: buildManifest(root, loaded, files),
   };
 }
 
-export async function buildWorkingTreeChangePacket(projectPath: string): Promise<WorkingTreeChangePacket> {
+export async function buildWorkingTreeChangeContext(projectPath: string): Promise<WorkingTreeChangeContext> {
   const root = path.resolve(projectPath);
   const loaded = await loadKlauroConfig(root);
   if (!loaded.config.upload.allowDirtyTreeSync) {
@@ -252,12 +293,18 @@ export async function buildUploadManifest(projectPath: string, mode: 'full' | 'd
   }
 
   const changes = mode === 'dirty-tree' ? listGitChanges(root) : [];
+  const remoteProvider = detectRemoteProvider(readGitRemote(root));
+  const transferRecommendation = recommendTransfer(loaded, remoteProvider, mode);
+  const workspaceRecommendation = await detectWorkspaceRecommendation(root);
   return {
     generated_at: new Date().toISOString(),
     root,
     config_file: loaded.configPath,
     ignore_file: loaded.ignorePath,
     mode,
+    branch: readGitBranch(root),
+    commit: readGitHead(root),
+    dirty: listGitChanges(root).length > 0,
     summary: {
       included_files: included.length,
       included_bytes: included.reduce((sum, file) => sum + file.bytes, 0),
@@ -265,9 +312,84 @@ export async function buildUploadManifest(projectPath: string, mode: 'full' | 'd
       changed_files: mode === 'dirty-tree' ? changes.filter(change => change.status !== 'deleted').length : undefined,
       deleted_files: mode === 'dirty-tree' ? changes.filter(change => change.status === 'deleted').length : undefined,
     },
+    remote_provider: remoteProvider,
+    transfer_recommendation: transferRecommendation,
+    workspace_recommendation: workspaceRecommendation,
     included_files: included.sort((left, right) => left.path.localeCompare(right.path)),
     excluded: excluded.sort((left, right) => left.path.localeCompare(right.path)).slice(0, 500),
   };
+}
+
+async function detectWorkspaceRecommendation(root: string): Promise<WorkspaceRecommendation | undefined> {
+  const candidates: WorkspaceCandidate[] = [];
+  await walkWorkspaceCandidates(root, root, candidates, 0);
+  if (candidates.length === 0) return undefined;
+  return {
+    recommended: candidates.length > 1,
+    reason: candidates.length > 1
+      ? 'Multiple child Git repositories or Klauro project configs were found. Initialize this folder as a workspace and attach each child project instead of merging them into one project analysis.'
+      : 'A child Git repository or Klauro project config was found. If this folder is meant to group projects, initialize it as a workspace; otherwise initialize inside the child project.',
+    rule: 'workspace-cannot-contain-workspace',
+    candidates: candidates.sort((left, right) => left.path.localeCompare(right.path)),
+  };
+}
+
+async function walkWorkspaceCandidates(
+  root: string,
+  currentDirectory: string,
+  candidates: WorkspaceCandidate[],
+  depth: number
+): Promise<void> {
+  if (depth > 5 || candidates.length >= 100) return;
+  let entries: Array<import('node:fs').Dirent>;
+  try {
+    entries = await fs.readdir(currentDirectory, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  const isRoot = currentDirectory === root;
+  const names = new Set(entries.map(entry => entry.name));
+  if (!isRoot && names.has('.git')) {
+    candidates.push({
+      path: normalizeRelativePath(path.relative(root, currentDirectory)),
+      kind: 'git-repo',
+      name: path.basename(currentDirectory),
+      remote_provider: detectRemoteProvider(readGitRemote(currentDirectory)),
+    });
+    return;
+  }
+
+  const configName = names.has('.klaurorc') ? '.klaurorc' : names.has('.klaurorc.json') ? '.klaurorc.json' : undefined;
+  if (!isRoot && configName) {
+    candidates.push(await readKlauroProjectCandidate(root, currentDirectory, configName));
+    return;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.isSymbolicLink() || EXCLUDED_DIRECTORIES.has(entry.name)) continue;
+    if (entry.name.startsWith('.') && entry.name !== '.github') continue;
+    await walkWorkspaceCandidates(root, path.join(currentDirectory, entry.name), candidates, depth + 1);
+  }
+}
+
+async function readKlauroProjectCandidate(root: string, directory: string, configName: string): Promise<WorkspaceCandidate> {
+  const candidate: WorkspaceCandidate = {
+    path: normalizeRelativePath(path.relative(root, directory)),
+    kind: 'klauro-project',
+    name: path.basename(directory),
+    remote_provider: detectRemoteProvider(readGitRemote(directory)),
+  };
+  try {
+    const raw = await fs.readFile(path.join(directory, configName), 'utf8');
+    const parsed = JSON.parse(raw);
+    candidate.name = parsed?.project?.name || candidate.name;
+    candidate.project_id = parsed?.project?.id;
+    candidate.organization_id = parsed?.project?.organizationId;
+  } catch {
+    // Candidate discovery should not fail the upload manifest.
+  }
+  return candidate;
 }
 
 async function walkConfiguredSourceFiles(
@@ -351,8 +473,11 @@ async function shouldIncludeRelativePath(root: string, relativePath: string, loa
     return false;
   }
 
-  const ext = path.extname(base);
-  return SOURCE_EXTENSIONS.has(ext) || IMPORTANT_EXTENSIONLESS.has(base);
+  // Use the analyzer's language registry as the single source of truth for what is
+  // analyzable source/manifest — so the snapshot we send to the product can never
+  // drift behind the languages the analyzer supports (the stale hardcoded list
+  // dropped Kotlin/.kt, Ruby/.rb, C# .csproj manifests, Swift, C++, etc.).
+  return isRegisteredSourceExtension(base) || isRegisteredManifest(base) || IMPORTANT_EXTENSIONLESS.has(base);
 }
 
 function listGitChanges(root: string): Array<{ path: string; status: 'added' | 'modified' | 'deleted' }> {
@@ -394,6 +519,42 @@ function readGitHead(root: string): string | undefined {
   }
 }
 
+function isGitRepository(root: string): boolean {
+  try {
+    return execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim() === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function readGitBranch(root: string): string | undefined {
+  try {
+    return execFileSync('git', ['branch', '--show-current'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readGitRemote(root: string): string | undefined {
+  try {
+    return execFileSync('git', ['remote', 'get-url', 'origin'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function readGitDiff(root: string): string | undefined {
   try {
     return execFileSync('git', ['diff', '--no-ext-diff', 'HEAD'], {
@@ -408,9 +569,17 @@ function readGitDiff(root: string): string | undefined {
 }
 
 function buildManifest(root: string, loaded: LoadedKlauroConfig, files: Array<{ content: string }>): SourceManifest {
+  const gitRemote = readGitRemote(root);
+  const remoteProvider = detectRemoteProvider(gitRemote);
   return {
     generated_at: new Date().toISOString(),
     root,
+    git_remote: gitRemote,
+    remote_provider: remoteProvider,
+    branch: readGitBranch(root),
+    base_commit: readGitHead(root),
+    dirty: listGitChanges(root).length > 0,
+    transfer_recommendation: recommendTransfer(loaded, remoteProvider, 'full'),
     file_count: files.length,
     total_bytes: files.reduce((sum, file) => sum + Buffer.byteLength(file.content, 'utf8'), 0),
     excluded_directories: Array.from(EXCLUDED_DIRECTORIES).sort(),
@@ -423,6 +592,44 @@ function buildManifest(root: string, loaded: LoadedKlauroConfig, files: Array<{ 
       send_git_diff: loaded.config.upload.sendGitDiff,
       send_deleted_paths: loaded.config.upload.sendDeletedPaths,
     },
+  };
+}
+
+function recommendTransfer(loaded: LoadedKlauroConfig, remoteProvider: RemoteProviderInfo | undefined, mode: 'full' | 'dirty-tree'): SourceTransferRecommendation {
+  if (loaded.config.policy.requireSelfHosted || loaded.config.analyzer.selfHosted) {
+    return {
+      operation: 'use_self_hosted_analyzer',
+      status: 'active',
+      reason: 'This project is configured to use a self-hosted analyzer endpoint.',
+    };
+  }
+
+  if (mode === 'dirty-tree') {
+    return {
+      operation: 'prepare_local_working_copy_context',
+      status: 'active',
+      reason: 'Dirty-tree contexts are private local working-copy context for the signed-in developer and are not shared project analysis.',
+      next_action: remoteProvider?.suggested_connection?.action,
+    };
+  }
+
+  if (remoteProvider?.connectable) {
+    return {
+      operation: 'submit_commit_analysis',
+      status: 'active',
+      reason: loaded.config.project.id
+        ? 'Submit the current committed tree to the connected Klauro project for shared project analysis.'
+        : 'Submit the current committed tree to Klauro for shared project analysis. The detected Git remote can also be connected later for automatic push-triggered analysis.',
+      next_action: remoteProvider.suggested_connection?.action,
+    };
+  }
+
+  return {
+    operation: 'submit_commit_analysis',
+    status: 'active',
+    reason: loaded.config.project.id
+      ? 'Submit the current committed tree to the connected Klauro project for shared project analysis.'
+      : 'Submit the current committed tree or unversioned source snapshot to Klauro for shared project analysis.',
   };
 }
 
