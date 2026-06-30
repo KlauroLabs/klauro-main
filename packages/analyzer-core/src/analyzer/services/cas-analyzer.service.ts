@@ -13,8 +13,16 @@ import { PHPAnalyzer } from '../languages/php-analyzer';
 import { RubyAnalyzer } from '../languages/ruby-analyzer';
 import { DartAnalyzer } from '../languages/dart-analyzer';
 import { TerraformAnalyzer } from '../languages/terraform-analyzer';
+import { CCppAnalyzer } from '../languages/c-cpp-analyzer';
+import { KotlinAnalyzer } from '../languages/kotlin-analyzer';
+import { SwiftAnalyzer } from '../languages/swift-analyzer';
+import { SolidityAnalyzer } from '../languages/solidity-analyzer';
+import { ElixirAnalyzer } from '../languages/elixir-analyzer';
+import { ShellAnalyzer } from '../languages/shell-analyzer';
+import { ProtobufAnalyzer } from '../languages/protobuf-analyzer';
 import { DockerComposeAnalyzer, DockerfileAnalyzer, KubernetesManifestAnalyzer } from '../languages/container-topology-analyzer';
 import { DistributionArtifactAnalyzer } from '../languages/distribution-artifact-analyzer';
+import { GenericTreeSitterLanguageAnalyzer } from '../languages/generic-tree-sitter-language-analyzer';
 
 import {
   NestJSAnalyzer,
@@ -357,6 +365,83 @@ export class CASAnalyzerService {
         analyzer: new TerraformAnalyzer()
       },
       {
+        id: 'c-cpp',
+        name: 'C/C++ Analyzer',
+        type: 'language',
+        version: '1.0.0',
+        detectPatterns: {
+          files: ['CMakeLists.txt', 'Makefile', '*.vcxproj'],
+          content: [/\.(c|h|cpp|cc|cxx|hpp|hh|hxx)$/]
+        },
+        analyzer: new CCppAnalyzer()
+      },
+      {
+        id: 'kotlin',
+        name: 'Kotlin Analyzer',
+        type: 'language',
+        version: '1.0.0',
+        detectPatterns: {
+          files: ['build.gradle.kts', 'settings.gradle.kts'],
+          content: [/\.kt$/, /\.kts$/]
+        },
+        analyzer: new KotlinAnalyzer()
+      },
+      {
+        id: 'swift',
+        name: 'Swift Analyzer',
+        type: 'language',
+        version: '1.0.0',
+        detectPatterns: {
+          files: ['Package.swift', '*.xcodeproj'],
+          content: [/\.swift$/]
+        },
+        analyzer: new SwiftAnalyzer()
+      },
+      {
+        id: 'solidity',
+        name: 'Solidity Analyzer',
+        type: 'language',
+        version: '1.0.0',
+        detectPatterns: {
+          files: ['hardhat.config.js', 'hardhat.config.ts', 'foundry.toml', 'truffle-config.js'],
+          content: [/\.sol$/]
+        },
+        analyzer: new SolidityAnalyzer()
+      },
+      {
+        id: 'elixir',
+        name: 'Elixir Analyzer',
+        type: 'language',
+        version: '1.0.0',
+        detectPatterns: {
+          files: ['mix.exs', 'mix.lock'],
+          content: [/\.ex$/, /\.exs$/]
+        },
+        analyzer: new ElixirAnalyzer()
+      },
+      {
+        id: 'shell',
+        name: 'Shell/Bash Analyzer',
+        type: 'language',
+        version: '1.0.0',
+        detectPatterns: {
+          files: ['*.sh', '*.bash', '*.zsh', '*.ksh'],
+          content: [/^#!.*\b(?:sh|bash|zsh|ksh|dash|ash)\b/m]
+        },
+        analyzer: new ShellAnalyzer()
+      },
+      {
+        id: 'protobuf',
+        name: 'Protobuf/gRPC Analyzer',
+        type: 'language',
+        version: '1.0.0',
+        detectPatterns: {
+          files: ['buf.yaml', 'buf.gen.yaml'],
+          content: [/\.proto$/]
+        },
+        analyzer: new ProtobufAnalyzer()
+      },
+      {
         id: 'dockerfile',
         name: 'Dockerfile Analyzer',
         type: 'language',
@@ -399,6 +484,19 @@ export class CASAnalyzerService {
           content: [/systemctl|launchctl|makensis|msiexec|pkgbuild|create-dmg|SERVICE_NAME|BINARY_NAME|DOWNLOAD_PREFIX|manifest\.json/i]
         },
         analyzer: new DistributionArtifactAnalyzer()
+      },
+      {
+        // Breadth fallback: any grammar-backed language without a deep analyzer
+        // (zig, haskell, lua, ocaml, erlang, clojure, julia, nim, fortran, …).
+        // Detection is via canAnalyze (no fixed extension list — it covers ~130).
+        id: 'generic-tree-sitter',
+        name: 'Generic Tree-sitter Analyzer',
+        type: 'language',
+        version: '1.0.0',
+        detectPatterns: {
+          content: [/\.(zig|hs|lua|ml|erl|ex|exs|clj|jl|nim|f90|ada|d|cr|nix|ipynb)$/i]
+        },
+        analyzer: new GenericTreeSitterLanguageAnalyzer()
       }
     ];
 

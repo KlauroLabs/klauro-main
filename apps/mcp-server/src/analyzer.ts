@@ -18,6 +18,7 @@ import { DartAnalyzer } from '../../../packages/analyzer-core/src/analyzer/langu
 import { TerraformAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/terraform-analyzer';
 import { DockerComposeAnalyzer, DockerfileAnalyzer, KubernetesManifestAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/container-topology-analyzer';
 import { DistributionArtifactAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/distribution-artifact-analyzer';
+import { GenericTreeSitterLanguageAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/generic-tree-sitter-language-analyzer';
 import {
   NestJSAnalyzer,
   SpringBootAnalyzer,
@@ -353,6 +354,19 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         content: [/systemctl|launchctl|makensis|msiexec|pkgbuild|create-dmg|SERVICE_NAME|BINARY_NAME|DOWNLOAD_PREFIX|manifest\.json/i],
       },
       analyzer: new DistributionArtifactAnalyzer(),
+    },
+    {
+      // Breadth fallback: any grammar-backed language without a deep analyzer
+      // (zig, haskell, lua, ocaml, erlang, clojure, julia, nim, fortran, …).
+      // Detection is via canAnalyze, which covers ~130 registered extensions.
+      id: 'generic-tree-sitter',
+      name: 'Generic Tree-sitter Analyzer',
+      type: 'language',
+      version: '1.0.0',
+      detectPatterns: {
+        content: [/\.(zig|hs|lua|ml|erl|ex|exs|clj|jl|nim|f90|ada|d|cr|nix)$/i],
+      },
+      analyzer: new GenericTreeSitterLanguageAnalyzer(),
     },
   ];
 
