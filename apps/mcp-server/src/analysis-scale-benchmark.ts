@@ -499,10 +499,10 @@ function capturePhaseTimings(): () => Record<string, number> | null {
 }
 
 async function childFullAnalysis(projectPath: string): Promise<void> {
-  const { analyzeProject } = await import('./analyzer');
+  const { analyzeForBench } = await import('./gauntlet/product-analysis');
   const readTimings = capturePhaseTimings();
   const startedAt = Date.now();
-  const output = await analyzeProject(projectPath);
+  const output = await analyzeForBench(projectPath);
   const wallMs = Date.now() - startedAt;
   const result: FullAnalysisChildResult = {
     wallMs,

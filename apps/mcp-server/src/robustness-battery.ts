@@ -773,9 +773,8 @@ function formatReport(verdicts: CaseVerdict[]): string {
 }
 
 async function runChildCase(caseDir: string, outFile: string): Promise<void> {
-  const { createOrchestrator } = await import('./analyzer');
-  const orchestrator = createOrchestrator();
-  const cas = await orchestrator.orchestrateAnalysis(caseDir);
+  const { analyzeForBench } = await import('./gauntlet/product-analysis');
+  const cas = await analyzeForBench(caseDir);
   await fs.writeFile(outFile, JSON.stringify(cas));
 }
 
