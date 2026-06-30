@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
-import { fileURLToPath } from 'url';
 import { grammarHealth } from '../../../../packages/analyzer-core/src/analyzer/core/wasm-tree-sitter';
 
 // Regression guard for the tree-sitter packaging bug that shipped grammar-less to
@@ -12,8 +11,11 @@ import { grammarHealth } from '../../../../packages/analyzer-core/src/analyzer/c
 // the vendored source grammars or the post-build dist/grammars copy regress.
 
 const MIN_GRAMMARS = 150; // ~160 ship; allow a small margin for in-flight churn.
-const here = path.dirname(fileURLToPath(import.meta.url));
-const mcpServerRoot = path.resolve(here, '..', '..'); // .../apps/mcp-server
+// `npm test` runs with cwd = apps/mcp-server; resolve from there (avoids import.meta,
+// which the project's tsc module setting disallows).
+const mcpServerRoot = process.cwd().endsWith(path.join('apps', 'mcp-server'))
+  ? process.cwd()
+  : path.resolve(process.cwd(), 'apps', 'mcp-server');
 
 test('grammarHealth resolves the full breadth grammar set from the source tree', () => {
   const h = grammarHealth();

@@ -5,10 +5,11 @@ import { execFileSync } from 'child_process';
 import { glob } from 'glob';
 import pLimit from 'p-limit';
 import { analyzeProject, analyzeProjectIncremental, type IncrementalAnalysisResult } from './analyzer';
-import { getAgentWorkPacket } from './agent-adoption';
+import { getAgentContext } from './agent-adoption';
 import { discoverTargets, type RepoTarget } from './gauntlet';
 import { getFileCacheSize, loadIncrementalState, saveAgenticBenchmarkReport } from './storage';
 import { isDirectCliInvocation } from './cli-invocation';
+import { analyzeWithInstalledKlauro } from './installed-klauro';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 
@@ -28,6 +29,11 @@ interface IncrementalBenchmarkOptions {
   useGitBaseline?: boolean;
   quiet?: boolean;
   concurrency?: number;
+  analysisPath?: 'in-process-harness' | 'klauro-product';
+  // Hosted server for the klauro-product in-flight path. When set, the installed
+  // CLI runs in remote mode against this URL (production by default); when unset
+  // it runs offline local. Mirrors the cold/warm path in machine-gauntlet.
+  analyzerServerUrl?: string;
   progress?: (event: { target: string; path: string; stage: 'start' | 'complete' | 'failed'; duration_ms?: number; error?: string }) => void;
 }
 
@@ -54,7 +60,7 @@ interface IncrementalTargetReport {
     git_baseline_ms?: number;
     edit_selection_ms?: number;
     edit_apply_ms?: number;
-    packet_generation_ms?: number;
+    context_generation_ms?: number;
     token_proof_ms?: number;
     state_load_ms?: number;
     cache_size_ms?: number;
@@ -87,10 +93,10 @@ interface IncrementalTargetReport {
     file_cache_bytes: number;
   };
   agent_value_after_edit: {
-    packet_generation_ms: number;
+    context_generation_ms: number;
     file_read_plan_count: number;
     next_mcp_calls: number;
-    estimated_packet_tokens: number;
+    estimated_context_tokens: number;
     estimated_source_tokens: number;
     estimated_total_context_tokens: number;
     estimated_search_baseline_tokens: number;
@@ -98,7 +104,7 @@ interface IncrementalTargetReport {
     estimated_cold_scan_tokens: number;
     estimated_cold_scan_token_reduction_percentage: number;
     selected_node?: unknown;
-    default_use?: boolean;
+    agent_context_ready?: boolean;
   };
   full_verify_parity?: {
     node_delta: number;
@@ -122,6 +128,7 @@ function parseArgs(argv: string[]) {
   let verifyFull = true;
   let useGitBaseline = false;
   let concurrency = 1;
+  let analysisPath: IncrementalBenchmarkOptions['analysisPath'] = 'in-process-harness';
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -155,13 +162,21 @@ function parseArgs(argv: string[]) {
       useGitBaseline = true;
     } else if (arg === '--concurrency') {
       concurrency = Number(argv[++i]);
+    } else if (arg === '--analysis-path') {
+      analysisPath = parseAnalysisPath(argv[++i]);
     } else if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
     }
   }
 
-  return { repos, includeRealRepos, devRoot, maxTargets, workRoot, outputPath, markdownPath, keepWorkspaces, verifyFull, useGitBaseline, concurrency };
+  return { repos, includeRealRepos, devRoot, maxTargets, workRoot, outputPath, markdownPath, keepWorkspaces, verifyFull, useGitBaseline, concurrency, analysisPath };
+}
+
+function parseAnalysisPath(value: string): IncrementalBenchmarkOptions['analysisPath'] {
+  if (value === 'klauro-product') return 'klauro-product';
+  if (value === 'in-process-harness') return 'in-process-harness';
+  throw new Error(`Invalid incremental benchmark analysis path "${value}". Expected klauro-product or in-process-harness.`);
 }
 
 function printHelp(): void {
@@ -178,6 +193,7 @@ function printHelp(): void {
     '  --no-verify-full             Skip the fresh full analysis parity check.',
     '  --git-baseline               Initialize and commit a git baseline in copied repos. Off by default to measure agent-facing incremental value without benchmark-only git overhead.',
     '  --concurrency n             Number of repos to benchmark concurrently. Default 1. Values above 1 are capped because storage isolation is process-scoped.',
+    '  --analysis-path path         Analysis path: klauro-product or in-process-harness. Default in-process-harness.',
     '  --discard-workspaces         Remove copied repos after writing the report. This is the default.',
     '  --keep-workspaces            Keep copied repos for debugging.',
     '  --output /path/report.json   Write JSON report.',
@@ -233,9 +249,9 @@ export async function runIncrementalValueBenchmark(options: IncrementalBenchmark
       average_non_analysis_overhead_ms: Math.round(average(reports.map(target => nonAnalysisOverheadMs(target.timings)))),
       average_no_change_speedup_vs_full: Number(average(reports.map(target => target.speedups.no_change_vs_full)).toFixed(2)),
       average_edit_speedup_vs_full: Number(average(reports.map(target => target.speedups.edit_incremental_vs_full)).toFixed(2)),
-      average_packet_generation_ms_after_edit: Math.round(average(reports.map(target => target.agent_value_after_edit.packet_generation_ms))),
+      average_context_generation_ms_after_edit: Math.round(average(reports.map(target => target.agent_value_after_edit.context_generation_ms))),
       average_file_read_plan_after_edit: Math.round(average(reports.map(target => target.agent_value_after_edit.file_read_plan_count))),
-      average_packet_tokens_after_edit: Math.round(average(reports.map(target => target.agent_value_after_edit.estimated_packet_tokens))),
+      average_context_tokens_after_edit: Math.round(average(reports.map(target => target.agent_value_after_edit.estimated_context_tokens))),
       average_total_context_tokens_after_edit: Math.round(average(reports.map(target => target.agent_value_after_edit.estimated_total_context_tokens))),
       average_search_baseline_tokens_after_edit: Math.round(average(reports.map(target => target.agent_value_after_edit.estimated_search_baseline_tokens))),
       average_search_token_reduction_after_edit: Math.round(average(reports.map(target => target.agent_value_after_edit.estimated_search_token_reduction_percentage))),
@@ -314,17 +330,17 @@ function failedIncrementalTargetReport(
       file_cache_bytes: 0,
     },
     agent_value_after_edit: {
-      packet_generation_ms: 0,
+      context_generation_ms: 0,
       file_read_plan_count: 0,
       next_mcp_calls: 0,
-      estimated_packet_tokens: 0,
+      estimated_context_tokens: 0,
       estimated_source_tokens: 0,
       estimated_total_context_tokens: 0,
       estimated_search_baseline_tokens: 0,
       estimated_search_token_reduction_percentage: 0,
       estimated_cold_scan_tokens: 0,
       estimated_cold_scan_token_reduction_percentage: 0,
-      default_use: false,
+      agent_context_ready: false,
     },
   };
 }
@@ -421,8 +437,21 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
     const previousStorage = process.env.KLAURO_STORAGE_PATH;
     process.env.KLAURO_STORAGE_PATH = storagePath;
     try {
-      const initial = await timed(() => analyzeProjectIncremental(workspace));
-      const noChange = await timed(() => analyzeProjectIncremental(workspace));
+      const analysisPath = options.analysisPath || 'in-process-harness';
+      const analysisFocus = 'agent-fast';
+      const installedEnv = { KLAURO_STORAGE_PATH: storagePath };
+      // Remote against the hosted server when a URL is supplied (production by
+      // default in the machine gauntlet); offline local otherwise.
+      const productMode: 'remote' | 'local' | undefined = options.analyzerServerUrl ? 'remote' : undefined;
+      const analyzeIncremental = () => analysisPath === 'klauro-product'
+        ? analyzeWithInstalledKlauro(workspace, { env: installedEnv, analysisFocus, mode: productMode, serverUrl: options.analyzerServerUrl, timeoutMs: 8 * 60 * 1000 })
+        : analyzeProjectIncremental(workspace);
+      const analyzeFull = () => analysisPath === 'klauro-product'
+        ? analyzeWithInstalledKlauro(workspace, { env: installedEnv, analysisFocus, mode: productMode, serverUrl: options.analyzerServerUrl, forceFull: true, timeoutMs: 8 * 60 * 1000 }).then(result => result.output)
+        : analyzeProject(workspace);
+
+      const initial = await timed(() => analyzeIncremental());
+      const noChange = await timed(() => analyzeIncremental());
       const editSelectionStartedAt = Date.now();
       const editFile = await chooseEditFile(initial.value.output, workspace);
       const editSelectionMs = Math.max(1, Date.now() - editSelectionStartedAt);
@@ -431,21 +460,21 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
       const editApplyStartedAt = Date.now();
       const edit = await applySafeSourceEdit(path.join(workspace, editFile));
       const editApplyMs = Math.max(1, Date.now() - editApplyStartedAt);
-      const edited = await timed(() => analyzeProjectIncremental(workspace));
+      const edited = await timed(() => analyzeIncremental());
 
-      const packetStartedAt = Date.now();
-      const packet = await getAgentWorkPacket(edited.value.output, workspace, {
+      const contextStartedAt = Date.now();
+      const context = await getAgentContext(edited.value.output, workspace, {
         task_type: 'modify',
         target: targetFromEditedFile(edited.value.output, editFile),
         instructions: `Use the incremental change summary to inspect ${editFile} and preserve connected behavior.`,
       });
-      const packetGenerationMs = Math.max(1, Date.now() - packetStartedAt);
+      const contextGenerationMs = Math.max(1, Date.now() - contextStartedAt);
       const tokenProofStartedAt = Date.now();
-      const tokenProof = await estimatePostEditTokenProof(workspace, packet, editFile);
+      const tokenProof = await estimatePostEditTokenProof(workspace, context, editFile);
       const tokenProofMs = Math.max(1, Date.now() - tokenProofStartedAt);
       const editLoopWallMs = Math.max(1, Date.now() - editLoopStartedAt);
 
-      const verify = options.verifyFull ? await timed(() => analyzeProject(workspace)) : undefined;
+      const verify = options.verifyFull ? await timed(() => analyzeFull()) : undefined;
       const stateLoadStartedAt = Date.now();
       const state = await loadIncrementalState(workspace);
       const stateLoadMs = Math.max(1, Date.now() - stateLoadStartedAt);
@@ -453,7 +482,7 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
       const cacheSize = await getFileCacheSize(workspace);
       const cacheSizeMs = Math.max(1, Date.now() - cacheSizeStartedAt);
       const fullParity = verify ? compareCasCounts(edited.value.output, verify.value) : undefined;
-      const gates = buildGates(initial, noChange, edited, packet, edit, tokenProof, fullParity);
+      const gates = buildGates(initial, noChange, edited, context, edit, tokenProof, fullParity);
       const score = Math.round(average(gates.map(gate => gate.score)));
       const status = aggregateStatus(gates.map(gate => gate.status));
 
@@ -477,7 +506,7 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
           git_baseline_ms: gitBaselineMs,
           edit_selection_ms: editSelectionMs,
           edit_apply_ms: editApplyMs,
-          packet_generation_ms: packetGenerationMs,
+          context_generation_ms: contextGenerationMs,
           token_proof_ms: tokenProofMs,
           state_load_ms: stateLoadMs,
           cache_size_ms: cacheSizeMs,
@@ -499,13 +528,13 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
           file_cache_bytes: cacheSize.bytes,
         },
         agent_value_after_edit: {
-          packet_generation_ms: packetGenerationMs,
-          file_read_plan_count: packet.file_read_plan.length,
-          next_mcp_calls: packet.next_mcp_calls.length,
-          estimated_packet_tokens: estimateTokens(JSON.stringify(packet).length),
+          context_generation_ms: contextGenerationMs,
+          file_read_plan_count: context.file_read_plan.length,
+          next_mcp_calls: context.next_mcp_calls.length,
+          estimated_context_tokens: estimateTokens(JSON.stringify(context).length),
           ...tokenProof,
-          selected_node: packet.selected_node,
-          default_use: packet.default_use,
+          selected_node: context.selected_node,
+          agent_context_ready: context.agent_context_ready,
         },
         full_verify_parity: fullParity,
       };
@@ -533,7 +562,7 @@ function buildGates(
   initial: Timed<IncrementalAnalysisResult>,
   noChange: Timed<IncrementalAnalysisResult>,
   edited: Timed<IncrementalAnalysisResult>,
-  packet: Awaited<ReturnType<typeof getAgentWorkPacket>>,
+  context: Awaited<ReturnType<typeof getAgentContext>>,
   edit: IncrementalTargetReport['edit'],
   tokenProof: Awaited<ReturnType<typeof estimatePostEditTokenProof>>,
   parity?: IncrementalTargetReport['full_verify_parity']
@@ -562,7 +591,7 @@ function buildGates(
     softGate('edit-produced-cas-delta', casDelta > 0 || changedFiles > 0, `${casDelta} CAS nodes changed, ${changedFiles} files changed`),
     gate('edit-stayed-incremental', !edited.value.wasFullRebuild, `wasFullRebuild=${edited.value.wasFullRebuild}`),
     softGate('edit-performance-acceptable', editPerformanceAcceptable, `${edited.durationMs}ms vs ${initial.durationMs}ms`),
-    gate('agent-packet-after-edit', packet.file_read_plan.length > 0 && packet.next_mcp_calls.length > 0, `${packet.file_read_plan.length} files, ${packet.next_mcp_calls.length} calls`),
+    gate('agent-context-after-edit', context.file_read_plan.length > 0 && context.next_mcp_calls.length > 0, `${context.file_read_plan.length} files, ${context.next_mcp_calls.length} calls`),
     gate('agent-token-reduction-after-edit', tokenProof.estimated_search_token_reduction_percentage >= 25, `${tokenProof.estimated_search_token_reduction_percentage}% vs search, ${tokenProof.estimated_total_context_tokens}/${tokenProof.estimated_search_baseline_tokens} tokens`),
   ];
   if (parity) {
@@ -1218,20 +1247,20 @@ function ratio(baseline: number, actual: number): number {
 
 async function estimatePostEditTokenProof(
   workspace: string,
-  packet: Awaited<ReturnType<typeof getAgentWorkPacket>>,
+  context: Awaited<ReturnType<typeof getAgentContext>>,
   editFile: string
 ) {
   const sourceFiles = await sourceFileStats(workspace);
   const sourceTokensByFile = new Map(sourceFiles.map(file => [file.file, file.estimated_tokens]));
-  const packetTokens = estimateTokens(JSON.stringify(packet).length);
-  const plannedSourceTokens = packet.file_read_plan.reduce((total, item: any) => {
+  const contextTokens = estimateTokens(JSON.stringify(context).length);
+  const plannedSourceTokens = context.file_read_plan.reduce((total, item: any) => {
     const file = String(item.file || '');
     const stat = findCompatibleSourceStat(sourceFiles, file);
     if (!stat) return total;
     return total + estimateLineWindowTokens(workspace, file, item.line_window, stat.estimated_tokens);
   }, 0);
-  const totalContextTokens = packetTokens + plannedSourceTokens;
-  const searchFiles = searchBaselineFiles(sourceFiles, editFile, packet);
+  const totalContextTokens = contextTokens + plannedSourceTokens;
+  const searchFiles = searchBaselineFiles(sourceFiles, editFile, context);
   const searchBaselineTokens = searchFiles.reduce((total, file) => total + (sourceTokensByFile.get(file.file) || file.estimated_tokens), 0) +
     estimateSearchOverheadTokens(sourceFiles.length, searchFiles.length);
   const coldScanTokens = sourceFiles.reduce((total, file) => total + file.estimated_tokens, 0);
@@ -1314,11 +1343,11 @@ function estimateLineWindowTokens(workspace: string, file: string, lineWindow: a
 function searchBaselineFiles(
   sourceFiles: Array<{ file: string; estimated_tokens: number }>,
   editFile: string,
-  packet: Awaited<ReturnType<typeof getAgentWorkPacket>>
+  context: Awaited<ReturnType<typeof getAgentContext>>
 ) {
   const targetText = [
     editFile,
-    packet.selected_node && typeof packet.selected_node === 'object' ? JSON.stringify(packet.selected_node) : '',
+    context.selected_node && typeof context.selected_node === 'object' ? JSON.stringify(context.selected_node) : '',
   ].join(' ');
   const tokens = meaningfulSearchTokens(targetText);
   const configFiles = sourceFiles.filter(file => /(^|\/)(package\.json|tsconfig|pyproject|go\.mod|cargo\.toml|composer\.json|pubspec\.yaml|readme)/i.test(file.file));
@@ -1399,9 +1428,9 @@ export function formatIncrementalValueMarkdownReport(report: Awaited<ReturnType<
     `Average non-analysis overhead: ${report.summary.average_non_analysis_overhead_ms}ms`,
     `Average no-change speedup vs full: ${report.summary.average_no_change_speedup_vs_full}x`,
     `Average edit speedup vs full: ${report.summary.average_edit_speedup_vs_full}x`,
-    `Average agent packet generation after edit: ${report.summary.average_packet_generation_ms_after_edit}ms`,
+    `Average agent context generation after edit: ${report.summary.average_context_generation_ms_after_edit}ms`,
     `Average file-read plan after edit: ${report.summary.average_file_read_plan_after_edit} files`,
-    `Average packet size after edit: ${report.summary.average_packet_tokens_after_edit} estimated tokens`,
+    `Average context size after edit: ${report.summary.average_context_tokens_after_edit} estimated tokens`,
     `Average total context after edit: ${report.summary.average_total_context_tokens_after_edit} estimated tokens`,
     `Average search baseline after edit: ${report.summary.average_search_baseline_tokens_after_edit} estimated tokens`,
     `Average token reduction vs search after edit: ${report.summary.average_search_token_reduction_after_edit}%`,
@@ -1410,7 +1439,7 @@ export function formatIncrementalValueMarkdownReport(report: Awaited<ReturnType<
     '',
     '## Repository Summary',
     '',
-    '| Repo | Status | Score | Edited file | Wall ms | Edit-loop ms | Full ms | Edit incremental ms | Overhead ms | Speedup | Changed files | Packet files | Token reduction | Parity |',
+    '| Repo | Status | Score | Edited file | Wall ms | Edit-loop ms | Full ms | Edit incremental ms | Overhead ms | Speedup | Changed files | Context files | Token reduction | Parity |',
     '| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
   ];
 
@@ -1426,7 +1455,7 @@ export function formatIncrementalValueMarkdownReport(report: Awaited<ReturnType<
     lines.push(`Edit: ${target.edit.kind} (${target.edit.detail})`);
     lines.push(`Timings: wall ${target.timings.total_wall_ms || 'unknown'}ms, edit-loop wall ${target.timings.edit_loop_wall_ms || 'unknown'}ms, full ${target.timings.initial_full_ms}ms, no-change incremental ${target.timings.no_change_incremental_ms}ms, edit incremental ${target.timings.edit_incremental_ms}ms, non-analysis overhead ${nonAnalysisOverheadMs(target.timings)}ms${target.timings.verify_full_after_edit_ms ? `, verify full ${target.timings.verify_full_after_edit_ms}ms` : ''}.`);
     lines.push(`Change summary: ${target.change_summary.files_changed} files changed, ${target.change_summary.nodes_added} nodes added, ${target.change_summary.nodes_modified} nodes modified, ${target.change_summary.nodes_deleted} nodes deleted, risk ${target.change_summary.risk_level}.`);
-    lines.push(`Agent packet after edit: ${target.agent_value_after_edit.file_read_plan_count} files, ${target.agent_value_after_edit.next_mcp_calls} MCP calls, ${target.agent_value_after_edit.estimated_total_context_tokens} estimated total context tokens (${target.agent_value_after_edit.estimated_packet_tokens} packet + ${target.agent_value_after_edit.estimated_source_tokens} source), ${target.agent_value_after_edit.estimated_search_token_reduction_percentage}% token reduction vs search, ${target.agent_value_after_edit.packet_generation_ms}ms.`);
+    lines.push(`Agent context after edit: ${target.agent_value_after_edit.file_read_plan_count} files, ${target.agent_value_after_edit.next_mcp_calls} MCP calls, ${target.agent_value_after_edit.estimated_total_context_tokens} estimated total context tokens (${target.agent_value_after_edit.estimated_context_tokens} context + ${target.agent_value_after_edit.estimated_source_tokens} source), ${target.agent_value_after_edit.estimated_search_token_reduction_percentage}% token reduction vs search, ${target.agent_value_after_edit.context_generation_ms}ms.`);
     lines.push(`Gates: ${target.gates.map(gate => `${gate.id}=${gate.status}`).join(', ')}`);
     lines.push('');
   }
@@ -1446,6 +1475,7 @@ async function main(): Promise<void> {
     verifyFull: args.verifyFull,
     useGitBaseline: args.useGitBaseline,
     concurrency: args.concurrency,
+    analysisPath: args.analysisPath,
   });
 
   await fs.ensureDir(path.dirname(args.outputPath));
@@ -1454,9 +1484,9 @@ async function main(): Promise<void> {
   await fs.writeFile(args.markdownPath, formatIncrementalValueMarkdownReport(report), 'utf8');
   const saved = await saveAgenticBenchmarkReport(report);
   console.log(`Incremental analysis benchmark: ${report.status.toUpperCase()} (${report.score}/100)`);
-  console.log(`Targets: ${report.summary.target_count} | Incremental success ${Math.round(report.summary.incremental_success_rate * 100)}% | Edit speedup ${report.summary.average_edit_speedup_vs_full}x | Packet ${report.summary.average_packet_generation_ms_after_edit}ms/${report.summary.average_packet_tokens_after_edit} tokens | Token reduction ${report.summary.average_search_token_reduction_after_edit}% vs search`);
+  console.log(`Targets: ${report.summary.target_count} | Incremental success ${Math.round(report.summary.incremental_success_rate * 100)}% | Edit speedup ${report.summary.average_edit_speedup_vs_full}x | Context ${report.summary.average_context_generation_ms_after_edit}ms/${report.summary.average_context_tokens_after_edit} tokens | Token reduction ${report.summary.average_search_token_reduction_after_edit}% vs search`);
   for (const target of report.targets) {
-    console.log(`${target.status.toUpperCase().padEnd(4)} ${String(target.score).padStart(3)}/100 | ${target.name} | ${target.edited_file || 'no edit'} | ${target.timings.total_wall_ms || 'unknown'}ms wall | ${target.timings.edit_loop_wall_ms || 'unknown'}ms edit loop | ${target.timings.initial_full_ms}ms full | ${target.timings.edit_incremental_ms}ms edit incr | ${target.speedups.edit_incremental_vs_full}x | packet ${target.agent_value_after_edit.file_read_plan_count} files`);
+    console.log(`${target.status.toUpperCase().padEnd(4)} ${String(target.score).padStart(3)}/100 | ${target.name} | ${target.edited_file || 'no edit'} | ${target.timings.total_wall_ms || 'unknown'}ms wall | ${target.timings.edit_loop_wall_ms || 'unknown'}ms edit loop | ${target.timings.initial_full_ms}ms full | ${target.timings.edit_incremental_ms}ms edit incr | ${target.speedups.edit_incremental_vs_full}x | context ${target.agent_value_after_edit.file_read_plan_count} files`);
   }
   console.log(`Report: ${args.outputPath}`);
   console.log(`Markdown: ${args.markdownPath}`);
