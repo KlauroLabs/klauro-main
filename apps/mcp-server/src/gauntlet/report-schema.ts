@@ -113,7 +113,10 @@ export type ScenarioExecution =
   /** Derives metrics from an existing benchmark report (replayed, honest, fast). */
   | 'projected'
   /** Measured directly from the analysis engine (no agent needed), e.g. readiness. */
-  | 'engine';
+  | 'engine'
+  /** Measured by driving the INSTALLED CLI against the hosted product (the VPS),
+   *  i.e. the real customer path rather than the in-process engine. */
+  | 'product';
 
 export interface ScenarioSpec {
   id: string;

@@ -23,11 +23,43 @@
 
 import { execFileSync } from 'child_process';
 import * as fs from 'fs-extra';
+import * as os from 'os';
 import * as path from 'path';
 import { createOrchestrator } from '../analyzer';
+import { analyzeWithInstalledKlauro } from '../installed-klauro';
 import { validateWin } from './win-validator';
 import { scipCallers, ctagsCallers, stackGraphsCallers } from './real-camp-arms';
 import type { ArmResult, WinVerdict } from './report-schema';
+
+/**
+ * Produce the Klauro CAS for a fixture. By default this runs the in-process
+ * engine. When KLAURO_BENCH_ANALYZER_URL is set, it instead runs the INSTALLED
+ * CLI in remote mode against that hosted service — the literal customer product
+ * (deep analysis on the server). The fixture is copied to a throwaway git repo
+ * so the remote source-snapshot builder is satisfied and the checked-in fixture
+ * is never mutated. The returned CAS has the same shape either way, so every
+ * downstream metric is identical — only the analysis SOURCE changes.
+ */
+async function analyzeForBench(dir: string): Promise<any> {
+  const url = process.env.KLAURO_BENCH_ANALYZER_URL;
+  if (!url) return createOrchestrator().orchestrateAnalysis(dir);
+  const tmp = path.join(os.tmpdir(), `klauro-bench-product-${process.pid}-${Math.random().toString(36).slice(2)}`);
+  await fs.copy(dir, tmp, { filter: src => !/(^|\/)\.git(\/|$)/.test(src) });
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: tmp });
+    execFileSync('git', ['add', '-A'], { cwd: tmp });
+    execFileSync('git', ['-c', 'user.email=bench@klauro', '-c', 'user.name=bench', 'commit', '-qm', 'bench fixture'], { cwd: tmp });
+    const res = await analyzeWithInstalledKlauro(tmp, { mode: 'remote', serverUrl: url, timeoutMs: 8 * 60 * 1000 });
+    return res.output;
+  } finally {
+    await fs.remove(tmp).catch(() => undefined);
+  }
+}
+
+/** True when the Klauro arm is exercising the hosted product, not the in-process engine. */
+export function benchProductMode(): boolean {
+  return Boolean(process.env.KLAURO_BENCH_ANALYZER_URL);
+}
 
 interface CallersTruth {
   task: 'callers';
@@ -71,7 +103,7 @@ async function sourceFiles(dir: string): Promise<string[]> {
 async function klauroArm(dir: string, truth: CallersTruth): Promise<{ result: ArmResult; files: string[]; bytes: number }> {
   const [className, methodName] = truth.target.split('.');
   const t0 = Date.now();
-  const cas: any = await createOrchestrator().orchestrateAnalysis(dir);
+  const cas: any = await analyzeForBench(dir);
   const time_ms = Date.now() - t0;
   const nodes: any[] = cas.nodes || [];
   const edges: any[] = cas.edges || [];
@@ -101,10 +133,10 @@ async function klauroArm(dir: string, truth: CallersTruth): Promise<{ result: Ar
     bytes,
     result: {
       arm_id: 'klauro',
-      mode: 'engine',
+      mode: benchProductMode() ? 'product' : 'engine',
       attempted: true,
       metrics: { quality: Math.round(s.f1 * 100), tokens: toTokens(bytes), time_ms },
-      source: 'primitive-bench:callers',
+      source: benchProductMode() ? 'primitive-bench:callers:product' : 'primitive-bench:callers',
     },
   };
 }
@@ -217,11 +249,19 @@ function astGrepCallers(dir: string, methodName: string, lang: string): { files:
   // Run ast-grep at full strength: arg-form varies by language (Go's zero-arg
   // `a.Save()` needs `()` not `$$$`), so union both so the competitor isn't
   // handicapped by a pattern mismatch.
-  // `.` for most langs, `->` for PHP/C++ member access — union so the competitor
-  // isn't shortchanged by an access-operator mismatch.
-  for (const pat of [`$X.${methodName}($$$)`, `$X.${methodName}()`, `$X->${methodName}($$$)`, `$X->${methodName}()`]) {
+  // `.` for most langs, `->` only for languages where that operator is valid.
+  // Keeping invalid syntax out of the competitor path avoids parser diagnostics
+  // while still giving ast-grep every sensible access form for the fixture.
+  const patterns = [`$X.${methodName}($$$)`, `$X.${methodName}()`];
+  if (['php', 'cpp', 'c'].includes(lang)) {
+    patterns.push(`$X->${methodName}($$$)`, `$X->${methodName}()`);
+  }
+  for (const pat of patterns) {
     try {
-      const out = execFileSync('ast-grep', ['run', '-p', pat, '-l', lang, dir], { encoding: 'utf8' });
+      const out = execFileSync('ast-grep', ['run', '-p', pat, '-l', lang, dir], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
       for (const l of out.split('\n')) {
         if (/\.[A-Za-z0-9]+:\d+/.test(l)) files.add(path.basename(l.split(':')[0]));
       }
