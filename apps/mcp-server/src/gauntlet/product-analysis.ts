@@ -15,6 +15,8 @@
  * what it got. See docs/KLAURO-PRODUCT-MODEL.md and the blackbox-testing principle.
  */
 
+import { execFileSync } from 'child_process';
+import * as fs from 'fs-extra';
 import * as http from 'http';
 import * as os from 'os';
 import * as path from 'path';
@@ -72,17 +74,36 @@ function postJson(url: string, body: unknown): Promise<any> {
  */
 export async function analyzeForBench(dir: string): Promise<CASOutput> {
   const serverUrl = await ensureProductServer();
-  const snapshot = await buildSourceSnapshot(dir);
-  const response = await postJson(`${serverUrl}/v1/analyze`, {
-    project_id: path.basename(dir),
-    project_path: dir,
-    snapshot,
-  });
-  const cas = response.cas as CASOutput;
-  // Cache locally exactly as the real product client does (analyze -> server ->
-  // local cache), so benches that read back via getAnalysis/the MCP find it.
-  await saveAnalysis(dir, cas).catch(() => undefined);
-  return cas;
+  // The product analyzes committed source. Fixtures aren't standalone git repos, so
+  // stage them in a throwaway git repo first (the customer always has a git repo);
+  // the checked-in fixture is never mutated.
+  const staged = await stageAsGitRepo(dir);
+  try {
+    const snapshot = await buildSourceSnapshot(staged);
+    const response = await postJson(`${serverUrl}/v1/analyze`, {
+      project_id: path.basename(dir),
+      project_path: dir,
+      snapshot,
+    });
+    const cas = response.cas as CASOutput;
+    // Cache locally exactly as the real product client does (analyze -> server ->
+    // local cache), keyed by the ORIGINAL dir so getAnalysis(dir)/the MCP find it.
+    await saveAnalysis(dir, cas).catch(() => undefined);
+    return cas;
+  } finally {
+    if (staged !== dir) await fs.remove(staged).catch(() => undefined);
+  }
+}
+
+/** If dir is already a clean git repo, use it; else copy to a temp git repo + commit. */
+async function stageAsGitRepo(dir: string): Promise<string> {
+  const tmp = path.join(os.tmpdir(), `klauro-bench-src-${process.pid}-${Math.random().toString(36).slice(2)}`);
+  await fs.copy(dir, tmp, { filter: (src) => !/(^|\/)\.git(\/|$)/.test(src) });
+  const git = (args: string[]) => execFileSync('git', args, { cwd: tmp, stdio: 'ignore' });
+  git(['init', '-q']);
+  git(['add', '-A']);
+  git(['-c', 'user.email=bench@klauro', '-c', 'user.name=bench', 'commit', '-qm', 'bench fixture']);
+  return tmp;
 }
 
 /** True when the harness is pointed at an external product server (e.g. the live VPS). */
