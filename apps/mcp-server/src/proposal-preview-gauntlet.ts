@@ -2,7 +2,7 @@
 import * as fs from 'fs-extra';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { analyzeProjectIncremental } from './analyzer';
+import { analyzeForBench } from './gauntlet/product-analysis';
 import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-preview';
 import { saveAgenticBenchmarkReport } from './storage';
 import { isDirectCliInvocation } from './cli-invocation';
@@ -29,7 +29,7 @@ export async function runProposalPreviewGauntlet() {
       '',
     ].join('\n'));
     const originalFiles = await snapshotFiles(repo);
-    await analyzeProjectIncremental(repo);
+    await analyzeForBench(repo);
 
     const iteration = await previewCodebaseIteration({
       path: repo,

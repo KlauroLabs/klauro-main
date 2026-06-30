@@ -1,8 +1,8 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { analyzeProjectIncremental } from './analyzer';
+import { analyzeForBench } from './gauntlet/product-analysis';
 import { buildGreenfieldArchitectureGuidance, type GreenfieldReferenceAnalysis } from './greenfield-guidance';
-import { buildGreenfieldBuildPacket } from './greenfield-build-session';
+import { buildGreenfieldBuildContext } from './greenfield-build-session';
 import { getPreviewAnalysis, previewGreenfieldCodebase, type ProposedFileInput } from './proposal-preview';
 import { evaluateLivePairDeterministically, runLiveAgentPair, runLiveAgentPairFromWorkspaces, type LiveAgentCommandConfig, type LiveAgentPairResult, type WithoutArmPromptOverrides } from './agent-live-trial';
 import { isDirectCliInvocation } from './cli-invocation';
@@ -1090,7 +1090,7 @@ export async function runAgentScratchBuildBenchmark(args: Args = parseArgs(proce
     references,
   });
   const seedDirectory = await createEmptySeedDirectory(args.workRoot);
-  const initialBuildPacket = await buildGreenfieldBuildPacket({
+  const initialBuildContext = await buildGreenfieldBuildContext({
     workspacePath: seedDirectory,
     planText: scenario.requirements,
     references,
@@ -1142,8 +1142,8 @@ export async function runAgentScratchBuildBenchmark(args: Args = parseArgs(proce
         capability_memory: guidance.capability_memory,
         existing_overlap: guidance.existing_overlap,
         recommended_architecture: guidance.recommended_architecture,
-        build_capsule: initialBuildPacket.agent_build_capsule,
-        growth_control_plane: initialBuildPacket.growth_control_plane,
+        build_capsule: initialBuildContext.agent_build_capsule,
+        growth_control_plane: initialBuildContext.growth_control_plane,
         large_scale_build_strategy: (guidance as any).large_scale_build_strategy,
         risks: guidance.risks,
         model_reuse: scenario.modelReuse,
@@ -1570,7 +1570,7 @@ async function runContinuationFromScratchBuild(
   uncoachedBaseline: boolean
 ): Promise<LiveAgentPairResult> {
   const fileReadPlan = await buildContinuationFileReadPlan(withRepoPath, scenario, continuation);
-  const continuationBuildPacket = await buildGreenfieldBuildPacket({
+  const continuationBuildContext = await buildGreenfieldBuildContext({
     workspacePath: withRepoPath,
     planText: continuation.instructions,
   });
@@ -1610,8 +1610,8 @@ async function runContinuationFromScratchBuild(
       plan_intent: guidance.plan_intent,
       capability_memory: guidance.capability_memory,
       recommended_architecture: guidance.recommended_architecture,
-      build_capsule: continuationBuildPacket.agent_build_capsule,
-      growth_control_plane: continuationBuildPacket.growth_control_plane,
+      build_capsule: continuationBuildContext.agent_build_capsule,
+      growth_control_plane: continuationBuildContext.growth_control_plane,
       large_scale_build_strategy: (guidance as any).large_scale_build_strategy,
       model_reuse: continuation.modelReuse,
       boundary_rules: continuation.boundaryRules,
@@ -1742,7 +1742,7 @@ async function buildContinuationGuidance(
   continuation: ScratchContinuation = scenario.continuation
 ): Promise<ReturnType<typeof buildGreenfieldArchitectureGuidance>> {
   try {
-    const cas = (await analyzeProjectIncremental(repoPath)).output;
+    const cas = await analyzeForBench(repoPath);
     return buildGreenfieldArchitectureGuidance({
       planText: continuation.instructions,
       references: [
@@ -1949,7 +1949,7 @@ async function loadReferences(paths: string[]): Promise<GreenfieldReferenceAnaly
     const absolute = path.resolve(referencePath);
     if (!(await fs.pathExists(absolute))) continue;
     try {
-      const cas = (await analyzeProjectIncremental(absolute)).output;
+      const cas = await analyzeForBench(absolute);
       references.push({
         path: absolute,
         name: cas.system?.name || path.basename(absolute),

@@ -2,7 +2,7 @@ import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
 import { isDirectCliInvocation } from './cli-invocation';
-import { createOrchestrator } from './analyzer';
+import { analyzeForBench } from './gauntlet/product-analysis';
 
 type GateStatus = 'pass' | 'fail';
 
@@ -85,8 +85,7 @@ const DEFAULT_EXPECTATIONS: TargetExpectation[] = [
 export async function runArchitecturePatternBenchmark(options: { outputPath?: string; markdownPath?: string } = {}): Promise<ArchitecturePatternBenchmarkReport> {
   const fixtureRoot = path.join(process.cwd(), 'fixtures', 'analysis-truth');
   const generatedRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-architecture-patterns-'));
-  const orchestrator = createOrchestrator();
-  const targets: TargetReport[] = [];
+    const targets: TargetReport[] = [];
 
   try {
     const expectations = [
@@ -97,7 +96,7 @@ export async function runArchitecturePatternBenchmark(options: { outputPath?: st
 
     for (const expectation of expectations) {
       const fixturePath = expectation.path || path.join(fixtureRoot, expectation.fixture);
-      const cas = await orchestrator.orchestrateAnalysis(fixturePath);
+      const cas = await analyzeForBench(fixturePath);
       const architecture = (cas.architecture_summary || {}) as any;
       const patterns = (architecture.architectural_patterns || []).map((pattern: any) => String(pattern.name || pattern.pattern || ''));
       const inventory = Object.fromEntries(

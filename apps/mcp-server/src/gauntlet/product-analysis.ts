@@ -20,6 +20,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { createRemoteAnalyzerHttpServer } from '../remote-analyzer-service';
 import { buildSourceSnapshot } from '../remote-source';
+import { saveAnalysis } from '../storage';
 import type { CASOutput } from '../../../../packages/analyzer-core/src/types/cas.types';
 
 let localServerUrl: string | null = null;
@@ -77,7 +78,11 @@ export async function analyzeForBench(dir: string): Promise<CASOutput> {
     project_path: dir,
     snapshot,
   });
-  return response.cas as CASOutput;
+  const cas = response.cas as CASOutput;
+  // Cache locally exactly as the real product client does (analyze -> server ->
+  // local cache), so benches that read back via getAnalysis/the MCP find it.
+  await saveAnalysis(dir, cas).catch(() => undefined);
+  return cas;
 }
 
 /** True when the harness is pointed at an external product server (e.g. the live VPS). */

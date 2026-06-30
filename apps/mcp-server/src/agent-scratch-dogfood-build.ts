@@ -3,7 +3,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { analyzeProjectIncremental } from './analyzer';
+import { analyzeForBench } from './gauntlet/product-analysis';
 import { buildGreenfieldArchitectureGuidance, type GreenfieldReferenceAnalysis } from './greenfield-guidance';
 import { getPreviewAnalysis, previewGreenfieldCodebase, type ProposedFileInput } from './proposal-preview';
 import { renderProposalPreviewHtml } from './proposal-preview-html';
@@ -236,7 +236,7 @@ async function runScenario(options: {
   const initialReference: GreenfieldReferenceAnalysis = {
     path: projectPath,
     name: `dogfood-${options.id}`,
-    cas: (await analyzeProjectIncremental(projectPath)).output,
+    cas: await analyzeForBench(projectPath),
   };
   const continuationGuidance = buildGreenfieldArchitectureGuidance({
     planText: options.continuationPlan,
@@ -300,7 +300,7 @@ async function analyzeStage(options: {
   const previewHtml = path.join(options.outputRoot, `${options.name}.html`);
   await renderProposalPreviewHtml({ previewId: preview.preview.id, output: previewHtml });
   const previewPayload = await getPreviewAnalysis(preview.preview.id) as any;
-  const analysis = await analyzeProjectIncremental(options.projectPath);
+  const analysis = { output: await analyzeForBench(options.projectPath) };
   const testCommand = 'node --test';
   const test = await runCommand(testCommand, options.projectPath);
   const duplicateDomainDefinitions = findDuplicateDomainDefinitions(files, options.duplicateConcepts);
@@ -901,7 +901,7 @@ async function loadReferences(paths: string[]): Promise<GreenfieldReferenceAnaly
     const absolute = path.resolve(referencePath);
     if (!(await fs.pathExists(absolute))) continue;
     try {
-      const cas = (await analyzeProjectIncremental(absolute)).output;
+      const cas = await analyzeForBench(absolute);
       references.push({
         path: absolute,
         name: cas.system?.name || path.basename(absolute),

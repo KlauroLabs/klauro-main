@@ -4,7 +4,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'fs-extra';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import { analyzeProjectIncremental, getAnalysis } from './analyzer';
+import { getAnalysis } from './analyzer';
+import { analyzeForBench } from './gauntlet/product-analysis';
 import { validateBehavioralInvariants } from './invariant-validation';
 import { validateCodebaseIdioms } from './idiom-query';
 import {
@@ -87,7 +88,7 @@ export async function previewCodebaseIteration(options: ProposalPreviewOptions) 
     });
   }
 
-  const proposed = (await analyzeProjectIncremental(workspace)).output;
+  const proposed = await analyzeForBench(workspace);
   const comparison = compareAnalyses(baseline, proposed, {
     diffText: options.diffText,
     changedFiles: options.proposedFiles?.map(file => file.path),
@@ -126,7 +127,7 @@ export async function previewGreenfieldCodebase(options: ProposalPreviewOptions)
 
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-greenfield-preview-'));
   await applyProposedFiles(workspace, options.proposedFiles);
-  const proposed = (await analyzeProjectIncremental(workspace)).output;
+  const proposed = await analyzeForBench(workspace);
   const comparison = compareAnalyses(undefined, proposed, {
     changedFiles: options.proposedFiles.map(file => file.path),
   });
@@ -305,7 +306,7 @@ async function loadOrAnalyzeBaseline(projectPath: string): Promise<CASOutput> {
   try {
     return await getAnalysis(projectPath);
   } catch {
-    return (await analyzeProjectIncremental(projectPath)).output;
+    return await analyzeForBench(projectPath);
   }
 }
 

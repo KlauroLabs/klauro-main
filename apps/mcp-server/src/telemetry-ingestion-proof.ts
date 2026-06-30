@@ -8,13 +8,13 @@ async function main(): Promise<void> {
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-telemetry-proof-'));
   process.env.KLAURO_STORAGE_PATH = storage;
 
-  const { getOrchestrator } = await import('./analyzer');
+  const { analyzeForBench } = await import('./gauntlet/product-analysis');
   const { ingestTelemetryBatch, loadTelemetryObservations } = await import('./telemetry-ingestion');
   const { buildOperationalPriorities } = await import('./product');
 
   const fixture = path.join(process.cwd(), 'fixtures', 'analysis-truth', 'rails-work-orders');
   console.log(`Analyzing ${fixture} (embeddings disabled)`);
-  const cas = await getOrchestrator().orchestrateAnalysis(fixture);
+  const cas = await analyzeForBench(fixture);
   console.log(`CAS ready: ${cas.nodes.length} nodes, ${(cas.entry_points || []).length} entry points, ${(cas.runtime_static_links || []).length} runtime links`);
 
   const controllerFile = 'app/controllers/work_orders_controller.rb';
