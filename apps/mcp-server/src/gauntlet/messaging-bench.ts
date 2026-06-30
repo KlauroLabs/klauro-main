@@ -16,7 +16,7 @@
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { createOrchestrator } from '../analyzer';
+import { analyzeForBench } from './product-analysis';
 import { validateWin } from './win-validator';
 import type { ArmResult, WinVerdict } from './report-schema';
 
@@ -49,7 +49,7 @@ async function sourceBytes(dir: string): Promise<number> {
 /** Klauro: read produces/consumes edges to/from topic nodes → "produces|consumes <topic>". */
 async function klauroWiring(dir: string): Promise<{ wiring: string[]; bytes: number; time_ms: number }> {
   const t0 = Date.now();
-  const cas: any = await createOrchestrator().orchestrateAnalysis(dir);
+  const cas: any = await analyzeForBench(dir);
   const time_ms = Date.now() - t0;
   const byId = new Map((cas.nodes || []).map((n: any) => [n.id, n]));
   const topicName = (id: string, fallback: string): string => {

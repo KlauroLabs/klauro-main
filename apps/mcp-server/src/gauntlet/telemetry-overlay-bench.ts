@@ -29,7 +29,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { createOrchestrator } from '../analyzer';
+import { analyzeForBench } from './product-analysis';
 import { correlateRuntimeEvent, type RuntimeEventInput } from '../product';
 import { validateWin } from './win-validator';
 import type { ArmResult } from './report-schema';
@@ -201,7 +201,7 @@ interface KlauroOverlay {
 
 async function klauroOverlay(dir: string, traces: OverlayTraces, truth: OverlayTruth): Promise<KlauroOverlay> {
   const t0 = Date.now();
-  const cas: any = await createOrchestrator().orchestrateAnalysis(dir);
+  const cas: any = await analyzeForBench(dir);
   const spanByName = new Map(traces.spans.map(s => [s.name, s]));
   let correct = 0;
   let decoyHonest = true;

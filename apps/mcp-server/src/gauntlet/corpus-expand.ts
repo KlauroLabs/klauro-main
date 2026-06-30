@@ -17,7 +17,7 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { analyzeProject } from '../analyzer';
+import { analyzeForBench } from './product-analysis';
 import { isDirectCliInvocation } from '../cli-invocation';
 
 const execFileAsync = promisify(execFile);
@@ -100,7 +100,7 @@ async function analyzeTarget(target: ExpansionTarget, workRoot: string): Promise
     return base;
   }
   try {
-    const cas = await analyzeProject(dest);
+    const cas = await analyzeForBench(dest);
     base.nodes = cas.nodes?.length || 0;
     base.edges = cas.edges?.length || 0;
     base.functions = (cas.nodes || []).filter((n: any) => n.type === 'function' || n.type === 'method').length;

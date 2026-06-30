@@ -14,7 +14,7 @@
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { createOrchestrator } from '../analyzer';
+import { analyzeForBench } from './product-analysis';
 import { getRouteTable } from '../query';
 import { validateWin } from './win-validator';
 import type { ArmResult } from './report-schema';
@@ -55,7 +55,7 @@ async function sourceBytes(dir: string): Promise<number> {
 /** Klauro: route table → the protected (auth=true) routes as "METHOD path". */
 async function klauroProtected(dir: string): Promise<{ routes: string[]; bytes: number; time_ms: number }> {
   const t0 = Date.now();
-  const cas: any = await createOrchestrator().orchestrateAnalysis(dir);
+  const cas: any = await analyzeForBench(dir);
   const rt: any = getRouteTable(cas, { limit: 500 });
   const routes = [...new Set<string>(
     (rt?.routes || [])

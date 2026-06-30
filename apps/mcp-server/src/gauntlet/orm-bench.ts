@@ -17,7 +17,7 @@
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { createOrchestrator } from '../analyzer';
+import { analyzeForBench } from './product-analysis';
 import { validateWin } from './win-validator';
 import type { ArmResult, WinVerdict } from './report-schema';
 
@@ -63,7 +63,7 @@ async function sourceBytes(dir: string): Promise<number> {
 
 async function klauroRelations(dir: string): Promise<{ relations: string[]; bytes: number; time_ms: number }> {
   const t0 = Date.now();
-  const cas: any = await createOrchestrator().orchestrateAnalysis(dir);
+  const cas: any = await analyzeForBench(dir);
   const time_ms = Date.now() - t0;
   const relations: string[] = (cas.database_schema?.relationships_summary || []).map((r: any) => String(r));
   return { relations, bytes: Buffer.byteLength(relations.join('\n'), 'utf8'), time_ms };

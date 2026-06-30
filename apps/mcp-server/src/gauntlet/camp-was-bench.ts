@@ -19,7 +19,7 @@
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { createOrchestrator } from '../analyzer';
+import { analyzeForBench } from './product-analysis';
 import {
   buildCrossCodebaseSystemGraph,
   type CrossCodebaseInput,
@@ -90,7 +90,7 @@ async function buildRealWorkspaceGraph(): Promise<{
   const repositories: CrossCodebaseInput[] = [];
   for (const name of dirs) {
     const repoPath = path.join(FIXTURE_DIR, name);
-    const cas: any = await createOrchestrator().orchestrateAnalysis(repoPath);
+    const cas: any = await analyzeForBench(repoPath);
     repositories.push({ path: repoPath, name, cas });
   }
   const graph = buildCrossCodebaseSystemGraph(WORKSPACE_NAME, repositories);

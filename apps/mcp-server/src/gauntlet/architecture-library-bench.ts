@@ -12,7 +12,7 @@
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { createOrchestrator } from '../analyzer';
+import { analyzeForBench } from './product-analysis';
 import { validateWin } from './win-validator';
 import type { ArmResult, WinVerdict } from './report-schema';
 
@@ -82,7 +82,7 @@ async function klauroArchitectureLibraries(dir: string): Promise<{
   time_ms: number;
 }> {
   const started = Date.now();
-  const cas: any = await createOrchestrator().orchestrateAnalysis(dir);
+  const cas: any = await analyzeForBench(dir);
   const libraries = (cas.libraries || []).filter((library: any) =>
     library.category && Array.isArray(library.usage_patterns)
   );

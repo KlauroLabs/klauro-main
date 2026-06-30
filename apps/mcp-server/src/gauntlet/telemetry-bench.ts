@@ -18,7 +18,7 @@
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { createOrchestrator } from '../analyzer';
+import { analyzeForBench } from './product-analysis';
 import { correlateRuntimeEvent, buildOperationalPriorities } from '../product';
 import { validateWin } from './win-validator';
 import type { ArmResult } from './report-schema';
@@ -69,7 +69,7 @@ function normPath(p: string): string {
 /** Klauro: analyze once, then correlate each runtime event to its static node. */
 async function klauroCorrelate(dir: string, truth: TelemetryTruth): Promise<{ correct: number; total: number; bytes: number; time_ms: number }> {
   const t0 = Date.now();
-  const cas: any = await createOrchestrator().orchestrateAnalysis(dir);
+  const cas: any = await analyzeForBench(dir);
   let correct = 0;
   const answerLines: string[] = [];
   for (const tc of truth.events) {
@@ -126,7 +126,7 @@ async function klauroCorrelate(dir: string, truth: TelemetryTruth): Promise<{ co
  */
 async function klauroHotpath(dir: string, truth: TelemetryTruth): Promise<{ correct: number; total: number; bytes: number; time_ms: number }> {
   const t0 = Date.now();
-  const cas: any = await createOrchestrator().orchestrateAnalysis(dir);
+  const cas: any = await analyzeForBench(dir);
   const observations = truth.events.map((tc, i) => ({
     id: `obs_${i}`,
     project_path: dir,

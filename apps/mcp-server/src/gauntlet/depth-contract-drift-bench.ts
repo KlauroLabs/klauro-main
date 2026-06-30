@@ -40,7 +40,7 @@
 import { execFileSync } from 'child_process';
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { createOrchestrator } from '../analyzer';
+import { analyzeForBench } from './product-analysis';
 import {
   buildCrossRepoContractDrift,
   type CrossRepoContractDrift,
@@ -156,7 +156,7 @@ async function klauroDrift(dir: string): Promise<{
   const dirs = await repoDirs(dir);
   const repos: Array<{ path: string; name: string; cas: any }> = [];
   for (const name of dirs) {
-    const cas: any = await createOrchestrator().orchestrateAnalysis(path.join(dir, name));
+    const cas: any = await analyzeForBench(path.join(dir, name));
     repos.push({ path: name, name, cas });
   }
   const findings = buildCrossRepoContractDrift(repos);

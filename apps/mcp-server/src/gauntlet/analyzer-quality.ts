@@ -13,7 +13,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs-extra';
-import { createOrchestrator } from '../analyzer';
+import { analyzeForBench } from './product-analysis';
 
 export interface CategoryScore {
   category: string;
@@ -92,7 +92,7 @@ export async function scoreFixture(fixtureDir: string): Promise<QualityReport> {
   // Fresh orchestrator per fixture: the shared singleton leaks state across
   // analyses in one process, which made aggregate scores nondeterministic
   // (e.g. elixir flipping 1.0↔0.92 by run order). Isolation = trustworthy numbers.
-  const cas: any = await createOrchestrator().orchestrateAnalysis(fixtureDir);
+  const cas: any = await analyzeForBench(fixtureDir);
   const nodes: any[] = cas.nodes || [];
   const edges: any[] = cas.edges || [];
 

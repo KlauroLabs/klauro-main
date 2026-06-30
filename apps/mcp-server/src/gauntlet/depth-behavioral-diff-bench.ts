@@ -71,7 +71,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { createOrchestrator } from '../analyzer';
+import { analyzeForBench } from './product-analysis';
 import { diffBehavior } from '../../../../packages/analyzer-core/src/analyzer/core/behavior-diff';
 import { codebaseMemoryPath } from './real-camp-arms';
 import type { CASBehaviorDiff } from '../../../../packages/analyzer-core/src/types/cas.types';
@@ -183,9 +183,8 @@ function klauroKindsFromDiff(diff: CASBehaviorDiff): BehavioralKind[] {
 async function klauroBehavioralDiff(
   caseDir: string,
 ): Promise<{ kinds: BehavioralKind[]; riskFlags: string[]; bytes: number }> {
-  const o = createOrchestrator();
-  const before: any = await o.orchestrateAnalysis(path.join(caseDir, 'before'));
-  const after: any = await o.orchestrateAnalysis(path.join(caseDir, 'after'));
+  const before: any = await analyzeForBench(path.join(caseDir, 'before'));
+  const after: any = await analyzeForBench(path.join(caseDir, 'after'));
   const diff = diffBehavior(before, after);
   const kinds = klauroKindsFromDiff(diff);
 

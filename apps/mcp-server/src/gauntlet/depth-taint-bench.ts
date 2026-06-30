@@ -70,7 +70,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { createOrchestrator } from '../analyzer';
+import { analyzeForBench } from './product-analysis';
 import { getUserJourneys } from '../query';
 import { codebaseMemoryPath } from './real-camp-arms';
 
@@ -167,7 +167,7 @@ function normEntry(j: any): string {
  * a sink-reaching flow where the chain never reaches one.
  */
 async function klauroFlows(dir: string): Promise<{ flows: string[]; bytes: number }> {
-  const cas: any = await createOrchestrator().orchestrateAnalysis(dir);
+  const cas: any = await analyzeForBench(dir);
   // get_user_journeys (list form) confirms the journeys exist + are paginated for
   // an agent; the per-journey `steps` call chain is on the detail view
   // (get_user_journeys {journey_id}) / the raw cas.user_journeys. We read the full

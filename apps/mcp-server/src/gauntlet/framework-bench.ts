@@ -20,7 +20,7 @@
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { createOrchestrator } from '../analyzer';
+import { analyzeForBench } from './product-analysis';
 import { getRouteTable } from '../query';
 import { validateWin } from './win-validator';
 import type { ArmResult, WinVerdict } from './report-schema';
@@ -67,7 +67,7 @@ async function sourceBytes(dir: string): Promise<number> {
 /** Klauro: the framework analyzer yields the route table directly. */
 async function klauroRoutes(dir: string): Promise<{ routes: string[]; bytes: number; time_ms: number }> {
   const t0 = Date.now();
-  const cas: any = await createOrchestrator().orchestrateAnalysis(dir);
+  const cas: any = await analyzeForBench(dir);
   const time_ms = Date.now() - t0;
   const rt: any = getRouteTable(cas, { limit: 500 });
   const routes: string[] = (rt?.routes || []).map((r: any) => `${r.method} ${r.path}`);

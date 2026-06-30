@@ -72,7 +72,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { createOrchestrator } from '../analyzer';
+import { analyzeForBench } from './product-analysis';
 import { codebaseMemoryPath } from './real-camp-arms';
 
 interface DispatchTruth {
@@ -405,7 +405,7 @@ export async function buildDepthDispatchReport(): Promise<DepthDispatchReport> {
     }
     const truthImpls = [...new Set(truth.resolves_to)];
 
-    const cas: any = await createOrchestrator().orchestrateAnalysis(dir);
+    const cas: any = await analyzeForBench(dir);
     const kl = klauroResolve(cas, truth);
     const klauroF1 = f1(kl.impls, truthImpls);
 
