@@ -37,13 +37,6 @@ const AIConfigSchema = z.object({
     maxRetries: z.number().default(3),
   }),
 
-  local: z.object({
-    enabled: z.boolean().default(true),
-    model: z.string().default('onnx-community/Qwen2.5-0.5B-Instruct'),
-    maxTokens: z.number().default(512),
-    temperature: z.number().default(0.3),
-  }),
-
   cache: z.object({
     enabled: z.boolean().default(true),
     ttl: z.number().default(86400), // 24 hours in seconds
@@ -112,7 +105,7 @@ const AIConfigSchema = z.object({
   fallback: z.object({
     enabled: z.boolean().default(true),
     strategy: z.enum(['cascade', 'loadbalance', 'failover']).default('cascade'),
-    providers: z.array(z.enum(['openai', 'claude', 'local', 'fallback'])).default(['openai', 'claude', 'local', 'fallback']),
+    providers: z.array(z.enum(['openai', 'claude', 'fallback'])).default(['openai', 'claude', 'fallback']),
   }),
   
   prompts: z.object({
@@ -125,6 +118,13 @@ const AIConfigSchema = z.object({
 
 export type AIConfig = z.infer<typeof AIConfigSchema>;
 
+export const DEEPINFRA_OPENAI_BASE_URL = 'https://api.deepinfra.com/v1/openai';
+
+// Cheap, valid default for the DeepInfra endpoint the product uses. Replaces stale
+// defaults (Meta-Llama-3.3-70B-Instruct, which DeepInfra 404s) and the gpt-4o-mini
+// fallback that a DeepInfra base URL would otherwise resolve to. ~$0.02–0.05/Mtok.
+export const DEFAULT_DEEPINFRA_MODEL = 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo';
+
 function hasAzureOpenAIConfig(): boolean {
   return Boolean(
     process.env.AZURE_OPENAI_API_KEY &&
@@ -133,20 +133,73 @@ function hasAzureOpenAIConfig(): boolean {
   );
 }
 
+function hasDeepInfraConfig(): boolean {
+  return Boolean(process.env.DEEPINFRA_API_KEY);
+}
+
+function isLoopbackUrl(value?: string): boolean {
+  return Boolean(value && /(?:127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1\])/i.test(value));
+}
+
 function localOpenAIBaseURL(): string | undefined {
-  const explicit = process.env.OPENAI_BASE_URL || process.env.LOCAL_OPENAI_BASE_URL;
-  if (explicit) return explicit;
-  const ollama = process.env.OLLAMA_BASE_URL;
-  if (ollama) return `${ollama.replace(/\/$/, '')}/v1`;
-  if (process.env.KLAURO_OLLAMA_AUTO === 'true' || process.env.KLAURO_OLLAMA_AUTO === '1') return 'http://127.0.0.1:11434/v1';
+  if (hasDeepInfraConfig()) return process.env.DEEPINFRA_BASE_URL || DEEPINFRA_OPENAI_BASE_URL;
+  const explicit = process.env.OPENAI_BASE_URL;
+  if (explicit && !isLoopbackUrl(explicit)) return explicit;
   return undefined;
 }
 
-export function isLocalAIProvider(): boolean {
-  if (process.env.KLAURO_OLLAMA_AUTO === 'true' || process.env.KLAURO_OLLAMA_AUTO === '1') return true;
-  if (process.env.OLLAMA_BASE_URL || process.env.LOCAL_OPENAI_BASE_URL) return true;
-  const baseURL = localOpenAIBaseURL();
-  return Boolean(baseURL && /(?:127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1\])/i.test(baseURL));
+export function describeConfiguredAIProvider(env: NodeJS.ProcessEnv = process.env): {
+  provider: 'deepinfra' | 'azure-openai' | 'openai-compatible' | 'openai' | 'anthropic' | 'fallback';
+  baseURL?: string;
+  model?: string;
+  structuredModel?: string;
+  hosted: boolean;
+} {
+  if (env.DEEPINFRA_API_KEY) {
+    return {
+      provider: 'deepinfra',
+      baseURL: env.DEEPINFRA_BASE_URL || DEEPINFRA_OPENAI_BASE_URL,
+      model: env.DEEPINFRA_MODEL || env.OPENAI_MODEL || DEFAULT_DEEPINFRA_MODEL,
+      structuredModel: env.DEEPINFRA_STRUCTURED_MODEL || env.OPENAI_STRUCTURED_MODEL || DEFAULT_DEEPINFRA_MODEL,
+      hosted: true,
+    };
+  }
+  if (env.AZURE_OPENAI_API_KEY && env.AZURE_OPENAI_ENDPOINT && (env.AZURE_OPENAI_DEPLOYMENT || env.AZURE_OPENAI_MODEL)) {
+    return {
+      provider: 'azure-openai',
+      baseURL: env.AZURE_OPENAI_ENDPOINT,
+      model: env.AZURE_OPENAI_DEPLOYMENT || env.AZURE_OPENAI_MODEL,
+      structuredModel: env.OPENAI_STRUCTURED_MODEL,
+      hosted: true,
+    };
+  }
+  if (env.OPENAI_BASE_URL && !isLoopbackUrl(env.OPENAI_BASE_URL)) {
+    const isDeepInfra = /deepinfra\.com/i.test(env.OPENAI_BASE_URL);
+    return {
+      provider: isDeepInfra ? 'deepinfra' : 'openai-compatible',
+      baseURL: env.OPENAI_BASE_URL,
+      // A DeepInfra base URL must never fall through to gpt-4o-mini (404 there).
+      model: env.OPENAI_MODEL || (isDeepInfra ? DEFAULT_DEEPINFRA_MODEL : undefined),
+      structuredModel: env.OPENAI_STRUCTURED_MODEL || (isDeepInfra ? DEFAULT_DEEPINFRA_MODEL : undefined),
+      hosted: true,
+    };
+  }
+  if (env.OPENAI_API_KEY) {
+    return {
+      provider: 'openai',
+      model: env.OPENAI_MODEL || 'gpt-4o-mini',
+      structuredModel: env.OPENAI_STRUCTURED_MODEL,
+      hosted: true,
+    };
+  }
+  if (env.ANTHROPIC_API_KEY) {
+    return {
+      provider: 'anthropic',
+      model: env.ANTHROPIC_MODEL || 'claude-3-haiku-20240307',
+      hosted: true,
+    };
+  }
+  return { provider: 'fallback', hosted: false };
 }
 
 function defaultRequestTimeoutMs(): string {
@@ -155,7 +208,7 @@ function defaultRequestTimeoutMs(): string {
   // burned its retry budget (3 x 30s) before any result. 90s lets one attempt
   // finish even on a slow shared-inference moment (the catalog race budget is 75s,
   // so this never cuts a call the race would otherwise allow to finish).
-  return isLocalAIProvider() ? '120000' : '90000';
+  return '90000';
 }
 
 export function getAIConfig(): AIConfig {
@@ -163,16 +216,20 @@ export function getAIConfig(): AIConfig {
   const config = {
     openai: {
       apiKey: process.env.OPENAI_API_KEY ||
-        (openAICompatibleBaseURL ? process.env.LOCAL_OPENAI_API_KEY || process.env.OLLAMA_API_KEY || 'local-openai-compatible' : undefined) ||
+        (hasDeepInfraConfig() ? process.env.DEEPINFRA_API_KEY : undefined) ||
         (hasAzureOpenAIConfig() ? process.env.AZURE_OPENAI_API_KEY : undefined),
       organization: process.env.OPENAI_ORGANIZATION,
       baseURL: openAICompatibleBaseURL,
       model: process.env.OPENAI_MODEL ||
-        process.env.LOCAL_OPENAI_MODEL ||
-        process.env.OLLAMA_MODEL ||
+        process.env.DEEPINFRA_MODEL ||
         process.env.AZURE_OPENAI_DEPLOYMENT ||
         process.env.AZURE_OPENAI_MODEL ||
-        (openAICompatibleBaseURL?.includes('127.0.0.1:11434') || openAICompatibleBaseURL?.includes('localhost:11434') ? 'qwen3:8b' : 'gpt-4o-mini'),
+        // When the endpoint is DeepInfra (the product's hosted provider), a cheap
+        // VALID model — never gpt-4o-mini, which 404s there. Only fall back to
+        // gpt-4o-mini for genuine OpenAI.
+        (hasDeepInfraConfig() || (openAICompatibleBaseURL && /deepinfra/i.test(openAICompatibleBaseURL))
+          ? DEFAULT_DEEPINFRA_MODEL
+          : 'gpt-4o-mini'),
       maxTokens: parseInt(process.env.OPENAI_MAX_TOKENS || '2000'),
       // Klauro interprets/extracts from deterministic facts — determinism is
       // always desired. temp 0 dramatically stabilizes structured capability
@@ -206,13 +263,6 @@ export function getAIConfig(): AIConfig {
       endpoint: process.env.HUGGINGFACE_ENDPOINT || 'https://api-inference.huggingface.co',
       timeout: parseInt(process.env.AI_TIMEOUT || '30000'),
       maxRetries: parseInt(process.env.AI_MAX_RETRIES || '3'),
-    },
-
-    local: {
-      enabled: process.env.AI_LOCAL_ENABLED !== 'false',
-      model: process.env.AI_LOCAL_MODEL || 'onnx-community/Qwen2.5-0.5B-Instruct',
-      maxTokens: parseInt(process.env.AI_LOCAL_MAX_TOKENS || '512'),
-      temperature: parseFloat(process.env.AI_LOCAL_TEMPERATURE || '0.3'),
     },
 
     cache: {
@@ -283,7 +333,7 @@ export function getAIConfig(): AIConfig {
     fallback: {
       enabled: process.env.AI_FALLBACK_ENABLED !== 'false',
       strategy: (process.env.AI_FALLBACK_STRATEGY as any) || 'cascade',
-      providers: (process.env.AI_FALLBACK_PROVIDERS?.split(',') as any[]) || ['openai', 'claude', 'local', 'fallback'],
+      providers: (process.env.AI_FALLBACK_PROVIDERS?.split(',') as any[]) || ['openai', 'claude', 'fallback'],
     },
     
     prompts: {
