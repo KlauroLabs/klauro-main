@@ -3,8 +3,39 @@ import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { glob } from 'glob';
 import { getAnalysisEntry, loadIncrementalState } from './storage';
+import { getRepoRevision, compareRevision, type RevisionMatch } from './revision';
 
 export type FreshnessStatus = 'fresh' | 'stale' | 'no-analysis';
+
+export interface RevisionFreshness {
+  match: RevisionMatch;
+  analyzed_commit: string | null;
+  current: { branch: string | null; head_sha: string | null; dirty: boolean } | null;
+  recommendation: string;
+}
+
+/**
+ * Revision-accurate freshness: compares the stored analysis's commit SHA (stamped at
+ * save time) against the current working copy. This is exact where the mtime heuristic
+ * is approximate, and is the basis for never-stale, read-through caching. `behind`
+ * means the cache should fetch the current revision from the VPS. See revision.ts and
+ * docs/KLAURO-PRODUCT-MODEL.md.
+ */
+export function revisionFreshness(projectPath: string, analyzedCommit: string | null | undefined): RevisionFreshness {
+  const current = getRepoRevision(projectPath);
+  const match = compareRevision(analyzedCommit, current);
+  const recommendation =
+    match === 'committed-current' ? 'Cache is the current commit — CAS file/line citations are trustworthy.'
+    : match === 'in-flight' ? 'On the analyzed commit with uncommitted edits — the in-flight/working overlay applies.'
+    : match === 'behind' ? 'HEAD has moved past the analyzed commit — fetch the current revision from Klauro before trusting citations.'
+    : 'Revision identity unavailable (not a git repo or no recorded commit) — falling back to mtime freshness.';
+  return {
+    match,
+    analyzed_commit: analyzedCommit ?? null,
+    current: current ? { branch: current.branch, head_sha: current.head_sha, dirty: current.dirty } : null,
+    recommendation,
+  };
+}
 
 export interface AnalysisFreshnessReport {
   generated_at: string;
