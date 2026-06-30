@@ -49,7 +49,7 @@ async function analyzeForBench(dir: string): Promise<any> {
     execFileSync('git', ['init', '-q'], { cwd: tmp });
     execFileSync('git', ['add', '-A'], { cwd: tmp });
     execFileSync('git', ['-c', 'user.email=bench@klauro', '-c', 'user.name=bench', 'commit', '-qm', 'bench fixture'], { cwd: tmp });
-    const res = await analyzeWithInstalledKlauro(tmp, { mode: 'remote', serverUrl: url, timeoutMs: 8 * 60 * 1000 });
+    const res = await analyzeWithInstalledKlauro(tmp, { serverUrl: url, timeoutMs: 8 * 60 * 1000 });
     return res.output;
   } finally {
     await fs.remove(tmp).catch(() => undefined);

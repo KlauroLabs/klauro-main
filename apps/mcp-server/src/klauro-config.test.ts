@@ -15,7 +15,7 @@ const fixturePath = path.join(repoRoot, 'fixtures', 'analysis-truth', 'fastapi-s
 
 test('upload manifest honors .klaurorc and .klauroignore before remote upload', async () => {
   await withFixtureWorkspace(async workspace => {
-    await writeDefaultKlauroConfig(workspace.repo, { force: true, mode: 'remote', serverUrl: 'https://analyzer.example.test' });
+    await writeDefaultKlauroConfig(workspace.repo, { force: true, serverUrl: 'https://analyzer.example.test' });
     fs.writeFileSync(path.join(workspace.repo, '.env'), 'SECRET=value\n');
     fs.mkdirSync(path.join(workspace.repo, 'private-fixtures'), { recursive: true });
     fs.writeFileSync(path.join(workspace.repo, 'private-fixtures', 'sample.json'), '{"secret":true}\n');
@@ -40,8 +40,6 @@ test('customer CLI init and upload-manifest produce parseable onboarding artifac
       'src/cli.ts',
       'init',
       workspace.repo,
-      '--mode',
-      'remote',
       '--server-url',
       'https://analyzer.example.test',
       '--project-id',
@@ -79,7 +77,7 @@ test('local init with a detected remote submits committed source and suggests pr
   await withFixtureWorkspace(async workspace => {
     spawnSync('git', ['init'], { cwd: workspace.repo, encoding: 'utf8' });
     spawnSync('git', ['remote', 'add', 'origin', 'git@github.com:acme/fastapi-sqlalchemy.git'], { cwd: workspace.repo, encoding: 'utf8' });
-    await writeDefaultKlauroConfig(workspace.repo, { force: true, mode: 'remote' });
+    await writeDefaultKlauroConfig(workspace.repo, { force: true });
 
     const manifest = await buildUploadManifest(workspace.repo);
     assert.equal(manifest.transfer_recommendation?.operation, 'submit_commit_analysis');
@@ -141,12 +139,11 @@ test('shared source snapshot rejects uncommitted git changes', async () => {
   });
 });
 
-test('analyzer defaults to the product (hosted) path — no user-facing local/remote mode', () => {
+test('analyzer is one product (hosted) — no local/remote mode field at all', () => {
   // One product: analysis goes to the hosted service (heavy work + AI on the VPS),
-  // production by default. 'local' in-process is an internal self-host/dev/offline
-  // escape only. See docs/KLAURO-PRODUCT-MODEL.md.
+  // production by default. There is no analyzer.mode. See docs/KLAURO-PRODUCT-MODEL.md.
   const config = defaultKlauroConfig('/tmp/example-project');
-  assert.equal(config.analyzer.mode, 'remote');
+  assert.equal((config.analyzer as Record<string, unknown>).mode, undefined);
   assert.equal(config.analyzer.serverUrl, 'https://mcp.klauro.com');
   assert.deepEqual(Object.keys(config.source).sort(), ['exclude', 'followSymlinks', 'include', 'maxFileBytes', 'roots'].sort());
 });
@@ -157,19 +154,16 @@ test('remote init defaults to Klauro Cloud without requiring --server-url', () =
       'src/cli.ts',
       'init',
       workspace.repo,
-      '--mode',
-      'remote',
       '--json',
     ], { cwd: repoRoot, encoding: 'utf8' });
 
     assert.equal(init.status, 0, init.stderr);
     const initialized = JSON.parse(init.stdout);
-    assert.equal(initialized.config.analyzer.mode, 'remote');
     assert.equal(initialized.config.analyzer.serverUrl, 'https://mcp.klauro.com');
   });
 });
 
-test('remote analyzer policy is enforced even when analyzer mode is local', () => {
+test('remote analyzer policy (allowRemoteAnalyzer / allowedAnalyzerHosts) is enforced', () => {
   const config = defaultKlauroConfig('/tmp/example-project');
   config.policy.allowRemoteAnalyzer = false;
   const loaded: LoadedKlauroConfig = { config, ignorePatterns: [] };

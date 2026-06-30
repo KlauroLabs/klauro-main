@@ -12,13 +12,6 @@ export interface InstalledKlauroRunOptions {
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   serverUrl?: string;
-  /**
-   * Force the installed CLI's analyzer mode. `remote` exercises the real hosted
-   * product path (deep analysis on the server); `local` exercises the offline
-   * path. When unset the CLI uses its own configured default. The gauntlet sets
-   * this to `remote` so "test the product" actually hits the deployed service.
-   */
-  mode?: 'remote' | 'local';
 }
 
 export function resolveInstalledKlauroCommand(): InstalledKlauroCommand {
@@ -62,7 +55,6 @@ export async function analyzeWithInstalledKlauro(
     '--json',
     '--quiet',
   ];
-  if (options.mode) args.push('--mode', options.mode);
   if (options.serverUrl) args.push('--server-url', options.serverUrl);
   if (options.forceFull) args.push('--force');
   if (options.analysisFocus) args.push('--analysis-focus', options.analysisFocus);

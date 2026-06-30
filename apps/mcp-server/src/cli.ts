@@ -41,7 +41,6 @@ interface ParsedArgs {
   serverUrl?: string;
   analysisId?: string;
   force: boolean;
-  mode?: 'local' | 'remote';
   dirtyTree: boolean;
   analysisFocus?: AnalysisFocus;
   projectId?: string;
@@ -182,7 +181,6 @@ async function main(): Promise<void> {
     const initOptions = await resolveInitOptions(projectPath, args);
     const result = await writeDefaultKlauroConfig(projectPath, {
       force: args.force,
-      mode: initOptions.mode,
       serverUrl: initOptions.serverUrl,
       projectId: initOptions.projectId,
       workspaceId: initOptions.workspaceId,
@@ -238,35 +236,15 @@ async function main(): Promise<void> {
   }
 
   if (args.command === 'analyze') {
-    const loaded = await loadKlauroConfig(projectPath);
-    const analyzerMode = args.mode || loaded.config.analyzer.mode;
-    if (analyzerMode === 'remote') {
-      const result = await withLogHandling(args.json, args.quiet, () => analyzeCodebaseRemotely({
-        projectPath,
-        serverUrl: args.serverUrl,
-        analysisId: args.analysisId,
-      }));
-      process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatRemoteResult(result));
-    } else {
-      await requireConnectorEntitlement({ serverUrl: args.serverUrl || loaded.config.analyzer.serverUrl });
-      const analysisFocus = args.analysisFocus || 'agent-fast';
-      const result = await withAnalysisFocus(analysisFocus, async () => {
-        if (args.force) {
-          const output = await withLogHandling(args.json, args.quiet, () => analyzeProject(projectPath));
-          return {
-            output,
-            state: undefined,
-            changeReport: undefined,
-            wasFullRebuild: true,
-            fullRebuildReason: 'forced-by-cli',
-          } as unknown as Awaited<ReturnType<typeof analyzeProjectIncremental>>;
-        }
-        return withLogHandling(args.json, args.quiet, () => analyzeProjectIncremental(projectPath));
-      });
-      process.stdout.write(args.json
-        ? `${JSON.stringify({ ...result, analysis_focus: analysisFocus }, null, 2)}\n`
-        : formatLocalAnalyzeResult(result, analysisFocus));
-    }
+    // One product: analysis always goes to the hosted service (heavy work + AI on the
+    // VPS), production by default. No local/remote mode. serverUrl can point at a
+    // self-hosted analyzer-server for dev. See docs/KLAURO-PRODUCT-MODEL.md.
+    const result = await withLogHandling(args.json, args.quiet, () => analyzeCodebaseRemotely({
+      projectPath,
+      serverUrl: args.serverUrl,
+      analysisId: args.analysisId,
+    }));
+    process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatRemoteResult(result));
     return;
   }
 
@@ -541,7 +519,6 @@ async function runLoginCommand(args: ParsedArgs): Promise<void> {
 }
 
 async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promise<{
-  mode?: 'local' | 'remote';
   serverUrl?: string;
   projectId?: string;
   workspaceId?: string;
@@ -551,7 +528,6 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
 }> {
   if (args.json || !process.stdin.isTTY || args.projectId || args.organizationId) {
     return {
-      mode: args.mode,
       serverUrl: args.serverUrl,
       projectId: args.projectId,
       workspaceId: args.organizationId,
@@ -584,13 +560,12 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
   if (!token) {
     process.stdout.write('Not signed in. Writing local config only; run `klauro login` to link/create hosted workspaces and projects.\n');
     const name = await promptLine(`Name [${path.basename(projectPath)}]: `) || path.basename(projectPath);
-    return { mode: args.mode || 'remote', serverUrl, kind, projectName: name, projectId: undefined, organizationId: undefined, workspaceId: undefined };
+    return { serverUrl, kind, projectName: name, projectId: undefined, organizationId: undefined, workspaceId: undefined };
   }
 
   if (kind === 'workspace') {
     const workspace = await selectOrCreateWorkspace(serverUrl, token, path.basename(projectPath));
     return {
-      mode: args.mode || 'remote',
       serverUrl,
       kind: 'workspace',
       projectName: workspace.name,
@@ -627,7 +602,6 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
   }
 
   return {
-    mode: args.mode || 'remote',
     serverUrl,
     kind: 'project',
     projectName: project.name,
@@ -787,7 +761,6 @@ function parseArgs(argv: string[]): ParsedArgs {
     serverUrl: undefined,
     analysisId: undefined,
     force: false,
-    mode: undefined,
     dirtyTree: false,
     analysisFocus: undefined,
     projectId: undefined,
@@ -870,8 +843,6 @@ function parseArgs(argv: string[]): ParsedArgs {
       const value = argv[++i] as WorkspaceDetailLevel;
       if (!['overview', 'connections', 'evidence', 'full'].includes(value)) throw new Error('--detail-level must be overview, connections, evidence, or full');
       parsed.detailLevel = value;
-    } else if (arg === '--mode') {
-      parsed.mode = argv[++i] as 'local' | 'remote';
     } else if (arg === '--analysis-focus') {
       parsed.analysisFocus = argv[++i] as ParsedArgs['analysisFocus'];
     } else if (arg === '--force') {
@@ -1006,7 +977,6 @@ function formatInitResult(result: Awaited<ReturnType<typeof writeDefaultKlauroCo
     'Initialized Klauro project config',
     `Config: ${result.configPath}`,
     `Ignore: ${result.ignorePath}`,
-    `Analyzer mode: ${result.config.analyzer.mode}`,
     `Analyzer URL: ${result.config.analyzer.serverUrl || 'not set'}`,
     '',
     'Next:',

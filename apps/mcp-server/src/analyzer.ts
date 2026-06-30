@@ -481,7 +481,6 @@ async function buildEmbeddingPhaseConfig(projectPath: string): Promise<Embedding
       embedding.store,
       embedding.databaseUrlEnv,
       embedding.dimensions,
-      loaded.config.analyzer.mode,
     );
 
     return {
@@ -502,7 +501,6 @@ function buildVectorStore(
   setting: 'auto' | 'file' | 'pgvector',
   databaseUrlEnv: string,
   dimensions: number,
-  analyzerMode: 'local' | 'remote',
 ): VectorStore {
   const fileBaseDir = getProjectStorageDir(projectPath);
   const fileStore = (): VectorStore =>
@@ -510,7 +508,9 @@ function buildVectorStore(
 
   let resolved: VectorStoreSetting;
   if (setting === 'auto') {
-    resolved = analyzerMode === 'remote' ? 'pgvector' : 'file';
+    // Availability decision, not a "mode": use pgvector when a database is actually
+    // configured (the hosted server), otherwise the file store.
+    resolved = process.env[databaseUrlEnv] ? 'pgvector' : 'file';
   } else {
     resolved = setting;
   }

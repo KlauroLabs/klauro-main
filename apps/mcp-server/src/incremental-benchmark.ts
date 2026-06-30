@@ -440,14 +440,13 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
       const analysisPath = options.analysisPath || 'in-process-harness';
       const analysisFocus = 'agent-fast';
       const installedEnv = { KLAURO_STORAGE_PATH: storagePath };
-      // Remote against the hosted server when a URL is supplied (production by
-      // default in the machine gauntlet); offline local otherwise.
-      const productMode: 'remote' | 'local' | undefined = options.analyzerServerUrl ? 'remote' : undefined;
+      // klauro-product = the installed CLI, which always runs the hosted product
+      // (production by default; serverUrl can target a self-hosted analyzer-server).
       const analyzeIncremental = () => analysisPath === 'klauro-product'
-        ? analyzeWithInstalledKlauro(workspace, { env: installedEnv, analysisFocus, mode: productMode, serverUrl: options.analyzerServerUrl, timeoutMs: 8 * 60 * 1000 })
+        ? analyzeWithInstalledKlauro(workspace, { env: installedEnv, analysisFocus, serverUrl: options.analyzerServerUrl, timeoutMs: 8 * 60 * 1000 })
         : analyzeProjectIncremental(workspace);
       const analyzeFull = () => analysisPath === 'klauro-product'
-        ? analyzeWithInstalledKlauro(workspace, { env: installedEnv, analysisFocus, mode: productMode, serverUrl: options.analyzerServerUrl, forceFull: true, timeoutMs: 8 * 60 * 1000 }).then(result => result.output)
+        ? analyzeWithInstalledKlauro(workspace, { env: installedEnv, analysisFocus, serverUrl: options.analyzerServerUrl, forceFull: true, timeoutMs: 8 * 60 * 1000 }).then(result => result.output)
         : analyzeProject(workspace);
 
       const initial = await timed(() => analyzeIncremental());

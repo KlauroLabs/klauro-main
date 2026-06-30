@@ -60,7 +60,7 @@ async function main(): Promise<void> {
       assertOutput(result, /Klauro install: OK/);
       assertOutput(result, /First value summary:/);
       assertOutput(result, /Graph: \d+ nodes, \d+ edges/);
-      return 'installer built the bundle, skipped external registration, analyzed the repo, and produced an agent packet summary';
+      return 'installer built the bundle, skipped external registration, analyzed the repo, and produced an agent context summary';
     }));
 
     const cliPath = path.join(packageRoot, 'dist', 'cli.cjs');
@@ -82,15 +82,13 @@ async function main(): Promise<void> {
           cliPath,
           'init',
           repo,
-          '--mode',
-          'remote',
           '--server-url',
           serverUrl,
           '--force',
           '--json',
         ], env);
         const payload = parseJson(result.stdout);
-        if (payload.config?.analyzer?.mode !== 'remote') throw new Error('Expected .klaurorc analyzer.mode=remote');
+        if (!payload.config?.analyzer?.serverUrl) throw new Error('Expected .klaurorc analyzer.serverUrl to be set');
         return `.klaurorc points at ${payload.config.analyzer.serverUrl}`;
       }));
 

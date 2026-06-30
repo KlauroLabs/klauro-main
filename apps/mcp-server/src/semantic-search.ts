@@ -123,7 +123,6 @@ export async function semanticSearch(
     config.embedding.store,
     config.embedding.databaseUrlEnv,
     config.embedding.dimensions,
-    config.analyzer.mode,
   );
   if (!store) {
     return degraded('Vector store could not be resolved');
@@ -424,11 +423,11 @@ function resolveVectorStore(
   setting: 'auto' | 'file' | 'pgvector',
   databaseUrlEnv: string,
   dimensions: number,
-  analyzerMode: 'local' | 'remote',
 ): VectorStore | null {
   let resolved: 'file' | 'pgvector';
   if (setting === 'auto') {
-    resolved = analyzerMode === 'remote' ? 'pgvector' : 'file';
+    // Availability decision, not a "mode": pgvector when a database is configured.
+    resolved = process.env[databaseUrlEnv] ? 'pgvector' : 'file';
   } else {
     resolved = setting;
   }

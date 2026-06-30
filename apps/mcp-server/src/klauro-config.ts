@@ -12,7 +12,9 @@ export interface KlauroConfig {
     organizationId?: string;
   };
   analyzer: {
-    mode: 'local' | 'remote';
+    // No "mode": Klauro is one product. Analysis goes to the hosted service
+    // (serverUrl, production by default). selfHosted only swaps the server URL for
+    // a local/self-hosted analyzer-server; it is not a local-vs-remote toggle.
     serverUrl?: string;
     selfHosted?: boolean;
   };
@@ -82,11 +84,8 @@ export function defaultKlauroConfig(projectPath: string): KlauroConfig {
       name: path.basename(path.resolve(projectPath)),
     },
     analyzer: {
-      // One product path: analysis goes to the hosted service (heavy work + AI on
-      // the VPS), production by default. There is no user-facing local/remote mode;
-      // this field is internal. 'local' (in-process) survives only as a self-hosted/
-      // dev/offline escape, never a customer choice. See docs/KLAURO-PRODUCT-MODEL.md.
-      mode: 'remote',
+      // One product: analysis goes to the hosted service (heavy work + AI on the VPS),
+      // production by default. No local/remote mode exists. See docs/KLAURO-PRODUCT-MODEL.md.
       serverUrl: process.env.KLAURO_ANALYZER_URL || DEFAULT_KLAURO_CLOUD_URL,
       selfHosted: false,
     },
@@ -156,7 +155,6 @@ export async function loadKlauroConfig(projectPath: string): Promise<LoadedKlaur
 
 export async function writeDefaultKlauroConfig(projectPath: string, options: {
   force?: boolean;
-  mode?: 'local' | 'remote';
   serverUrl?: string;
   projectId?: string;
   workspaceId?: string;
@@ -170,7 +168,6 @@ export async function writeDefaultKlauroConfig(projectPath: string, options: {
   const config = defaultKlauroConfig(root);
   config.kind = options.kind || config.kind;
   config.project.name = options.projectName || config.project.name;
-  config.analyzer.mode = options.mode || config.analyzer.mode;
   config.analyzer.serverUrl = options.serverUrl || config.analyzer.serverUrl;
   config.project.id = options.projectId || config.project.id;
   config.project.workspaceId = options.workspaceId || config.project.workspaceId;

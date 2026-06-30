@@ -236,9 +236,8 @@ export async function runMachineAgentProof(options: ParsedArgs) {
       const cas = options.analysisPath === 'klauro-product'
         ? (await analyzeWithInstalledKlauro(repo.path, {
           analysisFocus,
-          // Production hosted service by default (real customer path); offline
-          // local only when --local-analyzer is set.
-          mode: options.analyzerServerUrl ? 'remote' : 'local',
+          // The installed CLI always runs the hosted product. serverUrl targets the
+          // production service by default (or a self-hosted analyzer-server).
           serverUrl: options.analyzerServerUrl,
           env: { KLAURO_STORAGE_PATH: klauroProductStoragePath },
           timeoutMs: options.analysisBudgetMs ? Math.max(options.analysisBudgetMs * 2, 8 * 60 * 1000) : 8 * 60 * 1000,

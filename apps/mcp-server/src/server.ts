@@ -6,7 +6,7 @@ import { installGauntletWatcher, listGauntletWatchers, stopGauntletWatcher } fro
 import { runIncrementalGauntlet, listIncrementalRecords } from './gauntlet/incremental-gauntlet';
 import { appendFileSync } from 'fs';
 import * as nodePath from 'path';
-import { getAnalysis, runAnalysis } from './analyzer';
+import { analyzeProjectIncremental, getAnalysis, runAnalysis } from './analyzer';
 import { getAnalysisEntry, getStorageHealth, listAgenticBenchmarkReports, listAnalyses, listCrossCodebaseSystemGraphs, listWorkspaceGraphs, loadAgenticBenchmarkReport, loadCrossCodebaseSystemGraph, loadGoldenSnapshot, loadLatestAgenticBenchmarkReportByType, loadRuntimeObservations, loadWorkspaceGraph, saveAgenticBenchmarkReport, saveCrossCodebaseSystemGraph, saveGoldenSnapshot, saveRuntimeObservation, saveWorkspaceGraph } from './storage';
 import * as query from './query';
 import * as adrStore from './adr-store';
@@ -37,6 +37,7 @@ import { buildAgentPerformanceProof, formatStoredBenchmarkReport } from './agent
 import { formatIdiomBenchmarkMarkdown, runAgentIdiomBenchmark } from './agent-idiom-benchmark';
 import { runMachineAgentProof } from './machine-gauntlet';
 import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
+import { getAgentRevisionTracks } from './agent-revision-tracks';
 import { buildUploadManifest } from './remote-source';
 import { loadKlauroConfig, writeDefaultKlauroConfig } from './klauro-config';
 import { buildGithubImportPlan } from './github-import';
@@ -68,6 +69,18 @@ Cross-repo work (ui -> api -> worker is one product): run_workspace_analysis, th
 
 Trust, then verify: every result is stamped to a commit/branch. If get_file_nodes returns nothing for a file you can see on disk, it is likely on an unmerged branch — re-analyze or read that one file. On any tool error, fall back to reading. Don't lean on a single tool; no one view is the whole picture.`;
 
+async function getFreshAnalysisForAgent(projectPath: string) {
+  try {
+    const cas = await getAnalysis(projectPath);
+    const summary = freshness.summarizeAnalysisFreshness(projectPath, cas.analysis_timestamp);
+    if (!summary || summary.staleness === 'fresh') return cas;
+  } catch {
+    // Missing analysis falls through to the same incremental path as stale analysis.
+  }
+
+  return (await analyzeProjectIncremental(projectPath)).output;
+}
+
 export type ToolProfile = 'core' | 'core-no-pillars' | 'full';
 
 export function resolveToolProfile(): ToolProfile {
@@ -98,7 +111,7 @@ export const CORE_TOOL_NAMES = [
   'resolve_agent_analysis',
   'get_agent_start_context',
   'get_agent_tool_plan',
-  'get_agent_work_packet',
+  'get_agent_context',
   'search_nodes',
   'get_coding_context',
   'assess_change_risk',
@@ -189,8 +202,8 @@ function enforceResponseBudget(
 }
 
 const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
-  { label: 'Analysis management', tools: ['analyze_codebase', 'get_analysis_focus_profiles', 'get_description_enrichment_targets', 'generate_element_description', 'get_element_description', 'get_analysis_phases', 'run_analysis_layer', 'initialize_klauro_project', 'get_klauro_project_config', 'get_upload_manifest', 'get_github_import_plan', 'analyze_codebase_remote', 'sync_codebase_remote', 'list_analyses', 'validate_cas_contract', 'get_storage_health', 'get_storage_maintenance_report', 'prune_storage_artifacts', 'preview_codebase_iteration', 'get_greenfield_architecture_guidance', 'get_greenfield_build_packet', 'preview_greenfield_codebase', 'get_preview_analysis', 'compare_analysis_iterations', 'get_analysis_freshness', 'get_test_discovery_evidence', 'save_cas_golden_snapshot', 'compare_cas_golden_snapshot'] },
-  { label: 'System understanding and agent workflow', tools: ['get_summary', 'get_system_overview', 'get_architecture_context', 'list_answer_packs', 'get_mcp_demo_flow', 'get_cross_repo_links', 'run_workspace_analysis', 'resolve_workspace_analysis', 'get_workspace_summary', 'get_workspace_analysis', 'get_workspace_agent_packet', 'get_workspace_freshness', 'validate_was_contract', 'get_workspace_health', 'get_workspace_risk_packet', 'get_workspace_capability_map', 'get_workspace_entity_map', 'get_workspace_workflow', 'list_workspace_analyses', 'run_cross_codebase_analysis', 'get_cross_codebase_analysis', 'list_cross_codebase_analyses', 'save_workspace_graph', 'get_workspace_graph', 'list_workspace_graphs', 'verify_workspace_link', 'get_agent_bootstrap', 'get_agent_project_map', 'get_agent_doctor', 'get_agent_default_config', 'install_agent_default_config', 'get_capability_memory', 'get_idiom_aware_work_packet', 'open_agent_workbench', 'preflight_agent_change', 'get_codebase_agent_rules', 'explain_change_shape', 'evaluate_analysis_truth', 'get_semantic_map', 'get_framework_depth_report', 'get_integration_depth_report', 'get_cross_repo_contracts', 'get_runtime_instrumentation_plan', 'get_runtime_event_contract', 'get_runtime_sdk_package', 'evaluate_agent_task_proof', 'evaluate_agent_readiness', 'run_agentic_benchmark', 'get_agentic_benchmark_report', 'get_agent_performance_proof', 'run_agent_quality_benchmark', 'run_agent_idiom_benchmark', 'run_machine_agent_proof', 'run_incremental_value_benchmark', 'get_patterns', 'get_codebase_idioms', 'get_idiom_examples', 'validate_codebase_idioms', 'get_pattern_instances', 'get_perspectives'] },
+  { label: 'Analysis management', tools: ['analyze_codebase', 'get_analysis_focus_profiles', 'get_description_enrichment_targets', 'generate_element_description', 'get_element_description', 'get_analysis_phases', 'run_analysis_layer', 'initialize_klauro_project', 'get_klauro_project_config', 'get_upload_manifest', 'get_agent_revision_tracks', 'get_github_import_plan', 'analyze_codebase_remote', 'sync_codebase_remote', 'list_analyses', 'validate_cas_contract', 'get_storage_health', 'get_storage_maintenance_report', 'prune_storage_artifacts', 'preview_codebase_iteration', 'get_greenfield_architecture_guidance', 'get_greenfield_build_context', 'preview_greenfield_codebase', 'get_preview_analysis', 'compare_analysis_iterations', 'get_analysis_freshness', 'get_test_discovery_evidence', 'save_cas_golden_snapshot', 'compare_cas_golden_snapshot'] },
+  { label: 'System understanding and agent workflow', tools: ['get_summary', 'get_system_overview', 'get_architecture_context', 'list_answer_packs', 'get_mcp_demo_flow', 'get_cross_repo_links', 'run_workspace_analysis', 'resolve_workspace_analysis', 'get_workspace_summary', 'get_workspace_analysis', 'get_workspace_agent_context', 'get_workspace_freshness', 'validate_was_contract', 'get_workspace_health', 'get_workspace_risk_context', 'get_workspace_capability_map', 'get_workspace_entity_map', 'get_workspace_workflow', 'list_workspace_analyses', 'run_cross_codebase_analysis', 'get_cross_codebase_analysis', 'list_cross_codebase_analyses', 'save_workspace_graph', 'get_workspace_graph', 'list_workspace_graphs', 'verify_workspace_link', 'get_agent_bootstrap', 'get_agent_context', 'get_agent_project_map', 'get_agent_doctor', 'get_agent_default_config', 'install_agent_default_config', 'get_capability_memory', 'get_idiom_aware_agent_context', 'open_agent_workbench', 'preflight_agent_change', 'get_codebase_agent_rules', 'explain_change_shape', 'evaluate_analysis_truth', 'get_semantic_map', 'get_framework_depth_report', 'get_integration_depth_report', 'get_cross_repo_contracts', 'get_runtime_instrumentation_plan', 'get_runtime_event_contract', 'get_runtime_sdk_package', 'evaluate_agent_task_proof', 'evaluate_agent_readiness', 'run_agentic_benchmark', 'get_agentic_benchmark_report', 'get_agent_performance_proof', 'run_agent_quality_benchmark', 'run_agent_idiom_benchmark', 'run_machine_agent_proof', 'run_incremental_value_benchmark', 'get_patterns', 'get_codebase_idioms', 'get_idiom_examples', 'validate_codebase_idioms', 'get_pattern_instances', 'get_perspectives'] },
   { label: 'Navigation and search', tools: ['semantic_search', 'get_embedding_status', 'get_node', 'get_file_nodes', 'get_level'] },
   { label: 'Entry points, routes, and call graph', tools: ['get_entry_points', 'get_exit_points', 'get_route_table', 'get_external_services', 'get_callers', 'get_callees', 'get_call_chain', 'get_method_calls'] },
   { label: 'Component hierarchy', tools: ['get_component_parents', 'get_component_children', 'get_component_metrics', 'get_shared_components'] },
@@ -492,13 +505,15 @@ function registerTools(server: McpServer) {
         analysis_focus: z.enum(['agent-fast', 'ui-overview', 'deep-context', 'full']).optional().describe('Optional layered analysis profile. agent-fast prioritizes MCP context speed, ui-overview prioritizes AI narrative and visualization, deep-context enables deeper semantic layers, full uses default configured behavior.'),
       } as any,
     } as any,
-    async ({ path, force_full, analysis_focus }: any) => withErrorHandling(async () => withAnalysisFocus(analysis_focus, async () => {
+    async ({ path, force_full, analysis_focus }: any) => withErrorHandling(async () => {
+      const focus: AnalysisFocus = analysis_focus || 'agent-fast';
+      return withAnalysisFocus(focus, async () => {
       const previousEntry = await getAnalysisEntry(path);
       const summary = await runAnalysis(path, { forceFull: Boolean(force_full) });
       return json({
         status: 'success',
         analysis_type: summary.analysisType,
-        analysis_focus: analysis_focus || 'full',
+        analysis_focus: focus,
         path,
         name: summary.name,
         nodes: summary.nodes,
@@ -514,7 +529,8 @@ function registerTools(server: McpServer) {
         ),
         change_summary: summary.changeSummary,
       });
-    }))
+      });
+    })
   );
 
   server.registerTool(
@@ -702,9 +718,8 @@ function registerTools(server: McpServer) {
         force: z.boolean().optional().describe('Overwrite existing .klaurorc and .klauroignore'),
       } as any,
     } as any,
-    async ({ path, mode, server_url, project_id, organization_id, force }: any) => withErrorHandling(async () => {
+    async ({ path, server_url, project_id, organization_id, force }: any) => withErrorHandling(async () => {
       const result = await writeDefaultKlauroConfig(path, {
-        mode,
         serverUrl: server_url,
         projectId: project_id,
         organizationId: organization_id,
@@ -714,7 +729,6 @@ function registerTools(server: McpServer) {
         status: 'success',
         config_file: result.configPath,
         ignore_file: result.ignorePath,
-        analyzer_mode: result.config.analyzer.mode,
         analyzer_url: result.config.analyzer.serverUrl,
         project_id: result.config.project.id,
         organization_id: result.config.project.organizationId,
@@ -759,10 +773,26 @@ function registerTools(server: McpServer) {
   );
 
   server.registerTool(
+    'get_agent_revision_tracks',
+    {
+      title: 'Get Agent Revision Tracks',
+      description: 'Return the three-track agent state for a local repo: private uncommitted working-copy context, shared committed analyzed revision, and incoming analyzed commits from other developers/provider pushes.',
+      inputSchema: {
+        path: z.string().describe('Absolute path to the project directory'),
+        server_url: z.string().optional().describe('Klauro API/analyzer URL. Defaults to KLAURO_API_URL/KLAURO_ANALYZER_URL or Klauro Cloud.'),
+        analysis_id: z.string().optional().describe('Stable project analysis id. Defaults to configured project id or a hash of the local project path.'),
+      } as any,
+    } as any,
+    async ({ path, server_url, analysis_id }: any) => withErrorHandling(async () => {
+      return json(await getAgentRevisionTracks({ projectPath: path, serverUrl: server_url, analysisId: analysis_id }));
+    })
+  );
+
+  server.registerTool(
     'get_github_import_plan',
     {
       title: 'Get GitHub Import Plan',
-      description: 'Describe the GitHub App permissions, webhooks, and local-agent handoff needed for hosted main-branch analysis.',
+      description: 'Describe the GitHub App permissions, webhooks, and local-agent handoff needed for hosted selected-branch analysis.',
       inputSchema: {
         path: z.string().describe('Absolute path to the project directory'),
       } as any,
@@ -780,7 +810,7 @@ function registerTools(server: McpServer) {
       description: 'Upload a filtered local source snapshot to a remote Klauro analyzer service, then cache the returned CAS locally for fast MCP queries.',
       inputSchema: {
         path: z.string().describe('Absolute path to the project directory'),
-        server_url: z.string().optional().describe('Remote analyzer URL. Defaults to KLAURO_ANALYZER_URL or http://127.0.0.1:8787'),
+        server_url: z.string().optional().describe('Remote analyzer URL. Defaults to KLAURO_ANALYZER_URL or Klauro Cloud.'),
         analysis_id: z.string().optional().describe('Stable remote analysis id. Defaults to a hash of the local project path'),
       } as any,
     } as any,
@@ -809,7 +839,7 @@ function registerTools(server: McpServer) {
       description: 'Send dirty-tree file changes to a remote Klauro analyzer service and cache the updated CAS locally. Use after local agent edits when analyzers are hosted.',
       inputSchema: {
         path: z.string().describe('Absolute path to the project directory'),
-        server_url: z.string().optional().describe('Remote analyzer URL. Defaults to KLAURO_ANALYZER_URL or http://127.0.0.1:8787'),
+        server_url: z.string().optional().describe('Remote analyzer URL. Defaults to KLAURO_ANALYZER_URL or Klauro Cloud.'),
         analysis_id: z.string().optional().describe('Stable remote analysis id. Defaults to a hash of the local project path'),
       } as any,
     } as any,
@@ -1033,9 +1063,9 @@ function registerTools(server: McpServer) {
   );
 
   server.registerTool(
-    'get_greenfield_build_packet',
+    'get_greenfield_build_context',
     {
-      title: 'Get Greenfield Build Packet',
+      title: 'Get Greenfield Build Context',
       description: 'Guide a zero-repo or growing greenfield build. For an empty folder it returns first-slice architecture guidance; after files exist it analyzes the folder and returns CAS-backed memory, duplicate-prevention rules, focused files to read, next-slice validation steps, and a compact G1 build capsule for low-token agent prompts.',
       inputSchema: {
         workspace_path: z.string().describe('Absolute path to the empty or growing project folder'),
@@ -1051,7 +1081,7 @@ function registerTools(server: McpServer) {
     } as any,
     async ({ workspace_path, plan_text, proposed_files, reference_paths, limit }: any) => withErrorHandling(async () => {
       const references = await loadRepositoryAnalyses(reference_paths);
-      return json(await greenfieldBuildSession.buildGreenfieldBuildPacket({
+      return json(await greenfieldBuildSession.buildGreenfieldBuildContext({
         workspacePath: workspace_path,
         planText: plan_text,
         proposedFiles: proposed_files,
@@ -1345,7 +1375,7 @@ function registerTools(server: McpServer) {
         skipped_inputs: skippedInputs,
         next_mcp_calls: [
           { tool: 'get_workspace_analysis', args: { analysis_id_or_name: saved.id, detail_level: 'overview' } },
-          { tool: 'get_workspace_agent_packet', args: { analysis_id_or_name: saved.id, task: { task_type: 'cross-repo' } } },
+          { tool: 'get_workspace_agent_context', args: { analysis_id_or_name: saved.id, task: { task_type: 'cross-repo' } } },
           { tool: 'get_workspace_analysis', args: { analysis_id_or_name: saved.id, detail_level: 'evidence' } },
         ],
       });
@@ -1378,7 +1408,7 @@ function registerTools(server: McpServer) {
         },
         alternatives: result.alternatives,
         next_mcp_calls: [
-          { tool: 'get_workspace_agent_packet', args: { analysis_id_or_name: result.selected.id, task: { task_type: 'cross-repo' } } },
+          { tool: 'get_workspace_agent_context', args: { analysis_id_or_name: result.selected.id, task: { task_type: 'cross-repo' } } },
           { tool: 'get_workspace_analysis', args: { analysis_id_or_name: result.selected.id, detail_level: 'overview' } },
         ],
       });
@@ -1404,6 +1434,9 @@ function registerTools(server: McpServer) {
         generated_at: graph.generated_at,
         narrative: {
           source: graph.workspace_narrative.source,
+          ai_provider: graph.workspace_narrative.ai_provider || graph.ai_enrichment?.provider,
+          ai_model: graph.workspace_narrative.ai_model || graph.ai_enrichment?.model,
+          ai_structured_model: graph.workspace_narrative.ai_structured_model || graph.ai_enrichment?.structured_model,
           confidence: graph.workspace_narrative.confidence,
           title: graph.workspace_narrative.title,
           product_value_summary: graph.workspace_narrative.product_value_summary,
@@ -1479,10 +1512,10 @@ function registerTools(server: McpServer) {
   );
 
   server.registerTool(
-    'get_workspace_agent_packet',
+    'get_workspace_agent_context',
     {
-      title: 'Get Workspace Agent Packet',
-      description: 'Load a compact WAS-backed packet for cross-repo agent work. Use before broad multi-repo exploration: selected surfaces with deployable flags, source-backed runtime links, package/topology/inferred candidates, isolated surfaces, token budget, agent read-next guidance, and follow-up MCP calls.',
+      title: 'Get Workspace Agent Context',
+      description: 'Load a compact WAS-backed context for cross-repo agent work. Use before broad multi-repo exploration: selected surfaces with deployable flags, source-backed runtime links, package/topology/inferred candidates, isolated surfaces, token budget, agent read-next guidance, and follow-up MCP calls.',
       inputSchema: {
         analysis_id_or_name: z.string().describe('Workspace analysis id or name'),
         task: z.object({
@@ -1498,7 +1531,7 @@ function registerTools(server: McpServer) {
     async ({ analysis_id_or_name, task }: any) => withErrorHandling(async () => {
       const graph = await loadCrossCodebaseSystemGraph(analysis_id_or_name);
       if (!graph) return json({ error: `Workspace analysis not found: ${analysis_id_or_name}` });
-      return json(crossCodebaseAnalysis.buildWorkspaceAgentPacket(graph, task || {}));
+      return json(crossCodebaseAnalysis.buildWorkspaceAgentContext(graph, task || {}));
     })
   );
 
@@ -1552,9 +1585,9 @@ function registerTools(server: McpServer) {
   );
 
   server.registerTool(
-    'get_workspace_risk_packet',
+    'get_workspace_risk_context',
     {
-      title: 'Get Workspace Risk Packet',
+      title: 'Get Workspace Risk Context',
       description: 'Return WAS risk areas filtered by project, deployable, interface, severity, or target text, with MCP follow-up calls.',
       inputSchema: {
         analysis_id_or_name: z.string().describe('Workspace analysis id or name'),
@@ -1781,7 +1814,7 @@ function registerTools(server: McpServer) {
         workflow,
         deployables: apps,
         interfaces: (graph.interfaces || []).filter((item: any) => workflow.interface_ids?.includes(item.id)),
-        next_mcp_calls: apps.map((app: any) => ({ tool: 'get_agent_work_packet', args: { path: app.codebase_path, workspace_analysis_id: graph.id, task: { task_type: 'trace', target: workflow.name } } })),
+        next_mcp_calls: apps.map((app: any) => ({ tool: 'get_agent_context', args: { path: app.codebase_path, workspace_analysis_id: graph.id, task: { task_type: 'trace', target: workflow.name } } })),
       });
     })
   );
@@ -1838,7 +1871,7 @@ function registerTools(server: McpServer) {
         skipped_inputs: skippedInputs,
         next_mcp_calls: [
           { tool: 'get_workspace_analysis', args: { analysis_id_or_name: saved.id, detail_level: 'overview' } },
-          { tool: 'get_workspace_agent_packet', args: { analysis_id_or_name: saved.id, task: { task_type: 'cross-repo' } } },
+          { tool: 'get_workspace_agent_context', args: { analysis_id_or_name: saved.id, task: { task_type: 'cross-repo' } } },
           { tool: 'get_workspace_analysis', args: { analysis_id_or_name: saved.id, detail_level: 'evidence' } },
         ],
       });
@@ -1948,7 +1981,7 @@ function registerTools(server: McpServer) {
     'get_agent_bootstrap',
     {
       title: 'Get Agent Bootstrap',
-      description: 'Single default agent-start payload. Returns readiness, start context, tool plan, work packet, and a ready-to-use prompt for Codex, Claude, Cursor, or any coding agent.',
+      description: 'Single default agent-start payload. Returns readiness, start context, tool plan, agent context, and a ready-to-use prompt for Codex, Claude, Cursor, or any coding agent.',
       inputSchema: {
         path: z.string().describe('Project path'),
         workspace_analysis_id: z.string().optional().describe('Optional WAS id/name. When provided, include compact workspace context alongside repo CAS context.'),
@@ -1964,7 +1997,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, task }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
+      const cas = await getFreshAnalysisForAgent(path);
       return json(await agentBootstrap.getAgentBootstrap(cas, path, task || {}));
     })
   );
@@ -1973,7 +2006,7 @@ function registerTools(server: McpServer) {
     'get_agent_project_map',
     {
       title: 'Get Agent Project Map',
-      description: 'List analyzed parent/subproject candidates for a repository path so agents can choose the most specific default-use CAS analysis before broad file reads.',
+      description: 'List analyzed parent/subproject candidates for a repository path so agents can choose the most specific agent-context-ready CAS analysis before broad file reads.',
       inputSchema: {
         path: z.string().optional().describe('Repository or subproject path to filter candidates. Omit to map all stored analyses.'),
         task: z.object({
@@ -2020,13 +2053,13 @@ function registerTools(server: McpServer) {
     'get_agent_doctor',
     {
       title: 'Get Agent Doctor',
-      description: 'Default-use readiness check for Codex, Claude, and other agents: CAS contract, freshness, tests, runtime SDK proof, and golden snapshot status.',
+      description: 'Agent-use readiness check for Codex, Claude, and other agents: CAS contract, freshness, tests, runtime SDK proof, and golden snapshot status.',
       inputSchema: {
         path: z.string().describe('Project path'),
       } as any,
     } as any,
     async ({ path }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
+      const cas = await getFreshAnalysisForAgent(path);
       return json(await agentDoctor.getAgentDoctor(cas, path));
     })
   );
@@ -2035,7 +2068,7 @@ function registerTools(server: McpServer) {
     'get_agent_default_config',
     {
       title: 'Get Agent Default Config',
-      description: 'Return install-ready default-use instructions for Codex, Claude, Cursor, or another coding agent without writing files.',
+      description: 'Return install-ready agent-context-ready instructions for Codex, Claude, Cursor, or another coding agent without writing files.',
       inputSchema: {
         path: z.string().describe('Project path'),
         task: z.object({
@@ -2046,11 +2079,11 @@ function registerTools(server: McpServer) {
           instructions: z.string().optional(),
           success_criteria: z.array(z.string()).optional(),
           response_profile: z.enum(['standard', 'minimal', 'first-turn', 'capsule-only']).optional(),
-        }).optional().describe('Optional task context for tailoring default-use instructions'),
+        }).optional().describe('Optional task context for tailoring agent-context-ready instructions'),
       } as any,
     } as any,
     async ({ path, task }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
+      const cas = await getFreshAnalysisForAgent(path);
       return json(await agentDefaults.getAgentDefaultConfig(cas, path, task || {}));
     })
   );
@@ -2070,11 +2103,11 @@ function registerTools(server: McpServer) {
           instructions: z.string().optional(),
           success_criteria: z.array(z.string()).optional(),
           response_profile: z.enum(['standard', 'minimal', 'first-turn', 'capsule-only']).optional(),
-        }).optional().describe('Optional task context for tailoring default-use instructions'),
+        }).optional().describe('Optional task context for tailoring agent-context-ready instructions'),
       } as any,
     } as any,
     async ({ path, task }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
+      const cas = await getFreshAnalysisForAgent(path);
       return json(await agentDefaults.writeAgentDefaultConfig(cas, path, task || {}));
     })
   );
@@ -2098,7 +2131,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, task }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
+      const cas = await getFreshAnalysisForAgent(path);
       return json(agentAdoption.getAgentStartContext(cas, path, task || {}));
     })
   );
@@ -2121,16 +2154,16 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, task }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
+      const cas = await getFreshAnalysisForAgent(path);
       return json(agentAdoption.getAgentToolPlan(cas, { path, task: task || {} }));
     })
   );
 
   server.registerTool(
-    'get_agent_work_packet',
+    'get_agent_context',
     {
-      title: 'Get Agent Work Packet',
-      description: 'One call that does the work of an entire exploratory session: describe your task ("add an audit trail for driver status changes") and it resolves the target code, change risk, callers and callees, covering tests, behavioral invariants, and the exact source files to read first. Use this instead of grepping for symbols and tracing imports by hand — it turns a 40-call investigation into one call plus a handful of targeted reads. Requires an existing analysis (check with resolve_agent_analysis).',
+      title: 'Get Agent Context',
+      description: 'Return task-scoped context for what the agent is about to do. Klauro does not decide the task; it supplies the relevant graph target, risks, callers and callees, tests, invariants, idioms, in-flight overlap, and first source files so the agent can act with system understanding instead of broad rediscovery. Requires an existing analysis (check with resolve_agent_analysis).',
       inputSchema: {
         path: z.string().describe('Project path'),
         task: z.object({
@@ -2140,18 +2173,18 @@ function registerTools(server: McpServer) {
           runtime_event: z.record(z.unknown()).optional(),
           instructions: z.string().optional(),
           success_criteria: z.array(z.string()).optional(),
-          response_profile: z.enum(['standard', 'minimal', 'first-turn', 'capsule-only']).optional().describe('Optional response budget. Use capsule-only when token savings matter most; use first-turn for compact fields plus capsules; use minimal for compact work; omit for the full packet.'),
-        }).optional().describe('Task context for building the work packet'),
+          response_profile: z.enum(['standard', 'minimal', 'first-turn', 'capsule-only']).optional().describe('Optional response budget. Use capsule-only when token savings matter most; use first-turn for compact fields plus capsules; use minimal for compact context; omit for the full context.'),
+        }).optional().describe('Task context for building the agent context'),
       } as any,
     } as any,
     async ({ path, workspace_analysis_id, task }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
-      const packet = await agentAdoption.getAgentWorkPacket(cas, path, task || {});
+      const cas = await getFreshAnalysisForAgent(path);
+      const context = await agentAdoption.getAgentContext(cas, path, task || {});
       const workspaceGraph = workspace_analysis_id ? await loadCrossCodebaseSystemGraph(workspace_analysis_id) : null;
       return json(workspaceGraph ? {
-        ...packet,
-        workspace_context: crossCodebaseAnalysis.buildWorkspaceAgentPacket(workspaceGraph, task || { target: path }),
-      } : packet);
+        ...context,
+        workspace_context: crossCodebaseAnalysis.buildWorkspaceAgentContext(workspaceGraph, task || { target: path }),
+      } : context);
     })
   );
 
@@ -2182,10 +2215,10 @@ function registerTools(server: McpServer) {
   );
 
   server.registerTool(
-    'get_idiom_aware_work_packet',
+    'get_idiom_aware_agent_context',
     {
-      title: 'Get Idiom-Aware Work Packet',
-      description: 'One-call agent work packet with compact repo-local idiom context. Use for edits where matching local naming, placement, boundaries, testing, migrations, and framework style matters.',
+      title: 'Get Idiom-Aware Agent Context',
+      description: 'Task-scoped agent context with compact repo-local idiom context. Use for edits where matching local naming, placement, boundaries, testing, migrations, and framework style matters.',
       inputSchema: {
         path: z.string().describe('Project path'),
         workspace_analysis_id: z.string().optional().describe('Optional WAS id/name for compact workspace context.'),
@@ -2196,17 +2229,17 @@ function registerTools(server: McpServer) {
           runtime_event: z.record(z.unknown()).optional(),
           instructions: z.string().optional(),
           success_criteria: z.array(z.string()).optional(),
-        }).optional().describe('Task context for building the work packet'),
+        }).optional().describe('Task context for building the agent context'),
       } as any,
     } as any,
     async ({ path, workspace_analysis_id, task }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      const packet = await agentAdoption.getAgentWorkPacket(cas, path, task || {});
+      const context = await agentAdoption.getAgentContext(cas, path, task || {});
       const workspaceGraph = workspace_analysis_id ? await loadCrossCodebaseSystemGraph(workspace_analysis_id) : null;
       return json({
-        ...packet,
-        idiom_context: (packet.work_context as any).idiom_context,
-        ...(workspaceGraph ? { workspace_context: crossCodebaseAnalysis.buildWorkspaceAgentPacket(workspaceGraph, task || { target: path }) } : {}),
+        ...context,
+        idiom_context: (context.work_context as any).idiom_context,
+        ...(workspaceGraph ? { workspace_context: crossCodebaseAnalysis.buildWorkspaceAgentContext(workspaceGraph, task || { target: path }) } : {}),
       });
     })
   );
@@ -2239,7 +2272,7 @@ function registerTools(server: McpServer) {
       const workspaceGraph = workspace_analysis_id ? await loadCrossCodebaseSystemGraph(workspace_analysis_id) : null;
       return json(workspaceGraph ? {
         ...workbench,
-        workspace_context: crossCodebaseAnalysis.buildWorkspaceAgentPacket(workspaceGraph, task || { target: path }),
+        workspace_context: crossCodebaseAnalysis.buildWorkspaceAgentContext(workspaceGraph, task || { target: path }),
       } : workbench);
     })
   );
@@ -2281,7 +2314,7 @@ function registerTools(server: McpServer) {
       const workspaceGraph = workspace_analysis_id ? await loadCrossCodebaseSystemGraph(workspace_analysis_id) : null;
       return json(workspaceGraph ? {
         ...preflight,
-        workspace_context: crossCodebaseAnalysis.buildWorkspaceAgentPacket(workspaceGraph, {
+        workspace_context: crossCodebaseAnalysis.buildWorkspaceAgentContext(workspaceGraph, {
           task_type: task?.task_type || 'modify',
           target: target || task?.target,
           instructions: plan_text || task?.instructions,
@@ -2513,7 +2546,7 @@ function registerTools(server: McpServer) {
     'evaluate_agent_task_proof',
     {
       title: 'Evaluate Agent Task Proof',
-      description: 'Run agent work packets for representative tasks and score whether CAS gives agents enough target, risk, test, MCP, and file-read context to start work.',
+      description: 'Run agent contexts for representative tasks and score whether CAS gives agents enough target, risk, test, MCP, and file-read context to start work.',
       inputSchema: {
         path: z.string().describe('Project path'),
         tasks: z.array(z.object({
@@ -2525,7 +2558,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, tasks }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
+      const cas = await getFreshAnalysisForAgent(path);
       return json(await analysisMastery.evaluateAgentTaskProof(cas, path, tasks || [{ task_type: 'orient' }]));
     })
   );
@@ -2540,7 +2573,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
+      const cas = await getFreshAnalysisForAgent(path);
       const evidence = await testDiscovery.getTestDiscoveryEvidence(path, cas);
       return json(agentAdoption.evaluateAgentReadiness(cas, path, { testEvidence: evidence }));
     })
@@ -2784,7 +2817,7 @@ function registerTools(server: McpServer) {
     'run_incremental_value_benchmark',
     {
       title: 'Run Incremental Value Benchmark',
-      description: 'Copy repositories, run an initial analysis, rerun with no changes, edit one source file, rerun incremental analysis, optionally verify against a fresh full analysis, and report speed, correctness, cache, and agent work-packet value.',
+      description: 'Copy repositories, run an initial analysis, rerun with no changes, edit one source file, rerun incremental analysis, optionally verify against a fresh full analysis, and report speed, correctness, cache, and agent-context value.',
       inputSchema: {
         paths: z.array(z.string()).optional().describe('Project paths to benchmark. Omit to use all analyzed repositories.'),
         max_targets: z.number().optional().describe('Maximum repositories to benchmark'),
@@ -4736,7 +4769,7 @@ function registerResources(server: McpServer) {
   server.registerResource(
     'project-agent-bootstrap',
     new ResourceTemplate('klauro://{project_name}/agent-bootstrap', { list: undefined }),
-    { title: 'Agent Bootstrap', description: 'One payload with agent readiness, start context, MCP plan, work packet, and prompt text.', mimeType: 'application/json' } as any,
+    { title: 'Agent Bootstrap', description: 'One payload with agent readiness, start context, MCP plan, agent context, and prompt text.', mimeType: 'application/json' } as any,
     async (uri, params) => {
       const analyses = await listAnalyses();
       const entry = analyses.find(a => slugify(a.name) === params.project_name);
@@ -4789,7 +4822,7 @@ function registerResources(server: McpServer) {
   server.registerResource(
     'project-agent-readiness',
     new ResourceTemplate('klauro://{project_name}/agent-readiness', { list: undefined }),
-    { title: 'Agent Readiness', description: 'Default-use readiness score and gaps for agent adoption.', mimeType: 'application/json' } as any,
+    { title: 'Agent Readiness', description: 'Agent-use readiness score and gaps for agent adoption.', mimeType: 'application/json' } as any,
     async (uri, params) => {
       const analyses = await listAnalyses();
       const entry = analyses.find(a => slugify(a.name) === params.project_name);
@@ -4803,7 +4836,7 @@ function registerResources(server: McpServer) {
   server.registerResource(
     'project-agent-doctor',
     new ResourceTemplate('klauro://{project_name}/agent-doctor', { list: undefined }),
-    { title: 'Agent Doctor', description: 'Default-use readiness, freshness, tests, runtime SDK proof, and golden snapshot status.', mimeType: 'application/json' } as any,
+    { title: 'Agent Doctor', description: 'Agent-use readiness, freshness, tests, runtime SDK proof, and golden snapshot status.', mimeType: 'application/json' } as any,
     async (uri, params) => {
       const analyses = await listAnalyses();
       const entry = analyses.find(a => slugify(a.name) === params.project_name);
@@ -4816,7 +4849,7 @@ function registerResources(server: McpServer) {
   server.registerResource(
     'project-agent-defaults',
     new ResourceTemplate('klauro://{project_name}/agent-defaults', { list: undefined }),
-    { title: 'Agent Defaults', description: 'Install-ready default-use instructions for coding agents.', mimeType: 'application/json' } as any,
+    { title: 'Agent Defaults', description: 'Install-ready agent-context-ready instructions for coding agents.', mimeType: 'application/json' } as any,
     async (uri, params) => {
       const analyses = await listAnalyses();
       const entry = analyses.find(a => slugify(a.name) === params.project_name);
@@ -4995,7 +5028,7 @@ function registerPrompts(server: McpServer) {
         path: z.string().describe('Project path'),
         task_type: z.enum(['orient', 'modify', 'debug', 'review', 'trace', 'cross-repo', 'runtime']).optional().describe('Task type'),
         target: z.string().optional().describe('Task target, such as a feature, node, file, route, error, or subsystem'),
-        instructions: z.string().optional().describe('Exact user instructions to preserve in the work packet'),
+        instructions: z.string().optional().describe('Exact user instructions to preserve in the agent context'),
         success_criteria: z.array(z.string()).optional().describe('Success criteria for the task'),
       } as any,
     } as any,
