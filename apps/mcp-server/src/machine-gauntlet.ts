@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawn } from 'child_process';
 import pLimit from 'p-limit';
-import { getOrchestrator } from './analyzer';
+import { analyzeForBench } from './gauntlet/product-analysis';
 import { evaluateAgentReadiness } from './agent-adoption';
 import { runAgentIdiomBenchmark } from './agent-idiom-benchmark';
 import { runAgentGreenfieldBenchmark } from './agent-greenfield-benchmark';
@@ -14,7 +14,7 @@ import { reviewAnalysisUsefulness } from './analysis-usefulness-review';
 import { runIncrementalValueBenchmark } from './incremental-benchmark';
 import { discoverRealRepos, type RealRepoTarget } from './repo-discovery';
 import { isDirectCliInvocation } from './cli-invocation';
-import { withAnalysisFocus, type AnalysisFocus } from './analysis-focus';
+import { type AnalysisFocus } from './analysis-focus';
 import { analyzeWithInstalledKlauro, getInstalledKlauroVersion } from './installed-klauro';
 import { DEFAULT_KLAURO_CLOUD_URL } from './defaults';
 
@@ -242,7 +242,7 @@ export async function runMachineAgentProof(options: ParsedArgs) {
           env: { KLAURO_STORAGE_PATH: klauroProductStoragePath },
           timeoutMs: options.analysisBudgetMs ? Math.max(options.analysisBudgetMs * 2, 8 * 60 * 1000) : 8 * 60 * 1000,
         })).output
-        : await withAnalysisFocus(analysisFocus, async () => getOrchestrator().orchestrateAnalysis(repo.path));
+        : await analyzeForBench(repo.path);
       const readiness = evaluateAgentReadiness(cas, repo.path);
       const analysisQuality = assessAnalysisQuality(cas, repo.path);
       const usefulnessReview = await reviewAnalysisUsefulness(cas, repo.path, repo.name, analysisFocus);
@@ -830,8 +830,8 @@ async function runDescriptionGenerationProbe(
     process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT = '0';
     process.env.KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS = '1';
 
-    logMachineProgress(`AI description probe ${repo.name} (${repo.path})`);
-    const cas = await getOrchestrator().orchestrateAnalysis(repo.path);
+    logMachineProgress(`description probe ${repo.name} (${repo.path})`);
+    const cas = await analyzeForBench(repo.path);
     const generation = cas.enhanced_system_purpose?.description_generation;
     const status = String(generation?.status || 'missing');
     const source = String(cas.enhanced_system_purpose?.description_source || 'missing');

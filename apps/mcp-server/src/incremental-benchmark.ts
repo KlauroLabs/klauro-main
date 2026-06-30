@@ -4,7 +4,8 @@ import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { glob } from 'glob';
 import pLimit from 'p-limit';
-import { analyzeProject, analyzeProjectIncremental, type IncrementalAnalysisResult } from './analyzer';
+import { type IncrementalAnalysisResult } from './analyzer';
+import { analyzeForBench } from './gauntlet/product-analysis';
 import { getAgentContext } from './agent-adoption';
 import { discoverTargets, type RepoTarget } from './gauntlet';
 import { getFileCacheSize, loadIncrementalState, saveAgenticBenchmarkReport } from './storage';
@@ -444,10 +445,10 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
       // (production by default; serverUrl can target a self-hosted analyzer-server).
       const analyzeIncremental = () => analysisPath === 'klauro-product'
         ? analyzeWithInstalledKlauro(workspace, { env: installedEnv, analysisFocus, serverUrl: options.analyzerServerUrl, timeoutMs: 8 * 60 * 1000 })
-        : analyzeProjectIncremental(workspace);
+        : analyzeForBench(workspace).then(output => ({ output, state: undefined, changeReport: undefined, wasFullRebuild: true, fullRebuildReason: 'bench-product' }) as any);
       const analyzeFull = () => analysisPath === 'klauro-product'
         ? analyzeWithInstalledKlauro(workspace, { env: installedEnv, analysisFocus, serverUrl: options.analyzerServerUrl, forceFull: true, timeoutMs: 8 * 60 * 1000 }).then(result => result.output)
-        : analyzeProject(workspace);
+        : analyzeForBench(workspace);
 
       const initial = await timed(() => analyzeIncremental());
       const noChange = await timed(() => analyzeIncremental());
