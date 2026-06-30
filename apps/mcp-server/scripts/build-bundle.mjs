@@ -30,6 +30,13 @@ const NATIVE_PACKAGES = [
   'tree-sitter-go',
   'tree-sitter-php',
   'tree-sitter-rust',
+  // web-tree-sitter loads its OWN tree-sitter.wasm relative to its package dir at
+  // runtime — bundling it breaks that load. tree-sitter-wasms is a grammar-data
+  // package resolved via require.resolve. Keep both external (runtime deps in
+  // node_modules) so the WASM breadth path works when installed/deployed, not
+  // only in the dev tree.
+  'web-tree-sitter',
+  'tree-sitter-wasms',
   '@huggingface/transformers',
   '@xenova/transformers',
   'onnxruntime-node',
@@ -100,6 +107,34 @@ await build({
   plugins: [nativeExternals],
 });
 chmodSync(path.join(packageRoot, 'dist', 'cli.cjs'), 0o755);
+
+// --- Ship the tree-sitter grammars next to the bundle ---------------------
+// The bundle resolves grammars from `<dist>/grammars` first (see wasm-tree-sitter
+// grammarDirs()). Without this copy, an installed/deployed bundle loses the 130
+// vendored breadth grammars (and the mainstream ones), silently crippling
+// structural analysis. Copy every tree-sitter-*.wasm we ship into dist/grammars.
+{
+  const fs = await import('fs');
+  const grammarsOut = path.join(packageRoot, 'dist', 'grammars');
+  fs.mkdirSync(grammarsOut, { recursive: true });
+  const sources = [];
+  const vendored = path.resolve(packageRoot, '..', '..', 'packages', 'analyzer-core', 'vendored-grammars');
+  if (fs.existsSync(vendored)) sources.push(vendored);
+  try {
+    const reqAt = createRequire(path.join(packageRoot, 'resolve-anchor.js'));
+    sources.push(path.join(path.dirname(reqAt.resolve('tree-sitter-wasms/package.json')), 'out'));
+  } catch { /* tree-sitter-wasms not resolvable here — vendored dir still covers breadth */ }
+  let copied = 0;
+  for (const dir of sources) {
+    if (!fs.existsSync(dir)) continue;
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.endsWith('.wasm')) continue;
+      const dest = path.join(grammarsOut, f);
+      if (!fs.existsSync(dest)) { fs.copyFileSync(path.join(dir, f), dest); copied++; } // vendored wins (copied first)
+    }
+  }
+  console.log(`Copied ${copied} tree-sitter grammar(s) into dist/grammars from ${sources.length} source dir(s).`);
+}
 
 const CAPTURED_LIST_METHODS = ['tools/list', 'prompts/list', 'resources/list', 'resources/templates/list'];
 

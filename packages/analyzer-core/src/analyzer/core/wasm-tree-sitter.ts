@@ -33,25 +33,64 @@ const WASM_NAME: Record<string, string> = {
   'typescript-javascript': 'typescript',
 };
 
-function wasmDir(): string {
-  return path.join(path.dirname(require_.resolve('tree-sitter-wasms/package.json')), 'out');
+const fs_ = require_('fs');
+
+/**
+ * All directories that may hold `tree-sitter-<name>.wasm` grammar files, in
+ * priority order. This must work across the THREE layouts that all really happen
+ * in production, not just the dev tree:
+ *   - source / dev:   packages/analyzer-core/src/analyzer/core/   (__dirname up 3)
+ *   - esbuild bundle: apps/mcp-server/dist/server.cjs            (grammars copied to dist/grammars)
+ *   - installed dep:  node_modules/@klauro/analyzer-core/...     (grammars shipped in the package)
+ * Plus an explicit `KLAURO_GRAMMARS_DIR` override and the `tree-sitter-wasms` npm
+ * `out/` dir (the ~34 mainstream grammars). Resolved once + cached.
+ */
+let grammarDirsCache: string[] | null = null;
+function grammarDirs(): string[] {
+  if (grammarDirsCache) return grammarDirsCache;
+  const dirs: string[] = [];
+  const add = (d: string | null | undefined) => {
+    if (d && !dirs.includes(d) && fs_.existsSync(d)) dirs.push(d);
+  };
+  add(process.env.KLAURO_GRAMMARS_DIR);                                  // 1. operator override
+  add(path.join(__dirname, 'grammars'));                                 // 2. adjacent to bundle (build copies here)
+  add(path.join(__dirname, 'vendored-grammars'));
+  add(path.join(__dirname, '..', 'grammars'));
+  add(path.join(__dirname, '..', '..', '..', 'vendored-grammars'));      //    source-tree layout
+  try {                                                                  // 3. installed-as-a-dep layout
+    const pkg = require_.resolve('@klauro/analyzer-core/package.json');
+    add(path.join(path.dirname(pkg), 'vendored-grammars'));
+    add(path.join(path.dirname(pkg), 'dist', 'grammars'));
+  } catch { /* not a named dep — fine */ }
+  try {                                                                  // 4. tree-sitter-wasms npm out/
+    add(path.join(path.dirname(require_.resolve('tree-sitter-wasms/package.json')), 'out'));
+  } catch { /* not installed — vendored dirs still cover breadth */ }
+  grammarDirsCache = dirs;
+  return dirs;
 }
 
-/** Repo-tracked grammars vendored beyond what tree-sitter-wasms ships — the
- *  breadth path. Prebuilt `.wasm` from @tree-sitter-grammars/* (no emscripten
- *  build), checked BEFORE the npm dir so a vendored grammar wins. */
-function vendoredDir(): string {
-  return path.join(__dirname, '..', '..', '..', 'vendored-grammars');
-}
-
-/** Resolve the .wasm path for a grammar name: vendored first, then tree-sitter-wasms. */
+/** Resolve the .wasm path for a grammar name across every known layout. */
 function grammarFile(name: string): string | null {
-  const fs = require_('fs');
-  const vendored = path.join(vendoredDir(), `tree-sitter-${name}.wasm`);
-  if (fs.existsSync(vendored)) return vendored;
-  const shipped = path.join(wasmDir(), `tree-sitter-${name}.wasm`);
-  if (fs.existsSync(shipped)) return shipped;
+  for (const dir of grammarDirs()) {
+    const f = path.join(dir, `tree-sitter-${name}.wasm`);
+    if (fs_.existsSync(f)) return f;
+  }
   return null;
+}
+
+/** Diagnostics: how many distinct grammars resolve, and from where. Used by the
+ *  startup self-check + packaging test so a broken install fails loudly. */
+export function grammarHealth(): { dirs: string[]; count: number; sample: string[] } {
+  const seen = new Set<string>();
+  for (const dir of grammarDirs()) {
+    try {
+      for (const f of fs_.readdirSync(dir)) {
+        const m = /^tree-sitter-(.+)\.wasm$/.exec(f);
+        if (m) seen.add(m[1]);
+      }
+    } catch { /* unreadable dir — skip */ }
+  }
+  return { dirs: grammarDirs(), count: seen.size, sample: [...seen].sort().slice(0, 12) };
 }
 
 /** Initialize the WASM runtime once. Safe to call repeatedly. */
