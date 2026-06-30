@@ -23,43 +23,13 @@
 
 import { execFileSync } from 'child_process';
 import * as fs from 'fs-extra';
-import * as os from 'os';
 import * as path from 'path';
-import { createOrchestrator } from '../analyzer';
-import { analyzeWithInstalledKlauro } from '../installed-klauro';
 import { validateWin } from './win-validator';
 import { scipCallers, ctagsCallers, stackGraphsCallers } from './real-camp-arms';
+import { analyzeForBench, benchProductMode } from './product-analysis';
 import type { ArmResult, WinVerdict } from './report-schema';
 
-/**
- * Produce the Klauro CAS for a fixture. By default this runs the in-process
- * engine. When KLAURO_BENCH_ANALYZER_URL is set, it instead runs the INSTALLED
- * CLI in remote mode against that hosted service — the literal customer product
- * (deep analysis on the server). The fixture is copied to a throwaway git repo
- * so the remote source-snapshot builder is satisfied and the checked-in fixture
- * is never mutated. The returned CAS has the same shape either way, so every
- * downstream metric is identical — only the analysis SOURCE changes.
- */
-async function analyzeForBench(dir: string): Promise<any> {
-  const url = process.env.KLAURO_BENCH_ANALYZER_URL;
-  if (!url) return createOrchestrator().orchestrateAnalysis(dir);
-  const tmp = path.join(os.tmpdir(), `klauro-bench-product-${process.pid}-${Math.random().toString(36).slice(2)}`);
-  await fs.copy(dir, tmp, { filter: src => !/(^|\/)\.git(\/|$)/.test(src) });
-  try {
-    execFileSync('git', ['init', '-q'], { cwd: tmp });
-    execFileSync('git', ['add', '-A'], { cwd: tmp });
-    execFileSync('git', ['-c', 'user.email=bench@klauro', '-c', 'user.name=bench', 'commit', '-qm', 'bench fixture'], { cwd: tmp });
-    const res = await analyzeWithInstalledKlauro(tmp, { serverUrl: url, timeoutMs: 8 * 60 * 1000 });
-    return res.output;
-  } finally {
-    await fs.remove(tmp).catch(() => undefined);
-  }
-}
-
-/** True when the Klauro arm is exercising the hosted product, not the in-process engine. */
-export function benchProductMode(): boolean {
-  return Boolean(process.env.KLAURO_BENCH_ANALYZER_URL);
-}
+export { benchProductMode };
 
 interface CallersTruth {
   task: 'callers';

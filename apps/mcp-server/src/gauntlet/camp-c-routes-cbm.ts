@@ -43,7 +43,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { createOrchestrator } from '../analyzer';
+import { analyzeForBench } from './product-analysis';
 import { getRouteTable } from '../query';
 import { codebaseMemoryPath } from './real-camp-arms';
 
@@ -123,7 +123,7 @@ function canonicalizePath(p: string): string {
 
 /** Klauro: framework analyzer -> route table directly. */
 async function klauroRoutes(dir: string): Promise<{ routes: string[]; bytes: number }> {
-  const cas: any = await createOrchestrator().orchestrateAnalysis(dir);
+  const cas: any = await analyzeForBench(dir);
   const rt: any = getRouteTable(cas, { limit: 500 });
   const routes: string[] = (rt?.routes || []).map((r: any) => `${r.method} ${canonicalizePath(String(r.path))}`);
   return { routes: [...new Set(routes)], bytes: Buffer.byteLength(routes.join('\n'), 'utf8') };

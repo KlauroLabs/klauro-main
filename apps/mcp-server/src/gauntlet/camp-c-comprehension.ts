@@ -21,7 +21,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 
-import { createOrchestrator } from '../analyzer';
+import { analyzeForBench } from './product-analysis';
 import { runOrmRelationsBench } from './orm-bench';
 import { runDiGraphBench } from './di-bench';
 import { runGraphqlWiringBench } from './graphql-bench';
@@ -466,7 +466,7 @@ async function analyzeEmissionFixture(): Promise<{ fixture: string; cas: Record<
     const dir = path.join(FIXTURES_ROOT, rel);
     try {
       if (!(await fs.pathExists(dir))) continue;
-      const cas = (await createOrchestrator().orchestrateAnalysis(dir)) as unknown as Record<string, unknown>;
+      const cas = (await analyzeForBench(dir)) as unknown as Record<string, unknown>;
       // Use the first fixture that produces any Camp-C emission.
       const any = EMISSION_SPECS.some(s => s.fields.some(f => countFact(cas[f]) > 0));
       if (any) return { fixture: rel, cas };

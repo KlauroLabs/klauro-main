@@ -20,7 +20,7 @@
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { createOrchestrator } from '../analyzer';
+import { analyzeForBench } from './product-analysis';
 import { validateWin } from './win-validator';
 import type { ArmResult, WinVerdict } from './report-schema';
 
@@ -66,7 +66,7 @@ async function sourceBytes(dir: string): Promise<number> {
 
 async function klauroPatterns(dir: string): Promise<{ patterns: string[]; bytes: number; time_ms: number }> {
   const t0 = Date.now();
-  const cas: any = await createOrchestrator().orchestrateAnalysis(dir);
+  const cas: any = await analyzeForBench(dir);
   const time_ms = Date.now() - t0;
   const patterns: string[] = (cas.patterns || [])
     .map((p: any) => String(p.name || p.type || ''))

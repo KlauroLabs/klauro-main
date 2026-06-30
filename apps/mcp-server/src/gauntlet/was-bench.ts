@@ -15,7 +15,7 @@
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { createOrchestrator } from '../analyzer';
+import { analyzeForBench } from './product-analysis';
 import { buildCrossRepositoryLinks } from '../product';
 import { validateWin } from './win-validator';
 import type { ArmResult } from './report-schema';
@@ -68,7 +68,7 @@ async function klauroLinks(dir: string): Promise<{ links: string[]; bytes: numbe
   const dirs = await repoDirs(dir);
   const repos = [];
   for (const name of dirs) {
-    const cas: any = await createOrchestrator().orchestrateAnalysis(path.join(dir, name));
+    const cas: any = await analyzeForBench(path.join(dir, name));
     repos.push({ path: name, name, cas });
   }
   const result = buildCrossRepositoryLinks(repos);
