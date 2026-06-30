@@ -1,6 +1,6 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { getOrchestrator } from './analyzer';
+import { analyzeForBench } from './gauntlet/product-analysis';
 import { discoverTargets, type RepoTarget } from './gauntlet';
 import { evaluateAgentReadiness, type AgentReadinessReport } from './agent-adoption';
 import { getTestDiscoveryEvidence } from './test-discovery';
@@ -76,7 +76,7 @@ function printHelp(): void {
 
 async function analyzeTarget(target: RepoTarget): Promise<TargetAgentReport> {
   const startedAt = Date.now();
-  const output = await getOrchestrator().orchestrateAnalysis(target.path);
+  const output = await analyzeForBench(target.path);
   const testEvidence = await getTestDiscoveryEvidence(target.path, output);
   return {
     ...evaluateAgentReadiness(output, target.path, { testEvidence }),
@@ -86,18 +86,18 @@ async function analyzeTarget(target: RepoTarget): Promise<TargetAgentReport> {
 }
 
 function aggregateStatus(reports: TargetAgentReport[]): GateStatus {
-  if (reports.some(report => report.status === 'fail' || !report.default_use)) return 'fail';
+  if (reports.some(report => report.status === 'fail' || !report.agent_context_ready)) return 'fail';
   if (reports.some(report => report.status === 'warn')) return 'warn';
   return 'pass';
 }
 
 function printReport(report: AgentGauntletReport): void {
   console.log(`Agent adoption gauntlet: ${report.status.toUpperCase()} (${report.score}/100)`);
-  console.log(`Default-use targets: ${report.defaultUseTargets}/${report.targets.length}`);
+  console.log(`Agent-ready targets: ${report.defaultUseTargets}/${report.targets.length}`);
   for (const target of report.targets) {
     console.log([
       `${target.status.toUpperCase().padEnd(4)} ${String(target.score).padStart(3)}/100`,
-      target.default_use ? 'default-use' : 'not-default',
+      target.agent_context_ready ? 'agent-context-ready' : 'not-default',
       target.name,
       `${target.summary.nodes} nodes`,
       `${target.summary.entry_points} entries`,
@@ -141,7 +141,7 @@ async function main(): Promise<void> {
     generatedAt: new Date().toISOString(),
     status,
     score,
-    defaultUseTargets: targetReports.filter(target => target.default_use).length,
+    defaultUseTargets: targetReports.filter(target => target.agent_context_ready).length,
     targets: targetReports,
   };
 

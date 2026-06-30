@@ -1,7 +1,7 @@
 import { isDirectCliInvocation } from './cli-invocation';
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { getOrchestrator } from './analyzer';
+import { analyzeForBench } from './gauntlet/product-analysis';
 import { discoverTargets, type RepoTarget } from './gauntlet';
 import type { CASOutput, CASNode } from '../../../packages/analyzer-core/src/types/cas.types';
 import {
@@ -593,7 +593,7 @@ function scoreCas(cas: CASOutput, target: RepoTarget, durationMs: number): Targe
 
 async function analyzeTarget(target: RepoTarget): Promise<TargetAnswerReport> {
   const startedAt = Date.now();
-  const cas = await getOrchestrator().orchestrateAnalysis(target.path);
+  const cas = await analyzeForBench(target.path);
   return scoreCas(cas, target, Date.now() - startedAt);
 }
 

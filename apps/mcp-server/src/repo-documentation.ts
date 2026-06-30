@@ -2,7 +2,7 @@ import { isDirectCliInvocation } from './cli-invocation';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { discoverRealRepos, type RealRepoTarget } from './repo-discovery';
-import { analyzeProject } from './analyzer';
+import { analyzeForBench } from './gauntlet/product-analysis';
 import type {
   CASOutput,
   CASEntryPoint,
@@ -425,7 +425,7 @@ async function generateDocumentation(options: GeneratorOptions): Promise<RepoDoc
 
     const startedAt = Date.now();
     try {
-      const cas = await analyzeProject(target.path);
+      const cas = await analyzeForBench(target.path);
       const durationMs = Date.now() - startedAt;
       const markdown = buildRepoMarkdown(cas, durationMs);
       await fs.writeFile(docFile, markdown, 'utf8');

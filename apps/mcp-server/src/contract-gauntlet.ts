@@ -1,6 +1,6 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { getOrchestrator } from './analyzer';
+import { analyzeForBench } from './gauntlet/product-analysis';
 import { getCrossRepoContracts } from './analysis-mastery';
 import { buildCrossRepositoryLinks } from './product';
 import type { CASCrossRepositoryLink, CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
@@ -82,7 +82,7 @@ async function analyzeRepositories(root: string, expectation: ContractExpectatio
 
   for (const repository of expectation.repositories) {
     const repositoryPath = path.resolve(root, repository.path);
-    const cas = await getOrchestrator().orchestrateAnalysis(repositoryPath);
+    const cas = await analyzeForBench(repositoryPath);
     repositories.push({ path: repositoryPath, name: repository.name, cas });
   }
 

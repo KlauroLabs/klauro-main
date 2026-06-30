@@ -1,6 +1,7 @@
 /* Full-surface Klauro dogfood: run every single-CAS navigation/understanding
  * tool against Klauro's own analyzer-core, and triage each output. */
-import { analyzeProject, getAnalysis } from './analyzer';
+import { getAnalysis } from './analyzer';
+import { analyzeForBench } from './gauntlet/product-analysis';
 import * as q from './query';
 
 const TARGET = '/Users/michaelshattuck/dev/unravl/proof-of-concept/packages/analyzer-core';
@@ -50,7 +51,7 @@ async function run(label: string, fn: () => any): Promise<void> {
 async function main() {
   process.env.KLAURO_AI_INTERPRETATION ||= 'false';
   process.env.KLAURO_AI_INTERPRETATION_ENABLED ||= 'false';
-  const cas: any = await analyzeProject(TARGET); // always fresh so new code is present
+  const cas: any = await analyzeForBench(TARGET); // always fresh so new code is present
   // bootstrap target ids from broad searches; take the first node that exists
   const firstHit = (query: string, type?: string) => {
     const res = q.searchNodes(cas, query, { limit: 8 } as any) as any;

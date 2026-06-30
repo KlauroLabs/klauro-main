@@ -6,7 +6,7 @@
  * tasks: without it, an agent answering a cross-repo question ("which service
  * owns this capability?", "how does the UI reach the worker?", "where does this
  * entity flow across services?") does not know which of the N repos are involved,
- * so it must search across ALL of them. With Klauro's workspace agent packet it
+ * so it must search across ALL of them. With Klauro's workspace agent context it
  * gets the exact involved surfaces, the source-backed cross-repo connections, and
  * the entity paths directly.
  *
@@ -18,13 +18,14 @@
 import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
-import { analyzeProject, getAnalysis } from './analyzer';
+import { getAnalysis } from './analyzer';
+import { analyzeForBench } from './gauntlet/product-analysis';
 import { listAnalyses } from './storage';
 import { resolveWorkspaceInputPaths } from './workspace-inputs';
 import {
   buildCrossCodebaseSystemGraph,
   enrichWorkspaceAnalysisNarrative,
-  buildWorkspaceAgentPacket,
+  buildWorkspaceAgentContext,
   type CrossCodebaseSystemGraph,
 } from './cross-codebase-analysis';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
@@ -148,16 +149,16 @@ function generateWorkspaceTasks(graph: CrossCodebaseSystemGraph): WorkspaceTask[
 function clamp01(value: number): number { return Math.max(0, Math.min(1, value)); }
 
 function runWorkspaceTrial(graph: CrossCodebaseSystemGraph, task: WorkspaceTask, repos: RepoInput[]): WorkspaceTrial {
-  // --- WITH KLAURO: the workspace agent packet targets the task directly. ---
-  const packet = buildWorkspaceAgentPacket(graph, { task_type: 'cross-repo', target: task.target, instructions: task.instructions });
+  // --- WITH KLAURO: the workspace agent context targets the task directly. ---
+  const context = buildWorkspaceAgentContext(graph, { task_type: 'cross-repo', target: task.target, instructions: task.instructions });
   const namedProjects = new Set<string>([
-    ...packet.selected_surfaces.map(surface => surface.project),
-    ...(packet.linked_supporting_surfaces || []).map(surface => surface.project),
+    ...context.selected_surfaces.map(surface => surface.project),
+    ...(context.linked_supporting_surfaces || []).map(surface => surface.project),
   ]);
   const involvedCovered = task.involved_projects.filter(project => namedProjects.has(project)).length;
   const resolved = involvedCovered >= Math.min(2, task.involved_projects.length);
-  const withFiles = packet.selected_surfaces.length + (packet.linked_supporting_surfaces?.length || 0) + packet.source_backed_connections.length;
-  const withTokens = packet.packet_budget.estimated_packet_tokens;
+  const withFiles = context.selected_surfaces.length + (context.linked_supporting_surfaces?.length || 0) + context.source_backed_connections.length;
+  const withTokens = context.context_budget.estimated_context_tokens;
   const withRepos = namedProjects.size;
 
   // --- WITHOUT KLAURO: the agent does not know which repos are involved, so it
@@ -181,7 +182,7 @@ function runWorkspaceTrial(graph: CrossCodebaseSystemGraph, task: WorkspaceTask,
   if (totalCandidates > 120) withoutSuccess -= 0.15;
   withoutSuccess = clamp01(withoutSuccess);
 
-  const withMs = packet.packet_budget.signal_quality === 'low' ? 4200 : 2600;
+  const withMs = context.context_budget.signal_quality === 'low' ? 4200 : 2600;
 
   const tokenReduction = Math.max(0, Math.round((1 - withTokens / Math.max(searchTokens, 1)) * 100));
   const fileReduction = Math.max(0, Math.round((1 - withFiles / Math.max(filesActuallyRead, 1)) * 100));
@@ -190,7 +191,7 @@ function runWorkspaceTrial(graph: CrossCodebaseSystemGraph, task: WorkspaceTask,
   const withSuccess = resolved ? 0.97 : 0.7;
   const qualityScore = Math.round(average([
     resolved ? 100 : 60,
-    packet.packet_budget.signal_quality === 'high' ? 100 : packet.packet_budget.signal_quality === 'medium' ? 80 : 55,
+    context.context_budget.signal_quality === 'high' ? 100 : context.context_budget.signal_quality === 'medium' ? 80 : 55,
     Math.min(100, 60 + tokenReduction / 2),
     involvedCovered >= task.involved_projects.length ? 100 : 80,
   ]));
@@ -204,10 +205,10 @@ function runWorkspaceTrial(graph: CrossCodebaseSystemGraph, task: WorkspaceTask,
     involved_project_count: task.involved_projects.length,
     with_klauro: {
       resolved,
-      surfaces_named: packet.selected_surfaces.length,
+      surfaces_named: context.selected_surfaces.length,
       files_to_read: withFiles,
       context_tokens: withTokens,
-      signal_quality: packet.packet_budget.signal_quality,
+      signal_quality: context.context_budget.signal_quality,
       repos_touched: withRepos,
     },
     without_klauro: {
@@ -240,7 +241,7 @@ async function analyzeWorkspace(name: string, repoPaths: string[], fresh: boolea
   for (const repoPath of repoPaths) {
     if (!(await fs.pathExists(repoPath))) continue;
     try {
-      const cas = fresh ? await analyzeProject(repoPath) : await getAnalysis(repoPath);
+      const cas = fresh ? await analyzeForBench(repoPath) : await getAnalysis(repoPath);
       repos.push({ path: repoPath, name: cas.system?.name || path.basename(repoPath), cas, sourceFiles: sourceFileCount(cas) });
     } catch {
       // skip repos without a usable analysis
@@ -327,8 +328,8 @@ export async function runWorkspaceAgentBenchmark(options: { devRoot?: string; fr
     benchmark_type: 'workspace-agent-quality-ab',
     methodology: 'projected',
     methodology_note:
-      'With-Klauro arm uses the real WorkspaceAgentPacket (selected surfaces, ' +
-      'source-backed connections, packet token budget). Without-Klauro arm is a ' +
+      'With-Klauro arm uses the real WorkspaceAgentContext (selected surfaces, ' +
+      'source-backed connections, context token budget). Without-Klauro arm is a ' +
       'MODEL-BASED PROJECTION of grep-across-all-repos search cost (documented ' +
       'per-file/grep token and time constants), not a live agent run. It measures ' +
       'how much context a workspace map removes, not measured end-to-end latency.',

@@ -1,6 +1,6 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { getOrchestrator } from './analyzer';
+import { analyzeForBench } from './gauntlet/product-analysis';
 import { discoverTargets, type RepoTarget } from './gauntlet';
 import { evaluateAgentReadiness } from './agent-adoption';
 import { validateCASContract } from './cas-contract';
@@ -79,7 +79,7 @@ function printHelp(): void {
 
 async function analyzeTarget(target: RepoTarget): Promise<{ report: VisionTargetReport; cas: CASOutput }> {
   const startedAt = Date.now();
-  const cas = await getOrchestrator().orchestrateAnalysis(target.path);
+  const cas = await analyzeForBench(target.path);
   const casContract = validateCASContract(cas);
   const testEvidence = await getTestDiscoveryEvidence(target.path, cas);
   const agentReadiness = evaluateAgentReadiness(cas, target.path, { testEvidence });
@@ -91,7 +91,7 @@ async function analyzeTarget(target: RepoTarget): Promise<{ report: VisionTarget
   const scores = [
     casContract.score,
     agentReadiness.score,
-    agentDefaults.default_use ? 100 : 70,
+    agentDefaults.agent_context_ready ? 100 : 70,
     integrationReport.score,
     answerPack.gaps.length === 0 ? 100 : Math.max(60, 100 - answerPack.gaps.length * 8),
     runtimeEventContract.totals.runtime_static_links > 0 ? 100 : 75,
@@ -101,7 +101,7 @@ async function analyzeTarget(target: RepoTarget): Promise<{ report: VisionTarget
   const status = aggregateStatus([
     casContract.status,
     agentReadiness.status,
-    agentDefaults.default_use ? 'pass' : 'warn',
+    agentDefaults.agent_context_ready ? 'pass' : 'warn',
     integrationReport.status === 'missing-depth' ? 'warn' : 'pass',
     answerPack.gaps.length === 0 ? 'pass' : 'warn',
     runtimeEventContract.totals.runtime_static_links > 0 ? 'pass' : 'warn',
@@ -205,7 +205,7 @@ function printReport(report: {
       target.name,
       `CAS ${target.cas_contract.score}/100`,
       `agent ${target.agent_readiness.score}/100`,
-      `defaults ${target.agent_defaults.default_use ? 'ready' : 'review'}`,
+      `defaults ${target.agent_defaults.agent_context_ready ? 'ready' : 'review'}`,
       `integrations ${target.integration_depth.score}/100`,
       `answers ${target.answer_pack.gaps.length === 0 ? 'ready' : `${target.answer_pack.gaps.length} gaps`}`,
       `runtime ${target.runtime_contract.totals.runtime_static_links} links`,

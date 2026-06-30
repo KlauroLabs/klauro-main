@@ -2,7 +2,7 @@ import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
 import { isDirectCliInvocation } from './cli-invocation';
-import { createOrchestrator } from './analyzer';
+import { analyzeForBench } from './gauntlet/product-analysis';
 
 type GateStatus = 'pass' | 'fail';
 
@@ -35,7 +35,7 @@ export async function runCapabilityInferenceBenchmark(options: { outputPath?: st
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-capability-inference-'));
   try {
     await seedSymfonyFleetFixture(root);
-    const cas = await createOrchestrator().orchestrateAnalysis(root);
+    const cas = await analyzeForBench(root);
     const capabilities = (cas.system_capabilities || []).map(capability => ({
       name: capability.name,
       domains: capability.related_domains || [],

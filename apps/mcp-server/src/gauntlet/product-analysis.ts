@@ -20,6 +20,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { createRemoteAnalyzerHttpServer } from '../remote-analyzer-service';
 import { buildSourceSnapshot } from '../remote-source';
+import type { CASOutput } from '../../../../packages/analyzer-core/src/types/cas.types';
 
 let localServerUrl: string | null = null;
 
@@ -68,7 +69,7 @@ function postJson(url: string, body: unknown): Promise<any> {
  * source snapshot the product client would send, posts it to the product's analyzer
  * server, and returns what comes back. No engine, no AI, no model — ever.
  */
-export async function analyzeForBench(dir: string): Promise<any> {
+export async function analyzeForBench(dir: string): Promise<CASOutput> {
   const serverUrl = await ensureProductServer();
   const snapshot = await buildSourceSnapshot(dir);
   const response = await postJson(`${serverUrl}/v1/analyze`, {
@@ -76,7 +77,7 @@ export async function analyzeForBench(dir: string): Promise<any> {
     project_path: dir,
     snapshot,
   });
-  return response.cas;
+  return response.cas as CASOutput;
 }
 
 /** True when the harness is pointed at an external product server (e.g. the live VPS). */

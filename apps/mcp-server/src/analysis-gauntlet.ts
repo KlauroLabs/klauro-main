@@ -1,7 +1,7 @@
 import { isDirectCliInvocation } from './cli-invocation';
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { getOrchestrator } from './analyzer';
+import { analyzeForBench } from './gauntlet/product-analysis';
 import {
   evaluateAgentTaskProof,
   evaluateAnalysisTruth,
@@ -109,7 +109,7 @@ async function defaultTargets(includeDefaultFixture: boolean): Promise<Target[]>
 
 async function analyzeTarget(target: Target): Promise<TargetReport> {
   const startedAt = Date.now();
-  const cas = await getOrchestrator().orchestrateAnalysis(target.path);
+  const cas = await analyzeForBench(target.path);
   const expectation = target.expectation || await loadTruthExpectation(target.path);
   if (!expectation) throw new Error(`${target.name}: no analysis expectation found`);
 

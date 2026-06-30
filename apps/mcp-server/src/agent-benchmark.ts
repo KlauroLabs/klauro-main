@@ -1,8 +1,8 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { glob } from 'glob';
-import { getOrchestrator } from './analyzer';
-import { getAgentWorkPacket, type AgentTask } from './agent-adoption';
+import { analyzeForBench } from './gauntlet/product-analysis';
+import { getAgentContext, type AgentTask } from './agent-adoption';
 import { loadTruthExpectation, type AnalysisTruthExpectation } from './analysis-mastery';
 import { discoverTargets } from './gauntlet';
 import { saveAgenticBenchmarkReport } from './storage';
@@ -27,11 +27,11 @@ interface AgenticComparison {
   benchmark_type: 'deterministic-proxy';
   measurement_note: string;
   with_klauro: {
-    packet_generation_ms: number;
+    context_generation_ms: number;
     mcp_calls: number;
     files_to_read: number;
     source_tokens: number;
-    packet_tokens: number;
+    context_tokens: number;
     total_context_tokens: number;
     estimated_work_ms: number;
     estimated_cached_solution_ms: number;
@@ -324,29 +324,29 @@ function taskCard(id: string, label: string, category: BenchmarkTask['category']
 
 async function scoreTask(cas: CASOutput, projectPath: string, benchmarkTask: BenchmarkTask, sourceFiles: SourceFileStat[], analysisDurationMs: number, taskCount: number): Promise<TaskScore> {
   const task = benchmarkTask.task;
-  const packetStartedAt = Date.now();
-  const packet = await getAgentWorkPacket(cas, projectPath, task);
-  const packetGenerationMs = Math.max(1, Date.now() - packetStartedAt);
+  const contextStartedAt = Date.now();
+  const context = await getAgentContext(cas, projectPath, task);
+  const contextGenerationMs = Math.max(1, Date.now() - contextStartedAt);
   const filesInRepo = sourceFiles.length;
-  const planFiles = packet.file_read_plan.map(item => String(item.file)).filter(Boolean);
-  const selectedFile = packet.selected_node?.file ? String(packet.selected_node.file) : undefined;
+  const planFiles = context.file_read_plan.map(item => String(item.file)).filter(Boolean);
+  const selectedFile = context.selected_node?.file ? String(context.selected_node.file) : undefined;
   const reduction = filesInRepo === 0 ? 0 : Math.max(0, Math.round(((filesInRepo - planFiles.length) / filesInRepo) * 100));
   const gates = [
-    gate('target-resolved', Boolean(packet.selected_node) || task.task_type === 'orient', packet.selected_node?.name || 'not resolved'),
+    gate('target-resolved', Boolean(context.selected_node) || task.task_type === 'orient', context.selected_node?.name || 'not resolved'),
     gate('file-plan-present', planFiles.length > 0, `${planFiles.length} files`),
     gate('file-plan-narrower-than-repo', filesInRepo <= 1 || planFiles.length < filesInRepo, `${planFiles.length}/${filesInRepo}`),
     gate('selected-file-included', !selectedFile || planFiles.some(file => pathsCompatible(file, selectedFile)), selectedFile || 'no selected file'),
-    gate('mcp-followups-present', packet.next_mcp_calls.length > 0, `${packet.next_mcp_calls.length} calls`),
-    gate('coding-context-present', task.task_type === 'orient' || Boolean(packet.work_context.coding_context), packet.work_context.coding_context ? 'coding context' : 'no coding context'),
+    gate('mcp-followups-present', context.next_mcp_calls.length > 0, `${context.next_mcp_calls.length} calls`),
+    gate('coding-context-present', task.task_type === 'orient' || Boolean(context.work_context.coding_context), context.work_context.coding_context ? 'coding context' : 'no coding context'),
     gate(
       'risk-context-present',
-      task.task_type === 'orient' || Boolean(packet.work_context.risk || packet.work_context.risk_context),
-      packet.work_context.risk ? 'risk context' : packet.work_context.risk_context ? 'risk context summary' : 'no risk context'
+      task.task_type === 'orient' || Boolean(context.work_context.risk || context.work_context.risk_context),
+      context.work_context.risk ? 'risk context' : context.work_context.risk_context ? 'risk context summary' : 'no risk context'
     ),
     gate('beats-cold-repo-read', beatsColdRepoRead(filesInRepo, planFiles.length, reduction), `${reduction}% fewer files`),
   ];
   const score = Math.round(gates.reduce((sum, result) => sum + result.score, 0) / gates.length);
-  const comparison = buildAgenticComparison(projectPath, task, packet, sourceFiles, packetGenerationMs, Math.round(analysisDurationMs / Math.max(1, taskCount)));
+  const comparison = buildAgenticComparison(projectPath, task, context, sourceFiles, contextGenerationMs, Math.round(analysisDurationMs / Math.max(1, taskCount)));
 
   return {
     task_id: benchmarkTask.id,
@@ -356,9 +356,9 @@ async function scoreTask(cas: CASOutput, projectPath: string, benchmarkTask: Ben
     task,
     status: statusFromScore(score),
     score,
-    selected_node: packet.selected_node,
-    file_read_plan: packet.file_read_plan,
-    validation_plan: packet.validation_plan,
+    selected_node: context.selected_node,
+    file_read_plan: context.file_read_plan,
+    validation_plan: context.validation_plan,
     baseline: {
       cold_repo_files: filesInRepo,
       planned_files: planFiles.length,
@@ -389,35 +389,35 @@ function beatsColdRepoRead(filesInRepo: number, plannedFiles: number, reduction:
 function buildAgenticComparison(
   projectPath: string,
   task: AgentTask,
-  packet: Awaited<ReturnType<typeof getAgentWorkPacket>>,
+  context: Awaited<ReturnType<typeof getAgentContext>>,
   sourceFiles: SourceFileStat[],
-  packetGenerationMs: number,
+  contextGenerationMs: number,
   amortizedAnalysisMs = 0
 ): AgenticComparison {
-  const planFiles = packet.file_read_plan.map(item => String(item.file)).filter(Boolean);
-  const planItems = packet.file_read_plan as Array<{ file?: string; line_window?: { start?: number; end?: number } }>;
-  const packetTokens = estimateTokens(JSON.stringify(packet).length);
+  const planFiles = context.file_read_plan.map(item => String(item.file)).filter(Boolean);
+  const planItems = context.file_read_plan as Array<{ file?: string; line_window?: { start?: number; end?: number } }>;
+  const contextTokens = estimateTokens(JSON.stringify(context).length);
   const withSourceTokens = estimatePlannedSourceTokens(projectPath, planItems, sourceFiles);
-  const withTotalTokens = withSourceTokens + packetTokens;
+  const withTotalTokens = withSourceTokens + contextTokens;
   const coldScanTokens = sum(sourceFiles.map(file => file.estimated_tokens));
   const searchStats = sourceSearchBaseline(sourceFiles, task);
   const searchFileTokens = sum(searchStats.map(file => file.estimated_tokens));
   const searchOverheadTokens = estimateSearchOverheadTokens(sourceFiles.length, searchStats.length, task);
   const searchTokens = searchFileTokens + searchOverheadTokens;
-  const withEstimatedMs = estimateAgentWorkMs(planFiles.length, withTotalTokens, packetGenerationMs);
+  const withEstimatedMs = estimateAgentWorkMs(planFiles.length, withTotalTokens, contextGenerationMs);
   const coldEstimatedMs = estimateAgentWorkMs(sourceFiles.length, coldScanTokens, 0);
   const searchEstimatedMs = estimateAgentWorkMs(searchStats.length, searchTokens, 0);
   const withFirstRunMs = withEstimatedMs + amortizedAnalysisMs;
 
   return {
     benchmark_type: 'deterministic-proxy',
-    measurement_note: 'Token counts are local estimates from file bytes and MCP packet size. Speed is a deterministic work estimate plus measured Klauro packet generation; provider-reported tokens should be captured with the included two-agent protocol.',
+    measurement_note: 'Token counts are local estimates from file bytes and MCP context size. Speed is a deterministic work estimate plus measured Klauro context generation; provider-reported tokens should be captured with the included two-agent protocol.',
     with_klauro: {
-      packet_generation_ms: packetGenerationMs,
-      mcp_calls: packet.next_mcp_calls.length,
+      context_generation_ms: contextGenerationMs,
+      mcp_calls: context.next_mcp_calls.length,
       files_to_read: planFiles.length,
       source_tokens: withSourceTokens,
-      packet_tokens: packetTokens,
+      context_tokens: contextTokens,
       total_context_tokens: withTotalTokens,
       estimated_work_ms: withEstimatedMs,
       estimated_cached_solution_ms: withEstimatedMs,
@@ -605,8 +605,8 @@ function agentPromptWithKlauro(projectPath: string, task: AgentTask): string {
     task.success_criteria?.length ? `Success criteria: ${task.success_criteria.join('; ')}` : '',
     'Use Klauro by default before broad file reads.',
     `First call get_agent_doctor with path ${JSON.stringify(projectPath)}.`,
-    `Then call get_agent_start_context and get_agent_work_packet with path ${JSON.stringify(projectPath)} and task ${JSON.stringify(task)}.`,
-    'Read source files after the work packet narrows the target or when MCP reports a concrete gap. Record wall time, input tokens, output tokens, files read, tool calls, edits, tests, and result.',
+    `Then call get_agent_start_context and get_agent_context with path ${JSON.stringify(projectPath)} and task ${JSON.stringify(task)}.`,
+    'Read source files after the agent context narrows the target or when MCP reports a concrete gap. Record wall time, input tokens, output tokens, files read, tool calls, edits, tests, and result.',
   ].join('\n');
 }
 
@@ -708,7 +708,7 @@ function average(values: number[]): number {
 
 async function analyzeTarget(target: BenchmarkTarget, options: { requestedTask?: AgentTask; suite?: boolean; maxTasksPerRepo?: number } = {}) {
   const startedAt = Date.now();
-  const cas = await getOrchestrator().orchestrateAnalysis(target.path);
+  const cas = await analyzeForBench(target.path);
   const analysisDurationMs = Date.now() - startedAt;
   const sourceFiles = await sourceFileStats(target.path);
   const tasks = options.requestedTask

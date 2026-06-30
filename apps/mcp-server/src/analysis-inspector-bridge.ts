@@ -2,7 +2,7 @@ import * as fs from 'fs-extra';
 import * as http from 'http';
 import * as path from 'path';
 import { spawn } from 'child_process';
-import { analyzeProject } from './analyzer';
+import { analyzeForBench } from './gauntlet/product-analysis';
 import { withAnalysisFocus } from './analysis-focus';
 
 const port = Number(process.env.KLAURO_INSPECTOR_BRIDGE_PORT || '48731');
@@ -82,7 +82,7 @@ async function runJob(job: ReanalysisJob): Promise<void> {
   job.startedAt = new Date().toISOString();
   try {
     await appendLog(job.logPath, `$ klauro analyze ${job.projectPath} --analysis-focus ui-overview\n`);
-    const result = await withAnalysisFocus('ui-overview', () => analyzeProject(job.projectPath), {
+    const result = await withAnalysisFocus('ui-overview', () => analyzeForBench(job.projectPath), {
       interpretationBudgetMs: '90000',
       elementDescriptionBudgetMs: '150000',
       elementDescriptionLimit: '8',

@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import pLimit from 'p-limit';
 import { discoverRealRepos, type RealRepoTarget } from './repo-discovery';
-import { analyzeProject } from './analyzer';
+import { analyzeForBench } from './gauntlet/product-analysis';
 import { withAnalysisFocus, type AnalysisFocus } from './analysis-focus';
 import { evaluateSpotReadCas } from './analysis-spot-read-quality';
 import { isDirectCliInvocation } from './cli-invocation';
@@ -133,7 +133,7 @@ async function evaluateRepo(repo: RealRepoTarget, focus: AnalysisFocus, perRepoT
   const started = Date.now();
   try {
     const cas: CASOutput = await withTimeout(
-      withAnalysisFocus(focus, () => analyzeProject(repo.path)),
+      withAnalysisFocus(focus, () => analyzeForBench(repo.path)),
       perRepoTimeoutMs,
       `analysis timed out after ${Math.round(perRepoTimeoutMs / 1000)}s`
     );

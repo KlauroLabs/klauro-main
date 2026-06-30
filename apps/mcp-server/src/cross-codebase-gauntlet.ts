@@ -3,7 +3,8 @@ import * as os from 'os';
 import * as path from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { analyzeProject, getAnalysis } from './analyzer';
+import { getAnalysis } from './analyzer';
+import { analyzeForBench } from './gauntlet/product-analysis';
 import { buildCrossCodebaseSystemGraph, summarizeCrossCodebaseSystemGraph, type CrossCodebaseSystemGraph } from './cross-codebase-analysis';
 import { listAnalyses, loadCrossCodebaseSystemGraph } from './storage';
 import { resolveWorkspaceInputPaths } from './workspace-inputs';
@@ -35,9 +36,9 @@ interface McpConsumerResult {
   error?: string;
   analysis_id?: string;
   overview_bytes?: number;
-  packet_bytes?: number;
+  context_bytes?: number;
   overview_truncated?: boolean;
-  packet_truncated?: boolean;
+  context_truncated?: boolean;
   deployables_sample?: string[];
   deployables_returned?: number;
   deployables_total?: number;
@@ -57,7 +58,7 @@ interface McpConsumerResult {
   contract_conforms?: boolean;
   freshness_status?: string;
   next_tools?: string[];
-  packet_excerpt?: {
+  context_excerpt?: {
     selected_surfaces: Array<Record<string, unknown>>;
     linked_supporting_surfaces?: Array<Record<string, unknown>>;
     source_backed_connections: Array<Record<string, unknown>>;
@@ -68,6 +69,7 @@ interface McpConsumerResult {
   };
   generated_via_mcp?: boolean;
   ai_enrichment?: boolean;
+  ai_provider?: Record<string, unknown>;
   narrative_source?: string;
   ai_quality_flags?: string[];
   semantic_quality?: Record<string, unknown>;
@@ -249,10 +251,12 @@ async function main() {
         result.status === 'pass' &&
         result.ai_enrichment === true &&
         result.narrative_source === 'ai' &&
+        (!process.env.KLAURO_EXPECT_AI_PROVIDER || String(result.ai_provider?.provider || '') === process.env.KLAURO_EXPECT_AI_PROVIDER) &&
         (result.ai_quality_flags || []).length === 0
       ),
       observed: args.withAi ? Object.fromEntries(mcpConsumerResults.map(result => [result.system, {
         ai_enrichment: result.ai_enrichment,
+        ai_provider: result.ai_provider,
         narrative_source: result.narrative_source,
         ai_quality_flags: result.ai_quality_flags,
         semantic_quality: result.semantic_quality,
@@ -307,19 +311,19 @@ async function main() {
       } : 'skipped',
     },
     {
-      name: 'mcp-product-path-keeps-workspace-packets-compact',
+      name: 'mcp-product-path-keeps-workspace-contexts-compact',
       pass: !args.mcpConsumer || mcpConsumerResults.every(result =>
         result.status === 'pass' &&
         !result.overview_truncated &&
-        !result.packet_truncated &&
+        !result.context_truncated &&
         (result.overview_bytes || 0) <= 20_000 &&
-        (result.packet_bytes || 0) <= 20_000
+        (result.context_bytes || 0) <= 20_000
       ),
       observed: args.mcpConsumer ? Object.fromEntries(mcpConsumerResults.map(result => [result.system, {
         overview_bytes: result.overview_bytes,
-        packet_bytes: result.packet_bytes,
+        context_bytes: result.context_bytes,
         overview_truncated: result.overview_truncated,
-        packet_truncated: result.packet_truncated,
+        context_truncated: result.context_truncated,
       }])) : 'skipped',
     },
     {
@@ -374,6 +378,7 @@ async function main() {
     systems: systems.map(system => ({
       name: system.name,
       summary: summarizeCrossCodebaseSystemGraph(system.graph),
+      ai_provider: system.graph.ai_enrichment,
       unmatched_breakdown: unmatchedBreakdown(system.graph),
       mermaid: formatMermaid(system.graph),
       graph: args.includeGraph ? system.graph : undefined,
@@ -540,11 +545,13 @@ async function runMcpWorkspaceBuild(
   aiEnrichment: boolean
 ): Promise<{ analysisId?: string; graph?: CrossCodebaseSystemGraph; error?: string }> {
   try {
+    const aiTimeout = Number(process.env.KLAURO_WORKSPACE_GAUNTLET_AI_TIMEOUT_MS || process.env.KLAURO_WORKSPACE_AI_TIMEOUT_MS || 900_000);
+    const timeout = aiEnrichment ? Math.max(360_000, aiTimeout) : 120_000;
     const payload = await callMcpTool(client, 'run_workspace_analysis', {
       name: analysisName,
       paths: input.paths,
       ai_enrichment: aiEnrichment,
-    }, { timeout: aiEnrichment ? 360_000 : 120_000 });
+    }, { timeout });
     const analysisId = String((payload as any)?.saved?.id || analysisName);
     const graph = await loadCrossCodebaseSystemGraph(analysisId);
     if (!graph) return { analysisId, error: `Saved WAS not found after MCP generation: ${analysisId}` };
@@ -566,7 +573,7 @@ async function runMcpConsumerCheck(client: Client, system: SystemReport, analysi
       analysis_id_or_name: savedId,
       detail_level: 'overview',
     });
-    const packetPayload = await callMcpTool(client, 'get_workspace_agent_packet', {
+    const contextPayload = await callMcpTool(client, 'get_workspace_agent_context', {
       analysis_id_or_name: savedId,
       task: {
         task_type: 'cross-repo',
@@ -587,30 +594,30 @@ async function runMcpConsumerCheck(client: Client, system: SystemReport, analysi
       analysis_id_or_name: savedId,
     });
     const overview = unwrapToolPayload(overviewPayload);
-    const packet = unwrapToolPayload(packetPayload);
+    const context = unwrapToolPayload(contextPayload);
     const contract = unwrapToolPayload(contractPayload);
     const entityMap = unwrapToolPayload(entityPayload);
     const freshness = unwrapToolPayload(freshnessPayload);
-    const repoDrilldown = await runMcpRepoDrilldownCheck(client, packet, system.name);
+    const repoDrilldown = await runMcpRepoDrilldownCheck(client, context, system.name);
     const overviewText = JSON.stringify(overviewPayload);
-    const packetText = JSON.stringify(packetPayload);
+    const contextText = JSON.stringify(contextPayload);
     const savedGraph = await loadCrossCodebaseSystemGraph(savedId);
     const excludeRun = system.name === 'Zerac'
       ? await runMcpExcludeGenerationCheck(client, system, analysisName)
       : { status: 'skipped' as const };
     return {
       system: system.name,
-      status: isMcpWorkspacePayloadUsable(overview, packet) ? 'pass' : 'fail',
+      status: isMcpWorkspacePayloadUsable(overview, context) ? 'pass' : 'fail',
       analysis_id: savedId,
       overview_bytes: Buffer.byteLength(overviewText, 'utf8'),
-      packet_bytes: Buffer.byteLength(packetText, 'utf8'),
+      context_bytes: Buffer.byteLength(contextText, 'utf8'),
       overview_truncated: Boolean((overviewPayload as any)?.truncated),
-      packet_truncated: Boolean((packetPayload as any)?.truncated),
+      context_truncated: Boolean((contextPayload as any)?.truncated),
       deployables_sample: ((overview as any)?.deployables || []).map((app: any) => String(app.name)).slice(0, 24),
       deployables_returned: ((overview as any)?.deployables || []).length,
       deployables_total: Number((overview as any)?.summary?.application_count || savedGraph?.applications?.length || 0),
       distribution_units: ((overview as any)?.distribution_units || []).map(formatMcpDistributionUnit).slice(0, 12),
-      selected_distribution_units: ((packet as any)?.selected_distribution_units || []).map(formatMcpDistributionUnit).slice(0, 12),
+      selected_distribution_units: ((context as any)?.selected_distribution_units || []).map(formatMcpDistributionUnit).slice(0, 12),
       environments: ((overview as any)?.environments || []).map((environment: any) => String(environment.name)).sort(),
       entity_count: ((entityMap as any)?.entities || []).length,
       entity_path_count: ((entityMap as any)?.entity_paths || []).length,
@@ -619,18 +626,19 @@ async function runMcpConsumerCheck(client: Client, system: SystemReport, analysi
       contract_status: String((contract as any)?.status || ''),
       contract_conforms: Boolean((contract as any)?.conforms_to_was),
       freshness_status: String((freshness as any)?.status || ''),
-      next_tools: (((packet as any)?.agent_guidance?.next_mcp_calls || []) as Array<{ tool?: string }>).map(call => String(call.tool)).slice(0, 12),
-      packet_excerpt: {
-        selected_surfaces: (((packet as any)?.selected_surfaces || []) as Array<Record<string, unknown>>).slice(0, 6),
-        linked_supporting_surfaces: (((packet as any)?.linked_supporting_surfaces || []) as Array<Record<string, unknown>>).slice(0, 4),
-        source_backed_connections: (((packet as any)?.source_backed_connections || []) as Array<Record<string, unknown>>).slice(0, 6),
-        candidate_connections: (((packet as any)?.candidate_connections || []) as Array<Record<string, unknown>>).slice(0, 4),
-        warnings: (((packet as any)?.agent_guidance?.warnings || []) as string[]).slice(0, 4),
-        agent_should_read_next: (((packet as any)?.agent_guidance?.agent_should_read_next || []) as Array<Record<string, unknown>>).slice(0, 5),
-        next_mcp_calls: (((packet as any)?.agent_guidance?.next_mcp_calls || []) as Array<Record<string, unknown>>).slice(0, 4),
+      next_tools: (((context as any)?.agent_guidance?.next_mcp_calls || []) as Array<{ tool?: string }>).map(call => String(call.tool)).slice(0, 12),
+      context_excerpt: {
+        selected_surfaces: (((context as any)?.selected_surfaces || []) as Array<Record<string, unknown>>).slice(0, 6),
+        linked_supporting_surfaces: (((context as any)?.linked_supporting_surfaces || []) as Array<Record<string, unknown>>).slice(0, 4),
+        source_backed_connections: (((context as any)?.source_backed_connections || []) as Array<Record<string, unknown>>).slice(0, 6),
+        candidate_connections: (((context as any)?.candidate_connections || []) as Array<Record<string, unknown>>).slice(0, 4),
+        warnings: (((context as any)?.agent_guidance?.warnings || []) as string[]).slice(0, 4),
+        agent_should_read_next: (((context as any)?.agent_guidance?.agent_should_read_next || []) as Array<Record<string, unknown>>).slice(0, 5),
+        next_mcp_calls: (((context as any)?.agent_guidance?.next_mcp_calls || []) as Array<Record<string, unknown>>).slice(0, 4),
       },
       generated_via_mcp: generatedViaMcp,
       ai_enrichment: aiEnrichment,
+      ai_provider: savedGraph?.ai_enrichment || system.graph.ai_enrichment,
       narrative_source: system.graph.workspace_narrative?.source,
       semantic_quality: workspacePrimarySemanticAiCoverage(system.graph),
       semantic_preview: workspaceSemanticPreview(savedGraph || system.graph),
@@ -639,7 +647,7 @@ async function runMcpConsumerCheck(client: Client, system: SystemReport, analysi
         .filter(code => ['workspace-narrative-ai-degraded', 'capability-descriptions-degraded', 'domain-descriptions-degraded'].includes(code)),
       repo_drilldown: repoDrilldown,
       exclude_run: excludeRun,
-      error: isMcpWorkspacePayloadUsable(overview, packet) ? undefined : 'MCP response did not include overview surface sample, packet selected surfaces, agent read-next guidance, next MCP calls, or usable packet budget.',
+      error: isMcpWorkspacePayloadUsable(overview, context) ? undefined : 'MCP response did not include overview surface sample, context selected surfaces, agent read-next guidance, next MCP calls, or usable context budget.',
     };
   } catch (error) {
     return {
@@ -684,41 +692,41 @@ async function runMcpExcludeGenerationCheck(client: Client, system: SystemReport
 
 async function runMcpRepoDrilldownCheck(
   client: Client,
-  packet: any,
+  context: any,
   systemName: string
 ): Promise<NonNullable<McpConsumerResult['repo_drilldown']>> {
-  const calls = (((packet as any)?.agent_guidance?.next_mcp_calls || []) as Array<{ tool?: string; args?: Record<string, any> }>);
-  const workPacketCall = calls.find(call => call.tool === 'get_agent_work_packet' && typeof call.args?.path === 'string');
-  if (!workPacketCall?.args?.path) return { status: 'skipped', error: 'No get_agent_work_packet drilldown call was present in workspace packet.' };
+  const calls = (((context as any)?.agent_guidance?.next_mcp_calls || []) as Array<{ tool?: string; args?: Record<string, any> }>);
+  const agentContextCall = calls.find(call => call.tool === 'get_agent_context' && typeof call.args?.path === 'string');
+  if (!agentContextCall?.args?.path) return { status: 'skipped', error: 'No get_agent_context drilldown call was present in workspace context.' };
   try {
-    const payload = await callMcpTool(client, 'get_agent_work_packet', {
-      path: workPacketCall.args.path,
-      workspace_analysis_id: workPacketCall.args.workspace_analysis_id,
+    const payload = await callMcpTool(client, 'get_agent_context', {
+      path: agentContextCall.args.path,
+      workspace_analysis_id: agentContextCall.args.workspace_analysis_id,
       task: {
-        ...(workPacketCall.args.task || {}),
+        ...(agentContextCall.args.task || {}),
         response_profile: 'first-turn',
-        target: workPacketCall.args.task?.target || systemName,
+        target: agentContextCall.args.task?.target || systemName,
       },
     }, { timeout: 120_000 });
-    const repoPacket = unwrapToolPayload(payload);
-    const fileReadPlanCount = Array.isArray(repoPacket?.file_read_plan)
-      ? repoPacket.file_read_plan.length
-      : Array.isArray(repoPacket?.files)
-        ? repoPacket.files.length
+    const repoContext = unwrapToolPayload(payload);
+    const fileReadPlanCount = Array.isArray(repoContext?.file_read_plan)
+      ? repoContext.file_read_plan.length
+      : Array.isArray(repoContext?.files)
+        ? repoContext.files.length
         : 0;
-    const workContext = repoPacket?.work_context || {};
-    const compactContextPresent = Boolean(repoPacket?.capsule || repoPacket?.context_capsule || repoPacket?.selected || repoPacket?.execution);
+    const workContext = repoContext?.work_context || {};
+    const compactContextPresent = Boolean(repoContext?.capsule || repoContext?.context_capsule || repoContext?.selected || repoContext?.execution);
     const tests = workContext?.tests;
     const invariants = workContext?.behavioral_invariants;
     const hasTestsOrInvariants = Boolean(
       (Array.isArray(tests) && tests.length > 0) ||
       (Array.isArray(invariants) && invariants.length > 0) ||
       (invariants && typeof invariants === 'object' && Object.keys(invariants).length > 0) ||
-      (Array.isArray(repoPacket?.execution?.validate) && repoPacket.execution.validate.length > 0)
+      (Array.isArray(repoContext?.execution?.validate) && repoContext.execution.validate.length > 0)
     );
     return {
       status: fileReadPlanCount > 0 && (Boolean(workContext) || compactContextPresent) ? 'pass' : 'fail',
-      path: workPacketCall.args.path,
+      path: agentContextCall.args.path,
       file_read_plan_count: fileReadPlanCount,
       has_work_context: Boolean(workContext) || compactContextPresent,
       has_tests_or_invariants: hasTestsOrInvariants,
@@ -726,7 +734,7 @@ async function runMcpRepoDrilldownCheck(
   } catch (error) {
     return {
       status: 'fail',
-      path: workPacketCall.args.path,
+      path: agentContextCall.args.path,
       error: error instanceof Error ? error.message : String(error),
     };
   }
@@ -818,11 +826,11 @@ function duplicateSemanticNames(names: string[]): string[] {
 }
 
 function validateMcpConnectionTrustModel(result: McpConsumerResult): Record<string, unknown> {
-  const sourceBacked = result.packet_excerpt?.source_backed_connections || [];
-  const candidates = result.packet_excerpt?.candidate_connections || [];
+  const sourceBacked = result.context_excerpt?.source_backed_connections || [];
+  const candidates = result.context_excerpt?.candidate_connections || [];
   const visibleSurfaceIds = new Set([
-    ...(((result.packet_excerpt as any)?.selected_surfaces || []) as Array<Record<string, unknown>>).map(surface => String(surface.id || '')),
-    ...(((result.packet_excerpt as any)?.linked_supporting_surfaces || []) as Array<Record<string, unknown>>).map(surface => String(surface.id || '')),
+    ...(((result.context_excerpt as any)?.selected_surfaces || []) as Array<Record<string, unknown>>).map(surface => String(surface.id || '')),
+    ...(((result.context_excerpt as any)?.linked_supporting_surfaces || []) as Array<Record<string, unknown>>).map(surface => String(surface.id || '')),
   ].filter(Boolean));
   const invalidSourceBacked = sourceBacked.filter(connection =>
     String(connection.evidence_quality || '') !== 'source-backed' ||
@@ -891,17 +899,17 @@ function readNested(value: unknown, keys: string[]): unknown {
   return current;
 }
 
-function isMcpWorkspacePayloadUsable(overview: any, packet: any): boolean {
+function isMcpWorkspacePayloadUsable(overview: any, context: any): boolean {
   return Boolean(
     overview?.summary &&
     Array.isArray(overview?.deployables) &&
     Array.isArray(overview?.connections) &&
-    packet?.product === 'workspace_agent_packet' &&
-    Array.isArray(packet?.selected_surfaces) &&
-    packet?.selected_surfaces.length > 0 &&
-    Array.isArray(packet?.agent_guidance?.agent_should_read_next) &&
-    Array.isArray(packet?.agent_guidance?.next_mcp_calls) &&
-    packet?.packet_budget?.estimated_token_reduction_percentage >= 0
+    context?.product === 'workspace_agent_context' &&
+    Array.isArray(context?.selected_surfaces) &&
+    context?.selected_surfaces.length > 0 &&
+    Array.isArray(context?.agent_guidance?.agent_should_read_next) &&
+    Array.isArray(context?.agent_guidance?.next_mcp_calls) &&
+    context?.context_budget?.estimated_token_reduction_percentage >= 0
   );
 }
 
@@ -957,7 +965,7 @@ async function analyzeProjectDeterministicFirstPass(projectPath: string): Promis
   process.env.KLAURO_AI_INTERPRETATION = 'false';
   process.env.KLAURO_AI_INTERPRETATION_ENABLED = 'false';
   try {
-    return await analyzeProject(projectPath);
+    return await analyzeForBench(projectPath);
   } finally {
     restoreEnv('KLAURO_AI_INTERPRETATION', previous.interpretation);
     restoreEnv('KLAURO_AI_INTERPRETATION_ENABLED', previous.interpretationEnabled);
@@ -1009,7 +1017,16 @@ function resolveCurrentKlauroPath(devRoot: string): string {
 }
 
 function parseArgs(argv: string[]) {
-  const parsed: { devRoot?: string; output?: string; markdown?: string; json: boolean; includeGraph: boolean; fresh: boolean; mcpConsumer: boolean; withAi: boolean } = { json: false, includeGraph: false, fresh: false, mcpConsumer: true, withAi: false };
+  const parsed: {
+    devRoot?: string;
+    output?: string;
+    markdown?: string;
+    json: boolean;
+    includeGraph: boolean;
+    fresh: boolean;
+    mcpConsumer: boolean;
+    withAi: boolean;
+  } = { json: false, includeGraph: false, fresh: false, mcpConsumer: true, withAi: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--dev-root') parsed.devRoot = argv[++i];
@@ -1020,9 +1037,31 @@ function parseArgs(argv: string[]) {
     else if (arg === '--fresh') parsed.fresh = true;
     else if (arg === '--no-mcp-consumer') parsed.mcpConsumer = false;
     else if (arg === '--with-ai' || arg === '--ai-enrichment') parsed.withAi = true;
+    else if (arg === '--help' || arg === '-h') {
+      process.stdout.write(formatUsage());
+      process.exit(0);
+    }
     else throw new Error(`Unexpected argument: ${arg}`);
   }
   return parsed;
+}
+
+function formatUsage(): string {
+  return [
+    'Usage: npm run workspace-analysis-gauntlet -- [options]',
+    '',
+    'Options:',
+    '  --dev-root <path>       Root folder containing product workspaces. Defaults to ~/dev.',
+    '  --output <file>         Write JSON report.',
+    '  --markdown <file>       Write Markdown report.',
+    '  --json                  Print JSON report to stdout.',
+    '  --include-graph         Include full workspace graphs in the report.',
+    '  --fresh                 Re-analyze target repos before building workspace graphs.',
+    '  --no-mcp-consumer       Use internal graph builder only; skip MCP consumer validation.',
+    '  --with-ai               Enable AI enrichment checks when provider config is available.',
+    '  -h, --help              Show this help.',
+    '',
+  ].join('\n');
 }
 
 function formatMarkdown(report: any): string {
@@ -1056,15 +1095,15 @@ function formatMarkdown(report: any): string {
     ...((report.mcp_consumer_results || []).flatMap((result: McpConsumerResult) => [
       `### ${result.system}`,
       `Status: ${result.status}`,
-      `Packet bytes: ${result.packet_bytes ?? 'unknown'}${result.packet_truncated ? ' (truncated)' : ''}`,
+      `Context bytes: ${result.context_bytes ?? 'unknown'}${result.context_truncated ? ' (truncated)' : ''}`,
       `Deployables sample: ${(result.deployables_sample || []).join(', ') || 'none'} (${result.deployables_returned ?? 0}/${result.deployables_total ?? 0} returned)`,
       `Narrative: ${String((result.semantic_preview as any)?.narrative?.product_value_summary || '')}`,
       `Domains: ${(((result.semantic_preview as any)?.domains || []) as any[]).map(item => `${item.name} [${item.description_source}] - ${item.description}`).join(' | ') || 'none'}`,
       `Capabilities: ${(((result.semantic_preview as any)?.capabilities || []) as any[]).map(item => `${item.name} [${item.description_source}] - ${item.description}`).join(' | ') || 'none'}`,
       `AI quality flags: ${(result.ai_quality_flags || []).join(' | ') || 'none'}`,
-      `Selected surfaces: ${((result.packet_excerpt?.selected_surfaces || []) as any[]).map(item => `${item.name} (${item.deployable ? 'deployable' : 'non-deployable'} ${item.surface_kind || item.kind || 'surface'})`).join(', ') || 'none'}`,
-      `Source-backed connections: ${((result.packet_excerpt?.source_backed_connections || []) as any[]).map(item => `${item.source}->${item.target} ${item.kind}/${item.runtime_behavior}/${item.connection_nature}`).join(', ') || 'none'}`,
-      `Candidate connections: ${((result.packet_excerpt?.candidate_connections || []) as any[]).map(item => `${item.source}->${item.target} ${item.evidence_quality}: ${item.inferred_reason}`).join(', ') || 'none'}`,
+      `Selected surfaces: ${((result.context_excerpt?.selected_surfaces || []) as any[]).map(item => `${item.name} (${item.deployable ? 'deployable' : 'non-deployable'} ${item.surface_kind || item.kind || 'surface'})`).join(', ') || 'none'}`,
+      `Source-backed connections: ${((result.context_excerpt?.source_backed_connections || []) as any[]).map(item => `${item.source}->${item.target} ${item.kind}/${item.runtime_behavior}/${item.connection_nature}`).join(', ') || 'none'}`,
+      `Candidate connections: ${((result.context_excerpt?.candidate_connections || []) as any[]).map(item => `${item.source}->${item.target} ${item.evidence_quality}: ${item.inferred_reason}`).join(', ') || 'none'}`,
       '',
     ])),
     '',
@@ -1219,6 +1258,8 @@ function workspaceSemanticPreview(graph: CrossCodebaseSystemGraph | undefined): 
   return {
     narrative: {
       source: graph.workspace_narrative?.source,
+      ai_provider: graph.workspace_narrative?.ai_provider || graph.ai_enrichment?.provider,
+      ai_model: graph.workspace_narrative?.ai_model || graph.ai_enrichment?.model,
       product_value_summary: graph.workspace_narrative?.product_value_summary,
       description: graph.workspace_narrative?.description,
       key_capabilities: graph.workspace_narrative?.key_capabilities?.slice(0, 8),
@@ -1263,7 +1304,7 @@ function providerConsumerGapEvidence(graph: CrossCodebaseSystemGraph | undefined
   const app = (graph.applications || []).find(item => item.name === appName);
   const incomingLinks = app ? (graph.application_links || []).filter(link => link.target_application_id === app.id) : [];
   const insight = (graph.system_insights || []).find(item =>
-    item.type === 'provider-api-without-source-consumers' &&
+    (item.type === 'provider-api-without-source-consumers' || item.type === 'unclaimed-runtime-surface') &&
     item.application_ids.includes(app?.id || '')
   );
   return {
@@ -1423,6 +1464,7 @@ function looksExternalOrLocal(item: CrossCodebaseSystemGraph['interfaces'][numbe
   const itemAliases = (item.service_aliases || []).map(alias => alias.toLowerCase());
   if (itemAliases.includes('external_api')) return true;
   if (item.kind === 'sdk') return true;
+  if (/^(EXTERNAL-SERVICE|SERVICE-DEPENDENCY|SERVICE-REFERENCE)\b/i.test(item.name)) return true;
   if (item.endpoint && /^(https?:\/\/)?(localhost|127\.0\.0\.1|0\.0\.0\.0)(?::|\/|$)/i.test(item.endpoint)) return true;
   const host = endpointHost(item.endpoint || item.key);
   if (host && !aliases.has(host) && !/^(localhost|127\.0\.0\.1|0\.0\.0\.0)$/.test(host)) return true;
