@@ -1,8 +1,8 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import type { CASCodebaseIdiom, CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import { getOrchestrator } from './analyzer';
-import { getAgentWorkPacket, type AgentTask } from './agent-adoption';
+import { analyzeForBench } from './gauntlet/product-analysis';
+import { getAgentContext, type AgentTask } from './agent-adoption';
 import { buildIdiomContextForAgent, validateCodebaseIdioms } from './idiom-query';
 import { runLiveAgentPair, type LiveAgentCommandConfig, type LiveAgentPairResult } from './agent-live-trial';
 import { discoverRealRepos } from './repo-discovery';
@@ -209,16 +209,16 @@ export async function runAgentIdiomBenchmark(options: {
 
   for (const target of selectedTargets) {
     if (!options.quiet) console.log(`Analyzing idioms: ${target.name}`);
-    const cas = await getOrchestrator().orchestrateAnalysis(target.path);
+    const cas = await analyzeForBench(target.path);
     const tasks = buildIdiomTasks(cas, target.path, options.maxTasksPerRepo || 4);
     for (const task of tasks) {
-      const packet = await getAgentWorkPacket(cas, target.path, task.task);
+      const context = await getAgentContext(cas, target.path, task.task);
       const idiomContext = buildIdiomContextForAgent(cas, {
         target: task.task.target,
-        files: packet.file_read_plan.map(item => item.file),
+        files: context.file_read_plan.map(item => item.file),
         limit: 10,
       });
-      const targetOnlyFiles = targetOnlyChangedFiles(task, packet.file_read_plan);
+      const targetOnlyFiles = targetOnlyChangedFiles(task, context.file_read_plan);
       const idiomAwareFiles = idiomAwareChangedFiles(cas, task, targetOnlyFiles);
       const deterministicWith = deterministicIdiomScore(cas, target.path, task, {
         changedFiles: idiomAwareFiles,
@@ -266,9 +266,9 @@ export async function runAgentIdiomBenchmark(options: {
           cas,
           target,
           task,
-          fileReadPlan: packet.file_read_plan,
-          selectedNode: packet.selected_node,
-          validationPlan: packet.validation_plan,
+          fileReadPlan: context.file_read_plan,
+          selectedNode: context.selected_node,
+          validationPlan: context.validation_plan,
           idiomContext,
         });
       }

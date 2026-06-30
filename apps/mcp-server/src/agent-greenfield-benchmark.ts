@@ -1,7 +1,8 @@
 #!/usr/bin/env tsx
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { analyzeProjectIncremental, getAnalysis } from './analyzer';
+import { getAnalysis } from './analyzer';
+import { analyzeForBench } from './gauntlet/product-analysis';
 import { buildGreenfieldArchitectureGuidance, type GreenfieldReferenceAnalysis } from './greenfield-guidance';
 import { runLiveAgentPair, type LiveAgentCommandConfig, type LiveAgentPairResult } from './agent-live-trial';
 import { previewGreenfieldCodebase, getPreviewAnalysis, type ProposedFileInput } from './proposal-preview';
@@ -1102,7 +1103,7 @@ async function loadReferences(paths: string[]): Promise<GreenfieldReferenceAnaly
       try {
         cas = await getAnalysis(absolute);
       } catch {
-        cas = (await analyzeProjectIncremental(absolute)).output;
+        cas = await analyzeForBench(absolute);
       }
       references.push({
         path: absolute,

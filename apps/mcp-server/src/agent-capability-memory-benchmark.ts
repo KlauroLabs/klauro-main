@@ -2,8 +2,8 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import type { CASOutput, SystemCapability } from '../../../packages/analyzer-core/src/types/cas.types';
-import { buildCapabilityMemoryForAgent, getAgentWorkPacket } from './agent-adoption';
-import { getOrchestrator } from './analyzer';
+import { buildCapabilityMemoryForAgent, getAgentContext } from './agent-adoption';
+import { analyzeForBench } from './gauntlet/product-analysis';
 import { discoverRealRepos } from './repo-discovery';
 import { saveAgenticBenchmarkReport } from './storage';
 import { isDirectCliInvocation } from './cli-invocation';
@@ -92,7 +92,7 @@ export async function runAgentCapabilityMemoryBenchmark(options: {
 
   for (const target of targets) {
     if (!options.quiet) console.log(`Analyzing capability memory: ${target.name}`);
-    const cas = await getOrchestrator().orchestrateAnalysis(target.path);
+    const cas = await analyzeForBench(target.path);
     const trials = [];
     for (const capability of selectCapabilities(cas).slice(0, options.maxTasksPerRepo || 4)) {
       const task = taskForCapability(capability);
@@ -103,8 +103,8 @@ export async function runAgentCapabilityMemoryBenchmark(options: {
         files: capability.operations.map(operation => operation.path_or_command || '').filter(Boolean),
         limit: 8,
       });
-      const packet = await getAgentWorkPacket(cas, target.path, task);
-      const withScore = scoreWithCapabilityMemory(memory, capability, packet);
+      const context = await getAgentContext(cas, target.path, task);
+      const withScore = scoreWithCapabilityMemory(memory, capability, context);
       const withoutScore = scoreWithoutCapabilityMemory(capability);
       const delta = withScore.score - withoutScore.score;
       trials.push({
@@ -208,12 +208,12 @@ function taskForCapability(capability: SystemCapability) {
   };
 }
 
-function scoreWithCapabilityMemory(memory: any, capability: SystemCapability, packet: any) {
+function scoreWithCapabilityMemory(memory: any, capability: SystemCapability, context: any) {
   const matched = (memory.matched_capabilities || []).find((candidate: any) => candidate.id === capability.id || candidate.name === capability.name);
   const reuseDecision = (memory.reuse_decisions_required || []).find((decision: any) => decision.existing_capability === capability.name);
   const operationPaths = capability.operations.map(operation => operation.path_or_command).filter(Boolean) as string[];
-  const packetFiles = (packet.file_read_plan || []).map((item: any) => item.file).filter(Boolean);
-  const includesOwner = operationPaths.length === 0 || operationPaths.some(file => packetFiles.includes(file));
+  const contextFiles = (context.file_read_plan || []).map((item: any) => item.file).filter(Boolean);
+  const includesOwner = operationPaths.length === 0 || operationPaths.some(file => contextFiles.includes(file));
   const score =
     (matched ? 35 : 0) +
     (reuseDecision ? 25 : 0) +
@@ -227,7 +227,7 @@ function scoreWithCapabilityMemory(memory: any, capability: SystemCapability, pa
     reuse_decision_present: Boolean(reuseDecision),
     owner_path_in_file_plan: includesOwner,
     matched_capabilities: (memory.matched_capabilities || []).slice(0, 5),
-    file_read_plan: packetFiles.slice(0, 8),
+    file_read_plan: contextFiles.slice(0, 8),
   };
 }
 

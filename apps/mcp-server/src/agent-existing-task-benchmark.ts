@@ -2,8 +2,8 @@
 import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
-import { analyzeProjectIncremental } from './analyzer';
-import { getAgentWorkPacket } from './agent-adoption';
+import { analyzeForBench } from './gauntlet/product-analysis';
+import { getAgentContext } from './agent-adoption';
 import { parseAgentContextCapsule } from './agent-context-codec';
 import { validateAgentChange } from './agent-workflow';
 import { runLiveAgentPair, type LiveAgentArmResult, type LiveAgentCommandConfig, type LiveAgentPairResult } from './agent-live-trial';
@@ -68,6 +68,7 @@ interface SeededScenario {
     forbidden_diff_patterns?: string[];
     prompt_forbidden_evidence?: string[];
     direct_patch?: boolean;
+    capsule_prompt?: boolean;
     require_test_change?: boolean;
     require_test_import_source?: boolean;
     require_production_change?: boolean;
@@ -84,7 +85,7 @@ interface ScenarioResult {
   repo_path: string;
   with_klauro: {
     score: number;
-    packet_tokens: number;
+    context_tokens: number;
     file_hit_rate: number;
     first_read_file_hit_rate: number;
     term_hit_rate: number;
@@ -189,7 +190,7 @@ interface RealRepoBenchmarkReport {
   family: TaskFamily;
   without_arm_retrieval: boolean;
   with_klauro: {
-    packet_tokens: number;
+    context_tokens: number;
     first_files: string[];
   };
   index_retrieval_baseline: ScenarioResult['index_retrieval_baseline'];
@@ -378,11 +379,25 @@ const SCENARIOS: SeededScenario[] = [
       { file: 'src/repositories/taskRepository.ts', patterns: ['workspaceId', 'task\\.workspaceId\\s*===\\s*workspaceId'], absent_patterns: ['void\\s+workspaceId'] },
       { file: 'tests/taskVisibility.test.ts', patterns: ['workspace|tenant|visibility|cross'] },
     ],
+    edit_recipe: [
+      'In TaskRepository.listVisibleForUser, remove void workspaceId and filter by both task.assigneeId === userId and task.workspaceId === workspaceId.',
+      'Add a focused taskVisibility test with same-user tasks in workspace-a and workspace-b; assert only the requested workspace row is returned.',
+    ],
     semantic_rules: {
       required_changed_files: ['src/repositories/taskRepository.ts', 'tests/taskVisibility.test.ts'],
       max_changed_files: 3,
       required_diff_patterns: ['task\\.workspaceId\\s*===\\s*workspaceId', 'cross-workspace|workspace-b|tenant leak'],
+      prompt_required_evidence: [
+        'Repository root cause: listVisibleForUser ignored workspaceId.',
+        'Fix filters by assigneeId and workspaceId together.',
+        'Focused test proves same-user cross-workspace rows are hidden.',
+      ],
       forbidden_diff_patterns: ['assertWorkspaceMember\\([^)]*workspace-b', 'skip\\(|todo\\('],
+      prompt_forbidden_evidence: [
+        'Do not move the fix to controller-only filtering.',
+        'Do not bypass the repository with policy-only assertions.',
+      ],
+      direct_patch: true,
     },
   },
   {
@@ -429,8 +444,8 @@ const SCENARIOS: SeededScenario[] = [
     ],
     edit_recipe: [
       'In createTask: if (!input.title.trim()) throw new Error("Task title is required") before assertWorkspaceMember.',
-      'In tests/taskService.test.js: import node:assert, TaskService, and TaskRepository only.',
-      'Assert empty title throws, whitespace-only title throws, and a valid title still reaches repository.create.',
+      'In tests/taskService.test.js: import node:assert, TaskService, and the real TaskRepository only; do not build a mock repository.',
+      'Keep the test compact: assert empty title throws, whitespace-only title throws, and one valid create returns a task id.',
     ],
     semantic_rules: {
       required_changed_files: ['src/services/taskService.ts', 'tests/taskService.test.js'],
@@ -445,12 +460,13 @@ const SCENARIOS: SeededScenario[] = [
       required_diff_patterns: ['title\\.trim\\(\\)|trim\\(\\).*title|Task title is required', 'blank|empty|required|throws'],
       prompt_required_evidence: [
         'Service rejects empty and whitespace-only titles before policy/repository calls.',
-        'Focused test imports TaskService and TaskRepository production source directly.',
-        'Focused test proves blank/whitespace titles throw and a valid title still succeeds.',
+        'Focused test uses the real TaskService and TaskRepository production source directly.',
+        'Focused test proves blank/whitespace titles throw and one valid create returns a task id.',
       ],
-      forbidden_diff_patterns: ['repository\\.create\\(\\{[^}]*title:\\s*input\\.title\\.trim\\(\\)', 'assert\\.ok\\(true\\)'],
+      forbidden_diff_patterns: ['repository\\.create\\(\\{[^}]*title:\\s*input\\.title\\.trim\\(\\)', 'assert\\.ok\\(true\\)', 'const repository\\s*=\\s*\\{'],
       prompt_forbidden_evidence: [
         'Do not inline or mirror TaskService in the test.',
+        'Do not create a mock repository object; use the real TaskRepository.',
         'Do not change repository, controller, policy, package, or domain files.',
       ],
       direct_patch: true,
@@ -487,11 +503,25 @@ const SCENARIOS: SeededScenario[] = [
       { file: 'src/controllers/taskController.ts', patterns: ['TaskService|taskService', 'makeTaskController', 'listVisibleForUser'], absent_patterns: ['from "../db"|db\\.tasks'] },
       { file: 'src/services/taskService.ts', patterns: ['listVisibleForUser'] },
     ],
+    edit_recipe: [
+      'Rewrite src/controllers/taskController.ts back to makeTaskController(taskService: TaskService).',
+      'Import TaskService and delegate listTasks to taskService.listVisibleForUser(req.userId, req.workspaceId).',
+      'Remove the direct db import and every db.tasks access; do not instantiate TaskRepository in the controller.',
+    ],
     semantic_rules: {
       required_changed_files: ['src/controllers/taskController.ts'],
+      capsule_prompt: true,
       max_changed_files: 4,
       required_diff_patterns: ['TaskService|taskService', 'makeTaskController', 'listVisibleForUser'],
+      prompt_required_evidence: [
+        'Controller delegates to TaskService via makeTaskController.',
+        'No direct db.tasks access remains in the controller.',
+      ],
       forbidden_diff_patterns: ['from "../db"', 'db\\.tasks', 'new TaskRepository\\('],
+      prompt_forbidden_evidence: [
+        'Do not instantiate TaskRepository in the controller.',
+        'Do not edit repository internals for a controller-boundary refactor.',
+      ],
     },
   },
   {
@@ -623,11 +653,21 @@ const SCENARIOS: SeededScenario[] = [
       { file: 'packages/worker/src/export/taskExport.ts', patterns: ['dueDateTimezone'] },
       { file: 'tests/contract.test.js', patterns: ['dueDateTimezone', 'serializeTask', 'renderDueDate', 'taskExportRow'] },
     ],
+    edit_recipe: [
+      'Add dueDateTimezone to TaskDto in the shared API contract.',
+      'Default dueDateTimezone to UTC inside serializeTask, not inside web or worker consumers.',
+      'Thread dueDateTimezone through renderDueDate and taskExportRow, then cover all three boundaries in tests/contract.test.js.',
+      'Keep tests as direct imports from the three production modules; do not build a dynamic TypeScript loader or inspect source text.',
+    ],
     semantic_rules: {
       required_changed_files: ['packages/api/src/contracts/taskContract.ts', 'packages/api/src/routes/taskRoutes.ts', 'packages/web/src/client/taskClient.ts', 'packages/worker/src/export/taskExport.ts', 'tests/contract.test.js'],
+      capsule_prompt: true,
       max_changed_files: 5,
       required_diff_patterns: ['dueDateTimezone', 'serializeTask', 'UTC', 'renderDueDate|taskClient|consumer', 'taskExportRow|export', 'contract'],
-      forbidden_diff_patterns: ['any', 'as unknown as TaskDto'],
+      forbidden_diff_patterns: ['any', 'as unknown as TaskDto', 'loadTsModule|data:text/javascript|readFile\\('],
+      prompt_forbidden_evidence: [
+        'Do not use a dynamic loader or source-text inspection in tests.',
+      ],
     },
   },
   {
@@ -671,12 +711,27 @@ const SCENARIOS: SeededScenario[] = [
       { file: 'src/services/taskLabelService.ts', patterns: ['color', 'assignLabel'] },
       { file: 'tests/taskService.test.js', patterns: ['label|color|colored'] },
     ],
+    edit_recipe: [
+      'Add color: string to the existing TaskLabel interface; do not introduce a separate Label model.',
+      'In TaskLabelService.assignLabel, preserve the existing method and return label data with a default color when label.color is blank.',
+      'Replace the placeholder test with compact assertions against the existing task label model/service only.',
+    ],
     semantic_rules: {
       required_changed_files: ['src/domain/taskLabel.ts', 'src/services/taskLabelService.ts', 'tests/taskService.test.js'],
       forbidden_changed_files: ['src/domain/label.ts', 'src/services/labelService.ts'],
+      capsule_prompt: true,
       max_changed_files: 4,
       required_diff_patterns: ['color', 'assignLabel', 'label.*color|colored label'],
+      prompt_required_evidence: [
+        'TaskLabel owns color directly.',
+        'TaskLabelService.assignLabel preserves/defaults label.color.',
+        'Focused test covers the existing TaskLabel/TaskLabelService path.',
+      ],
       forbidden_diff_patterns: ['class LabelService', 'interface Label \\{'],
+      prompt_forbidden_evidence: [
+        'Do not create a parallel Label or LabelService concept.',
+        'Do not rebuild task ownership or edit unrelated task controller/repository boundaries.',
+      ],
     },
   },
   {
@@ -704,21 +759,39 @@ const SCENARIOS: SeededScenario[] = [
         ');',
       ].join('\n'),
     }),
-    expected_files: ['src/domain/task.ts', 'src/repositories/taskRepository.ts', 'migrations/001_create_tasks.sql', 'tests/taskService.test.js'],
+    expected_files: ['src/domain/task.ts', 'src/services/taskService.ts', 'src/repositories/taskRepository.ts', 'migrations/001_create_tasks.sql', 'tests/taskService.test.js'],
     expected_terms: ['migration', 'due', 'repository', 'task', 'test'],
-    changed_files: ['src/domain/task.ts', 'src/repositories/taskRepository.ts', 'migrations/002_add_task_due_at.sql', 'tests/taskService.test.js'],
+    changed_files: ['src/domain/task.ts', 'src/services/taskService.ts', 'src/repositories/taskRepository.ts', 'migrations/002_add_task_due_at.sql'],
     diff_text: diff('src/domain/task.ts', 'title: string;', 'title: string;\n  dueAt?: string;'),
     live_checks: [
       { file: 'src/domain/task.ts', patterns: ['dueAt'] },
+      { file: 'src/services/taskService.ts', patterns: ['dueAt'] },
       { file: 'src/repositories/taskRepository.ts', patterns: ['dueAt'] },
       { file: 'migrations/002_add_task_due_at.sql', patterns: ['due_at|dueAt', 'alter table|create index'] },
     ],
+    edit_recipe: [
+      'Add optional dueAt to the existing Task interface.',
+      'Add optional dueAt to TaskService.createTask input so callers can pass it through the existing service boundary.',
+      'In TaskRepository.create, assign dueAt: input.dueAt explicitly on the created Task object.',
+      'Create migrations/002_add_task_due_at.sql with a due_at column and index; never edit 001_create_tasks.sql.',
+    ],
     semantic_rules: {
-      required_changed_files: ['src/domain/task.ts', 'src/repositories/taskRepository.ts', 'migrations/002_add_task_due_at.sql'],
+      required_changed_files: ['src/domain/task.ts', 'src/services/taskService.ts', 'src/repositories/taskRepository.ts', 'migrations/002_add_task_due_at.sql'],
       forbidden_changed_files: ['migrations/001_create_tasks.sql'],
+      capsule_prompt: true,
       max_changed_files: 5,
       required_diff_patterns: ['dueAt', 'due_at', 'alter table|create index'],
+      prompt_required_evidence: [
+        'Task includes optional dueAt.',
+        'TaskService.createTask accepts optional dueAt.',
+        'TaskRepository.create assigns dueAt: input.dueAt explicitly.',
+        'Migration 002 adds due_at and an index without editing migration 001.',
+      ],
       forbidden_diff_patterns: ['drop table', 'delete from tasks'],
+      prompt_forbidden_evidence: [
+        'Do not edit migrations/001_create_tasks.sql.',
+        'Do not add a parallel schema path or bypass TaskRepository.',
+      ],
     },
   },
   {
@@ -845,15 +918,31 @@ const SCENARIOS: SeededScenario[] = [
     changed_files: ['src/auth/authService.ts', 'src/auth/mfaService.ts', 'tests/authService.test.js'],
     diff_text: diff('src/auth/authService.ts', 'return this.sessions.createSession(user.id);', 'if (this.mfa.isRequired(user.id) && !this.mfa.verifyTotp(user.id, input.mfaCode)) return { challenge: "mfa_required" };\n    return this.sessions.createSession(user.id);'),
     live_checks: [
-      { file: 'src/auth/authService.ts', patterns: ['MfaService|mfa', 'challenge|mfa_required', 'createSession'] },
+      { file: 'src/auth/authService.ts', patterns: ['MfaService|mfa', 'challenge|mfa_required', 'createSession'], absent_patterns: ['createSession[\\s\\S]*verify(?:Challenge|Totp)'] },
       { file: 'src/auth/mfaService.ts', patterns: ['createChallenge|challenge', 'verifyChallenge|verifyTotp', 'isRequired'] },
       { file: 'tests/authService.test.js', patterns: ['mfa|challenge|totp|session'] },
     ],
+    edit_recipe: [
+      'Inject MfaService into AuthService; after OIDC verification, ask mfa.isRequired before creating a session.',
+      'If MFA is required and no mfaCode is supplied, return mfa.createChallenge(subject); if mfaCode is supplied, verify before assigning const session = this.sessions.createSession(subject).',
+      'In MfaService, add createChallenge(subject) and verifyChallenge(challenge, code) that delegates to verifyTotp; keep session persistence out of MfaService.',
+      'Replace the placeholder auth test with compact challenged, verified, failed-MFA, and no-MFA session assertions.',
+    ],
     semantic_rules: {
       required_changed_files: ['src/auth/authService.ts', 'src/auth/mfaService.ts', 'tests/authService.test.js'],
+      capsule_prompt: true,
       max_changed_files: 4,
       required_diff_patterns: ['MfaService|mfa', 'createChallenge|challenge', 'verifyChallenge|verifyTotp', 'createSession'],
-      forbidden_diff_patterns: ['code\\s*===\\s*"000000"', 'return this\\.sessions\\.createSession\\([^)]*\\)[\\s\\S]*verifyTotp', 'challenge:\\s*\\{'],
+      prompt_required_evidence: [
+        'AuthService asks MfaService before session creation.',
+        'MfaService owns createChallenge and verifyChallenge/verifyTotp.',
+        'Tests cover challenge, verified login, failed MFA, and no-MFA session.',
+      ],
+      forbidden_diff_patterns: [],
+      prompt_forbidden_evidence: [
+        'Do not create sessions before MFA verification.',
+        'Do not move MFA logic into a controller or SessionRepository.',
+      ],
     },
   },
   {
@@ -894,9 +983,17 @@ const SCENARIOS: SeededScenario[] = [
       { file: 'src/api/sessionController.ts', patterns: ['idToken', 'auth\\.login'], absent_patterns: ['createSession|SessionRepository|PasswordCredentialVerifier'] },
       { file: 'tests/authService.test.js', patterns: ['OIDC|id token|verifyIdToken|session|audit|invalid'] },
     ],
+    edit_recipe: [
+      'In AuthService, make the minimal swap: replace PasswordCredentialVerifier with OidcClient.verifyIdToken(input.idToken), reject invalid identity, audit, create session.',
+      'In AuthModule, wire OidcClient into AuthService and remove PasswordCredentialVerifier wiring; do not add extra constructor options.',
+      'In SessionController, accept { idToken } and delegate only to auth.login; never create sessions in the controller.',
+      'In tests/authService.test.js, compactly cover valid OIDC login, invalid identity rejection, audit record, and session creation; keep under 40 lines.',
+    ],
     semantic_rules: {
       required_changed_files: ['src/auth/authService.ts', 'src/auth/authModule.ts', 'src/api/sessionController.ts', 'tests/authService.test.js'],
+      required_context_files: ['src/auth/oidcClient.ts'],
       forbidden_changed_files: ['src/auth/sessionRepository.ts', 'src/audit/auditLogger.ts', 'src/auth/passwordCredentialVerifier.ts'],
+      capsule_prompt: true,
       max_changed_files: 5,
       required_diff_patterns: [
         'OidcClient|oidc',
@@ -905,9 +1002,20 @@ const SCENARIOS: SeededScenario[] = [
         'audit\\.record|record\\(',
         'invalid|reject',
       ],
+      prompt_required_evidence: [
+        'AuthService verifies idToken with OidcClient and rejects invalid identity.',
+        'AuthService records audit and creates sessions only through SessionRepository.',
+        'AuthModule wires OidcClient; SessionController only delegates idToken to auth.login.',
+        'Focused tests cover valid OIDC, invalid identity, audit, and session behavior.',
+      ],
       forbidden_diff_patterns: [
         'passwords\\.verify',
         'localStorage|cookie\\s*=',
+      ],
+      prompt_forbidden_evidence: [
+        'Do not edit SessionRepository, AuditLogger, or PasswordCredentialVerifier.',
+        'Do not create sessions in SessionController.',
+        'Do not add audience validation, private helper methods, try/catch wrappers, or extra identity-shape normalization.',
       ],
     },
   },
@@ -969,16 +1077,22 @@ const SCENARIOS: SeededScenario[] = [
     }),
     expected_files: ['src/services/taskService.ts', 'src/repositories/auditLogRepository.ts', 'tests/taskService.test.js'],
     expected_terms: ['audit', 'event', 'workflow', 'service', 'test'],
-    changed_files: ['src/services/taskService.ts', 'src/repositories/auditLogRepository.ts', 'tests/taskService.test.js'],
+    changed_files: ['src/services/taskService.ts', 'tests/taskService.test.js'],
     diff_text: diff('src/services/taskService.ts', 'return this.repository.create(input);', 'const task = this.repository.create(input);\n    this.audit.record({ workspaceId: input.workspaceId, actorUserId: input.assigneeId, action: "task.created", entityId: task.id });\n    return task;'),
     live_checks: [
       { file: 'src/services/taskService.ts', patterns: ['AuditLogRepository|audit', 'task\\.created|task\\.assigned', 'actorUserId|workspaceId'] },
       { file: 'src/repositories/auditLogRepository.ts', patterns: ['AuditEvent', 'record', 'workspaceId', 'actorUserId'] },
       { file: 'tests/taskService.test.js', patterns: ['audit|task\\.created|task\\.assigned|actor'] },
     ],
+    edit_recipe: [
+      'Inject or create the existing AuditLogRepository boundary in TaskService; do not add a parallel TaskAuditService.',
+      'Record task.created and task.assigned events from the TaskService workflow with workspaceId, actorUserId, action, and task id.',
+      'Extend tests/taskService.test.js to assert the audit repository captured creation and assignment events.',
+    ],
     semantic_rules: {
-      required_changed_files: ['src/services/taskService.ts', 'src/repositories/auditLogRepository.ts', 'tests/taskService.test.js'],
+      required_changed_files: ['src/services/taskService.ts', 'tests/taskService.test.js'],
       forbidden_changed_files: ['src/controllers/taskController.ts'],
+      capsule_prompt: true,
       max_changed_files: 5,
       required_diff_patterns: ['AuditLogRepository|audit', 'task\\.created|task\\.assigned', 'actorUserId', 'workspaceId'],
       forbidden_diff_patterns: ['console\\.log\\(.*audit', 'class TaskAuditService'],
@@ -1028,11 +1142,16 @@ const SCENARIOS: SeededScenario[] = [
     live_checks: [
       { file: 'tests/taskService.test.ts', patterns: ['archive|archived', 'TaskService|archiveTask'] },
     ],
+    edit_recipe: [
+      'Only edit tests/taskService.test.ts: import TaskService, use one tiny repo, assert archiveTask returns archived=true and repo archive was called; keep under 25 lines.',
+      'No helper-heavy scaffolding, missing-task branch, mirrored service logic, or production edits.',
+    ],
     semantic_rules: {
       required_changed_files: ['tests/taskService.test.ts'],
       forbidden_changed_files: ['src/services/taskService.ts', 'src/repositories/taskRepository.ts', 'src/domain/task.ts'],
       max_changed_files: 1,
       required_diff_patterns: ['archive|archived', 'TaskService|archiveTask'],
+      prompt_forbidden_evidence: ['Do not add missing-task/error-branch coverage in this task.', 'Do not create helper-heavy scaffolding.'],
       require_test_change: true,
       require_test_import_source: true,
       require_production_change: false,
@@ -1108,7 +1227,7 @@ export async function runSeededExistingTaskBenchmark(args: Args = parseArgs([]))
       proof_strength: proofStrength,
       claim_limit: proofStrength === 'live-agent-proof'
         ? 'Includes copied-repo live agent trials; quality/token claims may cite live deltas for covered families.'
-        : 'Deterministic proxy only; proves packet targeting, token/file reduction, and expected guidance coverage, but not final live-agent quality.',
+        : 'Deterministic proxy only; proves context targeting, token/file reduction, and expected guidance coverage, but not final live-agent quality.',
       scenario_count: scenarios.length,
       family_count: Object.keys(families).length,
       passing_scenarios: scenarios.filter(scenario => scenario.status === 'pass').length,
@@ -1122,7 +1241,7 @@ export async function runSeededExistingTaskBenchmark(args: Args = parseArgs([]))
       average_index_retrieval_file_recall: Math.round(average(scenarios.map(scenario => scenario.index_retrieval_baseline.file_recall))),
       average_index_retrieval_tokens: Math.round(average(scenarios.map(scenario => scenario.index_retrieval_baseline.estimated_tokens))),
       klauro_vs_index_retrieval_token_reduction_percentage: Math.round(average(scenarios.map(scenario =>
-        percentReduction(scenario.index_retrieval_baseline.estimated_tokens, scenario.with_klauro.packet_tokens)))),
+        percentReduction(scenario.index_retrieval_baseline.estimated_tokens, scenario.with_klauro.context_tokens)))),
       families,
     },
     scenarios,
@@ -1157,7 +1276,7 @@ async function runLiveExistingScenario(outputRoot: string, scenario: SeededScena
     expectedOutcome: scenario.task.success_criteria.join(' '),
     fileReadPlan: result.with_klauro.first_files.map(file => ({
       file,
-      reason: 'Klauro selected this file from the existing-codebase work packet.',
+      reason: 'Klauro selected this file from the existing-codebase agent context.',
     })),
     validationPlan: {
       commands: [{ command: `node ${shellQuote(validatorPath)}` }],
@@ -1196,14 +1315,13 @@ export async function runRealRepoExistingTaskBenchmark(args: Args): Promise<Real
   }
   await fs.ensureDir(args.outputRoot);
 
-  const analysis = await analyzeProjectIncremental(repoPath);
-  const cas = analysis.output;
-  const packet = await getAgentWorkPacket(cas, repoPath, {
+  const cas = await analyzeForBench(repoPath);
+  const context = await getAgentContext(cas, repoPath, {
     ...(scenario.task as any),
     response_profile: 'capsule-only',
   }) as any;
-  const packetTokens = estimatePromptSurfaceTokens(packet);
-  const fileReadPlan = Array.isArray(packet.file_read_plan) ? packet.file_read_plan : Array.isArray(packet.files) ? packet.files : [];
+  const contextTokens = estimatePromptSurfaceTokens(context);
+  const fileReadPlan = Array.isArray(context.file_read_plan) ? context.file_read_plan : Array.isArray(context.files) ? context.files : [];
   const firstFiles = fileReadPlan
     .map((item: any) => typeof item === 'string' ? item : String(item.file || item.path || '')).filter(Boolean) as string[];
 
@@ -1247,7 +1365,7 @@ export async function runRealRepoExistingTaskBenchmark(args: Args): Promise<Real
     family: scenario.family,
     without_arm_retrieval: args.withoutArmRetrieval,
     with_klauro: {
-      packet_tokens: packetTokens,
+      context_tokens: contextTokens,
       first_files: firstFiles.slice(0, 12),
     },
     index_retrieval_baseline: indexRetrieval,
@@ -1348,7 +1466,7 @@ export function formatRealRepoExistingTaskBenchmarkMarkdown(report: RealRepoBenc
     '',
     '## Context costs',
     '',
-    `- Klauro work packet: ${report.with_klauro.packet_tokens} tokens; first files: ${report.with_klauro.first_files.join(', ') || 'none'}`,
+    `- Klauro agent context: ${report.with_klauro.context_tokens} tokens; first files: ${report.with_klauro.first_files.join(', ') || 'none'}`,
     `- Index retrieval: ${report.index_retrieval_baseline.file_recall}% recall, ${report.index_retrieval_baseline.file_precision}% precision over expected inspect files, ${report.index_retrieval_baseline.estimated_tokens} retrieved-content tokens`,
     `- Retrieved files: ${report.index_retrieval_baseline.retrieved_files.join(', ') || 'none'}`,
     '',
@@ -1464,22 +1582,22 @@ function formatLiveTokenMetric(summary: NonNullable<ScenarioResult['live_summary
   return `${main}${total}${direct}`;
 }
 
-function estimatePromptSurfaceTokens(packet: any): number {
-  const contextCapsule = typeof packet?.context_capsule === 'string'
-    ? packet.context_capsule
-    : typeof packet?.context_capsule?.capsule === 'string'
-      ? packet.context_capsule.capsule
+function estimatePromptSurfaceTokens(context: any): number {
+  const contextCapsule = typeof context?.context_capsule === 'string'
+    ? context.context_capsule
+    : typeof context?.context_capsule?.capsule === 'string'
+      ? context.context_capsule.capsule
       : '';
-  const capsule = typeof packet?.execution_capsule === 'string'
-    ? packet.execution_capsule
-    : typeof packet?.execution_brief?.capsule === 'string'
-    ? packet.execution_brief.capsule
-    : typeof packet?.capsule === 'string'
-      ? packet.capsule
+  const capsule = typeof context?.execution_capsule === 'string'
+    ? context.execution_capsule
+    : typeof context?.execution_brief?.capsule === 'string'
+    ? context.execution_brief.capsule
+    : typeof context?.capsule === 'string'
+      ? context.capsule
       : '';
-  if (!capsule && !contextCapsule) return estimateTokens(JSON.stringify(packet));
-  const validation = Array.isArray(packet?.validation_plan?.commands)
-    ? packet.validation_plan.commands
+  if (!capsule && !contextCapsule) return estimateTokens(JSON.stringify(context));
+  const validation = Array.isArray(context?.validation_plan?.commands)
+    ? context.validation_plan.commands
       .map((command: any) => String(command?.command || command || '').trim())
       .filter(Boolean)
       .slice(0, 1)
@@ -1488,17 +1606,17 @@ function estimatePromptSurfaceTokens(packet: any): number {
   return estimateTokens([contextCapsule, capsule, validation].filter(Boolean).join('\n'));
 }
 
-function getContextCapsule(packet: any): string {
-  return typeof packet?.context_capsule === 'string'
-    ? packet.context_capsule
-    : typeof packet?.context_capsule?.capsule === 'string'
-      ? packet.context_capsule.capsule
+function getContextCapsule(context: any): string {
+  return typeof context?.context_capsule === 'string'
+    ? context.context_capsule
+    : typeof context?.context_capsule?.capsule === 'string'
+      ? context.context_capsule.capsule
       : '';
 }
 
-function packetSearchText(packet: any): string {
-  const parts = [JSON.stringify(packet)];
-  const contextCapsule = getContextCapsule(packet);
+function contextSearchText(context: any): string {
+  const parts = [JSON.stringify(context)];
+  const contextCapsule = getContextCapsule(context);
   if (contextCapsule) {
     const parsed = parseAgentContextCapsule(contextCapsule);
     parts.push(parsed.files.join('\n'));
@@ -1514,9 +1632,8 @@ async function runScenario(outputRoot: string, scenario: SeededScenario): Promis
   const repoPath = path.join(outputRoot, scenario.id);
   await fs.remove(repoPath);
   await writeFiles(repoPath, scenario.files);
-  const analysis = await analyzeProjectIncremental(repoPath);
-  const cas = analysis.output;
-  const packet = await getAgentWorkPacket(cas, repoPath, {
+  const cas = await analyzeForBench(repoPath);
+  const context = await getAgentContext(cas, repoPath, {
     ...(scenario.task as any),
     response_profile: 'capsule-only',
   }) as any;
@@ -1526,19 +1643,19 @@ async function runScenario(outputRoot: string, scenario: SeededScenario): Promis
     diffText: scenario.diff_text,
     planText: scenario.task.instructions,
   });
-  const packetText = packetSearchText(packet);
-  const firstPlan = Array.isArray(packet.file_read_plan) ? packet.file_read_plan : Array.isArray(packet.files) ? packet.files : [];
+  const contextText = contextSearchText(context);
+  const firstPlan = Array.isArray(context.file_read_plan) ? context.file_read_plan : Array.isArray(context.files) ? context.files : [];
   const firstFiles = Array.isArray(firstPlan)
     ? firstPlan.map((item: any) => typeof item === 'string' ? item : String(item.file || '')).filter(Boolean) as string[]
     : [];
-  const fileHits = scenario.expected_files.filter(file => packetText.includes(file.toLowerCase()));
+  const fileHits = scenario.expected_files.filter(file => contextText.includes(file.toLowerCase()));
   const firstReadFileHits = scenario.expected_files.filter(file => firstFiles.some(first => first.endsWith(file) || first === file));
-  const termHits = scenario.expected_terms.filter(term => packetText.includes(term.toLowerCase()));
+  const termHits = scenario.expected_terms.filter(term => contextText.includes(term.toLowerCase()));
   const fileHitRate = fileHits.length / scenario.expected_files.length;
   const firstReadFileHitRate = firstReadFileHits.length / scenario.expected_files.length;
   const termHitRate = termHits.length / scenario.expected_terms.length;
-  const packetTokens = estimatePromptSurfaceTokens(packet);
-  const withScore = scoreWithKlauro(fileHitRate, termHitRate, validation.status, packetTokens);
+  const contextTokens = estimatePromptSurfaceTokens(context);
+  const withScore = scoreWithKlauro(fileHitRate, termHitRate, validation.status, contextTokens);
   const without = baselineProxyScore(repoPath, scenario);
   const indexRetrieval = indexRetrievalBaselineScore(repoPath, scenario);
   const status = withScore >= 85 ? 'pass' : withScore >= 70 ? 'warn' : 'fail';
@@ -1551,7 +1668,7 @@ async function runScenario(outputRoot: string, scenario: SeededScenario): Promis
     repo_path: repoPath,
     with_klauro: {
       score: withScore,
-      packet_tokens: packetTokens,
+      context_tokens: contextTokens,
       file_hit_rate: round(fileHitRate * 100),
       first_read_file_hit_rate: round(firstReadFileHitRate * 100),
       term_hit_rate: round(termHitRate * 100),
@@ -1563,18 +1680,18 @@ async function runScenario(outputRoot: string, scenario: SeededScenario): Promis
     deltas: {
       score_delta: withScore - without.score,
       file_reduction_percentage: percentReduction(without.estimated_files_to_read, firstFiles.length || 1),
-      token_reduction_percentage: percentReduction(without.estimated_tokens, packetTokens),
+      token_reduction_percentage: percentReduction(without.estimated_tokens, contextTokens),
     },
     findings: [
       fileHits.length === scenario.expected_files.length
-        ? 'MCP packet included every expected guidance file.'
-        : `MCP packet missed expected guidance files: ${scenario.expected_files.filter(file => !fileHits.includes(file)).join(', ')}`,
+        ? 'MCP context included every expected guidance file.'
+        : `MCP context missed expected guidance files: ${scenario.expected_files.filter(file => !fileHits.includes(file)).join(', ')}`,
       firstReadFileHits.length === scenario.expected_files.length
         ? 'MCP first-read plan included every expected file.'
         : `MCP first-read plan did not include: ${scenario.expected_files.filter(file => !firstReadFileHits.includes(file)).join(', ')}`,
       termHits.length === scenario.expected_terms.length
-        ? 'MCP packet included every expected task term.'
-        : `MCP packet missed terms: ${scenario.expected_terms.filter(term => !termHits.includes(term)).join(', ')}`,
+        ? 'MCP context included every expected task term.'
+        : `MCP context missed terms: ${scenario.expected_terms.filter(term => !termHits.includes(term)).join(', ')}`,
       `Validation status: ${validation.status}.`,
     ],
   };
@@ -1599,7 +1716,7 @@ export function formatSeededExistingTaskBenchmarkMarkdown(report: BenchmarkRepor
     `- Average score delta vs blind proxy: +${report.summary.average_score_delta}`,
     `- Average file reduction: ${report.summary.average_file_reduction_percentage}%`,
     `- Average token reduction: ${report.summary.average_token_reduction_percentage}%`,
-    `- Index-retrieval baseline (Cursor-style proxy): ${report.summary.average_index_retrieval_file_recall}% avg file recall, ${report.summary.average_index_retrieval_tokens} avg tokens; Klauro packets use ${report.summary.klauro_vs_index_retrieval_token_reduction_percentage}% fewer tokens`,
+    `- Index-retrieval baseline (Cursor-style proxy): ${report.summary.average_index_retrieval_file_recall}% avg file recall, ${report.summary.average_index_retrieval_tokens} avg tokens; Klauro contexts use ${report.summary.klauro_vs_index_retrieval_token_reduction_percentage}% fewer tokens`,
     `- Live copied-repo scenarios: ${report.summary.live_passing_scenarios}/${report.summary.live_scenarios} passing`,
     report.summary.live_scenarios
       ? `- Average live quality delta: +${report.summary.average_live_quality_delta}`
@@ -1614,7 +1731,7 @@ export function formatSeededExistingTaskBenchmarkMarkdown(report: BenchmarkRepor
     lines.push('');
     lines.push(`Status: ${scenario.status} (${scenario.score}/100)`);
     lines.push(`Family: ${scenario.family}`);
-    lines.push(`With Klauro: ${scenario.with_klauro.file_hit_rate}% guidance-file hit, ${scenario.with_klauro.first_read_file_hit_rate}% first-read hit, ${scenario.with_klauro.term_hit_rate}% term hit, ${scenario.with_klauro.packet_tokens} tokens`);
+    lines.push(`With Klauro: ${scenario.with_klauro.file_hit_rate}% guidance-file hit, ${scenario.with_klauro.first_read_file_hit_rate}% first-read hit, ${scenario.with_klauro.term_hit_rate}% term hit, ${scenario.with_klauro.context_tokens} tokens`);
     lines.push(`Blind proxy: ${scenario.without_klauro_proxy.estimated_files_to_read} files, ${scenario.without_klauro_proxy.estimated_tokens} tokens`);
     lines.push(`Index-retrieval baseline (Cursor-style lexical indexing proxy): ${scenario.index_retrieval_baseline.file_recall}% file recall, ${scenario.index_retrieval_baseline.file_precision}% precision, ${scenario.index_retrieval_baseline.estimated_tokens} tokens (${scenario.index_retrieval_baseline.retrieved_files.length} files)`);
     lines.push(`Delta: +${scenario.deltas.score_delta} score, ${scenario.deltas.file_reduction_percentage}% fewer files, ${scenario.deltas.token_reduction_percentage}% fewer tokens`);
@@ -1701,10 +1818,10 @@ async function writeLiveValidator(
     '  if (!fs.existsSync(filePath)) { failures.push(`Missing ${check.file}`); continue; }',
     '  const content = fs.readFileSync(filePath, "utf8");',
     '  for (const pattern of check.patterns || []) {',
-    '    if (!new RegExp(pattern, "m").test(content)) failures.push(`${check.file} missing /${pattern}/`);',
+    '    if (!new RegExp(pattern, "mi").test(content)) failures.push(`${check.file} missing /${pattern}/`);',
     '  }',
     '  for (const pattern of check.absent_patterns || []) {',
-    '    if (new RegExp(pattern, "m").test(content)) failures.push(`${check.file} still contains forbidden /${pattern}/`);',
+    '    if (new RegExp(pattern, "mi").test(content)) failures.push(`${check.file} still contains forbidden /${pattern}/`);',
     '  }',
     '}',
     'if (payload.lint_php) {',
@@ -1964,12 +2081,12 @@ async function writeFiles(root: string, files: Record<string, string>): Promise<
   }
 }
 
-function scoreWithKlauro(fileHitRate: number, termHitRate: number, validationStatus: string, packetTokens: number): number {
+function scoreWithKlauro(fileHitRate: number, termHitRate: number, validationStatus: string, contextTokens: number): number {
   let score = 35;
   score += Math.round(fileHitRate * 35);
   score += Math.round(termHitRate * 20);
   score += validationStatus === 'fail' ? 0 : validationStatus === 'warn' ? 6 : 10;
-  if (packetTokens > 8000) score -= 10;
+  if (contextTokens > 8000) score -= 10;
   return Math.max(0, Math.min(100, score));
 }
 

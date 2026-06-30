@@ -3,7 +3,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import pLimit from 'p-limit';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import { dominantUnanalyzedLanguage, getAgentWorkPacket } from './agent-adoption';
+import { dominantUnanalyzedLanguage, getAgentContext } from './agent-adoption';
 import { classifyAnalysisProfile, type AnalysisProfile } from './analysis-profile';
 import { discoverRealRepos, type RealRepoTarget } from './repo-discovery';
 import { isDirectCliInvocation } from './cli-invocation';
@@ -35,9 +35,9 @@ export interface AnalysisUsefulnessReview {
     idiom_count: number;
     invariant_count: number;
     architectural_pattern_count: number;
-    work_packet_profile?: string;
-    work_packet_files: number;
-    work_packet_tokens: number;
+    agent_context_profile?: string;
+    agent_context_files: number;
+    agent_context_tokens: number;
     missing_agent_value: string[];
   };
 }
@@ -210,7 +210,7 @@ export async function runAnalysisUsefulnessReview(options: ReviewOptions = {}) {
 
 export async function reviewAnalysisUsefulness(cas: CASOutput, projectPath: string, repoName = path.basename(projectPath), analysisFocus: AnalysisFocus = 'full'): Promise<AnalysisUsefulnessReview> {
   const profile = classifyAnalysisProfile(cas, projectPath);
-  const workPacket = await getAgentWorkPacket(cas, projectPath, {
+  const agentContext = await getAgentContext(cas, projectPath, {
     task_type: 'modify',
     target: inferReviewTarget(cas),
     instructions: 'Make a small idiomatic change without duplicating existing behavior.',
@@ -226,10 +226,10 @@ export async function reviewAnalysisUsefulness(cas: CASOutput, projectPath: stri
     scoreCapabilityMap(cas, profile),
     scoreArchitectureMap(cas, profile),
     scoreCasOrganization(cas, profile),
-    scoreAgentNavigation(workPacket, profile),
-    scoreArchitectureAgentContext(workPacket, profile),
-    scoreIdiomAndInvariantGuidance(cas, workPacket, profile),
-    scoreDuplicationAvoidance(cas, workPacket, profile),
+    scoreAgentNavigation(agentContext, profile),
+    scoreArchitectureAgentContext(agentContext, profile),
+    scoreIdiomAndInvariantGuidance(cas, agentContext, profile),
+    scoreDuplicationAvoidance(cas, agentContext, profile),
     scoreExternalIntegrationEvidence(cas, profile),
   ];
   const score = Math.round(average(gates.map(gate => gate.score)));
@@ -257,9 +257,9 @@ export async function reviewAnalysisUsefulness(cas: CASOutput, projectPath: stri
       idiom_count: cas.codebase_idioms?.length || 0,
       invariant_count: cas.behavioral_invariants?.length || 0,
       architectural_pattern_count: cas.architecture_summary?.architectural_patterns?.length || 0,
-      work_packet_profile: (workPacket as any).packet_profile,
-      work_packet_files: Array.isArray((workPacket as any).file_read_plan) ? (workPacket as any).file_read_plan.length : 0,
-      work_packet_tokens: estimateTokens(JSON.stringify(workPacket)),
+      agent_context_profile: (agentContext as any).context_profile,
+      agent_context_files: Array.isArray((agentContext as any).file_read_plan) ? (agentContext as any).file_read_plan.length : 0,
+      agent_context_tokens: estimateTokens(JSON.stringify(agentContext)),
       missing_agent_value: missing,
     },
   };
@@ -302,8 +302,8 @@ export function reviewAnalysisUsefulnessStatic(cas: CASOutput, projectPath: stri
       idiom_count: cas.codebase_idioms?.length || 0,
       invariant_count: cas.behavioral_invariants?.length || 0,
       architectural_pattern_count: cas.architecture_summary?.architectural_patterns?.length || 0,
-      work_packet_files: 0,
-      work_packet_tokens: 0,
+      agent_context_files: 0,
+      agent_context_tokens: 0,
       missing_agent_value: missing,
     },
   };
@@ -313,8 +313,8 @@ async function reviewTarget(target: ReviewTarget, analysisFocus: AnalysisFocus):
   const startedAt = Date.now();
   const absolute = path.resolve(target.path);
   const cas = await withAnalysisFocus(analysisFocus, async () => {
-    const { getOrchestrator } = await import('./analyzer');
-    return getOrchestrator().orchestrateAnalysis(absolute);
+    const { analyzeForBench } = await import('./gauntlet/product-analysis');
+    return analyzeForBench(absolute);
   });
   const review = await reviewAnalysisUsefulness(cas, absolute, target.name || path.basename(absolute), analysisFocus);
   return {
@@ -877,34 +877,34 @@ export function findArchitectureSystemTypeProblems(cas: CASOutput, profile: Anal
   return Array.from(new Set(problems));
 }
 
-function scoreAgentNavigation(workPacket: any, profile: AnalysisProfile): UsefulnessGate {
-  const filePlan = Array.isArray(workPacket?.file_read_plan) ? workPacket.file_read_plan : [];
-  const nextCalls = Array.isArray(workPacket?.next_mcp_calls) ? workPacket.next_mcp_calls : [];
-  const tokenEstimate = estimateTokens(JSON.stringify(workPacket || {}));
+function scoreAgentNavigation(agentContext: any, profile: AnalysisProfile): UsefulnessGate {
+  const filePlan = Array.isArray(agentContext?.file_read_plan) ? agentContext.file_read_plan : [];
+  const nextCalls = Array.isArray(agentContext?.next_mcp_calls) ? agentContext.next_mcp_calls : [];
+  const tokenEstimate = estimateTokens(JSON.stringify(agentContext || {}));
   let score = 0;
   const details: string[] = [];
   const sourceNeeded = !['empty', 'infrastructure'].includes(profile.kind);
 
-  if (workPacket?.default_use === true) score += 20; else details.push('work packet is not default-use ready');
+  if (agentContext?.agent_context_ready === true) score += 20; else details.push('agent context is not agent-context-ready ready');
   if (!sourceNeeded || filePlan.length > 0) score += 25; else details.push('no concrete file-read plan');
   if (filePlan.length <= 8) score += 15; else details.push(`file-read plan is too broad (${filePlan.length} files)`);
-  if (workPacket?.selected_node || profile.kind === 'empty' || profile.kind === 'infrastructure') score += 15; else details.push('no selected target node');
+  if (agentContext?.selected_node || profile.kind === 'empty' || profile.kind === 'infrastructure') score += 15; else details.push('no selected target node');
   if (nextCalls.length > 0) score += 10; else details.push('no recommended MCP follow-up calls');
-  if (tokenEstimate <= 10000) score += 15; else details.push(`work packet too large (${tokenEstimate} tokens)`);
+  if (tokenEstimate <= 10000) score += 15; else details.push(`agent context too large (${tokenEstimate} tokens)`);
 
   return gate('agent-navigation', score, details.length ? details.join('; ') : `${filePlan.length} files, ${tokenEstimate} tokens`);
 }
 
-export function scoreArchitectureAgentContext(workPacket: any, profile: AnalysisProfile): UsefulnessGate {
+export function scoreArchitectureAgentContext(agentContext: any, profile: AnalysisProfile): UsefulnessGate {
   if (profile.kind === 'empty' || profile.kind === 'infrastructure' || profile.kind === 'test-package') {
     return gate('architecture-agent-context', 100, `${profile.kind} does not require architecture placement guidance`);
   }
 
-  const context = workPacket?.work_context?.architecture_context;
+  const context = agentContext?.work_context?.architecture_context;
   const details: string[] = [];
   let score = 0;
 
-  if (context && typeof context === 'object') score += 15; else details.push('missing architecture_context in work packet');
+  if (context && typeof context === 'object') score += 15; else details.push('missing architecture_context in agent context');
   if (clean(context?.system_type) && clean(context.system_type) !== 'unknown') score += 10; else details.push('missing architecture system type');
 
   const budget = Array.isArray(context?.architecture_budget) ? context.architecture_budget : [];
@@ -940,7 +940,7 @@ export function scoreArchitectureAgentContext(workPacket: any, profile: Analysis
   if (rules.some((rule: string) => /pattern|architecture|owner|boundary|style/i.test(rule))) score += 10;
   else details.push('missing architecture preservation rules');
 
-  const scopeProblems = findArchitectureContextScopeProblems(workPacket);
+  const scopeProblems = findArchitectureContextScopeProblems(agentContext);
   if (scopeProblems.length > 0) {
     details.push(...scopeProblems);
     score = Math.min(score, 70);
@@ -949,10 +949,10 @@ export function scoreArchitectureAgentContext(workPacket: any, profile: Analysis
   return gate('architecture-agent-context', score, details.length ? details.join('; ') : `${patterns.length} patterns, ${matrix.length} decision rows`);
 }
 
-function findArchitectureContextScopeProblems(workPacket: any): string[] {
-  const selectedFile = clean(workPacket?.selected_node?.file || workPacket?.selected_node?.source?.file);
-  const planFiles = Array.isArray(workPacket?.file_read_plan)
-    ? workPacket.file_read_plan
+function findArchitectureContextScopeProblems(agentContext: any): string[] {
+  const selectedFile = clean(agentContext?.selected_node?.file || agentContext?.selected_node?.source?.file);
+  const planFiles = Array.isArray(agentContext?.file_read_plan)
+    ? agentContext.file_read_plan
       .filter((item: any) => !/task hint/i.test(clean(item?.reason)))
       .map((item: any) => clean(item?.file))
       .filter(Boolean)
@@ -960,7 +960,7 @@ function findArchitectureContextScopeProblems(workPacket: any): string[] {
   const anchorFiles = uniqueReviewStrings([selectedFile, ...planFiles].filter(Boolean));
   if (anchorFiles.length === 0) return [];
 
-  const context = workPacket?.work_context?.architecture_context;
+  const context = agentContext?.work_context?.architecture_context;
   const examples = collectArchitectureContextExampleFiles(context)
     .filter(file => !/^(?:node_modules|dist|build|coverage|\.klauro|\.agents|\.claude|\.codex)(?:\/|$)/i.test(file));
   if (examples.length === 0) return [];
@@ -993,11 +993,11 @@ function collectArchitectureContextExampleFiles(context: any): string[] {
   return uniqueReviewStrings(files);
 }
 
-function scoreIdiomAndInvariantGuidance(cas: CASOutput, workPacket: any, profile: AnalysisProfile): UsefulnessGate {
+function scoreIdiomAndInvariantGuidance(cas: CASOutput, agentContext: any, profile: AnalysisProfile): UsefulnessGate {
   const idioms = cas.codebase_idioms || [];
   const invariants = cas.behavioral_invariants || [];
-  const packetIdioms = workPacket?.work_context?.idiom_context;
-  const packetInvariants = workPacket?.work_context?.behavioral_invariants;
+  const contextIdioms = agentContext?.work_context?.idiom_context;
+  const contextInvariants = agentContext?.work_context?.behavioral_invariants;
   let score = 0;
   const details: string[] = [];
   const behaviorRequired = profile.expectations.behavioral_invariants === 'required';
@@ -1010,22 +1010,22 @@ function scoreIdiomAndInvariantGuidance(cas: CASOutput, workPacket: any, profile
     ((idiom.agent_guidance?.do || []).length > 0 || (idiom.agent_guidance?.avoid || []).length > 0)
   ).length;
   if (idioms.length === 0 || usableIdioms >= Math.ceil(idioms.length * 0.6)) score += 25; else details.push('idioms lack evidence, examples, or agent guidance');
-  if (packetIdioms || idioms.length === 0) score += 15; else details.push('work packet omits idiom context');
+  if (contextIdioms || idioms.length === 0) score += 15; else details.push('agent context omits idiom context');
   if (!behaviorRequired || invariants.length > 0) score += 20; else details.push('no behavioral invariants for app/service repo');
-  if (!behaviorRequired || packetInvariants || invariants.length === 0) score += 15; else details.push('work packet omits invariant context');
+  if (!behaviorRequired || contextInvariants || invariants.length === 0) score += 15; else details.push('agent context omits invariant context');
 
   return gate('idiom-invariant-guidance', score, details.length ? details.join('; ') : `${idioms.length} idioms, ${invariants.length} invariants`);
 }
 
-export function scoreDuplicationAvoidance(cas: CASOutput, workPacket: any, profile: AnalysisProfile): UsefulnessGate {
+export function scoreDuplicationAvoidance(cas: CASOutput, agentContext: any, profile: AnalysisProfile): UsefulnessGate {
   const capabilities = cas.system_capabilities || [];
   const workflows = cas.workflows || [];
   const concepts = cas.domain_concepts || [];
-  const selected = workPacket?.selected_node;
+  const selected = agentContext?.selected_node;
   const contextText = JSON.stringify({
-    target: workPacket?.target_resolution,
+    target: agentContext?.target_resolution,
     selected,
-    entry_context: workPacket?.work_context?.entry_context,
+    entry_context: agentContext?.work_context?.entry_context,
     capabilities: capabilities.slice(0, 8).map(capability => capability.name),
     workflows: workflows.slice(0, 8).map(workflow => workflow.name),
   });
@@ -1042,8 +1042,8 @@ export function scoreDuplicationAvoidance(cas: CASOutput, workPacket: any, profi
   }
   if (capabilities.length >= 2 || profile.kind === 'library-package') score += 25; else details.push('too few capabilities to warn against duplicate work');
   if (workflows.length > 0 || concepts.length >= 2 || profile.kind === 'library-package') score += 20; else details.push('few workflows/domain concepts for overlap detection');
-  if (selected || profile.kind === 'infrastructure') score += 20; else details.push('work packet cannot anchor the requested change to existing code');
-  if (/capabilit|workflow|entry|selected|idiom|existing/i.test(contextText)) score += 20; else details.push('work packet does not expose existing behavior context');
+  if (selected || profile.kind === 'infrastructure') score += 20; else details.push('agent context cannot anchor the requested change to existing code');
+  if (/capabilit|workflow|entry|selected|idiom|existing/i.test(contextText)) score += 20; else details.push('agent context does not expose existing behavior context');
   if ((cas.edges || []).length > 0 || (cas.method_calls || []).length > 0 || profile.kind === 'library-package') score += 15; else details.push('relationship graph is too thin for duplicate-work avoidance');
 
   return gate('duplication-avoidance', score, details.length ? details.join('; ') : 'existing behavior context present');
@@ -1105,7 +1105,7 @@ function summarizeReviews(reviews: AnalysisUsefulnessReview[]) {
     warn,
     fail,
     average_score: Math.round(average(reviews.map(review => review.score))),
-    average_work_packet_tokens: Math.round(average(reviews.map(review => review.summary.work_packet_tokens))),
+    average_agent_context_tokens: Math.round(average(reviews.map(review => review.summary.agent_context_tokens))),
     average_duration_ms: Math.round(average(reviews.map(review => review.duration_ms || 0))),
     gate_summary: gates,
     weakest_repos: [...reviews]
@@ -1137,7 +1137,7 @@ function formatMarkdown(report: Awaited<ReturnType<typeof runAnalysisUsefulnessR
     `Pass: ${report.summary.pass}`,
     `Warn: ${report.summary.warn}`,
     `Fail: ${report.summary.fail}`,
-    `Average work packet tokens: ${report.summary.average_work_packet_tokens}`,
+    `Average agent context tokens: ${report.summary.average_agent_context_tokens}`,
     `Average review duration: ${formatDuration(report.summary.average_duration_ms)}`,
     '',
     '## Gate Summary',
@@ -1152,9 +1152,9 @@ function formatMarkdown(report: Awaited<ReturnType<typeof runAnalysisUsefulnessR
   for (const repo of report.summary.weakest_repos) {
     lines.push(`| ${repo.repo} | ${repo.status} | ${repo.score} | ${repo.profile} | ${repo.missing_agent_value.join('<br>') || 'none'} |`);
   }
-  lines.push('', '## Reviews', '', '| Repo | Status | Score | Profile | Domain | Capabilities | Idioms | Packet Tokens |', '| --- | --- | ---: | --- | --- | ---: | ---: | ---: |');
+  lines.push('', '## Reviews', '', '| Repo | Status | Score | Profile | Domain | Capabilities | Idioms | Context Tokens |', '| --- | --- | ---: | --- | --- | ---: | ---: | ---: |');
   for (const review of report.reviews) {
-    lines.push(`| ${review.repo} | ${review.status} | ${review.score} | ${review.profile.kind} | ${review.summary.primary_domain || ''} | ${review.summary.capability_count} | ${review.summary.idiom_count} | ${review.summary.work_packet_tokens} |`);
+    lines.push(`| ${review.repo} | ${review.status} | ${review.score} | ${review.profile.kind} | ${review.summary.primary_domain || ''} | ${review.summary.capability_count} | ${review.summary.idiom_count} | ${review.summary.agent_context_tokens} |`);
   }
   return `${lines.join('\n')}\n`;
 }
@@ -1672,7 +1672,7 @@ async function main(): Promise<void> {
   await fs.ensureDir(path.dirname(args.markdownPath));
   await fs.writeFile(args.markdownPath, formatMarkdown(report), 'utf8');
   console.log(`Analysis usefulness review: ${report.status.toUpperCase()} (${report.score}/100)`);
-  console.log(`Reviews: ${report.summary.review_count} | Pass ${report.summary.pass} | Warn ${report.summary.warn} | Fail ${report.summary.fail} | Packet tokens ${report.summary.average_work_packet_tokens}`);
+  console.log(`Reviews: ${report.summary.review_count} | Pass ${report.summary.pass} | Warn ${report.summary.warn} | Fail ${report.summary.fail} | Context tokens ${report.summary.average_agent_context_tokens}`);
   console.log(`Report: ${args.outputPath}`);
   console.log(`Markdown: ${args.markdownPath}`);
   if (report.status === 'fail') process.exitCode = 1;
