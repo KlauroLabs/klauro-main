@@ -1,11 +1,14 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { DEFAULT_KLAURO_CLOUD_URL } from './defaults';
 
 export interface KlauroConfig {
   version: number;
+  kind?: 'project' | 'workspace';
   project: {
     name?: string;
     id?: string;
+    workspaceId?: string;
     organizationId?: string;
   };
   analyzer: {
@@ -74,12 +77,17 @@ const CONFIG_FILES = ['.klaurorc', '.klaurorc.json'];
 export function defaultKlauroConfig(projectPath: string): KlauroConfig {
   return {
     version: 1,
+    kind: 'project',
     project: {
       name: path.basename(path.resolve(projectPath)),
     },
     analyzer: {
-      mode: 'local',
-      serverUrl: process.env.KLAURO_ANALYZER_URL || 'http://127.0.0.1:8787',
+      // One product path: analysis goes to the hosted service (heavy work + AI on
+      // the VPS), production by default. There is no user-facing local/remote mode;
+      // this field is internal. 'local' (in-process) survives only as a self-hosted/
+      // dev/offline escape, never a customer choice. See docs/KLAURO-PRODUCT-MODEL.md.
+      mode: 'remote',
+      serverUrl: process.env.KLAURO_ANALYZER_URL || DEFAULT_KLAURO_CLOUD_URL,
       selfHosted: false,
     },
     source: {
@@ -151,15 +159,21 @@ export async function writeDefaultKlauroConfig(projectPath: string, options: {
   mode?: 'local' | 'remote';
   serverUrl?: string;
   projectId?: string;
+  workspaceId?: string;
   organizationId?: string;
+  projectName?: string;
+  kind?: 'project' | 'workspace';
 } = {}): Promise<{ configPath: string; ignorePath: string; config: KlauroConfig }> {
   const root = path.resolve(projectPath);
   const configPath = path.join(root, '.klaurorc');
   const ignorePath = path.join(root, '.klauroignore');
   const config = defaultKlauroConfig(root);
+  config.kind = options.kind || config.kind;
+  config.project.name = options.projectName || config.project.name;
   config.analyzer.mode = options.mode || config.analyzer.mode;
   config.analyzer.serverUrl = options.serverUrl || config.analyzer.serverUrl;
   config.project.id = options.projectId || config.project.id;
+  config.project.workspaceId = options.workspaceId || config.project.workspaceId;
   config.project.organizationId = options.organizationId || config.project.organizationId;
 
   if (!options.force) {
@@ -302,7 +316,7 @@ function escapeRegex(char: string): string {
 }
 
 export function resolveAnalyzerUrl(loaded: LoadedKlauroConfig, explicitUrl?: string): string | undefined {
-  return explicitUrl || loaded.config.analyzer.serverUrl || process.env.KLAURO_ANALYZER_URL;
+  return explicitUrl || loaded.config.analyzer.serverUrl || process.env.KLAURO_ANALYZER_URL || DEFAULT_KLAURO_CLOUD_URL;
 }
 
 export function resolveAnalysisId(loaded: LoadedKlauroConfig, fallback: string, explicitId?: string): string {

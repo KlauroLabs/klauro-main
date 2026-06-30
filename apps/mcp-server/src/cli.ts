@@ -7,22 +7,26 @@ import { writeAgentDefaultConfig } from './agent-defaults';
 import { getAgentDoctor } from './agent-doctor';
 import { buildCASGoldenSnapshot } from './cas-contract';
 import { listCrossCodebaseSystemGraphs, loadCrossCodebaseSystemGraph, saveCrossCodebaseSystemGraph, saveGoldenSnapshot } from './storage';
-import { getAgentWorkPacket } from './agent-adoption';
+import { getAgentContext } from './agent-adoption';
 import type { AgentTask, AgentTaskType } from './agent-adoption';
 import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
+import { getAgentRevisionTracks } from './agent-revision-tracks';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 import { buildUploadManifest } from './remote-source';
 import { loadKlauroConfig, writeDefaultKlauroConfig } from './klauro-config';
 import { buildGithubImportPlan } from './github-import';
 import { compareAnalysisIterations, getPreviewAnalysis, previewCodebaseIteration, previewGreenfieldCodebase, type ProposedFileInput } from './proposal-preview';
 import { buildGreenfieldArchitectureGuidance, type GreenfieldReferenceAnalysis } from './greenfield-guidance';
-import { buildGreenfieldBuildPacket } from './greenfield-build-session';
+import { buildGreenfieldBuildContext } from './greenfield-build-session';
 import { buildSupportBundle, formatSupportBundleResult } from './support-bundle';
 import { formatFullPurgeReport, formatProjectPurgeReport, purgeAll, purgeProject, resolvePurgeRoots } from './purge';
 import { getAnalysisRunLogPath } from '../../../packages/analyzer-core/src/analyzer/core/run-log';
 import { formatBuildIdentity, getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { withAnalysisFocus, type AnalysisFocus } from './analysis-focus';
+import { summarizeAnalysisFreshness } from './freshness';
 import { buildCrossCodebaseSystemGraph, selectWorkspaceAnalysisDetail, summarizeCrossCodebaseSystemGraph, type WorkspaceDetailLevel } from './cross-codebase-analysis';
+import { clearStoredConnectorSession, connectorToken, loadStoredConnectorAuth, normalizeServerUrl, requireConnectorEntitlement, saveStoredConnectorSession } from './connector-auth';
+import { detectRemoteProvider } from './remote-provider';
 import * as fs from 'fs-extra';
 import * as readline from 'readline';
 
@@ -59,6 +63,9 @@ interface ParsedArgs {
   all: boolean;
   allAiCache: boolean;
   yes: boolean;
+  email?: string;
+  password?: string;
+  register: boolean;
 }
 
 async function main(): Promise<void> {
@@ -93,6 +100,35 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (args.command === 'login') {
+    await runLoginCommand(args);
+    return;
+  }
+
+  if (args.command === 'logout') {
+    const result = clearStoredConnectorSession(args.serverUrl);
+    process.stdout.write(args.json
+      ? `${JSON.stringify(result, null, 2)}\n`
+      : `${result.removed ? 'Removed' : 'No stored'} Klauro login for ${result.serverUrl}\n`);
+    return;
+  }
+
+  if (args.command === 'auth-status') {
+    const auth = loadStoredConnectorAuth();
+    const serverUrl = normalizeServerUrl(args.serverUrl || auth.defaultServerUrl);
+    const stored = auth.accounts[serverUrl];
+    const result = {
+      server_url: serverUrl,
+      signed_in: Boolean(stored),
+      email: stored?.email,
+      auth_file: process.env.KLAURO_AUTH_CONFIG_PATH || '~/.klauro/auth.json',
+    };
+    process.stdout.write(args.json
+      ? `${JSON.stringify(result, null, 2)}\n`
+      : `${result.signed_in ? `Signed in to ${serverUrl}${result.email ? ` as ${result.email}` : ''}` : `Not signed in to ${serverUrl}`}\n`);
+    return;
+  }
+
   if (args.command === 'analyzer-server') {
     await runAnalyzerServerCommand(args);
     return;
@@ -100,13 +136,18 @@ async function main(): Promise<void> {
 
   if (![
     'analyzer-server',
+    'login',
+    'logout',
+    'auth-status',
     'init',
+    'index',
     'analyze',
     'upload-manifest',
     'install-agent',
     'github-import-plan',
     'agent-start',
-    'agent-work-packet',
+    'agent-context',
+    'agent-tracks',
     'agent-install',
     'doctor',
     'save-golden',
@@ -115,7 +156,7 @@ async function main(): Promise<void> {
     'proposal-preview',
     'greenfield-preview',
     'greenfield-guidance',
-    'greenfield-build-packet',
+    'greenfield-build-context',
     'preview-get',
     'compare-iterations',
     'workspace-analysis',
@@ -128,22 +169,26 @@ async function main(): Promise<void> {
   ].includes(args.command)) {
     throw new Error(`Unknown command: ${args.command}`);
   }
-  if (!args.path && ['init', 'analyze', 'upload-manifest', 'install-agent', 'github-import-plan'].includes(args.command)) {
+  if (!args.path && ['init', 'index', 'analyze', 'upload-manifest', 'install-agent', 'github-import-plan', 'agent-tracks'].includes(args.command)) {
     args.path = '.';
   }
-  if (!args.path && !['greenfield-preview', 'greenfield-guidance', 'greenfield-build-packet', 'preview-get', 'compare-iterations', 'workspace-analysis', 'workspace-get', 'workspace-list', 'cross-codebase-analysis', 'cross-codebase-get', 'cross-codebase-list', 'support-bundle'].includes(args.command)) {
+  if (!args.path && !['greenfield-preview', 'greenfield-guidance', 'greenfield-build-context', 'preview-get', 'compare-iterations', 'workspace-analysis', 'workspace-get', 'workspace-list', 'cross-codebase-analysis', 'cross-codebase-get', 'cross-codebase-list', 'support-bundle'].includes(args.command)) {
     throw new Error(`${args.command} requires a project path`);
   }
 
   const projectPath = args.path ? path.resolve(args.path) : '';
 
   if (args.command === 'init') {
+    const initOptions = await resolveInitOptions(projectPath, args);
     const result = await writeDefaultKlauroConfig(projectPath, {
       force: args.force,
-      mode: args.mode,
-      serverUrl: args.serverUrl,
-      projectId: args.projectId,
-      organizationId: args.organizationId,
+      mode: initOptions.mode,
+      serverUrl: initOptions.serverUrl,
+      projectId: initOptions.projectId,
+      workspaceId: initOptions.workspaceId,
+      organizationId: initOptions.organizationId,
+      projectName: initOptions.projectName,
+      kind: initOptions.kind,
     });
     process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatInitResult(result));
     return;
@@ -152,6 +197,36 @@ async function main(): Promise<void> {
   if (args.command === 'upload-manifest') {
     const manifest = await buildUploadManifest(projectPath, args.dirtyTree ? 'dirty-tree' : 'full');
     process.stdout.write(args.json ? `${JSON.stringify(manifest, null, 2)}\n` : formatUploadManifest(manifest));
+    return;
+  }
+
+  if (args.command === 'index') {
+    const loaded = await loadKlauroConfig(projectPath);
+    const serverUrl = args.serverUrl || loaded.config.analyzer.serverUrl;
+    const identity = await requireConnectorEntitlement({ serverUrl });
+    const manifest = await buildUploadManifest(projectPath, args.dirtyTree ? 'dirty-tree' : 'full');
+    const result = {
+      status: 'success',
+      index_type: 'local-working-copy-context',
+      authoritative: false,
+      visibility: 'private-to-this-developer',
+      account: {
+        user: identity.user,
+        entitlement: identity.entitlement,
+      },
+      manifest,
+      next: [
+        'Use this context to help local agents understand uncommitted work without publishing it as shared project analysis.',
+        'Commit changes and run klauro remote-analyze when the work should become a shared analyzed project revision.',
+      ],
+    };
+    process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatLocalIndexResult(result));
+    return;
+  }
+
+  if (args.command === 'agent-tracks') {
+    const result = await getAgentRevisionTracks({ projectPath, serverUrl: args.serverUrl, analysisId: args.analysisId });
+    process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatAgentRevisionTracks(result));
     return;
   }
 
@@ -173,7 +248,9 @@ async function main(): Promise<void> {
       }));
       process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatRemoteResult(result));
     } else {
-      const result = await withAnalysisFocus(args.analysisFocus, async () => {
+      await requireConnectorEntitlement({ serverUrl: args.serverUrl || loaded.config.analyzer.serverUrl });
+      const analysisFocus = args.analysisFocus || 'agent-fast';
+      const result = await withAnalysisFocus(analysisFocus, async () => {
         if (args.force) {
           const output = await withLogHandling(args.json, args.quiet, () => analyzeProject(projectPath));
           return {
@@ -187,8 +264,8 @@ async function main(): Promise<void> {
         return withLogHandling(args.json, args.quiet, () => analyzeProjectIncremental(projectPath));
       });
       process.stdout.write(args.json
-        ? `${JSON.stringify({ ...result, analysis_focus: args.analysisFocus || 'full' }, null, 2)}\n`
-        : formatLocalAnalyzeResult(result, args.analysisFocus));
+        ? `${JSON.stringify({ ...result, analysis_focus: analysisFocus }, null, 2)}\n`
+        : formatLocalAnalyzeResult(result, analysisFocus));
     }
     return;
   }
@@ -262,7 +339,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (args.command === 'greenfield-build-packet') {
+  if (args.command === 'greenfield-build-context') {
     const references: GreenfieldReferenceAnalysis[] = [];
     for (const referencePath of args.referencePaths) {
       const absolute = path.resolve(referencePath);
@@ -273,13 +350,13 @@ async function main(): Promise<void> {
         cas,
       });
     }
-    const result = await withLogHandling(args.json, args.quiet, () => buildGreenfieldBuildPacket({
+    const result = await withLogHandling(args.json, args.quiet, () => buildGreenfieldBuildContext({
       workspacePath: args.path ? path.resolve(args.path) : process.cwd(),
-      planText: loadTextArg(args.planText, args.planFile, 'greenfield-build-packet requires --plan or --plan-file'),
+      planText: loadTextArg(args.planText, args.planFile, 'greenfield-build-context requires --plan or --plan-file'),
       proposedFiles: loadProposedFiles(args.proposedFilesFile),
       references,
     }));
-    process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatGreenfieldBuildPacket(result));
+    process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatGreenfieldBuildContext(result));
     return;
   }
 
@@ -353,10 +430,10 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (args.command === 'agent-work-packet') {
-    const packet = await getAgentWorkPacket(cas, projectPath, args.task);
-    const output = args.compact ? compactWorkPacket(packet) : packet;
-    process.stdout.write(args.json ? `${JSON.stringify(output, null, 2)}\n` : formatWorkPacket(packet));
+  if (args.command === 'agent-context') {
+    const context = await getAgentContext(cas, projectPath, args.task);
+    const output = args.compact ? compactAgentContext(context) : context;
+    process.stdout.write(args.json ? `${JSON.stringify(output, null, 2)}\n` : formatAgentContext(context));
     return;
   }
 
@@ -427,11 +504,253 @@ async function confirmDestructiveAction(description: string, preApproved: boolea
   return answer.trim().toLowerCase() === 'y' || answer.trim().toLowerCase() === 'yes';
 }
 
+async function runLoginCommand(args: ParsedArgs): Promise<void> {
+  const serverUrl = normalizeServerUrl(args.serverUrl);
+  const email = args.email || await promptLine('Email: ');
+  const password = args.password || await promptLine('Password: ');
+  if (!email) throw new Error('login requires --email or an entered email');
+  if (!password) throw new Error('login requires --password or an entered password');
+  const endpoint = args.register ? '/api/auth/register' : '/api/auth/login';
+  const response = await fetch(`${serverUrl}${endpoint}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(args.register
+      ? { email, password, workspace_name: 'Klauro' }
+      : { email, password }),
+  });
+  const payload = await response.json().catch(() => ({})) as any;
+  if (!response.ok || !payload?.token) {
+    throw new Error(payload?.error || `Klauro login failed with HTTP ${response.status}`);
+  }
+  const stored = saveStoredConnectorSession({
+    serverUrl,
+    token: payload.token,
+    email: payload.user?.email || email,
+  });
+  const identity = await requireConnectorEntitlement({ serverUrl, token: payload.token });
+  const result = {
+    status: 'success',
+    server_url: stored.serverUrl,
+    auth_file: stored.file,
+    user: identity.user,
+    entitlement: identity.entitlement,
+  };
+  process.stdout.write(args.json
+    ? `${JSON.stringify(result, null, 2)}\n`
+    : `Signed in to ${stored.serverUrl} as ${identity.user?.email || email} (${identity.entitlement.status}).\nAuth stored at ${stored.file}\n`);
+}
+
+async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promise<{
+  mode?: 'local' | 'remote';
+  serverUrl?: string;
+  projectId?: string;
+  workspaceId?: string;
+  organizationId?: string;
+  projectName?: string;
+  kind?: 'project' | 'workspace';
+}> {
+  if (args.json || !process.stdin.isTTY || args.projectId || args.organizationId) {
+    return {
+      mode: args.mode,
+      serverUrl: args.serverUrl,
+      projectId: args.projectId,
+      workspaceId: args.organizationId,
+      organizationId: args.organizationId,
+      kind: args.projectId ? 'project' : undefined,
+    };
+  }
+
+  const serverUrl = normalizeServerUrl(args.serverUrl);
+  const token = connectorToken(undefined, serverUrl);
+  const manifest = await buildUploadManifest(projectPath);
+  const defaultKind = manifest.workspace_recommendation?.recommended ? 'workspace' : 'project';
+  process.stdout.write(`Klauro init for ${projectPath}\n`);
+  if (manifest.remote_provider) {
+    const remote = manifest.remote_provider.owner && manifest.remote_provider.repository
+      ? `${manifest.remote_provider.owner}/${manifest.remote_provider.repository}`
+      : manifest.remote_provider.repository_url || manifest.remote_provider.provider;
+    process.stdout.write(`Detected remote: ${remote}\n`);
+  }
+  if (manifest.workspace_recommendation?.recommended) {
+    process.stdout.write(`Detected child projects: ${manifest.workspace_recommendation.candidates.map(candidate => candidate.path).join(', ')}\n`);
+  }
+
+  const kind = await promptChoice<'project' | 'workspace'>(
+    'Initialize this folder as a project or workspace?',
+    ['project', 'workspace'],
+    defaultKind,
+  );
+
+  if (!token) {
+    process.stdout.write('Not signed in. Writing local config only; run `klauro login` to link/create hosted workspaces and projects.\n');
+    const name = await promptLine(`Name [${path.basename(projectPath)}]: `) || path.basename(projectPath);
+    return { mode: args.mode || 'remote', serverUrl, kind, projectName: name, projectId: undefined, organizationId: undefined, workspaceId: undefined };
+  }
+
+  if (kind === 'workspace') {
+    const workspace = await selectOrCreateWorkspace(serverUrl, token, path.basename(projectPath));
+    return {
+      mode: args.mode || 'remote',
+      serverUrl,
+      kind: 'workspace',
+      projectName: workspace.name,
+      workspaceId: workspace.id,
+      organizationId: workspace.id,
+    };
+  }
+
+  const workspace = await selectOrCreateWorkspace(serverUrl, token, undefined);
+  const projects = await listRemoteProjects(serverUrl, token, workspace.id);
+  const remoteUrl = manifest.remote_provider?.repository_url;
+  const matched = remoteUrl ? projects.find(project => normalizeRepoUrl(project.repo_url) === normalizeRepoUrl(remoteUrl)) : undefined;
+  let project: RemoteProjectChoice | undefined;
+  if (matched) {
+    const answer = await promptChoice<'yes' | 'no'>(
+      `Found matching Klauro project "${matched.name}" for this Git remote. Link to it?`,
+      ['yes', 'no'],
+      'yes',
+    );
+    if (answer === 'yes') project = matched;
+  }
+  if (!project && projects.length > 0) {
+    const answer = await promptChoice<'existing' | 'new'>('Use an existing project or create a new one?', ['existing', 'new'], 'new');
+    if (answer === 'existing') project = await selectRemoteProject(projects);
+  }
+  if (!project) {
+    const defaultName = path.basename(projectPath);
+    const name = await promptLine(`Project name [${defaultName}]: `) || defaultName;
+    project = await createRemoteProject(serverUrl, token, workspace.id, {
+      name,
+      repo_url: remoteUrl,
+      local_path: projectPath,
+    });
+  }
+
+  return {
+    mode: args.mode || 'remote',
+    serverUrl,
+    kind: 'project',
+    projectName: project.name,
+    projectId: project.id,
+    workspaceId: workspace.id,
+    organizationId: workspace.id,
+  };
+}
+
+interface RemoteWorkspaceChoice {
+  id: string;
+  name: string;
+  project_count?: number;
+}
+
+interface RemoteProjectChoice {
+  id: string;
+  name: string;
+  repo_url?: string;
+  local_path?: string;
+}
+
+async function selectOrCreateWorkspace(serverUrl: string, token: string, defaultName?: string): Promise<RemoteWorkspaceChoice> {
+  const workspaces = await listRemoteWorkspaces(serverUrl, token);
+  if (workspaces.length > 0) {
+    process.stdout.write('Workspaces:\n');
+    workspaces.forEach((workspace, index) => {
+      process.stdout.write(`  ${index + 1}. ${workspace.name}${workspace.project_count !== undefined ? ` (${workspace.project_count} projects)` : ''}\n`);
+    });
+  }
+  const action = workspaces.length
+    ? await promptChoice<'existing' | 'new'>('Use an existing workspace or create a new one?', ['existing', 'new'], 'existing')
+    : 'new';
+  if (action === 'existing') return selectRemoteWorkspace(workspaces);
+  const fallback = defaultName || 'Klauro Workspace';
+  const name = await promptLine(`Workspace name [${fallback}]: `) || fallback;
+  return createRemoteWorkspace(serverUrl, token, name);
+}
+
+async function selectRemoteWorkspace(workspaces: RemoteWorkspaceChoice[]): Promise<RemoteWorkspaceChoice> {
+  if (!workspaces.length) throw new Error('No workspaces available');
+  const raw = await promptLine(`Workspace number [1]: `);
+  const index = raw ? Number(raw) - 1 : 0;
+  if (!Number.isInteger(index) || index < 0 || index >= workspaces.length) throw new Error('Invalid workspace selection');
+  return workspaces[index];
+}
+
+async function selectRemoteProject(projects: RemoteProjectChoice[]): Promise<RemoteProjectChoice> {
+  projects.forEach((project, index) => {
+    process.stdout.write(`  ${index + 1}. ${project.name}${project.repo_url ? ` (${project.repo_url})` : ''}\n`);
+  });
+  const raw = await promptLine(`Project number [1]: `);
+  const index = raw ? Number(raw) - 1 : 0;
+  if (!Number.isInteger(index) || index < 0 || index >= projects.length) throw new Error('Invalid project selection');
+  return projects[index];
+}
+
+async function promptChoice<T extends string>(label: string, choices: readonly T[], defaultChoice: T): Promise<T> {
+  const answer = (await promptLine(`${label} [${choices.join('/')}; default ${defaultChoice}]: `)).toLowerCase();
+  if (!answer) return defaultChoice;
+  const match = choices.find(choice => choice.toLowerCase() === answer || choice[0].toLowerCase() === answer);
+  if (!match) throw new Error(`Invalid choice "${answer}". Expected one of: ${choices.join(', ')}`);
+  return match;
+}
+
+async function listRemoteWorkspaces(serverUrl: string, token: string): Promise<RemoteWorkspaceChoice[]> {
+  const payload = await remoteJson<{ workspaces?: RemoteWorkspaceChoice[] }>(serverUrl, token, '/api/workspaces');
+  return payload.workspaces || [];
+}
+
+async function createRemoteWorkspace(serverUrl: string, token: string, name: string): Promise<RemoteWorkspaceChoice> {
+  const payload = await remoteJson<{ workspace: RemoteWorkspaceChoice }>(serverUrl, token, '/api/workspaces', { name });
+  return payload.workspace;
+}
+
+async function listRemoteProjects(serverUrl: string, token: string, workspaceId: string): Promise<RemoteProjectChoice[]> {
+  const payload = await remoteJson<{ projects?: RemoteProjectChoice[] }>(serverUrl, token, `/api/workspaces/${encodeURIComponent(workspaceId)}/projects`);
+  return payload.projects || [];
+}
+
+async function createRemoteProject(serverUrl: string, token: string, workspaceId: string, input: { name: string; repo_url?: string; local_path?: string }): Promise<RemoteProjectChoice> {
+  const payload = await remoteJson<{ project: RemoteProjectChoice }>(serverUrl, token, `/api/workspaces/${encodeURIComponent(workspaceId)}/projects`, input);
+  return payload.project;
+}
+
+async function remoteJson<T>(serverUrl: string, token: string, route: string, body?: unknown): Promise<T> {
+  const response = await fetch(`${serverUrl}${route}`, {
+    method: body ? 'POST' : 'GET',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${token}`,
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const payload = await response.json().catch(() => ({})) as any;
+  if (!response.ok) throw new Error(payload?.error || `Klauro API request failed with HTTP ${response.status}`);
+  return payload as T;
+}
+
+function normalizeRepoUrl(value?: string): string | undefined {
+  if (!value) return undefined;
+  const detected = detectRemoteProvider(value);
+  return (detected?.repository_url || value).replace(/\.git$/i, '').toLowerCase();
+}
+
+async function promptLine(label: string): Promise<string> {
+  if (!process.stdin.isTTY) return '';
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const answer = await new Promise<string>(resolve => rl.question(label, resolve));
+  rl.close();
+  return answer.trim();
+}
+
 async function loadOrAnalyze(projectPath: string, refresh: boolean) {
   if (refresh) return (await analyzeProjectIncremental(projectPath)).output;
 
   try {
-    return await getAnalysis(projectPath);
+    const existing = await getAnalysis(projectPath);
+    const freshness = summarizeAnalysisFreshness(projectPath, existing.analysis_timestamp);
+    if (freshness && freshness.staleness !== 'fresh') {
+      return (await analyzeProjectIncremental(projectPath)).output;
+    }
+    return existing;
   } catch {
     return (await analyzeProjectIncremental(projectPath)).output;
   }
@@ -489,6 +808,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     all: false,
     allAiCache: false,
     yes: false,
+    register: false,
   };
 
   for (let i = 1; i < argv.length; i++) {
@@ -506,6 +826,12 @@ function parseArgs(argv: string[]): ParsedArgs {
       parsed.quiet = true;
     } else if (arg === '--server-url') {
       parsed.serverUrl = argv[++i];
+    } else if (arg === '--email') {
+      parsed.email = argv[++i];
+    } else if (arg === '--password') {
+      parsed.password = argv[++i];
+    } else if (arg === '--register') {
+      parsed.register = true;
     } else if (arg === '--path') {
       parsed.path = argv[++i];
     } else if (arg === '--analysis-id') {
@@ -587,22 +913,27 @@ function printHelp(): void {
     '  klauro purge --all [--yes] [--json]     (wipe all local Klauro data under ~/.klauro)',
     '  klauro --version',
     '  klauro doctor [--json]                  (no path: environment health for this machine)',
+    '  klauro login --email you@example.com [--password value] [--server-url url] [--register]',
+    '  klauro auth-status [--server-url url] [--json]',
+    '  klauro logout [--server-url url] [--json]',
     '  klauro analyzer-server [--host 0.0.0.0] [--port 8787] [--data-dir .klauro-remote-analyzer]',
-    '  klauro init [/path/to/repo] [--mode local|remote] [--server-url url] [--project-id id] [--organization-id id] [--force] [--json]',
+    '  klauro init [/path/to/repo] [--server-url url] [--project-id id] [--organization-id id] [--force] [--json]',
+    '  klauro index [/path/to/repo] [--dirty-tree] [--server-url url] [--json]',
     '  klauro upload-manifest [/path/to/repo] [--dirty-tree] [--json]',
-    '  klauro analyze [/path/to/repo] [--server-url http://127.0.0.1:8787] [--analysis-id id] [--analysis-focus agent-fast|ui-overview|deep-context|full] [--force] [--json]',
+    '  klauro analyze [/path/to/repo] [--server-url url] [--analysis-id id] [--analysis-focus agent-fast|ui-overview|deep-context|full] [--force] [--json]',
     '  klauro install-agent [/path/to/repo] [--json]',
     '  klauro github-import-plan [/path/to/repo] [--json]',
     '  klauro agent-start /path/to/repo [--task-type orient|modify|debug|review|trace|cross-repo|runtime] [--target query] [--json] [--refresh]',
-    '  klauro agent-work-packet /path/to/repo [--task-type orient|modify|debug|review|trace|cross-repo|runtime] [--target query] [--instructions text|--task text] [--success-criterion text] [--response-profile standard|minimal|first-turn|capsule-only] [--json] [--compact] [--quiet] [--refresh]',
+    '  klauro agent-context /path/to/repo [--task-type orient|modify|debug|review|trace|cross-repo|runtime] [--target query] [--instructions text|--task text] [--success-criterion text] [--response-profile standard|minimal|first-turn|capsule-only] [--json] [--compact] [--quiet] [--refresh]',
+    '  klauro agent-tracks /path/to/repo [--server-url url] [--analysis-id id] [--json]',
     '  klauro agent-install /path/to/repo [--task-type orient|modify|debug|review|trace|cross-repo|runtime] [--target query] [--json] [--refresh]',
     '  klauro doctor /path/to/repo [--json] [--refresh]   (with path: per-repository analysis readiness)',
     '  klauro save-golden /path/to/repo [--json] [--refresh]',
-    '  klauro remote-analyze /path/to/repo [--server-url http://127.0.0.1:8787] [--analysis-id id] [--json]',
-    '  klauro remote-sync /path/to/repo [--server-url http://127.0.0.1:8787] [--analysis-id id] [--json]',
+    '  klauro remote-analyze /path/to/repo [--server-url url] [--analysis-id id] [--json]',
+    '  klauro remote-sync /path/to/repo [--server-url url] [--analysis-id id] [--json]',
     '  klauro proposal-preview /path/to/repo --plan-file plan.md [--diff-file changes.patch] [--proposed-files files.json] [--server-url app-url] [--json]',
     '  klauro greenfield-guidance --plan-file plan.md [--reference-path /existing/repo] [--proposed-files files.json] [--json]',
-    '  klauro greenfield-build-packet [/empty/or/current/project] --plan-file plan.md [--reference-path /existing/repo] [--proposed-files files.json] [--json]',
+    '  klauro greenfield-build-context [/empty/or/current/project] --plan-file plan.md [--reference-path /existing/repo] [--proposed-files files.json] [--json]',
     '  klauro greenfield-preview --plan-file plan.md --proposed-files files.json [--server-url app-url] [--json]',
     '  klauro workspace-analysis /path/to/repo-a [--reference-path /path/to/repo-b] [--reference-path /path/to/repo-c] [--target name] [--json] [--refresh]',
     '  klauro workspace-get --preview-id id-or-name [--detail-level overview|connections|evidence|full] [--json]',
@@ -612,22 +943,25 @@ function printHelp(): void {
     '  klauro compare-iterations [--preview-id id] [--baseline-path /repo] [--proposed-path /repo-copy] [--json]',
     '',
     'Examples:',
-    '  klauro init . --mode remote --server-url https://analyzer.klauro.dev',
+    '  klauro init .',
+    '  klauro login --email you@example.com',
     '  klauro analyzer-server --host 127.0.0.1 --port 8787',
+    '  klauro index . --dirty-tree',
     '  klauro upload-manifest .',
     '  klauro analyze .',
     '  klauro install-agent .',
     '  klauro agent-start .',
-    '  klauro agent-work-packet . --task-type modify --target auth --json',
+    '  klauro agent-context . --task-type modify --target auth --json',
+    '  klauro agent-tracks .',
     '  klauro agent-install .',
     '  klauro doctor .',
     '  klauro save-golden .',
     '  klauro support-bundle . --output klauro-support.tar.gz',
-    '  klauro remote-analyze . --server-url http://127.0.0.1:8787',
-    '  klauro remote-sync . --server-url http://127.0.0.1:8787',
+    '  klauro remote-analyze .',
+    '  klauro remote-sync .',
     '  klauro proposal-preview . --plan "Add a health endpoint" --proposed-files proposed-files.json',
     '  klauro greenfield-guidance --plan "Create a portfolio reporting service" --reference-path ~/dev/zerac/zerac-api',
-    '  klauro greenfield-build-packet /tmp/new-app --plan "Build an operations command center" --json',
+    '  klauro greenfield-build-context /tmp/new-app --plan "Build an operations command center" --json',
     '  klauro greenfield-preview --plan-file plan.md --proposed-files proposed-files.json',
     '  klauro workspace-analysis ~/dev/soon/soon-ui --reference-path ~/dev/soon/soon-sync --target soon-workspace',
     '  klauro agent-start ~/dev/klauro/proof-of-concept --task-type debug --target auth',
@@ -693,8 +1027,14 @@ function formatUploadManifest(manifest: Awaited<ReturnType<typeof buildUploadMan
     `Root: ${manifest.root}`,
     `Config: ${manifest.config_file || 'default'}`,
     `Ignore: ${manifest.ignore_file || 'none'}`,
+    manifest.branch || manifest.commit ? `Revision: ${manifest.branch || 'unknown-branch'} @ ${manifest.commit || 'uncommitted/unversioned'}${manifest.dirty ? ' (dirty)' : ''}` : undefined,
     `Included: ${manifest.summary.included_files} files, ${manifest.summary.included_bytes} bytes`,
     `Excluded sample: ${manifest.summary.excluded_files} files/directories`,
+    manifest.remote_provider ? `Remote provider: ${manifest.remote_provider.provider}${manifest.remote_provider.owner && manifest.remote_provider.repository ? ` ${manifest.remote_provider.owner}/${manifest.remote_provider.repository}` : ''}` : undefined,
+    manifest.remote_provider?.suggested_connection ? `Connection suggestion: ${manifest.remote_provider.suggested_connection.action}` : undefined,
+    manifest.transfer_recommendation ? `Recommended action: ${manifest.transfer_recommendation.operation} (${manifest.transfer_recommendation.status}) - ${manifest.transfer_recommendation.reason}` : undefined,
+    manifest.workspace_recommendation ? `Workspace recommendation: ${manifest.workspace_recommendation.recommended ? 'yes' : 'possible'} - ${manifest.workspace_recommendation.reason}` : undefined,
+    manifest.workspace_recommendation?.candidates.length ? `Workspace candidates: ${manifest.workspace_recommendation.candidates.map(candidate => `${candidate.path} (${candidate.kind})`).join(', ')}` : undefined,
     manifest.summary.changed_files !== undefined ? `Dirty-tree changed files: ${manifest.summary.changed_files}` : undefined,
     manifest.summary.deleted_files !== undefined ? `Dirty-tree deleted files: ${manifest.summary.deleted_files}` : undefined,
     '',
@@ -702,6 +1042,44 @@ function formatUploadManifest(manifest: Awaited<ReturnType<typeof buildUploadMan
     ...(largest.length ? largest : ['- none']),
     '',
   ].filter(Boolean).join('\n');
+}
+
+function formatLocalIndexResult(result: {
+  status: string;
+  index_type: string;
+  authoritative: boolean;
+  visibility: string;
+  account: { entitlement: { status: string; plan?: string } };
+  manifest: Awaited<ReturnType<typeof buildUploadManifest>>;
+  next: string[];
+}): string {
+  return [
+    'Klauro local working-copy context: SUCCESS',
+    `Type: ${result.index_type}`,
+    `Shared project analysis: ${result.authoritative ? 'yes' : 'no'}`,
+    `Visibility: ${result.visibility}`,
+    `Entitlement: ${result.account.entitlement.status}${result.account.entitlement.plan ? ` (${result.account.entitlement.plan})` : ''}`,
+    `Included: ${result.manifest.summary.included_files} files, ${result.manifest.summary.included_bytes} bytes`,
+    result.manifest.summary.changed_files !== undefined ? `Dirty-tree changed files: ${result.manifest.summary.changed_files}` : undefined,
+    result.manifest.summary.deleted_files !== undefined ? `Dirty-tree deleted files: ${result.manifest.summary.deleted_files}` : undefined,
+    '',
+    'Next:',
+    ...result.next.map(step => `  ${step}`),
+    '',
+  ].filter(Boolean).join('\n');
+}
+
+function formatAgentRevisionTracks(result: Awaited<ReturnType<typeof getAgentRevisionTracks>>): string {
+  return [
+    'Klauro agent tracks',
+    `Project: ${result.project_id}`,
+    `Branch: ${result.selected_branch || 'unknown'}`,
+    `Working: ${result.working_track.dirty ? `${result.working_track.changed_files} changed, ${result.working_track.deleted_files} deleted (private)` : 'clean'}`,
+    `Committed: ${result.committed_track.local_commit ? result.committed_track.local_commit.slice(0, 12) : 'unversioned'}${result.committed_track.analyzed ? ' (analyzed)' : ' (not analyzed yet)'}`,
+    `Incoming: ${result.incoming_track.available ? `${result.incoming_track.commits.length} analyzed commit(s) ahead` : 'none detected'}`,
+    result.incoming_track.guidance,
+    '',
+  ].join('\n');
 }
 
 function formatLocalAnalyzeResult(result: Awaited<ReturnType<typeof analyzeProjectIncremental>>, focus?: ParsedArgs['analysisFocus']): string {
@@ -822,7 +1200,7 @@ function formatGreenfieldGuidance(result: ReturnType<typeof buildGreenfieldArchi
   ].join('\n');
 }
 
-function formatGreenfieldBuildPacket(result: Awaited<ReturnType<typeof buildGreenfieldBuildPacket>>): string {
+function formatGreenfieldBuildContext(result: Awaited<ReturnType<typeof buildGreenfieldBuildContext>>): string {
   const current = result.current_analysis;
   const readFirst = result.context_budget.read_first.slice(0, 8).map((item: any) => `- ${item.file}: ${item.reason}`);
   const nextFiles = result.context_budget.create_or_update_next.slice(0, 8).map((item: any) => `- ${item.file}: ${item.reason}`);
@@ -832,7 +1210,7 @@ function formatGreenfieldBuildPacket(result: Awaited<ReturnType<typeof buildGree
   const ownerFiles = growth?.concept_ownership_contract?.owner_files?.slice(0, 6).map((item: any) => `- ${item.file}: ${item.reason}`) || [];
   const stopRule = growth?.context_budget?.stop_rule;
   return [
-    `Klauro greenfield build packet: ${String(result.status).toUpperCase()}`,
+    `Klauro greenfield build context: ${String(result.status).toUpperCase()}`,
     `Stage: ${result.stage}`,
     `Workspace: ${result.workspace_path}`,
     current ? `Current graph: ${current.graph.nodes} nodes, ${current.graph.edges} edges, ${current.graph.capabilities} capabilities, ${current.graph.files} files` : 'Current graph: none yet',
@@ -913,71 +1291,71 @@ function formatPreviewPayload(payload: Awaited<ReturnType<typeof getPreviewAnaly
   ].join('\n');
 }
 
-function compactWorkPacket(packet: Awaited<ReturnType<typeof getAgentWorkPacket>>) {
-  if ((packet as any).packet_profile === 'first-turn') return packet;
-  const context = packet.work_context as any;
-  const nextMcpCalls = packet.next_mcp_calls.filter((step: any, index: number) =>
+function compactAgentContext(context: Awaited<ReturnType<typeof getAgentContext>>) {
+  if ((context as any).context_profile === 'first-turn') return context;
+  const workContext = context.work_context as any;
+  const nextMcpCalls = context.next_mcp_calls.filter((step: any, index: number) =>
     index < 8 || step.tool === 'validate_agent_change' || step.tool === 'validate_behavioral_invariants' || step.tool === 'validate_codebase_idioms'
   );
   return {
-    path: packet.path,
-    generated_at: packet.generated_at,
-    task: packet.task,
-    status: packet.status,
-    default_use: packet.default_use,
-    readiness: packet.readiness,
-    selected_node: packet.selected_node,
-    execution_brief: (packet as any).execution_brief ? {
-      capsule: (packet as any).execution_brief.capsule,
-      read_first: (packet as any).execution_brief.read_first,
-      edit_scope: (packet as any).execution_brief.edit_scope,
-      validate: (packet as any).execution_brief.validate,
-      stop_rule: (packet as any).execution_brief.stop_rule,
+    path: context.path,
+    generated_at: context.generated_at,
+    task: context.task,
+    status: context.status,
+    agent_context_ready: context.agent_context_ready,
+    readiness: context.readiness,
+    selected_node: context.selected_node,
+    execution_brief: (workContext as any).execution_brief ? {
+      capsule: (workContext as any).execution_brief.capsule,
+      read_first: (workContext as any).execution_brief.read_first,
+      edit_scope: (workContext as any).execution_brief.edit_scope,
+      validate: (workContext as any).execution_brief.validate,
+      stop_rule: (workContext as any).execution_brief.stop_rule,
     } : undefined,
-    target_gaps: (packet.target_resolution as any)?.gaps || [],
-    file_read_plan: packet.file_read_plan.slice(0, 12).map((item: any) => ({
+    target_gaps: (context.target_resolution as any)?.gaps || [],
+    file_read_plan: context.file_read_plan.slice(0, 12).map((item: any) => ({
       file: item.file,
       reason: item.reason,
       line: item.line,
       line_window: item.line_window,
       node_ids: Array.isArray(item.node_ids) ? item.node_ids.slice(0, 8) : item.node_ids,
     })),
-    risk: summarizeRiskForCli(context.risk),
-    risk_context: summarizeRiskContextForCli(context.risk_context),
-    tests: summarizeTests(context.tests),
-    architecture_context: context.architecture_context ? {
-      system_type: context.architecture_context.system_type,
-      architecture_budget: context.architecture_context.architecture_budget?.slice(0, 5),
-      patterns: context.architecture_context.patterns?.slice(0, 5),
-      inventory_counts: context.architecture_context.inventory_counts,
-      inventory_examples: context.architecture_context.inventory_examples,
-      relevant_inventory: context.architecture_context.relevant_inventory,
-      pattern_decision_matrix: context.architecture_context.pattern_decision_matrix?.slice(0, 5),
-      pattern_balance: context.architecture_context.pattern_balance,
-      agent_rules: context.architecture_context.agent_rules?.slice(0, 5),
+    risk: summarizeRiskForCli(workContext.risk),
+    risk_context: summarizeRiskContextForCli(workContext.risk_context),
+    tests: summarizeTests(workContext.tests),
+    architecture_context: workContext.architecture_context ? {
+      system_type: workContext.architecture_context.system_type,
+      architecture_budget: workContext.architecture_context.architecture_budget?.slice(0, 5),
+      patterns: workContext.architecture_context.patterns?.slice(0, 5),
+      inventory_counts: workContext.architecture_context.inventory_counts,
+      inventory_examples: workContext.architecture_context.inventory_examples,
+      relevant_inventory: workContext.architecture_context.relevant_inventory,
+      pattern_decision_matrix: workContext.architecture_context.pattern_decision_matrix?.slice(0, 5),
+      pattern_balance: workContext.architecture_context.pattern_balance,
+      agent_rules: workContext.architecture_context.agent_rules?.slice(0, 5),
     } : null,
-    behavioral_invariants: context.behavioral_invariants ? {
-      total: context.behavioral_invariants.total,
-      invariants: context.behavioral_invariants.invariants?.slice(0, 8),
+    behavioral_invariants: workContext.behavioral_invariants ? {
+      total: workContext.behavioral_invariants.total,
+      invariants: workContext.behavioral_invariants.invariants?.slice(0, 8),
     } : null,
-    idiom_context: context.idiom_context ? {
-      total_idioms: context.idiom_context.total_idioms,
-      selected_idioms: context.idiom_context.selected_idioms?.slice(0, 8),
-      local_examples: context.idiom_context.local_examples?.slice(0, 8),
-      do: context.idiom_context.do?.slice(0, 10),
-      avoid: context.idiom_context.avoid?.slice(0, 10),
-      validation: context.idiom_context.validation?.slice(0, 10),
+    idiom_context: workContext.idiom_context ? {
+      total_idioms: workContext.idiom_context.total_idioms,
+      selected_idioms: workContext.idiom_context.selected_idioms?.slice(0, 8),
+      local_examples: workContext.idiom_context.local_examples?.slice(0, 8),
+      do: workContext.idiom_context.do?.slice(0, 10),
+      avoid: workContext.idiom_context.avoid?.slice(0, 10),
+      validation: workContext.idiom_context.validation?.slice(0, 10),
     } : null,
-    invariant_impact: (packet as any).invariant_impact,
-    validation_plan: (packet as any).validation_plan,
+    invariant_impact: (workContext as any).invariant_impact,
+    validation_plan: (workContext as any).validation_plan,
     next_mcp_calls: nextMcpCalls.map((step: any) => ({
       tool: step.tool,
       purpose: step.purpose,
       required: step.required,
       args: step.args,
     })),
-    source_reading_rule: packet.source_reading_rule,
-    gaps: packet.gaps,
+    source_reading_rule: context.source_reading_rule,
+    gaps: context.gaps,
   };
 }
 
@@ -1019,37 +1397,37 @@ function summarizeRiskContextForCli(context: any) {
   };
 }
 
-function formatWorkPacket(packet: Awaited<ReturnType<typeof getAgentWorkPacket>>): string {
-  if ((packet as any).packet_profile === 'capsule-only') {
+function formatAgentContext(context: Awaited<ReturnType<typeof getAgentContext>>): string {
+  if ((context as any).context_profile === 'capsule-only') {
     const lines = [
-      'Klauro capsule-only work packet',
-      `Estimated tokens: ${(packet as any).estimated_tokens || 'unknown'}`,
+      'Klauro capsule-only agent context',
+      `Estimated tokens: ${(context as any).estimated_tokens || 'unknown'}`,
       '',
       'K15 context:',
       '```text',
-      (packet as any).context_capsule || '',
+      (context as any).context_capsule || '',
       '```',
       '',
       'K5 execution:',
       '```text',
-      (packet as any).execution_capsule || '',
+      (context as any).execution_capsule || '',
       '```',
       '',
-      `Rule: ${(packet as any).rule || 'Read K15, execute K5, then expand only if blocked.'}`,
+      `Rule: ${(context as any).rule || 'Read K15, execute K5, then expand only if blocked.'}`,
     ];
     return `${lines.join('\n')}\n`;
   }
 
-  const selected = packet.selected_node
-    ? `${packet.selected_node.name || packet.selected_node.id} (${packet.selected_node.file || 'unknown file'})`
+  const selected = context.selected_node
+    ? `${context.selected_node.name || context.selected_node.id} (${context.selected_node.file || 'unknown file'})`
     : 'none';
-  const invariantImpact = (packet as any).invariant_impact;
-  const validateAgentCall = packet.next_mcp_calls.find(step => step.tool === 'validate_agent_change');
-  const validateCall = packet.next_mcp_calls.find(step => step.tool === 'validate_behavioral_invariants');
-  const validateIdiomCall = packet.next_mcp_calls.find(step => step.tool === 'validate_codebase_idioms');
-  const idiomContext = (packet.work_context as any).idiom_context;
-  const riskContext = (packet.work_context as any).risk_context;
-  const validationCommands = ((packet as any).validation_plan?.commands || []).slice(0, 5);
+  const invariantImpact = (context as any).invariant_impact;
+  const validateAgentCall = context.next_mcp_calls.find(step => step.tool === 'validate_agent_change');
+  const validateCall = context.next_mcp_calls.find(step => step.tool === 'validate_behavioral_invariants');
+  const validateIdiomCall = context.next_mcp_calls.find(step => step.tool === 'validate_codebase_idioms');
+  const idiomContext = (context.work_context as any).idiom_context;
+  const riskContext = (context.work_context as any).risk_context;
+  const validationCommands = ((context as any).validation_plan?.commands || []).slice(0, 5);
   const validationLines = validationCommands.length > 0
     ? validationCommands.map((command: any) => `- ${command.command}: ${command.purpose}`)
     : ['- none inferred'];
@@ -1063,10 +1441,10 @@ function formatWorkPacket(packet: Awaited<ReturnType<typeof getAgentWorkPacket>>
     validationLines.push(`- MCP ${validateAgentCall.tool}: ${validateAgentCall.purpose}`);
   }
   const lines = [
-    `Klauro work packet: ${packet.status.toUpperCase()}`,
-    `Default use: ${packet.default_use ? 'yes' : 'no'}`,
-    `Path: ${packet.path}`,
-    `Task: ${packet.task.task_type || 'orient'}${packet.task.target ? ` -> ${packet.task.target}` : ''}`,
+    `Klauro agent context: ${context.status.toUpperCase()}`,
+    `Agent context ready: ${context.agent_context_ready ? 'yes' : 'no'}`,
+    `Path: ${context.path}`,
+    `Task: ${context.task.task_type || 'orient'}${context.task.target ? ` -> ${context.task.target}` : ''}`,
     `Selected node: ${selected}`,
     '',
     'Risk context:',
@@ -1079,7 +1457,7 @@ function formatWorkPacket(packet: Awaited<ReturnType<typeof getAgentWorkPacket>>
     ...(riskContext?.agent_rules?.length ? riskContext.agent_rules.slice(0, 3).map((rule: string) => `- ${rule}`) : []),
     '',
     'First files:',
-    ...packet.file_read_plan.slice(0, 10).map(item => {
+    ...context.file_read_plan.slice(0, 10).map(item => {
       const window = item.line_window
         ? ` lines ${item.line_window.start}-${item.line_window.end}`
         : item.line
@@ -1098,7 +1476,7 @@ function formatWorkPacket(packet: Awaited<ReturnType<typeof getAgentWorkPacket>>
     ...validationLines,
     '',
     'Gaps:',
-    ...(packet.gaps.length ? packet.gaps.map(gap => `- ${gap}`) : ['- none']),
+    ...(context.gaps.length ? context.gaps.map(gap => `- ${gap}`) : ['- none']),
   ];
   return `${lines.join('\n')}\n`;
 }
@@ -1106,7 +1484,7 @@ function formatWorkPacket(packet: Awaited<ReturnType<typeof getAgentWorkPacket>>
 function formatDoctor(doctor: Awaited<ReturnType<typeof getAgentDoctor>>): string {
   const lines = [
     `Klauro agent doctor: ${doctor.status.toUpperCase()}`,
-    `Default use: ${doctor.default_use ? 'yes' : 'no'}`,
+    `Agent context ready: ${doctor.agent_context_ready ? 'yes' : 'no'}`,
     `Path: ${doctor.path}`,
     '',
     'Checks:',
