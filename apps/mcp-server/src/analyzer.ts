@@ -922,12 +922,29 @@ function buildChangeHistoryEntry(result: IncrementalAnalysisResult): ChangeHisto
   };
 }
 
+// In-process global analysis mutex. getOrchestrator() returns a process-wide
+// singleton that carries per-analysis mutable state (activeAnalysisProjectPath,
+// projectRoots, discovery/inventory caches), so two analyses of DIFFERENT projects
+// running concurrently on it interleave and clobber each other — one project's
+// analyzers run against another's roots and silently emit nothing. Node analysis is
+// single-threaded and CPU-bound, so serializing costs ~no wall-clock over the
+// interleaving it prevents. The per-project file lock only guards same-path runs;
+// this guards ALL of them (e.g. the analyzer server fanning out concurrent requests).
+let globalAnalysisTail: Promise<unknown> = Promise.resolve();
+function withGlobalAnalysisLock<T>(fn: () => Promise<T>): Promise<T> {
+  const result = globalAnalysisTail.then(fn, fn);
+  globalAnalysisTail = result.then(() => undefined, () => undefined);
+  return result;
+}
+
 export async function analyzeProjectIncremental(projectPath: string): Promise<IncrementalAnalysisResult> {
   if (!(await fs.pathExists(projectPath))) {
     throw new Error(`Project path does not exist: ${projectPath}`);
   }
 
-  return withProjectAnalysisLock(projectPath, () => runIncrementalAnalysis(projectPath));
+  return withGlobalAnalysisLock(() =>
+    withProjectAnalysisLock(projectPath, () => runIncrementalAnalysis(projectPath)),
+  );
 }
 
 async function runIncrementalAnalysis(projectPath: string): Promise<IncrementalAnalysisResult> {

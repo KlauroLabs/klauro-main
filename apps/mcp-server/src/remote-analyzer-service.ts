@@ -26,16 +26,6 @@ interface RateLimitBucket {
 }
 
 export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOptions = {}): http.Server {
-  // The analyzer server fans concurrent client analyses onto the process-wide
-  // orchestrator, which carries per-analysis mutable state (activeAnalysisProjectPath,
-  // projectRoots, discovery/inventory caches). Concurrent analyses of DIFFERENT
-  // projects would interleave and clobber each other, so one project's analyzers run
-  // against another's roots and silently emit nothing. Use a fresh orchestrator per
-  // analysis so every request is isolated — correctness over the warm-singleton reuse
-  // that only pays off for a single-project process.
-  if (process.env.KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS === undefined) {
-    process.env.KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS = '1';
-  }
   const dataDir = path.resolve(options.dataDir || process.env.KLAURO_REMOTE_ANALYZER_DATA || path.join(process.cwd(), '.klauro-remote-analyzer'));
   const token = options.token ?? process.env.KLAURO_ANALYZER_TOKEN;
   const maxBodyBytes = options.maxBodyBytes || resolveMaxBodyBytes();
