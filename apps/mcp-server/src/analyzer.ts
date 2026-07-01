@@ -55,6 +55,7 @@ import { NuxtAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frame
 import { RemixAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/web/remix-analyzer';
 import { ReactNativeAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/web/react-native-analyzer';
 import { KtorAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/kotlin/ktor-analyzer';
+import { ComposeAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/kotlin/compose-analyzer';
 import { WordPressAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/php/wordpress-analyzer';
 import { BlazorAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/dotnet/blazor-analyzer';
 import { QuarkusAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/java/quarkus-analyzer';
@@ -409,6 +410,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
     { id: 'remix', name: 'Remix Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['@remix-run/react', '@remix-run/node'], files: ['remix.config.js'] }, requires: ['typescript-javascript'], analyzer: new RemixAnalyzer() },
     { id: 'react-native', name: 'React Native / Expo Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['react-native', 'expo'], files: ['app.json', 'app.config.js', 'app.config.ts'] }, requires: ['typescript-javascript'], analyzer: new ReactNativeAnalyzer() },
     { id: 'ktor', name: 'Ktor Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['io.ktor', 'ktor-server-core'], files: ['build.gradle.kts', 'build.gradle'], content: [/io\.ktor/, /routing\s*\{/, /embeddedServer\(/] }, requires: ['kotlin'], analyzer: new KtorAnalyzer() },
+    { id: 'jetpack-compose', name: 'Jetpack Compose Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['androidx.compose', 'androidx.compose.runtime', 'compose.runtime'], files: ['build.gradle.kts', 'build.gradle'], content: [/@Composable/, /androidx\.compose/] }, requires: ['kotlin'], analyzer: new ComposeAnalyzer() },
     { id: 'wordpress', name: 'WordPress Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['wp-config.php', 'style.css'], content: [/add_action\s*\(/, /add_filter\s*\(/, /register_post_type\s*\(/, /Plugin Name:/, /Theme Name:/] }, requires: ['php'], analyzer: new WordPressAnalyzer() },
     { id: 'blazor', name: 'Blazor Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.razor'], content: [/Microsoft\.AspNetCore\.Components/, /@page\s/, /@code\b/] }, requires: ['csharp'], analyzer: new BlazorAnalyzer() },
     { id: 'quarkus', name: 'Quarkus Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['io.quarkus'], files: ['pom.xml', 'build.gradle'], content: [/quarkus\./, /jakarta\.ws\.rs/, /javax\.ws\.rs/] }, requires: ['java'], analyzer: new QuarkusAnalyzer() },

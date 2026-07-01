@@ -1,0 +1,9 @@
+{
+  "task": "component-tree",
+  "expected_tree": [
+    "App renders Header",
+    "App renders UserList",
+    "App renders Footer",
+    "UserList renders UserCard"
+  ]
+}
