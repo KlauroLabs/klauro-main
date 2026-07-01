@@ -181,7 +181,7 @@ export class AIService {
     }
 
     const cacheKey = this.generateCacheKey('description', context);
-    
+
     try {
       // Check cache first
       const cached = await this.cache.get(cacheKey);
@@ -202,7 +202,7 @@ export class AIService {
       this.logger.info(`Generating description using ${provider.name} provider`);
       
       const description = await provider.generateDescription(context);
-      
+
       // Track usage
       const responseTime = Date.now() - startTime;
       this.updateUsageStats(provider.name, true, responseTime);
@@ -410,12 +410,54 @@ export class AIService {
     // are what distinguish one request from another. Without this, every
     // system-level call collides on `description:global:unknown:unknown` and
     // one project's description leaks into the next.
+    //
+    // The serialized facts are also the cache key on the content-addressed disk
+    // cache, so any RUN- or PATH-specific token in them defeats caching entirely:
+    // identical source content re-analyzed from a different absolute path (the
+    // common case — the analyzer stages each run in a fresh path-hashed
+    // workspace, so `systemName`/`product.name` become a per-path project-id
+    // hash) would otherwise produce a different key on every run and never hit.
+    // Normalize that noise out BEFORE hashing so identical prompt-relevant facts
+    // yield an identical key. This never changes what is SENT to the model — only
+    // how the request is keyed — so it cannot alter any generated description.
     if (context.additionalContext && Object.keys(context.additionalContext).length > 0) {
-      const serialized = JSON.stringify(context.additionalContext);
+      const serialized = this.normalizeContextForCacheKey(context.additionalContext);
       keyParts.push(crypto.createHash('md5').update(serialized).digest('hex').substring(0, 12));
     }
 
     return keyParts.join(':');
+  }
+
+  /**
+   * Stable serialization of `additionalContext` for the cache key. Serializes
+   * with sorted object keys (so key ordering never perturbs the hash) and scrubs
+   * run-/path-specific noise that carries no semantic meaning for the prompt:
+   * absolute/temp paths, path-derived project-id / md5-style hex tokens (the
+   * synthetic `systemName`), ISO timestamps, and epoch-millisecond stamps. The
+   * scrub is deliberately narrow (only long hex tokens and recognizable
+   * path/time shapes) so genuinely different SOURCE content — different entity
+   * names, routes, capabilities, real system names — still produces distinct
+   * keys and never collides.
+   */
+  private normalizeContextForCacheKey(additionalContext: Record<string, unknown>): string {
+    const stableStringify = (value: unknown): string => {
+      if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+      if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+      const keys = Object.keys(value as Record<string, unknown>).sort();
+      return `{${keys.map(k => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`).join(',')}}`;
+    };
+    const serialized = stableStringify(additionalContext);
+    return serialized
+      // absolute / temp workspace paths (macOS var/folders, /tmp, /private/tmp, /Users, and the analyzer's path-hashed workspace dirs)
+      .replace(/(?:\/private)?\/(?:var\/folders|tmp)\/[^"\\\s]*/gi, '<PATH>')
+      .replace(/\/(?:Users|home)\/[^"\\\s]*/gi, '<PATH>')
+      .replace(/[A-Za-z]:\\\\[^"\\\s]*/g, '<PATH>')
+      // path-derived project-id / md5-style hash tokens (>=12 hex chars, word-bounded) —
+      // the synthetic systemName/product.name for a staged workspace is exactly this shape
+      .replace(/\b[0-9a-f]{12,64}\b/gi, '<HASH>')
+      // absolute timestamps that vary every run
+      .replace(/\b20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\b/g, '<TS>')
+      .replace(/\b1[0-9]{12}\b/g, '<TS>');
   }
 
   private generateFallbackDescription(context: AIAnalysisContext): string {

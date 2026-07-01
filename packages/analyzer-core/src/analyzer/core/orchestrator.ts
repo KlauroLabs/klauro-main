@@ -109,6 +109,49 @@ import * as fs from 'fs-extra';
 import { glob, globSync } from 'glob';
 import * as path from 'path';
 
+/**
+ * Run an async worker over `items` with a bounded number in flight at once,
+ * awaiting the whole set. Each worker is independent; results are not returned
+ * (workers mutate shared state under their own id, so completion order does not
+ * matter). Used to fan out the per-element AI description batches — each batch's
+ * prompt depends only on its own items, so they can run concurrently instead of
+ * strictly one-after-another, collapsing wall-clock without changing which
+ * descriptions are produced or where they land. Concurrency defaults to 5 and is
+ * overridable via KLAURO_AI_CONCURRENCY. A worker that throws does not abort the
+ * others (each batch already handles its own errors); we still surface the first
+ * rejection after all settle so nothing is silently swallowed.
+ */
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<void>
+): Promise<void> {
+  const limit = Math.max(1, Math.floor(concurrency) || 1);
+  if (items.length === 0) return;
+  let cursor = 0;
+  let firstError: unknown;
+  const runNext = async (): Promise<void> => {
+    while (true) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      try {
+        await worker(items[index], index);
+      } catch (error) {
+        if (firstError === undefined) firstError = error;
+      }
+    }
+  };
+  const runners: Promise<void>[] = [];
+  for (let i = 0; i < Math.min(limit, items.length); i++) runners.push(runNext());
+  await Promise.all(runners);
+  if (firstError !== undefined) throw firstError;
+}
+
+function aiConcurrencyLimit(): number {
+  const configured = Number(process.env.KLAURO_AI_CONCURRENCY || '');
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 5;
+}
+
 // Code-layer / folder / structural names that are never meaningful capability
 // "owners". Used to drop ownership clauses like "owned by lib and entities".
 const CAPABILITY_STRUCTURAL_AREA_NAMES = new Set([
@@ -8567,13 +8610,21 @@ export class AnalyzerOrchestrator {
     const batchSize = Math.max(1, Math.min(12, Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE || '4')));
     const byId = new Map<string, DescriptionTarget>(targets.map(target => [target.id, target]));
 
-    for (let i = 0; i < targets.length; i += batchSize) {
+    // Each batch's prompt depends only on its own items, so the batches are
+    // independent and run concurrently (bounded) rather than one-after-another.
+    // The shared wall-clock budget is still enforced: every batch (and every
+    // repair inside it) times out at `startedAt + budgetMs`, so parallelism only
+    // collapses latency — it never runs past the budget nor changes which
+    // descriptions are produced or where they land (results are keyed by id).
+    const batches: DescriptionTarget[][] = [];
+    for (let i = 0; i < targets.length; i += batchSize) batches.push(targets.slice(i, i + batchSize));
+
+    await runWithConcurrency(batches, aiConcurrencyLimit(), async (batch) => {
       if (Date.now() - startedAt >= budgetMs) {
-        this.recordElementDescriptionGenerationByIds(targets.slice(i).map(target => target.id), capabilities, entities, 'deterministic', 'ai_skipped', false, 'budget-exhausted', budgetMs);
-        break;
+        this.recordElementDescriptionGenerationByIds(batch.map(target => target.id), capabilities, entities, 'deterministic', 'ai_skipped', false, 'budget-exhausted', budgetMs);
+        return;
       }
 
-      const batch = targets.slice(i, i + batchSize);
       let timeoutHandle: NodeJS.Timeout | undefined;
       try {
         const timeoutPromise = new Promise<string>((_, reject) => {
@@ -8605,7 +8656,7 @@ export class AnalyzerOrchestrator {
         const parsed = this.parseDescriptionBatch(raw);
         if (!parsed || parsed.size === 0) {
           this.recordElementDescriptionGenerationByIds(batch.map(target => target.id), capabilities, entities, 'deterministic', 'ai_rejected', true, 'invalid-json-or-empty', budgetMs);
-          continue;
+          return;
         }
         for (const target of batch) {
           const sanitized = this.sanitizeElementDescriptionCandidate(parsed.get(target.id) || '', byId.get(target.id) || target);
@@ -8768,7 +8819,7 @@ export class AnalyzerOrchestrator {
       } finally {
         if (timeoutHandle) clearTimeout(timeoutHandle);
       }
-    }
+    });
   }
 
   private capabilityDescriptionTarget(capability: SystemCapability, entityNamesById?: Map<string, string>): DescriptionTarget {
