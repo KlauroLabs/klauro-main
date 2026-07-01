@@ -7,6 +7,8 @@
  */
 
 import type { RepoRevision } from './revision';
+import { getRepoRevision } from './revision';
+import { loadKlauroConfig } from './klauro-config';
 
 export type AnalysisTrack = 'main' | 'other-branch' | 'in-flight';
 
@@ -26,6 +28,25 @@ export function revisionToTrack(rev: RepoRevision, mainBranch?: string): Analysi
     return branch === mainBranch ? 'main' : 'other-branch';
   }
   return branch === 'main' || branch === 'master' ? 'main' : 'other-branch';
+}
+
+/**
+ * Resolve the current analysis track for a project, honoring the configured
+ * default branch. Reads the repo's current revision and the project's
+ * `.klaurorc` `project.mainBranch` (when present) so a repo whose default
+ * branch isn't main/master is still classified as 'main'. Returns null when the
+ * path is not a git repo (no revision to classify).
+ */
+export async function resolveCurrentTrack(projectPath: string): Promise<AnalysisTrack | null> {
+  const rev = getRepoRevision(projectPath);
+  if (!rev) return null;
+  let mainBranch: string | undefined;
+  try {
+    mainBranch = (await loadKlauroConfig(projectPath)).config.project.mainBranch;
+  } catch {
+    // No/invalid .klaurorc → fall back to main/master default classification.
+  }
+  return revisionToTrack(rev, mainBranch);
 }
 
 /**

@@ -13,6 +13,7 @@
  */
 
 import type { AnalysisEntry } from './storage';
+import type { AnalysisTrack } from './track';
 
 export const DEFAULT_LIMIT = 50;
 export const MAX_LIMIT = 500;
@@ -40,6 +41,12 @@ export interface ListAnalysesQuery {
   sort?: AnalysisSort;
   /** When false, return the full AnalysisEntry instead of the compact shape. */
   compact?: boolean;
+  /**
+   * Optional track filter. When set, keep only entries on this track. Omitted
+   * (default) shows every track — backward compatible; nothing shown today is
+   * hidden. Legacy entries with no track are treated as 'main'.
+   */
+  track?: AnalysisTrack;
 }
 
 export interface CompactAnalysis {
@@ -51,6 +58,8 @@ export interface CompactAnalysis {
   edge_count: number;
   analyzed_at: string;
   cas_version?: string;
+  /** Which analysis track this entry belongs to. Legacy entries → 'main'. */
+  track: AnalysisTrack;
 }
 
 export interface ListAnalysesResult {
@@ -87,6 +96,7 @@ function toCompact(e: AnalysisEntry): CompactAnalysis {
     edge_count: e.edge_count,
     analyzed_at: e.analyzed_at,
     cas_version: e.cas_version,
+    track: e.track ?? 'main',
   };
 }
 
@@ -140,6 +150,7 @@ export function listAnalysesFiltered(entries: AnalysisEntry[], rawQuery: ListAna
     if (typeNeedle && !(e.system_type || '').toLowerCase().includes(typeNeedle)) return false;
     if (minNodes !== undefined && e.node_count < minNodes) return false;
     if (minEdges !== undefined && e.edge_count < minEdges) return false;
+    if (rawQuery.track && (e.track ?? 'main') !== rawQuery.track) return false;
     return true;
   });
 

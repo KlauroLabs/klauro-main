@@ -1,6 +1,7 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { listAnalysesFiltered, DEFAULT_LIMIT, MAX_LIMIT } from './analysis-listing';
+import type { AnalysisTrack } from './track';
 import { listWorkspaceAnalysesFiltered } from './workspace-listing';
 import { installGauntletWatcher, listGauntletWatchers, stopGauntletWatcher } from './gauntlet/gauntlet-watcher';
 import { runIncrementalGauntlet, listIncrementalRecords } from './gauntlet/incremental-gauntlet';
@@ -490,6 +491,16 @@ function runtimeObservationId(): string {
   return `runtime_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+/**
+ * Optional analysis-track selector shared by analysis-fetch tools. Omitting it
+ * preserves today's default behavior (in-flight when present, else main); an
+ * explicit value routes loadAnalysis to that exact track. Backward compatible.
+ */
+const TRACK_PARAM = z
+  .enum(['main', 'other-branch', 'in-flight'])
+  .optional()
+  .describe("Optional analysis track to read: 'main' (committed default branch), 'other-branch' (committed non-default branch), or 'in-flight' (dirty working tree). Omit for the default view (in-flight when present, else main).");
+
 function registerTools(server: McpServer) {
 
   // -- Analysis Management --
@@ -887,6 +898,7 @@ function registerTools(server: McpServer) {
         dedupe_by: z.enum(['name', 'path', 'none']).optional().describe("Collapse re-analyses: keep the largest entry per 'name' or per 'path'. Default 'none'."),
         sort: z.enum(['nodes', 'edges', 'name', 'recent']).optional().describe("Sort order. Default 'nodes' (desc)."),
         compact: z.boolean().optional().describe('Return a compact projection (default true). Set false for the full AnalysisEntry.'),
+        track: z.enum(['main', 'other-branch', 'in-flight']).optional().describe("Optional track filter. Omit (default) to show every track — each entry's `track` is always surfaced in the projection. Set to keep only 'main', 'other-branch', or 'in-flight' entries."),
       } as any,
     } as any,
     async (query: any) => withErrorHandling(async () => {
@@ -1238,10 +1250,10 @@ function registerTools(server: McpServer) {
     {
       title: 'Get Summary',
       description: 'Get condensed intelligence summary of an analyzed codebase. Includes system purpose, flow graph highlights (top 15 capabilities by score), architecture summary, database entities, entry point breakdown, node/edge counts, and analyzer contributions. This is the first tool to call to orient on a codebase.',
-      inputSchema: { path: z.string().describe('Project path (must be previously analyzed)') } as any,
+      inputSchema: { path: z.string().describe('Project path (must be previously analyzed)'), track: TRACK_PARAM } as any,
     } as any,
-    async ({ path }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
+    async ({ path, track }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path, track ? { track } : undefined);
       return json(query.buildSummary(cas));
     })
   );
@@ -4122,10 +4134,11 @@ function registerTools(server: McpServer) {
         fact_type: z.string().optional().describe('Filter by fact type, such as definition, relationship, workflow, runtime-correlation, cross-repository'),
         limit: z.number().optional().describe('Max results (default 50)'),
         offset: z.number().optional().describe('Skip first N results (default 0)'),
+        track: TRACK_PARAM,
       } as any,
     } as any,
-    async ({ path, subject_type, subject_id, fact_type, limit, offset }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
+    async ({ path, subject_type, subject_id, fact_type, limit, offset, track }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path, track ? { track } : undefined);
       return json(query.getAnalysisFacts(cas, { subjectType: subject_type, subjectId: subject_id, factType: fact_type, limit, offset }));
     })
   );

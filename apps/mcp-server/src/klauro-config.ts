@@ -10,6 +10,13 @@ export interface KlauroConfig {
     id?: string;
     workspaceId?: string;
     organizationId?: string;
+    /**
+     * The repo's default ("main") branch. When set, this branch is classified
+     * as the 'main' analysis track and every other committed branch as
+     * 'other-branch' (see track.ts revisionToTrack). Optional and backward
+     * compatible: when unset, both 'main' and 'master' are treated as default.
+     */
+    mainBranch?: string;
   };
   analyzer: {
     // No "mode": Klauro is one product. Analysis goes to the hosted service
