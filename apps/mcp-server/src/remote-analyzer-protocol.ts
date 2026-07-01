@@ -1,5 +1,5 @@
 import type { CASOutput, ChangeReport } from '../../../packages/analyzer-core/src/types/cas.types';
-import type { RemoteFileChange, SourceManifest, SourceSnapshot, WorkingTreeChangeContext } from './remote-source';
+import type { BranchDiffContext, RemoteFileChange, SourceManifest, SourceSnapshot, WorkingTreeChangeContext } from './remote-source';
 import type { ProposedFileInput } from './proposal-preview';
 
 export interface RemoteAnalyzeRequest {
@@ -21,6 +21,13 @@ export interface RemoteSyncRequest {
     changed_files: RemoteFileChange[];
     manifest?: SourceManifest;
   };
+}
+
+export interface RemoteAnalyzeDiffRequest {
+  project_id?: string;
+  organization_id?: string;
+  project_path?: string;
+  diff_context: BranchDiffContext;
 }
 
 export interface RemoteAnalyzeResponse {

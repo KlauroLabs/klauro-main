@@ -12,6 +12,18 @@ export interface RemoteSourceFile {
   hash: string;
 }
 
+/** A single file entry (path + content + hash) carried in a diff-only payload. */
+export type RemoteFileEntry = RemoteSourceFile;
+
+export interface BranchDiffContext {
+  base_branch: string;
+  target_branch: string;
+  base_commit?: string;
+  head_commit?: string;
+  changed_files: string[];
+  files: RemoteFileEntry[];
+}
+
 export interface RemoteChangedFile extends RemoteSourceFile {
   status: 'added' | 'modified';
 }
@@ -259,6 +271,49 @@ export async function buildWorkingTreeChangeContext(projectPath: string): Promis
   };
 }
 
+/**
+ * Build a light diff-only payload for a NON-default branch: only the files that
+ * changed on `targetBranch` relative to its merge-base with `baseBranch`, read at
+ * `targetBranch` (via `git show`, so it works without checking the branch out).
+ * Deleted files and rename-sources are dropped; only registered-source files that
+ * pass shouldIncludeRelativePath are carried as file entries.
+ */
+export async function buildBranchDiffContext(
+  projectPath: string,
+  targetBranch: string,
+  baseBranch?: string
+): Promise<BranchDiffContext> {
+  const root = path.resolve(projectPath);
+  const loaded = await loadKlauroConfig(root);
+  const resolvedBase = baseBranch || detectDefaultBranch(root) || 'main';
+  const baseCommit = readMergeBase(root, resolvedBase, targetBranch);
+  const headCommit = readRevParse(root, targetBranch);
+  const range = baseCommit ? `${baseCommit}..${targetBranch}` : targetBranch;
+
+  const changedFiles: string[] = [];
+  const files: RemoteFileEntry[] = [];
+  for (const change of listBranchDiff(root, range)) {
+    const normalized = normalizeRelativePath(change.path);
+    // Read content from the git ref (works without checkout); use its byte size
+    // for the inclusion gate since the file may not exist in the working tree.
+    const content = readFileAtRef(root, targetBranch, normalized);
+    if (content == null) continue;
+    const byteSize = Buffer.byteLength(content, 'utf8');
+    if (!(await shouldIncludeRelativePath(root, normalized, loaded, byteSize))) continue;
+    changedFiles.push(normalized);
+    files.push({ path: normalized, content, hash: hashContent(content) });
+  }
+
+  return {
+    base_branch: resolvedBase,
+    target_branch: targetBranch,
+    base_commit: baseCommit,
+    head_commit: headCommit,
+    changed_files: changedFiles.sort((left, right) => left.localeCompare(right)),
+    files: files.sort((left, right) => left.path.localeCompare(right.path)),
+  };
+}
+
 export async function buildUploadManifest(projectPath: string, mode: 'full' | 'dirty-tree' = 'full'): Promise<UploadManifest> {
   const root = path.resolve(projectPath);
   const loaded = await loadKlauroConfig(root);
@@ -457,7 +512,15 @@ async function readRemoteSourceFile(root: string, absolutePath: string, loaded: 
   };
 }
 
-async function shouldIncludeRelativePath(root: string, relativePath: string, loaded: LoadedKlauroConfig): Promise<boolean> {
+async function shouldIncludeRelativePath(
+  root: string,
+  relativePath: string,
+  loaded: LoadedKlauroConfig,
+  // When set, use this byte size instead of stat-ing the working tree. Branch-diff
+  // files may not exist in the checked-out tree (they live at a git ref), so the
+  // caller supplies the git-blob size to keep the max-file-bytes gate working.
+  sizeOverride?: number
+): Promise<boolean> {
   const normalized = normalizeRelativePath(relativePath);
   if (!normalized || normalized.startsWith('../') || path.isAbsolute(normalized)) return false;
   const parts = normalized.split('/');
@@ -469,11 +532,15 @@ async function shouldIncludeRelativePath(root: string, relativePath: string, loa
   if (patternListMatches(normalized, allExcludePatterns(loaded))) return false;
   if (!patternListMatches(normalized, loaded.config.source.include || ['**/*'])) return false;
 
-  try {
-    const stat = await fs.stat(path.join(root, normalized));
-    if (stat.size > loaded.config.source.maxFileBytes) return false;
-  } catch {
-    return false;
+  if (sizeOverride != null) {
+    if (sizeOverride > loaded.config.source.maxFileBytes) return false;
+  } else {
+    try {
+      const stat = await fs.stat(path.join(root, normalized));
+      if (stat.size > loaded.config.source.maxFileBytes) return false;
+    } catch {
+      return false;
+    }
   }
 
   // Use the analyzer's language registry as the single source of truth for what is
@@ -508,6 +575,104 @@ function listGitChanges(root: string): Array<{ path: string; status: 'added' | '
   } catch {
     return [];
   }
+}
+
+/** List add/modify/rename-target paths for a diff range (skips deletions and
+ *  rename-source paths). Handles `--name-status -z` where R/C entries emit two
+ *  NUL-separated fields (old path, new path). */
+function listBranchDiff(root: string, range: string): Array<{ path: string; status: 'added' | 'modified' }> {
+  try {
+    const output = execFileSync('git', ['diff', '--name-status', '--no-renames', '-z', range], {
+      cwd: root,
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024 * 20,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const fields = output.split('\0').filter(Boolean);
+    const changes: Array<{ path: string; status: 'added' | 'modified' }> = [];
+    for (let i = 0; i < fields.length; i++) {
+      const code = fields[i];
+      // Rename/copy status codes (R100, C75...) carry two path fields; with
+      // --no-renames these should not appear, but guard defensively anyway.
+      if (/^[RC]\d*$/.test(code)) {
+        i += 1; // skip old path
+        const newPath = fields[++i];
+        if (newPath) changes.push({ path: newPath, status: 'modified' });
+        continue;
+      }
+      const filePath = fields[++i];
+      if (!filePath) continue;
+      if (code.startsWith('D')) continue; // deletion — nothing to read on target
+      changes.push({ path: filePath, status: code.startsWith('A') ? 'added' : 'modified' });
+    }
+    return changes;
+  } catch {
+    return [];
+  }
+}
+
+function readMergeBase(root: string, baseRef: string, targetRef: string): string | undefined {
+  try {
+    return execFileSync('git', ['merge-base', baseRef, targetRef], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readRevParse(root: string, ref: string): string | undefined {
+  try {
+    return execFileSync('git', ['rev-parse', ref], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readFileAtRef(root: string, ref: string, relativePath: string): string | null {
+  try {
+    return execFileSync('git', ['show', `${ref}:${relativePath}`], {
+      cwd: root,
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024 * 20,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** Detect the repo's default branch (main/master), preferring an explicitly
+ *  configured origin/HEAD, then a local main, then master. */
+function detectDefaultBranch(root: string): string | undefined {
+  try {
+    const ref = execFileSync('git', ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (ref) return ref.replace(/^origin\//, '');
+  } catch {
+    // fall through to local branch detection
+  }
+  for (const candidate of ['main', 'master']) {
+    try {
+      execFileSync('git', ['rev-parse', '--verify', '--quiet', candidate], {
+        cwd: root,
+        stdio: ['ignore', 'ignore', 'ignore'],
+      });
+      return candidate;
+    } catch {
+      // try next candidate
+    }
+  }
+  return undefined;
 }
 
 function readGitHead(root: string): string | undefined {

@@ -103,6 +103,9 @@ export interface CASOutput {
   branch?: string;
   /** Which analysis track this output represents: 'main' | 'other-branch' | 'in-flight'. */
   analyzed_track?: 'main' | 'other-branch' | 'in-flight';
+  /** True when this CAS was produced over only the files changed on a branch
+   *  (a light diff-only payload), not the full source tree. */
+  diff_only?: boolean;
 }
 
 export interface CASEmbeddingIndex {

@@ -4,8 +4,8 @@ import * as fs from 'fs-extra';
 import * as path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { analyzeProjectIncremental } from './analyzer';
-import type { RemoteAnalyzeRequest, RemoteAnalyzeResponse, RemoteGreenfieldPreviewRequest, RemoteProjectRevision, RemoteProjectRevisionsResponse, RemoteProposalPreviewRequest, RemoteSyncRequest } from './remote-analyzer-protocol';
-import type { RemoteFileChange, SourceManifest } from './remote-source';
+import type { RemoteAnalyzeDiffRequest, RemoteAnalyzeRequest, RemoteAnalyzeResponse, RemoteGreenfieldPreviewRequest, RemoteProjectRevision, RemoteProjectRevisionsResponse, RemoteProposalPreviewRequest, RemoteSyncRequest } from './remote-analyzer-protocol';
+import type { BranchDiffContext, RemoteFileChange, SourceManifest } from './remote-source';
 import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-preview';
 import { isDirectCliInvocation } from './cli-invocation';
 import { AccountHttpError, AccountStore } from './account-store';
@@ -115,6 +115,25 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           analysis_id: result.analysis_id,
           project_id: body.project_id,
           organization_id: body.organization_id,
+          files: result.manifest.file_count,
+          bytes: result.manifest.total_bytes,
+          nodes: result.cas.nodes.length,
+          edges: result.cas.edges.length,
+        });
+        writeJson(response, 200, result);
+        return;
+      }
+
+      if (request.method === 'POST' && route === '/v1/analyze-diff') {
+        const body = await readJsonBody<RemoteAnalyzeDiffRequest>(request, maxBodyBytes);
+        const result = await handleAnalyzeDiff(dataDir, body);
+        await appendAuditLog(dataDir, {
+          event: 'analyze_diff',
+          analysis_id: result.analysis_id,
+          project_id: body.project_id,
+          organization_id: body.organization_id,
+          base_branch: body.diff_context?.base_branch,
+          target_branch: body.diff_context?.target_branch,
           files: result.manifest.file_count,
           bytes: result.manifest.total_bytes,
           nodes: result.cas.nodes.length,
@@ -376,6 +395,49 @@ async function handleAnalyze(dataDir: string, request: RemoteAnalyzeRequest): Pr
     manifest: request.snapshot.manifest,
     cas: result.output,
     change_report: result.changeReport,
+  };
+}
+
+async function handleAnalyzeDiff(dataDir: string, request: RemoteAnalyzeDiffRequest): Promise<RemoteAnalyzeResponse> {
+  const diff = request.diff_context;
+  if (!diff?.files?.length) throw new Error('Remote analyze-diff requires a diff_context with changed source files');
+  const analysisId = request.project_id || makeAnalysisId(request.project_path || diff.target_branch);
+  // Scope the diff workspace to the target branch so it never overwrites the
+  // full ('/v1/analyze') workspace for the same analysis_id.
+  const workspace = workspacePath(dataDir, `${analysisId}-branch-${diff.target_branch}`);
+
+  await fs.remove(workspace);
+  await fs.ensureDir(workspace);
+  await writeSnapshot(workspace, diff.files);
+
+  const result = await analyzeProjectIncremental(workspace);
+  const cas = result.output;
+  cas.analyzed_track = 'other-branch';
+  cas.diff_only = true;
+  if (diff.head_commit) cas.base_commit = diff.head_commit;
+  cas.branch = diff.target_branch;
+
+  return {
+    status: 'success',
+    analysis_id: analysisId,
+    analysis_revision: Date.now(),
+    analysis_type: result.wasFullRebuild ? 'full' : 'incremental',
+    base_commit: diff.head_commit,
+    manifest: buildDiffManifest(workspace, diff),
+    cas,
+    change_report: result.changeReport,
+  };
+}
+
+function buildDiffManifest(workspace: string, diff: BranchDiffContext): SourceManifest {
+  return {
+    generated_at: new Date().toISOString(),
+    root: workspace,
+    branch: diff.target_branch,
+    base_commit: diff.head_commit,
+    file_count: diff.files.length,
+    total_bytes: diff.files.reduce((sum, file) => sum + Buffer.byteLength(file.content, 'utf8'), 0),
+    excluded_directories: [],
   };
 }
 

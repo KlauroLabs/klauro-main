@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { saveAnalysis } from './storage';
 import type { RemoteAnalyzeResponse, RemoteAnalyzerResponse, RemoteProjectRevisionsResponse } from './remote-analyzer-protocol';
-import { buildSourceSnapshot, buildWorkingTreeChangeContext } from './remote-source';
+import { buildBranchDiffContext, buildSourceSnapshot, buildWorkingTreeChangeContext } from './remote-source';
 import { assertRemoteAnalyzerAllowed, loadKlauroConfig, resolveAnalysisId, resolveAnalyzerUrl } from './klauro-config';
 import { connectorToken, requireConnectorEntitlement } from './connector-auth';
 import { DEFAULT_KLAURO_CLOUD_URL } from './defaults';
@@ -60,6 +60,34 @@ export async function syncWorkingTreeRemotely(options: RemoteSyncOptions): Promi
   // The /v1/sync path analyzes the dirty working tree, so it must NOT overwrite
   // the committed 'main' analysis — persist it on the dedicated in-flight track.
   await saveAnalysis(projectPath, rewriteCasProjectName(response, projectPath).cas, 'in-flight');
+  return response;
+}
+
+export interface RemoteBranchDiffOptions extends RemoteSyncOptions {
+  targetBranch: string;
+  baseBranch?: string;
+}
+
+/**
+ * Analyze ONLY the files changed on a non-default branch (a light diff-only
+ * payload), then persist the resulting CAS on the dedicated 'other-branch' track
+ * so it never overwrites the committed 'main' analysis.
+ */
+export async function analyzeBranchDiffRemotely(options: RemoteBranchDiffOptions): Promise<RemoteAnalyzeResponse> {
+  const projectPath = path.resolve(options.projectPath);
+  const loaded = await loadKlauroConfig(projectPath);
+  const serverUrl = resolveAnalyzerUrl(loaded, options.serverUrl);
+  assertRemoteAnalyzerAllowed(loaded, serverUrl);
+  await requireConnectorEntitlement({ serverUrl, token: options.token });
+  const diffContext = await buildBranchDiffContext(projectPath, options.targetBranch, options.baseBranch);
+  const analysisId = resolveAnalysisId(loaded, defaultAnalysisId(projectPath), options.analysisId);
+  const response = await postRemote(options, '/v1/analyze-diff', {
+    project_id: analysisId,
+    organization_id: loaded.config.project.organizationId,
+    project_path: projectPath,
+    diff_context: diffContext,
+  }, serverUrl);
+  await saveAnalysis(projectPath, rewriteCasProjectName(response, projectPath).cas, 'other-branch');
   return response;
 }
 
