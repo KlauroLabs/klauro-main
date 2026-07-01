@@ -506,18 +506,31 @@ export class AICache {
 
   private setOnDisk<T>(fullKey: string, entry: CacheEntry<T>): void {
     if (!this.diskCacheEnabled) return;
-    const file = this.diskPath(fullKey);
-    try {
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      // Atomic write: write to a temp file then rename.
-      const tmp = `${file}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(entry), 'utf8');
-      fs.renameSync(tmp, file);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.debug(`Disk cache write failed: ${message}`);
+    // Write the project-scoped copy (for per-project deletion granularity) AND a
+    // global, content-addressed copy. The cache KEY is content-only (operation +
+    // element-facts hash — no project path; see AIService.generateCacheKey), so an
+    // identical AI request in ANY project/path can reuse the result: getFromDisk
+    // already reads the global path as a fallback. Populating it turns cold
+    // re-analysis, shared boilerplate, and repeated test fixtures into cache hits
+    // instead of fresh (slow) AI calls. Same key ⇒ same content ⇒ same valid answer,
+    // so this preserves cross-project correctness.
+    const scoped = this.diskPath(fullKey);
+    const global = this.legacyDiskPath(fullKey);
+    const targets = scoped === global ? [scoped] : [scoped, global];
+    for (const file of targets) {
+      try {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        // Atomic write: write to a temp file then rename.
+        const tmp = `${file}.${process.pid}.${this.tmpCounter++}.tmp`;
+        fs.writeFileSync(tmp, JSON.stringify(entry), 'utf8');
+        fs.renameSync(tmp, file);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.debug(`Disk cache write failed: ${message}`);
+      }
     }
   }
+  private tmpCounter = 0;
 
   private generateKey(key: string): string {
     // Ensure key is safe for Redis and consistent

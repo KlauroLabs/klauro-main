@@ -79,18 +79,27 @@ describe('AICache', () => {
       expect(aiCacheProjectScope('/tmp/klauro-test-projects/beta')).not.toBe(scope);
     });
 
-    it('writes scoped entries into a per-project subdirectory with the project recorded', async () => {
+    it('writes a scoped per-project copy AND a global content-addressed copy', async () => {
       setAICacheProjectScope(projectPath);
       const scope = getAICacheProjectScope()!;
       const cache = makeCache(diskDir);
       await cache.set('scoped-key', 'scoped-value');
 
+      // The scoped copy lives in the per-project subdir with the project recorded
+      // (kept for per-project deletion granularity).
       const scopedDir = path.join(diskDir, scope);
-      const files = fs.readdirSync(scopedDir).filter(f => f.endsWith('.json'));
-      expect(files.length).toBe(1);
-      const entry = JSON.parse(fs.readFileSync(path.join(scopedDir, files[0]), 'utf8'));
+      const scopedFiles = fs.readdirSync(scopedDir).filter(f => f.endsWith('.json'));
+      expect(scopedFiles.length).toBe(1);
+      const entry = JSON.parse(fs.readFileSync(path.join(scopedDir, scopedFiles[0]), 'utf8'));
       expect(entry.project).toBe(scope);
-      expect(fs.readdirSync(diskDir).filter(f => f.endsWith('.json')).length).toBe(0);
+
+      // A global, content-addressed copy is ALSO written at the root, so an
+      // identical AI request in any other project/path reuses it (huge perf win:
+      // repeated fixtures + cold re-analysis become cache hits). Same content key,
+      // same valid answer — cross-project isolation is preserved because the key
+      // is content-only (see cross-project-description-isolation.test.ts).
+      const rootFiles = fs.readdirSync(diskDir).filter(f => f.endsWith('.json'));
+      expect(rootFiles.length).toBe(1);
       await cache.close();
     });
 
