@@ -37,6 +37,14 @@ VERSION="$(node -e '
   }
   j.version = next;
   fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
+  // Keep the lockfile version in lockstep so the tree stays clean after a release.
+  const lock = "./package-lock.json";
+  if (fs.existsSync(lock)) {
+    const l = JSON.parse(fs.readFileSync(lock, "utf8"));
+    l.version = next;
+    if (l.packages && l.packages[""]) l.packages[""].version = next;
+    fs.writeFileSync(lock, JSON.stringify(l, null, 2) + "\n");
+  }
   process.stdout.write(next);
 ' "$BUMP")"
 echo "    new version: $VERSION"
@@ -72,7 +80,7 @@ fi
 
 echo "==> Tagging v$VERSION"
 cd "$REPO_ROOT"
-git add apps/mcp-server/package.json
+git add apps/mcp-server/package.json apps/mcp-server/package-lock.json
 git commit -q -m "Release v$VERSION" || echo "    (nothing to commit — version already staged/committed)"
 git tag -a "v$VERSION" -m "klauro v$VERSION" 2>/dev/null && echo "    tagged v$VERSION" || echo "    tag v$VERSION already exists"
 
