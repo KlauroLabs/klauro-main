@@ -55,3 +55,5 @@ apps/marketing-site/dist/
 apps/marketing-site/node_modules/
 **/obj/
 breadth-codex*.md
+# Release packing output (klauro tarball + manifest staged for VPS upload)
+apps/mcp-server/.pack/
