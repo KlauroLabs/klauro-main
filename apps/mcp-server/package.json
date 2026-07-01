@@ -56,6 +56,7 @@
     "repo-documentation": "tsx src/repo-documentation.ts",
     "save-golden": "tsx src/cli.ts save-golden",
     "gauntlet": "tsx src/gauntlet.ts",
+    "deepinfra-agent": "tsx src/gauntlet/deepinfra-agent.ts",
     "semantic-retrieval-benchmark": "tsx src/semantic-retrieval-benchmark.ts",
     "pg-vector-store-test": "tsx src/pg-vector-store.integration.ts",
     "embedding-value-benchmark": "tsx src/embedding-value-benchmark.ts",
