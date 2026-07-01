@@ -420,7 +420,9 @@ function parseArgs(argv: string[]): { out?: string; md?: string } {
 }
 
 async function main(): Promise<void> {
-  const fs = await import('fs-extra');
+  // fs-extra is CJS; a dynamic ESM import exposes its API on `.default`.
+  const fsMod = await import('fs-extra');
+  const fs: typeof import('fs-extra') = (fsMod as any).default ?? fsMod;
   const { out, md } = parseArgs(process.argv.slice(2));
   const report = await generateCompetitorScorecard({ timestamp: new Date().toISOString() });
   const markdown = renderScorecardMarkdown(report);
