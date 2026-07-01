@@ -94,6 +94,17 @@ S|val-stop
 Do not expand beyond the `F` files unless the capsule is contradictory,
 validation proves a concrete missing file, or the source proves the target moved.
 
+### Progressive Availability
+
+Klauro's deterministic structure (call graph, routes, entry points, file nodes,
+data flows, counts) is available the instant analysis returns — use it immediately;
+it is complete and authoritative. AI-written prose (system purpose, element
+descriptions) enriches in the background. Check `ai_enrichment` on `get_summary` /
+`analyze_codebase` (`ready` | `pending` | `disabled` | `synchronous`) and
+`description_source` on facts (`deterministic` | `ai` | `manual` | `reused`). On
+`pending`, act on the structure now and re-fetch only if you specifically need the
+richer narrative. Never block on prose — the facts are the product.
+
 ### Fallback
 
 If Klauro reports no analysis, stale analysis, a failed doctor check, missing

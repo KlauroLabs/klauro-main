@@ -511,7 +511,7 @@ function registerTools(server: McpServer) {
     'analyze_codebase',
     {
       title: 'Analyze Codebase',
-      description: 'Run full CAS analysis on a local directory path. Detects languages, frameworks, and libraries. Stores results for querying.',
+      description: 'Run full CAS analysis on a local directory path. Detects languages, frameworks, and libraries. Stores results for querying. Progressive availability: the deterministic structure (nodes, edges, entry points, routes, call graph) is ready to query the moment this returns; AI-written descriptions enrich in the background. The result carries ai_enrichment (pending|ready|disabled|synchronous) — start working off the structure immediately rather than waiting for prose.',
       inputSchema: {
         path: z.string().describe('Absolute path to the project directory'),
         force_full: z.boolean().optional().describe('Force full rebuild even if incremental is possible'),
@@ -1251,7 +1251,7 @@ function registerTools(server: McpServer) {
     'get_summary',
     {
       title: 'Get Summary',
-      description: 'Get condensed intelligence summary of an analyzed codebase. Includes system purpose, flow graph highlights (top 15 capabilities by score), architecture summary, database entities, entry point breakdown, node/edge counts, and analyzer contributions. This is the first tool to call to orient on a codebase.',
+      description: 'Get condensed intelligence summary of an analyzed codebase. Includes system purpose, flow graph highlights (top 15 capabilities by score), architecture summary, database entities, entry point breakdown, node/edge counts, and analyzer contributions. This is the first tool to call to orient on a codebase. Progressive availability: structural fields (entry points, counts, entities, flow highlights) are always final; the prose system purpose and capability descriptions may still be enriching — check ai_enrichment (pending = deterministic text now; re-call in a few seconds only if you need the richer narrative). Never block on pending prose; orient on the structure and proceed.',
       inputSchema: { path: z.string().describe('Project path (must be previously analyzed)'), track: TRACK_PARAM } as any,
     } as any,
     async ({ path, track }: any) => withErrorHandling(async () => {
@@ -4128,7 +4128,7 @@ function registerTools(server: McpServer) {
     'get_analysis_facts',
     {
       title: 'Get Analysis Facts',
-      description: 'Evidence-backed CAS facts. Filter by subject type, subject ID, or fact type to see the claim, producer, confidence, and source evidence behind CAS data.',
+      description: 'Evidence-backed CAS facts. Filter by subject type, subject ID, or fact type to see the claim, producer, confidence, and source evidence behind CAS data. Structural facts (definitions, relationships, workflows) are deterministic and available instantly; each fact carries a description_source (deterministic|ai|manual|reused) so you can tell precomputed structure from AI-enriched prose. Act on deterministic facts immediately — they do not wait on the background AI pass.',
       inputSchema: {
         path: z.string().describe('Project path'),
         subject_type: z.string().optional().describe('Filter by subject type, such as node, edge, entry_point, workflow, capability, runtime_link, repository_link'),

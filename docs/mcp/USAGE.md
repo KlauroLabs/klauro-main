@@ -272,6 +272,31 @@ Use the get_summary tool with path="/absolute/path/to/your/project"
 
 This returns the condensed intelligence view: what the system does, its tech stack, architecture layers, key capabilities, and scale metrics.
 
+#### Progressive availability — use structure now, prose enriches in the background
+
+Klauro returns the **deterministic structure** — call graph, routes, entry points,
+file nodes, data flows, entities, node/edge counts — the moment analysis completes
+(typically ~200ms after a warm analyze). That structure is complete and
+authoritative; **start working off it immediately.** The **AI-written prose** (the
+system-purpose summary and per-element descriptions) is generated in a background
+pass, so it may lag by a few seconds on a fresh analysis.
+
+Every response is stamped so you never guess which you have:
+
+- **`ai_enrichment`** on `get_summary` / `analyze_codebase` output:
+  - `ready` — AI prose is included.
+  - `pending` — you have deterministic text now; the background pass is still
+    running. Re-call in a few seconds **only if** you specifically need the richer
+    narrative. Do not block on it.
+  - `disabled` / `synchronous` — no background pass; the text you have is final.
+- **`description_source`** on `get_analysis_facts` and per-element results:
+  `deterministic` | `ai` | `manual` | `reused` — tells you whether a description is
+  precomputed structure or AI-enriched prose.
+
+Rule of thumb: **the facts are the product; the prose is flavor.** Act on the
+structure first, and only re-fetch for prose when the narrative is the actual thing
+you need.
+
 ### 9. Navigate Progressively
 
 Use `get_level` to explore the codebase top-down:
