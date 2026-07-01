@@ -1271,14 +1271,19 @@ export function getProjectStorageDir(projectPath: string): string {
   return path.join(storagePath, slug);
 }
 
+function incrementalStateFileName(track: AnalysisTrack): string {
+  return `incremental-state${trackSuffix(track)}.json`;
+}
+
 export async function saveIncrementalState(
   projectPath: string,
-  state: IncrementalState
+  state: IncrementalState,
+  track: AnalysisTrack = 'main'
 ): Promise<void> {
   const projectDir = getProjectStorageDir(projectPath);
   await fs.ensureDir(projectDir);
 
-  const statePath = path.join(projectDir, 'incremental-state.json');
+  const statePath = path.join(projectDir, incrementalStateFileName(track));
 
   const stateToSave = {
     ...state,
@@ -1291,11 +1296,12 @@ export async function saveIncrementalState(
 }
 
 export async function loadIncrementalState(
-  projectPath: string
+  projectPath: string,
+  track: AnalysisTrack = 'main'
 ): Promise<IncrementalState | null> {
   try {
     const projectDir = getProjectStorageDir(projectPath);
-    const statePath = path.join(projectDir, 'incremental-state.json');
+    const statePath = path.join(projectDir, incrementalStateFileName(track));
 
     if (!(await fs.pathExists(statePath))) {
       return null;
@@ -1307,7 +1313,7 @@ export async function loadIncrementalState(
       console.warn(
         `Incremental state version mismatch (${state.version} vs ${INCREMENTAL_STATE_VERSION_CURRENT}), discarding`
       );
-      await deleteIncrementalState(projectPath);
+      await deleteIncrementalState(projectPath, track);
       return null;
     }
 
@@ -1318,10 +1324,13 @@ export async function loadIncrementalState(
   }
 }
 
-export async function deleteIncrementalState(projectPath: string): Promise<void> {
+export async function deleteIncrementalState(
+  projectPath: string,
+  track: AnalysisTrack = 'main'
+): Promise<void> {
   try {
     const projectDir = getProjectStorageDir(projectPath);
-    const statePath = path.join(projectDir, 'incremental-state.json');
+    const statePath = path.join(projectDir, incrementalStateFileName(track));
 
     if (await fs.pathExists(statePath)) {
       await fs.remove(statePath);
