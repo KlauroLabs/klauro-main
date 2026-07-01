@@ -288,6 +288,21 @@ interface DiscoveredEntryPointCandidate {
   trigger?: CASEntryPoint['trigger'];
 }
 
+/**
+ * Options for a full analysis run.
+ */
+export interface OrchestrateAnalysisOptions {
+  /**
+   * When true, the slow AI interpretation phase is SKIPPED inline: the
+   * deterministic CAS is returned immediately with `ai_enrichment='pending'`
+   * (or 'disabled' if no AI provider is available). A closure is registered so
+   * the caller can run the AI phase afterwards via `enrichAnalysisAI(output)`.
+   * DEFAULT OFF — when false/unset the AI phase runs inline exactly as today
+   * and the output is annotated `ai_enrichment='synchronous'`.
+   */
+  deferAiEnrichment?: boolean;
+}
+
 export class AnalyzerOrchestrator {
   private analyzers: Map<string, AnalyzerRegistration> = new Map();
   private projectRoots: string[] = [];
@@ -312,6 +327,16 @@ export class AnalyzerOrchestrator {
   private elementDescriptionGroundingVocabulary: string[] = [];
   private static aiInterpretationTimeouts = 0;
   private static aiInterpretationDisabledUntil = 0;
+
+  /**
+   * Deferred AI-enrichment closures, keyed by the deterministic CASOutput that
+   * was returned early (opt-in progressive path only). Each closure re-runs the
+   * exact AI interpretation phase for that run and mutates the output in place.
+   * Populated by executeAnalysis when deferAiEnrichment is set; consumed (once)
+   * by enrichAnalysisAI. A WeakMap so early-returned outputs that are never
+   * enriched don't leak.
+   */
+  private deferredAiEnrichments: WeakMap<CASOutput, () => Promise<void>> = new WeakMap();
 
   registerAnalyzer(registration: AnalyzerRegistration): void {
     this.analyzers.set(registration.id, registration);
@@ -812,20 +837,43 @@ export class AnalyzerOrchestrator {
     this.sourceFileInventoryCache.delete(cacheKey);
   }
 
-  async orchestrateAnalysis(projectPath: string): Promise<CASOutput> {
+  async orchestrateAnalysis(projectPath: string, options?: OrchestrateAnalysisOptions): Promise<CASOutput> {
     this.activeAnalysisProjectPath = projectPath;
     setAICacheProjectScope(projectPath);
     const analysisId = `analysis_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const runLog = new AnalysisRunLog(projectPath, analysisId, CAS_VERSION);
     try {
-      return await this.executeAnalysis(projectPath, analysisId, runLog);
+      return await this.executeAnalysis(projectPath, analysisId, runLog, options);
     } catch (error) {
       runLog.fail(error);
       throw error;
     }
   }
 
-  private async executeAnalysis(projectPath: string, analysisId: string, runLog: AnalysisRunLog): Promise<CASOutput> {
+  /**
+   * Run the deferred AI enrichment for an output previously returned by
+   * `orchestrateAnalysis(..., { deferAiEnrichment: true })`. Runs the AI
+   * interpretation phase on the already-produced CAS, mutates it in place
+   * (system/capability/element descriptions upgrade to source 'ai'), refreshes
+   * `analysis_phases`/`product_map`, sets `ai_enrichment='ready'`, and returns
+   * the same (now enriched) output. Idempotent: if the output has no pending
+   * enrichment (already enriched, or produced synchronously), it is returned
+   * unchanged. AI failures inside the phase are already swallowed by
+   * applyAIInterpretation, so this resolves rather than rejects in that case.
+   */
+  async enrichAnalysisAI(output: CASOutput): Promise<CASOutput> {
+    const run = this.deferredAiEnrichments.get(output);
+    if (!run) {
+      return output;
+    }
+    // Consume once — guards against a double enrich racing the same closure.
+    this.deferredAiEnrichments.delete(output);
+    await run();
+    output.ai_enrichment = 'ready';
+    return output;
+  }
+
+  private async executeAnalysis(projectPath: string, analysisId: string, runLog: AnalysisRunLog, options?: OrchestrateAnalysisOptions): Promise<CASOutput> {
     const startTime = Date.now();
     const timings: Record<string, number> = {};
     const logTiming = (phase: string, start: number) => {
@@ -1223,34 +1271,47 @@ export class AnalyzerOrchestrator {
     phaseStart = Date.now();
     const unanalyzedLanguages = this.scanUnanalyzedLanguages(projectPath);
     const nestedRepositories = await this.describeNestedRepositories(projectPath);
-    await this.applyAIInterpretation(
-      enhancedSystemPurpose,
-      systemName,
-      frameworkNames,
-      entryPointSummary,
-      dbEntityNames,
-      externalServiceNames,
-      flowGraph,
-      domainConcepts,
-      systemCapabilities,
-      unanalyzedLanguages,
-      this.libraryNamesForInterpretation(allLibraries),
-      dataEntities,
-      projectTextSignal,
-      userJourneyResult.journeys
-    );
-    logTiming('pp_aiInterpretation', phaseStart);
 
-    const aiGeneration = enhancedSystemPurpose.description_generation;
-    runLog.recordAi({
-      provider_configured: this.hasAIInterpretationProviderConfigured(),
-      providers: this.configuredAiInterpretationProviders(),
-      attempted: aiGeneration?.attempted ?? false,
-      outcome: aiGeneration?.status || 'unknown',
-      reason: aiGeneration?.reason,
-      duration_ms: timings['pp_aiInterpretation'],
-      description_source: enhancedSystemPurpose.description_source,
-    });
+    // The single blocking AI phase, wrapped so it can run inline (default) or be
+    // deferred and run later against the produced CAS. It mutates the same
+    // enhancedSystemPurpose / systemCapabilities references that `output` holds,
+    // so re-running it after `output` is built upgrades the stored analysis.
+    const deferAiEnrichment = options?.deferAiEnrichment === true;
+    const runAiInterpretation = async (): Promise<void> => {
+      const aiPhaseStart = Date.now();
+      await this.applyAIInterpretation(
+        enhancedSystemPurpose,
+        systemName,
+        frameworkNames,
+        entryPointSummary,
+        dbEntityNames,
+        externalServiceNames,
+        flowGraph,
+        domainConcepts,
+        systemCapabilities,
+        unanalyzedLanguages,
+        this.libraryNamesForInterpretation(allLibraries),
+        dataEntities,
+        projectTextSignal,
+        userJourneyResult.journeys
+      );
+      const aiDuration = Date.now() - aiPhaseStart;
+      const aiGeneration = enhancedSystemPurpose.description_generation;
+      runLog.recordAi({
+        provider_configured: this.hasAIInterpretationProviderConfigured(),
+        providers: this.configuredAiInterpretationProviders(),
+        attempted: aiGeneration?.attempted ?? false,
+        outcome: aiGeneration?.status || 'unknown',
+        reason: aiGeneration?.reason,
+        duration_ms: aiDuration,
+        description_source: enhancedSystemPurpose.description_source,
+      });
+    };
+
+    if (!deferAiEnrichment) {
+      await runAiInterpretation();
+    }
+    logTiming('pp_aiInterpretation', phaseStart);
 
     phaseStart = Date.now();
     const methodCalls = this.buildMethodCalls(allNodes, allEdges);
@@ -1421,6 +1482,38 @@ export class AnalyzerOrchestrator {
     } as CASOutput;
 
     output.product_map = buildProductMap(output);
+
+    if (deferAiEnrichment) {
+      // Deterministic result returned instantly. If AI can't run at all, mark
+      // 'disabled' so consumers know no upgrade is coming and don't wait.
+      output.ai_enrichment = this.hasAIInterpretationProviderConfigured() ? 'pending' : 'disabled';
+      if (output.ai_enrichment === 'pending') {
+        // Register the closure that upgrades THIS output. It re-runs the AI
+        // phase (mutating enhancedSystemPurpose / systemCapabilities, which are
+        // the same references held by `output`) and then refreshes the few
+        // output fields derived from those AI mutations.
+        this.deferredAiEnrichments.set(output, async () => {
+          await runAiInterpretation();
+          output.analysis_phases = this.buildAnalysisPhases({
+            hasAIProvider: this.hasAIInterpretationProviderConfigured(),
+            systemDescriptionSource: enhancedSystemPurpose.description_source,
+            capabilityDescriptionSource: systemCapabilities.some(capability => capability.description_source === 'ai') ? 'ai' : 'deterministic',
+            embeddingEnabled: Boolean(this.embeddingPhaseConfig),
+            runtimeSignals: runtimeStaticLinks.length,
+          });
+          output.system_purpose = {
+            ...systemPurpose,
+            primary_type: enhancedSystemPurpose.primary_type,
+            confidence: Math.max(systemPurpose.confidence || 0, enhancedSystemPurpose.confidence || 0),
+            evidence: enhancedSystemPurpose.evidence || systemPurpose.evidence,
+          };
+          output.product_map = buildProductMap(output);
+        });
+      }
+    } else {
+      // Pure annotation: AI ran inline exactly as before, nothing else changes.
+      output.ai_enrichment = 'synchronous';
+    }
 
     phaseStart = Date.now();
     await this.applyEmbeddingPhase(output, projectPath);

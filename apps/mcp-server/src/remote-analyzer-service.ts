@@ -3,7 +3,7 @@ import * as http from 'node:http';
 import * as fs from 'fs-extra';
 import * as path from 'node:path';
 import { gunzipSync } from 'node:zlib';
-import { analyzeProjectIncremental } from './analyzer';
+import { analyzeProjectIncremental, analyzeProjectDeferred } from './analyzer';
 import type { RemoteAnalyzeDiffRequest, RemoteAnalyzeRequest, RemoteAnalyzeResponse, RemoteGreenfieldPreviewRequest, RemoteProjectRevision, RemoteProjectRevisionsResponse, RemoteProposalPreviewRequest, RemoteSyncRequest } from './remote-analyzer-protocol';
 import type { BranchDiffContext, RemoteFileChange, SourceManifest } from './remote-source';
 import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-preview';
@@ -18,6 +18,14 @@ interface RemoteAnalyzerServiceOptions {
   token?: string;
   maxBodyBytes?: number;
   rateLimitPerMinute?: number;
+  /**
+   * Opt-in progressive AI availability for POST /v1/analyze. When true, the
+   * handler returns the DETERMINISTIC CAS immediately (ai_enrichment='pending')
+   * and the slow AI enrichment upgrades the stored analysis in the background.
+   * DEFAULT FALSE — the synchronous path is byte-for-byte unchanged, so the
+   * in-process bench server used by tests stays synchronous.
+   */
+  deferAiEnrichment?: boolean;
 }
 
 interface RateLimitBucket {
@@ -30,6 +38,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
   const token = options.token ?? process.env.KLAURO_ANALYZER_TOKEN;
   const maxBodyBytes = options.maxBodyBytes || resolveMaxBodyBytes();
   const rateLimitPerMinute = options.rateLimitPerMinute ?? Number(process.env.KLAURO_ANALYZER_RATE_LIMIT_PER_MINUTE || 120);
+  const deferAiEnrichment = options.deferAiEnrichment === true;
   const buckets = new Map<string, RateLimitBucket>();
   const accounts = new AccountStore(dataDir);
 
@@ -108,7 +117,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
 
       if (request.method === 'POST' && route === '/v1/analyze') {
         const body = await readJsonBody<RemoteAnalyzeRequest>(request, maxBodyBytes);
-        const result = await handleAnalyze(dataDir, body);
+        const result = await handleAnalyze(dataDir, body, deferAiEnrichment);
         await appendProjectRevision(dataDir, result, 'local_commit_submission');
         await appendAuditLog(dataDir, {
           event: 'analyze',
@@ -376,7 +385,7 @@ function anonymizeClient(clientId: string): string {
   return crypto.createHash('sha256').update(clientId).digest('hex').slice(0, 16);
 }
 
-async function handleAnalyze(dataDir: string, request: RemoteAnalyzeRequest): Promise<RemoteAnalyzeResponse> {
+async function handleAnalyze(dataDir: string, request: RemoteAnalyzeRequest, deferAiEnrichment = false): Promise<RemoteAnalyzeResponse> {
   if (!request.snapshot?.files?.length) throw new Error('Remote analyze requires a source snapshot with files');
   const analysisId = request.project_id || makeAnalysisId(request.project_path || request.snapshot.project_name);
   const workspace = workspacePath(dataDir, analysisId);
@@ -384,6 +393,21 @@ async function handleAnalyze(dataDir: string, request: RemoteAnalyzeRequest): Pr
   await fs.remove(workspace);
   await fs.ensureDir(workspace);
   await writeSnapshot(workspace, request.snapshot.files);
+
+  if (deferAiEnrichment) {
+    // Progressive path: return the deterministic CAS now; the AI enrichment
+    // runs in the background and upgrades the stored analysis for later fetches.
+    const deferred = await analyzeProjectDeferred(workspace);
+    return {
+      status: 'success',
+      analysis_id: analysisId,
+      analysis_revision: Date.now(),
+      analysis_type: 'full',
+      base_commit: request.snapshot.base_commit,
+      manifest: request.snapshot.manifest,
+      cas: deferred.output,
+    };
+  }
 
   const result = await analyzeProjectIncremental(workspace);
   return {

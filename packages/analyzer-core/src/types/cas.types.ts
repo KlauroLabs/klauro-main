@@ -106,6 +106,21 @@ export interface CASOutput {
   /** True when this CAS was produced over only the files changed on a branch
    *  (a light diff-only payload), not the full source tree. */
   diff_only?: boolean;
+
+  /**
+   * Progressive AI availability marker for the (opt-in) deferred-enrichment path.
+   * Absent on legacy/older stores. Values:
+   *  - 'synchronous': AI interpretation ran inline in the same analyze call, as
+   *    it always has (default path; pure annotation, no behavior change).
+   *  - 'pending': the deterministic analysis was returned instantly and the slow
+   *    hosted-LLM enrichment is still running in the background; descriptions on
+   *    this copy are deterministic (description_source !== 'ai').
+   *  - 'ready': the background AI enrichment completed and was applied to the
+   *    stored analysis; at least one element carries an 'ai' description.
+   *  - 'disabled': deferred enrichment was requested but AI is not available
+   *    (no provider / feature off), so no background upgrade will arrive.
+   */
+  ai_enrichment?: 'pending' | 'ready' | 'disabled' | 'synchronous';
 }
 
 export interface CASEmbeddingIndex {

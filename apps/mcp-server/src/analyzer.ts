@@ -746,6 +746,76 @@ export async function analyzeProject(projectPath: string): Promise<CASOutput> {
   });
 }
 
+/**
+ * Result of a deferred (progressive) analysis. `output` is the deterministic
+ * CAS, already saved and safe to return to the caller immediately. `enrichment`
+ * is a promise that resolves after the background AI enrichment has completed
+ * and been re-saved (or immediately if there was nothing to enrich). Callers
+ * that don't care can ignore it — errors are swallowed internally. Tests await
+ * it to observe the 'ready' state deterministically.
+ */
+export interface DeferredAnalysisResult {
+  output: CASOutput;
+  enrichment: Promise<void>;
+}
+
+/**
+ * Progressive-availability entrypoint: run the DETERMINISTIC analysis, save it
+ * and return it immediately (ai_enrichment='pending'|'disabled'), then run the
+ * slow AI enrichment in the background and re-save the upgraded CAS
+ * (ai_enrichment='ready'). The next loadAnalysis picks up the enriched version.
+ *
+ * The background task re-uses the analysis locks so the enrich re-save never
+ * races a concurrent analysis on the shared orchestrator singleton, and it
+ * swallows all errors (logging only) so a failed enrichment can never crash the
+ * process — the deterministic CAS stays stored.
+ */
+export async function analyzeProjectDeferred(projectPath: string): Promise<DeferredAnalysisResult> {
+  if (!(await fs.pathExists(projectPath))) {
+    throw new Error(`Project path does not exist: ${projectPath}`);
+  }
+
+  const orch = getOrchestrator();
+
+  const output = await withGlobalAnalysisLock(() =>
+    withProjectAnalysisLock(projectPath, async () => {
+      orch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
+      const previousOutput = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
+      const result = await applyStoredElementDescriptions(projectPath, preservePreviousAIDescriptions(
+        previousOutput,
+        await orch.orchestrateAnalysis(projectPath, { deferAiEnrichment: true })
+      ));
+
+      await saveAnalysis(projectPath, result);
+      clearFreshnessSummaryCache();
+      await saveAnalysisSnapshot(projectPath, result);
+
+      return result;
+    }),
+  );
+
+  // Nothing to enrich (no AI provider, or already enriched) → done.
+  if (output.ai_enrichment !== 'pending') {
+    return { output, enrichment: Promise.resolve() };
+  }
+
+  // Fire-and-forget: run the AI phase in the background, then re-save the
+  // upgraded CAS. Guarded by the same locks + a catch so it can never crash.
+  const enrichment = withGlobalAnalysisLock(() =>
+    withProjectAnalysisLock(projectPath, async () => {
+      await orch.enrichAnalysisAI(output);
+      await saveAnalysis(projectPath, output);
+      clearFreshnessSummaryCache();
+      await saveAnalysisSnapshot(projectPath, output);
+    }),
+  ).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[Klauro] deferred AI enrichment failed for ${projectPath} (${message}); deterministic analysis remains stored`);
+  });
+
+  return { output, enrichment };
+}
+
 export async function getAnalysis(
   projectPath: string,
   options?: { track?: import('./track').AnalysisTrack }
