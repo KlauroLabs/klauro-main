@@ -16,6 +16,7 @@
  */
 
 import { execFileSync } from 'child_process';
+import * as crypto from 'crypto';
 import * as fs from 'fs-extra';
 import * as http from 'http';
 import * as os from 'os';
@@ -81,7 +82,10 @@ export async function analyzeForBench(dir: string): Promise<CASOutput> {
   try {
     const snapshot = await buildSourceSnapshot(staged);
     const response = await postJson(`${serverUrl}/v1/analyze`, {
-      project_id: path.basename(dir),
+      // Unique per source dir: the shared in-process server keys its incremental
+      // cache/workspace on project_id, so sibling repos with the same basename
+      // (was-bench ui/api/worker) must NOT collide, or one poisons the other's CAS.
+      project_id: crypto.createHash('sha256').update(path.resolve(dir)).digest('hex').slice(0, 16),
       project_path: dir,
       snapshot,
     });

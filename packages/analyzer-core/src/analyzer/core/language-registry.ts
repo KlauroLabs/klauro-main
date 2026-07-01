@@ -256,9 +256,12 @@ export const LANGUAGE_REGISTRY: LanguageRegistryEntry[] = [
   // no breadth spec, so the generic analyzer leaves them to the framework layer.
   { id: 'svelte', extensions: ['svelte'], manifests: [] },
   { id: 'vue', extensions: ['vue'], manifests: [] },
-  // Prisma schema — read by the Prisma library analyzer for ORM entity relations;
-  // must reach the snapshot or database_schema.relationships is empty.
-  { id: 'prisma', extensions: ['prisma'], manifests: ['schema.prisma'] },
+  // Prisma schema — read by the Prisma library analyzer for ORM entity relations.
+  // The `.prisma` extension carries the file into the source snapshot; schema.prisma
+  // is deliberately NOT a manifest (that would make `prisma/` a phantom project root
+  // and scope the PrismaAnalyzer out of it). Detection fires via the analyzer's
+  // detectPatterns.files (`prisma/schema.prisma`) + the `@prisma/client` dependency.
+  { id: 'prisma', extensions: ['prisma'], manifests: [] },
   // Build / infra / config-as-code
   { id: 'cmake', extensions: ['cmake'], manifests: ['cmakelists.txt'] },
   { id: 'make', extensions: ['mk', 'mak'], manifests: ['makefile', 'gnumakefile'] },
