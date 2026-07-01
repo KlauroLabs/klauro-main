@@ -57,12 +57,44 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
+      // Public installer script (no auth). Served verbatim from disk.
+      // POSIX sh for macOS/Linux: `curl -fsSL <url>/install | sh`.
+      if (request.method === 'GET' && (route === '/install' || route === '/install.sh')) {
+        await serveInstallScript(response);
+        return;
+      }
+
+      // Windows PowerShell installer (no auth): `irm <url>/install.ps1 | iex`.
+      if (request.method === 'GET' && route === '/install.ps1') {
+        await serveInstallPowershell(response);
+        return;
+      }
+
+      // Public release manifest (no auth): version + tarball pointer for `klauro update`.
+      if (request.method === 'GET' && route === '/dist/latest.json') {
+        await serveLatestManifest(request, response);
+        return;
+      }
+
+      // Public tarball download (no auth). Strict allowlist, no path traversal.
+      if (request.method === 'GET' && (route === '/dist/klauro-latest.tgz' || route.startsWith('/dist/'))) {
+        const requested = route === '/dist/klauro-latest.tgz'
+          ? 'klauro-latest.tgz'
+          : route.slice('/dist/'.length);
+        await serveTarball(response, requested);
+        return;
+      }
+
       if (request.method === 'GET' && (route === '/' || route === '/app')) {
         writeJson(response, 200, {
           status: 'ok',
           service: 'klauro-api',
           app_url: process.env.KLAURO_APP_URL || 'https://app.klauro.com',
           api_docs: '/health',
+          install: {
+            macos_linux: `curl -fsSL ${publicBaseUrl(request)}/install | sh`,
+            windows: `irm ${publicBaseUrl(request)}/install.ps1 | iex`,
+          },
         });
         return;
       }
@@ -571,6 +603,132 @@ async function readJsonBody<T>(request: http.IncomingMessage, maxBodyBytes: numb
 function writeJson(response: http.ServerResponse, statusCode: number, value: unknown): void {
   response.writeHead(statusCode, corsHeaders({ 'content-type': 'application/json' }));
   response.end(JSON.stringify(value));
+}
+
+function writeText(response: http.ServerResponse, statusCode: number, contentType: string, body: string): void {
+  response.writeHead(statusCode, corsHeaders({ 'content-type': contentType }));
+  response.end(body);
+}
+
+function publicBaseUrl(request: http.IncomingMessage): string {
+  if (process.env.KLAURO_PUBLIC_URL) return process.env.KLAURO_PUBLIC_URL.replace(/\/+$/, '');
+  const forwardedProto = String(request.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const forwardedHost = String(request.headers['x-forwarded-host'] || '').split(',')[0].trim();
+  const host = forwardedHost || request.headers.host || 'mcp.klauro.com';
+  const proto = forwardedProto || (host.startsWith('localhost') || host.startsWith('127.') ? 'http' : 'https');
+  return `${proto}://${host}`;
+}
+
+function resolveInstallScriptPath(filename: string): string {
+  // Resolve robustly across dev (src/) and bundled dist layouts. The deployed
+  // layout is /opt/klauro/source, so also probe from process.cwd(). Only the
+  // fixed installer filenames are ever passed in (no user-controlled input).
+  const candidates = [
+    path.resolve(__dirname, '..', 'scripts', filename),
+    path.resolve(__dirname, 'scripts', filename),
+    path.resolve(process.cwd(), 'apps', 'mcp-server', 'scripts', filename),
+    path.resolve(process.cwd(), 'scripts', filename),
+    `/opt/klauro/source/apps/mcp-server/scripts/${filename}`,
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return candidates[0];
+}
+
+async function serveInstallScript(response: http.ServerResponse): Promise<void> {
+  const scriptPath = resolveInstallScriptPath('install.sh');
+  if (!fs.existsSync(scriptPath)) {
+    writeText(response, 404, 'text/plain; charset=utf-8', 'install script not found');
+    return;
+  }
+  const body = await fs.readFile(scriptPath, 'utf8');
+  writeText(response, 200, 'text/x-shellscript; charset=utf-8', body);
+}
+
+async function serveInstallPowershell(response: http.ServerResponse): Promise<void> {
+  const scriptPath = resolveInstallScriptPath('install.ps1');
+  if (!fs.existsSync(scriptPath)) {
+    writeText(response, 404, 'text/plain; charset=utf-8', 'install script not found');
+    return;
+  }
+  const body = await fs.readFile(scriptPath, 'utf8');
+  // PowerShell `irm | iex` just needs the raw text; text/plain is the safe MIME.
+  writeText(response, 200, 'text/plain; charset=utf-8', body);
+}
+
+async function serveTarball(response: http.ServerResponse, requested: string): Promise<void> {
+  // Strict: basename only, no traversal, allowlisted filename shape.
+  if (requested.includes('/') || requested.includes('..')) {
+    writeText(response, 404, 'text/plain; charset=utf-8', 'not found');
+    return;
+  }
+  const allowed = requested === 'klauro-latest.tgz' || /^klauro-[\w.\-]+\.tgz$/.test(requested);
+  if (!allowed) {
+    writeText(response, 404, 'text/plain; charset=utf-8', 'not found');
+    return;
+  }
+
+  const downloadsDir = process.env.KLAURO_DOWNLOADS_DIR || '/opt/klauro/downloads';
+  const filePath = path.join(downloadsDir, requested);
+  // Defense in depth: ensure the resolved path stays inside the downloads dir.
+  const resolvedDir = path.resolve(downloadsDir);
+  const resolvedFile = path.resolve(filePath);
+  if (resolvedFile !== path.join(resolvedDir, requested)) {
+    writeText(response, 404, 'text/plain; charset=utf-8', 'not found');
+    return;
+  }
+
+  let stat: fs.Stats;
+  try {
+    stat = await fs.stat(resolvedFile);
+  } catch {
+    writeText(response, 404, 'text/plain; charset=utf-8', 'tarball not found');
+    return;
+  }
+  if (!stat.isFile()) {
+    writeText(response, 404, 'text/plain; charset=utf-8', 'tarball not found');
+    return;
+  }
+
+  response.writeHead(200, corsHeaders({
+    'content-type': 'application/gzip',
+    'content-length': String(stat.size),
+    'content-disposition': `attachment; filename="${requested}"`,
+    // The stable klauro-latest.tgz filename changes contents across releases,
+    // so never let npm/CDNs serve stale bits on `klauro update`.
+    'cache-control': 'no-cache, must-revalidate',
+  }));
+  const stream = fs.createReadStream(resolvedFile);
+  stream.on('error', () => {
+    response.destroy();
+  });
+  stream.pipe(response);
+}
+
+// Public release manifest so the CLI can check for a newer version without
+// downloading the 25MB tarball. Served from <downloads>/latest.json when
+// present; otherwise synthesized as a bare pointer to the latest tarball.
+async function serveLatestManifest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+  const downloadsDir = process.env.KLAURO_DOWNLOADS_DIR || '/opt/klauro/downloads';
+  const manifestPath = path.join(downloadsDir, 'latest.json');
+  let manifest: Record<string, unknown> = {};
+  try {
+    manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+  } catch {
+    manifest = {};
+  }
+  const base = publicBaseUrl(request);
+  const body = {
+    version: (manifest.version as string) || null,
+    tarball: `${base}/dist/klauro-latest.tgz`,
+    tarball_path: '/dist/klauro-latest.tgz',
+    min_node: (manifest.min_node as number) || 18,
+    published_at: (manifest.published_at as string) || null,
+    update_command: 'klauro update',
+  };
+  response.writeHead(200, corsHeaders({ 'content-type': 'application/json', 'cache-control': 'no-cache' }));
+  response.end(JSON.stringify(body));
 }
 
 function bearerToken(request: http.IncomingMessage): string | undefined {

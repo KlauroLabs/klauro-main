@@ -60,6 +60,8 @@ const SERVER_INSTRUCTIONS = `Klauro serves a precomputed analysis of this reposi
 
 Orient (once per repo): resolve_agent_analysis(path) confirms an analysis exists and selects the right one (not an embedded sub-fixture); if none, analyze_codebase. get_summary gives domain, capabilities, and entry points in one call.
 
+Progressive availability (don't wait): structural facts — call graph, routes, entry points, file nodes, data flows — are precomputed and return instantly. They are complete and authoritative; use them immediately. AI-written prose (the system/element descriptions) enriches in the background, so every result carries an ai_enrichment field: 'ready' = prose included; 'pending' = you got deterministic text now, re-call in a few seconds only if you specifically need the richer narrative; 'disabled'/'synchronous' = no background pass, the text you have is final. Never block on 'pending' — act on the structure first; the prose is flavor, the facts are the product.
+
 Find (instead of grep): search_nodes / semantic_search rank nodes by name+meaning with file:line and risk flags. get_route_table for routes (method/path/handler/auth); get_entry_points and get_exit_points for CLI, events, and queues; get_file_nodes for what a file defines.
 
 Understand before editing (highest value): get_coding_context(target) returns the node plus conventions, layer boundaries, callers, callees, and the exact tests to run — one call instead of read-file + trace-callers + find-tests. get_callers shows each call site's actual arguments; get_call_chain traces a request end to end; get_data_lineage tracks an entity's reads and writes; get_intent / get_conventions / get_modification_guide explain why it exists and how to change it safely.
