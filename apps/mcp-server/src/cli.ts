@@ -77,7 +77,22 @@ async function main(): Promise<void> {
   }
 
   if (process.argv[2] === '--version' || process.argv[2] === '-v' || process.argv[2] === 'version') {
-    process.stdout.write(`klauro ${formatBuildIdentity()}\n`);
+    if (process.argv.includes('--json')) {
+      const identity = getBuildIdentity();
+      process.stdout.write(`${JSON.stringify({
+        name: 'klauro',
+        version: identity.version,
+        base_version: identity.base_version,
+        channel: identity.channel,
+        git_sha: identity.git_sha,
+        build_time: identity.build_time ?? null,
+        node: process.version,
+        platform: `${process.platform}-${process.arch}`,
+        exec_path: process.execPath,
+      }, null, 2)}\n`);
+    } else {
+      process.stdout.write(`klauro ${formatBuildIdentity()}\n`);
+    }
     return;
   }
 
@@ -130,6 +145,30 @@ async function main(): Promise<void> {
 
   if (args.command === 'analyzer-server') {
     await runAnalyzerServerCommand(args);
+    return;
+  }
+
+  if (args.command === 'update' || args.command === 'upgrade' || args.command === 'self-update') {
+    await runUpdateCommand(args);
+    return;
+  }
+
+  if (args.command === 'whoami') {
+    const auth = loadStoredConnectorAuth();
+    const serverUrl = normalizeServerUrl(args.serverUrl || auth.defaultServerUrl);
+    const stored = auth.accounts[serverUrl];
+    if (args.json) {
+      process.stdout.write(`${JSON.stringify({ server_url: serverUrl, signed_in: Boolean(stored), email: stored?.email ?? null }, null, 2)}\n`);
+    } else {
+      process.stdout.write(stored
+        ? `Signed in to ${serverUrl}${stored.email ? ` as ${stored.email}` : ''}\n`
+        : `Not signed in to ${serverUrl} (run: klauro login --email you@example.com --register)\n`);
+    }
+    return;
+  }
+
+  if (args.command === 'status') {
+    await runStatusCommand(args);
     return;
   }
 
@@ -480,6 +519,129 @@ async function confirmDestructiveAction(description: string, preApproved: boolea
   const answer = await new Promise<string>(resolve => rl.question('Proceed? [y/N] ', resolve));
   rl.close();
   return answer.trim().toLowerCase() === 'y' || answer.trim().toLowerCase() === 'yes';
+}
+
+interface ReleaseManifest {
+  version: string | null;
+  tarball: string;
+  tarball_path?: string;
+  min_node?: number;
+  published_at?: string | null;
+}
+
+async function fetchReleaseManifest(serverUrl: string): Promise<ReleaseManifest | null> {
+  try {
+    const response = await fetch(`${serverUrl}/dist/latest.json`, { headers: { 'cache-control': 'no-cache' } });
+    if (!response.ok) return null;
+    return (await response.json()) as ReleaseManifest;
+  } catch {
+    return null;
+  }
+}
+
+async function runUpdateCommand(args: ParsedArgs): Promise<void> {
+  // Resolve the server that hosts the tarball: explicit flag, then the stored
+  // login default, then KLAURO_URL, then the public default.
+  const auth = loadStoredConnectorAuth();
+  const serverUrl = normalizeServerUrl(
+    args.serverUrl || auth.defaultServerUrl || process.env.KLAURO_URL,
+  );
+  const current = getBuildIdentity().base_version;
+  const manifest = await fetchReleaseManifest(serverUrl);
+  const latest = manifest?.version || null;
+  const checkOnly = process.argv.includes('--check');
+
+  if (args.json && checkOnly) {
+    process.stdout.write(`${JSON.stringify({ current, latest, server_url: serverUrl, up_to_date: latest ? latest === current : null }, null, 2)}\n`);
+    return;
+  }
+
+  process.stdout.write(`Current klauro: ${current}\n`);
+  process.stdout.write(latest ? `Latest available: ${latest} (${serverUrl})\n` : `Latest available: unknown (could not reach ${serverUrl}/dist/latest.json)\n`);
+
+  if (checkOnly) {
+    if (latest && latest === current && !args.force) {
+      process.stdout.write('You are on the latest version.\n');
+    } else if (latest && latest !== current) {
+      process.stdout.write('A newer version is available. Run: klauro update\n');
+    }
+    return;
+  }
+
+  if (latest && latest === current && !args.force) {
+    process.stdout.write('Already on the latest version. Use --force to reinstall anyway.\n');
+    return;
+  }
+
+  const tarballUrl = manifest?.tarball || `${serverUrl}/dist/klauro-latest.tgz`;
+  process.stdout.write(`\nInstalling ${tarballUrl} ...\n`);
+  process.stdout.write('(this may take a minute -- native tree-sitter deps compile)\n\n');
+  // --force reinstalls even when the version string is unchanged, so users
+  // always pick up fresh bits; the server sends Cache-Control: no-cache too.
+  const result = spawnSync('npm', ['install', '-g', tarballUrl, '--force'], { stdio: 'inherit' });
+  if (result.status !== 0) {
+    throw new Error(`npm install failed (exit ${result.status ?? 'unknown'}). See output above.`);
+  }
+  process.stdout.write('\nklauro updated. Restart Claude Code (or your MCP client) to load the new server.\n');
+}
+
+async function runStatusCommand(args: ParsedArgs): Promise<void> {
+  const identity = getBuildIdentity();
+  const auth = loadStoredConnectorAuth();
+  const serverUrl = normalizeServerUrl(args.serverUrl || auth.defaultServerUrl || process.env.KLAURO_URL);
+  const stored = auth.accounts[serverUrl];
+  const manifest = await fetchReleaseManifest(serverUrl);
+  const latest = manifest?.version || null;
+
+  // Best-effort: is the current directory analyzed, and how fresh?
+  const repoPath = path.resolve(args.path || '.');
+  let repo: { analyzed: boolean; system?: string; analyzed_at?: string; staleness?: string } = { analyzed: false };
+  try {
+    const cas = await getAnalysis(repoPath);
+    const freshness = summarizeAnalysisFreshness(repoPath, cas.analysis_timestamp);
+    repo = {
+      analyzed: true,
+      system: (cas as any).system_name || (cas as any).summary?.system_name,
+      analyzed_at: cas.analysis_timestamp,
+      staleness: freshness?.staleness,
+    };
+  } catch {
+    repo = { analyzed: false };
+  }
+
+  const report = {
+    version: identity.version,
+    channel: identity.channel,
+    node: process.version,
+    platform: `${process.platform}-${process.arch}`,
+    server_url: serverUrl,
+    signed_in: Boolean(stored),
+    email: stored?.email ?? null,
+    latest_available: latest,
+    update_available: Boolean(latest && latest !== identity.base_version),
+    repo: repoPath,
+    repo_analyzed: repo.analyzed,
+    repo_system: repo.system ?? null,
+    repo_analyzed_at: repo.analyzed_at ?? null,
+    repo_staleness: repo.staleness ?? null,
+  };
+
+  if (args.json) {
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    return;
+  }
+
+  const lines = [
+    `klauro ${report.version} (${report.channel}) · node ${report.node} · ${report.platform}`,
+    report.signed_in ? `Account:  signed in to ${serverUrl}${report.email ? ` as ${report.email}` : ''}` : `Account:  not signed in to ${serverUrl}  (klauro login --email you@example.com --register)`,
+    latest
+      ? (report.update_available ? `Release:  ${latest} available — run: klauro update` : `Release:  up to date (${latest})`)
+      : `Release:  could not reach ${serverUrl}`,
+    report.repo_analyzed
+      ? `Repo:     ${report.repo_system || 'analyzed'} · ${report.repo_staleness || 'unknown'} · ${report.repo_analyzed_at || ''}`.trim()
+      : `Repo:     ${repoPath} not analyzed  (klauro analyze .)`,
+  ];
+  process.stdout.write(lines.join('\n') + '\n');
 }
 
 async function runLoginCommand(args: ParsedArgs): Promise<void> {
@@ -877,39 +1039,53 @@ function parseArgs(argv: string[]): ParsedArgs {
 
 function printHelp(): void {
   process.stdout.write([
-    'Usage:',
+    'Usage: klauro <command> [options]',
+    '',
+    'Setup:',
     '  klauro install [repo-path] [--claude-md /path/to/repo] [--claude-scope user|project|local] [--no-register] [--rebuild] [--skip-self-check]',
     '  klauro uninstall [--claude-md /path/to/repo] [--no-deregister]',
+    '  klauro init [/path/to/repo] [--server-url url] [--project-id id] [--organization-id id] [--force] [--json]',
+    '',
+    'Status & maintenance:',
+    '  klauro version [--json]                 (build, node, platform)',
+    '  klauro status [/path/to/repo] [--json]  (version, account, release, repo readiness in one view)',
+    '  klauro update [--server-url url] [--check] [--force] [--json]   (upgrade to the latest hosted release)',
+    '  klauro doctor [/path/to/repo] [--json] [--refresh]   (no path: machine health; with path: repo readiness)',
     '  klauro purge </path/to/repo> [--all-ai-cache] [--yes] [--json]',
     '  klauro purge --all [--yes] [--json]     (wipe all local Klauro data under ~/.klauro)',
-    '  klauro --version',
-    '  klauro doctor [--json]                  (no path: environment health for this machine)',
+    '  klauro support-bundle [/path/to/repo] [--output bundle.tar.gz] [--json]',
+    '',
+    'Account:',
     '  klauro login --email you@example.com [--password value] [--server-url url] [--register]',
+    '  klauro whoami [--server-url url] [--json]',
     '  klauro auth-status [--server-url url] [--json]',
     '  klauro logout [--server-url url] [--json]',
-    '  klauro analyzer-server [--host 0.0.0.0] [--port 8787] [--data-dir .klauro-remote-analyzer]',
-    '  klauro init [/path/to/repo] [--server-url url] [--project-id id] [--organization-id id] [--force] [--json]',
+    '',
+    'Analyze:',
+    '  klauro analyze [/path/to/repo] [--server-url url] [--analysis-id id] [--analysis-focus agent-fast|ui-overview|deep-context|full] [--force] [--json]',
     '  klauro index [/path/to/repo] [--dirty-tree] [--server-url url] [--json]',
     '  klauro upload-manifest [/path/to/repo] [--dirty-tree] [--json]',
-    '  klauro analyze [/path/to/repo] [--server-url url] [--analysis-id id] [--analysis-focus agent-fast|ui-overview|deep-context|full] [--force] [--json]',
+    '  klauro remote-analyze /path/to/repo [--server-url url] [--analysis-id id] [--json]',
+    '  klauro remote-sync /path/to/repo [--server-url url] [--analysis-id id] [--json]',
+    '  klauro save-golden /path/to/repo [--json] [--refresh]',
+    '  klauro analyzer-server [--host 0.0.0.0] [--port 8787] [--data-dir .klauro-remote-analyzer]',
+    '',
+    'Agent context:',
     '  klauro install-agent [/path/to/repo] [--json]',
-    '  klauro github-import-plan [/path/to/repo] [--json]',
     '  klauro agent-start /path/to/repo [--task-type orient|modify|debug|review|trace|cross-repo|runtime] [--target query] [--json] [--refresh]',
     '  klauro agent-context /path/to/repo [--task-type orient|modify|debug|review|trace|cross-repo|runtime] [--target query] [--instructions text|--task text] [--success-criterion text] [--response-profile standard|minimal|first-turn|capsule-only] [--json] [--compact] [--quiet] [--refresh]',
     '  klauro agent-tracks /path/to/repo [--server-url url] [--analysis-id id] [--json]',
     '  klauro agent-install /path/to/repo [--task-type orient|modify|debug|review|trace|cross-repo|runtime] [--target query] [--json] [--refresh]',
-    '  klauro doctor /path/to/repo [--json] [--refresh]   (with path: per-repository analysis readiness)',
-    '  klauro save-golden /path/to/repo [--json] [--refresh]',
-    '  klauro remote-analyze /path/to/repo [--server-url url] [--analysis-id id] [--json]',
-    '  klauro remote-sync /path/to/repo [--server-url url] [--analysis-id id] [--json]',
+    '  klauro github-import-plan [/path/to/repo] [--json]',
+    '',
+    'Workspace & greenfield:',
+    '  klauro workspace-analysis /path/to/repo-a [--reference-path /path/to/repo-b] [--reference-path /path/to/repo-c] [--target name] [--json] [--refresh]',
+    '  klauro workspace-get --preview-id id-or-name [--detail-level overview|connections|evidence|full] [--json]',
+    '  klauro workspace-list [--json]',
     '  klauro proposal-preview /path/to/repo --plan-file plan.md [--diff-file changes.patch] [--proposed-files files.json] [--server-url app-url] [--json]',
     '  klauro greenfield-guidance --plan-file plan.md [--reference-path /existing/repo] [--proposed-files files.json] [--json]',
     '  klauro greenfield-build-context [/empty/or/current/project] --plan-file plan.md [--reference-path /existing/repo] [--proposed-files files.json] [--json]',
     '  klauro greenfield-preview --plan-file plan.md --proposed-files files.json [--server-url app-url] [--json]',
-    '  klauro workspace-analysis /path/to/repo-a [--reference-path /path/to/repo-b] [--reference-path /path/to/repo-c] [--target name] [--json] [--refresh]',
-    '  klauro workspace-get --preview-id id-or-name [--detail-level overview|connections|evidence|full] [--json]',
-    '  klauro workspace-list [--json]',
-    '  klauro support-bundle [/path/to/repo] [--output bundle.tar.gz] [--json]',
     '  klauro preview-get [--preview-id id] [--json]',
     '  klauro compare-iterations [--preview-id id] [--baseline-path /repo] [--proposed-path /repo-copy] [--json]',
     '',
