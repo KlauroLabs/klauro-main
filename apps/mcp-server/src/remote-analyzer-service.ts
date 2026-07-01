@@ -2,11 +2,13 @@ import * as crypto from 'node:crypto';
 import * as http from 'node:http';
 import * as fs from 'fs-extra';
 import * as path from 'node:path';
+import { gunzipSync } from 'node:zlib';
 import { analyzeProjectIncremental } from './analyzer';
-import type { RemoteAnalyzeRequest, RemoteAnalyzeResponse, RemoteGreenfieldPreviewRequest, RemoteProposalPreviewRequest, RemoteSyncRequest } from './remote-analyzer-protocol';
+import type { RemoteAnalyzeRequest, RemoteAnalyzeResponse, RemoteGreenfieldPreviewRequest, RemoteProjectRevision, RemoteProjectRevisionsResponse, RemoteProposalPreviewRequest, RemoteSyncRequest } from './remote-analyzer-protocol';
 import type { RemoteFileChange, SourceManifest } from './remote-source';
 import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-preview';
 import { isDirectCliInvocation } from './cli-invocation';
+import { AccountHttpError, AccountStore } from './account-store';
 
 const DEFAULT_PORT = 8787;
 const DEFAULT_MAX_BODY_BYTES = 100 * 1024 * 1024;
@@ -24,25 +26,85 @@ interface RateLimitBucket {
 }
 
 export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOptions = {}): http.Server {
+  // The analyzer server fans concurrent client analyses onto the process-wide
+  // orchestrator, which carries per-analysis mutable state (activeAnalysisProjectPath,
+  // projectRoots, discovery/inventory caches). Concurrent analyses of DIFFERENT
+  // projects would interleave and clobber each other, so one project's analyzers run
+  // against another's roots and silently emit nothing. Use a fresh orchestrator per
+  // analysis so every request is isolated — correctness over the warm-singleton reuse
+  // that only pays off for a single-project process.
+  if (process.env.KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS === undefined) {
+    process.env.KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS = '1';
+  }
   const dataDir = path.resolve(options.dataDir || process.env.KLAURO_REMOTE_ANALYZER_DATA || path.join(process.cwd(), '.klauro-remote-analyzer'));
   const token = options.token ?? process.env.KLAURO_ANALYZER_TOKEN;
   const maxBodyBytes = options.maxBodyBytes || resolveMaxBodyBytes();
   const rateLimitPerMinute = options.rateLimitPerMinute ?? Number(process.env.KLAURO_ANALYZER_RATE_LIMIT_PER_MINUTE || 120);
   const buckets = new Map<string, RateLimitBucket>();
+  const accounts = new AccountStore(dataDir);
 
   return http.createServer(async (request, response) => {
     try {
-      if (request.method === 'GET' && request.url === '/health') {
+      const requestUrl = new URL(request.url || '/', 'http://localhost');
+      const route = requestUrl.pathname;
+
+      if (request.method === 'OPTIONS') {
+        writeNoContent(response, 204);
+        return;
+      }
+
+      if (request.method === 'GET' && route === '/health') {
         writeJson(response, 200, { status: 'ok', service: 'klauro-remote-analyzer' });
         return;
       }
 
-      if (token && request.headers.authorization !== `Bearer ${token}`) {
+      if (request.method === 'GET' && (route === '/' || route === '/app')) {
+        writeJson(response, 200, {
+          status: 'ok',
+          service: 'klauro-api',
+          app_url: process.env.KLAURO_APP_URL || 'https://app.klauro.com',
+          api_docs: '/health',
+        });
+        return;
+      }
+
+      if (request.method === 'POST' && route === '/api/auth/register') {
+        const body = await readJsonBody<{ email: string; name?: string; password: string; workspace_name?: string }>(request, maxBodyBytes);
+        const result = await accounts.register({
+          email: body.email,
+          name: body.name,
+          password: body.password,
+          workspaceName: body.workspace_name,
+        });
+        writeJson(response, 201, result);
+        return;
+      }
+
+      if (request.method === 'POST' && route === '/api/auth/login') {
+        const body = await readJsonBody<{ email: string; password: string }>(request, maxBodyBytes);
+        const result = await accounts.login(body);
+        writeJson(response, 200, result);
+        return;
+      }
+
+      if (route.startsWith('/api/')) {
+        const apiAuthorization = await authorizeAccountApiRequest(accounts, request, token);
+        if (!apiAuthorization.authorized) {
+          writeJson(response, 401, { status: 'error', error: 'Sign in required' });
+          return;
+        }
+        const accountResult = await handleAccountApi(accounts, apiAuthorization.userId, route, request, maxBodyBytes, apiAuthorization.sharedToken);
+        writeJson(response, accountResult.statusCode, accountResult.body);
+        return;
+      }
+
+      const authorization = await authorizeAnalyzerRequest(accounts, request, token);
+      if (!authorization.authorized) {
         writeJson(response, 401, { status: 'error', error: 'Unauthorized remote analyzer request' });
         return;
       }
 
-      const clientId = request.headers.authorization || request.socket.remoteAddress || 'unknown';
+      const clientId = authorization.clientId || request.socket.remoteAddress || 'unknown';
       if (!withinRateLimit(buckets, clientId, rateLimitPerMinute)) {
         await appendAuditLog(dataDir, {
           event: 'rate_limited',
@@ -54,9 +116,10 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
-      if (request.method === 'POST' && request.url === '/v1/analyze') {
+      if (request.method === 'POST' && route === '/v1/analyze') {
         const body = await readJsonBody<RemoteAnalyzeRequest>(request, maxBodyBytes);
         const result = await handleAnalyze(dataDir, body);
+        await appendProjectRevision(dataDir, result, 'local_commit_submission');
         await appendAuditLog(dataDir, {
           event: 'analyze',
           analysis_id: result.analysis_id,
@@ -71,7 +134,14 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
-      if (request.method === 'POST' && request.url === '/v1/sync') {
+      const revisionsMatch = route.match(/^\/v1\/projects\/([^/]+)\/revisions$/);
+      if (request.method === 'GET' && revisionsMatch) {
+        const result = await readProjectRevisions(dataDir, decodeURIComponent(revisionsMatch[1]));
+        writeJson(response, 200, result);
+        return;
+      }
+
+      if (request.method === 'POST' && route === '/v1/sync') {
         const body = await readJsonBody<RemoteSyncRequest>(request, maxBodyBytes);
         const result = await handleSync(dataDir, body);
         await appendAuditLog(dataDir, {
@@ -91,7 +161,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
-      if (request.method === 'POST' && request.url === '/v1/proposals/preview') {
+      if (request.method === 'POST' && route === '/v1/proposals/preview') {
         const body = await readJsonBody<RemoteProposalPreviewRequest>(request, maxBodyBytes);
         const result = await handleProposalPreview(dataDir, body);
         await appendAuditLog(dataDir, {
@@ -105,7 +175,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
-      if (request.method === 'POST' && request.url === '/v1/proposals/greenfield') {
+      if (request.method === 'POST' && route === '/v1/proposals/greenfield') {
         const body = await readJsonBody<RemoteGreenfieldPreviewRequest>(request, maxBodyBytes);
         const result = await previewGreenfieldCodebase({
           title: body.title,
@@ -128,10 +198,114 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
 
       writeJson(response, 404, { status: 'error', error: 'Not found' });
     } catch (error) {
+      if (error instanceof AccountHttpError) {
+        writeJson(response, error.statusCode, { status: 'error', error: error.message });
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       writeJson(response, 500, { status: 'error', error: message });
     }
   });
+}
+
+async function authorizeAnalyzerRequest(accounts: AccountStore, request: http.IncomingMessage, sharedToken: string | undefined): Promise<{ authorized: boolean; clientId?: string }> {
+  const token = bearerToken(request);
+  if (!sharedToken) return { authorized: true, clientId: request.socket.remoteAddress || 'anonymous' };
+  if (token && token === sharedToken) return { authorized: true, clientId: 'shared-token' };
+  const user = await accounts.authenticate(token);
+  return user ? { authorized: true, clientId: `user:${user.id}` } : { authorized: false };
+}
+
+async function authorizeAccountApiRequest(accounts: AccountStore, request: http.IncomingMessage, sharedToken: string | undefined): Promise<{ authorized: boolean; userId: string; sharedToken?: boolean }> {
+  const token = bearerToken(request);
+  if (sharedToken && token && token === sharedToken) {
+    return { authorized: true, userId: 'shared-token', sharedToken: true };
+  }
+  const user = await accounts.authenticate(token);
+  return user ? { authorized: true, userId: user.id } : { authorized: false, userId: '' };
+}
+
+async function handleAccountApi(
+  accounts: AccountStore,
+  userId: string,
+  route: string,
+  request: http.IncomingMessage,
+  maxBodyBytes: number,
+  sharedToken = false,
+): Promise<{ statusCode: number; body: unknown }> {
+  if (request.method === 'GET' && route === '/api/me') {
+    if (sharedToken) {
+      return {
+        statusCode: 200,
+        body: {
+          user: {
+            id: 'shared-token',
+            email: 'shared-token@klauro.local',
+            name: 'Klauro Shared Analyzer Token',
+          },
+          entitlement: {
+            status: 'active',
+            plan: 'alpha-shared-analyzer',
+            source: 'shared-analyzer-token',
+          },
+        },
+      };
+    }
+    const user = await accounts.requireUser(bearerToken(request));
+    return {
+      statusCode: 200,
+      body: {
+        user,
+        entitlement: {
+          status: 'active',
+          plan: 'alpha',
+          source: 'account-store',
+        },
+      },
+    };
+  }
+
+  if (request.method === 'GET' && route === '/api/workspaces') {
+    return { statusCode: 200, body: { workspaces: await accounts.listWorkspaces(userId) } };
+  }
+
+  if (request.method === 'POST' && route === '/api/workspaces') {
+    const body = await readJsonBody<{ name: string }>(request, maxBodyBytes);
+    return { statusCode: 201, body: { workspace: await accounts.createWorkspace(userId, body) } };
+  }
+
+  const workspaceUsersMatch = route.match(/^\/api\/workspaces\/([^/]+)\/users$/);
+  if (workspaceUsersMatch) {
+    const workspaceId = decodeURIComponent(workspaceUsersMatch[1]);
+    if (request.method === 'GET') {
+      return { statusCode: 200, body: { users: await accounts.listWorkspaceUsers(userId, workspaceId) } };
+    }
+    if (request.method === 'POST') {
+      const body = await readJsonBody<{ email: string; role?: 'owner' | 'admin' | 'member' }>(request, maxBodyBytes);
+      return { statusCode: 201, body: { membership: await accounts.addWorkspaceUser(userId, workspaceId, body) } };
+    }
+  }
+
+  const workspaceProjectsMatch = route.match(/^\/api\/workspaces\/([^/]+)\/projects$/);
+  if (workspaceProjectsMatch) {
+    const workspaceId = decodeURIComponent(workspaceProjectsMatch[1]);
+    if (request.method === 'GET') {
+      return { statusCode: 200, body: { projects: await accounts.listProjects(userId, workspaceId) } };
+    }
+    if (request.method === 'POST') {
+      const body = await readJsonBody<{ name: string; repo_url?: string; local_path?: string; analysis_id?: string }>(request, maxBodyBytes);
+      return { statusCode: 201, body: { project: await accounts.createProject(userId, workspaceId, body) } };
+    }
+  }
+
+  const projectMatch = route.match(/^\/api\/projects\/([^/]+)$/);
+  if (projectMatch && request.method === 'GET') {
+    const project = await accounts.getProjectForUser(userId, decodeURIComponent(projectMatch[1]));
+    if (!project) throw new AccountHttpError(404, 'Project not found');
+    return { statusCode: 200, body: { project } };
+  }
+
+  throw new AccountHttpError(404, 'Not found');
 }
 
 function resolveMaxBodyBytes(): number {
@@ -215,6 +389,54 @@ async function handleAnalyze(dataDir: string, request: RemoteAnalyzeRequest): Pr
   };
 }
 
+async function appendProjectRevision(dataDir: string, result: RemoteAnalyzeResponse, source: RemoteProjectRevision['source']): Promise<void> {
+  const revision: RemoteProjectRevision = {
+    analysis_id: result.analysis_id,
+    analysis_revision: result.analysis_revision,
+    branch: result.manifest.branch,
+    commit: result.base_commit || result.manifest.base_commit,
+    source,
+    generated_at: new Date().toISOString(),
+    files: result.manifest.file_count,
+    bytes: result.manifest.total_bytes,
+    nodes: result.cas.nodes.length,
+    edges: result.cas.edges.length,
+  };
+  const file = projectRevisionsPath(dataDir, result.analysis_id);
+  await fs.ensureDir(path.dirname(file));
+  let existing: RemoteProjectRevision[] = [];
+  try {
+    const parsed = JSON.parse(await fs.readFile(file, 'utf8'));
+    existing = Array.isArray(parsed.revisions) ? parsed.revisions : [];
+  } catch {
+    existing = [];
+  }
+  const withoutDuplicate = existing.filter(item => !(item.commit && revision.commit && item.commit === revision.commit));
+  const revisions = [revision, ...withoutDuplicate].slice(0, 200);
+  await fs.writeJson(file, { analysis_id: result.analysis_id, revisions }, { spaces: 2 });
+}
+
+async function readProjectRevisions(dataDir: string, analysisId: string): Promise<RemoteProjectRevisionsResponse> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(projectRevisionsPath(dataDir, analysisId), 'utf8'));
+    return {
+      status: 'success',
+      analysis_id: analysisId,
+      revisions: Array.isArray(parsed.revisions) ? parsed.revisions : [],
+    };
+  } catch {
+    return { status: 'success', analysis_id: analysisId, revisions: [] };
+  }
+}
+
+function projectRevisionsPath(dataDir: string, analysisId: string): string {
+  return path.join(dataDir, 'project-revisions', `${safeFileName(analysisId)}.json`);
+}
+
+function safeFileName(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || 'project';
+}
+
 async function handleSync(dataDir: string, request: RemoteSyncRequest): Promise<RemoteAnalyzeResponse> {
   if (!request.analysis_id) throw new Error('Remote sync requires analysis_id');
   const workspace = workspacePath(dataDir, request.analysis_id);
@@ -265,12 +487,35 @@ async function readJsonBody<T>(request: http.IncomingMessage, maxBodyBytes: numb
     if (size > maxBodyBytes) throw new Error(`Request body exceeds ${maxBodyBytes} bytes`);
     chunks.push(buffer);
   }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as T;
+  const raw = Buffer.concat(chunks);
+  const body = request.headers['content-encoding'] === 'gzip' ? gunzipSync(raw) : raw;
+  return JSON.parse(body.toString('utf8')) as T;
 }
 
 function writeJson(response: http.ServerResponse, statusCode: number, value: unknown): void {
-  response.writeHead(statusCode, { 'content-type': 'application/json' });
+  response.writeHead(statusCode, corsHeaders({ 'content-type': 'application/json' }));
   response.end(JSON.stringify(value));
+}
+
+function bearerToken(request: http.IncomingMessage): string | undefined {
+  const header = request.headers.authorization;
+  if (!header?.startsWith('Bearer ')) return undefined;
+  return header.slice('Bearer '.length).trim() || undefined;
+}
+
+function writeNoContent(response: http.ServerResponse, statusCode: number): void {
+  response.writeHead(statusCode, corsHeaders());
+  response.end();
+}
+
+function corsHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  return {
+    'access-control-allow-origin': process.env.KLAURO_ALLOWED_ORIGIN || '*',
+    'access-control-allow-methods': 'GET,POST,OPTIONS',
+    'access-control-allow-headers': 'content-type, authorization',
+    vary: 'origin',
+    ...extra,
+  };
 }
 
 function safeDestination(workspace: string, relativePath: string): string {

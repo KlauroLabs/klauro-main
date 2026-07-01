@@ -167,8 +167,11 @@ function klauroKindsFromDiff(diff: CASBehaviorDiff): BehavioralKind[] {
   // journey-broken: a previously-present journey (a source->sink path) is gone.
   if (diff.journeys.removed.length > 0) kinds.add('journey-broken');
 
-  // capability-added: a new capability and/or a new journey appeared.
-  if (diff.capabilities.added.length > 0 || diff.journeys.added.length > 0) {
+  // capability-added: a new journey (route+handler -> sink) appeared. Grounded in the
+  // deterministic structural diff (journeys), NOT diff.capabilities.added — capability
+  // NAMES are AI-derived and shift on a pure control-variable rename, which would
+  // spuriously flag the control fixture as a behavioral change.
+  if (diff.journeys.added.length > 0) {
     kinds.add('capability-added');
   }
 
