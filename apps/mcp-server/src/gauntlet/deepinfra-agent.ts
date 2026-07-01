@@ -38,7 +38,8 @@ import * as path from 'path';
 
 export const DEFAULT_DEEPINFRA_BASE_URL = 'https://api.deepinfra.com/v1/openai';
 /** Tool-calling-capable DeepInfra model (matches the analyzer-core default). */
-export const DEFAULT_DEEPINFRA_AGENT_MODEL = 'meta-llama/Meta-Llama-3.3-70B-Instruct';
+// A real, tool-calling-capable DeepInfra model id (verified against the models API).
+export const DEFAULT_DEEPINFRA_AGENT_MODEL = 'meta-llama/Llama-3.3-70B-Instruct-Turbo';
 
 const SYSTEM_PROMPT =
   'You are a coding agent. Complete the task by editing files under the workspace. ' +
