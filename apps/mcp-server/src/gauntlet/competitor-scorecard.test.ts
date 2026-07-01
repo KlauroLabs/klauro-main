@@ -1,0 +1,121 @@
+/**
+ * Competitor-scorecard unit test — NO NETWORK, NO analyzeForBench.
+ *
+ * We inject a stub runner set (opts.runners) so the generator's normalization,
+ * camp grouping, verdict mapping, and markdown rendering are exercised with
+ * fully deterministic inputs — the same code path the live CLI takes, minus the
+ * product calls. Nothing here reaches the analyzer server or a competitor binary.
+ */
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  generateCompetitorScorecard,
+  renderScorecardMarkdown,
+  type ScorecardRow,
+  type ScorecardRunners,
+} from './competitor-scorecard';
+
+function row(partial: Partial<ScorecardRow> & Pick<ScorecardRow, 'camp' | 'scenario' | 'verdict'>): ScorecardRow {
+  return {
+    task: 't',
+    metric: 'F1',
+    klauro_score: 1.0,
+    best_competitor: 'x',
+    best_competitor_score: 0.0,
+    ...partial,
+  };
+}
+
+/** A stub runner set: Camp A (a win + a tie), Camp B (two wins), Camp C (a win,
+ *  out-of-category). No losses anywhere. */
+const stubRunners: Partial<ScorecardRunners> = {
+  campCRoutes: async () => [
+    row({ camp: 'A', scenario: 'camp-c-routes-vs-cbm: express-routes', best_competitor: 'codebase-memory', best_competitor_score: 0.0, verdict: 'win' }),
+    row({ camp: 'A', scenario: 'camp-c-routes-vs-cbm: fastapi-routes', best_competitor: 'codebase-memory', best_competitor_score: 1.0, klauro_score: 1.0, verdict: 'tie' }),
+  ],
+  behavioralDiff: async () => [
+    row({ camp: 'A', scenario: 'depth-behavioral-diff-vs-cbm: auth-removed', best_competitor: 'codebase-memory', best_competitor_score: 0.0, verdict: 'win' }),
+  ],
+  primitiveCallers: async () => [
+    row({ camp: 'B', scenario: 'primitive-who-calls: callers-py', best_competitor: 'ripgrep', best_competitor_score: 0.5, verdict: 'win' }),
+  ],
+  wasCrossRepo: async () => [
+    row({ camp: 'B', scenario: 'was-cross-repo: ui-api-worker', best_competitor: 'scip-typescript', best_competitor_score: 0.0, verdict: 'win' }),
+  ],
+  frameworkRoutes: async () => [
+    row({ camp: 'C', scenario: 'framework-routes: express-routes', best_competitor: 'none', best_competitor_score: null, verdict: 'win' }),
+  ],
+  // The remaining runners contribute nothing in this stub.
+  ormRelations: async () => [],
+  componentTree: async () => [],
+  fullGrid: async () => [],
+};
+
+test('normalizes injected runner rows into A/B/C camps with correct counts', async () => {
+  const report = await generateCompetitorScorecard({
+    runners: stubRunners,
+    timestamp: '2026-07-01T00:00:00.000Z',
+    endpoint: 'https://mcp.klauro.com',
+  });
+
+  const byCamp = Object.fromEntries(report.camps.map(c => [c.camp, c]));
+  // Camp A: campCRoutes (1 win + 1 tie) + behavioralDiff (1 win) = 2 wins + 1 tie.
+  assert.equal(byCamp.A.rows.length, 3);
+  assert.equal(byCamp.A.wins, 2);
+  assert.equal(byCamp.A.ties, 1);
+  assert.equal(byCamp.A.losses, 0);
+  // Camp B: 2 wins (primitive + was).
+  assert.equal(byCamp.B.rows.length, 2);
+  assert.equal(byCamp.B.wins, 2);
+  assert.equal(byCamp.B.losses, 0);
+  // Camp C: 1 win (framework routes, out-of-category).
+  assert.equal(byCamp.C.rows.length, 1);
+  assert.equal(byCamp.C.wins, 1);
+
+  assert.equal(report.totals.scenarios, 6);
+  assert.equal(report.totals.wins, 5);
+  assert.equal(report.totals.ties, 1);
+  assert.equal(report.totals.losses, 0);
+  assert.equal(report.zeroLosses, true);
+  assert.equal(report.endpoint, 'https://mcp.klauro.com');
+});
+
+test('renderScorecardMarkdown emits per-camp tables + the zero-losses summary', async () => {
+  const report = await generateCompetitorScorecard({
+    runners: stubRunners,
+    timestamp: '2026-07-01T00:00:00.000Z',
+    endpoint: 'https://mcp.klauro.com',
+  });
+  const md = renderScorecardMarkdown(report);
+
+  assert.match(md, /# Klauro Competitor Scorecard/);
+  assert.match(md, /Endpoint: `https:\/\/mcp\.klauro\.com`/);
+  assert.match(md, /Generated: 2026-07-01T00:00:00\.000Z/);
+  // Each camp heading + a table header row.
+  assert.match(md, /## Camp A — vs codebase-memory/);
+  assert.match(md, /## Camp B — vs structural indexers/);
+  assert.match(md, /## Camp C — comprehension/);
+  assert.match(md, /\| Scenario \| Metric \| Klauro \| Best competitor \| Verdict \|/);
+  // A specific normalized row rendered.
+  assert.match(md, /camp-c-routes-vs-cbm: express-routes .* WIN/);
+  // Out-of-category competitor rendered as n/a (no score).
+  assert.match(md, /none \(n\/a\)/);
+  // The headline assertion.
+  assert.match(md, /\*\*Zero losses\*\*/);
+  assert.match(md, /Total: 5 win \/ 1 tie \/ 0 loss across 6 scenarios/);
+});
+
+test('a loss anywhere flips zeroLosses and the summary line', async () => {
+  const withLoss: Partial<ScorecardRunners> = {
+    ...stubRunners,
+    fullGrid: async () => [
+      row({ camp: 'B', scenario: 'full-grid: language/ts [who-calls]', best_competitor: 'scip-typescript', best_competitor_score: 1.0, klauro_score: 0.9, verdict: 'loss' }),
+    ],
+  };
+  const report = await generateCompetitorScorecard({ runners: withLoss, timestamp: 'x' });
+  assert.equal(report.zeroLosses, false);
+  assert.equal(report.totals.losses, 1);
+  const md = renderScorecardMarkdown(report);
+  assert.match(md, /\*\*1 loss\(es\)\*\* — a Klauro bug to fix/);
+});
