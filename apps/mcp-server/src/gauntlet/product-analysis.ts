@@ -19,6 +19,7 @@ import { execFileSync } from 'child_process';
 import * as crypto from 'crypto';
 import * as fs from 'fs-extra';
 import * as http from 'http';
+import { request as httpsRequest } from 'https';
 import * as os from 'os';
 import * as path from 'path';
 import { createRemoteAnalyzerHttpServer } from '../remote-analyzer-service';
@@ -48,11 +49,18 @@ async function ensureProductServer(): Promise<string> {
 function postJson(url: string, body: unknown): Promise<any> {
   const payload = Buffer.from(JSON.stringify(body));
   const u = new URL(url);
+  // When pointed at the deployed product (KLAURO_BENCH_ANALYZER_URL), authenticate
+  // exactly like a real client: the hosted analyzer requires a bearer token. The
+  // in-process bench server is open (no token), so this header is simply absent there.
+  const token = process.env.KLAURO_BENCH_ANALYZER_TOKEN;
+  const headers: Record<string, string | number> = { 'content-type': 'application/json', 'content-length': payload.length };
+  if (token) headers['authorization'] = `Bearer ${token}`;
+  const isHttps = u.protocol === 'https:';
+  const transport = isHttps ? httpsRequest : http.request;
   return new Promise((resolve, reject) => {
-    const req = http.request(
-      { hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST',
-        headers: { 'content-type': 'application/json', 'content-length': payload.length } },
-      (res) => {
+    const req = transport(
+      { hostname: u.hostname, port: u.port || (isHttps ? 443 : 80), path: u.pathname, method: 'POST', headers },
+      (res: any) => {
         const chunks: Buffer[] = [];
         res.on('data', (c) => chunks.push(c));
         res.on('end', () => {
