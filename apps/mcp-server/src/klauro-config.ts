@@ -220,7 +220,8 @@ export function defaultExcludePatterns(): string[] {
     '**/.dart_tool/**',
     '**/.gradle/**',
     '**/Pods/**',
-    '**/bin/**',
+    // 'bin' is NOT ignored — it holds real source in OCaml/Dune, Rust src/bin,
+    // shell script dirs; build artifacts there fail the source-extension gate.
     '**/obj/**',
     '**/.env',
     '**/.env.*',

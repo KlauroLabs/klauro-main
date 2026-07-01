@@ -136,10 +136,11 @@ export const LANGUAGE_REGISTRY: LanguageRegistryEntry[] = [
     manifests: ['cpanfile', 'makefile.pl'] // Perl / Mojolicious + ExtUtils::MakeMaker
   },
   {
-    // Elixir / Phoenix is detected via its manifest; source extensions are
-    // intentionally inventoried elsewhere, so only the manifest is registered here.
+    // Elixir / Phoenix. The source extensions must be registered so the product
+    // source snapshot (isRegisteredSourceExtension) carries .ex/.exs files to the
+    // ElixirAnalyzer; without them the snapshot silently drops all Elixir source.
     id: 'elixir',
-    extensions: [],
+    extensions: ['ex', 'exs'],
     manifests: ['mix.exs']
   },
 
@@ -250,6 +251,14 @@ export const LANGUAGE_REGISTRY: LanguageRegistryEntry[] = [
   { id: 'glimmer', extensions: ['hbs', 'handlebars'], manifests: [] },
   { id: 'templ', extensions: ['templ'], manifests: [] },
   { id: 'astro_lang', extensions: ['astro'], manifests: [] },
+  // Single-file component formats handled by dedicated framework analyzers
+  // (Svelte/Vue). Registered so the product source snapshot carries the files;
+  // no breadth spec, so the generic analyzer leaves them to the framework layer.
+  { id: 'svelte', extensions: ['svelte'], manifests: [] },
+  { id: 'vue', extensions: ['vue'], manifests: [] },
+  // Prisma schema — read by the Prisma library analyzer for ORM entity relations;
+  // must reach the snapshot or database_schema.relationships is empty.
+  { id: 'prisma', extensions: ['prisma'], manifests: ['schema.prisma'] },
   // Build / infra / config-as-code
   { id: 'cmake', extensions: ['cmake'], manifests: ['cmakelists.txt'] },
   { id: 'make', extensions: ['mk', 'mak'], manifests: ['makefile', 'gnumakefile'] },

@@ -148,7 +148,10 @@ const EXCLUDED_DIRECTORIES = new Set([
   '.dart_tool',
   '.gradle',
   'Pods',
-  'bin',
+  // NOTE: 'bin' is intentionally NOT excluded — it holds real source in several
+  // ecosystems (OCaml/Dune `bin/main.ml`, Rust `src/bin`, shell scripts). Compiled
+  // artifacts there (.dll/.exe/.o) are dropped anyway by the registered-source-ext
+  // gate below, so excluding the whole dir only lost legitimate source.
   'obj',
 ]);
 
