@@ -57,7 +57,9 @@ export async function syncWorkingTreeRemotely(options: RemoteSyncOptions): Promi
     project_path: projectPath,
     changes,
   }, serverUrl);
-  await saveAnalysis(projectPath, rewriteCasProjectName(response, projectPath).cas);
+  // The /v1/sync path analyzes the dirty working tree, so it must NOT overwrite
+  // the committed 'main' analysis — persist it on the dedicated in-flight track.
+  await saveAnalysis(projectPath, rewriteCasProjectName(response, projectPath).cas, 'in-flight');
   return response;
 }
 

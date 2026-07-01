@@ -16,6 +16,8 @@ import type {
 import { CAS_VERSION } from '../../../packages/analyzer-core/src/types/cas.types';
 import type { RuntimeObservation } from './product';
 import { mirrorArtifactsToS3 } from './s3-artifacts';
+import type { AnalysisTrack } from './track';
+import { trackSuffix } from './track';
 
 const execFileAsync = promisify(execFile);
 const brotliCompressAsync = promisify(zlib.brotliCompress);
@@ -46,6 +48,12 @@ export interface AnalysisEntry {
   node_count: number;
   edge_count: number;
   cas_version?: string;
+  /** Which analysis track this entry belongs to. Defaults to 'main' (legacy). */
+  track?: AnalysisTrack;
+  /** Analyzed commit SHA, when the output carried one. */
+  base_commit?: string;
+  /** Analyzed branch, when the output carried one. */
+  branch?: string;
 }
 
 export const MINIMUM_COMPATIBLE_CAS_VERSION = '1.6.0';
@@ -674,13 +682,30 @@ async function rememberLoadedAnalysis(projectPath: string, filePath: string, out
   }
 }
 
-export async function saveAnalysis(projectPath: string, output: CASOutput): Promise<AnalysisEntry> {
+/**
+ * Index key for a (projectPath, track) pair. The 'main' track keeps the bare
+ * projectPath key so all existing single-path lookups/deletes are unchanged;
+ * other tracks get a distinct key so they coexist without overwriting main.
+ */
+function analysisIndexKey(projectPath: string, track: AnalysisTrack): string {
+  return track === 'main' ? projectPath : `${projectPath}#${track}`;
+}
+
+export async function saveAnalysis(
+  projectPath: string,
+  output: CASOutput,
+  track: AnalysisTrack = 'main'
+): Promise<AnalysisEntry> {
   const storagePath = await ensureStorageDir();
-  const fileName = `${projectSlug(projectPath)}.json${compressedJsonExtension()}`;
+  const fileName = `${projectSlug(projectPath)}${trackSuffix(track)}.json${compressedJsonExtension()}`;
   const filePath = path.join(storagePath, fileName);
 
   await writeCompressedJsonAtomic(filePath, output, { spaces: 0 });
-  await rememberLoadedAnalysis(projectPath, filePath, output);
+  // Only the 'main' track participates in the path-keyed loaded-analysis cache,
+  // which is keyed by projectPath and read back by default (main) loads.
+  if (track === 'main') {
+    await rememberLoadedAnalysis(projectPath, filePath, output);
+  }
 
   const frameworks = output.system.technologies?.frameworks?.map(f => f.name) || [];
 
@@ -694,11 +719,14 @@ export async function saveAnalysis(projectPath: string, output: CASOutput): Prom
     node_count: output.nodes.length,
     edge_count: output.edges.length,
     cas_version: output.cas_version,
+    track,
+    ...(output.base_commit ? { base_commit: output.base_commit } : {}),
+    ...(output.branch ? { branch: output.branch } : {}),
   };
 
   await withIndexLock(async () => {
     const index = await loadIndex();
-    index.analyses[projectPath] = entry;
+    index.analyses[analysisIndexKey(projectPath, track)] = entry;
     await saveIndex(index);
   });
 
@@ -707,15 +735,30 @@ export async function saveAnalysis(projectPath: string, output: CASOutput): Prom
 
 export async function loadAnalysis(
   projectPath: string,
-  options?: { preferCache?: boolean }
+  options?: { preferCache?: boolean; track?: AnalysisTrack }
 ): Promise<CASOutput | null> {
   const index = await loadIndex();
-  const entry = index.analyses[projectPath];
+  // Default view (no explicit track): the agent's current working state
+  // (in-flight) when one exists, else the shared committed baseline (main). An
+  // explicit track is honored exactly. This keeps a dirty-tree sync readable by
+  // default while never letting it clobber the preserved main analysis.
+  const track: AnalysisTrack = options?.track
+    ?? (index.analyses[analysisIndexKey(projectPath, 'in-flight')] ? 'in-flight' : 'main');
+  // Track-specific entry; for 'main' this is the legacy bare-path key.
+  let entry = index.analyses[analysisIndexKey(projectPath, track)];
+  // Backward compat: a legacy 'main' analysis may only exist under the bare
+  // path key, which analysisIndexKey('main') already returns — no extra work.
   if (!entry) return null;
 
   const storagePath = getStoragePath();
   const filePath = path.join(storagePath, entry.file);
-  const resolved = await resolveJsonStoragePath(filePath);
+  let resolved = await resolveJsonStoragePath(filePath);
+  // Backward compat: if a track-specific file is missing for 'main', fall back
+  // to the legacy on-disk filename (no track suffix).
+  if (!resolved && track === 'main') {
+    const legacyName = `${projectSlug(projectPath)}.json${compressedJsonExtension()}`;
+    resolved = await resolveJsonStoragePath(path.join(storagePath, legacyName));
+  }
   if (!resolved) return null;
 
   if (options?.preferCache) {

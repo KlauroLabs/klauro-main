@@ -97,6 +97,12 @@ export interface CASOutput {
   runtime?: CASRuntime;
   analysis_errors?: CASAnalysisError[];
   validation?: CASValidation;
+
+  /** Revision identity (stamped at runtime; see revision.ts / track.ts). */
+  base_commit?: string;
+  branch?: string;
+  /** Which analysis track this output represents: 'main' | 'other-branch' | 'in-flight'. */
+  analyzed_track?: 'main' | 'other-branch' | 'in-flight';
 }
 
 export interface CASEmbeddingIndex {
