@@ -46,7 +46,7 @@ function deriveArea(relPath: string): string {
   // Bucket top-level src tests by a coarse subject from the filename.
   const base = path.basename(p).replace(/\.test\.ts$/, '');
   if (/listing|storage|analysis|workspace/.test(base)) return 'analysis & workspace listing';
-  if (/agent|adoption|packet|readiness|benchmark|live|idiom|capsule/.test(base)) return 'agent harness & benchmarks';
+  if (/agent|adoption|context|readiness|benchmark|live|idiom|capsule/.test(base)) return 'agent harness & benchmarks';
   if (/cross|was|contract|semantic|graph/.test(base)) return 'cross-codebase / WAS';
   if (/cas|analyzer|orchestrat|framework|route|domain|terminal/.test(base)) return 'analyzer / CAS';
   return 'other server modules';

@@ -1861,7 +1861,7 @@ async function getGeneratedArtifactStorageHealth(storagePath: string): Promise<{
     'machine-proof-workspaces',
     'scratch-build-benchmark',
     'greenfield-live-continuity',
-    'from-zero-build-packet-proof',
+    'from-zero-build-context-proof',
     'from-zero-dogfood',
   ].map(async category => {
     const artifactPath = path.join(root, category);

@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { clearFreshnessSummaryCache, summarizeAnalysisFreshness } from './freshness';
-import { getAgentStartContext, getAgentWorkPacket } from './agent-adoption';
+import { getAgentStartContext, getAgentContext } from './agent-adoption';
 import { resolveAgentAnalysis } from './agent-project-map';
 import { saveAnalysis } from './storage';
 
@@ -181,8 +181,8 @@ test('agent start context leads with the analysis freshness summary', () => {
   });
 });
 
-test('work packet escalates when a cited file was deleted after analysis', async () => {
-  await withTempDir('klauro-freshness-packet-', async root => {
+test('agent context escalates when a cited file was deleted after analysis', async () => {
+  await withTempDir('klauro-freshness-context-', async root => {
     const files = writeSourceFixture(root);
     initGitRepo(root);
     const analyzedAt = new Date(Date.now() - HOUR_MS).toISOString();
@@ -190,25 +190,25 @@ test('work packet escalates when a cited file was deleted after analysis', async
     fs.rmSync(files[1]);
 
     clearFreshnessSummaryCache();
-    const packet = await getAgentWorkPacket(freshnessFixtureCas(root, analyzedAt), root, {
+    const context = await getAgentContext(freshnessFixtureCas(root, analyzedAt), root, {
       task_type: 'modify',
       target: 'UsersService',
     }) as Record<string, any>;
 
-    const freshness = packet.analysis_freshness;
-    assert.ok(freshness, 'work packet must carry analysis_freshness');
+    const freshness = context.analysis_freshness;
+    assert.ok(freshness, 'agent context must carry analysis_freshness');
     assert.equal(freshness.staleness, 'stale');
     assert.ok(freshness.cited_files_deleted_since_analysis.includes('src/users/users.service.ts'));
-    assert.match(freshness.warning, /citations in this packet may be invalid/i);
+    assert.match(freshness.warning, /citations in this context may be invalid/i);
     assert.match(freshness.warning, /analyze_codebase/);
 
-    const risk = packet.work_context?.risk;
+    const risk = context.work_context?.risk;
     assert.ok(risk?.target_file_changed_since_analysis, 'risk section must flag the changed analysis target');
     assert.match(risk.target_file_changed_since_analysis, /deleted after this analysis/i);
   });
 });
 
-test('work packet flags a modified analysis target in the risk section', async () => {
+test('agent context flags a modified analysis target in the risk section', async () => {
   await withTempDir('klauro-freshness-target-', async root => {
     const files = writeSourceFixture(root);
     initGitRepo(root);
@@ -217,18 +217,18 @@ test('work packet flags a modified analysis target in the risk section', async (
     fs.appendFileSync(files[1], '// changed after analysis\n');
 
     clearFreshnessSummaryCache();
-    const packet = await getAgentWorkPacket(freshnessFixtureCas(root, analyzedAt), root, {
+    const context = await getAgentContext(freshnessFixtureCas(root, analyzedAt), root, {
       task_type: 'modify',
       target: 'UsersService',
     }) as Record<string, any>;
 
-    assert.equal(packet.analysis_freshness.staleness, 'stale');
-    assert.ok(packet.analysis_freshness.cited_files_changed_since_analysis.includes('src/users/users.service.ts'));
-    assert.match(packet.work_context.risk.target_file_changed_since_analysis, /modified after this analysis/i);
+    assert.equal(context.analysis_freshness.staleness, 'stale');
+    assert.ok(context.analysis_freshness.cited_files_changed_since_analysis.includes('src/users/users.service.ts'));
+    assert.match(context.work_context.risk.target_file_changed_since_analysis, /modified after this analysis/i);
   });
 });
 
-test('first-turn work packet preserves stale-analysis warning', async () => {
+test('first-turn agent context preserves stale-analysis warning', async () => {
   await withTempDir('klauro-freshness-first-turn-', async root => {
     const files = writeSourceFixture(root);
     initGitRepo(root);
@@ -237,35 +237,35 @@ test('first-turn work packet preserves stale-analysis warning', async () => {
     fs.appendFileSync(files[1], '// changed after analysis\n');
 
     clearFreshnessSummaryCache();
-    const packet = await getAgentWorkPacket(freshnessFixtureCas(root, analyzedAt), root, {
+    const context = await getAgentContext(freshnessFixtureCas(root, analyzedAt), root, {
       task_type: 'modify',
       target: 'UsersService',
       response_profile: 'first-turn',
     }) as Record<string, any>;
 
-    assert.equal(packet.packet_profile, 'first-turn');
-    assert.equal(packet.analysis_freshness.staleness, 'stale');
-    assert.ok(packet.analysis_freshness.cited_files_changed_since_analysis.includes('src/users/users.service.ts'));
-    assert.match(packet.rule, /STALE: re-run analyze_codebase/i);
+    assert.equal(context.context_profile, 'first-turn');
+    assert.equal(context.analysis_freshness.staleness, 'stale');
+    assert.ok(context.analysis_freshness.cited_files_changed_since_analysis.includes('src/users/users.service.ts'));
+    assert.match(context.rule, /STALE: re-run analyze_codebase/i);
   });
 });
 
-test('work packet stays fresh with no warning when nothing changed', async () => {
-  await withTempDir('klauro-freshness-clean-packet-', async root => {
+test('agent context stays fresh with no warning when nothing changed', async () => {
+  await withTempDir('klauro-freshness-clean-context-', async root => {
     const files = writeSourceFixture(root);
     initGitRepo(root);
     const analyzedAt = new Date(Date.now() - HOUR_MS).toISOString();
     for (const file of files) setMtime(file, Date.now() - 2 * HOUR_MS);
 
     clearFreshnessSummaryCache();
-    const packet = await getAgentWorkPacket(freshnessFixtureCas(root, analyzedAt), root, {
+    const context = await getAgentContext(freshnessFixtureCas(root, analyzedAt), root, {
       task_type: 'modify',
       target: 'UsersService',
     }) as Record<string, any>;
 
-    assert.equal(packet.analysis_freshness.staleness, 'fresh');
-    assert.equal(packet.analysis_freshness.warning, undefined);
-    assert.equal(packet.work_context.risk?.target_file_changed_since_analysis, undefined);
+    assert.equal(context.analysis_freshness.staleness, 'fresh');
+    assert.equal(context.analysis_freshness.warning, undefined);
+    assert.equal(context.work_context.risk?.target_file_changed_since_analysis, undefined);
   });
 });
 

@@ -31,7 +31,7 @@ export async function getAgentDoctor(cas: CASOutput, projectPath: string, option
 
   const checks = [
     check('cas-contract', contract.status, contract.score, `${contract.summary.nodes} nodes, ${contract.summary.edges} edges`),
-    check('agent-readiness', readiness.status, readiness.score, readiness.default_use ? 'Default-use ready' : readiness.adoption_gaps.join('; ')),
+    check('agent-readiness', readiness.status, readiness.score, readiness.agent_context_ready ? 'Ready for agent use' : readiness.adoption_gaps.join('; ')),
     check('freshness', freshness.status === 'fresh' ? 'pass' : freshness.status === 'stale' ? 'warn' : 'fail', freshness.status === 'fresh' ? 100 : freshness.status === 'stale' ? 70 : 0, freshness.recommendation),
     check('test-evidence', testEvidence.status === 'cas-covered' ? 'pass' : 'warn', testEvidence.status === 'cas-covered' ? 100 : 80, testEvidence.summary),
     check('runtime-sdk', runtime.totals.runtime_static_links > 0 && sdkPackage.files.length > 0 ? 'pass' : 'warn', runtime.totals.runtime_static_links > 0 ? 100 : 75, `${runtime.totals.runtime_static_links} runtime links, ${sdkPackage.files.length} SDK files`),
@@ -45,7 +45,7 @@ export async function getAgentDoctor(cas: CASOutput, projectPath: string, option
     generated_at: new Date().toISOString(),
     path: projectPath,
     status,
-    default_use: status !== 'fail' && readiness.default_use && freshness.status !== 'stale',
+    agent_context_ready: status !== 'fail' && readiness.agent_context_ready && freshness.status !== 'stale',
     checks,
     readiness,
     freshness,

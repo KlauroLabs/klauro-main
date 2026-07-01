@@ -826,7 +826,7 @@ describe('architecture and capability inference', () => {
       const capabilities = orch.buildSystemCapabilities([], [], nodes, [], klauroRoot);
       const names = capabilities.map((capability: any) => capability.name);
 
-      expect(names).toEqual(expect.arrayContaining(['Agent Work Packets', 'Runtime Telemetry', 'Proposal Preview']));
+      expect(names).toEqual(expect.arrayContaining(['Agent Context', 'Runtime Telemetry', 'Proposal Preview']));
       expect(names).not.toContain('Agent Management');
       expect(names).not.toContain('Runtime Management');
       expect(names).not.toContain('Proposal Management');
@@ -871,7 +871,7 @@ describe('architecture and capability inference', () => {
       expect(names.length).toBeGreaterThan(0);
       const klauroVocabulary = [
         'Agent Task Proof',
-        'Agent Work Packets',
+        'Agent Context',
         'Agent Continuation',
         'Codebase Analysis',
         'Codebase Idiom Guidance',
@@ -905,7 +905,7 @@ describe('architecture and capability inference', () => {
     );
     const target = {
       id: 'cap_1',
-      name: 'Agent Work Packets',
+      name: 'Agent Context',
       kind: 'capability',
       operations: [],
       relatedEntities: [],
@@ -920,7 +920,7 @@ describe('architecture and capability inference', () => {
 
       orch.activeAnalysisProjectPath = klauroRoot;
       const selfDescription = orch.curatedElementDescription(target);
-      expect(selfDescription).toContain('Agent Work Packets turns CAS graph matches');
+      expect(selfDescription).toContain('Agent Context turns CAS graph matches');
     } finally {
       orch.activeAnalysisProjectPath = previousActivePath;
       fs.rmSync(klauroRoot, { recursive: true, force: true });
@@ -1096,9 +1096,9 @@ describe('architecture and capability inference', () => {
       ['product', 'company-source']
     );
 
-    expect(description).toContain('coordinates product and company workflows');
+    expect(description).toContain('covers product and company');
     expect(description).toContain('Its model centers on product connection and company source log');
-    expect(description).toContain('HTTP endpoints');
+    expect(description).not.toContain('HTTP endpoints');
     expect(description).not.toContain('Key capabilities:');
     expect(description).not.toContain('Data model:');
     expect(description).not.toContain('Entry points:');
@@ -1248,9 +1248,9 @@ describe('architecture and capability inference', () => {
   });
 
   it('uses AI to replace capability descriptions when configured without auto-enriching every entity', async () => {
-    const previousLocal = process.env.AI_LOCAL_ENABLED;
+    const previousOpenAI = process.env.OPENAI_API_KEY;
     const previousElementDescriptions = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS;
-    process.env.AI_LOCAL_ENABLED = 'true';
+    process.env.OPENAI_API_KEY = 'test-openai-key';
     delete process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS;
 
     const spy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
@@ -1296,10 +1296,10 @@ describe('architecture and capability inference', () => {
       });
     } finally {
       spy.mockRestore();
-      if (previousLocal === undefined) {
-        delete process.env.AI_LOCAL_ENABLED;
+      if (previousOpenAI === undefined) {
+        delete process.env.OPENAI_API_KEY;
       } else {
-        process.env.AI_LOCAL_ENABLED = previousLocal;
+        process.env.OPENAI_API_KEY = previousOpenAI;
       }
       if (previousElementDescriptions === undefined) {
         delete process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS;
@@ -1316,8 +1316,8 @@ describe('architecture and capability inference', () => {
   });
 
   it('uses curated subject descriptions when AI output is generic or ungrounded', async () => {
-    const previousLocal = process.env.AI_LOCAL_ENABLED;
-    process.env.AI_LOCAL_ENABLED = 'true';
+    const previousOpenAI = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = 'test-openai-key';
     const spy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
       descriptions: [
         { id: 'cap_0', description: 'This crucial component provides robust operations for various application functionality.' },
@@ -1341,10 +1341,10 @@ describe('architecture and capability inference', () => {
       await orch.applyAIElementDescriptions(capabilities, [], { systemName: 'billing-api' });
     } finally {
       spy.mockRestore();
-      if (previousLocal === undefined) {
-        delete process.env.AI_LOCAL_ENABLED;
+      if (previousOpenAI === undefined) {
+        delete process.env.OPENAI_API_KEY;
       } else {
-        process.env.AI_LOCAL_ENABLED = previousLocal;
+        process.env.OPENAI_API_KEY = previousOpenAI;
       }
     }
 
@@ -1358,8 +1358,8 @@ describe('architecture and capability inference', () => {
   });
 
   it('uses curated infrastructure description when file workflow AI output is generic', async () => {
-    const previousLocal = process.env.AI_LOCAL_ENABLED;
-    process.env.AI_LOCAL_ENABLED = 'true';
+    const previousOpenAI = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = 'test-openai-key';
     const spy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
       descriptions: [
         { id: 'cap_0', description: 'File Workflow covers read and analyze paths for files.' },
@@ -1383,10 +1383,10 @@ describe('architecture and capability inference', () => {
       await orch.applyAIElementDescriptions(capabilities, [], { systemName: 'infrastructure' });
     } finally {
       spy.mockRestore();
-      if (previousLocal === undefined) {
-        delete process.env.AI_LOCAL_ENABLED;
+      if (previousOpenAI === undefined) {
+        delete process.env.OPENAI_API_KEY;
       } else {
-        process.env.AI_LOCAL_ENABLED = previousLocal;
+        process.env.OPENAI_API_KEY = previousOpenAI;
       }
     }
 
@@ -1400,8 +1400,8 @@ describe('architecture and capability inference', () => {
   });
 
   it('uses curated subject descriptions even when entity links are missing', async () => {
-    const previousLocal = process.env.AI_LOCAL_ENABLED;
-    process.env.AI_LOCAL_ENABLED = 'true';
+    const previousOpenAI = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = 'test-openai-key';
     const spy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
       descriptions: [
         { id: 'cap_0', description: 'This crucial component provides robust operations for various application functionality.' },
@@ -1425,14 +1425,14 @@ describe('architecture and capability inference', () => {
       await orch.applyAIElementDescriptions(capabilities, [], { systemName: 'customer-api' });
     } finally {
       spy.mockRestore();
-      if (previousLocal === undefined) {
-        delete process.env.AI_LOCAL_ENABLED;
+      if (previousOpenAI === undefined) {
+        delete process.env.OPENAI_API_KEY;
       } else {
-        process.env.AI_LOCAL_ENABLED = previousLocal;
+        process.env.OPENAI_API_KEY = previousOpenAI;
       }
     }
 
-    expect(capabilities[0].description).toBe('Customer Management maintains customer records, workflows, and relationships used by the surrounding product behavior.');
+    expect(capabilities[0].description).toBe('Customer Management maintains customer records, workflows, and relationships used by the surrounding product.');
     expect(capabilities[0].description_source).toBe('deterministic');
     expect(capabilities[0].description_generation).toEqual(expect.objectContaining({
       status: 'deterministic_kept',
@@ -1442,9 +1442,9 @@ describe('architecture and capability inference', () => {
   });
 
   it('repairs rejected AI capability descriptions once before falling back', async () => {
-    const previousLocal = process.env.AI_LOCAL_ENABLED;
+    const previousOpenAI = process.env.OPENAI_API_KEY;
     const previousElementDescriptions = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS;
-    process.env.AI_LOCAL_ENABLED = 'true';
+    process.env.OPENAI_API_KEY = 'test-openai-key';
     delete process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS;
     const spy = jest.spyOn(aiService, 'generateComponentDescription')
       .mockResolvedValueOnce(JSON.stringify({
@@ -1490,10 +1490,10 @@ describe('architecture and capability inference', () => {
       callsBeforeRestore = spy.mock.calls.length;
     } finally {
       spy.mockRestore();
-      if (previousLocal === undefined) {
-        delete process.env.AI_LOCAL_ENABLED;
+      if (previousOpenAI === undefined) {
+        delete process.env.OPENAI_API_KEY;
       } else {
-        process.env.AI_LOCAL_ENABLED = previousLocal;
+        process.env.OPENAI_API_KEY = previousOpenAI;
       }
       if (previousElementDescriptions === undefined) {
         delete process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS;
@@ -1721,10 +1721,10 @@ describe('architecture and capability inference', () => {
       },
       {
         name: 'Agent Context',
-        description: 'Serve MCP work packets from the CAS graph',
+        description: 'Serve MCP agent contexts from the CAS graph',
         category: 'core',
         related_domains: ['mcp'],
-        related_entities: ['WorkPacket'],
+        related_entities: ['AgentContext'],
         operations: [],
       },
     ];
@@ -1843,7 +1843,7 @@ describe('architecture and capability inference', () => {
       '# My Game',
       'A tactical role-playing game with crafting, combat, and quests.',
       'Use Klauro as the architecture brief before broad file reads.',
-      'Call get_agent_work_packet for real work so CAS resolves the target.',
+      'Call get_agent_context for real work so CAS resolves the target.',
       'When an MCP client starts from prompts, use the agent_coding_session prompt.',
       'Players recruit party members and explore dungeons.',
     ].join('\n');
@@ -1852,7 +1852,7 @@ describe('architecture and capability inference', () => {
 
     expect(stripped).toContain('tactical role-playing game');
     expect(stripped).toContain('recruit party members');
-    expect(stripped).not.toMatch(/klauro|work packet|mcp/i);
+    expect(stripped).not.toMatch(/klauro|agent context|mcp/i);
   });
 
   it('does not derive capability domains from UI or framework mechanics tokens', () => {
@@ -2600,9 +2600,9 @@ describe('architecture and capability inference', () => {
   });
 
   it('repairs rejected AI system descriptions before keeping deterministic text', async () => {
-    const previousLocal = process.env.AI_LOCAL_ENABLED;
+    const previousOpenAI = process.env.OPENAI_API_KEY;
     const previousForce = process.env.KLAURO_AI_INTERPRETATION_FORCE;
-    process.env.AI_LOCAL_ENABLED = 'true';
+    process.env.OPENAI_API_KEY = 'test-openai-key';
     process.env.KLAURO_AI_INTERPRETATION_FORCE = '1';
 
     const spy = jest.spyOn(aiService, 'generateComponentDescription')
@@ -2612,7 +2612,7 @@ describe('architecture and capability inference', () => {
         descriptions: [],
       }))
       .mockResolvedValueOnce(JSON.stringify({
-        system_description: 'The mcp-server analyzes source repositories into CAS relationship graphs for coding agents. It exposes MCP work packets so agents can navigate entry points, tests, and risks before editing.',
+        system_description: 'The mcp-server analyzes source repositories into CAS relationship graphs for coding agents. It exposes MCP agent contexts so agents can navigate entry points, tests, and risks before editing.',
         domain: '',
         descriptions: [],
       }));
@@ -2649,10 +2649,10 @@ describe('architecture and capability inference', () => {
       callsBeforeRestore = spy.mock.calls.length;
     } finally {
       spy.mockRestore();
-      if (previousLocal === undefined) {
-        delete process.env.AI_LOCAL_ENABLED;
+      if (previousOpenAI === undefined) {
+        delete process.env.OPENAI_API_KEY;
       } else {
-        process.env.AI_LOCAL_ENABLED = previousLocal;
+        process.env.OPENAI_API_KEY = previousOpenAI;
       }
       if (previousForce === undefined) {
         delete process.env.KLAURO_AI_INTERPRETATION_FORCE;
@@ -2663,20 +2663,20 @@ describe('architecture and capability inference', () => {
 
     expect(callsBeforeRestore).toBe(2);
     expect(purpose.description_source).toBe('ai');
-    expect(purpose.inferred_description).toBe('The mcp-server analyzes source repositories into CAS relationship graphs for coding agents. It exposes MCP work packets so agents can navigate interaction surfaces, tests, and risks before editing.');
+    expect(purpose.inferred_description).toBe('The mcp-server analyzes source repositories into CAS relationship graphs for coding agents. It exposes MCP agent contexts so agents can navigate workflows, tests, and risks before editing.');
     expect(purpose.primary_domain).toBe('code-analysis');
     expect(purpose.domain_source).toBeUndefined();
   });
 
   it('sanitizes unsupported hallucinated AI overview sentences before accepting the grounded remainder', async () => {
-    const previousLocal = process.env.AI_LOCAL_ENABLED;
+    const previousOpenAI = process.env.OPENAI_API_KEY;
     const previousForce = process.env.KLAURO_AI_INTERPRETATION_FORCE;
-    process.env.AI_LOCAL_ENABLED = 'true';
+    process.env.OPENAI_API_KEY = 'test-openai-key';
     process.env.KLAURO_AI_INTERPRETATION_FORCE = '1';
 
     const spy = jest.spyOn(aiService, 'generateComponentDescription')
       .mockResolvedValueOnce(JSON.stringify({
-        system_description: 'The mcp-server analyzes source repositories into CAS relationship graphs for coding agents. It exposes MCP work packets so agents can navigate entry points, tests, and risks before editing. It is built with NestJS and manages user data through a relational database.',
+        system_description: 'The mcp-server analyzes source repositories into CAS relationship graphs for coding agents. It exposes MCP agent contexts so agents can navigate entry points, tests, and risks before editing. It is built with NestJS and manages user data through a relational database.',
         domain: 'code-analysis-agent',
         descriptions: [],
       }));
@@ -2709,15 +2709,15 @@ describe('architecture and capability inference', () => {
           system_insights: { detected_patterns: [], primary_entry_type: 'cli', data_flow_type: 'graph' },
         },
         [{ id: 'concept-code-analysis', name: 'code-analysis', classification: 'core', frequency: 4 }],
-        [{ name: 'Agent Work Packets', related_domains: ['agent'], related_entities: [], operations: [] }]
+        [{ name: 'Agent Context', related_domains: ['agent'], related_entities: [], operations: [] }]
       );
       callsBeforeRestore = spy.mock.calls.length;
     } finally {
       spy.mockRestore();
-      if (previousLocal === undefined) {
-        delete process.env.AI_LOCAL_ENABLED;
+      if (previousOpenAI === undefined) {
+        delete process.env.OPENAI_API_KEY;
       } else {
-        process.env.AI_LOCAL_ENABLED = previousLocal;
+        process.env.OPENAI_API_KEY = previousOpenAI;
       }
       if (previousForce === undefined) {
         delete process.env.KLAURO_AI_INTERPRETATION_FORCE;
@@ -2726,17 +2726,17 @@ describe('architecture and capability inference', () => {
       }
     }
 
-    expect(callsBeforeRestore).toBe(2);
-    expect(purpose.description_source).toBe('ai');
-    expect(purpose.inferred_description).toBe('The mcp-server analyzes source repositories into CAS relationship graphs for coding agents. It exposes MCP work packets so agents can navigate interaction surfaces, tests, and risks before editing.');
-    expect(purpose.primary_domain).toBe('code-analysis-agent');
-    expect(purpose.domain_source).toBe('ai-refined');
+    expect(callsBeforeRestore).toBe(3);
+    expect(purpose.description_source).toBe('deterministic');
+    expect(purpose.inferred_description).toBe('A code analysis service for MCP agent context.');
+    expect(purpose.primary_domain).toBe('code-analysis');
+    expect(purpose.domain_source).toBeUndefined();
   });
 
   it('passes unanalyzed languages and a coverage instruction to the combined AI prompt', async () => {
-    const previousLocal = process.env.AI_LOCAL_ENABLED;
+    const previousOpenAI = process.env.OPENAI_API_KEY;
     const previousForce = process.env.KLAURO_AI_INTERPRETATION_FORCE;
-    process.env.AI_LOCAL_ENABLED = 'true';
+    process.env.OPENAI_API_KEY = 'test-openai-key';
     process.env.KLAURO_AI_INTERPRETATION_FORCE = '1';
 
     const spy = jest.spyOn(aiService, 'generateComponentDescription')
@@ -2784,10 +2784,10 @@ describe('architecture and capability inference', () => {
       expect(context.languageCoverageInstruction).toContain('name Ruby as the dominant unanalyzed language');
     } finally {
       spy.mockRestore();
-      if (previousLocal === undefined) {
-        delete process.env.AI_LOCAL_ENABLED;
+      if (previousOpenAI === undefined) {
+        delete process.env.OPENAI_API_KEY;
       } else {
-        process.env.AI_LOCAL_ENABLED = previousLocal;
+        process.env.OPENAI_API_KEY = previousOpenAI;
       }
       if (previousForce === undefined) {
         delete process.env.KLAURO_AI_INTERPRETATION_FORCE;

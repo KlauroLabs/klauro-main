@@ -187,7 +187,7 @@ function projectDocSummary(projectPath) {
   if (hasFleet) {
     return 'TruckSpy is a fleet management backend for commercial vehicle operations. It supports real-time tracking, driver and vehicle management, compliance and safety workflows, dispatching, fuel and maintenance reporting, and integrations with telematics and business-service providers.';
   }
-  const hasCodebaseAnalysis = /\b(klauro|unravl|codebase analysis|cas|mcp|agent work packet)\b/.test(text);
+  const hasCodebaseAnalysis = /\b(klauro|unravl|codebase analysis|cas|mcp|agent agent context)\b/.test(text);
   if (hasCodebaseAnalysis) {
     return 'Klauro is a codebase analysis system that turns source repositories into a relationship graph for humans and AI agents. It maps structure, behavior, risks, tests, idioms, and change impact so agents can work with codebase context instead of rediscovering the project file by file.';
   }
@@ -958,7 +958,7 @@ function pillList(items){return (items||[]).slice(0,6).map(x=>'<span class="sour
 function metrics(rows){return rows.map(([k,v])=>'<div class="metric"><span>'+esc(k)+'</span><b>'+esc(v)+'</b></div>').join('')}
 function bars(rows){const max=Math.max(1,...(rows||[]).map(r=>r.count));return (rows||[]).map(r=>'<div class="metric"><span>'+esc(r.name)+'</span><b>'+num(r.count)+'</b></div><div class="bar"><i style="width:'+Math.max(4,r.count/max*100)+'%"></i></div>').join('')}
 function shellQuote(value){return "'"+String(value||'').replace(/'/g,"'\\\\''")+"'";}
-function reanalysisCommand(){return 'cd /Users/michaelshattuck/dev/unravl/proof-of-concept/apps/mcp-server && KLAURO_OLLAMA_AUTO=true OLLAMA_BASE_URL=http://127.0.0.1:11434 OLLAMA_MODEL=qwen3:8b npm run analyze -- '+shellQuote(current.path)+' --mode local --analysis-focus ui-overview --force --json && node ${generatorCommandPath}';}
+function reanalysisCommand(){return 'cd /Users/michaelshattuck/dev/unravl/proof-of-concept/apps/mcp-server && npm run analyze -- '+shellQuote(current.path)+' --analysis-focus ui-overview --force --json && node ${generatorCommandPath}';}
 function reanalyzePanel(){return '<div id="reanalyzePanel" class="reanalyze-panel"><h3>Reanalyze '+esc(current.name)+'</h3><p>Run a fresh Klauro analysis for this repository, then regenerate this inspector. Copy the command, or start the optional local bridge and trigger it from here.</p><div class="command-row"><code id="reanalyzeCommand" class="cmd">'+esc(reanalysisCommand())+'</code><button class="btn small" onclick="copyReanalysisCommand()">Copy</button><button class="btn small primary" onclick="triggerReanalysis()">Run via bridge</button></div><div id="bridgeStatus" class="bridge-status">Bridge command: <span class="kbd">cd /Users/michaelshattuck/dev/unravl/proof-of-concept/apps/mcp-server && npm run analysis-inspector-bridge</span></div></div>'}
 function showReanalysisPanel(){const panel=$('#reanalyzePanel');if(panel)panel.classList.toggle('active');}
 async function copyReanalysisCommand(){const text=reanalysisCommand();try{await navigator.clipboard.writeText(text);setBridgeStatus('Copied reanalysis command.')}catch{setBridgeStatus(text);}}

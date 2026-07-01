@@ -57,7 +57,7 @@ export interface LiveAgentArmResult {
   metrics_file: string;
   result_file: string;
   diff_file: string;
-  work_packet_file?: string;
+  agent_context_file?: string;
   duration_ms: number;
   exit_code?: number;
   files_changed: number;
@@ -245,22 +245,22 @@ async function runLiveAgentArm(
   const workspace = path.join(trialDirectory, arm);
   const promptFile = path.join(trialDirectory, `${arm}-prompt.md`);
   const greenfieldScratch = isGreenfieldScratchLiveTask(input);
-  const workPacketFile = arm === 'with-klauro' && !greenfieldScratch
-    ? path.join(trialDirectory, `${arm}-work-packet.json`)
+  const agentContextFile = arm === 'with-klauro' && !greenfieldScratch
+    ? path.join(trialDirectory, `${arm}-work-context.json`)
     : undefined;
   const metricsFile = path.join(workspace, '.klauro-live-metrics.json');
   const resultFile = path.join(workspace, '.klauro-live-result.json');
   const diffFile = path.join(trialDirectory, `${arm}.diff`);
   const requiresBenchmarkArtifacts = commandTemplateUsesBenchmarkArtifacts(commandTemplate);
   const prompt = arm === 'with-klauro'
-    ? promptWithKlauro(input, workspace, metricsFile, resultFile, workPacketFile, requiresBenchmarkArtifacts)
+    ? promptWithKlauro(input, workspace, metricsFile, resultFile, agentContextFile, requiresBenchmarkArtifacts)
     : promptWithoutKlauro(input, workspace, metricsFile, resultFile, requiresBenchmarkArtifacts);
   const startedAt = Date.now();
 
   try {
     await copyRepo(sourceRepoPath || input.repoPath, workspace);
-    if (workPacketFile) {
-      await fs.writeJson(workPacketFile, buildLiveWorkPacket(input, workspace), { spaces: 2 });
+    if (agentContextFile) {
+      await fs.writeJson(agentContextFile, buildLiveAgentContext(input, workspace), { spaces: 2 });
     }
     await fs.writeFile(promptFile, prompt, 'utf8');
     await initializeBaseline(workspace);
@@ -308,7 +308,7 @@ async function runLiveAgentArm(
       metrics_file: metricsFile,
       result_file: resultFile,
       diff_file: diffFile,
-      work_packet_file: workPacketFile,
+      agent_context_file: agentContextFile,
       duration_ms: Date.now() - startedAt,
       exit_code: result.exitCode,
       files_changed: diff.files,
@@ -350,7 +350,7 @@ async function runLiveAgentArm(
       metrics_file: metricsFile,
       result_file: resultFile,
       diff_file: diffFile,
-      work_packet_file: workPacketFile,
+      agent_context_file: agentContextFile,
       duration_ms: Date.now() - startedAt,
       files_changed: 0,
       changed_files: [],
@@ -810,7 +810,7 @@ function mergeExternalEvaluation(deterministic: LivePairEvaluation, external: an
   };
 }
 
-function buildLiveWorkPacket(input: LiveAgentPairInput, workspace: string) {
+function buildLiveAgentContext(input: LiveAgentPairInput, workspace: string) {
   const surgical = isSurgicalLiveTask(input);
   const greenfieldScratch = isGreenfieldScratchLiveTask(input);
   return {
@@ -936,7 +936,7 @@ function promptWithKlauro(
   workspace: string,
   metricsFile: string,
   resultFile: string,
-  workPacketFile?: string,
+  agentContextFile?: string,
   requiresBenchmarkArtifacts = true
 ): string {
   const surgical = isSurgicalLiveTask(input);
@@ -964,15 +964,14 @@ function promptWithKlauro(
     ? compactGreenfieldValidationLine(input, validationCommands)
     : validationCommands.length ? `Validate: ${validationCommands.join('; ')}` : '';
   const greenfieldTestLine = greenfieldScratch ? compactGreenfieldTestRequirementLine(input) : '';
-  const existingRules = !greenfieldScratch ? liveTaskSemanticRules(input) : {};
   const idiomSummary = greenfieldScratch
     ? formatIdiomContextForPrompt(input.idiomContext, greenfieldContinuation ? 1000 : 900)
     : formatExistingTaskContextForPrompt(input, 900);
   const executionCapsule = !greenfieldScratch ? formatExistingTaskExecutionCapsule(input, validationCommands) : '';
   if (!greenfieldScratch) {
-    if (existingRules.direct_patch === true) {
+    if (shouldUseExistingTaskExecutionCapsule(input)) {
       return [
-        'Execute this Klauro K5 capsule in the mounted repo. Read all F files; edit only * or ! files via O/A; satisfy Q; avoid N; preserve P; stop at S. Klauro validates after edit. No search, diffs, logs, tests, or package files.',
+        'Apply this Klauro patch brief in the mounted repo. Read only F files, then edit only * or ! files. Use apply_patch for edits; do not use python/cat/sed shell writes. Follow O exactly, satisfy Q, avoid N, preserve P, and stop after the edit. Do not search, run shell commands, run tests, inspect diffs/logs/package files, or create notes.',
         executionCapsule,
         'Final under 40 words: changed files only.',
         ...benchmarkArtifactInstructions(resultFile, metricsFile, requiresBenchmarkArtifacts),
@@ -1298,6 +1297,34 @@ function liveTaskSemanticRules(input: LiveAgentPairInput): any {
   return context.semantic_rules || validation.semantic_rules || {};
 }
 
+function shouldUseExistingTaskExecutionCapsule(input: LiveAgentPairInput): boolean {
+  if (isGreenfieldScratchLiveTask(input)) return false;
+  const rules = liveTaskSemanticRules(input);
+  if (rules.direct_patch === true) return true;
+  if (rules.capsule_prompt === true) return true;
+  if (rules.allow_only_changed_files !== true) return false;
+  const validation = input.validationPlan && typeof input.validationPlan === 'object'
+    ? input.validationPlan as any
+    : {};
+  const requiredChangedFiles = uniquePromptStrings(arrayOfStrings(rules.required_changed_files));
+  const expectedChangedFiles = uniquePromptStrings(arrayOfStrings(validation.expected_changed_files));
+  const changedFiles = requiredChangedFiles.length ? requiredChangedFiles : expectedChangedFiles;
+  const editRecipe = arrayOfStrings((input.idiomContext as any)?.edit_recipe);
+  const maxCapsuleFiles = editRecipe.length ? 5 : 4;
+  if (!changedFiles.length || changedFiles.length > maxCapsuleFiles) return false;
+  const requiredContextFiles = uniquePromptStrings(arrayOfStrings(rules.required_context_files));
+  if (requiredContextFiles.length > 2) return false;
+  const requiredEvidence = arrayOfStrings(rules.prompt_required_evidence || rules.required_diff_patterns);
+  const hasConcreteValidation = Array.isArray(validation.commands) && validation.commands.length > 0;
+  const hasStrongConstraints = requiredEvidence.length > 0 ||
+    rules.require_test_change === true ||
+    rules.require_production_change === false ||
+    rules.allow_only_changed_files === true;
+  if (!hasConcreteValidation || !hasStrongConstraints) return false;
+  if (Number.isFinite(rules.max_changed_files) && Number(rules.max_changed_files) > 6) return false;
+  return true;
+}
+
 function formatExistingTaskContextForPrompt(input: LiveAgentPairInput, maxLength = 1400): string {
   const context = input.idiomContext && typeof input.idiomContext === 'object'
     ? input.idiomContext as any
@@ -1340,7 +1367,7 @@ function formatExistingTaskContextForPrompt(input: LiveAgentPairInput, maxLength
   const editRecipe = arrayOfStrings(context.edit_recipe).slice(0, 5);
   const guidance = arrayOfStrings(context.guidance).slice(0, 5);
   const lines: string[] = [];
-  const directPatch = rules.direct_patch === true;
+  const directPatch = shouldUseExistingTaskExecutionCapsule(input);
   if (inspectFiles.length) lines.push(`Read first: ${inspectFiles.join(', ')}.`);
   if (changedFiles.length) lines.push(`Edit only when needed: ${changedFiles.join(', ')}.`);
   if (fallbackFiles.length) lines.push(`Only inspect if needed: ${fallbackFiles.join(', ')}.`);
@@ -1386,17 +1413,18 @@ function formatExistingTaskExecutionCapsule(input: LiveAgentPairInput, validatio
     ...arrayOfStrings(validation.expected_changed_files),
     ...arrayOfStrings(context.changed_files),
   ]).slice(0, 5);
-  const directPatch = rules.direct_patch === true;
+  const requiredContextFiles = uniquePromptStrings(arrayOfStrings(rules.required_context_files)).slice(0, 2);
+  const directPatch = shouldUseExistingTaskExecutionCapsule(input);
   const fallbackReadFiles = uniquePromptStrings([
     ...changedFiles,
-    ...arrayOfStrings(rules.required_context_files),
+    ...requiredContextFiles,
     ...input.fileReadPlan.map(item => {
       const value = item as any;
       return String(value.file || value.path || '').trim();
     }).filter(Boolean),
   ]).slice(0, 5);
   const readFirst = directPatch && changedFiles.length
-    ? changedFiles.slice(0, 3)
+    ? uniquePromptStrings([...changedFiles.slice(0, 3), ...requiredContextFiles]).slice(0, 5)
     : fallbackReadFiles;
   const forbiddenFiles = arrayOfStrings(rules.forbidden_changed_files).slice(0, 4);
   const editRecipe = arrayOfStrings(context.edit_recipe).slice(0, 3);
@@ -1429,11 +1457,11 @@ function buildExistingTaskCapsuleOps(input: LiveAgentPairInput, changedFiles: st
     return [
       {
         file: 'src/services/taskSummaryService.ts',
-        op: 'summarize: ids=uniq(tasks.projectId) > projectList=await projects.findByIds(ids) > byId=Map(projectList.id) > return sync map',
+        op: 'keep Task import/signature; summarize: ids=uniq(tasks.projectId) > list=await projects.findByIds(ids) > byId=Map(list.id) > return tasks.map({taskId, project: byId.get(task.projectId)!})',
       },
       {
         file: 'tests/taskSummaryService.test.ts',
-        op: 'assert+TaskSummaryService only; repo={findById:idCalls++,findByIds:idsCalls++/capture}; tasks p1,p2,p1; assert idCalls=0 idsCalls=1 capturedIds.length=2 result.length=3',
+        op: 'assert+TaskSummaryService only; repo tracks findByIdCalls[] and findByIdsCalls[][]; tasks p1,p1,p2; assert projects p1,p1,p2, taskIds preserved, findByIds once [p1,p2], findById zero',
       },
     ];
   }
@@ -1444,7 +1472,7 @@ function buildExistingTaskCapsuleOps(input: LiveAgentPairInput, changedFiles: st
   if (!editRecipe.length) return [];
   const targetFiles = changedFiles.length ? changedFiles : arrayOfStrings(context.changed_files);
   if (!targetFiles.length) return [];
-  return editRecipe.slice(0, Math.min(3, targetFiles.length)).map((recipe, index) => ({
+  return editRecipe.slice(0, 4).map((recipe, index) => ({
     file: targetFiles[Math.min(index, targetFiles.length - 1)],
     op: recipe,
   }));
@@ -1596,7 +1624,7 @@ function promptWithoutKlauro(input: LiveAgentPairInput, workspace: string, metri
         '',
       ].join('\n')
       : '',
-    'Do not use Klauro, its MCP server, CAS output, generated work packets, or precomputed analysis.',
+    'Do not use Klauro, its MCP server, CAS output, generated agent contexts, or precomputed analysis.',
     'Use normal repository exploration, make an edit only when the task requires one, and run relevant tests when possible.',
     'Do not install dependencies or run broad environment setup unless the task explicitly asks for it. If the existing environment cannot run a broad test, record that and stop after focused validation.',
     'Keep stdout/stderr concise: do not print file contents, generated code, or full diffs; write files directly and summarize only the changed files and validation result.',
@@ -2194,5 +2222,5 @@ export {
   estimateTokens as _estimateTokens,
   promptWithoutKlauro as _promptWithoutKlauro,
   promptWithKlauro as _promptWithKlauro,
-  buildLiveWorkPacket as _buildLiveWorkPacket,
+  buildLiveAgentContext as _buildLiveAgentContext,
 };

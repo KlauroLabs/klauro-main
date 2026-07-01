@@ -1,6 +1,6 @@
 import * as path from 'path';
 import type { CASBehavioralInvariant, CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import { buildCapabilityMemoryForAgent, getAgentStartContext, getAgentWorkPacket, type AgentTask } from './agent-adoption';
+import { buildCapabilityMemoryForAgent, getAgentStartContext, getAgentContext, type AgentTask } from './agent-adoption';
 import { assessBehavioralInvariantImpact, validateBehavioralInvariants } from './invariant-validation';
 import { buildIdiomContextForAgent, validateCodebaseIdioms } from './idiom-query';
 import { assessChangeRisk, buildSummary, findTests, getSystemOverview } from './query';
@@ -26,7 +26,7 @@ export interface AgentChangeReviewOptions {
 export async function openAgentWorkbench(cas: CASOutput, projectPath: string, task: AgentWorkflowTask = {}) {
   const normalizedTask = normalizeWorkflowTask(task);
   const startContext = getAgentStartContext(cas, projectPath, normalizedTask);
-  const workPacket = await getAgentWorkPacket(cas, projectPath, normalizedTask);
+  const agentContext = await getAgentContext(cas, projectPath, normalizedTask);
   const rules = buildCodebaseAgentRules(cas, projectPath, {
     target: normalizedTask.target,
     files: normalizedTask.files,
@@ -38,14 +38,14 @@ export async function openAgentWorkbench(cas: CASOutput, projectPath: string, ta
     product: 'agent_workbench',
     generated_at: new Date().toISOString(),
     path: projectPath,
-    status: workPacket.status,
+    status: agentContext.status,
     task: normalizedTask,
     agent_directive: {
-      default_use: startContext.readiness.default_use,
+      agent_context_ready: startContext.readiness.agent_context_ready,
       rule: 'Use this workbench before broad source exploration. Read only the file_read_plan first, then expand from concrete CAS evidence or source gaps.',
-      first_action: workPacket.file_read_plan.length > 0
-        ? `Inspect ${workPacket.file_read_plan[0].file}`
-        : 'Resolve a concrete target with search_nodes or get_agent_work_packet before editing.',
+      first_action: agentContext.file_read_plan.length > 0
+        ? `Inspect ${agentContext.file_read_plan[0].file}`
+        : 'Resolve a concrete target with search_nodes or get_agent_context before editing.',
       stop_conditions: [
         'Target resolution is ambiguous and no user clarification or source confirmation exists.',
         'Preflight or post-edit validation returns fail.',
@@ -58,21 +58,21 @@ export async function openAgentWorkbench(cas: CASOutput, projectPath: string, ta
       readiness: startContext.readiness,
       starting_points: startContext.starting_points,
     },
-    task_packet: {
-      target_resolution: workPacket.target_resolution,
-      selected_node: workPacket.selected_node,
-      work_context: workPacket.work_context,
-      file_read_plan: workPacket.file_read_plan,
-      execution_brief: workPacket.execution_brief,
-      execution_capsule: workPacket.execution_brief?.capsule,
-      validation_plan: workPacket.validation_plan,
-      source_reading_rule: workPacket.source_reading_rule,
-      gaps: workPacket.gaps,
+    task_context: {
+      target_resolution: agentContext.target_resolution,
+      selected_node: agentContext.selected_node,
+      work_context: agentContext.work_context,
+      file_read_plan: agentContext.file_read_plan,
+      execution_brief: agentContext.execution_brief,
+      execution_capsule: agentContext.execution_brief?.capsule,
+      validation_plan: agentContext.validation_plan,
+      source_reading_rule: agentContext.source_reading_rule,
+      gaps: agentContext.gaps,
     },
     agent_rules: rules.rules,
     signal_quality: signalQuality,
-    evidence_policy: buildEvidencePolicy(workPacket, rules),
-    next_mcp_calls: compactToolPlan(workPacket.next_mcp_calls),
+    evidence_policy: buildEvidencePolicy(agentContext, rules),
+    next_mcp_calls: compactToolPlan(agentContext.next_mcp_calls),
   };
 }
 
@@ -88,23 +88,23 @@ export async function preflightAgentChange(
     diff_text: options.diffText || options.task?.diff_text,
     plan_text: options.planText || options.task?.plan_text,
   });
-  const workPacket = await getAgentWorkPacket(cas, projectPath, {
+  const agentContext = await getAgentContext(cas, projectPath, {
     ...task,
     task_type: task.task_type || 'modify',
   });
   const changedFiles = normalizeFiles(options.files || task.files || parseFilesFromDiff(options.diffText || task.diff_text || ''));
   const diffText = options.diffText || task.diff_text || '';
   const planText = options.planText || task.plan_text || task.instructions || '';
-  const target = options.target || task.target || workPacket.selected_node?.id || undefined;
+  const target = options.target || task.target || agentContext.selected_node?.id || undefined;
   const idiomImpact = buildFocusedIdiomContext(cas, {
     target,
-    files: changedFiles.length ? changedFiles : workPacket.file_read_plan.map((item: any) => item.file),
+    files: changedFiles.length ? changedFiles : agentContext.file_read_plan.map((item: any) => item.file),
     limit: 10,
   });
   const capabilityMemory = buildCapabilityMemoryForAgent(cas, {
     target,
     instructions: planText,
-    files: changedFiles.length ? changedFiles : workPacket.file_read_plan.map((item: any) => item.file),
+    files: changedFiles.length ? changedFiles : agentContext.file_read_plan.map((item: any) => item.file),
     limit: 8,
   });
   const invariantImpact = assessFocusedInvariantImpact(cas, {
@@ -116,13 +116,13 @@ export async function preflightAgentChange(
   const planSignals = inspectPlanSignals(planText, diffText, changedFiles);
   const risks = target ? assessChangeRisk(cas, target) : null;
   const requiredChecks = uniqueStrings([
-    ...extractValidationCommands(workPacket.validation_plan),
+    ...extractValidationCommands(agentContext.validation_plan),
     ...(Array.isArray(invariantImpact.required_checks) ? invariantImpact.required_checks : []),
     ...idiomImpact.validation,
     ...planSignals.required_checks,
   ]).slice(0, 20);
   const findings = [
-    ...preflightFindingsFromTarget(workPacket),
+    ...preflightFindingsFromTarget(agentContext),
     ...preflightFindingsFromPlanSignals(planSignals, idiomImpact, invariantImpact),
   ];
   const status = aggregateStatus(findings.map(finding => finding.status));
@@ -136,14 +136,14 @@ export async function preflightAgentChange(
     verdict: verdictForStatus(status),
     task,
     change_shape: describeChangeShape(cas, { files: changedFiles, diffText, planText, target }),
-    target_resolution: workPacket.target_resolution,
-    selected_node: workPacket.selected_node,
+    target_resolution: agentContext.target_resolution,
+    selected_node: agentContext.selected_node,
     likely_impacts: {
       risk: summarizeRisk(risks),
       capability_memory: capabilityMemory,
       idioms: idiomImpact,
       invariants: invariantImpact,
-      tests: workPacket.work_context?.tests || null,
+      tests: agentContext.work_context?.tests || null,
     },
     findings,
     signal_quality: signalQuality,
@@ -493,19 +493,19 @@ function validateFocusedBehavioralInvariants(
   return focused;
 }
 
-function preflightFindingsFromTarget(workPacket: any) {
+function preflightFindingsFromTarget(agentContext: any) {
   const findings = [];
-  if (workPacket.target_resolution?.gaps?.length) {
+  if (agentContext.target_resolution?.gaps?.length) {
     findings.push({
       id: 'target-resolution-gap',
       status: 'warn' as GateStatus,
       severity: 'warning',
       evidence_source: 'workflow-resolution',
-      message: workPacket.target_resolution.gaps.join('; '),
+      message: agentContext.target_resolution.gaps.join('; '),
       recommendation: 'Confirm the intended target before editing.',
     });
   }
-  if (!workPacket.file_read_plan?.length) {
+  if (!agentContext.file_read_plan?.length) {
     findings.push({
       id: 'missing-file-read-plan',
       status: 'warn' as GateStatus,
@@ -684,7 +684,7 @@ function buildSignalQuality(cas: CASOutput) {
     capabilities === 0 ? 'CAS mapped no system capabilities; duplicate-work avoidance requires direct source confirmation.' : '',
     idioms === 0 ? 'CAS detected no repo-local idioms; style and placement guidance needs direct source confirmation.' : '',
     invariants === 0 ? 'CAS detected no behavioral invariants; auth, tenant, data, and boundary assumptions need source confirmation.' : '',
-    errors > 0 ? `${errors} analyzer error(s) were reported; omitted areas may be missing from this packet.` : '',
+    errors > 0 ? `${errors} analyzer error(s) were reported; omitted areas may be missing from this context.` : '',
     purposeConfidence !== null && purposeConfidence < 0.45 ? `System purpose confidence is low (${purposeConfidence.toFixed(2)}); treat summaries as orientation, not truth.` : '',
     isTestingSystemType(systemType) ? `Architecture system_type "${systemType}" looks like a test framework; treat architecture identity as suspect until re-analysis.` : '',
   ]);
@@ -726,7 +726,7 @@ function isTestingSystemType(systemType: string): boolean {
   return /\b(jest|vitest|mocha|jasmine|cypress|playwright|testing-library)\b/i.test(systemType);
 }
 
-function buildEvidencePolicy(workPacket: any, rules: any) {
+function buildEvidencePolicy(agentContext: any, rules: any) {
   return {
     known_facts: [
       'Node, edge, entry point, exit point, test, idiom, and invariant facts come from CAS analysis.',
@@ -737,7 +737,7 @@ function buildEvidencePolicy(workPacket: any, rules: any) {
       'Plan-only preflight is advisory until a diff or file bundle is supplied.',
     ],
     must_confirm_in_source: uniqueStrings([
-      ...(workPacket.file_read_plan || []).slice(0, 5).map((item: any) => item.file),
+      ...(agentContext.file_read_plan || []).slice(0, 5).map((item: any) => item.file),
       ...(rules.confidence_notes || []).some((note: string) => note.includes('low confidence')) ? 'Low-confidence invariants' : '',
     ].filter(Boolean)),
   };

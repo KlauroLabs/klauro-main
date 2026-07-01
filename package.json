@@ -9,6 +9,12 @@
     "legacy/*"
   ],
   "scripts": {
+    "app:dev": "npm --prefix apps/app run dev",
+    "app:build": "npm --prefix apps/app run build",
+    "app:typecheck": "npm --prefix apps/app run typecheck",
+    "api:dev": "npm --prefix apps/api run dev",
+    "api:build": "npm --prefix apps/api run build",
+    "api:typecheck": "npm --prefix apps/api run typecheck",
     "mcp:typecheck": "npm --prefix apps/mcp-server run typecheck",
     "mcp:test": "npm --prefix apps/mcp-server test",
     "analyzer:build": "npm --prefix packages/analyzer-core run build",

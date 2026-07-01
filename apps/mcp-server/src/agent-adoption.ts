@@ -70,7 +70,7 @@ export interface AgentReadinessReport {
   generated_at: string;
   status: GateStatus;
   score: number;
-  default_use: boolean;
+  agent_context_ready: boolean;
   summary: {
     nodes: number;
     edges: number;
@@ -167,7 +167,7 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
     readiness: {
       status: readiness.status,
       score: readiness.score,
-      default_use: readiness.default_use,
+      agent_context_ready: readiness.agent_context_ready,
       profile: readiness.profile,
       gaps: readiness.adoption_gaps,
       language_coverage_note: unanalyzedLanguageNote(cas),
@@ -237,7 +237,7 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
   };
 }
 
-export async function getAgentWorkPacket(cas: CASOutput, path: string, taskInput: AgentTask = {}) {
+export async function getAgentContext(cas: CASOutput, path: string, taskInput: AgentTask = {}) {
   const task = normalizeTask(taskInput);
   const readiness = evaluateAgentReadiness(cas, path);
   const plan = getAgentToolPlan(cas, { path, task });
@@ -256,7 +256,7 @@ export async function getAgentWorkPacket(cas: CASOutput, path: string, taskInput
   const risk = selectedNode ? assessChangeRisk(cas, selectedNode.id) : null;
   const riskForAgent = summarizeRiskForAgent(risk);
   const codingContext = selectedNode || targetQuery || task.target
-    ? getCodingContext(cas, selectedNode?.id || targetQuery || task.target || '', { task_type: workPacketTaskType(task.task_type) })
+    ? getCodingContext(cas, selectedNode?.id || targetQuery || task.target || '', { task_type: agentContextTaskType(task.task_type) })
     : null;
   const errorContracts = selectedNode && task.task_type === 'debug'
     ? getErrorContracts(cas, selectedNode.id, 'both')
@@ -337,20 +337,20 @@ export async function getAgentWorkPacket(cas: CASOutput, path: string, taskInput
   ];
 
   const sensitiveDataExposure = buildSensitiveExposureDigest(cas);
-  const analysisFreshness = buildWorkPacketFreshness(cas, path, selectedNode || undefined, fileReadPlan);
+  const analysisFreshness = buildAgentContextFreshness(cas, path, selectedNode || undefined, fileReadPlan);
   if (analysisFreshness?.invalid_citations) {
-    gaps.push('analysis-freshness: files cited by this packet changed or were deleted after analysis; re-run analyze_codebase before trusting citations');
+    gaps.push('analysis-freshness: files cited by this context changed or were deleted after analysis; re-run analyze_codebase before trusting citations');
   }
   const riskWithFreshness = analysisFreshness?.target_file_note && riskForAgent
     ? { ...riskForAgent, target_file_changed_since_analysis: analysisFreshness.target_file_note }
     : riskForAgent;
 
-  const packet = {
+  const context = {
     path,
     generated_at: new Date().toISOString(),
     task,
     status: gaps.length === 0 ? 'ready' : 'needs-review',
-    default_use: readiness.default_use,
+    agent_context_ready: readiness.agent_context_ready,
     ...(sensitiveDataExposure ? { sensitive_data_exposure: sensitiveDataExposure } : {}),
     ...(analysisFreshness ? { analysis_freshness: analysisFreshness.summary } : {}),
     readiness: {
@@ -392,7 +392,7 @@ export async function getAgentWorkPacket(cas: CASOutput, path: string, taskInput
     gaps,
   };
 
-  return adaptWorkPacketForTask(packet, cas, task);
+  return adaptAgentContextForTask(context, cas, task);
 }
 
 function buildDescriptionContextForAgent(
@@ -596,8 +596,8 @@ async function buildOperationalPriorityContextForAgent(
         runtime: priority.runtime,
         static_risk: priority.static_risk,
         recommendation: priority.recommendation,
-        next_work_packet: staticTarget ? {
-          tool: 'get_agent_work_packet',
+        next_agent_context: staticTarget ? {
+          tool: 'get_agent_context',
           args: {
             path,
             task: {
@@ -613,7 +613,7 @@ async function buildOperationalPriorityContextForAgent(
       ...(simulatedFallback
         ? ['Only simulated telemetry is available. Treat this as planning signal, not production truth.']
         : []),
-      'Use operational priorities to choose impact order, then use the target-specific K15/K5 work packet before editing.',
+      'Use operational priorities to choose impact order, then use the target-specific K15/K5 agent context before editing.',
       'Validate the normal CAS idioms, invariants, and tests after any runtime-driven fix.',
     ],
   };
@@ -863,8 +863,8 @@ export function formatExecutionCapsule(brief: any): string {
     files.length ? capsuleFileRoleLine(rawFiles, brief.read_first, brief.edit_scope) : '',
     capsuleOpsLine(brief.ops, fileIndex),
     opsPresent ? '' : capsuleList('A', brief.do || brief.edit_recipe, 3, 68),
-    capsuleList('Q', brief.test || brief.test_evidence, 2, 58),
-    capsuleList('N', brief.no || brief.avoid, 3, 58),
+    capsuleList('Q', brief.test || brief.test_evidence, 5, 58),
+    capsuleList('N', brief.no || brief.avoid, 6, 58),
     capsuleList('P', brief.preserve, 3, 64),
     capsuleList('V', brief.validate, 1, 96),
     capsuleBudgetLine(brief.token_policy),
@@ -1029,9 +1029,9 @@ function arrayOfStrings(value: unknown): string[] {
     : [];
 }
 
-const WORK_PACKET_CITATION_CHECK_LIMIT = 20;
+const AGENT_CONTEXT_CITATION_CHECK_LIMIT = 20;
 
-interface WorkPacketFreshness {
+interface AgentContextFreshness {
   summary: AnalysisFreshnessSummary & {
     cited_files_changed_since_analysis?: string[];
     cited_files_deleted_since_analysis?: string[];
@@ -1041,12 +1041,12 @@ interface WorkPacketFreshness {
   target_file_note?: string;
 }
 
-function buildWorkPacketFreshness(
+function buildAgentContextFreshness(
   cas: CASOutput,
   projectPath: string,
   selectedNode: CASNode | undefined,
   fileReadPlan: FileReadPlanItem[],
-): WorkPacketFreshness | null {
+): AgentContextFreshness | null {
   const base = summarizeAnalysisFreshness(projectPath, cas.analysis_timestamp);
   if (!base) return null;
   const analyzedAtMs = Date.parse(base.analyzed_at);
@@ -1057,7 +1057,7 @@ function buildWorkPacketFreshness(
   const citedFiles = uniqueStrings([
     ...(targetFile ? [targetFile] : []),
     ...fileReadPlan.map(item => item.file),
-  ]).slice(0, WORK_PACKET_CITATION_CHECK_LIMIT);
+  ]).slice(0, AGENT_CONTEXT_CITATION_CHECK_LIMIT);
 
   const changedCited: string[] = [];
   const deletedCited: string[] = [];
@@ -1087,7 +1087,7 @@ function buildWorkPacketFreshness(
       staleness: 'stale',
       cited_files_changed_since_analysis: changedCited.slice(0, 5),
       cited_files_deleted_since_analysis: deletedCited.slice(0, 5),
-      warning: `STALE ANALYSIS: ${changedCited.length} file(s) cited by this packet changed and ${deletedCited.length} were deleted after the analysis was generated. Specific file/line citations in this packet may be invalid. Re-run analyze_codebase for ${projectPath} (incremental) before relying on them.`,
+      warning: `STALE ANALYSIS: ${changedCited.length} file(s) cited by this context changed and ${deletedCited.length} were deleted after the analysis was generated. Specific file/line citations in this context may be invalid. Re-run analyze_codebase for ${projectPath} (incremental) before relying on them.`,
     },
     invalid_citations: true,
     target_file_note: targetFileNote,
@@ -1893,87 +1893,87 @@ function ownerCategoriesForPattern(
   return uniqueStrings(categories);
 }
 
-function adaptWorkPacketForTask<T extends Record<string, any>>(packet: T, cas: CASOutput, task: AgentTask): T {
-  if (task.response_profile === 'capsule-only') return compactCapsuleOnlyWorkPacket(packet);
-  if (task.response_profile === 'first-turn') return compactFirstTurnWorkPacket(packet);
-  if (task.response_profile === 'minimal') return compactTokenMinimalWorkPacket(packet);
-  return adaptWorkPacketForRepoScale(packet, cas);
+function adaptAgentContextForTask<T extends Record<string, any>>(context: T, cas: CASOutput, task: AgentTask): T {
+  if (task.response_profile === 'capsule-only') return compactCapsuleOnlyAgentContext(context);
+  if (task.response_profile === 'first-turn') return compactFirstTurnAgentContext(context);
+  if (task.response_profile === 'minimal') return compactTokenMinimalAgentContext(context);
+  return adaptAgentContextForRepoScale(context, cas);
 }
 
-function adaptWorkPacketForRepoScale<T extends Record<string, any>>(packet: T, cas: CASOutput): T {
-  const profile = workPacketScaleProfile(cas, packet);
-  if (profile === 'standard') return packet;
-  if (profile === 'small-repo-minimal') return compactSmallRepoMinimalWorkPacket(packet);
-  if (profile === 'token-minimal') return compactTokenMinimalWorkPacket(packet);
-  if (profile === 'tiny') return compactTinyWorkPacket(packet);
+function adaptAgentContextForRepoScale<T extends Record<string, any>>(context: T, cas: CASOutput): T {
+  const profile = agentContextScaleProfile(cas, context);
+  if (profile === 'standard') return context;
+  if (profile === 'small-repo-minimal') return compactSmallRepoMinimalAgentContext(context);
+  if (profile === 'token-minimal') return compactTokenMinimalAgentContext(context);
+  if (profile === 'tiny') return compactTinyAgentContext(context);
 
   return {
-    ...packet,
-    packet_profile: 'micro-repo',
-    work_context: compactMicroWorkContext(packet.work_context),
-    file_read_plan: compactMicroFileReadPlan(packet.file_read_plan),
-    execution_brief: packet.execution_brief,
-    invariant_impact: compactMicroInvariantImpact(packet.invariant_impact),
-    validation_plan: compactMicroValidationPlan(packet.validation_plan),
-    next_mcp_calls: compactMicroToolPlan(packet.next_mcp_calls),
+    ...context,
+    context_profile: 'micro-repo',
+    work_context: compactMicroWorkContext(context.work_context),
+    file_read_plan: compactMicroFileReadPlan(context.file_read_plan),
+    execution_brief: context.execution_brief,
+    invariant_impact: compactMicroInvariantImpact(context.invariant_impact),
+    validation_plan: compactMicroValidationPlan(context.validation_plan),
+    next_mcp_calls: compactMicroToolPlan(context.next_mcp_calls),
     source_reading_rule: 'This is a small repository. Use the file_read_plan first, then read whole files only when the listed line windows are insufficient. Keep idiom and invariant checks lightweight but still run them before finalizing edits.',
   } as unknown as T;
 }
 
-function compactFirstTurnWorkPacket<T extends Record<string, any>>(packet: T): T {
-  const compactPacket = buildFirstTurnCompactPacket(packet);
+function compactFirstTurnAgentContext<T extends Record<string, any>>(context: T): T {
+  const compactContext = buildFirstTurnCompactContext(context);
   return {
-    ...compactPacket,
-    context_capsule: formatAgentContextCapsule(compactPacket),
+    ...compactContext,
+    context_capsule: formatAgentContextCapsule(compactContext),
   } as unknown as T;
 }
 
-function compactCapsuleOnlyWorkPacket<T extends Record<string, any>>(packet: T): T {
-  const compactPacket = buildFirstTurnCompactPacket(packet);
-  const contextCapsule = formatAgentContextCapsule(compactPacket);
-  const executionCapsule = packet.execution_brief?.capsule || formatExecutionCapsule(packet.execution_brief);
+function compactCapsuleOnlyAgentContext<T extends Record<string, any>>(context: T): T {
+  const compactContext = buildFirstTurnCompactContext(context);
+  const contextCapsule = formatAgentContextCapsule(compactContext);
+  const executionCapsule = context.execution_brief?.capsule || formatExecutionCapsule(context.execution_brief);
   const payload = {
-    packet_profile: 'capsule-only',
+    context_profile: 'capsule-only',
     context_capsule: contextCapsule.capsule,
     execution_capsule: executionCapsule,
     estimated_tokens: Math.ceil(`${contextCapsule.capsule}\n${executionCapsule}`.length / 4),
-    selected: compactPacket.selected,
-    files: compactPacket.files,
+    selected: compactContext.selected,
+    files: compactContext.files,
     rule: 'Read K15 context, execute K5, then expand only if blocked by source evidence or validation.',
   };
   return payload as unknown as T;
 }
 
-function buildFirstTurnCompactPacket<T extends Record<string, any>>(packet: T) {
-  const context = packet.work_context || {};
-  const fileReadPlan = compactFirstTurnFileReadPlan(packet.file_read_plan);
+function buildFirstTurnCompactContext<T extends Record<string, any>>(context: T) {
+  const workContext = context.work_context || {};
+  const fileReadPlan = compactFirstTurnFileReadPlan(context.file_read_plan);
   const idioms = uniqueStrings([
-    ...compactFirstTurnIdioms(context.idiom_context),
-    ...compactFirstTurnArchitectureRules(context.architecture_context),
+    ...compactFirstTurnIdioms(workContext.idiom_context),
+    ...compactFirstTurnArchitectureRules(workContext.architecture_context),
   ]).slice(0, 3);
   const risks = uniqueStrings([
-    ...compactFirstTurnDescriptionContext(context.description_context),
-    ...compactFirstTurnOperationalPriorities(context.operational_priorities),
-    ...compactFirstTurnRisks(context.risk_context || context.risk),
+    ...compactFirstTurnDescriptionContext(workContext.description_context),
+    ...compactFirstTurnOperationalPriorities(workContext.operational_priorities),
+    ...compactFirstTurnRisks(workContext.risk_context || workContext.risk),
   ]);
-  const capabilityMemory = compactFirstTurnCapabilityMemory(context.capability_memory);
-  const freshness = compactTinyFreshness(packet.analysis_freshness);
+  const capabilityMemory = compactFirstTurnCapabilityMemory(workContext.capability_memory);
+  const freshness = compactTinyFreshness(context.analysis_freshness || workContext.analysis_freshness);
   const staleWarning = freshness && typeof freshness === 'object' && (freshness as any).warning
     ? 'STALE: re-run analyze_codebase before trusting this capsule; cited file/line targets may be invalid.'
     : null;
   return {
-    packet_profile: 'first-turn',
-    task: [packet.task?.task_type, compactFirstTurnText(String(packet.task?.target || ''), 90)].filter(Boolean).join(': '),
-    capsule: packet.execution_brief?.capsule || formatExecutionCapsule(packet.execution_brief),
+    context_profile: 'first-turn',
+    task: [context.task?.task_type, compactFirstTurnText(String(context.task?.target || ''), 90)].filter(Boolean).join(': '),
+    capsule: context.execution_brief?.capsule || formatExecutionCapsule(context.execution_brief),
     ...(freshness ? { analysis_freshness: freshness } : {}),
-    selected: compactTinyTarget(packet.selected_node),
+    selected: compactTinyTarget(context.selected_node),
     files: fileReadPlan.slice(0, 4),
     candidates: fileReadPlan.slice(4, 8),
-    terms: firstTurnTaskTerms(packet.task),
+    terms: firstTurnTaskTerms(context.task),
     idioms,
     risks: risks.slice(0, 2),
     reuse: capabilityMemory,
-    execution: compactFirstTurnExecution(packet.execution_brief),
+    execution: compactFirstTurnExecution(context.execution_brief),
     rule: staleWarning || 'Read files in order. Preserve idioms. Expand only if blocked.',
   };
 }
@@ -2161,74 +2161,74 @@ function uniqueByFile(plan: any[]): any[] {
   return result;
 }
 
-function compactSmallRepoMinimalWorkPacket<T extends Record<string, any>>(packet: T): T {
-  const context = packet.work_context || {};
-  const task = compactPacketTask(packet.task);
+function compactSmallRepoMinimalAgentContext<T extends Record<string, any>>(context: T): T {
+  const workContext = context.work_context || {};
+  const task = compactContextTask(context.task);
   return {
-    path: packet.path,
-    generated_at: packet.generated_at,
+    path: context.path,
+    generated_at: context.generated_at,
     task,
-    status: packet.status,
-    default_use: packet.default_use,
-    packet_profile: 'small-repo-minimal',
-    ...(packet.sensitive_data_exposure ? { sensitive_data_exposure: packet.sensitive_data_exposure } : {}),
-    ...(packet.analysis_freshness ? { analysis_freshness: compactTinyFreshness(packet.analysis_freshness) } : {}),
-    selected_node: compactTinyTarget(packet.selected_node),
+    status: context.status,
+    agent_context_ready: context.agent_context_ready,
+    context_profile: 'small-repo-minimal',
+    ...(context.sensitive_data_exposure ? { sensitive_data_exposure: context.sensitive_data_exposure } : {}),
+    ...(context.analysis_freshness ? { analysis_freshness: compactTinyFreshness(context.analysis_freshness) } : {}),
+    selected_node: compactTinyTarget(context.selected_node),
     work_context: {
-      coding_context: compactTinyCodingContext(context.coding_context),
-      architecture_context: compactTinyArchitectureContext(context.architecture_context),
-      risk: compactTinyRisk(context.risk),
-      risk_context: compactTinyRiskContext(context.risk_context),
-      tests: compactTinyTests(context.tests),
-      behavioral_invariants: compactMinimalInvariants(context.behavioral_invariants),
-      idiom_context: compactMinimalIdioms(context.idiom_context),
-      capability_memory: compactSmallRepoCapabilityMemory(context.capability_memory),
-      description_context: compactDescriptionContextForAgent(context.description_context),
-      operational_priorities: compactOperationalPrioritiesForAgent(context.operational_priorities, 2),
-      ...compactPillarWorkContext(context, { journeys: 2, entities: 2, deviations: 2 }),
+      coding_context: compactTinyCodingContext(workContext.coding_context),
+      architecture_context: compactTinyArchitectureContext(workContext.architecture_context),
+      risk: compactTinyRisk(workContext.risk),
+      risk_context: compactTinyRiskContext(workContext.risk_context),
+      tests: compactTinyTests(workContext.tests),
+      behavioral_invariants: compactMinimalInvariants(workContext.behavioral_invariants),
+      idiom_context: compactMinimalIdioms(workContext.idiom_context),
+      capability_memory: compactSmallRepoCapabilityMemory(workContext.capability_memory),
+      description_context: compactDescriptionContextForAgent(workContext.description_context),
+      operational_priorities: compactOperationalPrioritiesForAgent(workContext.operational_priorities, 2),
+      ...compactPillarWorkContext(workContext, { journeys: 2, entities: 2, deviations: 2 }),
     },
-    file_read_plan: compactTinyFileReadPlan(packet.file_read_plan, task),
-    execution_brief: packet.execution_brief,
-    validation_plan: compactMinimalValidationPlan(packet.validation_plan),
-    next_mcp_calls: compactMinimalToolPlan(packet.next_mcp_calls, task).slice(0, 2),
+    file_read_plan: compactTinyFileReadPlan(context.file_read_plan, task),
+    execution_brief: context.execution_brief,
+    validation_plan: compactMinimalValidationPlan(context.validation_plan),
+    next_mcp_calls: compactMinimalToolPlan(context.next_mcp_calls, task).slice(0, 2),
     source_reading_rule: 'Small repo: read the listed files first, preserve idioms, avoid duplicate capability work, then validate.',
-    gaps: Array.isArray(packet.gaps) ? packet.gaps.slice(0, 2) : packet.gaps,
+    gaps: Array.isArray(context.gaps) ? context.gaps.slice(0, 2) : context.gaps,
   } as unknown as T;
 }
 
-function compactTinyWorkPacket<T extends Record<string, any>>(packet: T): T {
-  const selected = packet.selected_node;
-  const context = packet.work_context || {};
-  const idioms = compactIdiomContextForMicroRepo(context.idiom_context);
-  const invariants = compactInvariantsForMicroRepo(context.behavioral_invariants);
-  const fileReadPlan = compactTinyFileReadPlan(packet.file_read_plan, packet.task);
-  const riskContext = compactTinyRiskContext(context.risk_context);
+function compactTinyAgentContext<T extends Record<string, any>>(context: T): T {
+  const selected = context.selected_node;
+  const workContext = context.work_context || {};
+  const idioms = compactIdiomContextForMicroRepo(workContext.idiom_context);
+  const invariants = compactInvariantsForMicroRepo(workContext.behavioral_invariants);
+  const fileReadPlan = compactTinyFileReadPlan(context.file_read_plan, context.task);
+  const riskContext = compactTinyRiskContext(workContext.risk_context);
   return {
-    path: packet.path,
-    generated_at: packet.generated_at,
-    task: compactPacketTask(packet.task),
-    status: packet.status,
-    default_use: packet.default_use,
-    packet_profile: 'ultra-small-repo',
-    ...(packet.sensitive_data_exposure ? { sensitive_data_exposure: packet.sensitive_data_exposure } : {}),
-    ...(packet.analysis_freshness ? { analysis_freshness: compactTinyFreshness(packet.analysis_freshness) } : {}),
+    path: context.path,
+    generated_at: context.generated_at,
+    task: compactContextTask(context.task),
+    status: context.status,
+    agent_context_ready: context.agent_context_ready,
+    context_profile: 'ultra-small-repo',
+    ...(context.sensitive_data_exposure ? { sensitive_data_exposure: context.sensitive_data_exposure } : {}),
+    ...(context.analysis_freshness ? { analysis_freshness: compactTinyFreshness(context.analysis_freshness) } : {}),
     readiness: {
-      status: packet.readiness?.status,
-      score: packet.readiness?.score,
-      profile: packet.readiness?.profile,
-      gaps: Array.isArray(packet.readiness?.gaps) ? packet.readiness.gaps.slice(0, 2) : packet.readiness?.gaps,
+      status: context.readiness?.status,
+      score: context.readiness?.score,
+      profile: context.readiness?.profile,
+      gaps: Array.isArray(context.readiness?.gaps) ? context.readiness.gaps.slice(0, 2) : context.readiness?.gaps,
     },
     target_resolution: {
-      query: packet.target_resolution?.query,
-      selected_node_id: packet.target_resolution?.selected_node_id,
+      query: context.target_resolution?.query,
+      selected_node_id: context.target_resolution?.selected_node_id,
     },
     selected_node: compactTinyTarget(selected),
     work_context: {
-      coding_context: compactTinyCodingContext(context.coding_context),
-      architecture_context: compactTinyArchitectureContext(context.architecture_context),
-      risk: compactTinyRisk(context.risk),
+      coding_context: compactTinyCodingContext(workContext.coding_context),
+      architecture_context: compactTinyArchitectureContext(workContext.architecture_context),
+      risk: compactTinyRisk(workContext.risk),
       risk_context: riskContext,
-      tests: compactTinyTests(context.tests),
+      tests: compactTinyTests(workContext.tests),
       idiom_context: idioms ? {
         total_idioms: idioms.total_idioms,
         selected_idioms: Array.isArray(idioms.selected_idioms) ? idioms.selected_idioms.slice(0, 1) : idioms.selected_idioms,
@@ -2239,19 +2239,19 @@ function compactTinyWorkPacket<T extends Record<string, any>>(packet: T): T {
         total: invariants.total,
         invariants: Array.isArray(invariants.invariants) ? invariants.invariants.slice(0, 1) : invariants.invariants,
       } : null,
-      description_context: compactDescriptionContextForAgent(context.description_context),
-      operational_priorities: compactOperationalPrioritiesForAgent(context.operational_priorities, 1),
-      ...compactPillarWorkContext(context, { journeys: 1, entities: 1, deviations: 1 }),
+      description_context: compactDescriptionContextForAgent(workContext.description_context),
+      operational_priorities: compactOperationalPrioritiesForAgent(workContext.operational_priorities, 1),
+      ...compactPillarWorkContext(workContext, { journeys: 1, entities: 1, deviations: 1 }),
     },
     file_read_plan: fileReadPlan,
-    execution_brief: packet.execution_brief,
+    execution_brief: context.execution_brief,
     validation_plan: {
-      strategy: packet.validation_plan?.strategy,
-      commands: Array.isArray(packet.validation_plan?.commands) ? packet.validation_plan.commands.slice(0, 1) : packet.validation_plan?.commands,
-      manual_checks: Array.isArray(packet.validation_plan?.manual_checks) ? packet.validation_plan.manual_checks.slice(0, 2) : packet.validation_plan?.manual_checks,
+      strategy: context.validation_plan?.strategy,
+      commands: Array.isArray(context.validation_plan?.commands) ? context.validation_plan.commands.slice(0, 1) : context.validation_plan?.commands,
+      manual_checks: Array.isArray(context.validation_plan?.manual_checks) ? context.validation_plan.manual_checks.slice(0, 2) : context.validation_plan?.manual_checks,
     },
-    next_mcp_calls: compactMicroToolPlan(packet.next_mcp_calls).slice(0, 2),
-    source_reading_rule: 'Ultra-small repo: use this packet to pick the first file and validation checks; avoid broad search unless the listed file is insufficient.',
+    next_mcp_calls: compactMicroToolPlan(context.next_mcp_calls).slice(0, 2),
+    source_reading_rule: 'Ultra-small repo: use this context to pick the first file and validation checks; avoid broad search unless the listed file is insufficient.',
   } as unknown as T;
 }
 
@@ -2484,60 +2484,60 @@ function compactTinyFileReadPlanRank(item: any, taskText: string): number {
   return 7;
 }
 
-function compactTokenMinimalWorkPacket<T extends Record<string, any>>(packet: T): T {
-  const context = packet.work_context || {};
-  const task = compactPacketTask(packet.task);
-  const fileReadPlan = compactMinimalFileReadPlan(packet.file_read_plan);
+function compactTokenMinimalAgentContext<T extends Record<string, any>>(context: T): T {
+  const workContext = context.work_context || {};
+  const task = compactContextTask(context.task);
+  const fileReadPlan = compactMinimalFileReadPlan(context.file_read_plan);
   const architectureContext = filterArchitectureContextToFilePlan(
-    compactMinimalArchitectureContext(context.architecture_context),
+    compactMinimalArchitectureContext(workContext.architecture_context),
     fileReadPlan,
   );
   return {
-    path: packet.path,
-    generated_at: packet.generated_at,
+    path: context.path,
+    generated_at: context.generated_at,
     task,
-    status: packet.status,
-    default_use: packet.default_use,
-    packet_profile: 'token-minimal',
-    ...(packet.sensitive_data_exposure ? { sensitive_data_exposure: packet.sensitive_data_exposure } : {}),
-    ...(packet.analysis_freshness ? { analysis_freshness: packet.analysis_freshness } : {}),
+    status: context.status,
+    agent_context_ready: context.agent_context_ready,
+    context_profile: 'token-minimal',
+    ...(context.sensitive_data_exposure ? { sensitive_data_exposure: context.sensitive_data_exposure } : {}),
+    ...(context.analysis_freshness ? { analysis_freshness: context.analysis_freshness } : {}),
     readiness: {
-      status: packet.readiness?.status,
-      score: packet.readiness?.score,
-      gaps: Array.isArray(packet.readiness?.gaps) ? packet.readiness.gaps.slice(0, 2) : packet.readiness?.gaps,
+      status: context.readiness?.status,
+      score: context.readiness?.score,
+      gaps: Array.isArray(context.readiness?.gaps) ? context.readiness.gaps.slice(0, 2) : context.readiness?.gaps,
     },
     target_resolution: {
-      query: packet.target_resolution?.query,
-      selected_node_id: packet.target_resolution?.selected_node_id,
-      selected_node: packet.target_resolution?.selected_node,
-      gaps: Array.isArray(packet.target_resolution?.gaps) ? packet.target_resolution.gaps.slice(0, 2) : packet.target_resolution?.gaps,
+      query: context.target_resolution?.query,
+      selected_node_id: context.target_resolution?.selected_node_id,
+      selected_node: context.target_resolution?.selected_node,
+      gaps: Array.isArray(context.target_resolution?.gaps) ? context.target_resolution.gaps.slice(0, 2) : context.target_resolution?.gaps,
     },
-    selected_node: packet.selected_node,
+    selected_node: context.selected_node,
     work_context: {
-      coding_context: compactTinyCodingContext(context.coding_context),
+      coding_context: compactTinyCodingContext(workContext.coding_context),
       architecture_context: architectureContext,
-      risk: compactMinimalRisk(context.risk),
-      risk_context: compactMinimalRiskContext(context.risk_context),
-      tests: compactMinimalTests(context.tests),
-      behavioral_invariants: compactMinimalInvariants(context.behavioral_invariants),
-      idiom_context: compactMinimalIdioms(context.idiom_context),
-      system_health: compactMinimalSystemHealth(context.system_health),
-      capability_memory: compactMinimalCapabilityMemory(context.capability_memory),
-      description_context: compactDescriptionContextForAgent(context.description_context),
-      operational_priorities: compactOperationalPrioritiesForAgent(context.operational_priorities, 3),
-      ...compactPillarWorkContext(context, { journeys: 2, entities: 2, deviations: 2 }),
+      risk: compactMinimalRisk(workContext.risk),
+      risk_context: compactMinimalRiskContext(workContext.risk_context),
+      tests: compactMinimalTests(workContext.tests),
+      behavioral_invariants: compactMinimalInvariants(workContext.behavioral_invariants),
+      idiom_context: compactMinimalIdioms(workContext.idiom_context),
+      system_health: compactMinimalSystemHealth(workContext.system_health),
+      capability_memory: compactMinimalCapabilityMemory(workContext.capability_memory),
+      description_context: compactDescriptionContextForAgent(workContext.description_context),
+      operational_priorities: compactOperationalPrioritiesForAgent(workContext.operational_priorities, 3),
+      ...compactPillarWorkContext(workContext, { journeys: 2, entities: 2, deviations: 2 }),
     },
     file_read_plan: fileReadPlan,
-    execution_brief: packet.execution_brief,
-    validation_plan: compactMinimalValidationPlan(packet.validation_plan),
-    next_mcp_calls: compactMinimalToolPlan(packet.next_mcp_calls, task),
-    source_reading_rule: 'Token-minimal packet: read only these line windows first. Expand with the listed MCP calls only when the edit proves the local context is insufficient.',
-    gaps: Array.isArray(packet.gaps) ? packet.gaps.slice(0, 3) : packet.gaps,
+    execution_brief: context.execution_brief,
+    validation_plan: compactMinimalValidationPlan(context.validation_plan),
+    next_mcp_calls: compactMinimalToolPlan(context.next_mcp_calls, task),
+    source_reading_rule: 'Token-minimal context: read only these line windows first. Expand with the listed MCP calls only when the edit proves the local context is insufficient.',
+    gaps: Array.isArray(context.gaps) ? context.gaps.slice(0, 3) : context.gaps,
   } as unknown as T;
 }
 
-function workPacketScaleProfile(cas: CASOutput, packet?: Record<string, any>): 'small-repo-minimal' | 'token-minimal' | 'tiny' | 'micro' | 'standard' {
-  const forcedProfile = process.env.KLAURO_AGENT_PACKET_PROFILE;
+function agentContextScaleProfile(cas: CASOutput, context?: Record<string, any>): 'small-repo-minimal' | 'token-minimal' | 'tiny' | 'micro' | 'standard' {
+  const forcedProfile = process.env.KLAURO_AGENT_CONTEXT_PROFILE;
   if (forcedProfile === 'standard' || forcedProfile === 'micro' || forcedProfile === 'tiny' || forcedProfile === 'token-minimal' || forcedProfile === 'small-repo-minimal') {
     return forcedProfile;
   }
@@ -2546,13 +2546,13 @@ function workPacketScaleProfile(cas: CASOutput, packet?: Record<string, any>): '
     .filter(file => Boolean(file) && !isNonProductSourceText(file)));
   const productNodes = (cas.nodes || []).filter(node => !node.metadata?.is_test && !node.metadata?.is_generated && !isNonProductAgentTarget(node));
   const sourceTokens = estimateCasSourceTokens(cas, sourceFiles);
-  const filePlanCount = Array.isArray(packet?.file_read_plan) ? packet.file_read_plan.length : undefined;
-  const selectedType = String(packet?.selected_node?.type || '').toLowerCase();
+  const filePlanCount = Array.isArray(context?.file_read_plan) ? context.file_read_plan.length : undefined;
+  const selectedType = String(context?.selected_node?.type || '').toLowerCase();
   const targetText = [
-    packet?.task?.target,
-    packet?.task?.instructions,
+    context?.task?.target,
+    context?.task?.instructions,
   ].filter(Boolean).join(' ');
-  const explicitTarget = Boolean(packet?.task?.target || /inspect\s+\S+\.\w+|preserve connected behavior/i.test(targetText));
+  const explicitTarget = Boolean(context?.task?.target || /inspect\s+\S+\.\w+|preserve connected behavior/i.test(targetText));
   const narrowTarget = Boolean(explicitTarget && ['file', 'module', 'function', 'method', 'variable', 'class', 'handler', 'route', 'api_route'].includes(selectedType));
   if (sourceTokens > 0 && sourceTokens <= 10000) return 'tiny';
   if (sourceTokens > 0 && sourceTokens <= 40000) return 'small-repo-minimal';
@@ -2808,7 +2808,7 @@ function compactMinimalToolPlan(steps: any, task?: any) {
     }));
 }
 
-function compactPacketTask(task: any) {
+function compactContextTask(task: any) {
   if (!task || typeof task !== 'object') return task;
   return {
     task_type: task.task_type,
@@ -2821,7 +2821,7 @@ function compactToolArgs(args: any, task?: any) {
   if (!args || typeof args !== 'object') return args;
   const compact: Record<string, unknown> = {};
   if (args.path) compact.path = args.path;
-  if (args.task || task) compact.task = compactPacketTask(args.task || task);
+  if (args.task || task) compact.task = compactContextTask(args.task || task);
   if (args.target) compact.target = args.target;
   if (args.target_kind) compact.target_kind = args.target_kind;
   if (args.layer) compact.layer = args.layer;
@@ -3492,7 +3492,9 @@ async function resolveTaskTarget(cas: CASOutput, projectPath: string, target?: s
       })
       .sort((left, right) => right.score - left.score);
     if (!selectedNode || (pathLikeTarget && targetFile && !nodeMatchesTargetFile(selectedNode, targetFile, cas.system?.root_path))) {
-      selectedNode = scoredCandidates[0]?.node;
+      selectedNode = pathLikeTarget && targetFile
+        ? chooseBestFileTargetNode(scoredCandidates.map(candidate => candidate.node))
+        : scoredCandidates[0]?.node;
     }
 
     if (!selectedNode) gaps.push(`target: no CAS node resolved for "${target}"`);
@@ -3694,19 +3696,20 @@ function nodeMatchesTargetFile(node: CASNode, targetFile: string, rootPath?: str
 }
 
 function chooseBestFileTargetNode(nodes: CASNode[]): CASNode | undefined {
-  return [...nodes]
+  const best = [...nodes]
     .sort((left, right) =>
       fileTargetNodeScore(right) - fileTargetNodeScore(left) ||
       (left.source?.line || Number.MAX_SAFE_INTEGER) - (right.source?.line || Number.MAX_SAFE_INTEGER)
     )[0];
+  return best && fileTargetNodeScore(best) > 0 ? best : undefined;
 }
 
 function fileTargetNodeScore(node: CASNode): number {
   let score = 0;
-  if (['class', 'function', 'method', 'service', 'controller', 'handler', 'route', 'api_route'].includes(node.type)) score += 40;
+  if (['class', 'function', 'method', 'service', 'controller', 'handler', 'route', 'api_route', 'entity', 'model', 'module'].includes(node.type)) score += 40;
   if (node.category === 'test' || isNonProductAgentTarget(node)) score -= 80;
-  if (node.type === 'file') score -= 40;
-  if (node.type === 'import' || node.type === 'property' || node.type === 'variable') score -= 30;
+  if (node.type === 'file') score += 10;
+  if (node.type === 'import' || node.type === 'property' || node.type === 'variable') score -= 100;
   if ((node.metadata as any)?.exported === true) score += 15;
   return score;
 }
@@ -4573,6 +4576,16 @@ function augmentFileReadPlanWithTaskHints(
   const sourceItems = plan.filter(item => !isTestPath(item.file));
   const testItems = plan.filter(item => isTestPath(item.file));
   const hintItems = candidates.map(candidate => taskHintReadPlanItem(candidate.file, candidate.score, tokens));
+  if (targetLooksLikeAgentContextSurfaceWork(taskText)) {
+    return [
+      ...sourceItems,
+      ...explicitSymbolItems,
+      ...hintItems,
+      ...likelyFocusedTests,
+      ...testItems,
+    ];
+  }
+
   if (targetLooksLikeDocumentationFirstWork(taskText)) {
     const documentationItems = hintItems.filter(item => isDocumentationPath(item.file));
     const nonDocumentationItems = hintItems.filter(item => !isDocumentationPath(item.file));
@@ -4772,6 +4785,10 @@ function taskHintFileScore(file: string, tokens: Set<string>): number {
   if (hasAny(tokens, ['label', 'labels', 'task', 'due', 'archive', 'model', 'domain']) && /domain|model|entity|entities|schema|type/.test(normalizedFile)) score += 14;
   if (hasAny(tokens, ['audit', 'event', 'events']) && /audit|event|service|repositor|workflow/.test(normalizedFile)) score += 24;
   if (hasAny(tokens, ['migration', 'schema', 'database', 'persisted', 'persistence', 'column', 'index']) && /migrations?\//.test(normalizedFile)) score += 24;
+  if (targetLooksLikeAgentContextSurfaceWork([...tokens].join(' '))) {
+    if (/agent-(adoption|workflow|defaults)|server|cli|freshness|watcher|machine-gauntlet/.test(normalizedFile)) score += 80;
+    if (/mcp|tools|usage|getting-started|configuration|agents|claude|was|agent/.test(normalizedFile)) score += 18;
+  }
   if (targetLooksLikeDocumentationFirstWork([...tokens].join(' ')) && isDocumentationPath(file)) score += 30;
   if (isDocumentationPath(file) && /docs?|readme|usage|guide|audit|proof|report|evidence/.test(normalizedFile)) score += 16;
   return score;
@@ -4791,6 +4808,12 @@ function targetLooksLikeDocumentationFirstWork(text?: string): boolean {
     return false;
   }
   return hasAny(tokens, ['doc', 'docs', 'documentation', 'readme', 'guide', 'usage', 'audit', 'proof', 'report']);
+}
+
+function targetLooksLikeAgentContextSurfaceWork(text?: string): boolean {
+  const tokens = tokenizeTaskHint(String(text || ''));
+  return hasAny(tokens, ['agent', 'context', 'mcp', 'tool', 'tools', 'cli', 'capsule', 'gauntlet']) &&
+    hasAny(tokens, ['rename', 'replace', 'surface', 'terminology', 'workflow', 'readiness', 'context', 'contexts', 'default']);
 }
 
 function isDocumentationPath(file: string): boolean {
@@ -5355,7 +5378,7 @@ function summarizeNodeForAgent(node: CASNode) {
   };
 }
 
-function workPacketTaskType(taskType?: AgentTaskType): 'add' | 'modify' | 'delete' | 'refactor' {
+function agentContextTaskType(taskType?: AgentTaskType): 'add' | 'modify' | 'delete' | 'refactor' {
   if (taskType === 'review' || taskType === 'trace' || taskType === 'runtime' || taskType === 'cross-repo' || taskType === 'orient') return 'modify';
   if (taskType === 'debug') return 'modify';
   return 'modify';
@@ -5454,8 +5477,8 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
     .sort((left, right) => left.score - right.score)
     .slice(0, 8)
     .map(result => `${result.id}: ${result.detail}`);
-  const defaultUseReady = analysisErrors === 0 && (rawStatus !== 'fail' ? score >= 85 : score >= 95);
-  const status: GateStatus = rawStatus === 'fail' && defaultUseReady ? 'warn' : rawStatus;
+  const agentContextReady = analysisErrors === 0 && (rawStatus !== 'fail' ? score >= 85 : score >= 95);
+  const status: GateStatus = rawStatus === 'fail' && agentContextReady ? 'warn' : rawStatus;
 
   return {
     path,
@@ -5463,7 +5486,7 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
     generated_at: new Date().toISOString(),
     status,
     score,
-    default_use: defaultUseReady,
+    agent_context_ready: agentContextReady,
     summary: {
       nodes: cas.nodes.length,
       edges: cas.edges.length,
@@ -5499,7 +5522,7 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
       'After edits, call validate_agent_change before finalizing.',
       'After edits, call validate_behavioral_invariants against the working diff before finalizing.',
       'After edits, call validate_codebase_idioms against the working diff before finalizing.',
-      'Report CAS/MCP errors as blockers to default use and then fall back to direct code reading.',
+      'Report CAS/MCP errors as blockers to agent context readiness and then fall back to direct code reading.',
     ],
     test_discovery: opts.testEvidence,
   };

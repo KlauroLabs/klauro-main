@@ -2,8 +2,8 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { benchmarkAgentContextCodecs } from './agent-context-codec';
 
-const samplePacket = {
-  packet_profile: 'first-turn',
+const sampleContext = {
+  context_profile: 'first-turn',
   task: 'modify: Replace password auth with OIDC while preserving tenant-scoped sessions',
   selected: {
     name: 'AuthService',
@@ -44,7 +44,7 @@ const samplePacket = {
   rule: 'Read files in order. Preserve idioms. Expand only if blocked by source evidence or validation failure.',
 };
 
-const report = benchmarkAgentContextCodecs(samplePacket);
+const report = benchmarkAgentContextCodecs(sampleContext);
 const args = parseArgs(process.argv.slice(2));
 
 if (args.output) {

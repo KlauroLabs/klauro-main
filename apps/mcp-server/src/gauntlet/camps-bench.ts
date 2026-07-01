@@ -48,28 +48,6 @@ import { hasWasmGrammar } from '../../../../packages/analyzer-core/src/analyzer/
 import { hasNativeGrammar } from '../../../../packages/analyzer-core/src/analyzer/core/native-parse';
 // Camp A across the top ~50 languages (per-language structural-vs-embedding head-to-head).
 import { buildCampALangsReport } from './camp-a-langs-bench';
-// Camp C = the FULL comprehension taxonomy (docs/CAMPS.md C1–C11): 9 head-to-head dims +
-// 8 emission-coverage dims, not just routes.
-import { buildCampCComprehensionReport, type CampCComprehensionReport } from './camp-c-comprehension';
-// WAS = Workspace Analysis (cross-repo), FIRST-CLASS (docs/CAMPS.md C10, W1–W8). The biggest
-// moat: every competitor analyzes one repo; WAS understands the whole workspace as one product.
-import { buildCampWASReport, type CampWASReport } from './camp-was-bench';
-// FULL-GRID = the exhaustive honest (row × metric) matrix: every supported language /
-// framework / library cell with an explicit verdict, folding in the camp-a-langs wins.
-import { buildFullGrid, type FullGridReport } from './full-grid';
-// Camp B structural head-to-head vs the REAL installed codebase-memory binary, per language.
-import { buildCampBStructuralReport, type CampBStructuralReport } from './camp-b-structural';
-// Camp C ROUTES head-to-head vs the real codebase-memory binary (cbm claims HTTP routes).
-import { buildCampCRoutesVsCbmReport, type CampCRoutesVsCbmReport } from './camp-c-routes-cbm';
-// DEPTH-1: cross-function source→sink (taint/data-flow) head-to-head vs the real codebase-memory binary.
-import { buildDepthTaintReport, type DepthTaintReport } from './depth-taint-bench';
-// DEPTH-4: type-aware interface→impl / dynamic dispatch vs the real codebase-memory binary (its LSP competes).
-import { buildDepthDispatchReport, type DepthDispatchReport } from './depth-dispatch-bench';
-// DEPTH-2 cross-repo contract drift + DEPTH-3 behavioral diff vs the real codebase-memory binary.
-import { buildDepthContractDriftReport, type DepthContractDriftReport } from './depth-contract-drift-bench';
-import { buildDepthBehavioralDiffReport, type DepthBehavioralDiffReport } from './depth-behavioral-diff-bench';
-// TELEMETRY OVERLAY ("how it's running") — runtime span→static-node correlation vs the real cbm binary.
-import { runTelemetryOverlaySuite, type TelemetryOverlayAggregate } from './telemetry-overlay-bench';
 
 type CampALangsReport = Awaited<ReturnType<typeof buildCampALangsReport>>;
 
@@ -118,26 +96,6 @@ export interface CampsReport {
   campALangs: CampALangsReport;
   campB: { rows: CampBRow[] };
   campC: { rows: CampCRow[]; pending: string[]; aggregate: { fixtures: number; meanKlauroF1: number; meanTokenSaving: number } };
-  // The FULL Camp C comprehension taxonomy (C1–C11): head-to-head + emission-coverage dims.
-  campCFull: CampCComprehensionReport;
-  // WAS — Workspace Analysis (cross-repo), first-class W1–W8. Out-of-category by construction.
-  campWAS: CampWASReport;
-  // FULL-GRID — the exhaustive honest matrix (languages × {who-calls, structural-retrieval},
-  // frameworks × routes, libraries × their fact). Folds in the 46 camp-a-langs wins.
-  fullGrid: FullGridReport;
-  // Per-language Camp-B structural head-to-head vs the real codebase-memory binary.
-  campBStructural: CampBStructuralReport;
-  // Camp-C route head-to-head vs the real codebase-memory binary (it claims routes).
-  campCRoutesVsCbm: CampCRoutesVsCbmReport;
-  // DEPTH-1: cross-function source→sink (taint/data-flow) vs the real codebase-memory binary.
-  depthTaint: DepthTaintReport;
-  // DEPTH-4: type-aware interface→impl dispatch vs the real codebase-memory binary (LSP head-to-head).
-  depthDispatch: DepthDispatchReport;
-  // DEPTH-2 cross-repo field-level contract drift + DEPTH-3 behavioral/semantic diff (out-of-category vs cbm).
-  depthContractDrift: DepthContractDriftReport;
-  depthBehavioralDiff: DepthBehavioralDiffReport;
-  // TELEMETRY overlay: runtime→static correlation ("how it's running") vs the real cbm binary (whose ingest_traces is a stub).
-  telemetryOverlay: TelemetryOverlayAggregate;
   breadth: { supportedLanguageCount: number; totalSpecs: number; languages: string[] };
   generatedAt: string;
 }
@@ -371,23 +329,13 @@ let cache: CampsReport | null = null;
  */
 export async function buildCampsReport(generatedAt = ''): Promise<CampsReport> {
   if (cache) return { ...cache, generatedAt: generatedAt || cache.generatedAt };
-  const [{ campA, campB }, campC, campALangs, campCFull, campWAS, fullGrid, campBStructural, campCRoutesVsCbm, depthTaint, depthDispatch, depthContractDrift, depthBehavioralDiff, telemetryOverlay] = await Promise.all([
+  const [{ campA, campB }, campC, campALangs] = await Promise.all([
     buildHeadToHead(),
     buildCampC(),
     buildCampALangsReport(),
-    buildCampCComprehensionReport(),
-    buildCampWASReport(),
-    buildFullGrid(),
-    buildCampBStructuralReport(),
-    buildCampCRoutesVsCbmReport(),
-    buildDepthTaintReport(),
-    buildDepthDispatchReport(),
-    buildDepthContractDriftReport(),
-    buildDepthBehavioralDiffReport(),
-    runTelemetryOverlaySuite(path.join(__dirname, '../../fixtures/telemetry-overlay'), { withCbm: true }),
   ]);
   const breadth = buildBreadth();
-  cache = { campA, campALangs, campB, campC, campCFull, campWAS, fullGrid, campBStructural, campCRoutesVsCbm, depthTaint, depthDispatch, depthContractDrift, depthBehavioralDiff, telemetryOverlay, breadth, generatedAt };
+  cache = { campA, campALangs, campB, campC, breadth, generatedAt };
   return cache;
 }
 

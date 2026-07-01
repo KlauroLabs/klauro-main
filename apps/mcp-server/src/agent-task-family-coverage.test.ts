@@ -38,7 +38,7 @@ test('task family coverage separates proven creation from unproven engineering t
       ...Array.from({ length: 3 }, () => ({ task: { instructions: 'auth-tenant-scope' } })),
     ],
   });
-  await writeReport(root, '.klauro-from-zero-build-packet-proof/latest-report.json', {
+  await writeReport(root, '.klauro-from-zero-build-context-proof/latest-report.json', {
     status: 'pass',
     summary: {
       scenario_count: 3,
@@ -110,7 +110,7 @@ test('task family coverage separates proven creation from unproven engineering t
 
 test('greenfield creation is not strong when live builds save tokens but do not improve quality', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-task-family-coverage-flat-quality-'));
-  await writeReport(root, '.klauro-from-zero-build-packet-proof/latest-report.json', {
+  await writeReport(root, '.klauro-from-zero-build-context-proof/latest-report.json', {
     status: 'pass',
     summary: {
       scenario_count: 3,
@@ -138,7 +138,7 @@ test('greenfield creation is not strong when live builds save tokens but do not 
 
 test('greenfield creation is not strong while unacceptable token tradeoff reports are still included as evidence', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-task-family-coverage-tradeoff-'));
-  await writeReport(root, '.klauro-from-zero-build-packet-proof/latest-report.json', {
+  await writeReport(root, '.klauro-from-zero-build-context-proof/latest-report.json', {
     status: 'pass',
     summary: {
       scenario_count: 3,
@@ -178,7 +178,7 @@ test('greenfield creation is not strong while unacceptable token tradeoff report
 
 test('greenfield creation treats older unacceptable tradeoffs as superseded when a newer same-task clear win exists', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-task-family-coverage-superseded-tradeoff-'));
-  await writeReport(root, '.klauro-from-zero-build-packet-proof/latest-report.json', {
+  await writeReport(root, '.klauro-from-zero-build-context-proof/latest-report.json', {
     status: 'pass',
     summary: {
       scenario_count: 3,

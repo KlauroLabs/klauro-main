@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert';
 import * as path from 'path';
+import * as fs from 'fs';
+import * as os from 'os';
 import { pathToFileURL } from 'url';
 import { summarizeAnalysisVersions } from './environment-doctor';
 import { MINIMUM_COMPATIBLE_CAS_VERSION, describeAnalysisVersion } from './storage';
@@ -83,33 +85,30 @@ test('summarizeAiProviders reports each configured provider', async () => {
   const checks = await loadChecks();
   assert.deepStrictEqual(checks.summarizeAiProviders({}), []);
   const configured = checks.summarizeAiProviders({
+    DEEPINFRA_API_KEY: 'deepinfra-test',
+    DEEPINFRA_MODEL: 'meta-llama/Meta-Llama-3.3-70B-Instruct',
     OPENAI_API_KEY: 'sk-test',
     ANTHROPIC_API_KEY: 'sk-ant-test',
-    OLLAMA_BASE_URL: 'http://127.0.0.1:11434',
-    AI_LOCAL_ENABLED: 'true',
   } as NodeJS.ProcessEnv);
-  assert.strictEqual(configured.length, 4);
+  assert.strictEqual(configured.length, 3);
+  assert.match(configured.join(' '), /deepinfra/);
   assert.match(configured.join(' '), /openai/);
   assert.match(configured.join(' '), /anthropic/);
-  assert.match(configured.join(' '), /ollama/);
 });
 
 test('evaluateAiProviders passes deterministically with no provider', async () => {
   const checks = await loadChecks();
-  const result = checks.evaluateAiProviders({ configured: [], ollamaConfigured: false });
+  const result = checks.evaluateAiProviders({ configured: [] });
   assert.strictEqual(result.status, 'pass');
   assert.match(result.detail, /deterministic/);
 });
 
-test('evaluateAiProviders warns when configured ollama is unreachable', async () => {
+test('summarizeAiProviders ignores loopback OpenAI-compatible URLs', async () => {
   const checks = await loadChecks();
-  const result = checks.evaluateAiProviders({
-    configured: ['ollama (http://127.0.0.1:11434)'],
-    ollamaConfigured: true,
-    ollamaProbe: { reachable: false, detail: 'fetch failed' },
-  });
-  assert.strictEqual(result.status, 'warn');
-  assert.match(result.detail, /degrades to deterministic/);
+  const configured = checks.summarizeAiProviders({
+    OPENAI_BASE_URL: 'http://127.0.0.1:11434/v1',
+  } as NodeJS.ProcessEnv);
+  assert.deepStrictEqual(configured, []);
 });
 
 test('evaluateStorageState fails with a fix when the directory is not writable', async () => {
@@ -135,6 +134,65 @@ test('evaluateStorageState passes and reports usage when writable', async () => 
   assert.strictEqual(result.status, 'pass');
   assert.match(result.detail, /created/);
   assert.match(result.detail, /12\.0 MB/);
+});
+
+test('evaluateSizeBudget fails or warns when runtime budgets are exceeded', async () => {
+  const checks = await loadChecks();
+  const pass = checks.evaluateSizeBudget({
+    id: 'product-bundle-footprint',
+    label: 'Bundle',
+    bytes: 10,
+    maxBytes: 20,
+  });
+  assert.strictEqual(pass.status, 'pass');
+
+  const fail = checks.evaluateSizeBudget({
+    id: 'product-bundle-footprint',
+    label: 'Bundle',
+    bytes: 30,
+    maxBytes: 20,
+    fix: 'trim bundle',
+  });
+  assert.strictEqual(fail.status, 'fail');
+  assert.match(fail.fix || '', /trim bundle/);
+
+  const warn = checks.evaluateSizeBudget({
+    id: 'product-storage-footprint',
+    label: 'Storage',
+    bytes: 30,
+    maxBytes: 20,
+    overStatus: 'warn',
+  });
+  assert.strictEqual(warn.status, 'warn');
+});
+
+test('inspectProductFootprint measures dist and install path separately from storage', async () => {
+  const checks = await loadChecks();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-footprint-test-'));
+  try {
+    fs.mkdirSync(path.join(root, 'dist'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'dist', 'index.cjs'), 'x'.repeat(10));
+    fs.writeFileSync(path.join(root, 'package.json'), '{}');
+    fs.writeFileSync(path.join(root, 'scripts', 'install.mjs'), '');
+
+    const results = checks.inspectProductFootprint({
+      packageRoot: root,
+      includeStorage: false,
+      env: {
+        KLAURO_PRODUCT_BUNDLE_MAX_BYTES: '20000',
+        KLAURO_PRODUCT_INSTALL_MAX_BYTES: '20000',
+      } as NodeJS.ProcessEnv,
+    });
+
+    assert.deepStrictEqual(results.map(result => result.id), [
+      'product-bundle-footprint',
+      'product-install-footprint',
+    ]);
+    assert.ok(results.every(result => result.status === 'pass'));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('evaluateZstd severities depend on stored compressed analyses', async () => {

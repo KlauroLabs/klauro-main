@@ -235,6 +235,23 @@ async function cellFromBench(
   }
 }
 
+async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await mapper(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 let cache: FullGridReport | null = null;
 
 /**
@@ -260,18 +277,16 @@ export async function buildFullGrid(): Promise<FullGridReport> {
   }
 
   const languageRows = new Set<string>(languages);
-  for (const lang of languages) {
+  const languageWhoCallCells = await mapLimit(languages, 8, async lang => {
     const fixtureDir = fixtureByBreadthKey.get(lang);
     if (fixtureDir) {
       // heavyArms: bring in the really-installed scip/ctags/stack-graphs panel so
       // the win (or ceiling-tie on TS) is measured against the strongest competitor.
-      cells.push(
-        await cellFromBench(lang, 'language', 'who-calls', () =>
+      return cellFromBench(lang, 'language', 'who-calls', () =>
           runCallersBench(fixtureDir, { heavyArms: true }),
-        ),
       );
-    } else {
-      cells.push({
+    }
+    return {
         row: lang,
         rowKind: 'language',
         metric: 'who-calls',
@@ -281,20 +296,22 @@ export async function buildFullGrid(): Promise<FullGridReport> {
         armsRan: [],
         tokenSaving: null,
         note: 'no who-calls fixture',
-      });
-    }
-  }
+    } satisfies GridCell;
+  });
+  cells.push(...languageWhoCallCells);
+
   // A callers fixture whose language is NOT in the breadth set (e.g. dart — has an
   // analyzer/fixture but no LANGUAGE_SPEC). Don't lose the covered cell: add it.
-  for (const [key, fixtureDir] of fixtureByBreadthKey) {
-    if (languageRows.has(key)) continue;
+  const extraLanguageFixtures = [...fixtureByBreadthKey.entries()].filter(([key]) => {
+    if (languageRows.has(key)) return false;
     languageRows.add(key);
-    cells.push(
-      await cellFromBench(key, 'language', 'who-calls', () =>
-        runCallersBench(fixtureDir, { heavyArms: true }),
-      ),
-    );
-  }
+    return true;
+  });
+  cells.push(
+    ...(await mapLimit(extraLanguageFixtures, 8, async ([key, fixtureDir]) =>
+      cellFromBench(key, 'language', 'who-calls', () => runCallersBench(fixtureDir, { heavyArms: true })),
+    )),
+  );
 
   // ---- Languages × {structural-retrieval} --------------------------------------
   // The 46 verified per-language Camp-A wins (camp-a-langs-bench): on a DISTINCT
@@ -378,13 +395,31 @@ export async function buildFullGrid(): Promise<FullGridReport> {
     ApexREST: 'apexrest',
   };
 
+  const FRONTEND_COMPONENT_FIXTURE: Record<string, string> = {
+    React: 'react-tree',
+    'Vue.js': 'vue-tree',
+    Angular: 'angular-tree',
+  };
+
   const webAnalyzers = FRAMEWORK_ANALYZERS.filter(a => a.category === 'web');
   const claimedFixtures = new Set<string>();
+  const frameworkJobs: Array<() => Promise<GridCell>> = [];
   for (const a of webAnalyzers) {
+    const componentFixture = FRONTEND_COMPONENT_FIXTURE[a.name];
+    if (componentFixture) {
+      const fixtureDir = path.join(FIXTURES, 'component-bench', componentFixture);
+      frameworkJobs.push(() =>
+        cellFromBench(a.name, 'framework', 'component-tree', () =>
+          runComponentTreeBench(fixtureDir),
+        ),
+      );
+      continue;
+    }
+
     const slug = FRAMEWORK_SLUG[a.name] || a.name.toLowerCase();
     const fixturesForFw = routeFixturesByFramework.get(slug) || [];
     if (fixturesForFw.length === 0) {
-      cells.push({
+      frameworkJobs.push(async () => ({
         row: a.name,
         rowKind: 'framework',
         metric: 'routes',
@@ -394,15 +429,13 @@ export async function buildFullGrid(): Promise<FullGridReport> {
         armsRan: [],
         tokenSaving: null,
         note: 'no route fixture',
-      });
+      }));
       continue;
     }
     // Use the primary (alphabetically-first) fixture as the representative cell.
     const primary = fixturesForFw.sort()[0];
     claimedFixtures.add(path.basename(primary));
-    cells.push(
-      await cellFromBench(a.name, 'framework', 'routes', () => runRouteFactsBench(primary)),
-    );
+    frameworkJobs.push(() => cellFromBench(a.name, 'framework', 'routes', () => runRouteFactsBench(primary)));
   }
   // Route fixtures not owned by any registered web analyzer slug are still real
   // covered cells (e.g. rails/echo/fiber/symfony/... analyzers live in ./web but
@@ -410,9 +443,10 @@ export async function buildFullGrid(): Promise<FullGridReport> {
   for (const fx of routeFixtures) {
     const base = path.basename(fx);
     if (claimedFixtures.has(base)) continue;
-    cells.push(await cellFromBench(base, 'framework', 'routes', () => runRouteFactsBench(fx)));
+    frameworkJobs.push(() => cellFromBench(base, 'framework', 'routes', () => runRouteFactsBench(fx)));
   }
   void routeFixtureNames;
+  cells.push(...(await mapLimit(frameworkJobs, 8, job => job())));
 
   // ---- Libraries × {their fact} ------------------------------------------------
   // Each comprehension bench owns a metric and a fixture group; every fixture is one
@@ -433,13 +467,15 @@ export async function buildFullGrid(): Promise<FullGridReport> {
     { group: 'telemetry-bench', metric: 'telemetry-correlation', run: runTelemetryCorrelationBench },
     { group: 'architecture-library-bench', metric: 'architecture-library-boundaries', run: runArchitectureLibraryBench },
   ];
+  const libraryJobs: Array<() => Promise<GridCell>> = [];
   for (const lb of libraryBenches) {
     const dirs = await fixtureDirs(lb.group);
     for (const dir of dirs) {
       const row = path.basename(dir);
-      cells.push(await cellFromBench(row, 'library', lb.metric, () => lb.run(dir)));
+      libraryJobs.push(() => cellFromBench(row, 'library', lb.metric, () => lb.run(dir)));
     }
   }
+  cells.push(...(await mapLimit(libraryJobs, 8, job => job())));
 
   // ---- Aggregate ---------------------------------------------------------------
   const won = cells.filter(c => c.verdict === 'win').length;

@@ -18,7 +18,7 @@ analysis exists for this repository.
 2. Call `get_agent_start_context` for the selected path before broad file reads.
 3. Call `get_agent_tool_plan` with the task type: `orient`, `modify`, `debug`,
    `review`, `trace`, `cross-repo`, or `runtime`.
-4. For concrete work, call `get_agent_work_packet` with:
+4. For concrete work, call `get_agent_context` with:
 
    ```json
    {

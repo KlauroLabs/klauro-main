@@ -122,7 +122,7 @@ CAS supports progressive disclosure through levels and targeted query surfaces. 
 
 - Repo-local idioms for naming, file organization, module boundaries, dependency injection, data access, error handling, validation, auth/tenant scope, logging, testing, migrations, async style, and configuration
 - Positive examples, affected scopes, deviations, and agent guidance
-- MCP idiom queries, examples, validation, and idiom-aware work packets
+- MCP idiom queries, examples, validation, and idiom-aware agent contexts
 - Live copied-repo A/B proof for idiom conformance and quality
 - Machine-wide real-repo discovery and proof accounting
 

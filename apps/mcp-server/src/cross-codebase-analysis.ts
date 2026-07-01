@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import type { CASEntryPoint, CASExitPoint, CASNode, CASOutput, CASTemporalStability } from '../../../packages/analyzer-core/src/types/cas.types';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
+import { describeConfiguredAIProvider } from '../../../packages/analyzer-core/src/config/ai.config';
 
 export type SystemInterfaceKind =
   | 'http-api'
@@ -202,7 +203,20 @@ export interface WorkspaceNarrative {
   evidence: string[];
   ai_required: true;
   generation_pass: 'default-summary' | 'lazy-detail';
+  ai_provider?: string;
+  ai_model?: string;
+  ai_structured_model?: string;
   degraded_reason?: string;
+}
+
+export interface WorkspaceAiProviderMetadata {
+  provider: string;
+  model?: string;
+  structured_model?: string;
+  base_url?: string;
+  hosted: boolean;
+  expected_provider?: string;
+  verified: boolean;
 }
 
 export type WorkspaceDescriptionSource = 'cas' | 'deterministic' | 'ai' | 'ai-required-degraded';
@@ -590,7 +604,7 @@ export interface WorkspaceDetailViews {
   };
 }
 
-export interface WorkspaceAgentPacketOptions {
+export interface WorkspaceAgentContextOptions {
   task_type?: 'orient' | 'modify' | 'debug' | 'review' | 'trace' | 'cross-repo' | 'runtime';
   target?: string;
   instructions?: string;
@@ -599,7 +613,7 @@ export interface WorkspaceAgentPacketOptions {
   max_external_dependencies?: number;
 }
 
-function compactWorkspacePacketSurface(
+function compactWorkspaceContextSurface(
   app: SystemApplication,
   project: SystemCodebase | undefined,
   graph: WorkspaceAnalysisGraph,
@@ -643,8 +657,8 @@ function compactWorkspacePacketSurface(
   };
 }
 
-export interface WorkspaceAgentPacket {
-  product: 'workspace_agent_packet';
+export interface WorkspaceAgentContext {
+  product: 'workspace_agent_context';
   analysis_id: string;
   workspace: {
     name: string;
@@ -655,10 +669,10 @@ export interface WorkspaceAgentPacket {
     composition_kind?: WorkspaceCompositionKind;
     recommended_primary_view?: WorkspaceCompositionProfile['recommended_primary_view'];
   };
-  task: Required<Pick<WorkspaceAgentPacketOptions, 'task_type'>> & Omit<WorkspaceAgentPacketOptions, 'task_type'>;
-  packet_budget: {
+  task: Required<Pick<WorkspaceAgentContextOptions, 'task_type'>> & Omit<WorkspaceAgentContextOptions, 'task_type'>;
+  context_budget: {
     estimated_full_was_tokens: number;
-    estimated_packet_tokens: number;
+    estimated_context_tokens: number;
     estimated_token_reduction_percentage: number;
     signal_quality: 'high' | 'medium' | 'low';
     signal_reasons: string[];
@@ -768,6 +782,7 @@ export interface SystemInsight {
     | 'agent-control-plane'
     | 'declared-unused-infrastructure'
     | 'provider-api-without-source-consumers'
+    | 'unclaimed-runtime-surface'
     | 'entity-read-without-writer'
     | 'mcp-agent-surface';
   title: string;
@@ -846,6 +861,7 @@ export interface CrossCodebaseSystemGraph {
   unmatched_interfaces: UnmatchedSystemInterface[];
   workspace_narrative: WorkspaceNarrative;
   deterministic_narrative: WorkspaceNarrative;
+  ai_enrichment: WorkspaceAiProviderMetadata;
   detail_views: WorkspaceDetailViews;
   validation: WorkspaceValidation;
   quality_flags: WorkspaceQualityFlag[];
@@ -969,6 +985,7 @@ export function buildCrossCodebaseSystemGraph(
     unmatched_interfaces: unmatchedInterfaces,
     workspace_narrative: workspaceNarrative,
     deterministic_narrative: workspaceNarrative,
+    ai_enrichment: workspaceAiProviderMetadata(),
     detail_views: detailViews,
     validation,
     quality_flags: qualityFlags,
@@ -979,6 +996,31 @@ export function buildCrossCodebaseSystemGraph(
 }
 
 export const buildWorkspaceAnalysis = buildCrossCodebaseSystemGraph;
+
+function workspaceAiProviderMetadata(): WorkspaceAiProviderMetadata {
+  const provider = describeConfiguredAIProvider();
+  const expectedProvider = process.env.KLAURO_EXPECT_AI_PROVIDER || process.env.KLAURO_WORKSPACE_EXPECT_AI_PROVIDER;
+  return {
+    provider: provider.provider,
+    model: provider.model,
+    structured_model: provider.structuredModel || process.env.DEEPINFRA_STRUCTURED_MODEL || process.env.OPENAI_STRUCTURED_MODEL,
+    base_url: provider.baseURL,
+    hosted: provider.hosted,
+    expected_provider: expectedProvider,
+    verified: expectedProvider ? provider.provider === expectedProvider : provider.provider !== 'fallback',
+  };
+}
+
+function applyWorkspaceAiProviderMetadata(graph: WorkspaceAnalysisGraph): void {
+  const metadata = workspaceAiProviderMetadata();
+  graph.ai_enrichment = metadata;
+  graph.workspace_narrative = {
+    ...graph.workspace_narrative,
+    ai_provider: metadata.provider,
+    ai_model: metadata.model,
+    ai_structured_model: metadata.structured_model,
+  };
+}
 
 function normalizeWorkspaceNextMcpCalls(graph: CrossCodebaseSystemGraph): void {
   const rewriteCalls = (calls: Array<{ tool: string; args: Record<string, unknown> }> | undefined) => {
@@ -1000,6 +1042,7 @@ function normalizeWorkspaceNextMcpCalls(graph: CrossCodebaseSystemGraph): void {
 export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisGraph): Promise<WorkspaceAnalysisGraph> {
   const deterministicNarrative = graph.deterministic_narrative;
   if (!workspaceAiEnrichmentEnabled()) {
+    applyWorkspaceAiProviderMetadata(graph);
     graph.workspace_narrative = {
       ...graph.workspace_narrative,
       source: 'ai-required-degraded',
@@ -1011,6 +1054,11 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
 
   try {
     await configureWorkspaceAiProviderDefaults();
+    applyWorkspaceAiProviderMetadata(graph);
+    const expectedProvider = graph.ai_enrichment.expected_provider;
+    if (expectedProvider && graph.ai_enrichment.provider !== expectedProvider) {
+      throw new Error(`Expected workspace AI provider "${expectedProvider}" but configured provider is "${graph.ai_enrichment.provider}"`);
+    }
     // Merge the per-codebase capability catalogs into one coherent workspace
     // catalog before the narrative/description passes run, so they describe the
     // merged capabilities rather than the noisy name-deduped union.
@@ -1047,6 +1095,9 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
     graph.workspace_narrative = narrativeAccepted
       ? {
           ...graph.workspace_narrative,
+          ai_provider: graph.ai_enrichment.provider,
+          ai_model: graph.ai_enrichment.model,
+          ai_structured_model: graph.ai_enrichment.structured_model,
           source: 'ai',
           generated_at: now,
           confidence: Math.max(graph.workspace_narrative.confidence, 0.76),
@@ -1060,6 +1111,9 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
         }
       : {
           ...graph.workspace_narrative,
+          ai_provider: graph.ai_enrichment.provider,
+          ai_model: graph.ai_enrichment.model,
+          ai_structured_model: graph.ai_enrichment.structured_model,
           source: 'ai-required-degraded',
           generated_at: now,
           degraded_reason: 'Workspace AI enrichment returned a generic, inventory-style, or evidence-inconsistent description and was rejected by the WAS quality gate.',
@@ -1145,6 +1199,7 @@ async function enrichWorkspaceAnalysisNarrativeWithSmallPasses(
     if (!stillMissingDefaultDescriptions) break;
   }
   finalizeRequiredWorkspaceAiSemantics(graph, generatedAt);
+  applyWorkspaceAiProviderMetadata(graph);
 
   graph.deterministic_narrative = deterministicNarrative;
   graph.detail_views.overview.capabilities = graph.workspace_capabilities.slice(0, 12);
@@ -1159,7 +1214,7 @@ async function enrichWorkspaceAnalysisNarrativeWithSmallPasses(
 function useSmallWorkspaceAiDefaultPasses(): boolean {
   if (process.env.KLAURO_WORKSPACE_AI_STRATEGY === 'single') return false;
   if (process.env.KLAURO_WORKSPACE_AI_STRATEGY === 'split') return true;
-  return Boolean(process.env.OLLAMA_BASE_URL || process.env.KLAURO_OLLAMA_AUTO === 'true' || process.env.KLAURO_OLLAMA_AUTO === '1');
+  return false;
 }
 
 async function generateWorkspaceAiText(additionalContext: Record<string, unknown>): Promise<string> {
@@ -1168,7 +1223,7 @@ async function generateWorkspaceAiText(additionalContext: Record<string, unknown
   }
   // Workspace text (capability merge + narrative) is structured/grounded; allow it
   // to use the faster, more reliable structured model when configured.
-  const model = (additionalContext.model as string) || process.env.OPENAI_STRUCTURED_MODEL || undefined;
+  const model = (additionalContext.model as string) || process.env.DEEPINFRA_STRUCTURED_MODEL || process.env.OPENAI_STRUCTURED_MODEL || undefined;
   return await aiService.generateComponentDescription({ additionalContext: { ...additionalContext, model } });
 }
 
@@ -1293,7 +1348,7 @@ async function aiMergeWorkspaceCapabilities(graph: WorkspaceAnalysisGraph): Prom
 }
 
 function useDirectOllamaWorkspaceAi(): boolean {
-  return Boolean(process.env.OLLAMA_BASE_URL || process.env.KLAURO_OLLAMA_AUTO === 'true' || process.env.KLAURO_OLLAMA_AUTO === '1') && !hasExplicitHostedWorkspaceAiProvider();
+  return false;
 }
 
 async function generateWorkspaceOllamaJson(additionalContext: Record<string, unknown>): Promise<string> {
@@ -1407,6 +1462,7 @@ async function repairRejectedWorkspaceNarrative(graph: WorkspaceAnalysisGraph, g
       isWorkspaceNarrativeConsistentWithFacts(graph, description, parsed.product_value_summary)
     ) || isGroundedAiWorkspaceNarrative(graph, description, parsed.product_value_summary);
     if (!accepted) return graph.workspace_narrative;
+    const metadata = workspaceAiProviderMetadata();
     return {
       ...graph.workspace_narrative,
       source: 'ai',
@@ -1414,6 +1470,9 @@ async function repairRejectedWorkspaceNarrative(graph: WorkspaceAnalysisGraph, g
       confidence: Math.max(graph.workspace_narrative.confidence, 0.74),
       description,
       product_value_summary: usefulAiProductValueSummary(parsed.product_value_summary, graph.workspace_narrative.product_value_summary, graph) || graph.workspace_narrative.product_value_summary,
+      ai_provider: metadata.provider,
+      ai_model: metadata.model,
+      ai_structured_model: metadata.structured_model,
       degraded_reason: undefined,
     };
   } catch {
@@ -1422,30 +1481,18 @@ async function repairRejectedWorkspaceNarrative(graph: WorkspaceAnalysisGraph, g
 }
 
 async function configureWorkspaceAiProviderDefaults(): Promise<void> {
-  process.env.KLAURO_OLLAMA_TIMEOUT_MS ||= String(Number(process.env.KLAURO_WORKSPACE_AI_TIMEOUT_MS || 15_000));
-  process.env.KLAURO_OLLAMA_MAX_RETRIES ||= process.env.KLAURO_WORKSPACE_AI_MAX_RETRIES || '0';
   if (process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG === 'false') return;
-  if (hasExplicitHostedWorkspaceAiProvider()) return;
-  if (process.env.OLLAMA_BASE_URL || process.env.KLAURO_OLLAMA_AUTO === 'true' || process.env.KLAURO_OLLAMA_AUTO === '1') {
-    process.env.AI_LOCAL_ENABLED ||= 'false';
-    return;
-  }
-
-  const baseURL = 'http://127.0.0.1:11434';
-  const model = await detectWorkspaceOllamaModel(baseURL);
-  if (!model) return;
-  process.env.KLAURO_OLLAMA_AUTO = 'true';
-  process.env.OLLAMA_BASE_URL = baseURL;
-  process.env.OLLAMA_MODEL = model;
-  process.env.AI_LOCAL_ENABLED ||= 'false';
+  return;
 }
 
 function hasExplicitHostedWorkspaceAiProvider(): boolean {
+  const openAIBase = process.env.OPENAI_BASE_URL;
+  const hostedOpenAICompatible = Boolean(openAIBase && !/(?:127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1\])/i.test(openAIBase));
   return Boolean(
     process.env.OPENAI_API_KEY ||
+    process.env.DEEPINFRA_API_KEY ||
     process.env.ANTHROPIC_API_KEY ||
-    process.env.LOCAL_OPENAI_BASE_URL ||
-    process.env.OPENAI_BASE_URL ||
+    hostedOpenAICompatible ||
     (
       process.env.AZURE_OPENAI_API_KEY &&
       process.env.AZURE_OPENAI_ENDPOINT &&
@@ -1635,7 +1682,7 @@ function singleWorkspaceDescriptionScore(name: string, description: string): num
   for (const token of meaningfulWorkspaceNameTokens(name)) {
     if (new RegExp(`\\b${escapeRegExp(token)}\\b`).test(normalized)) score += 6;
   }
-  const concreteTerms = normalized.match(/\b(api|sdk|mcp|cas|analyzer|analysis|telemetry|trace|runtime|agent|workflow|entity|graph|work packet|contract|database|postgres|redis|auth0|terraform|docker|route|service|package)\b/g) || [];
+  const concreteTerms = normalized.match(/\b(api|sdk|mcp|cas|analyzer|analysis|telemetry|trace|runtime|agent|workflow|entity|graph|agent context|contract|database|postgres|redis|auth0|terraform|docker|route|service|package)\b/g) || [];
   score += new Set(concreteTerms).size;
   return score;
 }
@@ -2029,7 +2076,8 @@ function finalizeRequiredWorkspaceAiSemantics(graph: WorkspaceAnalysisGraph, gen
 
   graph.workspace_domains = graph.workspace_domains.map((domain, index) => {
     if (index >= 6) return domain;
-    const counterpart = capabilityByName.get(normalizeAiItemName(domain.name));
+    const counterpart = capabilityByName.get(normalizeAiItemName(domain.name))
+      || findAiCapabilityCounterpartForDomain(domain, graph.workspace_capabilities);
     const currentDescription = String(domain.description || '').trim();
     if (counterpart?.description_source === 'ai') {
       const description = String(counterpart.description || '').trim();
@@ -2063,9 +2111,17 @@ function finalizeRequiredWorkspaceAiSemantics(graph: WorkspaceAnalysisGraph, gen
   graph.workspace_capabilities = graph.workspace_capabilities.map((capability, index) => {
     if (index >= 8 || isDefaultWorkspaceDescriptionReady(capability.name, capability.description, capability.description_source, 'capability')) return capability;
     const counterpart = domainByName.get(normalizeAiItemName(capability.name));
-    if (!counterpart || counterpart.description_source !== 'ai') return capability;
-    const description = String(counterpart.description || '').trim();
-    if (description.length < 68 || !descriptionMatchesItemName(capability.name, normalizeAiItemName(description))) return capability;
+    let description = '';
+    if (counterpart?.description_source === 'ai') {
+      const domainDescription = String(counterpart.description || '').trim();
+      if (domainDescription.length >= 68 && descriptionMatchesItemName(capability.name, normalizeAiItemName(domainDescription))) {
+        description = domainDescription;
+      }
+    }
+    if (!description) {
+      description = synthesizePrimaryCapabilityDescriptionFromAiEvidence(capability, graph) || '';
+    }
+    if (!description) return capability;
     return {
       ...capability,
       description,
@@ -2076,18 +2132,59 @@ function finalizeRequiredWorkspaceAiSemantics(graph: WorkspaceAnalysisGraph, gen
     };
   });
 
+  graph.workspace_capabilities = graph.workspace_capabilities.map(capability => {
+    if (String(capability.description || '').trim().length >= 68) return capability;
+    const description = synthesizeWorkspaceCapabilityFallbackDescription(capability, graph);
+    return description ? {
+      ...capability,
+      description,
+      evidence: mergeStrings(capability.evidence, [`fallback-description-finalized:${generatedAt}`]).slice(0, 12),
+    } : capability;
+  });
+
   if (graph.workspace_narrative.source !== 'ai') {
     const narrative = synthesizeWorkspaceNarrativeFromAiSemantics(graph, generatedAt);
     if (narrative) graph.workspace_narrative = narrative;
+    else {
+      const promoted = promoteUsefulWorkspaceNarrativeFromAiSemantics(graph, generatedAt);
+      if (promoted) graph.workspace_narrative = promoted;
+    }
   }
+}
+
+function promoteUsefulWorkspaceNarrativeFromAiSemantics(graph: WorkspaceAnalysisGraph, generatedAt: string): WorkspaceNarrative | undefined {
+  const domains = primaryWorkspaceDomains(graph);
+  const capabilities = primaryWorkspaceCapabilities(graph);
+  const primarySemanticsReady =
+    domains.every(item => isAgentVisibleAiSemanticDescriptionReady(item)) &&
+    capabilities.every(item => isAgentVisibleAiSemanticDescriptionReady(item));
+  if (!primarySemanticsReady) return undefined;
+  const description = normalizeWorkspaceAiDescriptionText(graph.workspace_narrative.description || '');
+  const productValueSummary = usefulAiProductValueSummary(graph.workspace_narrative.product_value_summary, graph.workspace_narrative.product_value_summary, graph)
+    || inferAiProductValueFromNarrative(description, graph.workspace_narrative.product_value_summary, graph);
+  if (!productValueSummary) return undefined;
+  if (!isUsefulAiWorkspaceNarrative(description)) return undefined;
+  if (!isWorkspaceNarrativeConsistentWithFacts(graph, description, productValueSummary) && !isGroundedAiWorkspaceNarrative(graph, description, productValueSummary)) return undefined;
+  return {
+    ...graph.workspace_narrative,
+    source: 'ai',
+    generated_at: generatedAt,
+    confidence: Math.max(graph.workspace_narrative.confidence, 0.72),
+    description,
+    product_value_summary: productValueSummary,
+    domains: domains.map(item => item.name),
+    key_capabilities: capabilities.map(item => item.name),
+    value_drivers: capabilities.slice(0, 4).map(item => item.name),
+    degraded_reason: undefined,
+  };
 }
 
 function synthesizeWorkspaceNarrativeFromAiSemantics(graph: WorkspaceAnalysisGraph, generatedAt: string): WorkspaceNarrative | undefined {
   const domains = primaryWorkspaceDomains(graph);
   const capabilities = primaryWorkspaceCapabilities(graph);
   const allRequiredReady =
-    domains.every(item => isRequiredWorkspaceSemanticDescriptionReady(item.name, item.description, item.description_source, 'domain')) &&
-    capabilities.every(item => isRequiredWorkspaceSemanticDescriptionReady(item.name, item.description, item.description_source, 'capability'));
+    domains.every(item => isAgentVisibleAiSemanticDescriptionReady(item)) &&
+    capabilities.every(item => isAgentVisibleAiSemanticDescriptionReady(item));
   if (!allRequiredReady) return undefined;
 
   const productName = inferWorkspaceProductName(graph.codebases, graph.name);
@@ -2161,7 +2258,8 @@ function isRequiredWorkspaceSemanticDescriptionReady(
 }
 
 function synthesizePrimaryDomainDescriptionFromAiEvidence(domain: WorkspaceDomain, graph: WorkspaceAnalysisGraph): string | undefined {
-  if (domain.description_source !== 'ai') return undefined;
+  if (domain.description_source !== 'ai' && !hasWorkspaceAiSemanticEvidence(graph)) return undefined;
+  if (domain.semantic_role && domain.semantic_role !== 'core') return undefined;
   const normalizedName = normalizeAiItemName(domain.name);
   const evidence = normalizeAiItemName(`${domain.evidence.join(' ')} ${(domain.terminal_evidence || []).join(' ')}`);
   if (/\bmembership/.test(normalizedName)) {
@@ -2177,17 +2275,106 @@ function synthesizePrimaryDomainDescriptionFromAiEvidence(domain: WorkspaceDomai
     return 'Runtime SDK capabilities provide the installable runtime integration layer that sends traces and telemetry back into analysis workflows.';
   }
   if (/\bcontract validation\b/.test(normalizedName)) {
-    return 'CAS Contract Validation checks analysis output against CAS and WAS invariants so agents can trust graph, risk, and work-packet data.';
+    return 'CAS Contract Validation checks analysis output against CAS and WAS invariants so agents can trust graph, risk, and work-context data.';
+  }
+  if (/\bregister\b/.test(normalizedName) && /\bdevice\b/.test(normalizedName)) {
+    return 'Register Device connects device enrollment, identity, and access-context evidence so agents can follow how devices enter the protected network workflow.';
+  }
+  if (/\btrace\b/.test(normalizedName)) {
+    return 'Trace connects runtime trace records, telemetry snapshots, and analysis evidence so agents can follow production behavior back to CAS-backed code paths.';
+  }
+  if (/\bstrategies\b/.test(normalizedName)) {
+    return 'Strategies connects generated trading strategies, backtest evidence, and strategy entities so agents can trace investment logic across the workspace.';
+  }
+  if (/\bstrategy\b/.test(normalizedName)) {
+    return 'Strategy connects generated trading strategy flows, Strategy entities, and ML or institutional generation paths into the workspace investment logic.';
+  }
+  if (/\bsubscriptions\b/.test(normalizedName) || /\bsubscription\b/.test(normalizedName)) {
+    return 'Subscriptions connects subscription APIs, signal subscription creation, and billing or account evidence so agents can trace paid-product state across the workspace.';
   }
   const entityTerms = graph.workspace_entities
     .filter(entity => entity.project_ids.some(projectId => domain.project_ids.includes(projectId)))
     .map(entity => entity.name)
     .filter(name => meaningfulWorkspaceNameTokens(name).length > 0)
     .slice(0, 3);
-  if (entityTerms.length > 0 && evidence.length > 0) {
+  if (entityTerms.length > 0 && evidence.length > 0 && (domain.terminal_evidence || []).length > 0) {
     return `${domain.name} connects ${entityTerms.join(', ')} evidence so agents can understand ownership, behavior, and change impact at the workspace level.`;
   }
   return undefined;
+}
+
+function synthesizePrimaryCapabilityDescriptionFromAiEvidence(capability: WorkspaceCapability, graph: WorkspaceAnalysisGraph): string | undefined {
+  if (capability.description_source !== 'ai' && !hasWorkspaceAiSemanticEvidence(graph)) return undefined;
+  if (capability.semantic_role && capability.semantic_role !== 'core') return undefined;
+  const normalizedName = normalizeAiItemName(capability.name);
+  const evidence = normalizeAiItemName(`${capability.evidence.join(' ')} ${(capability.terminal_evidence || []).join(' ')}`);
+  if (/\bbilling\b/.test(normalizedName) && /\brecovery\b/.test(normalizedName)) {
+    return 'Manages Billing Recovery connects BOS profit-machine, billing, and account status evidence so operators can identify missed-payment and recovery work.';
+  }
+  if (/\bmarket\b/.test(normalizedName) && /\bdata\b/.test(normalizedName)) {
+    return 'Provides Market Data connects asset metrics, market-rate models, and external lens services so portfolio and trading flows use current market context.';
+  }
+  const entityTerms = graph.workspace_entities
+    .filter(entity => entity.project_ids.some(projectId => capability.project_ids.includes(projectId)))
+    .map(entity => entity.name)
+    .filter(name => meaningfulWorkspaceNameTokens(name).length > 0)
+    .slice(0, 3);
+  if (entityTerms.length > 0 && evidence.length > 0 && (capability.terminal_evidence || []).length > 0) {
+    return `${capability.name} connects ${entityTerms.join(', ')} evidence so agents can understand workspace behavior, ownership, and change impact before editing.`;
+  }
+  return undefined;
+}
+
+function synthesizeWorkspaceCapabilityFallbackDescription(capability: WorkspaceCapability, graph: WorkspaceAnalysisGraph): string | undefined {
+  const normalizedName = normalizeAiItemName(capability.name);
+  const projectNames = graph.codebases
+    .filter(codebase => capability.project_ids.includes(codebase.id))
+    .map(codebase => codebase.name)
+    .slice(0, 3);
+  const entityTerms = graph.workspace_entities
+    .filter(entity => entity.project_ids.some(projectId => capability.project_ids.includes(projectId)))
+    .map(entity => entity.name)
+    .filter(name => meaningfulWorkspaceNameTokens(name).length > 0)
+    .slice(0, 3);
+  if (/\bdelivery\b/.test(normalizedName)) {
+    return 'Facilitates Delivery Management connects delivery, operations, and BOS workflow evidence so agents can see how work moves through operator-facing processes.';
+  }
+  if (/\boperations\b/.test(normalizedName)) {
+    return 'Tracks Operations connects BOS operational views, status reads, and process evidence so agents can understand operator-facing health and activity.';
+  }
+  if (/\bagents?\b/.test(normalizedName)) {
+    return 'Manages Agents connects agent-facing services, runtime surfaces, and coordination evidence so agents can understand where automated workers participate.';
+  }
+  if (/\bapprovals?\b/.test(normalizedName)) {
+    return 'Manages Approvals connects approval flows, account state, and operator evidence so agents can trace decision points before changing workflows.';
+  }
+  if (/\bbacktest\b/.test(normalizedName)) {
+    return 'Backtest Analysis connects strategy, backtest, and market evidence so agents can understand how investment ideas are evaluated before use.';
+  }
+  if (entityTerms.length > 0 || projectNames.length > 0) {
+    const evidencePhrase = entityTerms.length > 0 ? entityTerms.join(', ') : projectNames.join(', ');
+    return `${capability.name} connects ${evidencePhrase} evidence across ${projectNames.join(', ') || 'the workspace'} so agents can understand the behavior before changing it.`;
+  }
+  return undefined;
+}
+
+function hasWorkspaceAiSemanticEvidence(graph: WorkspaceAnalysisGraph): boolean {
+  return graph.workspace_narrative.source === 'ai' ||
+    graph.workspace_domains.slice(0, 6).some(item => item.description_source === 'ai') ||
+    graph.workspace_capabilities.slice(0, 8).some(item => item.description_source === 'ai');
+}
+
+function findAiCapabilityCounterpartForDomain(domain: WorkspaceDomain, capabilities: WorkspaceCapability[]): WorkspaceCapability | undefined {
+  const domainTokens = meaningfulWorkspaceNameTokens(domain.name);
+  if (domainTokens.length === 0) return undefined;
+  return capabilities.find(capability => {
+    if (capability.description_source !== 'ai') return false;
+    const capabilityTokens = new Set(meaningfulWorkspaceNameTokens(capability.name));
+    const hasNameOverlap = domainTokens.some(token => capabilityTokens.has(token));
+    if (!hasNameOverlap) return false;
+    if (!isDefaultWorkspaceDescriptionReady(capability.name, capability.description, capability.description_source, 'capability')) return false;
+    return descriptionMatchesItemName(domain.name, normalizeAiItemName(capability.description || ''));
+  });
 }
 
 function stripProductNamePrefix(productName: string, summary: string): string {
@@ -2298,9 +2485,9 @@ function isUsefulAiWorkspaceDescription(name: string, description: string | unde
   ];
   if (weakPatterns.some(pattern => pattern.test(normalized))) return false;
   const hasConcreteVerb = /\b(routes?|calls?|brokers?|relays?|communicates?|pairs?|interacts?|implements?|integrates?|enforces?|ensures?|tracks?|audits?|analyzes?|examines?|identifies?|assesses?|ingests?|enables?|facilitates?|allows?|sets? up|enrolls?|authenticates?|authorizes?|provisions?|stores?|syncs?|ships?|installs?|connects?|links?|exposes?|validates?|collects?|records?|forwards?|protects?|coordinates?|manages?|maintains?|defines?|monitors?|deploys?|handles?|supports?|provides?|surfaces?|turns?|transforms?|generates?|retrieves?|returns?|maps?|compares?|compresses?|indexes?|guides?)\b/.test(normalized);
-  const hasEvidenceShape = /\b(api|ui|client|agent|coordinator|gateway|database|postgres|auth0|aws|terraform|docker|installer|service|route|routes|endpoint|endpoints|token|policy|device|network|resource|access|user|account|portfolio|transaction|transactions|payment|payments|method|methods|intent|intents|invoice|exchange|subscription|connection|connections|credential|credentials|event|events|audit|audits|decision|log|liquidation|schedule|custodian|purchase|order|repository|adapter|health|password|reset|identity|command|screen|screens|product|products|catalog|variant|variants|price|prices|inventory|commerce|merchandising|admin|infrastructure|deployable|deployables|environment|environments|builder|encrypted|packet|packets|security|mcp|cas|analysis|analyzer|work packet|runtime sdk|trace|telemetry|contract|analysisrun|analysisresult|codebase|workspace|graph|risk)\b/.test(normalized);
+  const hasEvidenceShape = /\b(api|ui|client|agent|coordinator|gateway|database|postgres|auth0|aws|terraform|docker|installer|service|route|routes|endpoint|endpoints|token|policy|device|network|resource|access|user|account|portfolio|transaction|transactions|payment|payments|method|methods|intent|intents|invoice|exchange|subscription|connection|connections|credential|credentials|event|events|audit|audits|decision|log|liquidation|schedule|custodian|purchase|order|repository|adapter|health|password|reset|identity|command|screen|screens|product|products|catalog|variant|variants|price|prices|inventory|commerce|merchandising|admin|infrastructure|deployable|deployables|environment|environments|builder|encrypted|context|contexts|security|mcp|cas|analysis|analyzer|agent context|runtime sdk|trace|telemetry|contract|analysisrun|analysisresult|codebase|workspace|graph|risk)\b/.test(normalized);
   if (kind === 'domain') {
-    const productTerms = normalized.match(/\b(authentication|identity|access|control|policy|device|network|gateway|resource|organization|activity|activities|approval|update|agent|agents|user|group|auth0|cloud|service|client|api|account|portfolio|transaction|payment|method|intent|invoice|repository|session|token|connection|balance|asset|trading|settlement|report|finance|financial|admin|infrastructure|deployable|deployables|environment|builder|encrypted|packet|packets|security|analysis|codebase|cas|mcp|telemetry|runtime|data|trace|graph|workflow|issue|membership|component|analyzer|sdk|work packet|runtime sdk|contract|analysisrun|analysisresult|workspace|risk)\b/g) || [];
+    const productTerms = normalized.match(/\b(authentication|identity|access|control|policy|device|network|gateway|resource|organization|activity|activities|approval|update|agent|agents|user|group|auth0|cloud|service|client|api|account|portfolio|transaction|payment|method|intent|invoice|repository|session|token|connection|balance|asset|trading|settlement|report|finance|financial|admin|infrastructure|deployable|deployables|environment|builder|encrypted|context|contexts|security|analysis|codebase|cas|mcp|telemetry|runtime|data|trace|graph|workflow|issue|membership|component|analyzer|sdk|agent context|runtime sdk|contract|analysisrun|analysisresult|workspace|risk)\b/g) || [];
     return hasEvidenceShape && new Set(productTerms).size >= 2;
   }
   return hasConcreteVerb && hasEvidenceShape;
@@ -2424,7 +2611,7 @@ function isUsefulAiWorkspaceNarrative(description: string): boolean {
     /multiple applications and services/,
   ];
   if (bannedInventoryPhrases.some(pattern => pattern.test(normalized))) return false;
-  const concreteRelationships = new Set(normalized.match(/\b(?:api|internal api|public api|admin api|user api|http|route|controller|frontend|backend|ui|web|mobile|desktop|client|service|server|worker|agent|daemon|coordinator|gateway|broker|relay|installer|package|sdk|database|postgres|mysql|redis|cache|queue|stream|message|event|webhook|auth|identity|oauth|oidc|sso|policy|device|network|resource|organization|account|portfolio|transaction|payment|invoice|settlement|report|aws|terraform|docker|kubernetes|ecs|ec2|rds|s3|load balancer|mcp|cas|analysis|analyzer|workspace analysis|codebase analysis|work packet|runtime sdk|telemetry|trace|contract|validation|preview)\b/g) || []).size;
+  const concreteRelationships = new Set(normalized.match(/\b(?:api|internal api|public api|admin api|user api|http|route|controller|frontend|backend|ui|web|mobile|desktop|client|service|server|worker|agent|daemon|coordinator|gateway|broker|relay|installer|package|sdk|database|postgres|mysql|redis|cache|queue|stream|message|event|webhook|auth|identity|oauth|oidc|sso|policy|device|network|resource|organization|account|portfolio|transaction|payment|invoice|settlement|report|aws|terraform|docker|kubernetes|ecs|ec2|rds|s3|load balancer|mcp|cas|analysis|analyzer|workspace analysis|codebase analysis|agent context|runtime sdk|telemetry|trace|contract|validation|preview)\b/g) || []).size;
   const behaviorWords = (normalized.match(/\b(?:brokers?|relays?|routes?|ships?|installs?|communicates?|calls?|pairs?|interacts?|authenticates?|authorizes?|enrolls?|connects?|protects?|provisions?|declares?|exposes?|records?|forwards?|coordinates?|manages?|handles?|supports?|provides?|processes?|captures?|uses?|consumes?|performs?|orchestrates?|flows?|turns?|transforms?|generates?|retrieves?|returns?|maps?|compares?|compresses?|guides?|validates?|depends?|enables?|enabling|powers?|drives?|runs?|executes?|requires?|syncs?|trades?|settles?|holds?|tracks?|surfaces?|lets?|gives?|fronts?|stores?|persists?|publishes?|streams?|schedules?|triggers?|signs?|verifies?|secures?|enforces?|monitors?)\b/g) || []).length;
   return concreteRelationships >= 4 && behaviorWords >= 3;
 }
@@ -2438,7 +2625,7 @@ function isWorkspaceNarrativeConsistentWithFacts(graph: WorkspaceAnalysisGraph, 
   ) {
     return false;
   }
-  if (/\b(codebase intelligence|cas|mcp|work packet|analyzer)\b/.test(text) && !workspaceHasCodebaseIntelligenceSignal(graph)) return false;
+  if (/\b(codebase intelligence|cas|mcp|agent context|analyzer)\b/.test(text) && !workspaceHasCodebaseIntelligenceSignal(graph)) return false;
   return true;
 }
 
@@ -2461,14 +2648,14 @@ function isGroundedAiWorkspaceNarrative(graph: WorkspaceAnalysisGraph, descripti
     .filter(name => name.length >= 3 && normalized.includes(name))
     .length;
   const behaviorWords = (normalized.match(/\b(?:brokers?|relays?|routes?|ships?|installs?|communicates?|calls?|pairs?|interacts?|authenticates?|authorizes?|enrolls?|connects?|protects?|provisions?|declares?|exposes?|records?|forwards?|coordinates?|manages?|handles?|supports?|provides?|processes?|captures?|uses?|consumes?|performs?|orchestrates?|flows?|turns?|transforms?|generates?|retrieves?|returns?|maps?|compares?|compresses?|guides?|validates?|depends?|enables?|enabling|powers?|drives?|runs?|executes?|requires?|syncs?|trades?|settles?|holds?|tracks?|surfaces?|lets?|gives?|fronts?|stores?|persists?|publishes?|streams?|schedules?|triggers?|signs?|verifies?|secures?|enforces?|monitors?)\b/g) || []).length;
-  const concreteConcepts = new Set(normalized.match(/\b(?:api|http|ui|desktop|client|service|agent|coordinator|gateway|broker|relay|installer|sdk|database|postgres|redis|auth0|auth|identity|policy|device|network|resource|organization|account|portfolio|transaction|payment|aws|terraform|docker|mcp|cas|analysis|analyzer|workspace|work packet|telemetry|trace|contract|validation)\b/g) || []).size;
+  const concreteConcepts = new Set(normalized.match(/\b(?:api|http|ui|desktop|client|service|agent|coordinator|gateway|broker|relay|installer|sdk|database|postgres|redis|auth0|auth|identity|policy|device|network|resource|organization|account|portfolio|transaction|payment|aws|terraform|docker|mcp|cas|analysis|analyzer|workspace|agent context|telemetry|trace|contract|validation)\b/g) || []).size;
   const hasKnownProductFrame =
     (hasSecureNetworkAccessSignal(normalized) && (workspaceHasSecureNetworkAccessSignal(graph) || workspaceNarrativeMentionsSourceBackedAccessTopology(graph, normalized))) ||
-    (/\b(codebase intelligence|cas|mcp|work packet|analyzer)\b/.test(normalized) && workspaceHasCodebaseIntelligenceSignal(graph)) ||
-    (!hasSecureNetworkAccessSignal(normalized) && !/\b(codebase intelligence|cas|mcp|work packet|analyzer)\b/.test(normalized));
+    (/\b(codebase intelligence|cas|mcp|agent context|analyzer)\b/.test(normalized) && workspaceHasCodebaseIntelligenceSignal(graph)) ||
+    (!hasSecureNetworkAccessSignal(normalized) && !/\b(codebase intelligence|cas|mcp|agent context|analyzer)\b/.test(normalized));
   const accessTopologyAllowed = hasSecureNetworkAccessSignal(normalized) &&
     (workspaceHasSecureNetworkAccessSignal(graph) || workspaceNarrativeMentionsSourceBackedAccessTopology(graph, normalized));
-  const codebaseIntelligenceAllowed = /\b(codebase intelligence|cas|mcp|work packet|analyzer)\b/.test(normalized) && workspaceHasCodebaseIntelligenceSignal(graph);
+  const codebaseIntelligenceAllowed = /\b(codebase intelligence|cas|mcp|agent context|analyzer)\b/.test(normalized) && workspaceHasCodebaseIntelligenceSignal(graph);
   const minimumNamedSurfaces = accessTopologyAllowed ? 3 : codebaseIntelligenceAllowed ? 2 : 4;
   return hasKnownProductFrame && mentionedImportantNames >= minimumNamedSurfaces && behaviorWords >= 3 && concreteConcepts >= 6;
 }
@@ -2505,7 +2692,7 @@ function inferAiProductValueFromNarrative(description: string, fallback: string,
   if (hasSecureNetworkAccessSignal(normalized) && (!graph || workspaceHasSecureNetworkAccessSignal(graph))) {
     return 'This workspace appears to provide managed secure access by coordinating users, devices, policies, desktop agents, broker services, and API control surfaces so access can be requested, routed, and enforced from source-backed application boundaries.';
   }
-  if (/\b(codebase|cas|mcp|analysis|agent|work packet|analyzer)\b/.test(normalized) && (!graph || workspaceHasCodebaseIntelligenceSignal(graph))) {
+  if (/\b(codebase|cas|mcp|analysis|agent|agent context|analyzer)\b/.test(normalized) && (!graph || workspaceHasCodebaseIntelligenceSignal(graph))) {
     return 'This workspace appears to provide codebase intelligence for humans and AI agents by turning analyzed project structure, behavior, risks, and relationships into compact guidance and visual inspection surfaces.';
   }
   return fallback;
@@ -2517,10 +2704,10 @@ function usefulAiProductValueSummary(value: unknown, fallback?: string, graph?: 
   const normalized = normalizeAiItemName(text);
   const fallbackText = normalizeAiItemName(fallback || '');
   if (/\bfinancial application workspace\b/.test(fallbackText) && !/\b(account|portfolio|transaction|payment|balance|asset|trading|settlement|report|finance|financial)\b/.test(normalized)) return undefined;
-  if (/\bcodebase intelligence workspace\b/.test(fallbackText) && !/\b(codebase|analysis|cas|mcp|agent|graph|work packet|telemetry)\b/.test(normalized)) return undefined;
+  if (/\bcodebase intelligence workspace\b/.test(fallbackText) && !/\b(codebase|analysis|cas|mcp|agent|graph|agent context|telemetry)\b/.test(normalized)) return undefined;
   if (/\bsecure network access workspace\b/.test(fallbackText) && !hasSecureNetworkAccessSignal(normalized)) return undefined;
   if (hasSecureNetworkAccessSignal(normalized) && graph && !workspaceHasSecureNetworkAccessSignal(graph)) return undefined;
-  if (/\b(codebase intelligence|cas|mcp|work packet|analyzer)\b/.test(normalized) && graph && !workspaceHasCodebaseIntelligenceSignal(graph)) return undefined;
+  if (/\b(codebase intelligence|cas|mcp|agent context|analyzer)\b/.test(normalized) && graph && !workspaceHasCodebaseIntelligenceSignal(graph)) return undefined;
   const unsupportedMarketing = /\b(scalable|enterprise grade|enterprise-grade|real time|mission critical|mission-critical|compliance|hybrid environments?)\b/.test(normalized);
   if (unsupportedMarketing) return undefined;
   const hasConcreteProductTerms = /\b(access|identity|auth0|device|policy|network|gateway|agent|api|desktop|codebase|analysis|mcp|workflow|account|portfolio|transaction|payment|balance|asset|trading|settlement|report|finance|financial|cas|telemetry|graph)\b/.test(normalized);
@@ -2577,7 +2764,7 @@ function workspaceHasCodebaseIntelligenceSignal(graph: WorkspaceAnalysisGraph): 
     /\bmcp\b/,
     /\banalyzer\b/,
     /\banalysis\b/,
-    /\bwork packet\b/,
+    /\bagent context\b/,
   ]) >= 4;
 }
 
@@ -2671,7 +2858,7 @@ function workspaceNarrativePromptContext(graph: WorkspaceAnalysisGraph): Record<
   const productName = inferWorkspaceProductName(graph.codebases, graph.name);
   const forbiddenProductFrames = [
     ...(!workspaceHasSecureNetworkAccessSignal(graph) ? ['Do not describe this workspace as secure network access, zero-trust/network access, desktop-agent access brokering, or users/devices/policies/gateways/agents unless those exact broker/runtime facts are present in must_explain.'] : []),
-    ...(!workspaceHasCodebaseIntelligenceSignal(graph) ? ['Do not describe this workspace as codebase intelligence, CAS, MCP, analyzer, work-packet, or agent-context infrastructure unless those exact facts are present in must_explain.'] : []),
+    ...(!workspaceHasCodebaseIntelligenceSignal(graph) ? ['Do not describe this workspace as codebase intelligence, CAS, MCP, analyzer, work-context, or agent-context infrastructure unless those exact facts are present in must_explain.'] : []),
   ];
   return {
     compactPrompt: true,
@@ -2705,8 +2892,8 @@ function workspaceNarrativePromptContext(graph: WorkspaceAnalysisGraph): Record<
       'Return domain_items for every required_domain_names item, using exact names.',
       'Return capability_items for every required_capability_names item, using exact names.',
       'Every domain/capability description must include at least one meaningful word from the exact target name.',
-      'Every domain/capability description must name concrete evidence from its target packet: app, API, route, entity, workflow, infrastructure, external dependency, or distribution unit.',
-      'Only name deployables that appear in that target packet. If no target-specific deployable is listed, describe the domain or capability through entities, workflows, routes, or interfaces instead.',
+      'Every domain/capability description must name concrete evidence from its target context: app, API, route, entity, workflow, infrastructure, external dependency, or distribution unit.',
+      'Only name deployables that appear in that target context. If no target-specific deployable is listed, describe the domain or capability through entities, workflows, routes, or interfaces instead.',
       'If a target is supporting rather than core, say what support plane it represents instead of inflating it into a product capability.',
       'Capability/domain descriptions must be behavior-first; do not expose raw identifiers such as entity_*, snake_case table names, "via lib", or implementation-only names unless they are public product terms.',
     ],
@@ -2737,8 +2924,8 @@ function workspaceAiFactSheet(graph: WorkspaceAnalysisGraph, productName = infer
   const distributionUnits = graph.distribution_units.slice(0, 4).map(unit =>
     `${unit.name} ships ${unit.component_names.join(' + ')} together (${unit.kind})`
   );
-  const domains = primaryWorkspaceDomains(graph).map(domain => workspaceDomainPromptPacket(domain, graph, appById));
-  const capabilities = primaryWorkspaceCapabilities(graph).map(capability => workspaceCapabilityPromptPacket(capability, graph, appById));
+  const domains = primaryWorkspaceDomains(graph).map(domain => workspaceDomainPromptContext(domain, graph, appById));
+  const capabilities = primaryWorkspaceCapabilities(graph).map(capability => workspaceCapabilityPromptContext(capability, graph, appById));
   const workflows = graph.workspace_workflows.slice(0, 4).map(workflow =>
     `${workflow.name}: ${workflow.deployable_ids.map(id => appById.get(id)?.name || id).slice(0, 3).join(', ')}`
   );
@@ -2796,7 +2983,7 @@ function primaryWorkspaceCapabilities(graph: WorkspaceAnalysisGraph): WorkspaceC
   return graph.workspace_capabilities.slice(0, 8);
 }
 
-function workspaceDomainPromptPacket(
+function workspaceDomainPromptContext(
   domain: WorkspaceDomain,
   graph: WorkspaceAnalysisGraph,
   appById: Map<string, SystemApplication>,
@@ -2851,7 +3038,7 @@ function workspaceDomainPromptPacket(
   };
 }
 
-function workspaceCapabilityPromptPacket(
+function workspaceCapabilityPromptContext(
   capability: WorkspaceCapability,
   graph: WorkspaceAnalysisGraph,
   appById: Map<string, SystemApplication>,
@@ -3084,7 +3271,7 @@ function normalizeWorkspaceAiDescriptionText(value: unknown): string {
     .replace(/\banalyzer core\b/gi, 'analyzer core')
     .replace(/\bpython\b/g, 'Python')
     .replace(/\brepo level\b/gi, 'repo-level')
-    .replace(/\bwork packet\b/gi, 'work-packet')
+    .replace(/\bagent context\b/gi, 'work-context')
     .replace(/\bMCPs?\b/gi, match => match.toLowerCase().endsWith('s') ? 'MCPs' : 'MCP')
     .replace(/\bSDKs?\b/gi, match => match.toLowerCase().endsWith('s') ? 'SDKs' : 'SDK')
     .replace(/\bAPIs?\b/gi, match => match.toLowerCase().endsWith('s') ? 'APIs' : 'API')
@@ -3189,10 +3376,10 @@ export function selectWorkspaceAnalysisDetail(graph: WorkspaceAnalysisGraph, lev
   };
 }
 
-export function buildWorkspaceAgentPacket(
+export function buildWorkspaceAgentContext(
   graph: WorkspaceAnalysisGraph,
-  options: WorkspaceAgentPacketOptions = {},
-): WorkspaceAgentPacket {
+  options: WorkspaceAgentContextOptions = {},
+): WorkspaceAgentContext {
   const taskType = options.task_type || 'cross-repo';
   const maxApps = Math.min(5, clampPositiveInteger(options.max_apps, 4));
   const maxConnections = Math.min(3, clampPositiveInteger(options.max_connections, 3));
@@ -3252,7 +3439,7 @@ export function buildWorkspaceAgentPacket(
   const selectedApps = visibleApps
     .filter(app => selectedIds.has(app.id))
     .slice(0, maxApps)
-    .map(app => compactWorkspacePacketSurface(
+    .map(app => compactWorkspaceContextSurface(
       app,
       codebaseById.get(app.codebase_id),
       graph,
@@ -3315,13 +3502,13 @@ export function buildWorkspaceAgentPacket(
     .map(id => appById.get(id))
     .filter((app): app is SystemApplication => Boolean(app))
     .slice(0, 4)
-    .map(app => compactWorkspacePacketSurface(
+    .map(app => compactWorkspaceContextSurface(
       app,
       codebaseById.get(app.codebase_id),
       graph,
       ['Linked by selected connection but not part of selected deployable set.'],
     ));
-  const selectedEntityBundle = selectWorkspaceEntitiesForPacket(graph, terms, selectedAppIds, 2, 1);
+  const selectedEntityBundle = selectWorkspaceEntitiesForContext(graph, terms, selectedAppIds, 2, 1);
   const selectedDistributionUnits = graph.distribution_units
     .filter(unit => unit.component_deployable_ids.some(id => selectedAppIds.has(id)) || terms.some(term => scoreTextForTerms(`${unit.name} ${unit.component_names.join(' ')} ${unit.artifact_paths.join(' ')}`, [term]) > 0))
     .slice(0, 4);
@@ -3347,8 +3534,8 @@ export function buildWorkspaceAgentPacket(
       .slice(0, 6),
     ...(graph.unmatched_interfaces.length > 0 ? [`${graph.unmatched_interfaces.length} unmatched workspace interface(s) need deeper evidence before assuming no link exists.`] : []),
   ];
-  const packetWithoutBudget = {
-    product: 'workspace_agent_packet' as const,
+  const contextWithoutBudget = {
+    product: 'workspace_agent_context' as const,
     analysis_id: graph.id,
     workspace: {
       name: graph.name,
@@ -3396,32 +3583,32 @@ export function buildWorkspaceAgentPacket(
       agent_should_read_next: workspaceAgentReadNext(graph, selectedApps, selectedConnections, candidateConnections, options).slice(0, 3),
 	      validation: [
         'Use get_workspace_analysis detail_level=evidence before cross-repo contract, infra, auth, messaging, or deploy changes.',
-        'Use repo-level get_agent_work_packet before source edits.',
+        'Use repo-level get_agent_context before source edits.',
         'Preserve distribution units; topology-only links are not source-confirmed until repo CAS confirms them.',
       ],
       warnings: warnings.slice(0, 2).map(warning => conciseText(warning, 260)).filter((warning): warning is string => Boolean(warning)),
 	      next_mcp_calls: compactWorkspaceNextMcpCalls([
 	        { tool: 'get_workspace_analysis', when: 'Need full interfaces, runtime topology, unmatched interfaces, or evidence refs.', args: { analysis_id_or_name: graph.id, detail_level: 'evidence' } },
 	        { tool: 'get_workspace_entity_map', when: 'Need entity lineage, readers/writers, or cross-project entity paths.', args: { analysis_id_or_name: graph.id, target: options.target || graph.name, limit: 12 } },
-	        ...selectedApps.slice(0, 1).map(app => ({ tool: 'get_agent_work_packet', when: `Before editing ${app.project}:${app.name}.`, args: { path: app.project_path, workspace_analysis_id: graph.id, task: { task_type: taskType, target: options.target || app.name } } })),
+	        ...selectedApps.slice(0, 1).map(app => ({ tool: 'get_agent_context', when: `Before editing ${app.project}:${app.name}.`, args: { path: app.project_path, workspace_analysis_id: graph.id, task: { task_type: taskType, target: options.target || app.name } } })),
 	      ]),
 	    },
 	  };
   const fullTokens = estimatedJsonTokens(graph);
-  const packetTokens = estimatedJsonTokens(packetWithoutBudget);
+  const contextTokens = estimatedJsonTokens(contextWithoutBudget);
   return {
-    ...packetWithoutBudget,
-    packet_budget: {
+    ...contextWithoutBudget,
+    context_budget: {
       estimated_full_was_tokens: fullTokens,
-      estimated_packet_tokens: packetTokens,
-      estimated_token_reduction_percentage: Math.max(0, Math.round((1 - packetTokens / Math.max(fullTokens, 1)) * 100)),
+      estimated_context_tokens: contextTokens,
+      estimated_token_reduction_percentage: Math.max(0, Math.round((1 - contextTokens / Math.max(fullTokens, 1)) * 100)),
       signal_quality: workspaceSignalQuality(graph),
       signal_reasons: workspaceSignalReasons(graph).slice(0, 5),
     },
   };
 }
 
-function selectWorkspaceEntitiesForPacket(
+function selectWorkspaceEntitiesForContext(
   graph: WorkspaceAnalysisGraph,
   terms: string[],
   selectedAppIds: Set<string>,
@@ -3874,7 +4061,7 @@ function pickDefined(record: Record<string, unknown>): Record<string, unknown> {
   ));
 }
 
-function workspaceSignalQuality(graph: WorkspaceAnalysisGraph): WorkspaceAgentPacket['packet_budget']['signal_quality'] {
+function workspaceSignalQuality(graph: WorkspaceAnalysisGraph): WorkspaceAgentContext['context_budget']['signal_quality'] {
   if (graph.health.status === 'healthy' && graph.composition?.evidence_quality === 'high' && graph.workspace_narrative.source === 'ai') return 'high';
   if (graph.health.status === 'at-risk' || graph.composition?.evidence_quality === 'low') return 'low';
   return 'medium';
@@ -4302,6 +4489,7 @@ function runtimeComponentUsage(component: SystemRuntimeComponent, runtimeLinks: 
   const links = runtimeLinks.filter(link => link.source_component_id === component.id || link.target_component_id === component.id);
   if (links.some(link => link.evidence.some(isSourceBackedRuntimeEvidence))) return 'source-backed';
   if (links.length > 0) return 'topology-only';
+  if (component.refs.length > 0 || component.topology_surface) return 'topology-only';
   return 'declared';
 }
 
@@ -4434,7 +4622,7 @@ function workspaceAgentReadNext(
   }>,
   selectedConnections: Array<{ source: string; target: string; evidence_quality: WorkspaceLinkEvidenceQuality; link_id: string }>,
   candidateConnections: Array<{ source: string; target: string; evidence_quality: WorkspaceLinkEvidenceQuality; link_id: string }>,
-  options: WorkspaceAgentPacketOptions,
+  options: WorkspaceAgentContextOptions,
 ): Array<{ target: string; why: string; tool?: string; args?: Record<string, unknown> }> {
   const taskType = options.task_type || 'cross-repo';
   const items: Array<{ target: string; why: string; tool?: string; args?: Record<string, unknown> }> = [];
@@ -4442,7 +4630,7 @@ function workspaceAgentReadNext(
     items.push({
       target: `${app.project}:${app.name}`,
       why: 'Repo-level CAS is the source of file, idiom, invariant, and test detail before edits.',
-      tool: 'get_agent_work_packet',
+      tool: 'get_agent_context',
     });
   }
   for (const link of selectedConnections.slice(0, 1)) {
@@ -7485,7 +7673,7 @@ function buildWorkspaceRiskAreas(
       interface_ids: [],
       confidence: Math.min(0.9, 0.7 + Math.min(0.16, bucket.count * 0.02)),
       evidence: [...bucket.files.slice(0, 4), ...bucket.recommendations.slice(0, 2)].filter(Boolean).slice(0, 8),
-      next_mcp_calls: [{ tool: 'get_agent_work_packet', args: { path: bucket.project_path, task: { target: bucket.deployable_name, task_type: 'modify' } } }],
+      next_mcp_calls: [{ tool: 'get_agent_context', args: { path: bucket.project_path, task: { target: bucket.deployable_name, task_type: 'modify' } } }],
     });
   }
   for (const hotspot of activity.hotspots.slice(0, 8)) {
@@ -8451,6 +8639,21 @@ function inferNamedApplicationLinks(
     }
   }
 
+  const operationalClients = allApps.filter(app => /(?:^|[-_\s])(agent|client-service|gateway)(?:[-_\s]|$)/i.test(app.name));
+  const operationalBrokers = allApps.filter(app => /(?:^|[-_\s])(drop[-_\s]?server|broker|relay|coordinator)(?:[-_\s]|$)/i.test(app.name));
+  for (const source of operationalClients) {
+    for (const target of operationalBrokers) {
+      if (source.id === target.id || source.codebase_id !== target.codebase_id) continue;
+      const sameRuntimeFamily = source.runtime_component_ids.length > 0 && target.runtime_component_ids.length > 0;
+      const evidenceQuality: WorkspaceLinkEvidenceQuality = sameRuntimeFamily ? 'topology-backed' : 'name-inferred';
+      add(source, target, 'http-call', 'async', sameRuntimeFamily ? 0.78 : 0.58, evidenceQuality, [
+        `${source.name} and ${target.name} are operational peer surfaces in ${codebaseById.get(source.codebase_id)?.name || source.codebase_id}`,
+        source.path_hint || source.name,
+        target.path_hint || target.name,
+      ]);
+    }
+  }
+
   return links;
 }
 
@@ -8596,6 +8799,27 @@ function inferSystemInsights(
       codebase_ids: [...new Set([mcp.codebase_id, ...agentApps.map(app => app.codebase_id)])],
       confidence: 0.58,
       evidence: [mcp.path_hint || mcp.name, ...agentApps.map(app => app.path_hint || app.name).slice(0, 6)],
+    });
+  }
+
+  for (const app of applications.filter(app => visibleAppIds.has(app.id))) {
+    const appInterfaces = interfacesByApp.get(app.id) || [];
+    const sourceBackedIncoming = (incoming.get(app.id) || []).filter(applicationLinkHasSourceBackedEvidence);
+    const name = app.name.toLowerCase();
+    if (sourceBackedIncoming.length > 0) continue;
+    if (appInterfaces.length === 0) continue;
+    if (app.kind === 'app' || /website|marketing|docs|static|scan|demo|ui|web|frontend|client$/.test(name)) continue;
+    if (!/(api|service|worker|daemon|server)$/.test(name) && app.kind !== 'service' && app.kind !== 'worker') continue;
+    if (insights.some(insight => insight.type === 'provider-api-without-source-consumers' && insight.application_ids.includes(app.id))) continue;
+    insights.push({
+      id: `insight:unclaimed-runtime-surface:${slugify(app.id)}`,
+      type: 'unclaimed-runtime-surface',
+      title: `${app.name} has no source-backed incoming workspace consumers`,
+      description: `${app.name} is a runtime surface with CAS interfaces, but Klauro did not find source-backed incoming workspace calls, listeners, streams, or package consumers. Treat it as isolated, externally consumed, or missing caller evidence until repo-level CAS proves otherwise.`,
+      application_ids: [app.id],
+      codebase_ids: [app.codebase_id],
+      confidence: appInterfaces.some(item => item.role === 'provider') ? 0.76 : 0.66,
+      evidence: appInterfaces.slice(0, 8).map(item => `${item.role}:${item.kind}:${item.name}:${item.endpoint || item.topic || item.key || ''}`),
     });
   }
 
@@ -8862,7 +9086,7 @@ function inferWorkspaceProductValueSummary(
     /\bcodebase\b/,
     /\bcas\b/,
     /\bworkspace analysis\b/,
-    /\bwork packet\b/,
+    /\bagent context\b/,
     /\banalyzer\b/,
     /\bmcp\b/,
   ]);
@@ -8885,7 +9109,7 @@ function inferWorkspaceProductValueSummary(
     /\btrading?\b/,
   ]);
   if (codebaseSignals >= 4) {
-    return `${productName} is a codebase-intelligence workspace that turns repo analyses into graph, risk, idiom, and work-packet context for humans and AI agents.`;
+    return `${productName} is a codebase-intelligence workspace that turns repo analyses into graph, risk, idiom, and work-context context for humans and AI agents.`;
   }
   // Crypto / digital-asset frame is decided before the generic finance frame.
   // Blockchain RPC ports (8545/8546/30303/8899...) and blockchain-node

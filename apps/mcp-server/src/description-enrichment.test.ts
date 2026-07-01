@@ -12,9 +12,9 @@ test('manual element descriptions are stored and invalidated when source changes
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-description-project-'));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-description-storage-'));
   const previousStorage = process.env.KLAURO_STORAGE_PATH;
-  const previousLocal = process.env.AI_LOCAL_ENABLED;
+  const previousOpenAI = process.env.OPENAI_API_KEY;
   process.env.KLAURO_STORAGE_PATH = storage;
-  process.env.AI_LOCAL_ENABLED = 'true';
+  process.env.OPENAI_API_KEY = 'test-openai-key';
 
   const sourceFile = path.join(root, 'src', 'drivers.service.ts');
   await fs.ensureDir(path.dirname(sourceFile));
@@ -81,8 +81,8 @@ test('manual element descriptions are stored and invalidated when source changes
     aiService.generateComponentDescription = originalGenerate;
     if (previousStorage === undefined) delete process.env.KLAURO_STORAGE_PATH;
     else process.env.KLAURO_STORAGE_PATH = previousStorage;
-    if (previousLocal === undefined) delete process.env.AI_LOCAL_ENABLED;
-    else process.env.AI_LOCAL_ENABLED = previousLocal;
+    if (previousOpenAI === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousOpenAI;
     await fs.remove(root);
     await fs.remove(storage);
   }
@@ -92,9 +92,9 @@ test('manual element descriptions reject unsupported marketing claims', async ()
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-description-reject-'));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-description-storage-'));
   const previousStorage = process.env.KLAURO_STORAGE_PATH;
-  const previousLocal = process.env.AI_LOCAL_ENABLED;
+  const previousOpenAI = process.env.OPENAI_API_KEY;
   process.env.KLAURO_STORAGE_PATH = storage;
-  process.env.AI_LOCAL_ENABLED = 'true';
+  process.env.OPENAI_API_KEY = 'test-openai-key';
 
   const sourceFile = path.join(root, 'src', 'drivers.service.ts');
   await fs.ensureDir(path.dirname(sourceFile));
@@ -135,8 +135,8 @@ test('manual element descriptions reject unsupported marketing claims', async ()
     aiService.generateComponentDescription = originalGenerate;
     if (previousStorage === undefined) delete process.env.KLAURO_STORAGE_PATH;
     else process.env.KLAURO_STORAGE_PATH = previousStorage;
-    if (previousLocal === undefined) delete process.env.AI_LOCAL_ENABLED;
-    else process.env.AI_LOCAL_ENABLED = previousLocal;
+    if (previousOpenAI === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousOpenAI;
     await fs.remove(root);
     await fs.remove(storage);
   }
@@ -146,9 +146,9 @@ test('manual element descriptions retry once and store the repaired grounded ans
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-description-repair-'));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-description-storage-'));
   const previousStorage = process.env.KLAURO_STORAGE_PATH;
-  const previousLocal = process.env.AI_LOCAL_ENABLED;
+  const previousOpenAI = process.env.OPENAI_API_KEY;
   process.env.KLAURO_STORAGE_PATH = storage;
-  process.env.AI_LOCAL_ENABLED = 'true';
+  process.env.OPENAI_API_KEY = 'test-openai-key';
 
   const sourceFile = path.join(root, 'src', 'drivers.service.ts');
   await fs.ensureDir(path.dirname(sourceFile));
@@ -216,8 +216,8 @@ test('manual element descriptions retry once and store the repaired grounded ans
     aiService.generateComponentDescription = originalGenerate;
     if (previousStorage === undefined) delete process.env.KLAURO_STORAGE_PATH;
     else process.env.KLAURO_STORAGE_PATH = previousStorage;
-    if (previousLocal === undefined) delete process.env.AI_LOCAL_ENABLED;
-    else process.env.AI_LOCAL_ENABLED = previousLocal;
+    if (previousOpenAI === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousOpenAI;
     await fs.remove(root);
     await fs.remove(storage);
   }
@@ -227,9 +227,9 @@ test('manual element descriptions reject generic filler word salad that the vali
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-description-filler-'));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-description-storage-'));
   const previousStorage = process.env.KLAURO_STORAGE_PATH;
-  const previousLocal = process.env.AI_LOCAL_ENABLED;
+  const previousOpenAI = process.env.OPENAI_API_KEY;
   process.env.KLAURO_STORAGE_PATH = storage;
-  process.env.AI_LOCAL_ENABLED = 'true';
+  process.env.OPENAI_API_KEY = 'test-openai-key';
 
   const cas: CASOutput = {
     cas_version: '1.10.0',
@@ -271,8 +271,8 @@ test('manual element descriptions reject generic filler word salad that the vali
     aiService.generateComponentDescription = originalGenerate;
     if (previousStorage === undefined) delete process.env.KLAURO_STORAGE_PATH;
     else process.env.KLAURO_STORAGE_PATH = previousStorage;
-    if (previousLocal === undefined) delete process.env.AI_LOCAL_ENABLED;
-    else process.env.AI_LOCAL_ENABLED = previousLocal;
+    if (previousOpenAI === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousOpenAI;
     await fs.remove(root);
     await fs.remove(storage);
   }
@@ -282,9 +282,9 @@ test('manual element descriptions reject file coordination summaries from local 
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-description-file-restatement-'));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-description-storage-'));
   const previousStorage = process.env.KLAURO_STORAGE_PATH;
-  const previousLocal = process.env.AI_LOCAL_ENABLED;
+  const previousOpenAI = process.env.OPENAI_API_KEY;
   process.env.KLAURO_STORAGE_PATH = storage;
-  process.env.AI_LOCAL_ENABLED = 'true';
+  process.env.OPENAI_API_KEY = 'test-openai-key';
 
   const cas: CASOutput = {
     cas_version: '1.10.0',
@@ -296,9 +296,9 @@ test('manual element descriptions reject file coordination summaries from local 
     analyzer_contributions: [],
     progressive_levels: { levels: {}, level_definitions: [] } as any,
     system_capabilities: [{
-      id: 'cap_packets',
-      name: 'Agent Work Packets',
-      description: 'Agent Work Packets turns graph matches and tests into a compact coding brief for agents.',
+      id: 'cap_contexts',
+      name: 'Agent Contexts',
+      description: 'Agent Contexts turns graph matches and tests into compact coding context for agents.',
       category: 'core',
       criticality: 'critical',
       criticality_factors: [],
@@ -310,14 +310,14 @@ test('manual element descriptions reject file coordination summaries from local 
 
   const originalGenerate = aiService.generateComponentDescription;
   aiService.generateComponentDescription = async () =>
-    'Agent Work Packets manages the creation and coordination of files related to agent adoption and measurement, including files like agent-adoption.ts.';
+    'Agent Contexts manages the creation and coordination of files related to agent adoption and measurement, including files like agent-adoption.ts.';
 
   try {
     await saveAnalysis(root, cas);
     await assert.rejects(
       () => generateElementDescription({
         projectPath: root,
-        target: 'Agent Work Packets',
+        target: 'Agent Contexts',
         targetKind: 'capability',
       }),
       /low-quality or ungrounded description/,
@@ -326,8 +326,8 @@ test('manual element descriptions reject file coordination summaries from local 
     aiService.generateComponentDescription = originalGenerate;
     if (previousStorage === undefined) delete process.env.KLAURO_STORAGE_PATH;
     else process.env.KLAURO_STORAGE_PATH = previousStorage;
-    if (previousLocal === undefined) delete process.env.AI_LOCAL_ENABLED;
-    else process.env.AI_LOCAL_ENABLED = previousLocal;
+    if (previousOpenAI === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousOpenAI;
     await fs.remove(root);
     await fs.remove(storage);
   }
@@ -335,9 +335,9 @@ test('manual element descriptions reject file coordination summaries from local 
 
 test('manual capability descriptions reject implementation-function summaries from local models', async () => {
   const result = validateDescription(
-    'Agent Work Packets organizes and executes specific functions like parseArgs, formatTable, and renderRow to process and structure data.',
-    { kind: 'capability', name: 'Agent Work Packets', target: { related_domains: ['agent'] } },
-    groundingCas({ primary_domain: 'agent-development', core_concepts: ['agent', 'work packet'] }),
+    'Agent Contexts organizes and executes specific functions like parseArgs, formatTable, and renderRow to process and structure data.',
+    { kind: 'capability', name: 'Agent Contexts', target: { related_domains: ['agent'] } },
+    groundingCas({ primary_domain: 'agent-development', core_concepts: ['agent', 'agent context'] }),
   );
 
   assert.equal(result.ok, false);
@@ -517,9 +517,9 @@ test('manual capability description prompt omits internal helper operations', as
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-description-context-'));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-description-storage-'));
   const previousStorage = process.env.KLAURO_STORAGE_PATH;
-  const previousLocal = process.env.AI_LOCAL_ENABLED;
+  const previousOpenAI = process.env.OPENAI_API_KEY;
   process.env.KLAURO_STORAGE_PATH = storage;
-  process.env.AI_LOCAL_ENABLED = 'true';
+  process.env.OPENAI_API_KEY = 'test-openai-key';
 
   const cas: CASOutput = {
     cas_version: '1.10.0',
@@ -527,8 +527,8 @@ test('manual capability description prompt omits internal helper operations', as
     analysis_id: 'analysis-description-context-test',
     system: { id: 'system-test', name: 'klauro', type: 'service', root_path: root },
     nodes: [{
-      id: 'node-work-packet',
-      name: 'getAgentWorkPacket',
+      id: 'node-work-context',
+      name: 'getAgentContext',
       type: 'function',
       source: { file: 'src/agent-adoption.ts', line: 1 },
       metadata: {},
@@ -537,14 +537,14 @@ test('manual capability description prompt omits internal helper operations', as
     analyzer_contributions: [],
     progressive_levels: { levels: {}, level_definitions: [] } as any,
     system_capabilities: [{
-      id: 'cap_packets',
-      name: 'Agent Work Packets',
-      description: 'Agent Work Packets turns graph matches and tests into a compact coding brief for agents.',
+      id: 'cap_contexts',
+      name: 'Agent Contexts',
+      description: 'Agent Contexts turns graph matches and tests into compact coding context for agents.',
       category: 'core',
       criticality: 'critical',
       criticality_factors: [],
       operations: [{
-        entry_point_id: 'node:node-work-packet',
+        entry_point_id: 'node:node-work-context',
         entry_point_type: 'internal',
         action: 'Create',
         path_or_command: 'src/agent-adoption.ts',
@@ -558,27 +558,27 @@ test('manual capability description prompt omits internal helper operations', as
   const originalGenerate = aiService.generateComponentDescription;
   aiService.generateComponentDescription = async (context: any) => {
     facts = context.additionalContext?.target?.facts;
-    return 'Agent Work Packets gives coding agents a compact brief that points them to the right graph target, local risks, nearby tests, and validation steps before they edit.';
+    return 'Agent Contexts gives coding agents compact context that points them to the right graph target, local risks, nearby tests, and validation steps before they edit.';
   };
 
   try {
     await saveAnalysis(root, cas);
     const generated = await generateElementDescription({
       projectPath: root,
-      target: 'Agent Work Packets',
+      target: 'Agent Contexts',
       targetKind: 'capability',
     });
 
     assert.equal(generated.status, 'success');
     assert.deepEqual(facts.operations, []);
-    assert.deepEqual(facts.operation_concepts, ['Agent Work Packet']);
-    assert.doesNotMatch(JSON.stringify(facts), /agent-adoption\.ts|getAgentWorkPacket/);
+    assert.deepEqual(facts.operation_concepts, ['Agent Context']);
+    assert.doesNotMatch(JSON.stringify(facts), /agent-adoption\.ts|getAgentContext/);
   } finally {
     aiService.generateComponentDescription = originalGenerate;
     if (previousStorage === undefined) delete process.env.KLAURO_STORAGE_PATH;
     else process.env.KLAURO_STORAGE_PATH = previousStorage;
-    if (previousLocal === undefined) delete process.env.AI_LOCAL_ENABLED;
-    else process.env.AI_LOCAL_ENABLED = previousLocal;
+    if (previousOpenAI === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousOpenAI;
     await fs.remove(root);
     await fs.remove(storage);
   }
@@ -588,9 +588,9 @@ test('manual capability prompt derives behavior hints and excludes test-helper s
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-description-skill-context-'));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-description-storage-'));
   const previousStorage = process.env.KLAURO_STORAGE_PATH;
-  const previousLocal = process.env.AI_LOCAL_ENABLED;
+  const previousOpenAI = process.env.OPENAI_API_KEY;
   process.env.KLAURO_STORAGE_PATH = storage;
-  process.env.AI_LOCAL_ENABLED = 'true';
+  process.env.OPENAI_API_KEY = 'test-openai-key';
 
   await fs.outputFile(path.join(root, 'src/agents/skills/config.ts'), 'export function resolveSkillConfig() { return { enabled: true }; }\n');
   await fs.outputFile(path.join(root, 'src/agents/skills/frontmatter.ts'), 'export function resolveSkillInvocationPolicy() { return "automatic"; }\n');
@@ -688,8 +688,8 @@ test('manual capability prompt derives behavior hints and excludes test-helper s
     aiService.generateComponentDescription = originalGenerate;
     if (previousStorage === undefined) delete process.env.KLAURO_STORAGE_PATH;
     else process.env.KLAURO_STORAGE_PATH = previousStorage;
-    if (previousLocal === undefined) delete process.env.AI_LOCAL_ENABLED;
-    else process.env.AI_LOCAL_ENABLED = previousLocal;
+    if (previousOpenAI === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousOpenAI;
     await fs.remove(root);
     await fs.remove(storage);
   }
@@ -699,9 +699,9 @@ test('manual capability prompt marks generic analyzer-derived names so AI uses b
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-description-mutation-context-'));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-description-storage-'));
   const previousStorage = process.env.KLAURO_STORAGE_PATH;
-  const previousLocal = process.env.AI_LOCAL_ENABLED;
+  const previousOpenAI = process.env.OPENAI_API_KEY;
   process.env.KLAURO_STORAGE_PATH = storage;
-  process.env.AI_LOCAL_ENABLED = 'true';
+  process.env.OPENAI_API_KEY = 'test-openai-key';
 
   await fs.outputFile(path.join(root, 'apps/bos-web/src/pages/Approvals.tsx'), 'export function Approvals() { return approveRequest(); }\n');
   await fs.outputFile(path.join(root, 'apps/bos-web/src/pages/Operations.tsx'), 'export function Operations() { return pauseOperation(); }\n');
@@ -781,8 +781,8 @@ test('manual capability prompt marks generic analyzer-derived names so AI uses b
     aiService.generateComponentDescription = originalGenerate;
     if (previousStorage === undefined) delete process.env.KLAURO_STORAGE_PATH;
     else process.env.KLAURO_STORAGE_PATH = previousStorage;
-    if (previousLocal === undefined) delete process.env.AI_LOCAL_ENABLED;
-    else process.env.AI_LOCAL_ENABLED = previousLocal;
+    if (previousOpenAI === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousOpenAI;
     await fs.remove(root);
     await fs.remove(storage);
   }
@@ -792,9 +792,9 @@ test('manual capability descriptions repair generic analyzer-derived subject pre
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-description-generic-repair-'));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-description-storage-'));
   const previousStorage = process.env.KLAURO_STORAGE_PATH;
-  const previousLocal = process.env.AI_LOCAL_ENABLED;
+  const previousOpenAI = process.env.OPENAI_API_KEY;
   process.env.KLAURO_STORAGE_PATH = storage;
-  process.env.AI_LOCAL_ENABLED = 'true';
+  process.env.OPENAI_API_KEY = 'test-openai-key';
 
   await fs.outputFile(path.join(root, 'apps/bos-web/src/pages/Approvals.tsx'), 'export function Approvals() { return approveRequest(); }\n');
   await fs.outputFile(path.join(root, 'apps/bos-web/src/pages/Connectors.tsx'), 'export function Connectors() { return syncConnector(); }\n');
@@ -849,8 +849,8 @@ test('manual capability descriptions repair generic analyzer-derived subject pre
     aiService.generateComponentDescription = originalGenerate;
     if (previousStorage === undefined) delete process.env.KLAURO_STORAGE_PATH;
     else process.env.KLAURO_STORAGE_PATH = previousStorage;
-    if (previousLocal === undefined) delete process.env.AI_LOCAL_ENABLED;
-    else process.env.AI_LOCAL_ENABLED = previousLocal;
+    if (previousOpenAI === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousOpenAI;
     await fs.remove(root);
     await fs.remove(storage);
   }

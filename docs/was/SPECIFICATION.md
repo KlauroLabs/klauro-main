@@ -78,6 +78,7 @@ interface WorkspaceAnalysis {
   unmatched_interfaces: WorkspaceUnmatchedInterface[];
   workspace_narrative: WorkspaceNarrative;
   deterministic_narrative: WorkspaceNarrative;
+  ai_enrichment: WorkspaceAiProviderMetadata;
   detail_views: WorkspaceDetailViews;
   validation: WorkspaceValidation;
   quality_flags: WorkspaceQualityFlag[];
@@ -107,7 +108,7 @@ interface WorkspaceAnalysis {
 
 `WorkspaceInsight` is a higher-order interpretation of deterministic links, such as UI/API pairing, broker service, relay/fallback path, MCP/agent control surface, or declared-but-unused infrastructure. Insights MUST cite evidence and confidence.
 
-`WorkspaceNarrative.product_value_summary` is the required one-sentence explanation of the product or business job the workspace appears to serve, derived from deterministic WAS facts and AI-enriched by the default summary pass. It MUST NOT invent revenue, customers, compliance posture, or market claims. `WorkspaceNarrative.description` is the longer whole-system explanation of how the main deployables and dependencies fit together.
+`WorkspaceNarrative.product_value_summary` is the required one-sentence explanation of the product or business job the workspace appears to serve, derived from deterministic WAS facts and AI-enriched by the default summary pass. It MUST NOT invent revenue, customers, compliance posture, or market claims. `WorkspaceNarrative.description` is the longer whole-system explanation of how the main deployables and dependencies fit together. `WorkspaceNarrative` and `ai_enrichment` MUST expose the provider/model provenance for generated text, such as `deepinfra`, `azure-openai`, `openai-compatible`, `openai`, `anthropic`, or `fallback`, plus the narrative model and structured model when known.
 
 `WorkspaceHealth`, `WorkspaceRiskArea`, `WorkspaceActivitySummary`, and `WorkspaceTelemetrySummary` describe the whole-workspace operating picture. They SHOULD include risk severity, high-priority work items, analysis trust, change rate, contributors when available, telemetry/instrumentation status, and follow-up MCP calls. These objects do not replace repo-level CAS risks or runtime facts; they select and connect them at workspace level.
 
@@ -126,7 +127,7 @@ WAS MUST support progressive retrieval for MCP/API callers. Detail levels are ab
 - `evidence`: the overview plus interfaces, full integration links, runtime topology, data-flow paths, workspace entity paths, insights, unmatched interfaces, and validation.
 - `full`: the complete Workspace analysis artifact.
 
-The overview layer is the default human/API map. It MUST include `composition` so clients can decide whether the primary presentation should be app-to-app system topology or package/library architecture. For agent context injection, MCP SHOULD expose an additional task-scoped Workspace agent packet derived from WAS. The packet MUST NOT introduce new graph facts; it only selects and compresses existing WAS facts for a task. It SHOULD include selected surfaces with explicit `deployable` and `surface_kind` fields, source-backed runtime connections separately from package/code dependencies and inferred candidates, external dependency usage (`source-backed`, `topology-only`, `declared`), isolated surfaces, token-budget estimates compared with full WAS injection, validation rules, an `agent_should_read_next` list, and follow-up repo-level MCP calls.
+The overview layer is the default human/API map. It MUST include `composition` so clients can decide whether the primary presentation should be app-to-app system topology or package/library architecture. For agent context injection, MCP SHOULD expose an additional task-scoped Workspace agent context derived from WAS. The context MUST NOT introduce new graph facts; it only selects and compresses existing WAS facts for a task. It SHOULD include selected surfaces with explicit `deployable` and `surface_kind` fields, source-backed runtime connections separately from package/code dependencies and inferred candidates, external dependency usage (`source-backed`, `topology-only`, `declared`), isolated surfaces, token-budget estimates compared with full WAS injection, validation rules, an `agent_should_read_next` list, and follow-up repo-level MCP calls.
 
 Agents SHOULD only request deeper levels when a task requires evidence, contract details, runtime topology, or unresolved interface investigation.
 
@@ -139,7 +140,7 @@ WAS consumers may retrieve the same facts through different lenses:
 - CEO/product view: whole-system description, value drivers, domains, primary capabilities, major customer/user surfaces, external dependencies, and business-critical risks.
 - Senior engineer/DOE view: topology, deployment environments, ownership, integration contracts, data-flow paths, risk/blast radius, stale inputs, and unresolved interfaces.
 - New engineer view: what to read first, how the apps fit together, which repos own which surfaces, common workflows, and drilldown links into CAS.
-- AI agent view: compact workspace packet with selected surfaces, explicit deployable flags, source-backed runtime links, package/code dependencies marked separately from runtime behavior, topology-only dependencies, risk/idiom/validation guidance, and exact repo-level MCP calls.
+- AI agent view: compact workspace context with selected surfaces, explicit deployable flags, source-backed runtime links, package/code dependencies marked separately from runtime behavior, topology-only dependencies, risk/idiom/validation guidance, and exact repo-level MCP calls.
 
 These views are retrieval profiles. They MUST NOT create separate truths or infer repo-local implementation facts in WAS.
 
@@ -156,7 +157,7 @@ These views are retrieval profiles. They MUST NOT create separate truths or infe
 - WAS MUST report isolated deployables explicitly instead of forcing every app/service/site to connect. Isolated deployables are valid product facts and MAY be the correct result.
 - WAS SHOULD identify known gaps as unmatched interfaces instead of silently omitting them.
 - WAS SHOULD describe business/product value only from available CAS/WAS evidence and SHOULD mark low-confidence claims.
-- AI enrichment is required for every default CAS/WAS analysis at the system/workspace level. Overall descriptions, domains, and primary capabilities MUST be AI-generated or AI-reviewed from deterministic evidence in the default summary pass. If AI cannot run, the artifact MUST expose `source: ai-required-degraded`, `ai_required: true`, `generation_pass: default-summary`, and a degraded reason. Deeper entity, critical-flow, deployable, interface, and node descriptions MAY be generated lazily. Individual function/node descriptions MAY remain optional/manual.
+- AI enrichment is required for every default CAS/WAS analysis at the system/workspace level. Overall descriptions, domains, and primary capabilities MUST be AI-generated or AI-reviewed from deterministic evidence in the default summary pass. If AI cannot run, the artifact MUST expose `source: ai-required-degraded`, `ai_required: true`, `generation_pass: default-summary`, provider provenance, and a degraded reason. Deeper entity, critical-flow, deployable, interface, and node descriptions MAY be generated lazily. Individual function/node descriptions MAY remain optional/manual.
 - AI text MUST reference deterministic evidence and MUST NOT create new graph facts.
 - WAS MUST expose freshness/trust. Agents and APIs must be able to tell whether all CAS inputs are current, stale, missing required facts, or only partially trustworthy.
 - WAS MUST support drilldown without duplicating repo-local details. Workspace objects should include stable project ids, deployable ids, interface ids, repo paths, and next MCP calls that point back to repo-level CAS tools.
@@ -197,7 +198,7 @@ interface WorkspaceValidation {
 
 WAS validation fails when the workspace output is missing projects, deployables, runtime topology, unmatched interface reporting, evidence, summary, health, or narrative fields. WAS validation MUST NOT fail only because a workspace has zero integration links or zero interfaces; single-service, standalone, and disconnected workspaces are valid shapes when accurately reported.
 
-Validation and truth quality are separate gates. Schema conformance answers "is this a WAS artifact?" Truth quality answers "is this current, source-backed, AI-enriched at the required level, and useful enough for default agent use?"
+Validation and truth quality are separate gates. Schema conformance answers "is this a WAS artifact?" Truth quality answers "is this current, source-backed, AI-enriched at the required level, and useful enough for agent use?"
 
 ## 10. MCP Contract
 
@@ -205,8 +206,8 @@ The MCP/API surface should include:
 
 - `resolve_workspace_analysis`: select the best WAS for a path or set of paths.
 - `get_workspace_summary`: retrieve compact narrative, capabilities, domains, health, risk, activity, telemetry, and freshness.
-- `get_workspace_agent_packet`: retrieve compact task-scoped workspace context for agents before cross-repo exploration.
+- `get_workspace_agent_context`: retrieve compact task-scoped workspace context for agents before cross-repo exploration.
 - `get_workspace_freshness`: compare WAS inputs against current CAS analyses.
 - `validate_was_contract`: score WAS contract conformance, freshness, and required AI enrichment.
-- `get_workspace_health`, `get_workspace_risk_packet`, `get_workspace_capability_map`, and `get_workspace_workflow`: retrieve focused whole-workspace views with repo-level drilldown calls.
-- Repo-level `get_agent_work_packet`, `get_idiom_aware_work_packet`, `open_agent_workbench`, and `preflight_agent_change` should accept an optional workspace analysis id so agents can carry WAS context while editing a specific CAS-backed project.
+- `get_workspace_health`, `get_workspace_risk_context`, `get_workspace_capability_map`, and `get_workspace_workflow`: retrieve focused whole-workspace views with repo-level drilldown calls.
+- Repo-level `get_agent_context`, `get_idiom_aware_agent_context`, `open_agent_workbench`, and `preflight_agent_change` should accept an optional workspace analysis id so agents can carry WAS context while editing a specific CAS-backed project.

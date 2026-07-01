@@ -18,7 +18,6 @@ const AI_ENV_KEYS = [
   'KLAURO_EMBEDDING_ENABLED',
   'OPENAI_API_KEY',
   'ANTHROPIC_API_KEY',
-  'AI_LOCAL_ENABLED',
 ] as const;
 
 const VOLATILE_KEYS = new Set([

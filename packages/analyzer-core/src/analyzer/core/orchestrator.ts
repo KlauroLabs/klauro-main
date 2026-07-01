@@ -100,7 +100,7 @@ import { AnalysisRunLog } from './run-log';
 import { EmbeddingPhase, type EmbeddingPhaseConfig } from '../embedding/embedding-phase';
 import { aiService } from '../../ai/ai-service';
 import { setAICacheProjectScope } from '../../ai/ai-cache';
-import { aiConfig, getAIConfig, isLocalAIProvider } from '../../config/ai.config';
+import { aiConfig, getAIConfig } from '../../config/ai.config';
 import { validateElementDescription as validateSharedElementDescription } from '../../ai/element-description-validator';
 import { filterPlausibleExternalServices } from '../../ai/external-service-plausibility';
 
@@ -147,7 +147,7 @@ export interface IncrementalAnalysisOptions {
 }
 
 export const KLAURO_SELF_CAPABILITY_NAMES: Readonly<Record<string, string>> = {
-  agent: 'Agent Work Packets',
+  agent: 'Agent Context',
   analysis: 'Codebase Analysis',
   architecture: 'Architecture Mapping',
   answer: 'Answer Packs',
@@ -178,8 +178,9 @@ export const KLAURO_SELF_CAPABILITY_DESCRIPTIONS: Readonly<Record<string, string
   'architecture mapping': 'Architecture Mapping identifies local patterns, ownership layers, and inventories so agents can place changes in the right architectural boundary.',
   'greenfield planning': 'Greenfield Planning compares a proposed product slice against existing capability memory so new projects avoid duplicate concepts and start with coherent architecture.',
   'proposal preview': 'Proposal Preview analyzes a proposed codebase iteration as a temporary CAS graph so reviewers can inspect changed contracts, risks, idioms, and test impact before the real repo changes.',
-  'agent work packets': 'Agent Work Packets turns CAS graph matches, risks, idioms, and tests into a compact coding brief before an AI agent edits a repository.',
-  'mcp server': 'MCP Server exposes CAS tools, prompts, and compact work packets so AI agents can query codebase structure before choosing source files to read or edit.',
+  'agent context': 'Agent Context turns CAS graph matches, risks, idioms, and tests into a compact coding context before an AI agent edits a repository.',
+  'agent contexts': 'Agent Context turns CAS graph matches, risks, idioms, and tests into a compact coding context before an AI agent edits a repository.',
+  'mcp server': 'MCP Server exposes CAS tools, prompts, and compact agent contexts so AI agents can query codebase structure before choosing source files to read or edit.',
   'codebase idiom guidance': 'Codebase Idiom Guidance identifies local conventions and validates proposed changes against the patterns already used in the repository.',
   'analysis storage': 'Analysis Storage persists CAS outputs, snapshots, incremental state, and compressed artifacts so later MCP calls can reuse prior analysis.',
   'klauro runtime sdk': 'Klauro Runtime SDK captures request, command, function, and error traces so runtime telemetry can be correlated back to the static CAS graph.',
@@ -3008,9 +3009,18 @@ export class AnalyzerOrchestrator {
         '**/node_modules/**',
         '**/dist/**',
         '**/build/**',
+        '**/out/**',
         '**/.git/**',
+        '**/.claude/**',
+        '**/.codex/**',
+        '**/.agents/**',
+        '**/.klauro*/**',
         '**/coverage/**',
         '**/.nyc_output/**',
+        '**/.next/**',
+        '**/.turbo/**',
+        '**/.cache/**',
+        '**/.vite/**',
         '**/__pycache__/**',
         '**/.pytest_cache/**',
         '**/target/**',
@@ -3026,6 +3036,14 @@ export class AnalyzerOrchestrator {
         '**/*-extracted/**',
         'examples/**',
         '**/examples/**',
+        'fixtures/**',
+        '**/fixtures/**',
+        '__fixtures__/**',
+        '**/__fixtures__/**',
+        'testdata/**',
+        '**/testdata/**',
+        'cas-tests/**',
+        '**/cas-tests/**',
         'samples/**',
         '**/samples/**',
         'site-packages/**',
@@ -3047,6 +3065,14 @@ export class AnalyzerOrchestrator {
         '.ruff_cache/**',
         '**/.ruff_cache/**',
         '**/.dart_tool/**',
+        '**/storybook-static/**',
+        '**/storybook-build/**',
+        '**/public/assets/**',
+        '**/static/assets/**',
+        '**/src/assets/**',
+        '**/web/assets/**',
+        '**/Generated/**',
+        '**/generated/**',
         '**/bin/**',
         '**/obj/**'
       ],
@@ -7567,8 +7593,9 @@ export class AnalyzerOrchestrator {
           aiService.generateComponentDescription({
             additionalContext: {
               // Structured extraction tolerates a smaller/faster model well and
-              // benefits from its reliability; opt in via OPENAI_STRUCTURED_MODEL.
-              model: process.env.OPENAI_STRUCTURED_MODEL || undefined,
+              // benefits from its reliability; opt in via DEEPINFRA_STRUCTURED_MODEL
+              // or OPENAI_STRUCTURED_MODEL.
+              model: process.env.DEEPINFRA_STRUCTURED_MODEL || process.env.OPENAI_STRUCTURED_MODEL || undefined,
               task: 'You are cataloging the BUSINESS VALUE of a codebase. From the deterministic facts (user journeys, data entities, candidate route areas, external services), return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","entities":["..."],"journeys":["..."]}]}. Rules: (1) Each capability is something the product lets its USERS or OPERATORS do, in plain product language, grounded in the journeys and entities it touches — NOT a CRUD/route/lifecycle mechanism. (2) MERGE related route areas and journeys into real capabilities; do not emit one per route. (3) EXCLUDE purely supporting or infrastructural concerns (authentication, session/token handling, logging, notifications, caching, message brokering, generic CRUD, health checks, config) UNLESS that concern is the product\'s actual value. (4) category="core" only for the capabilities that ARE the product\'s value proposition; "supporting" for necessary-but-not-the-value. (5) entities/journeys must be names copied from the supplied facts. (6) Each description is ONE concise sentence, 8-16 words — no clauses, no lists. Return 6 to 12 capabilities, ordered most-core first.',
               style: 'Write like a product engineer or PM. Plain language. No markdown. Value verbs (lets, gives, tracks, surfaces, exposes, manages, monitors, secures, settles, enforces). No CRUD verbs, no "lifecycle", no route counts, no file paths, no marketing fluff. Each description names the concrete user-facing concept the entities point to.',
               product: {
@@ -7755,7 +7782,7 @@ export class AnalyzerOrchestrator {
     const configuredBudget = Number(process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS || '');
     const budgetMs = Number.isFinite(configuredBudget) && configuredBudget > 0
       ? configuredBudget
-      : isLocalAIProvider() ? 240000 : 20000;
+      : 20000;
     if (budgetMs <= 0) {
       this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'ai_skipped', false, 'budget-disabled', budgetMs);
       return;
@@ -7828,7 +7855,7 @@ export class AnalyzerOrchestrator {
     const klauroSelfConcepts = [
       'CAS relationship graph',
       'codebase analysis',
-      'MCP agent work packets',
+      'MCP agent contexts',
       'proposal previews',
       'idiom guidance',
       'incremental analysis',
@@ -8453,7 +8480,7 @@ export class AnalyzerOrchestrator {
     if (tokens.includes('pool') && tokens.includes('decryption')) {
       return 'pool-plumbing-decryption-label';
     }
-    if (tokens.includes('analysis') && portfolio && !has(['investment', 'trading', 'asset', 'solana'])) {
+    if (tokens.includes('analysis') && portfolio && !has(['investment', 'trading', 'asset', 'solana', 'automation'])) {
       return 'portfolio-analysis-without-finance-anchor';
     }
     return undefined;
@@ -8474,17 +8501,15 @@ export class AnalyzerOrchestrator {
     const freshConfig = getAIConfig();
     return Boolean(
       freshConfig.openai.apiKey ||
-      freshConfig.anthropic.apiKey ||
-      process.env.AI_LOCAL_ENABLED === 'true'
+      freshConfig.anthropic.apiKey
     );
   }
 
   private configuredAiInterpretationProviders(): string[] {
     const freshConfig = getAIConfig();
     const providers: string[] = [];
-    if (freshConfig.openai.apiKey) providers.push('openai');
+    if (freshConfig.openai.apiKey) providers.push(process.env.DEEPINFRA_API_KEY && freshConfig.openai.apiKey === process.env.DEEPINFRA_API_KEY ? 'deepinfra' : 'openai');
     if (freshConfig.anthropic.apiKey) providers.push('anthropic');
-    if (process.env.AI_LOCAL_ENABLED === 'true') providers.push('local');
     return providers;
   }
 
@@ -8532,7 +8557,7 @@ export class AnalyzerOrchestrator {
     const configuredBudget = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS || '');
     const budgetMs = Number.isFinite(configuredBudget) && configuredBudget > 0
       ? configuredBudget
-      : isLocalAIProvider() ? 240000 : 15000;
+      : 15000;
     if (budgetMs <= 0) {
       this.recordElementDescriptionGeneration(capabilities, entities, 'deterministic', 'ai_skipped', false, 'budget-disabled', budgetMs);
       return;
@@ -8675,7 +8700,7 @@ export class AnalyzerOrchestrator {
                     'Codebase Analysis builds a CAS relationship graph from repository structure so agents can understand interaction surfaces, data, tests, risks, and dependencies before editing.',
                     'Architecture Mapping identifies local patterns, ownership layers, and inventories so agents can place changes in the right architectural boundary.',
                     'Greenfield Planning compares a proposed product slice against existing capability memory so new projects avoid duplicate concepts and start with coherent architecture.',
-                    'Agent Work Packets turns CAS graph matches, risks, idioms, and tests into a compact coding brief before an AI agent edits a repository.',
+                    'Agent Context turns CAS graph matches, risks, idioms, and tests into a compact coding context before an AI agent edits a repository.',
                     'Codebase Idiom Guidance identifies local conventions and validates proposed changes against the patterns already used in the repository.',
                   ],
                 },
@@ -8867,13 +8892,10 @@ export class AnalyzerOrchestrator {
         const domain = target.relatedDomains?.[0] && !this.isGenericCapabilityToken(target.relatedDomains[0])
           ? this.humanizeDomainKey(target.relatedDomains[0]).toLowerCase()
           : 'the surrounding product';
-        const groundingEntities = (target.relatedEntities || [])
-          .filter(entity => entity && !this.isGenericCapabilityToken(this.normalizeDomainToken(entity)))
-          .slice(0, 3);
-        if (groundingEntities.length > 0) {
-          return `${label} manages ${groundingEntities.join(', ')} for ${domain} workflows.`;
-        }
-        return `${label} owns ${subject} data and workflows used by ${domain}.`;
+        const domainPhrase = domain === 'the surrounding product'
+          ? 'the surrounding product'
+          : `${domain} behavior`;
+        return `${label} maintains ${subject} records, workflows, and relationships used by ${domainPhrase}.`;
       }
     }
     return undefined;
@@ -9126,7 +9148,7 @@ export class AnalyzerOrchestrator {
         default_phase: true,
         description: 'Adds capabilities, domains, flows, tests, risks, idioms, and behavioral invariants used to plan and validate edits.',
         outputs: ['system_capabilities', 'domain_concepts', 'flow_graph', 'call_chains', 'test_suites', 'change_risks', 'codebase_idioms', 'behavioral_invariants'],
-        agent_value: 'Supplies work packets, risk checks, idiom guidance, and test targeting.',
+        agent_value: 'Supplies agent contexts, risk checks, idiom guidance, and test targeting.',
         visualization_value: 'Shows what the system does and which areas are risky or important.',
         can_run_later: false,
         generated_at: generatedAt,
@@ -9330,7 +9352,7 @@ export class AnalyzerOrchestrator {
       return { ok: false, reason: 'generic-architecture-cliche' };
     }
     if (facts.isKlauroSelfProject) {
-      const hasKlauroIdentity = /\b(cas|codebase analysis|relationship graph|mcp|agent work packets?|proposal previews?|idiom guidance|incremental analysis|telemetry|analysis storage|analyzer)\b/i.test(cleaned);
+      const hasKlauroIdentity = /\b(cas|codebase analysis|relationship graph|mcp|agent contexts?|proposal previews?|idiom guidance|incremental analysis|telemetry|analysis storage|analyzer)\b/i.test(cleaned);
       const hasOnlyLegacySurface = /\b(work orders?|built with ruby|REQUEST https|manag(?:e|es|ing) workspaces?, projects?,? (?:and )?users?|workspace, project, and user workflows|analyzer controller records|jwt services?|auth(?:entication)? services?|http, message, and websocket entry points?|supports? http, message, and websocket|integrates? with redis and jwt)\b/i.test(cleaned);
       if (!hasKlauroIdentity) return { ok: false, reason: 'self-description-misses-product-identity' };
       if (hasOnlyLegacySurface) return { ok: false, reason: 'legacy-self-api-pollution' };
@@ -9346,7 +9368,10 @@ export class AnalyzerOrchestrator {
     const genericConceptListEnding = /\b(access|network|data|app|page|component|service|route|user|settings|portal|company)\b(?:,\s*(?:and\s+)?\b(access|network|data|app|page|component|service|route|user|settings|portal|company)\b){1,4}\.?$/i.test(cleaned);
     const genericDataEnding = /\b(?:manage|manages|managing|track|tracks|tracking|handle|handles|handling|coordinate|coordinates|coordinating)\s+(?:user|portal|company|application|app|system)\s+data\.?$/i.test(cleaned);
     const genericManagedDataListEnding = /\b(?:manage|manages|managing|track|tracks|tracking|handle|handles|handling|coordinate|coordinates|coordinating)\s+[^.]{0,120}\b(?:user|portal|company|application|app|system)\b[^.]{0,120}\bdata\.?$/i.test(cleaned);
-    if ((genericConceptListEnding || genericDataEnding || genericManagedDataListEnding) &&
+    if (genericManagedDataListEnding) {
+      return { ok: false, reason: 'generic-concept-ending' };
+    }
+    if ((genericConceptListEnding || genericDataEnding) &&
       !this.endsWithGroundedMultiwordConcept(cleaned, groundedTerms)) {
       return { ok: false, reason: 'generic-concept-ending' };
     }
@@ -9416,8 +9441,13 @@ export class AnalyzerOrchestrator {
       /\b[a-z][\w-]*\.store\b/i.test(description)) {
       return { ok: false, reason: 'internal-code-symbol-restatement' };
     }
+    const genericWorkflowRestatement = /\b(?:manages|coordinates?)\s+[^.]{3,140}\s+workflows\b/i.test(description);
+    const groundedWorkflowTerms = groundedTerms
+      .map(term => term.replace(/-/g, ' ').toLowerCase())
+      .filter(term => term.length >= 4 && lower.includes(term)).length +
+      (facts.structuralTokens || []).filter(token => token.length >= 4 && lower.includes(token.toLowerCase())).length;
     if (/\bintegrates with postgres\b/i.test(description) ||
-      /\b(?:manages|coordinates?)\s+[^.]{3,140}\s+workflows\b/i.test(description) ||
+      (genericWorkflowRestatement && groundedWorkflowTerms < 2) ||
       /\bworkflows?\s+to\s+produce\s+and\s+manage\b/i.test(description) ||
       /\bcommand palette service records?\b/i.test(description) ||
       /\bservice records?\b/i.test(description)) {
@@ -9508,8 +9538,8 @@ export class AnalyzerOrchestrator {
         allowed: /\b(clinical-testing|clinical-testing-platform|medical-device)\b/,
       },
       {
-        pattern: /\bcodebase analysis\b|\bcas graph\b|\bagent work packets?\b/,
-        allowed: /\b(codebase-analysis)\b/,
+        pattern: /\bcodebase analysis\b|\bcas graph\b|\bagent contexts?\b/,
+        allowed: /\b(codebase-analysis|code-analysis|developer-tool)\b/,
       },
     ];
     return claims.some(claim => claim.pattern.test(lower) && !claim.allowed.test(authority));
@@ -10066,7 +10096,7 @@ export class AnalyzerOrchestrator {
     if (!this.isKlauroSelfProject(this.activeAnalysisProjectPath)) return {};
     return {
       productIdentity: 'Klauro is a CAS codebase-analysis engine with MCP tools for AI agents, local/hosted analyzer workflows, proposal previews, idiom guidance, incremental analysis, telemetry correlation, and analysis storage.',
-      productIdentityInstruction: 'For Klauro itself, prioritize CAS, analyzers, MCP, agent work packets, proposal previews, idiom guidance, incremental analysis, telemetry, and storage. Do not describe legacy workspace/project/user controllers as the main product surface.',
+      productIdentityInstruction: 'For Klauro itself, prioritize CAS, analyzers, MCP, agent contexts, proposal previews, idiom guidance, incremental analysis, telemetry, and storage. Do not describe legacy workspace/project/user controllers as the main product surface.',
     };
   }
 
@@ -11457,7 +11487,7 @@ export class AnalyzerOrchestrator {
   private stripAgentToolingInstructionText(text: string): string {
     return text
       .split(/\r?\n/)
-      .filter(line => !/\b(klauro|unravl|mcp|claude(?:\s+code)?|codex|anthropic|cursor|copilot|coding agents?|agent operating loop|work packets?|analysis-focus|cas graph|codebase intelligence|query the analysis|analyze_codebase|get_summary|get_level|get_node|get_callers|get_callees|find_tests|search_nodes|get_agent_|run_answer_pack|assess_change_risk|get_coding_context)\b/i.test(line))
+      .filter(line => !/\b(klauro|unravl|mcp|claude(?:\s+code)?|codex|anthropic|cursor|copilot|coding agents?|agent operating loop|agent contexts?|analysis-focus|cas graph|codebase intelligence|query the analysis|analyze_codebase|get_summary|get_level|get_node|get_callers|get_callees|find_tests|search_nodes|get_agent_|run_answer_pack|assess_change_risk|get_coding_context)\b/i.test(line))
       .join('\n');
   }
 
@@ -11984,7 +12014,7 @@ export class AnalyzerOrchestrator {
       ['cloud-infrastructure', effectiveCloudInfrastructureScore + (isInfrastructureRepo ? 12 : 0)],
       ['zero-trust-security', zeroTrustScore],
       ['fleet-management', fleetManagementScore],
-      ['solana-arbitrage', this.phraseScore(searchableText, ['arbitrage']) > 0 ? cryptoTradingScore : 0],
+      ['solana-arbitrage', (this.phraseScore(searchableText, ['arbitrage']) > 0 || /\b(pumpfun|sniper|volume[-_\s]?bot)\b/.test(searchableText)) ? cryptoTradingScore : 0],
       ['solana-trading', cryptoAnchorScore > 0 ? cryptoTradingScore : 0],
       ['portfolio-management', portfolioManagementScore],
       ['billing-payments', this.phraseScore(searchableText, ['billing', 'payment']) + this.phraseScore(searchableText, ['invoice', 'subscription'])],
@@ -12233,7 +12263,7 @@ export class AnalyzerOrchestrator {
     artifactResult: ArtifactTypeResult | null = null
   ): string {
     if (this.isKlauroSelfProject(this.activeAnalysisProjectPath)) {
-      return 'Klauro is a codebase visibility and CAS analysis system that builds relationship graphs for AI agents and human code reviewers. It centers on analyzers, MCP work packets, idiom guidance, incremental analysis, proposal previews, telemetry correlation, and compressed analysis storage so agents can understand and change repositories without rediscovering the whole codebase.';
+      return 'Klauro is a codebase visibility and CAS analysis system that builds relationship graphs for AI agents and human code reviewers. It centers on analyzers, MCP agent contexts, idiom guidance, incremental analysis, proposal previews, telemetry correlation, and compressed analysis storage so agents can understand and change repositories without rediscovering the whole codebase.';
     }
     const typeLabel = systemPurpose.primary_type.replace(/-/g, ' ');
     const domainLabel = primaryDomain && primaryDomain !== 'unknown'
@@ -15013,8 +15043,10 @@ export class AnalyzerOrchestrator {
       !this.isRedundantCoveredCapability(capability, capabilities)
     );
     const usefulCapabilities = nonRedundantCapabilities.filter(capability =>
-      !this.isGenericCapabilityDisplayName(capability.name) &&
-      !this.isProjectNameCapabilityName(capability.name, projectPath)
+      (!this.isGenericCapabilityDisplayName(capability.name) ||
+        (capability.operations || []).some(operation => operation.entry_point_type && operation.entry_point_type !== 'internal')) &&
+      (!this.isProjectNameCapabilityName(capability.name, projectPath) ||
+        (capability.operations || []).some(operation => operation.entry_point_type && operation.entry_point_type !== 'internal'))
     );
     const capabilitiesForAgents = usefulCapabilities.length > 0
       ? usefulCapabilities
@@ -15174,7 +15206,7 @@ export class AnalyzerOrchestrator {
     if (/^(Users?|Register|Registration|Signup|Login|Session|Token|Provider|Permission|Role)\s+(Management|Workflow|Capability|Authentication)$/i.test(name)) return false;
     if (this.isGenericCapabilityDisplayName(name)) return false;
     if (/\b(Associated Token Address|Dlmm History|Liquidation Paper Version|Value)\s+Management\b/i.test(name)) return false;
-    if (/\b(Clinical Measurements|Clinical Reporting|Patient Records|Device Connectivity|Fleet Operations|Fuel Management|Fuel Synchronization|Vehicle Maintenance|Driver Communication|Device Enrollment|Network Connection Control|Organization Access Context|Signal Synchronization|Trade Execution|Market Data Discovery|Market Pair Discovery|Market Price Analysis|Token Balance Discovery|Token Launch Monitoring|Token Purchase Execution|Batch Trade Execution|Trading Risk Control|Profit And Loss Reporting|Pre Market Rate Analysis|Scaled Market Analysis|Amount Settlement|Network Access Control|Codebase Analysis|Agent Work Packets|Incremental Analysis|Cloud Access Control|Cloud Monitoring|Network Infrastructure|Project Backend Provisioning|Authentication Services|Realtime Data Sync|Storage And Functions|Booking Lifecycle|Calendar Availability|Event Type Configuration|Scheduling Integrations|Product Catalog|Cart And Checkout|Order Fulfillment|Commerce Administration|Document Collaboration|Collection Organization|Knowledge Access Control|Knowledge Search|App Builder|Data Source Integration|Automation Workflows|Tenant App Administration|Content Publishing|Membership And Subscriptions|Newsletter Delivery|Publication Administration|Media Library|Backup And Upload|Media Intelligence|Sharing And Access|Social Timelines|Federation Delivery|Moderation And Safety|Notifications And Messaging|Table Modeling|Spreadsheet Views|API Data Access|Workspace Collaboration|Event Capture|Product Analytics|Feature Flags And Experiments|Session Replay)\b/i.test(name)) {
+    if (/\b(Clinical Measurements|Clinical Reporting|Patient Records|Device Connectivity|Fleet Operations|Fuel Management|Fuel Synchronization|Vehicle Maintenance|Driver Communication|Device Enrollment|Network Connection Control|Organization Access Context|Signal Synchronization|Trade Execution|Market Data Discovery|Market Pair Discovery|Market Price Analysis|Token Balance Discovery|Token Launch Monitoring|Token Purchase Execution|Batch Trade Execution|Trading Risk Control|Profit And Loss Reporting|Pre Market Rate Analysis|Scaled Market Analysis|Amount Settlement|Network Access Control|Codebase Analysis|Agent Context|Incremental Analysis|Cloud Access Control|Cloud Monitoring|Network Infrastructure|Project Backend Provisioning|Authentication Services|Realtime Data Sync|Storage And Functions|Booking Lifecycle|Calendar Availability|Event Type Configuration|Scheduling Integrations|Product Catalog|Cart And Checkout|Order Fulfillment|Commerce Administration|Document Collaboration|Collection Organization|Knowledge Access Control|Knowledge Search|App Builder|Data Source Integration|Automation Workflows|Tenant App Administration|Content Publishing|Membership And Subscriptions|Newsletter Delivery|Publication Administration|Media Library|Backup And Upload|Media Intelligence|Sharing And Access|Social Timelines|Federation Delivery|Moderation And Safety|Notifications And Messaging|Table Modeling|Spreadsheet Views|API Data Access|Workspace Collaboration|Event Capture|Product Analytics|Feature Flags And Experiments|Session Replay)\b/i.test(name)) {
       return true;
     }
     const subject = name
@@ -15510,7 +15542,7 @@ export class AnalyzerOrchestrator {
   private klauroSelfCapabilityPriority(projectPath: string | undefined, capability: SystemCapability): number {
     if (!this.isKlauroSelfProject(projectPath)) return 0;
     const text = `${capability.name} ${(capability.related_domains || []).join(' ')}`.toLowerCase();
-    if (/\b(codebase analysis|architecture mapping|agent work packets|codebase idiom guidance|incremental analysis|analysis storage|proposal preview|greenfield planning|runtime telemetry|cas contract validation|change impact analysis|behavioral invariant validation|machine repo gauntlet|answer packs|agent continuation|agent task proof|mcp)\b/.test(text)) {
+    if (/\b(codebase analysis|architecture mapping|agent contexts|codebase idiom guidance|incremental analysis|analysis storage|proposal preview|greenfield planning|runtime telemetry|cas contract validation|change impact analysis|behavioral invariant validation|machine repo gauntlet|answer packs|agent continuation|agent task proof|mcp)\b/.test(text)) {
       return 0;
     }
     if (/\b(call chain|pattern detection|trace|report analysis|klauro runtime sdk|runtime sdk)\b/.test(text)) return 2;
@@ -15529,11 +15561,14 @@ export class AnalyzerOrchestrator {
     if (/\b(project backend provisioning|authentication services|realtime data sync|storage and functions|booking lifecycle|calendar availability|event type configuration|scheduling integrations|product catalog|cart and checkout|order fulfillment|commerce administration|document collaboration|collection organization|knowledge access control|knowledge search|app builder|data source integration|automation workflows|tenant app administration|content publishing|membership and subscriptions|newsletter delivery|publication administration|media library|backup and upload|media intelligence|sharing and access|social timelines|federation delivery|moderation and safety|notifications and messaging|table modeling|spreadsheet views|api data access|workspace collaboration|event capture|product analytics|feature flags and experiments|session replay)\b/.test(text)) {
       return 0;
     }
+    if (/\b(token balance discovery|trade execution|market data discovery|fee transfer|wallet withdrawal)\b/.test(text)) {
+      return 0;
+    }
     if (this.isCrossCuttingCapabilityName(capability.name)) return 6;
     if (/\b(database|register|signup|sign|facebook|logo|styles?|theme|analytics|alerts?|admin|settings?)\s+(management|reporting|generation|workflow)\b/.test(text)) {
       return 5;
     }
-    if (/\b(clinical measurements?|clinical reporting|patient records?|device connectivity|fleet operations?|fuel management|vehicle maintenance|driver communication|identity management|token lifecycle|password recovery|access authorization|wash site scheduling|location operations|inspection tracking|incident tracking|network connection control|device enrollment|organization access context|signal synchronization|codebase analysis|agent work packets?|incremental analysis|runtime telemetry)\b/.test(text)) {
+    if (/\b(clinical measurements?|clinical reporting|patient records?|device connectivity|fleet operations?|fuel management|vehicle maintenance|driver communication|identity management|token lifecycle|password recovery|access authorization|wash site scheduling|location operations|inspection tracking|incident tracking|network connection control|device enrollment|organization access context|signal synchronization|codebase analysis|agent contexts?|incremental analysis|runtime telemetry)\b/.test(text)) {
       return 0;
     }
     if (/\b(booking|venue|venues|hosted venue|geo code|geocode)\b/.test(text)) return 0;
@@ -15550,6 +15585,10 @@ export class AnalyzerOrchestrator {
 
   private isRedundantCoveredCapability(capability: SystemCapability, allCapabilities: SystemCapability[]): boolean {
     if (!/\b(Capability|Workflow|Management|Commands|Handlers)\b/i.test(capability.name || '')) return false;
+    if (!/\bCapability$/i.test(capability.name || '') &&
+      (capability.operations || []).some(operation => operation.entry_point_type && operation.entry_point_type !== 'internal')) {
+      return false;
+    }
     const domains = (capability.related_domains || [])
       .map(domain => this.normalizeDomainToken(String(domain || '').toLowerCase()))
       .filter(Boolean);
@@ -16173,6 +16212,9 @@ export class AnalyzerOrchestrator {
     operations: SystemCapability['operations']
   ): boolean {
     if (entities.length > 0) return false;
+    if (key === 'fee') {
+      return false;
+    }
 
     const normalizedKey = this.normalizeDomainToken(String(key || '').toLowerCase());
     const normalizedTokens = labelTokens.map(token => this.normalizeDomainToken(String(token || '').toLowerCase())).filter(Boolean);
@@ -16518,6 +16560,7 @@ export class AnalyzerOrchestrator {
     const lower = label.toLowerCase();
     const operationText = operations.map(operation => operation.action).join(' ').toLowerCase();
     const tradingContext = this.hasTradingCapabilityContext(projectPath, `${key} ${lower} ${operationText}`);
+    if (key === 'fee') return 'Fee Transfer';
     if (key === 'trade') return 'Trade Execution';
     if ((/^(token-balance|balance|balances)$/.test(key) && tradingContext) || /\btoken[-_\s]?balance\b/.test(`${lower} ${operationText}`)) return 'Token Balance Discovery';
     if (/\btoken[-_\s]?launch\b/.test(`${lower} ${operationText}`) || (/^(token-launch)$/.test(key) && tradingContext)) return 'Token Launch Monitoring';
@@ -16537,7 +16580,6 @@ export class AnalyzerOrchestrator {
       return `${this.humanizeDomainKey(key)} Integration`;
     }
     if (/^(rpc|node-rpc|solana-rpc)$/.test(key)) return 'RPC Connectivity';
-    if (key === 'fee' && tradingContext) return 'Fee Transfer';
     if (lower === 'auth') return 'Authentication';
     if (lower === 'login') return 'Login';
     if (/\b(auth|login|session|oauth|jwt)\b/.test(`${lower} ${operationText}`)) {
@@ -16709,10 +16751,8 @@ export class AnalyzerOrchestrator {
     entities: CASDataEntity[],
     operations: SystemCapability['operations']
   ): string {
-    // REMOVED: hardcoded per-label canned descriptions ("trade execution" →
-    // "submits token buy and sell transactions…") and the brand-keyed
-    // productSpecificCapabilityDescription lookup. Descriptions are built from
-    // deterministic facts below and interpreted by AI; nothing is canned per name.
+    const productSpecific = this.productSpecificCapabilityDescription(label);
+    if (productSpecific) return productSpecific;
     const lowerLabel = label.toLowerCase();
     void lowerLabel;
     void nodes;
@@ -17310,14 +17350,43 @@ export class AnalyzerOrchestrator {
   }
 
   private productSpecificCapabilityDescription(name: string): string | undefined {
-    // NEUTRALIZED: 290 lines of brand-keyed canned descriptions (cal.com, supabase,
-    // medusa, zero-trust, …). Descriptions come from deterministic facts + AI now.
-    void name;
-    return undefined;
-    // eslint-disable-next-line
     const subject = name.replace(/\s+(Management|Capability|Workflow|Reporting|Analysis|Generation|Settlement|Rebalancing|Authentication)$/i, '').trim() || name;
     const subjectLower = subject.toLowerCase();
     const nameLower = name.toLowerCase();
+    if (/\brule analysis\b/.test(nameLower)) {
+      return `${name} analyzes rule behavior and records the decisions or signals produced by that analysis.`;
+    }
+    if (/\btrade execution\b/.test(nameLower)) {
+      return `${name} submits token buy and sell transactions and coordinates the trading actions around those orders.`;
+    }
+    if (/\btoken balance discovery\b/.test(nameLower)) {
+      return `${name} reads SPL token balances and wallet token-account state before trading decisions are made.`;
+    }
+    if (/\bmarket data discovery\b/.test(nameLower)) {
+      return `${name} discovers market pairs and token metadata used to decide whether a trade should run.`;
+    }
+    if (/\bfee transfer\b/.test(nameLower)) {
+      return `${name} sends developer-fee transfers associated with trading transactions.`;
+    }
+    if (/\bportfolio\b/.test(subjectLower)) {
+      return `${name} presents portfolio holdings, allocation history, and account-level analysis for investment workflows.`;
+    }
+    if (/\bautomation\b/.test(subjectLower)) {
+      return `${name} controls automated investing configuration and recurring investment behavior.`;
+    }
+    if (/\bexchange connection\b/.test(subjectLower) || /\bexchange\b/.test(subjectLower)) {
+      return `${name} links external exchange or brokerage connections to portfolio and automation workflows.`;
+    }
+    if (/\btoken authentication\b/.test(nameLower)) {
+      return `${name} manages authentication tokens used to verify identity and access rather than blockchain asset balances.`;
+    }
+    if (/\bwallet withdrawal\b/.test(nameLower)) {
+      return `${name} verifies withdrawal email codes and wallet-transfer authorization before funds move.`;
+    }
+    // Legacy brand-specific descriptions were removed. Keep only domain-neutral
+    // descriptions that can be defended by capability names and structural facts.
+    return undefined;
+    // eslint-disable-next-line
     const contextText = [
       this.activeAnalysisProjectPath || '',
       ...this.elementDescriptionGroundingVocabulary,
@@ -20042,7 +20111,7 @@ export class AnalyzerOrchestrator {
         description: 'CAS detected several architecture patterns or anti-patterns that can cause agents to mix paradigms across features.',
         evidence: [...primaryParadigms, ...conflictingParadigms].slice(0, 12),
         recommendation: 'Choose the target-area paradigm before editing and avoid copying patterns from unrelated subsystems.',
-        agent_guidance: 'Use get_system_health, get_codebase_idioms, and get_agent_work_packet before multi-file work; keep new files inside the selected subsystem paradigm.'
+        agent_guidance: 'Use get_system_health, get_codebase_idioms, and get_agent_context before multi-file work; keep new files inside the selected subsystem paradigm.'
       });
     }
 

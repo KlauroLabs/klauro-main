@@ -31,8 +31,8 @@ interface MachineRepoResult {
     gates?: Array<{ id?: string; status?: ReviewStatus; score?: number; detail?: string }>;
     summary?: {
       description?: string;
-      work_packet_tokens?: number;
-      work_packet_files?: number;
+      agent_context_tokens?: number;
+      agent_context_files?: number;
       missing_agent_value?: string[];
     };
   };
@@ -127,7 +127,7 @@ function reviewColdOutput(repo: MachineRepoResult): ColdReviewItem {
   const usefulness = repo.usefulness_review!;
   const descriptionGate = (usefulness.gates || []).find(gate => gate.id === 'description-quality' || gate.id === 'description-layering');
   const architectureGate = (usefulness.gates || []).find(gate => gate.id === 'architecture-agent-context');
-  const agentContextScore = clamp(Math.round(Number(usefulness.score || 0) - packetPenalty(repo)));
+  const agentContextScore = clamp(Math.round(Number(usefulness.score || 0) - contextPenalty(repo)));
   const narrativeScore = scoreNarrative(repo, descriptionGate);
   const productOutputScore = clamp(Math.round(agentContextScore * 0.65 + narrativeScore * 0.35));
   const concerns = concernsFor(repo, descriptionGate, architectureGate);
@@ -177,7 +177,7 @@ function concernsFor(
   if (descriptionGate?.status !== 'pass') concerns.push(`narrative debt: ${descriptionGate?.detail || 'description quality not proven'}`);
   if ((repo.cas?.system_capabilities || 0) === 0 && repo.usefulness_review?.profile?.kind !== 'infrastructure') concerns.push('no capabilities for agent/product orientation');
   if ((repo.cas?.codebase_idioms || 0) === 0) concerns.push('no repo-local idioms extracted');
-  if ((repo.usefulness_review?.summary?.work_packet_tokens || 0) > 5000) concerns.push(`large work packet: ${repo.usefulness_review?.summary?.work_packet_tokens} estimated tokens`);
+  if ((repo.usefulness_review?.summary?.agent_context_tokens || 0) > 5000) concerns.push(`large agent context: ${repo.usefulness_review?.summary?.agent_context_tokens} estimated tokens`);
   return concerns;
 }
 
@@ -200,8 +200,8 @@ function categoryFor(repo: MachineRepoResult): ColdReviewItem['category'] {
   return 'large-app';
 }
 
-function packetPenalty(repo: MachineRepoResult): number {
-  const tokens = repo.usefulness_review?.summary?.work_packet_tokens || 0;
+function contextPenalty(repo: MachineRepoResult): number {
+  const tokens = repo.usefulness_review?.summary?.agent_context_tokens || 0;
   if (tokens > 10000) return 20;
   if (tokens > 5000) return 10;
   return 0;
@@ -270,7 +270,7 @@ function verdictFor(status: ReviewStatus, agentScore: number, narrativeScore: nu
   if (status === 'fail') return 'Not good enough for default product trust.';
   if (status === 'pass') return 'Useful product output for a cold agent and human reviewer.';
   if (narrativeScore < 75) return 'Agent context is useful, but human-facing narrative still needs AI enrichment.';
-  if (agentScore < 90) return 'Narrative is acceptable, but the MCP work packet needs sharper agent context.';
+  if (agentScore < 90) return 'Narrative is acceptable, but the MCP agent context needs sharper agent context.';
   return 'Useful product output for a cold agent and human reviewer.';
 }
 

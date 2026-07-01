@@ -22,7 +22,7 @@ Run CAS analysis on a local directory. Uses incremental analysis by default when
 
 Focus profiles let agents and UI flows pay for the context they need:
 
-- `agent-fast`: prioritizes graph, entry points, risks, idioms, tests, required AI system/capability summaries, and compact work packets; defers lazy entity/flow/node descriptions and embedding-heavy layers.
+- `agent-fast`: prioritizes graph, entry points, risks, idioms, tests, required AI system/capability summaries, and compact agent contexts; defers lazy entity/flow/node descriptions and embedding-heavy layers.
 - `ui-overview`: prioritizes visualization, required AI system/capability summaries, and selected human-facing lazy descriptions; defers embedding-heavy layers.
 - `deep-context`: keeps the core graph and required AI system/capability summaries, enables embedding-backed semantic retrieval where configured, and still defers bulk entity/flow/node descriptions unless requested.
 - `full`: uses repository and environment defaults.
@@ -132,45 +132,57 @@ Read the effective `.klaurorc`, `.klauroignore`, analyzer mode, upload policy, s
 
 ### `get_upload_manifest`
 
-Dry-run the upload policy and show exactly which files would be sent before full or dirty-tree sync.
+Dry-run the upload policy and show exactly which files would be sent before shared committed-source analysis or private dirty-tree context.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Absolute path to the project directory |
-| `dirty_tree` | boolean | no | Show dirty-tree incremental upload instead of full snapshot upload |
+| `dirty_tree` | boolean | no | Show private dirty-tree working-copy context instead of committed-source upload |
 
-**Returns:** Included files, byte counts, excluded sample, config path, ignore path, and upload summary.
+**Returns:** Included files, byte counts, excluded sample, config path, ignore path, branch/commit status, workspace recommendations, and the recommended next action.
+
+### `get_agent_revision_tracks`
+
+Return the three-track agent state for a local repository.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Absolute path to the project directory |
+| `server_url` | string | no | Klauro API/analyzer URL. Defaults to Klauro Cloud |
+| `analysis_id` | string | no | Stable project analysis id. Defaults to configured project id or a hash of the local project path |
+
+**Returns:** Working track for private uncommitted changes, committed track for the local selected-branch commit and whether it has shared analysis, and incoming track for analyzed commits from teammates/provider pushes that are not local HEAD.
 
 ### `get_github_import_plan`
 
-Describe the GitHub App permissions, webhooks, and local-agent handoff needed for hosted main-branch analysis.
+Describe the GitHub App permissions, webhooks, and local-agent handoff needed for hosted selected-branch analysis.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Absolute path to the project directory |
 
-**Returns:** Required GitHub App permissions, webhooks, configured owner/repositories, and note about local dirty-tree sync.
+**Returns:** Required GitHub App permissions, webhooks, configured owner/repositories, and note about private working-copy context.
 
 ### `analyze_codebase_remote`
 
-Upload a filtered local source snapshot to a remote Klauro analyzer service, cache the returned CAS locally, and make the result available to all local MCP query tools.
+Upload a filtered committed-source snapshot to a remote Klauro analyzer service, cache the returned CAS locally, and record a shared project analysis revision.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Absolute path to the project directory |
-| `server_url` | string | no | Analyzer service URL. Defaults to `KLAURO_ANALYZER_URL` or `http://127.0.0.1:8787` |
+| `server_url` | string | no | Analyzer service URL. Defaults to `KLAURO_ANALYZER_URL` or Klauro Cloud |
 | `analysis_id` | string | no | Stable remote analysis id. Defaults to a hash of the local project path |
 
 **Returns:** Status, remote analysis id, revision, analysis type, upload size, and CAS graph counts.
 
 ### `sync_codebase_remote`
 
-Send dirty-tree file changes to a remote Klauro analyzer service and cache the updated CAS locally. This is the hosted-analyzer incremental path for local AI agent edits.
+Send dirty-tree file changes to a remote Klauro analyzer service for private local agent assistance. This is not shared project truth and should not be visible to teammates.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Absolute path to the project directory |
-| `server_url` | string | no | Analyzer service URL. Defaults to `KLAURO_ANALYZER_URL` or `http://127.0.0.1:8787` |
+| `server_url` | string | no | Analyzer service URL. Defaults to `KLAURO_ANALYZER_URL` or Klauro Cloud |
 | `analysis_id` | string | no | Stable remote analysis id. Defaults to a hash of the local project path |
 
 **Returns:** Status, remote analysis id, revision, analysis type, changed file count, upload size, graph counts, and incremental change summary.
@@ -208,7 +220,7 @@ Analyze proposed files as a synthetic new codebase. The output is still normal C
 
 **Returns:** Advisory status, preview id, private preview URL, proposed analysis id, detected graph summary, required checks, and greenfield readiness warnings.
 
-### `get_greenfield_build_packet`
+### `get_greenfield_build_context`
 
 Guide a zero-repo or growing greenfield build. This is the MCP surface agents should use when the user asks for a new project that does not have a repository yet, or when a new project already has an initial slice and the agent needs to continue without duplicating architecture or domain concepts.
 
@@ -458,7 +470,7 @@ Build and persist a WAS-compliant Workspace analysis from completed CAS analyses
 | `exclude` | string[] | no | Additional workspace exclude patterns, e.g. `["desktop-tray/**", "archives/**"]` |
 | `ai_enrichment` | boolean | no | Defaults to `true`. Set `false` for fast deterministic WAS generation; narrative is marked AI-required degraded until refreshed |
 
-**Returns:** Save metadata, compact WAS summary, applied input policy, skipped inputs with reasons, and next MCP calls. Agents should retrieve needed slices with `get_workspace_analysis` or `get_workspace_agent_packet`; this tool does not dump the full WAS artifact.
+**Returns:** Save metadata, compact WAS summary, applied input policy, skipped inputs with reasons, and next MCP calls. Agents should retrieve needed slices with `get_workspace_analysis` or `get_workspace_agent_context`; this tool does not dump the full WAS artifact.
 
 ### `resolve_workspace_analysis`
 
@@ -492,16 +504,16 @@ Load a persisted WAS-compliant Workspace analysis by id or name.
 
 **Returns:** At `overview`, a compact repo/app map with composition classification, health, activity, telemetry, risks, capabilities, workflows, environments, simple sync/async/passive/stream connections, major external dependencies, and isolated deployables. `composition.kind` tells clients whether the workspace is primarily an `interconnected-system`, `composed-application-architecture`, `hybrid-system-and-architecture`, `library-collection`, or `disconnected-collection`; `recommended_primary_view` tells agents/UI whether to prefer a system map, architecture map, both, or inventory. External dependencies include `usage` (`source-backed`, `topology-only`, or `declared`) and `used`; agents should treat `topology-only` Redis/Postgres/MinIO/etc. as provisioned/wired infrastructure, not source-proven usage. Isolated deployables include a reason category (`validated-standalone`, `weak-cas-signal`, `unresolved-candidate`, or `no-evidence`) so agents do not confuse valid standalone surfaces with possible analysis gaps. Deeper levels add links, runtime evidence, interfaces, unmatched surfaces, validation, Terraform/Docker/Compose/CI infrastructure details, or the complete graph.
 
-### `get_workspace_agent_packet`
+### `get_workspace_agent_context`
 
-Load a compact WAS-backed packet for cross-repo agent work. This is the preferred agent entrypoint after `run_workspace_analysis` when a task spans multiple repos, apps, deployables, SDKs, messages, runtime dependencies, or infrastructure.
+Load a compact WAS-backed context for cross-repo agent work. This is the preferred agent entrypoint after `run_workspace_analysis` when a task spans multiple repos, apps, deployables, SDKs, messages, runtime dependencies, or infrastructure.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `analysis_id_or_name` | string | yes | Workspace analysis id or name |
 | `task` | object | no | Task selector with `task_type`, `target`, `instructions`, `max_apps`, `max_connections`, and `max_external_dependencies` |
 
-**Returns:** Composition classification, selected workspace surfaces with stable ids, explicit `deployable` flags, `surface_kind`, and absolute project paths; source-backed runtime connections with stable ids/interface ids; candidate/package/topology connections with `runtime_behavior`, `connection_nature`, and `inferred_reason`; source-backed/topology-only/declared external dependencies; isolated surfaces; compact system summary; health/risk/activity/telemetry/capability/workflow context; token-budget estimate and signal quality; validation guidance; `agent_should_read_next`; and next MCP calls. Agents should use this before broad multi-repo source exploration, then call repo-level `get_agent_work_packet` for each selected project before editing. If `workspace_narrative.source` is `ai-required-degraded`, the artifact is usable for evidence but should be refreshed with AI enrichment before customer-facing interpretation.
+**Returns:** Composition classification, selected workspace surfaces with stable ids, explicit `deployable` flags, `surface_kind`, and absolute project paths; source-backed runtime connections with stable ids/interface ids; candidate/package/topology connections with `runtime_behavior`, `connection_nature`, and `inferred_reason`; source-backed/topology-only/declared external dependencies; isolated surfaces; compact system summary; health/risk/activity/telemetry/capability/workflow context; token-budget estimate and signal quality; validation guidance; `agent_should_read_next`; and next MCP calls. Agents should use this before broad multi-repo source exploration, then call repo-level `get_agent_context` for each selected project before editing. If `workspace_narrative.source` is `ai-required-degraded`, the artifact is usable for evidence but should be refreshed with AI enrichment before customer-facing interpretation.
 
 ### `get_workspace_freshness`
 
@@ -533,7 +545,7 @@ Return workspace health and priority work items.
 
 **Returns:** Health, activity, telemetry, priority work items, and top risk areas.
 
-### `get_workspace_risk_packet`
+### `get_workspace_risk_context`
 
 Return workspace risks filtered by target or severity.
 
@@ -580,7 +592,7 @@ Return a specific WAS workflow with deployables, interfaces, evidence, and repo-
 | `analysis_id_or_name` | string | yes | Workspace analysis id or name |
 | `workflow_id_or_name` | string | yes | Workflow id or name |
 
-**Returns:** Workflow, connected deployables, connected interfaces, and repo-level `get_agent_work_packet` calls.
+**Returns:** Workflow, connected deployables, connected interfaces, and repo-level `get_agent_context` calls.
 
 ### `list_workspace_analyses`
 
@@ -646,7 +658,7 @@ High-level payload for Codex, Claude, Cursor, and other coding agents after `res
 | `path` | string | yes | Project path |
 | `task` | object | no | Optional task context with `task_type`, `target`, `related_paths`, or `runtime_event` |
 
-**Returns:** Default-use rule, agent readiness, start context, task-specific tool plan, work packet, source file read plan, and a ready-to-use prompt. This is the highest-level agent bootstrap surface.
+**Returns:** Agent-use rule, agent readiness, start context, task-specific tool plan, agent context, source file read plan, and a ready-to-use prompt. This is the highest-level agent bootstrap surface.
 
 ### `get_agent_project_map`
 
@@ -658,7 +670,7 @@ List analyzed parent and subproject candidates for a repository path. Use this w
 | `task` | object | no | Optional task context with `task_type`, `target`, `related_paths`, `runtime_event`, `instructions`, or `success_criteria` |
 | `limit` | number | no | Maximum candidates to return |
 
-**Returns:** Requested path, candidate analyses, relation to the requested path (`exact`, `descendant`, `ancestor`, or `other`), readiness/default-use status, analysis profile, graph counts, target matches, selected candidate, and routing rule.
+**Returns:** Requested path, candidate analyses, relation to the requested path (`exact`, `descendant`, `ancestor`, or `other`), readiness/agent-context-ready status, analysis profile, graph counts, target matches, selected candidate, and routing rule.
 
 ### `resolve_agent_analysis`
 
@@ -669,7 +681,7 @@ Select the best stored CAS analysis for an agent task. This is the default first
 | `path` | string | yes | Repository or subproject path the agent was handed |
 | `task` | object | no | Optional task context with `task_type`, `target`, `related_paths`, `runtime_event`, `instructions`, or `success_criteria` |
 
-**Returns:** Selected path, selected candidate profile/readiness, alternatives, and a recommendation. Use `selected_path` for `get_agent_start_context`, `get_agent_tool_plan`, `get_agent_work_packet`, and follow-up tools when it differs from the requested path.
+**Returns:** Selected path, selected candidate profile/readiness, alternatives, and a recommendation. Use `selected_path` for `get_agent_start_context`, `get_agent_tool_plan`, `get_agent_context`, and follow-up tools when it differs from the requested path.
 
 ### `get_agent_start_context`
 
@@ -680,7 +692,7 @@ Default first call for Codex, Claude, Cursor, and other coding agents when an an
 | `path` | string | yes | Project path |
 | `task` | object | no | Optional task context with `task_type`, `target`, `related_paths`, or `runtime_event` |
 
-**Returns:** Default-use rule, agent readiness status, system summary, scale metrics, top entry/exit points, connected nodes, runtime links, answer-pack status, recommended first MCP tools, and guidance for when source file reads are still required.
+**Returns:** Agent-use rule, agent readiness status, system summary, scale metrics, top entry/exit points, connected nodes, runtime links, answer-pack status, recommended first MCP tools, and guidance for when source file reads are still required.
 
 ### `get_agent_tool_plan`
 
@@ -693,9 +705,9 @@ Task-specific MCP call plan for agents. Use this before choosing source files so
 
 **Returns:** Ordered MCP steps with tool names, arguments, purpose, required/optional status, and fallback behavior if CAS/MCP is missing or stale.
 
-### `get_agent_work_packet`
+### `get_agent_context`
 
-One-call task packet for agents. Use this after `get_agent_start_context` when an agent needs to begin real work without manually orchestrating every query.
+Task-scoped context for agents. Use this after `get_agent_start_context` when an agent needs codebase context for the work it is about to do without manually orchestrating every query. Klauro does not decide the task; it returns the relevant system facts, risks, conventions, files, and validation context for the agent's own intent.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -705,7 +717,7 @@ One-call task packet for agents. Use this after `get_agent_start_context` when a
 
 **Returns:** Target resolution, selected node, coding context, `capability_memory` for avoiding duplicate/rebuilt behavior, change risk, callers, callees, tests, error contracts for debug tasks, behavioral invariant impact, compact `idiom_context`, optional WAS `workspace_context`, runtime-backed `operational_priorities` for debug/runtime/production-symptom tasks when telemetry exists, representative entry/call-chain context, recommended MCP follow-ups, adoption gaps, a file read plan with concrete source files, bounded line windows, and reasons, an `execution_brief` plus `execution_brief.capsule` for token-minimal first implementation, and a validation plan with focused test/typecheck/build commands, monorepo package script routing, tests to inspect, manual checks, environment rules, and validation gaps.
 
-Set `task.response_profile` to `capsule-only` when an agent needs the smallest useful starting packet. It returns only the `K15` context capsule, `K5` execution capsule, selected target, first files, token estimate, and expansion rule. Set `first-turn` when the agent needs compact JSON fields in addition to the capsules. `K5` includes exact file paths, read/edit role sigils, file-scoped operations for direct-patch work, proof requirements, negative constraints, preservation rules, validation, and stop cues. `K15` is the compact agent context language for orientation, selected node, default extension restoration, role-grouped file dictionary, idioms, reuse, risk, validation, and expansion rules. Set `minimal` when the agent needs compact architecture/risk/test context, or omit it for the full work packet. For edit/debug tasks where token savings matter, agents should read `context_capsule` / `context_capsule.capsule` for orientation, execute `execution_capsule` / `capsule` before opening any other files, then fall back to `first-turn` or full workbench only if the capsules are ambiguous.
+Set `task.response_profile` to `capsule-only` when an agent needs the smallest useful starting context. It returns only the `K15` context capsule, `K5` execution capsule, selected target, first files, token estimate, and expansion rule. Set `first-turn` when the agent needs compact JSON fields in addition to the capsules. `K5` includes exact file paths, read/edit role sigils, file-scoped operations for direct-patch work, proof requirements, negative constraints, preservation rules, validation, and stop cues. `K15` is the compact agent context language for orientation, selected node, default extension restoration, role-grouped file dictionary, idioms, reuse, risk, validation, and expansion rules. Set `minimal` when the agent needs compact architecture/risk/test context, or omit it for the full agent context. For edit/debug tasks where token savings matter, agents should read `context_capsule` / `context_capsule.capsule` for orientation, execute `execution_capsule` / `capsule` before opening any other files, then fall back to `first-turn` or full workbench only if the capsules are ambiguous.
 
 ### `get_capability_memory`
 
@@ -720,11 +732,11 @@ Find existing analyzed capabilities that overlap the requested work so agents av
 | `files` | string[] | no | Known files involved in the work |
 | `limit` | number | no | Maximum capabilities to return |
 
-**Returns:** A compact capability-memory packet with matched capabilities, overlap scores, operation paths, related entities/domains, reuse decisions, do-not-rebuild guidance, and first checks for agents before adding new services, routes, workers, models, packages, or duplicated behavior.
+**Returns:** A compact capability-memory context with matched capabilities, overlap scores, operation paths, related entities/domains, reuse decisions, do-not-rebuild guidance, and first checks for agents before adding new services, routes, workers, models, packages, or duplicated behavior.
 
-### `get_idiom_aware_work_packet`
+### `get_idiom_aware_agent_context`
 
-One-call task packet that surfaces the same agent work packet with top-level idiom context for clients that want repo-local conventions first.
+Task-scoped agent context with top-level idiom context for clients that want repo-local conventions first.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -732,11 +744,11 @@ One-call task packet that surfaces the same agent work packet with top-level idi
 | `workspace_analysis_id` | string | no | Optional WAS id/name to include compact workspace context |
 | `task` | object | no | Optional task context with `task_type`, `target`, `related_paths`, `runtime_event`, `instructions`, or `success_criteria` |
 
-**Returns:** The normal agent work packet plus top-level `idiom_context` with selected idioms, local examples, do/avoid guidance, validation instructions, and likely violations.
+**Returns:** The normal agent context plus top-level `idiom_context` with selected idioms, local examples, do/avoid guidance, validation instructions, and likely violations.
 
 ### `open_agent_workbench`
 
-Product-level agent workspace for a task. Use this before broad source exploration when an agent needs one actionable packet instead of stitching together many lower-level calls.
+Product-level agent workspace for a task. Use this before broad source exploration when an agent needs one task-scoped context surface instead of stitching together many lower-level calls.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -744,7 +756,7 @@ Product-level agent workspace for a task. Use this before broad source explorati
 | `workspace_analysis_id` | string | no | Optional WAS id/name to include compact workspace context |
 | `task` | object | no | Optional task context with `task_type`, `target`, `instructions`, `success_criteria`, `change_type`, `files`, `diff_text`, or `plan_text` |
 
-**Returns:** Orientation, target resolution, file-read plan, validation plan, repo-local agent rules, `signal_quality`, evidence policy, stop conditions, and next MCP calls. `signal_quality` tells the agent when tests, patterns, idioms, invariants, purpose confidence, or analyzer coverage are thin so the packet is treated as guidance instead of complete truth.
+**Returns:** Orientation, target resolution, file-read plan, validation plan, repo-local agent rules, `signal_quality`, evidence policy, stop conditions, and next MCP calls. `signal_quality` tells the agent when tests, patterns, idioms, invariants, purpose confidence, or analyzer coverage are thin so the context is treated as guidance instead of complete truth.
 
 ### `preflight_agent_change`
 
@@ -812,21 +824,21 @@ Score whether this repository's CAS/MCP surface is good enough for agents to use
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
 
-**Returns:** Pass/warn/fail status, score, `default_use` boolean, graph and answerability gates, adoption gaps, and the required agent behavior contract.
+**Returns:** Pass/warn/fail status, score, `agent_context_ready` boolean, graph and answerability gates, adoption gaps, and the required agent behavior contract.
 
 ### `get_agent_doctor`
 
-Run the default-use readiness doctor for Codex, Claude, and other coding agents. This combines CAS contract validation, analysis freshness, test discovery evidence, runtime SDK proof, and golden snapshot status into one payload.
+Run the agent-context-ready readiness doctor for Codex, Claude, and other coding agents. This combines CAS contract validation, analysis freshness, test discovery evidence, runtime SDK proof, and golden snapshot status into one payload.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
 
-**Returns:** Pass/warn/fail status, `default_use` boolean, readiness report, freshness report, test discovery evidence, runtime event contract, runtime SDK package proof, golden snapshot comparison, and recommended first MCP tools.
+**Returns:** Pass/warn/fail status, `agent_context_ready` boolean, readiness report, freshness report, test discovery evidence, runtime event contract, runtime SDK package proof, golden snapshot comparison, and recommended first MCP tools.
 
 ### `get_agent_default_config`
 
-Return install-ready default-use instructions for an agent without writing files.
+Return install-ready agent-context-ready instructions for an agent without writing files.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -933,7 +945,7 @@ Generate a deterministic TypeScript runtime SDK package from the CAS runtime con
 
 ### `evaluate_agent_task_proof`
 
-Run agent work packets for representative tasks and score whether CAS gives enough target, risk, test, MCP, and file-read context to begin work.
+Run agent contexts for representative tasks and score whether CAS gives enough target, risk, test, MCP, and file-read context to begin work.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -1000,11 +1012,11 @@ Run the work-quality benchmark layer on top of the agentic benchmark suite.
 | `test_timeout_ms` | number | no | Per-test command timeout in milliseconds |
 | `orchestrator_timeout_ms` | number | no | Evaluator command timeout in milliseconds |
 
-**Returns:** Persisted report metadata, JSON report, Markdown report, success gates, context completeness, projected baseline quality, quality-score delta, token/time/file deltas, and optional live A/B execution results. Live results include copied repo paths, prompt/result/metric files, the with-Klauro work-packet artifact, binary diff paths, changed files, lines added/deleted, raw wall-clock duration, test status, provider token metrics when reported, deterministic orchestrator scores, optional external-orchestrator scores, and separated patch-quality, hidden-validation, command-completion, and timeout signals. The live `time_reduction_percentage` metric is time to valid solution: when one arm produces an invalid diff, the valid arm gets credit for reaching a solution instead of comparing raw wall time for an invalid patch. Claude Code live commands are also classified as lean or full-agent measurement mode; use `--safe-mode --no-session-persistence` on both arms when measuring Klauro token savings so unrelated local memory, plugins, hooks, and session persistence do not mask packet savings. When using `--add-dir {workspace}`, put `--` before `"$(cat {prompt_file})"` so Claude does not treat the prompt as another allowed directory.
+**Returns:** Persisted report metadata, JSON report, Markdown report, success gates, context completeness, projected baseline quality, quality-score delta, token/time/file deltas, and optional live A/B execution results. Live results include copied repo paths, prompt/result/metric files, the with-Klauro agent-context artifact, binary diff paths, changed files, lines added/deleted, raw wall-clock duration, test status, provider token metrics when reported, deterministic orchestrator scores, optional external-orchestrator scores, and separated patch-quality, hidden-validation, command-completion, and timeout signals. The live `time_reduction_percentage` metric is time to valid solution: when one arm produces an invalid diff, the valid arm gets credit for reaching a solution instead of comparing raw wall time for an invalid patch. Claude Code live commands are also classified as lean or full-agent measurement mode; use `--safe-mode --no-session-persistence` on both arms when measuring Klauro token savings so unrelated local memory, plugins, hooks, and session persistence do not mask context savings. When using `--add-dir {workspace}`, put `--` before `"$(cat {prompt_file})"` so Claude does not treat the prompt as another allowed directory.
 
 ### `run_agent_idiom_benchmark`
 
-Run copied-repo A/B idiom quality tasks. Both arms receive the same task; the with-Klauro arm receives CAS idiom context and the without-Klauro arm is prohibited from using CAS/MCP/precomputed work packets.
+Run copied-repo A/B idiom quality tasks. Both arms receive the same task; the with-Klauro arm receives CAS idiom context and the without-Klauro arm is prohibited from using CAS/MCP/precomputed agent contexts.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -1059,7 +1071,7 @@ Measure whether iterative analysis is fast, correct, and useful after a codebase
 | `verify_full` | boolean | no | Run a fresh full analysis after the edit and compare CAS count parity |
 | `discard_workspaces` | boolean | no | Remove copied repositories after collecting results |
 
-**Returns:** Persisted report metadata, JSON report, Markdown report, copied repo paths, edited file, full/no-change/edit-incremental timings, speedups, change summary, incremental state and file-cache counts, optional fresh-full parity, and an agent work-packet generated from the edited CAS.
+**Returns:** Persisted report metadata, JSON report, Markdown report, copied repo paths, edited file, full/no-change/edit-incremental timings, speedups, change summary, incremental state and file-cache counts, optional fresh-full parity, and an agent-context generated from the edited CAS.
 
 ### `get_patterns`
 

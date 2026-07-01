@@ -6,20 +6,20 @@ Prompts generate structured context for injection into AI assistant conversation
 
 ## `agent_coding_session`
 
-Default prompt for Codex, Claude, Cursor, and other agents. It resolves the best stored analysis for the requested path, then loads CAS readiness, start context, task-specific MCP tool plan, and the work packet before source-file exploration.
+Default prompt for Codex, Claude, Cursor, and other agents. It resolves the best stored analysis for the requested path, then loads CAS readiness, start context, task-specific MCP tool plan, and the agent context before source-file exploration.
 
 | Argument | Type | Required | Description |
 |----------|------|----------|-------------|
 | `path` | string | yes | Project path |
 | `task_type` | string | no | One of `orient`, `modify`, `debug`, `review`, `trace`, `cross-repo`, or `runtime` |
 | `target` | string | no | Task target, such as a feature, node, file, route, error, or subsystem |
-| `instructions` | string | no | Exact user instructions to preserve in the work packet |
+| `instructions` | string | no | Exact user instructions to preserve in the agent context |
 | `success_criteria` | string[] | no | Success criteria for the task |
 
 **Generates sections:**
 
 1. **Analysis Resolution** - Requested path, selected path, and recommendation when a subproject analysis is chosen
-2. **Header** - System name, default-use status, readiness score, and adoption gaps
+2. **Header** - System name, agent-context-ready status, readiness score, and adoption gaps
 3. **Operating Rule** - When to use MCP and when to read source files
 4. **System** - Type, description, languages, frameworks, and top capabilities
 5. **Scale** - Node, edge, entry point, and analysis error counts

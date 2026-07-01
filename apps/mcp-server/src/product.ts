@@ -1749,7 +1749,7 @@ export function buildOperationalPriorities(cas: CASOutput, observations: Runtime
       recommendation: operationalRecommendation(errors, slowEvents, healthRisk?.type),
       agent_guidance: [
         'Use get_runtime_trace for representative traces before editing.',
-        'Use get_agent_work_packet with static_target.file (preferred) or static_target.id as the target so fixes preserve local idioms and behavior.',
+        'Use get_agent_context with static_target.file (preferred) or static_target.id as the target so fixes preserve local idioms and behavior.',
         'Use assess_change_risk, find_tests, validate_behavioral_invariants, and validate_codebase_idioms before finalizing.',
       ],
     } satisfies OperationalPriority;
@@ -1766,7 +1766,7 @@ export function buildOperationalPriorities(cas: CASOutput, observations: Runtime
     priorities: priorities.slice(0, options.limit || 20),
     guidance: [
       'Prioritize issues where runtime volume or errors overlap static criticality, missing tests, complexity, or idiom drift.',
-      'Use Klauro runtime correlation as a triage map; source edits still need the normal CAS work packet and validation loop.',
+      'Use Klauro runtime correlation as a triage map; source edits still need the normal CAS agent context and validation loop.',
     ],
   };
 }

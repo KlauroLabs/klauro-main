@@ -63,10 +63,19 @@ const IGNORE_PATTERNS = [
   '**/node_modules/**',
   '**/dist/**',
   '**/build/**',
+  '**/out/**',
   '**/.git/**',
+  '**/.claude/**',
+  '**/.codex/**',
+  '**/.agents/**',
+  '**/.klauro*/**',
   '**/.terraform/**',
   '**/coverage/**',
   '**/.nyc_output/**',
+  '**/.next/**',
+  '**/.turbo/**',
+  '**/.cache/**',
+  '**/.vite/**',
   '**/__pycache__/**',
   '**/.pytest_cache/**',
   '**/target/**',
@@ -74,6 +83,10 @@ const IGNORE_PATTERNS = [
   '**/vendors/**',
   '**/examples/**',
   '**/Examples/**',
+  '**/fixtures/**',
+  '**/__fixtures__/**',
+  '**/testdata/**',
+  '**/cas-tests/**',
   '**/samples/**',
   '**/Samples/**',
   '**/.venv/**',
@@ -91,6 +104,12 @@ const IGNORE_PATTERNS = [
   '**/*.bundle.css',
   '**/*.min.js',
   '**/*.min.css',
+  '**/storybook-static/**',
+  '**/storybook-build/**',
+  '**/public/assets/**',
+  '**/static/assets/**',
+  '**/src/assets/**',
+  '**/web/assets/**',
   '**/Generated/**',
   '**/generated/**',
 ];
@@ -170,7 +189,7 @@ export class ChangeDetector {
           ...detectedChanges.modified,
           ...detectedChanges.deleted,
         ]);
-        if (coreConfigChanged) {
+        if (coreConfigChanged && this.shouldFullRebuildForCoreConfigChange()) {
           return this.createFullRebuildChangeSet(`Core configuration changed: ${coreConfigChanged}`);
         }
         const enriched = await this.enrichWithDependencies(detectedChanges, previousState);
@@ -508,7 +527,7 @@ export class ChangeDetector {
     }
 
     const coreConfigChanged = this.checkCoreConfigChanges([...added, ...modified, ...deleted]);
-    if (coreConfigChanged) {
+    if (coreConfigChanged && this.shouldFullRebuildForCoreConfigChange()) {
       return {
         added,
         modified,
@@ -700,6 +719,17 @@ export class ChangeDetector {
       }
     }
     return null;
+  }
+
+  private shouldFullRebuildForCoreConfigChange(): boolean {
+    const configured = process.env.KLAURO_FULL_REBUILD_ON_CONFIG_CHANGE?.toLowerCase();
+    if (configured === 'false' || configured === '0' || configured === 'no') {
+      return false;
+    }
+    if (configured === 'true' || configured === '1' || configured === 'yes') {
+      return true;
+    }
+    return process.env.KLAURO_ANALYSIS_FOCUS !== 'agent-fast';
   }
 
   private isSourceFile(file: string): boolean {

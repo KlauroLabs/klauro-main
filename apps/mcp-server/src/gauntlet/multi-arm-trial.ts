@@ -10,7 +10,7 @@
  * arm is measured identically. No parallel, divergent measurement path.
  *
  * Arm shapes:
- *  - klauro:     gets a precomputed work packet (promptWithKlauro).
+ *  - klauro:     gets a precomputed agent context (promptWithKlauro).
  *  - no-tools:   bare baseline (promptWithoutKlauro, no candidates).
  *  - competitor: promptWithoutKlauro + the arm's retrieval backend ranked
  *                candidates injected as withoutArmRetrievedFiles, and the
@@ -27,7 +27,7 @@ import {
   _copyRepo, _initializeBaseline, _runShell, _diffStats, _readMetricFile,
   _renderCommand, _parseMetricsFromText, _estimateSourceReadTokens,
   _firstPositiveNumber, _estimateTokens, _promptWithoutKlauro, _promptWithKlauro,
-  _buildLiveWorkPacket,
+  _buildLiveAgentContext,
   type LiveAgentPairInput, type LiveAgentCommandConfig,
 } from '../agent-live-trial';
 import type { RetrievalBackend } from './retrieval/types';
@@ -134,7 +134,7 @@ async function runArm(
   const metricsFile = path.join(workspace, '.klauro-live-metrics.json');
   const resultFile = path.join(workspace, '.klauro-live-result.json');
   const diffFile = path.join(trialDirectory, `${arm.id}.diff`);
-  const workPacketFile = arm.kind === 'klauro' ? path.join(trialDirectory, `${arm.id}-work-packet.json`) : undefined;
+  const agentContextFile = arm.kind === 'klauro' ? path.join(trialDirectory, `${arm.id}-agent-context.json`) : undefined;
 
   const startedAt = Date.now();
   let indexMs = 0;
@@ -163,10 +163,10 @@ async function runArm(
     }
 
     const prompt = arm.kind === 'klauro'
-      ? _promptWithKlauro(armInput, workspace, metricsFile, resultFile, workPacketFile, true)
+      ? _promptWithKlauro(armInput, workspace, metricsFile, resultFile, agentContextFile, true)
       : _promptWithoutKlauro(armInput, workspace, metricsFile, resultFile, true);
 
-    if (workPacketFile) await fs.writeJson(workPacketFile, _buildLiveWorkPacket(armInput, workspace), { spaces: 2 });
+    if (agentContextFile) await fs.writeJson(agentContextFile, _buildLiveAgentContext(armInput, workspace), { spaces: 2 });
     await fs.writeFile(promptFile, prompt, 'utf8');
     await _initializeBaseline(workspace);
 

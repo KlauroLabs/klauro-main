@@ -95,6 +95,127 @@ test('change detector does not repeatedly full rebuild for already-analyzed dirt
   }
 });
 
+test('agent-fast treats later package config edits as incremental local changes', async () => {
+  const projectPath = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-incremental-agent-fast-config-'));
+  const previousFocus = process.env.KLAURO_ANALYSIS_FOCUS;
+  const previousFullRebuild = process.env.KLAURO_FULL_REBUILD_ON_CONFIG_CHANGE;
+  try {
+    process.env.KLAURO_ANALYSIS_FOCUS = 'agent-fast';
+    delete process.env.KLAURO_FULL_REBUILD_ON_CONFIG_CHANGE;
+
+    execFileSync('git', ['init'], { cwd: projectPath, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: projectPath });
+    execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: projectPath });
+    fs.writeFileSync(path.join(projectPath, 'package.json'), '{"name":"agent-fast-config","scripts":{"test":"node test.js"}}\n');
+    fs.writeFileSync(path.join(projectPath, 'index.ts'), 'export const value = 1;\n');
+    execFileSync('git', ['add', '.'], { cwd: projectPath });
+    execFileSync('git', ['commit', '-m', 'initial'], { cwd: projectPath, stdio: 'ignore' });
+
+    const orchestrator = new AnalyzerOrchestrator() as any;
+    const output: CASOutput = {
+      cas_version: '1.10.0',
+      analysis_timestamp: new Date().toISOString(),
+      analysis_id: 'agent-fast-config-test',
+      system: {
+        id: 'agent-fast-config-test',
+        name: 'agent-fast-config-test',
+        type: 'application',
+        root_path: projectPath,
+      },
+      nodes: [],
+      edges: [],
+      analyzer_contributions: [],
+      progressive_levels: { total_levels: 1 },
+    };
+    const detector = new ChangeDetector(projectPath);
+    const state = orchestrator.buildIncrementalState(projectPath, output, detector);
+
+    fs.writeFileSync(path.join(projectPath, 'package.json'), '{"name":"agent-fast-config","scripts":{"test":"node test.js","lint":"eslint ."}}\n');
+
+    const changes = await detector.detectChanges(state);
+    assert.equal(changes.requiresFullRebuild, false);
+    assert.deepEqual(changes.modified, ['package.json']);
+    assert.deepEqual(changes.added, []);
+    assert.deepEqual(changes.deleted, []);
+  } finally {
+    if (previousFocus === undefined) delete process.env.KLAURO_ANALYSIS_FOCUS;
+    else process.env.KLAURO_ANALYSIS_FOCUS = previousFocus;
+    if (previousFullRebuild === undefined) delete process.env.KLAURO_FULL_REBUILD_ON_CONFIG_CHANGE;
+    else process.env.KLAURO_FULL_REBUILD_ON_CONFIG_CHANGE = previousFullRebuild;
+    fs.rmSync(projectPath, { recursive: true, force: true });
+  }
+});
+
+test('full analysis still full rebuilds when core package config changes', async () => {
+  const projectPath = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-incremental-full-config-'));
+  const previousFocus = process.env.KLAURO_ANALYSIS_FOCUS;
+  const previousFullRebuild = process.env.KLAURO_FULL_REBUILD_ON_CONFIG_CHANGE;
+  try {
+    process.env.KLAURO_ANALYSIS_FOCUS = 'full';
+    delete process.env.KLAURO_FULL_REBUILD_ON_CONFIG_CHANGE;
+
+    execFileSync('git', ['init'], { cwd: projectPath, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: projectPath });
+    execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: projectPath });
+    fs.writeFileSync(path.join(projectPath, 'package.json'), '{"name":"full-config","scripts":{"test":"node test.js"}}\n');
+    fs.writeFileSync(path.join(projectPath, 'index.ts'), 'export const value = 1;\n');
+    execFileSync('git', ['add', '.'], { cwd: projectPath });
+    execFileSync('git', ['commit', '-m', 'initial'], { cwd: projectPath, stdio: 'ignore' });
+
+    const orchestrator = new AnalyzerOrchestrator() as any;
+    const output: CASOutput = {
+      cas_version: '1.10.0',
+      analysis_timestamp: new Date().toISOString(),
+      analysis_id: 'full-config-test',
+      system: {
+        id: 'full-config-test',
+        name: 'full-config-test',
+        type: 'application',
+        root_path: projectPath,
+      },
+      nodes: [],
+      edges: [],
+      analyzer_contributions: [],
+      progressive_levels: { total_levels: 1 },
+    };
+    const detector = new ChangeDetector(projectPath);
+    const state = orchestrator.buildIncrementalState(projectPath, output, detector);
+
+    fs.writeFileSync(path.join(projectPath, 'package.json'), '{"name":"full-config","scripts":{"test":"node test.js","lint":"eslint ."}}\n');
+
+    const changes = await detector.detectChanges(state);
+    assert.equal(changes.requiresFullRebuild, true);
+    assert.match(changes.reason || '', /Core configuration changed: package\.json/);
+  } finally {
+    if (previousFocus === undefined) delete process.env.KLAURO_ANALYSIS_FOCUS;
+    else process.env.KLAURO_ANALYSIS_FOCUS = previousFocus;
+    if (previousFullRebuild === undefined) delete process.env.KLAURO_FULL_REBUILD_ON_CONFIG_CHANGE;
+    else process.env.KLAURO_FULL_REBUILD_ON_CONFIG_CHANGE = previousFullRebuild;
+    fs.rmSync(projectPath, { recursive: true, force: true });
+  }
+});
+
+test('incremental source tracking excludes Klauro scratch and generated proof folders', () => {
+  const projectPath = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-incremental-ignore-scratch-'));
+  try {
+    fs.mkdirSync(path.join(projectPath, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(projectPath, '.klauro-scratch-live', 'src'), { recursive: true });
+    fs.mkdirSync(path.join(projectPath, 'apps', 'mcp-server', 'fixtures', 'demo'), { recursive: true });
+    fs.writeFileSync(path.join(projectPath, 'src', 'real.ts'), 'export const real = true;\n');
+    fs.writeFileSync(path.join(projectPath, '.klauro-scratch-live', 'src', 'copy.ts'), 'export const generated = true;\n');
+    fs.writeFileSync(path.join(projectPath, 'apps', 'mcp-server', 'fixtures', 'demo', 'fixture.ts'), 'export const fixture = true;\n');
+
+    const orchestrator = new AnalyzerOrchestrator() as any;
+    const sourceFiles = orchestrator.getIncrementalSourceFiles(projectPath) as string[];
+
+    assert.ok(sourceFiles.includes('src/real.ts'));
+    assert.ok(!sourceFiles.includes('.klauro-scratch-live/src/copy.ts'));
+    assert.ok(!sourceFiles.includes('apps/mcp-server/fixtures/demo/fixture.ts'));
+  } finally {
+    fs.rmSync(projectPath, { recursive: true, force: true });
+  }
+});
+
 test('change detector normalizes parent-repo git paths for subproject incremental state', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-incremental-monorepo-'));
   const projectPath = path.join(repoRoot, 'apps', 'mcp-server');

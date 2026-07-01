@@ -65,8 +65,8 @@ describe('shared element description validator', () => {
 
   it('rejects file coordination restatements for capability descriptions', () => {
     const result = validateElementDescription(
-      'Agent Work Packets manages the creation and coordination of files related to agent adoption and measurement.',
-      { name: 'Agent Work Packets', relatedDomains: ['agent'] },
+      'Agent Context manages the creation and coordination of files related to agent adoption and measurement.',
+      { name: 'Agent Context', relatedDomains: ['agent'] },
     );
     expect(result.ok).toBe(false);
     expect(result.reason).toBe('generic-structural-phrase');
@@ -74,8 +74,8 @@ describe('shared element description validator', () => {
 
   it('rejects descriptions that name implementation source files', () => {
     const result = validateElementDescription(
-      'Agent Work Packets prepares coding briefs for agents by coordinating agent-adoption.ts and agent-adoption-measurement.ts.',
-      { name: 'Agent Work Packets', relatedDomains: ['agent'] },
+      'Agent Context prepares coding briefs for agents by coordinating agent-adoption.ts and agent-adoption-measurement.ts.',
+      { name: 'Agent Context', relatedDomains: ['agent'] },
     );
     expect(result.ok).toBe(false);
     expect(result.reason).toBe('source-file-restatement');
@@ -102,8 +102,8 @@ describe('shared element description validator', () => {
 
   it('rejects capability descriptions that summarize implementation functions', () => {
     const result = validateElementDescription(
-      'Agent Work Packets coordinates and generates functions to process and format data for structured output.',
-      { name: 'Agent Work Packets', kind: 'capability', relatedDomains: ['agent'] },
+      'Agent Context coordinates and generates functions to process and format data for structured output.',
+      { name: 'Agent Context', kind: 'capability', relatedDomains: ['agent'] },
     );
     expect(result.ok).toBe(false);
     expect(result.reason).toBe('implementation-function-restatement');
@@ -111,8 +111,8 @@ describe('shared element description validator', () => {
 
   it('rejects capability descriptions that list helper function examples', () => {
     const result = validateElementDescription(
-      'Agent Work Packets organizes and executes specific functions like parseArgs, formatTable, and renderRow to process and structure data.',
-      { name: 'Agent Work Packets', kind: 'capability', relatedDomains: ['agent'] },
+      'Agent Context organizes and executes specific functions like parseArgs, formatTable, and renderRow to process and structure data.',
+      { name: 'Agent Context', kind: 'capability', relatedDomains: ['agent'] },
     );
     expect(result.ok).toBe(false);
     expect(result.reason).toBe('implementation-function-restatement');
@@ -315,8 +315,8 @@ describe('external service plausibility filter', () => {
   });
 });
 
-describe('AI interpretation budgets for local providers', () => {
-  const localEnvKeys = ['KLAURO_OLLAMA_AUTO', 'OLLAMA_BASE_URL', 'LOCAL_OPENAI_BASE_URL', 'OPENAI_BASE_URL', 'AI_TIMEOUT'];
+describe('AI interpretation budgets for hosted providers', () => {
+  const localEnvKeys = ['KLAURO_OLLAMA_AUTO', 'OLLAMA_BASE_URL', 'LOCAL_OPENAI_BASE_URL', 'OPENAI_BASE_URL', 'OPENAI_API_KEY', 'AI_TIMEOUT'];
   let saved: Record<string, string | undefined>;
 
   beforeEach(() => {
@@ -331,24 +331,23 @@ describe('AI interpretation budgets for local providers', () => {
     }
   });
 
-  it('defaults the per-request timeout to 120s for local ollama and 90s for cloud', () => {
+  it('ignores local model toggles and defaults the per-request timeout to 90s for hosted AI', () => {
     const { getAIConfig } = require('../../config/ai.config');
-    // Cloud default is 90s: a hosted-70B catalog/narrative call sends a large
+    // Hosted default is 90s: a hosted-70B catalog/narrative call sends a large
     // fact bundle and returns structured JSON on highly variable shared inference;
     // a short timeout cut it off, burning the retry budget before any result.
     expect(getAIConfig().openai.timeout).toBe(90000);
     process.env.KLAURO_OLLAMA_AUTO = 'true';
-    expect(getAIConfig().openai.timeout).toBe(120000);
+    expect(getAIConfig().openai.timeout).toBe(90000);
     process.env.AI_TIMEOUT = '45000';
     expect(getAIConfig().openai.timeout).toBe(45000);
   });
 
-  it('sizes the interpretation wall budget to fit a local call plus one repair', async () => {
-    process.env.KLAURO_OLLAMA_AUTO = 'true';
-    const previousLocal = process.env.AI_LOCAL_ENABLED;
+  it('uses the hosted interpretation wall budget unless explicitly overridden', async () => {
+    const previousOpenAI = process.env.OPENAI_API_KEY;
     const previousForce = process.env.KLAURO_AI_INTERPRETATION_FORCE;
     const previousBudget = process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS;
-    process.env.AI_LOCAL_ENABLED = 'true';
+    process.env.OPENAI_API_KEY = 'test-openai-key';
     process.env.KLAURO_AI_INTERPRETATION_FORCE = '1';
     delete process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS;
 
@@ -371,26 +370,26 @@ describe('AI interpretation budgets for local providers', () => {
       await orch.applyAIInterpretation(purpose, 'analysis-api', [], [], [], [], orch.emptyFlowGraph(), []);
     } finally {
       spy.mockRestore();
-      if (previousLocal === undefined) delete process.env.AI_LOCAL_ENABLED;
-      else process.env.AI_LOCAL_ENABLED = previousLocal;
+      if (previousOpenAI === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousOpenAI;
       if (previousForce === undefined) delete process.env.KLAURO_AI_INTERPRETATION_FORCE;
       else process.env.KLAURO_AI_INTERPRETATION_FORCE = previousForce;
       if (previousBudget === undefined) delete process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS;
       else process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS = previousBudget;
     }
 
-    expect(purpose.description_generation.budget_ms).toBe(240000);
+    expect(purpose.description_generation.budget_ms).toBe(20000);
     expect(purpose.description_generation.status).toBe('ai_applied');
   });
 });
 
 describe('keep-better policy and rejection-reason telemetry in the combined path', () => {
-  const envKeys = ['AI_LOCAL_ENABLED', 'KLAURO_AI_INTERPRETATION_FORCE', 'KLAURO_AI_INTERPRETATION_BUDGET_MS'];
+  const envKeys = ['OPENAI_API_KEY', 'KLAURO_AI_INTERPRETATION_FORCE', 'KLAURO_AI_INTERPRETATION_BUDGET_MS'];
   let saved: Record<string, string | undefined>;
 
   beforeEach(() => {
     saved = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
-    process.env.AI_LOCAL_ENABLED = 'true';
+    process.env.OPENAI_API_KEY = 'test-openai-key';
     process.env.KLAURO_AI_INTERPRETATION_FORCE = '1';
     process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS = '20000';
   });
@@ -451,7 +450,7 @@ describe('keep-better policy and rejection-reason telemetry in the combined path
     }));
   });
 
-  it('rejects AI without retaining deterministic summaries that use analyzer jargon', async () => {
+  it('rejects generic AI and repairs deterministic summaries that use analyzer jargon', async () => {
     const spy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
       system_description: 'An order management system built with Angular that coordinates company, offer, suggestion, and upload workflows. It connects to HTTP API Connection and apollo-angular to manage user, portal, and company data.',
       domain: '',
@@ -482,9 +481,10 @@ describe('keep-better policy and rejection-reason telemetry in the combined path
       spy.mockRestore();
     }
 
-    expect(purpose.description_source).toBe('deterministic');
+    expect(purpose.description_source).toBe('ai');
+    expect(purpose.inferred_description).not.toMatch(/route entry points|lifecycle entry points|user, portal, and company data/i);
     expect(purpose.description_generation).toEqual(expect.objectContaining({
-      status: 'ai_rejected',
+      status: 'ai_applied',
       attempted: true,
       reason: expect.stringContaining('generic-concept-ending'),
     }));
@@ -673,7 +673,7 @@ describe('self-analysis AI description guardrails', () => {
     confidence: 0.9,
     evidence: [],
     primary_domain: 'codebase-analysis',
-    core_concepts: ['CAS', 'MCP', 'codebase analysis', 'agent work packets'],
+    core_concepts: ['CAS', 'MCP', 'codebase analysis', 'agent contexts'],
     inferred_description: 'Klauro builds CAS relationship graphs for AI agents and human codebase inspection.',
     supporting_workflow_ids: [],
   };
@@ -700,7 +700,7 @@ describe('self-analysis AI description guardrails', () => {
 
   it('accepts self descriptions that lead with CAS, MCP, agent guidance, and analysis storage', () => {
     const result = orch.validateGeneratedAIInterpretation(
-      'Klauro builds CAS relationship graphs from repositories so AI agents can understand codebase structure before editing. It exposes MCP work packets, idiom guidance, proposal previews, incremental analysis, telemetry correlation, and analysis storage for development workflows.',
+      'Klauro builds CAS relationship graphs from repositories so AI agents can understand codebase structure before editing. It exposes MCP agent contexts, idiom guidance, proposal previews, incremental analysis, telemetry correlation, and analysis storage for development workflows.',
       purpose,
       { isKlauroSelfProject: true, structuralTokens: ['codebase', 'analysis', 'agent', 'storage'] },
     );
@@ -715,7 +715,7 @@ describe('self-analysis AI description guardrails', () => {
       { name: 'Workspaces Management', related_domains: ['workspace'] },
       { name: 'Projects Management', related_domains: ['project'] },
       { name: 'Codebase Analysis', related_domains: ['analysis'] },
-      { name: 'Agent Work Packets', related_domains: ['agent'] },
+      { name: 'Agent Context', related_domains: ['agent'] },
       { name: 'Proposal Preview', related_domains: ['proposal'] },
       { name: 'Codebase Idiom Guidance', related_domains: ['idiom'] },
       { name: 'Analysis Storage', related_domains: ['storage'] },
@@ -725,7 +725,7 @@ describe('self-analysis AI description guardrails', () => {
 
     expect(prioritized.map((capability: any) => capability.name)).toEqual([
       'Codebase Analysis',
-      'Agent Work Packets',
+      'Agent Context',
       'Proposal Preview',
       'Codebase Idiom Guidance',
       'Analysis Storage',

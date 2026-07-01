@@ -2,7 +2,7 @@ import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import { getAgentWorkPacket } from './agent-adoption';
+import { getAgentContext } from './agent-adoption';
 import { buildOperationalPriorities } from './product';
 import { ingestTelemetryBatch, loadTelemetryObservations, type TelemetryEvent } from './telemetry-ingestion';
 
@@ -24,7 +24,7 @@ interface RuntimeImpactBenchmarkReport {
     runtime_top_file: string;
     runtime_top_score: number;
     capsule_estimated_tokens: number;
-    full_packet_estimated_tokens: number;
+    full_context_estimated_tokens: number;
     token_reduction_percentage: number;
   };
   gates: BenchmarkGate[];
@@ -37,7 +37,7 @@ export async function runRuntimeImpactBenchmark(options: { outputPath?: string; 
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-runtime-impact-'));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-runtime-impact-storage-'));
   const previousStorage = process.env.KLAURO_STORAGE_PATH;
-  const previousProfile = process.env.KLAURO_AGENT_PACKET_PROFILE;
+  const previousProfile = process.env.KLAURO_AGENT_CONTEXT_PROFILE;
   const gates: BenchmarkGate[] = [];
 
   process.env.KLAURO_STORAGE_PATH = storage;
@@ -69,30 +69,30 @@ export async function runRuntimeImpactBenchmark(options: { outputPath?: string; 
       top ? `${top.source}, ${top.runtime.errors} errors, volume ${top.runtime.estimated_volume}` : 'missing priority'
     ));
 
-    process.env.KLAURO_AGENT_PACKET_PROFILE = 'standard';
-    const fullPacket = await getAgentWorkPacket(cas, workspace, {
+    process.env.KLAURO_AGENT_CONTEXT_PROFILE = 'standard';
+    const fullContext = await getAgentContext(cas, workspace, {
       task_type: 'debug',
       target: 'what bugs should I address today',
       instructions: 'Use production telemetry to pick the most impactful bug, then preserve local idioms and tests.',
     }) as any;
 
-    const capsulePacket = await getAgentWorkPacket(cas, workspace, {
+    const capsuleContext = await getAgentContext(cas, workspace, {
       task_type: 'debug',
       target: 'what bugs should I address today',
       instructions: 'Use production telemetry to pick the most impactful bug, then preserve local idioms and tests.',
       response_profile: 'capsule-only',
     }) as any;
 
-    const fullPacketEstimatedTokens = estimateTokens(JSON.stringify(fullPacket));
-    const capsuleEstimatedTokens = Number(capsulePacket.estimated_tokens || estimateTokens(`${capsulePacket.context_capsule}\n${capsulePacket.execution_capsule}`));
-    const tokenReduction = percentReduction(fullPacketEstimatedTokens, capsuleEstimatedTokens);
-    const fullPriorityFile = fullPacket.work_context?.operational_priorities?.priorities?.[0]?.static_target?.file || '';
-    const capsuleText = `${capsulePacket.context_capsule || ''}\n${capsulePacket.execution_capsule || ''}`;
+    const fullContextEstimatedTokens = estimateTokens(JSON.stringify(fullContext));
+    const capsuleEstimatedTokens = Number(capsuleContext.estimated_tokens || estimateTokens(`${capsuleContext.context_capsule}\n${capsuleContext.execution_capsule}`));
+    const tokenReduction = percentReduction(fullContextEstimatedTokens, capsuleEstimatedTokens);
+    const fullPriorityFile = fullContext.work_context?.operational_priorities?.priorities?.[0]?.static_target?.file || '';
+    const capsuleText = `${capsuleContext.context_capsule || ''}\n${capsuleContext.execution_capsule || ''}`;
 
     gates.push(gate(
-      'runtime-impact:work-packet-carries-priority',
+      'runtime-impact:work-context-carries-priority',
       fullPriorityFile.endsWith('src/exports/invoice-export.service.ts'),
-      `work packet top priority ${fullPriorityFile || 'missing'}`
+      `agent context top priority ${fullPriorityFile || 'missing'}`
     ));
     gates.push(gate(
       'runtime-impact:capsule-carries-priority',
@@ -102,7 +102,7 @@ export async function runRuntimeImpactBenchmark(options: { outputPath?: string; 
     gates.push(gate(
       'runtime-impact:capsule-token-reduction',
       tokenReduction >= 70 && capsuleEstimatedTokens <= 350,
-      `${tokenReduction}% reduction, ${capsuleEstimatedTokens} capsule tokens vs ${fullPacketEstimatedTokens} full tokens`
+      `${tokenReduction}% reduction, ${capsuleEstimatedTokens} capsule tokens vs ${fullContextEstimatedTokens} full tokens`
     ));
 
     const passed = gates.filter(item => item.status === 'pass').length;
@@ -118,7 +118,7 @@ export async function runRuntimeImpactBenchmark(options: { outputPath?: string; 
         runtime_top_file: runtimeTopFile,
         runtime_top_score: Number(top?.priority_score || 0),
         capsule_estimated_tokens: capsuleEstimatedTokens,
-        full_packet_estimated_tokens: fullPacketEstimatedTokens,
+        full_context_estimated_tokens: fullContextEstimatedTokens,
         token_reduction_percentage: tokenReduction,
       },
       gates,
@@ -138,8 +138,8 @@ export async function runRuntimeImpactBenchmark(options: { outputPath?: string; 
   } finally {
     if (previousStorage === undefined) delete process.env.KLAURO_STORAGE_PATH;
     else process.env.KLAURO_STORAGE_PATH = previousStorage;
-    if (previousProfile === undefined) delete process.env.KLAURO_AGENT_PACKET_PROFILE;
-    else process.env.KLAURO_AGENT_PACKET_PROFILE = previousProfile;
+    if (previousProfile === undefined) delete process.env.KLAURO_AGENT_CONTEXT_PROFILE;
+    else process.env.KLAURO_AGENT_CONTEXT_PROFILE = previousProfile;
     await fs.remove(workspace);
     await fs.remove(storage);
   }

@@ -5,6 +5,9 @@ import * as path from 'path';
 
 export const MINIMUM_NODE_MAJOR = 20;
 export const DEFAULT_HANDSHAKE_LIMIT_MS = 600;
+export const DEFAULT_PRODUCT_BUNDLE_BUDGET_BYTES = 75 * 1024 * 1024;
+export const DEFAULT_PRODUCT_INSTALL_BUDGET_BYTES = 350 * 1024 * 1024;
+export const DEFAULT_PRODUCT_STORAGE_BUDGET_BYTES = 512 * 1024 * 1024;
 export const OPERATING_LOOP_MARKER = '## Klauro Agent Rule';
 export const OPERATING_LOOP_BEGIN_MARKER = '<!-- klauro:operating-loop:begin -->';
 export const OPERATING_LOOP_END_MARKER = '<!-- klauro:operating-loop:end -->';
@@ -191,13 +194,90 @@ export function formatBytes(bytes) {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+export function productFootprintBudgets(env = process.env) {
+  return {
+    bundleBytes: parseByteBudget(env.KLAURO_PRODUCT_BUNDLE_MAX_BYTES, DEFAULT_PRODUCT_BUNDLE_BUDGET_BYTES),
+    installBytes: parseByteBudget(env.KLAURO_PRODUCT_INSTALL_MAX_BYTES, DEFAULT_PRODUCT_INSTALL_BUDGET_BYTES),
+    storageBytes: parseByteBudget(env.KLAURO_PRODUCT_STORAGE_WARN_BYTES, DEFAULT_PRODUCT_STORAGE_BUDGET_BYTES),
+  };
+}
+
+function parseByteBudget(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export function evaluateSizeBudget({ id, label, bytes, maxBytes, overStatus = 'fail', fix }) {
+  if (bytes <= maxBytes) {
+    return checkResult(id, 'pass', `${label} is ${formatBytes(bytes)} (budget ${formatBytes(maxBytes)}).`);
+  }
+  return checkResult(id, overStatus,
+    `${label} is ${formatBytes(bytes)}, over the ${formatBytes(maxBytes)} budget.`,
+    fix);
+}
+
+export function inspectProductFootprint({ packageRoot, env = process.env, includeStorage = true } = {}) {
+  const root = packageRoot || path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+  const budgets = productFootprintBudgets(env);
+  const distDir = path.join(root, 'dist');
+  const nodeModulesDir = path.join(root, 'node_modules');
+  const shippedScriptFiles = [
+    path.join(root, 'scripts', 'install.mjs'),
+    path.join(root, 'scripts', 'uninstall.mjs'),
+    path.join(root, 'scripts', 'environment-checks.mjs'),
+  ];
+  const packageFiles = [
+    path.join(root, 'package.json'),
+    path.join(root, 'package-lock.json'),
+    ...shippedScriptFiles,
+  ];
+
+  const bundleBytes = fs.existsSync(distDir) ? directorySizeBytes(distDir) : 0;
+  const installBytes = bundleBytes
+    + packageFiles.filter(file => fs.existsSync(file)).reduce((sum, file) => sum + fs.statSync(file).size, 0)
+    + (fs.existsSync(nodeModulesDir) ? directorySizeBytes(nodeModulesDir) : 0);
+
+  const checks = [
+    evaluateSizeBudget({
+      id: 'product-bundle-footprint',
+      label: 'Bundled MCP/runtime dist',
+      bytes: bundleBytes,
+      maxBytes: budgets.bundleBytes,
+      fix: `Run npm --prefix ${root} run build and inspect dist/. Gauntlet, tests, and legacy source must stay out of the product bundle.`,
+    }),
+    evaluateSizeBudget({
+      id: 'product-install-footprint',
+      label: 'Local install footprint estimate',
+      bytes: installBytes,
+      maxBytes: budgets.installBytes,
+      fix: 'Move heavy analyzer/test/gauntlet dependencies out of the local product package, or ship them only in hosted analyzer/gauntlet packages.',
+    }),
+  ];
+
+  if (includeStorage) {
+    const rootStorage = storageRoot(env);
+    const storageBytes = fs.existsSync(rootStorage) ? directorySizeBytes(rootStorage) : 0;
+    checks.push(evaluateSizeBudget({
+      id: 'product-storage-footprint',
+      label: 'Local Klauro storage',
+      bytes: storageBytes,
+      maxBytes: budgets.storageBytes,
+      overStatus: 'warn',
+      fix: `Run storage pruning for generated artifacts: npm --prefix ${root} run storage-prune -- --include-ephemeral-analyses --include-temp-artifacts --max-bytes ${budgets.storageBytes} --confirm`,
+    }));
+  }
+
+  return checks;
+}
+
 export function summarizeAiProviders(env = process.env) {
   const configured = [];
+  if (env.DEEPINFRA_API_KEY) configured.push(`deepinfra (${env.DEEPINFRA_BASE_URL || 'https://api.deepinfra.com/v1/openai'}; model ${env.DEEPINFRA_MODEL || env.OPENAI_MODEL || 'default'})`);
   if (env.OPENAI_API_KEY) configured.push('openai (OPENAI_API_KEY)');
   if (env.ANTHROPIC_API_KEY) configured.push('anthropic (ANTHROPIC_API_KEY)');
-  if (env.OPENAI_BASE_URL || env.LOCAL_OPENAI_BASE_URL) configured.push(`openai-compatible endpoint (${env.OPENAI_BASE_URL || env.LOCAL_OPENAI_BASE_URL})`);
-  if (env.OLLAMA_BASE_URL) configured.push(`ollama (${env.OLLAMA_BASE_URL})`);
-  if (env.AI_LOCAL_ENABLED === 'true') configured.push('local model (AI_LOCAL_ENABLED=true)');
+  if (env.OPENAI_BASE_URL && !/(?:127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1\])/i.test(env.OPENAI_BASE_URL)) {
+    configured.push(`openai-compatible endpoint (${env.OPENAI_BASE_URL})`);
+  }
   return configured;
 }
 
@@ -217,20 +297,12 @@ export async function probeOllama(baseUrl = 'http://127.0.0.1:11434', timeoutMs 
   }
 }
 
-export function evaluateAiProviders({ configured, ollamaConfigured, ollamaProbe }) {
+export function evaluateAiProviders({ configured }) {
   if (configured.length === 0) {
     return checkResult('ai-providers', 'pass',
-      'No AI provider configured; analysis runs fully deterministic (agent-fast profile is unaffected). Optional: set ANTHROPIC_API_KEY, OPENAI_API_KEY, or OLLAMA_BASE_URL for AI narrative layers.');
+      'No hosted AI provider configured; analysis runs deterministic and hosted narrative layers are disabled. Optional on the hosted analyzer only: set DEEPINFRA_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, or a hosted OPENAI_BASE_URL.');
   }
-  if (ollamaConfigured && ollamaProbe && !ollamaProbe.reachable) {
-    return checkResult('ai-providers', 'warn',
-      `Configured: ${configured.join('; ')}. Ollama endpoint is unreachable (${ollamaProbe.detail}); analysis degrades to deterministic output.`,
-      'Start ollama (ollama serve) or unset OLLAMA_BASE_URL. Deterministic analysis works without it.');
-  }
-  const ollamaNote = ollamaConfigured && ollamaProbe?.reachable
-    ? ` Ollama reachable (${ollamaProbe.models} model(s)).`
-    : '';
-  return checkResult('ai-providers', 'pass', `Configured: ${configured.join('; ')}.${ollamaNote}`);
+  return checkResult('ai-providers', 'pass', `Configured hosted AI provider(s): ${configured.join('; ')}.`);
 }
 
 export function evaluateZstd({ zstdAvailable, compressedFiles }) {
@@ -445,7 +517,7 @@ function operatingLoopBody() {
     '1. Call resolve_agent_analysis with the repository path and the current task; use the selected path when it differs.',
     '2. Call get_agent_start_context with the selected path before broad file reads.',
     '3. Call get_agent_tool_plan with the task type (orient, modify, debug, review, trace, cross-repo, or runtime).',
-    '4. Call get_agent_work_packet for real work so CAS resolves the target, risk, tests, call context, and first files to inspect.',
+    '4. Call get_agent_context for real work so CAS resolves the target, risk, tests, call context, and first files to inspect.',
     '5. If no analysis exists, run analyze_codebase with analysis_focus "agent-fast" first.',
     '6. Read source files after MCP narrows the target to specific files, nodes, or explicit CAS gaps.',
     '7. After edits, call validate_behavioral_invariants and validate_codebase_idioms before finalizing.',

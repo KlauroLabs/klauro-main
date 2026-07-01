@@ -16,7 +16,7 @@ This runs the CAS pipeline: language detection, framework detection, library det
 
 Results and analysis support files are stored under `~/.klauro/analyses/` unless `KLAURO_STORAGE_PATH` is configured.
 
-Use `get_analysis_focus_profiles` before refreshing a repository when the caller is not sure which layer to pay for. Coding and review agents should normally follow its `agent-fast` recommendation, then request `get_agent_work_packet` with `response_profile: "capsule-only"`. Retry with `first-turn` only when the capsules leave a concrete gap. Human overview surfaces and drilldowns should explicitly request `ui-overview` or `manual-element-description` through `run_analysis_layer`, while runtime/audit work should request `deep-context` only after the fast graph exists. `deep-context` enables semantic retrieval and AI system narrative when configured, but it does not generate bulk element descriptions; those stay manual so agent work never pays that cost by default.
+Use `get_analysis_focus_profiles` before refreshing a repository when the caller is not sure which layer to pay for. Coding and review agents should normally follow its `agent-fast` recommendation, then request `get_agent_context` with `response_profile: "capsule-only"`. Retry with `first-turn` only when the capsules leave a concrete gap. Human overview surfaces and drilldowns should explicitly request `ui-overview` or `manual-element-description` through `run_analysis_layer`, while runtime/audit work should request `deep-context` only after the fast graph exists. `deep-context` enables semantic retrieval and AI system narrative when configured, but it does not generate bulk element descriptions; those stay manual so agent work never pays that cost by default.
 
 For human-facing narrative quality, call `get_description_enrichment_targets` after analysis. It returns the weak system, capability, service, node, entity, and entry-point descriptions that should be regenerated next, with ready-to-use `run_analysis_layer` or `generate_element_description` arguments. This keeps the fast agent graph cheap while giving the UI a concrete queue for AI-written descriptions instead of accepting deterministic or inventory-style text.
 
@@ -43,9 +43,9 @@ unserialized object leaks.
 If the analyzers are hosted instead of installed locally, use the remote analyzer path:
 
 ```
-Use initialize_klauro_project with path="/absolute/path/to/your/project", mode="remote", and server_url="https://analyzer.example.com"
+Use initialize_klauro_project with path="/absolute/path/to/your/project" and mode="remote". Klauro Cloud is the default analyzer URL.
 Use get_upload_manifest with path="/absolute/path/to/your/project"
-Use analyze_codebase_remote with path="/absolute/path/to/your/project" and server_url="https://analyzer.example.com"
+Use analyze_codebase_remote with path="/absolute/path/to/your/project".
 ```
 
 This uploads a filtered source snapshot, receives CAS from the analyzer service, and saves that CAS into the local MCP cache. After local agent edits, use:
@@ -54,7 +54,7 @@ This uploads a filtered source snapshot, receives CAS from the analyzer service,
 Use sync_codebase_remote with path="/absolute/path/to/your/project"
 ```
 
-This sends only dirty-tree changes to the remote analyzer and updates the local CAS cache with the incremental result. The CLI equivalents are `npm run remote-analyze -- /repo --server-url http://127.0.0.1:8787` and `npm run remote-sync -- /repo --server-url http://127.0.0.1:8787`. See `docs/mcp/REMOTE-ANALYZER.md` for Docker and deployment details.
+This sends only dirty-tree changes to the remote analyzer and updates the local CAS cache with the incremental result. The CLI equivalents are `npm run remote-analyze -- /repo` and `npm run remote-sync -- /repo`. See `docs/mcp/REMOTE-ANALYZER.md` for Docker and deployment details.
 
 ### Preview Agent Proposals Before Implementation
 
@@ -74,19 +74,19 @@ Use preview_greenfield_codebase with plan_text="..." and proposed_files=[...].
 
 Agents should include the returned advisory verdict, private preview URL, changed contracts, required checks, and uncertainty in the plan output. A `needs_revision` or `high_risk` verdict is not a hard blocker in v1, but it must be surfaced before implementation.
 
-For large greenfield builds, first call `get_greenfield_build_packet` against the empty target folder. It returns first-slice architecture guidance without wasting tokens exploring an empty tree. After the first slice exists, call it again against the same folder; Klauro analyzes the new codebase as normal CAS and returns graph memory, architecture memory, model ownership, boundary ownership, test memory, product-focus guidance, a growth control plane, concepts to reuse, focused files to read, duplicate-prevention rules, and validation checks for the next slice. The packet also includes `agent_build_capsule` in `G1` format, a compact prompt-native build language for agents. `G1|0` is the empty-folder first slice and `G1|c` is continuation; its lines carry requested behaviors, architecture patterns, concepts to reuse, owner files, read-first files, next files, do-not-rebuild rules, validation, and the stop rule. Use the G1 capsule first, then expand to full greenfield JSON only when the capsule leaves a concrete gap. The `product_focus` and `growth_control_plane` sections are the expanded agent-facing shift in responsibility: they name the requested product behaviors, the architecture decisions Klauro is carrying, the product-slice stop rule, the architecture budget, concept ownership, duplication gates, what not to spend time rediscovering, and the next product slice definition. Treat each vertical slice as a normal codebase iteration: packet, build, preview/analyze, packet again. The live scratch harness now passes this compact growth-control context into with-Klauro agents for both empty-folder and continuation waves. The `agent-greenfield-benchmark` includes a continuity trial that proves this behavior by comparing a baseline that rebuilds `User`, `Workspace`, `Project`, and route boundaries against a Klauro-guided slice that reuses the existing models, services, migrations, and tests. The `agent-from-zero-build-packet-proof` now runs multi-slice empty-folder builds across multiple domains and compares Klauro-guided growth against baselines that pass tests while duplicating domain concepts.
+For large greenfield builds, first call `get_greenfield_build_context` against the empty target folder. It returns first-slice architecture guidance without wasting tokens exploring an empty tree. After the first slice exists, call it again against the same folder; Klauro analyzes the new codebase as normal CAS and returns graph memory, architecture memory, model ownership, boundary ownership, test memory, product-focus guidance, a growth control plane, concepts to reuse, focused files to read, duplicate-prevention rules, and validation checks for the next slice. The context also includes `agent_build_capsule` in `G1` format, a compact prompt-native build language for agents. `G1|0` is the empty-folder first slice and `G1|c` is continuation; its lines carry requested behaviors, architecture patterns, concepts to reuse, owner files, read-first files, next files, do-not-rebuild rules, validation, and the stop rule. Use the G1 capsule first, then expand to full greenfield JSON only when the capsule leaves a concrete gap. The `product_focus` and `growth_control_plane` sections are the expanded agent-facing shift in responsibility: they name the requested product behaviors, the architecture decisions Klauro is carrying, the product-slice stop rule, the architecture budget, concept ownership, duplication gates, what not to spend time rediscovering, and the next product slice definition. Treat each vertical slice as a normal codebase iteration: context, build, preview/analyze, context again. The live scratch harness now passes this compact growth-control context into with-Klauro agents for both empty-folder and continuation waves. The `agent-greenfield-benchmark` includes a continuity trial that proves this behavior by comparing a baseline that rebuilds `User`, `Workspace`, `Project`, and route boundaries against a Klauro-guided slice that reuses the existing models, services, migrations, and tests. The `agent-from-zero-build-context-proof` now runs multi-slice empty-folder builds across multiple domains and compares Klauro-guided growth against baselines that pass tests while duplicating domain concepts.
 
 For multi-project products, run repo/project CAS analysis first for every associated codebase, then call `run_workspace_analysis`. Use `.klauroignore` or `.klaurorc` `source.exclude` when a local workspace contains archived/generated repos or intentionally irrelevant tools. Workspace analysis follows WAS: it composes completed CAS outputs into projects, deployables, interfaces, integration links, runtime topology, data-flow paths, unmatched interfaces, insights, health, risk, activity, telemetry, domains, primary capabilities, workflows, and AI-required narrative. It must not read source code at the workspace layer; missing workspace relationships are repo-level CAS gaps to fix.
 
-Agents should start cross-repo work with `resolve_workspace_analysis` for the handed folder/path, then `get_workspace_agent_packet` before broad exploration. The packet selects relevant workspace surfaces/connections/dependencies, includes stable ids and absolute repo paths, explicitly says whether each selected surface is deployable, separates source-backed runtime connections from package/code dependencies and inferred candidates, includes health/risk/activity/telemetry/capability/workflow context, estimates token savings against full WAS injection, and tells the agent what to read next through `agent_should_read_next` plus repo-level `get_agent_work_packet` calls. Repo-level `get_agent_work_packet`, `get_idiom_aware_work_packet`, `open_agent_workbench`, and `preflight_agent_change` can receive `workspace_analysis_id` so the agent keeps WAS context while working inside a specific CAS.
+Agents should start cross-repo work with `resolve_workspace_analysis` for the handed folder/path, then `get_workspace_agent_context` before broad exploration. The context selects relevant workspace surfaces/connections/dependencies, includes stable ids and absolute repo paths, explicitly says whether each selected surface is deployable, separates source-backed runtime connections from package/code dependencies and inferred candidates, includes health/risk/activity/telemetry/capability/workflow context, estimates token savings against full WAS injection, and tells the agent what to read next through `agent_should_read_next` plus repo-level `get_agent_context` calls. Repo-level `get_agent_context`, `get_idiom_aware_agent_context`, `open_agent_workbench`, and `preflight_agent_change` can receive `workspace_analysis_id` so the agent keeps WAS context while working inside a specific CAS.
 
-Check `composition.kind` and `recommended_primary_view` first: interconnected systems need app-to-app topology, composed application architectures need package/library/component architecture, hybrids need both, and disconnected collections should not have fake links invented. Use `get_workspace_freshness` and `validate_was_contract` before trusting older workspace artifacts. Use `get_workspace_analysis` with `detail_level=evidence` only when the packet leaves a concrete evidence gap. Read `overview.external_dependencies[].usage` before acting on infrastructure: `source-backed` means code evidence exists, while `topology-only` or `declared` means deployment/config evidence exists but source usage has not been proven. If `workspace_narrative.source` is `ai-required-degraded`, the graph facts are still usable, but the workspace should be refreshed with AI enrichment before using the description or primary capabilities as polished product interpretation.
+Check `composition.kind` and `recommended_primary_view` first: interconnected systems need app-to-app topology, composed application architectures need package/library/component architecture, hybrids need both, and disconnected collections should not have fake links invented. Use `get_workspace_freshness` and `validate_was_contract` before trusting older workspace artifacts. Use `get_workspace_analysis` with `detail_level=evidence` only when the context leaves a concrete evidence gap. Read `overview.external_dependencies[].usage` before acting on infrastructure: `source-backed` means code evidence exists, while `topology-only` or `declared` means deployment/config evidence exists but source usage has not been proven. If `workspace_narrative.source` is `ai-required-degraded`, the graph facts are still usable, but the workspace should be refreshed with AI enrichment before using the description or primary capabilities as polished product interpretation.
 
 CLI equivalents:
 
 ```
 npm run proposal-preview -- /repo --plan-file plan.md --diff-file changes.patch --json
-npm run greenfield-build-packet -- /empty-or-growing-project --plan-file plan.md --json
+npm run greenfield-build-context -- /empty-or-growing-project --plan-file plan.md --json
 npm run greenfield-preview -- --plan-file plan.md --proposed-files files.json --json
 ```
 
@@ -130,7 +130,7 @@ For a specific task, include task context:
 Use get_agent_bootstrap with path="/selected/path" and task={ "task_type": "modify", "target": "auth" }
 ```
 
-This returns readiness, the system summary, graph anchors, answer-pack status, the recommended first MCP calls, a work packet, and a source file read plan. Agents should use it before broad file reads whenever an analysis exists.
+This returns readiness, the system summary, graph anchors, answer-pack status, the recommended first MCP calls, a agent context, and a source file read plan. Agents should use it before broad file reads whenever an analysis exists.
 
 ### 4. Plan MCP Tool Use
 
@@ -142,17 +142,17 @@ Use get_agent_tool_plan with path="/repo" and task={ "task_type": "debug", "targ
 
 Supported task types are `orient`, `modify`, `debug`, `review`, `trace`, `cross-repo`, and `runtime`. The plan tells the agent which MCP tools to call, why, and when file reads are appropriate.
 
-### 5. Get the Work Packet
+### 5. Get the Agent Context
 
-When the agent is ready to act, request the task packet:
+When the agent is ready to act, request task-scoped context:
 
 ```
-Use get_agent_work_packet with path="/repo" and task={ "task_type": "modify", "target": "auth" }
+Use get_agent_context with path="/repo" and task={ "task_type": "modify", "target": "auth" }
 ```
 
-The work packet resolves the target, includes coding context, architecture context, risk, callers, callees, tests, behavioral invariant impact, entry/call-chain context, and returns a concrete file read plan. Agents should inspect those files first before expanding to broader source reads. The architecture context is intentionally compact: it names the system type, architecture budget, local patterns such as MVC, MVVM, repository, service layer, mediator, unit of work, and singleton where present, inventory examples, target-relevant owners, a pattern decision matrix, pattern-balance risks, and rules for preserving the codebase's existing shape.
+The agent context resolves the target, includes coding context, architecture context, risk, callers, callees, tests, behavioral invariant impact, entry/call-chain context, and returns a concrete file read plan. Agents should inspect those files first before expanding to broader source reads. The architecture context is intentionally compact: it names the system type, architecture budget, local patterns such as MVC, MVVM, repository, service layer, mediator, unit of work, and singleton where present, inventory examples, target-relevant owners, a pattern decision matrix, pattern-balance risks, and rules for preserving the codebase's existing shape.
 
-For the first agent turn, especially when token savings must beat codebase-index retrieval, request the smallest packet:
+For the first agent turn, especially when token savings must beat codebase-index retrieval, request the smallest useful context:
 
 ```json
 { "task_type": "modify", "target": "auth", "response_profile": "capsule-only" }
@@ -160,7 +160,7 @@ For the first agent turn, especially when token savings must beat codebase-index
 
 The `capsule-only` profile gives K15/K5 capsules, selected target, first files, token estimate, and validation in the smallest prompt-native form. Ask for `first-turn` when the capsules leave a concrete gap and the agent needs compact JSON fields.
 
-The CLI mirrors this behavior. `npm --silent run agent-work-packet -- /repo --json --compact --quiet` includes each file plan's `line_window`, and the plain-text output prints the same line range so CLI-first agents can avoid reading whole files by default. Use `npm --silent` and `--quiet` for machine-readable JSON so npm's command banner and analyzer maintenance logs do not pollute stdout. Work packets are token-bounded by default; ask follow-up MCP tools for deeper context only when the focused packet proves insufficient.
+The CLI mirrors this behavior. `npm --silent run agent-context -- /repo --json --compact --quiet` includes each file plan's `line_window`, and the plain-text output prints the same line range so CLI-first agents can avoid reading whole files by default. Use `npm --silent` and `--quiet` for machine-readable JSON so npm's command banner and analyzer maintenance logs do not pollute stdout. Agent contexts are token-bounded by default; ask follow-up MCP tools for deeper context only when the focused context proves insufficient.
 
 ### 6. Use The Agent Workbench And Change Lifecycle
 
@@ -182,7 +182,7 @@ Use preflight_agent_change with path="/repo", target="billing webhook", plan_tex
 
 Agents should include the returned `plan_output_block` in their plan when there are warnings, unknowns, affected invariants, missing tests, or migration/auth concerns. Findings include `evidence_source` so agents can tell CAS-backed facts apart from plan-text heuristics.
 
-To retrieve the living “how to work in this repo” packet:
+To retrieve the living “how to work in this repo” context:
 
 ```
 Use get_codebase_agent_rules with path="/repo"
@@ -190,7 +190,7 @@ Use get_codebase_agent_rules with path="/repo"
 
 This returns architecture, idiom, invariant, testing, source-reading, confidence, and signal-quality rules derived from CAS.
 
-When the task specifically needs architecture-shape guidance without the rest of a work packet, use:
+When the task specifically needs architecture-shape guidance without the rest of a agent context, use:
 
 ```
 Use get_architecture_context with path="/repo" and target="billing"
@@ -238,9 +238,9 @@ Or read:
 klauro://{project_name}/agent-readiness
 ```
 
-This checks analysis errors, graph integrity, entry and exit coverage, call chains, method calls, answer-pack gaps, evidence, tests, security surfaces, runtime links, and flow coverage. `default_use=true` means CAS/MCP is strong enough to be the first path for the repository.
+This checks analysis errors, graph integrity, entry and exit coverage, call chains, method calls, answer-pack gaps, evidence, tests, security surfaces, runtime links, and flow coverage. `agent_context_ready=true` means CAS/MCP is strong enough to be the first path for the repository.
 
-For the full default-use doctor, including freshness, test discovery evidence, runtime SDK proof, and saved golden snapshot status:
+For the full agent-context-ready doctor, including freshness, test discovery evidence, runtime SDK proof, and saved golden snapshot status:
 
 ```
 Use get_agent_doctor with path="/repo"
@@ -252,7 +252,7 @@ Or read:
 klauro://{project_name}/agent-doctor
 ```
 
-To install default-use instructions into the repository for future agents:
+To install agent-context-ready instructions into the repository for future agents:
 
 ```
 Use install_agent_default_config with path="/repo"
@@ -260,7 +260,7 @@ Use install_agent_default_config with path="/repo"
 
 This writes `.klauro/agent-defaults.json` and `.klauro/agent-defaults.md`. Agents can read those files to know the required first MCP calls before broad file reads.
 
-The installed defaults intentionally use a selected-path placeholder for follow-up calls. Agents should call `resolve_agent_analysis` first and then use the returned `selected_path` for doctor, start-context, work-packet, invariant validation, and benchmark proof calls when it differs from the original path.
+The installed defaults intentionally use a selected-path placeholder for follow-up calls. Agents should call `resolve_agent_analysis` first and then use the returned `selected_path` for doctor, start-context, agent-context, invariant validation, and benchmark proof calls when it differs from the original path.
 
 ### 9. Orient with get_summary
 
@@ -300,14 +300,14 @@ From there, drill into targeted areas:
 - **Explore concepts**: `get_domain_concepts` (filterable, paginated)
 - **Understand recent changes**: `get_changes_since`, `get_change_summary`, `get_hot_spots`, `get_analysis_snapshots`
 - **Resolve monorepos/subprojects**: `resolve_agent_analysis`, `get_agent_project_map`
-- **Use product-level agent workflows**: `open_agent_workbench` before broad source reads, `preflight_agent_change` before plans/edits, `explain_change_shape` for proposed diffs, and `validate_agent_change` before finalizing; inspect `signal_quality` and finding `evidence_source` before relying on the packet
+- **Use product-level agent workflows**: `open_agent_workbench` before broad source reads, `preflight_agent_change` before plans/edits, `explain_change_shape` for proposed diffs, and `validate_agent_change` before finalizing; inspect `signal_quality` and finding `evidence_source` before relying on the context
 - **Check freshness and test discovery**: `get_analysis_freshness`, `get_test_discovery_evidence`
 - **Prove answerability**: `run_answer_pack` with `pack="mastery"`
 - **Connect repos**: `get_cross_repo_links` with related analyzed paths
 - **Persist workspace graphs**: `save_workspace_graph`, `get_workspace_graph`, `verify_workspace_link`
 - **Validate CAS completeness**: `validate_cas_contract`, `save_cas_golden_snapshot`, `compare_cas_golden_snapshot`
 - **Check integration analyzer depth**: `get_integration_depth_report`
-- **Avoid rebuilding existing behavior**: `get_capability_memory` or the `capability_memory` field in `get_agent_work_packet` before adding services, routes, workers, models, packages, or new feature slices
+- **Avoid rebuilding existing behavior**: `get_capability_memory` or the `capability_memory` field in `get_agent_context` before adding services, routes, workers, models, packages, or new feature slices
 - **Inspect and validate behavior-level rules**: `get_behavioral_invariants` before edits and `validate_behavioral_invariants` after edits for tenant scope, auth, DB constraints, migrations, and test coverage
 - **Inspect and validate repo-local practices**: `get_codebase_idioms` and `get_idiom_examples` before edits, then `validate_codebase_idioms` after edits so changes match local naming, placement, testing, migration, error/logging, and boundary conventions
 - **Inspect MCP storage**: `get_storage_health`
@@ -325,7 +325,7 @@ Use `get_agent_bootstrap` first, or use the `agent_coding_session` prompt when y
 Use get_agent_bootstrap with path="/absolute/path/to/your/project"
 ```
 
-Then use `get_agent_work_packet` with the user's task, including the user's exact `instructions` and `success_criteria` when the request is behaviorally specific. Use source files after MCP identifies the relevant nodes, files, line windows, tests, validation commands, or gaps.
+Then use `get_agent_context` with the user's task, including the user's exact `instructions` and `success_criteria` when the request is behaviorally specific. Use source files after MCP identifies the relevant nodes, files, line windows, tests, validation commands, or gaps.
 
 You can also use the `architectural_context` prompt to inject full system awareness:
 
@@ -340,15 +340,15 @@ To prove duplicate-work avoidance across repos, run `npm run agent-capability-me
 ### Before modifying code
 
 1. Call `get_agent_tool_plan` with `task_type="modify"` and the target.
-2. Call `get_agent_work_packet` with the same task.
-3. Use the packet's `architecture_context` to preserve the existing pattern budget and owner categories. Do not introduce a new paradigm unless the packet shows no local fit or the user explicitly asks for that architectural change.
-4. Check the packet's `capability_memory` or call `get_capability_memory` if the change adds behavior, so the plan explicitly reuses, extends, extracts, or distinguishes existing capabilities before creating new code.
-5. Read the packet's file read plan first, starting with each item's `line_window` when present.
-6. Use the packet's risk, callers, callees, tests, and validation plan to decide the edit and verification path.
-7. Run the packet's validation commands. In monorepos these may route to package roots, such as `cd packages/analyzer-core && npm test`.
+2. Call `get_agent_context` with the same task.
+3. Use the agent context's `architecture_context` to preserve the existing pattern budget and owner categories. Do not introduce a new paradigm unless the context shows no local fit or the user explicitly asks for that architectural change.
+4. Check the agent context's `capability_memory` or call `get_capability_memory` if the change adds behavior, so the plan explicitly reuses, extends, extracts, or distinguishes existing capabilities before creating new code.
+5. Read the agent context's file read plan first, starting with each item's `line_window` when present.
+6. Use the agent context's risk, callers, callees, tests, and validation plan to decide the edit and verification path.
+7. Run the agent context's validation commands. In monorepos these may route to package roots, such as `cd packages/analyzer-core && npm test`.
 8. After edits, call `validate_behavioral_invariants` and `validate_codebase_idioms` against the working diff before finalizing.
 
-The validation plan is part of the product surface, not a benchmark-only artifact. It gives agents focused test/typecheck/build commands when CAS can infer them, lists tests to inspect first, and tells agents to report an environment blocker instead of installing dependencies or doing broad setup unless the task explicitly asks for that. The packet also includes `architecture_context`, behavioral invariants, invariant impact, and `idiom_context` so agents preserve architectural paradigms, tenant/org scope, auth boundaries, DB constraints, migration contracts, test coverage, naming, file placement, module boundaries, validation style, error/logging style, async style, and configuration practices while editing.
+The validation plan is part of the product surface, not a benchmark-only artifact. It gives agents focused test/typecheck/build commands when CAS can infer them, lists tests to inspect first, and tells agents to report an environment blocker instead of installing dependencies or doing broad setup unless the task explicitly asks for that. The agent context also includes `architecture_context`, behavioral invariants, invariant impact, and `idiom_context` so agents preserve architectural paradigms, tenant/org scope, auth boundaries, DB constraints, migration contracts, test coverage, naming, file placement, module boundaries, validation style, error/logging style, async style, and configuration practices while editing.
 
 Or use the `safe_modification_guide` prompt which composes all of these into a single output.
 
@@ -394,7 +394,7 @@ Use the run_answer_pack tool with path="/absolute/path/to/project" and pack="mas
 
 This returns deterministic answers for overview, entry points, representative flow, change impact, data, tests, external boundaries, security, and runtime readiness. Each answer includes CAS evidence and follow-up tools for deeper work.
 
-For the strongest agent default-use signal:
+For the strongest agent-context-ready signal:
 
 ```
 Use get_agent_doctor with path="/absolute/path/to/project"
@@ -524,12 +524,12 @@ To ask "what bugs should I address today" with production signal, first ingest o
 
 ```
 Use get_operational_priorities with path="/repo"
-Use get_agent_work_packet with path="/repo" and task={ "task_type": "debug", "target": "<top static_target.file>", "response_profile": "capsule-only" }
+Use get_agent_context with path="/repo" and task={ "task_type": "debug", "target": "<top static_target.file>", "response_profile": "capsule-only" }
 ```
 
 `get_operational_priorities` ranks stored ingested telemetry by error count,
 latency, traffic volume, static risk, missing tests, and CAS correlation. The
-work packet keeps the runtime priority compact in K15/K5 while still requiring
+agent context keeps the runtime priority compact in K15/K5 while still requiring
 normal idiom, invariant, and test validation before edits.
 
 To verify that runtime context changes agent priority without bloating prompt
@@ -577,7 +577,7 @@ Use this when an agent needs to know whether the stored CAS still reflects the c
 Use get_analysis_freshness with path="/absolute/path/to/project"
 ```
 
-Fresh analyses can be used as the first source of context. Stale analyses should be refreshed with `analyze_codebase` before default-use agent work.
+Fresh analyses can be used as the first source of context. Stale analyses should be refreshed with `analyze_codebase` before agent-context-ready agent work.
 
 ### Maintaining golden CAS snapshots
 
@@ -623,7 +623,7 @@ From `apps/mcp-server/`:
 npm run agent-gauntlet
 ```
 
-This analyzes the configured repositories and runs `evaluate_agent_readiness` against each one. The report is written to `.klauro-agent-gauntlet/latest-report.json` unless `--output` is provided. A passing target has `default_use=true`, meaning agents should use MCP as the first path for that repo.
+This analyzes the configured repositories and runs `evaluate_agent_readiness` against each one. The report is written to `.klauro-agent-gauntlet/latest-report.json` unless `--output` is provided. A passing target has `agent_context_ready=true`, meaning agents should use MCP as the first path for that repo.
 
 ### Running the agent usefulness benchmark
 
@@ -633,7 +633,7 @@ From `apps/mcp-server/`:
 npm run agent-benchmark
 ```
 
-This checks whether task work packets resolve targets, produce a focused file read plan, include the selected target file, return follow-up MCP calls, and beat a cold repo read. The report includes file-reduction percentages so agent adoption is measured against the baseline of reading broad source files.
+This checks whether task agent contexts resolve targets, produce a focused file read plan, include the selected target file, return follow-up MCP calls, and beat a cold repo read. The report includes file-reduction percentages so agent adoption is measured against the baseline of reading broad source files.
 
 For the with-Klauro vs without-Klauro benchmark:
 
@@ -683,7 +683,7 @@ npm run agent-live-benchmark -- --repo app=/repo --task-type modify --target aut
 
 For generated suites, use `--live-task-type` or `--live-task-category` to keep live runs focused on harder edit/debug/review tasks instead of spending live-agent budget on easy orientation tasks.
 
-When live commands are supplied, the harness creates paired repository copies under `.klauro-agent-live-trials/`, writes separate with-Klauro and without-Klauro prompts, initializes each copy as a clean git baseline, runs each command, records duration, changed files, added/deleted lines, test status, provider token metrics when reported, and writes binary diffs. The with-Klauro arm also receives a real CAS-derived work-packet artifact for the copied repo; if MCP tools are unavailable in the trial runtime, the agent reads that artifact instead of generating analysis inside its own turn. A deterministic orchestrator compares both diffs and reports patch quality, hidden-validation pass/fail, command completion, changed-file precision, time reduction, token reduction, and confidence as separate signals.
+When live commands are supplied, the harness creates paired repository copies under `.klauro-agent-live-trials/`, writes separate with-Klauro and without-Klauro prompts, initializes each copy as a clean git baseline, runs each command, records duration, changed files, added/deleted lines, test status, provider token metrics when reported, and writes binary diffs. The with-Klauro arm also receives a real CAS-derived agent-context artifact for the copied repo; if MCP tools are unavailable in the trial runtime, the agent reads that artifact instead of generating analysis inside its own turn. A deterministic orchestrator compares both diffs and reports patch quality, hidden-validation pass/fail, command completion, changed-file precision, time reduction, token reduction, and confidence as separate signals.
 
 For fair live proof, write tasks in behavioral terms and keep implementation paths out of the agent prompt. Hidden validation can still assert exact files, strings, tests, or diffs through `--test-command`; the no-Klauro arm should not receive the path that Klauro is supposed to discover.
 
@@ -697,7 +697,7 @@ To cold-review the actual product output from the latest machine proof, without 
 npm run analysis-output-cold-review -- --output .klauro-analysis-output-cold-review/latest-report.json --markdown .klauro-analysis-output-cold-review/latest-report.md
 ```
 
-This samples large apps, infrastructure repos, library/SDK repos, small/simple repos, and Klauro itself from `.klauro-agent-proof-machine/latest-report.json`. It scores agent-context usefulness separately from human-facing narrative quality. A `warn` result is useful evidence: it means MCP packets are helping agents, but the UI/human description layer still needs AI enrichment before claiming the analysis output is fully polished.
+This samples large apps, infrastructure repos, library/SDK repos, small/simple repos, and Klauro itself from `.klauro-agent-proof-machine/latest-report.json`. It scores agent-context usefulness separately from human-facing narrative quality. A `warn` result is useful evidence: it means MCP context are helping agents, but the UI/human description layer still needs AI enrichment before claiming the analysis output is fully polished.
 
 To turn that cold-review debt into an explicit enrichment queue:
 
@@ -719,7 +719,7 @@ npm run analysis-narrative-enrichment-runner -- --max-targets 5 --max-targets-pe
 The runner records attempted targets, generated targets, generated-but-still-weak
 targets, target removals from the queue, before/after narrative target counts,
 and the generated descriptions. Use `--dry-run` first when checking the queue
-shape, and keep this on the `ui-overview` path so default agent-fast MCP packets
+shape, and keep this on the `ui-overview` path so default agent-fast MCP context
 do not pay for narrative generation.
 
 Agent command templates may use:
@@ -767,9 +767,9 @@ From `apps/mcp-server/`:
 npm run incremental-benchmark
 ```
 
-This copies discovered repositories into isolated workspaces, runs an initial analysis, reruns analysis with no source changes, edits one source file safely, reruns incremental analysis, and then generates an agent work packet from the edited CAS. With `--verify-full`, it also runs a fresh full analysis after the edit and compares node/edge/entry/exit count parity.
+This copies discovered repositories into isolated workspaces, runs an initial analysis, reruns analysis with no source changes, edits one source file safely, reruns incremental analysis, and then generates an agent context from the edited CAS. With `--verify-full`, it also runs a fresh full analysis after the edit and compares node/edge/entry/exit count parity.
 
-The report shows whether iterative analysis stayed incremental, how much faster it was than a full rebuild, whether the edit produced a change summary, how many files are tracked in incremental state, how many file-cache entries exist, and whether an agent can immediately get a focused post-edit work packet instead of rediscovering the repo.
+The report shows whether iterative analysis stayed incremental, how much faster it was than a full rebuild, whether the edit produced a change summary, how many files are tracked in incremental state, how many file-cache entries exist, and whether an agent can immediately get a focused post-edit agent context instead of rediscovering the repo.
 
 Copied workspaces are discarded by default after each target so proof runs do not accumulate large dependency trees. Use `--keep-workspaces` only when debugging a failed target.
 
@@ -815,7 +815,7 @@ npm run agent-proof-fast
 npm run agent-proof-machine -- --agent-with-cmd "agent-with --workspace {workspace} --prompt-file {prompt_file}" --agent-without-cmd "agent-without --workspace {workspace} --prompt-file {prompt_file}" --max-live-tasks 6
 ```
 
-For Claude Code live proof or MCP-guided execution, prefer a lean command so the measured token delta reflects the Klauro packet and source reads instead of unrelated local memory, hooks, plugins, or session persistence:
+For Claude Code live proof or MCP-guided execution, prefer a lean command so the measured token delta reflects the Klauro context and source reads instead of unrelated local memory, hooks, plugins, or session persistence:
 
 ```
 claude -p --safe-mode --no-session-persistence --permission-mode bypassPermissions --add-dir {workspace} --output-format json -- "$(cat {prompt_file})"
@@ -823,9 +823,9 @@ claude -p --safe-mode --no-session-persistence --permission-mode bypassPermissio
 
 Use the same lean mode for both with-Klauro and without-Klauro arms. Keep the `--` before the prompt so Claude does not treat the prompt as another `--add-dir` value. Benchmark reports label non-lean Claude commands as `full-agent` and keep provider-token regressions visible.
 
-For normal agent work, call `get_agent_work_packet` with `task.response_profile="capsule-only"` when the agent needs to start cheaply. The response includes `context_capsule` in Klauro Agent Context Language (`K15`) format, `execution_capsule` in Klauro Execution Capsule (`K5`) format, selected target, first files, token estimate, and the expansion rule. Use `first-turn` only when the capsule-only response leaves a concrete gap and the agent needs compact JSON fields. Agents should read K15 for orientation, restore default file extensions, execute K5 before broad file exploration or full-packet follow-up calls, and expand only when the capsules are ambiguous or source evidence proves the target moved. `K15` carries compact orientation, selected node, default extension restoration, indexed file roles, idioms, reuse, risk, validation, and expansion rules. `K5` carries exact path dictionaries with read/edit sigils plus file-scoped operations for known-fix/direct-patch work. See `docs/mcp/EXECUTION-CAPSULE.md`.
+For normal agent work, call `get_agent_context` with `task.response_profile="capsule-only"` when the agent needs to start cheaply. The response includes `context_capsule` in Klauro Agent Context Language (`K15`) format, `execution_capsule` in Klauro Execution Capsule (`K5`) format, selected target, first files, token estimate, and the expansion rule. Use `first-turn` only when the capsule-only response leaves a concrete gap and the agent needs compact JSON fields. Agents should read K15 for orientation, restore default file extensions, execute K5 before broad file exploration or full-context follow-up calls, and expand only when the capsules are ambiguous or source evidence proves the target moved. `K15` carries compact orientation, selected node, default extension restoration, indexed file roles, idioms, reuse, risk, validation, and expansion rules. `K5` carries exact path dictionaries with read/edit sigils plus file-scoped operations for known-fix/direct-patch work. See `docs/mcp/EXECUTION-CAPSULE.md`.
 
-For new-codebase work, call `get_greenfield_build_packet` and read
+For new-codebase work, call `get_greenfield_build_context` and read
 `agent_build_capsule.capsule` before creating files. The G1 capsule is the
 greenfield equivalent of K15/K5: it compresses first-slice or continuation
 guidance into behavior, pattern, owner, next-file, validation, and
@@ -838,15 +838,25 @@ To verify that greenfield prompt compression is still working:
 npm run greenfield-build-codec-benchmark -- --output /tmp/klauro-greenfield-build-codec-benchmark.json
 ```
 
-To verify the compact MCP packet against competitor-shaped agent context baselines:
+To verify the compact MCP context against competitor-shaped agent context baselines:
 
 ```
 npm run competitor-baseline-benchmark -- --output .klauro-competitor-baseline-benchmark/latest-report.json --markdown .klauro-competitor-baseline-benchmark/latest-report.md
 ```
 
-This compares Klauro against two explicit proxies: a Cursor-style editor/index retrieval baseline and a Linear-style issue/workflow/code-context baseline. It is not a private vendor-product measurement; it is a repeatable proof that Klauro's CAS/MCP packet beats both "indexed code likely files" and "issue plus repo context plus review workflow" shapes on context readiness and token discipline. The report must show quality lift and token reduction against both baselines before final acceptance treats the proof as passing.
+This compares Klauro against two explicit proxies: a Cursor-style editor/index retrieval baseline and a Linear-style issue/workflow/code-context baseline. It is not a private vendor-product measurement; it is a repeatable proof that Klauro's CAS/MCP context beats both "indexed code likely files" and "issue plus repo context plus review workflow" shapes on context readiness and token discipline. The report must show quality lift and token reduction against both baselines before final acceptance treats the proof as passing.
 
-To run true installed-tool comparisons after Cursor, Linear, or another competitor exposes a local command:
+To see which real installed intelligence competitors and agent executors can be benchmarked on this machine:
+
+```
+npm run competitor-readiness -- \
+  --output .klauro-competitor-readiness/latest-report.json \
+  --markdown .klauro-competitor-readiness/latest-report.md
+```
+
+This is a readiness report, not a win claim. It separates installed code-intelligence competitors that the gauntlet can already measure from agent executors that can run copied-repo A/B tasks. Klauro is not the autonomous coding agent in this comparison; Klauro is the codebase, product, and workspace intelligence layer being handed to agents. Cursor Agent, OpenCode, Aider, Cline, Continue, Claude, Codex, or similar tools are executor arms. They count as live proof only when they can run in the copied-repo harness, edit files, and report metrics or enough artifacts for Klauro to score quality, speed, and token discipline.
+
+To run true installed-tool comparisons after an agent executor and a competing intelligence source expose local adapters:
 
 ```
 npm run competitor-live-benchmark -- \
@@ -858,7 +868,7 @@ npm run competitor-live-benchmark -- \
   --markdown .klauro-true-competitor-benchmark/latest-report.md
 ```
 
-This uses the copied-repo live A/B harness, not a proxy. Each command receives the same seeded engineering task in its own repo copy. The Klauro arm receives the compact CAS/MCP work packet; the competitor arm receives the task and may use whatever the installed product actually provides. The harness captures wall time, git diff, changed files, validator result, stdout/stderr tails, and token metrics when the tool exposes them. Command templates may include `{workspace}`, `{prompt_file}`, `{metrics_file}`, `{result_file}`, `{arm}`, and `{task_id}`. For fair token proof, adapters should write `provider_input_tokens`, `provider_output_tokens`, and `provider_total_tokens` to `{metrics_file}` when available.
+This uses the copied-repo live A/B harness, not a proxy. Each command receives the same seeded engineering task in its own repo copy. The Klauro arm receives the compact CAS/MCP agent context; the comparison arm receives the task plus the selected non-Klauro intelligence source or baseline context. The harness captures wall time, git diff, changed files, validator result, stdout/stderr tails, and token metrics when the executor exposes them. Command templates may include `{workspace}`, `{prompt_file}`, `{metrics_file}`, `{result_file}`, `{arm}`, and `{task_id}`. For fair token proof, adapters should write `provider_input_tokens`, `provider_output_tokens`, and `provider_total_tokens` to `{metrics_file}` when available. The included codebase-memory adapter is `src/codebase-memory-agent-adapter.ts`; it indexes the copied repo with the real installed `codebase-memory-mcp` binary, injects architecture/search context, and runs Codex as the same executor.
 
 Use `agent-proof-fast` for normal local development. It still discovers every real Git repo under `/Users/michaelshattuck/dev` and reports every repo as passed, failed, unsupported, or skipped with a reason, but it analyzes a bounded sample with source-file and timing budgets so the proof does not monopolize the workstation.
 
@@ -893,7 +903,7 @@ To enforce the complete non-UI product bar from the latest proof artifacts:
 npm run agent-vision-acceptance
 ```
 
-This fails if the recent CAS mastery, default-agent-readiness, real-repo vision, deterministic usefulness, deterministic quality, indexed-codebase baseline proof, copied-repo live A/B proof, live idiom-quality proof, machine-wide repo accounting, or incremental edit-loop reports no longer support default agent use. It is the quick acceptance gate for proving that Klauro is materially useful to agents before relying on MCP by default.
+This fails if the recent CAS mastery, default-agent-readiness, real-repo vision, deterministic usefulness, deterministic quality, indexed-codebase baseline proof, copied-repo live A/B proof, live idiom-quality proof, machine-wide repo accounting, or incremental edit-loop reports no longer support agent use. It is the quick acceptance gate for proving that Klauro is materially useful to agents before relying on MCP by default.
 
 To regenerate the proof from scratch and then enforce the same gate:
 
@@ -911,7 +921,7 @@ From `apps/mcp-server/`:
 npm run vision-gauntlet
 ```
 
-This runs the full technical proof across discovered real repos: CAS contract validation, answer-pack readiness, agent default-use readiness, runtime event contract coverage, runtime SDK generation, test discovery evidence, and cross-repo links. Default discovery includes Klauro, Kadra, Money, Zerac, Soon, and SoundSyft when those repos exist under `~/dev`. Use `--repo name=/path/to/repo` to add or override targets. The report is written to `.klauro-vision-gauntlet/latest-report.json` unless `--output` is provided.
+This runs the full technical proof across discovered real repos: CAS contract validation, answer-pack readiness, agent-context-ready readiness, runtime event contract coverage, runtime SDK generation, test discovery evidence, and cross-repo links. Default discovery includes Klauro, Kadra, Money, Zerac, Soon, and SoundSyft when those repos exist under `~/dev`. Use `--repo name=/path/to/repo` to add or override targets. The report is written to `.klauro-vision-gauntlet/latest-report.json` unless `--output` is provided.
 
 ### Running the cross-repo contract gauntlet
 

@@ -11,81 +11,81 @@ import {
   preflightAgentChange,
   validateAgentChange,
 } from './agent-workflow';
-import { buildArchitectureContextForAgent, evaluateAgentReadiness, formatExecutionCapsule, getAgentStartContext, getAgentToolPlan, getAgentWorkPacket } from './agent-adoption';
+import { buildArchitectureContextForAgent, evaluateAgentReadiness, formatExecutionCapsule, getAgentStartContext, getAgentToolPlan, getAgentContext } from './agent-adoption';
 import { benchmarkAgentContextCodecs, formatAgentContextCapsule, parseAgentContextCapsule } from './agent-context-codec';
 import { ingestTelemetryBatch } from './telemetry-ingestion';
 
-test('openAgentWorkbench returns a product-level packet for agent work', async () => {
+test('openAgentWorkbench returns a product-level context for agent work', async () => {
   await withWorkspace(async workspace => {
     const cas = fixtureCas();
-    const packet = await openAgentWorkbench(cas, workspace, {
+    const context = await openAgentWorkbench(cas, workspace, {
       task_type: 'modify',
       target: 'UsersService',
       instructions: 'Change user creation behavior',
     });
 
-    assert.equal(packet.product, 'agent_workbench');
-    assert.equal(packet.task_packet.selected_node?.name, 'UsersService');
-    assert.ok(packet.task_packet.file_read_plan.some((item: any) => item.file === 'src/users/users.service.ts'));
-    assert.equal(packet.task_packet.work_context.capability_memory.status, 'possible-existing-capability');
-    assert.ok(packet.task_packet.work_context.capability_memory.reuse_decisions_required.some((decision: any) =>
+    assert.equal(context.product, 'agent_workbench');
+    assert.equal(context.task_context.selected_node?.name, 'UsersService');
+    assert.ok(context.task_context.file_read_plan.some((item: any) => item.file === 'src/users/users.service.ts'));
+    assert.equal(context.task_context.work_context.capability_memory.status, 'possible-existing-capability');
+    assert.ok(context.task_context.work_context.capability_memory.reuse_decisions_required.some((decision: any) =>
       decision.existing_capability === 'Tenant-scoped user management'
     ));
-    assert.ok(packet.task_packet.work_context.architecture_context.architecture_budget.includes('Service Layer'));
-    assert.ok(packet.task_packet.work_context.risk_context.target_risk);
-    assert.equal(packet.task_packet.work_context.risk_context.target_risk.name, 'UsersService');
-    assert.ok(packet.task_packet.work_context.risk_context.agent_rules.some((rule: string) => rule.includes('assess_change_risk')));
-    assert.equal(packet.task_packet.execution_brief.mode, 'minimal-execution');
-    assert.ok(packet.task_packet.execution_brief.read_first.includes('src/users/users.service.ts'));
-    assert.ok(packet.task_packet.execution_brief.token_policy.source_files <= 5);
-    assert.match(packet.task_packet.execution_brief.stop_rule, /stop/i);
-    assert.match(packet.task_packet.execution_brief.capsule, /^K5\|m\|/);
-    assert.ok(packet.task_packet.execution_brief.capsule.length < JSON.stringify(packet.task_packet.execution_brief).length / 2);
-    assert.ok(packet.agent_rules.idiom_rules.some((rule: any) => rule.category === 'testing'));
-    assert.equal(packet.signal_quality.overall, 'partial');
-    assert.ok(packet.signal_quality.warnings.some((warning: string) => warning.includes('reusable patterns')));
-    assert.ok(packet.evidence_policy.must_confirm_in_source.length > 0);
+    assert.ok(context.task_context.work_context.architecture_context.architecture_budget.includes('Service Layer'));
+    assert.ok(context.task_context.work_context.risk_context.target_risk);
+    assert.equal(context.task_context.work_context.risk_context.target_risk.name, 'UsersService');
+    assert.ok(context.task_context.work_context.risk_context.agent_rules.some((rule: string) => rule.includes('assess_change_risk')));
+    assert.equal(context.task_context.execution_brief.mode, 'minimal-execution');
+    assert.ok(context.task_context.execution_brief.read_first.includes('src/users/users.service.ts'));
+    assert.ok(context.task_context.execution_brief.token_policy.source_files <= 5);
+    assert.match(context.task_context.execution_brief.stop_rule, /stop/i);
+    assert.match(context.task_context.execution_brief.capsule, /^K5\|m\|/);
+    assert.ok(context.task_context.execution_brief.capsule.length < JSON.stringify(context.task_context.execution_brief).length / 2);
+    assert.ok(context.agent_rules.idiom_rules.some((rule: any) => rule.category === 'testing'));
+    assert.equal(context.signal_quality.overall, 'partial');
+    assert.ok(context.signal_quality.warnings.some((warning: string) => warning.includes('reusable patterns')));
+    assert.ok(context.evidence_policy.must_confirm_in_source.length > 0);
   });
 });
 
-test('first-turn work packets include a compact K15 context capsule that agents can execute without broad JSON', async () => {
+test('first-turn agent contexts include a compact K15 context capsule that agents can execute without broad JSON', async () => {
   await withWorkspace(async workspace => {
-    const packet = await getAgentWorkPacket(fixtureCas(), workspace, {
+    const context = await getAgentContext(fixtureCas(), workspace, {
       task_type: 'modify',
       target: 'UsersService',
       instructions: 'Change tenant-scoped user creation behavior.',
       response_profile: 'first-turn',
     }) as any;
 
-    assert.equal(packet.context_capsule.format, 'K15');
-    assert.match(packet.context_capsule.capsule, /^K15m[A-Za-z0-9]* UsersService/m);
-    assert.match(packet.context_capsule.capsule, /^I/m);
-    assert.match(packet.context_capsule.capsule, /^V/m);
-    assert.ok(packet.context_capsule.estimated_tokens < Math.ceil(JSON.stringify(packet).length / 4));
+    assert.equal(context.context_capsule.format, 'K15');
+    assert.match(context.context_capsule.capsule, /^K15m[A-Za-z0-9]* UsersService/m);
+    assert.match(context.context_capsule.capsule, /^I/m);
+    assert.match(context.context_capsule.capsule, /^V/m);
+    assert.ok(context.context_capsule.estimated_tokens < Math.ceil(JSON.stringify(context).length / 4));
 
-    const parsed = parseAgentContextCapsule(packet.context_capsule.capsule);
+    const parsed = parseAgentContextCapsule(context.context_capsule.capsule);
     assert.equal(parsed.version, 'K15');
     assert.ok(parsed.files.some(file => file.includes('src/users/users.service.ts')));
     assert.ok(parsed.rules.some(rule => /idioms|risk|reuse|F/i.test(rule)));
   });
 });
 
-test('capsule-only work packets avoid expanded JSON when token savings matter most', async () => {
+test('capsule-only agent contexts avoid expanded JSON when token savings matter most', async () => {
   await withWorkspace(async workspace => {
-    const firstTurn = await getAgentWorkPacket(fixtureCas(), workspace, {
+    const firstTurn = await getAgentContext(fixtureCas(), workspace, {
       task_type: 'modify',
       target: 'UsersService',
       instructions: 'Change tenant-scoped user creation behavior.',
       response_profile: 'first-turn',
     }) as any;
-    const capsuleOnly = await getAgentWorkPacket(fixtureCas(), workspace, {
+    const capsuleOnly = await getAgentContext(fixtureCas(), workspace, {
       task_type: 'modify',
       target: 'UsersService',
       instructions: 'Change tenant-scoped user creation behavior.',
       response_profile: 'capsule-only',
     }) as any;
 
-    assert.equal(capsuleOnly.packet_profile, 'capsule-only');
+    assert.equal(capsuleOnly.context_profile, 'capsule-only');
     assert.match(capsuleOnly.context_capsule, /^K15m[A-Za-z0-9]* UsersService/m);
     assert.match(capsuleOnly.execution_capsule, /^K5\|m\|UsersService/m);
     assert.ok(Array.isArray(capsuleOnly.files));
@@ -95,7 +95,7 @@ test('capsule-only work packets avoid expanded JSON when token savings matter mo
   });
 });
 
-test('agent work packets include telemetry-backed operational priorities for debug/runtime tasks', async () => {
+test('agent contexts include telemetry-backed operational priorities for debug/runtime tasks', async () => {
   await withWorkspace(async workspace => {
     const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-agent-runtime-storage-'));
     const previousStorage = process.env.KLAURO_STORAGE_PATH;
@@ -129,23 +129,23 @@ test('agent work packets include telemetry-backed operational priorities for deb
         },
       }], { persist: true });
 
-      const packet = await getAgentWorkPacket(cas, workspace, {
+      const context = await getAgentContext(cas, workspace, {
         task_type: 'debug',
         target: 'what bugs should I address today',
         instructions: 'Use runtime impact to pick the most important bug and preserve local idioms.',
       }) as any;
 
-      assert.equal(packet.work_context.operational_priorities.status, 'ready');
-      assert.equal(packet.work_context.operational_priorities.sources.ingested, 1);
-      assert.equal(packet.work_context.operational_priorities.priorities[0].source, 'ingested');
-      assert.equal(packet.work_context.operational_priorities.priorities[0].runtime.errors, 1);
-      assert.equal(packet.work_context.operational_priorities.priorities[0].runtime.estimated_volume, 42);
-      const operationalTarget = packet.work_context.operational_priorities.priorities[0].static_target ||
-        packet.work_context.operational_priorities.priorities[0].target;
+      assert.equal(context.work_context.operational_priorities.status, 'ready');
+      assert.equal(context.work_context.operational_priorities.sources.ingested, 1);
+      assert.equal(context.work_context.operational_priorities.priorities[0].source, 'ingested');
+      assert.equal(context.work_context.operational_priorities.priorities[0].runtime.errors, 1);
+      assert.equal(context.work_context.operational_priorities.priorities[0].runtime.estimated_volume, 42);
+      const operationalTarget = context.work_context.operational_priorities.priorities[0].static_target ||
+        context.work_context.operational_priorities.priorities[0].target;
       assert.match(operationalTarget.file, /users\.service\.ts/);
-      assert.ok(packet.next_mcp_calls.some((call: any) => call.tool === 'get_operational_priorities'));
+      assert.ok(context.next_mcp_calls.some((call: any) => call.tool === 'get_operational_priorities'));
 
-      const capsuleOnly = await getAgentWorkPacket(cas, workspace, {
+      const capsuleOnly = await getAgentContext(cas, workspace, {
         task_type: 'debug',
         target: 'what bugs should I address today',
         instructions: 'Use runtime impact to pick the most important bug and preserve local idioms.',
@@ -163,7 +163,7 @@ test('agent work packets include telemetry-backed operational priorities for deb
 
 test('K15 agent context language beats JSON-like and binary cache formats on balanced agent-use score', () => {
   const compact = {
-    packet_profile: 'first-turn',
+    context_profile: 'first-turn',
     task: 'modify: UsersService tenant-scoped user creation',
     selected: { name: 'UsersService', type: 'service', file: 'src/users/users.service.ts', line: 12 },
     files: ['src/users/users.service.ts', 'tests/users/users.service.test.ts', 'src/users/users.controller.ts'],
@@ -292,22 +292,22 @@ test('execution capsule supports file-scoped executable operations', () => {
   assert.ok(capsule.length < 470, capsule);
 });
 
-test('agent work packet exposes compact risk context for broad tasks before a node is selected', async () => {
+test('agent context exposes compact risk context for broad tasks before a node is selected', async () => {
   await withWorkspace(async workspace => {
     const cas = fixtureCas();
-    const packet = await getAgentWorkPacket(cas, workspace, {
+    const context = await getAgentContext(cas, workspace, {
       task_type: 'modify',
       target: 'improve account safety behavior',
     });
 
-    assert.equal(packet.work_context.risk_context.status, 'ready');
-    assert.ok(packet.work_context.risk_context.summary.total_high_risk_nodes >= 1);
-    assert.ok(packet.work_context.risk_context.repo_top_risks.some((risk: any) => risk.name === 'UsersService'));
-    assert.ok(packet.work_context.risk_context.agent_rules.some((rule: string) => rule.includes('repo_top_risks')));
+    assert.equal(context.work_context.risk_context.status, 'ready');
+    assert.ok(context.work_context.risk_context.summary.total_high_risk_nodes >= 1);
+    assert.ok(context.work_context.risk_context.repo_top_risks.some((risk: any) => risk.name === 'UsersService'));
+    assert.ok(context.work_context.risk_context.agent_rules.some((rule: string) => rule.includes('repo_top_risks')));
   });
 });
 
-test('agent work packet prioritizes documentation files for documentation tasks', async () => {
+test('agent context prioritizes documentation files for documentation tasks', async () => {
   await withWorkspace(async workspace => {
     fs.mkdirSync(path.join(workspace, 'docs', 'mcp'), { recursive: true });
     fs.writeFileSync(
@@ -317,18 +317,18 @@ test('agent work packet prioritizes documentation files for documentation tasks'
     const cas = fixtureCas();
     cas.system = { ...cas.system, root_path: workspace } as any;
 
-    const packet = await getAgentWorkPacket(cas, workspace, {
+    const context = await getAgentContext(cas, workspace, {
       task_type: 'modify',
-      target: 'analysis perfection audit documentation and MCP work packet evidence',
+      target: 'analysis perfection audit documentation and MCP agent context evidence',
     });
 
-    assert.equal(packet.selected_node, null);
-    assert.equal(packet.file_read_plan[0]?.file, 'docs/mcp/ANALYSIS-PERFECTION-AUDIT.md');
-    assert.match(packet.file_read_plan[0]?.reason || '', /task hint related file/);
+    assert.equal(context.selected_node, null);
+    assert.equal(context.file_read_plan[0]?.file, 'docs/mcp/ANALYSIS-PERFECTION-AUDIT.md');
+    assert.match(context.file_read_plan[0]?.reason || '', /task hint related file/);
   });
 });
 
-test('agent work packet treats audit proof targets as documentation-first', async () => {
+test('agent context treats audit proof targets as documentation-first', async () => {
   await withWorkspace(async workspace => {
     fs.mkdirSync(path.join(workspace, 'docs', 'mcp'), { recursive: true });
     fs.writeFileSync(
@@ -339,17 +339,17 @@ test('agent work packet treats audit proof targets as documentation-first', asyn
     cas.system = { ...cas.system, root_path: workspace } as any;
     cas.nodes.push(node('coverage-evidence', 'evidence', 'function', 'apps/mcp-server/src/agent-task-family-coverage.ts', 825));
 
-    const packet = await getAgentWorkPacket(cas, workspace, {
+    const context = await getAgentContext(cas, workspace, {
       task_type: 'modify',
       target: 'storage maintenance MCP tools and analysis perfection audit evidence',
     });
 
-    assert.equal(packet.selected_node, null);
-    assert.equal(packet.file_read_plan[0]?.file, 'docs/mcp/ANALYSIS-PERFECTION-AUDIT.md');
+    assert.equal(context.selected_node, null);
+    assert.equal(context.file_read_plan[0]?.file, 'docs/mcp/ANALYSIS-PERFECTION-AUDIT.md');
   });
 });
 
-test('agent work packet does not treat docs-heavy inference tasks as documentation edits', async () => {
+test('agent context does not treat docs-heavy inference tasks as documentation edits', async () => {
   await withWorkspace(async workspace => {
     fs.mkdirSync(path.join(workspace, 'docs', 'cas'), { recursive: true });
     fs.writeFileSync(
@@ -363,17 +363,17 @@ test('agent work packet does not treat docs-heavy inference tasks as documentati
       node('analysis-profile', 'classifyAnalysisProfile', 'function', 'apps/mcp-server/src/analysis-profile.ts', 12),
     );
 
-    const packet = await getAgentWorkPacket(cas, workspace, {
+    const context = await getAgentContext(cas, workspace, {
       task_type: 'modify',
       target: 'adversarial domain profile inference docs heavy SDK embedded examples monorepo product summary',
     });
 
-    assert.notEqual(packet.selected_node, null);
+    assert.notEqual(context.selected_node, null);
     assert.ok(
-      ['DomainExtractor', 'classifyAnalysisProfile'].includes(packet.selected_node?.name || ''),
-      `expected analyzer source target, got ${packet.selected_node?.name || 'none'}`,
+      ['DomainExtractor', 'classifyAnalysisProfile'].includes(context.selected_node?.name || ''),
+      `expected analyzer source target, got ${context.selected_node?.name || 'none'}`,
     );
-    assert.ok(!packet.file_read_plan[0]?.file.endsWith('.md'));
+    assert.ok(!context.file_read_plan[0]?.file.endsWith('.md'));
   });
 });
 
@@ -442,7 +442,7 @@ test('architecture context does not promote unrelated global patterns for a targ
   assert.ok(context.inventory_examples.controllers.every((item: any) => item.name !== 'LegacyReportsController'));
 });
 
-test('agent work packet scopes architecture examples to selected target even when task hints add related files', async () => {
+test('agent context scopes architecture examples to selected target even when task hints add related files', async () => {
   await withWorkspace(async workspace => {
     const cas = fixtureCas();
     cas.system = { ...cas.system, root_path: workspace } as any;
@@ -478,20 +478,20 @@ test('agent work packet scopes architecture examples to selected target even whe
       ],
     };
 
-    const packet = await getAgentWorkPacket(cas, workspace, {
+    const context = await getAgentContext(cas, workspace, {
       task_type: 'modify',
       target: 'UsersService',
       instructions: 'Adjust authenticated user creation while preserving auth/session policy boundaries.',
     }) as any;
 
-    assert.match(packet.file_read_plan[0].reason, /selected target/);
-    assert.match(packet.file_read_plan[0].reason, /representative entry point/);
-    assert.ok(packet.file_read_plan.some((item: any) => item.file === 'src/auth/auth.service.ts' && /task hint/.test(item.reason)));
+    assert.match(context.file_read_plan[0].reason, /selected target/);
+    assert.match(context.file_read_plan[0].reason, /representative entry point/);
+    assert.ok(context.file_read_plan.some((item: any) => item.file === 'src/auth/auth.service.ts' && /task hint/.test(item.reason)));
 
     const examples = [
-      ...Object.values(packet.work_context.architecture_context.inventory_examples || {}).flatMap((items: any) => items || []),
-      ...Object.values(packet.work_context.architecture_context.relevant_inventory || {}).flatMap((items: any) => items || []),
-      ...packet.work_context.architecture_context.pattern_decision_matrix.flatMap((row: any) => row.examples || []),
+      ...Object.values(context.work_context.architecture_context.inventory_examples || {}).flatMap((items: any) => items || []),
+      ...Object.values(context.work_context.architecture_context.relevant_inventory || {}).flatMap((items: any) => items || []),
+      ...context.work_context.architecture_context.pattern_decision_matrix.flatMap((row: any) => row.examples || []),
     ] as any[];
     assert.ok(examples.some((example: any) => String(example.file || '').includes('users/users.service.ts')));
     assert.ok(examples.every((example: any) => !String(example.file || '').includes('auth/')));
@@ -763,24 +763,24 @@ test('architecture context exposes local pattern owners for architecture proposa
   assert.ok(matrix.some((item: any) => item.pattern === 'Unit of Work' && item.owner_categories.includes('unit_of_work')));
 });
 
-test('small-repo work packets retain compact architecture decision context', async () => {
+test('small-repo agent contexts retain compact architecture decision context', async () => {
   await withWorkspace(async workspace => {
     const cas = fixtureCas();
     cas.nodes = cas.nodes.slice(0, 3);
     cas.edges = cas.edges.slice(0, 2);
     cas.test_suites = [];
 
-    const packet = await getAgentWorkPacket(cas, workspace, {
+    const context = await getAgentContext(cas, workspace, {
       task_type: 'modify',
       target: 'UsersService',
       instructions: 'Make a small service change.',
     });
 
-    const compactPacket = packet as any;
-    assert.match(compactPacket.packet_profile || '', /small-repo-minimal|micro-repo|token-minimal/);
-    assert.ok(compactPacket.work_context.architecture_context);
-    assert.ok(compactPacket.work_context.architecture_context.pattern_decision_matrix.length > 0);
-    assert.ok(compactPacket.work_context.architecture_context.agent_rules.some((rule: string) => /architectural style|pattern/i.test(rule)));
+    const compactContext = context as any;
+    assert.match(compactContext.context_profile || '', /small-repo-minimal|micro-repo|token-minimal/);
+    assert.ok(compactContext.work_context.architecture_context);
+    assert.ok(compactContext.work_context.architecture_context.pattern_decision_matrix.length > 0);
+    assert.ok(compactContext.work_context.architecture_context.agent_rules.some((rule: string) => /architectural style|pattern/i.test(rule)));
   });
 });
 
@@ -811,40 +811,59 @@ test('preflightAgentChange explains fit, impacts, and required checks before edi
   });
 });
 
-test('agent work packet honors explicit file path targets before semantic fallback', async () => {
+test('agent context honors explicit file path targets before semantic fallback', async () => {
   await withWorkspace(async workspace => {
-    const packet = await getAgentWorkPacket(fixtureCas(), workspace, {
+    const context = await getAgentContext(fixtureCas(), workspace, {
       task_type: 'modify',
       target: 'src/users/entities/user.entity.ts',
       instructions: 'Change the persisted User shape.',
     });
 
-    assert.equal(packet.selected_node?.name, 'User');
-    assert.equal(packet.file_read_plan[0].file, 'src/users/entities/user.entity.ts');
-    assert.ok(packet.target_resolution.candidates.every((candidate: any) =>
+    assert.equal(context.selected_node?.name, 'User');
+    assert.equal(context.file_read_plan[0].file, 'src/users/entities/user.entity.ts');
+    assert.ok(context.target_resolution.candidates.every((candidate: any) =>
       candidate.file === 'src/users/entities/user.entity.ts' || candidate.score < 250
     ));
   });
 });
 
-test('agent work packet surfaces target-scoped AI description enrichment only when narrative is weak', async () => {
+test('agent context does not anchor exact file targets to incidental import nodes', async () => {
   await withWorkspace(async workspace => {
-    const packet = await getAgentWorkPacket(fixtureCas(), workspace, {
+    const cas = fixtureCas();
+    cas.nodes.push(
+      node('import-cli-path', 'import path', 'import', 'apps/mcp-server/src/cli.ts', 1) as any,
+      node('import-cli-fs', 'import fs-extra', 'import', 'apps/mcp-server/src/cli.ts', 2) as any,
+    );
+
+    const context = await getAgentContext(cas, workspace, {
+      task_type: 'modify',
+      target: 'apps/mcp-server/src/cli.ts',
+      instructions: 'Update CLI behavior.',
+    });
+
+    assert.equal(context.selected_node, null);
+    assert.equal(context.file_read_plan[0].file, 'apps/mcp-server/src/cli.ts');
+  });
+});
+
+test('agent context surfaces target-scoped AI description enrichment only when narrative is weak', async () => {
+  await withWorkspace(async workspace => {
+    const context = await getAgentContext(fixtureCas(), workspace, {
       task_type: 'modify',
       target: 'UsersService',
       instructions: 'Explain and adjust user creation behavior without broad exploration.',
     }) as any;
 
-    assert.equal(packet.work_context.description_context.status, 'target-description-needs-ai');
-    assert.equal(packet.work_context.description_context.target.id, 'users-service');
-    assert.ok(packet.work_context.description_context.reasons.some((reason: string) => /missing|source/.test(reason)));
-    assert.ok(packet.next_mcp_calls.some((call: any) =>
+    assert.equal(context.work_context.description_context.status, 'target-description-needs-ai');
+    assert.equal(context.work_context.description_context.target.id, 'users-service');
+    assert.ok(context.work_context.description_context.reasons.some((reason: string) => /missing|source/.test(reason)));
+    assert.ok(context.next_mcp_calls.some((call: any) =>
       call.tool === 'generate_element_description' &&
       call.args.target === 'users-service' &&
       call.args.target_kind === 'service'
     ));
 
-    const capsule = await getAgentWorkPacket(fixtureCas(), workspace, {
+    const capsule = await getAgentContext(fixtureCas(), workspace, {
       task_type: 'modify',
       target: 'UsersService',
       instructions: 'Explain and adjust user creation behavior without broad exploration.',
@@ -854,7 +873,7 @@ test('agent work packet surfaces target-scoped AI description enrichment only wh
   });
 });
 
-test('agent work packet ignores generic capability suffixes when resolving targets', async () => {
+test('agent context ignores generic capability suffixes when resolving targets', async () => {
   await withWorkspace(async workspace => {
     const cas = fixtureCas();
     cas.nodes.push(
@@ -862,18 +881,18 @@ test('agent work packet ignores generic capability suffixes when resolving targe
       node('portfolio-management-service', 'PortfolioManagementService', 'service', 'src/business/services/portfolio-management/portfolio-management.service.ts', 1),
     );
 
-    const packet = await getAgentWorkPacket(cas, workspace, {
+    const context = await getAgentContext(cas, workspace, {
       task_type: 'modify',
       target: 'Payments Management',
       instructions: 'Make a small idiomatic change without duplicating existing behavior.',
     });
 
-    assert.equal(packet.selected_node?.name, 'PaymentsService');
-    assert.equal(packet.file_read_plan[0].file, 'src/payments/payments.service.ts');
+    assert.equal(context.selected_node?.name, 'PaymentsService');
+    assert.equal(context.file_read_plan[0].file, 'src/payments/payments.service.ts');
   });
 });
 
-test('agent work packet prefers active analyzer source over legacy lexical matches for analyzer maintenance', async () => {
+test('agent context prefers active analyzer source over legacy lexical matches for analyzer maintenance', async () => {
   await withWorkspace(async workspace => {
     const cas = fixtureCas();
     cas.nodes.push(
@@ -882,18 +901,18 @@ test('agent work packet prefers active analyzer source over legacy lexical match
       node('active-capability-summary', 'buildQuickDescription', 'method', 'packages/analyzer-core/src/analyzer/core/orchestrator.ts', 6660) as any,
     );
 
-    const packet = await getAgentWorkPacket(cas, workspace, {
+    const context = await getAgentContext(cas, workspace, {
       task_type: 'modify',
       target: 'capability summaries analyzer usefulness review',
       instructions: 'Improve CAS capability summaries and analysis usefulness review output.',
     });
 
-    assert.equal(packet.selected_node?.name, 'buildQuickDescription');
-    assert.equal(packet.file_read_plan[0].file, 'packages/analyzer-core/src/analyzer/core/orchestrator.ts');
+    assert.equal(context.selected_node?.name, 'buildQuickDescription');
+    assert.equal(context.file_read_plan[0].file, 'packages/analyzer-core/src/analyzer/core/orchestrator.ts');
   });
 });
 
-test('agent work packet resolves exact module filenames from the working tree before stale semantic matches', async () => {
+test('agent context resolves exact module filenames from the working tree before stale semantic matches', async () => {
   await withWorkspace(async workspace => {
     fs.mkdirSync(path.join(workspace, 'apps', 'mcp-server', 'src'), { recursive: true });
     fs.writeFileSync(
@@ -907,19 +926,19 @@ test('agent work packet resolves exact module filenames from the working tree be
       node('legacy-description-service', 'DescriptionService', 'service', 'legacy/api/description.service.ts', 12) as any,
     );
 
-    const packet = await getAgentWorkPacket(cas, workspace, {
+    const context = await getAgentContext(cas, workspace, {
       task_type: 'modify',
       target: 'description-enrichment',
       instructions: 'Improve manual AI description enrichment without broad file exploration.',
     });
 
-    assert.equal(packet.file_read_plan[0].file, 'apps/mcp-server/src/description-enrichment.ts');
-    assert.equal(packet.selected_node, null);
-    assert.ok(packet.target_resolution.gaps.some((gap: string) => gap.includes('no CAS node resolved')));
+    assert.equal(context.file_read_plan[0].file, 'apps/mcp-server/src/description-enrichment.ts');
+    assert.equal(context.selected_node, null);
+    assert.ok(context.target_resolution.gaps.some((gap: string) => gap.includes('no CAS node resolved')));
   });
 });
 
-test('agent work packet keeps task-hint files out of architecture placement guidance', async () => {
+test('agent context keeps task-hint files out of architecture placement guidance', async () => {
   await withWorkspace(async workspace => {
     const cas = fixtureCas();
     cas.system = {
@@ -946,44 +965,44 @@ test('agent work packet keeps task-hint files out of architecture placement guid
       services: ['analyzer-service', 'auth-service'],
     };
 
-    const packet = await getAgentWorkPacket(cas, workspace, {
+    const context = await getAgentContext(cas, workspace, {
       task_type: 'modify',
       target: 'buildQuickDescription',
       instructions: 'Improve analyzer output without changing auth.',
     });
 
     const examples = [
-      ...Object.values(packet.work_context.architecture_context.inventory_examples || {}).flatMap((items: any) => items || []),
-      ...Object.values(packet.work_context.architecture_context.relevant_inventory || {}).flatMap((items: any) => items || []),
+      ...Object.values(context.work_context.architecture_context.inventory_examples || {}).flatMap((items: any) => items || []),
+      ...Object.values(context.work_context.architecture_context.relevant_inventory || {}).flatMap((items: any) => items || []),
     ] as any[];
     assert.ok(examples.some((example: any) => String(example.file || '').includes('src/analyzer')));
     assert.ok(examples.every((example: any) => !String(example.file || '').includes('src/auth')));
   });
 });
 
-test('agent work packet infers focused tests from the workspace when CAS test links are missing', async () => {
+test('agent context infers focused tests from the workspace when CAS test links are missing', async () => {
   await withWorkspace(async workspace => {
     const cas = fixtureCas();
     delete (cas as any).test_suites;
     cas.edges = (cas.edges || []).filter(edge => edge.type !== 'tests');
 
-    const packet = await getAgentWorkPacket(cas, workspace, {
+    const context = await getAgentContext(cas, workspace, {
       task_type: 'modify',
       target: 'src/users/users.service.ts',
       instructions: 'Change service behavior without broad test exploration.',
     });
 
-    assert.equal(packet.validation_plan.strategy, 'focused-tests-first');
-    assert.ok(packet.validation_plan.tests_to_inspect.some((testFile: any) =>
+    assert.equal(context.validation_plan.strategy, 'focused-tests-first');
+    assert.ok(context.validation_plan.tests_to_inspect.some((testFile: any) =>
       testFile.file === 'src/users/users.service.spec.ts'
     ));
-    assert.ok(packet.validation_plan.commands.some((command: any) =>
+    assert.ok(context.validation_plan.commands.some((command: any) =>
       command.scope === 'focused-test' && command.command.includes('src/users/users.service.spec.ts')
     ));
   });
 });
 
-test('agent work packet excludes Klauro proof artifacts from task-hint source files', async () => {
+test('agent context excludes Klauro proof artifacts from task-hint source files', async () => {
   await withWorkspace(async workspace => {
     const generatedDir = path.join(workspace, '.klauro-existing-task-live-audit-feature', 'run', 'with-klauro', 'src', 'domain');
     fs.mkdirSync(path.join(workspace, 'src', 'domain'), { recursive: true });
@@ -998,13 +1017,13 @@ test('agent work packet excludes Klauro proof artifacts from task-hint source fi
       node('generated-task-domain', 'Task', 'entity', '.klauro-existing-task-live-audit-feature/run/with-klauro/src/domain/task.ts', 1) as any,
     );
 
-    const packet = await getAgentWorkPacket(cas, workspace, {
+    const context = await getAgentContext(cas, workspace, {
       task_type: 'modify',
       target: 'audit task domain model',
       instructions: 'Add audit domain behavior without reading generated proof artifacts.',
     });
 
-    const files = packet.file_read_plan.map((item: any) => item.file);
+    const files = context.file_read_plan.map((item: any) => item.file);
     assert.ok(files.some((file: string) => file === 'src/domain/task.ts'));
     assert.ok(files.every((file: string) => !file.includes('.klauro-existing-task-live')));
   });
@@ -1067,7 +1086,7 @@ test('validateAgentChange blocks non-idiomatic post-edit diffs', async () => {
   });
 });
 
-test('readiness, start context, and work packet surface dominant unanalyzed languages', async () => {
+test('readiness, start context, and agent context surface dominant unanalyzed languages', async () => {
   await withWorkspace(async workspace => {
     const cas = fixtureCas();
     (cas.system as any).technologies = {
@@ -1085,14 +1104,14 @@ test('readiness, start context, and work packet surface dominant unanalyzed lang
     assert.ok(readiness.adoption_gaps.includes(
       'language-coverage: Ruby is 79% of source but not analyzed; CAS covers only the analyzed remainder',
     ));
-    assert.equal(readiness.default_use, false);
+    assert.equal(readiness.agent_context_ready, false);
 
     const expectedNote = 'Ruby is 79% of source (289 files) but not analyzed; CAS covers only the analyzed remainder. Fall back to direct file reading for the Ruby portion.';
-    const context = getAgentStartContext(cas, workspace);
-    assert.equal(context.readiness.language_coverage_note, expectedNote);
+    const startContext = getAgentStartContext(cas, workspace);
+    assert.equal(startContext.readiness.language_coverage_note, expectedNote);
 
-    const packet = await getAgentWorkPacket(cas, workspace, { task_type: 'orient' });
-    assert.equal(packet.readiness.language_coverage_note, expectedNote);
+    const agentContext = await getAgentContext(cas, workspace, { task_type: 'orient' });
+    assert.equal(agentContext.readiness.language_coverage_note, expectedNote);
   });
 });
 
@@ -1112,15 +1131,15 @@ test('readiness has no language coverage gate when no unanalyzed language domina
   });
 });
 
-test('agent work packet carries target-scoped pillar digests when pillar data touches the target', async () => {
+test('agent context carries target-scoped pillar digests when pillar data touches the target', async () => {
   await withWorkspace(async workspace => {
     const cas = pillarFixtureCas();
-    const packet = await getAgentWorkPacket(cas, workspace, {
+    const context = await getAgentContext(cas, workspace, {
       task_type: 'modify',
       target: 'UsersService',
     });
 
-    const journeyContext = packet.work_context.journey_context;
+    const journeyContext = context.work_context.journey_context;
     assert.ok(journeyContext, 'journey_context missing');
     assert.equal(journeyContext.total_matching, 1);
     assert.equal(journeyContext.journeys[0].id, 'journey-create-user');
@@ -1129,7 +1148,7 @@ test('agent work packet carries target-scoped pillar digests when pillar data to
     assert.equal(journeyContext.journeys[0].tests, 1);
     assert.ok(!journeyContext.journeys.some((journey: any) => journey.id === 'journey-billing-export'));
 
-    const lineageContext = packet.work_context.lineage_context;
+    const lineageContext = context.work_context.lineage_context;
     assert.ok(lineageContext, 'lineage_context missing');
     assert.equal(lineageContext.total_matching, 1);
     assert.equal(lineageContext.entities[0].entity, 'User');
@@ -1138,7 +1157,7 @@ test('agent work packet carries target-scoped pillar digests when pillar data to
     assert.deepEqual(lineageContext.entities[0].sensitive_fields, ['email']);
     assert.ok(!lineageContext.entities.some((entity: any) => entity.entity === 'Invoice'));
 
-    const conformanceContext = packet.work_context.conformance_context;
+    const conformanceContext = context.work_context.conformance_context;
     assert.ok(conformanceContext, 'conformance_context missing');
     assert.equal(conformanceContext.scope, 'module');
     assert.equal(conformanceContext.deviations[0].kind, 'unguarded-entry-point');
@@ -1151,7 +1170,7 @@ test('agent work packet carries target-scoped pillar digests when pillar data to
   });
 });
 
-test('agent work packet bounds journey digests and reports the true match count', async () => {
+test('agent context bounds journey digests and reports the true match count', async () => {
   await withWorkspace(async workspace => {
     const cas = pillarFixtureCas();
     const journeys = (cas as any).user_journeys;
@@ -1159,11 +1178,11 @@ test('agent work packet bounds journey digests and reports the true match count'
     for (let index = 0; index < 7; index += 1) {
       journeys.push({ ...base, id: `journey-extra-${index}`, name: `Extra user flow ${index}`, criticality: 'medium' });
     }
-    const packet = await getAgentWorkPacket(cas, workspace, {
+    const context = await getAgentContext(cas, workspace, {
       task_type: 'modify',
       target: 'UsersService',
     });
-    const journeyContext = packet.work_context.journey_context;
+    const journeyContext = context.work_context.journey_context;
     assert.ok(journeyContext);
     assert.equal(journeyContext.total_matching, 8);
     assert.ok(journeyContext.journeys.length <= 5);
@@ -1172,39 +1191,39 @@ test('agent work packet bounds journey digests and reports the true match count'
   });
 });
 
-test('agent work packet pillar digests match entity targets through terminal entities and lineage rows', async () => {
+test('agent context pillar digests match entity targets through terminal entities and lineage rows', async () => {
   await withWorkspace(async workspace => {
     const cas = pillarFixtureCas();
     (cas as any).data_lineage[0].writers = [];
     (cas as any).data_lineage[0].readers = [];
-    const packet = await getAgentWorkPacket(cas, workspace, {
+    const context = await getAgentContext(cas, workspace, {
       task_type: 'modify',
       target: 'User',
     });
-    assert.equal(packet.selected_node?.name, 'User');
-    const journeyContext = packet.work_context.journey_context;
+    assert.equal(context.selected_node?.name, 'User');
+    const journeyContext = context.work_context.journey_context;
     assert.ok(journeyContext, 'journey_context missing for entity target');
     assert.equal(journeyContext.journeys[0].id, 'journey-create-user');
-    const lineageContext = packet.work_context.lineage_context;
+    const lineageContext = context.work_context.lineage_context;
     assert.ok(lineageContext, 'lineage_context missing for entity target');
     assert.equal(lineageContext.entities[0].entity, 'User');
     assert.equal(lineageContext.entities[0].access, 'target-entity');
   });
 });
 
-test('agent work packet omits pillar digests when no pillar data exists', async () => {
+test('agent context omits pillar digests when no pillar data exists', async () => {
   await withWorkspace(async workspace => {
-    const packet = await getAgentWorkPacket(fixtureCas(), workspace, {
+    const context = await getAgentContext(fixtureCas(), workspace, {
       task_type: 'modify',
       target: 'UsersService',
     });
-    assert.ok(!('journey_context' in packet.work_context));
-    assert.ok(!('lineage_context' in packet.work_context));
-    assert.ok(!('conformance_context' in packet.work_context));
+    assert.ok(!('journey_context' in context.work_context));
+    assert.ok(!('lineage_context' in context.work_context));
+    assert.ok(!('conformance_context' in context.work_context));
   });
 });
 
-test('agent work packet omits pillar digests when pillar data exists but misses the target', async () => {
+test('agent context omits pillar digests when pillar data exists but misses the target', async () => {
   await withWorkspace(async workspace => {
     const cas = pillarFixtureCas();
     (cas as any).user_journeys = [(cas as any).user_journeys[1]];
@@ -1212,89 +1231,89 @@ test('agent work packet omits pillar digests when pillar data exists but misses 
     (cas as any).paradigm_conformance[0].deviations = (cas as any).paradigm_conformance[0].deviations.filter(
       (deviation: any) => deviation.file.startsWith('src/billing/'),
     );
-    const packet = await getAgentWorkPacket(cas, workspace, {
+    const context = await getAgentContext(cas, workspace, {
       task_type: 'modify',
       target: 'UsersService',
     });
-    assert.ok(!('journey_context' in packet.work_context));
-    assert.ok(!('lineage_context' in packet.work_context));
-    assert.ok(!('conformance_context' in packet.work_context));
+    assert.ok(!('journey_context' in context.work_context));
+    assert.ok(!('lineage_context' in context.work_context));
+    assert.ok(!('conformance_context' in context.work_context));
   });
 });
 
-test('compacted work packets preserve pillar digests', async () => {
+test('compacted agent contexts preserve pillar digests', async () => {
   for (const profile of ['small-repo-minimal', 'token-minimal', 'tiny', 'micro']) {
     await withWorkspace(async workspace => {
-      const previous = process.env.KLAURO_AGENT_PACKET_PROFILE;
-      process.env.KLAURO_AGENT_PACKET_PROFILE = profile;
+      const previous = process.env.KLAURO_AGENT_CONTEXT_PROFILE;
+      process.env.KLAURO_AGENT_CONTEXT_PROFILE = profile;
       try {
-        const packet = await getAgentWorkPacket(pillarFixtureCas(), workspace, {
+        const context = await getAgentContext(pillarFixtureCas(), workspace, {
           task_type: 'modify',
           target: 'UsersService',
         });
-        assert.ok(packet.work_context.journey_context, `${profile}: journey_context dropped`);
-        assert.equal(packet.work_context.journey_context.journeys[0].id, 'journey-create-user');
-        assert.ok(packet.work_context.lineage_context, `${profile}: lineage_context dropped`);
-        assert.equal(packet.work_context.lineage_context.entities[0].entity, 'User');
-        assert.ok(packet.work_context.conformance_context, `${profile}: conformance_context dropped`);
-        assert.equal(packet.work_context.conformance_context.deviations[0].severity, 'error');
+        assert.ok(context.work_context.journey_context, `${profile}: journey_context dropped`);
+        assert.equal(context.work_context.journey_context.journeys[0].id, 'journey-create-user');
+        assert.ok(context.work_context.lineage_context, `${profile}: lineage_context dropped`);
+        assert.equal(context.work_context.lineage_context.entities[0].entity, 'User');
+        assert.ok(context.work_context.conformance_context, `${profile}: conformance_context dropped`);
+        assert.equal(context.work_context.conformance_context.deviations[0].severity, 'error');
       } finally {
-        if (previous === undefined) delete process.env.KLAURO_AGENT_PACKET_PROFILE;
-        else process.env.KLAURO_AGENT_PACKET_PROFILE = previous;
+        if (previous === undefined) delete process.env.KLAURO_AGENT_CONTEXT_PROFILE;
+        else process.env.KLAURO_AGENT_CONTEXT_PROFILE = previous;
       }
     });
   }
 });
 
-test('compacted work packets do not invent pillar digests when data is absent', async () => {
+test('compacted agent contexts do not invent pillar digests when data is absent', async () => {
   await withWorkspace(async workspace => {
-    const previous = process.env.KLAURO_AGENT_PACKET_PROFILE;
-    process.env.KLAURO_AGENT_PACKET_PROFILE = 'small-repo-minimal';
+    const previous = process.env.KLAURO_AGENT_CONTEXT_PROFILE;
+    process.env.KLAURO_AGENT_CONTEXT_PROFILE = 'small-repo-minimal';
     try {
-      const packet = await getAgentWorkPacket(fixtureCas(), workspace, {
+      const context = await getAgentContext(fixtureCas(), workspace, {
         task_type: 'modify',
         target: 'UsersService',
       });
-      assert.ok(!('journey_context' in packet.work_context));
-      assert.ok(!('lineage_context' in packet.work_context));
-      assert.ok(!('conformance_context' in packet.work_context));
+      assert.ok(!('journey_context' in context.work_context));
+      assert.ok(!('lineage_context' in context.work_context));
+      assert.ok(!('conformance_context' in context.work_context));
     } finally {
-      if (previous === undefined) delete process.env.KLAURO_AGENT_PACKET_PROFILE;
-      else process.env.KLAURO_AGENT_PACKET_PROFILE = previous;
+      if (previous === undefined) delete process.env.KLAURO_AGENT_CONTEXT_PROFILE;
+      else process.env.KLAURO_AGENT_CONTEXT_PROFILE = previous;
     }
   });
 });
 
-test('start context and work packet lead with the sensitive-data exposure digest', async () => {
+test('start context and agent context lead with the sensitive-data exposure digest', async () => {
   await withWorkspace(async workspace => {
     const cas = pillarFixtureCas();
     const expectedLine = 'User: 1 unguarded paths, external_transfer: false, sensitive fields: email';
 
-    const context = getAgentStartContext(cas, workspace, {});
-    const exposure = (context as any).sensitive_data_exposure;
+    const startContext = getAgentStartContext(cas, workspace, {});
+    const exposure = (startContext as any).sensitive_data_exposure;
     assert.ok(exposure, 'sensitive_data_exposure missing from start context');
     assert.equal(exposure.total_exposed_entities, 1);
     assert.deepEqual(exposure.highest_risk, [expectedLine]);
     assert.match(exposure.instruction, /before answering security/);
     assert.equal(Object.keys(exposure)[0], 'instruction');
-    const contextKeys = Object.keys(context);
-    assert.ok(contextKeys.indexOf('sensitive_data_exposure') < contextKeys.indexOf('readiness'),
+    const startContextKeys = Object.keys(startContext);
+    assert.ok(startContextKeys.indexOf('sensitive_data_exposure') < startContextKeys.indexOf('readiness'),
       'exposure digest should precede readiness in the start context');
 
-    const packet = await getAgentWorkPacket(cas, workspace, { task_type: 'modify', target: 'UsersService' });
-    const packetExposure = (packet as any).sensitive_data_exposure;
-    assert.ok(packetExposure, 'sensitive_data_exposure missing from work packet');
-    assert.deepEqual(packetExposure.highest_risk, [expectedLine]);
-    const packetKeys = Object.keys(packet);
-    assert.ok(packetKeys.indexOf('sensitive_data_exposure') < packetKeys.indexOf('work_context'),
-      'exposure digest should precede work_context in the packet');
+    const agentContext = await getAgentContext(cas, workspace, { task_type: 'modify', target: 'UsersService' });
+    const contextExposure = (agentContext as any).sensitive_data_exposure;
+    assert.ok(contextExposure, 'sensitive_data_exposure missing from agent context');
+    assert.deepEqual(contextExposure.highest_risk, [expectedLine]);
+    const agentContextKeys = Object.keys(agentContext);
+    assert.ok(agentContextKeys.indexOf('sensitive_data_exposure') < agentContextKeys.indexOf('work_context'),
+      'exposure digest should precede work_context in the context');
 
-    const lineageContext = packet.work_context.lineage_context;
+    const lineageContext = agentContext.work_context.lineage_context;
     assert.ok(lineageContext, 'lineage_context missing');
     assert.equal(Object.keys(lineageContext)[0], 'headline');
     assert.equal(lineageContext.headline, expectedLine);
     assert.match(String(lineageContext.instruction), /before answering security/);
-    const workContextKeys = Object.keys(packet.work_context);
+    const workContextKeys = Object.keys(agentContext.work_context);
     assert.ok(workContextKeys.indexOf('lineage_context') < workContextKeys.indexOf('journey_context'),
       'lineage_context should precede journey_context');
   });
@@ -1309,15 +1328,15 @@ test('exposure digest calls out paths covered only by non-auth guards', async ()
       external_transfer: false,
       sensitive: true,
     };
-    const context = getAgentStartContext(cas, workspace, {});
-    const exposure = (context as any).sensitive_data_exposure;
+    const startContext = getAgentStartContext(cas, workspace, {});
+    const exposure = (startContext as any).sensitive_data_exposure;
     assert.ok(exposure, 'sensitive_data_exposure missing from start context');
     assert.deepEqual(exposure.highest_risk, [
       'User: 26 unguarded paths (22 with non-auth guards only), external_transfer: false, sensitive fields: email',
     ]);
 
-    const packet = await getAgentWorkPacket(cas, workspace, { task_type: 'modify', target: 'UsersService' });
-    const lineageContext = packet.work_context.lineage_context;
+    const agentContext = await getAgentContext(cas, workspace, { task_type: 'modify', target: 'UsersService' });
+    const lineageContext = agentContext.work_context.lineage_context;
     assert.ok(lineageContext, 'lineage_context missing');
     const userRow = (lineageContext.entities as any[]).find(entity => entity.entity === 'User');
     assert.ok(userRow, 'User row missing from lineage context entities');
@@ -1333,36 +1352,36 @@ test('exposure digest is omitted when no sensitive entity has unguarded or exter
 
     const cas = pillarFixtureCas();
     (cas as any).data_lineage[0].exposure = { unguarded_paths: 0, external_transfer: false, sensitive: true };
-    const context = getAgentStartContext(cas, workspace, {});
-    assert.ok(!('sensitive_data_exposure' in context));
+    const startContext = getAgentStartContext(cas, workspace, {});
+    assert.ok(!('sensitive_data_exposure' in startContext));
 
-    const packet = await getAgentWorkPacket(cas, workspace, { task_type: 'modify', target: 'UsersService' });
-    assert.ok(!('sensitive_data_exposure' in packet));
-    const lineageContext = packet.work_context.lineage_context;
+    const agentContext = await getAgentContext(cas, workspace, { task_type: 'modify', target: 'UsersService' });
+    assert.ok(!('sensitive_data_exposure' in agentContext));
+    const lineageContext = agentContext.work_context.lineage_context;
     assert.ok(lineageContext, 'lineage_context should still match the target');
     assert.ok(!('headline' in lineageContext));
     assert.ok(!('instruction' in lineageContext));
   });
 });
 
-test('compacted work packets preserve the exposure digest and lineage headline', async () => {
+test('compacted agent contexts preserve the exposure digest and lineage headline', async () => {
   for (const profile of ['small-repo-minimal', 'token-minimal', 'tiny', 'micro']) {
     await withWorkspace(async workspace => {
-      const previous = process.env.KLAURO_AGENT_PACKET_PROFILE;
-      process.env.KLAURO_AGENT_PACKET_PROFILE = profile;
+      const previous = process.env.KLAURO_AGENT_CONTEXT_PROFILE;
+      process.env.KLAURO_AGENT_CONTEXT_PROFILE = profile;
       try {
-        const packet = await getAgentWorkPacket(pillarFixtureCas(), workspace, {
+        const context = await getAgentContext(pillarFixtureCas(), workspace, {
           task_type: 'modify',
           target: 'UsersService',
         });
-        assert.ok((packet as any).sensitive_data_exposure, `${profile}: sensitive_data_exposure dropped`);
-        const lineageContext = packet.work_context.lineage_context;
+        assert.ok((context as any).sensitive_data_exposure, `${profile}: sensitive_data_exposure dropped`);
+        const lineageContext = context.work_context.lineage_context;
         assert.ok(lineageContext, `${profile}: lineage_context dropped`);
         assert.equal(lineageContext.headline, 'User: 1 unguarded paths, external_transfer: false, sensitive fields: email', `${profile}: lineage headline dropped`);
         assert.match(String(lineageContext.instruction), /before answering security/, `${profile}: lineage instruction dropped`);
       } finally {
-        if (previous === undefined) delete process.env.KLAURO_AGENT_PACKET_PROFILE;
-        else process.env.KLAURO_AGENT_PACKET_PROFILE = previous;
+        if (previous === undefined) delete process.env.KLAURO_AGENT_CONTEXT_PROFILE;
+        else process.env.KLAURO_AGENT_CONTEXT_PROFILE = previous;
       }
     });
   }

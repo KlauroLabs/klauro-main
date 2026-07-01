@@ -56,7 +56,7 @@ Agent operating loop:
 1. Call \`resolve_agent_analysis\` for this repository path and the current task.
 2. Call \`get_agent_start_context\` for the selected path before broad file reads.
 3. Call \`get_agent_tool_plan\` with the task type (orient, modify, debug, review, trace, cross-repo, or runtime).
-4. Call \`get_agent_work_packet\` for real work so CAS resolves the target, risk, tests, call context, invariants, and first files to inspect.
+4. Call \`get_agent_context\` for real work so CAS resolves the target, risk, tests, call context, invariants, and first files to inspect.
 5. Before code edits, call \`get_coding_context\` for the target, then \`assess_change_risk\` and \`find_tests\` when connected behavior can be affected.
 6. Read source files only after MCP narrows the target to specific files.
 7. After edits, call \`validate_behavioral_invariants\` and \`validate_codebase_idioms\` before finalizing.

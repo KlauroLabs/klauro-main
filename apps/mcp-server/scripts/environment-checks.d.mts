@@ -22,6 +22,9 @@ export interface BundleToolCallResult {
 
 export declare const MINIMUM_NODE_MAJOR: number;
 export declare const DEFAULT_HANDSHAKE_LIMIT_MS: number;
+export declare const DEFAULT_PRODUCT_BUNDLE_BUDGET_BYTES: number;
+export declare const DEFAULT_PRODUCT_INSTALL_BUDGET_BYTES: number;
+export declare const DEFAULT_PRODUCT_STORAGE_BUDGET_BYTES: number;
 export declare const OPERATING_LOOP_MARKER: string;
 export declare const OPERATING_LOOP_BEGIN_MARKER: string;
 export declare const OPERATING_LOOP_END_MARKER: string;
@@ -53,12 +56,27 @@ export declare function evaluateStorageState(input: {
 export declare function inspectStorage(env?: NodeJS.ProcessEnv): EnvironmentCheck;
 export declare function directorySizeBytes(rootDir: string): number;
 export declare function formatBytes(bytes: number): string;
+export declare function productFootprintBudgets(env?: NodeJS.ProcessEnv): {
+  bundleBytes: number;
+  installBytes: number;
+  storageBytes: number;
+};
+export declare function evaluateSizeBudget(input: {
+  id: string;
+  label: string;
+  bytes: number;
+  maxBytes: number;
+  overStatus?: 'warn' | 'fail';
+  fix?: string;
+}): EnvironmentCheck;
+export declare function inspectProductFootprint(input?: {
+  packageRoot?: string;
+  env?: NodeJS.ProcessEnv;
+  includeStorage?: boolean;
+}): EnvironmentCheck[];
 export declare function summarizeAiProviders(env?: NodeJS.ProcessEnv): string[];
-export declare function probeOllama(baseUrl?: string, timeoutMs?: number): Promise<{ reachable: boolean; models?: number; detail?: string }>;
 export declare function evaluateAiProviders(input: {
   configured: string[];
-  ollamaConfigured: boolean;
-  ollamaProbe?: { reachable: boolean; models?: number; detail?: string };
 }): EnvironmentCheck;
 export declare function evaluateZstd(input: { zstdAvailable: boolean; compressedFiles: number }): EnvironmentCheck;
 export declare function hasZstdBinary(): boolean;

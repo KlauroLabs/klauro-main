@@ -2,7 +2,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import type { CASOutput, CASEntryPoint, CASExitPoint, CASNode } from '../../../packages/analyzer-core/src/types/cas.types';
 import { buildCrossRepositoryLinks, buildCrossRepoJourneys, buildCrossRepoRouteDrift, pathsCompatible } from './product';
-import { getAgentWorkPacket, type AgentTask } from './agent-adoption';
+import { getAgentContext, type AgentTask } from './agent-adoption';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 
@@ -378,14 +378,14 @@ export function getRuntimeInstrumentationPlan(cas: CASOutput, opts: { limit?: nu
 
 export async function evaluateAgentTaskProof(cas: CASOutput, pathValue: string, tasks: AgentTask[]) {
   const taskReports = await Promise.all(tasks.map(async task => {
-    const packet = await getAgentWorkPacket(cas, pathValue, task);
+    const context = await getAgentContext(cas, pathValue, task);
     const checks: MasteryCheck[] = [
-      simpleCheck('target-resolved', Boolean(packet.selected_node), packet.selected_node?.id || 'no selected node'),
-      simpleCheck('file-read-plan', packet.file_read_plan.length > 0, `${packet.file_read_plan.length} files`),
-      simpleCheck('coding-context', Boolean(packet.work_context.coding_context && !('error' in (packet.work_context.coding_context as Record<string, unknown>))), 'coding context'),
-      simpleCheck('risk-context', Boolean(packet.work_context.risk || packet.work_context.risk_context), 'risk context'),
-      simpleCheck('test-context', Boolean(packet.work_context.tests), 'test context'),
-      simpleCheck('mcp-followups', packet.next_mcp_calls.length > 0, `${packet.next_mcp_calls.length} calls`),
+      simpleCheck('target-resolved', Boolean(context.selected_node), context.selected_node?.id || 'no selected node'),
+      simpleCheck('file-read-plan', context.file_read_plan.length > 0, `${context.file_read_plan.length} files`),
+      simpleCheck('coding-context', Boolean(context.work_context.coding_context && !('error' in (context.work_context.coding_context as Record<string, unknown>))), 'coding context'),
+      simpleCheck('risk-context', Boolean(context.work_context.risk || context.work_context.risk_context), 'risk context'),
+      simpleCheck('test-context', Boolean(context.work_context.tests), 'test context'),
+      simpleCheck('mcp-followups', context.next_mcp_calls.length > 0, `${context.next_mcp_calls.length} calls`),
     ];
     const score = Math.round(checks.reduce((sum, check) => sum + check.score, 0) / checks.length);
     return {
@@ -393,9 +393,9 @@ export async function evaluateAgentTaskProof(cas: CASOutput, pathValue: string, 
       status: score >= 90 ? 'pass' : score >= 75 ? 'warn' : 'fail',
       score,
       checks,
-      selected_node: packet.selected_node,
-      file_read_plan: packet.file_read_plan,
-      gaps: packet.gaps,
+      selected_node: context.selected_node,
+      file_read_plan: context.file_read_plan,
+      gaps: context.gaps,
     };
   }));
   const score = taskReports.length

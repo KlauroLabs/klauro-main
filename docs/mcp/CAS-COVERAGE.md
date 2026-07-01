@@ -17,11 +17,11 @@ This document maps public CAS concepts and related v1.9 analysis storage to the 
 | `runtime` | `get_system_overview` | `overview` |
 | `runtime_static_links` | `get_system_overview` (count), `get_runtime_static_links`, `simulate_runtime_telemetry`, `correlate_runtime_event`, `record_runtime_event`, `validate_cas_contract` | `cas-contract` |
 | `analysis_facts` | `get_system_overview` (count), `get_analysis_facts` | |
-| `codebase_idioms` | `get_codebase_idioms`, `get_idiom_aware_work_packet`, `get_agent_work_packet`, `validate_codebase_idioms`, `evaluate_agent_readiness` | `agent-work-packet` |
+| `codebase_idioms` | `get_codebase_idioms`, `get_idiom_aware_agent_context`, `get_agent_context`, `validate_codebase_idioms`, `evaluate_agent_readiness` | `agent-context` |
 | `idiom_summary` | `get_system_overview`, `get_codebase_idioms`, `evaluate_agent_readiness` | `overview`, `agent-readiness` |
-| `idiom_examples` | `get_idiom_examples`, `get_codebase_idioms`, `get_agent_work_packet` | `agent-work-packet` |
+| `idiom_examples` | `get_idiom_examples`, `get_codebase_idioms`, `get_agent_context` | `agent-context` |
 | `idiom_violations` | `get_codebase_idioms`, `validate_codebase_idioms` | |
-| `system_health` | `get_system_overview`, `get_system_health`, `get_agent_work_packet`, `get_operational_priorities` | `health`, `agent-work-packet`, `risks` |
+| `system_health` | `get_system_overview`, `get_system_health`, `get_agent_context`, `get_operational_priorities` | `health`, `agent-context`, `risks` |
 | `repository_links` | `get_system_overview`, `get_cross_repo_links`, `save_workspace_graph`, `get_workspace_graph`, `verify_workspace_link` | `overview`, `workspace/{id}/graph` |
 | `disclosure` | `get_system_overview` | `overview` |
 | `validation` | `get_system_overview`, `validate_cas_contract` | `overview`, `cas-contract` |
@@ -40,7 +40,7 @@ This document maps public CAS concepts and related v1.9 analysis storage to the 
 | `data_entities` | `get_data_entities` | `schema` |
 | `data_summary` | `get_data_entities` | `schema` |
 | `database_schema` | `get_database_schema` | `schema` |
-| `behavioral_invariants` | `get_behavioral_invariants`, `validate_behavioral_invariants`, `get_agent_work_packet`, `evaluate_agent_readiness` | `agent-work-packet` |
+| `behavioral_invariants` | `get_behavioral_invariants`, `validate_behavioral_invariants`, `get_agent_context`, `evaluate_agent_readiness` | `agent-context` |
 | `behavioral_invariant_summary` | `get_behavioral_invariants`, `validate_cas_contract`, `evaluate_agent_readiness` | `cas-contract`, `agent-readiness` |
 | `security_boundaries` | `get_security_overview` | `security` |
 | `security_summary` | `get_security_overview` | `security` |
@@ -78,7 +78,7 @@ This document maps public CAS concepts and related v1.9 analysis storage to the 
 | `analysis_snapshots` storage | `get_analysis_at`, `get_analysis_snapshots` | |
 | `runtime_observations` storage | `simulate_runtime_telemetry`, `record_runtime_event`, `get_runtime_observations`, `get_runtime_trace`, `get_operational_priorities`, `validate_cas_contract` | `cas-contract`, `risks` |
 | Answer packs | `list_answer_packs`, `run_answer_pack`, `get_mcp_demo_flow` | |
-| Agent default-use context | `resolve_agent_analysis`, `get_agent_project_map`, `get_agent_bootstrap`, `get_agent_start_context`, `get_agent_tool_plan`, `get_agent_work_packet`, `get_capability_memory`, `get_idiom_aware_work_packet`, `validate_behavioral_invariants`, `validate_codebase_idioms`, `evaluate_agent_readiness`, `get_agent_default_config`, `install_agent_default_config` | `agent-bootstrap`, `agent-start`, `agent-readiness`, `agent-defaults` |
+| Agent agent-context-ready context | `resolve_agent_analysis`, `get_agent_project_map`, `get_agent_bootstrap`, `get_agent_start_context`, `get_agent_tool_plan`, `get_agent_context`, `get_capability_memory`, `get_idiom_aware_agent_context`, `validate_behavioral_invariants`, `validate_codebase_idioms`, `evaluate_agent_readiness`, `get_agent_default_config`, `install_agent_default_config` | `agent-bootstrap`, `agent-start`, `agent-readiness`, `agent-defaults` |
 | Ground-truth analysis checks | `evaluate_analysis_truth` | |
 | Source-level semantic map | `get_semantic_map` | |
 | Framework/library depth | `get_framework_depth_report`, `get_integration_depth_report` | `integration-depth` |
@@ -99,6 +99,6 @@ This document maps public CAS concepts and related v1.9 analysis storage to the 
 
 ## Coverage Status
 
-The MCP server exposes the public CAS concepts needed by UI and agent workflows, plus v1.8 change-history/snapshot queries, v1.9 codebase-idiom queries/validation, and v1.10 system-health/coherence queries. It also exposes product-level answer packs, persisted workspace graphs, cross-repository linking, contract views, behavioral invariants, invariant-aware and idiom-aware diff validation, runtime observation correlation and trace replay, operational priority ranking, instrumentation plans, runtime SDK package generation, truth evaluation, semantic maps, integration depth reports, source test discovery evidence, analysis freshness, CAS contract validation, saved golden-shape comparisons, storage health, agent default-use readiness, monorepo/subproject analysis resolution, installable agent defaults, customer upload manifests, GitHub import planning, remote analyzer full/incremental sync, with-Klauro vs without-Klauro benchmark reports, machine-wide proof, and live copied-repo agent trial artifacts on top of CAS. Internal implementation artifacts such as `index`, `incremental_state`, and `file_cache` are intentionally not exposed directly beyond aggregate storage health and freshness checks.
+The MCP server exposes the public CAS concepts needed by UI and agent workflows, plus v1.8 change-history/snapshot queries, v1.9 codebase-idiom queries/validation, and v1.10 system-health/coherence queries. It also exposes product-level answer packs, persisted workspace graphs, cross-repository linking, contract views, behavioral invariants, invariant-aware and idiom-aware diff validation, runtime observation correlation and trace replay, operational priority ranking, instrumentation plans, runtime SDK package generation, truth evaluation, semantic maps, integration depth reports, source test discovery evidence, analysis freshness, CAS contract validation, saved golden-shape comparisons, storage health, agent-context-ready readiness, monorepo/subproject analysis resolution, installable agent defaults, customer upload manifests, GitHub import planning, remote analyzer full/incremental sync, with-Klauro vs without-Klauro benchmark reports, machine-wide proof, and live copied-repo agent trial artifacts on top of CAS. Internal implementation artifacts such as `index`, `incremental_state`, and `file_cache` are intentionally not exposed directly beyond aggregate storage health and freshness checks.
 
 When adding a new public CAS field, update this matrix and add a tool/resource entry if humans or agents need to query it.

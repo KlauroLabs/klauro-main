@@ -281,7 +281,7 @@ function scoreNarrativeProvenance(cas: CASOutput): SpotReadGate {
     /\b(canvas objects?|synced objects?|travelNodes|archivedInCollection|inCollection|removeDocument|unarchivedInCollection)\b/i.test(description)) {
     problems.push('system narrative is polluted by example/internal entities instead of product identity');
   }
-  if (/\b(codebase focused|c# analysis|json processing|request\s+\d{1,3}(?:\.\d{1,3}){3}|database interactions?|command-line interfaces?|toolchain tools|processing stages?|packet-level operations?|terminal command execution|structured operations)\b/i.test(description)) {
+  if (/\b(codebase focused|c# analysis|json processing|request\s+\d{1,3}(?:\.\d{1,3}){3}|database interactions?|command-line interfaces?|toolchain tools|processing stages?|context-level operations?|terminal command execution|structured operations)\b/i.test(description)) {
     problems.push('system narrative includes low-level implementation mechanics instead of product concepts');
   }
   if (/\bintegrates with postgres\b/i.test(description) ||
@@ -715,7 +715,7 @@ function descriptionContradictsPurposeFamily(description: string, domain?: strin
     },
     {
       label: 'codebase-analysis claim conflicts with purpose/domain',
-      pattern: /\bcodebase analysis\b|\bcas graph\b|\bagent work packets?\b/,
+      pattern: /\bcodebase analysis\b|\bcas graph\b|\bagent contexts?\b/,
       allowed: /\b(codebase-analysis)\b/,
     },
   ];

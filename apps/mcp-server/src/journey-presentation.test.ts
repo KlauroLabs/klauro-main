@@ -279,7 +279,7 @@ test('product map markdown renders journey headlines instead of machine names', 
   assert.ok(!markdown.includes('| boundaries:'), 'pipe-separated machine row is gone');
 });
 
-test('agent work packet journey digest carries a one-line headline per journey', () => {
+test('agent context journey digest carries a one-line headline per journey', () => {
   const context = buildJourneyContextForAgent(casWithJourneys() as any, { nodeId: truckspy.entry?.handler_node_id }) as any;
   assert.ok(context);
   assert.equal(context.total_matching, 1);

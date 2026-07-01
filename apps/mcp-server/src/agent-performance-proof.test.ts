@@ -242,9 +242,9 @@ function incrementalReport(generatedAt: Date) {
       average_edit_incremental_ms: 250,
       average_no_change_speedup_vs_full: 10,
       average_edit_speedup_vs_full: 4,
-      average_packet_generation_ms_after_edit: 20,
+      average_context_generation_ms_after_edit: 20,
       average_file_read_plan_after_edit: 2,
-      average_packet_tokens_after_edit: 500,
+      average_context_tokens_after_edit: 500,
       average_full_verify_count_similarity: 1,
     },
   };

@@ -31,7 +31,7 @@ The AI interpretation pass (`applyAIInterpretation` in `packages/analyzer-core/s
 - `KLAURO_AI_INTERPRETATION=false` disables the system-description/domain pass (`description_generation.reason: 'disabled-by-env'`) and therefore produces a degraded default CAS artifact.
 - `KLAURO_AI_ELEMENT_DESCRIPTIONS=false` disables capability/entity description generation and therefore produces degraded primary capability descriptions in default CAS unless prior AI/manual text is safely reused.
 - `KLAURO_EMBEDDING_ENABLED=false` disables the embedding phase (read in `apps/mcp-server/src/analyzer.ts`; the core orchestrator runs no embedding unless `configureEmbedding` is called).
-- With no provider configured (no `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `AI_LOCAL_ENABLED`), all AI passes are skipped with `reason: 'no-ai-provider-configured'`.
+- With no hosted provider configured (no `DEEPINFRA_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, hosted `OPENAI_BASE_URL`, or complete `AZURE_OPENAI_*` configuration), all AI passes are skipped with `reason: 'no-ai-provider-configured'`. Local model toggles such as `OLLAMA_BASE_URL` and loopback `OPENAI_BASE_URL` are ignored by the product AI path.
 
 In every disabled/failed case the deterministic text remains and structure is byte-identical to an AI-enabled run, but the artifact is not considered equivalent to an AI-enriched default CAS. Consumers must inspect provenance before using descriptions as product/architecture interpretation.
 

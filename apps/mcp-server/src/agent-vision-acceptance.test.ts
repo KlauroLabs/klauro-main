@@ -44,7 +44,7 @@ test('vision acceptance requires competitor baseline quality and token lift', ()
     summary: {
       scenario_count: 14,
       family_count: 13,
-      average_klauro_packet_tokens: 2500,
+      average_klauro_context_tokens: 2500,
       cursor: {
         model: 'cursor-style-index-context-proxy-v2',
         average_context_readiness_score: 51,
@@ -82,7 +82,7 @@ test('vision acceptance requires competitor baseline quality and token lift', ()
     summary: {
       scenario_count: 14,
       family_count: 13,
-      average_klauro_packet_tokens: 4200,
+      average_klauro_context_tokens: 4200,
       cursor: {
         model: 'cursor-style-index-context-proxy-v2',
         average_context_readiness_score: 51,
@@ -123,9 +123,9 @@ test('vision acceptance requires new-user install-to-value and hosted incrementa
     total_ms: 8000,
     max_total_ms: 600000,
     steps: [
-      { name: 'deterministic install plus first value', ok: true, detail: 'installer built bundle and produced an agent packet summary' },
+      { name: 'deterministic install plus first value', ok: true, detail: 'installer built bundle and produced an agent context summary' },
       { name: 'installed CLI is executable', ok: true, detail: 'klauro 1.0.0' },
-      { name: 'remote analyzer project init', ok: true, detail: '.klaurorc points at http://127.0.0.1:8787' },
+      { name: 'remote analyzer project init', ok: true, detail: '.klaurorc points at https://mcp.klauro.com' },
       { name: 'hosted analyzer full analysis', ok: true, detail: 'full remote analysis returned 33 nodes' },
       { name: 'hosted analyzer incremental sync', ok: true, detail: 'incremental sync returned 1 changed file(s)' },
     ],

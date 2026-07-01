@@ -5,7 +5,7 @@ CAS analysis, agent-facing MCP context, hosted analyzers, proposal previews, inc
 
 ## Layout
 
-- `apps/mcp-server/` - MCP server, CLI, hosted analyzer HTTP service, proof gauntlets, proposal preview tooling, remote sync, and agent work packets.
+- `apps/mcp-server/` - MCP server, CLI, hosted analyzer HTTP service, proof gauntlets, proposal preview tooling, remote sync, and agent contexts.
 - `packages/analyzer-core/` - CAS analyzer engine, CAS types, language/framework analyzers, incremental analysis, idiom/invariant extraction, embeddings, telemetry schema, and SDK source.
 - `legacy/web/` - old Next.js prototype UI. Keep as reference only until the designed Klauro UI is rebuilt.
 - `legacy/database/` - old SQL/database reference material. Do not treat it as current production schema without a current migration.

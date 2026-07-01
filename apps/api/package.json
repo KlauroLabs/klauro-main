@@ -1,0 +1,22 @@
+{
+  "name": "@klauro/api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Klauro hosted API entrypoint for accounts, workspaces, projects, and remote analysis.",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "start": "tsx src/index.ts",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@klauro/mcp-server": "1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.2"
+  },
+  "license": "UNLICENSED"
+}

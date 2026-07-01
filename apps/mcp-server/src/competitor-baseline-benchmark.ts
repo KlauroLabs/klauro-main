@@ -36,7 +36,7 @@ interface CompetitorScenario {
   title: string;
   with_klauro: {
     score: number;
-    packet_tokens: number;
+    context_tokens: number;
     first_files: string[];
   };
   cursor_index_context_proxy: CompetitorContextProxy & { model: 'cursor-style-index-context-proxy-v2' };
@@ -76,7 +76,7 @@ interface CompetitorBaselineReport {
     scenario_count: number;
     family_count: number;
     average_klauro_score: number;
-    average_klauro_packet_tokens: number;
+    average_klauro_context_tokens: number;
     cursor: CompetitorSummary;
     linear: CompetitorSummary;
 
@@ -146,7 +146,7 @@ function toCompetitorScenario(scenario: SeededScenario): CompetitorScenario {
     title: scenario.title,
     with_klauro: {
       score: scenario.with_klauro.score,
-      packet_tokens: scenario.with_klauro.packet_tokens,
+      context_tokens: scenario.with_klauro.context_tokens,
       first_files: scenario.with_klauro.first_files,
     },
     cursor_index_context_proxy: {
@@ -169,10 +169,10 @@ function toCompetitorScenario(scenario: SeededScenario): CompetitorScenario {
     linear_workflow_code_context_proxy: linear,
     deltas: {
       context_readiness_delta_vs_cursor: scenario.with_klauro.score - cursorContextReadinessScore,
-      token_reduction_vs_cursor_percentage: percentReduction(index.estimated_tokens, scenario.with_klauro.packet_tokens),
+      token_reduction_vs_cursor_percentage: percentReduction(index.estimated_tokens, scenario.with_klauro.context_tokens),
       first_file_hit_rate_delta_vs_cursor_recall: scenario.with_klauro.first_read_file_hit_rate - index.file_recall,
       context_readiness_delta_vs_linear: scenario.with_klauro.score - linear.context_readiness_score,
-      token_reduction_vs_linear_percentage: percentReduction(linear.estimated_tokens, scenario.with_klauro.packet_tokens),
+      token_reduction_vs_linear_percentage: percentReduction(linear.estimated_tokens, scenario.with_klauro.context_tokens),
       first_file_hit_rate_delta_vs_linear_recall: scenario.with_klauro.first_read_file_hit_rate - linear.file_recall,
     },
   };
@@ -209,11 +209,11 @@ function summarize(scenarios: CompetitorScenario[]): CompetitorBaselineReport['s
   );
   return {
     competitor_models: ['cursor-style-index-context-proxy-v2', 'linear-style-workflow-code-context-proxy-v1'],
-    claim_limit: 'Compares Klauro MCP packets against explicit competitor-shaped proxies: Cursor-style editor/index retrieval and Linear-style issue/workflow/code context. These are repeatable proxy baselines, not measurements of private vendor implementations.',
+    claim_limit: 'Compares Klauro MCP contexts against explicit competitor-shaped proxies: Cursor-style editor/index retrieval and Linear-style issue/workflow/code context. These are repeatable proxy baselines, not measurements of private vendor implementations.',
     scenario_count: scenarios.length,
     family_count: new Set(scenarios.map(scenario => scenario.family)).size,
     average_klauro_score: round(average(scenarios.map(scenario => scenario.with_klauro.score))),
-    average_klauro_packet_tokens: round(average(scenarios.map(scenario => scenario.with_klauro.packet_tokens))),
+    average_klauro_context_tokens: round(average(scenarios.map(scenario => scenario.with_klauro.context_tokens))),
     cursor,
     linear,
     competitor_model: 'cursor-style-index-context-proxy-v2',
@@ -298,8 +298,8 @@ function buildGates(
         summary.linear.scenarios_with_positive_token_reduction >= Math.ceil(summary.scenario_count * 0.8),
       `${summary.linear.average_token_reduction_percentage}% average token reduction, ${summary.linear.scenarios_with_positive_token_reduction}/${summary.scenario_count} positive scenarios`),
     gate('competitor-baseline:klauro-token-discipline',
-      summary.average_klauro_packet_tokens <= 3200,
-      `${summary.average_klauro_packet_tokens} average Klauro packet tokens`),
+      summary.average_klauro_context_tokens <= 3200,
+      `${summary.average_klauro_context_tokens} average Klauro context tokens`),
   ];
 }
 
@@ -372,8 +372,8 @@ function renderMarkdown(report: CompetitorBaselineReport): string {
     `- Scenarios: ${report.summary.scenario_count} across ${report.summary.family_count} task families.`,
     `- Cursor-style context readiness: Klauro ${report.summary.average_klauro_score}/100 vs ${report.summary.cursor.average_context_readiness_score}/100, delta +${report.summary.cursor.average_context_readiness_delta}.`,
     `- Linear-style context readiness: Klauro ${report.summary.average_klauro_score}/100 vs ${report.summary.linear.average_context_readiness_score}/100, delta +${report.summary.linear.average_context_readiness_delta}.`,
-    `- Cursor-style tokens: Klauro ${report.summary.average_klauro_packet_tokens} vs ${report.summary.cursor.average_tokens}, reduction ${report.summary.cursor.average_token_reduction_percentage}%.`,
-    `- Linear-style tokens: Klauro ${report.summary.average_klauro_packet_tokens} vs ${report.summary.linear.average_tokens}, reduction ${report.summary.linear.average_token_reduction_percentage}%.`,
+    `- Cursor-style tokens: Klauro ${report.summary.average_klauro_context_tokens} vs ${report.summary.cursor.average_tokens}, reduction ${report.summary.cursor.average_token_reduction_percentage}%.`,
+    `- Linear-style tokens: Klauro ${report.summary.average_klauro_context_tokens} vs ${report.summary.linear.average_tokens}, reduction ${report.summary.linear.average_token_reduction_percentage}%.`,
     `- Cursor-style targeting: ${report.summary.cursor.average_file_recall}% recall, ${report.summary.cursor.average_file_precision}% precision.`,
     `- Linear-style targeting: ${report.summary.linear.average_file_recall}% recall, ${report.summary.linear.average_file_precision}% precision.`,
     '',
@@ -389,7 +389,7 @@ function renderMarkdown(report: CompetitorBaselineReport): string {
       signed(scenario.deltas.context_readiness_delta_vs_linear),
       `${scenario.deltas.token_reduction_vs_linear_percentage}%`,
       `${scenario.cursor_index_context_proxy.file_recall}%`,
-      String(scenario.with_klauro.packet_tokens),
+      String(scenario.with_klauro.context_tokens),
       String(scenario.cursor_index_context_proxy.estimated_tokens),
       String(scenario.linear_workflow_code_context_proxy.estimated_tokens),
     ].join(' | ')).map(row => `| ${row} |`),

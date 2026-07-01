@@ -1,4 +1,4 @@
-# Security Packet
+# Security Context
 
 This is the minimum security and privacy material needed before onboarding customers to hosted or self-hosted analyzer deployments.
 

@@ -1,0 +1,26 @@
+{
+  "name": "@klauro/app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Klauro customer application UI.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "lucide-react": "^0.562.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.2",
+    "typescript": "^5.9.2",
+    "vite": "^7.3.0"
+  },
+  "license": "UNLICENSED"
+}

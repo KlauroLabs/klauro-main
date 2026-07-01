@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runRuntimeImpactBenchmark } from './runtime-impact-benchmark';
 
-test('runtime impact benchmark proves telemetry triage reaches compact agent packets', async () => {
+test('runtime impact benchmark proves telemetry triage reaches compact agent contexts', async () => {
   const report = await runRuntimeImpactBenchmark();
   assert.equal(report.status, 'pass');
   assert.equal(report.score, 100);

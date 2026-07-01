@@ -2,7 +2,7 @@ import * as http from 'http';
 import { getAIConfig } from '../../config/ai.config';
 import { OpenAIProvider } from '../../ai/providers/openai-provider';
 
-describe('OpenAIProvider local-compatible endpoint support', () => {
+describe('OpenAIProvider compatible endpoint support', () => {
   const originalEnv = { ...process.env };
 
   afterEach(() => {
@@ -38,11 +38,12 @@ describe('OpenAIProvider local-compatible endpoint support', () => {
     try {
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('Expected TCP test server');
-      process.env.OPENAI_BASE_URL = `http://127.0.0.1:${address.port}/v1`;
-      process.env.OPENAI_MODEL = 'local-test-model';
-      process.env.OPENAI_API_KEY = 'local-test-key';
+      const config = getAIConfig();
+      config.openai.baseURL = `http://127.0.0.1:${address.port}/v1`;
+      config.openai.model = 'local-test-model';
+      config.openai.apiKey = 'local-test-key';
 
-      const provider = new OpenAIProvider(getAIConfig());
+      const provider = new OpenAIProvider(config);
       const description = await provider.generateDescription({
         additionalContext: { systemName: 'local-provider-test' },
       });
@@ -53,6 +54,15 @@ describe('OpenAIProvider local-compatible endpoint support', () => {
     } finally {
       await new Promise<void>(resolve => server.close(() => resolve()));
     }
+  });
+
+  it('labels DeepInfra as the selected OpenAI-compatible provider', () => {
+    process.env.DEEPINFRA_API_KEY = 'deepinfra-key';
+    process.env.DEEPINFRA_MODEL = 'meta-llama/Meta-Llama-3.3-70B-Instruct';
+
+    const provider = new OpenAIProvider(getAIConfig());
+
+    expect(provider.name).toBe('deepinfra');
   });
 
   it('uses Ollama native chat with thinking disabled when OLLAMA_BASE_URL is configured', async () => {
@@ -87,8 +97,12 @@ describe('OpenAIProvider local-compatible endpoint support', () => {
       if (!address || typeof address === 'string') throw new Error('Expected TCP test server');
       process.env.OLLAMA_BASE_URL = `http://127.0.0.1:${address.port}`;
       process.env.OLLAMA_MODEL = 'qwen3:8b';
+      const config = getAIConfig();
+      config.openai.apiKey = 'explicit-self-hosted-test-key';
+      config.openai.baseURL = `http://127.0.0.1:${address.port}/v1`;
+      config.openai.model = 'qwen3:8b';
 
-      const provider = new OpenAIProvider(getAIConfig());
+      const provider = new OpenAIProvider(config);
       const description = await provider.generateDescription({
         additionalContext: { systemName: 'ollama-native-test' },
       });
@@ -115,8 +129,13 @@ describe('OpenAIProvider local-compatible endpoint support', () => {
       process.env.OLLAMA_MODEL = 'qwen3:8b';
       process.env.KLAURO_OLLAMA_TIMEOUT_MS = '20';
       process.env.AI_MAX_RETRIES = '0';
+      const config = getAIConfig();
+      config.openai.apiKey = 'explicit-self-hosted-test-key';
+      config.openai.baseURL = `http://127.0.0.1:${address.port}/v1`;
+      config.openai.model = 'qwen3:8b';
+      config.openai.maxRetries = 0;
 
-      const provider = new OpenAIProvider(getAIConfig());
+      const provider = new OpenAIProvider(config);
       await expect(provider.generateDescription({
         additionalContext: { systemName: 'ollama-timeout-test' },
       })).rejects.toThrow('Ollama request timed out after 20ms');

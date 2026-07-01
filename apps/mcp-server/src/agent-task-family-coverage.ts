@@ -50,7 +50,7 @@ const REPORTS = {
   qualityBenchmark: '.klauro-agent-quality-benchmark/latest-report.json',
   idiomBenchmark: '.klauro-agent-idiom-benchmark/latest-report.json',
   greenfieldBenchmark: '.klauro-agent-greenfield-benchmark/latest-report.json',
-  fromZeroProof: '.klauro-from-zero-build-packet-proof/latest-report.json',
+  fromZeroProof: '.klauro-from-zero-build-context-proof/latest-report.json',
   existingTaskBenchmark: '.klauro-existing-task-benchmark/latest-report.json',
   existingTaskLiveSmoke: '.klauro-existing-task-benchmark/live-smoke-report.json',
   existingTaskLiveHard: '.klauro-existing-task-benchmark/live-hard-report.json',
@@ -221,7 +221,7 @@ function greenfieldCreation(reports: Record<keyof typeof REPORTS, JsonObject>): 
     ],
     proven: [
       'Empty-folder live A/B exists for backend, UI, and compliance-shaped products.',
-      'Repeatable from-zero proof creates multiple growing systems with Klauro build packets.',
+      'Repeatable from-zero proof creates multiple growing systems with Klauro build contexts.',
       `${positiveQualityLive.length}/${strongLive.length} qualifying live greenfield builds show a positive initial quality delta.`,
     ],
     missing: [
@@ -286,7 +286,7 @@ function fromZeroCapabilityMemory(reports: Record<keyof typeof REPORTS, JsonObje
     partial: report.status === 'pass',
     evidence: [evidence(report, REPORTS.fromZeroProof, `${summary.scenario_count || 0} scenarios, ${summary.growth_iteration_count || 0} growth iterations, ${summary.with_klauro_duplicate_classes || 0} with-Klauro duplicate classes, ${summary.without_klauro_duplicate_classes || 0} baseline duplicate classes`)],
     proven: [
-      'Klauro packets carry known concepts, owner files, and growth control between slices.',
+      'Klauro contexts carry known concepts, owner files, and growth control between slices.',
       'Deterministic baseline comparison shows duplicate domain classes avoided.',
     ],
     missing: [],
@@ -312,7 +312,7 @@ function existingProjectOrientationAndTargeting(reports: Record<keyof typeof REP
     partial: report.status === 'pass',
     evidence: [evidence(report, REPORTS.agentBenchmark, `${summary.task_count || 0} tasks, ${percent(summary.average_token_reduction_vs_search)} token reduction vs search, task types ${[...taskTypes].sort().join(', ')}`)],
     proven: [
-      'Existing-project packets reduce broad source exploration across orient, debug, modify, and trace tasks.',
+      'Existing-project contexts reduce broad source exploration across orient, debug, modify, and trace tasks.',
     ],
     missing: [],
     next: [
@@ -339,7 +339,7 @@ function bugDiagnosis(reports: Record<keyof typeof REPORTS, JsonObject>): TaskFa
       ...(live ? [evidence(reports.existingTaskLiveSmoke, REPORTS.existingTaskLiveSmoke, `${live.id}: live ${live.live_summary?.status}, with ${live.live_summary?.with_score}/100 vs without ${live.live_summary?.without_score}/100, quality delta ${signed(live.live_summary?.quality_delta)}, token reduction ${percent(live.live_summary?.token_reduction_percentage)}`)] : []),
     ],
     proven: [
-      'Deterministic benchmarks exercise debug-oriented packet retrieval.',
+      'Deterministic benchmarks exercise debug-oriented context retrieval.',
       ...(seeded ? ['Seeded existing-project diagnosis proof checks root-cause guidance for a tenant/workspace leak.'] : []),
       ...(livePassed ? ['Live copied-repo A/B diagnosis proof scores root-cause text, impacted repository/service/policy files, invariant-preserving fix placement, and focused tenant regression coverage while the unguided arm failed the focused validator.'] : []),
     ],
@@ -550,7 +550,7 @@ function authTenantBoundaryChanges(reports: Record<keyof typeof REPORTS, JsonObj
       ...(live ? [evidence(reports.existingTaskLiveAuthTenant, REPORTS.existingTaskLiveAuthTenant, `${live.id}: live ${live.live_summary?.status}, with ${live.live_summary?.with_score}/100 vs without ${live.live_summary?.without_score}/100, quality delta ${signed(live.live_summary?.quality_delta)}, token reduction ${percent(live.live_summary?.token_reduction_percentage)}`)] : []),
     ],
     proven: [
-      'Idiom extraction can surface auth/tenant-scope guidance for edit packets.',
+      'Idiom extraction can surface auth/tenant-scope guidance for edit contexts.',
       ...(seeded ? ['Seeded existing-project proof checks role/policy hardening guidance through the existing workspace policy boundary.'] : []),
       ...(livePassed ? ['Live tenant-boundary proof shows the Klauro arm preserved the policy/service boundary and passed semantic validation while the unguided arm failed it.'] : []),
       ...(!livePassed && liveQualityAndTokenOnly(live) ? ['Live tenant-boundary proof improved semantic quality and token use, but it is not strong because Klauro took longer than the unguided arm.'] : []),

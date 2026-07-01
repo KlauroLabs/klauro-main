@@ -639,7 +639,7 @@ test('existing-project live prompt uses compact semantic execution brief', async
 
   const prompt = await fs.readFile(result.with_klauro.prompt_file, 'utf8');
   assert.match(prompt, /Use this Klauro brief as the complete starting context/);
-  assert.doesNotMatch(prompt, /Immediately read this precomputed Klauro work packet first/);
+  assert.doesNotMatch(prompt, /Immediately read this precomputed Klauro agent context first/);
   assert.match(prompt, /Read first: src\/auth\/authService\.ts, tests\/authService\.test\.js\./);
   assert.match(prompt, /Edit only when needed: src\/auth\/authService\.ts, tests\/authService\.test\.js\./);
   assert.match(prompt, /Only inspect if needed: src\/auth\/oidcClient\.ts, src\/auth\/sessionRepository\.ts\./);

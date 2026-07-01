@@ -23,7 +23,8 @@ test('fast machine proof defaults to a bounded resource profile', () => {
   assert.equal(options.runLive, false);
   assert.equal(options.analysisConcurrency, 1);
   assert.equal(options.incrementalConcurrency, 1);
-  assert.equal(options.incrementalExecutionModel, 'in-process');
+  assert.equal(options.analysisPath, 'klauro-product');
+  assert.equal(options.inFlightPath, 'klauro-product');
   assert.equal(options.analysisBudgetMs, 30_000);
   assert.equal(options.incrementalBudgetMs, 30_000);
   assert.equal(machineProofAnalysisFocus(options), 'agent-fast');
@@ -54,10 +55,22 @@ test('full machine proof remains explicit and comprehensive by default', () => {
   assert.equal(options.maxTargets, undefined);
   assert.equal(options.maxSourceFiles, undefined);
   assert.equal(options.runLive, true);
-  assert.equal(options.incrementalExecutionModel, 'isolated');
+  assert.equal(options.analysisPath, 'klauro-product');
+  assert.equal(options.inFlightPath, 'klauro-product');
   assert.equal(options.analysisBudgetMs, 120_000);
   assert.equal(options.incrementalBudgetMs, 120_000);
   assert.equal(machineProofAnalysisFocus(options), 'agent-fast');
+});
+
+test('machine proof still allows explicit harness paths for development', () => {
+  const options = normalizeMachineProofOptions(baseOptions({
+    mode: 'fast',
+    analysisPath: 'in-process-harness',
+    inFlightPath: 'isolated-harness',
+  }));
+
+  assert.equal(options.analysisPath, 'in-process-harness');
+  assert.equal(options.inFlightPath, 'isolated-harness');
 });
 
 test('machine proof selection reports all repos but only analyzes budgeted fast targets', () => {
@@ -200,7 +213,7 @@ test('machine performance diagnostics surface slow and weak-token outliers witho
           output_summary: { nodes: 48_000, tracked_files: 3_000 },
           agent_value_after_edit: {
             estimated_search_token_reduction_percentage: 99,
-            estimated_packet_tokens: 2_500,
+            estimated_context_tokens: 2_500,
             estimated_total_context_tokens: 3_500,
             estimated_search_baseline_tokens: 900_000,
           },
@@ -218,7 +231,7 @@ test('machine performance diagnostics surface slow and weak-token outliers witho
           output_summary: { nodes: 48_000, tracked_files: 3_000 },
           agent_value_after_edit: {
             estimated_search_token_reduction_percentage: 99,
-            estimated_packet_tokens: 7_500,
+            estimated_context_tokens: 7_500,
             estimated_total_context_tokens: 8_500,
             estimated_search_baseline_tokens: 900_000,
           },
@@ -236,7 +249,7 @@ test('machine performance diagnostics surface slow and weak-token outliers witho
           output_summary: { nodes: 80, tracked_files: 12 },
           agent_value_after_edit: {
             estimated_search_token_reduction_percentage: 12,
-            estimated_packet_tokens: 1_800,
+            estimated_context_tokens: 1_800,
             estimated_total_context_tokens: 2_400,
             estimated_search_baseline_tokens: 2_700,
           },
@@ -252,7 +265,7 @@ test('machine performance diagnostics surface slow and weak-token outliers witho
   assert.equal(diagnostics.counts.slow_incremental_repos, 1);
   assert.equal(diagnostics.counts.slow_edit_loop_repos, 1);
   assert.equal(diagnostics.counts.weak_token_reduction_repos, 1);
-  assert.equal(diagnostics.counts.large_packet_repos, 1);
+  assert.equal(diagnostics.counts.large_context_repos, 1);
   assert.equal(diagnostics.slow_proof_harness_repos[0].name, 'slow-proof-harness');
   assert.equal(diagnostics.slow_incremental_repos[0].name, 'slow-incremental');
   assert.equal(diagnostics.weak_token_reduction_repos[0].name, 'tiny-token-margin');

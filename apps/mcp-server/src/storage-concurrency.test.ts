@@ -12,8 +12,22 @@ import {
 } from './storage';
 
 const APP_DIR = path.resolve(__dirname, '..');
-const TSX_BIN = path.join(APP_DIR, 'node_modules', '.bin', 'tsx');
 const STORAGE_MODULE = path.join(__dirname, 'storage');
+
+function resolveTsxBin(): string {
+  const executable = process.platform === 'win32' ? 'tsx.cmd' : 'tsx';
+  const candidates = [
+    path.join(APP_DIR, 'node_modules', '.bin', executable),
+    path.join(APP_DIR, '..', '..', 'node_modules', '.bin', executable),
+  ];
+  const found = candidates.find(candidate => fs.pathExistsSync(candidate));
+  if (!found) {
+    throw new Error(`Unable to find tsx binary. Checked: ${candidates.join(', ')}`);
+  }
+  return found;
+}
+
+const TSX_BIN = resolveTsxBin();
 
 function restoreEnv(name: string, previous: string | undefined): void {
   if (previous === undefined) delete process.env[name];

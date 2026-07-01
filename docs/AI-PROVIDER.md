@@ -1,46 +1,46 @@
-# AI Provider Setup (self-hostable, GPU-free, low-cost)
+# AI Provider Setup (hosted, low-cost)
 
 Klauro's analysis is **deterministic-first**: the system description, domains, and
-primary capabilities are produced from source-backed evidence and are correct even
-with a weak or absent model. AI is *flavoring* — it turns the deterministic fact
-sheet into prose. So you do **not** need a frontier model, a GPU, or Anthropic.
+primary capabilities are produced from source-backed evidence first, then AI
+turns that evidence into concise, defensible prose. In the commercial product,
+that AI enrichment runs on the hosted analyzer service, not on a customer's
+laptop.
 
-## Recommended posture: cheap open 70B + local fallback
+## Recommended posture: cheap hosted open-weight model
 
 The AI layer is provider-agnostic (`packages/analyzer-core/src/config/ai.config.ts`)
-and cascades through providers in order (`AI_FALLBACK_PROVIDERS`, default
-`openai,claude,local,fallback`). Point the OpenAI-compatible client at a cheap host
-running an **open-weight** model; keep the local CPU model as the automatic fallback.
+and cascades through hosted providers in order (`AI_FALLBACK_PROVIDERS`, default
+`openai,claude,fallback`). Point the OpenAI-compatible client at a cheap hosted
+open-weight provider. DeepInfra is the current default recommendation for alpha.
 
 ```bash
-# Primary: any OpenAI-compatible host running an open 70B
-#   (Groq / DeepInfra / Together / OpenRouter / your own vLLM box)
-export OPENAI_BASE_URL="https://api.groq.com/openai/v1"   # example
-export OPENAI_API_KEY="sk-..."
-export OPENAI_MODEL="llama-3.3-70b-versatile"             # or qwen2.5-72b-instruct
+# Primary: DeepInfra, first-class OpenAI-compatible hosted inference.
+# Keep this secret out of the repo. Export it in the shell/service env that
+# launches the hosted analyzer.
+export DEEPINFRA_API_KEY="..."
+export DEEPINFRA_MODEL="meta-llama/Meta-Llama-3.3-70B-Instruct"
 
 # Optional but RECOMMENDED for reliability: a faster, cheaper model for the
 # structured-extraction calls (capability catalog + workspace merge). These are
 # dedup/classify/format-to-JSON tasks an 8B model handles well, and a fast model
 # avoids the timeouts that variable shared-70B latency causes on those calls.
-# Prose descriptions/narrative still use OPENAI_MODEL.
-export OPENAI_STRUCTURED_MODEL="meta-llama/Meta-Llama-3.1-8B-Instruct"  # example (DeepInfra)
+# Prose descriptions/narrative still use DEEPINFRA_MODEL.
+export DEEPINFRA_STRUCTURED_MODEL="meta-llama/Meta-Llama-3.1-8B-Instruct"
 
-# Fallback: local CPU model (no GPU). ONNX is the zero-dependency default;
-# Ollama gives better prose if installed.
-export AI_LOCAL_MODEL="onnx-community/Qwen2.5-0.5B-Instruct"   # default, $0
-# or, with Ollama running locally:
-#   export OLLAMA_BASE_URL="http://127.0.0.1:11434"
-#   export OLLAMA_MODEL="qwen2.5:7b-instruct"
+# Optional compatibility form, useful for other OpenAI-compatible providers:
+# export OPENAI_BASE_URL="https://api.deepinfra.com/v1/openai"
+# export OPENAI_API_KEY="$DEEPINFRA_API_KEY"
+# export OPENAI_MODEL="$DEEPINFRA_MODEL"
+# export OPENAI_STRUCTURED_MODEL="$DEEPINFRA_STRUCTURED_MODEL"
 
 # Workspace (WAS) narrative pass tuning
 export KLAURO_WORKSPACE_AI_MAX_TOKENS=650
-export KLAURO_WORKSPACE_AI_TIMEOUT_MS=120000   # raise for slow CPU fallback
+export KLAURO_WORKSPACE_AI_TIMEOUT_MS=120000
 ```
 
-Everything here is open-weight, so anything you run hosted now can be repatriated to
-your own CPU box (e.g. a Hetzner dedicated-CPU VPS running Ollama exposed as
-OpenAI-compatible) without touching Klauro.
+Customer machines should not set DeepInfra/OpenAI/Anthropic keys, run Ollama, or
+download local model weights for Klauro. Local connectors do deterministic
+indexing, cache reads, and branch overlays; hosted analyzers do the AI work.
 
 ## Capability & description AI overlay (the interpretation layer)
 
@@ -55,9 +55,9 @@ This overlay is **ON by default** (CAS-level capability/entity description inter
 AI prose instead of the deterministic baseline, point it at a capable model:
 
 ```bash
-export OPENAI_BASE_URL="https://api.groq.com/openai/v1"   # any OpenAI-compatible 70B host
-export OPENAI_API_KEY="sk-..."
-export OPENAI_MODEL="llama-3.3-70b-versatile"             # or qwen2.5-72b-instruct
+export DEEPINFRA_API_KEY="..."
+export DEEPINFRA_MODEL="meta-llama/Meta-Llama-3.3-70B-Instruct"
+export DEEPINFRA_STRUCTURED_MODEL="meta-llama/Meta-Llama-3.1-8B-Instruct"
 # Give the interpretation pass enough wall-clock for a hosted model:
 export KLAURO_AI_INTERPRETATION_BUDGET_MS=120000
 ```
@@ -70,7 +70,22 @@ Behavior:
   routes (src/app/controllers/payment/payment.controller.ts)"). Never canned, never brand-keyed.
 - To disable the overlay entirely (pure deterministic): `export KLAURO_AI_INTERPRETATION=false`.
 
-The same provider cascade and AI cache (above) apply, so re-analysis of unchanged code is free.
+The same hosted provider cascade and AI cache (above) apply, so re-analysis of
+unchanged code reuses cached AI output.
+
+## Proving the hosted provider was used
+
+CAS/WAS enrichment must not silently fall back to local inference when hosted
+DeepInfra is expected. Set:
+
+```bash
+export KLAURO_EXPECT_AI_PROVIDER=deepinfra
+```
+
+Workspace artifacts and gauntlet reports include `ai_enrichment.provider`,
+`ai_enrichment.model`, and `ai_enrichment.structured_model`. With
+`KLAURO_EXPECT_AI_PROVIDER=deepinfra`, the workspace gauntlet fails if the run
+uses OpenAI fallback, Anthropic fallback, or deterministic fallback instead.
 
 ## Cost guardrail (keeps real cost ~$1–5/mo)
 
@@ -79,18 +94,16 @@ Cost is driven by **which calls reach the paid host**, not by analysis volume:
 - **Required** system/workspace summaries (description + domains + capabilities) —
   one bounded JSON call per repo plus one per workspace, ~3–4k tokens each, minus the
   content-hashed AI cache (`~/.klauro/ai-cache`). Route these to the hosted 70B.
-- **Node/function-level descriptions and embeddings** — keep these **local and lazy**.
-  Node descriptions are optional (`lazy` is a first-class flag) and embeddings have a
-  local ONNX provider, so both can stay `$0`. Routing *these* to a paid model is the
-  only way to exceed the budget.
+- **Node/function-level descriptions and embeddings** — keep these **lazy**.
+  Node descriptions are optional (`lazy` is a first-class flag), and embedding-heavy
+  enrichment should run only when an MCP/API caller needs it.
 
 Keep `AI_CACHE_ENABLED=true` (default) and use incremental analysis so unchanged code
 re-uses cached AI output for free.
 
-## Offline / fully self-hosted
+## Self-hosted analyzer deployments
 
-Drop the `OPENAI_BASE_URL` block entirely. The default is local ONNX
-(`onnx-community/Qwen2.5-0.5B-Instruct`) on CPU — fully private, `$0`, no GPU. With the
-deterministic-first fixes, the workspace narrative is still specific and correctly
-identifies domains (e.g. a crypto/digital-asset workspace) even on the small local
-model, because the evidence handed to it is already ranked and crypto-aware.
+Self-hosted Klauro can point the hosted analyzer process at a private
+OpenAI-compatible endpoint, including a CPU-only inference box, but that endpoint
+is still server-side from the customer's perspective. The local MCP connector
+does not run AI enrichment.

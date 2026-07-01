@@ -6,7 +6,7 @@
  * ranked list is injected into that arm's agent prompt (via the live engine's
  * withoutArmRetrievedFiles hook), so the arm competes on the quality of its
  * retrieval — exactly how ctags / embeddings / a Cursor-style index would help a
- * real agent. Klauro, by contrast, supplies a precomputed work packet.
+ * real agent. Klauro, by contrast, supplies a precomputed agent context.
  *
  * Backends are pure-ish (filesystem read only), deterministic, and bounded.
  */

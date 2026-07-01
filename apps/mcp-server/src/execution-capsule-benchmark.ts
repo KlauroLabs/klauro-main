@@ -152,7 +152,7 @@ function buildCandidates(values: any[]): Candidate[] {
     `  (validate ${(value.validate || []).map((item: string) => `"${item}"`).join(' ')}))`,
   ].join('\n')).join('\n');
   const protoText = () => values.map(value => [
-    `packet { task: "${value.task_type}" target: "${short(value.target)}"`,
+    `context { task: "${value.task_type}" target: "${short(value.target)}"`,
     ...(value.read_first || []).map((item: string) => `  read: "${item}"`),
     ...(value.edit_scope || []).map((item: string) => `  edit: "${item}"`),
     ...(value.ops || []).map((item: any) => `  op { file: "${item.file}" text: "${short(item.op)}" }`),

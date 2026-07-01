@@ -19,6 +19,13 @@ Two product surfaces sit on top of that same truth:
 
 Runtime telemetry later closes the loop by showing whether the system behaves in production the way static analysis says it should.
 
+Klauro also introduces a collaboration state that Git does not cover: analyzed
+in-flight work. Durable commits remain the accepted project truth, but humans
+and agents should also be able to see provisional branch, session, and working
+tree changes before they land. That lets teams avoid duplicate work, spot likely
+merge conflicts, and coordinate multi-agent or multi-human development while the
+work is still happening.
+
 ## Core Principles
 
 ### 1. Semantic Understanding
@@ -55,6 +62,15 @@ That is why the UI matters. It gives humans a way to verify and understand what 
 ### 5. AI-Native Context
 
 AI agents should start from the architecture and then inspect code with intent. MCP gives agents a compact, queryable map before they spend tokens reading files.
+
+### 6. In-Flight Collaboration
+
+Klauro should understand active work before Git does. A developer's uncommitted
+changes, an agent's sandboxed edits, a teammate's feature branch, and incoming
+analyzed commits are all part of the product context. They are not durable truth
+until accepted, but they are valuable provisional facts. MCP and the UI should
+surface them with provenance so agents can deduplicate work, preserve local
+architecture, and avoid conflicts before commit, push, or merge.
 
 ## What Users Should Be Able To See
 
@@ -101,10 +117,21 @@ The MCP server is the agent verification surface. It should answer questions lik
 - What data does this flow touch?
 - What tests cover this node?
 - What is risky about changing this component?
+- Is someone else already changing this capability, entity, route, migration,
+  contract, deployable, or workspace dependency?
+- Are there incoming analyzed changes that make my local plan stale?
 
 ### Telemetry
 
 Telemetry should eventually show runtime behavior against the same model: traffic, errors, bottlenecks, hot paths, unused components, and production drift from static expectations.
+
+### Analysis Flow
+
+See [`../KLAURO-ANALYSIS-FLOW.md`](../KLAURO-ANALYSIS-FLOW.md) for the unified
+cold, warm, in-flight, incoming, and durable analysis model. The short version:
+there is one Klauro analysis experience. Some phases may happen from the
+installed client and some may happen in hosted Klauro services, but customers
+and agents should experience one coherent product flow.
 
 ## The Vision Statement
 

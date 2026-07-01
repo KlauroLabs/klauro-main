@@ -1,5 +1,3 @@
-import { isLocalAIProvider } from '../../../packages/analyzer-core/src/config/ai.config';
-
 export type AnalysisFocus = 'agent-fast' | 'ui-overview' | 'deep-context' | 'full';
 export type AnalysisTrigger = 'mcp' | 'cli' | 'ui' | 'inspector' | 'manual-description' | 'runtime' | 'unknown';
 
@@ -44,9 +42,7 @@ const FOCUS_ENV_KEYS = [
   'KLAURO_EMBEDDING_ENABLED',
   'KLAURO_AGENT_FAST_EXCLUDE_LEGACY',
   'KLAURO_MAX_FILES_PER_ANALYZER',
-  'KLAURO_OLLAMA_AUTO',
-  'OLLAMA_BASE_URL',
-  'OLLAMA_MODEL',
+  'KLAURO_FULL_REBUILD_ON_CONFIG_CHANGE',
 ] as const;
 
 type FocusEnvKey = typeof FOCUS_ENV_KEYS[number];
@@ -65,7 +61,7 @@ const FOCUS_PROFILES: AnalysisFocusProfile[] = [
       'tests',
       'AI-written system narrative',
       'AI primary capability descriptions',
-      'K15/K5 capsule-only work packets',
+      'K15/K5 capsule-only agent contexts',
       'freshness and incremental state',
     ],
     defers: [
@@ -75,7 +71,7 @@ const FOCUS_PROFILES: AnalysisFocusProfile[] = [
     ],
     recommended_layers: ['agent-fast-refresh'],
     next_tool: 'analyze_codebase',
-    agent_guidance: 'Use this before coding, debugging, review, trace, or any capsule-only/first-turn MCP context. Expand only when the packet reports a gap.',
+    agent_guidance: 'Use this before coding, debugging, review, trace, or any capsule-only/first-turn MCP context. Expand only when the context reports a gap.',
   },
   {
     focus: 'ui-overview',
@@ -232,14 +228,12 @@ export function applyAnalysisFocus(
 ): void {
   if (focus === 'agent-fast') {
     process.env.KLAURO_ANALYSIS_FOCUS = 'agent-fast';
-    applyLocalOllamaDefaults();
-    const localProvider = isLocalAIProvider();
     process.env.KLAURO_AI_INTERPRETATION = process.env.KLAURO_AI_INTERPRETATION || 'true';
     process.env.KLAURO_AI_INTERPRETATION_FORCE = process.env.KLAURO_AI_INTERPRETATION_FORCE || 'true';
     process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP = 'false';
     process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS = process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS ||
       options.interpretationBudgetMs ||
-      (localProvider ? '240000' : '30000');
+      '30000';
     process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS || 'true';
     process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT ||
       options.elementDescriptionLimit ||
@@ -248,22 +242,21 @@ export function applyAnalysisFocus(
     process.env.KLAURO_EMBEDDING_ENABLED = 'false';
     process.env.KLAURO_AGENT_FAST_EXCLUDE_LEGACY = 'true';
     process.env.KLAURO_MAX_FILES_PER_ANALYZER = process.env.KLAURO_MAX_FILES_PER_ANALYZER || '300';
+    process.env.KLAURO_FULL_REBUILD_ON_CONFIG_CHANGE = process.env.KLAURO_FULL_REBUILD_ON_CONFIG_CHANGE || 'false';
     return;
   }
 
   if (focus === 'ui-overview') {
     process.env.KLAURO_ANALYSIS_FOCUS = 'ui-overview';
-    applyLocalOllamaDefaults();
-    const localProvider = isLocalAIProvider();
     process.env.KLAURO_AI_INTERPRETATION = process.env.KLAURO_AI_INTERPRETATION || 'true';
     process.env.KLAURO_AI_INTERPRETATION_FORCE = process.env.KLAURO_AI_INTERPRETATION_FORCE || 'true';
     process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP = 'false';
     process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS = process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS ||
       options.interpretationBudgetMs ||
-      (localProvider ? '240000' : '45000');
+      '45000';
     process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS ||
       options.elementDescriptionBudgetMs ||
-      (localProvider ? '240000' : '90000');
+      '90000';
     process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE || '4';
     process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT ||
       options.elementDescriptionLimit ||
@@ -276,14 +269,12 @@ export function applyAnalysisFocus(
 
   if (focus === 'deep-context') {
     process.env.KLAURO_ANALYSIS_FOCUS = 'deep-context';
-    applyLocalOllamaDefaults();
-    const localProvider = isLocalAIProvider();
     process.env.KLAURO_AI_INTERPRETATION = process.env.KLAURO_AI_INTERPRETATION || 'true';
     process.env.KLAURO_AI_INTERPRETATION_FORCE = process.env.KLAURO_AI_INTERPRETATION_FORCE || 'false';
     process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP = process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP || 'false';
     process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS = process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS ||
       options.interpretationBudgetMs ||
-      (localProvider ? '240000' : '60000');
+      '60000';
     process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS || 'true';
     process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT ||
       options.elementDescriptionLimit ||
@@ -296,15 +287,6 @@ export function applyAnalysisFocus(
   if (focus === 'full') {
     process.env.KLAURO_ANALYSIS_FOCUS = 'full';
   }
-}
-
-function applyLocalOllamaDefaults(): void {
-  if (process.env.KLAURO_OLLAMA_AUTO === 'false' || process.env.KLAURO_OLLAMA_AUTO === '0') {
-    return;
-  }
-  process.env.KLAURO_OLLAMA_AUTO = process.env.KLAURO_OLLAMA_AUTO || 'true';
-  process.env.OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
-  process.env.OLLAMA_MODEL = process.env.OLLAMA_MODEL || process.env.KLAURO_LOCAL_AI_MODEL || 'qwen3:8b';
 }
 
 function captureFocusEnv(): Record<FocusEnvKey, string | undefined> {

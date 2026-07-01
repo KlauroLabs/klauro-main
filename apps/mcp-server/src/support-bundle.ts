@@ -66,7 +66,7 @@ interface EnvironmentSnapshot {
 function snapshotEnvironment(): EnvironmentSnapshot {
   const env: Record<string, string> = {};
   const interestingNames = Object.keys(process.env)
-    .filter(name => name.startsWith('KLAURO_') || name === 'AI_LOCAL_ENABLED' || name === 'OLLAMA_BASE_URL')
+    .filter(name => name.startsWith('KLAURO_'))
     .sort();
   for (const name of interestingNames) {
     env[name] = SECRET_ENV_NAME_PATTERN.test(name) ? '[set]' : String(process.env[name]);

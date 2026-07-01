@@ -36,15 +36,28 @@ test('remote analyzer supports full source upload and dirty-tree incremental syn
   const serverUrl = `http://127.0.0.1:${address.port}`;
 
   try {
-    const full = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl });
+    const account = await postJson(address.port, '/api/auth/register', {
+      email: 'owner@example.com',
+      password: 'password-1234',
+      workspace_name: 'Remote Sync Workspace',
+    });
+    assert.equal(account.statusCode, 201);
+    const token = JSON.parse(account.body).token as string;
+
+    const full = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token });
     assert.equal(full.status, 'success');
     assert.equal(full.analysis_type, 'full');
     assert.ok(full.cas.nodes.length > 0);
     assert.ok((await getAnalysis(repo)).nodes.length > 0);
+    const revisions = await getJson(address.port, `/v1/projects/${encodeURIComponent(full.analysis_id)}/revisions`, token);
+    assert.equal(revisions.statusCode, 200);
+    const revisionPayload = JSON.parse(revisions.body);
+    assert.equal(revisionPayload.revisions[0].commit, full.base_commit);
+    assert.equal(revisionPayload.revisions[0].source, 'local_commit_submission');
 
     const appFile = path.join(repo, 'app', 'main.py');
     fs.appendFileSync(appFile, '\n\n@app.get("/healthz")\ndef healthz():\n    return {"ok": True}\n');
-    const incremental = await syncWorkingTreeRemotely({ projectPath: repo, serverUrl, analysisId: full.analysis_id });
+    const incremental = await syncWorkingTreeRemotely({ projectPath: repo, serverUrl, analysisId: full.analysis_id, token });
 
     assert.equal(incremental.status, 'success');
     assert.equal(incremental.analysis_type, 'incremental');
@@ -97,6 +110,27 @@ test('remote analyzer honors hosted request body limit from environment', async 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+async function getJson(port: number, route: string, token?: string): Promise<{ statusCode: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      hostname: '127.0.0.1',
+      port,
+      path: route,
+      method: 'GET',
+      headers: token ? { authorization: `Bearer ${token}` } : {},
+    }, response => {
+      let responseBody = '';
+      response.setEncoding('utf8');
+      response.on('data', chunk => {
+        responseBody += chunk;
+      });
+      response.on('end', () => resolve({ statusCode: response.statusCode || 0, body: responseBody }));
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
 
 async function postJson(port: number, route: string, body: unknown): Promise<{ statusCode: number; body: string }> {
   const payload = JSON.stringify(body);

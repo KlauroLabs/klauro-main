@@ -297,7 +297,7 @@ test('every core-profile tool response stays within the byte budget on the large
       ['resolve_agent_analysis', { path }],
       ['get_agent_start_context', { path }],
       ['get_agent_tool_plan', { path, task: { task_type: 'orient' } }],
-      ['get_agent_work_packet', { path, task: { task_type: 'modify', target: 'service' } }],
+      ['get_agent_context', { path, task: { task_type: 'modify', target: 'service' } }],
       ['get_coding_context', { path, target: nodeId ?? 'service' }],
       ['find_tests', { path }],
       ['validate_agent_change', { path, files: ['src/index.ts'] }],

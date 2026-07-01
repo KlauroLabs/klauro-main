@@ -19,13 +19,13 @@ export async function runDescriptionQualityBenchmark(options: { outputPath?: str
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-description-quality-'));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-description-quality-storage-'));
   const previousStorage = process.env.KLAURO_STORAGE_PATH;
-  const previousLocal = process.env.AI_LOCAL_ENABLED;
+  const previousOpenAI = process.env.OPENAI_API_KEY;
   const originalGenerate = aiService.generateComponentDescription;
   const results: ScenarioResult[] = [];
   const calls = new Map<string, number>();
 
   process.env.KLAURO_STORAGE_PATH = storage;
-  process.env.AI_LOCAL_ENABLED = 'true';
+  process.env.OPENAI_API_KEY = 'test-openai-key';
 
   try {
     await seedDescriptionProject(root);
@@ -134,8 +134,8 @@ export async function runDescriptionQualityBenchmark(options: { outputPath?: str
     aiService.generateComponentDescription = originalGenerate;
     if (previousStorage === undefined) delete process.env.KLAURO_STORAGE_PATH;
     else process.env.KLAURO_STORAGE_PATH = previousStorage;
-    if (previousLocal === undefined) delete process.env.AI_LOCAL_ENABLED;
-    else process.env.AI_LOCAL_ENABLED = previousLocal;
+    if (previousOpenAI === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousOpenAI;
     await fs.remove(root);
     await fs.remove(storage);
   }

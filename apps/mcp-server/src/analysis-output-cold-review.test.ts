@@ -54,8 +54,8 @@ function repo(name: string, repoPath: string, kind: string, sourceFiles: number)
         { id: 'architecture-agent-context', status: 'pass', score: 95, detail: 'good' },
       ],
       summary: {
-        work_packet_tokens: 1200,
-        work_packet_files: 2,
+        agent_context_tokens: 1200,
+        agent_context_files: 2,
       },
     },
   };

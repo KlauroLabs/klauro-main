@@ -26,12 +26,12 @@ Agent operating loop:
 1. Call `resolve_agent_analysis` for the handed path and current task so monorepo roots can route to the best analyzed subproject.
 2. If MCP has a selected analysis, call `get_agent_start_context` for that selected path before broad file reads.
 3. Call `get_agent_tool_plan` with the user's task (`orient`, `modify`, `debug`, `review`, `trace`, `cross-repo`, or `runtime`).
-4. Call `get_agent_work_packet` for real work so CAS resolves the target, risk, tests, call context, invariants, and first files to inspect.
+4. Call `get_agent_context` for real work so CAS resolves the target, risk, tests, call context, invariants, and first files to inspect.
 5. Use `run_answer_pack` or the recommended follow-up tools when the task needs explanation with evidence.
 6. Before code edits, call `get_coding_context` for the target, then `assess_change_risk`, `get_codebase_idioms`, `get_behavioral_invariants`, and `find_tests` when connected behavior can be affected.
 7. Read source files after MCP narrows the target to specific files, nodes, tests, or explicit CAS gaps.
 8. After edits, call `validate_behavioral_invariants` and `validate_codebase_idioms` before finalizing so the change preserves behavior and repo-local idioms.
-9. If CAS/MCP returns an error or readiness fails, report that as a blocker to default use and then fall back to direct code reading for the task.
+9. If CAS/MCP returns an error or readiness fails, report that as a blocker to agent context readiness and then fall back to direct code reading for the task.
 
 Planning loop:
 
@@ -42,7 +42,7 @@ Planning loop:
 
 When an MCP client starts from prompts or resources instead of tools, use the `agent_coding_session` prompt or read `klauro://{project_name}/agent-start`.
 
-Use `evaluate_agent_readiness` to decide whether a repository is ready for default agent use. Use `evaluate_analysis_truth`, `get_semantic_map`, `get_codebase_idioms`, `validate_codebase_idioms`, `get_framework_depth_report`, `get_cross_repo_contracts`, `get_runtime_instrumentation_plan`, and `evaluate_agent_task_proof` when judging whether the analysis is accurate enough for real work. Use `npm run agent-gauntlet`, `npm run analysis-gauntlet`, `npm run agent-idiom-benchmark`, and `npm run agent-proof-machine` from `apps/mcp-server/` to verify this across the configured repo set, the ground-truth fixture, live idiom proof, and every real repo under `~/dev`.
+Use `evaluate_agent_readiness` to decide whether a repository is ready for agent use. Use `evaluate_analysis_truth`, `get_semantic_map`, `get_codebase_idioms`, `validate_codebase_idioms`, `get_framework_depth_report`, `get_cross_repo_contracts`, `get_runtime_instrumentation_plan`, and `evaluate_agent_task_proof` when judging whether the analysis is accurate enough for real work. Use `npm run agent-gauntlet`, `npm run analysis-gauntlet`, `npm run agent-idiom-benchmark`, and `npm run agent-proof-machine` from `apps/mcp-server/` to verify this across the configured repo set, the ground-truth fixture, live idiom proof, and every real repo under `~/dev`.
 
 ## Non-Negotiable Rules
 

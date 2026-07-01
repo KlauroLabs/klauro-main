@@ -7,24 +7,26 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 const repoRoot = path.resolve(__dirname, '..');
-const tsxBin = path.join(repoRoot, 'node_modules', '.bin', 'tsx');
+const tsxBin = fs.existsSync(path.join(repoRoot, 'node_modules', '.bin', 'tsx'))
+  ? path.join(repoRoot, 'node_modules', '.bin', 'tsx')
+  : path.join(repoRoot, '..', '..', 'node_modules', '.bin', 'tsx');
 const fixturePath = path.join(repoRoot, 'fixtures', 'analysis-truth', 'fastapi-sqlalchemy');
 
 test('command-specific help prints usage without treating --help as a project path', () => {
-  const result = spawnSync(tsxBin, ['src/cli.ts', 'agent-work-packet', '--help'], {
+  const result = spawnSync(tsxBin, ['src/cli.ts', 'agent-context', '--help'], {
     cwd: repoRoot,
     encoding: 'utf8',
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /klauro agent-work-packet/);
+  assert.match(result.stdout, /klauro agent-context/);
   assert.doesNotMatch(result.stderr, /Project path does not exist|requires a project path/);
 });
 
-test('agent-work-packet CLI emits parseable compact JSON with line windows', () => {
+test('agent-context CLI emits parseable compact JSON with line windows', () => {
   withFixtureWorkspace(workspace => {
     const result = runCli(workspace, [
-      'agent-work-packet',
+      'agent-context',
       workspace.repo,
       '--task-type',
       'modify',
@@ -39,19 +41,19 @@ test('agent-work-packet CLI emits parseable compact JSON with line windows', () 
     assert.equal(result.status, 0, result.stderr);
     assert.doesNotMatch(result.stdout, /^>/, 'stdout should be pure JSON, not an npm command banner');
 
-    const packet = JSON.parse(result.stdout);
-    assert.ok(packet.file_read_plan.length > 0);
-    assert.ok(packet.file_read_plan.some((item: any) => item.line_window?.start >= 1));
-    assert.ok(packet.risk_context);
-    assert.ok(Array.isArray(packet.risk_context.agent_rules));
-    assert.ok(packet.risk_context.agent_rules.some((rule: string) => rule.includes('assess_change_risk')));
+    const context = JSON.parse(result.stdout);
+    assert.ok(context.file_read_plan.length > 0);
+    assert.ok(context.file_read_plan.some((item: any) => item.line_window?.start >= 1));
+    assert.ok(context.risk_context);
+    assert.ok(Array.isArray(context.risk_context.agent_rules));
+    assert.ok(context.risk_context.agent_rules.some((rule: string) => rule.includes('assess_change_risk')));
   });
 });
 
-test('agent-work-packet CLI accepts --task as a natural alias for instructions', () => {
+test('agent-context CLI accepts --task as a natural alias for instructions', () => {
   withFixtureWorkspace(workspace => {
     const result = runCli(workspace, [
-      'agent-work-packet',
+      'agent-context',
       workspace.repo,
       '--task-type',
       'modify',
@@ -66,12 +68,12 @@ test('agent-work-packet CLI accepts --task as a natural alias for instructions',
     ]);
 
     assert.equal(result.status, 0, result.stderr);
-    const packet = JSON.parse(result.stdout);
-    assert.match(JSON.stringify(packet.task || packet), /Update user creation behavior/);
+    const context = JSON.parse(result.stdout);
+    assert.match(JSON.stringify(context.task || context), /Update user creation behavior/);
   });
 });
 
-test('agent-work-packet CLI quiet JSON suppresses analyzer maintenance logs', () => {
+test('agent-context CLI quiet JSON suppresses analyzer maintenance logs', () => {
   withFixtureWorkspace(workspace => {
     const projectId = storageProjectId(workspace.repo);
     const projectStorage = path.join(workspace.storage, projectId);
@@ -82,7 +84,7 @@ test('agent-work-packet CLI quiet JSON suppresses analyzer maintenance logs', ()
     );
 
     const result = runCli(workspace, [
-      'agent-work-packet',
+      'agent-context',
       workspace.repo,
       '--task-type',
       'modify',
@@ -97,15 +99,53 @@ test('agent-work-packet CLI quiet JSON suppresses analyzer maintenance logs', ()
     assert.equal(result.status, 0, result.stderr);
     assert.doesNotMatch(result.stdout, /Incremental state version mismatch/);
     assert.doesNotMatch(result.stderr, /Incremental state version mismatch/);
-    const packet = JSON.parse(result.stdout);
-    assert.ok(packet.status);
+    const context = JSON.parse(result.stdout);
+    assert.ok(context.status);
   });
 });
 
-test('agent-work-packet CLI defaults to a bounded packet profile', () => {
+test('agent-context CLI auto-refreshes stale local analysis before returning agent context', () => {
+  withFixtureWorkspace(workspace => {
+    const first = runCli(workspace, [
+      'agent-context',
+      workspace.repo,
+      '--task-type',
+      'modify',
+      '--instructions',
+      'Update user creation behavior and tests',
+      '--json',
+      '--compact',
+      '--quiet',
+      '--refresh',
+    ]);
+
+    assert.equal(first.status, 0, first.stderr);
+
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1100);
+    fs.appendFileSync(path.join(workspace.repo, 'app', 'main.py'), '\n# changed after analysis\n');
+
+    const second = runCli(workspace, [
+      'agent-context',
+      workspace.repo,
+      '--task-type',
+      'modify',
+      '--instructions',
+      'Update user creation behavior and tests',
+      '--json',
+      '--quiet',
+    ]);
+
+    assert.equal(second.status, 0, second.stderr);
+    const context = JSON.parse(second.stdout);
+    assert.equal(context.analysis_freshness?.staleness, 'fresh');
+    assert.equal(context.analysis_freshness?.changed_files, 0);
+  });
+});
+
+test('agent-context CLI defaults to a bounded context profile', () => {
   withFixtureWorkspace(workspace => {
     const result = runCli(workspace, [
-      'agent-work-packet',
+      'agent-context',
       workspace.repo,
       '--task-type',
       'modify',
@@ -117,16 +157,16 @@ test('agent-work-packet CLI defaults to a bounded packet profile', () => {
     ]);
 
     assert.equal(result.status, 0, result.stderr);
-    const packet = JSON.parse(result.stdout);
-    assert.match(packet.packet_profile, /small-repo-minimal|token-minimal|ultra-small-repo|micro-repo/);
-    assert.notEqual(packet.packet_profile, undefined);
+    const context = JSON.parse(result.stdout);
+    assert.match(context.context_profile, /small-repo-minimal|token-minimal|ultra-small-repo|micro-repo/);
+    assert.notEqual(context.context_profile, undefined);
   });
 });
 
-test('agent-work-packet CLI supports capsule-only K15/K5 response profile', () => {
+test('agent-context CLI supports capsule-only K15/K5 response profile', () => {
   withFixtureWorkspace(workspace => {
     const result = runCli(workspace, [
-      'agent-work-packet',
+      'agent-context',
       workspace.repo,
       '--task-type',
       'modify',
@@ -140,11 +180,11 @@ test('agent-work-packet CLI supports capsule-only K15/K5 response profile', () =
     ]);
 
     assert.equal(result.status, 0, result.stderr);
-    const packet = JSON.parse(result.stdout);
-    assert.equal(packet.packet_profile, 'capsule-only');
-    assert.match(packet.context_capsule, /^K15m[A-Za-z0-9]* audit logging/m);
-    assert.match(packet.execution_capsule, /^K5\|m\|/);
-    assert.ok(packet.estimated_tokens < 500);
+    const context = JSON.parse(result.stdout);
+    assert.equal(context.context_profile, 'capsule-only');
+    assert.match(context.context_capsule, /^K15m[A-Za-z0-9]* audit logging/m);
+    assert.match(context.execution_capsule, /^K5\|m\|/);
+    assert.ok(context.estimated_tokens < 500);
   });
 });
 
@@ -165,7 +205,7 @@ test('agent-install CLI emits selected-path routing metadata without placeholder
     assert.equal(routedCalls.length, 4);
     assert.doesNotMatch(JSON.stringify(config.first_calls), /<selected_path/);
     assert.ok(config.first_calls.some((call: any) =>
-      call.tool === 'get_agent_work_packet' && call.args.task?.response_profile === 'capsule-only'
+      call.tool === 'get_agent_context' && call.args.task?.response_profile === 'capsule-only'
     ));
     assert.match(config.prompts.agent_skill, /K15 Context Capsule/);
     assert.match(config.prompts.agent_skill, /read-then-edit/);

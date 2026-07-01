@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "project": {
+    "name": "proof-of-concept"
+  },
+  "analyzer": {
+    "mode": "remote",
+    "serverUrl": "https://app.klauro.com",
+    "selfHosted": false
+  },
+  "source": {
+    "roots": [
+      "."
+    ],
+    "include": [
+      "**/*"
+    ],
+    "exclude": [
+      "**/.git/**",
+      "**/.klauro/**",
+      "**/.klauro*/**",
+      "**/.claude/**",
+      "**/.codex/**",
+      "**/node_modules/**",
+      "**/dist/**",
+      "**/build/**",
+      "**/coverage/**",
+      "**/.next/**",
+      "**/.nuxt/**",
+      "**/.turbo/**",
+      "**/.cache/**",
+      "**/.vite/**",
+      "**/target/**",
+      "**/vendor/**",
+      "**/vendors/**",
+      "**/__pycache__/**",
+      "**/.pytest_cache/**",
+      "**/.mypy_cache/**",
+      "**/.ruff_cache/**",
+      "**/.venv/**",
+      "**/venv/**",
+      "**/env/**",
+      "**/.tox/**",
+      "**/.dart_tool/**",
+      "**/.gradle/**",
+      "**/Pods/**",
+      "**/bin/**",
+      "**/obj/**",
+      "**/.env",
+      "**/.env.*",
+      "**/*.pem",
+      "**/*.key",
+      "**/secrets/**",
+      "**/*secret*/**",
+      "**/*credential*/**"
+    ],
+    "maxFileBytes": 1048576,
+    "followSymlinks": false
+  },
+  "upload": {
+    "mode": "full",
+    "requireManifestReview": false,
+    "allowDirtyTreeSync": true,
+    "sendGitDiff": true,
+    "sendDeletedPaths": true
+  },
+  "mcp": {
+    "preferLocalCache": true
+  },
+  "policy": {
+    "allowRemoteAnalyzer": true,
+    "allowedAnalyzerHosts": [],
+    "requireSelfHosted": false,
+    "blockUntrackedFiles": false
+  },
+  "embedding": {
+    "enabled": true,
+    "provider": "local",
+    "model": "klauro-local-hash-v1",
+    "apiKeyEnv": "KLAURO_EMBEDDING_API_KEY",
+    "dimensions": 384,
+    "maxDocumentChars": 8000,
+    "store": "auto",
+    "databaseUrlEnv": "KLAURO_DATABASE_URL",
+    "phaseBudgetMs": 120000,
+    "maxConcurrency": 8,
+    "rerank": {
+      "alpha": 0.7,
+      "beta": 0.3
+    }
+  },
+  "github": {
+    "defaultBranchOnly": true
+  }
+}

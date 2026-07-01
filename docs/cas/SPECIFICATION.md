@@ -2291,7 +2291,7 @@ Capability descriptions MUST be AI-generated or AI-reviewed in the default summa
 - Each idiom SHOULD include positive examples that are safe for agents to inspect before editing.
 - Each idiom SHOULD include agent guidance with explicit do, avoid, and validation instructions.
 - Validation SHOULD score changed files and diffs against idioms for correctness-adjacent drift: non-local naming, misplaced files, boundary bypasses, missing tests, schema changes without migrations, generic errors, transient logging, and auth/tenant-scope mistakes.
-- Agent-facing MCP work packets SHOULD include compact idiom context for modify, debug, and review tasks.
+- Agent-facing MCP agent contexts SHOULD include compact idiom context for modify, debug, and review tasks.
 - Agents SHOULD call both `validate_behavioral_invariants` and `validate_codebase_idioms` before finalizing edits.
 - Live agent proof SHOULD include copied-repo A/B tasks where both arms can pass correctness and the with-CAS arm receives idiom context; acceptance SHOULD require positive idiom-conformance delta without correctness regression.
 
@@ -2333,7 +2333,7 @@ Implementations SHOULD support:
 - Retrieving codebase idioms by category, target node, file path, confidence, limit, and offset.
 - Retrieving idiom examples for a specific idiom, category, target node, or file path.
 - Validating explicit file lists, provided diff text, staged changes, and working-tree changes against idioms.
-- Returning idiom-aware work packets that combine target resolution, risk, tests, behavioral invariants, and local idiom guidance.
+- Returning idiom-aware agent contexts that combine target resolution, risk, tests, behavioral invariants, and local idiom guidance.
 
 ## 7. Extensions
 
@@ -2830,8 +2830,8 @@ interface BaseAnalyzer {
 - Emit `codebase_idioms` with confidence, prevalence, evidence, positive examples, affected scopes, agent guidance, and deviations.
 - Emit `idiom_summary`, `idiom_examples`, and `idiom_violations` for compact UI and MCP consumption.
 - Add a post-analysis idiom detector that derives local conventions from nodes, edges, file paths, imports, decorators, tests, migrations, behavioral invariants, patterns, configuration, and analysis facts.
-- Add MCP queries for codebase idioms, idiom examples, idiom validation, and idiom-aware agent work packets.
-- Extend agent work packets so modify/debug/review workflows validate both behavioral invariants and codebase idioms after edits.
+- Add MCP queries for codebase idioms, idiom examples, idiom validation, and idiom-aware agent contexts.
+- Extend agent contexts so modify/debug/review workflows validate both behavioral invariants and codebase idioms after edits.
 - Add live A/B idiom quality proof that measures correctness, idiom conformance, minimality, test relevance, boundary preservation, and file targeting.
 - Account for every real repository in machine-wide proof runs, including unsupported and skipped repositories with explicit reasons.
 
@@ -2873,7 +2873,7 @@ All versions maintain backward compatibility:
 - **v1.9.0** (2026-05-13): Codebase Idiom Intelligence
   - Repo-local convention extraction
   - Idiom examples, violations, and validation
-  - Idiom-aware agent work packets
+  - Idiom-aware agent contexts
 
 - **v1.0.0** (2024-01-01): Initial release
   - Core node and edge structures
@@ -2950,7 +2950,7 @@ All versions maintain backward compatibility:
   - Repo-local idioms for naming, file organization, module boundaries, dependency injection, data access, error handling, validation, auth/tenant scope, logging, testing, migrations, async style, and configuration
   - Evidence-backed positive examples and deviations
   - Agent guidance with do, avoid, and validation instructions
-  - MCP idiom queries, examples, validation, and idiom-aware work packets
+  - MCP idiom queries, examples, validation, and idiom-aware agent contexts
   - Live copied-repo A/B idiom quality proof
   - Machine-wide real-repo discovery and accounting
 

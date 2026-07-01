@@ -41,8 +41,8 @@ type Candidate = {
   promptNative: number;
 };
 
-export function formatAgentContextCapsule(packet: any): AgentContextCodecResult {
-  const capsule = encodeK15(packet);
+export function formatAgentContextCapsule(context: any): AgentContextCodecResult {
+  const capsule = encodeK15(context);
   return {
     format: 'K15',
     capsule,
@@ -51,7 +51,7 @@ export function formatAgentContextCapsule(packet: any): AgentContextCodecResult 
   };
 }
 
-export function benchmarkAgentContextCodecs(packet: any): {
+export function benchmarkAgentContextCodecs(context: any): {
   generated_at: string;
   benchmark_type: 'agent-context-codec-proof';
   status: 'pass' | 'fail';
@@ -61,9 +61,9 @@ export function benchmarkAgentContextCodecs(packet: any): {
   gates: AgentContextCodecBenchmarkGate[];
   results: AgentContextCodecBenchmarkResult[];
 } {
-  const candidates = buildCandidates(packet);
-  const minJsonTokens = estimateTokens(JSON.stringify(packet));
-  const minJsonPromptishTokens = estimatePromptishTokens(JSON.stringify(packet));
+  const candidates = buildCandidates(context);
+  const minJsonTokens = estimateTokens(JSON.stringify(context));
+  const minJsonPromptishTokens = estimatePromptishTokens(JSON.stringify(context));
   const results = candidates
     .map(candidate => {
       const timing = timeEncoder(candidate.encode);
@@ -72,7 +72,7 @@ export function benchmarkAgentContextCodecs(packet: any): {
       const promptishTokens = estimatePromptishTokens(output);
       const tokenReduction = percentReduction(minJsonTokens, estimatedTokens);
       const promptishTokenReduction = percentReduction(minJsonPromptishTokens, promptishTokens);
-      const contextSlots = countContextSlots(packet, output);
+      const contextSlots = countContextSlots(context, output);
       const contextDensity = Math.round((contextSlots / Math.max(1, estimatedTokens)) * 10_000) / 100;
       const promptishContextDensity = Math.round((contextSlots / Math.max(1, promptishTokens)) * 10_000) / 100;
       const balancedScore = Math.round(
@@ -404,109 +404,109 @@ export function parseAgentContextCapsule(capsule: string): {
   return { version, task, selected, files, validation, rules };
 }
 
-function buildCandidates(packet: any): Candidate[] {
-  const minJson = () => JSON.stringify(packet);
+function buildCandidates(context: any): Candidate[] {
+  const minJson = () => JSON.stringify(context);
   const shortJson = () => JSON.stringify({
-    p: packet.packet_profile,
-    t: packet.task,
-    c: packet.capsule,
-    s: packet.selected,
-    f: packet.files,
-    a: packet.candidates,
-    k: packet.terms,
-    i: packet.idioms,
-    r: packet.risks,
-    m: packet.reuse,
-    e: packet.execution,
-    q: packet.rule,
+    p: context.context_profile,
+    t: context.task,
+    c: context.capsule,
+    s: context.selected,
+    f: context.files,
+    a: context.candidates,
+    k: context.terms,
+    i: context.idioms,
+    r: context.risks,
+    m: context.reuse,
+    e: context.execution,
+    q: context.rule,
   });
   const toonish = () => [
-    `profile: ${packet.packet_profile || ''}`,
-    `task: ${packet.task || ''}`,
-    packet.selected ? `selected: ${compactSelected(packet.selected)}` : '',
-    table('files', ['n', 'file'], [...arrayOfStrings(packet.files), ...arrayOfStrings(packet.candidates)].map((file, index) => [String(index + 1), file])),
-    lineList('idioms', packet.idioms),
-    lineList('risks', packet.risks),
-    lineList('reuse', packet.reuse),
-    lineList('validate', packet.execution?.validate),
-    `rule: ${packet.rule || ''}`,
+    `profile: ${context.context_profile || ''}`,
+    `task: ${context.task || ''}`,
+    context.selected ? `selected: ${compactSelected(context.selected)}` : '',
+    table('files', ['n', 'file'], [...arrayOfStrings(context.files), ...arrayOfStrings(context.candidates)].map((file, index) => [String(index + 1), file])),
+    lineList('idioms', context.idioms),
+    lineList('risks', context.risks),
+    lineList('reuse', context.reuse),
+    lineList('validate', context.execution?.validate),
+    `rule: ${context.rule || ''}`,
   ].filter(Boolean).join('\n');
   const yamlBrief = () => [
-    `task: ${packet.task || ''}`,
-    packet.selected ? `selected: ${compactSelected(packet.selected)}` : '',
+    `task: ${context.task || ''}`,
+    context.selected ? `selected: ${compactSelected(context.selected)}` : '',
     'files:',
-    ...[...arrayOfStrings(packet.files), ...arrayOfStrings(packet.candidates)].slice(0, 8).map((file, index) => `  - ${index + 1}: ${file}`),
+    ...[...arrayOfStrings(context.files), ...arrayOfStrings(context.candidates)].slice(0, 8).map((file, index) => `  - ${index + 1}: ${file}`),
     'idioms:',
-    ...arrayOfStrings(packet.idioms).slice(0, 3).map(value => `  - ${compactText(value, 78)}`),
+    ...arrayOfStrings(context.idioms).slice(0, 3).map(value => `  - ${compactText(value, 78)}`),
     'reuse:',
-    ...arrayOfStrings(packet.reuse).slice(0, 2).map(value => `  - ${compactText(value, 78)}`),
+    ...arrayOfStrings(context.reuse).slice(0, 2).map(value => `  - ${compactText(value, 78)}`),
     'risks:',
-    ...arrayOfStrings(packet.risks).slice(0, 2).map(value => `  - ${compactText(value, 78)}`),
+    ...arrayOfStrings(context.risks).slice(0, 2).map(value => `  - ${compactText(value, 78)}`),
     'validate:',
-    ...arrayOfStrings(packet.execution?.validate).slice(0, 2).map(value => `  - ${compactText(value, 92)}`),
-    `rule: ${compactText(packet.rule || '', 96)}`,
+    ...arrayOfStrings(context.execution?.validate).slice(0, 2).map(value => `  - ${compactText(value, 92)}`),
+    `rule: ${compactText(context.rule || '', 96)}`,
   ].filter(Boolean).join('\n');
   const xmlTags = () => [
-    `<task>${escapeTag(packet.task || '')}</task>`,
-    packet.selected ? `<selected>${escapeTag(compactSelected(packet.selected))}</selected>` : '',
-    `<files>${[...arrayOfStrings(packet.files), ...arrayOfStrings(packet.candidates)].slice(0, 8)
+    `<task>${escapeTag(context.task || '')}</task>`,
+    context.selected ? `<selected>${escapeTag(compactSelected(context.selected))}</selected>` : '',
+    `<files>${[...arrayOfStrings(context.files), ...arrayOfStrings(context.candidates)].slice(0, 8)
       .map((file, index) => `<f n="${index + 1}">${escapeTag(file)}</f>`).join('')}</files>`,
-    `<idioms>${arrayOfStrings(packet.idioms).slice(0, 3).map(value => `<i>${escapeTag(compactText(value, 78))}</i>`).join('')}</idioms>`,
-    `<reuse>${arrayOfStrings(packet.reuse).slice(0, 2).map(value => `<u>${escapeTag(compactText(value, 78))}</u>`).join('')}</reuse>`,
-    `<risks>${arrayOfStrings(packet.risks).slice(0, 2).map(value => `<r>${escapeTag(compactText(value, 78))}</r>`).join('')}</risks>`,
-    `<validate>${arrayOfStrings(packet.execution?.validate).slice(0, 2).map(value => `<v>${escapeTag(compactText(value, 92))}</v>`).join('')}</validate>`,
-    `<rule>${escapeTag(compactText(packet.rule || '', 96))}</rule>`,
+    `<idioms>${arrayOfStrings(context.idioms).slice(0, 3).map(value => `<i>${escapeTag(compactText(value, 78))}</i>`).join('')}</idioms>`,
+    `<reuse>${arrayOfStrings(context.reuse).slice(0, 2).map(value => `<u>${escapeTag(compactText(value, 78))}</u>`).join('')}</reuse>`,
+    `<risks>${arrayOfStrings(context.risks).slice(0, 2).map(value => `<r>${escapeTag(compactText(value, 78))}</r>`).join('')}</risks>`,
+    `<validate>${arrayOfStrings(context.execution?.validate).slice(0, 2).map(value => `<v>${escapeTag(compactText(value, 92))}</v>`).join('')}</validate>`,
+    `<rule>${escapeTag(compactText(context.rule || '', 96))}</rule>`,
   ].filter(Boolean).join('');
   const tsv = () => [
-    `T\t${packet.task || ''}`,
-    packet.selected ? `S\t${compactSelected(packet.selected)}` : '',
-    ...[...arrayOfStrings(packet.files), ...arrayOfStrings(packet.candidates)].map((file, index) => `F\t${index + 1}\t${file}`),
-    ...arrayOfStrings(packet.idioms).map(value => `I\t${value}`),
-    ...arrayOfStrings(packet.risks).map(value => `R\t${value}`),
-    ...arrayOfStrings(packet.reuse).map(value => `M\t${value}`),
-    ...arrayOfStrings(packet.execution?.validate).map(value => `V\t${value}`),
-    `!\t${packet.rule || ''}`,
+    `T\t${context.task || ''}`,
+    context.selected ? `S\t${compactSelected(context.selected)}` : '',
+    ...[...arrayOfStrings(context.files), ...arrayOfStrings(context.candidates)].map((file, index) => `F\t${index + 1}\t${file}`),
+    ...arrayOfStrings(context.idioms).map(value => `I\t${value}`),
+    ...arrayOfStrings(context.risks).map(value => `R\t${value}`),
+    ...arrayOfStrings(context.reuse).map(value => `M\t${value}`),
+    ...arrayOfStrings(context.execution?.validate).map(value => `V\t${value}`),
+    `!\t${context.rule || ''}`,
   ].filter(Boolean).join('\n');
   const k5PlusShort = () => [
-    packet.capsule || '',
+    context.capsule || '',
     shortJson(),
   ].filter(Boolean).join('\n');
   const protobufText = () => [
-    `task:"${compactText(packet.task || '', 86)}"`,
-    packet.selected ? `sel{${compactSelected(packet.selected)}}` : '',
-    ...[...arrayOfStrings(packet.files), ...arrayOfStrings(packet.candidates)].slice(0, 8)
+    `task:"${compactText(context.task || '', 86)}"`,
+    context.selected ? `sel{${compactSelected(context.selected)}}` : '',
+    ...[...arrayOfStrings(context.files), ...arrayOfStrings(context.candidates)].slice(0, 8)
       .map((file, index) => `f{n:${index + 1} p:"${file}"}`),
-    ...arrayOfStrings(packet.idioms).slice(0, 3).map(value => `i:"${compactText(value, 72)}"`),
-    ...arrayOfStrings(packet.risks).slice(0, 2).map(value => `r:"${compactText(value, 72)}"`),
-    ...arrayOfStrings(packet.execution?.validate).slice(0, 2).map(value => `v:"${compactText(value, 90)}"`),
+    ...arrayOfStrings(context.idioms).slice(0, 3).map(value => `i:"${compactText(value, 72)}"`),
+    ...arrayOfStrings(context.risks).slice(0, 2).map(value => `r:"${compactText(value, 72)}"`),
+    ...arrayOfStrings(context.execution?.validate).slice(0, 2).map(value => `v:"${compactText(value, 90)}"`),
   ].filter(Boolean).join(' ');
   const jsonbRowset = () => [
-    ['t', packet.task || ''],
-    ['s', packet.selected ? compactSelected(packet.selected) : ''],
-    ...[...arrayOfStrings(packet.files), ...arrayOfStrings(packet.candidates)].slice(0, 8).map((file, index) => [`f${index + 1}`, file]),
-    ...arrayOfStrings(packet.idioms).slice(0, 3).map((value, index) => [`i${index + 1}`, value]),
-    ...arrayOfStrings(packet.risks).slice(0, 2).map((value, index) => [`r${index + 1}`, value]),
-    ...arrayOfStrings(packet.execution?.validate).slice(0, 2).map((value, index) => [`v${index + 1}`, value]),
+    ['t', context.task || ''],
+    ['s', context.selected ? compactSelected(context.selected) : ''],
+    ...[...arrayOfStrings(context.files), ...arrayOfStrings(context.candidates)].slice(0, 8).map((file, index) => [`f${index + 1}`, file]),
+    ...arrayOfStrings(context.idioms).slice(0, 3).map((value, index) => [`i${index + 1}`, value]),
+    ...arrayOfStrings(context.risks).slice(0, 2).map((value, index) => [`r${index + 1}`, value]),
+    ...arrayOfStrings(context.execution?.validate).slice(0, 2).map((value, index) => [`v${index + 1}`, value]),
   ].filter(([, value]) => value).map(([key, value]) => `${key}\t${String(key).startsWith('f') ? value : compactText(value, 90)}`).join('\n');
-  const cborDiagnostic = () => `{"t":${JSON.stringify(compactText(packet.task || '', 86))},"f":[${[...arrayOfStrings(packet.files), ...arrayOfStrings(packet.candidates)].slice(0, 8).map(file => JSON.stringify(file)).join(',')}],"i":[${arrayOfStrings(packet.idioms).slice(0, 3).map(value => JSON.stringify(compactText(value, 72))).join(',')}],"r":[${arrayOfStrings(packet.risks).slice(0, 2).map(value => JSON.stringify(compactText(value, 72))).join(',')}],"v":[${arrayOfStrings(packet.execution?.validate).slice(0, 2).map(value => JSON.stringify(compactText(value, 90))).join(',')}]}`;
+  const cborDiagnostic = () => `{"t":${JSON.stringify(compactText(context.task || '', 86))},"f":[${[...arrayOfStrings(context.files), ...arrayOfStrings(context.candidates)].slice(0, 8).map(file => JSON.stringify(file)).join(',')}],"i":[${arrayOfStrings(context.idioms).slice(0, 3).map(value => JSON.stringify(compactText(value, 72))).join(',')}],"r":[${arrayOfStrings(context.risks).slice(0, 2).map(value => JSON.stringify(compactText(value, 72))).join(',')}],"v":[${arrayOfStrings(context.execution?.validate).slice(0, 2).map(value => JSON.stringify(compactText(value, 90))).join(',')}]}`;
   const messagePackBase64 = () => Buffer.from(JSON.stringify({
-    t: compactText(packet.task || '', 86),
-    s: packet.selected ? compactSelected(packet.selected) : '',
-    f: [...arrayOfStrings(packet.files), ...arrayOfStrings(packet.candidates)].slice(0, 8),
-    i: arrayOfStrings(packet.idioms).slice(0, 3).map(value => compactText(value, 72)),
-    r: arrayOfStrings(packet.risks).slice(0, 2).map(value => compactText(value, 72)),
-    v: arrayOfStrings(packet.execution?.validate).slice(0, 2).map(value => compactText(value, 90)),
+    t: compactText(context.task || '', 86),
+    s: context.selected ? compactSelected(context.selected) : '',
+    f: [...arrayOfStrings(context.files), ...arrayOfStrings(context.candidates)].slice(0, 8),
+    i: arrayOfStrings(context.idioms).slice(0, 3).map(value => compactText(value, 72)),
+    r: arrayOfStrings(context.risks).slice(0, 2).map(value => compactText(value, 72)),
+    v: arrayOfStrings(context.execution?.validate).slice(0, 2).map(value => compactText(value, 90)),
   })).toString('base64');
-  const k6 = () => encodeLegacyK6(packet);
-  const k7 = () => encodeK7(packet);
-  const k8 = () => encodeK8(packet);
-  const k9 = () => encodeK9(packet);
-  const k10 = () => encodeK10(packet);
-  const k11 = () => encodeK11(packet);
-  const k12 = () => encodeK12(packet);
-  const k13 = () => encodeK13(packet);
-  const k14 = () => encodeK14(packet);
-  const k15 = () => encodeK15(packet);
+  const k6 = () => encodeLegacyK6(context);
+  const k7 = () => encodeK7(context);
+  const k8 = () => encodeK8(context);
+  const k9 = () => encodeK9(context);
+  const k10 = () => encodeK10(context);
+  const k11 = () => encodeK11(context);
+  const k12 = () => encodeK12(context);
+  const k13 = () => encodeK13(context);
+  const k14 = () => encodeK14(context);
+  const k15 = () => encodeK15(context);
   const gzipJson = () => zlib.gzipSync(Buffer.from(minJson())).toString('base64');
   const gzipK7 = () => zlib.gzipSync(Buffer.from(k7())).toString('base64');
 
@@ -537,222 +537,222 @@ function buildCandidates(packet: any): Candidate[] {
   ];
 }
 
-function encodeLegacyK6(packet: any): string {
-  const aliases = buildPathAliases(packet);
-  const files = uniqueStrings([...arrayOfStrings(packet.files), ...arrayOfStrings(packet.candidates)]).slice(0, 8);
-  const editSet = new Set(arrayOfStrings(packet.execution?.edit));
-  const readSet = new Set(arrayOfStrings(packet.execution?.read));
+function encodeLegacyK6(context: any): string {
+  const aliases = buildPathAliases(context);
+  const files = uniqueStrings([...arrayOfStrings(context.files), ...arrayOfStrings(context.candidates)]).slice(0, 8);
+  const editSet = new Set(arrayOfStrings(context.execution?.edit));
+  const readSet = new Set(arrayOfStrings(context.execution?.read));
   const lines = [
-    `K6|${compactText(packet.task || 'work', 84)}`,
+    `K6|${compactText(context.task || 'work', 84)}`,
     aliasLine(aliases),
-    packet.selected ? `@|${compactSelected(packet.selected)}` : '',
+    context.selected ? `@|${compactSelected(context.selected)}` : '',
     files.length ? `F|${files.map((file, index) => {
       const marker = editSet.has(file) ? '*' : readSet.has(file) ? '>' : '';
       return `${index + 1}${marker}:${applyAliases(file, aliases)}`;
     }).join(';')}` : '',
-    listLine('I', packet.idioms, 3, 64, aliases),
-    listLine('M', packet.reuse, 2, 64, aliases),
-    listLine('R', packet.risks, 2, 64, aliases),
-    listLine('V', packet.execution?.validate, 2, 80, aliases),
-    packet.rule ? `!|${compactText(packet.rule, 72)}` : '',
+    listLine('I', context.idioms, 3, 64, aliases),
+    listLine('M', context.reuse, 2, 64, aliases),
+    listLine('R', context.risks, 2, 64, aliases),
+    listLine('V', context.execution?.validate, 2, 80, aliases),
+    context.rule ? `!|${compactText(context.rule, 72)}` : '',
   ];
   return lines.filter(Boolean).join('\n');
 }
 
-function encodeK7(packet: any): string {
-  const aliases = buildPathAliases(packet);
-  const files = uniqueStrings([...arrayOfStrings(packet.files), ...arrayOfStrings(packet.candidates)]).slice(0, 8);
-  const editSet = new Set(arrayOfStrings(packet.execution?.edit));
-  const readSet = new Set(arrayOfStrings(packet.execution?.read));
+function encodeK7(context: any): string {
+  const aliases = buildPathAliases(context);
+  const files = uniqueStrings([...arrayOfStrings(context.files), ...arrayOfStrings(context.candidates)]).slice(0, 8);
+  const editSet = new Set(arrayOfStrings(context.execution?.edit));
+  const readSet = new Set(arrayOfStrings(context.execution?.read));
   const lines = [
-    `K7|${taskCode(packet.task)}:${compactTaskText(packet.task || 'work', 72)}`,
+    `K7|${taskCode(context.task)}:${compactTaskText(context.task || 'work', 72)}`,
     aliasLine(aliases),
-    packet.selected ? `@|${compactSelected(packet.selected)}` : '',
+    context.selected ? `@|${compactSelected(context.selected)}` : '',
     files.length ? `F|${files.map((file, index) => {
       const marker = editSet.has(file) ? '*' : readSet.has(file) ? '>' : '';
       return `${index + 1}${marker}:${applyAliases(file, aliases)}`;
     }).join(';')}` : '',
-    listLine('i', packet.idioms, 3, 50, aliases, compactAgentText),
-    listLine('u', packet.reuse, 2, 52, aliases, compactAgentText),
-    listLine('r', packet.risks, 2, 52, aliases, compactAgentText),
-    listLine('v', packet.execution?.validate, 2, 72, aliases, compactCommandText),
-    packet.rule ? `!|${compactAgentText(packet.rule, 54)}` : '',
+    listLine('i', context.idioms, 3, 50, aliases, compactAgentText),
+    listLine('u', context.reuse, 2, 52, aliases, compactAgentText),
+    listLine('r', context.risks, 2, 52, aliases, compactAgentText),
+    listLine('v', context.execution?.validate, 2, 72, aliases, compactCommandText),
+    context.rule ? `!|${compactAgentText(context.rule, 54)}` : '',
   ];
   return lines.filter(Boolean).join('\n');
 }
 
-function encodeK8(packet: any): string {
-  const aliases = buildPathAliases(packet);
-  const files = uniqueStrings([...arrayOfStrings(packet.files), ...arrayOfStrings(packet.candidates)]).slice(0, 8);
-  const editSet = new Set(arrayOfStrings(packet.execution?.edit));
-  const readSet = new Set(arrayOfStrings(packet.execution?.read));
+function encodeK8(context: any): string {
+  const aliases = buildPathAliases(context);
+  const files = uniqueStrings([...arrayOfStrings(context.files), ...arrayOfStrings(context.candidates)]).slice(0, 8);
+  const editSet = new Set(arrayOfStrings(context.execution?.edit));
+  const readSet = new Set(arrayOfStrings(context.execution?.read));
   const lines = [
-    `K8 ${taskCode(packet.task)} ${compactTaskText(packet.task || 'work', 66)}`,
+    `K8 ${taskCode(context.task)} ${compactTaskText(context.task || 'work', 66)}`,
     compactAliasLine(aliases),
-    packet.selected ? `@ ${compactSelectedK8(packet.selected, aliases)}` : '',
+    context.selected ? `@ ${compactSelectedK8(context.selected, aliases)}` : '',
     files.length ? `F ${files.map(file => {
       const marker = editSet.has(file) ? '*' : readSet.has(file) ? '>' : '';
       return `${marker}${applyAliasesK8(file, aliases)}`;
     }).join(';')}` : '',
-    compactListLine('I', packet.idioms, 3, 46, aliases),
-    compactListLine('U', packet.reuse, 2, 48, aliases),
-    compactListLine('R', packet.risks, 2, 48, aliases),
-    compactListLine('V', packet.execution?.validate, 2, 66, aliases, compactCommandText),
-    packet.rule ? `! ${compactAgentText(packet.rule, 48)}` : '',
+    compactListLine('I', context.idioms, 3, 46, aliases),
+    compactListLine('U', context.reuse, 2, 48, aliases),
+    compactListLine('R', context.risks, 2, 48, aliases),
+    compactListLine('V', context.execution?.validate, 2, 66, aliases, compactCommandText),
+    context.rule ? `! ${compactAgentText(context.rule, 48)}` : '',
   ];
   return lines.filter(Boolean).join('\n');
 }
 
-function encodeK9(packet: any): string {
-  const aliases = buildPathAliases(packet);
-  const files = uniqueStrings([...arrayOfStrings(packet.files), ...arrayOfStrings(packet.candidates)]).slice(0, 8);
-  const editSet = new Set(arrayOfStrings(packet.execution?.edit));
-  const readSet = new Set(arrayOfStrings(packet.execution?.read));
+function encodeK9(context: any): string {
+  const aliases = buildPathAliases(context);
+  const files = uniqueStrings([...arrayOfStrings(context.files), ...arrayOfStrings(context.candidates)]).slice(0, 8);
+  const editSet = new Set(arrayOfStrings(context.execution?.edit));
+  const readSet = new Set(arrayOfStrings(context.execution?.read));
   const fileRefs = new Map<string, number>();
   files.forEach((file, index) => fileRefs.set(file, index + 1));
   const lines = [
-    `K9 ${taskCode(packet.task)}|${compactTaskText(packet.task || 'work', 58)}`,
+    `K9 ${taskCode(context.task)}|${compactTaskText(context.task || 'work', 58)}`,
     compactAliasLine(aliases),
     files.length ? `F ${files.map((file, index) => {
       const marker = editSet.has(file) ? '*' : readSet.has(file) ? '>' : '';
       return `${index + 1}${marker}=${applyAliasesK8(file, aliases)}`;
     }).join(';')}` : '',
-    packet.selected ? `@ ${compactSelectedK9(packet.selected, aliases, fileRefs)}` : '',
-    compactListLine('I', packet.idioms, 3, 38, aliases, compactK9AgentText),
-    compactListLine('U', packet.reuse, 2, 40, aliases, compactK9AgentText),
-    compactListLine('R', packet.risks, 2, 40, aliases, compactK9AgentText),
-    compactListLine('V', compactK9Validation(packet.execution?.validate, fileRefs), 2, 44, aliases, compactCommandText),
-    packet.rule ? `! ${compactK9AgentText(packet.rule, 42)}` : '',
+    context.selected ? `@ ${compactSelectedK9(context.selected, aliases, fileRefs)}` : '',
+    compactListLine('I', context.idioms, 3, 38, aliases, compactK9AgentText),
+    compactListLine('U', context.reuse, 2, 40, aliases, compactK9AgentText),
+    compactListLine('R', context.risks, 2, 40, aliases, compactK9AgentText),
+    compactListLine('V', compactK9Validation(context.execution?.validate, fileRefs), 2, 44, aliases, compactCommandText),
+    context.rule ? `! ${compactK9AgentText(context.rule, 42)}` : '',
   ];
   return lines.filter(Boolean).join('\n');
 }
 
-function encodeK10(packet: any): string {
-  const aliases = buildPathAliases(packet);
-  const files = uniqueStrings([...arrayOfStrings(packet.files), ...arrayOfStrings(packet.candidates)]).slice(0, 8);
-  const editSet = new Set(arrayOfStrings(packet.execution?.edit));
-  const readSet = new Set(arrayOfStrings(packet.execution?.read));
+function encodeK10(context: any): string {
+  const aliases = buildPathAliases(context);
+  const files = uniqueStrings([...arrayOfStrings(context.files), ...arrayOfStrings(context.candidates)]).slice(0, 8);
+  const editSet = new Set(arrayOfStrings(context.execution?.edit));
+  const readSet = new Set(arrayOfStrings(context.execution?.read));
   const fileRefs = new Map<string, number>();
   files.forEach((file, index) => fileRefs.set(file, index + 1));
   const lines = [
-    `K10 ${taskCode(packet.task)}|${compactTaskText(packet.task || 'work', 52)}`,
+    `K10 ${taskCode(context.task)}|${compactTaskText(context.task || 'work', 52)}`,
     compactAliasLineK10(aliases),
     files.length ? `F${files.map((file, index) => {
       const marker = editSet.has(file) ? '*' : readSet.has(file) ? '>' : '';
       return `${index + 1}${marker}=${applyAliasesK8(file, aliases)}`;
     }).join(';')}` : '',
-    packet.selected ? `@${compactSelectedK10(packet.selected, aliases, fileRefs)}` : '',
-    compactListLineK10('I', packet.idioms, 3, 28, aliases, compactK10Guidance),
-    compactListLineK10('U', packet.reuse, 2, 30, aliases, compactK10Guidance),
-    compactListLineK10('R', packet.risks, 2, 30, aliases, compactK10Guidance),
-    compactListLineK10('V', compactK10Validation(packet.execution?.validate, fileRefs), 2, 34, aliases, compactCommandText),
-    packet.rule ? `!${compactK10Rule(packet.rule, 30)}` : '',
+    context.selected ? `@${compactSelectedK10(context.selected, aliases, fileRefs)}` : '',
+    compactListLineK10('I', context.idioms, 3, 28, aliases, compactK10Guidance),
+    compactListLineK10('U', context.reuse, 2, 30, aliases, compactK10Guidance),
+    compactListLineK10('R', context.risks, 2, 30, aliases, compactK10Guidance),
+    compactListLineK10('V', compactK10Validation(context.execution?.validate, fileRefs), 2, 34, aliases, compactCommandText),
+    context.rule ? `!${compactK10Rule(context.rule, 30)}` : '',
   ];
   return lines.filter(Boolean).join('\n');
 }
 
-function encodeK11(packet: any): string {
-  const aliases = buildPathAliases(packet);
-  const files = uniqueStrings([...arrayOfStrings(packet.files), ...arrayOfStrings(packet.candidates)]).slice(0, 8);
-  const editSet = new Set(arrayOfStrings(packet.execution?.edit));
-  const readSet = new Set(arrayOfStrings(packet.execution?.read));
+function encodeK11(context: any): string {
+  const aliases = buildPathAliases(context);
+  const files = uniqueStrings([...arrayOfStrings(context.files), ...arrayOfStrings(context.candidates)]).slice(0, 8);
+  const editSet = new Set(arrayOfStrings(context.execution?.edit));
+  const readSet = new Set(arrayOfStrings(context.execution?.read));
   const fileRefs = new Map<string, number>();
   files.forEach((file, index) => fileRefs.set(file, index + 1));
   const lines = [
-    `K11${taskCode(packet.task)} ${compactK11Task(packet.task || 'work', 48)}`,
+    `K11${taskCode(context.task)} ${compactK11Task(context.task || 'work', 48)}`,
     compactAliasLineK11(aliases),
     files.length ? `F ${files.map((file, index) => {
       const marker = editSet.has(file) ? '*' : readSet.has(file) ? '>' : '=';
       return `${index + 1}${marker}${applyAliasesK8(file, aliases)}`;
     }).join(' ')}` : '',
-    packet.selected ? `@ ${compactSelectedK11(packet.selected, aliases, fileRefs)}` : '',
-    compactListLineK11('I', packet.idioms, 3, 24, aliases, compactK11Guidance),
-    compactListLineK11('U', packet.reuse, 2, 28, aliases, compactK11Guidance),
-    compactListLineK11('R', packet.risks, 2, 28, aliases, compactK11Guidance),
-    compactListLineK11('V', compactK11Validation(packet.execution?.validate, fileRefs), 2, 32, aliases, compactCommandText),
-    packet.rule ? `! ${compactK11Rule(packet.rule, 28)}` : '',
+    context.selected ? `@ ${compactSelectedK11(context.selected, aliases, fileRefs)}` : '',
+    compactListLineK11('I', context.idioms, 3, 24, aliases, compactK11Guidance),
+    compactListLineK11('U', context.reuse, 2, 28, aliases, compactK11Guidance),
+    compactListLineK11('R', context.risks, 2, 28, aliases, compactK11Guidance),
+    compactListLineK11('V', compactK11Validation(context.execution?.validate, fileRefs), 2, 32, aliases, compactCommandText),
+    context.rule ? `! ${compactK11Rule(context.rule, 28)}` : '',
   ];
   return lines.filter(Boolean).join('\n');
 }
 
-function encodeK12(packet: any): string {
-  const aliases = buildPathAliases(packet);
-  const files = uniqueStrings([...arrayOfStrings(packet.files), ...arrayOfStrings(packet.candidates)]).slice(0, 8);
-  const editSet = new Set(arrayOfStrings(packet.execution?.edit));
-  const readSet = new Set(arrayOfStrings(packet.execution?.read));
+function encodeK12(context: any): string {
+  const aliases = buildPathAliases(context);
+  const files = uniqueStrings([...arrayOfStrings(context.files), ...arrayOfStrings(context.candidates)]).slice(0, 8);
+  const editSet = new Set(arrayOfStrings(context.execution?.edit));
+  const readSet = new Set(arrayOfStrings(context.execution?.read));
   const fileRefs = new Map<string, number>();
   files.forEach((file, index) => fileRefs.set(file, index + 1));
   const lines = [
-    `K12${taskCode(packet.task)} ${compactK12Task(packet.task || 'work', 46)}`,
+    `K12${taskCode(context.task)} ${compactK12Task(context.task || 'work', 46)}`,
     compactAliasLineK12(aliases),
     files.length ? `F ${files.map(file => {
       const role = editSet.has(file) ? 'e' : readSet.has(file) ? 'r' : 'c';
       const { alias, suffix } = splitFileForK12(file, aliases);
       return `${role}${alias} ${suffix}`;
     }).join(' ')}` : '',
-    packet.selected ? `@ ${compactSelectedK12(packet.selected, fileRefs)}` : '',
-    compactListLineK12('I', packet.idioms, 3, 22, compactK12Guidance),
-    compactListLineK12('U', packet.reuse, 2, 24, compactK12Guidance),
-    compactListLineK12('R', packet.risks, 2, 24, compactK12Guidance),
-    compactListLineK12('V', compactK12Validation(packet.execution?.validate, fileRefs), 2, 28, compactCommandText),
-    packet.rule ? `! ${compactK12Rule(packet.rule, 26)}` : '',
+    context.selected ? `@ ${compactSelectedK12(context.selected, fileRefs)}` : '',
+    compactListLineK12('I', context.idioms, 3, 22, compactK12Guidance),
+    compactListLineK12('U', context.reuse, 2, 24, compactK12Guidance),
+    compactListLineK12('R', context.risks, 2, 24, compactK12Guidance),
+    compactListLineK12('V', compactK12Validation(context.execution?.validate, fileRefs), 2, 28, compactCommandText),
+    context.rule ? `! ${compactK12Rule(context.rule, 26)}` : '',
   ];
   return lines.filter(Boolean).join('\n');
 }
 
-function encodeK13(packet: any): string {
-  const aliases = buildPathAliases(packet);
-  const files = uniqueStrings([...arrayOfStrings(packet.files), ...arrayOfStrings(packet.candidates)]).slice(0, 8);
-  const editSet = new Set(arrayOfStrings(packet.execution?.edit));
-  const readSet = new Set(arrayOfStrings(packet.execution?.read));
+function encodeK13(context: any): string {
+  const aliases = buildPathAliases(context);
+  const files = uniqueStrings([...arrayOfStrings(context.files), ...arrayOfStrings(context.candidates)]).slice(0, 8);
+  const editSet = new Set(arrayOfStrings(context.execution?.edit));
+  const readSet = new Set(arrayOfStrings(context.execution?.read));
   const groupedFiles = groupK13Files(files, aliases, editSet, readSet);
   const orderedFiles = groupedFiles.flatMap(group => group.files.map(file => file.original));
   const fileRefs = new Map<string, number>();
   orderedFiles.forEach((file, index) => fileRefs.set(file, index + 1));
   const lines = [
-    `K13${taskCode(packet.task)} ${compactK12Task(packet.task || 'work', 46)}`,
+    `K13${taskCode(context.task)} ${compactK12Task(context.task || 'work', 46)}`,
     compactAliasLineK12(aliases),
     ...formatK13FileGroups(groupedFiles),
-    packet.selected ? `@ ${compactSelectedK12(packet.selected, fileRefs)}` : '',
-    compactListLineK12('I', packet.idioms, 3, 22, compactK12Guidance),
-    compactListLineK12('U', packet.reuse, 2, 24, compactK12Guidance),
-    compactListLineK12('R', packet.risks, 2, 24, compactK12Guidance),
-    compactListLineK12('V', compactK12Validation(packet.execution?.validate, fileRefs), 2, 28, compactCommandText),
-    packet.rule ? `! ${compactK12Rule(packet.rule, 26)}` : '',
+    context.selected ? `@ ${compactSelectedK12(context.selected, fileRefs)}` : '',
+    compactListLineK12('I', context.idioms, 3, 22, compactK12Guidance),
+    compactListLineK12('U', context.reuse, 2, 24, compactK12Guidance),
+    compactListLineK12('R', context.risks, 2, 24, compactK12Guidance),
+    compactListLineK12('V', compactK12Validation(context.execution?.validate, fileRefs), 2, 28, compactCommandText),
+    context.rule ? `! ${compactK12Rule(context.rule, 26)}` : '',
   ];
   return lines.filter(Boolean).join('\n');
 }
 
-function encodeK14(packet: any): string {
-  const aliases = buildPathAliases(packet);
-  const files = uniqueStrings([...arrayOfStrings(packet.files), ...arrayOfStrings(packet.candidates)]).slice(0, 8);
-  const editSet = new Set(arrayOfStrings(packet.execution?.edit));
-  const readSet = new Set(arrayOfStrings(packet.execution?.read));
+function encodeK14(context: any): string {
+  const aliases = buildPathAliases(context);
+  const files = uniqueStrings([...arrayOfStrings(context.files), ...arrayOfStrings(context.candidates)]).slice(0, 8);
+  const editSet = new Set(arrayOfStrings(context.execution?.edit));
+  const readSet = new Set(arrayOfStrings(context.execution?.read));
   const defaultExtension = chooseK14DefaultExtension(files);
   const groupedFiles = groupK14Files(files, aliases, editSet, readSet, defaultExtension);
   const orderedFiles = groupedFiles.flatMap(group => group.files.map(file => file.original));
   const fileRefs = new Map<string, number>();
   orderedFiles.forEach((file, index) => fileRefs.set(file, index + 1));
   const lines = [
-    `K14${taskCode(packet.task)} ${compactK12Task(packet.task || 'work', 46)}`,
+    `K14${taskCode(context.task)} ${compactK12Task(context.task || 'work', 46)}`,
     defaultExtension ? `X ${defaultExtension}` : '',
     compactAliasLineK12(aliases),
     ...formatK13FileGroups(groupedFiles),
-    packet.selected ? `@ ${compactSelectedK12(packet.selected, fileRefs)}` : '',
-    compactListLineK12('I', packet.idioms, 3, 22, compactK12Guidance),
-    compactListLineK12('U', packet.reuse, 2, 24, compactK12Guidance),
-    compactListLineK12('R', packet.risks, 2, 24, compactK12Guidance),
-    compactListLineK12('V', compactK12Validation(packet.execution?.validate, fileRefs), 2, 28, compactCommandText),
-    packet.rule ? `! ${compactK12Rule(packet.rule, 26)}` : '',
+    context.selected ? `@ ${compactSelectedK12(context.selected, fileRefs)}` : '',
+    compactListLineK12('I', context.idioms, 3, 22, compactK12Guidance),
+    compactListLineK12('U', context.reuse, 2, 24, compactK12Guidance),
+    compactListLineK12('R', context.risks, 2, 24, compactK12Guidance),
+    compactListLineK12('V', compactK12Validation(context.execution?.validate, fileRefs), 2, 28, compactCommandText),
+    context.rule ? `! ${compactK12Rule(context.rule, 26)}` : '',
   ];
   return lines.filter(Boolean).join('\n');
 }
 
-function encodeK15(packet: any): string {
-  const aliases = buildPathAliases(packet);
-  const files = uniqueStrings([...arrayOfStrings(packet.files), ...arrayOfStrings(packet.candidates)]).slice(0, 8);
-  const editSet = new Set(arrayOfStrings(packet.execution?.edit));
-  const readSet = new Set(arrayOfStrings(packet.execution?.read));
+function encodeK15(context: any): string {
+  const aliases = buildPathAliases(context);
+  const files = uniqueStrings([...arrayOfStrings(context.files), ...arrayOfStrings(context.candidates)]).slice(0, 8);
+  const editSet = new Set(arrayOfStrings(context.execution?.edit));
+  const readSet = new Set(arrayOfStrings(context.execution?.read));
   const defaultExtension = chooseK14DefaultExtension(files);
   const groupedFiles = groupK14Files(files, aliases, editSet, readSet, defaultExtension);
   const orderedFiles = groupedFiles.flatMap(group => group.files.map(file => file.original));
@@ -760,15 +760,15 @@ function encodeK15(packet: any): string {
   orderedFiles.forEach((file, index) => fileRefs.set(file, index + 1));
   const extensionSigil = defaultExtension ? defaultExtension : '';
   const lines = [
-    `K15${taskCode(packet.task)}${extensionSigil} ${compactK12Task(packet.task || 'work', 46)}`,
+    `K15${taskCode(context.task)}${extensionSigil} ${compactK12Task(context.task || 'work', 46)}`,
     compactAliasLineK15(aliases),
     ...formatK15FileGroups(groupedFiles),
-    packet.selected ? `@${compactSelectedK12(packet.selected, fileRefs)}` : '',
-    compactListLineK15('I', packet.idioms, 3, 22, compactK12Guidance),
-    compactListLineK15('U', packet.reuse, 2, 24, compactK12Guidance),
-    compactListLineK15('R', packet.risks, 2, 24, compactK12Guidance),
-    compactListLineK15('V', compactK12Validation(packet.execution?.validate, fileRefs), 2, 28, compactCommandText),
-    packet.rule ? `!${compactK12Rule(packet.rule, 26)}` : '',
+    context.selected ? `@${compactSelectedK12(context.selected, fileRefs)}` : '',
+    compactListLineK15('I', context.idioms, 3, 22, compactK12Guidance),
+    compactListLineK15('U', context.reuse, 2, 24, compactK12Guidance),
+    compactListLineK15('R', context.risks, 2, 24, compactK12Guidance),
+    compactListLineK15('V', compactK12Validation(context.execution?.validate, fileRefs), 2, 28, compactCommandText),
+    context.rule ? `!${compactK12Rule(context.rule, 26)}` : '',
   ];
   return lines.filter(Boolean).join('\n');
 }
@@ -872,13 +872,13 @@ function aliasLine(aliases: Map<string, string>): string {
   return values.length ? `~|${values.map(([key, value]) => `${key}=${value}`).join(';')}` : '';
 }
 
-function buildPathAliases(packet: any): Map<string, string> {
+function buildPathAliases(context: any): Map<string, string> {
   const rawPaths = [
-    ...arrayOfStrings(packet.files),
-    ...arrayOfStrings(packet.candidates),
-    ...arrayOfStrings(packet.execution?.read),
-    ...arrayOfStrings(packet.execution?.edit),
-    ...arrayOfStrings(packet.execution?.validate).flatMap(value => value.split(/\s+/).filter(part => part.includes('/'))),
+    ...arrayOfStrings(context.files),
+    ...arrayOfStrings(context.candidates),
+    ...arrayOfStrings(context.execution?.read),
+    ...arrayOfStrings(context.execution?.edit),
+    ...arrayOfStrings(context.execution?.validate).flatMap(value => value.split(/\s+/).filter(part => part.includes('/'))),
   ];
   const paths = uniqueStrings(rawPaths);
   const aliases = new Map<string, string>();
@@ -1554,19 +1554,19 @@ function resultByName(results: AgentContextCodecBenchmarkResult[], name: string)
   return results.find(result => result.name === name);
 }
 
-function countContextSlots(packet: any, output: string): number {
+function countContextSlots(context: any, output: string): number {
   const baseSlots = [
-    packet.task,
-    packet.selected,
-    packet.rule,
+    context.task,
+    context.selected,
+    context.rule,
   ].filter(Boolean).length;
   const listSlots = [
-    ...arrayOfStrings(packet.files),
-    ...arrayOfStrings(packet.candidates),
-    ...arrayOfStrings(packet.idioms),
-    ...arrayOfStrings(packet.reuse),
-    ...arrayOfStrings(packet.risks),
-    ...arrayOfStrings(packet.execution?.validate),
+    ...arrayOfStrings(context.files),
+    ...arrayOfStrings(context.candidates),
+    ...arrayOfStrings(context.idioms),
+    ...arrayOfStrings(context.reuse),
+    ...arrayOfStrings(context.risks),
+    ...arrayOfStrings(context.execution?.validate),
   ].length;
   const expectedSlots = baseSlots + listSlots;
   const text = String(output || '').trim();
@@ -1586,8 +1586,8 @@ function countContextSlots(packet: any, output: string): number {
   if (/^K1[12345]/m.test(text)) {
     let slots = 0;
     for (const line of text.split(/\r?\n/)) {
-      if (/^K1[12345]/.test(line)) slots += packet.task ? 1 : 0;
-      else if (/^@/.test(line)) slots += packet.selected ? 1 : 0;
+      if (/^K1[12345]/.test(line)) slots += context.task ? 1 : 0;
+      else if (/^@/.test(line)) slots += context.selected ? 1 : 0;
       else if (/^[EOC](\s|[A-Za-z0-9_])/.test(line)) {
         const isK15 = /^K15/m.test(text);
         const parts = line.slice(isK15 ? 1 : 2).split(/\s+/).filter(Boolean);
@@ -1606,7 +1606,7 @@ function countContextSlots(packet: any, output: string): number {
       }
       else if (/^[IURV]\s+/.test(line)) slots += line.slice(2).split(/\s+/).filter(Boolean).length;
       else if (/^K15/m.test(text) && /^[IURV]\S/.test(line)) slots += line.slice(1).split(/\s+/).filter(Boolean).length;
-      else if (/^!/.test(line)) slots += packet.rule ? 1 : 0;
+      else if (/^!/.test(line)) slots += context.rule ? 1 : 0;
     }
     return Math.min(expectedSlots, Math.max(1, slots));
   }

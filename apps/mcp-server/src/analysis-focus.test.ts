@@ -13,12 +13,11 @@ const focusKeys = [
   'KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT',
   'KLAURO_AI_ELEMENT_DESCRIPTIONS',
   'KLAURO_EMBEDDING_ENABLED',
-  'KLAURO_OLLAMA_AUTO',
-  'OLLAMA_BASE_URL',
-  'OLLAMA_MODEL',
+  'KLAURO_FULL_REBUILD_ON_CONFIG_CHANGE',
+  'OPENAI_MODEL',
 ] as const;
 
-test('ui-overview focus enables local AI enrichment without embeddings', async () => {
+test('ui-overview focus enables AI enrichment without silently opting into local AI', async () => {
   await withCleanFocusEnv(async () => {
     const seen = await withAnalysisFocus('ui-overview', async () => ({
       focus: process.env.KLAURO_ANALYSIS_FOCUS,
@@ -31,45 +30,41 @@ test('ui-overview focus enables local AI enrichment without embeddings', async (
       elementLimit: process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT,
       elements: process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS,
       embeddings: process.env.KLAURO_EMBEDDING_ENABLED,
-      ollamaAuto: process.env.KLAURO_OLLAMA_AUTO,
-      ollamaBaseUrl: process.env.OLLAMA_BASE_URL,
-      ollamaModel: process.env.OLLAMA_MODEL,
     }));
 
     assert.equal(seen.focus, 'ui-overview');
     assert.equal(seen.interpretation, 'true');
     assert.equal(seen.force, 'true');
     assert.equal(seen.deterministicKeep, 'false');
-    assert.equal(seen.interpretationBudget, '240000');
-    assert.equal(seen.elementBudget, '240000');
+    assert.equal(seen.interpretationBudget, '45000');
+    assert.equal(seen.elementBudget, '90000');
     assert.equal(seen.elementBatchSize, '4');
     assert.equal(seen.elementLimit, '8');
     assert.equal(seen.elements, 'true');
     assert.equal(seen.embeddings, 'false');
-    assert.equal(seen.ollamaAuto, 'true');
-    assert.equal(seen.ollamaBaseUrl, 'http://127.0.0.1:11434');
-    assert.equal(seen.ollamaModel, 'qwen3:8b');
   });
 });
 
-test('ui-overview focus respects explicitly configured local model and restores env', async () => {
+test('ui-overview focus restores hosted provider env without introducing local model env', async () => {
   await withCleanFocusEnv(async () => {
-    process.env.OLLAMA_MODEL = 'qwen3-coder:latest';
+    process.env.OPENAI_MODEL = 'hosted-model';
     process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT = '3';
 
     const seen = await withAnalysisFocus('ui-overview', async () => ({
-      model: process.env.OLLAMA_MODEL,
+      model: process.env.OPENAI_MODEL,
       limit: process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT,
+      localModel: process.env.OLLAMA_MODEL,
     }));
 
-    assert.equal(seen.model, 'qwen3-coder:latest');
+    assert.equal(seen.model, 'hosted-model');
     assert.equal(seen.limit, '3');
-    assert.equal(process.env.OLLAMA_MODEL, 'qwen3-coder:latest');
+    assert.equal(seen.localModel, undefined);
+    assert.equal(process.env.OPENAI_MODEL, 'hosted-model');
     assert.equal(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT, '3');
   });
 });
 
-test('agent-fast focus keeps required AI summary and capability enrichment while disabling heavier layers', async () => {
+test('agent-fast focus keeps required AI summary and capability enrichment without auto-starting local AI', async () => {
   await withCleanFocusEnv(async () => {
     const seen = await withAnalysisFocus('agent-fast', async () => ({
       focus: process.env.KLAURO_ANALYSIS_FOCUS,
@@ -82,24 +77,20 @@ test('agent-fast focus keeps required AI summary and capability enrichment while
       elements: process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS,
       embeddings: process.env.KLAURO_EMBEDDING_ENABLED,
       excludeLegacy: process.env.KLAURO_AGENT_FAST_EXCLUDE_LEGACY,
-      ollamaAuto: process.env.KLAURO_OLLAMA_AUTO,
-      ollamaBaseUrl: process.env.OLLAMA_BASE_URL,
-      ollamaModel: process.env.OLLAMA_MODEL,
+      fullRebuildOnConfig: process.env.KLAURO_FULL_REBUILD_ON_CONFIG_CHANGE,
     }));
 
     assert.equal(seen.focus, 'agent-fast');
     assert.equal(seen.interpretation, 'true');
     assert.equal(seen.force, 'true');
     assert.equal(seen.deterministicKeep, 'false');
-    assert.equal(seen.interpretationBudget, '240000');
+    assert.equal(seen.interpretationBudget, '30000');
     assert.equal(seen.elements, 'true');
     assert.equal(seen.elementLimit, '8');
     assert.equal(seen.elementBatchSize, '4');
     assert.equal(seen.embeddings, 'false');
     assert.equal(seen.excludeLegacy, 'true');
-    assert.equal(seen.ollamaAuto, 'true');
-    assert.equal(seen.ollamaBaseUrl, 'http://127.0.0.1:11434');
-    assert.equal(seen.ollamaModel, 'qwen3:8b');
+    assert.equal(seen.fullRebuildOnConfig, 'false');
   });
 });
 
@@ -114,20 +105,16 @@ test('deep-context focus enables semantic depth without bulk element description
       elementLimit: process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT,
       elements: process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS,
       embeddings: process.env.KLAURO_EMBEDDING_ENABLED,
-      ollamaAuto: process.env.KLAURO_OLLAMA_AUTO,
-      ollamaModel: process.env.OLLAMA_MODEL,
     }));
 
     assert.equal(seen.focus, 'deep-context');
     assert.equal(seen.interpretation, 'true');
     assert.equal(seen.force, 'false');
     assert.equal(seen.deterministicKeep, 'false');
-    assert.equal(seen.interpretationBudget, '240000');
+    assert.equal(seen.interpretationBudget, '60000');
     assert.equal(seen.elementLimit, '8');
     assert.equal(seen.elements, 'true');
     assert.equal(seen.embeddings, 'true');
-    assert.equal(seen.ollamaAuto, 'true');
-    assert.equal(seen.ollamaModel, 'qwen3:8b');
   });
 });
 

@@ -193,7 +193,7 @@ if (options.firstValue) {
   } else {
     const firstValue = runFirstValue(repoPath);
     report(firstValue.analysisCheck);
-    report(firstValue.packetCheck);
+    report(firstValue.contextCheck);
     if (firstValue.summary) {
       print('');
       print('First value summary:');
@@ -248,7 +248,7 @@ function runFirstValue(repoPath) {
         detail: `agent-fast analysis failed: ${trimCommandOutput(analyze.stderr || analyze.stdout)}`,
         fix: `Run manually: node ${cliPath} analyze ${repoPath} --analysis-focus agent-fast --json`,
       },
-      packetCheck: { id: 'first-value-work-packet', status: 'fail', detail: 'Skipped because analysis failed.' },
+      contextCheck: { id: 'first-value-agent-context', status: 'fail', detail: 'Skipped because analysis failed.' },
     };
   }
 
@@ -259,9 +259,9 @@ function runFirstValue(repoPath) {
     analyzePayload = undefined;
   }
 
-  const packet = spawnSync(process.execPath, [
+  const contextResult = spawnSync(process.execPath, [
     cliPath,
-    'agent-work-packet',
+    'agent-context',
     repoPath,
     '--task-type',
     'orient',
@@ -272,31 +272,31 @@ function runFirstValue(repoPath) {
     '--quiet',
     '--json',
   ], { cwd: packageRoot, encoding: 'utf8', env: process.env, maxBuffer: 64 * 1024 * 1024 });
-  if (packet.status !== 0) {
+  if (contextResult.status !== 0) {
     return {
       analysisCheck: {
         id: 'first-value-analysis',
         status: 'pass',
         detail: `agent-fast analysis completed in ${Date.now() - startedAt}ms (${analyzePayload?.output?.nodes?.length || 0} nodes).`,
       },
-      packetCheck: {
-        id: 'first-value-work-packet',
+      contextCheck: {
+        id: 'first-value-agent-context',
         status: 'fail',
-        detail: `work packet failed: ${trimCommandOutput(packet.stderr || packet.stdout)}`,
-        fix: `Run manually: node ${cliPath} agent-work-packet ${repoPath} --task-type orient --target "system overview" --response-profile capsule-only --json`,
+        detail: `agent context failed: ${trimCommandOutput(contextResult.stderr || contextResult.stdout)}`,
+        fix: `Run manually: node ${cliPath} agent-context ${repoPath} --task-type orient --target "system overview" --response-profile capsule-only --json`,
       },
     };
   }
 
-  let packetPayload;
+  let contextPayload;
   try {
-    packetPayload = JSON.parse(packet.stdout);
+    contextPayload = JSON.parse(contextResult.stdout);
   } catch {
-    packetPayload = undefined;
+    contextPayload = undefined;
   }
 
   const output = analyzePayload?.output || {};
-  const firstFiles = packetPayload?.first_files_to_read || packetPayload?.file_plan?.first_files_to_read || [];
+  const firstFiles = contextPayload?.first_files_to_read || contextPayload?.file_plan?.first_files_to_read || [];
   const totalMs = Date.now() - startedAt;
   return {
     analysisCheck: {
@@ -304,18 +304,18 @@ function runFirstValue(repoPath) {
       status: 'pass',
       detail: `agent-fast analysis completed in ${totalMs}ms (${output.nodes?.length || 0} nodes, ${output.edges?.length || 0} edges, ${output.entry_points?.length || 0} entry points).`,
     },
-    packetCheck: {
-      id: 'first-value-work-packet',
-      status: packetPayload ? 'pass' : 'warn',
-      detail: packetPayload
-        ? `Generated an agent work packet with ${Array.isArray(firstFiles) ? firstFiles.length : 0} first file(s) and ${packetPayload.token_budget?.estimated_tokens || packetPayload.budget?.estimated_tokens || 'compact'} token budget.`
-        : 'Work packet completed but JSON output could not be parsed.',
+    contextCheck: {
+      id: 'first-value-agent-context',
+      status: contextPayload ? 'pass' : 'warn',
+      detail: contextPayload
+        ? `Generated agent context with ${Array.isArray(firstFiles) ? firstFiles.length : 0} first file(s) and ${contextPayload.token_budget?.estimated_tokens || contextPayload.budget?.estimated_tokens || 'compact'} token budget.`
+        : 'Agent context completed but JSON output could not be parsed.',
     },
     summary: [
       `Repo: ${repoPath}`,
       `System: ${output.system?.name || path.basename(repoPath)}`,
       `Graph: ${output.nodes?.length || 0} nodes, ${output.edges?.length || 0} edges, ${output.entry_points?.length || 0} entry points`,
-      `Agent packet: ${packetPayload?.task?.task_type || 'orient'} / ${packetPayload?.task?.target || 'system overview'}`,
+      `Agent context: ${contextPayload?.task?.task_type || 'orient'} / ${contextPayload?.task?.target || 'system overview'}`,
       firstFiles.length ? `First files: ${firstFiles.slice(0, 5).map(file => typeof file === 'string' ? file : file.path || file.file).filter(Boolean).join(', ')}` : 'First files: none reported',
     ].join('\n'),
   };
@@ -373,7 +373,7 @@ function printHelp() {
     '  --no-register          Skip claude mcp add; print the command instead',
     '  --rebuild              Force npm run build even when dist/ exists',
     '  --skip-self-check      Skip the handshake and resolve_agent_analysis self-check',
-    '  --first-value          Analyze [repo-path] with the fast agent layer and print an agent work packet summary',
+    '  --first-value          Analyze [repo-path] with the fast agent layer and print an agent context summary',
     '  -h, --help             Show this help',
   ].join('\n'));
 }

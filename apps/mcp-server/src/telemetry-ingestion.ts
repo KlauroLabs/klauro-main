@@ -152,7 +152,7 @@ export async function ingestTelemetryBatch(
     guidance: [
       'Ingested telemetry is stored with source "ingested" and drives get_runtime_observations and get_operational_priorities by default.',
       'Unmatched events are stored, not dropped; use their hints plus get_runtime_instrumentation_plan to improve correlation.',
-      'Use get_agent_work_packet with a matched static_target.file before editing the implicated code.',
+      'Use get_agent_context with a matched static_target.file before editing the implicated code.',
     ],
   };
 }

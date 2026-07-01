@@ -64,7 +64,7 @@ System overview combining architecture summary, tech stack, system purpose, capa
 
 Default agent bootstrap payload for coding agents.
 
-**Includes:** default-use rule, readiness report, start context, task plan, work packet, idiom context, file read plan, agent workbench guidance, and ready-to-use prompt text.
+**Includes:** agent-context-ready rule, readiness report, start context, task plan, agent context, idiom context, file read plan, agent workbench guidance, and ready-to-use prompt text.
 
 ---
 
@@ -72,29 +72,29 @@ Default agent bootstrap payload for coding agents.
 
 Default CAS-backed start context for coding agents before broad file reads.
 
-**Includes:** agent default-use rule, readiness summary, system summary, scale metrics, top entry/exit points, connected nodes, runtime links, idiom summary, answer-pack status, recommended first MCP tools, and file-read guidance.
+**Includes:** agent-context-ready rule, readiness summary, system summary, scale metrics, top entry/exit points, connected nodes, runtime links, idiom summary, answer-pack status, recommended first MCP tools, and file-read guidance.
 
 ---
 
 ## `klauro://{project_name}/agent-readiness`
 
-Default-use readiness score and gaps for agent adoption.
+Agent-use readiness score and gaps for agent adoption.
 
-**Includes:** pass/warn/fail status, score, `default_use`, summary metrics, readiness gates, adoption gaps, and required agent behavior.
+**Includes:** pass/warn/fail status, score, `agent_context_ready`, summary metrics, readiness gates, adoption gaps, and required agent behavior.
 
 ---
 
 ## `klauro://{project_name}/agent-doctor`
 
-One-shot default-use health report for coding agents.
+One-shot agent-context-ready health report for coding agents.
 
-**Includes:** pass/warn/fail status, `default_use`, readiness report, analysis freshness, test discovery evidence, runtime event contract proof, runtime SDK package proof, golden snapshot comparison, and first recommended MCP tools.
+**Includes:** pass/warn/fail status, `agent_context_ready`, readiness report, analysis freshness, test discovery evidence, runtime event contract proof, runtime SDK package proof, golden snapshot comparison, and first recommended MCP tools.
 
 ---
 
 ## `klauro://{project_name}/agent-defaults`
 
-Install-ready default-use instructions for coding agents.
+Install-ready agent-context-ready instructions for coding agents.
 
 **Includes:** required agent rule, MCP server command, first calls, prompt text, doctor output, and bootstrap output.
 
@@ -204,8 +204,8 @@ Resources are best for loading a complete view of a domain in a single read. Too
 |------|-----|
 | Start an agent session | Resource: `klauro://{name}/agent-bootstrap` or Prompt: `agent_coding_session` |
 | Check whether agents should default to MCP | Resource: `klauro://{name}/agent-readiness` or Tool: `evaluate_agent_readiness` |
-| Run the full agent default-use doctor | Resource: `klauro://{name}/agent-doctor` or Tool: `get_agent_doctor` |
-| Install default-use agent instructions | Resource: `klauro://{name}/agent-defaults` or Tool: `install_agent_default_config` |
+| Run the full agent-context-ready doctor | Resource: `klauro://{name}/agent-doctor` or Tool: `get_agent_doctor` |
+| Install agent-context-ready agent instructions | Resource: `klauro://{name}/agent-defaults` or Tool: `install_agent_default_config` |
 | Check whether stored analysis is stale | Resource: `klauro://{name}/freshness` or Tool: `get_analysis_freshness` |
 | Verify whether tests were found or missed | Resource: `klauro://{name}/test-discovery` or Tool: `get_test_discovery_evidence` |
 | Get SDK runtime event payloads | Resource: `klauro://{name}/runtime-event-contract` or Tool: `get_runtime_event_contract` |

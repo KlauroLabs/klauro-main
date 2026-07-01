@@ -697,7 +697,7 @@ function nounPhrases(text: string): string[] {
     .flatMap(match => match[1].split(/,|\band\b/gi))
     .map(cleanConceptTerm)
     .filter(Boolean);
-  const explicitDomainTerms = Array.from(text.matchAll(/\b(auth|tenant|billing|payment|portfolio|trading|report|analytics|notification|workspace|proposal|preview|contract|migration|repository|controller|component|dashboard|organization|user|role|access|claim|claims|intake|evidence|packet|review|queue|policy|audit|export|sla|escalation|digest|webhook|postgres|persistence|worker|background)\w*\b/gi))
+  const explicitDomainTerms = Array.from(text.matchAll(/\b(auth|tenant|billing|payment|portfolio|trading|report|analytics|notification|workspace|proposal|preview|contract|migration|repository|controller|component|dashboard|organization|user|role|access|claim|claims|intake|evidence|context|review|queue|policy|audit|export|sla|escalation|digest|webhook|postgres|persistence|worker|background)\w*\b/gi))
     .map(match => match[0].toLowerCase());
   const properConcepts = Array.from(text.matchAll(/\b([A-Z][a-zA-Z0-9]+(?:\s+[A-Z][a-zA-Z0-9]+){0,2})\b/g))
     .map(match => cleanConceptTerm(match[1]))

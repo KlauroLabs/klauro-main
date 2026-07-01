@@ -2,7 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { loadAnalysis } from './storage';
-import { getAgentWorkPacket } from './agent-adoption';
+import { getAgentContext } from './agent-adoption';
 import { RETRIEVAL_FIXTURE } from './semantic-retrieval-fixture';
 
 type Arm = 'semantic' | 'lexical';
@@ -15,7 +15,7 @@ interface ArmResult {
   correct: boolean;
   rank: number;
   filesInReadPlan: number;
-  packetTokens: number;
+  contextTokens: number;
 }
 
 interface ArmAggregate {
@@ -23,7 +23,7 @@ interface ArmAggregate {
   entries: number;
   accuracy: number;
   avgFilesInReadPlan: number;
-  avgPacketTokens: number;
+  avgContextTokens: number;
 }
 
 function rankOfExpected(
@@ -38,8 +38,8 @@ function rankOfExpected(
   return 0;
 }
 
-function estimatePacketTokens(packet: unknown): number {
-  return Math.ceil(JSON.stringify(packet).length / 4);
+function estimateContextTokens(context: unknown): number {
+  return Math.ceil(JSON.stringify(context).length / 4);
 }
 
 async function readKlaurorc(repoPath: string): Promise<{ file: string; original: string }> {
@@ -71,8 +71,8 @@ async function measure(
   query: string,
   expectedNodeIds: string[],
 ): Promise<ArmResult> {
-  const packet = await getAgentWorkPacket(cas, repoPath, { task_type: 'modify', target: query });
-  const resolution = packet.target_resolution;
+  const context = await getAgentContext(cas, repoPath, { task_type: 'modify', target: query });
+  const resolution = context.target_resolution;
   const candidates = (resolution.candidates || []) as Array<{ id?: string }>;
   const resolvedNodeId = resolution.selected_node_id;
   return {
@@ -82,8 +82,8 @@ async function measure(
     resolvedNodeId,
     correct: Boolean(resolvedNodeId && expectedNodeIds.includes(resolvedNodeId)),
     rank: rankOfExpected(candidates, expectedNodeIds),
-    filesInReadPlan: packet.file_read_plan.length,
-    packetTokens: estimatePacketTokens(packet),
+    filesInReadPlan: context.file_read_plan.length,
+    contextTokens: estimateContextTokens(context),
   };
 }
 
@@ -94,7 +94,7 @@ function aggregate(arm: Arm, results: ArmResult[]): ArmAggregate {
     entries: count,
     accuracy: results.filter(result => result.correct).length / count,
     avgFilesInReadPlan: results.reduce((sum, result) => sum + result.filesInReadPlan, 0) / count,
-    avgPacketTokens: results.reduce((sum, result) => sum + result.packetTokens, 0) / count,
+    avgContextTokens: results.reduce((sum, result) => sum + result.contextTokens, 0) / count,
   };
 }
 
@@ -132,15 +132,15 @@ async function main(): Promise<void> {
 
   const accuracyDelta = semanticAgg.accuracy - lexicalAgg.accuracy;
   const filesDelta = semanticAgg.avgFilesInReadPlan - lexicalAgg.avgFilesInReadPlan;
-  const tokensDelta = semanticAgg.avgPacketTokens - lexicalAgg.avgPacketTokens;
+  const tokensDelta = semanticAgg.avgContextTokens - lexicalAgg.avgContextTokens;
 
-  console.log('\nEmbedding Value Benchmark - Work-Packet Target Resolution');
+  console.log('\nEmbedding Value Benchmark - Work-Context Target Resolution');
   console.log('='.repeat(72));
   console.log('arm        accuracy   avg files   avg tokens');
   for (const agg of [semanticAgg, lexicalAgg]) {
     console.log(
       `${agg.arm.padEnd(10)} ${agg.accuracy.toFixed(3).padStart(8)}` +
-        ` ${agg.avgFilesInReadPlan.toFixed(2).padStart(11)} ${agg.avgPacketTokens.toFixed(0).padStart(12)}`,
+        ` ${agg.avgFilesInReadPlan.toFixed(2).padStart(11)} ${agg.avgContextTokens.toFixed(0).padStart(12)}`,
     );
   }
   console.log('-'.repeat(72));
@@ -152,7 +152,7 @@ async function main(): Promise<void> {
   console.log(`Fixture entries: ${RETRIEVAL_FIXTURE.length}`);
   console.log(
     `Semantic vs lexical: accuracy ${accuracyDelta >= 0 ? '+' : ''}${accuracyDelta.toFixed(3)}, ` +
-      `avg tokens ${tokensDelta >= 0 ? '+' : ''}${tokensDelta.toFixed(0)} per packet`,
+      `avg tokens ${tokensDelta >= 0 ? '+' : ''}${tokensDelta.toFixed(0)} per context`,
   );
 
   const reportDir = path.join(__dirname, '..', '.klauro-embedding-value-benchmark');
@@ -168,7 +168,7 @@ async function main(): Promise<void> {
         deltas: {
           accuracy: accuracyDelta,
           avg_files_in_read_plan: filesDelta,
-          avg_packet_tokens: tokensDelta,
+          avg_context_tokens: tokensDelta,
         },
         per_task: RETRIEVAL_FIXTURE.map((entry, index) => ({
           query: entry.query,

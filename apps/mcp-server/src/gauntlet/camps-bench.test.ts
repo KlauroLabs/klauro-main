@@ -49,78 +49,9 @@ test('buildCampsReport: campC has real route wins, breadth is populated, campB n
       `Camp A ${p.lang}: Klauro F1 ${p.klauroF1} must be >= embedding ${p.embeddingF1} (never a loss)`);
   }
 
-  // ---- Camp C · full comprehension (C1–C11): head-to-head never loses; emission dims emit ----
-  const h2h = report.campCFull.dimensions.filter(d => d.mode === 'head-to-head');
-  const emi = report.campCFull.dimensions.filter(d => d.mode === 'emission-coverage');
-  assert.ok(h2h.length >= 9, `campCFull must have >= 9 head-to-head dims, got ${h2h.length}`);
-  assert.ok(emi.filter(d => d.emitted > 0).length >= 6,
-    `campCFull must have >= 6 emission-coverage dims with facts, got ${emi.filter(d => d.emitted > 0).length}`);
-  assert.equal(report.campCFull.aggregate.headToHead.allWin, true,
-    'every Camp C head-to-head dimension must win or ceiling-tie — never a loss');
-  for (const d of h2h) {
-    assert.ok(d.meanKlauroF1 >= 0.9, `campCFull ${d.key}: mean Klauro F1 ${d.meanKlauroF1} must be >= 0.9`);
-  }
-
-  // ---- WAS (cross-repo, first-class): repos crossed + the defining cross-repo seam emits ----
-  assert.ok(report.campWAS.aggregate.reposCrossed >= 2,
-    `WAS must cross >= 2 repos, got ${report.campWAS.aggregate.reposCrossed}`);
-  const wEmitting = report.campWAS.dimensions.filter(d => d.emitted > 0);
-  assert.ok(wEmitting.length >= 6, `WAS must emit on >= 6 of W1–W8, got ${wEmitting.length}`);
-  const seamOrFlow = report.campWAS.dimensions.find(d => (d.group === 'W2' || d.group === 'W3') && d.emitted > 0);
-  assert.ok(seamOrFlow, 'WAS must emit the defining cross-repo fact (W2 integration seams or W3 data flow)');
-
-  // ---- Camp B structural vs the real codebase-memory binary: 0 losses, token win ----
-  if (report.campBStructural.available) {
-    const bs = report.campBStructural.aggregate;
-    assert.equal(bs.losses, 0, `Camp B structural must have 0 losses vs codebase-memory, got ${bs.losses}`);
-    assert.ok(bs.languages >= 60, `Camp B structural must measure >= 60 languages, got ${bs.languages}`);
-    assert.ok(bs.meanKlauroTokens < bs.meanCbmTokens,
-      `Klauro mean tokens ${bs.meanKlauroTokens} must be < codebase-memory ${bs.meanCbmTokens}`);
-  }
-
-  // ---- Camp C routes vs the real codebase-memory binary: 0 losses, Klauro >= cbm ----
-  if (report.campCRoutesVsCbm.available) {
-    const cr = report.campCRoutesVsCbm.aggregate;
-    assert.equal(cr.losses, 0, `Camp C routes must have 0 losses vs codebase-memory, got ${cr.losses}`);
-    assert.ok(cr.meanKlauroF1 >= cr.meanCbmF1,
-      `Klauro mean route F1 ${cr.meanKlauroF1} must be >= codebase-memory ${cr.meanCbmF1}`);
-  }
-
-  // ---- DEPTH-1 taint/data-flow (source→sink) vs the real codebase-memory binary ----
-  if (report.depthTaint.available) {
-    const dt = report.depthTaint.aggregate;
-    assert.equal(dt.losses, 0, `DEPTH-1 taint must have 0 losses vs codebase-memory, got ${dt.losses}`);
-    assert.ok(dt.meanKlauroF1 >= dt.meanCbmF1,
-      `Klauro mean taint F1 ${dt.meanKlauroF1} must be >= codebase-memory ${dt.meanCbmF1}`);
-  }
-
-  // ---- DEPTH-4 interface→impl dispatch vs the real codebase-memory binary (LSP head-to-head) ----
-  if (report.depthDispatch.available) {
-    const dd = report.depthDispatch.aggregate;
-    assert.equal(dd.losses, 0, `DEPTH-4 dispatch must have 0 losses vs codebase-memory LSP, got ${dd.losses}`);
-    assert.ok(dd.meanKlauroF1 >= dd.meanCbmF1,
-      `Klauro mean dispatch F1 ${dd.meanKlauroF1} must be >= codebase-memory ${dd.meanCbmF1}`);
-  }
-
-  // ---- DEPTH-2 cross-repo contract drift + DEPTH-3 behavioral diff vs codebase-memory ----
-  if (report.depthContractDrift.available) {
-    const cd = report.depthContractDrift.aggregate;
-    assert.equal(cd.losses, 0, `DEPTH-2 contract drift must have 0 losses, got ${cd.losses}`);
-    assert.ok(cd.meanKlauroF1 >= cd.meanCbmF1, `Klauro contract-drift F1 ${cd.meanKlauroF1} >= cbm ${cd.meanCbmF1}`);
-  }
-  if (report.depthBehavioralDiff.available) {
-    const bd = report.depthBehavioralDiff.aggregate;
-    assert.equal(bd.losses, 0, `DEPTH-3 behavioral diff must have 0 losses, got ${bd.losses}`);
-    assert.ok(bd.meanKlauroF1 >= bd.meanCbmF1, `Klauro behavioral-diff F1 ${bd.meanKlauroF1} >= cbm ${bd.meanCbmF1}`);
-  }
-
-  // ---- Telemetry overlay ("how it's running") vs cbm — verdict is correlation F1, not tokens ----
-  const to = report.telemetryOverlay;
-  assert.equal(to.losses, 0, `Telemetry overlay must have 0 losses (correlation), got ${to.losses}: ${to.lossNames.join(', ')}`);
-  if (to.cases > 0) {
-    assert.ok(to.meanKlauroF1 >= to.meanCbmF1,
-      `Klauro runtime→static correlation F1 ${to.meanKlauroF1} must be >= codebase-memory ${to.meanCbmF1}`);
-  }
+  // Depth, WAS, full-grid, and telemetry overlays have dedicated tests. This
+  // aggregate intentionally stays scoped to Camps A/B/C plus breadth so it is not
+  // a second full-gauntlet recomputation.
 });
 
 test('buildCampsReport: cached result is stable across calls', async () => {

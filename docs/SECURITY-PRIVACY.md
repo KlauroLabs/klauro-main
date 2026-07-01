@@ -7,9 +7,21 @@ This document is the authoritative answer to two questions for teams running Kla
 
 Everything below is verified against the current code. Implemented behavior and planned behavior are strictly separated.
 
-## Local-Only Guarantee (Default Configuration)
+## Default Local Connector Behavior
 
-With no `.klaurorc`, no AI provider API keys, no embedding API key, no S3 bucket variables, and no explicit remote commands, Klauro makes **zero network calls**. Analysis runs locally (`analyzer.mode` defaults to `local`), embeddings use the local hash provider (`klauro-local-hash-v1`), and all artifacts are written under `~/.klauro/` (or `KLAURO_STORAGE_PATH`). Specifically, the following NEVER leave the machine with default config:
+The customer product path is account-gated. The local connector can keep a
+lightweight deterministic cache and in-flight context for MCP, but
+shared CAS/WAS analysis, hosted AI enrichment, telemetry correlation, and
+durable history live in the Klauro service. Local developer-only full analysis
+exists for Klauro engineering and self-hosted evaluation, but it is not the
+commercial default.
+
+With no `.klaurorc`, no account token, no embedding API key, no S3 bucket
+variables, and no explicit remote commands, Klauro makes **zero network calls**
+and does not upload a repository. The connector cannot produce commercial
+hosted value until it has an account token and analyzer URL. The following
+NEVER leave the machine unless you explicitly run a remote sync/analyze path or
+configure an egress provider:
 
 - Source code text (including `node.source.raw` snippets stored in the CAS)
 - File paths and directory names
@@ -53,25 +65,27 @@ As of this release the analyzer relativizes absolute project paths throughout th
 
 Ordered worst-first by payload sensitivity.
 
-### 1. Remote analyzer mode — sends source code (explicit opt-in)
+### 1. Hosted analyzer source paths — account-gated
 
 - Code: `apps/mcp-server/src/remote-sync-client.ts`, `remote-source.ts`
-- Active when: `.klaurorc` sets `analyzer.mode: "remote"`, or you run `klauro remote-analyze` / `remote-sync`, or MCP tools `analyze_codebase_remote` / `sync_codebase_remote`. **The default mode is `local`; plain `klauro analyze` and the MCP `analyze_codebase` tool never upload anything.**
-- Payload: full filtered source snapshot (file contents + sha256 hashes + relative paths), or dirty-tree packets (changed file contents, deleted paths, `git diff` against HEAD, HEAD commit hash), plus project name, absolute project root path, and project/organization IDs. Filtering: `.klaurorc` include/exclude, `.klauroignore`, safe defaults (`.env*`, `*.pem`, `*.key`, `secrets/**`, dependency/build dirs), 1 MB per-file cap.
-- Destination: `serverUrl` from config / `--server-url` / `KLAURO_ANALYZER_URL` (defaults to `http://127.0.0.1:8787`, i.e., loopback).
-- Controls: `policy.allowRemoteAnalyzer=false` blocks all remote calls; `policy.allowedAnalyzerHosts` pins hosts; `policy.requireSelfHosted=true` blocks non-self-hosted servers; `upload.sendGitDiff=false`, `upload.sendDeletedPaths=false`, `upload.allowDirtyTreeSync=false`. These policies are enforced on every remote call regardless of configured mode. Preview with `klauro upload-manifest`.
-- Documented: `docs/mcp/REMOTE-ANALYZER.md`, `docs/mcp/SECURITY-PACKET.md`.
+- Active when: `.klaurorc` sets `analyzer.mode: "remote"`, or you run `klauro remote-analyze` / `remote-sync`, or MCP tools `analyze_codebase_remote` / `sync_codebase_remote`. Local `klauro index` builds a manifest and in-flight context but does not publish durable shared project analysis by itself. All product connector commands require a Klauro account token with an active or trialing entitlement unless `KLAURO_CONNECTOR_AUTH_DISABLED=true` is explicitly set for Klauro development.
+- Connected-provider payload: when a Git provider repo is connected, Klauro's hosted service pulls and analyzes selected-branch commits on the VPS/cloud side. The developer laptop sends no full source snapshot for those provider-triggered analyses.
+- Local committed-source payload: full filtered committed source snapshot (file contents + sha256 hashes + relative paths), plus project name, absolute project root path, Git remote/provider, branch, commit hash, transfer recommendation, and project/workspace IDs. This creates the same shared project revision as provider checkout analysis.
+- In-flight payload: dirty-tree or branch/session contexts (changed file contents, deleted paths, `git diff` against HEAD, HEAD commit hash), plus project name, absolute project root path, Git remote/provider, branch, base commit, dirty flag, transfer recommendation, project/workspace IDs, and session/author metadata when available. This is provisional context, not durable project truth. Product policy may scope it to one developer/device or share it with authorized workspace members for deduplication and conflict avoidance.
+- Filtering: `.klaurorc` include/exclude, `.klauroignore`, safe defaults (`.env*`, `*.pem`, `*.key`, `secrets/**`, dependency/build dirs), 1 MB per-file cap. JSON request bodies above 1 KB are gzip-compressed in transit.
+- Destination: `serverUrl` from config / `--server-url` / `KLAURO_ANALYZER_URL` (defaults to Klauro Cloud).
+- Controls: `policy.allowRemoteAnalyzer=false` blocks all remote calls; `policy.allowedAnalyzerHosts` pins hosts; `policy.requireSelfHosted=true` blocks non-self-hosted servers; `upload.sendGitDiff=false`, `upload.sendDeletedPaths=false`, `upload.allowDirtyTreeSync=false`. These policies are enforced on every remote call regardless of configured mode. Preview with `klauro upload-manifest`; build in-flight context with `klauro index --dirty-tree`.
+- Documented: `docs/mcp/REMOTE-ANALYZER.md`, `docs/mcp/SECURITY-REVIEW.md`.
 
-### 2. Cloud AI providers — send structural facts and bounded code excerpts (opt-in via API key)
+### 2. Hosted AI providers — send structural facts and bounded code excerpts (server-side only)
 
 - Code: `packages/analyzer-core/src/ai/providers/{openai,claude}-provider.ts`, `ai-service.ts`; callers in `analyzer/core/orchestrator.ts` and `apps/mcp-server/src/description-enrichment.ts`
-- Active when: `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is set (or `OPENAI_BASE_URL`/`LOCAL_OPENAI_BASE_URL`/`AZURE_OPENAI_*` point at a server you choose). No key, no calls. `KLAURO_AI_INTERPRETATION=false` disables the analysis-time pass even with a key.
+- Active when the hosted analyzer service has `DEEPINFRA_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, hosted `OPENAI_BASE_URL`, or `AZURE_OPENAI_*` configured. Customer laptops do not need model runtimes or provider API keys. Loopback `OPENAI_BASE_URL`, `OLLAMA_BASE_URL`, and `LOCAL_OPENAI_BASE_URL` are ignored by the product AI configuration.
 - Payload classes (exact):
   - **Analysis-time interpretation pass** (`orchestrator.applyAIInterpretation` and element-description batches): structural facts only — system name, framework names, entry-point type counts, entity names, external service names, capability names, domain concept names, plus a short *derived* summary of project text (synthesized from package.json description / README / agent guide files — not raw excerpts). No code text.
   - **On-demand element descriptions** (`generate_element_description` MCP tool): the above context plus a **code excerpt of the target element, capped at 6,000 characters** (`readSourceExcerpt`), edge names, and the element's file path.
   - **AI code-analysis prompts** (`ai-prompts.ts`, used by legacy `ai-analyzer` paths): when a caller supplies code, it is truncated to **4,000 characters** (`truncateCode`).
 - Destinations: `api.openai.com` / Azure endpoint / custom `baseURL`, or `api.anthropic.com`.
-- Local alternatives (no cloud egress): `OLLAMA_BASE_URL` (local Ollama), `AI_LOCAL_ENABLED=true` (in-process transformers model — note: the model itself is **downloaded from the Hugging Face hub on first use**, which is a network call that sends no project data).
 
 ### 3. API embedding provider — sends embedding documents including code (opt-in via config + key)
 
@@ -107,7 +121,13 @@ Ordered worst-first by payload sensitivity.
 
 ## Cloud-AI Opt-In Semantics (Summary)
 
-Setting an AI provider API key opts you into sending, per analysis or per description request: structural metadata (names of files, functions, entities, capabilities, frameworks, external services), short derived project-text summaries, and — only for on-demand element descriptions — a code excerpt of the targeted element bounded at 6,000 characters. Klauro never sends whole files or the full repository to AI providers. To use AI features without cloud egress, point `OPENAI_BASE_URL`/`OLLAMA_BASE_URL` at a self-hosted model or set `AI_LOCAL_ENABLED=true`.
+Configuring an AI provider on the hosted analyzer opts the Klauro service into
+sending, per analysis or per description request: structural metadata (names of
+files, functions, entities, capabilities, frameworks, external services), short
+derived project-text summaries, and — only for on-demand element descriptions —
+a code excerpt of the targeted element bounded at 6,000 characters. Klauro never
+sends whole files or the full repository to AI providers. Local connectors do
+not run AI enrichment.
 
 ## Deletion Story: Fully Purging a Project
 
@@ -146,10 +166,14 @@ klauro purge --all        # equivalent to rm -rf ~/.klauro, with confirmation
 
 Purging data does not reverse the installation itself. `klauro uninstall` removes the Claude Code MCP registration and the Klauro operating-loop block from CLAUDE.md files written by `klauro install`.
 
-If you used opt-in egress, local deletion does not delete remote copies: remote analyzer server storage, S3 artifact buckets, AI provider/data-retention policies, and pgvector rows must be purged on those systems. Hosted retention controls (delete project / delete uploaded source / retention periods / audit trail) are **planned** — see `docs/mcp/SECURITY-PACKET.md`.
+If you used opt-in egress, local deletion does not delete remote copies: remote analyzer server storage, S3 artifact buckets, AI provider/data-retention policies, and pgvector rows must be purged on those systems. Hosted retention controls (delete project / delete uploaded source / retention periods / audit trail) are **planned** — see `docs/mcp/SECURITY-REVIEW.md`.
 
 ## Implemented vs Planned
 
-Implemented: local analysis default, path relativization in stored CAS, remote analyzer with policy gates and upload manifests, cloud AI opt-in with bounded prompts, local/file embeddings default with opt-in Voyage API, local telemetry ingestion with 14-day retention, S3 mirroring behind env vars.
+Implemented: local connector/cache behavior, path relativization in stored CAS,
+remote analyzer with policy gates, account entitlement checks, upload manifests,
+hosted AI opt-in with bounded prompts, local/file embeddings default with opt-in
+Voyage API, local telemetry ingestion with 14-day retention, S3 mirroring behind
+env vars.
 
-Planned (not active in this release): hosted telemetry ingestion endpoint (`api.klauro.io`), GitHub App import execution, change-history author/commit-message capture, hosted retention/deletion controls, SOC 2 program items listed in the security packet.
+Planned (not active in this release): hosted telemetry ingestion endpoint (`api.klauro.io`), GitHub App import execution, change-history author/commit-message capture, hosted retention/deletion controls, SOC 2 program items listed in the security context.

@@ -11,6 +11,13 @@ export { PHPAnalyzer } from './php-analyzer';
 export { RubyAnalyzer } from './ruby-analyzer';
 export { DartAnalyzer } from './dart-analyzer';
 export { TerraformAnalyzer } from './terraform-analyzer';
+export { CCppAnalyzer } from './c-cpp-analyzer';
+export { KotlinAnalyzer } from './kotlin-analyzer';
+export { SwiftAnalyzer } from './swift-analyzer';
+export { SolidityAnalyzer } from './solidity-analyzer';
+export { ElixirAnalyzer } from './elixir-analyzer';
+export { ShellAnalyzer } from './shell-analyzer';
+export { ProtobufAnalyzer } from './protobuf-analyzer';
 
 // Language analyzer mappings for easy lookup
 export const LanguageAnalyzers = {
@@ -18,7 +25,6 @@ export const LanguageAnalyzers = {
   javascript: 'TypeScriptJavaScriptAnalyzer',
   typescript: 'TypeScriptJavaScriptAnalyzer',
   java: 'JavaAnalyzer',
-  kotlin: 'JavaAnalyzer',
   scala: 'JavaAnalyzer',
   csharp: 'CSharpAnalyzer',
   fsharp: 'CSharpAnalyzer',
@@ -29,7 +35,17 @@ export const LanguageAnalyzers = {
   ruby: 'RubyAnalyzer',
   dart: 'DartAnalyzer',
   terraform: 'TerraformAnalyzer',
-  hcl: 'TerraformAnalyzer'
+  hcl: 'TerraformAnalyzer',
+  c: 'CCppAnalyzer',
+  cpp: 'CCppAnalyzer',
+  kotlin: 'KotlinAnalyzer',
+  swift: 'SwiftAnalyzer',
+  solidity: 'SolidityAnalyzer',
+  elixir: 'ElixirAnalyzer',
+  shell: 'ShellAnalyzer',
+  bash: 'ShellAnalyzer',
+  protobuf: 'ProtobufAnalyzer',
+  proto: 'ProtobufAnalyzer'
 } as const;
 
 // Supported languages list
@@ -117,7 +133,7 @@ export const ANALYZER_METADATA = [
   },
   {
     name: 'JavaAnalyzer',
-    languages: ['java', 'kotlin', 'scala'],
+    languages: ['java', 'scala'],
     frameworks: ['spring-boot', 'spring-mvc', 'hibernate', 'junit', 'maven', 'gradle'],
     priority: 90,
     category: 'language'
@@ -168,6 +184,55 @@ export const ANALYZER_METADATA = [
     name: 'TerraformAnalyzer',
     languages: ['terraform', 'hcl'],
     frameworks: ['terraform', 'opentofu'],
+    priority: 85,
+    category: 'language'
+  },
+  {
+    name: 'CCppAnalyzer',
+    languages: ['c', 'cpp'],
+    frameworks: ['cmake', 'make', 'native'],
+    priority: 90,
+    category: 'language'
+  },
+  {
+    name: 'KotlinAnalyzer',
+    languages: ['kotlin'],
+    frameworks: ['ktor', 'android', 'gradle'],
+    priority: 90,
+    category: 'language'
+  },
+  {
+    name: 'SwiftAnalyzer',
+    languages: ['swift'],
+    frameworks: ['swiftui', 'vapor', 'spm'],
+    priority: 90,
+    category: 'language'
+  },
+  {
+    name: 'SolidityAnalyzer',
+    languages: ['solidity'],
+    frameworks: ['hardhat', 'foundry', 'truffle'],
+    priority: 90,
+    category: 'language'
+  },
+  {
+    name: 'ElixirAnalyzer',
+    languages: ['elixir'],
+    frameworks: ['phoenix', 'ecto', 'otp'],
+    priority: 90,
+    category: 'language'
+  },
+  {
+    name: 'ShellAnalyzer',
+    languages: ['shell', 'bash', 'zsh'],
+    frameworks: ['shell'],
+    priority: 80,
+    category: 'language'
+  },
+  {
+    name: 'ProtobufAnalyzer',
+    languages: ['protobuf', 'proto'],
+    frameworks: ['grpc', 'buf'],
     priority: 85,
     category: 'language'
   }

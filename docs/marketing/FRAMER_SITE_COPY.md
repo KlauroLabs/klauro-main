@@ -36,7 +36,7 @@ Klauro replaces repo rediscovery with codebase understanding.
 
 Subheadline:
 
-Every AI coding agent burns time building a mental model before it can make a good change. Klauro analyzes the system once, then gives agents compact work packets and gives humans visualization of the same CAS truth layer.
+Every AI coding agent burns time building a mental model before it can make a good change. Klauro analyzes the system once, then gives agents compact agent contexts and gives humans visualization of the same CAS truth layer.
 
 Proof line:
 
@@ -80,9 +80,9 @@ Body: Engineers, founders, reviewers, and product leaders can inspect what was b
 
 Card 2:
 
-Title: MCP work packets for agents
+Title: MCP agent contexts for agents
 
-Body: Claude, Codex, Cursor, and other agents can query Klauro before broad source-file exploration. Work packets include target files, call paths, invariants, idioms, tests, risks, runtime priorities, and compact execution capsules.
+Body: Claude, Codex, Cursor, and other agents can query Klauro before broad source-file exploration. Agent contexts include target files, call paths, invariants, idioms, tests, risks, runtime priorities, and compact execution capsules.
 
 Card 3:
 
@@ -120,13 +120,13 @@ Agents should start with understanding, not repo search.
 
 Body:
 
-Before an agent edits, Klauro resolves the relevant analysis, selects the target, returns a compact work packet, and narrows the first files to inspect. The packet carries local architecture, idioms, behavioral invariants, risks, tests, runtime signals, and validation steps. After the edit, agents can validate behavior and idiom conformance before finalizing.
+Before an agent edits, Klauro resolves the relevant analysis, selects the target, returns a compact agent context, and narrows the first files to inspect. The context includes local architecture, idioms, behavioral invariants, risks, tests, runtime signals, and validation steps. After the edit, agents can validate behavior and idiom conformance before finalizing.
 
 Steps:
 
 1. Resolve the right codebase or monorepo slice.
 2. Get an agent start context and task-specific tool plan.
-3. Read a compact work packet instead of scanning the repo.
+3. Read a compact agent context instead of scanning the repo.
 4. Inspect only the first files Klauro identifies.
 5. Edit against local patterns and architecture.
 6. Validate invariants, tests, and idiom conformance.
@@ -143,7 +143,7 @@ Stat cards:
 - Up to 88% faster than targeted search.
 - 81% token reduction in the latest machine-wide proof.
 - 7.18x average incremental edit speedup.
-- 102 of 102 eligible local repos passed default-use readiness in the latest machine gauntlet.
+- 102 of 102 eligible local repos passed agent-context-ready readiness in the latest machine gauntlet.
 - 17 of 17 engineering task families strong under the quality-plus-token bar.
 
 Context paragraph:
@@ -162,7 +162,7 @@ Build large systems without forgetting what already exists.
 
 Body:
 
-Klauro also works before a repo exists. For a new product, agents can request a greenfield build packet that carries architecture guidance, domain ownership, test strategy, duplication gates, and growth rules. After the first slice is written, Klauro analyzes the new codebase and uses that CAS memory to guide the next slice.
+Klauro also works before a repo exists. For a new product, agents can request a greenfield build context that carries architecture guidance, domain ownership, test strategy, duplication gates, and growth rules. After the first slice is written, Klauro analyzes the new codebase and uses that CAS memory to guide the next slice.
 
 Use cases:
 
@@ -197,7 +197,7 @@ Not another agent. The context layer underneath them.
 
 Body:
 
-Editor indexes help agents find files. Project-management agents help teams act inside workflow tools. Klauro is the codebase truth layer underneath them: deterministic CAS output, architecture-aware context, compact MCP packets, idiom intelligence, proposal previews, incremental analysis, and runtime-informed priorities.
+Editor indexes help agents find files. Project-management agents help teams act inside workflow tools. Klauro is the codebase truth layer underneath them: deterministic CAS output, architecture-aware context, compact MCP contexts, idiom intelligence, proposal previews, incremental analysis, and runtime-informed priorities.
 
 Comparison points:
 
@@ -242,11 +242,11 @@ Key modules:
 
 - Start context for orientation.
 - Tool plans for modify, debug, review, trace, runtime, and cross-repo tasks.
-- Work packets for concrete code changes.
+- Agent contexts for concrete code changes.
 - Coding context for selected nodes or files.
 - Idiom validation before final output.
 - Behavioral invariant validation after edits.
-- Greenfield build packets for new projects.
+- Greenfield build contexts for new projects.
 - Proposal previews for multi-file plans and refactors.
 
 ### Visualization Page
@@ -338,7 +338,7 @@ Can it help with new projects?
 
 Answer:
 
-Yes. Greenfield build packets guide the first slice of a new system, then CAS memory guides later slices so agents avoid duplicated concepts and architecture drift.
+Yes. Greenfield build contexts guide the first slice of a new system, then CAS memory guides later slices so agents avoid duplicated concepts and architecture drift.
 
 Question:
 

@@ -1,5 +1,5 @@
 import type { CASOutput, ChangeReport } from '../../../packages/analyzer-core/src/types/cas.types';
-import type { RemoteFileChange, SourceManifest, SourceSnapshot, WorkingTreeChangePacket } from './remote-source';
+import type { RemoteFileChange, SourceManifest, SourceSnapshot, WorkingTreeChangeContext } from './remote-source';
 import type { ProposedFileInput } from './proposal-preview';
 
 export interface RemoteAnalyzeRequest {
@@ -14,7 +14,7 @@ export interface RemoteSyncRequest {
   project_id?: string;
   organization_id?: string;
   project_path?: string;
-  changes: WorkingTreeChangePacket | {
+  changes: WorkingTreeChangeContext | {
     project_name: string;
     base_commit?: string;
     git_diff?: string;
@@ -32,6 +32,25 @@ export interface RemoteAnalyzeResponse {
   manifest: SourceManifest;
   cas: CASOutput;
   change_report?: ChangeReport;
+}
+
+export interface RemoteProjectRevision {
+  analysis_id: string;
+  analysis_revision: number;
+  branch?: string;
+  commit?: string;
+  source: 'local_commit_submission' | 'git_provider' | 'manual';
+  generated_at: string;
+  files: number;
+  bytes: number;
+  nodes: number;
+  edges: number;
+}
+
+export interface RemoteProjectRevisionsResponse {
+  status: 'success';
+  analysis_id: string;
+  revisions: RemoteProjectRevision[];
 }
 
 export interface RemoteProposalPreviewRequest {
@@ -61,4 +80,4 @@ export interface RemoteErrorResponse {
   error: string;
 }
 
-export type RemoteAnalyzerResponse = RemoteAnalyzeResponse | RemoteErrorResponse;
+export type RemoteAnalyzerResponse = RemoteAnalyzeResponse | RemoteProjectRevisionsResponse | RemoteErrorResponse;

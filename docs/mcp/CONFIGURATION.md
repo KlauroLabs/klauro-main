@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Node.js 18+
+- Node.js 20+
 - npm
 - The Klauro proof-of-concept repository cloned locally
 
@@ -11,20 +11,27 @@
 ```bash
 cd apps/mcp-server
 npm install --legacy-peer-deps
+npm run build
 ```
 
 The `--legacy-peer-deps` flag is required due to tree-sitter native module peer dependency ranges.
 
 ## Running the Server
 
-The server runs directly via tsx with no build step:
+For product-style local use, run the bundled MCP entrypoint:
 
 ```bash
 cd apps/mcp-server
-npx tsx src/index.ts
+node dist/index.cjs
 ```
 
 The server uses stdio transport and waits for JSON-RPC messages on stdin.
+The `tsx src/index.ts` path is for local development only.
+
+The local MCP/client is expected to stay lightweight. Product runtime budgets,
+packaging rules, and cleanup commands live in [`../PRODUCT-RUNTIME.md`](../PRODUCT-RUNTIME.md).
+Gauntlet and benchmark artifacts are allowed to be heavy, but they must remain
+separate from the installable product path.
 
 ## Remote Analyzer Mode
 
@@ -39,13 +46,19 @@ Then analyze or sync through the hosted analyzer while caching returned CAS loca
 
 ```bash
 cd apps/mcp-server
-npm run init -- /absolute/path/to/repo --mode remote --server-url http://127.0.0.1:8787
+npm run init -- /absolute/path/to/repo --mode remote
 npm run upload-manifest -- /absolute/path/to/repo
-npm run remote-analyze -- /absolute/path/to/repo --server-url http://127.0.0.1:8787
-npm run remote-sync -- /absolute/path/to/repo --server-url http://127.0.0.1:8787
+npm run remote-analyze -- /absolute/path/to/repo
+npm run remote-sync -- /absolute/path/to/repo
 ```
 
-MCP clients can call `initialize_klauro_project`, `get_upload_manifest`, `analyze_codebase_remote`, and `sync_codebase_remote` directly. Set `KLAURO_ANALYZER_URL` and optional `KLAURO_ANALYZER_TOKEN` in the MCP server environment to avoid passing the URL each time. See `REMOTE-ANALYZER.md` for the deployment model and source-transfer rules.
+MCP clients can call `initialize_klauro_project`, `get_upload_manifest`, `analyze_codebase_remote`, and `sync_codebase_remote` directly. Klauro Cloud is the default hosted analyzer URL. Set `KLAURO_ANALYZER_URL` and optional `KLAURO_ANALYZER_TOKEN` only when using a self-hosted or development analyzer. See `REMOTE-ANALYZER.md` for the deployment model and source-transfer rules.
+
+The same hosted service also exposes a minimal account UI at `/app` for alpha
+trials. It supports users, workspaces, workspace membership, and projects using
+file-backed storage in the analyzer data directory. This is the current
+greenfield customer setup path; do not route new work through the stale legacy
+API.
 
 ## AI Description Providers
 
@@ -54,15 +67,15 @@ The core graph does not require AI, but the system narrative, primary capability
 Supported hosted provider environment variables:
 
 ```bash
-# OpenAI-compatible local servers (Ollama, LM Studio, OpenCode, vLLM, llama.cpp)
-OPENAI_BASE_URL=http://127.0.0.1:11434/v1
-OPENAI_MODEL=llama3.1
-OPENAI_API_KEY=local
+# DeepInfra (recommended hosted open-weight provider)
+DEEPINFRA_API_KEY=...
+DEEPINFRA_MODEL=meta-llama/Meta-Llama-3.3-70B-Instruct
+DEEPINFRA_STRUCTURED_MODEL=meta-llama/Meta-Llama-3.1-8B-Instruct
 
-# Ollama shorthand
-OLLAMA_BASE_URL=http://127.0.0.1:11434
-OLLAMA_MODEL=qwen3:8b
-OLLAMA_THINK=false
+# OpenAI-compatible hosted providers
+OPENAI_BASE_URL=https://your-hosted-openai-compatible-provider/v1
+OPENAI_MODEL=llama-3.3-70b
+OPENAI_API_KEY=...
 
 # OpenAI
 OPENAI_API_KEY=...
@@ -79,7 +92,15 @@ AZURE_OPENAI_DEPLOYMENT=your-deployment-name
 AZURE_OPENAI_API_VERSION=2024-10-21
 ```
 
-When `OLLAMA_BASE_URL` is set, Klauro uses Ollama's native chat endpoint with `think: false` by default so Qwen3-style reasoning models return concise description text instead of hidden reasoning blocks. Set `OLLAMA_THINK=true` only for ad hoc experimentation, not normal analysis.
+DeepInfra is first-class but still uses the OpenAI-compatible client internally.
+Set `KLAURO_EXPECT_AI_PROVIDER=deepinfra` in CI or gauntlets when a hosted
+DeepInfra pass is required; WAS artifacts and reports expose `ai_enrichment`
+metadata so deterministic fallback cannot be mistaken for hosted AI.
+
+AI enrichment is hosted-only in the product architecture. The local connector
+does not use Ollama, LM Studio, local OpenAI-compatible servers, or in-process
+transformers models. Customers should not need model runtimes or provider API
+keys on their laptops.
 
 `AZURE_OPENAI_API_KEY` alone is not enough; Klauro needs the endpoint and deployment name to call Azure OpenAI. If no AI provider is configured, default CAS/WAS analysis must mark the system narrative and primary capability descriptions as degraded or failed with explicit provenance; deterministic text is not equivalent to the required AI enrichment.
 
@@ -123,19 +144,23 @@ After configuring, restart Claude Code and run `/mcp` to verify the `klauro` ser
 
 ## Storage
 
-Analysis results are stored as JSON files at:
+Analysis results are stored as compressed JSON artifacts at:
 
 ```
 ~/.klauro/analyses/
 ```
 
 Each analysis produces:
-- `{slugified-project-name}.json` - The full CAS output
+- `{slugified-project-name}.json.zst` or `.json.br` - The full CAS output
 - `index.json` - Maps project paths to analysis files
 - `{project-slug}/incremental-state.json` - Incremental analysis state
 - `{project-slug}/file-cache/` - File-level analysis cache
 - `{project-slug}/change-history.json` - Incremental change history
 - `{project-slug}/snapshots/` - Analysis snapshots for time-travel queries
+
+The MCP surface should retrieve targeted slices from this cache, not inject the
+entire CAS/WAS blob into an agent prompt. Local storage is a cache; hosted
+analyzer storage and retention are the durable commercial path.
 
 Snapshot retention is bounded for local development. By default Klauro keeps at
 most 10 analysis snapshots per project and prunes a project's snapshot directory
@@ -149,13 +174,13 @@ export KLAURO_MAX_SNAPSHOT_BYTES=1073741824
 export KLAURO_INCREMENTAL_SNAPSHOT_INTERVAL_MS=0
 ```
 
-Agent work packets are token-bounded by default. Large repositories receive a
-compact packet with a focused file plan, idiom guidance, invariants, capability
+Agent agent contexts are token-bounded by default. Large repositories receive a
+compact context with a focused file plan, idiom guidance, invariants, capability
 memory, and follow-up MCP calls instead of a broad context dump. For local
-debugging only, override the packet profile with:
+debugging only, override the context profile with:
 
 ```bash
-export KLAURO_AGENT_PACKET_PROFILE=standard
+export KLAURO_AGENT_CONTEXT_PROFILE=standard
 ```
 
 Valid values are `token-minimal`, `tiny`, `micro`, and `standard`. Do not set

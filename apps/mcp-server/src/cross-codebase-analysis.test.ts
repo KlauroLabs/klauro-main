@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildCrossCodebaseSystemGraph, buildWorkspaceAgentPacket, enrichWorkspaceAnalysisNarrative, selectPreferredWorkspaceOllamaModel, selectWorkspaceAnalysisDetail } from './cross-codebase-analysis';
+import { buildCrossCodebaseSystemGraph, buildWorkspaceAgentContext, enrichWorkspaceAnalysisNarrative, selectPreferredWorkspaceOllamaModel, selectWorkspaceAnalysisDetail } from './cross-codebase-analysis';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
@@ -735,13 +735,13 @@ test('workspace domains demote thin entity-only concepts below terminal product 
     entry_points: [{ id: 'entry:analysis', source_node: 'route', type: 'http', name: 'POST /analysis', trigger: { method: 'POST', path: '/analysis' } }],
     enhanced_system_purpose: {
       primary_domain: 'Codebase Analysis',
-      core_concepts: ['Codebase Graph', 'Agent Work Packet'],
+      core_concepts: ['Codebase Graph', 'Agent Context'],
       primary_workflow_id: 'workflow:analyze-codebase',
     } as any,
     system_capabilities: [{
       id: 'capability:analyze-codebase',
       name: 'Codebase Analysis',
-      description: 'Codebase Analysis builds a graph from code elements, routes, entities, and risks for agent work packets.',
+      description: 'Codebase Analysis builds a graph from code elements, routes, entities, and risks for agent contexts.',
       category: 'core',
       criticality: 'critical',
       operations: [{ entry_point_id: 'entry:analysis', action: 'analyze', path_or_command: '/analysis' }],
@@ -795,14 +795,14 @@ test('AI enrichment rejects item descriptions that are useful-sounding but not g
   delete process.env.OLLAMA_BASE_URL;
   delete process.env.KLAURO_OLLAMA_AUTO;
   aiService.generateComponentDescription = async () => JSON.stringify({
-    description: 'The analysis API turns submitted codebase structure into graph context for AI agents, connecting analysis runs, codebase graph records, route evidence, and work-packet guidance so changes can target the right behavior without broad file rediscovery.',
+    description: 'The analysis API turns submitted codebase structure into graph context for AI agents, connecting analysis runs, codebase graph records, route evidence, and work-context guidance so changes can target the right behavior without broad file rediscovery.',
     product_value_summary: 'The workspace analyzes codebases into graph-backed agent context.',
     domains: [
       { name: 'Customer', description: 'Customer routes customer API requests into customer database records so customer accounts, users, and support workflows stay synchronized.' },
       { name: 'Codebase Analysis', description: 'Codebase Analysis turns analysis API route evidence, AnalysisRun records, and CodebaseGraph facts into agent-ready workspace context.' },
     ],
     key_capabilities: [
-      { name: 'Codebase Analysis', description: 'Codebase Analysis analyzes submitted codebase routes, entities, risks, and graph relationships into compact agent work packets.' },
+      { name: 'Codebase Analysis', description: 'Codebase Analysis analyzes submitted codebase routes, entities, risks, and graph relationships into compact agent contexts.' },
     ],
     value_drivers: ['agent context from codebase graph analysis'],
     relationship_summary: ['analysis-api accepts codebase analysis requests'],
@@ -970,7 +970,7 @@ test('keeps deterministic product summaries scoped to the actual workspace vocab
     system_capabilities: [{
       id: 'capability:codebase-analysis',
       name: 'Codebase Analysis',
-      description: 'Codebase Analysis turns CAS graph, workspace analysis, analyzer facts, and MCP work packet context into agent guidance.',
+      description: 'Codebase Analysis turns CAS graph, workspace analysis, analyzer facts, and MCP agent context context into agent guidance.',
       category: 'system',
       criticality: 'critical',
       operations: [{ entry_point_id: 'entry:mcp', action: 'query', path_or_command: '/mcp' }],
@@ -1145,7 +1145,7 @@ test('ranks evidence-backed product capabilities above unsupported generic bucke
 	  assert.ok((graph.workspace_entities.find(entity => entity.name === 'AccessRequest')?.terminal_score || 0) > 0);
 	});
 
-test('builds compact workspace agent packets from WAS without full graph injection', () => {
+test('builds compact workspace agent contexts from WAS without full graph injection', () => {
   const api = cas({
     system: { id: 'api', name: 'zerac-api', type: 'service', root_path: '/tmp/zerac-api' },
     nodes: [
@@ -1231,35 +1231,35 @@ test('builds compact workspace agent packets from WAS without full graph injecti
     { path: '/tmp/poc', name: 'poc', cas: drop },
     { path: '/tmp/admin-ui', name: 'admin-ui', cas: ui },
   ], { generatedAt: '2026-01-01T00:00:00.000Z' });
-  const packet = buildWorkspaceAgentPacket(graph, {
+  const context = buildWorkspaceAgentContext(graph, {
     task_type: 'debug',
     target: 'drop server auth0 admin api',
     instructions: 'Figure out how the drop server brokers agent registration into the admin API.',
   });
 
-  assert.equal(packet.product, 'workspace_agent_packet');
-  assert.equal(packet.workspace.composition_kind, 'interconnected-system');
-  assert.ok(packet.packet_budget.estimated_packet_tokens < packet.packet_budget.estimated_full_was_tokens);
-  assert.ok(packet.packet_budget.estimated_token_reduction_percentage > 0);
-  assert.ok(['high', 'medium', 'low'].includes(packet.packet_budget.signal_quality));
-  assert.ok(packet.selected_surfaces.some(app => app.name === 'drop-server' && typeof app.deployable === 'boolean'));
-  assert.ok(packet.agent_guidance.read_order.every(item => item.startsWith('/tmp/')));
-  assert.ok(packet.selected_surfaces.some(app => app.name === 'admin-api'));
-  assert.ok(packet.source_backed_connections.some(connection => connection.source === 'drop-server' && connection.target === 'admin-api' && connection.runtime_behavior === 'yes'));
-  assert.ok(packet.source_backed_connections.every(connection => connection.link_id && connection.source_id && connection.target_id));
-  assert.ok(packet.external_dependencies.some(dependency => dependency.name === 'Auth0' && dependency.usage === 'source-backed'));
-  assert.ok(packet.entities.length >= 2);
-  assert.ok(packet.entity_paths.length > 0);
-  assert.ok(packet.agent_guidance.agent_should_read_next.length > 0);
-  assert.ok(packet.agent_guidance.next_mcp_calls.some(call => call.tool === 'get_workspace_entity_map'));
-  assert.ok(packet.agent_guidance.warnings.some(warning => /prototype-or-demo-projects-present/.test(warning)));
-  assert.ok(packet.health);
-  assert.ok(Array.isArray(packet.risk_areas));
-  assert.ok(Array.isArray(packet.capabilities));
-  assert.ok(Array.isArray(packet.workflows));
-  assert.ok(packet.agent_guidance.next_mcp_calls.some(call => call.tool === 'get_agent_work_packet'));
-  assert.ok(packet.agent_guidance.next_mcp_calls.some(call => call.tool === 'get_agent_work_packet' && String((call.args as any).path).startsWith('/tmp/')));
-  assert.ok(packet.agent_guidance.validation.some(rule => /topology-only/.test(rule)));
+  assert.equal(context.product, 'workspace_agent_context');
+  assert.equal(context.workspace.composition_kind, 'interconnected-system');
+  assert.ok(context.context_budget.estimated_context_tokens < context.context_budget.estimated_full_was_tokens);
+  assert.ok(context.context_budget.estimated_token_reduction_percentage > 0);
+  assert.ok(['high', 'medium', 'low'].includes(context.context_budget.signal_quality));
+  assert.ok(context.selected_surfaces.some(app => app.name === 'drop-server' && typeof app.deployable === 'boolean'));
+  assert.ok(context.agent_guidance.read_order.every(item => item.startsWith('/tmp/')));
+  assert.ok(context.selected_surfaces.some(app => app.name === 'admin-api'));
+  assert.ok(context.source_backed_connections.some(connection => connection.source === 'drop-server' && connection.target === 'admin-api' && connection.runtime_behavior === 'yes'));
+  assert.ok(context.source_backed_connections.every(connection => connection.link_id && connection.source_id && connection.target_id));
+  assert.ok(context.external_dependencies.some(dependency => dependency.name === 'Auth0' && dependency.usage === 'source-backed'));
+  assert.ok(context.entities.length >= 2);
+  assert.ok(context.entity_paths.length > 0);
+  assert.ok(context.agent_guidance.agent_should_read_next.length > 0);
+  assert.ok(context.agent_guidance.next_mcp_calls.some(call => call.tool === 'get_workspace_entity_map'));
+  assert.ok(context.agent_guidance.warnings.some(warning => /prototype-or-demo-projects-present/.test(warning)));
+  assert.ok(context.health);
+  assert.ok(Array.isArray(context.risk_areas));
+  assert.ok(Array.isArray(context.capabilities));
+  assert.ok(Array.isArray(context.workflows));
+  assert.ok(context.agent_guidance.next_mcp_calls.some(call => call.tool === 'get_agent_context'));
+  assert.ok(context.agent_guidance.next_mcp_calls.some(call => call.tool === 'get_agent_context' && String((call.args as any).path).startsWith('/tmp/')));
+  assert.ok(context.agent_guidance.validation.some(rule => /topology-only/.test(rule)));
 });
 
 test('classifies library workspaces as composed architecture instead of runtime systems', () => {
@@ -1301,7 +1301,7 @@ test('classifies library workspaces as composed architecture instead of runtime 
     { path: '/tmp/payment-sdk', name: '@commerce/payment-sdk', cas: payments },
   ], { generatedAt: '2026-01-01T00:00:00.000Z' });
   const overview = selectWorkspaceAnalysisDetail(graph, 'overview') as any;
-  const packet = buildWorkspaceAgentPacket(graph, {
+  const context = buildWorkspaceAgentContext(graph, {
     task_type: 'modify',
     target: 'checkout domain payment',
     instructions: 'Add checkout behavior without duplicating domain or payment libraries.',
@@ -1311,7 +1311,7 @@ test('classifies library workspaces as composed architecture instead of runtime 
   assert.equal(graph.composition.recommended_primary_view, 'architecture-map');
   assert.equal(overview.composition.kind, 'composed-application-architecture');
   assert.ok(graph.application_links.every(link => link.kind === 'sdk-install'));
-  assert.ok(packet.system_summary.composition_reasons.some(reason => /package|library/.test(reason)));
+  assert.ok(context.system_summary.composition_reasons.some(reason => /package|library/.test(reason)));
 });
 
 test('validates standalone single-repo workspaces without requiring integration links', () => {

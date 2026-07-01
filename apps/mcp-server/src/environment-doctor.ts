@@ -97,6 +97,7 @@ export async function runEnvironmentDoctor(options: {
     ],
   });
   results.push(bundleCheck);
+  results.push(...checks.inspectProductFootprint({ packageRoot, env: process.env }));
 
   if (options.skipHandshake) {
     results.push(checks.checkResult('handshake-latency', 'warn', 'Handshake probe skipped.', 'Run klauro doctor without --skip-handshake.'));
@@ -126,11 +127,7 @@ export async function runEnvironmentDoctor(options: {
   ));
 
   const configured = checks.summarizeAiProviders(process.env);
-  const ollamaConfigured = Boolean(process.env.OLLAMA_BASE_URL);
-  const ollamaProbe = ollamaConfigured
-    ? await checks.probeOllama(process.env.OLLAMA_BASE_URL)
-    : undefined;
-  results.push(checks.evaluateAiProviders({ configured, ollamaConfigured, ollamaProbe }));
+  results.push(checks.evaluateAiProviders({ configured }));
 
   const analysesDir = checks.storageAnalysesDir(process.env);
   results.push(checks.evaluateZstd({

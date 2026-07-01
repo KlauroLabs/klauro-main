@@ -11,7 +11,7 @@ export interface AgentAnalysisCandidate {
   name: string;
   relation: 'exact' | 'descendant' | 'ancestor' | 'other';
   score: number;
-  default_use: boolean;
+  agent_context_ready: boolean;
   status: string;
   readiness_score: number;
   profile_kind: string;
@@ -67,7 +67,7 @@ export async function getAgentProjectMap(input: {
     candidate_count: candidates.length,
     candidates: candidates.slice(0, limit),
     selected: candidates[0],
-    rule: 'Use the selected path for subsequent agent tools when it is more specific than the requested path or when the requested path is not default-use ready.',
+    rule: 'Use the selected path for subsequent agent tools when it is more specific than the requested path or when the requested path is not agent-context-ready ready.',
   };
 }
 
@@ -92,7 +92,7 @@ export async function resolveAgentAnalysis(input: {
   const baseRecommendation = selected
     ? selected.path === normalizePath(input.path)
       ? 'Continue with the requested path; it is the best matching analysis.'
-      : `Use ${selected.path} for agent-start/work-packet calls; it is the best matching analyzed subproject.`
+      : `Use ${selected.path} for agent-start/work-context calls; it is the best matching analyzed subproject.`
     : 'No stored analysis matches this path. Run analyze_codebase on the repository or target subproject first.';
   return {
     generated_at: new Date().toISOString(),
@@ -126,7 +126,7 @@ async function buildCandidate(entry: AnalysisEntry, requestedPath: string | unde
     name: entry.name,
     relation,
     score,
-    default_use: readiness.default_use,
+    agent_context_ready: readiness.agent_context_ready,
     status: readiness.status,
     readiness_score: readiness.score,
     profile_kind: profile.kind,
@@ -148,7 +148,7 @@ function candidateScore(input: {
   entry: AnalysisEntry;
 }): number {
   let score = input.readiness.score;
-  if (input.readiness.default_use) score += 25;
+  if (input.readiness.agent_context_ready) score += 25;
   if (input.relation === 'exact') score += 25;
   if (input.relation === 'descendant') score += 18;
   if (input.relation === 'ancestor') score -= 10;

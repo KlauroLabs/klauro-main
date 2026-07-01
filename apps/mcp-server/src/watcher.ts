@@ -12,9 +12,11 @@ interface WatchSession {
   startedAt: string;
   lastAnalysis: string | null;
   pendingChanges: Map<string, { path: string; type: 'add' | 'change' | 'unlink'; timestamp: number }>;
+  recentImpactPreviews: ImpactPreview[];
   recentChanges: ChangeReport[];
   analysisInProgress: boolean;
   debounceTimer: ReturnType<typeof setTimeout> | null;
+  impactTimer: ReturnType<typeof setTimeout> | null;
   error: string | null;
   stats: {
     totalChangesDetected: number;
@@ -23,8 +25,20 @@ interface WatchSession {
   };
 }
 
-const DEBOUNCE_MS = 500;
+interface ImpactPreview {
+  timestamp: string;
+  filesChanged: number;
+  files: string[];
+  changeTypes: Array<'add' | 'change' | 'unlink'>;
+  scope: 'source' | 'test' | 'config' | 'infrastructure' | 'mixed';
+  likelyFullRebuild: boolean;
+  guidance: string;
+}
+
+const DEFAULT_DEBOUNCE_MS = 5_000;
+const DEFAULT_IMPACT_DEBOUNCE_MS = 250;
 const MAX_RECENT_CHANGES = 10;
+const MAX_RECENT_IMPACT_PREVIEWS = 20;
 
 const sessions = new Map<string, WatchSession>();
 const emitter = new EventEmitter();
@@ -56,6 +70,18 @@ function getIgnorePatterns(): RegExp[] {
 function shouldIgnore(filePath: string): boolean {
   const patterns = getIgnorePatterns();
   return patterns.some(p => p.test(filePath));
+}
+
+function getDebounceMs(): number {
+  const parsed = Number.parseInt(process.env.KLAURO_WATCH_DEBOUNCE_MS || '', 10);
+  if (!Number.isFinite(parsed)) return DEFAULT_DEBOUNCE_MS;
+  return Math.max(2_000, Math.min(parsed, 120_000));
+}
+
+function getImpactDebounceMs(): number {
+  const parsed = Number.parseInt(process.env.KLAURO_WATCH_IMPACT_DEBOUNCE_MS || '', 10);
+  if (!Number.isFinite(parsed)) return DEFAULT_IMPACT_DEBOUNCE_MS;
+  return Math.max(50, Math.min(parsed, 5_000));
 }
 
 function isSourceFile(filePath: string): boolean {
@@ -106,6 +132,7 @@ async function runIncrementalAnalysis(session: WatchSession): Promise<void> {
     emitter.emit('analysis-complete', {
       watchId: session.id,
       projectPath: session.projectPath,
+      files: changesSnapshot.map(change => change.path),
       changeReport: result.changeReport,
       duration,
       wasFullRebuild: result.wasFullRebuild,
@@ -135,7 +162,85 @@ function scheduleAnalysis(session: WatchSession): void {
   session.debounceTimer = setTimeout(() => {
     session.debounceTimer = null;
     runIncrementalAnalysis(session);
-  }, DEBOUNCE_MS);
+  }, getDebounceMs());
+}
+
+function classifyScope(files: string[]): ImpactPreview['scope'] {
+  const scopes = new Set<ImpactPreview['scope']>();
+  for (const file of files) {
+    const normalized = file.replace(/\\/g, '/');
+    if (/(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|package\.json|tsconfig\.json|vite\.config\.|next\.config\.|nest-cli\.json|pyproject\.toml|Cargo\.toml|go\.mod|composer\.json)$/i.test(normalized)) {
+      scopes.add('config');
+    } else if (/(^|\/)(Dockerfile|docker-compose\.ya?ml|compose\.ya?ml|k8s\/|kubernetes\/|helm\/|terraform\/|infra\/)|\.(tf|hcl)$/i.test(normalized)) {
+      scopes.add('infrastructure');
+    } else if (/(^|\/)(test|tests|__tests__|spec)\/|(\.test|\.spec)\.[tj]sx?$|_test\.(go|py)$/i.test(normalized)) {
+      scopes.add('test');
+    } else {
+      scopes.add('source');
+    }
+  }
+  return scopes.size === 1 ? Array.from(scopes)[0] : 'mixed';
+}
+
+function shouldLikelyFullRebuild(files: string[], changeTypes: Array<'add' | 'change' | 'unlink'>): boolean {
+  if (changeTypes.includes('unlink')) return true;
+  return files.some(file => {
+    const normalized = file.replace(/\\/g, '/');
+    return /(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|package\.json|tsconfig\.json|vite\.config\.|next\.config\.|nest-cli\.json|pyproject\.toml|Cargo\.toml|go\.mod|composer\.json|schema\.prisma|migrations?\/|Dockerfile|docker-compose\.ya?ml|compose\.ya?ml)|\.(tf|hcl)$/i.test(normalized);
+  });
+}
+
+function buildImpactGuidance(preview: Omit<ImpactPreview, 'guidance'>): string {
+  if (preview.likelyFullRebuild) {
+    return 'Treat this as a broad in-flight impact candidate: configuration, dependency, schema, infrastructure, delete, or placement changes may affect more than the changed files.';
+  }
+  if (preview.scope === 'test') {
+    return 'Test-only in-flight change detected. Prefer focused validation and compare against touched behavior before widening scope.';
+  }
+  if (preview.scope === 'source') {
+    return 'Source in-flight change detected. Use the next coalesced analysis for affected capabilities, tests, idioms, and overlap before finalizing.';
+  }
+  return 'Mixed in-flight change detected. Wait for the coalesced analysis before treating impact as complete.';
+}
+
+function emitImpactPreview(session: WatchSession): void {
+  if (session.pendingChanges.size === 0) return;
+  const changes = Array.from(session.pendingChanges.values());
+  const files = changes.map(change => change.path).sort((left, right) => left.localeCompare(right));
+  const changeTypes = Array.from(new Set(changes.map(change => change.type))).sort();
+  const previewWithoutGuidance = {
+    timestamp: new Date().toISOString(),
+    filesChanged: files.length,
+    files: files.slice(0, 50),
+    changeTypes,
+    scope: classifyScope(files),
+    likelyFullRebuild: shouldLikelyFullRebuild(files, changeTypes),
+  };
+  const preview: ImpactPreview = {
+    ...previewWithoutGuidance,
+    guidance: buildImpactGuidance(previewWithoutGuidance),
+  };
+
+  session.recentImpactPreviews.unshift(preview);
+  if (session.recentImpactPreviews.length > MAX_RECENT_IMPACT_PREVIEWS) {
+    session.recentImpactPreviews.pop();
+  }
+
+  emitter.emit('impact-preview', {
+    watchId: session.id,
+    projectPath: session.projectPath,
+    preview,
+  });
+}
+
+function scheduleImpactPreview(session: WatchSession): void {
+  if (session.impactTimer) {
+    clearTimeout(session.impactTimer);
+  }
+  session.impactTimer = setTimeout(() => {
+    session.impactTimer = null;
+    emitImpactPreview(session);
+  }, getImpactDebounceMs());
 }
 
 function handleFileChange(session: WatchSession, eventType: string, filename: string | null): void {
@@ -165,6 +270,7 @@ function handleFileChange(session: WatchSession, eventType: string, filename: st
     type: changeType,
   });
 
+  scheduleImpactPreview(session);
   scheduleAnalysis(session);
 }
 
@@ -187,9 +293,11 @@ export function startWatch(projectPath: string): { watchId: string; status: stri
     startedAt: new Date().toISOString(),
     lastAnalysis: null,
     pendingChanges: new Map(),
+    recentImpactPreviews: [],
     recentChanges: [],
     analysisInProgress: false,
     debounceTimer: null,
+    impactTimer: null,
     error: null,
     stats: {
       totalChangesDetected: 0,
@@ -239,6 +347,10 @@ export function stopWatch(watchId: string): { success: boolean; message: string 
     clearTimeout(session.debounceTimer);
     session.debounceTimer = null;
   }
+  if (session.impactTimer) {
+    clearTimeout(session.impactTimer);
+    session.impactTimer = null;
+  }
 
   session.status = 'stopped';
 
@@ -253,6 +365,9 @@ export interface WatchStatus {
   lastAnalysis: string | null;
   pendingChanges: number;
   pendingFiles: string[];
+  recentImpactPreviews: ImpactPreview[];
+  debounceMs: number;
+  impactDebounceMs: number;
   analysisInProgress: boolean;
   error: string | null;
   stats: {
@@ -285,6 +400,9 @@ export function getWatchStatus(watchId: string): WatchStatus | null {
     lastAnalysis: session.lastAnalysis,
     pendingChanges: session.pendingChanges.size,
     pendingFiles: Array.from(session.pendingChanges.keys()).slice(0, 20),
+    recentImpactPreviews: session.recentImpactPreviews.slice(0, 5),
+    debounceMs: getDebounceMs(),
+    impactDebounceMs: getImpactDebounceMs(),
     analysisInProgress: session.analysisInProgress,
     error: session.error,
     stats: session.stats,
@@ -319,6 +437,7 @@ export function pollWatchChanges(watchId: string, since?: string): {
     riskLevel: string;
   }>;
   pendingFiles: string[];
+  impactPreviews: ImpactPreview[];
   analysisInProgress: boolean;
 } | null {
   const session = sessions.get(watchId);
@@ -345,6 +464,7 @@ export function pollWatchChanges(watchId: string, since?: string): {
     hasChanges: changes.length > 0 || session.pendingChanges.size > 0,
     changes,
     pendingFiles: Array.from(session.pendingChanges.keys()).slice(0, 20),
+    impactPreviews: session.recentImpactPreviews.slice(0, 5),
     analysisInProgress: session.analysisInProgress,
   };
 }

@@ -1,0 +1,15 @@
+{
+	email mike.shattuck@klauro.com
+}
+
+app.klauro.com {
+	encode gzip zstd
+	root * /srv/app
+	try_files {path} /index.html
+	file_server
+}
+
+mcp.klauro.com {
+	encode gzip zstd
+	reverse_proxy api:8787
+}

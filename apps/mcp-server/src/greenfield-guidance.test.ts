@@ -75,7 +75,7 @@ test('greenfield guidance exposes capability memory and reuse decisions before b
 
 test('greenfield guidance extracts domain concepts instead of sentence fragments for large scratch plans', () => {
   const guidance = buildGreenfieldArchitectureGuidance({
-    planText: 'Build a large-scale claims operations control plane for regulated enterprise teams. It needs organizations, users, role-scoped access, claim intake, evidence packets, review queues, policy checks, audit exports, SLA escalation digests, external webhook intake, PostgreSQL persistence, migrations, focused tests, and background workers. The system must be able to grow for many product slices without duplicating domain concepts or re-deciding architecture each time.',
+    planText: 'Build a large-scale claims operations control plane for regulated enterprise teams. It needs organizations, users, role-scoped access, claim intake, evidence contexts, review queues, policy checks, audit exports, SLA escalation digests, external webhook intake, PostgreSQL persistence, migrations, focused tests, and background workers. The system must be able to grow for many product slices without duplicating domain concepts or re-deciding architecture each time.',
     references: [],
   });
 

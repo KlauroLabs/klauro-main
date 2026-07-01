@@ -104,7 +104,7 @@ export async function simulateRuntimeTelemetry(
     agent_guidance: [
       'Treat simulated telemetry as a product-planning layer, not production truth.',
       'Use get_operational_priorities to see how runtime volume, errors, and latency change the next-work ranking.',
-      'Use get_agent_work_packet for a selected static target before editing so fixes still follow CAS idioms, tests, and invariants.',
+      'Use get_agent_context for a selected static target before editing so fixes still follow CAS idioms, tests, and invariants.',
     ],
   };
 }

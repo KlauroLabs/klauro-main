@@ -23,7 +23,7 @@ interface AgentPerformanceProofOptions {
 }
 
 export function formatStoredBenchmarkReport(report: StoredBenchmarkReport): string {
-  if (isFromZeroBuildPacketReport(report)) return formatFromZeroBuildPacketMarkdown(report);
+  if (isFromZeroBuildContextReport(report)) return formatFromZeroBuildContextMarkdown(report);
   if (isIdiomReport(report)) return formatIdiomBenchmarkMarkdown(report as any);
   if (isQualityReport(report)) return formatQualityMarkdownReport(report as any);
   if (isIncrementalReport(report)) return formatIncrementalValueMarkdownReport(report as any);
@@ -83,8 +83,8 @@ function isIdiomReport(report: StoredBenchmarkReport): boolean {
     || Number.isFinite(report.summary?.average_idiom_conformance_delta);
 }
 
-function isFromZeroBuildPacketReport(report: StoredBenchmarkReport): boolean {
-  return report.benchmark_type === 'from-zero-build-packet-proof';
+function isFromZeroBuildContextReport(report: StoredBenchmarkReport): boolean {
+  return report.benchmark_type === 'from-zero-build-context-proof';
 }
 
 function isExistingTaskReport(report: StoredBenchmarkReport): boolean {
@@ -129,7 +129,7 @@ function summarizeReport(report: StoredBenchmarkReport): ProofSummary {
       live_average_quality_delta: signed(summary.average_live_quality_delta),
       live_average_token_reduction: asPercentNumber(summary.average_live_token_reduction_percentage),
     });
-  } else if (isFromZeroBuildPacketReport(report)) {
+  } else if (isFromZeroBuildContextReport(report)) {
     Object.assign(metrics, {
       scenarios: summary.scenario_count,
       scenarios_passed: summary.scenarios_passed,
@@ -151,9 +151,9 @@ function summarizeReport(report: StoredBenchmarkReport): ProofSummary {
       average_edit_incremental_ms: summary.average_edit_incremental_ms,
       average_no_change_speedup_vs_full: summary.average_no_change_speedup_vs_full,
       average_edit_speedup_vs_full: summary.average_edit_speedup_vs_full,
-      average_packet_generation_ms_after_edit: summary.average_packet_generation_ms_after_edit,
+      average_context_generation_ms_after_edit: summary.average_context_generation_ms_after_edit,
       average_file_read_plan_after_edit: summary.average_file_read_plan_after_edit,
-      average_packet_tokens_after_edit: summary.average_packet_tokens_after_edit,
+      average_context_tokens_after_edit: summary.average_context_tokens_after_edit,
       average_total_context_tokens_after_edit: summary.average_total_context_tokens_after_edit,
       average_search_baseline_tokens_after_edit: summary.average_search_baseline_tokens_after_edit,
       average_search_token_reduction_after_edit: asPercentNumber(summary.average_search_token_reduction_after_edit),
@@ -219,10 +219,10 @@ function summarizeReport(report: StoredBenchmarkReport): ProofSummary {
   };
 }
 
-function formatFromZeroBuildPacketMarkdown(report: StoredBenchmarkReport): string {
+function formatFromZeroBuildContextMarkdown(report: StoredBenchmarkReport): string {
   const summary = report.summary || {};
   return [
-    '# From-Zero Build Packet Proof',
+    '# From-Zero Build Context Proof',
     '',
     `Generated: ${report.generated_at || report.generatedAt || ''}`,
     `Status: ${report.status || 'unknown'}`,
@@ -413,7 +413,7 @@ function buildClaims(summaries: ProofSummary[], rollups: ProofSummary[]) {
   const incremental = summaries.find(summary => summary.benchmark_type === 'incremental-analysis-agent-value');
   const idiom = summaries.find(summary => summary.benchmark_type === 'live-agent-idiom-quality-ab')
     || summaries.find(summary => summary.benchmark_type === 'deterministic-agent-idiom-quality-proxy');
-  const fromZero = summaries.find(summary => summary.benchmark_type === 'from-zero-build-packet-proof');
+  const fromZero = summaries.find(summary => summary.benchmark_type === 'from-zero-build-context-proof');
 
   if (quality) {
     claims.push({
@@ -431,7 +431,7 @@ function buildClaims(summaries: ProofSummary[], rollups: ProofSummary[]) {
   }
   if (deterministic) {
     claims.push({
-      claim: 'Klauro work packets reduce context, file reads, and estimated solution time versus broad source exploration.',
+      claim: 'Klauro agent contexts reduce context, file reads, and estimated solution time versus broad source exploration.',
       evidence: deterministic.metrics,
       report_id: deterministic.id,
     });
@@ -452,7 +452,7 @@ function buildClaims(summaries: ProofSummary[], rollups: ProofSummary[]) {
   }
   if (fromZero) {
     claims.push({
-      claim: 'Klauro build packets help greenfield projects grow without duplicate domain concepts, even when an unguided continuation can still pass tests.',
+      claim: 'Klauro build contexts help greenfield projects grow without duplicate domain concepts, even when an unguided continuation can still pass tests.',
       evidence: fromZero.metrics,
       report_id: fromZero.id,
     });

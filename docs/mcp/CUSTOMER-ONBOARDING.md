@@ -2,6 +2,11 @@
 
 The first customer experience should prove value without asking the customer to trust a black box.
 
+The customer is not choosing between separate "local" and "remote" products.
+They are using Klauro. A Klauro analysis can start from a connected Git repo, a
+local committed tree, a workspace folder, or in-flight branch/session work. The
+result should be one coherent CAS/WAS-backed experience for UI and MCP.
+
 ## First Ten Minutes
 
 Current private distribution path:
@@ -10,7 +15,7 @@ Current private distribution path:
 node /absolute/path/to/proof-of-concept/apps/mcp-server/scripts/install.mjs /absolute/path/to/repo --first-value --claude-md /absolute/path/to/repo
 ```
 
-The installer verifies Node/npm, installs dependencies if needed, builds deterministic `dist/` artifacts, registers the MCP server when Claude Code is available, writes or prints agent operating-loop instructions, runs MCP startup checks, and with `--first-value` returns a first agent work-packet summary.
+The installer verifies Node/npm, installs dependencies if needed, builds deterministic `dist/` artifacts, registers the MCP server when Claude Code is available, writes or prints agent operating-loop instructions, runs MCP startup checks, and with `--first-value` returns a first agent work-context summary.
 
 After install, the direct CLI path is:
 
@@ -40,10 +45,18 @@ Expected customer-visible outputs:
 
 ## Hosted Analyzer
 
-Hosted mode keeps the analyzer implementation off the customer machine:
+Hosted mode keeps the analyzer implementation off the customer machine.
+
+When a customer connects a Git provider repo to Klauro, Klauro's VPS/cloud does
+the full shared analysis from selected-branch pushed commits. The local MCP then
+gives agents that shared CAS/WAS context.
+
+When a customer starts from a local folder before connecting a repo, or for a
+local-only repo, the local client sends a filtered, compressed committed-source
+context to hosted analyzers:
 
 ```bash
-node dist/cli.cjs init /absolute/path/to/repo --mode remote --server-url https://analyzer.klauro.dev
+node dist/cli.cjs init /absolute/path/to/repo --mode remote
 node dist/cli.cjs upload-manifest /absolute/path/to/repo
 node dist/cli.cjs analyze /absolute/path/to/repo
 ```
@@ -54,11 +67,18 @@ Tokens are not stored in `.klaurorc`. Customers should authenticate through logi
 export KLAURO_ANALYZER_TOKEN=...
 ```
 
-Use this as the default commercial path. Customers install the thin CLI/MCP
-client locally, review the upload manifest, and send filtered source snapshots
-or dirty-tree deltas to the hosted analyzer. The analyzer implementation remains
-server-side, and returned CAS is cached locally so agents can work quickly after
-sync.
+Customers install the thin CLI/MCP client for agent access, account login,
+cache reads, committed-source submission, and in-flight analysis for active
+branch/session/working-tree work. Before uploading local source, customers can
+review the upload manifest. The analyzer implementation remains server-side
+where appropriate, and returned CAS/WAS context is cached so agents can work
+quickly after sync.
+
+In-flight analysis is provisional, not private by definition. Teams should be
+able to share it with authorized workspace members so another human or agent can
+see that work is coming before commit or push. That enables deduplication,
+soft-merge planning, and overlap warnings across humans, agents, branches, and
+incoming analyzed revisions.
 
 ## Self-Hosted Analyzer
 
@@ -99,13 +119,15 @@ image runs inside the customer's network.
 | Option | Who runs analyzers | Analyzer IP exposure | Best for | Status |
 | --- | --- | --- | --- | --- |
 | Local analyzer | Customer machine | Highest; analyzer code is local | Internal development and early demos | Implemented and tested |
-| Hosted analyzer | Klauro infrastructure | Lowest; customer receives thin client only | Default commercial deployment | Implemented locally; pending live deploy |
+| Connected-repo hosted analyzer | Klauro infrastructure | Lowest; Klauro pulls connected Git repos on the VPS/cloud | Automatic selected-branch analysis on push | Provider detection/planning implemented; Git app import service pending |
+| Local committed-source analyzer | Klauro infrastructure | Medium; filtered/compressed source contexts leave the laptop | Local-only repos, pre-push commit analysis, and teams without connected providers | Implemented and tested |
 | Self-hosted analyzer | Customer infrastructure | Medium; analyzer image is shipped, not source | Enterprise/security-sensitive customers | Docker path implemented |
-| GitHub import | Klauro infrastructure | Lowest | Hosted main-branch analysis and PR checks | Planned integration path; local dirty-tree sync still required |
+| GitHub import | Klauro infrastructure | Lowest | Hosted selected-branch analysis and PR checks | Planned integration path; in-flight context still supports uncommitted and branch/session work |
 
 ## GitHub Import
 
-GitHub import is for hosted main-branch truth. It does not replace dirty-tree sync for local agents.
+GitHub import is for automatic selected-branch analysis on push. It does not
+replace in-flight context for active human and agent work.
 
 ```bash
 node dist/cli.cjs github-import-plan /absolute/path/to/repo
@@ -124,7 +146,10 @@ Webhook events:
 - `pull_request`
 - `installation_repositories`
 
-Local agents still call `remote-sync` for uncommitted changes because those changes do not exist in GitHub yet.
+Local agents still submit in-flight context for uncommitted or not-yet-shared
+branch work because those changes may not exist in the connected provider yet.
+When the work becomes a committed analyzed revision, Klauro promotes it from
+provisional context into durable project truth.
 
 ## Release Readiness Test
 
@@ -135,7 +160,10 @@ cd apps/mcp-server
 npm run new-user-e2e
 ```
 
-Passing means a fresh temp repo can install Klauro, get first value, start a local hosted analyzer, run full remote analysis, and sync an incremental dirty-tree change without mutating the source repo beyond `.klaurorc`/`.klauroignore` when explicitly initialized.
+Passing means a fresh temp repo can install Klauro, get first value, reach the
+Klauro analyzer service, run a cold product analysis, query warm MCP context,
+and submit an in-flight change without mutating the source repo beyond
+`.klaurorc`/`.klauroignore` when explicitly initialized.
 
 The command writes `.klauro-new-user-e2e/latest-report.json`. Full product acceptance (`npm run agent-proof-full`) includes this check before `agent-vision-acceptance`, so release readiness fails if the ten-minute install-to-value path or hosted incremental sync breaks.
 
@@ -148,4 +176,4 @@ Each design partner should receive:
 - With-Klauro vs without-Klauro benchmark report.
 - Incremental sync timing.
 - Idiom-conformance delta.
-- Security packet.
+- Security context.

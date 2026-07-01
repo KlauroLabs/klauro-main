@@ -2,11 +2,36 @@
 
 This document records the current non-UI proof that Klauro helps coding agents work faster, with less context discovery, while preserving patch quality.
 
+The proof target is the customer Klauro flow, not a partial analyzer harness. A
+valid product gauntlet must cover cold analysis, warm MCP understanding, and
+in-flight analysis. In-flight means provisional branch/session/working-tree work
+that Klauro can analyze and share with authorized teammates and agents before it
+becomes durable project truth. This is the collaboration bar: Klauro should help
+agents avoid duplicate work, stale assumptions, merge pressure, and architecture
+drift while work is still happening.
+
 ## What Is Proven
 
-Klauro is materially valuable when the task requires behavioral target discovery. The strongest evidence comes from copied-repository live A/B trials where both agents received the same user-level task, but only the with-Klauro arm received a CAS work packet.
+Klauro is materially valuable when the task requires behavioral target discovery. The strongest evidence comes from copied-repository live A/B trials where both agents received the same user-level task, but only the with-Klauro arm received a CAS agent context.
 
-The current result is not "Klauro always wins on every tiny edit." On trivial grep-friendly tasks, the work-packet overhead can be neutral or negative. The product claim is narrower and stronger: for non-trivial agentic work where the target is not handed to the agent, Klauro reduces rediscovery cost and keeps quality intact.
+The current result is not "Klauro always wins on every tiny edit." On trivial grep-friendly tasks, the agent-context overhead can be neutral or negative. The product claim is narrower and stronger: for non-trivial agentic work where the target is not handed to the agent, Klauro reduces rediscovery cost and keeps quality intact.
+
+The next proof bar is stronger than ordinary indexing benchmarks. The gauntlet
+must show the same installed Klauro product path a customer would use:
+
+- cold analysis of new projects/workspaces;
+- warm understanding queries against existing CAS/WAS;
+- in-flight analysis of uncommitted, branch, or agent-session work;
+- incoming change awareness for analyzed commits or branches the local checkout
+  has not yet pulled;
+- collaboration collision tests where two agents or developers work on adjacent
+  or overlapping capabilities;
+- MCP context that combine durable truth, in-flight context, incoming changes,
+  idioms, invariants, risks, tests, and validation guidance without broad source
+  rediscovery.
+
+This product flow is documented in
+[`../KLAURO-ANALYSIS-FLOW.md`](../KLAURO-ANALYSIS-FLOW.md).
 
 Scratch/new-codebase work now has a separate live proof path. `npm run agent-scratch-build-benchmark` starts from an empty folder, gives one arm Klauro greenfield guidance plus capability-memory rules, gives the other arm only product requirements, analyzes both generated projects with normal CAS, and then runs continuation waves on the generated codebase. This directly tests whether Klauro helps agents build large systems without repeatedly re-deciding architecture or rebuilding domain concepts. The harness is now scenario-aware: `work-intake-backend` covers backend/API/data/migration/worker architecture, `project-manager-saas` covers a familiar todo/project-management SaaS with projects, lists, tasks, assignments, comments, labels, notifications, audits, migrations, and digest workers, and `operations-command-center-ui` covers UI-heavy route/view/component/service/domain-contract architecture.
 
@@ -14,7 +39,7 @@ The live harness now supports true divergent-history continuation. Earlier conti
 
 There is also a concrete dogfood build, not just a benchmark harness. `npm run agent-scratch-dogfood-build` creates brand-new empty folders, asks Klauro for greenfield architecture guidance before files exist, writes production-shaped products, previews the generated files as normal CAS, analyzes the folders, then adds second product slices using the initial analyses as capability memory. The continuations must reuse existing model chains, avoid duplicate domain definitions, add the expected continuation evidence, and keep focused tests passing. The current dogfood covers two product shapes: a backend reliability platform and a UI-heavy operations command center.
 
-The greenfield loop now has a dedicated product surface: `get_greenfield_build_packet` / `npm run greenfield-build-packet`. It works before a repository exists and then switches into CAS-backed continuation memory after files are written. This is the intended agent loop for building large new systems: ask Klauro for the first-slice packet in an empty folder, create the vertical slice, run tests and analysis, ask for the next packet, and extend the concepts already present instead of rebuilding them. The packet now includes a `growth_control_plane` so agents get an explicit product-slice focus, stop rule, architecture budget, concept ownership contract, duplication gate, and next Klauro loop instead of spending prompt budget re-deciding architecture. It also includes a compact `G1` build capsule so agents can start from a prompt-native first-slice or continuation language instead of injecting the full greenfield packet by default. `npm run greenfield-build-codec-benchmark` now verifies that G1 wins the greenfield prompt-format comparison: current representative results reduce prompt tokens by about 95.5% versus full greenfield JSON for empty-folder first-slice guidance and about 96.5% for CAS-backed continuation guidance.
+The greenfield loop now has a dedicated product surface: `get_greenfield_build_context` / `npm run greenfield-build-context`. It works before a repository exists and then switches into CAS-backed continuation memory after files are written. This is the intended agent loop for building large new systems: ask Klauro for the first-slice context in an empty folder, create the vertical slice, run tests and analysis, ask for the next context, and extend the concepts already present instead of rebuilding them. The context now includes a `growth_control_plane` so agents get an explicit product-slice focus, stop rule, architecture budget, concept ownership contract, duplication gate, and next Klauro loop instead of spending prompt budget re-deciding architecture. It also includes a compact `G1` build capsule so agents can start from a prompt-native first-slice or continuation language instead of injecting the full greenfield context by default. `npm run greenfield-build-codec-benchmark` now verifies that G1 wins the greenfield prompt-format comparison: current representative results reduce prompt tokens by about 95.5% versus full greenfield JSON for empty-folder first-slice guidance and about 96.5% for CAS-backed continuation guidance.
 
 Task-family coverage is now tracked separately from aggregate proof scores. Run `npm run agent-task-family-coverage` from `apps/mcp-server/` to generate `apps/mcp-server/.klauro-agent-task-family-coverage/latest-report.json` and `.md`. The current report is intentionally stricter about total tokens: a live family is strong only when Klauro improves quality and does not increase total provider tokens. After compacting the existing-project prompt path, tightening scenario validators, normalizing stored quality scores, and scoring relative patch minimality, the latest report is 17 of 17 engineering task families strong, 0 partial, and 0 gaps, for a 100/100 PASS. Strong families include real from-scratch creation, multi-wave greenfield growth, from-zero capability memory, existing-project orientation/targeting, bug diagnosis/root cause, bug fixes, product enhancements, architectural refactors, monolith decomposition, schema/migration work, auth/tenant boundary changes, auth-system replacement, MFA/security enhancement, test targeting, application performance fixes, cross-repo contract changes, and large feature integration.
 
@@ -22,17 +47,19 @@ AI description usefulness now has a dedicated proof path as well. `npm run descr
 
 Layered analysis cost is now measured separately from description quality. `npm run analysis-focus-benchmark` proves that `agent-fast` keeps the core graph, agent context, required AI system narrative, and primary capability summaries enabled while deferring lazy entity/flow/node descriptions and semantic embeddings for a 100% reduction in optional enrichment work versus an enriched pass. The same report verifies that UI inspection routes to `ui-overview`, runtime/audit routes to `deep-context`, and ordinary MCP/CLI coding work never defaults to `full`.
 
-Competitor-style context indexing now has a dedicated acceptance-gated proof. `npm run competitor-baseline-benchmark` regenerates the seeded existing-project task suite and compares Klauro's compact MCP packet against repeatable Cursor-style editor/index and Linear-style issue/workflow/code-context proxies. The claim is deliberately scoped: this is not a measurement of Cursor or Linear as products, but it is stable local proof against the main context shapes they represent. The report records quality score, retrieved-file recall/precision, packet tokens, proxy tokens, and per-scenario deltas, and final acceptance fails if Klauro does not show both quality lift and token reduction against both proxies.
+Competitor-style context indexing now has a dedicated acceptance-gated proof. `npm run competitor-baseline-benchmark` regenerates the seeded existing-project task suite and compares Klauro's compact MCP context against repeatable Cursor-style editor/index and Linear-style issue/workflow/code-context proxies. The claim is deliberately scoped: this is not a measurement of Cursor or Linear as products, but it is stable local proof against the main context shapes they represent. The report records quality score, retrieved-file recall/precision, context tokens, proxy tokens, and per-scenario deltas, and final acceptance fails if Klauro does not show both quality lift and token reduction against both proxies.
 
-True installed-tool comparisons now have a separate live benchmark path. `npm run competitor-live-benchmark` accepts a Klauro-enabled command plus real installed Cursor, Linear, or arbitrary competitor command templates. It runs the same copied-repo live A/B harness used by existing-project proof: each tool gets its own repo copy, the Klauro arm receives the compact CAS/MCP work packet, the competitor arm uses the installed product directly, and the harness captures wall time, diffs, validator results, changed-file precision, and provider token metrics when exposed. This is the proof path to cite for real Cursor/Linear comparisons after those tools are installed and wired through command adapters.
+Installed benchmark readiness is now explicit. `npm run competitor-readiness` detects local intelligence competitors and agent executor arms, then classifies each as ready, candidate, blocked, or missing. Klauro is not an autonomous coding agent; it competes as the codebase, product, and workspace intelligence substrate that autonomous agents use. Code-intelligence/indexing tools such as `codebase-memory-mcp`, `scip-typescript`, stack-graphs, ctags, ast-grep, ripgrep, and Ollama embeddings can be measured by the existing gauntlet arms when installed. Agent executors such as Cursor Agent, OpenCode, Aider, Cline, Continue, Claude, or Codex are the runners for live copied-repo A/B tasks: the same executor should run with Klauro context and with each competing intelligence substrate or baseline context. Installed but unauthenticated executors are reported as blocked, not silently counted.
 
-Cold product-output review is now a repeatable artifact instead of a prose caveat. `npm run analysis-output-cold-review` reads the latest full machine proof, samples representative large apps, infrastructure repos, libraries/SDKs, small repos, and Klauro itself, then scores agent-context usefulness separately from human-facing narrative quality. The latest run warns, not fails: average agent context is 97/100, but average narrative quality is 72/100 because the sampled analyses were generated with AI narrative disabled and therefore still carry deterministic-description debt. That is useful evidence for the current product boundary: MCP default use is strong, while UI-overview/human narrative enrichment still needs a targeted pass before claiming "perfect" product output.
+True installed-tool comparisons now have a separate live benchmark path. `npm run competitor-live-benchmark` accepts command templates for agent executors running against copied repos. It runs the same copied-repo live A/B harness used by existing-project proof: each executor gets equivalent task/repo copies, the Klauro arm receives the compact CAS/MCP agent context, and the comparison arm receives the best available non-Klauro intelligence source or baseline context for that tool. The harness captures wall time, diffs, validator results, changed-file precision, and provider token metrics when exposed. This is the proof path to cite for real installed comparisons after the relevant executor and intelligence-source adapters are wired. The current codebase-memory adapter indexes the copied repo with the real installed `codebase-memory-mcp` binary, injects its architecture/search context into the same Codex executor, and compares that live arm against the Klauro context arm.
+
+Cold product-output review is now a repeatable artifact instead of a prose caveat. `npm run analysis-output-cold-review` reads the latest full machine proof, samples representative large apps, infrastructure repos, libraries/SDKs, small repos, and Klauro itself, then scores agent-context usefulness separately from human-facing narrative quality. The latest run warns, not fails: average agent context is 97/100, but average narrative quality is 72/100 because the sampled analyses were generated with AI narrative disabled and therefore still carry deterministic-description debt. That is useful evidence for the current product boundary: MCP agent context readiness is strong, while UI-overview/human narrative enrichment still needs a targeted pass before claiming "perfect" product output.
 
 Narrative-debt remediation is now measurable instead of hand-waved. `npm run analysis-narrative-enrichment-proof` reads the cold-review findings, loads each stored CAS, and emits a concrete queue of system, capability, service, entity, and entry-point descriptions to regenerate. The latest proof is `warn` with all gates passing: 12/13 narrative-debt outputs have queued element targets, 1/13 is accounted for as no-target debt, 133 enrichment targets were found, description mechanics passed for service/capability/entity/entry-point targets, and `agent-fast` stayed at 0 optional enrichment work while `ui-overview` carried the narrative cost. `npm run analysis-narrative-enrichment-runner` then executes bounded slices and records generated, generated-but-still-weak, target-removed, and before/after queue counts. That keeps the product framing precise: Klauro's default MCP path remains token-minimal, and human-facing polish is an explicit enrichment layer.
 
-Runtime-informed agent work now has a dedicated proof path. `npm run runtime-impact-benchmark` ingests production-shaped telemetry for several CAS targets, including a statically high-risk checkout path and a higher-impact invoice-export failure. The benchmark verifies that ingested runtime errors and volume reorder the agent's "what should I fix today" priority away from the static-only guess, that `get_agent_work_packet` carries the runtime-backed target and next packet, and that the capsule-only K15/K5 response preserves that priority with at least 70% fewer tokens than the full packet. This keeps telemetry positioned as agent guidance, not a replacement safety gate: the fix still flows through normal CAS idioms, invariants, tests, and validation.
+Runtime-informed agent work now has a dedicated proof path. `npm run runtime-impact-benchmark` ingests production-shaped telemetry for several CAS targets, including a statically high-risk checkout path and a higher-impact invoice-export failure. The benchmark verifies that ingested runtime errors and volume reorder the agent's "what should I fix today" priority away from the static-only guess, that `get_agent_context` carries the runtime-backed target and next context, and that the capsule-only K15/K5 response preserves that priority with at least 70% fewer tokens than the full context. This keeps telemetry positioned as agent guidance, not a replacement safety gate: the fix still flows through normal CAS idioms, invariants, tests, and validation.
 
-Seeded existing-project proof now covers the previously untested improvement families. `npm run agent-existing-task-benchmark` creates small existing codebases with a tenant/workspace visibility leak, blank-title validation bug, direct-controller-data-access refactor, N+1-style task summary path, producer/consumer contract change, task-label product enhancement, due-date migration, workspace-role hardening, simple auth replacement, MFA step-up auth, distributed auth replacement across service/module/controller/test boundaries, monolith decomposition, cross-cutting audit-log feature integration, and test-only archive coverage task. It checks whether MCP work packets include the task-specific behavioral owners, terms, and validation guidance needed before broad rediscovery. Latest deterministic result after switching existing-project default use to `response_profile: "capsule-only"` with compact context capsules plus `K5` execution capsules: pass 94/100 across 14/14 scenarios and 13 families, +33 average score delta versus a blind proxy, 38% fewer files, 96% fewer first-turn tokens than cold scan, and 13% fewer prompt tokens than the Cursor-style lexical index-retrieval proxy. The proof harness expands path aliases and file references before scoring guidance-file coverage, so compact path dictionaries are measured as agent-usable context instead of raw string matches. The default context format is now K15; the codec benchmark reports both the legacy `chars/4` estimate and a stricter promptish lexical estimate. K15 measures about 95 estimated tokens / 85 promptish tokens versus K14 at 98 / 90, K13 at 102 / 102, K12 at 104 / 109, K11 at 112 / 150, K10 at 115 / 167, K9 at 147 / 192, JSONB rowset at about 190 / 207, protobuf-style text at about 206 / 281, YAML brief at about 273 / 263, TOON-style table at about 287 / 261, XML tags at about 303 / 420, and minified JSON at about 354 / 448 on the representative packet. K15 won the balanced prompt-native codec benchmark over minified JSON, short-key JSON, TOON-style tables, YAML/XML prompt blocks, TSV/opcodes, protobuf-style text, JSONB rowsets, CBOR diagnostic JSON, K5+short JSON, K6/K7/K8/K9/K10/K11/K12/K13/K14, and gzip/base64 variants.
+Seeded existing-project proof now covers the previously untested improvement families. `npm run agent-existing-task-benchmark` creates small existing codebases with a tenant/workspace visibility leak, blank-title validation bug, direct-controller-data-access refactor, N+1-style task summary path, producer/consumer contract change, task-label product enhancement, due-date migration, workspace-role hardening, simple auth replacement, MFA step-up auth, distributed auth replacement across service/module/controller/test boundaries, monolith decomposition, cross-cutting audit-log feature integration, and test-only archive coverage task. It checks whether MCP agent contexts include the task-specific behavioral owners, terms, and validation guidance needed before broad rediscovery. Latest deterministic result after switching existing-project agent context readiness to `response_profile: "capsule-only"` with compact context capsules plus `K5` execution capsules: pass 94/100 across 14/14 scenarios and 13 families, +33 average score delta versus a blind proxy, 38% fewer files, 96% fewer first-turn tokens than cold scan, and 13% fewer prompt tokens than the Cursor-style lexical index-retrieval proxy. The proof harness expands path aliases and file references before scoring guidance-file coverage, so compact path dictionaries are measured as agent-usable context instead of raw string matches. The default context format is now K15; the codec benchmark reports both the legacy `chars/4` estimate and a stricter promptish lexical estimate. K15 measures about 95 estimated tokens / 85 promptish tokens versus K14 at 98 / 90, K13 at 102 / 102, K12 at 104 / 109, K11 at 112 / 150, K10 at 115 / 167, K9 at 147 / 192, JSONB rowset at about 190 / 207, protobuf-style text at about 206 / 281, YAML brief at about 273 / 263, TOON-style table at about 287 / 261, XML tags at about 303 / 420, and minified JSON at about 354 / 448 on the representative context. K15 won the balanced prompt-native codec benchmark over minified JSON, short-key JSON, TOON-style tables, YAML/XML prompt blocks, TSV/opcodes, protobuf-style text, JSONB rowsets, CBOR diagnostic JSON, K5+short JSON, K6/K7/K8/K9/K10/K11/K12/K13/K14, and gzip/base64 variants.
 
 Existing-project live proof now includes semantic patch validation. `npm run agent-existing-task-benchmark -- --live ...` runs copied-repo A/B trials through the same live runner used by scratch proof, with external validators that inspect actual diffs for required changed files, forbidden shortcuts, minimality, production/test shape, and behavior-specific patterns. The live engineering-task set now covers diagnosis, bug fix, product enhancement, refactor, migration, auth/tenant hardening, auth replacement, MFA, test-only coverage, performance fix, monolith decomposition, large feature integration, and contract change. Klauro improved quality on every live existing-project task with non-negative token reduction: distributed auth replacement scored 99/100 vs 77/100, audit-feature integration 99/100 vs 90/100, product enhancement 93/100 vs 83/100, migration 95/100 vs 78/100, tenant hardening 99/100 vs 84/100 with 55% fewer tokens, MFA 99/100 vs 84/100 with 34% fewer tokens, performance 99/100 vs 82/100, test-only coverage 99/100 vs 74/100, refactor 95/100 vs 78/100 with 79% fewer tokens, bug fix 99/100 vs 93/100, monolith decomposition 99/100 vs 82/100, and cross-repo contract change 100/100 vs 96/100 with 56% fewer tokens and 28% faster wall time. This is now engineering-task evidence, not merely file-targeting evidence.
 
@@ -69,14 +96,14 @@ Most recent scratch greenfield live trial:
 | Continuation wave on that backend | 100/100 continuation score, 2 test files / 6 test cases, 2 migrations, 147 CAS nodes, 174 edges | 100/100 continuation score, 3 test files / 7 test cases, 2 migrations, 160 CAS nodes, 190 edges | Quality preserved; estimated continuation tokens 64% lower |
 | Empty-folder project-manager SaaS | 100/100 scratch score, 25 changed files, 1 test file / 3 test cases, 1 migration, 89 CAS nodes, 70 edges | 92/100 scratch score, 17 changed files, 2 test files / 0 detected test cases, 0 migrations, 164 CAS nodes, 185 edges | +8 quality delta, 56% faster, migration evidence preserved; Klauro used 40% more initial provider tokens |
 | Two project-manager continuation waves | 100/100 and 100/100 with Klauro | 90/100 and 90/100 without Klauro | +10 and +10 workspace quality deltas, +57 and +70 changed-file precision deltas, 13% and 3% fewer provider tokens; wave 1 was slower, wave 2 was 16% faster |
-| Empty-folder operations command center UI | 100/100 scratch score, 23 files, 17 source files, 3 test files / 3 test cases, 140 CAS nodes, 139 edges | 100/100 scratch score, 26 files, 20 source files, 3 test files / 5 test cases, 135 CAS nodes, 141 edges | Quality preserved; compact Klauro packet fixed token overhead and produced 14% fewer initial tokens, 29% faster |
+| Empty-folder operations command center UI | 100/100 scratch score, 23 files, 17 source files, 3 test files / 3 test cases, 140 CAS nodes, 139 edges | 100/100 scratch score, 26 files, 20 source files, 3 test files / 5 test cases, 135 CAS nodes, 141 edges | Quality preserved; compact Klauro context fixed token overhead and produced 14% fewer initial tokens, 29% faster |
 | Continuation wave on that UI | 100/100 continuation score, 3 test files / 3 test cases | 100/100 continuation score, 3 test files / 4 test cases | Quality preserved; token overhead remains a watch item for UI continuation |
 
 The scratch live benchmark exposed two product issues and produced fixes:
 
 - Scratch report output paths now create their parent directories, so live proof runs cannot fail after the agents finish.
 - Scratch scoring now counts focused test cases as well as test files, so agents are rewarded for behavior coverage instead of file proliferation.
-- Greenfield scratch packets now use a compact build brief and make the full compact packet optional. The UI initial trial moved from 105% more tokens before compaction to 14% fewer tokens after compaction.
+- Greenfield scratch contexts now use a compact build brief and make the full compact context optional. The UI initial trial moved from 105% more tokens before compaction to 14% fewer tokens after compaction.
 - Continuation waves can now start from each arm's own prior workspace instead of copying one shared baseline. This makes `npm run agent-scratch-build-multi-wave` the stronger live proof command for the "build massive projects cleanly" claim.
 
 Scratch proof artifacts:
@@ -87,7 +114,7 @@ Scratch proof artifacts:
 - `apps/mcp-server/.klauro-agent-scratch-build-benchmark/live-work-intake-multi-wave-strict-rescored-codex.md`: markdown summary.
 - `apps/mcp-server/.klauro-agent-scratch-build-benchmark/live-project-manager-saas-multi-wave-focused-tests-codex.json`: project-manager SaaS divergent-history multi-wave live A/B result after focused-test prompt hardening.
 - `apps/mcp-server/.klauro-agent-scratch-build-benchmark/live-project-manager-saas-multi-wave-focused-tests-codex.md`: markdown summary.
-- `apps/mcp-server/.klauro-agent-scratch-build-benchmark/live-operations-ui-compact-codex.json`: current UI-heavy empty-folder live A/B result after compact packet fix.
+- `apps/mcp-server/.klauro-agent-scratch-build-benchmark/live-operations-ui-compact-codex.json`: current UI-heavy empty-folder live A/B result after compact context fix.
 - `apps/mcp-server/.klauro-agent-scratch-build-benchmark/live-operations-ui-compact-codex.md`: markdown summary.
 - `apps/mcp-server/.klauro-agent-scratch-build-benchmark/live-operations-ui-multi-wave-strict-codex.json`: UI-heavy divergent-history multi-wave live A/B result.
 - `apps/mcp-server/.klauro-agent-scratch-build-benchmark/live-operations-ui-multi-wave-strict-codex.md`: markdown summary.
@@ -100,13 +127,13 @@ Scratch proof artifacts:
 - `/Users/michaelshattuck/.klauro/scratch-dogfood-build/reliability-platform-continuation.html`: local CAS preview for the backend continuation state.
 - `/Users/michaelshattuck/.klauro/scratch-dogfood-build/operations-command-center-initial.html`: local CAS preview for the UI-heavy initial state.
 - `/Users/michaelshattuck/.klauro/scratch-dogfood-build/operations-command-center-continuation.html`: local CAS preview for the UI-heavy continuation state.
-- `/Users/michaelshattuck/.klauro/from-zero-dogfood/market-signal-ops`: manual from-zero dogfood project created after calling `greenfield-build-packet` on an empty folder.
-- `/tmp/klauro-from-zero-initial-packet.json`: first packet for the empty folder; status `ready`, stage `empty_workspace_first_slice`.
-- `/tmp/klauro-from-zero-continuation-packet.json`: continuation packet after the first slice; CAS memory reported 41 nodes, 44 edges, 8 capabilities, and 2 tests.
-- `/tmp/klauro-from-zero-after-second-slice-packet.json`: packet after the second slice; CAS memory reported 51 nodes, 54 edges, 11 capabilities, and 3 tests.
+- `/Users/michaelshattuck/.klauro/from-zero-dogfood/market-signal-ops`: manual from-zero dogfood project created after calling `greenfield-build-context` on an empty folder.
+- `/tmp/klauro-from-zero-initial-context.json`: first context for the empty folder; status `ready`, stage `empty_workspace_first_slice`.
+- `/tmp/klauro-from-zero-continuation-context.json`: continuation context after the first slice; CAS memory reported 41 nodes, 44 edges, 8 capabilities, and 2 tests.
+- `/tmp/klauro-from-zero-after-second-slice-context.json`: context after the second slice; CAS memory reported 51 nodes, 54 edges, 11 capabilities, and 3 tests.
 - `/tmp/klauro-from-zero-dogfood-report.json`: summarized proof artifact.
-- `apps/mcp-server/.klauro-from-zero-build-packet-proof/latest-report.json`: latest repeatable multi-domain baseline comparison for from-zero continuation with and without the compact build packet.
-- `apps/mcp-server/.klauro-from-zero-build-packet-proof/latest-report.md`: markdown summary of that comparison.
+- `apps/mcp-server/.klauro-from-zero-build-context-proof/latest-report.json`: latest repeatable multi-domain baseline comparison for from-zero continuation with and without the compact build context.
+- `apps/mcp-server/.klauro-from-zero-build-context-proof/latest-report.md`: markdown summary of that comparison.
 - `/tmp/klauro-from-zero-five-slice-split.json`: previous expanded five-slice from-zero proof with split continuation services.
 - `/tmp/klauro-from-zero-five-slice-split.md`: markdown summary of the previous expanded five-slice proof.
 
@@ -118,18 +145,18 @@ Most recent scratch dogfood result:
 | Backend continuation using initial analysis memory | 20 files, 94 CAS nodes, 91 edges, 13 capabilities, reused Organization/Workspace/Service/Incident/Alert IDs, zero duplicate core domain definitions, tests passed |
 | UI initial empty-folder build | 10 files, 48 CAS nodes, 53 edges, 11 capabilities, 2 entry points, tests passed |
 | UI continuation using initial analysis memory | 16 files, 83 CAS nodes, 82 edges, 16 capabilities, reused Workspace/Dashboard/Widget/AnalysisStatus IDs, zero duplicate core domain definitions, tests passed |
-| Manual from-zero build packet dogfood | Empty folder packet produced first-slice domain/service/entry/test guidance; after the first slice, the packet used CAS memory to preserve Organization, Workspace, SignalSource, SignalRule, AlertPolicy, OperatorReview, AuditEvent, and SignalDigest; after the second slice, it preserved NotificationPreference, SavedQueueFilter, and SignalRuleComparisonOverlay with zero duplicate domain class definitions |
-| Repeatable from-zero baseline comparison | Three scratch domains (`market-signal-ops`, `grant-review-ops`, and `fleet-maintenance-ops`), each starting from an empty folder and then growing through five product slices: first slice, continuation, scale expansion, collaboration expansion, and operations/evidence expansion. With Klauro: tests passed, product-focus guidance was present in every packet, later behavior split into adjacent services while reusing the same domain concepts, no duplicate domain classes were introduced, and the proof scored 100. Without Klauro: tests still passed but created duplicate domain/model classes. Latest expanded result: +96 average quality delta, +18 duplicate-class delta, zero with-Klauro duplicate classes, 27 fewer focused files read, and 13.33% fewer context characters. |
+| Manual from-zero build context dogfood | Empty folder context produced first-slice domain/service/entry/test guidance; after the first slice, the context used CAS memory to preserve Organization, Workspace, SignalSource, SignalRule, AlertPolicy, OperatorReview, AuditEvent, and SignalDigest; after the second slice, it preserved NotificationPreference, SavedQueueFilter, and SignalRuleComparisonOverlay with zero duplicate domain class definitions |
+| Repeatable from-zero baseline comparison | Three scratch domains (`market-signal-ops`, `grant-review-ops`, and `fleet-maintenance-ops`), each starting from an empty folder and then growing through five product slices: first slice, continuation, scale expansion, collaboration expansion, and operations/evidence expansion. With Klauro: tests passed, product-focus guidance was present in every context, later behavior split into adjacent services while reusing the same domain concepts, no duplicate domain classes were introduced, and the proof scored 100. Without Klauro: tests still passed but created duplicate domain/model classes. Latest expanded result: +96 average quality delta, +18 duplicate-class delta, zero with-Klauro duplicate classes, 27 fewer focused files read, and 13.33% fewer context characters. |
 | Live divergent-history backend multi-wave | Strict backend run starts with separate empty-folder A/B projects, then carries each arm's own output through two continuation waves. Latest rescored result: pass, 92/100. Initial arm scores tied at 100/100 after strict validation, but Klauro used 40% fewer initial tokens. Wave 1 preserved quality with +2 live evaluator quality, +67 changed-file precision delta, +45 completion delta, 45% faster, and 2 fewer changed files. Wave 2 preserved quality with +2 live evaluator quality, +63 changed-file precision delta, 39% fewer provider tokens, 28% faster, and 3 fewer changed files. |
 | Live divergent-history UI multi-wave | UI-heavy run starts with separate empty-folder A/B projects, then carries each arm's own output through two continuation waves. Latest result: pass, 97/100. Initial arm scores tied at 100/100, but Klauro used 42% fewer initial tokens, finished 31% faster, and changed 15 fewer files. Wave 1 produced +10 live quality, +31 changed-file precision delta, 58% fewer provider tokens, 45% faster, and 10 fewer changed files. Wave 2 produced +10 live quality, +48 changed-file precision delta, +45 completion delta, 43% faster, and 6 fewer changed files. |
 | Live divergent-history compliance backend multi-wave | Compliance/evidence run starts with separate empty-folder A/B projects, then carries each arm's own output through two continuation waves. Latest result: pass, 98/100. Klauro passed hard validation with migration evidence; the unguided initial arm failed hard validation for missing migration evidence. Initial workspace quality was 100 with Klauro vs 92 without, while Klauro used more provider tokens and time. Wave 1 produced +10 workspace quality, +9 live quality, +56 changed-file precision, and 56% fewer provider tokens. Wave 2 produced +10 workspace quality, +15 live quality, and +59 changed-file precision, but used more provider tokens and time. This is a quality/file-targeting win with mixed token cost on compliance-shaped work. |
 | Overall | PASS, 3/3 live multi-wave scenario families plus deterministic from-zero proof. Quality, continuity, and file-targeting are improving; token/time value is strong in backend/UI and still mixed in compliance continuation. |
 
-The machine proof now enforces this as a gate. The latest full machine run at `apps/mcp-server/.klauro-agent-proof-machine/latest-report.json` passed 100/100 with the from-zero gate present: three passing scenarios, product-focus evidence in all three, 15 growth iterations, +96 average quality delta, +18 duplicate-class delta, 13.33% context reduction, and zero with-Klauro duplicate classes. The full run also verified 102/102 eligible repositories, 102/102 default-use readiness, 102/102 analysis-quality/usefulness/idiom pass, 100% incremental success, 7.18x average edit speedup, and 81% token reduction versus targeted search.
+The machine proof now enforces this as a gate. The latest full machine run at `apps/mcp-server/.klauro-agent-proof-machine/latest-report.json` passed 100/100 with the from-zero gate present: three passing scenarios, product-focus evidence in all three, 15 growth iterations, +96 average quality delta, +18 duplicate-class delta, 13.33% context reduction, and zero with-Klauro duplicate classes. The full run also verified 102/102 eligible repositories, 102/102 agent-context-ready readiness, 102/102 analysis-quality/usefulness/idiom pass, 100% incremental success, 7.18x average edit speedup, and 81% token reduction versus targeted search.
 
-Cold review found one important greenfield product gap: later from-zero continuation packets were good at saying what not to duplicate, but weak at saying where to extend. The build packet now resolves each requested adjacent behavior to existing concepts and owner files. The proof gate now requires continuation `existing_behavior_to_extend` entries with `owner_files`, so a packet cannot pass on prohibition alone.
+Cold review found one important greenfield product gap: later from-zero continuation contexts were good at saying what not to duplicate, but weak at saying where to extend. The build context now resolves each requested adjacent behavior to existing concepts and owner files. The proof gate now requires continuation `existing_behavior_to_extend` entries with `owner_files`, so a context cannot pass on prohibition alone.
 
-Important caveat: the evaluator is now more aligned with the product goal, but it is still a heuristic. It checks entry boundaries, data-access boundaries, migrations/persistence evidence, focused continuation tests, CAS graph shape, duplicate-concept avoidance, and owner-file extension guidance for greenfield-shaped tasks. The live proof now covers backend-shaped, UI-shaped, and compliance-shaped divergent-history multi-wave scratch runs. Compliance proves that Klauro can improve quality and file targeting while token/time cost remains mixed, so continuation packets still need ongoing cold review of generated CAS outputs and live agent runs. The G1 capsule is the current compactness fix for greenfield prompts; its repeatable from-zero proof must stay passing before claiming greenfield default-use readiness.
+Important caveat: the evaluator is now more aligned with the product goal, but it is still a heuristic. It checks entry boundaries, data-access boundaries, migrations/persistence evidence, focused continuation tests, CAS graph shape, duplicate-concept avoidance, and owner-file extension guidance for greenfield-shaped tasks. The live proof now covers backend-shaped, UI-shaped, and compliance-shaped divergent-history multi-wave scratch runs. Compliance proves that Klauro can improve quality and file targeting while token/time cost remains mixed, so continuation contexts still need ongoing cold review of generated CAS outputs and live agent runs. The G1 capsule is the current compactness fix for greenfield prompts; its repeatable from-zero proof must stay passing before claiming greenfield agent-context-ready readiness.
 
 Historical no-target live trials remain useful for trend evidence:
 
@@ -151,7 +178,7 @@ The generated live reports are local benchmark artifacts:
 
 Persisted MCP reports can be inspected with `get_agentic_benchmark_report`. Use `benchmark_type` to load the latest report for a specific family, or call `get_agent_performance_proof` to ask MCP for the current proof summary across live quality, deterministic usefulness, and incremental-analysis reports. The proof summary defaults to reports generated in the last 7 days and rolls up persisted live A/B reports, so the current two-trial live evidence is available directly through MCP as 61% fewer tokens, 22% faster wall time, and 30% fewer files read.
 
-The full non-UI product bar is enforced by `npm run agent-vision-acceptance` from `apps/mcp-server/`. That command reads the latest proof artifacts and fails if CAS mastery, default-use agent readiness, real-repo vision coverage, deterministic usefulness, deterministic quality, AI description quality, idiom-quality improvement, from-zero build memory, persisted MCP proof, live scratch-build coverage, divergent-history multi-wave quality/file-targeting proof, machine-wide repo accounting, or incremental edit-loop value stops meeting the thresholds that justify default agent use.
+The full non-UI product bar is enforced by `npm run agent-vision-acceptance` from `apps/mcp-server/`. That command reads the latest proof artifacts and fails if CAS mastery, agent-context-ready agent readiness, real-repo vision coverage, deterministic usefulness, deterministic quality, AI description quality, idiom-quality improvement, from-zero build memory, persisted MCP proof, live scratch-build coverage, divergent-history multi-wave quality/file-targeting proof, machine-wide repo accounting, or incremental edit-loop value stops meeting the thresholds that justify agent use.
 
 Use `npm run agent-proof-full` when the proof must be regenerated before acceptance. It runs MCP typecheck/tests, all non-UI gauntlets and benchmarks, and then `agent-vision-acceptance`.
 
@@ -184,7 +211,7 @@ The idiom-quality benchmark now uses a repo/task-sensitive deterministic blind-a
 
 ## Iterative Analysis Proof
 
-The incremental value benchmark copies repositories, runs a full analysis, reruns with no changes, applies a syntactically valid source edit, reruns incremental analysis, verifies that CAS changed, and then asks MCP for a post-edit work packet.
+The incremental value benchmark copies repositories, runs a full analysis, reruns with no changes, applies a syntactically valid source edit, reruns incremental analysis, verifies that CAS changed, and then asks MCP for a post-edit agent context.
 
 Latest all-eligible machine result:
 
@@ -192,7 +219,7 @@ Latest all-eligible machine result:
 - Repositories discovered under `/Users/michaelshattuck/dev`: 105.
 - Eligible repositories analyzed: 102/102.
 - Unsupported repositories reported with reasons: 3.
-- Default-use ready: 102/102.
+- Ready for agent use: 102/102.
 - Analysis quality/usefulness/idioms: 102/102.
 - Incremental targets passed cleanly: 101/102.
 - Incremental success rate: 100% stayed incremental.
@@ -202,9 +229,9 @@ Latest all-eligible machine result:
 - Average edit incremental analysis: 1.776s.
 - Average no-change speedup vs full: 13.34x.
 - Average edit speedup vs full: 7.18x.
-- Average post-edit work-packet generation: 143ms.
+- Average post-edit agent-context generation: 143ms.
 - Average post-edit file-read plan: 2 files.
-- Average post-edit packet size: 3,334 estimated tokens.
+- Average post-edit context size: 3,334 estimated tokens.
 - Average total context after edit: 4,500 estimated tokens.
 - Average token reduction vs targeted search: 81%.
 - Average token reduction vs cold scan: 67%.
@@ -225,7 +252,7 @@ Latest focused slow-outlier result after those fixes:
 - Status: pass, 100/100.
 - Targets: 4/4 passed and stayed incremental.
 - Average edit speedup vs full analysis: 5.5x.
-- Average post-edit packet generation: 1.229s.
+- Average post-edit context generation: 1.229s.
 - Average token reduction vs targeted search: 100%.
 - `truckspyapp`: 70.824s full, 14.778s edit incremental, 4.79x speedup.
 - `openclaw`: 54.042s full, 6.953s edit incremental, 7.77x speedup.
@@ -245,12 +272,12 @@ Earlier focused incremental fixture result:
 - Average edit incremental analysis: 7.236s.
 - Average no-change speedup vs full: 10.61x.
 - Average edit speedup vs full: 2.16x.
-- Average post-edit work-packet generation: 172ms.
+- Average post-edit agent-context generation: 172ms.
 - Average post-edit file-read plan: 2 files.
-- Average post-edit packet size: 6,503 estimated tokens.
+- Average post-edit context size: 6,503 estimated tokens.
 - Full-verify count similarity: 99%.
 
-Latest focused incremental benchmark after the compact work-packet fix:
+Latest focused incremental benchmark after the compact agent-context fix:
 
 - Status: pass, 100/100.
 - Targets: 6.
@@ -260,9 +287,9 @@ Latest focused incremental benchmark after the compact work-packet fix:
 - Average edit incremental analysis: 1.227s.
 - Average no-change speedup vs full: 13.06x.
 - Average edit speedup vs full: 4.53x.
-- Average post-edit work-packet generation: 80ms.
+- Average post-edit agent-context generation: 80ms.
 - Average post-edit file-read plan: 3 files.
-- Average post-edit packet size: 7,067 estimated tokens.
+- Average post-edit context size: 7,067 estimated tokens.
 - Full-verify count similarity: 99.965%.
 
 This proves the edit loop can stay incremental, detect real CAS deltas from source edits, and produce immediate agent-facing context after a codebase changes.
@@ -271,7 +298,7 @@ For the current requirement-by-requirement evidence audit, see `docs/mcp/ANALYSI
 
 ## Default-Use Readiness
 
-The agent gauntlet passed 100/100 across 13 configured repositories, with 13/13 marked default-use ready:
+The agent gauntlet passed 100/100 across 13 configured repositories, with 13/13 marked agent context ready:
 
 - Klauro
 - Kadra
@@ -298,13 +325,13 @@ The live trials exposed and fixed product-level gaps:
 - Natural-language tasks now infer likely CAS targets from instructions and success criteria, so users do not need to name exact classes or files.
 - Route nodes receive stronger ranking when the task names an HTTP method/path such as `PUT /v1/settings`.
 - Concrete implementation nodes outrank DTO properties, tests, imports, and synthetic call-site nodes when they are better edit targets.
-- Agent work packets filter out structural edges such as `contains`, `provides`, and `has_method` from the first read plan, leaving behavioral callers/callees and tests.
-- Validation plans and focused test guidance are included in live work packets, so Klauro can improve patch quality, not only locate files.
-- Agent work packets now compact repository-wide risk summaries and enforce call-chain limits, keeping default MCP context useful without bloating token usage.
+- Agent contexts filter out structural edges such as `contains`, `provides`, and `has_method` from the first read plan, leaving behavioral callers/callees and tests.
+- Validation plans and focused test guidance are included in live agent contexts, so Klauro can improve patch quality, not only locate files.
+- Agent contexts now compact repository-wide risk summaries and enforce call-chain limits, keeping default MCP context useful without bloating token usage.
 - File-read plans now include bounded line windows, so agents can inspect the relevant slice of a large file first and expand only when the local evidence requires it.
 - Validation plans resolve package-level scripts from monorepo roots, so a root-path task can still get concrete commands such as `cd packages/analyzer-core && npm test` or `cd apps/mcp-server && npm run typecheck`.
 - Python API route tasks now infer conventional API test files such as `tests/test_api.py`, so agents get focused pytest commands instead of a validation gap.
-- Live with-Klauro prompts now read the precomputed MCP work packet first instead of spending time regenerating analysis during the benchmark.
+- Live with-Klauro prompts now read the precomputed MCP agent context first instead of spending time regenerating analysis during the benchmark.
 - Live evaluation no longer treats route strings such as `/v1/settings` as expected edit-file paths when scoring changed-file precision.
 - Incremental analysis now forces a full rebuild when cached CAS is stale or missing agent-critical fields such as graph integrity, call chains, or analysis facts.
 - Live copied-repo benchmarks exclude local virtual environments, caches, and build artifacts, and now fail fast if a clean git baseline cannot be created.
@@ -314,7 +341,7 @@ The live trials exposed and fixed product-level gaps:
 - Installed agent defaults now preserve selected-path routing metadata for monorepos and avoid unresolved placeholders in generated defaults.
 - Integration-depth reports now separate extracted missing depth from unobserved optional surfaces, so agents are not misled by broad keywords such as finance exchanges or HTML span symbols.
 - Analysis mastery reports now separate blocking gaps from non-blocking agent observations, so fixture caveats do not masquerade as failed proof.
-- Incremental benchmark workspaces now discard copied repositories by default, exclude local environments and dependency caches such as `.venv`, and compact test/invariant evidence in work packets so proof runs stay operational and token-bounded.
+- Incremental benchmark workspaces now discard copied repositories by default, exclude local environments and dependency caches such as `.venv`, and compact test/invariant evidence in agent contexts so proof runs stay operational and token-bounded.
 - Live benchmarks can now start from a truly empty folder because baseline git commits allow empty baselines.
 - `agent-scratch-build-benchmark` adds real empty-folder scratch builds plus continuation waves, can rescore existing live reports with `--score-existing-report`, and supports multiple live scenario families through `--scenario`.
 - `agent-scratch-build-multi-wave` runs the same live scratch harness with additional continuation slices. Continuation waves now carry each arm's own prior workspace forward, so this command can expose accumulated duplication and architecture drift that a shared-baseline continuation cannot.
@@ -383,19 +410,19 @@ npm run agent-scratch-dogfood-build -- \
   --report /tmp/klauro-scratch-dogfood-build.json
 ```
 
-Run the repeatable from-zero build-packet comparison:
+Run the repeatable from-zero build-context comparison:
 
 ```bash
-npm run agent-from-zero-build-packet-proof
+npm run agent-from-zero-build-context-proof
 ```
 
-Run the prompt-format benchmark for the greenfield build packet:
+Run the prompt-format benchmark for the greenfield build context:
 
 ```bash
 npm run greenfield-build-codec-benchmark -- --output /tmp/klauro-greenfield-build-codec-benchmark.json
 ```
 
-The current proof starts from truly empty folders, builds initial slices, then runs four continuation slices with fresh Klauro build packets before each growth step. The latest expanded multi-domain run is `apps/mcp-server/.klauro-from-zero-build-packet-proof/latest-report.json`: pass, 100/100, 3/3 scenarios passed, 3/3 scenarios carried product-focus packet evidence across all five slices, +96 average quality delta, +18 duplicate-class delta avoided, zero with-Klauro duplicate classes, 27 fewer focused files read, 13.33% fewer context characters, and unguided baselines that still pass tests while duplicating domain/model classes.
+The current proof starts from truly empty folders, builds initial slices, then runs four continuation slices with fresh Klauro build contexts before each growth step. The latest expanded multi-domain run is `apps/mcp-server/.klauro-from-zero-build-context-proof/latest-report.json`: pass, 100/100, 3/3 scenarios passed, 3/3 scenarios carried product-focus context evidence across all five slices, +96 average quality delta, +18 duplicate-class delta avoided, zero with-Klauro duplicate classes, 27 fewer focused files read, 13.33% fewer context characters, and unguided baselines that still pass tests while duplicating domain/model classes.
 
 Rescore existing scratch live artifacts after evaluator changes:
 
@@ -434,4 +461,4 @@ claude -p --safe-mode --no-session-persistence --permission-mode bypassPermissio
   --add-dir {workspace} --output-format json -- "$(cat {prompt_file})"
 ```
 
-This keeps both arms on the same agent while removing unrelated project memory, plugin, hook, and session-persistence overhead from the measurement. The `--` before the prompt is required because `--add-dir` accepts multiple directories and can otherwise consume the prompt. The benchmark still records provider token totals and direct provider tokens; non-lean Claude commands are reported as `full-agent` so a token regression is not mistaken for a CAS packet failure.
+This keeps both arms on the same agent while removing unrelated project memory, plugin, hook, and session-persistence overhead from the measurement. The `--` before the prompt is required because `--add-dir` accepts multiple directories and can otherwise consume the prompt. The benchmark still records provider token totals and direct provider tokens; non-lean Claude commands are reported as `full-agent` so a token regression is not mistaken for a CAS context failure.

@@ -55,7 +55,7 @@ export async function generateElementDescription(input: {
   stored: boolean;
 }> {
   if (!hasAIProviderConfigured()) {
-    throw new Error('AI descriptions require OPENAI_API_KEY, ANTHROPIC_API_KEY, OPENAI_BASE_URL/LOCAL_OPENAI_BASE_URL, OLLAMA_BASE_URL, or AI_LOCAL_ENABLED=true.');
+    throw new Error('AI descriptions require hosted Klauro AI enrichment: configure DEEPINFRA_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, Azure OpenAI, or a non-local OPENAI_BASE_URL on the hosted analyzer service.');
   }
 
   const cas = await loadAnalysis(input.projectPath);
@@ -334,7 +334,7 @@ export async function applyStoredElementDescriptions(projectPath: string, cas: C
 
 function hasAIProviderConfigured(): boolean {
   const config = getAIConfig();
-  return Boolean(config.openai.apiKey || config.anthropic.apiKey || process.env.AI_LOCAL_ENABLED === 'true');
+  return Boolean(config.openai.apiKey || config.anthropic.apiKey);
 }
 
 async function resolveTarget(

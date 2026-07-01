@@ -1,10 +1,12 @@
 **/node_modules
 **/dist
 **/build
+**/target
 **/.next
 **/.turbo
 **/.cache
 **/.klauro*
+apps/mcp-server/.klauro-*
 **/coverage
 **/*.log
 .git
@@ -12,6 +14,9 @@ legacy
 docs
 **/temp
 **/tmp
+**/cas-tests
+**/testdata
+**/__fixtures__
 **/.pytest_cache
 **/.mypy_cache
 **/.ruff_cache

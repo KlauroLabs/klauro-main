@@ -1,0 +1,9 @@
+# Klauro upload exclusions. These patterns apply in addition to safe defaults.
+.env*
+secrets/**
+private-fixtures/**
+customer-dumps/**
+*.pem
+*.key
+*.p12
+*.pfx

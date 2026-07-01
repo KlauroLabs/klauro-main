@@ -48,7 +48,7 @@ const GENERATED_STORAGE_CATEGORIES = [
   'machine-proof-workspaces',
   'scratch-build-benchmark',
   'greenfield-live-continuity',
-  'from-zero-build-packet-proof',
+  'from-zero-build-context-proof',
   'from-zero-dogfood',
 ];
 

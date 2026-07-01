@@ -1,19 +1,19 @@
 import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
-import { benchmarkGreenfieldBuildCodecs, buildGreenfieldBuildPacket } from './greenfield-build-session';
+import { benchmarkGreenfieldBuildCodecs, buildGreenfieldBuildContext } from './greenfield-build-session';
 
 async function main() {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-greenfield-codec-'));
   await seedContinuationWorkspace(workspace);
 
   const emptyWorkspace = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-empty-codec-'));
-  const emptyPacket = await buildGreenfieldBuildPacket({
+  const emptyContext = await buildGreenfieldBuildContext({
     workspacePath: emptyWorkspace,
     planText: 'Build a multi-tenant compliance evidence platform with controls, reviewer queues, audit exports, escalation windows, tests, and durable history.',
     references: [],
   });
-  const continuationPacket = await buildGreenfieldBuildPacket({
+  const continuationContext = await buildGreenfieldBuildContext({
     workspacePath: workspace,
     planText: 'Continue the compliance platform with reviewer notifications, saved queue filters, control renewal windows, and audit export packages. Reuse Workspace, Control, EvidenceRequest, ReviewerQueue, and AuditEvent.',
     references: [],
@@ -25,11 +25,11 @@ async function main() {
     scenarios: [
       {
         name: 'empty-folder-first-slice',
-        ...benchmarkGreenfieldBuildCodecs(emptyPacket),
+        ...benchmarkGreenfieldBuildCodecs(emptyContext),
       },
       {
         name: 'cas-backed-continuation',
-        ...benchmarkGreenfieldBuildCodecs(continuationPacket),
+        ...benchmarkGreenfieldBuildCodecs(continuationContext),
       },
     ],
   };

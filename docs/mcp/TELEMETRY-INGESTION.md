@@ -120,7 +120,7 @@ Unmatched events are stored with `correlation.status: "unmatched"` and surfaced 
 ## How ingested data flows into runtime tools
 
 - `get_runtime_observations` returns ingested observations by default. Pass `source: "simulated"` or `source: "all"` to see simulated data; the response always includes `ingested_count`, `simulated_count`, and per-observation `source`.
-- `get_operational_priorities` ranks work from ingested telemetry plus static risk by default. Pass `include_simulated: true` to mix in simulated observations; each priority carries `source: "ingested" | "simulated" | "mixed"`. Each priority's `static_target.file` is a CAS-resolved file you can hand to `get_agent_work_packet`.
+- `get_operational_priorities` ranks work from ingested telemetry plus static risk by default. Pass `include_simulated: true` to mix in simulated observations; each priority carries `source: "ingested" | "simulated" | "mixed"`. Each priority's `static_target.file` is a CAS-resolved file you can hand to `get_agent_context`.
 - `get_runtime_trace` replays a `trace_id` from ingested data by default, with the same `source` opt-in.
 - `simulate_runtime_telemetry` remains the planning surface; everything it stores is marked `source: "simulated"` and never masquerades as production truth.
 

@@ -212,11 +212,11 @@ function analysisGates(report: JsonObject): Gate[] {
 
 function agentGates(report: JsonObject): Gate[] {
   const targets = array(report.targets);
-  const defaultUseTargets = targets.filter(target => target.default_use === true);
+  const defaultUseTargets = targets.filter(target => target.agent_context_ready === true);
   return [
     gate('agent-gauntlet:status', ['pass', 'warn'].includes(report.status) && Number(report.score) >= 95, `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`),
-    gate('agent-gauntlet:coverage', targets.length >= 12 && report.defaultUseTargets >= 12, `${report.defaultUseTargets || 0}/${targets.length} default-use targets`),
-    gate('agent-gauntlet:default-use', targets.length > 0 && defaultUseTargets.length === targets.length && targets.every(target => target.default_use === true && Number(target.score) >= 95), `${defaultUseTargets.length}/${targets.length} ready by default`),
+    gate('agent-gauntlet:coverage', targets.length >= 12 && report.defaultUseTargets >= 12, `${report.defaultUseTargets || 0}/${targets.length} agent-context-ready targets`),
+    gate('agent-gauntlet:agent-context-ready', targets.length > 0 && defaultUseTargets.length === targets.length && targets.every(target => target.agent_context_ready === true && Number(target.score) >= 95), `${defaultUseTargets.length}/${targets.length} ready by default`),
   ];
 }
 
@@ -267,7 +267,7 @@ function incrementalBenchmarkGates(report: JsonObject): Gate[] {
     gate('incremental-benchmark:success', Number(summary.incremental_success_rate) === 1, `${percent(summary.incremental_success_rate)} incremental success`),
     gate('incremental-benchmark:no-change-speedup', Number(summary.average_no_change_speedup_vs_full) >= 5, `${summary.average_no_change_speedup_vs_full || 0}x no-change speedup`),
     gate('incremental-benchmark:edit-speedup', Number(summary.average_edit_speedup_vs_full) >= 2, `${summary.average_edit_speedup_vs_full || 0}x edit speedup`),
-    gate('incremental-benchmark:post-edit-context', Number(summary.average_packet_generation_ms_after_edit) <= 500 && Number(summary.average_file_read_plan_after_edit) <= 3 && Number(summary.average_packet_tokens_after_edit) <= 10000, `${summary.average_packet_generation_ms_after_edit || 0}ms, ${summary.average_file_read_plan_after_edit || 0} files, ${summary.average_packet_tokens_after_edit || 0} tokens`),
+    gate('incremental-benchmark:post-edit-context', Number(summary.average_context_generation_ms_after_edit) <= 500 && Number(summary.average_file_read_plan_after_edit) <= 3 && Number(summary.average_context_tokens_after_edit) <= 10000, `${summary.average_context_generation_ms_after_edit || 0}ms, ${summary.average_file_read_plan_after_edit || 0} files, ${summary.average_context_tokens_after_edit || 0} tokens`),
     gate('incremental-benchmark:full-verify-parity', Number(summary.average_full_verify_count_similarity) >= 0.98, `${percent(summary.average_full_verify_count_similarity)} count similarity`),
   ];
 }
@@ -369,13 +369,13 @@ export function competitorBaselineBenchmarkGates(report: JsonObject): Gate[] {
     gate('competitor-baseline:cursor-token-reduction',
       Number(cursor.average_token_reduction_percentage || summary.average_token_reduction_vs_index_percentage || 0) >= 15 &&
         Number(cursor.scenarios_with_positive_token_reduction || summary.scenarios_with_positive_token_reduction || 0) >= Math.ceil(Number(summary.scenario_count || 0) * 0.8) &&
-        Number(summary.average_klauro_packet_tokens || Number.POSITIVE_INFINITY) <= 3200,
-      `${cursor.average_token_reduction_percentage || summary.average_token_reduction_vs_index_percentage || 0}% average token reduction, ${summary.average_klauro_packet_tokens || 'missing'} avg packet tokens`),
+        Number(summary.average_klauro_context_tokens || Number.POSITIVE_INFINITY) <= 3200,
+      `${cursor.average_token_reduction_percentage || summary.average_token_reduction_vs_index_percentage || 0}% average token reduction, ${summary.average_klauro_context_tokens || 'missing'} avg context tokens`),
     gate('competitor-baseline:linear-token-reduction',
       Number(linear.average_token_reduction_percentage || 0) >= 20 &&
         Number(linear.scenarios_with_positive_token_reduction || 0) >= Math.ceil(Number(summary.scenario_count || 0) * 0.8) &&
-        Number(summary.average_klauro_packet_tokens || Number.POSITIVE_INFINITY) <= 3200,
-      `${linear.average_token_reduction_percentage || 0}% average token reduction, ${summary.average_klauro_packet_tokens || 'missing'} avg packet tokens`),
+        Number(summary.average_klauro_context_tokens || Number.POSITIVE_INFINITY) <= 3200,
+      `${linear.average_token_reduction_percentage || 0}% average token reduction, ${summary.average_klauro_context_tokens || 'missing'} avg context tokens`),
     gate('competitor-baseline:all-local-gates-pass', gates.length >= 8 && failed.length === 0, `${failed.length} failing competitor baseline gates`),
   ];
 }
@@ -506,7 +506,7 @@ export function newUserE2EGates(report: JsonObject): Gate[] {
       requiredSteps.every(name => stepNames.has(name)) && passedSteps.length === steps.length && steps.length >= requiredSteps.length,
       `${passedSteps.length}/${steps.length} steps passed`),
     gate('new-user-e2e:first-value',
-      steps.some(step => step.name === 'deterministic install plus first value' && step.ok === true && /agent packet summary/i.test(String(step.detail || ''))),
+      steps.some(step => step.name === 'deterministic install plus first value' && step.ok === true && /agent context summary/i.test(String(step.detail || ''))),
       steps.find(step => step.name === 'deterministic install plus first value')?.detail || 'missing first-value step'),
     gate('new-user-e2e:hosted-incremental',
       steps.some(step => step.name === 'hosted analyzer incremental sync' && step.ok === true && /incremental sync returned/i.test(String(step.detail || ''))),
@@ -666,7 +666,7 @@ async function persistedProofGates(): Promise<Gate[]> {
   const idiomReport = reports.find((report: JsonObject) => report.benchmark_type === 'live-agent-idiom-quality-ab')
     || reports.find((report: JsonObject) => report.benchmark_type === 'deterministic-agent-idiom-quality-proxy')
     || (!fileIdiomBenchmark.missing_report ? fileIdiomBenchmark : undefined);
-  const fromZeroReport = reports.find((report: JsonObject) => report.benchmark_type === 'from-zero-build-packet-proof');
+  const fromZeroReport = reports.find((report: JsonObject) => report.benchmark_type === 'from-zero-build-context-proof');
   const fromZeroScenarioCount = Number(fromZeroReport?.summary?.scenario_count || (fromZeroReport?.scenario ? 1 : 0));
   const fromZeroProductFocusCount = Number(fromZeroReport?.summary?.product_focus_scenario_count || 0);
   const fromZeroGrowthIterations = Number(fromZeroReport?.summary?.growth_iteration_count || fromZeroReport?.summary?.task_count || 0);
@@ -756,8 +756,8 @@ async function persistedProofGates(): Promise<Gate[]> {
         Number(fromZeroReport?.summary?.context_char_reduction_percentage || 0) > 0 &&
         Number(fromZeroReport?.summary?.with_klauro_duplicate_classes || 0) === 0,
       fromZeroReport
-        ? `${fromZeroReport.summary?.scenarios_passed || 0}/${fromZeroScenarioCount} scenarios, ${fromZeroProductFocusCount}/${fromZeroScenarioCount} product-focus packets, ${fromZeroGrowthIterations} growth iterations, quality delta ${fromZeroReport.summary?.quality_delta}, duplicate-class delta ${fromZeroReport.summary?.duplicate_class_delta}, context reduction ${fromZeroReport.summary?.context_char_reduction_percentage}%, with-Klauro duplicates ${fromZeroReport.summary?.with_klauro_duplicate_classes}`
-        : 'missing from-zero build packet proof'),
+        ? `${fromZeroReport.summary?.scenarios_passed || 0}/${fromZeroScenarioCount} scenarios, ${fromZeroProductFocusCount}/${fromZeroScenarioCount} product-focus contexts, ${fromZeroGrowthIterations} growth iterations, quality delta ${fromZeroReport.summary?.quality_delta}, duplicate-class delta ${fromZeroReport.summary?.duplicate_class_delta}, context reduction ${fromZeroReport.summary?.context_char_reduction_percentage}%, with-Klauro duplicates ${fromZeroReport.summary?.with_klauro_duplicate_classes}`
+        : 'missing from-zero build context proof'),
   ];
 }
 

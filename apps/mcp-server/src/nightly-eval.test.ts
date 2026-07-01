@@ -151,7 +151,7 @@ test('evaluateVocabIsolationChecks passes clean foreign analyses and the Klauro 
     system_capabilities: [capability('Vehicle Management', 'Vehicle Management maintains vehicle records, workflows, and relationships used by fleet behavior.')],
   } as unknown as Partial<CASOutput>);
   const klauroSelf = vocabFixture({
-    system_capabilities: [capability('Agent Work Packets', 'Agent Work Packets turns CAS graph matches, risks, idioms, and tests into a compact coding brief before an AI agent edits a repository.')],
+    system_capabilities: [capability('Agent Context', 'Agent Context turns CAS graph matches, risks, idioms, and tests into a compact coding context before an AI agent edits a repository.')],
   } as unknown as Partial<CASOutput>);
   const checks = evaluateVocabIsolationChecks({
     foreign: [{ name: 'fleet-app', cas: foreign }],

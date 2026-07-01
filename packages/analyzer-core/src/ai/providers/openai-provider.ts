@@ -26,7 +26,7 @@ function resolveOllamaBaseURL(openAIBaseURL?: string): string | undefined {
 }
 
 export class OpenAIProvider implements AIProvider {
-  public readonly name = 'openai';
+  public readonly name: string;
   private client: OpenAI;
   private logger: winston.Logger;
   private config: AIConfig;
@@ -35,6 +35,7 @@ export class OpenAIProvider implements AIProvider {
   constructor(config: AIConfig) {
     this.config = config;
     this.ollamaBaseURL = resolveOllamaBaseURL(config.openai.baseURL);
+    this.name = this.resolveProviderName();
     
     if (!config.openai.apiKey) {
       throw new Error('OpenAI API key is required');
@@ -75,7 +76,7 @@ export class OpenAIProvider implements AIProvider {
         winston.format.errors({ stack: true }),
         winston.format.json()
       ),
-      defaultMeta: { provider: 'openai' },
+      defaultMeta: { provider: this.name },
       transports: [
         new winston.transports.Console({
           stderrLevels: ['error', 'warn', 'info', 'verbose', 'debug', 'silly'],
@@ -86,6 +87,15 @@ export class OpenAIProvider implements AIProvider {
         })
       ]
     });
+  }
+
+  private resolveProviderName(): string {
+    const baseURL = this.config.openai.baseURL || '';
+    if (process.env.DEEPINFRA_API_KEY && this.config.openai.apiKey === process.env.DEEPINFRA_API_KEY) return 'deepinfra';
+    if (process.env.AZURE_OPENAI_API_KEY && this.config.openai.apiKey === process.env.AZURE_OPENAI_API_KEY) return 'azure-openai';
+    if (/deepinfra\.com/i.test(baseURL)) return 'deepinfra';
+    if (baseURL) return this.ollamaBaseURL ? 'ollama' : 'openai-compatible';
+    return 'openai';
   }
 
   get available(): boolean {

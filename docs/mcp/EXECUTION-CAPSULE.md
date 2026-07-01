@@ -1,6 +1,6 @@
 # Klauro Agent Capsules
 
-Klauro uses two prompt-native capsule formats over CAS-backed work packets:
+Klauro uses two prompt-native capsule formats over CAS-backed agent contexts:
 
 - `K5`: the execution capsule for the next edit.
 - `K15`: the agent context language for selected-node orientation, indexed file
@@ -78,16 +78,16 @@ The default prompt format must optimize for all of these:
 - Can be parsed deterministically by Klauro tooling when needed.
 
 `K5` is the default execution capsule inside capsule-only and first-turn MCP
-packets. It supersedes the earlier `K3` and `K4` layouts by folding read/edit
+contexts. It supersedes the earlier `K3` and `K4` layouts by folding read/edit
 scope into the file dictionary, preserving exact paths, and keeping direct
 operations prompt-native. Expanded JSON remains available through the normal
-`get_agent_work_packet` response and follow-up tools.
+`get_agent_context` response and follow-up tools.
 
 ## K15 Agent Context Language
 
 `K15` is the compact agent-readable context format. It carries the context
 agents need before reading source files, without forcing them to parse the
-expanded JSON packet. It supersedes `K14` by keeping role-grouped file aliases,
+expanded JSON context. It supersedes `K14` by keeping role-grouped file aliases,
 moving the default extension into the header, and removing separator spaces
 from opcode lines without dropping exact paths or validation cues.
 
@@ -121,11 +121,11 @@ Codes:
 - `V`: focused validation commands, with optional `#` file references.
 - `!`: expansion rule.
 
-Agents should request `get_agent_work_packet` with
+Agents should request `get_agent_context` with
 `response_profile: "capsule-only"` when token savings matter most. Read `K15`
 first for orientation, then execute `K5` for the exact edit. If `K15` and `K5`
 disagree, prefer the more specific `K5` edit operation and report the conflict
-as a Klauro packet issue. Retry with `response_profile: "first-turn"` only when
+as a Klauro context issue. Retry with `response_profile: "first-turn"` only when
 the capsules leave a concrete gap and the agent needs compact JSON fields.
 
 ## Benchmark

@@ -2,7 +2,6 @@ import { aiConfig, AIConfig, getAIConfig } from '../config/ai.config';
 import { OpenAIProvider } from './providers/openai-provider';
 import { ClaudeProvider } from './providers/claude-provider';
 import { FallbackProvider } from './providers/fallback-provider';
-import { LocalProvider } from './providers/local-provider';
 import { AICache } from './ai-cache';
 import { ComponentNode, ArchitectureBlueprint, RiskArea } from '../types';
 import { prompts } from './ai-prompts';
@@ -155,19 +154,6 @@ export class AIService {
       }
     } catch (error) {
       this.logger.warn('Failed to initialize Claude provider:', error);
-    }
-
-    try {
-      if (aiConfig.local.enabled) {
-        this.providers.set('local', new LocalProvider({
-          model: aiConfig.local.model,
-          maxTokens: aiConfig.local.maxTokens,
-          temperature: aiConfig.local.temperature,
-        }));
-        this.logger.info('Local provider initialized');
-      }
-    } catch (error) {
-      this.logger.warn('Failed to initialize Local provider:', error);
     }
 
     // Fallback provider is always available

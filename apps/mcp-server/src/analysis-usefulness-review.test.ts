@@ -429,16 +429,16 @@ test('description quality gate accepts AI-backed descriptions that orient agents
   const gate = scoreDescriptionQuality({
     enhanced_system_purpose: {
       primary_domain: 'agent-analysis',
-      core_concepts: ['work packet', 'idiom guidance', 'change risk'],
-      inferred_description: 'Klauro analyzes source repositories into a CAS relationship graph that gives coding agents compact work packets, local idiom guidance, change-risk context, and targeted validation steps before they edit files.',
+      core_concepts: ['agent context', 'idiom guidance', 'change risk'],
+      inferred_description: 'Klauro analyzes source repositories into a CAS relationship graph that gives coding agents compact agent contexts, local idiom guidance, change-risk context, and targeted validation steps before they edit files.',
       description_source: 'ai',
       description_generation: { status: 'ai_applied', attempted: true },
     },
-    domain_concepts: [{ name: 'work packet' }, { name: 'idiom guidance' }],
+    domain_concepts: [{ name: 'agent context' }, { name: 'idiom guidance' }],
     system_capabilities: [
       {
-        id: 'work-packets',
-        name: 'Agent Work Packets',
+        id: 'work-contexts',
+        name: 'Agent Contexts',
         category: 'core',
         criticality: 'critical',
         description: 'Turns graph matches, risk signals, idioms, and nearby tests into a compact coding brief so agents can start with the right files and validation plan.',
@@ -613,12 +613,12 @@ test('description quality gate fails rejected AI fallbacks that leak structural 
   const gate = scoreDescriptionQuality({
     enhanced_system_purpose: {
       primary_domain: 'agent-analysis',
-      core_concepts: ['work packet', 'idiom guidance', 'change risk'],
-      inferred_description: 'Klauro analyzes source repositories into a CAS relationship graph that gives coding agents compact work packets, local idiom guidance, change-risk context, and targeted validation steps before they edit files.',
+      core_concepts: ['agent context', 'idiom guidance', 'change risk'],
+      inferred_description: 'Klauro analyzes source repositories into a CAS relationship graph that gives coding agents compact agent contexts, local idiom guidance, change-risk context, and targeted validation steps before they edit files.',
       description_source: 'ai',
       description_generation: { status: 'ai_applied', attempted: true },
     },
-    domain_concepts: [{ name: 'work packet' }, { name: 'idiom guidance' }],
+    domain_concepts: [{ name: 'agent context' }, { name: 'idiom guidance' }],
     system_capabilities: [
       {
         id: 'greenfield',
@@ -1209,11 +1209,11 @@ test('description enrichment targets point UI and agents at the next weak narrat
     },
     system_capabilities: [
       {
-        id: 'cap_packets',
-        name: 'Agent Work Packets',
+        id: 'cap_contexts',
+        name: 'Agent Contexts',
         category: 'core',
         criticality: 'critical',
-        description: 'Agent Work Packets organizes and executes specific functions like parseArgs, formatTable, and renderRow to process and structure data.',
+        description: 'Agent Contexts organizes and executes specific functions like parseArgs, formatTable, and renderRow to process and structure data.',
         description_source: 'ai',
         description_generation: { status: 'ai_applied', attempted: true },
         operations: [],
@@ -1280,10 +1280,10 @@ test('description enrichment targets point UI and agents at the next weak narrat
   assert.equal(targets[0].suggested_args.layer, 'agent-fast-refresh');
   assert.match(targets[0].reasons.join('\n'), /regurgitates CAS inventory/);
 
-  const capability = targets.find(target => target.target_id === 'cap_packets');
+  const capability = targets.find(target => target.target_id === 'cap_contexts');
   assert.equal(capability?.target_kind, 'capability');
   assert.equal(capability?.suggested_tool, 'generate_element_description');
-  assert.equal(capability?.suggested_args.target, 'cap_packets');
+  assert.equal(capability?.suggested_args.target, 'cap_contexts');
   assert.match(capability?.reasons.join('\n') || '', /implementation-function-restatement|generic structural/);
 
   const service = targets.find(target => target.target_id === 'node-dispatch-service');

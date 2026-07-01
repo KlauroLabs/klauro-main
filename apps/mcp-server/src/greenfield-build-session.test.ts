@@ -3,51 +3,51 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
-import { benchmarkGreenfieldBuildCodecs, buildGreenfieldBuildPacket } from './greenfield-build-session';
+import { benchmarkGreenfieldBuildCodecs, buildGreenfieldBuildContext } from './greenfield-build-session';
 
-test('greenfield build packet starts from a truly empty folder without source exploration', async () => {
+test('greenfield build context starts from a truly empty folder without source exploration', async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-empty-greenfield-'));
-  const packet = await buildGreenfieldBuildPacket({
+  const context = await buildGreenfieldBuildContext({
     workspacePath: workspace,
     planText: 'Build a multi-tenant incident operations platform with dashboards, alerts, escalation policies, tests, and audit history.',
     references: [],
   });
 
-  assert.equal(packet.product, 'greenfield_build_packet');
-  assert.equal(packet.stage, 'empty_workspace_first_slice');
-  assert.equal(packet.agent_build_capsule.format, 'G1');
-  assert.match(packet.agent_build_capsule.capsule, /^G1\|0\|/);
-  assert.match(packet.agent_build_capsule.capsule, /^N\|/m);
-  assert.ok(packet.agent_build_capsule.estimated_tokens < Math.ceil(JSON.stringify(packet).length / 4));
-  assert.equal(packet.current_analysis, null);
-  assert.equal(packet.architecture_memory.stage, 'no_code_yet');
-  assert.ok(packet.architecture_memory.decision_ledger.some((item: any) => item.decision.includes('Name core domain concepts once')));
-  assert.match(packet.product_focus.objective, /product behavior/);
-  assert.ok(packet.product_focus.agent_should_not_spend_time_on.some((item: string) => item.includes('empty folder')));
-  assert.ok(packet.product_focus.next_product_slice_definition.includes('vertical slice'));
-  assert.equal(packet.growth_control_plane.mode, 'first_slice_bootstrap');
-  assert.match(packet.growth_control_plane.purpose, /agent can spend more effort on product behavior/);
-  assert.equal(packet.growth_control_plane.context_budget.max_first_reads, 0);
-  assert.ok(packet.recommended_architecture.architecture_contract.required_boundaries.some((item: any) => item.kind === 'entry'));
-  assert.ok(packet.recommended_architecture.architecture_contract.required_boundaries.some((item: any) => item.kind === 'service'));
-  assert.ok(packet.recommended_architecture.architecture_contract.required_boundaries.some((item: any) => item.kind === 'domain_model'));
-  assert.ok(packet.recommended_architecture.architecture_contract.do_not_collapse.some((item: string) => item.includes('route/API files')));
-  assert.ok(packet.growth_control_plane.product_slice.done_when.some((item: string) => item.includes('Core domain concepts are named once')));
-  assert.ok(packet.growth_control_plane.next_klauro_loop.some((item: string) => item.includes('preview_greenfield_codebase')));
-  assert.match(packet.context_budget.token_rule, /Do not spend tokens exploring the empty folder/);
-  assert.ok(packet.next_agent_steps.some(step => step.includes('vertical slice')));
-  assert.ok(packet.validation_plan.klauro_checks.includes('preview_greenfield_codebase'));
+  assert.equal(context.product, 'greenfield_build_context');
+  assert.equal(context.stage, 'empty_workspace_first_slice');
+  assert.equal(context.agent_build_capsule.format, 'G1');
+  assert.match(context.agent_build_capsule.capsule, /^G1\|0\|/);
+  assert.match(context.agent_build_capsule.capsule, /^N\|/m);
+  assert.ok(context.agent_build_capsule.estimated_tokens < Math.ceil(JSON.stringify(context).length / 4));
+  assert.equal(context.current_analysis, null);
+  assert.equal(context.architecture_memory.stage, 'no_code_yet');
+  assert.ok(context.architecture_memory.decision_ledger.some((item: any) => item.decision.includes('Name core domain concepts once')));
+  assert.match(context.product_focus.objective, /product behavior/);
+  assert.ok(context.product_focus.agent_should_not_spend_time_on.some((item: string) => item.includes('empty folder')));
+  assert.ok(context.product_focus.next_product_slice_definition.includes('vertical slice'));
+  assert.equal(context.growth_control_plane.mode, 'first_slice_bootstrap');
+  assert.match(context.growth_control_plane.purpose, /agent can spend more effort on product behavior/);
+  assert.equal(context.growth_control_plane.context_budget.max_first_reads, 0);
+  assert.ok(context.recommended_architecture.architecture_contract.required_boundaries.some((item: any) => item.kind === 'entry'));
+  assert.ok(context.recommended_architecture.architecture_contract.required_boundaries.some((item: any) => item.kind === 'service'));
+  assert.ok(context.recommended_architecture.architecture_contract.required_boundaries.some((item: any) => item.kind === 'domain_model'));
+  assert.ok(context.recommended_architecture.architecture_contract.do_not_collapse.some((item: string) => item.includes('route/API files')));
+  assert.ok(context.growth_control_plane.product_slice.done_when.some((item: string) => item.includes('Core domain concepts are named once')));
+  assert.ok(context.growth_control_plane.next_klauro_loop.some((item: string) => item.includes('preview_greenfield_codebase')));
+  assert.match(context.context_budget.token_rule, /Do not spend tokens exploring the empty folder/);
+  assert.ok(context.next_agent_steps.some(step => step.includes('vertical slice')));
+  assert.ok(context.validation_plan.klauro_checks.includes('preview_greenfield_codebase'));
 
-  const codecReport = benchmarkGreenfieldBuildCodecs(packet);
+  const codecReport = benchmarkGreenfieldBuildCodecs(context);
   assert.equal(codecReport.recommendation, 'g1-build-capsule');
   assert.equal(codecReport.results[0].name, 'g1-build-capsule');
   assert.ok(codecReport.results[0].estimated_tokens < codecReport.results.find(result => result.name === 'full-json')!.estimated_tokens);
   assert.ok(codecReport.results[0].balanced_score > codecReport.results.find(result => result.name === 'messagepack-base64-proxy')!.balanced_score);
 });
 
-test('greenfield build packet keeps backend incident platforms backend-first even with UI-heavy references', async () => {
+test('greenfield build context keeps backend incident platforms backend-first even with UI-heavy references', async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-backend-greenfield-'));
-  const packet = await buildGreenfieldBuildPacket({
+  const context = await buildGreenfieldBuildContext({
     workspacePath: workspace,
     planText: [
       'Build a multi-tenant incident response operations platform for SaaS engineering teams.',
@@ -62,9 +62,9 @@ test('greenfield build packet keeps backend incident platforms backend-first eve
     }],
   });
 
-  const patternNames = packet.recommended_architecture.patterns.map((pattern: any) => pattern.name);
-  const filePlan = packet.recommended_architecture.file_plan.map((file: any) => file.path);
-  const boundaries = packet.recommended_architecture.architecture_contract.required_boundaries.map((boundary: any) => boundary.kind);
+  const patternNames = context.recommended_architecture.patterns.map((pattern: any) => pattern.name);
+  const filePlan = context.recommended_architecture.file_plan.map((file: any) => file.path);
+  const boundaries = context.recommended_architecture.architecture_contract.required_boundaries.map((boundary: any) => boundary.kind);
 
   assert.ok(patternNames.includes('Service Layer'));
   assert.ok(patternNames.includes('Repository/Data Access Boundary'));
@@ -80,12 +80,12 @@ test('greenfield build packet keeps backend incident platforms backend-first eve
   assert.ok(boundaries.includes('migration'));
   assert.ok(boundaries.includes('auth_policy'));
   assert.ok(boundaries.includes('integration_adapter'));
-  assert.ok(packet.recommended_architecture.data_and_migrations.every((item: string) => !/No data layer/i.test(item)));
-  assert.match(packet.agent_build_capsule.capsule, /Repository\/Data Access Boundary/);
-  assert.doesNotMatch(packet.agent_build_capsule.capsule, /Component\/Page UI/);
+  assert.ok(context.recommended_architecture.data_and_migrations.every((item: string) => !/No data layer/i.test(item)));
+  assert.match(context.agent_build_capsule.capsule, /Repository\/Data Access Boundary/);
+  assert.doesNotMatch(context.agent_build_capsule.capsule, /Component\/Page UI/);
 });
 
-test('greenfield build packet turns an existing scratch project into CAS-backed continuation memory', async () => {
+test('greenfield build context turns an existing scratch project into CAS-backed continuation memory', async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-growing-greenfield-'));
   await fs.outputJson(path.join(workspace, 'package.json'), {
     scripts: { test: 'node --test src/*.test.js' },
@@ -112,39 +112,39 @@ import test from 'node:test';
 test('placeholder', () => assert.equal(1, 1));
 `);
 
-  const packet = await buildGreenfieldBuildPacket({
+  const context = await buildGreenfieldBuildContext({
     workspacePath: workspace,
     planText: 'Continue the command center by adding workspace notification preferences and dashboard comparison overlays. Reuse Workspace, Dashboard, and Widget.',
     references: [],
   });
 
-  assert.equal(packet.stage, 'continuation_iteration');
-  assert.equal(packet.agent_build_capsule.format, 'G1');
-  assert.match(packet.agent_build_capsule.capsule, /^G1\|c\|/);
-  assert.match(packet.agent_build_capsule.capsule, /Workspace|Dashboard|Widget/);
-  assert.match(packet.agent_build_capsule.capsule, /dashboard-service\.ts|domain\.ts/);
-  assert.ok(packet.current_analysis);
-  assert.equal(packet.architecture_memory.stage, 'cas_backed_continuation');
-  assert.match(packet.product_focus.objective, /architecture map/);
-  assert.ok(packet.product_focus.agent_should_not_spend_time_on.some((item: string) => item.includes('Re-discovering')));
-  assert.ok(packet.product_focus.existing_behavior_to_extend.length > 0);
-  assert.ok(packet.product_focus.existing_behavior_to_extend.some((item: any) => item.owner_files?.some((file: string) => file.includes('domain.ts') || file.includes('dashboard-service.ts'))));
-  assert.equal(packet.growth_control_plane.mode, 'cas_backed_growth');
-  assert.ok(packet.growth_control_plane.concept_ownership_contract.known_concepts.some((concept: string) => /Workspace|Dashboard|Widget/i.test(concept)));
-  assert.ok(packet.growth_control_plane.concept_ownership_contract.owner_files.some((item: any) => item.file.includes('domain.ts') || item.file.includes('dashboard-service.ts')));
-  assert.ok(packet.growth_control_plane.duplication_gate.required_before_new_model_or_service.some((item: string) => item.includes('known_concepts')));
-  assert.equal(packet.growth_control_plane.context_budget.max_first_reads, 5);
-  assert.match(packet.growth_control_plane.context_budget.read_rule, /Read only owner_files first/);
-  assert.ok(packet.current_analysis!.graph.files >= 3);
-  assert.ok(packet.architecture_memory.model_ownership.some((item: any) => /Workspace|Dashboard|Widget/i.test(item.concept)));
-  assert.ok(packet.architecture_memory.boundary_ownership.some((item: any) => item.boundary.includes('dashboard-service.ts')));
-  assert.ok(packet.architecture_memory.test_memory.some((item: any) => item.file.includes('dashboard-service.test.js')));
-  assert.ok(packet.duplicate_prevention.known_concepts_already_defined.some(concept => /Workspace|Dashboard|Widget/i.test(concept)));
-  assert.ok(packet.duplicate_prevention.likely_reused_concepts_for_this_slice.some(concept => /Workspace|Dashboard|Widget/i.test(concept)));
-  assert.ok(packet.context_budget.read_first.some((item: any) => item.file.includes('domain.ts')));
-  assert.ok(packet.validation_plan.klauro_checks.includes('analyze_codebase with incremental state'));
+  assert.equal(context.stage, 'continuation_iteration');
+  assert.equal(context.agent_build_capsule.format, 'G1');
+  assert.match(context.agent_build_capsule.capsule, /^G1\|c\|/);
+  assert.match(context.agent_build_capsule.capsule, /Workspace|Dashboard|Widget/);
+  assert.match(context.agent_build_capsule.capsule, /dashboard-service\.ts|domain\.ts/);
+  assert.ok(context.current_analysis);
+  assert.equal(context.architecture_memory.stage, 'cas_backed_continuation');
+  assert.match(context.product_focus.objective, /architecture map/);
+  assert.ok(context.product_focus.agent_should_not_spend_time_on.some((item: string) => item.includes('Re-discovering')));
+  assert.ok(context.product_focus.existing_behavior_to_extend.length > 0);
+  assert.ok(context.product_focus.existing_behavior_to_extend.some((item: any) => item.owner_files?.some((file: string) => file.includes('domain.ts') || file.includes('dashboard-service.ts'))));
+  assert.equal(context.growth_control_plane.mode, 'cas_backed_growth');
+  assert.ok(context.growth_control_plane.concept_ownership_contract.known_concepts.some((concept: string) => /Workspace|Dashboard|Widget/i.test(concept)));
+  assert.ok(context.growth_control_plane.concept_ownership_contract.owner_files.some((item: any) => item.file.includes('domain.ts') || item.file.includes('dashboard-service.ts')));
+  assert.ok(context.growth_control_plane.duplication_gate.required_before_new_model_or_service.some((item: string) => item.includes('known_concepts')));
+  assert.equal(context.growth_control_plane.context_budget.max_first_reads, 5);
+  assert.match(context.growth_control_plane.context_budget.read_rule, /Read only owner_files first/);
+  assert.ok(context.current_analysis!.graph.files >= 3);
+  assert.ok(context.architecture_memory.model_ownership.some((item: any) => /Workspace|Dashboard|Widget/i.test(item.concept)));
+  assert.ok(context.architecture_memory.boundary_ownership.some((item: any) => item.boundary.includes('dashboard-service.ts')));
+  assert.ok(context.architecture_memory.test_memory.some((item: any) => item.file.includes('dashboard-service.test.js')));
+  assert.ok(context.duplicate_prevention.known_concepts_already_defined.some(concept => /Workspace|Dashboard|Widget/i.test(concept)));
+  assert.ok(context.duplicate_prevention.likely_reused_concepts_for_this_slice.some(concept => /Workspace|Dashboard|Widget/i.test(concept)));
+  assert.ok(context.context_budget.read_first.some((item: any) => item.file.includes('domain.ts')));
+  assert.ok(context.validation_plan.klauro_checks.includes('analyze_codebase with incremental state'));
 
-  const codecReport = benchmarkGreenfieldBuildCodecs(packet);
+  const codecReport = benchmarkGreenfieldBuildCodecs(context);
   assert.equal(codecReport.recommendation, 'g1-build-capsule');
   assert.equal(codecReport.results[0].name, 'g1-build-capsule');
   assert.ok(codecReport.results[0].token_reduction_vs_full_json > 80);
@@ -186,7 +186,7 @@ function uiHeavyReferenceCas(): any {
   };
 }
 
-test('greenfield build packet prioritizes domain folders as first-read memory', async () => {
+test('greenfield build context prioritizes domain folders as first-read memory', async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-domain-folder-greenfield-'));
   await fs.outputJson(path.join(workspace, 'package.json'), { type: 'module' });
   await fs.outputFile(path.join(workspace, 'src/domain/concepts.js'), `
@@ -198,20 +198,20 @@ import { SignalRule } from '../domain/concepts.js';
 export class RuleService { create(input) { return new SignalRule(input); } }
 `);
 
-  const packet = await buildGreenfieldBuildPacket({
+  const context = await buildGreenfieldBuildContext({
     workspacePath: workspace,
     planText: 'Continue by adding signal rule comparison overlays and reuse Workspace and SignalRule.',
     references: [],
   });
 
-  assert.ok(packet.context_budget.read_first.some((item: any) => item.file === 'src/domain/concepts.js'));
-  assert.ok(packet.context_budget.read_first.some((item: any) => item.file === 'src/services/rule-service.js'));
-  assert.ok(packet.architecture_memory.boundary_ownership.some((item: any) => item.boundary === 'src/services/rule-service.js'));
-  assert.ok(packet.duplicate_prevention.likely_reused_concepts_for_this_slice.includes('Workspace'));
-  assert.ok(packet.duplicate_prevention.likely_reused_concepts_for_this_slice.includes('SignalRule'));
+  assert.ok(context.context_budget.read_first.some((item: any) => item.file === 'src/domain/concepts.js'));
+  assert.ok(context.context_budget.read_first.some((item: any) => item.file === 'src/services/rule-service.js'));
+  assert.ok(context.architecture_memory.boundary_ownership.some((item: any) => item.boundary === 'src/services/rule-service.js'));
+  assert.ok(context.duplicate_prevention.likely_reused_concepts_for_this_slice.includes('Workspace'));
+  assert.ok(context.duplicate_prevention.likely_reused_concepts_for_this_slice.includes('SignalRule'));
 });
 
-test('greenfield build packet gives positive owner guidance for adjacent new behavior', async () => {
+test('greenfield build context gives positive owner guidance for adjacent new behavior', async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-adjacent-greenfield-'));
   await fs.outputJson(path.join(workspace, 'package.json'), { type: 'module' });
   await fs.outputFile(path.join(workspace, 'src/domain/concepts.ts'), `
@@ -232,13 +232,13 @@ import test from 'node:test';
 test('placeholder', () => assert.equal(1, 1));
 `);
 
-  const packet = await buildGreenfieldBuildPacket({
+  const context = await buildGreenfieldBuildContext({
     workspacePath: workspace,
     planText: 'Continue with escalation windows, audit exports, workspace risk rollups, and digest subscriptions.',
     references: [],
   });
 
-  const extensionTargets = packet.product_focus.existing_behavior_to_extend;
+  const extensionTargets = context.product_focus.existing_behavior_to_extend;
   assert.ok(extensionTargets.length > 0);
   assert.ok(extensionTargets.some((item: any) => item.owner_files?.includes('src/services/signal-operations.service.ts')));
   assert.ok(extensionTargets.some((item: any) => item.entities?.some((entity: string) => /Workspace|SignalDigest/i.test(entity))));
@@ -248,7 +248,7 @@ test('placeholder', () => assert.equal(1, 1));
   assert.ok(extensionTargets.some((item: any) => /smallest focused test/.test(String(item.description || ''))));
 });
 
-test('greenfield build packet ignores agent worktrees and fixtures for owner-file memory', async () => {
+test('greenfield build context ignores agent worktrees and fixtures for owner-file memory', async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-build-memory-filter-'));
   await fs.outputJson(path.join(workspace, 'package.json'), { type: 'module' });
   await fs.outputFile(path.join(workspace, 'src/domain/evidence.ts'), `
@@ -268,28 +268,28 @@ export class ComponentEntity { id!: string; }
 struct FixtureService;
 `);
 
-  const packet = await buildGreenfieldBuildPacket({
+  const context = await buildGreenfieldBuildContext({
     workspacePath: workspace,
     planText: 'Continue the evidence platform by adding control renewal windows, audit exports, and reviewer queues. Reuse EvidenceRequest.',
     references: [],
   });
 
-  const readFirst = packet.context_budget.read_first.map((item: any) => item.file);
-  const ownerFiles = packet.product_focus.existing_behavior_to_extend.flatMap((item: any) => item.owner_files || []);
+  const readFirst = context.context_budget.read_first.map((item: any) => item.file);
+  const ownerFiles = context.product_focus.existing_behavior_to_extend.flatMap((item: any) => item.owner_files || []);
   assert.ok(readFirst.some((file: string) => file === 'src/domain/evidence.ts'));
   assert.ok(readFirst.some((file: string) => file === 'src/services/evidence-review.service.ts'));
   assert.ok([...readFirst, ...ownerFiles].every((file: string) => !file.includes('.claude/worktrees')));
   assert.ok([...readFirst, ...ownerFiles].every((file: string) => !file.includes('/fixtures/')));
 });
 
-test('greenfield build packet ranks owner-file memory by requested plan terms', async () => {
+test('greenfield build context ranks owner-file memory by requested plan terms', async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-build-memory-relevance-'));
   await fs.outputJson(path.join(workspace, 'package.json'), { type: 'module' });
   await fs.outputFile(path.join(workspace, 'packages/analyzer-core/src/database/entities/component.entity.ts'), `
 export class ComponentEntity { id!: string; }
 `);
   await fs.outputFile(path.join(workspace, 'apps/mcp-server/src/greenfield-build-session.ts'), `
-export function buildGreenfieldBuildPacket() { return 'greenfield continuation packet'; }
+export function buildGreenfieldBuildContext() { return 'greenfield continuation context'; }
 `);
   await fs.outputFile(path.join(workspace, 'apps/mcp-server/src/agent-scratch-build-benchmark.ts'), `
 export function runScratchComplianceBenchmark() { return 'compliance multi-wave proof'; }
@@ -299,13 +299,13 @@ export function runScratchComplianceBenchmark() { return 'compliance multi-wave 
 Compliance multi-wave evidence belongs here.
 `);
 
-  const packet = await buildGreenfieldBuildPacket({
+  const context = await buildGreenfieldBuildContext({
     workspacePath: workspace,
-    planText: 'Improve greenfield continuation packets and update compliance multi-wave proof docs.',
+    planText: 'Improve greenfield continuation contexts and update compliance multi-wave proof docs.',
     references: [],
   });
 
-  const readFirst = packet.context_budget.read_first.map((item: any) => item.file);
+  const readFirst = context.context_budget.read_first.map((item: any) => item.file);
   assert.ok(readFirst.some((file: string) => file.includes('greenfield-build-session.ts') || file.includes('agent-scratch-build-benchmark.ts')));
   assert.ok(!readFirst.includes('packages/analyzer-core/src/database/entities/component.entity.ts'));
 });

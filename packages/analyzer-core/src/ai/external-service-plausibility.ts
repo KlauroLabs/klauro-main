@@ -59,6 +59,7 @@ export function isPlausibleExternalServiceName(name: string, selfNames: string[]
   if (/^@[^/]+\/.+\/.+/.test(trimmed)) return false;
   if (/^@?[\w.-]+\/[\w./-]+$/.test(trimmed) && !/:\/\//.test(trimmed)) return false;
   if (/\.|:\/\//.test(trimmed)) return true;
+  if (/^[A-Z][A-Za-z0-9]*(?:Service|Client|Sdk|SDK|Api|API)$/.test(trimmed) && !CODE_TYPE_TOKENS.has(norm)) return true;
   if (PASCAL_CASE_MULTIWORD_PATTERN.test(trimmed)) return false;
   if (CODE_TYPE_TOKENS.has(norm)) return false;
   return false;

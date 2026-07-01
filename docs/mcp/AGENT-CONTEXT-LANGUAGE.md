@@ -2,7 +2,7 @@
 
 Klauro Agent Context Language is the prompt-native family used for compact MCP
 context injection. It is not a storage format and it is not CAS. It is a small,
-line-oriented language over CAS-backed work packets:
+line-oriented language over CAS-backed agent contexts:
 
 - `K15`: current existing-codebase orientation and task context.
 - `K14`: previous existing-codebase capsule, kept only as a benchmark baseline.
@@ -126,7 +126,7 @@ Vtest 2 typecheck
 ## G1 Grammar
 
 `G1` is the greenfield build language. It is returned by
-`get_greenfield_build_packet` as `agent_build_capsule` and is used when a
+`get_greenfield_build_context` as `agent_build_capsule` and is used when a
 project starts from an empty folder or when an existing new project needs the
 next product slice without duplicating concepts.
 
@@ -172,7 +172,7 @@ two local token lenses: the old `chars/4` estimate and a stricter `promptish`
 lexical estimate that counts words, numbers, path punctuation, and delimiters.
 K15 wins the balanced score because it keeps K14's direct usability while
 folding the dominant file extension into the header and removing separator
-tokens from opcode lines. On the representative existing-project packet, K15
+tokens from opcode lines. On the representative existing-project context, K15
 measured about 95 estimated tokens and 85 promptish tokens versus K14 at 98 /
 90, K13 at 102 / 102, K12 at 104 / 109, K11 at 112 / 150, K10 at 115 / 167,
 and minified JSON at 354 / 448.
@@ -199,7 +199,7 @@ Greenfield build quality is verified separately:
 
 ```bash
 cd apps/mcp-server
-npm run agent-from-zero-build-packet-proof
+npm run agent-from-zero-build-context-proof
 ```
 
 That proof starts from empty folders, grows multiple product slices, and checks
