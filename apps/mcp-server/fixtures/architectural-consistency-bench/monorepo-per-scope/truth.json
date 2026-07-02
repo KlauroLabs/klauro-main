@@ -1,0 +1,17 @@
+{
+  "task": "architectural-consistency-monorepo-per-scope",
+  "expected_violation_files": ["apps/api/src/controllers/admin-order.controller.ts"],
+  "expected_clean_files": [
+    "apps/api/src/controllers/order.controller.ts",
+    "apps/api/src/controllers/invoice.controller.ts",
+    "apps/api/src/controllers/checkout.controller.ts",
+    "apps/api/src/controllers/fulfillment.controller.ts",
+    "apps/marketing-site/src/controllers/page.controller.ts",
+    "apps/marketing-site/src/controllers/landing.controller.ts",
+    "apps/marketing-site/src/controllers/blog.controller.ts",
+    "apps/marketing-site/src/controllers/contact.controller.ts",
+    "apps/marketing-site/src/controllers/events.controller.ts",
+    "packages/shared/src/id-utils.ts"
+  ],
+  "notes": "apps/api's own local norm is handler->service->repository (4/5 comparable controllers); AdminOrderController breaks it by calling OrderRepository directly. apps/marketing-site has a totally DIFFERENT but internally consistent local norm (handler->repository directly, no service layer at all, 5/5 controllers) and must stay silent even though its style differs from apps/api's — no global repo-wide norm is required for either scope to be judged. packages/shared/src/id-utils.ts (generateId/sanitizeId) is a pure/stateless utility decoy that must never be flagged by the coupling-hotspot scan regardless of fan-in."
+}

@@ -1224,6 +1224,7 @@ export class AnalyzerOrchestrator {
       edges: allEdges,
       paradigmConformance,
       patterns: allPatterns,
+      exitPoints: allExitPoints,
     });
     const dataLineage = buildDataLineage({
       nodes: allNodes,
@@ -2135,6 +2136,7 @@ export class AnalyzerOrchestrator {
       edges,
       paradigmConformance,
       patterns: detectedPatterns,
+      exitPoints,
     });
     const dataLineage = buildDataLineage({
       nodes,
