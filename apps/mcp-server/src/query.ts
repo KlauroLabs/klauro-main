@@ -288,6 +288,17 @@ function searchTypeRank(type: string): number {
   return SEARCH_TYPE_PRIORITY[type] ?? 3;
 }
 
+// Lower is better, matching the sort convention below. 0 = exact name or
+// qualified_name match, 1 = name starts with the query, 2 = name contains it
+// anywhere, 3 = the match came only from qualified_name/description text.
+function nameMatchRank(node: CASNode, queryLower: string): number {
+  const nameLower = node.name.toLowerCase();
+  if (nameLower === queryLower || node.qualified_name?.toLowerCase() === queryLower) return 0;
+  if (nameLower.startsWith(queryLower)) return 1;
+  if (nameLower.includes(queryLower)) return 2;
+  return 3;
+}
+
 function productTechSignals(cas: CASOutput): { languages: string[]; frameworks: string[] } {
   const languages = new Set<string>();
   const frameworks = new Set<string>();
@@ -371,7 +382,12 @@ export function searchNodes(
     }
   }
 
-  exact.sort((a, b) => searchTypeRank(a.type) - searchTypeRank(b.type));
+  // Within the exact bucket, put true symbol-name matches ahead of
+  // description/qualified-name substring hits: a node named exactly
+  // "buildSummary" should rank above some unrelated node whose description
+  // merely happens to mention "build summary" or share its type priority.
+  exact.sort((a, b) => nameMatchRank(a, queryLower) - nameMatchRank(b, queryLower)
+    || searchTypeRank(a.type) - searchTypeRank(b.type));
   overlapping.sort(
     (a, b) => b.overlap - a.overlap || searchTypeRank(a.node.type) - searchTypeRank(b.node.type)
   );

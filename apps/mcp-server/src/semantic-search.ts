@@ -262,6 +262,35 @@ export function fuseAndRank(
     }
   }
 
+  // Symbol-name boost: when the query looks like an identifier (buildSummary,
+  // searchNodes, AnalyzerOrchestrator, ...), a node whose own name matches it
+  // should win regardless of how the embedding happens to score — semantic
+  // similarity is a heuristic for concept queries, but for a literal symbol
+  // name the ground truth is the name itself. This runs as an additive tier
+  // ABOVE the RRF/structural blend rather than replacing it, so hybrid/semantic
+  // ranking is unaffected for natural-language queries (which rarely produce a
+  // nameMatchTier > 0 for anything).
+  const nameMatchTier = new Map<string, number>();
+  if (isSymbolLikeQuery(query)) {
+    for (const id of candidateIds) {
+      const node = nodesById.get(id);
+      if (!node) continue;
+      nameMatchTier.set(id, computeNameMatchTier(node, queryLower));
+    }
+    // Symbol-like queries can also hit names that never surfaced in the
+    // vector/lexical candidate pool at all (e.g. index skipped it, or the
+    // hash-embedding provider scored an unrelated node higher). Pull in any
+    // node with a strong name-tier match so it can compete for the top slot.
+    for (const node of cas.nodes) {
+      if (candidateIds.has(node.id) || !passesFilter(node, options)) continue;
+      const tier = computeNameMatchTier(node, queryLower);
+      if (tier > 0) {
+        candidateIds.add(node.id);
+        nameMatchTier.set(node.id, tier);
+      }
+    }
+  }
+
   const fused = new Map<string, number>();
   for (const id of candidateIds) {
     let score = 0;
@@ -282,7 +311,14 @@ export function fuseAndRank(
   const computed = scored.map(entry => {
     const fusedNorm = maxFused > 0 ? (fused.get(entry.id) ?? 0) / maxFused : 0;
     const structural = graph.structuralScore(entry.id, candidateIds);
-    const final = rerank.alpha * fusedNorm + rerank.beta * structural;
+    const baseFinal = rerank.alpha * fusedNorm + rerank.beta * structural;
+    // Name-match tiers occupy disjoint score bands above the [0,1] base range
+    // (tier 3 = exact name >= 3, tier 2 = startsWith/contains >= 2, tier 1 =
+    // word-boundary token match >= 1) so a match always outranks every
+    // non-matching node, while ties within a tier still fall back to the
+    // normal fused/structural score.
+    const tier = nameMatchTier.get(entry.id) ?? 0;
+    const final = tier > 0 ? tier + baseFinal : baseFinal;
     return {
       node: entry.node,
       semantic: semanticScore.get(entry.id) ?? 0,
@@ -514,6 +550,46 @@ function passesFilter(node: CASNode, options: SemanticSearchOptions): boolean {
 function rankToScore(rank: number, total: number): number {
   if (total <= 1) return rank === 0 ? 1 : 0;
   return (total - 1 - rank) / (total - 1);
+}
+
+// A query "looks like a symbol" when it's a single identifier-shaped token
+// (camelCase, PascalCase, snake_case, or a bare word) rather than a natural-
+// language phrase. Multi-word phrases ("where are driver status updates
+// handled") should keep using pure semantic/hybrid ranking — forcing a name
+// tier onto them would defeat the point of semantic search.
+function isSymbolLikeQuery(query: string): boolean {
+  const trimmed = query.trim();
+  if (!trimmed || /\s/.test(trimmed)) return false;
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(trimmed);
+}
+
+// Returns a tier: 3 = exact name/qualified-name match (case-insensitive),
+// 2 = name starts with or contains the query as a substring, 1 = the query
+// matches one of the node's camelCase/snake_case word tokens exactly,
+// 0 = no name-level match at all.
+function computeNameMatchTier(node: CASNode, queryLower: string): number {
+  const nameLower = node.name.toLowerCase();
+  const qualifiedLower = node.qualified_name?.toLowerCase();
+
+  if (nameLower === queryLower || qualifiedLower === queryLower) return 3;
+
+  if (nameLower.startsWith(queryLower) || nameLower.includes(queryLower)) return 2;
+  if (qualifiedLower && (qualifiedLower.startsWith(queryLower) || qualifiedLower.includes(queryLower))) return 2;
+
+  const nameWords = splitCamelCaseWords(node.name);
+  if (nameWords.includes(queryLower)) return 1;
+
+  return 0;
+}
+
+function splitCamelCaseWords(str: string): string[] {
+  return str
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/[-_./]/g, ' ')
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
 }
 
 function clampUnit(value: number): number {
