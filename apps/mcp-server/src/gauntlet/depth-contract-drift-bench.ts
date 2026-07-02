@@ -49,7 +49,7 @@ import { codebaseMemoryPath } from './real-camp-arms';
 
 const FIXTURE_ROOT = path.join(__dirname, '..', '..', 'fixtures', 'depth-contract-drift');
 
-const CASES = ['type-change', 'field-rename', 'field-removed', 'interface-dto'] as const;
+const CASES = ['type-change', 'field-rename', 'field-removed', 'interface-dto', 'bare-interface'] as const;
 
 interface TruthDrift {
   field: string;

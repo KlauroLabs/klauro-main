@@ -11,6 +11,7 @@ import { isAuthenticationGuardName } from '../../../packages/analyzer-core/src/a
 import { buildProductMap } from '../../../packages/analyzer-core/src/analyzer/core/product-map';
 import type { CASProductMap } from '../../../packages/analyzer-core/src/types/cas.types';
 import {
+  displayJourneySteps,
   guardPhraseForBoundaries,
   journeyDetailMarkdown,
   journeyHeadline,
@@ -840,7 +841,7 @@ export function getWorkflows(cas: CASOutput, workflowId?: string) {
 
 export function getUserJourneys(
   cas: CASOutput,
-  opts: { journeyId?: string; kind?: string; limit?: number; offset?: number; format?: 'json' | 'markdown' } = {}
+  opts: { journeyId?: string; kind?: string; limit?: number; offset?: number; format?: 'json' | 'markdown'; includeSteps?: boolean } = {}
 ) {
   const journeysNotice = cas.user_journeys === undefined
     ? analysisVersionNotice(cas, 'user journeys')
@@ -882,6 +883,16 @@ export function getUserJourneys(
     };
   }
 
+  // Steps in the list form: default ON. Each step is small (node_id, name,
+  // layer, depth), so even a page of 25 journeys stays token-cheap, and it
+  // removes the near-universal need for a 2nd per-journey detail call just to
+  // get the step chain (e.g. to feed a node_id into get_coding_context). Uses
+  // the same display-deduped step list as the markdown/detail views (drops
+  // steps whose label repeats the entry or the previous step) so the JSON and
+  // markdown forms agree. Pass include_steps: false to opt out for very large
+  // listings.
+  const includeSteps = opts.includeSteps !== false;
+
   return {
     total: filtered.length,
     offset,
@@ -901,6 +912,14 @@ export function getUserJourneys(
       entities_written: journey.terminal_effects?.entities_written || [],
       external_services: journey.terminal_effects?.external_services || [],
       step_count: journey.steps?.length || 0,
+      steps: includeSteps
+        ? displayJourneySteps(journey).map(step => ({
+            node_id: step.node_id,
+            name: step.name,
+            layer: step.layer,
+            depth: step.depth,
+          }))
+        : undefined,
       // Compact source->sink reaching-chain so the cross-function path is visible
       // without a second per-journey detail call. Reuses the same compression-bounded
       // step-name phrase as the markdown/detail views (leading + "(N intermediate)" +

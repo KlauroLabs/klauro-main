@@ -10,7 +10,7 @@ test('depth-contract-drift: Klauro detects cross-repo field-level drift; cbm out
   const report = await buildDepthContractDriftReport();
 
   assert.equal(report.available, true, 'Klauro side must always be available');
-  assert.equal(report.results.length, 4, 'four drift cases: type-change, field-rename, field-removed, interface-dto');
+  assert.equal(report.results.length, 5, 'five drift cases: type-change, field-rename, field-removed, interface-dto, bare-interface');
 
   // No losses — name any loss case loudly (same posture as the win-validator).
   assert.equal(
@@ -42,7 +42,7 @@ test('depth-contract-drift: Klauro detects cross-repo field-level drift; cbm out
     assert.equal(r.verdict, 'win', `case ${r.fixture}: out-of-category win expected`);
   }
 
-  assert.equal(report.aggregate.wins, 4, 'all four cases are wins');
+  assert.equal(report.aggregate.wins, 5, 'all five cases are wins');
   assert.equal(report.aggregate.winRate, 1, 'winRate must be 1.0');
   assert.equal(report.aggregate.meanKlauroF1, 1, 'mean Klauro F1 must be 1.0');
 });

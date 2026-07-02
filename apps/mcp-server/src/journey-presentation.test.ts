@@ -207,6 +207,29 @@ test('getUserJourneys list mode carries a compact source->sink path so no second
   assert.ok(!item.path.includes('method_src_'), 'raw node ids never leak into the path');
 });
 
+test('getUserJourneys list mode includes the step chain by default (no 2nd call needed)', () => {
+  const result = getUserJourneys(casWithJourneys()) as any;
+  const item = result.journeys[0];
+  assert.ok(Array.isArray(item.steps), 'list item carries a steps array');
+  assert.ok(item.steps.length > 0, 'steps array is non-empty for a journey with steps');
+  // Each compact step exposes exactly the fields needed to act on it further
+  // (e.g. feed node_id into get_coding_context) without re-fetching detail.
+  for (const step of item.steps) {
+    assert.ok(step.node_id, 'each step carries its node_id');
+    assert.ok(step.name, 'each step carries its name');
+    assert.ok(step.layer, 'each step carries its layer');
+    assert.equal(typeof step.depth, 'number', 'each step carries its depth');
+  }
+});
+
+test('getUserJourneys list mode drops steps when include_steps is false', () => {
+  const result = getUserJourneys(casWithJourneys(), { includeSteps: false }) as any;
+  assert.equal(result.journeys[0].steps, undefined, 'steps omitted when explicitly opted out');
+  // step_count and the compact path phrase remain available either way.
+  assert.ok(result.journeys[0].step_count > 0);
+  assert.ok(result.journeys[0].path);
+});
+
 test('getUserJourneys markdown mode renders a readable journey brief', () => {
   const result = getUserJourneys(casWithJourneys(), { format: 'markdown' }) as any;
   assert.ok(result.markdown.startsWith('# User Journeys'));

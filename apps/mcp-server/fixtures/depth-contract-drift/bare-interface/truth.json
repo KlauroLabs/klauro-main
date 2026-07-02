@@ -1,0 +1,8 @@
+{
+  "expected_links": ["web -> api GET /api/members/:id", "web -> api GET /api/rewards/:id"],
+  "seam": { "consumer_repo": "web", "producer_repo": "api" },
+  "drift": [
+    { "field": "points", "producer_type": "number", "consumer_type": "string", "kind": "type-changed", "contract": "member" }
+  ],
+  "control_no_drift": [{ "contract": "reward" }]
+}

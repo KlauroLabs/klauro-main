@@ -13616,7 +13616,7 @@ export class AnalyzerOrchestrator {
     const GENERIC = /^(pagination|paginated|response|error|base|common|list|meta|page|sort|filter|query|param|option|config|result|success|status|health|ping|api|data|item|value|generic|wrapper|envelope|dto|input|output|payload|request|body|args|count|info|detail|map|record|enum|type|abstract|sortby|orderby|where|select)s?$/i;
     const groups = new Map<string, { rep: CASNode; nodes: CASNode[]; ops: Set<string> }>();
     for (const node of nodes) {
-      if (!this.isDtoLikeDataShapeNode(node)) continue;
+      if (!this.isDtoLikeDataShapeNode(node, propertyIndex)) continue;
       if (projectPath && !this.isPrimaryProductNodeForProject(node, projectPath)) continue;
       const { core, op } = this.dataShapeAffix(node.name || '');
       if (!core || core.length < 3) continue;
@@ -13674,7 +13674,7 @@ export class AnalyzerOrchestrator {
 	      .slice(0, 60);
 	  }
 
-  private isDtoLikeDataShapeNode(node: CASNode): boolean {
+  private isDtoLikeDataShapeNode(node: CASNode, propertyIndex?: EntityPropertyIndex): boolean {
     if (node.type === 'dto') return true;
     if (node.type !== 'interface' && node.type !== 'type') return false;
     const name = String(node.name || '');
@@ -13682,7 +13682,17 @@ export class AnalyzerOrchestrator {
     if (/(Dto|Vo|Model|Schema|Entity|Payload|Input|Output|Response|Request|Params?|Body|Query|Args|Result|Record)$/i.test(name)) {
       return true;
     }
-    return /\/(?:dto|dtos|types|schemas|contracts|entities|models)\//.test(file);
+    if (/\/(?:dto|dtos|types|schemas|contracts|entities|models)\//.test(file)) return true;
+    // Bare interface/type alias with no DTO-ish suffix or folder: still a real
+    // cross-repo contract shape if it declares actual typed fields (a plain
+    // structural marker interface with no properties contributes no shape and
+    // stays excluded — this only widens coverage for genuine data shapes, it
+    // never fabricates one). Field evidence + the caller's GENERIC-name filter
+    // keep this honest.
+    if (propertyIndex) {
+      return this.dataShapeNodeHasFieldEvidence(node, propertyIndex);
+    }
+    return false;
   }
 
   private dataShapeNodeHasFieldEvidence(node: CASNode, propertyIndex: EntityPropertyIndex): boolean {
