@@ -79,6 +79,7 @@ export interface CASOutput {
   runtime_static_links?: CASRuntimeStaticLink[];
   analysis_facts?: CASAnalysisFact[];
   distribution_units?: CASDistributionUnit[];
+  deployable_evidence?: DeployableEvidence[];
 
   // v1.9.0+ Codebase Idiom Intelligence
   codebase_idioms?: CASCodebaseIdiom[];
@@ -3575,4 +3576,21 @@ export interface AnalysisLockStatus {
     operation: string;
   };
   queuedOperations: number;
+}
+
+/**
+ * Deployable Evidence: per-artifact facts about what in this codebase can
+ * actually be built, run, or shipped — composed from evidence already
+ * extracted by other analyzers (container topology, distribution artifacts,
+ * framework entry points) plus targeted manifest/CI reads. See
+ * packages/analyzer-core/src/analyzer/core/deployable-evidence.ts.
+ */
+export interface DeployableEvidence {
+  root_path: string;        // dir owning this candidate (build context / manifest dir / crate dir)
+  name: string;
+  tier: 1 | 2 | 3;          // 1=ship declaration, 2=runnable entry, 3=package identity
+  kind: 'container' | 'compose-service' | 'k8s' | 'serverless' | 'installer' | 'ci-deploy' | 'bin' | 'server-entry' | 'package';
+  evidence: string[];       // concrete: file paths, manifest keys, port bindings
+  ships_paths?: string[];   // Tier-1 only: what this artifact packages/COPYs/bundles (membership)
+  ports?: number[];
 }

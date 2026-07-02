@@ -55,6 +55,7 @@ import {
   CASRuntimeStaticLink,
   CASAnalysisFact,
   CASDistributionUnit,
+  DeployableEvidence,
   CASCrossRepositoryLink,
   CASMethodCall,
   CASDecorator,
@@ -77,6 +78,7 @@ import {
   CASArtifactType
 } from '../../types/cas.types';
 import { classifyArtifactType, artifactLedDomainLabel, collectArtifactManifestSignal, type ArtifactTypeResult } from './artifact-type';
+import { collectDeployableEvidence } from './deployable-evidence';
 import { ChangeDetector } from './change-detector';
 import { buildUserJourneys } from './journey-builder';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
@@ -1348,6 +1350,12 @@ export class AnalyzerOrchestrator {
     const repositoryLinks = this.buildRepositoryLinks(projectPath, allNodes, allEntryPoints, allExitPoints, externalServices, allLibraries, databaseSchema, configuration);
     const runtimeStaticLinks = this.buildRuntimeStaticLinks(allNodes, allEntryPoints, allExitPoints, callChains, externalServices);
     const distributionUnits = this.buildDistributionUnits(projectPath, allNodes);
+    const deployableEvidence: DeployableEvidence[] = collectDeployableEvidence({
+      projectPath,
+      nodes: allNodes,
+      entryPoints: allEntryPoints,
+      exitPoints: allExitPoints,
+    });
     const analysisFacts = this.buildAnalysisFacts(
       allNodes,
       allEdges,
@@ -1479,6 +1487,7 @@ export class AnalyzerOrchestrator {
       runtime_static_links: runtimeStaticLinks.length > 0 ? runtimeStaticLinks : undefined,
       analysis_facts: analysisFacts.length > 0 ? analysisFacts : undefined,
       distribution_units: distributionUnits.length > 0 ? distributionUnits : undefined,
+      deployable_evidence: deployableEvidence.length > 0 ? deployableEvidence : undefined,
       codebase_idioms: idiomDetection.idioms.length > 0 ? idiomDetection.idioms : undefined,
       idiom_summary: idiomDetection.idioms.length > 0 ? idiomDetection.summary : undefined,
       idiom_examples: idiomDetection.examples.length > 0 ? idiomDetection.examples : undefined,
@@ -2153,6 +2162,12 @@ export class AnalyzerOrchestrator {
     const repositoryLinks = this.buildRepositoryLinks(projectPath, nodes, entryPoints, exitPoints, externalServices, libraries, databaseSchema, configuration);
     const runtimeStaticLinks = this.buildRuntimeStaticLinks(nodes, entryPoints, exitPoints, callChains, externalServices);
     const distributionUnits = this.buildDistributionUnits(projectPath, nodes);
+    const deployableEvidence: DeployableEvidence[] = collectDeployableEvidence({
+      projectPath,
+      nodes,
+      entryPoints,
+      exitPoints,
+    });
     const analysisFacts = this.buildAnalysisFacts(
       nodes,
       edges,
@@ -2345,6 +2360,7 @@ export class AnalyzerOrchestrator {
       runtime_static_links: runtimeStaticLinks.length > 0 ? runtimeStaticLinks : undefined,
       analysis_facts: analysisFacts.length > 0 ? analysisFacts : undefined,
       distribution_units: distributionUnits.length > 0 ? distributionUnits : undefined,
+      deployable_evidence: deployableEvidence.length > 0 ? deployableEvidence : undefined,
       decorators: decorators.length > 0 ? decorators : undefined,
       implementation_health: implementationHealth,
       system_health: systemHealth,
@@ -7345,6 +7361,28 @@ export class AnalyzerOrchestrator {
         }
       }
 
+      // Leading doc-comment rationale: a JSDoc/docstring block directly above a
+      // function/method is parsed into node.documentation (not node.comments —
+      // language analyzers route doc comments through extractJSDoc/parseJSDoc
+      // separately from inline comment extraction). Without this check, a
+      // documented internal function with an explicit "why" (e.g. "Best-effort:
+      // if X doesn't exist yet, do Y instead") produced zero evidence and
+      // get_intent returned null even though the rationale was right there.
+      // Only counts as evidence when the text carries an actual rationale
+      // signal — plain param/type documentation with no "why" is not intent.
+      const docText = [node.documentation?.description, node.documentation?.summary]
+        .filter(Boolean)
+        .join(' ');
+      const RATIONALE_SIGNAL = /\b(because|so that|in order to|to avoid|to prevent|to ensure|otherwise|best[- ]effort|workaround|fallback|instead of|if .* doesn't|if .* does not|rather than|note:|caveat|important:)\b/i;
+      if (docText && RATIONALE_SIGNAL.test(docText)) {
+        evidence.push({
+          type: 'code_comment',
+          source: node.source?.file || 'unknown',
+          excerpt: docText.substring(0, 200),
+          confidence_contribution: 0.4
+        });
+      }
+
       const workaroundPatterns = ['hack', 'workaround', 'temporary', 'legacy', 'deprecated', 'temp', 'fixme'];
       const nameLower = node.name.toLowerCase();
       const isWorkaround = workaroundPatterns.some(p => nameLower.includes(p));
@@ -7389,7 +7427,7 @@ export class AnalyzerOrchestrator {
 
         const intent: CASIntent = {
           node_id: node.id,
-          inferred_purpose: node.description || node.documentation?.summary || synthesizedPurpose,
+          inferred_purpose: node.description || node.documentation?.summary || node.documentation?.description || synthesizedPurpose,
           confidence,
           workaround_indicator: isWorkaround ? {
             is_workaround: true,

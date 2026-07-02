@@ -1,0 +1,68 @@
+{
+  "analysisTarget": "apps/mcp-server/src",
+  "scenarios": [
+    {
+      "id": "getInterfaceSignature",
+      "targetName": "getInterfaceSignature",
+      "targetFile": "query.ts",
+      "question": "What is getInterfaceSignature, what does it do, why does it exist, what is its I/L/S/O contract, and what breaks if I change it?",
+      "truth": {
+        "what": "An exported function in apps/mcp-server/src/query.ts implementing the 'get_interface_signature' MCP tool.",
+        "does": "Joins four already-computed fact tables (entry_points, exit_points, data_lineage, callers/callees) into one Input/Logic/Side-effects/Output (I/L/S/O) contract record for a target node, at a chosen level (function/flow/capability/project/workspace).",
+        "why": "SPEC-INTELLIGENCE-CAPITALIZATION.md concept #2: every entity has the same I/L/S/O contract shape but the four facts previously lived in four separate tools/ID-spaces that an agent had to call separately and intersect by node_id/file by hand. This is a pure join over existing facts, no new analyzer pass, purpose-built to collapse a 4-call manual join into 1 call.",
+        "contract": {
+          "input": ["cas: CASOutput", "target: string", "opts: { level?, caller_limit?, callee_limit? }"],
+          "output": "I/L/S/O record: input[] (parameters/entry_points), output[], side_effects[] (exit_points + data_lineage writes), logic { callers_total, callees_total, key_refs, truncated }, gaps[]",
+          "side_effects": "none (pure read/join over cas fields, no external calls)"
+        },
+        "blastRadius": {
+          "callerCount": 1,
+          "callerNames": ["server.ts get_interface_signature MCP tool handler (line ~3520)"],
+          "risk": "low — single call site, narrow blast radius; a signature change only affects the one MCP tool wrapper"
+        }
+      }
+    },
+    {
+      "id": "getCallers",
+      "targetName": "getCallers",
+      "targetFile": "query.ts",
+      "question": "What is getCallers, what does it do, why does it exist, what is its contract, and what breaks if I change it?",
+      "truth": {
+        "what": "An exported function in apps/mcp-server/src/query.ts implementing the 'get_callers' MCP tool and used internally as a shared traversal primitive.",
+        "does": "BFS-style traversal up to maxDepth over cas.edges (incoming) plus cas.method_calls (incoming), returning the callers of a node with name/type/depth/via, capped at `limit`.",
+        "why": "Blast-radius analysis: before changing a function, an agent (or another query.ts primitive like getCodingContext/getInterfaceSignature) needs to know who calls it, transitively, without re-deriving the incoming-edge index each time.",
+        "contract": {
+          "input": ["cas: CASOutput", "nodeId: string", "maxDepth: number = 2", "limit: number = 50"],
+          "output": "{ total, callers: [{node_id, name, type, depth, via}] } (shape varies slightly by call site; used both as the get_callers tool and as an internal helper)",
+          "side_effects": "none (read-only traversal)"
+        },
+        "blastRadius": {
+          "callerCount": 11,
+          "callerNames": ["query.ts (9 internal call sites: getCodingContext, getInterfaceSignature, and others)", "server.ts (2 call sites: get_callers tool + at least one other tool composing callers)"],
+          "risk": "medium-high — widely reused internal primitive; changing its signature or return shape ripples into getCodingContext, getInterfaceSignature, and the get_callers MCP tool simultaneously"
+        }
+      }
+    },
+    {
+      "id": "saveAnalysis",
+      "targetName": "saveAnalysis",
+      "targetFile": "storage.ts",
+      "question": "What is saveAnalysis, what does it do, why does it exist, what is its contract, and what breaks if I change it?",
+      "truth": {
+        "what": "An exported async function in apps/mcp-server/src/storage.ts, the canonical persistence path for a completed analysis (CASOutput).",
+        "does": "Writes the CASOutput to a compressed JSON file keyed by project path + track, updates the in-memory loaded-analysis cache (main track only), builds an AnalysisEntry summary (frameworks, node/edge counts, cas_version, base_commit/branch), and records it in the on-disk analyses index under a lock.",
+        "why": "Every analysis path (fresh analyze, remote sync, description enrichment/benchmarking) must persist its CASOutput the same way so that list_analyses/get_analysis/getFreshAnalysisForAgent and the index-keyed cache all see a consistent, track-aware record — this is the single write path so those readers don't each reinvent index bookkeeping.",
+        "contract": {
+          "input": ["projectPath: string", "output: CASOutput", "track: AnalysisTrack = 'main'"],
+          "output": "Promise<AnalysisEntry> (name, path, file, analyzed_at, system_type, frameworks, node_count, edge_count, cas_version, track, optional base_commit/branch)",
+          "side_effects": "writes a compressed JSON file to the storage dir; mutates the in-memory loaded-analysis cache for the 'main' track; acquires an index lock and rewrites the on-disk analyses index"
+        },
+        "blastRadius": {
+          "callerCount": 5,
+          "callerNames": ["analyzer.ts", "description-quality-benchmark.ts", "description-enrichment.ts", "remote-sync-client.ts", "storage.ts (internal)"],
+          "risk": "high — every analysis-producing path in the product depends on this exact persistence contract; a shape change to AnalysisEntry or the index side-effect breaks list_analyses and freshness resolution across the board"
+        }
+      }
+    }
+  ]
+}

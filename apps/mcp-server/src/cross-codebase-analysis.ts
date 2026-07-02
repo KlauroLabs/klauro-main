@@ -34,6 +34,19 @@ export interface CrossCodebaseInput {
   cas: CASOutput;
 }
 
+/** Shared contract (agent-A): evidence-first deployable-boundary signal.
+ *  Tier 1 = ship artifacts (container/compose/k8s/serverless/installer/ci-deploy).
+ *  Tier 2 = runnable-but-unpackaged (bin/server-entry). Tier 3 = package identity. */
+export interface DeployableEvidence {
+  root_path: string;
+  name: string;
+  tier: 1 | 2 | 3;
+  kind: 'container' | 'compose-service' | 'k8s' | 'serverless' | 'installer' | 'ci-deploy' | 'bin' | 'server-entry' | 'package';
+  evidence: string[];
+  ships_paths?: string[];
+  ports?: number[];
+}
+
 export type WorkspaceAnalysisInput = CrossCodebaseInput;
 
 export interface CrossCodebaseRef {
@@ -79,6 +92,13 @@ export interface SystemApplication {
   runtime_component_ids: string[];
   evidence?: string[];
   trust_guidance?: string;
+  /** id of the SystemApplication this one ships inside of, when evidence-gated
+   *  merge determined it has no standalone deployable artifact of its own
+   *  (e.g. a client-service bundled into an installer alongside its client). */
+  bundled_into?: string;
+  /** Why this application is/isn't a standalone deployable: tier reached,
+   *  artifact evidence, and (if merged) the positive bundling evidence. */
+  boundary_evidence?: string[];
 }
 
 export type WorkspaceDeployable = SystemApplication;
@@ -907,6 +927,7 @@ export function buildCrossCodebaseSystemGraph(
   const interfaces = repositories.flatMap(repository => extractInterfaces(repository, codebaseId(repository.path)));
   const runtimeComponents = repositories.flatMap(repository => extractRuntimeComponents(repository, codebaseId(repository.path)));
   const applications = buildApplications(codebases, interfaces, runtimeComponents, repositories);
+  resolveDeployables(applications, repositories);
   const distributionUnits = buildWorkspaceDistributionUnits(repositories, applications, codebases);
   const allLinks = buildLinks(interfaces);
   const runtimeLinks = buildRuntimeLinks(runtimeComponents, interfaces, allLinks);
@@ -5147,6 +5168,7 @@ function normalizePortTokens(ports: Array<string | undefined> | undefined): stri
 function detectWorkspaceCryptoProfile(
   repositories: CrossCodebaseInput[],
   applications: SystemApplication[],
+  terminalProfiles: Map<string, WorkspaceTerminalSemanticProfile>,
 ): WorkspaceCryptoProfile {
   const evidence: string[] = [];
   const chains = new Set<string>();
@@ -5179,18 +5201,39 @@ function detectWorkspaceCryptoProfile(
   // Product vocabulary: names of capabilities, entities, domain concepts, and
   // the inferred primary domain. Infrastructure/runtime names are excluded by
   // construction (these are repo-level product facts, not topology).
+  //
+  // A bare name match is not enough: a codebase-analysis product that itself
+  // *analyzes* crypto repos (Solidity security rules referencing ERC20/ERC721,
+  // a crypto-domain classifier's own identifiers/tests) surfaces those tokens
+  // as `domain_concepts`/`system_capabilities` names too, even though the
+  // product's own terminal evidence (primary_domain, journeys, leaf
+  // capabilities) says otherwise. So each vocabulary term is only credited
+  // toward the strong-crypto gate when it is terminally grounded for at least
+  // one repo in the workspace — i.e. it also shows up in that repo's terminal
+  // semantic profile (primary_domain, core_concepts, journey terminal
+  // entities/effects, leaf/primary-flow capabilities) rather than solely as a
+  // capability/entity/domain-concept label pulled from source identifiers.
   const vocabulary: string[] = [];
+  const terminallyGroundedVocabulary: string[] = [];
   for (const repository of repositories) {
     const cas: any = repository.cas || {};
-    for (const capability of cas.system_capabilities || []) vocabulary.push(String(capability.name || ''));
-    for (const entity of cas.data_entities || []) vocabulary.push(String(entity.name || ''));
-    for (const concept of cas.domain_concepts || []) vocabulary.push(String(concept.name || ''));
+    const projectId = codebaseId(repository.path);
+    const terminalProfile = terminalProfiles.get(projectId) || emptyTerminalSemanticProfile(projectId);
+    const repoVocab: string[] = [];
+    for (const capability of cas.system_capabilities || []) repoVocab.push(String(capability.name || ''));
+    for (const entity of cas.data_entities || []) repoVocab.push(String(entity.name || ''));
+    for (const concept of cas.domain_concepts || []) repoVocab.push(String(concept.name || ''));
     const purpose = cas.enhanced_system_purpose || {};
-    if (purpose.primary_domain) vocabulary.push(String(purpose.primary_domain));
-    for (const concept of purpose.core_concepts || []) vocabulary.push(String(concept));
+    if (purpose.primary_domain) repoVocab.push(String(purpose.primary_domain));
+    for (const concept of purpose.core_concepts || []) repoVocab.push(String(concept));
+    vocabulary.push(...repoVocab);
+    for (const term of repoVocab) {
+      if (terminalSignalForName(terminalProfile, term).score > 0) terminallyGroundedVocabulary.push(term);
+    }
   }
   const vocabText = normalizeAiItemName(vocabulary.join(' '));
-  const strongTerms = CRYPTO_STRONG_PATTERNS.filter(pattern => pattern.test(vocabText));
+  const groundedVocabText = normalizeAiItemName(terminallyGroundedVocabulary.join(' '));
+  const strongTerms = CRYPTO_STRONG_PATTERNS.filter(pattern => pattern.test(groundedVocabText));
   const matchedTerms = CRYPTO_TERM_PATTERNS.filter(pattern => pattern.test(vocabText));
   const strongSignal = strongTerms.length;
   if (strongSignal) {
@@ -5284,7 +5327,7 @@ function buildWorkspaceDomains(
 	      add(domain, codebase.id, `project_domain:${codebase.name}`, 72, 36, [`project_domain:${codebase.name}`]);
 	    }
 	  }
-	  const cryptoProfile = detectWorkspaceCryptoProfile(repositories, applications);
+	  const cryptoProfile = detectWorkspaceCryptoProfile(repositories, applications, terminalProfiles);
 	  if (cryptoProfile.isCrypto) {
 	    const chainText = cryptoProfile.chains.length ? ` (${cryptoProfile.chains.slice(0, 4).join(', ')})` : '';
 	    add(
@@ -9690,6 +9733,214 @@ function applicationSurfaceFromFile(file: string | undefined): { name: string; p
   const srcBin = normalized.match(/(?:^|\/)src\/bin\/([^/.]+)\.[a-z0-9]+$/i);
   if (srcBin?.[1]) return { name: srcBin[1], pathHint: `src/bin/${srcBin[1]}`, deployableHint: true };
   return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Evidence-first deployable boundary resolver (agent-B claim).
+//
+// Shared contract with agent-A: repository.cas.deployable_evidence, when
+// present, is the authoritative DeployableEvidence[] signal. Until agent-A
+// lands that field on CASOutput, deriveDeployableEvidenceFallback() computes
+// an equivalent signal directly from cas.nodes / distribution_units so the
+// resolver has something real to consume rather than blocking on the other
+// claim landing first.
+// ---------------------------------------------------------------------------
+
+function deployableEvidenceFromCas(repository: CrossCodebaseInput): DeployableEvidence[] {
+  const supplied = (repository.cas as unknown as { deployable_evidence?: DeployableEvidence[] })?.deployable_evidence;
+  if (Array.isArray(supplied) && supplied.length > 0) return supplied;
+  return deriveDeployableEvidenceFallback(repository);
+}
+
+function deriveDeployableEvidenceFallback(repository: CrossCodebaseInput): DeployableEvidence[] {
+  const byRoot = new Map<string, DeployableEvidence>();
+  const upsert = (rootPath: string, tier: 1 | 2 | 3, kind: DeployableEvidence['kind'], evidenceLine: string, shipsPath?: string) => {
+    if (!rootPath) return;
+    const existing = byRoot.get(rootPath);
+    if (existing) {
+      if (tier < existing.tier) { existing.tier = tier; existing.kind = kind; }
+      existing.evidence = mergeStrings(existing.evidence, [evidenceLine]);
+      if (shipsPath) existing.ships_paths = mergeStrings(existing.ships_paths || [], [shipsPath]);
+      return;
+    }
+    byRoot.set(rootPath, {
+      root_path: rootPath,
+      name: rootPath.split('/').pop() || rootPath,
+      tier,
+      kind,
+      evidence: [evidenceLine],
+      ships_paths: shipsPath ? [shipsPath] : undefined,
+    });
+  };
+
+  for (const node of repository.cas.nodes || []) {
+    const sourceFile = String((node as any)?.source?.file || (node as any)?.metadata?.file || '');
+    const surface = applicationSurfaceFromFile(sourceFile);
+    if (!surface) continue;
+    const nodeName = String((node as any)?.name || '');
+    const nodeType = String((node as any)?.type || '').toLowerCase();
+    const combined = `${nodeName} ${nodeType} ${sourceFile}`.toLowerCase();
+    if (/dockerfile/.test(combined)) {
+      upsert(surface.pathHint, 1, 'container', `cas-node:dockerfile:${sourceFile}`);
+    } else if (/compose/.test(combined)) {
+      upsert(surface.pathHint, 1, 'compose-service', `cas-node:compose:${sourceFile}`);
+    } else if (/kubernetes|k8s|\bhelm\b/.test(combined)) {
+      upsert(surface.pathHint, 1, 'k8s', `cas-node:k8s:${sourceFile}`);
+    } else if (/serverless|lambda|cloud function/.test(combined)) {
+      upsert(surface.pathHint, 1, 'serverless', `cas-node:serverless:${sourceFile}`);
+    } else if (/installer|packaging|\.msi\b|\.deb\b|\.rpm\b|nsis/.test(combined)) {
+      upsert(surface.pathHint, 1, 'installer', `cas-node:installer:${sourceFile}`);
+    } else if (/deploy script|release script|\bci\b.*deploy|deploy.*\bci\b/.test(combined)) {
+      upsert(surface.pathHint, 1, 'ci-deploy', `cas-node:ci-deploy:${sourceFile}`);
+    } else if (/^(bin\/|cmd\/)/.test(surface.pathHint) || /(?:^|\/)src\/bin\//.test(sourceFile)) {
+      upsert(surface.pathHint, 2, 'bin', `cas-node:bin:${sourceFile}`);
+    } else if (surface.deployableHint && /(^|\/)(apps|services)\//.test(surface.pathHint)) {
+      upsert(surface.pathHint, 2, 'server-entry', `cas-node:server-entry:${sourceFile}`);
+    } else if (!surface.deployableHint) {
+      upsert(surface.pathHint, 3, 'package', `cas-node:package:${sourceFile}`);
+    }
+  }
+
+  for (const unit of repository.cas.distribution_units || []) {
+    const kindLower = String(unit.kind || '').toLowerCase();
+    const tierOneKind: DeployableEvidence['kind'] | undefined =
+      /container|docker/.test(kindLower) ? 'container' :
+      /compose/.test(kindLower) ? 'compose-service' :
+      /k8s|kubernetes|helm/.test(kindLower) ? 'k8s' :
+      /serverless|lambda/.test(kindLower) ? 'serverless' :
+      /installer|package|msi|deb|rpm/.test(kindLower) ? 'installer' :
+      /ci|deploy|release/.test(kindLower) ? 'ci-deploy' : undefined;
+    for (const artifactPath of unit.artifact_paths || []) {
+      const surface = applicationSurfaceFromFile(artifactPath);
+      const rootPath = surface?.pathHint || unit.name;
+      if (tierOneKind) {
+        upsert(rootPath, 1, tierOneKind, `distribution-unit:${unit.name}:${artifactPath}`, artifactPath);
+      } else {
+        upsert(rootPath, 2, 'bin', `distribution-unit:${unit.name}:${artifactPath}`, artifactPath);
+      }
+    }
+    // Multiple components bundled into one distribution unit is itself
+    // positive bundling evidence for every component beyond the first.
+    if ((unit.component_names || []).length > 1) {
+      for (const componentName of unit.component_names || []) {
+        const cleanName = cleanApplicationName(componentName);
+        if (!cleanName) continue;
+        upsert(cleanName, 1, 'installer', `distribution-unit:${unit.name}:bundles:${unit.component_names.join(',')}`);
+      }
+    }
+  }
+
+  return [...byRoot.values()];
+}
+
+interface DeployableResolution {
+  rootPath: string;
+  name: string;
+  tier: 1 | 2 | 3 | 4;
+  kind: DeployableEvidence['kind'] | 'folder-heuristic';
+  evidence: string[];
+  shipsPaths: string[];
+}
+
+/** THE ALGORITHM: evidence-first boundary + evidence-gated merge.
+ *
+ *  1. Candidates = DeployableEvidence roots (tier 1/2/3 from real ship/runtime
+ *     artifacts), folder-regex demoted to Tier-4 tiebreaker used only when
+ *     tiers 1-3 are silent for a given codebase.
+ *  2. Attribute code to nearest owning root (containment).
+ *  3. Evidence-gated merge: a Tier-2/3 candidate merges into another
+ *     deployable ONLY with positive bundling evidence (it's in another root's
+ *     Tier-1 ships_paths, OR it has no own Tier-1 artifact and is named as a
+ *     bundled component in a shared distribution unit). Never merge on
+ *     absence-of-artifact alone; ambiguous cases stay separate and are
+ *     flagged `possible_bundle` in boundary_evidence.
+ */
+function resolveDeployables(applications: SystemApplication[], repositories: CrossCodebaseInput[]): void {
+  for (const repository of repositories) {
+    const projectId = codebaseId(repository.path);
+    const evidenceList = deployableEvidenceFromCas(repository);
+    const evidenceByRoot = new Map<string, DeployableEvidence>();
+    for (const evidence of evidenceList) evidenceByRoot.set(evidence.root_path, evidence);
+
+    const appsForRepo = applications.filter(app => app.codebase_id === projectId);
+    if (appsForRepo.length === 0) continue;
+
+    const resolutions = new Map<string, DeployableResolution>();
+    for (const app of appsForRepo) {
+      const rootPath = app.path_hint || app.name;
+      const evidence = evidenceByRoot.get(rootPath)
+        || [...evidenceByRoot.values()].find(candidate => rootPath && (rootPath.startsWith(`${candidate.root_path}/`) || candidate.root_path.startsWith(`${rootPath}/`)));
+      if (evidence) {
+        resolutions.set(app.id, {
+          rootPath: evidence.root_path,
+          name: evidence.name,
+          tier: evidence.tier,
+          kind: evidence.kind,
+          evidence: [...evidence.evidence],
+          shipsPaths: evidence.ships_paths || [],
+        });
+      } else {
+        // Tier-4 tiebreaker: tiers 1-3 silent for this root, fall back to the
+        // pre-existing folder-regex/name heuristic so nothing loses coverage.
+        resolutions.set(app.id, {
+          rootPath,
+          name: app.name,
+          tier: 4,
+          kind: 'folder-heuristic',
+          evidence: [`folder-heuristic:${rootPath || app.name}`],
+          shipsPaths: [],
+        });
+      }
+    }
+
+    // Evidence-gated merge pass.
+    for (const app of appsForRepo) {
+      const resolution = resolutions.get(app.id);
+      if (!resolution) continue;
+      if (resolution.tier === 1) {
+        app.boundary_evidence = mergeStrings(app.boundary_evidence || [], [`tier-1-deployable:${resolution.kind}`, ...resolution.evidence]);
+        continue;
+      }
+
+      // Look for another root whose Tier-1 ships_paths cover this app's root,
+      // or another root's distribution unit that names this app as a bundled
+      // component (both are positive bundling evidence).
+      const bundleTarget = appsForRepo.find(other => {
+        if (other.id === app.id) return false;
+        const otherResolution = resolutions.get(other.id);
+        if (!otherResolution || otherResolution.tier !== 1) return false;
+        const shipsHit = otherResolution.shipsPaths.some(shipped =>
+          shipped === resolution.rootPath || shipped.includes(app.name) || (resolution.rootPath && shipped.startsWith(resolution.rootPath)));
+        const bundleEvidenceHit = otherResolution.evidence.some(line => line.includes('bundles:') && line.includes(app.name));
+        return shipsHit || bundleEvidenceHit;
+      });
+
+      if (bundleTarget && resolution.tier <= 3) {
+        app.bundled_into = bundleTarget.id;
+        app.boundary_evidence = mergeStrings(app.boundary_evidence || [], [
+          `bundled-into:${bundleTarget.name}`,
+          `positive-bundling-evidence:ships_paths-or-distribution-unit`,
+          ...resolution.evidence,
+        ]);
+        continue;
+      }
+
+      if (resolution.tier === 4) {
+        app.boundary_evidence = mergeStrings(app.boundary_evidence || [], [`tier-4-folder-heuristic:${resolution.rootPath}`, 'possible_bundle:unresolved-no-tier1-3-evidence']);
+      } else {
+        // Tier-2/3 candidate with no positive bundling evidence: never merge
+        // on absence-of-artifact alone. Stays a separate deployable, flagged
+        // ambiguous only if there is a same-repo Tier-1 sibling it could
+        // plausibly belong to.
+        const hasTier1Sibling = appsForRepo.some(other => other.id !== app.id && resolutions.get(other.id)?.tier === 1);
+        app.boundary_evidence = mergeStrings(app.boundary_evidence || [], [
+          `tier-${resolution.tier}-standalone:${resolution.kind}`,
+          ...resolution.evidence,
+          ...(hasTier1Sibling ? ['possible_bundle:no_positive_evidence_found'] : []),
+        ]);
+      }
+    }
+  }
 }
 
 function shouldSkipWorkspaceApplicationPath(pathHint: string | undefined): boolean {
