@@ -350,6 +350,25 @@ export class TreeSitterTSExtractor {
       }
     }
 
+    // Object-literal shorthand methods (`{ add(a, b) { ... } }`) parse as
+    // `method_definition` too, same as class methods, but their parent is an
+    // `object` node rather than `class_body`. extractClasses() only walks
+    // `class_body` members, so these were falling through entirely: not a
+    // "standalone function" (excluded from funcTypes above to avoid
+    // double-counting class methods) and not attached to any class. Collect
+    // them explicitly here, restricted to method_definitions whose immediate
+    // parent is an object literal, so real class methods stay handled solely
+    // by extractClasses().
+    const objectMethodNodes = this.collectByTypesOutsideClasses(root, new Set(['method_definition']))
+      .filter((node: any) => node.parent?.type === 'object');
+
+    for (const func of objectMethodNodes) {
+      const extracted = this.extractFunction(func, root);
+      if (extracted && !extracted.className) {
+        functions.push(extracted);
+      }
+    }
+
     return functions;
   }
 

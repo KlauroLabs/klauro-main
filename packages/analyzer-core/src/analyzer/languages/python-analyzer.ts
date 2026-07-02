@@ -1110,24 +1110,52 @@ export class PythonAnalyzer extends BaseAnalyzer {
   }
 
   private isInsideClass(lines: string[], lineIndex: number): boolean {
+    const ownIndent = lines[lineIndex].length - lines[lineIndex].trimStart().length;
+    if (ownIndent === 0) {
+      // A line at column 0 cannot be nested inside any class/function block in Python,
+      // regardless of what class/def statements appeared earlier in the file.
+      return false;
+    }
+
+    // Walk backwards, tracking only lines whose indent is strictly less than the
+    // smallest indent seen so far (i.e. actual enclosing blocks), so a class/def
+    // that has already been closed by a dedent is not mistaken for an ancestor.
+    let minIndentSeen = ownIndent;
     for (let i = lineIndex - 1; i >= 0; i--) {
       const line = lines[i];
+      if (!line.trim()) continue;
       const indent = line.length - line.trimStart().length;
 
-      if (line.trim().startsWith('class ') && indent === 0) {
-        return true;
+      if (indent < minIndentSeen) {
+        if (line.trim().startsWith('class ')) {
+          return true;
+        }
+        minIndentSeen = indent;
+        if (indent === 0) break;
       }
     }
     return false;
   }
 
   private isInsideClassOrFunction(lines: string[], lineIndex: number): boolean {
+    const ownIndent = lines[lineIndex].length - lines[lineIndex].trimStart().length;
+    if (ownIndent === 0) {
+      return false;
+    }
+
+    let minIndentSeen = ownIndent;
     for (let i = lineIndex - 1; i >= 0; i--) {
       const line = lines[i];
+      if (!line.trim()) continue;
       const indent = line.length - line.trimStart().length;
 
-      if ((line.trim().startsWith('class ') || line.trim().startsWith('def ') || line.trim().startsWith('async def ')) && indent === 0) {
-        return true;
+      if (indent < minIndentSeen) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('class ') || trimmed.startsWith('def ') || trimmed.startsWith('async def ')) {
+          return true;
+        }
+        minIndentSeen = indent;
+        if (indent === 0) break;
       }
     }
     return false;

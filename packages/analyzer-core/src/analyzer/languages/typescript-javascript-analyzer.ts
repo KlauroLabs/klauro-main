@@ -2312,6 +2312,41 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         });
       }
 
+      if (!node || typeof node !== 'object') return;
+
+      // Object-literal methods: shorthand `{ add(a, b) {} }` and
+      // function-valued properties `{ cb: function(){} }` / `{ cb: () => {} }`.
+      // Plain data properties (e.g. `{ x: 5 }`) are intentionally excluded.
+      if (
+        node.type === 'Property' &&
+        !node.computed &&
+        (node.value?.type === 'FunctionExpression' || node.value?.type === 'ArrowFunctionExpression')
+      ) {
+        const keyName = node.key?.name || node.key?.value;
+        if (keyName) {
+          const jsdoc = this.extractJSDoc(node, content, lines);
+          const comments = this.extractNodeComments(node, content, lines);
+          const todos = this.extractTodosFromComments(comments, node.loc?.start.line?.toString() || '');
+          const status = this.detectImplementationStatus(node.value, content);
+
+          functions.push({
+            name: keyName,
+            type: node.value.type === 'ArrowFunctionExpression' ? 'arrow' : 'method',
+            parameters: this.extractParameters(node.value.params, jsdoc),
+            returnType: this.extractReturnType(node.value.returnType, jsdoc),
+            lineStart: node.loc?.start.line || 0,
+            lineEnd: node.loc?.end.line || 0,
+            isExported: false,
+            isAsync: node.value.async || false,
+            isGenerator: node.value.generator || false,
+            documentation: jsdoc,
+            comments: comments.length > 0 ? comments : undefined,
+            todos: todos.length > 0 ? todos : undefined,
+            implementationStatus: status
+          });
+        }
+      }
+
       for (const key in node) {
         if (key === 'parent') continue;
 
