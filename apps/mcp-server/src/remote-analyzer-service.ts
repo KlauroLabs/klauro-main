@@ -17,6 +17,34 @@ import { getAnalysis } from './analyzer';
 
 const DEFAULT_PORT = 8787;
 const DEFAULT_MAX_BODY_BYTES = 100 * 1024 * 1024;
+const SSE_HEARTBEAT_MS = 25_000;
+
+/**
+ * §WS-C-transport — minimal in-process pub/sub for the coordination SSE
+ * stream. One `Set<ServerResponse>` per workspace holds every open
+ * `GET /v1/coordination/stream?workspace=` connection; a claim/release/
+ * heartbeat/in-flight mutation broadcasts a delta to that workspace's
+ * subscribers only (never cross-workspace). Deliberately process-local —
+ * multi-process/horizontal fanout is out of scope here (see WS-K notes on
+ * Redis pub/sub tiering); a single analyzer-service process is the deployed
+ * shape today. Cleared automatically as connections close (`response.on('close')`).
+ */
+const coordinationSubscribers = new Map<string, Set<http.ServerResponse>>();
+
+/** Push one SSE event to every open subscriber of `workspace`. Never throws. */
+function broadcastCoordinationEvent(workspace: string, event: string, data: unknown): void {
+  const subscribers = coordinationSubscribers.get(workspace);
+  if (!subscribers || subscribers.size === 0) return;
+  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const subscriber of subscribers) {
+    try {
+      subscriber.write(payload);
+    } catch {
+      // A dead/broken pipe here is cleaned up by its own 'close' handler;
+      // never let one bad subscriber break the broadcast to the others.
+    }
+  }
+}
 
 interface RemoteAnalyzerServiceOptions {
   dataDir?: string;
@@ -283,6 +311,13 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         const casEdges = await casEdgesForWorkspace(body.workspace);
         const result = arbitrate(newClaim, activeBefore, casEdges, []);
         const stored = await appendClaim(body.workspace, newClaim);
+        broadcastCoordinationEvent(body.workspace, 'claim', {
+          claim_id: stored.claim_id,
+          seq: stored.seq,
+          agent_id: stored.agent_id,
+          status: stored.status,
+          verdict: result.verdict,
+        });
         writeJson(response, 200, {
           claim_id: stored.claim_id,
           seq: stored.seq,
@@ -305,6 +340,12 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           return;
         }
         const stored = await appendClaim(body.workspace, { ...prior, status: 'released', heartbeat_at: new Date().toISOString() });
+        broadcastCoordinationEvent(body.workspace, 'release', {
+          claim_id: stored.claim_id,
+          seq: stored.seq,
+          agent_id: stored.agent_id,
+          status: stored.status,
+        });
         writeJson(response, 200, { status: 'released', claim_id: stored.claim_id, seq: stored.seq });
         return;
       }
@@ -319,6 +360,12 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         }
         const now = new Date().toISOString();
         const stored = await appendClaim(body.workspace, { ...prior, heartbeat_at: now });
+        broadcastCoordinationEvent(body.workspace, 'heartbeat', {
+          claim_id: stored.claim_id,
+          seq: stored.seq,
+          agent_id: stored.agent_id,
+          heartbeat_at: now,
+        });
         writeJson(response, 200, { status: 'heartbeat', claim_id: stored.claim_id, seq: stored.seq, heartbeat_at: now });
         return;
       }
@@ -331,9 +378,8 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 400, { status: 'error', error: 'workspace query param is required' });
           return;
         }
-        // Poll fallback in lieu of SSE (TODO: GET /v1/coordination/stream via
-        // SSE, per WS-C-transport — deferred; this poll endpoint is sufficient
-        // for cross-machine awareness today).
+        // Poll fallback, kept alongside the SSE stream below for clients that
+        // can't hold a long-lived connection (or as a resync-on-reconnect path).
         const log = await readClaimLog(workspace);
         const claims = await getActiveClaims(workspace);
         const presence = await getPresence(workspace);
@@ -344,6 +390,58 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           claims: Number.isFinite(since) ? claims.filter((c) => c.seq > (since as number)) : claims,
           presence,
         });
+        return;
+      }
+
+      // §WS-C-transport — live coordination stream. Keeps the response open as
+      // `text/event-stream` and pushes claim/release/heartbeat/in-flight deltas
+      // for `workspace` as they happen (see `broadcastCoordinationEvent`). Emits
+      // an initial `state` event with the current snapshot so a fresh subscriber
+      // doesn't have to race a separate GET /v1/coordination/state call, then a
+      // `:heartbeat` comment every ~25s to keep intermediaries (proxies, load
+      // balancers) from closing the idle connection. Cleans up its subscriber-set
+      // entry on close (client disconnect, server shutdown, or network drop).
+      if (request.method === 'GET' && route === '/v1/coordination/stream') {
+        const workspace = requestUrl.searchParams.get('workspace') || '';
+        if (!workspace) {
+          writeJson(response, 400, { status: 'error', error: 'workspace query param is required' });
+          return;
+        }
+        response.writeHead(200, corsHeaders({
+          'content-type': 'text/event-stream',
+          'cache-control': 'no-cache, no-transform',
+          connection: 'keep-alive',
+        }));
+        response.write(': connected\n\n');
+
+        const claims = await getActiveClaims(workspace);
+        const presence = await getPresence(workspace);
+        response.write(`event: state\ndata: ${JSON.stringify({ workspace, claims, presence })}\n\n`);
+
+        let subscribers = coordinationSubscribers.get(workspace);
+        if (!subscribers) {
+          subscribers = new Set();
+          coordinationSubscribers.set(workspace, subscribers);
+        }
+        subscribers.add(response);
+
+        const heartbeatTimer = setInterval(() => {
+          try {
+            response.write(': heartbeat\n\n');
+          } catch {
+            // connection is going/gone; the 'close' handler below finishes cleanup.
+          }
+        }, SSE_HEARTBEAT_MS);
+
+        const cleanup = (): void => {
+          clearInterval(heartbeatTimer);
+          const set = coordinationSubscribers.get(workspace);
+          set?.delete(response);
+          if (set && set.size === 0) coordinationSubscribers.delete(workspace);
+        };
+        request.on('close', cleanup);
+        response.on('close', cleanup);
+        response.on('error', cleanup);
         return;
       }
 
@@ -393,6 +491,12 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           updated_at: new Date().toISOString(),
         };
         await appendInFlightSnapshot(body.workspace, snapshot);
+        broadcastCoordinationEvent(body.workspace, 'in-flight', {
+          agent_id: snapshot.agent_id,
+          base_commit: snapshot.base_commit,
+          branch: snapshot.branch,
+          updated_at: snapshot.updated_at,
+        });
         await appendSecurityAudit(getSecurityStoreDir(body.workspace), {
           ts: snapshot.updated_at,
           actor: body.agent_id,

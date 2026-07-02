@@ -6,7 +6,16 @@ import * as path from 'node:path';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
 
-import { fetchRemoteState, mergeRemotePeers, publishClaim, RemoteStoreError, syncClaim } from './remote-store';
+import {
+  __resetRetryQueueForTests,
+  fetchRemoteState,
+  flushRetryQueue,
+  getRetryQueueSize,
+  mergeRemotePeers,
+  publishClaim,
+  RemoteStoreError,
+  syncClaim,
+} from './remote-store';
 import { readClaimLog } from './local-store';
 import type { WorkClaim } from './types';
 
@@ -229,4 +238,72 @@ test('mergeRemotePeers drops released claims and handles an undefined remote sta
   const merged = mergeRemotePeers([active, released], undefined);
   assert.equal(merged.length, 1);
   assert.equal(merged[0].claim_id, 'still-active');
+});
+
+test('retry queue: flushRetryQueue drains a queued entry once its target becomes reachable (fails once, then drains)', async () => {
+  const dir = await freshCoordDir();
+  __resetRetryQueueForTests();
+
+  // Start a server that fails the first request (simulating the remote being
+  // down at enqueue time) then succeeds thereafter (simulating recovery).
+  let requestCount = 0;
+  const server = await startThrowawayServer(async (_req, body) => {
+    requestCount += 1;
+    if (requestCount === 1) return { status: 503, body: { error: 'temporarily unavailable' } };
+    return { status: 200, body: { claim_id: body.claim_id, seq: 1, verdict: 'granted' } };
+  });
+
+  const claim = makeClaim({ claim_id: 'flaky-remote' });
+  const first = await syncClaim('ws-test', claim, { baseUrl: server.baseUrl, token: 't' });
+  assert.ok(first.remoteError, 'first publish should fail (server returns 503)');
+  assert.equal(first.remoteQueued, true);
+  assert.equal(getRetryQueueSize(), 1);
+
+  // Force the queued entry to be due right now (ignore backoff) and drain it —
+  // the server now succeeds (requestCount > 1), so the queue should empty.
+  const drainResult = await flushRetryQueue(Date.now() + 60_000);
+  assert.equal(drainResult.flushed, 1, 'the queued entry should succeed on retry now that the server recovered');
+  assert.equal(drainResult.requeued, 0);
+  assert.equal(getRetryQueueSize(), 0, 'queue should be empty after a successful drain');
+
+  await server.close();
+  __resetRetryQueueForTests();
+  await fsp.rm(dir, { recursive: true, force: true });
+});
+
+test('retry queue: entries are dropped (not retried forever) once RETRY_MAX_ATTEMPTS is exceeded', async () => {
+  const dir = await freshCoordDir();
+  __resetRetryQueueForTests();
+  const claim = makeClaim({ claim_id: 'always-fails' });
+
+  const first = await syncClaim('ws-test', claim, { baseUrl: 'http://127.0.0.1:1' });
+  assert.equal(first.remoteQueued, true);
+
+  // Drive the queue through repeated failed drains (target stays unreachable)
+  // until the entry is dropped rather than retried forever.
+  let lastResult = { flushed: 0, requeued: 0, dropped: 0 };
+  for (let i = 0; i < 10 && getRetryQueueSize() > 0; i++) {
+    lastResult = await flushRetryQueue(Date.now() + 60_000 * (i + 1));
+  }
+  assert.equal(getRetryQueueSize(), 0, 'entry should eventually be dropped, not retried forever');
+  assert.ok(lastResult.dropped >= 1, 'the final drain should report the entry as dropped');
+
+  __resetRetryQueueForTests();
+  await fsp.rm(dir, { recursive: true, force: true });
+});
+
+test('retry queue: local write is never blocked or lost even when the remote is permanently unreachable', async () => {
+  const dir = await freshCoordDir();
+  __resetRetryQueueForTests();
+  const claim = makeClaim({ claim_id: 'local-always-safe' });
+
+  const result = await syncClaim('ws-test', claim, { baseUrl: 'http://127.0.0.1:1' });
+  assert.equal(result.local.claim_id, 'local-always-safe', 'local write must succeed regardless of remote reachability');
+
+  const log = await readClaimLog('ws-test');
+  assert.equal(log.length, 1);
+  assert.equal(log[0].claim_id, 'local-always-safe');
+
+  __resetRetryQueueForTests();
+  await fsp.rm(dir, { recursive: true, force: true });
 });
