@@ -35,6 +35,8 @@ export interface WorkClaim {
   heartbeat_at: string;
   base_commit?: string;
   branch?: string;
+  /** Organization scope (§WS-F tenancy). Optional/additive — see `TenantScoped` in security.ts. */
+  org_id?: string;
 }
 
 /** A workspace's live agent roster (WS-C `presence.ts` / `get_active_agents`). */
@@ -66,6 +68,8 @@ export interface InFlightSnapshot {
     symbols: string[];
   };
   updated_at: string;
+  /** Organization scope (§WS-F tenancy). Optional/additive — see `TenantScoped` in security.ts. */
+  org_id?: string;
 }
 
 /** A minimal CAS call/data edge, enough for blast-radius overlap (matches CASEdge shape). */

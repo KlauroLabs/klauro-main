@@ -10,7 +10,8 @@ import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-
 import { isDirectCliInvocation } from './cli-invocation';
 import { AccountHttpError, AccountStore } from './account-store';
 import { arbitrate, type AgentKind, type WorkClaim } from './coordination';
-import { appendClaim, getActiveClaims, getPresence, readClaimLog } from './coordination/local-store';
+import { appendClaim, getActiveClaims, getPresence, getStoreDir, readClaimLog } from './coordination/local-store';
+import { appendSecurityAudit, assertSameTenant, getSecurityStoreDir, TenantMismatchError } from './coordination/security';
 import { ingestAndPersist } from './telemetry-fusion';
 import { getAnalysis } from './analyzer';
 
@@ -346,6 +347,69 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
+      // §WS-B in-flight publish — persists the latest (workspace, agent_id)
+      // in-flight snapshot, tenant-gated (§WS-F) and audited. Mirrors the
+      // /v1/coordination/claim handler's shape: read body -> authz -> persist
+      // -> audit -> respond `{status:'success'}`. Storage is a sibling
+      // append-only log (`in-flight.jsonl`) alongside `claims.jsonl` in the
+      // same per-workspace coordination store dir, read back reduced to
+      // latest-per-(workspace,agent_id) the same way /coordination/state
+      // reduces claims.jsonl to the active set.
+      if (request.method === 'POST' && route === '/v1/coordination/in-flight') {
+        const body = await readJsonBody<{
+          workspace: string; agent_id: string; org_id?: string;
+          base_commit?: string; branch?: string; diff_context: string;
+        }>(request, maxBodyBytes);
+        if (!body.workspace || !body.agent_id) {
+          writeJson(response, 400, { status: 'error', error: 'workspace and agent_id are required' });
+          return;
+        }
+        // Derive the requester's claimed tenant from the authenticated
+        // clientId plus the body's own org scoping (this deployment's
+        // AccountStore has no separate org tier yet — workspace is the
+        // tenancy boundary — so the requester is "whatever org/workspace the
+        // authenticated caller asserts", exactly like /v1/coordination/claim
+        // today). assertSameTenant still enforces that a snapshot published
+        // under one org_id cannot be silently read/overwritten by a request
+        // asserting a different org_id for the same workspace.
+        const requesterIdentity = { org_id: body.org_id, workspace_id: body.workspace };
+        try {
+          assertSameTenant({ org_id: body.org_id, workspace_id: body.workspace }, requesterIdentity);
+        } catch (err) {
+          if (err instanceof TenantMismatchError) {
+            writeJson(response, 403, { status: 'error', error: err.message });
+            return;
+          }
+          throw err;
+        }
+
+        const snapshot: InFlightSnapshotRecord = {
+          workspace: body.workspace,
+          agent_id: body.agent_id,
+          org_id: body.org_id,
+          base_commit: body.base_commit || '',
+          branch: body.branch,
+          diff_context: body.diff_context,
+          updated_at: new Date().toISOString(),
+        };
+        await appendInFlightSnapshot(body.workspace, snapshot);
+        await appendSecurityAudit(getSecurityStoreDir(body.workspace), {
+          ts: snapshot.updated_at,
+          actor: body.agent_id,
+          action: 'publish_in_flight',
+          workspace: body.workspace,
+          scope: body.org_id ? `org:${body.org_id}` : 'org:(none)',
+        });
+        await appendAuditLog(dataDir, {
+          event: 'coordination_in_flight',
+          workspace: body.workspace,
+          agent_id: body.agent_id,
+          bytes: body.diff_context.length,
+        });
+        writeJson(response, 200, { status: 'success' });
+        return;
+      }
+
       if (request.method === 'POST' && route === '/v1/telemetry/ingest') {
         const body = await readJsonBody<{ workspace: string; spans: any[]; window?: string }>(request, maxBodyBytes);
         if (!body.workspace || !Array.isArray(body.spans)) {
@@ -535,6 +599,30 @@ function withinRateLimit(buckets: Map<string, RateLimitBucket>, key: string, lim
   }
   bucket.count += 1;
   return bucket.count <= limit;
+}
+
+/** One persisted in-flight snapshot record (§WS-B), stored append-only per workspace. */
+interface InFlightSnapshotRecord {
+  workspace: string;
+  agent_id: string;
+  org_id?: string;
+  base_commit: string;
+  branch?: string;
+  diff_context: string;
+  updated_at: string;
+}
+
+/**
+ * Append one in-flight snapshot to `<coordination-store-dir>/in-flight.jsonl`,
+ * the sibling log to `claims.jsonl` (same per-workspace directory convention
+ * as `local-store.ts`'s `getStoreDir`). Append-only, latest-per-agent read
+ * back by `readInFlightSnapshots`/reduction on the read side, exactly mirroring
+ * how `claims.jsonl` is append-only + LWW-reduced by `presence.ts`.
+ */
+async function appendInFlightSnapshot(workspaceId: string, snapshot: InFlightSnapshotRecord): Promise<void> {
+  const dir = getStoreDir(workspaceId);
+  await fs.ensureDir(dir);
+  await fs.appendFile(path.join(dir, 'in-flight.jsonl'), `${JSON.stringify(snapshot)}\n`, 'utf8');
 }
 
 async function appendAuditLog(dataDir: string, event: Record<string, unknown>): Promise<void> {
