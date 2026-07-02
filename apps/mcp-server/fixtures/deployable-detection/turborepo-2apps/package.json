@@ -1,0 +1,6 @@
+{
+  "name": "turborepo-2apps-fixture",
+  "private": true,
+  "workspaces": ["apps/*", "packages/*"],
+  "devDependencies": { "turbo": "^1.0.0" }
+}

@@ -45,6 +45,9 @@ export interface DeployableEvidence {
   evidence: string[];
   ships_paths?: string[];
   ports?: number[];
+  /** Which of ships_paths is the primary/ENTRYPOINT of a multi-member bundle
+   *  (e.g. a Dockerfile packaging client+client-service, ENTRYPOINT client). */
+  entrypoint_member?: string;
 }
 
 export type WorkspaceAnalysisInput = CrossCodebaseInput;
@@ -9626,7 +9629,7 @@ function buildApplications(
       !isRawInfrastructureOrImageSurface(app)
     );
   }
-  return [...byId.values()]
+  const normalized = [...byId.values()]
     .map(app => {
       const normalizedApp = {
         ...app,
@@ -9642,8 +9645,82 @@ function buildApplications(
           !isRawInfrastructureOrImageSurface(normalizedApp) &&
           !looksLikeInternalUtilityApplication(normalizedApp),
       };
-    })
-    .sort((left, right) => left.codebase_id.localeCompare(right.codebase_id) || left.name.localeCompare(right.name));
+    });
+
+  suppressWorkspaceContainerRoots(normalized, repositories, codebaseById);
+
+  return normalized.sort((left, right) => left.codebase_id.localeCompare(right.codebase_id) || left.name.localeCompare(right.name));
+}
+
+/** A monorepo CONTAINER root (root package.json with a `workspaces` field, a
+ *  pnpm-workspace.yaml/turbo.json/nx.json/lerna.json at root, or a Cargo
+ *  `[workspace]` root) is not itself a deployable — it's the workspace shell
+ *  around the real deployables. Suppress the root codebase's synthetic
+ *  application surface ONLY when the repo also has sibling app surfaces that
+ *  are actually deployable (a single-package repo whose root IS the one app
+ *  must keep counting). */
+function suppressWorkspaceContainerRoots(
+  applications: SystemApplication[],
+  repositories: CrossCodebaseInput[],
+  codebaseById: Map<string, SystemCodebase>,
+): void {
+  for (const repository of repositories) {
+    const projectId = codebaseId(repository.path);
+    const codebase = codebaseById.get(projectId);
+    if (!codebase || !isWorkspaceContainerRoot(repository.path)) continue;
+
+    const appsForRepo = applications.filter(app => app.codebase_id === projectId);
+    const rootApp = appsForRepo.find(app =>
+      cleanApplicationName(app.name) === cleanApplicationName(codebase.name) && !isRealDeployableSurfacePathHint(app.path_hint));
+    if (!rootApp) continue;
+
+    const siblingDeployables = appsForRepo.some(app =>
+      app.id !== rootApp.id && app.deployable && isRealDeployableSurfacePathHint(app.path_hint));
+    if (!siblingDeployables) continue; // single-package repo: root IS the one app, keep it
+
+    rootApp.deployable = false;
+    rootApp.boundary_evidence = mergeStrings(rootApp.boundary_evidence || [], [
+      'workspace-container-root:suppressed',
+      'root declares workspace members with sibling deployable apps present',
+    ]);
+  }
+}
+
+/** A "real" application-surface path_hint lives under a known monorepo app
+ *  root (apps/services/cmd/bin/crates/packages) — as opposed to leaked
+ *  fragments like an interface's route path (e.g. "/health") that sometimes
+ *  land in path_hint for a codebase-level synthetic root application. */
+function isRealDeployableSurfacePathHint(pathHint: string | undefined): boolean {
+  return /^(apps|services|cmd|bin|crates|packages|libs)\//.test(pathHint || '');
+}
+
+function isWorkspaceContainerRoot(repositoryPath: string): boolean {
+  try {
+    const packageJsonPath = path.join(repositoryPath, 'package.json');
+    if (fs.existsSync(packageJsonPath)) {
+      const json = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+      if (json && (Array.isArray(json.workspaces) || (json.workspaces && Array.isArray(json.workspaces.packages)))) {
+        return true;
+      }
+    }
+  } catch {
+    // unreadable manifest: fall through to other markers
+  }
+
+  const markerFiles = ['pnpm-workspace.yaml', 'turbo.json', 'nx.json', 'lerna.json'];
+  if (markerFiles.some(marker => fs.existsSync(path.join(repositoryPath, marker)))) return true;
+
+  try {
+    const cargoTomlPath = path.join(repositoryPath, 'Cargo.toml');
+    if (fs.existsSync(cargoTomlPath)) {
+      const content = fs.readFileSync(cargoTomlPath, 'utf8');
+      if (/^\s*\[workspace\]/m.test(content)) return true;
+    }
+  } catch {
+    // unreadable manifest
+  }
+
+  return false;
 }
 
 function applicationSurfaceCandidatesFromCas(repository: CrossCodebaseInput, projectId: string): Array<Partial<SystemApplication> & { name: string }> {
@@ -9833,6 +9910,18 @@ function deriveDeployableEvidenceFallback(repository: CrossCodebaseInput): Deplo
   return [...byRoot.values()];
 }
 
+/** Does a ships_paths entry (a bin/crate/package name from Dockerfile COPY /
+ *  cargo -p args / installer cp targets) name this app? Matched by exact name
+ *  or by path_hint basename — ships_paths holds bare names like
+ *  "client-service", apps carry path_hint like "bin/client-service". */
+function bundleNameMatches(shipped: string, app: SystemApplication): boolean {
+  const cleanShipped = cleanApplicationName(shipped);
+  if (!cleanShipped) return false;
+  if (cleanApplicationName(app.name) === cleanShipped) return true;
+  const pathBasename = cleanApplicationName((app.path_hint || '').split('/').pop() || '');
+  return Boolean(pathBasename) && pathBasename === cleanShipped;
+}
+
 interface DeployableResolution {
   rootPath: string;
   name: string;
@@ -9893,12 +9982,47 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
       }
     }
 
+    // Root/unattached Tier-1 bundle artifacts: a Dockerfile or installer script
+    // at the repo root (root_path '.') is attached to no single app surface,
+    // so its members never get containment-attributed above. When its
+    // ships_paths names >=2 apps in this repo (by basename/name match), pick
+    // the PRIMARY as the app matching its entrypoint_member (or the first
+    // named member absent an entrypoint), mark it Tier-1, and bundle the
+    // other named members into it. Evidence-gated: only members the artifact
+    // actually names merge; gateway's own separate Dockerfile is untouched.
+    const rootBundleTargets = new Map<string, { primaryAppId: string; evidence: DeployableEvidence }>();
+    for (const evidence of evidenceList) {
+      if (evidence.tier !== 1 || evidence.root_path !== '.') continue;
+      const shipsPaths = evidence.ships_paths || [];
+      if (shipsPaths.length < 2) continue;
+      const namedApps = appsForRepo.filter(app => shipsPaths.some(shipped => bundleNameMatches(shipped, app)));
+      if (namedApps.length < 2) continue;
+      const primary = (evidence.entrypoint_member && namedApps.find(app => bundleNameMatches(evidence.entrypoint_member!, app)))
+        || namedApps[0];
+      rootBundleTargets.set(primary.id, { primaryAppId: primary.id, evidence });
+      for (const member of namedApps) {
+        if (member.id === primary.id) continue;
+        member.bundled_into = primary.id;
+        member.boundary_evidence = mergeStrings(member.boundary_evidence || [], [
+          `bundled-into:${primary.name}`,
+          `positive-bundling-evidence:root-installer-artifact`,
+          ...evidence.evidence,
+        ]);
+      }
+    }
+
     // Evidence-gated merge pass.
     for (const app of appsForRepo) {
+      if (app.bundled_into) continue; // already resolved by the root-bundle pass above
       const resolution = resolutions.get(app.id);
       if (!resolution) continue;
-      if (resolution.tier === 1) {
-        app.boundary_evidence = mergeStrings(app.boundary_evidence || [], [`tier-1-deployable:${resolution.kind}`, ...resolution.evidence]);
+      if (resolution.tier === 1 || rootBundleTargets.has(app.id)) {
+        const rootBundle = rootBundleTargets.get(app.id);
+        app.boundary_evidence = mergeStrings(app.boundary_evidence || [], [
+          `tier-1-deployable:${resolution.kind}`,
+          ...resolution.evidence,
+          ...(rootBundle ? [`bundle-primary:root-installer-artifact`, ...rootBundle.evidence.evidence] : []),
+        ]);
         continue;
       }
 

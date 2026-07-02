@@ -69,8 +69,9 @@ export function collectDeployableEvidence(input: CollectDeployableEvidenceInput)
   const { projectPath, nodes, entryPoints, exitPoints } = input;
   const results: DeployableEvidence[] = [];
 
-  results.push(...collectTier1FromContainerTopologyNodes(nodes, exitPoints));
+  results.push(...collectTier1FromContainerTopologyNodes(projectPath, nodes, exitPoints));
   results.push(...collectTier1FromDistributionArtifactNodes(nodes));
+  results.push(...collectTier1FromInstallerScripts(projectPath));
   results.push(...collectTier1FromCiDeployJobs(projectPath));
   results.push(...collectTier2BinTargets(projectPath));
   results.push(...collectTier2ServerEntries(entryPoints));
@@ -84,7 +85,7 @@ export function collectDeployableEvidence(input: CollectDeployableEvidenceInput)
 // ---------------------------------------------------------------------------
 
 /** Dockerfiles (container_image_definition nodes) + compose services (compose_service nodes). */
-function collectTier1FromContainerTopologyNodes(nodes: CASNode[], exitPoints: CASExitPoint[]): DeployableEvidence[] {
+function collectTier1FromContainerTopologyNodes(projectPath: string, nodes: CASNode[], exitPoints: CASExitPoint[]): DeployableEvidence[] {
   const out: DeployableEvidence[] = [];
 
   for (const node of nodes) {
@@ -98,17 +99,28 @@ function collectTier1FromContainerTopologyNodes(nodes: CASNode[], exitPoints: CA
       const exposedPorts: string[] = arrayOf(metadata.exposed_ports);
       if (exposedPorts.length) evidence.push(`EXPOSE ${exposedPorts.join(', ')}`);
 
+      // Real bundle membership: parse the Dockerfile itself for what it
+      // actually builds/COPYs/ships, rather than base-image lineage (which is
+      // useless for membership — every stage in a multi-stage build often
+      // shares the same FROM images regardless of what binaries it packages).
+      const dockerfileMembers = parseDockerfileMembers(projectPath, file);
+      const shipsPaths = dockerfileMembers.members.length ? dockerfileMembers.members : baseImages;
+      if (dockerfileMembers.members.length) {
+        evidence.push(`builds/copies: ${dockerfileMembers.members.join(', ')}`);
+      }
+      if (dockerfileMembers.entrypointMember) {
+        evidence.push(`entrypoint-member: ${dockerfileMembers.entrypointMember}`);
+      }
+
       out.push({
         root_path: path.dirname(file) || '.',
         name: node.name || file,
         tier: 1,
         kind: 'container',
         evidence,
-        // What this Dockerfile packages: the base image lineage is the closest
-        // deterministic membership signal available without re-parsing COPY
-        // instructions (not extracted by container-topology-analyzer today).
-        ships_paths: baseImages,
+        ships_paths: shipsPaths,
         ports: numericPorts(exposedPorts),
+        entrypoint_member: dockerfileMembers.entrypointMember,
       });
     }
 
@@ -235,6 +247,100 @@ function collectTier1FromCiDeployJobs(projectPath: string): DeployableEvidence[]
   }
 
   return out;
+}
+
+/** Installers / packaging shell scripts (e.g. build-installer.sh) that bundle
+ *  multiple binaries into one distribution artifact. Reads `cargo build -p X`
+ *  args plus `cp target/release/<bin> ...` copy targets to recover real
+ *  membership, independent of whether the Distribution Artifact Analyzer's
+ *  own node pipeline fired for this file. */
+function collectTier1FromInstallerScripts(projectPath: string): DeployableEvidence[] {
+  const out: DeployableEvidence[] = [];
+  let files: string[] = [];
+  try {
+    files = safeGlobSync(['**/*installer*.sh', '**/build-installer.sh', '**/*installer*.bash'], {
+      cwd: projectPath,
+      ignore: IGNORE_GLOBS,
+      nodir: true,
+      absolute: false,
+    });
+  } catch {
+    return out;
+  }
+
+  for (const relativeFile of files) {
+    let content = '';
+    try {
+      content = fs.readFileSync(path.join(projectPath, relativeFile), 'utf8');
+    } catch {
+      continue;
+    }
+
+    const members = new Set<string>();
+    for (const match of content.matchAll(/cargo\s+(?:build|install)\b[^\n]*/g)) {
+      for (const pkgMatch of match[0].matchAll(/-p\s+([A-Za-z0-9_-]+)/g)) members.add(pkgMatch[1]);
+    }
+    for (const match of content.matchAll(/\bcp\s+[^\n]*target\/(?:release|debug)\/([A-Za-z0-9_-]+)/g)) {
+      members.add(match[1]);
+    }
+
+    if (!members.size) continue;
+
+    out.push({
+      root_path: '.',
+      name: path.basename(relativeFile, path.extname(relativeFile)),
+      tier: 1,
+      kind: 'installer',
+      evidence: [
+        `installer script: ${relativeFile}`,
+        `bundles: ${[...members].join(', ')}`,
+      ],
+      ships_paths: [...members],
+    });
+  }
+
+  return out;
+}
+
+/** Parse a Dockerfile's real bundle membership: `cargo build -p X -p Y`
+ *  package args, `COPY [--from=stage] .../release/<bin> <dest>` targets, and
+ *  the ENTRYPOINT/CMD primary binary. Falls back to no members (caller uses
+ *  base images) when the Dockerfile doesn't match any of these patterns. */
+function parseDockerfileMembers(projectPath: string, relativeFile: string): { members: string[]; entrypointMember?: string } {
+  if (!relativeFile) return { members: [] };
+  let content = '';
+  try {
+    content = fs.readFileSync(path.join(projectPath, relativeFile), 'utf8');
+  } catch {
+    return { members: [] };
+  }
+
+  const members = new Set<string>();
+  for (const match of content.matchAll(/^\s*RUN\s+.*cargo\s+(?:build|install)\b[^\n]*/gim)) {
+    for (const pkgMatch of match[0].matchAll(/-p\s+([A-Za-z0-9_-]+)/g)) members.add(pkgMatch[1]);
+  }
+  for (const match of content.matchAll(/^\s*COPY\s+(?:--from=\S+\s+)?(\S+)\s+(\S+)\s*$/gim)) {
+    const source = match[1];
+    const dest = match[2];
+    const binName = path.basename(source);
+    if (/\/(release|debug)\//.test(source) || /^\/usr\/local\/bin\//.test(dest) || /\/bin\//.test(dest)) {
+      if (binName && binName !== '.' && !/\.(sh|sql|json|yaml|yml|toml|txt|md)$/i.test(binName)) {
+        members.add(binName);
+      }
+    }
+  }
+
+  let entrypointMember: string | undefined;
+  const entrypointMatch = content.match(/^\s*ENTRYPOINT\s+(.+)$/im) || content.match(/^\s*CMD\s+(.+)$/im);
+  if (entrypointMatch) {
+    const jsonArray = entrypointMatch[1].match(/\[\s*"([^"]+)"/);
+    const raw = jsonArray ? jsonArray[1] : entrypointMatch[1].trim().split(/\s+/)[0];
+    const baseName = path.basename(raw.replace(/["'\[\],]/g, ''));
+    if (baseName && members.has(baseName)) entrypointMember = baseName;
+    else if (baseName) entrypointMember = baseName;
+  }
+
+  return { members: [...members], entrypointMember };
 }
 
 // ---------------------------------------------------------------------------

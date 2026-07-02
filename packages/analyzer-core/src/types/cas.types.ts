@@ -3591,6 +3591,7 @@ export interface DeployableEvidence {
   tier: 1 | 2 | 3;          // 1=ship declaration, 2=runnable entry, 3=package identity
   kind: 'container' | 'compose-service' | 'k8s' | 'serverless' | 'installer' | 'ci-deploy' | 'bin' | 'server-entry' | 'package';
   evidence: string[];       // concrete: file paths, manifest keys, port bindings
-  ships_paths?: string[];   // Tier-1 only: what this artifact packages/COPYs/bundles (membership)
+  ships_paths?: string[];   // Tier-1 only: what this artifact packages/COPYs/bundles (membership names, e.g. bin/crate names)
   ports?: number[];
+  entrypoint_member?: string; // Tier-1 only: which of ships_paths is the primary/ENTRYPOINT of a multi-member bundle
 }

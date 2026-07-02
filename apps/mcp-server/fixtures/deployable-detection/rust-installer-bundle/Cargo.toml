@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = [
+  "bin/client",
+  "bin/client-service",
+  "bin/gateway",
+  "crates/shared",
+]

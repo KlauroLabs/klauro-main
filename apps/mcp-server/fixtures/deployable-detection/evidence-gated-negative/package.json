@@ -1,0 +1,5 @@
+{
+  "name": "evidence-gated-negative-fixture",
+  "private": true,
+  "workspaces": ["apps/*"]
+}
