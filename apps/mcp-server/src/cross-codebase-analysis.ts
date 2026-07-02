@@ -601,6 +601,7 @@ export interface WorkspaceDetailViews {
     inferred_insights: SystemInsight[];
     unmatched_interfaces: UnmatchedSystemInterface[];
     validation: WorkspaceValidation;
+    shared_code_rollup: WorkspaceSharedCodeRollup[];
   };
 }
 
@@ -854,6 +855,7 @@ export interface CrossCodebaseSystemGraph {
   infrastructure_overlay: WorkspaceInfrastructureOverlay;
   application_links: SystemApplicationLink[];
   integration_links: WorkspaceDeployableLink[];
+  shared_code_rollup: WorkspaceSharedCodeRollup[];
   system_insights: SystemInsight[];
   inferred_insights: SystemInsight[];
   links: SystemLink[];
@@ -909,6 +911,7 @@ export function buildCrossCodebaseSystemGraph(
   const allLinks = buildLinks(interfaces);
   const runtimeLinks = buildRuntimeLinks(runtimeComponents, interfaces, allLinks);
   const applicationLinks = buildApplicationLinks(allLinks, runtimeLinks, interfaces, runtimeComponents, applications, codebases, repositories);
+  const sharedCodeRollup = buildSharedCodeRollup(repositories, applications, applicationLinks);
   let systemInsights = inferSystemInsights(codebases, applications, interfaces, applicationLinks, runtimeComponents, runtimeLinks, distributionUnits);
   const codebaseByIdForRanking = new Map(codebases.map(codebase => [codebase.id, codebase]));
   const preliminaryConnectedApps = new Set(applicationLinks.flatMap(link => [link.source_application_id, link.target_application_id]));
@@ -939,7 +942,7 @@ export function buildCrossCodebaseSystemGraph(
   const workspaceNarrative = buildWorkspaceNarrative(name, generatedAt, codebases, applications, applicationLinks, systemInsights, runtimeComponents, composition, capabilities, domains);
   const validation = buildWorkspaceValidation(codebases, applications, interfaces, applicationLinks, unmatchedInterfaces, inputs, health);
   const qualityFlags = buildWorkspaceQualityFlags(workspaceNarrative, capabilities, domains, entityMap.entities, codebases, interfaces, applicationLinks, unmatchedInterfaces);
-  const detailViews = buildWorkspaceDetailViews(codebases, applications, distributionUnits, interfaces, runtimeComponents, runtimeLinks, applicationLinks, systemInsights, dataFlowPaths, entityMap.entities, entityMap.paths, unmatchedInterfaces, validation, workspaceNarrative, composition, ownership, activity, telemetry, health, riskAreas, capabilities, workflows, environments, infrastructureOverlay);
+  const detailViews = buildWorkspaceDetailViews(codebases, applications, distributionUnits, interfaces, runtimeComponents, runtimeLinks, applicationLinks, systemInsights, dataFlowPaths, entityMap.entities, entityMap.paths, unmatchedInterfaces, validation, workspaceNarrative, composition, ownership, activity, telemetry, health, riskAreas, capabilities, workflows, environments, infrastructureOverlay, sharedCodeRollup);
 
   const graph: CrossCodebaseSystemGraph = {
     analysis_kind: 'workspace',
@@ -978,6 +981,7 @@ export function buildCrossCodebaseSystemGraph(
     infrastructure_overlay: infrastructureOverlay,
     application_links: applicationLinks,
     integration_links: applicationLinks,
+    shared_code_rollup: sharedCodeRollup,
     system_insights: systemInsights,
     inferred_insights: systemInsights,
     links,
@@ -4240,6 +4244,7 @@ function buildWorkspaceDetailViews(
   workflows: WorkspaceWorkflow[],
   environments: WorkspaceEnvironment[],
   infrastructureOverlay: WorkspaceInfrastructureOverlay,
+  sharedCodeRollup: WorkspaceSharedCodeRollup[] = [],
 ): WorkspaceDetailViews {
   const codebaseById = new Map(codebases.map(codebase => [codebase.id, codebase]));
   const appById = new Map(applications.map(app => [app.id, app]));
@@ -4432,6 +4437,7 @@ function buildWorkspaceDetailViews(
       inferred_insights: insights,
       unmatched_interfaces: unmatchedInterfaces,
       validation,
+      shared_code_rollup: sharedCodeRollup,
     },
   };
 }
@@ -8557,7 +8563,7 @@ function applicationForImportSource(
 
 function isMajorApplicationBoundary(app: SystemApplication): boolean {
   const hint = app.path_hint || '';
-  return /(?:^|\/)(apps|packages|bin)\//.test(hint) || app.runtime_component_ids.length > 0;
+  return /(?:^|\/)(apps|packages|bin|libs)\//.test(hint) || app.runtime_component_ids.length > 0;
 }
 
 function inferNamedApplicationLinks(
@@ -9670,6 +9676,8 @@ function applicationSurfaceFromFile(file: string | undefined): { name: string; p
     { regex: /^(bin\/[^/]+)/, deployable: true },
     { regex: /^(packages\/[^/]+)/, deployable: false },
     { regex: /^(crates\/[^/]+)/, deployable: false },
+    { regex: /^(libs\/[^/]+\/(?!src|lib|test|tests|dist|build|__tests__)[^/]+)/, deployable: false },
+    { regex: /^(libs\/[^/]+)/, deployable: false },
   ];
   for (const pattern of patterns) {
     const match = normalized.match(pattern.regex);
@@ -9748,6 +9756,164 @@ function distributionNamesMatch(left: string, right: string): boolean {
 
 function normalizeDistributionName(value: string): string {
   return String(value || '').replace(/\\/g, '/').split('/').pop()!.replace(/\.exe$/i, '').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase();
+}
+
+/**
+ * A shared library/package inside a monorepo, rolled up by which deployables
+ * consume it, how much they use it, and (where derivable from CAS import
+ * specifiers) which exported symbols each consumer actually imports.
+ */
+export interface WorkspaceSharedCodeRollupConsumer {
+  deployable_id: string;
+  deployable_name: string;
+  project_id: string;
+  usage_count: number;
+  consumed_symbols: string[];
+  evidence_quality: WorkspaceLinkEvidenceQuality;
+}
+
+export interface WorkspaceSharedCodeRollupBlastRadiusEntry {
+  symbol: string;
+  consumer_deployable_ids: string[];
+  consumer_count: number;
+}
+
+export interface WorkspaceSharedCodeRollup {
+  id: string;
+  lib_application_id: string;
+  lib_name: string;
+  project_id: string;
+  path_hint: string;
+  consumer_count: number;
+  total_usage_count: number;
+  consumers: WorkspaceSharedCodeRollupConsumer[];
+  consumed_surface: string[];
+  surface_derivable: boolean;
+  blast_radius: WorkspaceSharedCodeRollupBlastRadiusEntry[];
+  evidence: string[];
+}
+
+/**
+ * Compose a cross-deployable shared-code rollup from facts already computed
+ * in this pass: deployable/package applications (applicationSurfaceCandidatesFromCas),
+ * the sdk-install application links built by inferInternalDependencyLinks /
+ * inferInternalImportDependencyLinks (deployable_id-level consumer/usage facts),
+ * and CAS `import` node `metadata.specifiers` (named-symbol facts) matched
+ * against the lib's package name. No new analysis pass is run.
+ */
+function buildSharedCodeRollup(
+  repositories: CrossCodebaseInput[],
+  applications: SystemApplication[],
+  applicationLinks: SystemApplicationLink[],
+): WorkspaceSharedCodeRollup[] {
+  const libApps = applications.filter(app => !app.deployable && isPackagePathHint(app.path_hint));
+  if (libApps.length === 0) return [];
+
+  const appById = new Map(applications.map(app => [app.id, app]));
+  const repoByProjectId = new Map(repositories.map(repository => [codebaseId(repository.path), repository]));
+
+  // deployable_id-level consumer + usage-count facts, reused from the links
+  // already built by inferInternalDependencyLinks/inferInternalImportDependencyLinks.
+  const linksByTargetLibId = new Map<string, SystemApplicationLink[]>();
+  for (const link of applicationLinks) {
+    if (link.kind !== 'sdk-install') continue;
+    const list = linksByTargetLibId.get(link.target_application_id) || [];
+    list.push(link);
+    linksByTargetLibId.set(link.target_application_id, list);
+  }
+
+  const rollups: WorkspaceSharedCodeRollup[] = [];
+  for (const libApp of libApps) {
+    const libLinks = linksByTargetLibId.get(libApp.id) || [];
+    const consumerDeployableIds = new Set(
+      libLinks
+        .map(link => link.source_application_id)
+        .filter(id => appById.get(id)?.deployable),
+    );
+    if (consumerDeployableIds.size === 0) continue;
+
+    // Consumed-symbol surface: walk this lib's own repo's CAS import nodes,
+    // grouped by which deployable's file the import lives in, matching
+    // metadata.source against the lib's package/path name.
+    const repository = repoByProjectId.get(libApp.codebase_id);
+    const consumedByDeployable = new Map<string, Set<string>>();
+    let surfaceDerivable = false;
+    if (repository) {
+      for (const node of repository.cas.nodes || []) {
+        if (String((node as any)?.type || '').toLowerCase() !== 'import') continue;
+        const metadata = (node as any)?.metadata as Record<string, unknown> | undefined;
+        const importSource = String(metadata?.source || '');
+        if (!importSource) continue;
+        const sourceFile = (node as any)?.source?.file as string | undefined;
+        // The importing FILE's owning app is the consumer; the import
+        // SPECIFIER resolves to the target lib. These must not be conflated.
+        const consumerApp = applicationForFile(libApp.codebase_id, sourceFile, applications);
+        if (!consumerApp || consumerApp.id === libApp.id || !consumerApp.deployable) continue;
+        if (!consumerDeployableIds.has(consumerApp.id)) continue;
+        // Only attribute this import to the lib if the import specifier
+        // actually resolves to this lib application (not some other lib).
+        const resolvedTarget = applicationForImportSource(libApp.codebase_id, sourceFile, importSource, applications);
+        if (resolvedTarget?.id !== libApp.id) continue;
+        const specifiers = Array.isArray(metadata?.specifiers) ? metadata!.specifiers as Array<Record<string, unknown>> : [];
+        if (specifiers.length === 0) continue;
+        surfaceDerivable = true;
+        const set = consumedByDeployable.get(consumerApp.id) || new Set<string>();
+        for (const specifier of specifiers) {
+          const imported = String(specifier?.imported || specifier?.name || '').trim();
+          if (imported && imported !== '*') set.add(imported);
+        }
+        consumedByDeployable.set(consumerApp.id, set);
+      }
+    }
+
+    const consumers: WorkspaceSharedCodeRollupConsumer[] = [...consumerDeployableIds].map(deployableId => {
+      const deployableApp = appById.get(deployableId);
+      const links = libLinks.filter(link => link.source_application_id === deployableId);
+      const usageCount = links.length || 1;
+      const evidenceQuality = links.find(link => link.evidence_quality === 'source-backed')
+        ? 'source-backed' as const
+        : (links[0]?.evidence_quality || 'source-backed');
+      return {
+        deployable_id: deployableId,
+        deployable_name: deployableApp?.name || deployableId,
+        project_id: deployableApp?.codebase_id || libApp.codebase_id,
+        usage_count: usageCount,
+        consumed_symbols: [...(consumedByDeployable.get(deployableId) || [])].sort(),
+        evidence_quality: evidenceQuality,
+      };
+    }).sort((left, right) => right.usage_count - left.usage_count || left.deployable_name.localeCompare(right.deployable_name));
+
+    const consumedSurface = [...new Set(consumers.flatMap(consumer => consumer.consumed_symbols))].sort();
+
+    const blastRadiusBySymbol = new Map<string, Set<string>>();
+    for (const consumer of consumers) {
+      for (const symbol of consumer.consumed_symbols) {
+        const set = blastRadiusBySymbol.get(symbol) || new Set<string>();
+        set.add(consumer.deployable_id);
+        blastRadiusBySymbol.set(symbol, set);
+      }
+    }
+    const blastRadius: WorkspaceSharedCodeRollupBlastRadiusEntry[] = [...blastRadiusBySymbol.entries()]
+      .map(([symbol, ids]) => ({ symbol, consumer_deployable_ids: [...ids].sort(), consumer_count: ids.size }))
+      .sort((left, right) => right.consumer_count - left.consumer_count || left.symbol.localeCompare(right.symbol));
+
+    rollups.push({
+      id: `${libApp.codebase_id}:shared-code-rollup:${slugify(libApp.name)}`,
+      lib_application_id: libApp.id,
+      lib_name: libApp.name,
+      project_id: libApp.codebase_id,
+      path_hint: libApp.path_hint || '',
+      consumer_count: consumers.length,
+      total_usage_count: consumers.reduce((sum, consumer) => sum + consumer.usage_count, 0),
+      consumers,
+      consumed_surface: consumedSurface,
+      surface_derivable: surfaceDerivable,
+      blast_radius: blastRadius,
+      evidence: libApp.evidence || [],
+    });
+  }
+
+  return rollups.sort((left, right) => right.consumer_count - left.consumer_count || left.lib_name.localeCompare(right.lib_name));
 }
 
 function summarize(
@@ -10127,6 +10293,8 @@ function applicationPathHint(file: string | undefined): string {
     /((?:^|\/)packages\/[^/]+)/,
     /((?:^|\/)crates\/[^/]+)/,
     /((?:^|\/)bin\/[^/]+)/,
+    /((?:^|\/)libs\/[^/]+\/(?!src|lib|test|tests|dist|build|__tests__)[^/]+)/,
+    /((?:^|\/)libs\/[^/]+)/,
   ];
   for (const pattern of patterns) {
     const match = normalized.match(pattern);
@@ -10166,7 +10334,7 @@ function isDeployableApplication(name: string, pathHint: string | undefined, ali
 }
 
 function isPackagePathHint(pathHint: string | undefined): boolean {
-  return /(?:^|\/)(packages|crates)\//.test(pathHint || '');
+  return /(?:^|\/)(packages|crates|libs)\//.test(pathHint || '');
 }
 
 function isUiApplication(app: SystemApplication): boolean {
