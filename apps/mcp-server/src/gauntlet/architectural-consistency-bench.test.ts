@@ -26,3 +26,44 @@ for (const fixture of fixtures) {
     assert.equal(r.is_cohesive, false, `[${fixture}] is_cohesive should be false when a violation is planted`);
   });
 }
+
+// Monorepo-specific assertions beyond the generic file-level F1 check above:
+// per-scope norm inference must find a real deviation local to apps/api even
+// though apps/marketing-site uses a totally different (also internally
+// consistent) layering style, and the pure high-fan-in utility decoy must
+// never appear in principle_violations regardless of its call count.
+const monorepoFixture = 'monorepo-per-scope';
+if (fixtures.includes(monorepoFixture)) {
+  test(`architectural-consistency-bench [${monorepoFixture}]: per-scope detection is scope-local, pure utility stays silent`, { timeout: 60000 }, async () => {
+    const r: any = await runArchitecturalConsistencyBench(path.join(ROOT, monorepoFixture));
+    const detail = r.detail;
+
+    const perScopeConflict = (detail.conflicts || []).find((c: any) => c.id === 'per-scope-layering:apps/api');
+    assert.ok(
+      perScopeConflict,
+      `expected a per-scope-layering:apps/api conflict (no global norm required), got conflicts: ${JSON.stringify(detail.conflicts)}`,
+    );
+
+    const allConflictFiles = (detail.conflicts || []).flatMap((c: any) =>
+      (c.competing || []).flatMap((comp: any) => comp.files || [])
+    );
+    const allViolationFiles = (detail.principle_violations || []).map((v: any) => v.file);
+    const marketingSiteMentioned = [...allConflictFiles, ...allViolationFiles].some((f: string) =>
+      f.includes('marketing-site')
+    );
+    assert.equal(
+      marketingSiteMentioned,
+      false,
+      `apps/marketing-site has its own internally-consistent (direct-repository) local norm and must never be flagged just for differing from apps/api's style, but found: ${JSON.stringify({ allConflictFiles, allViolationFiles })}`,
+    );
+
+    const idUtilsFlaggedAsCoupling = (detail.principle_violations || []).some(
+      (v: any) => v.principle === 'coupling' && v.file.includes('id-utils.ts')
+    );
+    assert.equal(
+      idUtilsFlaggedAsCoupling,
+      false,
+      'packages/shared/src/id-utils.ts (generateId/sanitizeId) is pure/stateless and must never be flagged as a coupling hotspot',
+    );
+  });
+}
