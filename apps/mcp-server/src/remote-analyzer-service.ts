@@ -10,7 +10,7 @@ import { buildSourceSnapshot } from './remote-source';
 import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-preview';
 import { isDirectCliInvocation } from './cli-invocation';
 import { AccountHttpError, AccountStore } from './account-store';
-import { arbitrate, type AgentKind, type WorkClaim } from './coordination';
+import { getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind } from './coordination';
 import { appendClaim, getActiveClaims, getPresence, getStoreDir, readClaimLog } from './coordination/local-store';
 import { appendSecurityAudit, assertSameTenant, getSecurityStoreDir, TenantMismatchError } from './coordination/security';
 import { ingestAndPersist } from './telemetry-fusion';
@@ -284,91 +284,101 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
       // §WS-C-transport / WS-A — coordination fabric + telemetry ingest over HTTP,
       // for cross-machine agents (same LOCAL store used by the MCP tools in
       // server.ts, keyed by `workspace`; the coordination/ modules are the
-      // committed pure core — this route layer only appends/reads via
-      // coordination/local-store.ts and calls arbitrate()).
+      // committed pure core). Fabric v2 WS2: claim/release/heartbeat/state now
+      // route through the ENFORCED grant-manager (requestGrant/releaseGrant/
+      // heartbeatGrant/getGrants), the same path server.ts's MCP tools use, so
+      // cross-machine/HTTP clients get real grant/queue enforcement too.
       if (request.method === 'POST' && route === '/v1/coordination/claim') {
+        // ENFORCED grant path (Fabric v2 WS2 — see coordination/grant-manager.ts):
+        // cross-machine/HTTP callers get the same grant/queue/redirect semantics
+        // MCP's claim_work tool does, not just advisory arbitration. §1.6
+        // SPEC-COORDINATION-FABRIC-V2: a queued verdict is awareness-rich (holder
+        // intent + lease_status + options), never a bare "denied".
         const body = await readJsonBody<{
           workspace: string; agent_id: string; intent: string; agent_kind?: AgentKind;
           paths?: string[]; symbols?: string[]; capability?: string; ttl_ms?: number;
           base_commit?: string; branch?: string; claim_id?: string;
         }>(request, maxBodyBytes);
-        const now = new Date().toISOString();
-        const claimId = body.claim_id || `${body.agent_id}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
-        const newClaim: WorkClaim = {
-          claim_id: claimId,
-          seq: 0,
+        const result = await requestGrant({
           workspace_id: body.workspace,
           agent_id: body.agent_id,
           agent_kind: body.agent_kind || 'other',
           scope: { repo: body.workspace, paths: body.paths || [], symbols: body.symbols || [], capability: body.capability },
           intent: body.intent,
-          status: 'active',
-          created_at: now,
-          ttl_ms: body.ttl_ms || 5 * 60 * 1000,
-          heartbeat_at: now,
-          base_commit: body.base_commit,
-          branch: body.branch,
-        };
-        const activeBefore = await getActiveClaims(body.workspace);
-        const casEdges = await casEdgesForWorkspace(body.workspace);
-        const result = arbitrate(newClaim, activeBefore, casEdges, []);
-        const stored = await appendClaim(body.workspace, newClaim);
+          ttl_ms: body.ttl_ms,
+        });
+
+        let freeHint: { free_paths: string[]; free_symbols: string[] } | undefined;
+        let holder: GrantHolderContext | undefined;
+        let options: string[] | undefined;
+        if (result.verdict === 'queued') {
+          const { active } = await getGrants(body.workspace);
+          const heldPaths = new Set(active.flatMap((g) => g.scope.paths));
+          const heldSymbols = new Set(active.flatMap((g) => g.scope.symbols));
+          freeHint = {
+            free_paths: (body.paths || []).filter((p) => !heldPaths.has(p)),
+            free_symbols: (body.symbols || []).filter((s) => !heldSymbols.has(s)),
+          };
+          const holderId = result.conflict?.holder_agent_id;
+          if (holderId) {
+            const holders = await describeGrantHolders(body.workspace, [holderId]);
+            holder = holders[holderId];
+          }
+          options = ['wait_and_heartbeat_poll', 'proceed_with_awareness_if_compatible'];
+          if (freeHint.free_paths.length > 0 || freeHint.free_symbols.length > 0) options.push('redirect_to_free_scope');
+          if (holder && holder.lease_status !== 'active') options.push('take_over_stale_lease');
+        }
+
         broadcastCoordinationEvent(body.workspace, 'claim', {
-          claim_id: stored.claim_id,
-          seq: stored.seq,
-          agent_id: stored.agent_id,
-          status: stored.status,
+          claim_id: result.grant_id,
+          agent_id: body.agent_id,
           verdict: result.verdict,
         });
         writeJson(response, 200, {
-          claim_id: stored.claim_id,
-          seq: stored.seq,
+          claim_id: result.grant_id,
           verdict: result.verdict,
-          kind: result.kind,
-          evidence: result.evidence,
-          with_claim: result.with_claim
-            ? { claim_id: result.with_claim.claim_id, agent_id: result.with_claim.agent_id, intent: result.with_claim.intent, scope: result.with_claim.scope }
-            : undefined,
+          grant_id: result.grant_id,
+          lease_expires_at: result.lease_expires_at,
+          queue_position: result.queue_position,
+          conflict: result.conflict,
+          holder,
+          options,
+          redirect_hint: result.redirect_hint,
+          free_scope_hint: freeHint,
+          base_commit: body.base_commit,
+          branch: body.branch,
         });
         return;
       }
 
       if (request.method === 'POST' && route === '/v1/coordination/release') {
-        const body = await readJsonBody<{ workspace: string; claim_id: string }>(request, maxBodyBytes);
-        const log = await readClaimLog(body.workspace);
-        const prior = [...log].reverse().find((entry) => entry.claim_id === body.claim_id);
-        if (!prior) {
-          writeJson(response, 200, { status: 'not_found', claim_id: body.claim_id });
+        const body = await readJsonBody<{ workspace: string; claim_id: string; agent_id?: string }>(request, maxBodyBytes);
+        if (!body.agent_id) {
+          writeJson(response, 400, { status: 'error', error: 'agent_id is required to release a grant', claim_id: body.claim_id });
           return;
         }
-        const stored = await appendClaim(body.workspace, { ...prior, status: 'released', heartbeat_at: new Date().toISOString() });
+        await releaseGrant(body.workspace, body.agent_id, body.claim_id);
         broadcastCoordinationEvent(body.workspace, 'release', {
-          claim_id: stored.claim_id,
-          seq: stored.seq,
-          agent_id: stored.agent_id,
-          status: stored.status,
+          claim_id: body.claim_id,
+          agent_id: body.agent_id,
+          status: 'released',
         });
-        writeJson(response, 200, { status: 'released', claim_id: stored.claim_id, seq: stored.seq });
+        writeJson(response, 200, { status: 'released', claim_id: body.claim_id });
         return;
       }
 
       if (request.method === 'POST' && route === '/v1/coordination/heartbeat') {
         const body = await readJsonBody<{ workspace: string; claim_id: string }>(request, maxBodyBytes);
-        const log = await readClaimLog(body.workspace);
-        const prior = [...log].reverse().find((entry) => entry.claim_id === body.claim_id);
-        if (!prior) {
+        const result = await heartbeatGrant(body.workspace, body.claim_id);
+        if (!result.ok) {
           writeJson(response, 200, { status: 'not_found', claim_id: body.claim_id });
           return;
         }
-        const now = new Date().toISOString();
-        const stored = await appendClaim(body.workspace, { ...prior, heartbeat_at: now });
         broadcastCoordinationEvent(body.workspace, 'heartbeat', {
-          claim_id: stored.claim_id,
-          seq: stored.seq,
-          agent_id: stored.agent_id,
-          heartbeat_at: now,
+          claim_id: body.claim_id,
+          lease_expires_at: result.lease_expires_at,
         });
-        writeJson(response, 200, { status: 'heartbeat', claim_id: stored.claim_id, seq: stored.seq, heartbeat_at: now });
+        writeJson(response, 200, { status: 'heartbeat', claim_id: body.claim_id, lease_expires_at: result.lease_expires_at });
         return;
       }
 
@@ -382,15 +392,22 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         }
         // Poll fallback, kept alongside the SSE stream below for clients that
         // can't hold a long-lived connection (or as a resync-on-reconnect path).
+        // Now also returns the ENFORCED grant projection (active + queued) so
+        // cross-machine/HTTP clients see the same live grant state MCP's
+        // get_active_agents tool does.
         const log = await readClaimLog(workspace);
         const claims = await getActiveClaims(workspace);
         const presence = await getPresence(workspace);
+        const grants = await getGrants(workspace);
+        const holderCtx = await describeGrantHolders(workspace, grants.active.map((g) => g.agent_id));
         const maxSeq = log.reduce((max, entry) => Math.max(max, entry.seq), 0);
         writeJson(response, 200, {
           workspace,
           max_seq: maxSeq,
           claims: Number.isFinite(since) ? claims.filter((c) => c.seq > (since as number)) : claims,
           presence,
+          grants: grants.active.map((g) => ({ ...g, intent: holderCtx[g.agent_id]?.intent, lease_status: holderCtx[g.agent_id]?.lease_status })),
+          queued: grants.queued,
         });
         return;
       }
@@ -559,6 +576,56 @@ async function casEdgesForWorkspace(workspace: string): Promise<Array<{ id: stri
   } catch {
     return [];
   }
+}
+
+/**
+ * Awareness-rich holder context for a conflicting/held grant (§1.6
+ * SPEC-COORDINATION-FABRIC-V2 — "awareness is the primitive"), mirroring the
+ * same helper in server.ts so cross-machine/HTTP callers get the same
+ * holder id + intent + lease-staleness signal MCP callers get. Reads the raw
+ * claim log rather than grant-manager internals, decoding the `__grant__`
+ * JSON marker locally so this stays a read-only, additive projection.
+ */
+interface GrantHolderContext {
+  agent_id: string;
+  intent: string;
+  granted_at: string;
+  lease_expires_at: string;
+  lease_status: 'active' | 'near_expiry' | 'expired';
+}
+
+async function describeGrantHolders(
+  workspace: string,
+  agentIds: string[]
+): Promise<Record<string, GrantHolderContext>> {
+  if (agentIds.length === 0) return {};
+  const wanted = new Set(agentIds);
+  const active = await getActiveClaims(workspace);
+  const out: Record<string, GrantHolderContext> = {};
+  const nowMs = Date.now();
+  for (const claim of active) {
+    if (!wanted.has(claim.agent_id) || out[claim.agent_id]) continue;
+    let markerIntent: string | undefined;
+    try {
+      const parsed = JSON.parse(claim.intent);
+      if (parsed && typeof parsed === 'object' && parsed.__grant__?.kind === 'granted') {
+        markerIntent = parsed.__grant__.intent;
+      }
+    } catch {
+      // not a grant-manager claim; skip.
+    }
+    if (markerIntent === undefined) continue;
+    const leaseMs = Date.parse(claim.heartbeat_at) + claim.ttl_ms;
+    const remainingMs = leaseMs - nowMs;
+    out[claim.agent_id] = {
+      agent_id: claim.agent_id,
+      intent: markerIntent,
+      granted_at: claim.created_at,
+      lease_expires_at: new Date(leaseMs).toISOString(),
+      lease_status: remainingMs <= 0 ? 'expired' : remainingMs < 30_000 ? 'near_expiry' : 'active',
+    };
+  }
+  return out;
 }
 
 async function authorizeAnalyzerRequest(accounts: AccountStore, request: http.IncomingMessage, sharedToken: string | undefined): Promise<{ authorized: boolean; clientId?: string }> {

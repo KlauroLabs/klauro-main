@@ -55,8 +55,8 @@ import { pruneKlauroStorage } from './storage-maintenance';
 import { resolveWorkspaceInputPaths, type WorkspaceSkippedInput } from './workspace-inputs';
 import { RESPONSE_BUDGET_BYTES, boundToolPayload, boundToolText, serializeToolResponse } from './response-budget';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
-import { arbitrate, detectCollisions, type AgentKind, type CasEdgeRef, type WasCapabilityRef, type WorkClaim } from './coordination';
-import { appendClaim, attributeChange, checkEditLock, getActiveClaims, getPresence, readClaimLog, watch } from './coordination/local-store';
+import { arbitrate, detectCollisions, getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind, type CasEdgeRef, type WasCapabilityRef, type WorkClaim } from './coordination';
+import { attributeChange, checkEditLock, getActiveClaims, getPresence, watch } from './coordination/local-store';
 import { loadPersistedRuntimeFacts } from './telemetry-fusion';
 
 const SERVER_INSTRUCTIONS = `Klauro serves a precomputed analysis of this repository — call graph, routes, data flows, entry points, conventions, and tests, queryable directly. Default to it over grep/Read: a query returns real call sites and blast radius, not guesses. The value is the sequence below; each tool's own description has the detail.
@@ -75,7 +75,7 @@ Change, then verify: assess_change_risk and get_error_contracts before; validate
 
 Cross-repo work (ui -> api -> worker is one product): run_workspace_analysis, then get_workspace_summary / get_workspace_capability_map / get_cross_repo_links.
 
-Coordinate before you act (multi-agent workspaces): before starting any non-trivial work, call check_collision (read-only) or claim_work (announces intent) with the workspace, your agent_id, and the paths/symbols/capability you're about to touch. On duplicate, another agent already has this covered — adopt their work or defer instead of redoing it. On conflict, coordinate directly or rebase before proceeding; do not silently overwrite. While working, call heartbeat_work periodically so your claim doesn't expire; call release_work on completion or handoff so others can proceed. Use get_active_agents to see who else is live in the workspace, and get_in_flight_changes to see who is touching a specific path and why. This write-side only has value if you actually call it — treat it as mandatory for shared workspaces, not optional bookkeeping.
+Coordinate before you act (multi-agent workspaces — awareness first, never a lockout): before starting any non-trivial edit, call claim_work with the workspace, your agent_id, and the paths/symbols/capability you're about to touch. The fabric makes you AWARE of who else is here and what they intend, so you coordinate — it never blocks work you need. Disjoint work always runs free in parallel (block-time -> 0 for non-overlapping scope). If the verdict is "granted", proceed immediately: heartbeat_work periodically while working so the lease doesn't expire, and release_work the moment you're done or handing off (this instantly frees the scope and promotes the next queued agent, if any). If the verdict is "queued" — meaning another agent's grant genuinely overlaps your scope — you get full awareness in the response, not a dead end: the holder's agent_id, their stated intent, and their lease_status (active/near_expiry/expired), plus an "options" array. If the work is FUNGIBLE (interchangeable with something else), take redirect_hint/free_scope_hint and go do disjoint work instead. If the work is NON-fungible (you specifically need that symbol), you are never denied: wait_and_heartbeat_poll, proceed_with_awareness_if_compatible once you've read the holder's intent and judged the changes compatible, or take_over_stale_lease if their lease_status shows near_expiry/expired. If the verdict is "duplicate", you already hold this exact grant. Use check_collision for the same awareness read-only (no grant taken; surfaces overlapping_grant_holders with intent + lease_status even before you claim) and get_active_agents to see every live grant holder's intent + lease_status plus the queue. Contention is resolved by informed coordination, not lockout — the invariant "one grant per symbol" governs simultaneous blind writes, not your right to reach work you need. Use get_in_flight_changes to see who is touching a specific path and why. This only has value if you actually call it — treat it as mandatory for shared workspaces, not optional bookkeeping.
 
 Trust, then verify: every result is stamped to a commit/branch. If get_file_nodes returns nothing for a file you can see on disk, it is likely on an unmerged branch — re-analyze or read that one file. On any tool error, fall back to reading. Don't lean on a single tool; no one view is the whole picture.`;
 
@@ -404,6 +404,58 @@ async function wasCapabilitiesForWorkspace(workspace: string): Promise<WasCapabi
   } catch {
     return [];
   }
+}
+
+/**
+ * Awareness-rich holder context for a conflicting/held grant (§1.6 of
+ * docs/SPEC-COORDINATION-FABRIC-V2.md — "awareness is the primitive"). A
+ * queued/blocked verdict must never be a dead end: the caller needs to see
+ * WHO holds the scope, WHY (their stated intent), and whether the lease is
+ * stale enough to safely take over. This reads the raw claim log (same
+ * per-workspace `claims.jsonl` grant-manager itself appends to) rather than
+ * reaching into grant-manager internals, decoding the `__grant__` JSON
+ * marker locally so this stays a read-only, additive projection.
+ */
+interface GrantHolderContext {
+  agent_id: string;
+  intent: string;
+  granted_at: string;
+  lease_expires_at: string;
+  lease_status: 'active' | 'near_expiry' | 'expired';
+}
+
+async function describeGrantHolders(
+  workspace: string,
+  agentIds: string[]
+): Promise<Record<string, GrantHolderContext>> {
+  if (agentIds.length === 0) return {};
+  const wanted = new Set(agentIds);
+  const active = await getActiveClaims(workspace);
+  const out: Record<string, GrantHolderContext> = {};
+  const nowMs = Date.now();
+  for (const claim of active) {
+    if (!wanted.has(claim.agent_id) || out[claim.agent_id]) continue;
+    let markerIntent: string | undefined;
+    try {
+      const parsed = JSON.parse(claim.intent);
+      if (parsed && typeof parsed === 'object' && parsed.__grant__?.kind === 'granted') {
+        markerIntent = parsed.__grant__.intent;
+      }
+    } catch {
+      // not a grant-manager claim; skip (e.g. a plain edit-lock claim for the same agent).
+    }
+    if (markerIntent === undefined) continue;
+    const leaseMs = Date.parse(claim.heartbeat_at) + claim.ttl_ms;
+    const remainingMs = leaseMs - nowMs;
+    out[claim.agent_id] = {
+      agent_id: claim.agent_id,
+      intent: markerIntent,
+      granted_at: claim.created_at,
+      lease_expires_at: new Date(leaseMs).toISOString(),
+      lease_status: remainingMs <= 0 ? 'expired' : remainingMs < 30_000 ? 'near_expiry' : 'active',
+    };
+  }
+  return out;
 }
 
 async function withErrorHandling(fn: () => Promise<{ content: Array<{ type: 'text'; text: string }> }>): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
@@ -4300,7 +4352,7 @@ function registerTools(server: McpServer) {
     'claim_work',
     {
       title: 'Claim Work',
-      description: 'Announce intent to work on paths/symbols/a capability in a workspace before starting non-trivial changes. Appends the claim and arbitrates it against every other active claim in that workspace: granted (disjoint, proceed), duplicate (another active claim already covers this capability — adopt or defer instead of redoing it), or conflict (path/symbol/blast-radius overlap — coordinate or rebase). Call heartbeat_work while working and release_work when done or handing off.',
+      description: 'Request a symbol/path-level GRANT before starting non-trivial changes. ENFORCED (not advisory): at most one active grant per overlapping symbol/path in a workspace at a time — but this governs simultaneous BLIND writes, not your right to reach work you need (§1.6 SPEC-COORDINATION-FABRIC-V2: awareness is the primitive, never a dead end). Returns verdict "granted" (grant_id + lease_expires_at — proceed; heartbeat_work to keep it alive, release_work when done), "queued" (another agent holds a conflicting grant — you get FULL awareness: the holder\'s agent_id + their stated intent + lease_status [active/near_expiry/expired], plus queue_position, plus an `options` array [\'wait_and_heartbeat_poll\', \'take_over_stale_lease\' (only if lease is near_expiry/expired), \'proceed_with_awareness_if_compatible\', \'redirect_to_free_scope\'] plus redirect_hint/free_scope_hint for when the work is fungible), or "duplicate" (you already hold an identical grant). Disjoint work is never queued: block-time is 0 for non-overlapping scope. Overlapping work is resolved by awareness + negotiation, never lockout.',
       inputSchema: {
         workspace: z.string().describe('Workspace or project id/path to coordinate within'),
         agent_id: z.string().describe('Stable identifier for the calling agent/session'),
@@ -4309,44 +4361,68 @@ function registerTools(server: McpServer) {
         paths: z.array(z.string()).optional().describe('File/dir paths this work will touch'),
         symbols: z.array(z.string()).optional().describe('Symbol/node ids this work will touch'),
         capability: z.string().optional().describe('Capability or feature name this work implements'),
-        ttl_ms: z.number().optional().describe('Claim TTL in ms before it is considered stale (default 5 minutes)'),
+        ttl_ms: z.number().optional().describe('Grant TTL in ms before it is considered stale (default 5 minutes)'),
         base_commit: z.string().optional(),
         branch: z.string().optional(),
-        claim_id: z.string().optional().describe('Reuse an existing claim id to refresh/update it instead of creating a new one'),
+        claim_id: z.string().optional().describe('Deprecated/unused by the enforced grant path; kept for backward-compat request shape.'),
       } as any,
     } as any,
-    async ({ workspace, agent_id, intent, agent_kind, paths, symbols, capability, ttl_ms, base_commit, branch, claim_id }: any) => withErrorHandling(async () => {
-      const now = new Date().toISOString();
-      const id = claim_id || `${agent_id}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
-      const newClaim: WorkClaim = {
-        claim_id: id,
-        seq: 0,
+    async ({ workspace, agent_id, intent, agent_kind, paths, symbols, capability, ttl_ms, base_commit, branch }: any) => withErrorHandling(async () => {
+      const result = await requestGrant({
         workspace_id: workspace,
         agent_id,
         agent_kind: (agent_kind as AgentKind) || 'other',
         scope: { repo: workspace, paths: paths || [], symbols: symbols || [], capability },
         intent,
-        status: 'active',
-        created_at: now,
-        ttl_ms: ttl_ms || 5 * 60 * 1000,
-        heartbeat_at: now,
+        ttl_ms,
+      });
+
+      let freeHint: { free_paths: string[]; free_symbols: string[] } | undefined;
+      let holder: GrantHolderContext | undefined;
+      let options: string[] | undefined;
+      if (result.verdict === 'queued') {
+        const { active } = await getGrants(workspace);
+        const heldPaths = new Set(active.flatMap((g) => g.scope.paths));
+        const heldSymbols = new Set(active.flatMap((g) => g.scope.symbols));
+        freeHint = {
+          free_paths: (paths || []).filter((p: string) => !heldPaths.has(p)),
+          free_symbols: (symbols || []).filter((s: string) => !heldSymbols.has(s)),
+        };
+        const holderId = result.conflict?.holder_agent_id;
+        if (holderId) {
+          const holders = await describeGrantHolders(workspace, [holderId]);
+          holder = holders[holderId];
+        }
+        // §1.6: awareness-rich options, never a hard dead end. redirect_to_free_scope
+        // is only offered when there is actually free scope to redirect to (fungible
+        // work); take_over_stale_lease only when the holder's lease has actually lapsed
+        // or is about to — otherwise it would suggest clobbering a live agent.
+        options = ['wait_and_heartbeat_poll', 'proceed_with_awareness_if_compatible'];
+        if (freeHint.free_paths.length > 0 || freeHint.free_symbols.length > 0) {
+          options.push('redirect_to_free_scope');
+        }
+        if (holder && holder.lease_status !== 'active') {
+          options.push('take_over_stale_lease');
+        }
+      }
+
+      return json({
+        // Back-compat shape: callers keyed on claim_id/verdict for the old advisory
+        // path still get something sane — grant_id doubles as claim_id, "granted"
+        // maps to the old "granted" verdict, "queued"/"duplicate" are new states
+        // the old advisory path never returned (it only ever granted or conflicted).
+        claim_id: result.grant_id,
+        verdict: result.verdict,
+        grant_id: result.grant_id,
+        lease_expires_at: result.lease_expires_at,
+        queue_position: result.queue_position,
+        conflict: result.conflict,
+        holder,
+        options,
+        redirect_hint: result.redirect_hint,
+        free_scope_hint: freeHint,
         base_commit,
         branch,
-      };
-      const activeBefore = await getActiveClaims(workspace);
-      const casEdges = await casEdgesForWorkspace(workspace);
-      const wasCapabilities = capability ? await wasCapabilitiesForWorkspace(workspace) : [];
-      const result = arbitrate(newClaim, activeBefore, casEdges, wasCapabilities);
-      const stored = await appendClaim(workspace, newClaim);
-      return json({
-        claim_id: stored.claim_id,
-        seq: stored.seq,
-        verdict: result.verdict,
-        kind: result.kind,
-        evidence: result.evidence,
-        with_claim: result.with_claim
-          ? { claim_id: result.with_claim.claim_id, agent_id: result.with_claim.agent_id, intent: result.with_claim.intent, scope: result.with_claim.scope }
-          : undefined,
       });
     })
   );
@@ -4355,19 +4431,17 @@ function registerTools(server: McpServer) {
     'release_work',
     {
       title: 'Release Work',
-      description: 'Mark a claim released (completed or handed off). Frees its paths/symbols/capability for other agents to claim without conflict.',
+      description: 'Release a held grant (completed or handing off). Frees its paths/symbols for other agents and immediately advances the FIFO queue: the next non-conflicting queued request (if any) is promoted to granted.',
       inputSchema: {
         workspace: z.string().describe('Workspace or project id/path'),
-        claim_id: z.string().describe('Claim id to release'),
+        claim_id: z.string().describe('Grant id to release (as returned by claim_work\'s grant_id/claim_id)'),
+        agent_id: z.string().optional().describe('Agent id that holds the grant (required to release; falls back to claim_id-embedded agent for back-compat callers)'),
       } as any,
     } as any,
-    async ({ workspace, claim_id }: any) => withErrorHandling(async () => {
-      const log = await readClaimLog(workspace);
-      const prior = [...log].reverse().find((entry) => entry.claim_id === claim_id);
-      if (!prior) return json({ status: 'not_found', claim_id });
-      const now = new Date().toISOString();
-      const stored = await appendClaim(workspace, { ...prior, status: 'released', heartbeat_at: now });
-      return json({ status: 'released', claim_id: stored.claim_id, seq: stored.seq });
+    async ({ workspace, claim_id, agent_id }: any) => withErrorHandling(async () => {
+      if (!agent_id) return json({ status: 'error', error: 'agent_id is required to release a grant', claim_id });
+      await releaseGrant(workspace, agent_id, claim_id);
+      return json({ status: 'released', claim_id });
     })
   );
 
@@ -4375,19 +4449,16 @@ function registerTools(server: McpServer) {
     'heartbeat_work',
     {
       title: 'Heartbeat Work',
-      description: 'Refresh a claim\'s heartbeat so it stays active (does not expire) while work is in progress. Call periodically for long-running tasks.',
+      description: 'Extend a held grant\'s lease (does not expire) while work is in progress. Call periodically for long-running tasks. Returns ok:false if the grant no longer exists (released, expired, or still queued — queued requests have nothing to heartbeat).',
       inputSchema: {
         workspace: z.string().describe('Workspace or project id/path'),
-        claim_id: z.string().describe('Claim id to heartbeat'),
+        claim_id: z.string().describe('Grant id to heartbeat'),
       } as any,
     } as any,
     async ({ workspace, claim_id }: any) => withErrorHandling(async () => {
-      const log = await readClaimLog(workspace);
-      const prior = [...log].reverse().find((entry) => entry.claim_id === claim_id);
-      if (!prior) return json({ status: 'not_found', claim_id });
-      const now = new Date().toISOString();
-      const stored = await appendClaim(workspace, { ...prior, heartbeat_at: now });
-      return json({ status: 'heartbeat', claim_id: stored.claim_id, seq: stored.seq, heartbeat_at: now });
+      const result = await heartbeatGrant(workspace, claim_id);
+      if (!result.ok) return json({ status: 'not_found', claim_id });
+      return json({ status: 'heartbeat', claim_id, lease_expires_at: result.lease_expires_at });
     })
   );
 
@@ -4395,13 +4466,20 @@ function registerTools(server: McpServer) {
     'get_active_agents',
     {
       title: 'Get Active Agents',
-      description: 'Live agent presence roster for a workspace: which agents currently hold active (non-expired) claims, their scope (paths/symbols/capability), and last-seen time. Use before starting work to see who else is already active.',
+      description: 'Live grant state for a workspace: which agents currently hold active (non-expired) grants — scope, stated intent, lease_expires_at, and lease_status (active/near_expiry/expired) — plus the FIFO queue of agents waiting on a conflicting scope. This is the awareness surface (§1.6 SPEC-COORDINATION-FABRIC-V2): use it before starting work to see who else is here, what they intend, blast-radius overlap risk, and free scope you could pick instead of queuing.',
       inputSchema: {
         workspace: z.string().describe('Workspace or project id/path'),
       } as any,
     } as any,
     async ({ workspace }: any) => withErrorHandling(async () => {
-      return json(await getPresence(workspace));
+      const [presence, grants] = await Promise.all([getPresence(workspace), getGrants(workspace)]);
+      const holderCtx = await describeGrantHolders(workspace, grants.active.map((g) => g.agent_id));
+      const enrichedGrants = grants.active.map((g) => ({
+        ...g,
+        intent: holderCtx[g.agent_id]?.intent,
+        lease_status: holderCtx[g.agent_id]?.lease_status,
+      }));
+      return json({ ...presence, grants: enrichedGrants, queued: grants.queued });
     })
   );
 
@@ -4409,7 +4487,7 @@ function registerTools(server: McpServer) {
     'check_collision',
     {
       title: 'Check Collision',
-      description: 'Read-only preflight: does a proposed (not-yet-claimed) set of paths/symbols/capability collide with any other active agent in the workspace? Runs the same duplicate/overlap/blast-radius detectors as claim_work but takes no claim. Use this to check before deciding whether to claim_work at all.',
+      description: 'Read-only preflight: does a proposed (not-yet-claimed) set of paths/symbols/capability collide with any other active agent or held GRANT in the workspace? Runs the same duplicate/overlap/blast-radius detectors as claim_work plus the live grant holders/queue, but takes no grant. Overlapping holders are returned WITH awareness context (intent + lease_status), never just a bare yes/no — so you can judge whether to wait, take over a stale lease, or proceed with awareness before ever calling claim_work.',
       inputSchema: {
         workspace: z.string().describe('Workspace or project id/path'),
         paths: z.array(z.string()).optional(),
@@ -4437,6 +4515,15 @@ function registerTools(server: McpServer) {
       const wasCapabilities = capability ? await wasCapabilitiesForWorkspace(workspace) : [];
       const verdict = arbitrate(probe, active, casEdges, wasCapabilities);
       const report = detectCollisions([...active, probe], [], casEdges, wasCapabilities);
+      const grants = await getGrants(workspace);
+      const heldPaths = new Set(grants.active.flatMap((g) => g.scope.paths));
+      const heldSymbols = new Set(grants.active.flatMap((g) => g.scope.symbols));
+      const overlappingGrants = grants.active.filter(
+        (g) =>
+          g.scope.symbols.some((s) => (symbols || []).includes(s)) ||
+          g.scope.paths.some((gp) => (paths || []).some((p: string) => gp === p || gp.startsWith(p + '/') || p.startsWith(gp + '/')))
+      );
+      const holderCtx = await describeGrantHolders(workspace, overlappingGrants.map((g) => g.agent_id));
       return json({
         verdict: verdict.verdict,
         kind: verdict.kind,
@@ -4446,6 +4533,13 @@ function registerTools(server: McpServer) {
           : undefined,
         edit_lock_conflicts: editLockConflicts,
         collisions: report,
+        active_grants: grants.active,
+        queued_grants: grants.queued,
+        overlapping_grant_holders: overlappingGrants.map((g) => ({ ...g, ...holderCtx[g.agent_id] })),
+        free_scope_hint: {
+          free_paths: (paths || []).filter((p: string) => !heldPaths.has(p)),
+          free_symbols: (symbols || []).filter((s: string) => !heldSymbols.has(s)),
+        },
       });
     })
   );
