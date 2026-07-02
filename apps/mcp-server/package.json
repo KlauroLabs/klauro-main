@@ -120,6 +120,7 @@
     "gauntlet:ui": "tsx src/gauntlet/ui-server.ts",
     "corpus:expand": "tsx src/gauntlet/corpus-expand.ts",
     "autonomous-mcp-trial": "tsx src/gauntlet/autonomous-mcp-trial.ts",
+    "large-repo-scenario": "tsx src/gauntlet/large-repo-scenario.ts",
     "release": "bash scripts/release.sh"
   },
   "dependencies": {
