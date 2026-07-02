@@ -45,8 +45,33 @@ VERSION="$(node -e '
     if (l.packages && l.packages[""]) l.packages[""].version = next;
     fs.writeFileSync(lock, JSON.stringify(l, null, 2) + "\n");
   }
+  // Also keep the monorepo ROOT lockfile in lockstep. `docker compose up --build`
+  // runs `npm ci` at the repo root, and npm ci fails hard if the root lockfile''s
+  // recorded apps/mcp-server version (or any @klauro/mcp-server dep ref pinned to
+  // an exact version) drifts from package.json. This bit us in a real deploy.
+  const rootLock = process.argv[2];
+  if (rootLock && fs.existsSync(rootLock)) {
+    const rl = JSON.parse(fs.readFileSync(rootLock, "utf8"));
+    let n = 0;
+    if (rl.packages && rl.packages["apps/mcp-server"]) {
+      rl.packages["apps/mcp-server"].version = next;
+      n++;
+    }
+    for (const k of Object.keys(rl.packages || {})) {
+      const pk = rl.packages[k];
+      for (const dt of ["dependencies", "devDependencies"]) {
+        const ref = pk && pk[dt] && pk[dt]["@klauro/mcp-server"];
+        // Only rewrite exact-version pins; leave "*"/range specs alone.
+        if (ref && /^\d+\.\d+\.\d+/.test(ref)) {
+          pk[dt]["@klauro/mcp-server"] = next;
+          n++;
+        }
+      }
+    }
+    if (n > 0) fs.writeFileSync(rootLock, JSON.stringify(rl, null, 2) + "\n");
+  }
   process.stdout.write(next);
-' "$BUMP")"
+' "$BUMP" "$REPO_ROOT/package-lock.json")"
 echo "    new version: $VERSION"
 
 echo "==> Packing tarball (build + npm pack + latest.json)"
@@ -80,7 +105,7 @@ fi
 
 echo "==> Tagging v$VERSION"
 cd "$REPO_ROOT"
-git add apps/mcp-server/package.json apps/mcp-server/package-lock.json
+git add apps/mcp-server/package.json apps/mcp-server/package-lock.json package-lock.json
 git commit -q -m "Release v$VERSION" || echo "    (nothing to commit — version already staged/committed)"
 git tag -a "v$VERSION" -m "klauro v$VERSION" 2>/dev/null && echo "    tagged v$VERSION" || echo "    tag v$VERSION already exists"
 
