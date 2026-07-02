@@ -55,7 +55,7 @@ import { pruneKlauroStorage } from './storage-maintenance';
 import { resolveWorkspaceInputPaths, type WorkspaceSkippedInput } from './workspace-inputs';
 import { RESPONSE_BUDGET_BYTES, boundToolPayload, boundToolText, serializeToolResponse } from './response-budget';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
-import { arbitrate, detectCollisions, type AgentKind, type CasEdgeRef, type WorkClaim } from './coordination';
+import { arbitrate, detectCollisions, type AgentKind, type CasEdgeRef, type WasCapabilityRef, type WorkClaim } from './coordination';
 import { appendClaim, attributeChange, checkEditLock, getActiveClaims, getPresence, readClaimLog, watch } from './coordination/local-store';
 import { loadPersistedRuntimeFacts } from './telemetry-fusion';
 
@@ -352,6 +352,31 @@ async function casEdgesForWorkspace(workspace: string): Promise<CasEdgeRef[]> {
   try {
     const cas = await getAnalysis(workspace);
     return (cas.edges || []).map((edge) => ({ id: edge.id, source: edge.source, target: edge.target, type: edge.type }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Best-effort WAS capabilities for capability-name arbitration (§WS-C). Resolves
+ * the persisted workspace-analysis graph whose inputs cover `workspace` (same
+ * resolver `resolve_workspace_analysis` uses) and trims its
+ * `workspace_capabilities` to the coordination module's minimal
+ * `WasCapabilityRef` shape. `workspace` may be a logical id with no matching
+ * WAS analysis (or none has been run yet) — that is expected, not an error,
+ * so any failure or empty match falls back to `[]` and arbitration proceeds
+ * exactly as before this cross-reference existed.
+ */
+async function wasCapabilitiesForWorkspace(workspace: string): Promise<WasCapabilityRef[]> {
+  try {
+    const { selected } = await resolveWorkspaceAnalysisForPaths([workspace]);
+    if (!selected) return [];
+    const capabilities = Array.isArray(selected.workspace_capabilities) ? selected.workspace_capabilities : [];
+    return capabilities.map((capability: any) => ({
+      id: capability.id,
+      name: capability.name,
+      project_ids: Array.isArray(capability.project_ids) ? capability.project_ids.slice(0, 20) : undefined,
+    }));
   } catch {
     return [];
   }
@@ -4213,7 +4238,8 @@ function registerTools(server: McpServer) {
       };
       const activeBefore = await getActiveClaims(workspace);
       const casEdges = await casEdgesForWorkspace(workspace);
-      const result = arbitrate(newClaim, activeBefore, casEdges, []);
+      const wasCapabilities = capability ? await wasCapabilitiesForWorkspace(workspace) : [];
+      const result = arbitrate(newClaim, activeBefore, casEdges, wasCapabilities);
       const stored = await appendClaim(workspace, newClaim);
       return json({
         claim_id: stored.claim_id,
@@ -4311,8 +4337,9 @@ function registerTools(server: McpServer) {
         ttl_ms: 0,
         heartbeat_at: new Date().toISOString(),
       };
-      const verdict = arbitrate(probe, active, casEdges, []);
-      const report = detectCollisions([...active, probe], [], casEdges, []);
+      const wasCapabilities = capability ? await wasCapabilitiesForWorkspace(workspace) : [];
+      const verdict = arbitrate(probe, active, casEdges, wasCapabilities);
+      const report = detectCollisions([...active, probe], [], casEdges, wasCapabilities);
       return json({
         verdict: verdict.verdict,
         kind: verdict.kind,
