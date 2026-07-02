@@ -48,6 +48,44 @@ incoming + runtime as one model. Build toward that demo.
   coordinates through it). Keep it vendor-neutral; that neutrality is a structural moat the
   IDE incumbents cannot copy.
 
+### 1.1 Two-tier coordination store (SAME-MACHINE + cross-machine) — architect for both
+
+Multiple agents can share a codebase in two distinct topologies, and **same-machine is the more
+common near-term case** (a dev running Claude Code + Cursor + Codex, or several sessions, against
+one working tree). The coordination store MUST work at two tiers, composed:
+
+- **LOCAL tier (same-machine).** All agents on one host share a local coordination store at
+  `~/.klauro/coordination/<workspace_id>/` — an append-only claim/presence/intent log + a
+  file-watch (or Unix-domain-socket daemon) for **sub-second local notification, zero network.**
+  This is where same-machine peers see each other's claims, intents, and "why". It is authoritative
+  for same-machine peers and a **write-through cache** to the remote tier.
+- **REMOTE tier (cross-machine).** The VPS store (WS-C-transport SSE) syncs claims/presence/in-flight
+  across machines. A claim writes to BOTH: local (instant, for same-host peers) and remote
+  (propagate, for other machines). Reads merge the local active-set with the remote active-set.
+
+**Why same-machine still needs coordination even though agents share the filesystem:** they see the
+*code* on disk, but the filesystem carries **no intent, no reasoning, no "peer is mid-edit", and no
+arbitration.** Three same-machine-specific hazards the local store must address:
+
+1. **Silent clobber is WORSE same-machine.** One shared working tree → two agents save the same
+   file → last-write-wins on disk, silently. (Cross-machine agents are isolated on branches/clones,
+   so this is a same-machine-specific danger.) → **soft edit-locks:** an agent announces "editing
+   `auth.ts`" to the local store *before* writing; peers `check_collision` and see the advisory lock;
+   optional strict mode refuses the overlapping claim.
+2. **No change attribution in a shared tree.** The working tree doesn't record *who* made an
+   uncommitted change or *why*. The local store maps `agent_id ↔ touched_paths ↔ intent`, so a peer
+   can ask "who changed this and what were they doing." In-flight for same-machine = **read the
+   shared working tree directly (no diff sync needed) + attribute via the local store**; in-flight
+   for cross-machine = sync the diff (WS-B remote).
+3. **Speed.** Same-machine coordination must not pay a VPS round-trip — the local file-watch/socket
+   gives ~1s peer awareness; the remote sync happens async in the background.
+
+**Impact on the workstreams:** the PURE core (arbiter/collision, WS-C/WS-D) is **tier-agnostic** —
+it operates on `WorkClaim[]`/`InFlightSnapshot[]` regardless of origin, so it is unchanged. The
+two-tier split lives entirely in the **store/transport layer** (WS-B, WS-C-transport, WS-K) and in
+a new `local-store.ts`. Build the local tier FIRST — it's simpler (no network, no WS-F cross-machine
+privacy gate), it covers the most common case, and it de-risks the demo (N agents on one laptop).
+
 ---
 
 ## 2. Current-state matrix (grounded 2026-07-01)
