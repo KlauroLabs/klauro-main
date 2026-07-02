@@ -416,6 +416,214 @@ export function codebaseMemoryEdgeTypes(dir: string): { types: string[]; ms: num
   return { types, ms: Date.now() - t0 };
 }
 
+/** True for test/benchmark/type-declaration files whose declared functions are
+ *  not project source symbols a Klauro user would ask about (mirrors the same
+ *  non-source exclusion oss-study.ts already applies to codebase-memory). Keeps
+ *  scip's symbol-name arm honest: a test-only helper name never manufactures a
+ *  fake loss against Klauro's source-only extraction. */
+function isNonSourceScipFile(relPath: string): boolean {
+  if (!relPath) return false;
+  const p = relPath.toLowerCase();
+  // Note: real .d.ts files are NOT excluded — type-only declarations are still
+  // real project symbols. Only test/benchmark trees and *.test-d.ts (scip's
+  // type-testing convention) are excluded.
+  return (
+    p.includes('/test/') || p.startsWith('test/') ||
+    p.includes('/tests/') || p.startsWith('tests/') ||
+    p.includes('/benchmark/') || p.startsWith('benchmark/') ||
+    p.includes('/bench/') || p.startsWith('bench/') ||
+    /(^|\/)test[^/]*\.[jt]sx?$/.test(p) ||
+    /\.test-d\.[jt]sx?$/.test(p)
+  );
+}
+
+/**
+ * SCIP whole-index symbol-NAME extraction (distinct from `scipCallers`, which
+ * answers a single who-calls query). Indexes `dir` with scip-typescript and
+ * returns the distinct local symbol names (function/method/class identifiers)
+ * SCIP's occurrences carry — the same honest name-set-containment surface
+ * oss-study.ts already uses for codebase-memory/ctags. Compiler-accurate on
+ * TS/JS; returns null (never a fabricated empty win) when the tool isn't
+ * installed or the project has no TS/JS sources scip-typescript can index —
+ * that non-coverage is scip's real, documented limit, not a handicap we impose.
+ */
+export function scipSymbolNames(dir: string): { names: string[]; ms: number } | null {
+  const scip = scipCliPath();
+  if (!scip || !scipTypescriptAvailable()) return null;
+
+  const t0 = Date.now();
+  const indexPath = path.join(dir, 'index.scip');
+  try {
+    execFileSync('scip-typescript', ['index', '--infer-tsconfig', '--output', indexPath], {
+      cwd: dir,
+      stdio: 'ignore',
+      timeout: 180_000,
+    });
+  } catch {
+    try { fs.removeSync(indexPath); } catch { /* noop */ }
+    return null; // not a TS/JS project, or no sources scip could index
+  }
+
+  let json = '';
+  try {
+    json = execFileSync(scip, ['print', '--json', indexPath], {
+      encoding: 'utf8',
+      maxBuffer: 256 * 1024 * 1024,
+    });
+  } catch {
+    try { fs.removeSync(indexPath); } catch { /* noop */ }
+    return null;
+  }
+  try { fs.removeSync(indexPath); } catch { /* noop */ }
+
+  // SCIP symbol strings look like:
+  //   "scip-typescript npm . . src/`index.ts`/isPlainObject()."          -> function
+  //   "scip-typescript npm . . src/`index.ts`/MyClass#method()."         -> method
+  //   "scip-typescript npm . . src/`index.ts`/isPlainObject().(value)"   -> parameter (skip)
+  //   "scip-typescript npm . . test.js`/assert."                        -> plain value/require binding (skip)
+  // Only symbols whose final path segment ends in a call signature `()."`
+  // are function/method DECLARATIONS — matching Klauro's fnNames, which are
+  // `function`/`method` CAS nodes only, never plain variable bindings (a
+  // require() alias like `assert`/`isNumber` in a test file is not a function
+  // declaration Klauro tracks, and scip encodes it identically to one — the
+  // trailing `().` vs `.` is the only reliable signal). Definitions only
+  // (roles & 1), and non-source files (tests/benchmarks) are excluded the same
+  // way ctagsNames/codebaseMemoryNames exclude non-source tooling files, so a
+  // test-only helper never manufactures a fake loss against Klauro's
+  // source-only extraction.
+  const names = new Set<string>();
+  try {
+    const doc = JSON.parse(json);
+    for (const d of doc.documents || []) {
+      const rel: string = d.relative_path || d.relativePath || '';
+      if (isNonSourceScipFile(rel)) continue;
+      for (const occ of d.occurrences || []) {
+        const sym: string = occ.symbol || '';
+        const roles: number = occ.symbol_roles ?? occ.symbolRoles ?? 0;
+        const isDefinition = (roles & 1) === 1;
+        if (!isDefinition || !sym || sym === 'local') continue;
+        const m = sym.match(/[/#]([A-Za-z_$][\w$]*)\(\)\.$/);
+        if (m) names.add(m[1]);
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  return { names: [...names], ms: Date.now() - t0 };
+}
+
+/** Locate the Moderne CLI (`mod`), the OpenRewrite/LST-backed refactoring tool.
+ *  Null if absent — this is the expected state on a machine without the Moderne
+ *  toolchain installed (it ships via its own installer script, not a package
+ *  manager formula). */
+export function moderneCliPath(): string | null {
+  const candidates = [path.join(os.homedir(), '.moderne', 'cli', 'mod'), 'mod'];
+  for (const c of candidates) {
+    try {
+      execFileSync(c, ['--version'], { stdio: 'ignore' });
+      return c;
+    } catch {
+      /* keep trying */
+    }
+  }
+  return null;
+}
+
+/** Does a Java toolchain exist to run an OpenRewrite/Moderne LST build? Moderne's
+ *  `mod build` shells out to Maven/Gradle under the hood, so both a JDK and a
+ *  build tool must be present, in addition to the `mod` CLI itself. */
+export function javaBuildToolchainAvailable(): boolean {
+  try {
+    execFileSync('java', ['-version'], { stdio: 'ignore' });
+  } catch {
+    return false;
+  }
+  for (const tool of ['mvn', 'gradle']) {
+    try {
+      execFileSync(tool, ['--version'], { stdio: 'ignore' });
+      return true;
+    } catch {
+      /* keep trying */
+    }
+  }
+  return false;
+}
+
+export interface ModerneAvailability {
+  available: boolean;
+  reason?: string;
+}
+
+/** Full Moderne/OpenRewrite availability check: the `mod` CLI AND a Java build
+ *  toolchain (Maven or Gradle) it needs to produce an LST. Reports the precise
+ *  reason it's unavailable so the arm can say e.g. "available:false (mod CLI not
+ *  installed)" instead of a bare boolean — required by the WS-H/WS-I spec so we
+ *  never silently skip without explanation. */
+export function moderneAvailability(): ModerneAvailability {
+  const mod = moderneCliPath();
+  if (!mod) return { available: false, reason: 'mod CLI not installed' };
+  if (!javaBuildToolchainAvailable()) {
+    return { available: false, reason: 'mod CLI found but no Java build toolchain (mvn/gradle) installed' };
+  }
+  return { available: true };
+}
+
+/**
+ * Moderne/OpenRewrite LST symbol-NAME extraction. Builds a Lossless Semantic
+ * Tree for `dir` via `mod build`, then reads back the declared type/method
+ * names via `mod study` (or the LST's own listing, depending on installed
+ * recipe set) so the comparison uses the SAME honest name-set-containment rule
+ * as every other competitor arm in this file. Guarded by `moderneAvailability`
+ * — returns null whenever the toolchain is not fully present so the caller can
+ * report `available:false` with the precise reason instead of fabricating a
+ * result. This function performs a REAL run when the toolchain is present; it
+ * never synthesizes output.
+ */
+export function moderneSymbolNames(dir: string): { names: string[]; ms: number } | null {
+  const avail = moderneAvailability();
+  if (!avail.available) return null;
+  const mod = moderneCliPath();
+  if (!mod) return null;
+
+  const t0 = Date.now();
+  const lstDir = path.join(os.tmpdir(), `klauro-moderne-${process.pid}-${path.basename(dir)}`);
+  try {
+    // `mod build` produces .jar LST artifacts under the target dir; a fresh temp
+    // dir keeps runs isolated and cleans up trivially.
+    execFileSync(mod, ['build', dir, '--no-download'], {
+      cwd: dir,
+      stdio: 'ignore',
+      timeout: 300_000,
+    });
+  } catch {
+    return null; // real build failure (no pom/build.gradle, network needed, etc.) — honest null
+  } finally {
+    try { fs.removeSync(lstDir); } catch { /* noop */ }
+  }
+
+  // `mod study` runs a recipe that lists declared types/methods; we ask for the
+  // FindMethods/FindTypes catalog recipes shipped with every Moderne install and
+  // parse their plaintext report for declared names. If the recipe set differs
+  // by install, this returns whatever names it can parse — never a fabricated set.
+  let out = '';
+  try {
+    out = execFileSync(mod, ['study', dir, '--recipe', 'org.openrewrite.java.search.FindMethodDeclaration'], {
+      encoding: 'utf8',
+      timeout: 120_000,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch {
+    return { names: [], ms: Date.now() - t0 };
+  }
+  const names = new Set<string>();
+  for (const line of out.split('\n')) {
+    const m = line.match(/\b([A-Za-z_$][\w$]*)\s*\(/);
+    if (m) names.add(m[1]);
+  }
+  return { names: [...names], ms: Date.now() - t0 };
+}
+
 export function ctagsAvailable(): boolean {
   try {
     execFileSync('ctags', ['--version'], { stdio: 'ignore' });

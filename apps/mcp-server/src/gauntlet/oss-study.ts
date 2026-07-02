@@ -49,7 +49,15 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { analyzeForBench } from './product-analysis';
-import { codebaseMemoryPath, ctagsAvailable } from './real-camp-arms';
+import {
+  codebaseMemoryPath,
+  ctagsAvailable,
+  scipCliPath,
+  scipTypescriptAvailable,
+  scipSymbolNames,
+  moderneAvailability,
+  moderneSymbolNames,
+} from './real-camp-arms';
 import type { CASOutput } from '../../../../packages/analyzer-core/src/types/cas.types';
 
 export interface OssStudyRepo {
@@ -71,10 +79,22 @@ const CORPUS_ROOT = path.join(os.homedir(), '.klauro', 'gauntlet', 'oss-study-co
 export type OssVerdict = 'win' | 'tie-ceiling' | 'loss';
 
 export interface OssCompetitorArm {
-  arm: 'codebase-memory' | 'ctags';
+  arm: 'codebase-memory' | 'ctags' | 'scip' | 'moderne';
   available: boolean;
   /** Distinct project-rooted-ish symbol names the arm surfaced (best-effort). */
   names: string[];
+  /** Present only when the arm is unavailable/skipped — the precise reason why,
+   *  so a `available:false` row is never a bare unexplained boolean. */
+  unavailable_reason?: string;
+}
+
+/** All competitor arms run for this repo (not just the primary/first-available
+ *  one). Every arm that is fully unavailable in this environment is still
+ *  reported here with `available:false` and a reason — never silently omitted
+ *  and never fabricated. */
+export interface OssCompetitorArms {
+  primary: OssCompetitorArm | null;
+  all: OssCompetitorArm[];
 }
 
 export interface OssRepoResult {
@@ -89,6 +109,11 @@ export interface OssRepoResult {
     fnNames: string[];
   };
   competitor: OssCompetitorArm | null;
+  /** Every real competitor arm run against this repo (codebase-memory, ctags,
+   *  scip, moderne), each honestly reporting available:true/false. Superset of
+   *  `competitor` (which stays the primary codebase-memory/ctags arm used for
+   *  the headline verdict, unchanged for backward compatibility). */
+  competitor_arms: OssCompetitorArm[];
   verdict: OssVerdict;
   note: string;
 }
@@ -238,20 +263,63 @@ function ctagsNames(dir: string): string[] | null {
   return [...names];
 }
 
-/** Pick whichever competitor arm is available (codebase-memory preferred, ctags as
- *  fallback), reusing real-camp-arms.ts availability guards. Null if neither is
- *  installed — the row is then scored Klauro-only (no loss possible; tie/win only
- *  against "no competitor read"). */
-function runCompetitorArm(dir: string): OssCompetitorArm | null {
+/** scip / scip-typescript symbol-name arm. Reuses `scipSymbolNames` (real-camp-
+ *  arms.ts), which indexes `dir` with the real scip-typescript compiler-accurate
+ *  indexer. Returns `available:false` with a reason (not null) when the tool is
+ *  missing or the repo has no TS/JS sources — scip's real, documented coverage
+ *  limit, never faked. */
+function scipArm(dir: string): OssCompetitorArm {
+  if (!scipCliPath() || !scipTypescriptAvailable()) {
+    return { arm: 'scip', available: false, names: [], unavailable_reason: 'scip / scip-typescript CLI not installed' };
+  }
+  const result = scipSymbolNames(dir);
+  if (result === null) {
+    return { arm: 'scip', available: false, names: [], unavailable_reason: 'scip-typescript could not index this repo (no TS/JS sources, or indexing failed)' };
+  }
+  return { arm: 'scip', available: result.names.length > 0, names: result.names };
+}
+
+/** Moderne/OpenRewrite LST symbol-name arm. Reuses `moderneSymbolNames` (real-
+ *  camp-arms.ts), which is availability-guarded on BOTH the `mod` CLI and a Java
+ *  build toolchain (Maven/Gradle). Returns `available:false` with the precise
+ *  reason (mod CLI missing, or present but no build toolchain, or a real build
+ *  failure) rather than ever fabricating a result. */
+function moderneArm(dir: string): OssCompetitorArm {
+  const avail = moderneAvailability();
+  if (!avail.available) {
+    return { arm: 'moderne', available: false, names: [], unavailable_reason: avail.reason || 'mod CLI not installed' };
+  }
+  const result = moderneSymbolNames(dir);
+  if (result === null) {
+    return { arm: 'moderne', available: false, names: [], unavailable_reason: 'mod build/study failed for this repo (no pom.xml/build.gradle, or LST build error)' };
+  }
+  return { arm: 'moderne', available: result.names.length > 0, names: result.names };
+}
+
+/** Run every real competitor arm against this repo — codebase-memory, ctags,
+ *  scip, and moderne — reusing real-camp-arms.ts availability guards for each.
+ *  `primary` keeps the original codebase-memory-preferred, ctags-fallback arm
+ *  used for the headline verdict (unchanged contract with the existing test);
+ *  `all` carries every arm's honest result (including unavailable ones with a
+ *  reason) for full reporting. Never fabricates a result for an absent tool. */
+function runCompetitorArm(dir: string): OssCompetitorArms {
+  let primary: OssCompetitorArm | null = null;
   const cbmNames = codebaseMemoryNames(dir);
   if (cbmNames !== null) {
-    return { arm: 'codebase-memory', available: cbmNames.length > 0, names: cbmNames };
+    primary = { arm: 'codebase-memory', available: cbmNames.length > 0, names: cbmNames };
+  } else {
+    const ctNames = ctagsNames(dir);
+    if (ctNames !== null) {
+      primary = { arm: 'ctags', available: ctNames.length > 0, names: ctNames };
+    }
   }
-  const ctNames = ctagsNames(dir);
-  if (ctNames !== null) {
-    return { arm: 'ctags', available: ctNames.length > 0, names: ctNames };
-  }
-  return null;
+
+  const all: OssCompetitorArm[] = [];
+  if (primary) all.push(primary);
+  all.push(scipArm(dir));
+  all.push(moderneArm(dir));
+
+  return { primary, all };
 }
 
 /** Klauro symbol names (functions + methods) from a real analyzeForBench CAS. */
@@ -278,46 +346,61 @@ function missing(a: string[], b: string[]): string[] {
 }
 
 /** Same honest name-set-containment rule camp-b-structural.ts uses: a loss only
- *  when the competitor surfaced a name Klauro's CAS does not contain; a win when
- *  Klauro saw a name the competitor missed, or the competitor is unavailable/empty
- *  while Klauro extracted symbols; else an honest ceiling tie. Never tuned per-repo —
- *  this function has no repo-specific branches. */
+ *  when a competitor surfaced a name Klauro's CAS does not contain; a win when
+ *  Klauro saw a name every available competitor missed, or no competitor arm is
+ *  available/non-empty while Klauro extracted symbols; else an honest ceiling
+ *  tie. Never tuned per-repo — this function has no repo-specific branches.
+ *  Checks EVERY available arm (not just the primary), so adding scip/moderne
+ *  can only make the proof stricter, never weaker: a loss against ANY real,
+ *  available competitor is surfaced. */
 function decideVerdict(
   klauroFnNames: string[],
   klauroSymbolCount: number,
-  competitor: OssCompetitorArm | null,
+  arms: OssCompetitorArm[],
 ): { verdict: OssVerdict; note: string } {
-  if (!competitor || !competitor.available) {
+  const available = arms.filter(a => a.available);
+
+  if (available.length === 0) {
     if (klauroSymbolCount >= 1) {
+      const skipped = arms.filter(a => !a.available && a.unavailable_reason);
+      const skippedNote = skipped.length
+        ? ` (${skipped.map(a => `${a.arm}: ${a.unavailable_reason}`).join('; ')})`
+        : '';
       return {
         verdict: 'win',
-        note: competitor
-          ? `competitor arm (${competitor.arm}) indexed no symbols; Klauro extracted ${klauroSymbolCount}`
+        note: arms.length > 0
+          ? `no competitor arm indexed any symbols; Klauro extracted ${klauroSymbolCount}${skippedNote}`
           : 'no competitor arm installed; Klauro extracted symbols (recorded win, not a fixture-tuned claim)',
       };
     }
     return { verdict: 'tie-ceiling', note: 'neither side extracted symbols (degenerate, no-loss tie)' };
   }
 
-  const missedByKlauro = missing(competitor.names, klauroFnNames);
-  if (missedByKlauro.length > 0) {
-    return {
-      verdict: 'loss',
-      note: `${competitor.arm} extracted source symbols Klauro missed: [${missedByKlauro.slice(0, 10).join(', ')}]`,
-    };
+  for (const competitor of available) {
+    const missedByKlauro = missing(competitor.names, klauroFnNames);
+    if (missedByKlauro.length > 0) {
+      return {
+        verdict: 'loss',
+        note: `${competitor.arm} extracted source symbols Klauro missed: [${missedByKlauro.slice(0, 10).join(', ')}]`,
+      };
+    }
   }
 
-  const klauroOnly = missing(klauroFnNames, competitor.names);
+  const allCompetitorNames = new Set<string>();
+  for (const competitor of available) {
+    for (const n of competitor.names) allCompetitorNames.add(n);
+  }
+  const klauroOnly = missing(klauroFnNames, [...allCompetitorNames]);
   if (klauroOnly.length > 0) {
     return {
       verdict: 'win',
-      note: `Klauro saw symbols ${competitor.arm} missed: [${klauroOnly.slice(0, 10).join(', ')}]`,
+      note: `Klauro saw symbols every available competitor (${available.map(a => a.arm).join(', ')}) missed: [${klauroOnly.slice(0, 10).join(', ')}]`,
     };
   }
 
   return {
     verdict: 'tie-ceiling',
-    note: `symbol-name parity with ${competitor.arm}; Klauro's edge is tokens`,
+    note: `symbol-name parity with ${available.map(a => a.arm).join(', ')}; Klauro's edge is tokens`,
   };
 }
 
@@ -361,6 +444,7 @@ export async function buildOssStudyReport(): Promise<OssStudyReport> {
           clone_source: 'none',
           klauro: { nodes: 0, functions: 0, classes: 0, tokens: 0, fnNames: [] },
           competitor: null,
+          competitor_arms: [],
           verdict: 'tie-ceiling',
           note: 'no network and no fallback corpus present — repo skipped honestly',
         });
@@ -377,6 +461,7 @@ export async function buildOssStudyReport(): Promise<OssStudyReport> {
           clone_source: cloneSource,
           klauro: { nodes: 0, functions: 0, classes: 0, tokens: 0, fnNames: [] },
           competitor: null,
+          competitor_arms: [],
           verdict: 'tie-ceiling',
           note: `analyzeForBench failed: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`,
         });
@@ -390,8 +475,8 @@ export async function buildOssStudyReport(): Promise<OssStudyReport> {
       });
       const tokens = tokensOf(klauroPayload);
 
-      const competitor = runCompetitorArm(sourceDir);
-      const { verdict, note } = decideVerdict(fnNames, functions + classes, competitor);
+      const { primary: competitor, all: competitorArms } = runCompetitorArm(sourceDir);
+      const { verdict, note } = decideVerdict(fnNames, functions + classes, competitorArms);
 
       rows.push({
         repo: repo.name,
@@ -399,6 +484,7 @@ export async function buildOssStudyReport(): Promise<OssStudyReport> {
         clone_source: cloneSource,
         klauro: { nodes: (cas.nodes || []).length, functions, classes, tokens, fnNames },
         competitor,
+        competitor_arms: competitorArms,
         verdict,
         note,
       });
@@ -415,11 +501,13 @@ export async function buildOssStudyReport(): Promise<OssStudyReport> {
 
   const ratios: number[] = [];
   for (const r of measured) {
-    if (!r.competitor || !r.competitor.available) continue;
-    // Charitable competitor token basis: byteLength/4 of its raw name list — the
-    // smallest honest payload a competitor client would read for symbol names.
-    const competitorTokens = tokensOf(JSON.stringify(r.competitor.names));
-    if (competitorTokens > 0) ratios.push(r.klauro.tokens / competitorTokens);
+    for (const arm of r.competitor_arms) {
+      if (!arm.available) continue;
+      // Charitable competitor token basis: byteLength/4 of its raw name list — the
+      // smallest honest payload a competitor client would read for symbol names.
+      const competitorTokens = tokensOf(JSON.stringify(arm.names));
+      if (competitorTokens > 0) ratios.push(r.klauro.tokens / competitorTokens);
+    }
   }
   const avgTokenRatio = ratios.length ? ratios.reduce((a, b) => a + b, 0) / ratios.length : 0;
 
