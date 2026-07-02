@@ -1,0 +1,12 @@
+{
+  "task": "security-facts",
+  "true_facts": [
+    "access-control:onlyOwner:transferOwnership",
+    "access-control:onlyOwner:mint",
+    "access-control:inherits:SecureToken",
+    "reentrancy-guard:withdraw",
+    "erc20-conformance",
+    "external-call-before-state-write:withdraw",
+    "external-call-before-state-write:riskyWithdraw"
+  ]
+}
