@@ -55,6 +55,9 @@ import { pruneKlauroStorage } from './storage-maintenance';
 import { resolveWorkspaceInputPaths, type WorkspaceSkippedInput } from './workspace-inputs';
 import { RESPONSE_BUDGET_BYTES, boundToolPayload, boundToolText, serializeToolResponse } from './response-budget';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
+import { arbitrate, detectCollisions, type AgentKind, type CasEdgeRef, type WorkClaim } from './coordination';
+import { appendClaim, attributeChange, checkEditLock, getActiveClaims, getPresence, readClaimLog, watch } from './coordination/local-store';
+import { loadPersistedRuntimeFacts } from './telemetry-fusion';
 
 const SERVER_INSTRUCTIONS = `Klauro serves a precomputed analysis of this repository — call graph, routes, data flows, entry points, conventions, and tests, queryable directly. Default to it over grep/Read: a query returns real call sites and blast radius, not guesses. The value is the sequence below; each tool's own description has the detail.
 
@@ -69,6 +72,8 @@ Understand before editing (highest value): get_coding_context(target) returns th
 Change, then verify: assess_change_risk and get_error_contracts before; validate_agent_change after, to surface ripple (e.g. a dropped DTO field breaking its service and entity) instead of finding it one compile error at a time.
 
 Cross-repo work (ui -> api -> worker is one product): run_workspace_analysis, then get_workspace_summary / get_workspace_capability_map / get_cross_repo_links.
+
+Coordinate before you act (multi-agent workspaces): before starting any non-trivial work, call check_collision (read-only) or claim_work (announces intent) with the workspace, your agent_id, and the paths/symbols/capability you're about to touch. On duplicate, another agent already has this covered — adopt their work or defer instead of redoing it. On conflict, coordinate directly or rebase before proceeding; do not silently overwrite. While working, call heartbeat_work periodically so your claim doesn't expire; call release_work on completion or handoff so others can proceed. Use get_active_agents to see who else is live in the workspace, and get_in_flight_changes to see who is touching a specific path and why. This write-side only has value if you actually call it — treat it as mandatory for shared workspaces, not optional bookkeeping.
 
 Trust, then verify: every result is stamped to a commit/branch. If get_file_nodes returns nothing for a file you can see on disk, it is likely on an unmerged branch — re-analyze or read that one file. On any tool error, fall back to reading. Don't lean on a single tool; no one view is the whole picture.`;
 
@@ -217,6 +222,7 @@ const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
   { label: 'Dependencies', tools: ['get_dependencies', 'get_libraries'] },
   { label: 'Change history', tools: ['get_changes_since', 'get_changes_between', 'get_changes_for_node', 'get_changes_for_file', 'get_changes_for_entry_point', 'get_change_summary', 'get_hot_spots', 'get_analysis_at', 'get_analysis_snapshots'] },
   { label: 'Watch mode', tools: ['start_watch', 'stop_watch', 'get_watch_status', 'list_watches', 'poll_watch_changes', 'install_gauntlet_watcher', 'list_gauntlet_watchers', 'stop_gauntlet_watcher', 'run_incremental_gauntlet'] },
+  { label: 'Multi-agent coordination', tools: ['claim_work', 'release_work', 'heartbeat_work', 'get_active_agents', 'check_collision', 'get_in_flight_changes', 'subscribe_workspace'] },
 ];
 
 function buildGatewayDescription(registry: Map<string, RegisteredToolEntry>, profile: ToolProfile): string {
@@ -334,6 +340,21 @@ function versionUpgradeReport(
     to: newVersion,
     note: `Stored analysis was upgraded from cas_version ${from} to ${newVersion}. Fields introduced between these versions are now populated for this project.`,
   };
+}
+
+/**
+ * Best-effort CAS edges for blast-radius arbitration (§WS-C). `workspace` is
+ * whatever id/path the caller coordinates under, which may not be an
+ * analyzable project path (e.g. a logical workspace id) — arbitration must
+ * still work with an empty edge set in that case, so failures are swallowed.
+ */
+async function casEdgesForWorkspace(workspace: string): Promise<CasEdgeRef[]> {
+  try {
+    const cas = await getAnalysis(workspace);
+    return (cas.edges || []).map((edge) => ({ id: edge.id, source: edge.source, target: edge.target, type: edge.type }));
+  } catch {
+    return [];
+  }
 }
 
 async function withErrorHandling(fn: () => Promise<{ content: Array<{ type: 'text'; text: string }> }>): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
@@ -3434,7 +3455,20 @@ function registerTools(server: McpServer) {
     } as any,
     async ({ path, target, task_type, include }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      return json(query.getCodingContext(cas, target, { task_type, include }));
+      const context: any = query.getCodingContext(cas, target, { task_type, include });
+      // WS-A (minimal, safe merge): surface fused runtime facts for the
+      // resolved target node, if any were persisted via telemetry ingest.
+      // We don't have a dedicated dataDir/workspace parameter on this tool,
+      // so we reuse `path` as the workspace key (same convention as
+      // get_runtime_observations / ingest_telemetry) rather than threading a
+      // new parameter through query.getCodingContext.
+      const nodeId = context?.node?.id;
+      if (nodeId) {
+        const fused = await loadPersistedRuntimeFacts('', path).catch(() => null);
+        const matches = fused?.facts?.filter((f) => f.node_id === nodeId) || [];
+        if (matches.length > 0) context.fused_runtime_facts = matches;
+      }
+      return json(context);
     })
   );
 
@@ -4064,7 +4098,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, type, since, static_id, trace_id, span_id, source, limit }: any) => withErrorHandling(async () => {
-      return json(await telemetryIngestion.loadTelemetryObservations(path, {
+      const result: any = await telemetryIngestion.loadTelemetryObservations(path, {
         type,
         since,
         staticId: static_id,
@@ -4072,7 +4106,18 @@ function registerTools(server: McpServer) {
         spanId: span_id,
         source,
         limit,
-      }));
+      });
+      // WS-A: merge in fused telemetry facts (hot/slow/error) persisted via
+      // POST /v1/telemetry/ingest or ingest_telemetry, additive to the
+      // existing observation shape — see telemetry-fusion.ts.
+      const fused = await loadPersistedRuntimeFacts('', path).catch(() => null);
+      if (fused?.facts?.length) {
+        result.fused_runtime_facts = static_id
+          ? fused.facts.filter((f) => f.node_id === static_id)
+          : fused.facts;
+        result.fused_updated_at = fused.updated_at;
+      }
+      return json(result);
     })
   );
 
@@ -4121,6 +4166,205 @@ function registerTools(server: McpServer) {
     } as any,
     async ({ path, trace_id, source }: any) => withErrorHandling(async () => {
       return json(await telemetryIngestion.loadTelemetryTrace(path, trace_id, { source }));
+    })
+  );
+
+  // -- Coordination fabric (§WS-E) --
+  // LOCAL tier only: same-machine, file-backed claim log (see coordination/local-store.ts).
+  // Cross-machine sync is HTTP-only for now (remote-analyzer-service.ts §WS-C-transport).
+
+  server.registerTool(
+    'claim_work',
+    {
+      title: 'Claim Work',
+      description: 'Announce intent to work on paths/symbols/a capability in a workspace before starting non-trivial changes. Appends the claim and arbitrates it against every other active claim in that workspace: granted (disjoint, proceed), duplicate (another active claim already covers this capability — adopt or defer instead of redoing it), or conflict (path/symbol/blast-radius overlap — coordinate or rebase). Call heartbeat_work while working and release_work when done or handing off.',
+      inputSchema: {
+        workspace: z.string().describe('Workspace or project id/path to coordinate within'),
+        agent_id: z.string().describe('Stable identifier for the calling agent/session'),
+        intent: z.string().describe('Short description of the work being claimed'),
+        agent_kind: z.enum(['claude', 'cursor', 'codex', 'human', 'other']).optional().describe('Kind of agent (default other)'),
+        paths: z.array(z.string()).optional().describe('File/dir paths this work will touch'),
+        symbols: z.array(z.string()).optional().describe('Symbol/node ids this work will touch'),
+        capability: z.string().optional().describe('Capability or feature name this work implements'),
+        ttl_ms: z.number().optional().describe('Claim TTL in ms before it is considered stale (default 5 minutes)'),
+        base_commit: z.string().optional(),
+        branch: z.string().optional(),
+        claim_id: z.string().optional().describe('Reuse an existing claim id to refresh/update it instead of creating a new one'),
+      } as any,
+    } as any,
+    async ({ workspace, agent_id, intent, agent_kind, paths, symbols, capability, ttl_ms, base_commit, branch, claim_id }: any) => withErrorHandling(async () => {
+      const now = new Date().toISOString();
+      const id = claim_id || `${agent_id}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+      const newClaim: WorkClaim = {
+        claim_id: id,
+        seq: 0,
+        workspace_id: workspace,
+        agent_id,
+        agent_kind: (agent_kind as AgentKind) || 'other',
+        scope: { repo: workspace, paths: paths || [], symbols: symbols || [], capability },
+        intent,
+        status: 'active',
+        created_at: now,
+        ttl_ms: ttl_ms || 5 * 60 * 1000,
+        heartbeat_at: now,
+        base_commit,
+        branch,
+      };
+      const activeBefore = await getActiveClaims(workspace);
+      const casEdges = await casEdgesForWorkspace(workspace);
+      const result = arbitrate(newClaim, activeBefore, casEdges, []);
+      const stored = await appendClaim(workspace, newClaim);
+      return json({
+        claim_id: stored.claim_id,
+        seq: stored.seq,
+        verdict: result.verdict,
+        kind: result.kind,
+        evidence: result.evidence,
+        with_claim: result.with_claim
+          ? { claim_id: result.with_claim.claim_id, agent_id: result.with_claim.agent_id, intent: result.with_claim.intent, scope: result.with_claim.scope }
+          : undefined,
+      });
+    })
+  );
+
+  server.registerTool(
+    'release_work',
+    {
+      title: 'Release Work',
+      description: 'Mark a claim released (completed or handed off). Frees its paths/symbols/capability for other agents to claim without conflict.',
+      inputSchema: {
+        workspace: z.string().describe('Workspace or project id/path'),
+        claim_id: z.string().describe('Claim id to release'),
+      } as any,
+    } as any,
+    async ({ workspace, claim_id }: any) => withErrorHandling(async () => {
+      const log = await readClaimLog(workspace);
+      const prior = [...log].reverse().find((entry) => entry.claim_id === claim_id);
+      if (!prior) return json({ status: 'not_found', claim_id });
+      const now = new Date().toISOString();
+      const stored = await appendClaim(workspace, { ...prior, status: 'released', heartbeat_at: now });
+      return json({ status: 'released', claim_id: stored.claim_id, seq: stored.seq });
+    })
+  );
+
+  server.registerTool(
+    'heartbeat_work',
+    {
+      title: 'Heartbeat Work',
+      description: 'Refresh a claim\'s heartbeat so it stays active (does not expire) while work is in progress. Call periodically for long-running tasks.',
+      inputSchema: {
+        workspace: z.string().describe('Workspace or project id/path'),
+        claim_id: z.string().describe('Claim id to heartbeat'),
+      } as any,
+    } as any,
+    async ({ workspace, claim_id }: any) => withErrorHandling(async () => {
+      const log = await readClaimLog(workspace);
+      const prior = [...log].reverse().find((entry) => entry.claim_id === claim_id);
+      if (!prior) return json({ status: 'not_found', claim_id });
+      const now = new Date().toISOString();
+      const stored = await appendClaim(workspace, { ...prior, heartbeat_at: now });
+      return json({ status: 'heartbeat', claim_id: stored.claim_id, seq: stored.seq, heartbeat_at: now });
+    })
+  );
+
+  server.registerTool(
+    'get_active_agents',
+    {
+      title: 'Get Active Agents',
+      description: 'Live agent presence roster for a workspace: which agents currently hold active (non-expired) claims, their scope (paths/symbols/capability), and last-seen time. Use before starting work to see who else is already active.',
+      inputSchema: {
+        workspace: z.string().describe('Workspace or project id/path'),
+      } as any,
+    } as any,
+    async ({ workspace }: any) => withErrorHandling(async () => {
+      return json(await getPresence(workspace));
+    })
+  );
+
+  server.registerTool(
+    'check_collision',
+    {
+      title: 'Check Collision',
+      description: 'Read-only preflight: does a proposed (not-yet-claimed) set of paths/symbols/capability collide with any other active agent in the workspace? Runs the same duplicate/overlap/blast-radius detectors as claim_work but takes no claim. Use this to check before deciding whether to claim_work at all.',
+      inputSchema: {
+        workspace: z.string().describe('Workspace or project id/path'),
+        paths: z.array(z.string()).optional(),
+        symbols: z.array(z.string()).optional(),
+        capability: z.string().optional(),
+      } as any,
+    } as any,
+    async ({ workspace, paths, symbols, capability }: any) => withErrorHandling(async () => {
+      const active = await getActiveClaims(workspace);
+      const casEdges = await casEdgesForWorkspace(workspace);
+      const editLockConflicts = paths?.length ? await checkEditLock(workspace, paths) : [];
+      const probe: WorkClaim = {
+        claim_id: '__probe__',
+        seq: 0,
+        workspace_id: workspace,
+        agent_id: '__probe__',
+        agent_kind: 'other',
+        scope: { repo: workspace, paths: paths || [], symbols: symbols || [], capability },
+        intent: 'preflight-check',
+        status: 'active',
+        created_at: new Date().toISOString(),
+        ttl_ms: 0,
+        heartbeat_at: new Date().toISOString(),
+      };
+      const verdict = arbitrate(probe, active, casEdges, []);
+      const report = detectCollisions([...active, probe], [], casEdges, []);
+      return json({
+        verdict: verdict.verdict,
+        kind: verdict.kind,
+        evidence: verdict.evidence,
+        with_claim: verdict.with_claim
+          ? { claim_id: verdict.with_claim.claim_id, agent_id: verdict.with_claim.agent_id, intent: verdict.with_claim.intent }
+          : undefined,
+        edit_lock_conflicts: editLockConflicts,
+        collisions: report,
+      });
+    })
+  );
+
+  server.registerTool(
+    'get_in_flight_changes',
+    {
+      title: 'Get In-Flight Changes',
+      description: 'Which active agents currently have a claim/edit-lock touching a given path, and their stated intent — answers "who is changing this and why" in a shared workspace. Pass exclude_self to omit your own agent_id.',
+      inputSchema: {
+        workspace: z.string().describe('Workspace or project id/path'),
+        path: z.string().describe('File or directory path to check'),
+        exclude_self: z.string().optional().describe('agent_id to exclude from results'),
+      } as any,
+    } as any,
+    async ({ workspace, path, exclude_self }: any) => withErrorHandling(async () => {
+      const attribution = await attributeChange(workspace, path);
+      if (exclude_self) {
+        attribution.attributions = attribution.attributions.filter((a) => a.agent_id !== exclude_self);
+      }
+      return json(attribution);
+    })
+  );
+
+  server.registerTool(
+    'subscribe_workspace',
+    {
+      title: 'Subscribe Workspace',
+      description: 'Start (or confirm) live local-peer awareness for a workspace: same-machine claim-log changes are watched via fs events. There is no push transport over MCP (stdio has no server-initiated events), so this call arms a short-lived local watch and returns immediately — poll get_active_agents / get_in_flight_changes / check_collision afterward to see deltas. For cross-machine polling use HTTP GET /v1/coordination/state?workspace=&since=.',
+      inputSchema: {
+        workspace: z.string().describe('Workspace or project id/path'),
+      } as any,
+    } as any,
+    async ({ workspace }: any) => withErrorHandling(async () => {
+      const unwatch = watch(workspace, () => {});
+      // Best-effort local watch: MCP stdio has no server push, so this is a
+      // fire-and-forget arm+release rather than a held subscription. The
+      // caller is expected to poll; this just confirms the store is watchable.
+      setTimeout(unwatch, 250);
+      return json({
+        status: 'watching',
+        workspace,
+        note: 'MCP has no server-push transport; poll get_active_agents/get_in_flight_changes/check_collision for deltas. For cross-machine or SSE-style polling use HTTP GET /v1/coordination/state?workspace=&since=.',
+      });
     })
   );
 

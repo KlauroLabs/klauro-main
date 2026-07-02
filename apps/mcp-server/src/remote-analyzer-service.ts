@@ -9,6 +9,10 @@ import type { BranchDiffContext, RemoteFileChange, SourceManifest } from './remo
 import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-preview';
 import { isDirectCliInvocation } from './cli-invocation';
 import { AccountHttpError, AccountStore } from './account-store';
+import { arbitrate, type AgentKind, type WorkClaim } from './coordination';
+import { appendClaim, getActiveClaims, getPresence, readClaimLog } from './coordination/local-store';
+import { ingestAndPersist } from './telemetry-fusion';
+import { getAnalysis } from './analyzer';
 
 const DEFAULT_PORT = 8787;
 const DEFAULT_MAX_BODY_BYTES = 100 * 1024 * 1024;
@@ -246,6 +250,121 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
+      // §WS-C-transport / WS-A — coordination fabric + telemetry ingest over HTTP,
+      // for cross-machine agents (same LOCAL store used by the MCP tools in
+      // server.ts, keyed by `workspace`; the coordination/ modules are the
+      // committed pure core — this route layer only appends/reads via
+      // coordination/local-store.ts and calls arbitrate()).
+      if (request.method === 'POST' && route === '/v1/coordination/claim') {
+        const body = await readJsonBody<{
+          workspace: string; agent_id: string; intent: string; agent_kind?: AgentKind;
+          paths?: string[]; symbols?: string[]; capability?: string; ttl_ms?: number;
+          base_commit?: string; branch?: string; claim_id?: string;
+        }>(request, maxBodyBytes);
+        const now = new Date().toISOString();
+        const claimId = body.claim_id || `${body.agent_id}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+        const newClaim: WorkClaim = {
+          claim_id: claimId,
+          seq: 0,
+          workspace_id: body.workspace,
+          agent_id: body.agent_id,
+          agent_kind: body.agent_kind || 'other',
+          scope: { repo: body.workspace, paths: body.paths || [], symbols: body.symbols || [], capability: body.capability },
+          intent: body.intent,
+          status: 'active',
+          created_at: now,
+          ttl_ms: body.ttl_ms || 5 * 60 * 1000,
+          heartbeat_at: now,
+          base_commit: body.base_commit,
+          branch: body.branch,
+        };
+        const activeBefore = await getActiveClaims(body.workspace);
+        const casEdges = await casEdgesForWorkspace(body.workspace);
+        const result = arbitrate(newClaim, activeBefore, casEdges, []);
+        const stored = await appendClaim(body.workspace, newClaim);
+        writeJson(response, 200, {
+          claim_id: stored.claim_id,
+          seq: stored.seq,
+          verdict: result.verdict,
+          kind: result.kind,
+          evidence: result.evidence,
+          with_claim: result.with_claim
+            ? { claim_id: result.with_claim.claim_id, agent_id: result.with_claim.agent_id, intent: result.with_claim.intent, scope: result.with_claim.scope }
+            : undefined,
+        });
+        return;
+      }
+
+      if (request.method === 'POST' && route === '/v1/coordination/release') {
+        const body = await readJsonBody<{ workspace: string; claim_id: string }>(request, maxBodyBytes);
+        const log = await readClaimLog(body.workspace);
+        const prior = [...log].reverse().find((entry) => entry.claim_id === body.claim_id);
+        if (!prior) {
+          writeJson(response, 200, { status: 'not_found', claim_id: body.claim_id });
+          return;
+        }
+        const stored = await appendClaim(body.workspace, { ...prior, status: 'released', heartbeat_at: new Date().toISOString() });
+        writeJson(response, 200, { status: 'released', claim_id: stored.claim_id, seq: stored.seq });
+        return;
+      }
+
+      if (request.method === 'POST' && route === '/v1/coordination/heartbeat') {
+        const body = await readJsonBody<{ workspace: string; claim_id: string }>(request, maxBodyBytes);
+        const log = await readClaimLog(body.workspace);
+        const prior = [...log].reverse().find((entry) => entry.claim_id === body.claim_id);
+        if (!prior) {
+          writeJson(response, 200, { status: 'not_found', claim_id: body.claim_id });
+          return;
+        }
+        const now = new Date().toISOString();
+        const stored = await appendClaim(body.workspace, { ...prior, heartbeat_at: now });
+        writeJson(response, 200, { status: 'heartbeat', claim_id: stored.claim_id, seq: stored.seq, heartbeat_at: now });
+        return;
+      }
+
+      if (request.method === 'GET' && route === '/v1/coordination/state') {
+        const workspace = requestUrl.searchParams.get('workspace') || '';
+        const sinceParam = requestUrl.searchParams.get('since');
+        const since = sinceParam ? Number(sinceParam) : undefined;
+        if (!workspace) {
+          writeJson(response, 400, { status: 'error', error: 'workspace query param is required' });
+          return;
+        }
+        // Poll fallback in lieu of SSE (TODO: GET /v1/coordination/stream via
+        // SSE, per WS-C-transport — deferred; this poll endpoint is sufficient
+        // for cross-machine awareness today).
+        const log = await readClaimLog(workspace);
+        const claims = await getActiveClaims(workspace);
+        const presence = await getPresence(workspace);
+        const maxSeq = log.reduce((max, entry) => Math.max(max, entry.seq), 0);
+        writeJson(response, 200, {
+          workspace,
+          max_seq: maxSeq,
+          claims: Number.isFinite(since) ? claims.filter((c) => c.seq > (since as number)) : claims,
+          presence,
+        });
+        return;
+      }
+
+      if (request.method === 'POST' && route === '/v1/telemetry/ingest') {
+        const body = await readJsonBody<{ workspace: string; spans: any[]; window?: string }>(request, maxBodyBytes);
+        if (!body.workspace || !Array.isArray(body.spans)) {
+          writeJson(response, 400, { status: 'error', error: 'workspace and spans[] are required' });
+          return;
+        }
+        const cas = await getAnalysis(body.workspace);
+        const result = await ingestAndPersist(dataDir, body.workspace, cas, body.spans, { window: body.window });
+        await appendAuditLog(dataDir, {
+          event: 'telemetry_ingest',
+          workspace: body.workspace,
+          matched: result.facts.length,
+          unmatched: result.unmatched.length,
+          total_facts: result.total_facts,
+        });
+        writeJson(response, 200, { status: 'success', ...result });
+        return;
+      }
+
       writeJson(response, 404, { status: 'error', error: 'Not found' });
     } catch (error) {
       if (error instanceof AccountHttpError) {
@@ -256,6 +375,20 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
       writeJson(response, 500, { status: 'error', error: message });
     }
   });
+}
+
+/**
+ * Best-effort CAS edges for blast-radius arbitration (§WS-C). `workspace` may
+ * not be an analyzable project path in every deployment, so failures fall
+ * back to an empty edge set rather than rejecting the coordination request.
+ */
+async function casEdgesForWorkspace(workspace: string): Promise<Array<{ id: string; source: string; target: string; type: string }>> {
+  try {
+    const cas = await getAnalysis(workspace);
+    return (cas.edges || []).map((edge) => ({ id: edge.id, source: edge.source, target: edge.target, type: edge.type }));
+  } catch {
+    return [];
+  }
 }
 
 async function authorizeAnalyzerRequest(accounts: AccountStore, request: http.IncomingMessage, sharedToken: string | undefined): Promise<{ authorized: boolean; clientId?: string }> {
