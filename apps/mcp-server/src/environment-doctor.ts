@@ -13,6 +13,7 @@ import {
   type AnalysisEntry,
   type AnalysisVersionInfo,
 } from './storage';
+import { checkMcpRegistration } from './mcp-registration-doctor';
 
 type ChecksModule = typeof import('../scripts/environment-checks.mjs');
 type EnvironmentCheck = import('../scripts/environment-checks.mjs').EnvironmentCheck;
@@ -80,6 +81,9 @@ export function summarizeAnalysisVersions(
 export async function runEnvironmentDoctor(options: {
   handshakeLimitMs?: number;
   skipHandshake?: boolean;
+  skipMcpRegistrationBootProbe?: boolean;
+  mcpRegistrationBootMaxMs?: number;
+  projectPath?: string;
 } = {}): Promise<EnvironmentDoctorReport> {
   const checks = await loadChecks();
   const packageRoot = path.resolve(__dirname, '..');
@@ -113,6 +117,13 @@ export async function runEnvironmentDoctor(options: {
       probe.ok ? undefined : `Rebuild the bundle (npm --prefix ${packageRoot} run build) and check that node ${bundlePath} starts cleanly.`,
     ));
   }
+
+  results.push(await checkMcpRegistration({
+    packageRoot,
+    projectPath: options.projectPath,
+    probeBoot: options.skipMcpRegistrationBootProbe ? false : true,
+    bootMaxMs: options.mcpRegistrationBootMaxMs,
+  }));
 
   results.push(checks.inspectStorage(process.env));
 

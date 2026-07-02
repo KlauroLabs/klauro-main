@@ -108,7 +108,7 @@ async function main(): Promise<void> {
   }
 
   if (args.command === 'doctor' && !args.path) {
-    const report = await runEnvironmentDoctor();
+    const report = await runEnvironmentDoctor({ projectPath: process.cwd() });
     process.stdout.write(args.json ? `${JSON.stringify(report, null, 2)}\n` : `${await formatEnvironmentDoctor(report)}\n`);
     process.exitCode = report.status === 'fail' ? 1 : 0;
     return;
