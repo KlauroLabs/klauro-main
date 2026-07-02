@@ -54,6 +54,47 @@ export interface AppStateData {
   revisionsByProject: Record<string, ProjectRevision[]>;
 }
 
+export interface ProductMapCapability {
+  name: string;
+  description: string;
+  category: 'core' | 'supporting' | 'admin' | 'internal';
+  criticality: 'critical' | 'high' | 'medium' | 'low';
+  entities: string[];
+  tests_present: boolean;
+  risk_level: 'low' | 'medium' | 'high';
+}
+
+export interface ProductMap {
+  identity: {
+    name: string;
+    domain: string;
+    description: string;
+    unanalyzed_languages: Array<{ name: string; files: number; share_of_source: number }>;
+  };
+  capabilities: ProductMapCapability[];
+  data: {
+    entities: number;
+    sensitive: string[];
+    exposure_highlights: Array<{ entity: string; sensitive_fields: string[]; unguarded_paths: number }>;
+  };
+  health: {
+    status?: 'healthy' | 'watch' | 'at-risk' | 'critical';
+    score?: number;
+    tests: { total: number; passing: number; failing: number; coverage_percentage?: number };
+    implementation: { complete: number; partial: number; stubs: number; not_implemented: number; deprecated: number; health_score?: number };
+    top_risks: Array<{ name: string; level: 'low' | 'medium' | 'high'; type: string; recommendation: string }>;
+  };
+}
+
+export interface ProjectAnalysisResponse {
+  status: 'ready' | 'no_analysis';
+  project_id: string;
+  analysis_id?: string;
+  summary?: unknown;
+  product_map?: ProductMap;
+  error?: string;
+}
+
 const configuredBase = import.meta.env.VITE_KLAURO_API_URL as string | undefined;
 // app.klauro.com is a static host with no /api/* routes of its own — the API
 // lives on mcp.klauro.com. If a build ever ships without VITE_KLAURO_API_URL
@@ -151,5 +192,30 @@ export function addWorkspaceMember(token: string, workspaceId: string, input: { 
   return apiRequest(`/api/workspaces/${encodeURIComponent(workspaceId)}/users`, token, {
     method: 'POST',
     body: JSON.stringify(input),
+  });
+}
+
+export function getProjectAnalysis(token: string, projectId: string): Promise<ProjectAnalysisResponse> {
+  return apiRequest(`/api/projects/${encodeURIComponent(projectId)}/analysis`, token);
+}
+
+export interface AnalyzeProjectResult {
+  analysis_id: string;
+  analysis_revision: number;
+  nodes: number;
+  edges: number;
+}
+
+/**
+ * Re-Analyze action: the browser has no filesystem access, so it cannot build
+ * a source snapshot itself (the CLI normally does that). Instead this calls
+ * the account-authed server-side endpoint, which reads the project's
+ * `local_path` directly on the API host, builds the snapshot there, and runs
+ * analysis — reusing the existing project's analysis_id so revisions and the
+ * analysis stay attached to the same project.
+ */
+export function reanalyzeProject(token: string, project: Project): Promise<AnalyzeProjectResult> {
+  return apiRequest(`/api/projects/${encodeURIComponent(project.id)}/reanalyze`, token, {
+    method: 'POST',
   });
 }

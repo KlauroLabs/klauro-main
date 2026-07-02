@@ -27,9 +27,12 @@ import {
   AppStateData,
   createProject,
   createWorkspace,
+  getProjectAnalysis,
   loadAppData,
   Project,
+  ProjectAnalysisResponse,
   ProjectRevision,
+  reanalyzeProject,
   registerAccount,
   signIn,
   Workspace,
@@ -130,10 +133,12 @@ function App() {
             )}
             {route.type === 'project' && selectedProject && selectedWorkspace && (
               <RepoOverview
+                token={token}
                 workspace={selectedWorkspace}
                 project={selectedProject}
                 members={data?.membersByWorkspace[selectedWorkspace.id] || []}
                 revisions={data?.revisionsByProject[selectedProject.id] || []}
+                onReanalyzed={() => refresh()}
               />
             )}
           </section>
@@ -347,30 +352,111 @@ function WorkspaceView(props: {
   );
 }
 
-function RepoOverview(props: { workspace: Workspace; project: Project; members: unknown[]; revisions: ProjectRevision[] }) {
+function RepoOverview(props: { token: string; workspace: Workspace; project: Project; members: unknown[]; revisions: ProjectRevision[]; onReanalyzed: () => void }) {
   const latest = props.revisions[0];
+  const [analysis, setAnalysis] = useState<ProjectAnalysisResponse | null>(null);
+  const [analysisError, setAnalysisError] = useState('');
+  const [reanalyzing, setReanalyzing] = useState(false);
+  const [reanalyzeError, setReanalyzeError] = useState('');
+
+  useEffect(() => {
+    setAnalysis(null);
+    setAnalysisError('');
+    if (!props.project.analysis_id) return;
+    let cancelled = false;
+    getProjectAnalysis(props.token, props.project.id)
+      .then(result => { if (!cancelled) setAnalysis(result); })
+      .catch(error => { if (!cancelled) setAnalysisError(error instanceof Error ? error.message : 'Failed to load analysis'); });
+    return () => { cancelled = true; };
+  }, [props.token, props.project.id, props.project.analysis_id]);
+
+  async function handleReanalyze() {
+    setReanalyzing(true);
+    setReanalyzeError('');
+    try {
+      await reanalyzeProject(props.token, props.project);
+      props.onReanalyzed();
+      const result = await getProjectAnalysis(props.token, props.project.id);
+      setAnalysis(result);
+    } catch (error) {
+      setReanalyzeError(error instanceof Error ? error.message : 'Re-analysis failed');
+    } finally {
+      setReanalyzing(false);
+    }
+  }
+
+  const productMap = analysis?.status === 'ready' ? analysis.product_map : undefined;
+  const capabilities = productMap?.capabilities || [];
+  const entityNames = (productMap?.data.exposure_highlights.map(highlight => highlight.entity) || []).slice(0, 8);
+
   return (
     <div className="repo-overview">
       <div className="workspace-header repo-head">
         <div className="updated"><span className="status-dot" />Updated {latest ? relativeTime(latest.generated_at) : 'after first analysis'}</div>
         <div className="title-row"><h1>{props.project.name}</h1><span className="source-badge">{props.project.repo_url ? 'GitHub' : 'Project'}</span></div>
-        <p>{repoSummary(props.project)}</p>
-        <div className="repo-actions"><button className="button"><Edit2 size={16} /> Edit Summary</button><button className="button primary"><RefreshCcw size={16} /> Re-Analyze</button></div>
+        <p>{productMap?.identity.description || repoSummary(props.project)}</p>
+        <div className="repo-actions">
+          <button className="button"><Edit2 size={16} /> Edit Summary</button>
+          <button className="button primary" onClick={handleReanalyze} disabled={reanalyzing}>
+            <RefreshCcw size={16} /> {reanalyzing ? 'Analyzing…' : 'Re-Analyze'}
+          </button>
+        </div>
+        {reanalyzeError && <p className="error">{reanalyzeError}</p>}
       </div>
       <div className="metric-strip">
-        <Metric label="Capabilities" value={props.project.analysis_id ? 'Available' : 'Pending'} hint="Core business domains" />
+        <Metric label="Capabilities" value={capabilities.length ? String(capabilities.length) : props.project.analysis_id ? 'Available' : 'Pending'} hint="Core business domains" />
         <Metric label="Entry points" value={String(latest?.nodes || 0)} hint="Known graph nodes" />
         <Metric label="Contributors" value={String(props.members.length || '-')} hint="Workspace users" />
         <Metric label="Analysis" value={latest?.source || 'Not run'} hint={latest ? relativeTime(latest.generated_at) : 'Awaiting run'} />
+        {productMap?.health.score !== undefined && (
+          <Metric label="Health" value={`${productMap.health.score}`} hint={productMap.health.status || 'System complexity'} />
+        )}
       </div>
-      <DataSection title="Capabilities" subtitle="Core business functions or infrastructure" items={repoCapabilities(props.project)} />
+      {!props.project.analysis_id && (
+        <EmptyState text="No analysis attached to this project yet. Click Re-Analyze to run Klauro on this repository and populate real capabilities, entities, and health." />
+      )}
+      {props.project.analysis_id && analysisError && (
+        <EmptyState text={`Could not load the analysis for this project: ${analysisError}`} />
+      )}
+      {props.project.analysis_id && analysis?.status === 'no_analysis' && (
+        <EmptyState text="This project has an analysis_id, but no stored analysis was found for it yet. Click Re-Analyze to generate one." />
+      )}
+      <section className="repo-section">
+        <h2>Capabilities <span>Core business functions or infrastructure</span></h2>
+        {capabilities.length ? (
+          <div className="data-grid">
+            {capabilities.slice(0, 12).map(capability => <CapabilityCell key={capability.name} capability={capability} />)}
+          </div>
+        ) : (
+          <EmptyState text={props.project.analysis_id ? 'Analysis attached but no capabilities were detected yet.' : 'Run analysis to discover this repository’s real capabilities.'} />
+        )}
+      </section>
       <section className="repo-section">
         <h2>Critical Flows <span>Analysis-backed revision paths</span></h2>
         <div className="flow-list">
           {props.revisions.length ? props.revisions.slice(0, 4).map(revision => <RevisionFlow key={`${revision.analysis_revision}-${revision.generated_at}`} revision={revision} />) : <EmptyState text="No analyzed revisions yet. Re-analyze this project to populate critical flows from CAS." />}
         </div>
       </section>
-      <DataSection title="Key Entities" subtitle="Available after CAS analysis is attached to this project" items={repoEntities(props.project)} entity />
+      <section className="repo-section">
+        <h2>Key Entities <span>Sensitive/high-exposure data entities from CAS</span></h2>
+        {entityNames.length ? (
+          <div className="entity-grid">
+            {(productMap?.data.exposure_highlights || []).slice(0, 8).map(highlight => <EntityCard key={highlight.entity} name={highlight.entity} detail={`${highlight.sensitive_fields.length} sensitive field(s), ${highlight.unguarded_paths} unguarded path(s)`} />)}
+          </div>
+        ) : (
+          <EmptyState text={props.project.analysis_id ? 'No sensitive data entities were flagged by analysis.' : 'Available after CAS analysis is attached to this project.'} />
+        )}
+      </section>
+    </div>
+  );
+}
+
+function CapabilityCell({ capability }: { capability: { name: string; description: string; criticality: string; category: string; risk_level: string } }) {
+  return (
+    <div className="data-cell">
+      <span className="mini-icon">□</span>
+      <h3>{capability.name}</h3>
+      <p>{capability.description || `${capability.category} capability, ${capability.criticality} criticality, ${capability.risk_level} risk.`}</p>
     </div>
   );
 }
@@ -440,23 +526,8 @@ function RepoCard({ project, revisions, onOpen }: { project: Project; revisions:
   );
 }
 
-function DataSection({ title, subtitle, items, entity = false }: { title: string; subtitle: string; items: string[]; entity?: boolean }) {
-  return (
-    <section className="repo-section">
-      <h2>{title} <span>{subtitle}</span></h2>
-      <div className={entity ? 'entity-grid' : 'data-grid'}>
-        {items.map(item => entity ? <EntityCard key={item} name={item} /> : <DataCell key={item} name={item} />)}
-      </div>
-    </section>
-  );
-}
-
-function DataCell({ name }: { name: string }) {
-  return <div className="data-cell"><span className="mini-icon">□</span><h3>{name}</h3><p>Run or attach a CAS analysis to replace this overview with analysis-backed descriptions, flows, and evidence.</p></div>;
-}
-
-function EntityCard({ name }: { name: string }) {
-  return <div className="entity-card"><span className="cube"><Layers3 size={18} /></span><h3>{name}</h3><p>Pending CAS drilldown</p></div>;
+function EntityCard({ name, detail }: { name: string; detail?: string }) {
+  return <div className="entity-card"><span className="cube"><Layers3 size={18} /></span><h3>{name}</h3><p>{detail || 'No exposure detail available.'}</p></div>;
 }
 
 function RevisionFlow({ revision }: { revision: ProjectRevision }) {
@@ -653,16 +724,6 @@ function projectTags(project: Project) {
   if (/infra|terraform|deploy/.test(value)) tags.push('Infra');
   if (!tags.length) tags.push(projectKind(project));
   return tags.slice(0, 4);
-}
-
-function repoCapabilities(project: Project) {
-  return projectKind(project) === 'Infrastructure'
-    ? ['Deploy Runtime', 'Configure Services', 'Protect Environments', 'Track Changes', 'Map Dependencies', 'Guide Agents']
-    : ['Analyze Codebase', 'Guide Agents', 'Track Changes', 'Preserve Context', 'Expose MCP', 'Visualize System'];
-}
-
-function repoEntities(project: Project) {
-  return project.analysis_id ? ['Source', 'Analysis', 'Workspace', 'Revision', 'Context'] : ['Source', 'Pending Analysis', 'Workspace', 'Revision', 'Context'];
 }
 
 function complexityScore(projects: Project[]) {

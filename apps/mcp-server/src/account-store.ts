@@ -248,6 +248,16 @@ export class AccountStore {
     return project;
   }
 
+  async setProjectAnalysisId(userId: string, projectId: string, analysisId: string): Promise<AccountProject> {
+    const db = await this.load();
+    const project = db.projects.find(candidate => candidate.id === projectId);
+    if (!project) throw httpError(404, 'Project not found');
+    requireMembership(db, userId, project.workspace_id);
+    project.analysis_id = analysisId;
+    await this.save(db);
+    return project;
+  }
+
   private async load(): Promise<AccountDatabase> {
     if (!(await fs.pathExists(this.filePath))) {
       return { version: 1, users: [], workspaces: [], workspace_users: [], projects: [], sessions: [] };

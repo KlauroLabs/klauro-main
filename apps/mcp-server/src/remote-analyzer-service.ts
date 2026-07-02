@@ -6,6 +6,7 @@ import { gunzipSync } from 'node:zlib';
 import { analyzeProjectIncremental, analyzeProjectDeferred } from './analyzer';
 import type { RemoteAnalyzeDiffRequest, RemoteAnalyzeRequest, RemoteAnalyzeResponse, RemoteGreenfieldPreviewRequest, RemoteProjectRevision, RemoteProjectRevisionsResponse, RemoteProposalPreviewRequest, RemoteSyncRequest } from './remote-analyzer-protocol';
 import type { BranchDiffContext, RemoteFileChange, SourceManifest } from './remote-source';
+import { buildSourceSnapshot } from './remote-source';
 import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-preview';
 import { isDirectCliInvocation } from './cli-invocation';
 import { AccountHttpError, AccountStore } from './account-store';
@@ -14,6 +15,7 @@ import { appendClaim, getActiveClaims, getPresence, getStoreDir, readClaimLog } 
 import { appendSecurityAudit, assertSameTenant, getSecurityStoreDir, TenantMismatchError } from './coordination/security';
 import { ingestAndPersist } from './telemetry-fusion';
 import { getAnalysis } from './analyzer';
+import { buildSummary, getProductMap } from './query';
 
 const DEFAULT_PORT = 8787;
 const DEFAULT_MAX_BODY_BYTES = 100 * 1024 * 1024;
@@ -157,7 +159,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 401, { status: 'error', error: 'Sign in required' });
           return;
         }
-        const accountResult = await handleAccountApi(accounts, apiAuthorization.userId, route, request, maxBodyBytes, apiAuthorization.sharedToken);
+        const accountResult = await handleAccountApi(accounts, apiAuthorization.userId, route, request, maxBodyBytes, apiAuthorization.sharedToken, dataDir);
         writeJson(response, accountResult.statusCode, accountResult.body);
         return;
       }
@@ -583,6 +585,7 @@ async function handleAccountApi(
   request: http.IncomingMessage,
   maxBodyBytes: number,
   sharedToken = false,
+  dataDir?: string,
 ): Promise<{ statusCode: number; body: unknown }> {
   if (request.method === 'GET' && route === '/api/me') {
     if (sharedToken) {
@@ -654,6 +657,83 @@ async function handleAccountApi(
     const project = await accounts.getProjectForUser(userId, decodeURIComponent(projectMatch[1]));
     if (!project) throw new AccountHttpError(404, 'Project not found');
     return { statusCode: 200, body: { project } };
+  }
+
+  const projectAnalysisMatch = route.match(/^\/api\/projects\/([^/]+)\/analysis$/);
+  if (projectAnalysisMatch && request.method === 'GET') {
+    if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
+    const project = await accounts.getProjectForUser(userId, decodeURIComponent(projectAnalysisMatch[1]));
+    if (!project) throw new AccountHttpError(404, 'Project not found');
+    if (!project.analysis_id) {
+      return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
+    }
+    try {
+      const cas = await getAnalysis(workspacePath(dataDir, project.analysis_id));
+      const summary = buildSummary(cas, { detail: 'compact' });
+      const productMap = getProductMap(cas);
+      return {
+        statusCode: 200,
+        body: {
+          status: 'ready',
+          project_id: project.id,
+          analysis_id: project.analysis_id,
+          summary,
+          product_map: productMap,
+        },
+      };
+    } catch (error) {
+      return {
+        statusCode: 200,
+        body: {
+          status: 'no_analysis',
+          project_id: project.id,
+          analysis_id: project.analysis_id,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+  }
+
+  const projectReanalyzeMatch = route.match(/^\/api\/projects\/([^/]+)\/reanalyze$/);
+  if (projectReanalyzeMatch && request.method === 'POST') {
+    if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
+    const project = await accounts.getProjectForUser(userId, decodeURIComponent(projectReanalyzeMatch[1]));
+    if (!project) throw new AccountHttpError(404, 'Project not found');
+    const sourcePath = project.local_path || project.repo_url;
+    if (!sourcePath || !(await fs.pathExists(sourcePath))) {
+      throw new AccountHttpError(400, 'Project has no analyzable local_path on this server. Attach a local_path that exists on the API host, or use the Klauro CLI to push an analysis for this project.');
+    }
+    const analysisId = project.analysis_id || makeAnalysisId(project.local_path || project.id);
+    const workspace = workspacePath(dataDir, analysisId);
+    const snapshot = await buildSourceSnapshot(sourcePath);
+    await fs.remove(workspace);
+    await fs.ensureDir(workspace);
+    await writeSnapshot(workspace, snapshot.files);
+    const result = await analyzeProjectIncremental(workspace);
+    const response: RemoteAnalyzeResponse = {
+      status: 'success',
+      analysis_id: analysisId,
+      analysis_revision: Date.now(),
+      analysis_type: result.wasFullRebuild ? 'full' : 'incremental',
+      base_commit: snapshot.base_commit,
+      manifest: snapshot.manifest,
+      cas: result.output,
+      change_report: result.changeReport,
+    };
+    await appendProjectRevision(dataDir, response, 'local_commit_submission');
+    if (project.analysis_id !== analysisId) {
+      await accounts.setProjectAnalysisId(userId, project.id, analysisId);
+    }
+    return {
+      statusCode: 200,
+      body: {
+        status: 'success',
+        analysis_id: analysisId,
+        analysis_revision: response.analysis_revision,
+        nodes: response.cas.nodes.length,
+        edges: response.cas.edges.length,
+      },
+    };
   }
 
   throw new AccountHttpError(404, 'Not found');
