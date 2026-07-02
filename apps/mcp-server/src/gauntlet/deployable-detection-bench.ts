@@ -44,6 +44,15 @@
  *      one with NO ship artifact and not imported by the other. EXPECT it
  *      stays a SEPARATE (possibly flagged possible_bundle) application, NOT
  *      forced into bundled_into.
+ *   6. rust-messy-workspace — the shipped-gate trap: a Cargo workspace with
+ *      8 bins. client+client-service are packaged by ONE top-level Dockerfile
+ *      + build-installer.sh with ENTRYPOINT=client; gateway and server each
+ *      have their OWN Dockerfile; smoke-test/demo-cast/bench-tool/scratch are
+ *      plain [[bin]] crates referenced by NO ship artifact anywhere. EXPECT 3
+ *      top-level deployables: client (client-service bundled_into client),
+ *      gateway, server. The 4 unshipped bins must be deployable:false
+ *      (runnable-not-shipped) — RUNNABLE is not SHIPPED. crates/shared rolls
+ *      up (not its own deployable).
  */
 
 import * as path from 'path';
@@ -78,6 +87,7 @@ export const FIXTURES: FixtureCase[] = [
   { id: 'next-fullstack', dir: path.join(FIXTURES_ROOT, 'next-fullstack'), workspaceName: 'next-fullstack-fixture' },
   { id: 'go-cmd-monorepo', dir: path.join(FIXTURES_ROOT, 'go-cmd-monorepo'), workspaceName: 'go-cmd-monorepo-fixture' },
   { id: 'evidence-gated-negative', dir: path.join(FIXTURES_ROOT, 'evidence-gated-negative'), workspaceName: 'evidence-gated-negative-fixture' },
+  { id: 'rust-messy-workspace', dir: path.join(FIXTURES_ROOT, 'rust-messy-workspace'), workspaceName: 'rust-messy-workspace-fixture' },
 ];
 
 export interface DeployableDetectionBenchResult {

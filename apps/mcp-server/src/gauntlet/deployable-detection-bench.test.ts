@@ -155,3 +155,63 @@ test('evidence-gated-negative: unshipped sibling stays separate, NOT force-merge
     // possible_bundle for human review) but never silently merged.
   }
 });
+
+test('rust-messy-workspace: shipped-gate collapses unshipped bins, client+client-service bundle, gateway+server separate', async () => {
+  _resetDeployableDetectionBenchCache();
+  const { applications } = await runDeployableDetectionBench('rust-messy-workspace');
+
+  const client = applications.find(a => a.name === 'client' || a.path_hint?.endsWith('bin/client'));
+  const clientService = applications.find(a => a.name === 'client-service' || a.path_hint?.endsWith('bin/client-service'));
+  const gateway = applications.find(a => a.name === 'gateway' || a.path_hint?.endsWith('bin/gateway'));
+  const server = applications.find(a => a.name === 'server' || a.path_hint?.endsWith('bin/server'));
+  const shared = applications.find(a => a.name === 'shared' || a.path_hint?.includes('crates/shared'));
+  const unshippedNames = ['smoke-test', 'demo-cast', 'bench-tool', 'scratch'];
+  const unshipped = unshippedNames.map(name => applications.find(a => a.name === name || a.path_hint?.endsWith(`bin/${name}`)));
+
+  // BASELINE: all 8 bins should be discovered as application surfaces.
+  assert.ok(client, 'expected a client application surface to be detected');
+  assert.ok(clientService, 'expected a client-service application surface to be detected');
+  assert.ok(gateway, 'expected a gateway application surface to be detected');
+  assert.ok(server, 'expected a server application surface to be detected');
+  for (const [i, app] of unshipped.entries()) {
+    assert.ok(app, `expected ${unshippedNames[i]} application surface to be detected`);
+  }
+
+  // BASELINE: crates/shared is a library, not a deployable ship unit.
+  if (shared) {
+    assert.notEqual(shared.deployable, true, 'crates/shared should not be its own deployable (it rolls up)');
+  }
+
+  // BOUNDARY: client-service is bundled into client (top-level Dockerfile +
+  // build-installer.sh, ENTRYPOINT=client).
+  assert.equal(
+    (clientService as any)?.bundled_into,
+    client?.id,
+    'expected client-service.bundled_into === client.id (top-level Dockerfile ENTRYPOINT=client bundles both)',
+  );
+
+  // BOUNDARY: gateway and server each have their own Dockerfile — independent
+  // ship units, not bundled into client or each other.
+  assert.equal((gateway as any)?.bundled_into, undefined, 'gateway should not be bundled into anything (own Dockerfile)');
+  assert.equal((server as any)?.bundled_into, undefined, 'server should not be bundled into anything (own Dockerfile)');
+  assert.equal(gateway?.deployable, true, 'gateway should be deployable (own Dockerfile)');
+  assert.equal(server?.deployable, true, 'server should be deployable (own Dockerfile)');
+
+  // SHIPPED-GATE (the core assertion of this fixture): the 4 unshipped bins
+  // are RUNNABLE (Cargo [[bin]]) but appear in NO ship artifact anywhere —
+  // they must be deployable:false, not silently counted as ship units.
+  for (const [i, app] of unshipped.entries()) {
+    if (!app) continue;
+    assert.notEqual(app.deployable, true, `${unshippedNames[i]} is runnable-only (no ship artifact references it) and must not be deployable:true`);
+    assert.ok(
+      (app.boundary_evidence || []).some((line: string) => line.startsWith('runnable-not-shipped:')),
+      `${unshippedNames[i]} should carry runnable-not-shipped boundary_evidence, got: ${JSON.stringify(app.boundary_evidence)}`,
+    );
+  }
+
+  // BOUNDARY: exactly 3 top-level deployables — client (with client-service
+  // folded in), gateway, server. The 4 unshipped bins must not inflate the count.
+  const topLevel = topLevelDeployables(applications);
+  const topLevelNames = topLevel.map(a => a.name).sort();
+  assert.equal(topLevel.length, 3, `expected 3 top-level deployables, got ${topLevel.length}: ${topLevelNames.join(', ')}`);
+});

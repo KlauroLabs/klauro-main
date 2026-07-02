@@ -9948,8 +9948,35 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
   for (const repository of repositories) {
     const projectId = codebaseId(repository.path);
     const evidenceList = deployableEvidenceFromCas(repository);
+    // Keep the BEST (lowest-tier) evidence per root_path — a root can have
+    // both its own Tier-1 ship artifact (e.g. bin/gateway/Dockerfile) and a
+    // Tier-2 bin entry (Cargo [[bin]] under the same root). Naive last-write-
+    // wins would silently drop the Tier-1 evidence whenever the Tier-2 entry
+    // for the same root_path happens to sort after it in evidenceList, which
+    // both hides real ship artifacts (gateway wrongly demoted) and produces
+    // the "wrong primary" symptom (a bundle-primary's own resolution.tier
+    // reads as 2 instead of 1). Merge evidence lines instead of discarding.
     const evidenceByRoot = new Map<string, DeployableEvidence>();
-    for (const evidence of evidenceList) evidenceByRoot.set(evidence.root_path, evidence);
+    for (const evidence of evidenceList) {
+      const existing = evidenceByRoot.get(evidence.root_path);
+      if (!existing) {
+        evidenceByRoot.set(evidence.root_path, { ...evidence });
+        continue;
+      }
+      if (evidence.tier < existing.tier) {
+        evidenceByRoot.set(evidence.root_path, {
+          ...evidence,
+          evidence: mergeStrings(evidence.evidence, existing.evidence),
+          ships_paths: mergeStrings(evidence.ships_paths || [], existing.ships_paths || []),
+        });
+      } else if (evidence.tier > existing.tier) {
+        existing.evidence = mergeStrings(existing.evidence, evidence.evidence);
+        existing.ships_paths = mergeStrings(existing.ships_paths || [], evidence.ships_paths || []);
+      } else {
+        existing.evidence = mergeStrings(existing.evidence, evidence.evidence);
+        existing.ships_paths = mergeStrings(existing.ships_paths || [], evidence.ships_paths || []);
+      }
+    }
 
     const appsForRepo = applications.filter(app => app.codebase_id === projectId);
     if (appsForRepo.length === 0) continue;
@@ -10064,6 +10091,86 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
         ]);
       }
     }
+
+    applyShippedGate(appsForRepo, resolutions, rootBundleTargets);
+  }
+}
+
+/** THE SHIPPED-GATE: RUNNABLE is not the same thing as SHIPPED.
+ *
+ *  A Cargo [[bin]] / `func main` / package.json bin is a Tier-2/3 RUNNABLE
+ *  candidate — buildable, testable, sometimes even documented — but that
+ *  alone does not make it a ship unit. Real repos accumulate test/demo/
+ *  utility binaries (smoke-test, demo-cast, bench-tool, scratch, ...) that
+ *  build fine and never appear in any Dockerfile/compose/k8s/installer/CI-
+ *  deploy artifact. Flagging every one of those `deployable:true` produces
+ *  an unusable deployable list (e.g. 18 "deployables" for a workspace that
+ *  ships 1-3 things).
+ *
+ *  Runs AFTER bundling resolution (bundled_into is already set for members
+ *  a Tier-1 artifact names) so this only has to decide the apps still
+ *  standing on their own. A Tier-2/3 app keeps deployable:true ONLY IF:
+ *   (a) it reached Tier 1 itself (owns a Dockerfile/compose/k8s/installer/
+ *       CI-deploy artifact) — already true, left untouched;
+ *   (b) it is bundled_into another app (a Tier-1 artifact named it) —
+ *       already true, left untouched; the PRIMARY it bundles into keeps
+ *       deployable:true, the member itself is not "top-level" but its
+ *       deployable flag is irrelevant once bundled_into is set (callers
+ *       should read topLevelDeployables()); we leave `deployable` as-is
+ *       for bundled members since bundled_into already excludes them from
+ *       the top-level count;
+ *   (c) it is the sole runnable in the workspace, or the workspace's root
+ *       app (single-package repo case) — nothing else could possibly be
+ *       "the" deployable, so keep it;
+ *  Otherwise: demote to deployable:false with boundary_evidence
+ *  `runnable-not-shipped:no-tier1-artifact-references-it`. This is a
+ *  general principle (evidence-gated), not tuned to any one repo — it
+ *  fires whenever a Tier-2/3 candidate has no Tier-1 sibling that
+ *  references it and there exists at least one OTHER runnable in the
+ *  workspace (so a genuinely single-binary repo is never gated out).
+ */
+function applyShippedGate(
+  appsForRepo: SystemApplication[],
+  resolutions: Map<string, DeployableResolution>,
+  rootBundleTargets: Map<string, { primaryAppId: string; evidence: DeployableEvidence }>,
+): void {
+  // Tier-4 (folder-heuristic) apps carry NO real evidence either way — they
+  // exist only because tiers 1-3 were silent for that root. Gating them
+  // would punish the absence of evidence rather than act on positive
+  // evidence, so the shipped-gate only ever considers genuine Tier-2/3
+  // candidates (bin/server-entry/package identity from real manifests).
+  const runnableApps = appsForRepo.filter(app => {
+    const resolution = resolutions.get(app.id);
+    return resolution && (resolution.tier === 2 || resolution.tier === 3);
+  });
+
+  // Single-package repo / sole runnable: nothing to gate against, keep as-is.
+  if (runnableApps.length <= 1) return;
+
+  for (const app of runnableApps) {
+    const resolution = resolutions.get(app.id)!;
+    if (app.bundled_into) continue; // (b) named in a Tier-1 artifact's ships_paths
+    if (rootBundleTargets.has(app.id)) continue; // (a'): bundle PRIMARY — a root Tier-1 artifact's entrypoint member is shipped by definition
+
+    // Not gated as far as bundling goes — but is it ACTUALLY referenced by
+    // some Tier-1 artifact that just didn't attribute it via containment or
+    // root-bundle matching (e.g. named in ships_paths of a non-root Tier-1
+    // artifact elsewhere in the repo)? Re-check directly for safety/symmetry
+    // with the bundling pass above.
+    const referencedByTier1 = appsForRepo.some(other => {
+      if (other.id === app.id) return false;
+      const otherResolution = resolutions.get(other.id);
+      return otherResolution?.tier === 1 && otherResolution.shipsPaths.some(shipped => bundleNameMatches(shipped, app));
+    });
+    if (referencedByTier1) continue;
+
+    if (!app.deployable) continue; // nothing to demote
+
+    app.deployable = false;
+    app.boundary_evidence = mergeStrings(app.boundary_evidence || [], [
+      'runnable-not-shipped:no-tier1-artifact-references-it',
+      `tier-${resolution.tier}-runnable-only:${resolution.kind}`,
+    ]);
   }
 }
 
