@@ -1,7 +1,7 @@
 import * as path from 'path';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { listAnalyses, getAnalysisEntry, type AnalysisEntry } from './storage';
-import { getAnalysis } from './analyzer';
+import { getAnalysis, analyzeProjectIncremental } from './analyzer';
 import { evaluateAgentReadiness, type AgentTask } from './agent-adoption';
 import { classifyAnalysisProfile } from './analysis-profile';
 import { summarizeAnalysisFreshness, type AnalysisFreshnessSummary } from './freshness';
@@ -79,13 +79,43 @@ export async function resolveAgentAnalysis(input: {
   requested_path: string;
   selected_path: string | null;
   analysis_freshness?: AnalysisFreshnessSummary;
+  refreshed?: boolean;
   selected?: AgentAnalysisCandidate;
   candidates: AgentAnalysisCandidate[];
   recommendation: string;
 }> {
-  const map = await getAgentProjectMap({ path: input.path, task: input.task, limit: 12 });
+  // Act on staleness before scoring candidates, not just after: this was
+  // previously "compute analysis_freshness for display" only — the returned
+  // candidate list and node counts reflected whatever was last on disk even
+  // when staleness was non-fresh. resolve_agent_analysis is documented as the
+  // mandatory first call for any agent, so this is the highest-leverage place
+  // to guarantee freshness (see docs/SPEC-FRESHNESS.md). The refresh is the
+  // existing changed-file-only incremental path (analyzeProjectIncremental) —
+  // cheap when nothing relevant changed, bounded when something did.
+  let refreshed = false;
+  const initialMap = await getAgentProjectMap({ path: input.path, task: input.task, limit: 12 });
+  let bestGuessPath = initialMap.selected?.path || normalizePath(input.path);
+  const initialEntry = initialMap.selected ? await getAnalysisEntry(initialMap.selected.path) : null;
+  const initialFreshness = initialMap.selected
+    ? summarizeAnalysisFreshness(initialMap.selected.path, initialEntry?.analyzed_at)
+    : null;
+
+  if (initialFreshness && initialFreshness.staleness !== 'fresh') {
+    try {
+      await analyzeProjectIncremental(bestGuessPath);
+      refreshed = true;
+    } catch {
+      // Refresh failure (e.g. path no longer exists) falls back to the
+      // pre-refresh candidate map computed above rather than throwing —
+      // resolve_agent_analysis should degrade gracefully, not hard-fail.
+    }
+  }
+
+  const map = refreshed ? await getAgentProjectMap({ path: input.path, task: input.task, limit: 12 }) : initialMap;
   const selected = map.selected;
-  const selectedEntry = selected ? await getAnalysisEntry(selected.path) : null;
+  const selectedEntry = selected
+    ? (refreshed ? await getAnalysisEntry(selected.path) : initialEntry)
+    : null;
   const freshness = selected
     ? summarizeAnalysisFreshness(selected.path, selectedEntry?.analyzed_at)
     : null;
@@ -99,6 +129,7 @@ export async function resolveAgentAnalysis(input: {
     requested_path: input.path,
     selected_path: selected?.path || null,
     ...(freshness ? { analysis_freshness: freshness } : {}),
+    refreshed,
     selected,
     candidates: map.candidates,
     recommendation: freshness && freshness.staleness !== 'fresh'

@@ -170,7 +170,16 @@ function collectGitCandidates(projectPath: string, analyzedAtIso: string): { cha
   const changed = new Set<string>();
   const deleted = new Set<string>();
 
-  for (const line of runGit(projectPath, ['status', '--porcelain']).split('\n')) {
+  // `-uall` (as opposed to the default `-unormal`) makes git enumerate every
+  // untracked FILE individually instead of collapsing a brand-new, entirely
+  // untracked directory into a single `?? some/new/dir/` line. Without this, a
+  // freshly-added module (e.g. a new coordination/ directory with new source
+  // files, none of them tracked yet) is invisible to isSourceLikeFile below —
+  // it only ever sees the directory path, which has no recognized extension —
+  // and the freshness summary silently reports "fresh" even though a whole new
+  // module was just added. This was a real gap: added files were only picked
+  // up once at least one file in the new directory had been staged/tracked.
+  for (const line of runGit(projectPath, ['status', '--porcelain', '-uall']).split('\n')) {
     if (line.length < 4) continue;
     const status = line.slice(0, 2);
     let filePath = line.slice(3).trim();

@@ -17,6 +17,15 @@ export interface SemanticSearchOptions {
   files?: string[];
   types?: string[];
   mode?: 'lexical' | 'semantic' | 'hybrid';
+  /**
+   * Freshness-gated CAS loader override. Callers on the agent-entry path (e.g.
+   * search_nodes) pass getFreshAnalysisForAgent here so semantic/hybrid search
+   * reads a refreshed CAS instead of the raw stored one; defaults to the plain
+   * getAnalysis(path) for callers that don't need the guarantee. Keeping this as
+   * an injected function avoids a circular import between semantic-search.ts and
+   * server.ts (the freshness gate lives in server.ts).
+   */
+  getCas?: (projectPath: string) => Promise<CASOutput>;
 }
 
 export interface SemanticSearchResult {
@@ -59,7 +68,7 @@ export async function semanticSearch(
   options: SemanticSearchOptions = {},
 ): Promise<SemanticSearchResponse> {
   const limit = options.limit && options.limit > 0 ? options.limit : 25;
-  const cas = await getAnalysis(projectPath);
+  const cas = await (options.getCas ? options.getCas(projectPath) : getAnalysis(projectPath));
   const { config } = await loadKlauroConfig(projectPath);
 
   const degraded = (reason: string): SemanticSearchResponse => ({

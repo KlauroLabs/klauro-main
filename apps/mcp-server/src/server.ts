@@ -77,6 +77,14 @@ Coordinate before you act (multi-agent workspaces): before starting any non-triv
 
 Trust, then verify: every result is stamped to a commit/branch. If get_file_nodes returns nothing for a file you can see on disk, it is likely on an unmerged branch — re-analyze or read that one file. On any tool error, fall back to reading. Don't lean on a single tool; no one view is the whole picture.`;
 
+// Freshness-gated read: this is now the DEFAULT way any agent-entry tool reads
+// CAS, not a special agent-only path (see docs/SPEC-FRESHNESS.md). It checks the
+// cheap (~sub-100ms, 5s-memoized) git-diff based staleness summary and, only when
+// stale, runs analyzeProjectIncremental — which is changed-file-only and
+// content-hash cached, so the common case (nothing changed) costs one git scan,
+// not a re-parse. The name is kept as getFreshAnalysisForAgent for call-site
+// continuity; every agent-entry tool should route through this instead of the
+// raw getAnalysis(path).
 async function getFreshAnalysisForAgent(projectPath: string) {
   try {
     const cas = await getAnalysis(projectPath);
@@ -299,6 +307,20 @@ function enableToolCallLogging(server: McpServer): void {
 
 function json(data: unknown): { content: Array<{ type: 'text'; text: string }> } {
   return { content: [{ type: 'text', text: serializeToolResponse(data) }] };
+}
+
+// Stamp the freshness guarantee onto agent-entry tool responses, mirroring the
+// existing ai_enrichment progressive-serve field pattern: freshness_checked_at
+// makes "no agent-entry response is older than the time since the last
+// committed/working-tree change" (SPEC-FRESHNESS.md section 2e) observable
+// per-call instead of only asserted in docs. Only applied to responses that are
+// plain objects, since some gated tools (e.g. an error object) shouldn't be
+// mutated.
+function withFreshnessStamp<T>(data: T): T {
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    return { ...data, freshness_checked_at: new Date().toISOString() };
+  }
+  return data;
 }
 
 function compactText(value: unknown, max = 180): string | undefined {
@@ -1301,8 +1323,10 @@ function registerTools(server: McpServer) {
       inputSchema: { path: z.string().describe('Project path (must be previously analyzed)'), track: TRACK_PARAM } as any,
     } as any,
     async ({ path, track }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path, track ? { track } : undefined);
-      return json(query.buildSummary(cas));
+      // track-scoped reads (working/committed/incoming) bypass the freshness gate:
+      // getFreshAnalysisForAgent only knows about the default track's CAS.
+      const cas = track ? await getAnalysis(path, { track }) : await getFreshAnalysisForAgent(path);
+      return json(withFreshnessStamp(query.buildSummary(cas)));
     })
   );
 
@@ -1314,8 +1338,8 @@ function registerTools(server: McpServer) {
       inputSchema: { path: z.string().describe('Project path') } as any,
     } as any,
     async ({ path }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
-      return json(query.getSystemOverview(cas));
+      const cas = await getFreshAnalysisForAgent(path);
+      return json(withFreshnessStamp(query.getSystemOverview(cas)));
     })
   );
 
@@ -1332,8 +1356,8 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, target, files, limit }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
-      return json(agentAdoption.buildArchitectureContextForAgent(cas, { target, files, limit }));
+      const cas = await getFreshAnalysisForAgent(path);
+      return json(withFreshnessStamp(agentAdoption.buildArchitectureContextForAgent(cas, { target, files, limit })));
     })
   );
 
@@ -3130,10 +3154,14 @@ function registerTools(server: McpServer) {
     async ({ path, query: q, type, category, level, limit, mode }: any) => withErrorHandling(async () => {
       const resolvedMode = mode || 'hybrid';
       if (resolvedMode === 'lexical') {
-        const cas = await getAnalysis(path);
+        // searchNodes returns a bare array (existing contract) — not stamped
+        // with freshness_checked_at to avoid a breaking shape change; the
+        // freshness guarantee still applies, it's just not observable on this
+        // particular branch the way it is on object-shaped responses.
+        const cas = await getFreshAnalysisForAgent(path);
         return json(query.searchNodes(cas, q, { type, category, level, limit }));
       }
-      return json(await semanticSearch(path, q, { type, category, level, limit }));
+      return json(withFreshnessStamp(await semanticSearch(path, q, { type, category, level, limit, getCas: getFreshAnalysisForAgent })));
     })
   );
 
@@ -3154,7 +3182,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, query: q, type, category, level, types, files, limit }: any) => withErrorHandling(async () => {
-      return json(await semanticSearch(path, q, { type, category, level, types, files, limit }));
+      return json(withFreshnessStamp(await semanticSearch(path, q, { type, category, level, types, files, limit, getCas: getFreshAnalysisForAgent })));
     })
   );
 
@@ -3479,7 +3507,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, target, task_type, include }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
+      const cas = await getFreshAnalysisForAgent(path);
       const context: any = query.getCodingContext(cas, target, { task_type, include });
       // WS-A (minimal, safe merge): surface fused runtime facts for the
       // resolved target node, if any were persisted via telemetry ingest.
@@ -3493,7 +3521,27 @@ function registerTools(server: McpServer) {
         const matches = fused?.facts?.filter((f) => f.node_id === nodeId) || [];
         if (matches.length > 0) context.fused_runtime_facts = matches;
       }
-      return json(context);
+      // Per-file staleness surface (additive, non-blocking): getFreshAnalysisForAgent
+      // just refreshed this CAS, so the changed-file set is normally empty here — it
+      // is only non-empty when a refresh couldn't complete synchronously (e.g. a huge
+      // diff tripped the full-rebuild path). Attach the specific reason to the node
+      // instead of only a project-wide banner, so the agent knows exactly what's
+      // uncertain rather than an undifferentiated stale/fresh flag.
+      const nodeFile = context?.node?.source?.file;
+      if (nodeFile) {
+        const postRefreshSummary = freshness.summarizeAnalysisFreshness(path, cas.analysis_timestamp);
+        const normalizedFile = String(nodeFile).replace(/\\/g, '/');
+        const stillChanged = postRefreshSummary?.files_changed_since_analysis.examples.some(
+          (f) => normalizedFile.endsWith(f) || f.endsWith(normalizedFile)
+        );
+        if (stillChanged) {
+          context.may_be_stale = {
+            value: true,
+            reason: `${nodeFile} changed since the last completed analysis and a synchronous refresh could not fully resolve it (likely an in-progress full rebuild after a large diff). Treat this node's file/line citations as provisional.`,
+          };
+        }
+      }
+      return json(withFreshnessStamp(context));
     })
   );
 

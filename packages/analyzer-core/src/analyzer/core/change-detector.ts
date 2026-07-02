@@ -375,7 +375,17 @@ export class ChangeDetector {
   }
 
   private getUncommittedChanges(): Array<{ file: string; status: string }> {
-    const output = execFileSync('git', ['status', '--porcelain=v1', '-z'], {
+    // `-uall` (vs. git's default `-unormal`) makes git enumerate every
+    // untracked FILE individually instead of collapsing a brand-new, entirely
+    // untracked directory into a single `?? some/new/dir/` entry. Without
+    // this, adding a whole new module (e.g. a new `coordination/` directory
+    // with new source files, none of them tracked yet) was INVISIBLE to
+    // change detection: the entry's path was the directory, isTrackedAnalysisFile
+    // has no extension to match against a directory, so it was silently
+    // dropped and the incremental analysis returned "no changes" even though
+    // real new files existed on disk. This is the exact "new files are
+    // invisible" gap described in docs/SPEC-FRESHNESS.md.
+    const output = execFileSync('git', ['status', '--porcelain=v1', '-z', '-uall'], {
       cwd: this.projectPath,
       stdio: 'pipe',
       maxBuffer: 1024 * 1024 * 50,

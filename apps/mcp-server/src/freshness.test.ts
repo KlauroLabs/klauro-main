@@ -269,7 +269,13 @@ test('agent context stays fresh with no warning when nothing changed', async () 
   });
 });
 
-test('resolve_agent_analysis includes analysis freshness for the selected analysis', async () => {
+test('resolve_agent_analysis refreshes a stale analysis before returning (acts on staleness, not just advisory)', async () => {
+  // SPEC-FRESHNESS.md: resolve_agent_analysis is documented as the mandatory
+  // first call for any agent, so it must ACT on staleness rather than only
+  // reporting it as an FYI field the caller can ignore. Before this change,
+  // this same scenario asserted staleness === 'aging' as the final answer;
+  // now the tool triggers an incremental refresh (changed-file-only, cheap)
+  // and the returned freshness reflects the POST-refresh state.
   const previousStorage = process.env.KLAURO_STORAGE_PATH;
   await withTempDir('klauro-freshness-resolve-', async root => {
     const storage = path.join(root, 'storage');
@@ -288,10 +294,11 @@ test('resolve_agent_analysis includes analysis freshness for the selected analys
       const resolution = await resolveAgentAnalysis({ path: project });
 
       assert.equal(resolution.selected_path, project);
+      assert.equal(resolution.refreshed, true);
       assert.ok(resolution.analysis_freshness);
-      assert.equal(resolution.analysis_freshness!.staleness, 'aging');
-      assert.equal(resolution.analysis_freshness!.files_changed_since_analysis.count, 1);
-      assert.match(resolution.recommendation, /analyze_codebase/);
+      assert.equal(resolution.analysis_freshness!.staleness, 'fresh');
+      assert.equal(resolution.analysis_freshness!.files_changed_since_analysis.count, 0);
+      assert.match(resolution.recommendation, /best matching analysis/);
     } finally {
       if (previousStorage === undefined) delete process.env.KLAURO_STORAGE_PATH;
       else process.env.KLAURO_STORAGE_PATH = previousStorage;
