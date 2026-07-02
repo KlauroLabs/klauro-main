@@ -1773,6 +1773,97 @@ Replay stored runtime observations for a trace ID.
 
 **Returns:** Ordered observations for the trace, ingested/simulated counts, matched/unmatched counts, and CAS static IDs touched by the trace.
 
+## Multi-Agent Coordination
+
+Net-new (see [`../SPEC-COORDINATION-FABRIC.md`](../SPEC-COORDINATION-FABRIC.md) for the full design and [`../COORDINATION-FABRIC.md`](../COORDINATION-FABRIC.md) for the user-facing overview). These tools let multiple agents (same machine or across machines) sharing a workspace announce intent, see each other's active work, and get a preflight collision check before editing overlapping paths/symbols/capabilities. The local tier is a same-machine, file-backed claim log (`apps/mcp-server/src/coordination/local-store.ts`) with sub-second fs-event awareness; cross-machine sync goes over HTTP (`POST/GET /v1/coordination/*` on the remote analyzer service). MCP has no server-push transport, so cross-tool awareness is poll-based: call `get_active_agents` / `get_in_flight_changes` / `check_collision` again to see deltas.
+
+### `claim_work`
+
+Announce intent to work on paths/symbols/a capability in a workspace before starting non-trivial changes. Appends the claim and arbitrates it against every other active claim in that workspace.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `workspace` | string | yes | Workspace or project id/path to coordinate within |
+| `agent_id` | string | yes | Stable identifier for the calling agent/session |
+| `intent` | string | yes | Short description of the work being claimed |
+| `agent_kind` | string | no | `claude`, `cursor`, `codex`, `human`, or `other` (default `other`) |
+| `paths` | string[] | no | File/dir paths this work will touch |
+| `symbols` | string[] | no | Symbol/node ids this work will touch |
+| `capability` | string | no | Capability or feature name this work implements |
+| `ttl_ms` | number | no | Claim TTL in ms before considered stale (default 5 minutes) |
+| `base_commit` | string | no | Base commit for the claim |
+| `branch` | string | no | Branch for the claim |
+| `claim_id` | string | no | Reuse an existing claim id to refresh/update it instead of creating a new one |
+
+**Returns:** `claim_id`, `seq`, `verdict` (`granted`, `duplicate`, or `conflict`), `kind`, `evidence`, and — on `duplicate`/`conflict` — the other agent's `with_claim` (id, agent_id, intent, scope). On `duplicate`, another active claim already covers the same capability; adopt or defer. On `conflict`, path/symbol/blast-radius overlaps; coordinate or rebase. Call `heartbeat_work` while working and `release_work` when done or handing off.
+
+### `release_work`
+
+Mark a claim released (completed or handed off), freeing its paths/symbols/capability for other agents to claim without conflict.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `workspace` | string | yes | Workspace or project id/path |
+| `claim_id` | string | yes | Claim id to release |
+
+**Returns:** `status` (`released` or `not_found`), `claim_id`, `seq`.
+
+### `heartbeat_work`
+
+Refresh a claim's heartbeat so it stays active (does not expire) while work is in progress. Call periodically for long-running tasks.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `workspace` | string | yes | Workspace or project id/path |
+| `claim_id` | string | yes | Claim id to heartbeat |
+
+**Returns:** `status` (`heartbeat` or `not_found`), `claim_id`, `seq`, `heartbeat_at`.
+
+### `get_active_agents`
+
+Live agent presence roster for a workspace: which agents currently hold active (non-expired) claims, their scope (paths/symbols/capability), and last-seen time. Use before starting work to see who else is already active.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `workspace` | string | yes | Workspace or project id/path |
+
+**Returns:** Presence roster of active agents with their claimed scope and staleness.
+
+### `check_collision`
+
+Read-only preflight: does a proposed (not-yet-claimed) set of paths/symbols/capability collide with any other active agent in the workspace? Runs the same duplicate/overlap/blast-radius detectors as `claim_work` but takes no claim.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `workspace` | string | yes | Workspace or project id/path |
+| `paths` | string[] | no | Proposed paths |
+| `symbols` | string[] | no | Proposed symbols |
+| `capability` | string | no | Proposed capability |
+
+**Returns:** `verdict`, `kind`, `evidence`, `with_claim` (the colliding claim, if any), `edit_lock_conflicts` (soft edit-lock hits on the proposed paths), and `collisions` (full `CollisionReport`: duplicates, overlaps, drifts, blast-radius intersections). Use this to decide whether to call `claim_work` at all.
+
+### `get_in_flight_changes`
+
+Which active agents currently have a claim/edit-lock touching a given path, and their stated intent — answers "who is changing this and why" in a shared workspace.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `workspace` | string | yes | Workspace or project id/path |
+| `path` | string | yes | File or directory path to check |
+| `exclude_self` | string | no | agent_id to exclude from results |
+
+**Returns:** Attribution: which agent(s) have an active claim/edit-lock over the path, and their stated intent.
+
+### `subscribe_workspace`
+
+Start (or confirm) live local-peer awareness for a workspace: same-machine claim-log changes are watched via fs events.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `workspace` | string | yes | Workspace or project id/path |
+
+**Returns:** `status: "watching"`, `workspace`, and a note that MCP has no server-push transport (stdio) — poll `get_active_agents`/`get_in_flight_changes`/`check_collision` for deltas, or use HTTP `GET /v1/coordination/state?workspace=&since=` for cross-machine polling. See `../COORDINATION-FABRIC.md` for the HTTP `/v1/coordination/*` routes (`claim`, `release`, `heartbeat`, `state`, `stream`, `in-flight`) and the `/v1/telemetry/ingest` route used by telemetry fusion.
+
 ### `get_analysis_facts`
 
 Evidence-backed facts behind CAS objects.
