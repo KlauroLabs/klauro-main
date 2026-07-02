@@ -51,16 +51,16 @@ test('reciprocal-rank fusion is deterministic for identical inputs', () => {
     { nodeId: 'n5', score: 0.40 },
   ];
 
-  const first = fuseAndRank(cas, query, vectorHits, lexicalHits, {}, 10, RERANK);
-  const second = fuseAndRank(cas, query, vectorHits, lexicalHits, {}, 10, RERANK);
+  const first = fuseAndRank(cas, query, vectorHits, lexicalHits, { detail: 'full' }, 10, RERANK);
+  const second = fuseAndRank(cas, query, vectorHits, lexicalHits, { detail: 'full' }, 10, RERANK);
 
   assert.deepEqual(
     first.map(r => r.node_id),
     second.map(r => r.node_id),
   );
   assert.deepEqual(
-    first.map(r => r.scores.final),
-    second.map(r => r.scores.final),
+    first.map(r => r.scores!.final),
+    second.map(r => r.scores!.final),
   );
   assert.ok(first.length > 0);
 });
@@ -80,9 +80,9 @@ test('fusion rewards nodes ranked highly by both lexical and vector signals', ()
     { nodeId: 'n4', score: 0.10 },
   ];
 
-  const fused = fuseAndRank(cas, query, vectorHits, lexicalHits, {}, 10, RERANK);
+  const fused = fuseAndRank(cas, query, vectorHits, lexicalHits, { detail: 'full' }, 10, RERANK);
   assert.equal(fused[0].node_id, lexicalHits[0].id);
-  assert.ok(fused[0].scores.final >= fused[fused.length - 1].scores.final);
+  assert.ok(fused[0].scores!.final >= fused[fused.length - 1].scores!.final);
 });
 
 test('exact name match lands inside the top-K window even with weak signals', () => {
@@ -100,7 +100,7 @@ test('exact name match lands inside the top-K window even with weak signals', ()
   }
 
   const limit = 5;
-  const results = fuseAndRank(cas, query, vectorHits, lexicalHits, {}, limit, RERANK);
+  const results = fuseAndRank(cas, query, vectorHits, lexicalHits, { detail: 'full' }, limit, RERANK);
   assert.equal(results.length, limit);
   assert.ok(
     results.some(r => r.node_id === 'exact'),
@@ -121,8 +121,8 @@ test('exact-match floor preserves determinism across repeated runs', () => {
     .slice(0, 15)
     .map((n, i) => ({ nodeId: n.id, score: 0.8 - i * 0.02 }));
 
-  const a = fuseAndRank(cas, query, vectorHits, lexicalHits, {}, 3, RERANK);
-  const b = fuseAndRank(cas, query, vectorHits, lexicalHits, {}, 3, RERANK);
+  const a = fuseAndRank(cas, query, vectorHits, lexicalHits, { detail: 'full' }, 3, RERANK);
+  const b = fuseAndRank(cas, query, vectorHits, lexicalHits, { detail: 'full' }, 3, RERANK);
   assert.deepEqual(a.map(r => r.node_id), b.map(r => r.node_id));
   assert.ok(a.some(r => r.node_id === 'exact'));
 });

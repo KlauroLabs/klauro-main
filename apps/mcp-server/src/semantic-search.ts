@@ -18,6 +18,13 @@ export interface SemanticSearchOptions {
   types?: string[];
   mode?: 'lexical' | 'semantic' | 'hybrid';
   /**
+   * 'compact' (default): drop the sub-score breakdown and graph_context,
+   * keep a single final score, and lower the default limit — see
+   * docs/SPEC-RESPONSE-BUDGET.md §4. 'full' restores today's shape
+   * (all sub-scores + graph_context) at the historical default limit.
+   */
+  detail?: 'compact' | 'full';
+  /**
    * Freshness-gated CAS loader override. Callers on the agent-entry path (e.g.
    * search_nodes) pass getFreshAnalysisForAgent here so semantic/hybrid search
    * reads a refreshed CAS instead of the raw stored one; defaults to the plain
@@ -35,13 +42,14 @@ export interface SemanticSearchResult {
   type: string;
   framework_role?: string;
   file?: string;
-  scores: {
+  score: number;
+  scores?: {
     semantic: number;
     lexical: number;
     structural: number;
     final: number;
   };
-  graph_context: {
+  graph_context?: {
     caller_count: number;
     callee_count: number;
     test_count: number;
@@ -67,7 +75,12 @@ export async function semanticSearch(
   query: string,
   options: SemanticSearchOptions = {},
 ): Promise<SemanticSearchResponse> {
-  const limit = options.limit && options.limit > 0 ? options.limit : 25;
+  const detail = options.detail || 'compact';
+  // compact default (8) covers what most agents actually consume from a
+  // search (top 3-5 results) without replaying ~20 unused hits on every
+  // subsequent turn; full keeps the historical default of 25.
+  const defaultLimit = detail === 'full' ? 25 : 8;
+  const limit = options.limit && options.limit > 0 ? options.limit : defaultLimit;
   const cas = await (options.getCas ? options.getCas(projectPath) : getAnalysis(projectPath));
   const { config } = await loadKlauroConfig(projectPath);
 
@@ -187,12 +200,13 @@ function lexicalFallback(
     ranked.push({ node, lexical, final: lexical });
   }
   ranked.sort((a, b) => b.final - a.final || a.node.id.localeCompare(b.node.id));
+  const detail = options.detail || 'compact';
   return ranked.slice(0, limit).map(entry => toResult(cas, entry.node, graph, {
     semantic: 0,
     lexical: entry.lexical,
     structural: graph.structuralScore(entry.node.id, new Set()),
     final: entry.final,
-  }));
+  }, detail));
 }
 
 export function fuseAndRank(
@@ -283,6 +297,7 @@ export function fuseAndRank(
   const window = computed.slice(0, limit);
   const windowIds = new Set(window.map(entry => entry.node.id));
   const missingExact = computed.filter(entry => exactMatches.has(entry.node.id) && !windowIds.has(entry.node.id));
+  const detail = options.detail || 'compact';
 
   if (missingExact.length > 0) {
     const kept = window.slice(0, Math.max(0, limit - missingExact.length));
@@ -294,7 +309,7 @@ export function fuseAndRank(
       lexical: round(entry.lexical),
       structural: round(entry.structural),
       final: round(entry.final),
-    }));
+    }, detail));
   }
 
   return window.map(entry => toResult(cas, entry.node, graph, {
@@ -302,7 +317,7 @@ export function fuseAndRank(
     lexical: round(entry.lexical),
     structural: round(entry.structural),
     final: round(entry.final),
-  }));
+  }, detail));
 }
 
 interface GraphSignals {
@@ -384,7 +399,8 @@ function toResult(
   cas: CASOutput,
   node: CASNode,
   graph: GraphSignals,
-  scores: SemanticSearchResult['scores'],
+  scores: NonNullable<SemanticSearchResult['scores']>,
+  detail: 'compact' | 'full' = 'compact',
 ): SemanticSearchResult {
   const risk = (cas.change_risks || []).find(entry => entry.node_id === node.id);
   return {
@@ -394,14 +410,20 @@ function toResult(
     type: node.type,
     framework_role: determineFrameworkRole(cas, node),
     file: node.source?.file,
-    scores,
-    graph_context: {
-      caller_count: graph.callerCount(node.id),
-      callee_count: graph.calleeCount(node.id),
-      test_count: graph.testCount(node.id),
-      is_entry_point: graph.isEntryPoint(node.id),
-      risk: risk?.risk_level,
-    },
+    score: scores.final,
+    // compact (default): drop the semantic/lexical/structural sub-score
+    // breakdown and graph_context — diagnostic, not decision-relevant for
+    // most calls (docs/SPEC-RESPONSE-BUDGET.md §4). full restores both.
+    ...(detail === 'full' ? {
+      scores,
+      graph_context: {
+        caller_count: graph.callerCount(node.id),
+        callee_count: graph.calleeCount(node.id),
+        test_count: graph.testCount(node.id),
+        is_entry_point: graph.isEntryPoint(node.id),
+        risk: risk?.risk_level,
+      },
+    } : {}),
   };
 }
 

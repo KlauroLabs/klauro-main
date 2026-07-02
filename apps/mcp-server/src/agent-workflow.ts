@@ -161,7 +161,9 @@ export function buildCodebaseAgentRules(
   projectPath: string,
   options: { target?: string; files?: string[]; limit?: number } = {},
 ) {
-  const summary = buildSummary(cas);
+  // full detail: architectureRules() below reads pattern.guidance, which
+  // compact mode omits — this internal caller needs the complete shape.
+  const summary = buildSummary(cas, { detail: 'full' });
   const overview = getSystemOverview(cas);
   const idiomContext = buildFocusedIdiomContext(cas, {
     target: options.target,

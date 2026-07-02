@@ -1320,13 +1320,17 @@ function registerTools(server: McpServer) {
     {
       title: 'Get Summary',
       description: 'Get condensed intelligence summary of an analyzed codebase. Includes system purpose, flow graph highlights (top 15 capabilities by score), architecture summary, database entities, entry point breakdown, node/edge counts, and analyzer contributions. This is the first tool to call to orient on a codebase. Progressive availability: structural fields (entry points, counts, entities, flow highlights) are always final; the prose system purpose and capability descriptions may still be enriching — check ai_enrichment (pending = deterministic text now; re-call in a few seconds only if you need the richer narrative). Never block on pending prose; orient on the structure and proceed.',
-      inputSchema: { path: z.string().describe('Project path (must be previously analyzed)'), track: TRACK_PARAM } as any,
+      inputSchema: {
+        path: z.string().describe('Project path (must be previously analyzed)'),
+        track: TRACK_PARAM,
+        detail: z.enum(['compact', 'full']).optional().describe("'compact' (default) omits the static analysis_phases prose and trims architectural_patterns guidance to keep replayed-context cost low; 'full' restores the complete payload."),
+      } as any,
     } as any,
-    async ({ path, track }: any) => withErrorHandling(async () => {
+    async ({ path, track, detail }: any) => withErrorHandling(async () => {
       // track-scoped reads (working/committed/incoming) bypass the freshness gate:
       // getFreshAnalysisForAgent only knows about the default track's CAS.
       const cas = track ? await getAnalysis(path, { track }) : await getFreshAnalysisForAgent(path);
-      return json(withFreshnessStamp(query.buildSummary(cas)));
+      return json(withFreshnessStamp(query.buildSummary(cas, { detail })));
     })
   );
 
@@ -2126,10 +2130,11 @@ function registerTools(server: McpServer) {
           success_criteria: z.array(z.string()).optional(),
           response_profile: z.enum(['standard', 'minimal', 'first-turn', 'capsule-only']).optional(),
         }).optional().describe('Optional task context used to score the selected analysis'),
+        detail: z.enum(['compact', 'full']).optional().describe("'compact' (default) omits the full candidates[] list when the match is exact and unambiguous; 'full' always includes candidates."),
       } as any,
     } as any,
-    async ({ path, task }: any) => withErrorHandling(async () => {
-      return json(await agentProjectMap.resolveAgentAnalysis({ path, task: task || {} }));
+    async ({ path, task, detail }: any) => withErrorHandling(async () => {
+      return json(await agentProjectMap.resolveAgentAnalysis({ path, task: task || {}, detail }));
     })
   );
 
@@ -3147,21 +3152,24 @@ function registerTools(server: McpServer) {
         type: z.string().optional().describe('Filter by node type (e.g. class, function, module, service, controller)'),
         category: z.string().optional().describe('Filter by category'),
         level: z.number().optional().describe('Filter by hierarchy level'),
-        limit: z.number().optional().describe('Max results (default 25)'),
+        limit: z.number().optional().describe('Max results (default 8 in compact detail, 25 in full)'),
         mode: z.enum(['lexical', 'semantic', 'hybrid']).optional().describe('Retrieval mode. hybrid (default) and semantic blend embedding similarity with structural re-ranking; lexical matches names and descriptions only.'),
+        detail: z.enum(['compact', 'full']).optional().describe("'compact' (default) returns a single final score per hit, drops graph_context, and lowers the default limit to 8; 'full' restores the semantic/lexical/structural score breakdown, graph_context, and the historical limit of 25."),
       } as any,
     } as any,
-    async ({ path, query: q, type, category, level, limit, mode }: any) => withErrorHandling(async () => {
+    async ({ path, query: q, type, category, level, limit, mode, detail }: any) => withErrorHandling(async () => {
       const resolvedMode = mode || 'hybrid';
+      const resolvedDetail = detail || 'compact';
       if (resolvedMode === 'lexical') {
         // searchNodes returns a bare array (existing contract) — not stamped
         // with freshness_checked_at to avoid a breaking shape change; the
         // freshness guarantee still applies, it's just not observable on this
         // particular branch the way it is on object-shaped responses.
         const cas = await getFreshAnalysisForAgent(path);
-        return json(query.searchNodes(cas, q, { type, category, level, limit }));
+        const resolvedLimit = limit || (resolvedDetail === 'full' ? 25 : 8);
+        return json(query.searchNodes(cas, q, { type, category, level, limit: resolvedLimit }));
       }
-      return json(withFreshnessStamp(await semanticSearch(path, q, { type, category, level, limit, getCas: getFreshAnalysisForAgent })));
+      return json(withFreshnessStamp(await semanticSearch(path, q, { type, category, level, limit, detail: resolvedDetail, getCas: getFreshAnalysisForAgent })));
     })
   );
 
@@ -3504,11 +3512,13 @@ function registerTools(server: McpServer) {
         target: z.string().describe('Node ID, file path, or search query to find the target'),
         task_type: z.enum(['add', 'modify', 'delete', 'refactor']).optional().describe('Type of change (default: modify)'),
         include: z.array(z.string()).optional().describe('Sections to include: conventions, patterns, constraints, tests (default: all)'),
+        caller_limit: z.number().optional().describe('Max callers to include in connected_code (default: 10). If the node has more, the response reports callers_total and truncated:true — pass a larger limit or call get_callers directly for the full set.'),
+        callee_limit: z.number().optional().describe('Max callees to include in connected_code (default: 10). If the node has more, the response reports callees_total and truncated:true — pass a larger limit or call get_callees directly for the full set.'),
       } as any,
     } as any,
-    async ({ path, target, task_type, include }: any) => withErrorHandling(async () => {
+    async ({ path, target, task_type, include, caller_limit, callee_limit }: any) => withErrorHandling(async () => {
       const cas = await getFreshAnalysisForAgent(path);
-      const context: any = query.getCodingContext(cas, target, { task_type, include });
+      const context: any = query.getCodingContext(cas, target, { task_type, include, caller_limit, callee_limit });
       // WS-A (minimal, safe merge): surface fused runtime facts for the
       // resolved target node, if any were persisted via telemetry ingest.
       // We don't have a dedicated dataDir/workspace parameter on this tool,

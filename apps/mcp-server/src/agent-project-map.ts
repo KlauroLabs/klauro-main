@@ -74,6 +74,7 @@ export async function getAgentProjectMap(input: {
 export async function resolveAgentAnalysis(input: {
   path: string;
   task?: AgentTask;
+  detail?: 'compact' | 'full';
 }): Promise<{
   generated_at: string;
   requested_path: string;
@@ -124,6 +125,13 @@ export async function resolveAgentAnalysis(input: {
       ? 'Continue with the requested path; it is the best matching analysis.'
       : `Use ${selected.path} for agent-start/work-context calls; it is the best matching analyzed subproject.`
     : 'No stored analysis matches this path. Run analyze_codebase on the repository or target subproject first.';
+  const detail = input.detail || 'compact';
+  // compact (default): an exact, unambiguous match doesn't need the full
+  // candidate list replayed on every turn — only include candidates when
+  // the match is ambiguous (no exact-relation selection) or detail:'full'
+  // is requested. See docs/SPEC-RESPONSE-BUDGET.md §4.
+  const isExactMatch = selected?.relation === 'exact';
+  const includeCandidates = detail === 'full' || !isExactMatch;
   return {
     generated_at: new Date().toISOString(),
     requested_path: input.path,
@@ -131,7 +139,7 @@ export async function resolveAgentAnalysis(input: {
     ...(freshness ? { analysis_freshness: freshness } : {}),
     refreshed,
     selected,
-    candidates: map.candidates,
+    candidates: includeCandidates ? map.candidates : [],
     recommendation: freshness && freshness.staleness !== 'fresh'
       ? `${baseRecommendation} ${freshness.recommendation}`
       : baseRecommendation,

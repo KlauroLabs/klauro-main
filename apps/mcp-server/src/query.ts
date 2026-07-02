@@ -43,7 +43,8 @@ export function analysisVersionNotice(
   return `This analysis (cas_version ${stored}) predates ${featureLabel}, which is guaranteed from CAS ${attestedSince}. Re-run analyze_codebase on this project to generate it.`;
 }
 
-export function buildSummary(cas: CASOutput) {
+export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full' } = {}) {
+  const detail = opts.detail || 'compact';
   const nodesByType: Record<string, number> = {};
   for (const n of cas.nodes) {
     nodesByType[n.type] = (nodesByType[n.type] || 0) + 1;
@@ -60,6 +61,24 @@ export function buildSummary(cas: CASOutput) {
   const productTech = productTechSignals(cas);
   const versionInfo = describeAnalysisVersion(cas.cas_version);
 
+  // compact mode (default) drops the static, per-repo-invariant analysis_phases
+  // prose (identical on every call, ~40% of the full payload per
+  // docs/SPEC-RESPONSE-BUDGET.md) and trims architectural_patterns to
+  // name/confidence/category (no guidance sentence) and a shorter slice.
+  // full restores today's shape byte-for-byte.
+  const architecturalPatterns = detail === 'full'
+    ? cas.architecture_summary?.architectural_patterns?.slice(0, 12).map(pattern => ({
+        name: pattern.name,
+        confidence: pattern.confidence,
+        category: pattern.category,
+        guidance: pattern.guidance,
+      })) || []
+    : cas.architecture_summary?.architectural_patterns?.slice(0, 6).map(pattern => ({
+        name: pattern.name,
+        confidence: pattern.confidence,
+        category: pattern.category,
+      })) || [];
+
   return {
     name: cas.system?.name,
     type: cas.system?.type,
@@ -73,14 +92,9 @@ export function buildSummary(cas: CASOutput) {
     primary_domain: primaryDomain,
     description: cas.enhanced_system_purpose?.inferred_description || null,
     description_source: cas.enhanced_system_purpose?.description_source || null,
-    analysis_phases: cas.analysis_phases || [],
+    ...(detail === 'full' ? { analysis_phases: cas.analysis_phases || [] } : {}),
     architecture_type: cas.architecture_summary?.system_type || null,
-    architectural_patterns: cas.architecture_summary?.architectural_patterns?.slice(0, 12).map(pattern => ({
-      name: pattern.name,
-      confidence: pattern.confidence,
-      category: pattern.category,
-      guidance: pattern.guidance,
-    })) || [],
+    architectural_patterns: architecturalPatterns,
     pattern_balance: cas.architecture_summary?.pattern_balance || null,
     architectural_inventory_counts: inventory ? Object.fromEntries(
       Object.entries(inventory).map(([key, values]) => [key, Array.isArray(values) ? values.length : 0])
@@ -113,6 +127,7 @@ export function buildSummary(cas: CASOutput) {
         .map(c => c.name) : [],
     analyzers: cas.analyzer_contributions.map(c => c.analyzer_name),
     errors: cas.analysis_errors?.length || 0,
+    ...(detail === 'compact' ? { detail: 'compact' as const } : {}),
   };
 }
 
@@ -1966,11 +1981,19 @@ export function getCodingContext(
   opts: {
     task_type?: 'add' | 'modify' | 'delete' | 'refactor';
     include?: string[];
+    caller_limit?: number;
+    callee_limit?: number;
   } = {}
 ) {
   const taskType = opts.task_type || 'modify';
   const includeAll = !opts.include || opts.include.length === 0;
   const shouldInclude = (section: string) => includeAll || opts.include?.includes(section);
+  const callerLimit = opts.caller_limit && opts.caller_limit > 0 ? opts.caller_limit : 10;
+  const calleeLimit = opts.callee_limit && opts.callee_limit > 0 ? opts.callee_limit : 10;
+  // Large-but-bounded probe used only to learn the true caller/callee count so we can
+  // report `callers_total`/`callees_total` and a `truncated` flag instead of silently
+  // dropping entries past the display limit (see docs/SPEC-RESPONSE-BUDGET.md).
+  const UNCAPPED_COUNT_PROBE = 5000;
 
   let targetNode: CASNode | undefined;
   if (target.includes('/') || target.includes('.')) {
@@ -2182,8 +2205,17 @@ export function getCodingContext(
     };
   }
 
-  const callersResult = getCallers(cas, targetNode.id, 1, 10);
-  const calleesResult = getCallees(cas, targetNode.id, 1, 10);
+  const callersResult = getCallers(cas, targetNode.id, 1, callerLimit);
+  const calleesResult = getCallees(cas, targetNode.id, 1, calleeLimit);
+  // callersResult.total/truncated only reflect what the capped traversal collected, not
+  // the real graph count. Re-probe at depth 1 with a large limit to learn the true count
+  // so truncation is reported honestly rather than silently.
+  const callersTotal = callersResult.truncated
+    ? getCallers(cas, targetNode.id, 1, UNCAPPED_COUNT_PROBE).total
+    : callersResult.total;
+  const calleesTotal = calleesResult.truncated
+    ? getCallees(cas, targetNode.id, 1, UNCAPPED_COUNT_PROBE).total
+    : calleesResult.total;
 
   const sharedTypes: Array<{ id: string; name: string; usage_count: number }> = [];
   const outgoingEdges = cas.edges.filter(e => e.source === targetNode!.id && e.type === 'uses_type');
@@ -2195,12 +2227,14 @@ export function getCodingContext(
     }
   }
 
+  const anyTruncated = callersTotal > callersResult.callers.length || calleesTotal > calleesResult.callees.length;
+
   result.connected_code = {
     callers: callersResult.callers.map(c => ({
       id: c.node_id,
       name: c.name,
       type: c.type,
-      risk_if_changed: callersResult.total > 5 ? 'high' : (callersResult.total > 2 ? 'medium' : 'low'),
+      risk_if_changed: callersTotal > 5 ? 'high' : (callersTotal > 2 ? 'medium' : 'low'),
     })),
     callees: calleesResult.callees.map(c => ({
       id: c.node_id,
@@ -2208,6 +2242,16 @@ export function getCodingContext(
       type: c.type,
     })),
     shared_types: sharedTypes,
+    callers_total: callersTotal,
+    callees_total: calleesTotal,
+    truncated: anyTruncated,
+    ...(anyTruncated
+      ? {
+          truncation_hint:
+            `Showing ${callersResult.callers.length}/${callersTotal} callers and ${calleesResult.callees.length}/${calleesTotal} callees. ` +
+            `Call get_callers/get_callees directly (or pass a larger caller_limit/callee_limit) for the full set.`,
+        }
+      : {}),
   };
 
   return result;
