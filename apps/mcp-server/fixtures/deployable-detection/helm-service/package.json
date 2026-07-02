@@ -1,0 +1,6 @@
+{
+  "name": "orders-service",
+  "version": "1.4.0",
+  "private": true,
+  "main": "src/server.js"
+}

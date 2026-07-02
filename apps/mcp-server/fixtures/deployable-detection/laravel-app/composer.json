@@ -1,0 +1,8 @@
+{
+  "name": "fixture/laravel-app",
+  "description": "Fixture Laravel app",
+  "require": {
+    "php": "^8.2",
+    "laravel/framework": "^11.0"
+  }
+}

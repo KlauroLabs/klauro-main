@@ -1,0 +1,11 @@
+[project]
+name = "python-service"
+version = "0.1.0"
+description = "Fixture FastAPI service"
+
+[project.scripts]
+python-service-cli = "app.cli:main"
+
+[tool.poetry]
+name = "python-service"
+version = "0.1.0"

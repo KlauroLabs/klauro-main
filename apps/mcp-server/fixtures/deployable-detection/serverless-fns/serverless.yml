@@ -1,0 +1,20 @@
+service: notifications-svc
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: us-east-1
+
+functions:
+  sendEmail:
+    handler: src/sendEmail.handler
+    events:
+      - http:
+          path: /send-email
+          method: post
+  sendSms:
+    handler: src/sendSms.handler
+    events:
+      - http:
+          path: /send-sms
+          method: post
