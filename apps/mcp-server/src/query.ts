@@ -9,6 +9,7 @@ import { detectCommunities } from '../../../packages/analyzer-core/src/analyzer/
 import { findNearClones } from '../../../packages/analyzer-core/src/analyzer/core/minhash-clone-detection';
 import { isAuthenticationGuardName } from '../../../packages/analyzer-core/src/analyzer/core/guard-classification';
 import { buildProductMap } from '../../../packages/analyzer-core/src/analyzer/core/product-map';
+import { buildTerminalSignal } from '../../../packages/analyzer-core/src/analyzer/core/terminal-signal';
 import type { CASProductMap } from '../../../packages/analyzer-core/src/types/cas.types';
 import {
   displayJourneySteps,
@@ -2316,6 +2317,171 @@ export function getCodingContext(
   };
 
   return result;
+}
+
+/**
+ * getInterfaceSignature — the I/L/S/O join (SPEC-INTELLIGENCE-CAPITALIZATION.md
+ * concept #2). Every entity (function -> flow -> capability -> project ->
+ * workspace) has the same contract shape: Input (what it requires), Logic
+ * (the blackbox internal wiring), Side-effects (3rd-party/external touches),
+ * Output (what it produces). Today these four facts live in four separate
+ * tools/ID-spaces (entry_points, exit_points, data_lineage, callers/callees)
+ * that an agent must call separately and intersect by node_id/file by hand.
+ * This is a pure JOIN over existing facts — no new analyzer pass.
+ */
+export function getInterfaceSignature(
+  cas: CASOutput,
+  target: string,
+  opts: { level?: 'auto' | 'function' | 'flow' | 'capability' | 'project' | 'workspace'; caller_limit?: number; callee_limit?: number } = {}
+) {
+  const callerLimit = opts.caller_limit && opts.caller_limit > 0 ? opts.caller_limit : 10;
+  const calleeLimit = opts.callee_limit && opts.callee_limit > 0 ? opts.callee_limit : 10;
+  const UNCAPPED_COUNT_PROBE = 5000;
+
+  // -- project/workspace level: aggregate from WAS-adjacent CAS fields
+  // (product_map, exit_points, entry_points) rather than a single node. --
+  const requestedLevel = opts.level && opts.level !== 'auto' ? opts.level : undefined;
+  const isProjectTarget = requestedLevel === 'project' || requestedLevel === 'workspace'
+    || (!requestedLevel && /^(project|workspace|\.|\/?$)$/.test(target.trim()));
+
+  if (isProjectTarget) {
+    const productMap = cas.product_map || buildProductMap(cas);
+    const exitTypes = new Set((cas.exit_points || []).map(ep => ep.type));
+    const externalServices = [...new Set([
+      ...(cas.external_services || []).map((s: any) => s.name || s.id).filter(Boolean),
+      ...(cas.exit_points || []).map(ep => ep.target?.service_id).filter(Boolean),
+    ])];
+
+    return {
+      target: { id: cas.system?.name || target, level: requestedLevel === 'workspace' ? 'workspace' : 'project', name: cas.system?.name },
+      level: requestedLevel === 'workspace' ? 'workspace' : 'project',
+      input: (cas.entry_points || []).slice(0, 20).map(ep => ({ id: ep.id, name: ep.name, type: ep.type })),
+      output: (productMap.capabilities || []).slice(0, 20).map(c => ({ name: c.name, category: c.category, entities: c.entities?.slice(0, 5) })),
+      side_effects: {
+        exit_point_types: [...exitTypes],
+        external_services: externalServices.slice(0, 20),
+        exit_point_count: (cas.exit_points || []).length,
+      },
+      logic: {
+        callers_total: undefined,
+        callees_total: undefined,
+        key_refs: (productMap.capabilities || []).slice(0, 10).map(c => c.name),
+        internal_module_count: cas.nodes.filter(n => n.type === 'module' || n.type === 'file').length,
+      },
+      purpose: cas.enhanced_system_purpose?.inferred_description || productMap.identity?.description || undefined,
+      gaps: [
+        'project/workspace level is aggregated from product_map + entry/exit points, not a per-node join; cross-repo (workspace) contracts require WAS tools (get_cross_repo_contracts) which this join does not call.',
+      ],
+    };
+  }
+
+  // -- function/flow/capability level: resolve target node the same way
+  // getCodingContext does (node id, file path, or search query). --
+  let targetNode: CASNode | undefined;
+  if (target.includes('/') || target.includes('.')) {
+    const fileNodes = cas.nodes.filter(n => n.source?.file?.endsWith(target) || n.id === target);
+    targetNode = fileNodes.find(n => n.type === 'class' || n.type === 'module' || n.type === 'function') || fileNodes[0];
+  } else {
+    targetNode = cas.nodes.find(n => n.id === target);
+    if (!targetNode) {
+      const searchResults = searchNodes(cas, target, { limit: 1 });
+      if (searchResults.length > 0) targetNode = cas.nodes.find(n => n.id === searchResults[0].id);
+    }
+  }
+
+  if (!targetNode) {
+    return { error: `Target not found: ${target}` };
+  }
+
+  const level = requestedLevel
+    ? requestedLevel
+    : (['controller', 'gateway', 'resolver', 'handler', 'page', 'route', 'api_route'].includes(targetNode.type)
+        ? 'flow'
+        : 'function');
+
+  // -- I: required inputs --
+  const ownEntryPoints = (cas.entry_points || []).filter(ep =>
+    ep.source_node === targetNode!.id || ep.handler?.node_id === targetNode!.id
+  );
+  const requiredParams = targetNode.signature?.parameters?.map(p => ({ name: p.name, type: p.type, optional: p.optional })) || [];
+  const callersResult = getCallers(cas, targetNode.id, 1, callerLimit);
+  const callersTotal = callersResult.truncated ? getCallers(cas, targetNode.id, 1, UNCAPPED_COUNT_PROBE).total : callersResult.total;
+
+  // -- O: produced outputs --
+  const returnType = targetNode.signature?.return_type;
+  const ownExitEventNames: string[] = [];
+
+  // -- S: side-effects, from exit_points filtered to this node's own
+  // source_node (code-level call sites) reconciled with data_lineage
+  // external_recipients for entities this node writes/reads (entity-level
+  // recipients) — the two "external" notions the audit found unreconciled. --
+  const ownExitPoints = (cas.exit_points || []).filter(ep => ep.source_node === targetNode!.id);
+  const lineageEntries = cas.data_lineage || [];
+  const relatedLineage = lineageEntries.filter(entry =>
+    entry.writers.some(w => w.node_id === targetNode!.id) || entry.readers.some(r => r.node_id === targetNode!.id)
+  );
+  const externalRecipients = [...new Set(relatedLineage.flatMap(entry => entry.external_recipients.map(r => r.service)))];
+  const boundariesCrossed = relatedLineage.flatMap(entry => entry.boundaries_crossed);
+
+  // -- L: blackbox internal wiring (callers + callees), reusing the
+  // truncation-signal pattern from getCodingContext (report the true total,
+  // never silently drop entries past the display limit). --
+  const calleesResult = getCallees(cas, targetNode.id, 1, calleeLimit);
+  const calleesTotal = calleesResult.truncated ? getCallees(cas, targetNode.id, 1, UNCAPPED_COUNT_PROBE).total : calleesResult.total;
+  const anyTruncated = callersTotal > callersResult.callers.length || calleesTotal > calleesResult.callees.length;
+
+  // -- purpose: terminal-signal proximity, if the entity's name/related
+  // entities match a ranked terminal entity/stage. Cheap: buildTerminalSignal
+  // runs over the CAS's own journeys/capabilities, already in memory. --
+  let purpose: string | undefined;
+  if (cas.user_journeys && cas.user_journeys.length > 0) {
+    const signal = buildTerminalSignal({ journeys: cas.user_journeys, systemCapabilities: cas.system_capabilities || [] });
+    const nameLower = targetNode.name.toLowerCase();
+    const matchedEntity = signal.ranked_entities.find(e => e.name.toLowerCase() === nameLower || nameLower.includes(e.name.toLowerCase()));
+    const matchedStage = signal.ranked_stages.find(s => s.name.toLowerCase() === nameLower || nameLower.includes(s.name.toLowerCase()));
+    if (matchedEntity) {
+      purpose = `Near/at a terminal entity: "${matchedEntity.name}" (score ${matchedEntity.score.toFixed(1)}, ${matchedEntity.write_journeys} write / ${matchedEntity.read_journeys} read journeys) — this is evidence of why the entity exists, not an inferred label.`;
+    } else if (matchedStage) {
+      purpose = `Near-terminal stage: "${matchedStage.name}" (${matchedStage.min_distance_from_terminal} step(s) from a terminal, score ${matchedStage.score.toFixed(1)}).`;
+    }
+  }
+
+  const gaps: string[] = [];
+  if (!cas.data_lineage || cas.data_lineage.length === 0) {
+    gaps.push('No data_lineage on this analysis scope — side_effects.external_recipients may be incomplete; re-run analyze_codebase or widen scope if this node touches shared entities.');
+  }
+  if (!purpose) {
+    gaps.push('No terminal-signal match for this target — purpose omitted rather than fabricated.');
+  }
+
+  return {
+    target: { id: targetNode.id, name: targetNode.name, type: targetNode.type, file: targetNode.source?.file, line: targetNode.source?.line },
+    level,
+    input: [
+      ...requiredParams.map(p => ({ kind: 'parameter', name: p.name, type: p.type, optional: p.optional })),
+      ...ownEntryPoints.map(ep => ({ kind: 'entry_point', id: ep.id, name: ep.name, type: ep.type, trigger: ep.trigger })),
+    ],
+    output: [
+      ...(returnType ? [{ kind: 'return_type', type: returnType }] : []),
+      ...ownExitEventNames.map(name => ({ kind: 'event', name })),
+    ],
+    side_effects: [
+      ...ownExitPoints.map(ep => ({ kind: 'exit_point', id: ep.id, type: ep.type, name: ep.name, target: ep.target })),
+      ...externalRecipients.map(service => ({ kind: 'external_recipient', service })),
+      ...boundariesCrossed.map(b => ({ kind: 'boundary', boundary: b.boundary, guarded: b.guarded, guard_kinds: b.guard_kinds })),
+    ],
+    logic: {
+      callers_total: callersTotal,
+      callees_total: calleesTotal,
+      key_refs: [
+        ...callersResult.callers.slice(0, 5).map(c => c.name),
+        ...calleesResult.callees.slice(0, 5).map(c => c.name),
+      ],
+      truncated: anyTruncated,
+    },
+    purpose,
+    gaps: gaps.length ? gaps : undefined,
+  };
 }
 
 export function getConventions(

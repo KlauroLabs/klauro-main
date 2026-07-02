@@ -67,7 +67,7 @@ Progressive availability (don't wait): structural facts — call graph, routes, 
 
 Find (instead of grep): search_nodes / semantic_search rank nodes by name+meaning with file:line and risk flags. get_route_table for routes (method/path/handler/auth); get_entry_points and get_exit_points for CLI, events, and queues; get_file_nodes for what a file defines.
 
-Understand before editing (highest value): get_coding_context(target) returns the node plus conventions, layer boundaries, callers, callees, and the exact tests to run — one call instead of read-file + trace-callers + find-tests. get_callers shows each call site's actual arguments; get_call_chain traces a request end to end; get_data_lineage tracks an entity's reads and writes; get_intent / get_conventions / get_modification_guide explain why it exists and how to change it safely.
+Understand before editing (highest value): get_coding_context(target) returns the node plus conventions, layer boundaries, callers, callees, and the exact tests to run — one call instead of read-file + trace-callers + find-tests. get_callers shows each call site's actual arguments; get_call_chain traces a request end to end; get_data_lineage tracks an entity's reads and writes; get_intent / get_conventions / get_modification_guide explain why it exists and how to change it safely. Before changing an entity, call get_interface_signature to see its full contract — Input (params/entry points it requires), Logic (its caller/callee blackbox wiring), Side-effects (external systems/entities it touches), Output (return type/produced entities) — and blast radius in one call, at function/flow/capability/project/workspace level, instead of joining entry_points + exit_points + data_lineage + get_callers by hand.
 
 Stay cohesive as the system grows (self-regulation, mandatory before non-trivial additions): lead with the comprehension layer — get_product_map, get_paradigm_conformance, get_patterns — to learn HOW this system is actually built (its layering norm, its dominant design patterns) before writing code that assumes a different shape. Then, before adding a new handler/module/data-access path, call get_architectural_conflicts to check whether what you're about to build would introduce a competing pattern for a concern this codebase already has a norm for (e.g. calling a repository directly where every other handler goes through a service), or an engineering-principle break (layering skip, split ownership of an entity's writes, a new coupling hotspot). A clean is_cohesive:true doesn't mean skip design judgment, but a conflict/violation is a direct signal to align with the existing shape instead of adding a second way to do the same thing — keeping a codebase built by many agents cohesive by construction, not by cleanup after the fact.
 
@@ -223,7 +223,7 @@ const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
   { label: 'Analysis management', tools: ['analyze_codebase', 'get_analysis_focus_profiles', 'get_description_enrichment_targets', 'generate_element_description', 'get_element_description', 'get_analysis_phases', 'run_analysis_layer', 'initialize_klauro_project', 'get_klauro_project_config', 'get_upload_manifest', 'get_agent_revision_tracks', 'get_github_import_plan', 'analyze_codebase_remote', 'sync_codebase_remote', 'list_analyses', 'validate_cas_contract', 'get_storage_health', 'get_storage_maintenance_report', 'prune_storage_artifacts', 'preview_codebase_iteration', 'get_greenfield_architecture_guidance', 'get_greenfield_build_context', 'preview_greenfield_codebase', 'get_preview_analysis', 'compare_analysis_iterations', 'get_analysis_freshness', 'get_test_discovery_evidence', 'save_cas_golden_snapshot', 'compare_cas_golden_snapshot'] },
   { label: 'System understanding and agent workflow', tools: ['get_summary', 'get_system_overview', 'get_architecture_context', 'list_answer_packs', 'get_mcp_demo_flow', 'get_cross_repo_links', 'run_workspace_analysis', 'resolve_workspace_analysis', 'get_workspace_summary', 'get_workspace_analysis', 'get_workspace_agent_context', 'get_workspace_freshness', 'validate_was_contract', 'get_workspace_health', 'get_workspace_risk_context', 'get_workspace_capability_map', 'get_workspace_entity_map', 'get_workspace_workflow', 'list_workspace_analyses', 'run_cross_codebase_analysis', 'get_cross_codebase_analysis', 'list_cross_codebase_analyses', 'save_workspace_graph', 'get_workspace_graph', 'list_workspace_graphs', 'verify_workspace_link', 'get_agent_bootstrap', 'get_agent_context', 'get_agent_project_map', 'get_agent_doctor', 'get_agent_default_config', 'install_agent_default_config', 'get_capability_memory', 'get_idiom_aware_agent_context', 'open_agent_workbench', 'preflight_agent_change', 'get_codebase_agent_rules', 'explain_change_shape', 'evaluate_analysis_truth', 'get_semantic_map', 'get_framework_depth_report', 'get_integration_depth_report', 'get_cross_repo_contracts', 'get_runtime_instrumentation_plan', 'get_runtime_event_contract', 'get_runtime_sdk_package', 'evaluate_agent_task_proof', 'evaluate_agent_readiness', 'run_agentic_benchmark', 'get_agentic_benchmark_report', 'get_agent_performance_proof', 'run_agent_quality_benchmark', 'run_agent_idiom_benchmark', 'run_machine_agent_proof', 'run_incremental_value_benchmark', 'get_patterns', 'get_codebase_idioms', 'get_idiom_examples', 'validate_codebase_idioms', 'get_pattern_instances', 'get_perspectives'] },
   { label: 'Navigation and search', tools: ['semantic_search', 'get_embedding_status', 'get_node', 'get_file_nodes', 'get_level'] },
-  { label: 'Entry points, routes, and call graph', tools: ['get_entry_points', 'get_exit_points', 'get_route_table', 'get_external_services', 'get_callers', 'get_callees', 'get_call_chain', 'get_method_calls'] },
+  { label: 'Entry points, routes, and call graph', tools: ['get_entry_points', 'get_exit_points', 'get_route_table', 'get_external_services', 'get_callers', 'get_callees', 'get_call_chain', 'get_method_calls', 'get_interface_signature'] },
   { label: 'Component hierarchy', tools: ['get_component_parents', 'get_component_children', 'get_component_metrics', 'get_shared_components'] },
   { label: 'Coding context and conventions', tools: ['get_conventions', 'get_modification_guide', 'get_pattern_examples', 'find_similar_code', 'get_comments', 'get_error_contracts', 'get_framework_guidance', 'get_usage_examples', 'get_configuration'] },
   { label: 'Intent, data, and risk', tools: ['get_intent', 'get_data_entities', 'get_security_overview', 'get_behavioral_invariants', 'validate_behavioral_invariants', 'get_stability', 'get_flow_coverage'] },
@@ -3499,6 +3499,25 @@ function registerTools(server: McpServer) {
     async ({ path, node_id }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getMethodCalls(cas, node_id));
+    })
+  );
+
+  server.registerTool(
+    'get_interface_signature',
+    {
+      title: 'Get Interface Signature',
+      description: 'The I/L/S/O contract for one entity in a single call: Input (required parameters / entry points it triggers on), Logic (blackbox caller/callee wiring — counts + key refs, truncation-signal honest), Side-effects (exit points + external data-lineage recipients + boundaries crossed), Output (return type / produced entities), and purpose (terminal-signal proximity, when reachable). Replaces the manual join of get_entry_points + get_exit_points + get_data_lineage + get_callers/get_callees for the same target. Level-aware: function/flow/capability resolve to one node; project/workspace aggregate from product_map + entry/exit points (gaps are reported honestly, not fabricated). Call this before changing an entity to see its full contract and blast radius.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        target: z.string().describe('Node ID, file path, search query, or "project"/"workspace" for the aggregate rollup'),
+        level: z.enum(['auto', 'function', 'flow', 'capability', 'project', 'workspace']).optional().describe('Granularity (default: auto-detected from target shape)'),
+        caller_limit: z.number().optional().describe('Max callers to include in logic.key_refs (default: 10)'),
+        callee_limit: z.number().optional().describe('Max callees to include in logic.key_refs (default: 10)'),
+      } as any,
+    } as any,
+    async ({ path, target, level, caller_limit, callee_limit }: any) => withErrorHandling(async () => {
+      const cas = await getFreshAnalysisForAgent(path);
+      return json(withFreshnessStamp(query.getInterfaceSignature(cas, target, { level, caller_limit, callee_limit })));
     })
   );
 
