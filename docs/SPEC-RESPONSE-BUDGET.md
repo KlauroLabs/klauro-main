@@ -1,5 +1,7 @@
 # Klauro — Spec: Default-Compact Responses for High-Traffic Onboarding Tools
 
+> **Status: PARTIALLY IMPLEMENTED** as of e1780f62 (2026-07-02) — detail/compact defaults + get_coding_context truncation signal shipped; replay-amplification measured.
+
 > **Audience:** builder agents. Investigation done 2026-07-02 via Klauro MCP tools (dogfooded on
 > `proof-of-concept` itself, a 33,932-node / 33,078-edge analyzed repo) + source read confirmation.
 > This spec extends the existing byte-budget machinery (`response-budget.ts`) — it does not

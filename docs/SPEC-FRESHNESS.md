@@ -1,5 +1,7 @@
 # Klauro — Spec: Always-Fresh-on-Read, Never-Thrash Freshness Guarantee
 
+> **Status: IMPLEMENTED** as of e1780f62 (2026-07-02) — freshness wired into onboarding tools + new-file pickup (git status -uall). This spec's problem-statement describes the PRE-fix state; verify against source, not this doc.
+
 > **Audience:** builder agents. Investigation done 2026-07-02 via Klauro MCP tools (dogfooded on
 > `proof-of-concept` itself) + source read confirmation. This spec extends existing incremental
 > machinery — it does not propose a greenfield freshness system. The incremental engine

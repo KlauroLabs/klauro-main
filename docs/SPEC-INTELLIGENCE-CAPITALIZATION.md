@@ -1,5 +1,7 @@
 # SPEC — Intelligence Capitalization Audit
 
+> **Status: IN PROGRESS** as of e1780f62 (2026-07-02) — get_interface_signature (I/L/S/O join, concept #2 + terminal-why #1) SHIPPED; other concepts still latent per the table.
+
 **Date:** 2026-07-02
 **Method:** Live dogfood of the deployed Klauro MCP tools against this repo
 (proof-of-concept itself), `resolve_agent_analysis` confirmed fresh

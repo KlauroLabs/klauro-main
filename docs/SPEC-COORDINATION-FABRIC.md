@@ -1,5 +1,7 @@
 # Klauro — Master Build Spec: The Multi-Agent Coordination Fabric
 
+> **Status: IMPLEMENTED** (local tier + MCP tools + routes live as of e1780f62, 2026-07-02). SSE/retry/security shipped; cross-machine sync + fleet scale are follow-ons.
+
 > **Audience:** builder agents. This is the authoritative spec. Each Workstream (WS) is
 > independently buildable, has a stated current state, files to touch, a contract, and
 > acceptance criteria. Model-tier hints tell you where to use a cheap model.
