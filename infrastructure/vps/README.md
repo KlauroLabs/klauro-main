@@ -9,7 +9,11 @@ This deployment keeps the product surfaces separate:
 Deploy from the repo root after building the app:
 
 ```bash
-npm run app:build
+# VITE_KLAURO_API_URL must be set at build time — Vite inlines it into the
+# bundle. Without it, the built app falls back to window.location.origin
+# (app.klauro.com), which serves static files only and has no /api/* routes,
+# so every login/register call 405s. See apps/app/.env.example.
+VITE_KLAURO_API_URL=https://mcp.klauro.com npm run app:build
 rsync -az --delete apps/app/dist/ root@74.208.212.208:/opt/klauro/app-dist/
 rsync -az --delete --exclude node_modules --exclude dist --exclude .git ./ root@74.208.212.208:/opt/klauro/source/
 rsync -az infrastructure/vps/Caddyfile root@74.208.212.208:/opt/klauro/Caddyfile

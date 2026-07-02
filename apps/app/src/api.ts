@@ -55,7 +55,17 @@ export interface AppStateData {
 }
 
 const configuredBase = import.meta.env.VITE_KLAURO_API_URL as string | undefined;
-export const apiBaseUrl = (configuredBase || window.location.origin).replace(/\/$/, '');
+// app.klauro.com is a static host with no /api/* routes of its own — the API
+// lives on mcp.klauro.com. If a build ever ships without VITE_KLAURO_API_URL
+// baked in (the original cause of the alpha login failure), fall back to the
+// known-good API host for that specific hostname instead of same-origin,
+// which would 405 on every auth call. Local dev (any other hostname) keeps
+// the same-origin fallback so a dev-run API on the current host still works.
+const knownProductionApiHosts: Record<string, string> = {
+  'app.klauro.com': 'https://mcp.klauro.com',
+};
+const fallbackBase = knownProductionApiHosts[window.location.hostname] || window.location.origin;
+export const apiBaseUrl = (configuredBase || fallbackBase).replace(/\/$/, '');
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number) {
