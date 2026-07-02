@@ -1000,6 +1000,51 @@ export function getParadigmConformance(
 }
 
 /**
+ * Architectural consistency: pattern-conflict/overlap findings (the same
+ * concern handled by two competing structural patterns) and engineering-
+ * principle violations (layering, single-responsibility, coupling), grounded
+ * in the same deterministic evidence as paradigm_conformance. This is the
+ * tool an agent calls BEFORE adding non-trivial code to check "is what I'm
+ * about to build consistent with how this system is actually built?" —
+ * self-regulation so a fleet of agents keeps a growing codebase cohesive.
+ */
+export function getArchitecturalConflicts(
+  cas: CASOutput,
+  opts: { severity?: 'low' | 'medium' | 'high'; limit?: number; offset?: number } = {}
+) {
+  const notice = cas.architectural_conflicts === undefined && cas.principle_violations === undefined
+    ? analysisVersionNotice(cas, 'architectural conflicts')
+    : undefined;
+
+  let conflicts = cas.architectural_conflicts || [];
+  if (opts.severity) {
+    const rank = { low: 0, medium: 1, high: 2 };
+    conflicts = conflicts.filter(c => rank[c.severity] >= rank[opts.severity!]);
+  }
+  const violations = cas.principle_violations || [];
+
+  const offset = opts.offset ?? 0;
+  const limit = opts.limit ?? 25;
+
+  const violationsBySeverity: Record<string, number> = {};
+  for (const v of violations) violationsBySeverity[v.severity] = (violationsBySeverity[v.severity] || 0) + 1;
+
+  const violationsByPrinciple: Record<string, number> = {};
+  for (const v of violations) violationsByPrinciple[v.principle] = (violationsByPrinciple[v.principle] || 0) + 1;
+
+  return {
+    total_conflicts: conflicts.length,
+    total_principle_violations: violations.length,
+    principle_violations_by_severity: violationsBySeverity,
+    principle_violations_by_principle: violationsByPrinciple,
+    conflicts: conflicts.slice(offset, offset + limit),
+    principle_violations: violations.slice(0, limit),
+    is_cohesive: conflicts.length === 0 && violations.filter(v => v.severity === 'error').length === 0,
+    analysis_version_notice: notice,
+  };
+}
+
+/**
  * Order data-lineage access sites so the most authoritative producers/consumers
  * come first: repositories and services (where the entity is really persisted or
  * orchestrated) above controllers, above UI stores, above tests. An entity whose

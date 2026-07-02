@@ -86,6 +86,8 @@ export interface CASOutput {
   idiom_examples?: CASIdiomExample[];
   idiom_violations?: CASIdiomViolation[];
   paradigm_conformance?: CASParadigmConformance[];
+  architectural_conflicts?: CASArchitecturalConflict[];
+  principle_violations?: CASPrincipleViolation[];
   product_map?: CASProductMap;
 
   // v1.10.0+ Graph-Anchored Semantic Retrieval
@@ -659,6 +661,36 @@ export interface CASParadigmDeviation {
   file: string;
   node_id: string;
   kind: CASParadigmDeviationKind;
+  detail: string;
+  severity: 'info' | 'warning' | 'error';
+}
+
+/** A concern (responsibility) handled by two different structural patterns in
+ *  different places in the codebase — the architectural-conflict/overlap
+ *  signal behind get_architectural_conflicts. Grounded in the same deviation
+ *  evidence as paradigm_conformance and the pattern-instance variations. */
+export interface CASArchitecturalConflict {
+  id: string;
+  kind: 'pattern-conflict' | 'pattern-overlap';
+  concern: string;
+  competing: Array<{
+    label: string;
+    files: string[];
+    share: number;
+  }>;
+  severity: 'low' | 'medium' | 'high';
+  evidence: string[];
+  suggested_alignment: string;
+}
+
+/** An engineering-principle break (layering, single-responsibility, coupling)
+ *  grounded in structural evidence — deterministic detection, no AI judgment
+ *  baked in. */
+export interface CASPrincipleViolation {
+  id: string;
+  principle: 'layering' | 'single-responsibility' | 'coupling';
+  file: string;
+  node_id: string;
   detail: string;
   severity: 'info' | 'warning' | 'error';
 }

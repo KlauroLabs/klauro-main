@@ -8,7 +8,7 @@
  * name-match tier boost in semantic-search.ts / query.ts.
  */
 
-import { test } from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'path';
 import { runSearchQualityBench } from './search-quality-bench';

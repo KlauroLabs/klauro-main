@@ -1,0 +1,10 @@
+{
+  "task": "architectural-consistency",
+  "expected_violation_files": ["src/controllers/admin.controller.ts"],
+  "expected_clean_files": [
+    "src/controllers/user.controller.ts",
+    "src/controllers/account.controller.ts",
+    "src/controllers/profile.controller.ts",
+    "src/controllers/settings.controller.ts"
+  ]
+}

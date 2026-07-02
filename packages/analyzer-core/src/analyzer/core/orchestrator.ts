@@ -81,6 +81,7 @@ import { ChangeDetector } from './change-detector';
 import { buildUserJourneys } from './journey-builder';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
 import { buildParadigmConformance } from './paradigm-conformance';
+import { buildArchitecturalConflicts } from './architectural-conflicts';
 import { buildDataLineage } from './data-lineage';
 import { isLanguageBuiltinName, isLanguageBuiltinExitPoint, isLanguageBuiltinDomainToken, isCapabilityNoiseToken, isVendorLibDomainToken } from './language-builtins';
 import { buildProductMap } from './product-map';
@@ -1218,6 +1219,12 @@ export class AnalyzerOrchestrator {
       entryPoints: allEntryPoints,
       exitPoints: allExitPoints,
     });
+    const architecturalConflicts = buildArchitecturalConflicts({
+      nodes: allNodes,
+      edges: allEdges,
+      paradigmConformance,
+      patterns: allPatterns,
+    });
     const dataLineage = buildDataLineage({
       nodes: allNodes,
       edges: allEdges,
@@ -1451,6 +1458,8 @@ export class AnalyzerOrchestrator {
       user_journeys: userJourneyResult.journeys.length > 0 ? userJourneyResult.journeys : undefined,
       user_journey_summary: userJourneyResult.journeys.length > 0 ? userJourneyResult.summary : undefined,
       paradigm_conformance: paradigmConformance.length > 0 ? paradigmConformance : undefined,
+      architectural_conflicts: architecturalConflicts.conflicts.length > 0 ? architecturalConflicts.conflicts : undefined,
+      principle_violations: architecturalConflicts.principle_violations.length > 0 ? architecturalConflicts.principle_violations : undefined,
       data_lineage: dataLineage.length > 0 ? dataLineage : undefined,
       domain_concepts: domainConcepts.length > 0 ? domainConcepts : undefined,
       enhanced_system_purpose: enhancedSystemPurpose,
@@ -2121,6 +2130,12 @@ export class AnalyzerOrchestrator {
       entryPoints,
       exitPoints,
     });
+    const architecturalConflicts = buildArchitecturalConflicts({
+      nodes,
+      edges,
+      paradigmConformance,
+      patterns: detectedPatterns,
+    });
     const dataLineage = buildDataLineage({
       nodes,
       edges,
@@ -2318,6 +2333,8 @@ export class AnalyzerOrchestrator {
       user_journeys: userJourneyResult.journeys.length > 0 ? userJourneyResult.journeys : undefined,
       user_journey_summary: userJourneyResult.journeys.length > 0 ? userJourneyResult.summary : undefined,
       paradigm_conformance: paradigmConformance.length > 0 ? paradigmConformance : undefined,
+      architectural_conflicts: architecturalConflicts.conflicts.length > 0 ? architecturalConflicts.conflicts : undefined,
+      principle_violations: architecturalConflicts.principle_violations.length > 0 ? architecturalConflicts.principle_violations : undefined,
       data_lineage: dataLineage.length > 0 ? dataLineage : undefined,
       domain_concepts: domainConcepts.length > 0 ? domainConcepts : undefined,
       flow_graph: flowGraph,

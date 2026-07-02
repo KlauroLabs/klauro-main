@@ -69,6 +69,8 @@ Find (instead of grep): search_nodes / semantic_search rank nodes by name+meanin
 
 Understand before editing (highest value): get_coding_context(target) returns the node plus conventions, layer boundaries, callers, callees, and the exact tests to run — one call instead of read-file + trace-callers + find-tests. get_callers shows each call site's actual arguments; get_call_chain traces a request end to end; get_data_lineage tracks an entity's reads and writes; get_intent / get_conventions / get_modification_guide explain why it exists and how to change it safely.
 
+Stay cohesive as the system grows (self-regulation, mandatory before non-trivial additions): lead with the comprehension layer — get_product_map, get_paradigm_conformance, get_patterns — to learn HOW this system is actually built (its layering norm, its dominant design patterns) before writing code that assumes a different shape. Then, before adding a new handler/module/data-access path, call get_architectural_conflicts to check whether what you're about to build would introduce a competing pattern for a concern this codebase already has a norm for (e.g. calling a repository directly where every other handler goes through a service), or an engineering-principle break (layering skip, split ownership of an entity's writes, a new coupling hotspot). A clean is_cohesive:true doesn't mean skip design judgment, but a conflict/violation is a direct signal to align with the existing shape instead of adding a second way to do the same thing — keeping a codebase built by many agents cohesive by construction, not by cleanup after the fact.
+
 Change, then verify: assess_change_risk and get_error_contracts before; validate_agent_change after, to surface ripple (e.g. a dropped DTO field breaking its service and entity) instead of finding it one compile error at a time.
 
 Cross-repo work (ui -> api -> worker is one product): run_workspace_analysis, then get_workspace_summary / get_workspace_capability_map / get_cross_repo_links.
@@ -225,7 +227,7 @@ const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
   { label: 'Component hierarchy', tools: ['get_component_parents', 'get_component_children', 'get_component_metrics', 'get_shared_components'] },
   { label: 'Coding context and conventions', tools: ['get_conventions', 'get_modification_guide', 'get_pattern_examples', 'find_similar_code', 'get_comments', 'get_error_contracts', 'get_framework_guidance', 'get_usage_examples', 'get_configuration'] },
   { label: 'Intent, data, and risk', tools: ['get_intent', 'get_data_entities', 'get_security_overview', 'get_behavioral_invariants', 'validate_behavioral_invariants', 'get_stability', 'get_flow_coverage'] },
-  { label: 'Workflows, capabilities, and runtime', tools: ['get_workflows', 'get_paradigm_conformance', 'get_data_lineage', 'diff_behavior', 'get_flow_graph', 'get_runtime_static_links', 'simulate_runtime_telemetry', 'correlate_runtime_event', 'record_runtime_event', 'ingest_telemetry', 'get_runtime_observations', 'get_operational_priorities', 'get_runtime_trace', 'get_analysis_facts', 'get_domain_concepts'] },
+  { label: 'Workflows, capabilities, and runtime', tools: ['get_workflows', 'get_paradigm_conformance', 'get_architectural_conflicts', 'get_data_lineage', 'diff_behavior', 'get_flow_graph', 'get_runtime_static_links', 'simulate_runtime_telemetry', 'correlate_runtime_event', 'record_runtime_event', 'ingest_telemetry', 'get_runtime_observations', 'get_operational_priorities', 'get_runtime_trace', 'get_analysis_facts', 'get_domain_concepts'] },
   { label: 'Behaviors, testing, data, and health', tools: ['get_behaviors', 'get_lifecycle_hooks', 'get_test_summary', 'get_database_schema', 'get_implementation_health', 'get_system_health', 'get_documentation_coverage', 'get_todos'] },
   { label: 'Dependencies', tools: ['get_dependencies', 'get_libraries'] },
   { label: 'Change history', tools: ['get_changes_since', 'get_changes_between', 'get_changes_for_node', 'get_changes_for_file', 'get_changes_for_entry_point', 'get_change_summary', 'get_hot_spots', 'get_analysis_at', 'get_analysis_snapshots'] },
@@ -3916,6 +3918,24 @@ function registerTools(server: McpServer) {
     async ({ path, paradigm }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getParadigmConformance(cas, { paradigm }));
+    })
+  );
+
+  server.registerTool(
+    'get_architectural_conflicts',
+    {
+      title: 'Get Architectural Conflicts',
+      description: 'Architectural consistency check: is what you are about to build (or what already exists) consistent with how this system is actually built? Returns pattern-conflict/overlap findings — the same concern (e.g. entry-to-repository data access) handled by two competing structural patterns in different places — and engineering-principle violations (layering skips, single-responsibility/ownership breaks, coupling hotspots), each grounded in file/node evidence. Call this BEFORE adding non-trivial code to a large system so cohesion is maintained by construction, not caught after the fact. is_cohesive is true only when no conflicts and no error-severity principle violations were found.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        severity: z.enum(['low', 'medium', 'high']).optional().describe('Minimum conflict severity to include'),
+        limit: z.number().optional().describe('Max conflicts to return (default 25)'),
+        offset: z.number().optional().describe('Skip first N conflicts (default 0)'),
+      } as any,
+    } as any,
+    async ({ path, severity, limit, offset }: any) => withErrorHandling(async () => {
+      const cas = await getFreshAnalysisForAgent(path);
+      return json(withFreshnessStamp(query.getArchitecturalConflicts(cas, { severity, limit, offset })));
     })
   );
 
