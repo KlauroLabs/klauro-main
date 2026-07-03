@@ -9601,6 +9601,22 @@ function buildApplications(
     }
   }
 
+  // BUG B (evidence-first app discovery, not folder-allowlist-gated):
+  // applicationSurfaceCandidatesFromCas() above only recognizes app surfaces
+  // under a hardcoded path allowlist (apps/services/cmd/bin/packages/crates/
+  // libs). A real evidence root at ANY other path (app/, core/, feature-x/,
+  // or the flat repo root) is structurally invisible to it — no
+  // SystemApplication ever gets created there, so resolveDeployables (which
+  // only ANNOTATES existing apps) has nothing to attach the evidence to. Fix:
+  // create a SystemApplication directly from each strong deployable_evidence
+  // root that doesn't already map to an existing app surface, at any path.
+  for (const repository of repositories) {
+    const projectId = codebaseId(repository.path);
+    for (const candidate of applicationSurfaceCandidatesFromEvidenceRoots(repository, projectId, byId)) {
+      ensure(applicationId(projectId, candidate.name), projectId, candidate.name, candidate);
+    }
+  }
+
   for (const item of interfaces) {
     const app = ensure(item.application_id, item.codebase_id);
     app.interface_ids.push(item.id);
@@ -9658,7 +9674,21 @@ function buildApplications(
  *  around the real deployables. Suppress the root codebase's synthetic
  *  application surface ONLY when the repo also has sibling app surfaces that
  *  are actually deployable (a single-package repo whose root IS the one app
- *  must keep counting). */
+ *  must keep counting).
+ *
+ *  Same principle applies to a second, distinct case (BUG A): determineSystemType()
+ *  (orchestrator.ts) defaults `system.type` to 'application' whenever a
+ *  codebase's CAS nodes carry none of controller/component/package/module —
+ *  true of ecosystems whose analyzer emits other node types (e.g. the C#
+ *  analyzer emits class/method/route). That silent default then makes
+ *  isDeployableApplication() fall through to `systemType === 'application'`
+ *  for the synthetic repo-ROOT "codebase" surface, which has no path_hint and
+ *  no real evidence of its own — inflating the deployable count by one
+ *  phantom root. The root surface must NOT be counted deployable via that
+ *  fallthrough alone: it's the container, not a ship unit, unless it
+ *  genuinely has its own Tier-1 evidence AND no sub-app deployables exist
+ *  (the true single-root-app case, where suppressing it would wrongly lose
+ *  the only real deployable). */
 function suppressWorkspaceContainerRoots(
   applications: SystemApplication[],
   repositories: CrossCodebaseInput[],
@@ -9667,12 +9697,16 @@ function suppressWorkspaceContainerRoots(
   for (const repository of repositories) {
     const projectId = codebaseId(repository.path);
     const codebase = codebaseById.get(projectId);
-    if (!codebase || !isWorkspaceContainerRoot(repository.path)) continue;
+    if (!codebase) continue;
 
     const appsForRepo = applications.filter(app => app.codebase_id === projectId);
     const rootApp = appsForRepo.find(app =>
       cleanApplicationName(app.name) === cleanApplicationName(codebase.name) && !isRealDeployableSurfacePathHint(app.path_hint));
-    if (!rootApp) continue;
+    if (!rootApp || !rootApp.deployable) continue;
+
+    const isContainerRoot = isWorkspaceContainerRoot(repository.path);
+    const isDefaultedPhantomRoot = !isContainerRoot && isSystemTypeDefaultedWithoutRealEvidence(repository, rootApp);
+    if (!isContainerRoot && !isDefaultedPhantomRoot) continue;
 
     const siblingDeployables = appsForRepo.some(app =>
       app.id !== rootApp.id && app.deployable && isRealDeployableSurfacePathHint(app.path_hint));
@@ -9681,9 +9715,34 @@ function suppressWorkspaceContainerRoots(
     rootApp.deployable = false;
     rootApp.boundary_evidence = mergeStrings(rootApp.boundary_evidence || [], [
       'workspace-container-root:suppressed',
-      'root declares workspace members with sibling deployable apps present',
+      isContainerRoot
+        ? 'root declares workspace members with sibling deployable apps present'
+        : 'phantom-root:system-type-defaulted-to-application-without-real-evidence',
     ]);
   }
+}
+
+/** True when this codebase's system.type reads 'application' only because
+ *  determineSystemType() had no controller/component/package/module CAS node
+ *  types to key off of (the silent default — see orchestrator.ts), the root
+ *  app surface has no path_hint of its own and no real deployable evidence
+ *  (no service-ish alias, no useful alias, nothing beyond the bare name/type
+ *  fallthrough), and there's at least one other, better-evidenced app in the
+ *  same codebase — i.e. this is the phantom container, not the one true app. */
+function isSystemTypeDefaultedWithoutRealEvidence(repository: CrossCodebaseInput, rootApp: SystemApplication): boolean {
+  const systemType = repository.cas.system?.type;
+  if (systemType !== 'application') return false;
+
+  const recognizedTypes = new Set(['controller', 'component', 'package', 'module']);
+  const nodes = repository.cas.nodes || [];
+  const hasRecognizedType = nodes.some(node => recognizedTypes.has(String((node as CASNode)?.type || '')));
+  if (hasRecognizedType) return false; // determineSystemType had real signal; not a silent default
+
+  if (rootApp.path_hint) return false; // has its own real surface path, not the bare synthetic root
+  if ((rootApp.service_aliases || []).length > 0) return false; // carries real alias evidence
+  if ((rootApp.evidence || []).some(line => !line.startsWith('cas-input:'))) return false; // has evidence beyond the generic root-surface stamp
+
+  return true;
 }
 
 /** A "real" application-surface path_hint lives under a known monorepo app
@@ -9810,6 +9869,163 @@ function applicationSurfaceFromFile(file: string | undefined): { name: string; p
   const srcBin = normalized.match(/(?:^|\/)src\/bin\/([^/.]+)\.[a-z0-9]+$/i);
   if (srcBin?.[1]) return { name: srcBin[1], pathHint: `src/bin/${srcBin[1]}`, deployableHint: true };
   return undefined;
+}
+
+/** BUG B FIX: evidence-first app discovery, independent of the folder
+ *  allowlist. applicationSurfaceCandidatesFromCas()/applicationSurfaceFromFile()
+ *  above only recognize a small set of conventional monorepo roots (apps/
+ *  services/cmd/bin/packages/crates/libs). A real repo using app/, core/,
+ *  feature-x/, or the flat repo root for its ship-unit module is structurally
+ *  invisible to that allowlist — no SystemApplication gets created there, so
+ *  resolveDeployables (which only ANNOTATES apps that already exist) has
+ *  nothing to attach the evidence to.
+ *
+ *  This creates a SystemApplication directly from each cas.deployable_evidence
+ *  root that:
+ *   (a) doesn't already correspond to an existing app surface (by exact
+ *       path_hint, or containment — the evidence root is the same as, or a
+ *       descendant/ancestor of, an existing app's path_hint), other than the
+ *       repo root itself ('.'), which is always already represented by the
+ *       codebase-level synthetic root app and never double-created here; and
+ *   (b) is Tier-1 ONLY: a real ship/run artifact (Dockerfile, compose, k8s,
+ *       serverless, installer, ci-deploy, or an ecosystem's own Tier-1 "bin"
+ *       signal like com.android.application/executableTarget). Tier-2/3-only
+ *       evidence never creates a new app surface on its own here — some
+ *       evidence providers report root_path as a bare, de-contextualized
+ *       fragment (a route handler's immediate directory rather than the real
+ *       module root), so accepting Tier-2/3 signals risks fanning a single
+ *       real module out into spurious phantom apps (measured regression:
+ *       turborepo-2apps briefly gained a stray "src" deployable during
+ *       development of this fix — see the real-repo re-validation note in
+ *       the accompanying feedback file). Requiring Tier-1 keeps this
+ *       evidence-first without over-producing.
+ *  Guards against duplicates: an evidence root already covered by an
+ *  allowlist-discovered or codebase-root app surface is skipped. */
+function applicationSurfaceCandidatesFromEvidenceRoots(
+  repository: CrossCodebaseInput,
+  projectId: string,
+  existingById: Map<string, SystemApplication>,
+): Array<Partial<SystemApplication> & { name: string }> {
+  const evidenceList = deployableEvidenceFromCas(repository);
+  if (evidenceList.length === 0) return [];
+
+  // Group by root_path first (an evidence root frequently carries multiple
+  // separate DeployableEvidence entries — e.g. a "GET /health" route entry
+  // AND an "app instantiation" entry both at root_path "app" — which must
+  // collapse to ONE candidate app per root, not one app per evidence line;
+  // otherwise a single real module fans out into several phantom surfaces
+  // (one per route/signal found under it). Keep the best (lowest) tier, and
+  // track how many DISTINCT ship-unit names appear at this root_path: a
+  // shared directory (e.g. "docker/" holding four different *.Dockerfile
+  // artifacts, one per real service) is NOT itself one ship unit — each
+  // named artifact is its own, and the directory-level root_path is an
+  // aggregation artifact of the evidence provider, not a real module
+  // boundary. Only collapse-and-create when the root_path unambiguously
+  // names ONE ship unit (single distinct evidence name).
+  const byRoot = new Map<string, { tier: 1 | 2 | 3; evidence: string[]; names: Set<string> }>();
+  for (const evidence of evidenceList) {
+    // root_path '.' (repo root, no subfolder) is always already represented
+    // by the codebase-level synthetic root SystemApplication created at the
+    // top of buildApplications — never create a second app for it here (Bug
+    // A's phantom-root suppression separately decides whether THAT surface
+    // should count as deployable). This function only discovers evidence
+    // roots at real, non-root subfolders that the folder-allowlist misses.
+    if (!evidence.root_path || evidence.root_path === '.') continue;
+    if (shouldSkipWorkspaceApplicationPath(evidence.root_path)) continue;
+    const cleanEvidenceName = cleanApplicationName(evidence.name);
+    const existing = byRoot.get(evidence.root_path);
+    if (!existing) {
+      byRoot.set(evidence.root_path, { tier: evidence.tier, evidence: [...evidence.evidence], names: new Set(cleanEvidenceName ? [cleanEvidenceName] : []) });
+    } else {
+      if (evidence.tier < existing.tier) existing.tier = evidence.tier;
+      existing.evidence = mergeStrings(existing.evidence, evidence.evidence);
+      if (cleanEvidenceName) existing.names.add(cleanEvidenceName);
+    }
+  }
+  if (byRoot.size === 0) return [];
+
+  const existingForRepo = [...existingById.values()].filter(app => app.codebase_id === projectId);
+
+  const coveredByExisting = (rootPath: string): boolean =>
+    existingForRepo.some(app => {
+      const hint = app.path_hint || '';
+      if (!hint) return false;
+      return hint === rootPath || hint.startsWith(`${rootPath}/`) || rootPath.startsWith(`${hint}/`);
+    });
+
+  // OPS/TOOLING PATH GUARD: real evidence providers sometimes flag a
+  // deploy/reinstall/maintenance script under an ops-tooling folder
+  // (scripts/, docker/, deploy/, infra/, hack/, ci/, tools/) as Tier-1
+  // "installer" evidence — the script genuinely installs/starts a service,
+  // but the folder itself is operational tooling, not a distinct shippable
+  // module (e.g. scripts/pg/win/install.ps1, a Windows re-provisioning
+  // helper for the already-discovered physical-gateway app). Individual
+  // Dockerfiles under docker/ are still attributed correctly by
+  // applicationSurfaceFromFile's own Dockerfile-name pattern (independent of
+  // this function); this guard only stops THIS evidence-root-creation path
+  // from also spawning a directory-named phantom app for the same tooling
+  // folder. Real app/core/feature-x-style module names are unaffected.
+  const isOpsToolingPath = (rootPath: string): boolean => /(?:^|\/)(scripts|docker|deploy|infra|hack|ci|tools|tooling)(?:\/|$)/i.test(rootPath);
+
+  const out: Array<Partial<SystemApplication> & { name: string }> = [];
+  for (const [rootPath, entry] of byRoot) {
+    if (coveredByExisting(rootPath)) continue;
+    if (isOpsToolingPath(rootPath)) continue;
+
+    // STRONG SIGNAL ONLY: Tier-1 (real ship/run artifact — Dockerfile,
+    // compose, k8s, serverless, installer, ci-deploy, or an ecosystem's own
+    // Tier-1 "bin" signal like com.android.application/executableTarget).
+    // Tier-2/3-only evidence is deliberately NOT enough to create a brand
+    // new app surface here — evidence providers sometimes report root_path
+    // as a bare, de-contextualized fragment (e.g. a route handler's own
+    // file's immediate directory name "src" instead of the real module root
+    // "apps/api/src"), which would otherwise fan out into spurious phantom
+    // apps for every such fragment. A genuine Tier-2/3 module at a real
+    // non-conventional path still has SOME Tier-1 evidence of its own once
+    // it truly ships (a Dockerfile, a package manifest with a bin entry
+    // recognized elsewhere, etc.); until then, creating an app from a bare
+    // runnable/package signal alone risks exactly the over-production this
+    // fix must avoid (see the zerac-api=4 regression guardrail).
+    if (entry.tier !== 1) continue;
+
+    // AMBIGUOUS-ROOT GUARD: if this root_path aggregates more than one
+    // distinctly-named Tier-1 artifact (e.g. a shared "docker/" directory
+    // holding several unrelated *.Dockerfile ship units), it is not itself
+    // a single ship unit — each named artifact is presumably already
+    // attributed elsewhere (applicationSurfaceFromFile's own Dockerfile-name
+    // pattern), and collapsing them into one directory-named phantom app
+    // would over-produce. Skip; only an unambiguous 1:1 root->ship-unit
+    // mapping creates a new app here.
+    if (entry.names.size > 1) continue;
+
+    // Name by the root folder's basename (consistent with how
+    // applicationSurfaceFromFile names allowlisted surfaces) rather than an
+    // individual evidence line's name (which may be an ephemeral route like
+    // "GET /health") — the folder identity is the stable, real app name.
+    const cleanName = cleanApplicationName(rootPath.split('/').pop() || rootPath);
+    if (!cleanName) continue;
+
+    const deployable = entry.tier === 1;
+    out.push({
+      id: applicationId(projectId, cleanName),
+      codebase_id: projectId,
+      codebase_path: repository.path,
+      name: cleanName,
+      kind: applicationKind(cleanName, repository.cas.system?.type, rootPath),
+      deployable,
+      description: `${cleanName} is an application surface discovered directly from deployable evidence at ${rootPath} (tier ${entry.tier}).`,
+      path_hint: rootPath,
+      service_aliases: [cleanName],
+      ports: [],
+      interface_ids: [],
+      runtime_component_ids: [],
+      evidence: [...entry.evidence],
+      trust_guidance: deployable
+        ? 'Evidence-derived application surface (non-conventional path); use repo-level drilldown before editing behavior or release boundaries.'
+        : 'Evidence-derived package/library surface (non-conventional path); use repo-level drilldown before assuming runtime behavior.',
+    });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

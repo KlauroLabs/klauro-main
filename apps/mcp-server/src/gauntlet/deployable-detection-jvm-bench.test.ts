@@ -113,26 +113,24 @@ test('dotnet-solution: OrdersApi + BillingWorker are 2 deployables, Common.Domai
   assert.equal((ordersApi as any)?.bundled_into, undefined, 'OrdersApi should not be bundled into anything');
   assert.equal((billingWorker as any)?.bundled_into, undefined, 'BillingWorker should not be bundled into anything');
 
-  // Named-surface assertion rather than a raw top-level count: a known,
-  // pre-existing resolver gap (determineSystemType() in orchestrator.ts
-  // defaults system.type to 'application' whenever a codebase has no
-  // 'controller'/'component'/'package'/'module' CAS node types — true of
-  // this C# fixture, since the C# analyzer emits 'class'/'method'/'route'
-  // node types, none of which determineSystemType recognizes) makes the
-  // always-present root "<workspace>" codebase surface deployable:true too
-  // (isDeployableApplication() falls through to `systemType === 'application'`).
-  // That is orchestrator-level and out of this provider's ownership/scope
-  // (see ~/.klauro/agent-feedback/2026-07-02-deployable-jvm.md); assert on
-  // the two real application surfaces being present and correctly gated
-  // instead of a brittle raw count that would also break for any other
-  // ecosystem hitting the same default.
+  // determineSystemType() (orchestrator.ts) defaults system.type to
+  // 'application' whenever a codebase has no controller/component/package/
+  // module CAS node types — true of this C# fixture, since the C# analyzer
+  // emits class/method/route node types. That silent default used to leak
+  // into isDeployableApplication()'s `systemType === 'application'`
+  // fallthrough for the synthetic repo-ROOT "<workspace>" codebase surface,
+  // inflating the count to 3. Fixed at the resolver level (phantom-root
+  // suppression in suppressWorkspaceContainerRoots(), cross-codebase-
+  // analysis.ts): the root surface is now suppressed whenever system.type
+  // was defaulted without real evidence AND sibling deployables exist. This
+  // genuinely asserts exactly 2 top-level deployables now.
   const topLevel = topLevelDeployables(applications);
-  const topLevelOrdersApi = topLevel.find(a => a === ordersApi);
-  const topLevelBillingWorker = topLevel.find(a => a === billingWorker);
-  assert.ok(topLevelOrdersApi, 'expected OrdersApi to be a top-level deployable');
-  assert.ok(topLevelBillingWorker, 'expected BillingWorker to be a top-level deployable');
-  assert.ok(
-    topLevel.length >= 2,
-    `expected at least 2 top-level deployables (OrdersApi, BillingWorker), got ${topLevel.length}: ${topLevel.map(a => a.name).join(', ')}`,
+  const topLevelNames = topLevel.map(a => a.name).sort();
+  assert.equal(
+    topLevel.length,
+    2,
+    `expected exactly 2 top-level deployables (OrdersApi, BillingWorker), got ${topLevel.length}: ${topLevelNames.join(', ')}`,
   );
+  assert.ok(topLevel.includes(ordersApi), 'expected OrdersApi to be a top-level deployable');
+  assert.ok(topLevel.includes(billingWorker), 'expected BillingWorker to be a top-level deployable');
 });
