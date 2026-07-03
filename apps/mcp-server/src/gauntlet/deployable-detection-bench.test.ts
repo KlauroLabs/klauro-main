@@ -215,3 +215,53 @@ test('rust-messy-workspace: shipped-gate collapses unshipped bins, client+client
   const topLevelNames = topLevel.map(a => a.name).sort();
   assert.equal(topLevel.length, 3, `expected 3 top-level deployables, got ${topLevel.length}: ${topLevelNames.join(', ')}`);
 });
+
+test('docker-shared-dir-entrypoint-fixture: per-service Dockerfile entrypoint wins primary over a shared generic Dockerfile; a same-named [[bin]]/lib-crate pair does not collide and the bin is shipped-gated out', async () => {
+  _resetDeployableDetectionBenchCache();
+  const { applications } = await runDeployableDetectionBench('docker-shared-dir-entrypoint-fixture');
+
+  const bina = applications.find(a => a.name === 'bina' || a.path_hint?.endsWith('bin/bina'));
+  const binb = applications.find(a => a.name === 'binb' || a.path_hint?.endsWith('bin/binb'));
+
+  // BASELINE: both real services are discovered as application surfaces.
+  assert.ok(bina, 'expected a bina application surface to be detected');
+  assert.ok(binb, 'expected a binb application surface to be detected');
+
+  // BOUNDARY (entrypoint-as-primary): bina's own per-service Dockerfile
+  // (docker/BinA.Dockerfile) has NO CMD and an ENTRYPOINT that is a generic
+  // wrapper script, not the binary — the sole-build-output-binary fallback
+  // must recover "bina" as its entrypoint member, and that dedicated
+  // Dockerfile must win primary attribution over the shared top-level
+  // Dockerfile (which also names bina+binb generically for a dev/test
+  // image). Neither bina nor binb should be bundled into the other or into
+  // a phantom third application from the generic Dockerfile.
+  assert.equal((bina as any)?.bundled_into, undefined, 'bina should not be bundled into anything — it has its own dedicated Dockerfile');
+  assert.equal((binb as any)?.bundled_into, undefined, 'binb should not be bundled into anything — it has its own dedicated Dockerfile');
+  assert.equal(bina?.deployable, true, 'bina should be deployable (own Dockerfile, entrypoint-resolved)');
+  assert.equal(binb?.deployable, true, 'binb should be deployable (own Dockerfile)');
+
+  const topLevel = topLevelDeployables(applications);
+  const topLevelNames = topLevel.map(a => a.name).sort();
+  assert.equal(
+    topLevelNames.filter(name => name === 'bina' || name === 'binb').length,
+    2,
+    `expected both bina and binb present as top-level deployables, got: ${topLevelNames.join(', ')}`,
+  );
+
+  // BOUNDARY (identity collision + shipped-gate): a Cargo [[bin]] target
+  // named "version" at the repo root (src/bin/version.rs) shares its bare
+  // name with an unrelated crates/version LIBRARY crate. They must resolve
+  // to two DIFFERENT SystemApplications (not merge into one via the shared
+  // applicationId-by-name), and the bin target itself — a real RUNNABLE with
+  // no Tier-1 ship artifact referencing it — must be shipped-gated to
+  // deployable:false, never surviving as a phantom top-level deployable.
+  const versionApps = applications.filter(a => a.name === 'version');
+  assert.ok(versionApps.length >= 2, `expected the version lib crate and the version [[bin]] target to be two distinct applications, got ${versionApps.length}`);
+  for (const versionApp of versionApps) {
+    assert.notEqual(versionApp.deployable, true, `version app at path_hint=${versionApp.path_hint} must not be deployable:true`);
+  }
+  assert.ok(
+    !topLevelNames.includes('version'),
+    `"version" must not appear as a top-level deployable, got: ${topLevelNames.join(', ')}`,
+  );
+});

@@ -62,6 +62,7 @@ import { deriveActiveClaims } from './coordination/presence';
 import { detectConceptualConflicts, type AgentInFlightState, type ConceptualConflict, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
 import { captureInFlightChanges } from './coordination/in-flight-capture';
 import { planIntentMerge } from './coordination/intent-merge';
+import { partitionTasks, type PartitionCas, type PartitionTask } from './coordination/partitioner';
 import { loadPersistedRuntimeFacts } from './telemetry-fusion';
 
 const SERVER_INSTRUCTIONS = `Klauro serves a precomputed analysis of this repository — call graph, routes, data flows, entry points, conventions, and tests, queryable directly. Default to it over grep/Read: a query returns real call sites and blast radius, not guesses. The value is the sequence below; each tool's own description has the detail.
@@ -85,6 +86,8 @@ Coordinate before you act (multi-agent workspaces — awareness first, never a l
 Catch what textual merge can't (semantic incoherence, not just overlap — now AMBIENT, not opt-in): claim_work/check_collision catch PATH and SYMBOL overlap — two agents touching the same lines. They cannot catch two changes that each merge cleanly on their own but are jointly incoherent (you retype getUser(): User|null -> User while another agent concurrently edits a caller still doing "if (!getUser())"; git sees two valid disjoint diffs and merges them — the bug ships). That is what check_conceptual_conflicts/check_collision are for, and the fabric now SEES what others are changing automatically: every call to either tool ambiently captures your own git working-tree diff (TS/JS files get full before/after signature diffing — signature/return-type/nullability/params — other languages degrade honestly to an unrecognized-change flag) and folds it into your persisted state with zero self-reporting required. Passing your own changes: SymbolChange[] explicitly still works and is merged on top (useful for languages ambient capture can't syntactically diff, or to add before/after detail ambient capture couldn't infer) — but you no longer have to. Conceptual conflicts surface automatically the moment you call either tool; this is fleet-coherence, not textual safety — the two are complementary, run both.
 
 When finishing overlapping work, reconcile by intent, not by textual diff: call plan_intent_merge to get a single MergePlan across everyone touching this workspace — compatible work composes automatically (auto_mergeable, with a rationale naming both intents), only genuine incoherence needs you (needs_resolution — check_conceptual_conflicts findings that would pass a textual merge but shouldn't be auto-merged), and duplicated effort is flagged once instead of kept twice (duplicate_work). It reuses whatever you and others already reported via check_conceptual_conflicts/check_collision — no extra bookkeeping if you were already calling those.
+
+Before fanning work out to a fleet, plan the batching instead of guessing it: call plan_parallel_work with your pending task list (and the repo path) to turn it into the maximally-parallel non-conflicting batches up front — it uses the same CAS blast-radius awareness as the rest of this group, so tasks that look textually disjoint but reach into the same call-graph surface still land in different batches.
 
 Trust, then verify: every result is stamped to a commit/branch. If get_file_nodes returns nothing for a file you can see on disk, it is likely on an unmerged branch — re-analyze or read that one file. On any tool error, fall back to reading. Don't lean on a single tool; no one view is the whole picture.`;
 
@@ -242,7 +245,7 @@ const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
   { label: 'Dependencies', tools: ['get_dependencies', 'get_libraries'] },
   { label: 'Change history', tools: ['get_changes_since', 'get_changes_between', 'get_changes_for_node', 'get_changes_for_file', 'get_changes_for_entry_point', 'get_change_summary', 'get_hot_spots', 'get_analysis_at', 'get_analysis_snapshots'] },
   { label: 'Watch mode', tools: ['start_watch', 'stop_watch', 'get_watch_status', 'list_watches', 'poll_watch_changes', 'install_gauntlet_watcher', 'list_gauntlet_watchers', 'stop_gauntlet_watcher', 'run_incremental_gauntlet'] },
-  { label: 'Multi-agent coordination', tools: ['claim_work', 'release_work', 'heartbeat_work', 'get_active_agents', 'check_collision', 'check_conceptual_conflicts', 'get_in_flight_changes', 'plan_intent_merge', 'subscribe_workspace'] },
+  { label: 'Multi-agent coordination', tools: ['claim_work', 'release_work', 'heartbeat_work', 'get_active_agents', 'check_collision', 'check_conceptual_conflicts', 'get_in_flight_changes', 'plan_intent_merge', 'plan_parallel_work', 'subscribe_workspace'] },
 ];
 
 function buildGatewayDescription(registry: Map<string, RegisteredToolEntry>, profile: ToolProfile): string {
@@ -631,6 +634,34 @@ async function conceptualConflictCasForWorkspace(workspace: string): Promise<Con
       edges: (cas.edges || [])
         .filter((e: any) => e.type === 'calls')
         .map((e: any) => ({ source: e.source, target: e.target, type: e.type })),
+    };
+  } catch {
+    return { nodes: [], edges: [] };
+  }
+}
+
+/**
+ * Best-effort CAS in the `PartitionCas` shape `partitionTasks` needs (nodes
+ * id/name, "calls" edges, plus a derived file list for
+ * `inferFootprintFromIntent`'s path matching). Mirrors
+ * `conceptualConflictCasForWorkspace` above — same tolerance for `path` being
+ * a logical workspace id with no analyzable project (empty CAS, reduced
+ * fidelity, never an error).
+ */
+async function partitionCasForPath(path: string): Promise<PartitionCas> {
+  try {
+    const cas = await getAnalysis(path);
+    const files = new Set<string>();
+    for (const n of (cas.nodes || []) as any[]) {
+      const f = n?.source?.file;
+      if (typeof f === 'string' && f.length > 0) files.add(f);
+    }
+    return {
+      nodes: (cas.nodes || []).map((n: any) => ({ id: n.id, name: n.name })),
+      edges: (cas.edges || [])
+        .filter((e: any) => e.type === 'calls')
+        .map((e: any) => ({ source: e.source, target: e.target, type: e.type })),
+      files: [...files],
     };
   } catch {
     return { nodes: [], edges: [] };
@@ -4940,6 +4971,49 @@ function registerTools(server: McpServer) {
         note: planStates.length === 0
           ? 'No agent states found (none passed explicitly, no persisted conceptual-conflict state, no ambient changes). Call check_conceptual_conflicts/check_collision first, or pass `states` explicitly.'
           : undefined,
+      });
+    })
+  );
+
+  server.registerTool(
+    'plan_parallel_work',
+    {
+      title: 'Plan Parallel Work',
+      description: 'THE ACCELERANT (P6, §1.5 SPEC-COORDINATION-FABRIC-V2): given a pending task list, compute the MAXIMALLY-PARALLEL non-conflicting batching up front — the automated version of the decompose -> disjoint-claims -> fan-out loop a human orchestrator runs by hand. Everything else in this coordination group (claim_work/check_collision/check_conceptual_conflicts) reacts to overlap AFTER agents are already mid-flight; this tool runs BEFORE any agent starts, so a fleet can be routed to avoid most collisions rather than merely surviving them. Pass `tasks` with each task\'s declared `target_symbols`/`target_paths` when known; when a task declares neither, pass `path` (the repo) so the CAS-backed heuristic (`inferFootprintFromIntent`) can match real identifiers/file mentions in its free-text `intent` — deterministic pattern matching against ground truth, not AI, and a task matching nothing real stays visible in `unpartitionable` rather than being silently dropped or guessed at. THE GRAPH-AWARE ADVANTAGE: with `path` supplied and `include_blast_radius` left at its default (true), two tasks whose LITERAL targets are disjoint but whose CAS call-graph blast radii intersect (one edits a function, the other edits a real caller or callee of it) are still separated into different batches — a file/path-only partitioner cannot see this. Returns `batches` (each an array of task_ids meant to run FULLY PARALLEL, in fixed greedy-coloring order), `parallelism_factor` (tasks / batches — higher is more parallel), `conflict_edges` (each with a\'symbol\'/\'path\'/\'blast-radius\' reason), `footprint_source` (declared vs inferred per task id), `unpartitionable` (tasks with no derivable footprint at all, still included in a batch, never dropped), and a human-readable `summary` line. Call this before dispatching parallel work to a fleet of agents whenever you have more than one pending task for the same workspace.',
+      inputSchema: {
+        tasks: z.array(z.object({
+          id: z.string(),
+          intent: z.string(),
+          target_symbols: z.array(z.string()).optional().describe('Node ids (preferred) or bare symbol names this task will edit'),
+          target_paths: z.array(z.string()).optional().describe('Relative file paths this task will edit'),
+        })).describe('Pending tasks to partition into maximally-parallel non-conflicting batches'),
+        path: z.string().optional().describe('Repo path, to load the CAS for blast-radius expansion and intent->footprint inference. Omit to partition on declared footprints only (reduced fidelity, noted in the response).'),
+        include_blast_radius: z.boolean().optional().describe('Expand each task footprint by one hop of CAS call-graph edges before computing conflicts. Default true.'),
+      } as any,
+    } as any,
+    async ({ tasks, path, include_blast_radius }: any) => withErrorHandling(async () => {
+      const partitionTasksInput: PartitionTask[] = (tasks || []).map((t: any) => ({
+        id: t.id,
+        intent: t.intent,
+        target_symbols: t.target_symbols,
+        target_paths: t.target_paths,
+      }));
+
+      const cas = path ? await partitionCasForPath(path) : { nodes: [], edges: [] };
+      const includeBlastRadius = include_blast_radius ?? true;
+      const result = partitionTasks(partitionTasksInput, cas, { includeBlastRadius: includeBlastRadius });
+
+      const batchSummaries = result.batches.map(
+        (b) => `batch ${b.batch_index + 1} runs [${b.task_ids.join(', ')}] in parallel`
+      );
+      const summary = `${partitionTasksInput.length} tasks -> ${result.batches.length} parallel batch${result.batches.length === 1 ? '' : 'es'}, factor ${result.parallelism_factor.toFixed(2)}; ${batchSummaries.join('; ')}`;
+
+      return json({
+        ...result,
+        summary,
+        fidelity_note: path
+          ? undefined
+          : 'No `path` supplied: partitioned on declared target_symbols/target_paths only — no CAS blast-radius expansion, no intent inference. Pass `path` for full fidelity.',
       });
     })
   );

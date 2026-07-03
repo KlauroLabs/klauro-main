@@ -18,29 +18,69 @@ export function parseDockerfileMembers(projectPath: string, relativeFile: string
   }
 
   const members = new Set<string>();
+  // Real COMPILED build-output binaries (cargo -p package args, or a COPY
+  // sourced from a release/debug build dir) — as opposed to auxiliary
+  // scripts/tools that merely get COPYed alongside into the same bin
+  // directory (e.g. a `fetch_access_token` helper script copied to
+  // /usr/local/bin/ next to the actual service binary). Both count as
+  // `members` (real bundle membership — the auxiliary file DOES ship in the
+  // image), but only builtBinaries are candidates for the sole-member
+  // entrypoint fallback below: a helper script is never "the" service.
+  const builtBinaries = new Set<string>();
   for (const match of content.matchAll(/^\s*RUN\s+.*cargo\s+(?:build|install)\b[^\n]*/gim)) {
-    for (const pkgMatch of match[0].matchAll(/-p\s+([A-Za-z0-9_-]+)/g)) members.add(pkgMatch[1]);
+    for (const pkgMatch of match[0].matchAll(/-p\s+([A-Za-z0-9_-]+)/g)) {
+      members.add(pkgMatch[1]);
+      builtBinaries.add(pkgMatch[1]);
+    }
   }
   for (const match of content.matchAll(/^\s*COPY\s+(?:--from=\S+\s+)?(\S+)\s+(\S+)\s*$/gim)) {
     const source = match[1];
     const dest = match[2];
     const binName = path.basename(source);
-    if (/\/(release|debug)\//.test(source) || /^\/usr\/local\/bin\//.test(dest) || /\/bin\//.test(dest)) {
+    const isBuildOutput = /\/(release|debug)\//.test(source);
+    if (isBuildOutput || /^\/usr\/local\/bin\//.test(dest) || /\/bin\//.test(dest)) {
       if (binName && binName !== '.' && !/\.(sh|sql|json|yaml|yml|toml|txt|md)$/i.test(binName)) {
         members.add(binName);
+        if (isBuildOutput) builtBinaries.add(binName);
       }
     }
   }
 
+  // Real Docker semantics: ENTRYPOINT is the fixed executable, CMD supplies
+  // its default arguments. A very common pattern (seen in real repos) wraps
+  // several binaries behind one ENTRYPOINT script (e.g.
+  // `ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]` + `CMD ["coordinator"]`,
+  // where entrypoint.sh execs "$1"). In that shape the ENTRYPOINT's own
+  // basename is a dispatcher/wrapper, not a shipped member — CMD's basename
+  // is the actual default-selected binary and the one that should win as
+  // primary. Resolution order: (1) ENTRYPOINT basename if it names a real
+  // member, (2) else CMD basename if it names a real member (the wrapper
+  // case above), (3) else ENTRYPOINT basename as a last resort (single-bin
+  // images with no members list still need SOME name), (4) else CMD.
+  const firstToken = (raw: string): string => {
+    const jsonArray = raw.match(/\[\s*"([^"]+)"/);
+    const token = jsonArray ? jsonArray[1] : raw.trim().split(/\s+/)[0];
+    return path.basename(token.replace(/["'\[\],]/g, ''));
+  };
+  const entrypointRawMatch = content.match(/^\s*ENTRYPOINT\s+(.+)$/im);
+  const cmdRawMatch = content.match(/^\s*CMD\s+(.+)$/im);
+  const entrypointBaseName = entrypointRawMatch ? firstToken(entrypointRawMatch[1]) : undefined;
+  const cmdBaseName = cmdRawMatch ? firstToken(cmdRawMatch[1]) : undefined;
+
   let entrypointMember: string | undefined;
-  const entrypointMatch = content.match(/^\s*ENTRYPOINT\s+(.+)$/im) || content.match(/^\s*CMD\s+(.+)$/im);
-  if (entrypointMatch) {
-    const jsonArray = entrypointMatch[1].match(/\[\s*"([^"]+)"/);
-    const raw = jsonArray ? jsonArray[1] : entrypointMatch[1].trim().split(/\s+/)[0];
-    const baseName = path.basename(raw.replace(/["'\[\],]/g, ''));
-    if (baseName && members.has(baseName)) entrypointMember = baseName;
-    else if (baseName) entrypointMember = baseName;
-  }
+  if (entrypointBaseName && members.has(entrypointBaseName)) entrypointMember = entrypointBaseName;
+  else if (cmdBaseName && members.has(cmdBaseName)) entrypointMember = cmdBaseName;
+  else if (builtBinaries.size === 1) {
+    // Neither ENTRYPOINT nor CMD names a real member — often because the
+    // actual binary is selected by a runtime override this Dockerfile can't
+    // see (e.g. a docker-compose `entrypoint:`/`command:` override passing
+    // the bin name as an argument to a generic wrapper script, so the
+    // Dockerfile itself only ever names the wrapper). When this Dockerfile
+    // only builds exactly ONE real compiled binary (ignoring auxiliary
+    // helper scripts merely copied alongside it), there is no ambiguity —
+    // it must be that one, regardless of what the wrapper script is called.
+    entrypointMember = [...builtBinaries][0];
+  } else entrypointMember = entrypointBaseName || cmdBaseName;
 
   return { members: [...members], entrypointMember };
 }

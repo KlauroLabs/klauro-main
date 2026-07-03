@@ -15,6 +15,7 @@ import { appendClaim, getActiveClaims, getPresence, getStoreDir, readClaimLog } 
 import { deriveActiveClaims } from './coordination/presence';
 import { appendSecurityAudit, assertSameTenant, defaultSecretDenyPatterns, getSecurityStoreDir, redactInFlightChanges, TenantMismatchError } from './coordination/security';
 import { detectConceptualConflicts, type AgentInFlightState, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
+import { partitionTasks, type PartitionCas, type PartitionTask } from './coordination/partitioner';
 import { ingestAndPersist } from './telemetry-fusion';
 import { getAnalysis } from './analyzer';
 import { buildSummary, getProductMap } from './query';
@@ -505,6 +506,39 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
+      // P6 work-partitioner (§1.5 SPEC-COORDINATION-FABRIC-V2) over HTTP, for
+      // cross-machine orchestrators that can't reach the MCP tool directly.
+      // Same handler path as server.ts's `plan_parallel_work` tool: load the
+      // CAS best-effort for `path` (blast-radius expansion + intent
+      // inference), call the pure `partitionTasks`, return the same
+      // PartitionResult shape plus a human-readable `summary`.
+      if (request.method === 'POST' && route === '/v1/coordination/plan-parallel-work') {
+        const body = await readJsonBody<{
+          tasks: PartitionTask[]; path?: string; include_blast_radius?: boolean;
+        }>(request, maxBodyBytes);
+        if (!Array.isArray(body.tasks) || body.tasks.length === 0) {
+          writeJson(response, 400, { status: 'error', error: 'tasks (non-empty array) is required' });
+          return;
+        }
+        const cas = body.path ? await partitionCasForPathHttp(body.path) : { nodes: [], edges: [] };
+        const includeBlastRadius = body.include_blast_radius ?? true;
+        const result = partitionTasks(body.tasks, cas, { includeBlastRadius });
+
+        const batchSummaries = result.batches.map(
+          (b) => `batch ${b.batch_index + 1} runs [${b.task_ids.join(', ')}] in parallel`
+        );
+        const summary = `${body.tasks.length} tasks -> ${result.batches.length} parallel batch${result.batches.length === 1 ? '' : 'es'}, factor ${result.parallelism_factor.toFixed(2)}; ${batchSummaries.join('; ')}`;
+
+        writeJson(response, 200, {
+          ...result,
+          summary,
+          fidelity_note: body.path
+            ? undefined
+            : 'No `path` supplied: partitioned on declared target_symbols/target_paths only — no CAS blast-radius expansion, no intent inference. Pass `path` for full fidelity.',
+        });
+        return;
+      }
+
       // §WS-B in-flight publish — persists the latest (workspace, agent_id)
       // in-flight snapshot, tenant-gated (§WS-F) and audited. Mirrors the
       // /v1/coordination/claim handler's shape: read body -> authz -> persist
@@ -706,6 +740,28 @@ async function conceptualConflictCasForWorkspaceHttp(workspace: string): Promise
       edges: (cas.edges || [])
         .filter((e: any) => e.type === 'calls')
         .map((e: any) => ({ source: e.source, target: e.target, type: e.type })),
+    };
+  } catch {
+    return { nodes: [], edges: [] };
+  }
+}
+
+/** Cross-machine mirror of server.ts's `partitionCasForPath` — same shape,
+ *  same tolerance for `path` not resolving to an analyzable project. */
+async function partitionCasForPathHttp(path: string): Promise<PartitionCas> {
+  try {
+    const cas = await getAnalysis(path);
+    const files = new Set<string>();
+    for (const n of (cas.nodes || []) as any[]) {
+      const f = n?.source?.file;
+      if (typeof f === 'string' && f.length > 0) files.add(f);
+    }
+    return {
+      nodes: (cas.nodes || []).map((n: any) => ({ id: n.id, name: n.name })),
+      edges: (cas.edges || [])
+        .filter((e: any) => e.type === 'calls')
+        .map((e: any) => ({ source: e.source, target: e.target, type: e.type })),
+      files: [...files],
     };
   } catch {
     return { nodes: [], edges: [] };

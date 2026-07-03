@@ -1,0 +1,16 @@
+[package]
+name = "fixture-root"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "version"
+
+[workspace]
+resolver = "2"
+members = [
+  "bin/bina",
+  "bin/binb",
+  "bin/scratch-tool",
+  "crates/version",
+]

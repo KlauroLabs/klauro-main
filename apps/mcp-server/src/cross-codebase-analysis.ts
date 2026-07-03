@@ -9549,8 +9549,46 @@ function buildApplications(
 ): SystemApplication[] {
   const byId = new Map<string, SystemApplication>();
   const codebaseById = new Map(codebases.map(codebase => [codebase.id, codebase]));
+
+  // IDENTITY-COLLISION GUARD: applicationIdValue is derived from the cleaned
+  // NAME ALONE (see applicationId()), so two structurally unrelated modules
+  // that happen to share a name — e.g. a Cargo LIB crate `crates/version`
+  // (deployable:false) and a wholly separate `[[bin]]` target `version` at
+  // the repo root (`src/bin/version.rs`, deployable:true) — collide into one
+  // SystemApplication. Real repos hit this (a tiny version-stamp bin named
+  // the same as an unrelated lib crate). Blindly OR-ing `deployable` across
+  // the merge (the old behavior) makes it STICKY: once any candidate for
+  // this name says deployable:true, the merged app can never read false
+  // again, even though the true evidence-bearing path_hint is a different,
+  // unrelated folder. That produced a false-positive top-level deployable
+  // for a lib crate whose own evidence is `deployable:false`.
+  // Fix: when an incoming candidate's path_hint conflicts with the existing
+  // app's path_hint (both non-empty, neither a prefix/ancestor of the
+  // other), treat it as a DIFFERENT module and give it its own disambiguated
+  // application id instead of merging. Candidates that share a path_hint (or
+  // where one is empty, or one contains the other — e.g. a route handler
+  // nested under an already-known app root) still collapse into one app, as
+  // intended.
+  const pathHintConflicts = (a: string, b: string): boolean => {
+    if (!a || !b) return false;
+    if (a === b) return false;
+    return !a.startsWith(`${b}/`) && !b.startsWith(`${a}/`);
+  };
+  const disambiguatedId = (applicationIdValue: string, pathHint: string): string =>
+    `${applicationIdValue}@${slugify(pathHint || 'root')}`;
+
   const ensure = (applicationIdValue: string, codebaseIdValue: string, nameHint?: string, facts: Partial<SystemApplication> = {}): SystemApplication => {
-    const existing = byId.get(applicationIdValue);
+    let existing = byId.get(applicationIdValue);
+    let targetId = applicationIdValue;
+    if (existing && pathHintConflicts(existing.path_hint || '', facts.path_hint || '')) {
+      // Same name, different real module: don't merge. Look for an existing
+      // disambiguated sibling with a matching/compatible path_hint first, so
+      // repeated candidates for the SAME disambiguated module still collapse
+      // into one app instead of fanning out further on every call.
+      targetId = disambiguatedId(applicationIdValue, facts.path_hint || '');
+      const disambiguatedExisting = byId.get(targetId);
+      existing = disambiguatedExisting;
+    }
     if (existing) {
       existing.deployable = existing.deployable || Boolean(facts.deployable);
       if (!existing.description && facts.description) existing.description = facts.description;
@@ -9567,7 +9605,7 @@ function buildApplications(
     const codebase = codebaseById.get(codebaseIdValue);
     const name = nameHint || applicationNameFromId(applicationIdValue) || codebase?.name || codebaseIdValue;
     const application: SystemApplication = {
-      id: applicationIdValue,
+      id: targetId,
       codebase_id: codebaseIdValue,
       codebase_path: codebase?.path || '',
       name,
@@ -9582,7 +9620,7 @@ function buildApplications(
       evidence: [...new Set(facts.evidence || [])],
       trust_guidance: facts.trust_guidance,
     };
-    byId.set(applicationIdValue, application);
+    byId.set(targetId, application);
     return application;
   };
 
@@ -10127,15 +10165,22 @@ function deriveDeployableEvidenceFallback(repository: CrossCodebaseInput): Deplo
 }
 
 /** Does a ships_paths entry (a bin/crate/package name from Dockerfile COPY /
- *  cargo -p args / installer cp targets) name this app? Matched by exact name
- *  or by path_hint basename — ships_paths holds bare names like
- *  "client-service", apps carry path_hint like "bin/client-service". */
-function bundleNameMatches(shipped: string, app: SystemApplication): boolean {
+ *  cargo -p args / installer cp targets) name this app? Matched by exact name,
+ *  by path_hint basename (ships_paths holds bare names like "client-service",
+ *  apps carry path_hint like "bin/client-service"), or by the app's own
+ *  resolved evidence name when passed — a Cargo bin crate's FOLDER name and
+ *  its Cargo `[package] name` frequently differ (e.g. folder bin/client-service,
+ *  package/binary "zeracd"); the ships_paths/entrypoint always names the real
+ *  compiled BINARY, so an installer/Dockerfile that ships "zeracd" would never
+ *  match an app that's only known by its folder name without this. */
+function bundleNameMatches(shipped: string, app: SystemApplication, resolvedName?: string): boolean {
   const cleanShipped = cleanApplicationName(shipped);
   if (!cleanShipped) return false;
   if (cleanApplicationName(app.name) === cleanShipped) return true;
   const pathBasename = cleanApplicationName((app.path_hint || '').split('/').pop() || '');
-  return Boolean(pathBasename) && pathBasename === cleanShipped;
+  if (pathBasename && pathBasename === cleanShipped) return true;
+  if (resolvedName && cleanApplicationName(resolvedName) === cleanShipped) return true;
+  return false;
 }
 
 interface DeployableResolution {
@@ -10200,7 +10245,40 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
     const resolutions = new Map<string, DeployableResolution>();
     for (const app of appsForRepo) {
       const rootPath = app.path_hint || app.name;
-      const evidence = evidenceByRoot.get(rootPath)
+      // DIRECTORY-DECOUPLED ENTRYPOINT MATCH: a per-service Dockerfile
+      // conventionally named after what it ships (Client.Dockerfile,
+      // Agent.Dockerfile, ...) commonly lives in a SHARED directory
+      // (docker/, deploy/, ci/) alongside its siblings, so its root_path
+      // (the directory) never equals or contains the actual app's path_hint
+      // (e.g. bin/client) — a plain root_path containment check misses it
+      // entirely. Checked FIRST (ahead of the containment match below)
+      // because it is real Tier-1 ship evidence naming this app by its own
+      // ENTRYPOINT/CMD binary, which must outrank a same-root_path Tier-2/3
+      // signal (e.g. the app's own Cargo [[bin]] entry at its path_hint) —
+      // otherwise the weaker in-place signal wins by map lookup order alone
+      // and the real Tier-1 artifact is never seen. Evidence-gated: only
+      // attaches when this evidence's own entrypoint_member resolves to
+      // THIS app specifically, so a shared directory with several sibling
+      // Dockerfiles still attributes each one to its own service. Searches
+      // the RAW evidenceList (not the root_path-collapsed evidenceByRoot
+      // map) because several distinct Tier-1 artifacts can legitimately
+      // share one root_path/directory (e.g. docker/Agent.Dockerfile +
+      // docker/Client.Dockerfile + docker/Coordinator.Dockerfile all under
+      // "docker") and the collapse intentionally keeps only one merged
+      // entry per root_path — exactly the case this match needs to see past.
+      // When several Tier-1 artifacts all resolve their entrypoint_member to
+      // this same app (e.g. a generic root-level multi-service Dockerfile
+      // AND this app's own dedicated per-service Dockerfile both default to
+      // it), prefer the MOST SPECIFIC one — a real root_path (this app's own
+      // artifact) over the generic repo root_path '.' (a shared/aggregate
+      // artifact) — so the app's identity is anchored to its own dedicated
+      // evidence rather than whichever happens to sort first.
+      const directoryDecoupledCandidates = evidenceList.filter(candidate =>
+        candidate.tier === 1 && candidate.entrypoint_member && bundleNameMatches(candidate.entrypoint_member, app));
+      const directoryDecoupledMatch = directoryDecoupledCandidates.find(candidate => candidate.root_path !== '.')
+        || directoryDecoupledCandidates[0];
+      const evidence = directoryDecoupledMatch
+        || evidenceByRoot.get(rootPath)
         || [...evidenceByRoot.values()].find(candidate => rootPath && (rootPath.startsWith(`${candidate.root_path}/`) || candidate.root_path.startsWith(`${rootPath}/`)));
       if (evidence) {
         resolutions.set(app.id, {
@@ -10238,12 +10316,31 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
       if (evidence.tier !== 1 || evidence.root_path !== '.') continue;
       const shipsPaths = evidence.ships_paths || [];
       if (shipsPaths.length < 2) continue;
-      const namedApps = appsForRepo.filter(app => shipsPaths.some(shipped => bundleNameMatches(shipped, app)));
+      // A named member with its OWN dedicated Tier-1 artifact elsewhere
+      // (e.g. a per-service docker/Client.Dockerfile that directly names
+      // this app as ITS entrypoint) already has stronger, more specific
+      // ship evidence than a shared/generic root-level multi-service
+      // artifact (often a dev/test docker-compose image bundling
+      // everything for convenience). Don't let the generic root artifact
+      // sweep such a member into someone else's bundle — its dedicated
+      // evidence wins and it competes for PRIMARY on equal footing instead.
+      const hasOwnDedicatedTier1 = (app: SystemApplication): boolean => {
+        const ownResolution = resolutions.get(app.id);
+        return Boolean(ownResolution && ownResolution.tier === 1 && ownResolution.rootPath !== evidence.root_path);
+      };
+      const namedApps = appsForRepo.filter(app => shipsPaths.some(shipped => bundleNameMatches(shipped, app, resolutions.get(app.id)?.name)));
       if (namedApps.length < 2) continue;
-      const primary = (evidence.entrypoint_member && namedApps.find(app => bundleNameMatches(evidence.entrypoint_member!, app)))
+      const dedicatedApps = namedApps.filter(hasOwnDedicatedTier1);
+      const sweepableApps = namedApps.filter(app => !hasOwnDedicatedTier1(app));
+      // Prefer a named member with its OWN dedicated Tier-1 entrypoint match
+      // as primary over the shared artifact's generic entrypoint pick — it
+      // is evidenced as shipped in its own right, not just swept in.
+      const primary = (evidence.entrypoint_member && dedicatedApps.find(app => bundleNameMatches(evidence.entrypoint_member!, app, resolutions.get(app.id)?.name)))
+        || dedicatedApps[0]
+        || (evidence.entrypoint_member && namedApps.find(app => bundleNameMatches(evidence.entrypoint_member!, app, resolutions.get(app.id)?.name)))
         || namedApps[0];
       rootBundleTargets.set(primary.id, { primaryAppId: primary.id, evidence });
-      for (const member of namedApps) {
+      for (const member of sweepableApps) {
         if (member.id === primary.id) continue;
         member.bundled_into = primary.id;
         member.boundary_evidence = mergeStrings(member.boundary_evidence || [], [
@@ -10252,6 +10349,10 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
           ...evidence.evidence,
         ]);
       }
+      // A dedicated app other than the chosen primary keeps its own
+      // Tier-1 evidence untouched (handled by the per-app evidence-gated
+      // merge pass below via its own resolution) rather than being forced
+      // into this shared artifact's bundle.
     }
 
     // Evidence-gated merge pass.
@@ -10271,14 +10372,22 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
 
       // Look for another root whose Tier-1 ships_paths cover this app's root,
       // or another root's distribution unit that names this app as a bundled
-      // component (both are positive bundling evidence).
+      // component (both are positive bundling evidence). Checks the app's
+      // own resolved evidence NAME (resolution.name) as well as app.name —
+      // a Cargo bin crate's folder name and its actual `[package] name` /
+      // compiled binary name frequently differ (e.g. folder client-service,
+      // package "zeracd"), and ships_paths always names the real binary.
       const bundleTarget = appsForRepo.find(other => {
         if (other.id === app.id) return false;
         const otherResolution = resolutions.get(other.id);
         if (!otherResolution || otherResolution.tier !== 1) return false;
         const shipsHit = otherResolution.shipsPaths.some(shipped =>
-          shipped === resolution.rootPath || shipped.includes(app.name) || (resolution.rootPath && shipped.startsWith(resolution.rootPath)));
-        const bundleEvidenceHit = otherResolution.evidence.some(line => line.includes('bundles:') && line.includes(app.name));
+          shipped === resolution.rootPath
+          || shipped.includes(app.name)
+          || (resolution.name && resolution.name !== app.name && shipped.includes(resolution.name))
+          || (resolution.rootPath && shipped.startsWith(resolution.rootPath)));
+        const bundleEvidenceHit = otherResolution.evidence.some(line =>
+          line.includes('bundles:') && (line.includes(app.name) || (resolution.name ? line.includes(resolution.name) : false)));
         return shipsHit || bundleEvidenceHit;
       });
 

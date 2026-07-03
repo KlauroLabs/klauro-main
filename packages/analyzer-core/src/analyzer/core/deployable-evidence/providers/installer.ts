@@ -34,6 +34,63 @@ function collectFromDistributionArtifactNodes(ctx: EvidenceCollectionContext): D
   return out;
 }
 
+/** Recover `cargo build/install -p <package>` membership when the package
+ *  name is passed through a shell FUNCTION PARAMETER rather than written
+ *  literally on the cargo line — a common indirection in real installer
+ *  scripts, e.g.:
+ *    build_binary() {
+ *      local binary_name=$1
+ *      cargo build --release -p "$binary_name"
+ *    }
+ *    CLIENT_BINARY=$(build_binary "client")
+ *    ZERACD_BINARY=$(build_binary "zeracd")
+ *  The direct `-p\s+([A-Za-z0-9_-]+)` regex only matches a literal package
+ *  name; it can't see through `"$binary_name"`, so real bundle membership
+ *  (here: client + zeracd, the two binaries this installer actually ships
+ *  together) goes completely undetected. This walks each shell function
+ *  whose body both (a) binds a `local <param>=$N` (or reads `$N` directly)
+ *  and (b) has a `cargo build|install ... -p "$<param>"` line referencing
+ *  that same parameter, then resolves the parameter's real values from every
+ *  literal-string call site of that function elsewhere in the script
+ *  (`funcname "literal" ...`), attributing position N's literal as a member. */
+function resolveIndirectCargoPackageMembers(content: string): string[] {
+  const members: string[] = [];
+  const funcBodyRegex = /(?:^|\n)\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{([\s\S]*?)\n\}/g;
+  for (const funcMatch of content.matchAll(funcBodyRegex)) {
+    const funcName = funcMatch[1];
+    const body = funcMatch[2];
+    // Which positional parameter ($1, $2, ...) does a cargo -p arg reference,
+    // directly or via a `local name=$N` alias resolved back to its position?
+    const paramAliases = new Map<string, string>(); // alias name -> $N
+    for (const aliasMatch of body.matchAll(/\blocal\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\$(\d+)\b/g)) {
+      paramAliases.set(aliasMatch[1], `$${aliasMatch[2]}`);
+    }
+    let targetPosition: number | undefined;
+    for (const cargoMatch of body.matchAll(/cargo\s+(?:build|install)\b[^\n]*-p\s+"?\$(\{?)([A-Za-z_][A-Za-z0-9_]*)\}?"?/g)) {
+      const referenced = cargoMatch[2];
+      const positional = /^\d+$/.test(referenced) ? `$${referenced}` : paramAliases.get(referenced);
+      if (positional) {
+        const position = Number(positional.slice(1));
+        if (Number.isFinite(position) && position > 0) { targetPosition = position; break; }
+      }
+    }
+    if (!targetPosition) continue;
+
+    // Resolve real values from literal call sites: `funcName "literal" ...`
+    const callRegex = new RegExp(`\\b${funcName}\\s+((?:"[^"]*"|'[^']*'|\\S+)\\s*){0,6}`, 'g');
+    for (const callMatch of content.matchAll(callRegex)) {
+      // Skip the definition site itself (immediately followed by `()`).
+      if (new RegExp(`\\b${funcName}\\s*\\(\\)`).test(callMatch[0])) continue;
+      const rawArgs = callMatch[1] ? callMatch[0].slice(funcName.length).trim() : '';
+      if (!rawArgs) continue;
+      const args = [...rawArgs.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].map(m => m[1] ?? m[2] ?? m[3]);
+      const value = args[targetPosition - 1];
+      if (value && /^[A-Za-z0-9_-]+$/.test(value) && !value.startsWith('$')) members.push(value);
+    }
+  }
+  return members;
+}
+
 /** Installers / packaging shell scripts (e.g. build-installer.sh) that bundle
  *  multiple binaries into one distribution artifact. Reads `cargo build -p X`
  *  args plus `cp target/release/<bin> ...` copy targets to recover real
@@ -69,6 +126,7 @@ function collectFromInstallerScripts(ctx: EvidenceCollectionContext): Deployable
     for (const match of content.matchAll(/\bcp\s+[^\n]*target\/(?:release|debug)\/([A-Za-z0-9_-]+)/g)) {
       members.add(match[1]);
     }
+    resolveIndirectCargoPackageMembers(content).forEach(name => members.add(name));
 
     if (!members.size) continue;
 

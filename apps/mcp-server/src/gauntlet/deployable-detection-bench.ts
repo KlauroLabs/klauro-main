@@ -53,6 +53,24 @@
  *      gateway, server. The 4 unshipped bins must be deployable:false
  *      (runnable-not-shipped) — RUNNABLE is not SHIPPED. crates/shared rolls
  *      up (not its own deployable).
+ *   7. docker-shared-dir-entrypoint-fixture — the entrypoint-as-primary +
+ *      utility-bin-false-positive trap (modeled on a real repo): bin/bina +
+ *      bin/binb each have their OWN per-service Dockerfile, both living in a
+ *      SHARED docker/ directory; bina's Dockerfile has NO CMD and an
+ *      ENTRYPOINT that is a generic wrapper script (entrypoint.sh) rather
+ *      than the binary itself, so the real shipped binary must be recovered
+ *      from the Dockerfile's sole build-output binary. A separate top-level
+ *      Dockerfile bundles bina+binb generically (dev/test convenience image)
+ *      and must NOT steal primary attribution from their own dedicated
+ *      Dockerfiles. Separately, a Cargo `[[bin]] name = "version"` target at
+ *      the repo root shares its bare name with an unrelated `crates/version`
+ *      LIBRARY crate (deployable:false) — the two must NOT collide into one
+ *      SystemApplication (identity-collision bug) and the bin target itself
+ *      must resolve to deployable:false via the shipped-gate (no Tier-1
+ *      artifact references it — RUNNABLE is not SHIPPED). EXPECT 2 top-level
+ *      deployables: bina, binb (each its own primary, neither is bundled into
+ *      the other or into the generic top-level Dockerfile); the version bin
+ *      and the version lib crate are both deployable:false.
  */
 
 import * as path from 'path';
@@ -88,6 +106,7 @@ export const FIXTURES: FixtureCase[] = [
   { id: 'go-cmd-monorepo', dir: path.join(FIXTURES_ROOT, 'go-cmd-monorepo'), workspaceName: 'go-cmd-monorepo-fixture' },
   { id: 'evidence-gated-negative', dir: path.join(FIXTURES_ROOT, 'evidence-gated-negative'), workspaceName: 'evidence-gated-negative-fixture' },
   { id: 'rust-messy-workspace', dir: path.join(FIXTURES_ROOT, 'rust-messy-workspace'), workspaceName: 'rust-messy-workspace-fixture' },
+  { id: 'docker-shared-dir-entrypoint-fixture', dir: path.join(FIXTURES_ROOT, 'docker-shared-dir-entrypoint-fixture'), workspaceName: 'docker-shared-dir-entrypoint-fixture' },
 ];
 
 export interface DeployableDetectionBenchResult {
