@@ -23,7 +23,7 @@ import { request as httpsRequest } from 'https';
 import * as os from 'os';
 import * as path from 'path';
 import { createRemoteAnalyzerHttpServer } from '../remote-analyzer-service';
-import { buildSourceSnapshot } from '../remote-source';
+import { buildSourceSnapshot, EXCLUDED_DIRECTORIES } from '../remote-source';
 import { saveAnalysis } from '../storage';
 import type { CASOutput } from '../../../../packages/analyzer-core/src/types/cas.types';
 
@@ -107,10 +107,37 @@ export async function analyzeForBench(dir: string): Promise<CASOutput> {
   }
 }
 
+// Directory basenames never worth staging into the throwaway bench repo: VCS
+// metadata plus build-artifact/dependency dirs (node_modules, target, dist, ...).
+// Reuses remote-source.ts's EXCLUDED_DIRECTORIES — the same list that determines
+// what the product's own source snapshot would exclude anyway — so the copy filter
+// can't drop anything the snapshot walk would have kept, and can't diverge from it
+// over time. `.git` is added on top since EXCLUDED_DIRECTORIES already has it, but
+// we keep the explicit check below for clarity/safety even if that list changes.
+const STAGING_EXCLUDED_DIR_NAMES = new Set([...EXCLUDED_DIRECTORIES, '.git']);
+
+/**
+ * True when `relPath` (relative to the repo root being staged, using forward
+ * slashes) falls inside a directory we should never copy. Checks every path
+ * segment, not just the basename, so `foo/node_modules/bar` is excluded too.
+ */
+function isStagingExcluded(relPath: string): boolean {
+  if (!relPath) return false;
+  const normalized = relPath.split(path.sep).join('/');
+  return normalized.split('/').some((segment) => STAGING_EXCLUDED_DIR_NAMES.has(segment));
+}
+
 /** If dir is already a clean git repo, use it; else copy to a temp git repo + commit. */
 async function stageAsGitRepo(dir: string): Promise<string> {
   const tmp = path.join(os.tmpdir(), `klauro-bench-src-${process.pid}-${Math.random().toString(36).slice(2)}`);
-  await fs.copy(dir, tmp, { filter: (src) => !/(^|\/)\.git(\/|$)/.test(src) });
+  const root = path.resolve(dir);
+  await fs.copy(dir, tmp, {
+    filter: (src) => {
+      const rel = path.relative(root, src);
+      if (!rel || rel.startsWith('..')) return true; // root itself
+      return !isStagingExcluded(rel);
+    },
+  });
   const git = (args: string[]) => execFileSync('git', args, { cwd: tmp, stdio: 'ignore' });
   git(['init', '-q']);
   git(['add', '-A']);

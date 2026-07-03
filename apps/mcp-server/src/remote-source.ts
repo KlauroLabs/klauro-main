@@ -130,7 +130,10 @@ export interface WorkspaceRecommendation {
   candidates: WorkspaceCandidate[];
 }
 
-const EXCLUDED_DIRECTORIES = new Set([
+// Exported so other blackbox-client code (e.g. the gauntlet's bench staging step)
+// can align its own directory filtering with what the snapshot walk excludes,
+// instead of maintaining a second, potentially-divergent ignore list.
+export const EXCLUDED_DIRECTORIES = new Set([
   '.git',
   '.klauro',
   '.klauro-agent-idiom-benchmark',
