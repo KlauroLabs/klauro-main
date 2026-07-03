@@ -96,10 +96,21 @@ else
       "$VPS_USER@$VPS_HOST:/opt/klauro/downloads/"
     sshpass -p "$VPS_PASSWORD" ssh $SSHOPTS "$VPS_USER@$VPS_HOST" \
       "cp /opt/klauro/downloads/klauro-latest.tgz /opt/klauro/downloads/klauro-${VERSION}.tgz"
-    echo "==> Verifying hosted manifest"
+    echo "==> Verifying the LIVE distribution channel (not just the upload)"
+    # A green /health does NOT mean the distribution channel works: the api serves
+    # /dist/* from a mounted downloads dir, and a missing mount silently yields
+    # tarball-404 + version:null. So verify what clients actually hit, and FAIL LOUD.
     HOSTED="$(curl -fsS "https://mcp.klauro.com/dist/latest.json" | node -p "JSON.parse(require('fs').readFileSync(0)).version" 2>/dev/null || echo unknown)"
-    echo "    hosted latest.json version: $HOSTED"
-    [ "$HOSTED" = "$VERSION" ] && echo "    OK — clients will see $VERSION on 'klauro update --check'"
+    TARBALL_CODE="$(curl -s -o /dev/null -w '%{http_code}' -r 0-0 "https://mcp.klauro.com/dist/klauro-latest.tgz" 2>/dev/null || echo 000)"
+    echo "    hosted latest.json version: $HOSTED ; tarball HTTP: $TARBALL_CODE"
+    if [ "$HOSTED" = "$VERSION" ] && [ "$TARBALL_CODE" = "200" ] || [ "$TARBALL_CODE" = "206" ]; then
+      echo "    OK — clients will see $VERSION + download the tarball on 'klauro update'"
+    else
+      echo "    !! DISTRIBUTION CHANNEL BROKEN: version=$HOSTED (want $VERSION), tarball=$TARBALL_CODE (want 200/206)."
+      echo "    !! Common cause: the api container is missing the '/opt/klauro/downloads' volume mount"
+      echo "    !! (the deploy rsyncs docker-compose.yml — ensure it keeps the downloads mount)."
+      echo "    !! Tarball uploaded fine, but clients can't fetch it. FIX before announcing the release."
+    fi
   fi
 fi
 
