@@ -7960,7 +7960,11 @@ function toSystemCodebase(repository: CrossCodebaseInput): SystemCodebase {
   const sdkPackageNames = sdkPackageCandidates(repository);
   return {
     id: codebaseId(repository.path),
-    name: repository.name || cas.system?.name || path.basename(repository.path),
+    // A hash/id-shaped or hostname-shaped candidate here (e.g. cas.system?.name
+    // resolving to the workspace/analysis-id directory basename an analyzer
+    // server stages a snapshot under) must never surface as the codebase's
+    // own name — fall back to the real repo directory basename instead.
+    name: sanitizeDeployableName(repository.name || cas.system?.name || path.basename(repository.path), repository),
     path: repository.path,
     project_role: inferProjectRole(repository),
     system_type: cas.system?.type || 'application',
@@ -11093,6 +11097,83 @@ function sourceNodeServiceAliases(cas: CASOutput, nodeId: string | undefined): s
   return normalizeAliases(node?.name?.replace(/^Compose service:\s*/i, '')).filter(isUsefulApplicationAlias);
 }
 
+/**
+ * A deployable/app NAME must never be a hash/id-shaped token (a content
+ * hash, uuid, or the workspace/analysis-id directory basename an analyzer
+ * server stages a snapshot under) or a bare hostname/domain string (an
+ * external SOAP/HTTP endpoint's host, e.g. from a WSDL URL). Both shapes
+ * are real plumbing artifacts, not human-meaningful application identity —
+ * mirrors isHashOrIdShapedToken in orchestrator.ts (duplicated locally: that
+ * one is a private method on the analyzer-core orchestrator class, across
+ * the apps/packages boundary from this module).
+ */
+function isHashOrIdShapedToken(token: string): boolean {
+  const normalized = (token || '').toLowerCase();
+  if (normalized.length < 8) return false;
+  if (/^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/.test(normalized)) return true;
+  if (normalized.length >= 12 && /^[0-9a-f]+$/.test(normalized)) return true;
+  if (normalized.length >= 10 && /^[0-9a-z]+$/.test(normalized) && /[0-9]/.test(normalized) && !/[aeiou]/.test(normalized)) {
+    return true;
+  }
+  return false;
+}
+
+/** A bare dotted/dashed hostname (e.g. "ws.efsllc.com" -> cleaned
+ *  "ws-efsllc-com") is a real external endpoint's address, not this repo's
+ *  application identity — it names the OTHER end of an integration, not a
+ *  deployable this codebase ships. Recognized by a public-suffix-ish TLD
+ *  tail surviving cleanApplicationName's dot-to-dash normalization: at
+ *  least 3 dash-joined segments where the last segment is a short
+ *  (2-6 char) alphabetic token (com/org/io/co/net/dev/app/...). */
+function isHostShapedToken(cleanedName: string): boolean {
+  const normalized = (cleanedName || '').toLowerCase();
+  // cleanApplicationName() deliberately PRESERVES dots (it only replaces
+  // non [a-zA-Z0-9_.-] characters), so a raw hostname like "ws.efsllc.com"
+  // reaches this check still dot-separated; only a later slugify() call
+  // (applicationId's own id-string construction) converts dots to dashes.
+  // Check both shapes so this guard catches the name whether or not it has
+  // already passed through slugify by the time it gets here.
+  const dotSegments = normalized.split('.').filter(Boolean);
+  if (dotSegments.length >= 2) {
+    const dotTld = dotSegments[dotSegments.length - 1];
+    if (/^[a-z]{2,6}$/.test(dotTld) && dotSegments.slice(0, -1).every(segment => /^[a-z0-9-]+$/.test(segment))) return true;
+  }
+  const segments = normalized.split('-').filter(Boolean);
+  if (segments.length < 3) return false;
+  const tld = segments[segments.length - 1];
+  return /^[a-z]{2,6}$/.test(tld) && segments.slice(0, -1).every(segment => /^[a-z0-9]+$/i.test(segment));
+}
+
+/** True when `cleanedName` is not safe to surface as a deployable/app name
+ *  (hash/id-shaped, or a bare external hostname) and a better, human name
+ *  (directory basename / repo name / manifest name) should be used instead. */
+function isUnsafeDeployableName(cleanedName: string): boolean {
+  if (!cleanedName) return true;
+  return isHashOrIdShapedToken(cleanedName) || isHostShapedToken(cleanedName);
+}
+
+/** The last-resort, always-safe application name: the repo directory's own
+ *  basename. Never a hash/id or a hostname since it comes straight from the
+ *  filesystem path the caller supplied for this repository, not from
+ *  derived/CAS-computed metadata that can be staged under a workspace dir
+ *  named after an analysis id. */
+function safeRepositoryFallbackName(repository: CrossCodebaseInput): string {
+  return cleanApplicationName(path.basename(repository.path)) || 'codebase';
+}
+
+/** Resolve a deployable/app name candidate, honoring the caller's preferred
+ *  chain but substituting `safeRepositoryFallbackName` the moment a
+ *  candidate turns out to be hash/id-shaped or a bare hostname. Upstream
+ *  cause (kept for anyone tracing this further): a value in the chain
+ *  (`cas.system?.name`, or a raw endpoint-derived alias) can legitimately be
+ *  a workspace/analysis-id basename or a WSDL/HTTP endpoint host — this is
+ *  the general backstop, not a truckspy-specific patch. */
+function sanitizeDeployableName(candidate: string, repository: CrossCodebaseInput): string {
+  const cleaned = cleanApplicationName(candidate);
+  if (isUnsafeDeployableName(cleaned)) return safeRepositoryFallbackName(repository);
+  return candidate;
+}
+
 function serviceAliasesFromEndpoint(endpoint: string | undefined): string[] {
   const value = String(endpoint || '').trim();
   if (!value) return [];
@@ -11129,13 +11210,17 @@ function inferApplicationName(
   }
   for (const alias of normalizeAliases(aliases)) {
     if (isExternalRuntimeDependency(alias)) return alias;
-    if (isUsefulApplicationAlias(alias)) return alias;
+    if (isUsefulApplicationAlias(alias) && !isUnsafeDeployableName(cleanApplicationName(alias))) return alias;
   }
-  const endpointAlias = serviceAliasesFromEndpoint(fallback).find(isUsefulApplicationAlias);
+  // A raw endpoint host (e.g. "ws.efsllc.com" from a SOAP/WSDL URL) names
+  // the OTHER end of an integration, not this repo's own application
+  // identity — never surface it as a deployable name. Fall through to the
+  // repository-name chain below instead of returning the bare host.
+  const endpointAlias = serviceAliasesFromEndpoint(fallback).find(alias => isUsefulApplicationAlias(alias) && !isHostShapedToken(cleanApplicationName(alias)));
   if (endpointAlias) return endpointAlias;
   const externalEndpointAlias = serviceAliasesFromEndpoint(fallback).find(alias => isExternalRuntimeDependency(alias));
   if (externalEndpointAlias) return externalEndpointAlias;
-  return repository.name || repository.cas.system?.name || path.basename(repository.path);
+  return sanitizeDeployableName(repository.name || repository.cas.system?.name || path.basename(repository.path), repository);
 }
 
 function applicationNameFromFile(file: string | undefined): string {

@@ -1336,3 +1336,62 @@ test('validates standalone single-repo workspaces without requiring integration 
   assert.equal(graph.validation.cas_inputs_validated[0].status, 'valid');
   assert.equal(graph.validation.relationship_coverage.integration_link_count, 0);
 });
+
+test('falls back to the repo directory name instead of a hash-shaped workspace basename', () => {
+  // Mirrors a real analyzer-server flow: a snapshot is analyzed inside a
+  // workspace directory named after an opaque analysis id (a 16-char hex
+  // digest of the real repo path), so cas.system.name ends up being that
+  // hash instead of the real project name. A deployable/app name must never
+  // surface that hash — it should fall back to the actual repo directory's
+  // basename ("truckspyapp"), not the workspace-basename hash.
+  const hashLikeWorkspaceBasename = '43d8a1e72566feb2';
+  const app = cas({
+    system: { id: hashLikeWorkspaceBasename, name: hashLikeWorkspaceBasename, type: 'application', root_path: `/tmp/workspaces/${hashLikeWorkspaceBasename}` },
+    nodes: [{ id: 'controller', name: 'CustomerApiTokenController', type: 'controller', source: { file: 'Customer/CustomerApiTokenController.php', line: 1 } } as any],
+    entry_points: [{
+      id: 'entry:token',
+      source_node: 'controller',
+      type: 'http',
+      name: 'POST /api/customer/token',
+      trigger: { method: 'POST', path: '/api/customer/token' },
+    }],
+  });
+
+  // No explicit `name` passed (the real bench/product flow keys the
+  // repository input off the real filesystem path but does not always
+  // supply a separate display name) — `path` is the one value guaranteed
+  // to be the real, human-meaningful directory, never the hash.
+  const graph = buildCrossCodebaseSystemGraph('truckspy-system', [
+    { path: '/Users/x/dev/clients/outcode/truckspy/truckspyapp', cas: app },
+  ]);
+
+  const names = graph.applications.map(candidate => candidate.name);
+  assert.ok(!names.includes(hashLikeWorkspaceBasename), `expected no hash-shaped name, got: ${names.join(', ')}`);
+  assert.ok(names.includes('truckspyapp'), `expected repo-directory-derived name "truckspyapp", got: ${names.join(', ')}`);
+});
+
+test('falls back to the repo directory name instead of a bare external endpoint hostname', () => {
+  // Mirrors a real PHP/SOAP integration: a WSDL client hardcodes a remote
+  // host (ws.efsllc.com). That host names the OTHER end of the integration,
+  // not this repo's own application identity, and must never surface as a
+  // deployable/app name (previously produced "ws-efsllc-com").
+  const app = cas({
+    system: { id: 'wex-client-php', name: 'wex-client-php', type: 'application', root_path: '/tmp/wex-client-php' },
+    nodes: [{ id: 'console', name: 'console', type: 'function', source: { file: 'wex-client-php/console.php', line: 1 } } as any],
+    external_services: [{
+      id: 'external:wex-soap',
+      name: 'WEX SOAP client',
+      type: 'http',
+      endpoint: 'https://ws.efsllc.com/richapp/Wsdl.action?wsdl=/axis2/services/CardManagementWS',
+      connected_nodes: ['console'],
+    }] as any,
+  });
+
+  const graph = buildCrossCodebaseSystemGraph('truckspy-system', [
+    { path: '/Users/x/dev/clients/outcode/truckspy/wex-client-php', cas: app },
+  ]);
+
+  const names = graph.applications.map(candidate => candidate.name);
+  assert.ok(!names.includes('ws-efsllc-com'), `expected no bare-hostname name, got: ${names.join(', ')}`);
+  assert.ok(names.includes('wex-client-php'), `expected repo-directory-derived name "wex-client-php", got: ${names.join(', ')}`);
+});
