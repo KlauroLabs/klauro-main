@@ -502,7 +502,7 @@ Load a persisted WAS-compliant Workspace analysis by id or name.
 | `analysis_id_or_name` | string | yes | Workspace analysis id or name |
 | `detail_level` | string | no | `overview`, `connections`, `evidence`, or `full`. Defaults to `overview` |
 
-**Returns:** At `overview`, a compact repo/app map with composition classification, health, activity, telemetry, risks, capabilities, workflows, environments, simple sync/async/passive/stream connections, major external dependencies, and isolated deployables. `composition.kind` tells clients whether the workspace is primarily an `interconnected-system`, `composed-application-architecture`, `hybrid-system-and-architecture`, `library-collection`, or `disconnected-collection`; `recommended_primary_view` tells agents/UI whether to prefer a system map, architecture map, both, or inventory. External dependencies include `usage` (`source-backed`, `topology-only`, or `declared`) and `used`; agents should treat `topology-only` Redis/Postgres/MinIO/etc. as provisioned/wired infrastructure, not source-proven usage. Isolated deployables include a reason category (`validated-standalone`, `weak-cas-signal`, `unresolved-candidate`, or `no-evidence`) so agents do not confuse valid standalone surfaces with possible analysis gaps. Deeper levels add links, runtime evidence, interfaces, unmatched surfaces, validation, Terraform/Docker/Compose/CI infrastructure details, or the complete graph.
+**Returns:** At `overview`, a compact repo/app map with composition classification, health, activity, telemetry, risks, capabilities, workflows, environments, simple sync/async/passive/stream connections, major external dependencies, and isolated deployables. `composition.kind` tells clients whether the workspace is primarily an `interconnected-system`, `composed-application-architecture`, `hybrid-system-and-architecture`, `library-collection`, or `disconnected-collection`; `recommended_primary_view` tells agents/UI whether to prefer a system map, architecture map, both, or inventory. External dependencies include `usage` (`source-backed`, `topology-only`, or `declared`) and `used`; agents should treat `topology-only` Redis/Postgres/MinIO/etc. as provisioned/wired infrastructure, not source-proven usage. Isolated deployables include a reason category (`validated-standalone`, `weak-cas-signal`, `unresolved-candidate`, or `no-evidence`) so agents do not confuse valid standalone surfaces with possible analysis gaps. Deeper levels add links, runtime evidence, interfaces, unmatched surfaces, validation, Terraform/Docker/Compose/CI infrastructure details, or the complete graph. At `full` (and `evidence`) detail, the graph also carries `shared_code_rollup` (`WorkspaceSharedCodeRollup[]`, not a separate tool) — cross-deployable shared-library rollups built from `libs/*`-style code recognized in deployable detection, composed from SDK-install links + CAS import specifiers: for each shared library, its consumer deployables, the consumed-symbol surface, and per-symbol blast radius, so a monorepo's `libs/`/shared-package surfaces are queryable instead of structurally invisible to WAS.
 
 ### `get_workspace_agent_context`
 
@@ -1489,6 +1489,20 @@ All method calls involving a specific node.
 
 **Returns:** `{ made_by, received_by }` - arrays of method calls with execution context (async, conditional, loop depth), arguments, external details, framework semantics, performance hints.
 
+### `get_interface_signature`
+
+The I/L/S/O contract for one entity in a single call — replaces manually joining `get_entry_points` + `get_exit_points` + `get_data_lineage` + `get_callers`/`get_callees` for the same target. Call this before changing an entity to see its full contract and blast radius in one shot.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `target` | string | yes | Node ID, file path, search query, or `"project"`/`"workspace"` for the aggregate rollup |
+| `level` | enum | no | `auto` \| `function` \| `flow` \| `capability` \| `project` \| `workspace` (default: auto-detected from target shape) |
+| `caller_limit` | number | no | Max callers in `logic.key_refs` (default 10) |
+| `callee_limit` | number | no | Max callees in `logic.key_refs` (default 10) |
+
+**Returns:** Freshness-stamped. `Input` (required parameters / entry points it triggers on), `Logic` (blackbox caller/callee wiring — counts + key refs, honest truncation signal), `Side-effects` (exit points + external data-lineage recipients + boundaries crossed), `Output` (return type / produced entities), and `purpose` (terminal-signal proximity, when reachable). Level-aware: function/flow/capability resolve to one node; project/workspace aggregate from `product_map` + entry/exit points (gaps reported honestly, not fabricated).
+
 ---
 
 ## Intelligence (CAS v1.7.0)
@@ -1679,6 +1693,21 @@ Runtime-to-static correlation for entry points, exit points, call chains, and ex
 
 **Returns:** `runtime`, status counts, and links with `runtime_signal`, `telemetry_status`, `instrumentation_points`, confidence, and evidence.
 
+### `get_architectural_conflicts`
+
+Architectural self-regulation / cohesion check: is what you're about to build (or what already exists) consistent with how this system is actually built? Call this BEFORE adding non-trivial code to a large system so cohesion is maintained by construction, not caught after the fact.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `severity` | enum | no | Minimum conflict severity to include: `low` \| `medium` \| `high` |
+| `limit` | number | no | Max conflicts to return (default 25) |
+| `offset` | number | no | Skip first N conflicts (default 0) |
+
+**Returns:** Freshness-stamped. Pattern-conflict/overlap findings (the same concern — e.g. entry-to-repository data access — handled by two competing structural patterns in different places) and engineering-principle violations (layering skips, single-responsibility/ownership breaks, coupling hotspots), each grounded in file/node evidence. `is_cohesive` is true only when there are no conflicts and no error-severity principle violations.
+
+<!-- TODO(orchestrator): docs/mcp/TOOLS.md is missing entries for several tools that ARE registered in server.ts and pre-date this session, incl. get_paradigm_conformance, get_product_map, query_graph, get_data_lineage (only 1 passing mention, no full entry), get_user_journeys, get_clones, get_communities, get_dead_code, get_adrs/manage_adr, get_cross_codebase_analysis/list_cross_codebase_analyses/run_cross_codebase_analysis, get_greenfield_architecture_guidance, install_gauntlet_watcher/list_gauntlet_watchers/stop_gauntlet_watcher, diff_behavior. This is a pre-existing documentation gap (not this session's drift) too large to safely author from scratch in this pass — needs a dedicated doc sweep grepping each tool's real inputSchema/description in server.ts. -->
+
 ### `simulate_runtime_telemetry`
 
 Generate deterministic simulated traffic, errors, latency, and traces mapped onto CAS objects, then feed those observations into operational priorities.
@@ -1775,11 +1804,11 @@ Replay stored runtime observations for a trace ID.
 
 ## Multi-Agent Coordination
 
-Net-new (see [`../SPEC-COORDINATION-FABRIC.md`](../SPEC-COORDINATION-FABRIC.md) for the full design and [`../COORDINATION-FABRIC.md`](../COORDINATION-FABRIC.md) for the user-facing overview). These tools let multiple agents (same machine or across machines) sharing a workspace announce intent, see each other's active work, and get a preflight collision check before editing overlapping paths/symbols/capabilities. The local tier is a same-machine, file-backed claim log (`apps/mcp-server/src/coordination/local-store.ts`) with sub-second fs-event awareness; cross-machine sync goes over HTTP (`POST/GET /v1/coordination/*` on the remote analyzer service). MCP has no server-push transport, so cross-tool awareness is poll-based: call `get_active_agents` / `get_in_flight_changes` / `check_collision` again to see deltas.
+See [`../SPEC-COORDINATION-FABRIC-V2.md`](../SPEC-COORDINATION-FABRIC-V2.md) §1.7 for the current, authoritative model: **concurrent work + awareness + semantic reconciliation is the default; `claim_work`'s grant/lease mechanism is an opt-in exclusive-access tool for the rare genuine-exclusive case, not a gate on every write.** (The original design doc, [`../SPEC-COORDINATION-FABRIC.md`](../SPEC-COORDINATION-FABRIC.md), and [`../COORDINATION-FABRIC.md`](../COORDINATION-FABRIC.md) describe the v1 advisory-only build; v2 layers a real grant/lease system — `apps/mcp-server/src/coordination/grant-manager.ts` — on top, while keeping awareness ungated.) These tools let multiple agents (same machine or across machines) sharing a workspace announce intent, see each other's active work, and get a preflight collision check before editing overlapping paths/symbols/capabilities. The local tier is a same-machine, file-backed claim/grant log (`apps/mcp-server/src/coordination/local-store.ts`) with sub-second fs-event awareness; cross-machine sync goes over HTTP (`POST/GET /v1/coordination/*` on the remote analyzer service). MCP has no server-push transport, so cross-tool awareness is poll-based: call `get_active_agents` / `get_in_flight_changes` / `check_collision` again to see deltas.
 
 ### `claim_work`
 
-Announce intent to work on paths/symbols/a capability in a workspace before starting non-trivial changes. Appends the claim and arbitrates it against every other active claim in that workspace.
+Request a symbol/path-level GRANT before starting non-trivial changes — the opt-in exclusive-access tool (§1.6/§1.7 of the v2 spec): at most one active grant per overlapping symbol/path in a workspace at a time, but this governs simultaneous *blind writes*, not an agent's right to reach work it needs. Disjoint work is never queued (block-time is 0 for non-overlapping scope); overlapping work is resolved by awareness + negotiation, never a hard lockout.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -1790,23 +1819,24 @@ Announce intent to work on paths/symbols/a capability in a workspace before star
 | `paths` | string[] | no | File/dir paths this work will touch |
 | `symbols` | string[] | no | Symbol/node ids this work will touch |
 | `capability` | string | no | Capability or feature name this work implements |
-| `ttl_ms` | number | no | Claim TTL in ms before considered stale (default 5 minutes) |
+| `ttl_ms` | number | no | Grant TTL in ms before considered stale (default 5 minutes) |
 | `base_commit` | string | no | Base commit for the claim |
 | `branch` | string | no | Branch for the claim |
-| `claim_id` | string | no | Reuse an existing claim id to refresh/update it instead of creating a new one |
+| `claim_id` | string | no | Deprecated/unused by the enforced grant path; kept for backward-compat request shape |
 
-**Returns:** `claim_id`, `seq`, `verdict` (`granted`, `duplicate`, or `conflict`), `kind`, `evidence`, and — on `duplicate`/`conflict` — the other agent's `with_claim` (id, agent_id, intent, scope). On `duplicate`, another active claim already covers the same capability; adopt or defer. On `conflict`, path/symbol/blast-radius overlaps; coordinate or rebase. Call `heartbeat_work` while working and `release_work` when done or handing off.
+**Returns:** `claim_id`/`grant_id` (same value, `grant_id` is the current name), `verdict` — `granted` (proceed; `heartbeat_work` to keep it alive, `release_work` when done), `queued` (another agent holds a conflicting grant — you get the holder's `agent_id` + stated `intent` + `lease_status` [`active`/`near_expiry`/`expired`], `queue_position`, and an `options` array such as `wait_and_heartbeat_poll`, `take_over_stale_lease` (only if the lease has lapsed/is lapsing), `proceed_with_awareness_if_compatible`, `redirect_to_free_scope` (only when free scope actually exists), plus `redirect_hint`/`free_scope_hint`), or `duplicate` (you already hold an identical grant). `lease_expires_at` is set on `granted`.
 
 ### `release_work`
 
-Mark a claim released (completed or handed off), freeing its paths/symbols/capability for other agents to claim without conflict.
+Release a held grant (completed or handing off). Frees its paths/symbols for other agents and immediately advances the FIFO queue: the next non-conflicting queued request (if any) is promoted to `granted`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `workspace` | string | yes | Workspace or project id/path |
-| `claim_id` | string | yes | Claim id to release |
+| `claim_id` | string | yes | Grant id to release (`grant_id`/`claim_id` from `claim_work`) |
+| `agent_id` | string | no | Agent id that holds the grant — required to actually release; falls back to a claim_id-embedded agent for back-compat callers |
 
-**Returns:** `status` (`released` or `not_found`), `claim_id`, `seq`.
+**Returns:** `status` (`released` or an error if `agent_id` is missing), `claim_id`.
 
 ### `heartbeat_work`
 
@@ -1821,17 +1851,18 @@ Refresh a claim's heartbeat so it stays active (does not expire) while work is i
 
 ### `get_active_agents`
 
-Live agent presence roster for a workspace: which agents currently hold active (non-expired) claims, their scope (paths/symbols/capability), and last-seen time. Use before starting work to see who else is already active.
+Live grant state for a workspace — the awareness surface (§1.6 of the v2 spec): which agents currently hold active (non-expired) grants (scope, stated intent, `lease_expires_at`, `lease_status`), plus the FIFO queue of agents waiting on a conflicting scope. Use this before starting work to see who else is here, what they intend, blast-radius overlap risk, and free scope you could pick instead of queuing.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
+
 | `workspace` | string | yes | Workspace or project id/path |
 
-**Returns:** Presence roster of active agents with their claimed scope and staleness.
+**Returns:** Presence info plus `grants` (active grants enriched with holder `intent`/`lease_status`) and `queued` (the FIFO wait list).
 
 ### `check_collision`
 
-Read-only preflight: does a proposed (not-yet-claimed) set of paths/symbols/capability collide with any other active agent in the workspace? Runs the same duplicate/overlap/blast-radius detectors as `claim_work` but takes no claim.
+Read-only preflight: does a proposed (not-yet-claimed) set of paths/symbols/capability collide with any other active agent or held GRANT in the workspace? Runs the same duplicate/overlap/blast-radius detectors as `claim_work` plus the live grant holders/queue, but takes no grant. Overlapping holders are always returned with awareness context (intent + lease_status), never a bare yes/no.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -1840,7 +1871,7 @@ Read-only preflight: does a proposed (not-yet-claimed) set of paths/symbols/capa
 | `symbols` | string[] | no | Proposed symbols |
 | `capability` | string | no | Proposed capability |
 
-**Returns:** `verdict`, `kind`, `evidence`, `with_claim` (the colliding claim, if any), `edit_lock_conflicts` (soft edit-lock hits on the proposed paths), and `collisions` (full `CollisionReport`: duplicates, overlaps, drifts, blast-radius intersections). Use this to decide whether to call `claim_work` at all.
+**Returns:** `verdict`, `kind`, `evidence`, `with_claim` (the colliding claim, if any), `edit_lock_conflicts` (soft edit-lock hits on the proposed paths), `collisions` (full `CollisionReport`: duplicates, overlaps, drifts, blast-radius intersections), `active_grants`/`queued_grants`, `overlapping_grant_holders` (with intent + lease status), and `free_scope_hint` (paths/symbols not currently held). Use this to decide whether to call `claim_work` at all.
 
 ### `get_in_flight_changes`
 

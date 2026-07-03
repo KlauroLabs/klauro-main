@@ -1,6 +1,16 @@
 # Klauro — Master Build Spec: The Multi-Agent Coordination Fabric
 
-> **Status: IMPLEMENTED** (local tier + MCP tools + routes live as of e1780f62, 2026-07-02). SSE/retry/security shipped; cross-machine sync + fleet scale are follow-ons.
+> **Status: IMPLEMENTED (v1)** (local tier + MCP tools + routes live as of e1780f62, 2026-07-02). SSE/retry/security shipped; cross-machine sync + fleet scale are follow-ons.
+>
+> **Superseded by [[SPEC-COORDINATION-FABRIC-V2]] for the coordination MODEL.**
+> This v1 doc's advisory `checkEditLock`/collision-detection framing, and its
+> "enforced arbitration" framing in later planning, are both superseded by v2
+> §1.7: the core model is **concurrent work + awareness + semantic
+> reconciliation**, with locking/enforcement demoted to an OPT-IN tool for the
+> rare genuine-exclusive case, not the default coordination mechanism. Kept
+> here as the historical build record for WS-C through WS-K (still an accurate
+> description of what was actually built at the time); read v2 for the current
+> architecture and rationale.
 
 > **Audience:** builder agents. This is the authoritative spec. Each Workstream (WS) is
 > independently buildable, has a stated current state, files to touch, a contract, and

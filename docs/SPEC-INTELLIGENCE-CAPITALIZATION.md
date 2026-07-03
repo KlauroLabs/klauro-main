@@ -1,6 +1,19 @@
 # SPEC — Intelligence Capitalization Audit
 
-> **Status: IN PROGRESS** as of e1780f62 (2026-07-02) — get_interface_signature (I/L/S/O join, concept #2 + terminal-why #1) SHIPPED; other concepts still latent per the table.
+> **Status: MOSTLY SHIPPED** as of `4589d385`/`e1780f62` (2026-07-02, both post-date
+> this doc's authoring commit `b577f1d0`). **`get_interface_signature` (concept #2 +
+> terminal-why #1) SHIPPED** (`e1780f62`) — registered in `server.ts`, documented in
+> `docs/mcp/TOOLS.md`. **`get_architectural_conflicts` (concept 5b) ALSO SHIPPED**
+> (`4589d385`, landed the same session, after this doc's body below was written) —
+> the doc's own text below saying it "does not exist" is now STALE; verified live in
+> `server.ts` (`registerTool('get_architectural_conflicts', ...)`) and documented in
+> `docs/mcp/TOOLS.md`. Concept 4 (coordination fabric reachability) has also moved:
+> `claim_work`/`check_collision`/`get_active_agents`/etc. are confirmed registered in
+> `server.ts` as of this session — read `docs/SPEC-COORDINATION-FABRIC-V2.md` for the
+> current model rather than this doc's "not reachable" framing below. Remaining
+> latent concepts (terminal-proximity as its own field, telemetry self-dogfooding)
+> are unchanged — verify current state before trusting this doc's per-concept
+> verdicts, which describe the state at `b577f1d0`, not today.
 
 **Date:** 2026-07-02
 **Method:** Live dogfood of the deployed Klauro MCP tools against this repo
@@ -12,8 +25,9 @@ source edited; no commits made. This is a read-only audit + design doc.
 concept — are we computing it, surfacing it, and is what's surfaced enough
 to give an agent a capability it could not have any other way? The answer
 varies wildly by concept, and one of the six tools named in the audit brief
-(`get_architectural_conflicts`) **does not exist** — that itself is a
-finding.
+(`get_architectural_conflicts`) **did not exist at the time this section was
+written** — it has since shipped in commit `4589d385`; see the status stamp
+above.
 
 ---
 
@@ -251,8 +265,17 @@ break anything downstream, and does it touch any external system?"
   as a feedback item, not silently fixing (audit is read-only).
 
 ### Concept 5b — Architectural conflicts (MISSING → capitalize)
+
+> **UPDATE, post-authoring: SHIPPED in commit `4589d385`** (same session, after
+> this section was written). `get_architectural_conflicts(path)` is now
+> registered in `server.ts` and documented in `docs/mcp/TOOLS.md`, per that
+> commit's own description: pattern-conflict/overlap + engineering-principle
+> violations (layering/single-responsibility/coupling), deterministic+AI,
+> bench F1=1.0 on a planted layering violation. The gap analysis below is kept
+> as the design rationale that led to the build, not as a current-state claim.
+
 - `get_architectural_conflicts` was named in the audit brief as if it
-  exists; it does not. What exists instead: `get_paradigm_conformance`
+  exists; it does not [at the time of writing — see update above]. What exists instead: `get_paradigm_conformance`
   (per-paradigm deviations) and `get_patterns` (pattern inventory) — both
   are single-paradigm/single-pattern views. Neither computes
   **cross-paradigm or cross-pattern contradiction** (e.g., "60% of the

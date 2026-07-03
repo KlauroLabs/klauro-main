@@ -1,9 +1,13 @@
 # SPEC: Evidence-Based Deployable Detection
 
-Status: **IN PROGRESS** as of this session (2026-07-02). Agents A/B/C are building
-the evidence collector, resolver, and fixture bench in parallel against this spec.
-Agent-F (this doc's author) is also the fabric observer for the build — see
-Part 2 below for the coordination battle-test verdict.
+> **Status: IMPLEMENTED** as of commit `658e8990` (2026-07-02). The evidence
+> collector, resolver, and fixture bench described below are built and live in
+> `apps/mcp-server/src/cross-codebase-analysis.ts` +
+> `packages/analyzer-core/src/analyzer/core/deployable-evidence/`. This section
+> reflects the code as read this session, not the original build plan — treat
+> §1-§7 as the current design, not an in-progress proposal. Known resolver gaps
+> that shipped alongside this (from `658e8990`'s own commit message) are called
+> out in §9.
 
 ## 1. Problem
 
@@ -152,10 +156,13 @@ fact.
      justified this root's boundary (kept separate, merged, or flagged
      `possible_bundle`), so the decision is auditable, not just asserted.
 
-## 5. Shared contract
+## 5. Shared contract (as implemented)
 
-Two shapes are shared across the collector (agent-A), resolver (agent-B),
-and bench (agent-C):
+`DeployableEvidence` lives in `packages/analyzer-core/src/types/cas.types.ts`
+and is produced by a **pluggable `EvidenceProvider` registry**, not a
+monolithic collector — see §5a. `SystemApplication` (the resolver's output
+type, `bundled_into` at line ~101 / `boundary_evidence` at line ~104 of its
+interface) lives in `apps/mcp-server/src/cross-codebase-analysis.ts`:
 
 ```ts
 /** packages/analyzer-core/src/types/cas.types.ts */
@@ -181,10 +188,58 @@ interface SystemApplication {
 }
 ```
 
-`bundled_into` and `boundary_evidence` are already present on
-`SystemApplication` in `apps/mcp-server/src/cross-codebase-analysis.ts`
-(lines 98/101 of the interface as of this session) — agent-B is wiring the
-resolver that populates them from agent-A's `DeployableEvidence[]`.
+The resolver (`resolveDeployables`, `apps/mcp-server/src/cross-codebase-analysis.ts`
+~line 10129) consumes `DeployableEvidence[]` and populates `bundled_into` /
+`boundary_evidence` on `SystemApplication`. Related resolver-side functions
+confirmed live in that file: `applicationSurfaceCandidatesFromCas` (candidate
+roots from CAS), `applicationSurfaceFromFile` (the original Tier-4
+folder-regex classifier — now consulted only as the last-resort tiebreaker
+described in §3/§4, not the primary signal), `suppressWorkspaceContainerRoots`
+(kills the phantom monorepo-root deployable for workspace-manifest files —
+`package.json` workspaces, pnpm/turbo/nx/lerna configs, Cargo `[workspace]`),
+and `applyShippedGate` (the shipped-gate, §5b).
+
+### 5a. Pluggable EvidenceProvider registry
+
+The evidence collector is not one function — it's a registry of small,
+independent `EvidenceProvider` implementations, one per ecosystem/concern,
+under `packages/analyzer-core/src/analyzer/core/deployable-evidence/`:
+
+- `types.ts` — the `EvidenceProvider` interface (`id`, dominant `tier`, a pure
+  `collect(ctx)` that returns `DeployableEvidence[]` and never throws) and the
+  `EvidenceCollectionContext` shape (partial CAS + project path + convenience
+  `nodes`/`exitPoints` arrays).
+- `registry.ts` — `BUILTIN_PROVIDERS` (the built-in list, collection order
+  preserved for dedupe stability) plus `registerProvider()` / `getProviders()`
+  for adding more without touching the resolver.
+- `util.ts` — shared helpers used by multiple providers.
+- `providers/` — one file per concern, each exporting one `EvidenceProvider`:
+  `container.ts`, `installer.ts`, `ci-deploy.ts`, `bin-targets.ts`,
+  `package-manifest.ts` (the original five, general-purpose/language-agnostic
+  concerns), plus the per-ecosystem breadth providers added this session:
+  `python.ts`, `ruby.ts`, `php.ts`, `jvm.ts`, `dotnet.ts`,
+  `deploy-manifests.ts` (PaaS: Helm/serverless/Procfile-style configs),
+  `native.ts` (C/C++), `mobile.ts`. That is 8 ecosystem-breadth providers on
+  top of the original 5, for 13 provider files total as of `658e8990`.
+
+Adding a new ecosystem means writing one `providers/<eco>.ts` file and
+registering it — the resolver itself is unchanged and ecosystem-agnostic,
+since it only ever consumes the shared `DeployableEvidence[]` shape.
+
+### 5b. Shipped-gate: runnable is not shipped
+
+`applyShippedGate` (added in commit `f8ef1aed`, `cross-codebase-analysis.ts`)
+runs after the bundling merge and demotes a Tier-2/3 "runnable" candidate
+(e.g. a Cargo `[[bin]]` or a `main()`) to `deployable:false` UNLESS: (a) it
+has its own Tier-1 ship artifact, (b) a Tier-1 artifact elsewhere names it in
+`ships_paths` (it's a bundle member), or (c) it's the sole runnable in the
+workspace (nothing else could possibly be "the" deployable). Otherwise it's
+tagged `boundary_evidence: ['runnable-not-shipped:no-tier1-artifact-references-it', ...]`.
+Tier-4 (pure folder-heuristic) candidates are exempt from the gate — gating
+them would punish absence of evidence rather than act on positive evidence.
+This is the fix for the motivating over-count case: real repos accumulate
+test/demo/utility binaries that build fine but never ship, and flagging every
+one `deployable:true` produces an unusable list.
 
 ## 6. Worked examples
 
@@ -218,11 +273,39 @@ resolver that populates them from agent-A's `DeployableEvidence[]`.
   reaches the same answer via Tier-1 evidence instead of by trusting the
   folder name.
 
+## 6a. Real-repo results (as measured this session)
+
+- **zerac-api**: confirmed 4 real deployables (per `bae5aca6`), matching §6's
+  worked example — 4 `apps/*` each with its own Dockerfile, no merges.
+- **zerac/poc**: the shipped-gate (`f8ef1aed`) was motivated by zerac/poc
+  over-producing **18** "deployables" pre-fix (folder-name detection counting
+  every runnable bin). **Verified post-fix (2026-07-02, live probe through
+  `analyzeForBench` + `buildCrossCodebaseSystemGraph`): 18 → 4 top-level
+  deployables** (`agent`, `dropserver`, `gateway`, `version`) + 47 non-deployable
+  libs — the unshipped test/demo/utility bins (`btm-test`, `hello`,
+  `magic-cast-demo`, `memory-clear`, `packet_sniffer`, `zerac-ngrok`, …)
+  correctly collapsed. **Two honest residuals remain** (tracked, not yet fixed):
+  (1) `version` is a false-positive deployable (a utility that spuriously matches
+  a ship artifact); (2) multi-artifact primary attribution inverts — it shows
+  `client → agent` (agent primary) whereas the product-owner ground truth is
+  client-primary-bundles-client-service. So: the gross error (18) is fixed and
+  the shipped-gate generalizes to a messy real repo, but the specific
+  client-primary relationship is not yet exact. The fixture regression
+  (`rust-messy-workspace`: 8 bins, 3 shipped, 4 runnable-not-shipped decoys)
+  passes and covers the mechanism on a clean analog.
+
 ## 7. Fixture matrix (acceptance bar)
 
-Agent-C is building `apps/mcp-server/src/gauntlet/deployable-detection-bench.ts`
-+ `.test.ts` covering (at minimum) 5 cases that must each resolve correctly
-under this spec's algorithm:
+`apps/mcp-server/src/gauntlet/deployable-detection-bench.ts` + `.test.ts` and
+its siblings (`deployable-detection-tier1-bench.test.ts`,
+`deployable-detection-py-bench.test.ts`,
+`deployable-detection-jvm-bench.test.ts`,
+`deployable-detection-native-bench.test.ts`,
+`deployable-detection-evidence-root-bench.test.ts`) cover the following cases
+end to end (per commit messages: core bench 6/6, per-ecosystem benches
+reported passing individually — py 3/3, jvm 2/2, native 2/2, tier1 4/4 as of
+`658e8990`; re-run the suite directly for current counts rather than trusting
+this doc's numbers as they age):
 
 1. **Bundle-via-installer** (zerac/poc shape): N runnable bins, 1 installer
    script bundling 2 of them → 1 ship unit with 2 members + N-2 separate.
@@ -241,15 +324,18 @@ under this spec's algorithm:
    `bundled_into` set, citing the import-coupling evidence.
 
 Passing this matrix — including case 4's negative requirement (no merge
-without positive evidence) — is the acceptance bar for closing this spec's
-IN PROGRESS status.
+without positive evidence) — was the acceptance bar for this spec, and per
+the commit history above it has been met (bench suites reported passing at
+each landing commit through `658e8990`). Re-run the suites directly for
+current pass/fail rather than trusting this doc as it ages.
 
-## 8. Fabric coordination observations (fabric observer report)
+## 8. Fabric coordination observations (fabric observer report, historical)
 
-See the standalone battle-test report for full detail:
-`~/.klauro/agent-feedback/2026-07-02-agentF-fabric-observer.md`. Summary
-below; this section will be updated with the final verdict once the build
-window closes.
+This section is a point-in-time log from the build that produced this
+feature, kept as historical record — it predates the fabric-v2 spec
+(`docs/SPEC-COORDINATION-FABRIC-V2.md`) that the build's own findings
+motivated. See the standalone battle-test report for full detail:
+`~/.klauro/agent-feedback/2026-07-02-agentF-fabric-observer.md`.
 
 This build ran 6 agents concurrently through Klauro's real coordination
 fabric (`workspace_id: deployable-detection-build`), with two deliberate
