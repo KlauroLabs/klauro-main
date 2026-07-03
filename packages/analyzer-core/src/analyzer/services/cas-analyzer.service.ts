@@ -61,7 +61,9 @@ import {
   ZustandAnalyzer,
   TanStackQueryAnalyzer,
   ReqwestAnalyzer,
-  architectureLibraryAnalyzerDefinitions
+  architectureLibraryAnalyzerDefinitions,
+  AIStackAnalyzer,
+  McpToolRegistrationAnalyzer
 } from '../libraries';
 
 import * as fs from 'fs-extra';
@@ -972,6 +974,43 @@ export class CASAnalyzerService {
         },
         requires: ['rust'],
         analyzer: new ReqwestAnalyzer()
+      },
+      {
+        id: 'mcp-tool-registration',
+        name: 'MCP Tool Registration Analyzer',
+        type: 'library',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['@modelcontextprotocol/sdk'],
+          content: [/\.registerTool\s*\(/, /\.setRequestHandler\s*\(/]
+        },
+        requires: ['typescript-javascript'],
+        analyzer: new McpToolRegistrationAnalyzer()
+      },
+      {
+        id: 'ai-stack',
+        name: 'AI Stack Analyzer',
+        type: 'library',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: [
+            'langchain', '@langchain/core', '@langchain/langgraph',
+            'llamaindex', 'llama-index',
+            'ai', '@ai-sdk/openai', '@ai-sdk/anthropic',
+            'openai',
+            '@anthropic-ai/sdk', 'anthropic',
+            '@modelcontextprotocol/sdk', 'mcp', 'fastmcp',
+            'crewai', 'langgraph',
+            'autogen', 'pyautogen',
+            'pinecone', '@pinecone-database/pinecone',
+            'weaviate', 'weaviate-client', 'weaviate-ts-client',
+            'chromadb',
+            'qdrant', '@qdrant/js-client-rest', 'qdrant-client',
+            'pgvector'
+          ],
+          files: ['requirements.txt', 'pyproject.toml', 'Pipfile', 'setup.py']
+        },
+        analyzer: new AIStackAnalyzer()
       },
       ...architectureLibraryAnalyzerDefinitions().map(definition => ({
         id: definition.id,
