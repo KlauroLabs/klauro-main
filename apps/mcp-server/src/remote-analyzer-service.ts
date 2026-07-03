@@ -12,7 +12,9 @@ import { isDirectCliInvocation } from './cli-invocation';
 import { AccountHttpError, AccountStore } from './account-store';
 import { getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind } from './coordination';
 import { appendClaim, getActiveClaims, getPresence, getStoreDir, readClaimLog } from './coordination/local-store';
+import { deriveActiveClaims } from './coordination/presence';
 import { appendSecurityAudit, assertSameTenant, getSecurityStoreDir, TenantMismatchError } from './coordination/security';
+import { detectConceptualConflicts, type AgentInFlightState, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
 import { ingestAndPersist } from './telemetry-fusion';
 import { getAnalysis } from './analyzer';
 import { buildSummary, getProductMap } from './query';
@@ -464,6 +466,45 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
+      // §1.7 SPEC-COORDINATION-FABRIC-V2 — cross-machine mirror of the MCP
+      // `check_conceptual_conflicts` tool (server.ts). Same agent-reported
+      // design and same `__conceptual__` marker technique (a WorkClaim.intent
+      // JSON marker on the existing claim log, exactly like `__grant__`) so
+      // HTTP/cross-machine callers get the identical crown-jewel detector MCP
+      // callers do — no separate store, no separate detection logic (the
+      // pure `detectConceptualConflicts` core is called the same way).
+      if (request.method === 'POST' && route === '/v1/coordination/conceptual-conflicts') {
+        const body = await readJsonBody<{
+          workspace: string; agent_id: string; agent_kind?: AgentKind;
+          intent: string; changes?: SymbolChange[];
+        }>(request, maxBodyBytes);
+        if (!body.workspace || !body.agent_id) {
+          writeJson(response, 400, { status: 'error', error: 'workspace and agent_id are required' });
+          return;
+        }
+        const requesterChanges: SymbolChange[] = Array.isArray(body.changes) ? body.changes : [];
+        await reportConceptualChangesHttp(body.workspace, body.agent_id, body.agent_kind || 'other', body.intent || '', requesterChanges);
+
+        const others = await otherAgentConceptualStatesHttp(body.workspace, body.agent_id);
+        const cas = await conceptualConflictCasForWorkspaceHttp(body.workspace);
+        const requesterState: AgentInFlightState = { agent_id: body.agent_id, intent: body.intent || '', changes: requesterChanges };
+        const allConflicts = detectConceptualConflicts([requesterState, ...others], cas);
+        const conflicts = allConflicts.filter((c) => c.agents.includes(body.agent_id));
+
+        broadcastCoordinationEvent(body.workspace, 'conceptual-conflict-report', {
+          agent_id: body.agent_id,
+          conflicts_found: conflicts.length,
+        });
+        writeJson(response, 200, {
+          status: 'reported',
+          workspace: body.workspace,
+          agent_id: body.agent_id,
+          other_agents_considered: others.length,
+          conflicts,
+        });
+        return;
+      }
+
       // §WS-B in-flight publish — persists the latest (workspace, agent_id)
       // in-flight snapshot, tenant-gated (§WS-F) and audited. Mirrors the
       // /v1/coordination/claim handler's shape: read body -> authz -> persist
@@ -562,6 +603,85 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
       writeJson(response, 500, { status: 'error', error: message });
     }
   });
+}
+
+/**
+ * §1.7 SPEC-COORDINATION-FABRIC-V2 helpers for `/v1/coordination/conceptual-conflicts`,
+ * mirroring server.ts's MCP-side `check_conceptual_conflicts` wiring exactly
+ * (same `__conceptual__` marker technique, same claim log, same pure
+ * detector). See server.ts's `reportConceptualChanges` doc comment for the
+ * full honest-design writeup (agent-reported, not ambient — the live claim
+ * log/InFlightSnapshot don't carry per-symbol before/after shape).
+ */
+const CONCEPTUAL_CLAIM_TTL_MS_HTTP = 30 * 60 * 1000;
+
+interface ConceptualMarkerHttp {
+  __conceptual__: { intent: string; changes: SymbolChange[]; reported_at: string };
+}
+
+function conceptualClaimIdHttp(workspaceId: string, agentId: string): string {
+  return `conceptual:${workspaceId}:${agentId}`;
+}
+
+function decodeConceptualMarkerHttp(intent: string): ConceptualMarkerHttp['__conceptual__'] | undefined {
+  try {
+    const parsed = JSON.parse(intent);
+    if (parsed && typeof parsed === 'object' && parsed.__conceptual__) {
+      return parsed.__conceptual__ as ConceptualMarkerHttp['__conceptual__'];
+    }
+  } catch {
+    // not a conceptual-conflict report; ignore.
+  }
+  return undefined;
+}
+
+async function reportConceptualChangesHttp(
+  workspace: string,
+  agentId: string,
+  agentKind: AgentKind,
+  intent: string,
+  changes: SymbolChange[]
+): Promise<void> {
+  const now = new Date().toISOString();
+  await appendClaim(workspace, {
+    claim_id: conceptualClaimIdHttp(workspace, agentId),
+    workspace_id: workspace,
+    agent_id: agentId,
+    agent_kind: agentKind,
+    scope: { repo: workspace, paths: [], symbols: changes.map((c) => c.symbol_id) },
+    intent: JSON.stringify({ __conceptual__: { intent, changes, reported_at: now } } satisfies ConceptualMarkerHttp),
+    status: 'active',
+    created_at: now,
+    ttl_ms: CONCEPTUAL_CLAIM_TTL_MS_HTTP,
+    heartbeat_at: now,
+  });
+}
+
+async function otherAgentConceptualStatesHttp(workspace: string, excludeAgentId: string): Promise<AgentInFlightState[]> {
+  const log = await readClaimLog(workspace);
+  const active = deriveActiveClaims(log, Date.now()).filter((c) => c.workspace_id === workspace);
+  const states: AgentInFlightState[] = [];
+  for (const claim of active) {
+    if (claim.agent_id === excludeAgentId) continue;
+    const marker = decodeConceptualMarkerHttp(claim.intent);
+    if (!marker) continue;
+    states.push({ agent_id: claim.agent_id, intent: marker.intent, changes: marker.changes });
+  }
+  return states;
+}
+
+async function conceptualConflictCasForWorkspaceHttp(workspace: string): Promise<ConflictCas> {
+  try {
+    const cas = await getAnalysis(workspace);
+    return {
+      nodes: (cas.nodes || []).map((n: any) => ({ id: n.id, name: n.name })),
+      edges: (cas.edges || [])
+        .filter((e: any) => e.type === 'calls')
+        .map((e: any) => ({ source: e.source, target: e.target, type: e.type })),
+    };
+  } catch {
+    return { nodes: [], edges: [] };
+  }
 }
 
 /**
