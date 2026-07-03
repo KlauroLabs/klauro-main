@@ -9960,7 +9960,7 @@ function applicationSurfaceCandidatesFromEvidenceRoots(
   // aggregation artifact of the evidence provider, not a real module
   // boundary. Only collapse-and-create when the root_path unambiguously
   // names ONE ship unit (single distinct evidence name).
-  const byRoot = new Map<string, { tier: 1 | 2 | 3; evidence: string[]; names: Set<string> }>();
+  const byRoot = new Map<string, { tier: 1 | 2 | 3; evidence: string[]; names: Set<string>; shipsPaths: string[] }>();
   for (const evidence of evidenceList) {
     // root_path '.' (repo root, no subfolder) is always already represented
     // by the codebase-level synthetic root SystemApplication created at the
@@ -9973,11 +9973,17 @@ function applicationSurfaceCandidatesFromEvidenceRoots(
     const cleanEvidenceName = cleanApplicationName(evidence.name);
     const existing = byRoot.get(evidence.root_path);
     if (!existing) {
-      byRoot.set(evidence.root_path, { tier: evidence.tier, evidence: [...evidence.evidence], names: new Set(cleanEvidenceName ? [cleanEvidenceName] : []) });
+      byRoot.set(evidence.root_path, {
+        tier: evidence.tier,
+        evidence: [...evidence.evidence],
+        names: new Set(cleanEvidenceName ? [cleanEvidenceName] : []),
+        shipsPaths: [...(evidence.ships_paths || [])],
+      });
     } else {
       if (evidence.tier < existing.tier) existing.tier = evidence.tier;
       existing.evidence = mergeStrings(existing.evidence, evidence.evidence);
       if (cleanEvidenceName) existing.names.add(cleanEvidenceName);
+      existing.shipsPaths = mergeStrings(existing.shipsPaths, evidence.ships_paths || []);
     }
   }
   if (byRoot.size === 0) return [];
@@ -10035,6 +10041,26 @@ function applicationSurfaceCandidatesFromEvidenceRoots(
     // would over-produce. Skip; only an unambiguous 1:1 root->ship-unit
     // mapping creates a new app here.
     if (entry.names.size > 1) continue;
+
+    // PACKAGING-ARTIFACT GUARD: this root's own Tier-1 evidence already
+    // names >= 2 OTHER real apps elsewhere in the repo as ships_paths (e.g.
+    // a top-level installer/ directory holding an .nsi script whose `File`
+    // directives ship client.exe + zeracd.exe — two ALREADY-DISCOVERED
+    // deployables). That makes this root a PACKAGING/BUNDLING artifact for
+    // those apps, not a distinct ship unit in its own right, mirroring the
+    // root_path==='.' root-bundle principle in resolveDeployables (a shared
+    // installer artifact bundles members; it is not itself a member).
+    // Evidence-gated: only fires when the named ships_paths actually
+    // resolve to other real, already-known apps (not just >=2 arbitrary
+    // strings), so a genuine standalone service whose own evidence
+    // happens to mention >=2 file paths is unaffected.
+    const namedOtherApps = new Set(
+      entry.shipsPaths
+        .map(shipped => existingForRepo.find(other => bundleNameMatches(shipped, other)))
+        .filter((other): other is SystemApplication => Boolean(other))
+        .map(other => other.id),
+    );
+    if (namedOtherApps.size >= 2) continue;
 
     // Name by the root folder's basename (consistent with how
     // applicationSurfaceFromFile names allowlisted surfaces) rather than an
@@ -10190,6 +10216,13 @@ interface DeployableResolution {
   kind: DeployableEvidence['kind'] | 'folder-heuristic';
   evidence: string[];
   shipsPaths: string[];
+  /** True when this resolution came from evidence anchored to THIS app
+   *  specifically (its own entrypoint_member match, or root_path exactly
+   *  equal to its path_hint) rather than the fuzzy containment fallback,
+   *  which can return a directory-level blob merged across unrelated
+   *  sibling artifacts. False/undefined for the Tier-4 folder-heuristic
+   *  fallback and the fuzzy containment match. */
+  selfAnchored?: boolean;
 }
 
 /** THE ALGORITHM: evidence-first boundary + evidence-gated merge.
@@ -10277,8 +10310,8 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
         candidate.tier === 1 && candidate.entrypoint_member && bundleNameMatches(candidate.entrypoint_member, app));
       const directoryDecoupledMatch = directoryDecoupledCandidates.find(candidate => candidate.root_path !== '.')
         || directoryDecoupledCandidates[0];
-      const evidence = directoryDecoupledMatch
-        || evidenceByRoot.get(rootPath)
+      const exactRootEvidence = directoryDecoupledMatch || evidenceByRoot.get(rootPath);
+      const evidence = exactRootEvidence
         || [...evidenceByRoot.values()].find(candidate => rootPath && (rootPath.startsWith(`${candidate.root_path}/`) || candidate.root_path.startsWith(`${rootPath}/`)));
       if (evidence) {
         resolutions.set(app.id, {
@@ -10288,6 +10321,15 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
           kind: evidence.kind,
           evidence: [...evidence.evidence],
           shipsPaths: evidence.ships_paths || [],
+          // NAME-ANCHORED (own entrypoint_member match, or root_path exactly
+          // equal to this app's own path_hint) vs a fuzzy CONTAINMENT
+          // fallback that can return a directory-level evidence blob merged
+          // across several unrelated sibling artifacts (e.g. several
+          // *.Dockerfile files sharing root_path "docker") — only the
+          // former is safe to treat as "this app's own single ship
+          // artifact" for logic that reasons about ITS ships_paths in
+          // isolation (see the packaging-artifact demotion below).
+          selfAnchored: Boolean(exactRootEvidence),
         });
       } else {
         // Tier-4 tiebreaker: tiers 1-3 silent for this root, fall back to the
@@ -10355,11 +10397,43 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
       // into this shared artifact's bundle.
     }
 
+    // NON-ROOT PACKAGING-ARTIFACT DEMOTION: a Tier-1 "installer"/"ci-deploy"
+    // surface at its OWN dedicated non-root path (e.g. a top-level
+    // installer/ directory holding an .nsi/.wxs script) can itself resolve
+    // as a normal Tier-1 app when its evidence root wasn't folded into any
+    // sibling — but if that evidence's OWN ships_paths names >= 2 OTHER
+    // real sibling apps (by resolved binary/package name, not just its own
+    // folder name), it is a PACKAGING/BUNDLING artifact for those apps, not
+    // a distinct deployable in its own right — the same principle already
+    // applied to root_path === '.' bundles above, generalized to any root.
+    // Evidence-gated: only demotes when >= 2 OTHER apps are positively
+    // named; a real standalone service whose own Dockerfile happens to
+    // mention one sibling path is unaffected.
+    for (const app of appsForRepo) {
+      if (app.bundled_into || rootBundleTargets.has(app.id)) continue;
+      const resolution = resolutions.get(app.id);
+      if (!resolution || resolution.tier !== 1 || resolution.rootPath === '.') continue;
+      if (!resolution.selfAnchored) continue; // fuzzy containment match: shipsPaths may be a merged multi-artifact blob, not safe to reason about in isolation
+      const namedSiblings = new Set(
+        resolution.shipsPaths
+          .map(shipped => appsForRepo.find(other => other.id !== app.id && bundleNameMatches(shipped, other, resolutions.get(other.id)?.name)))
+          .filter((other): other is SystemApplication => Boolean(other))
+          .map(other => other.id),
+      );
+      if (namedSiblings.size < 2) continue;
+      app.deployable = false;
+      app.boundary_evidence = mergeStrings(app.boundary_evidence || [], [
+        'packaging-artifact-not-own-deployable:ships-paths-name-multiple-sibling-apps',
+        ...resolution.evidence,
+      ]);
+    }
+
     // Evidence-gated merge pass.
     for (const app of appsForRepo) {
       if (app.bundled_into) continue; // already resolved by the root-bundle pass above
       const resolution = resolutions.get(app.id);
       if (!resolution) continue;
+      if (!app.deployable) continue; // demoted above: packaging artifact, not a deployable in its own right
       if (resolution.tier === 1 || rootBundleTargets.has(app.id)) {
         const rootBundle = rootBundleTargets.get(app.id);
         app.boundary_evidence = mergeStrings(app.boundary_evidence || [], [
@@ -11067,24 +11141,34 @@ function inferApplicationName(
 function applicationNameFromFile(file: string | undefined): string {
   const normalized = String(file || '').replace(/\\/g, '/');
   const lower = normalized.toLowerCase();
-  const rustServiceModule = lower.match(/(?:^|\/)crates\/[^/]+\/src\/([^/.]+)\.rs$/);
-  if (rustServiceModule?.[1] && !/^(lib|main|mod|types?|models?|schema|error|config|utils?)$/.test(rustServiceModule[1])) {
+  // CASE-PRESERVING FIX: capture groups are matched against the ORIGINAL-CASE
+  // `normalized` string (with a case-INSENSITIVE flag on the path-prefix
+  // literal only), not the pre-lowercased `lower` string. Matching against
+  // `lower` previously discarded a PascalCase/camelCase folder name's word
+  // boundaries before cleanApplicationName() ever saw them (e.g.
+  // "apps/OrdersApi/Dockerfile" captured as "ordersapi", with no case left to
+  // split into "orders-api"), while the sibling applicationSurfaceFromFile()
+  // preserves case for the exact same kind of path — the mismatch meant the
+  // SAME real module surfaced as two different application ids/names
+  // (orders-api vs ordersapi) depending on which code path named it first.
+  const rustServiceModule = normalized.match(/(?:^|\/)crates\/[^/]+\/src\/([^/.]+)\.rs$/i);
+  if (rustServiceModule?.[1] && !/^(lib|main|mod|types?|models?|schema|error|config|utils?)$/i.test(rustServiceModule[1])) {
     const moduleName = rustServiceModule[1].replace(/_/g, '-');
-    if (/(api|server|service|worker|agent|client|coordinator|gateway|broker|relay|drop|sync|scheduler)/.test(moduleName)) return moduleName;
+    if (/(api|server|service|worker|agent|client|coordinator|gateway|broker|relay|drop|sync|scheduler)/i.test(moduleName)) return moduleName;
   }
   const patterns = [
-    /(?:^|\/)apps\/([^/]+)\//,
-    /(?:^|\/)packages\/([^/]+)\//,
-    /(?:^|\/)crates\/([^/]+)\//,
-    /(?:^|\/)bin\/([^/]+)\//,
-    /(?:^|\/)src\/bin\/([^/.]+)\.[a-z0-9]+$/,
+    /(?:^|\/)apps\/([^/]+)\//i,
+    /(?:^|\/)packages\/([^/]+)\//i,
+    /(?:^|\/)crates\/([^/]+)\//i,
+    /(?:^|\/)bin\/([^/]+)\//i,
+    /(?:^|\/)src\/bin\/([^/.]+)\.[a-z0-9]+$/i,
   ];
   for (const pattern of patterns) {
-    const match = lower.match(pattern);
+    const match = normalized.match(pattern);
     if (match?.[1]) return match[1];
   }
-  const serviceMatch = lower.match(/(?:^|\/)services\/([^/]+)\//);
-  if (serviceMatch?.[1] && !/(?:^|\/)(src|lib|libs|packages|apps)\//.test(lower.split('/services/')[0] || '')) {
+  const serviceMatch = normalized.match(/(?:^|\/)services\/([^/]+)\//i);
+  if (serviceMatch?.[1] && !/(?:^|\/)(src|lib|libs|packages|apps)\//i.test(lower.split('/services/')[0] || '')) {
     return serviceMatch[1];
   }
   const dockerfile = normalized.match(/(?:^|\/)([^/]+)\.Dockerfile$/i);
@@ -11167,6 +11251,20 @@ function cleanApplicationName(value: string | undefined): string {
     .replace(/^compose service:\s*/i, '')
     .replace(/^docker image definition:\s*/i, '')
     .replace(/\.dockerfile$/i, '')
+    // NAME-NORMALIZATION FIX: split camelCase/PascalCase word boundaries
+    // (e.g. a Dockerfile named after the service it ships, `DropServer.
+    // Dockerfile`) into hyphen-separated words BEFORE lowercasing, so
+    // "DropServer" normalizes to "drop-server" — matching the same
+    // service's folder-derived name (bin/drop-server, Cargo `[package]
+    // name = "drop-server"`) instead of collapsing into the unrelated
+    // "dropserver". Without this, the same underlying binary surfaces as
+    // TWO distinct SystemApplications (folder-name vs PascalCase-artifact-
+    // name) that never collapse because applicationId() keys off the
+    // cleaned name. Acronym runs stay together (HTTPServer -> http-server,
+    // not h-t-t-p-server) by only splitting before an uppercase letter that
+    // starts a new word (lower/digit -> upper, or upper -> upper+lower).
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1-$2')
     .replace(/[^a-zA-Z0-9_.-]+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')

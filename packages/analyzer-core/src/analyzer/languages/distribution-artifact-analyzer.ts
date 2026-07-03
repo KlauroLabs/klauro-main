@@ -147,6 +147,33 @@ export class DistributionArtifactAnalyzer extends BaseAnalyzer {
   }
 }
 
+/** Extensions of real compiled/programming-language source files that are
+ *  NEVER themselves an installer/release-script/manifest distribution
+ *  artifact, even when their PATH happens to contain "installer"/"release"/
+ *  "manifest" (e.g. bin/installer/bin/uninstaller.rs — Rust source for an
+ *  installer's GUI, not the installer artifact itself; a repo's
+ *  release-notes-generator.py; a src/manifest/loader.go parser). The loose
+ *  name-pattern glob (**\/*installer*, **\/*release*, **\/*manifest*) exists
+ *  to catch scripts with unpredictable names, but a `.rs`/`.go`/`.py`/etc.
+ *  file is source code that gets COMPILED, not an artifact a packaging step
+ *  ships or runs directly — treating it as installer evidence produces
+ *  garbage binary_names (AST identifier fragments extracted by
+ *  binaryNamesFromText, which was only ever designed to scan shell/ini/nsi
+ *  text). Kept deliberately narrow (source-only, general-purpose languages)
+ *  so genuine script languages (.sh/.ps1/.bat/... — already gated by their
+ *  own dedicated branches above) and extension-less scripts are unaffected. */
+const NON_ARTIFACT_SOURCE_EXTENSIONS = new Set([
+  'rs', 'go', 'py', 'rb', 'java', 'kt', 'kts', 'scala', 'c', 'h', 'cc', 'cpp', 'cxx', 'hpp', 'hxx',
+  'cs', 'swift', 'm', 'mm', 'php', 'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'dart', 'ex', 'exs',
+  'erl', 'hrl', 'hs', 'lhs', 'ml', 'mli', 'fs', 'fsi', 'fsx', 'clj', 'cljs', 'cljc', 'lua', 'nim',
+  'zig', 'jl', 'r', 'pl', 'pm', 'sql', 'proto', 'v', 'sv', 'vhd', 'vhdl', 'groovy', 'gradle',
+]);
+
+function isNonArtifactSourceFile(file: string): boolean {
+  const match = file.toLowerCase().match(/\.([a-z0-9]+)$/);
+  return Boolean(match && NON_ARTIFACT_SOURCE_EXTENSIONS.has(match[1]));
+}
+
 function parseDistributionArtifact(relativeFile: string, content: string): ParsedDistributionArtifact | undefined {
   const file = relativeFile.replace(/\\/g, '/');
   const lower = file.toLowerCase();
@@ -156,6 +183,7 @@ function parseDistributionArtifact(relativeFile: string, content: string): Parse
   if (/\.(ps1|psm1)$/i.test(lower)) return parseScript(file, content, 'powershell-script');
   if (/\.(bat|cmd)$/i.test(lower)) return parseScript(file, content, 'batch-script');
   if (/\.(sh|bash|zsh)$/i.test(lower) || /(^|\/)install$/i.test(lower)) return parseScript(file, content, 'shell-script');
+  if (isNonArtifactSourceFile(file)) return undefined;
   if (/installer|install|release|manifest/i.test(file) && looksLikeDistributionScript(content)) {
     return parseScript(file, content, 'release-script');
   }
@@ -203,12 +231,46 @@ function parseInstaller(file: string, content: string): ParsedDistributionArtifa
     role: 'installer',
     name: productName || path.basename(file),
     productName,
-    binaryNames: binaryNamesFromText(content),
+    binaryNames: installerBinaryNamesFromText(content),
     serviceNames: serviceNamesFromText(content),
     installPaths: pathValuesFromText(content),
     platforms: installerPlatforms(file, content),
     line: lineOf(content, 'Name "') || 1,
   };
+}
+
+/** NSI/WiX-specific binary-name extraction, principled to each format's real
+ *  file-shipping directives rather than a generic whole-file word scan.
+ *  binaryNamesFromText()'s catch-all token regex was designed for short
+ *  `Exec=`/`ExecStart=` command-line VALUES (desktop-entry/service-unit), not
+ *  a full installer script — run across an entire .nsi file it also captures
+ *  every NSIS preprocessor keyword, macro name, and `!include`d header
+ *  (SetCompressor, VIAddVersionKey, MUI2.nsh, PROJECT_ROOT, ...) as if each
+ *  were a shipped binary. NSIS ships files via `File "path\to\thing.exe"` (or
+ *  a bare `File "thing"` referencing a build-output artifact) and names its
+ *  own output via `OutFile "Name.exe"`; WiX/MSI-style installers name binary
+ *  components via `<File Source="...">`/`Name="....exe"`. Extracting from
+ *  those specific directives instead of the whole document yields the real
+ *  shipped binaries (client.exe, zeracd.exe, ZeracInstaller.exe) with none of
+ *  the scripting-language noise. */
+function installerBinaryNamesFromText(text: string): string[] {
+  const names = new Set<string>();
+  // NSIS: File "...\name.exe" / File "name" (ships a build-output artifact).
+  for (const match of text.matchAll(/^\s*File\s+(?:\/\S+\s+)*"([^"]+)"/gim)) {
+    const value = cleanBinaryName(match[1].split(/[\\/]/).pop() || match[1]);
+    if (value) names.add(value);
+  }
+  // NSIS: OutFile "Name.exe" (the installer's own output binary).
+  for (const match of text.matchAll(/^\s*OutFile\s+"([^"]+)"/gim)) {
+    const value = cleanBinaryName(match[1]);
+    if (value) names.add(value);
+  }
+  // WiX: <File ... Source="...\name.exe" ...> or Name="name.exe".
+  for (const match of text.matchAll(/<File\b[^>]*\b(?:Source|Name)="([^"]+)"/gi)) {
+    const value = cleanBinaryName(match[1].split(/[\\/]/).pop() || match[1]);
+    if (value) names.add(value);
+  }
+  return [...names].filter(name => !isDistributionNoiseToken(name)).slice(0, 40);
 }
 
 function parseScript(file: string, content: string, kind: DistributionArtifactKind): ParsedDistributionArtifact | undefined {
