@@ -53,6 +53,17 @@
  *      gateway, server. The 4 unshipped bins must be deployable:false
  *      (runnable-not-shipped) — RUNNABLE is not SHIPPED. crates/shared rolls
  *      up (not its own deployable).
+ *   8. installer-script-only-bundle — the installer-SCRIPT-ONLY bundling trap
+ *      (regression lock for the .sh/.bat/.nsi source-inventory gap): a Cargo
+ *      workspace with bin/client + bin/client-service, NO Dockerfile at all —
+ *      the ONLY bundling evidence is build-installer.sh, which builds both
+ *      binaries via a shell function parameter indirection (`local
+ *      binary_name=$1; cargo build -p "$binary_name"`), mirroring the real
+ *      zerac/poc build-mac-installer.sh pattern. EXPECT 1 top-level
+ *      deployable: client (client-service bundled_into client). This proves
+ *      .sh files actually reach the deployable-evidence installer provider
+ *      via the product source snapshot, independent of any Dockerfile-based
+ *      bundling evidence.
  *   7. docker-shared-dir-entrypoint-fixture — the entrypoint-as-primary +
  *      utility-bin-false-positive trap (modeled on a real repo): bin/bina +
  *      bin/binb each have their OWN per-service Dockerfile, both living in a
@@ -101,6 +112,7 @@ export interface FixtureCase {
 
 export const FIXTURES: FixtureCase[] = [
   { id: 'rust-installer-bundle', dir: path.join(FIXTURES_ROOT, 'rust-installer-bundle'), workspaceName: 'rust-installer-bundle-fixture' },
+  { id: 'installer-script-only-bundle', dir: path.join(FIXTURES_ROOT, 'installer-script-only-bundle'), workspaceName: 'installer-script-only-bundle-fixture' },
   { id: 'turborepo-2apps', dir: path.join(FIXTURES_ROOT, 'turborepo-2apps'), workspaceName: 'turborepo-2apps-fixture' },
   { id: 'next-fullstack', dir: path.join(FIXTURES_ROOT, 'next-fullstack'), workspaceName: 'next-fullstack-fixture' },
   { id: 'go-cmd-monorepo', dir: path.join(FIXTURES_ROOT, 'go-cmd-monorepo'), workspaceName: 'go-cmd-monorepo-fixture' },

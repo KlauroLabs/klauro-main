@@ -57,6 +57,36 @@ test('rust-installer-bundle: client+client-service bundle, gateway separate, sha
   assert.equal(topLevel.length, 2, `expected 2 top-level deployables, got ${topLevel.length}: ${topLevelNames.join(', ')}`);
 });
 
+test('installer-script-only-bundle: client-service bundles into client via .sh installer script alone (no Dockerfile)', async () => {
+  _resetDeployableDetectionBenchCache();
+  const { applications } = await runDeployableDetectionBench('installer-script-only-bundle');
+
+  const client = applications.find(a => a.name === 'client' || a.path_hint?.endsWith('bin/client'));
+  const clientService = applications.find(a => a.name === 'client-service' || a.path_hint?.endsWith('bin/client-service'));
+  const shared = applications.find(a => a.name === 'shared' || a.path_hint?.includes('crates/shared'));
+
+  assert.ok(client, 'expected a client application surface to be detected');
+  assert.ok(clientService, 'expected a client-service application surface to be detected');
+  if (shared) {
+    assert.notEqual(shared.deployable, true, 'crates/shared should not be its own deployable (it rolls up)');
+  }
+
+  // Regression lock: this fixture has NO Dockerfile — the only bundling
+  // evidence is build-installer.sh (a .sh file). If .sh ever stops being a
+  // registered source extension (or is otherwise excluded from the product
+  // source snapshot), this evidence never reaches the installer provider and
+  // client-service silently stops bundling into client.
+  assert.equal(
+    (clientService as any)?.bundled_into,
+    client?.id,
+    'expected client-service.bundled_into === client.id via build-installer.sh alone',
+  );
+
+  const topLevel = topLevelDeployables(applications);
+  const topLevelNames = topLevel.map(a => a.name).sort();
+  assert.equal(topLevel.length, 1, `expected 1 top-level deployable (client), got ${topLevel.length}: ${topLevelNames.join(', ')}`);
+});
+
 test('turborepo-2apps: web + api are 2 deployables, packages/ui rolls up', async () => {
   _resetDeployableDetectionBenchCache();
   const { applications } = await runDeployableDetectionBench('turborepo-2apps');

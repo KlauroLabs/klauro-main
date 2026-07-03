@@ -201,6 +201,22 @@ export const LANGUAGE_REGISTRY: LanguageRegistryEntry[] = [
   { id: 'noir', extensions: ['nr'], manifests: ['nargo.toml'] },
   { id: 'clarity', extensions: ['clar'], manifests: ['clarinet.toml'] },
   { id: 'powershell', extensions: ['ps1', 'psm1', 'psd1'], manifests: [] },
+  // Shell/batch/installer scripts. These are also picked up by the dedicated
+  // ShellAnalyzer (shell-analyzer.ts, which globs .sh/.bash/.zsh/.ksh directly),
+  // but that glob is independent of the orchestrator's source inventory AND of
+  // the product source snapshot (apps/mcp-server/src/remote-source.ts) sent to
+  // the remote analyzer server. Without registering these extensions here,
+  // installer/build scripts (.sh/.bat/.nsi/.iss — e.g. build-mac-installer.sh,
+  // build-windows-installer.bat, an Inno Setup .iss, an NSIS .nsi) never enter
+  // that snapshot, so the deployable-evidence installer provider
+  // (deployable-evidence/providers/installer.ts, which globs the analyzer
+  // server's materialized project directory) finds nothing to read even though
+  // its own parsing logic is correct. `.bat`/`.nsi`/`.iss` are intentionally a
+  // separate `installer_scripts` entry (not folded into `shell`) so a repo full
+  // of Windows/NSIS installer scripts cannot register as extra "shell" source
+  // for any consumer that keys off this registry's `id`.
+  { id: 'shell', extensions: ['sh', 'bash', 'zsh', 'ksh'], manifests: [] },
+  { id: 'installer_scripts', extensions: ['bat', 'cmd', 'nsi', 'iss'], manifests: [] },
   { id: 'awk', extensions: ['awk'], manifests: [] },
   { id: 'fish', extensions: ['fish'], manifests: [] },
   { id: 'vim', extensions: ['vim', 'vimrc'], manifests: [] },
