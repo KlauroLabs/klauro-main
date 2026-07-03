@@ -25,6 +25,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { parseIgnorePatterns, sourcePatternListMatches } from '../klauro-config';
+import type { SymbolChange } from './conceptual-conflict';
 
 // ---------------------------------------------------------------------------
 // 1. Redaction / ignore filter
@@ -181,6 +182,60 @@ function firstMatchingPattern(filePath: string, patterns: string[]): string | un
     if (sourcePatternListMatches(filePath, [pattern])) return pattern;
   }
   return undefined;
+}
+
+/** Why a `SymbolChange` was dropped from an ambient in-flight capture before it left the machine. */
+export interface DroppedChange {
+  symbol_id: string;
+  file: string;
+  reason: DropReason;
+  pattern: string;
+}
+
+export interface RedactInFlightChangesResult {
+  kept: SymbolChange[];
+  dropped: DroppedChange[];
+}
+
+/**
+ * Apply the SAME redaction gate used for `InFlightDiffFile[]` (secret-shaped
+ * filename deny-list + project `.klauroignore` globs, matched against
+ * `SymbolChange.file`) to the ambiently-captured `SymbolChange[]`
+ * (`in-flight-capture.ts`'s `captureInFlightChanges`) before it is ever
+ * attached to a published `InFlightSnapshot` and sent cross-machine.
+ *
+ * `SymbolChange.before`/`after` carry `signature` text lifted verbatim from
+ * the source file (e.g. a `const apiKey = "..."` initializer) — if the
+ * originating FILE is secret-shaped or ignored, the whole change entry for
+ * that file is dropped outright (never partially redacted down to "just the
+ * symbol name"), exactly mirroring `redactInFlightDiff`'s all-or-nothing
+ * per-file behavior. A dropped change's `before`/`after` signature text is
+ * NEVER included in the `dropped` list — only `symbol_id`/`file`/reason/pattern,
+ * so no secret-shaped content leaks into logs, telemetry, or this return
+ * value either.
+ */
+export function redactInFlightChanges(
+  changes: SymbolChange[],
+  rules: RedactionRules
+): RedactInFlightChangesResult {
+  const kept: SymbolChange[] = [];
+  const dropped: DroppedChange[] = [];
+
+  for (const change of changes) {
+    const secretMatch = firstMatchingPattern(change.file, rules.secretPatterns);
+    if (secretMatch) {
+      dropped.push({ symbol_id: change.symbol_id, file: change.file, reason: 'secret-pattern', pattern: secretMatch });
+      continue;
+    }
+    const ignoreMatch = firstMatchingPattern(change.file, rules.ignorePatterns);
+    if (ignoreMatch) {
+      dropped.push({ symbol_id: change.symbol_id, file: change.file, reason: 'klauroignore', pattern: ignoreMatch });
+      continue;
+    }
+    kept.push(change);
+  }
+
+  return { kept, dropped };
 }
 
 // ---------------------------------------------------------------------------

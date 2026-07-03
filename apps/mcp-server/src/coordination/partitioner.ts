@@ -21,11 +21,16 @@
  *
  * Scope / honesty note: this module partitions DECLARED footprints
  * (`target_symbols` / `target_paths` the task itself states) plus CAS
- * blast-radius expansion of those footprints. It does NOT attempt to infer a
- * task's footprint from free-text `intent` — that is NLP-hard, unreliable,
- * and out of scope; see the follow-on note at the bottom of this file. A
- * task with no declared footprint is reported in `unpartitionable` (kept
- * visible, never silently dropped) rather than guessed at or discarded.
+ * blast-radius expansion of those footprints. When a task declares nothing,
+ * it falls back to a DETERMINISTIC heuristic — `inferFootprintFromIntent` —
+ * that tokenizes the free-text `intent` and matches candidate identifiers
+ * against real CAS node names / file paths (see that function's doc for the
+ * exact heuristic and its precision limits). This is pattern matching
+ * against ground truth, NOT NLP/semantic understanding and NOT AI — a task
+ * whose intent mentions no real CAS entity still lands in `unpartitionable`
+ * (kept visible, never silently dropped) rather than guessed at. AI-based
+ * (semantic) inference is a separate, deeper follow-on — see the note at the
+ * bottom of this file.
  *
  * Pure module: no IO, no transport, no storage reads — same discipline as
  * collision.ts / conceptual-conflict.ts. The CAS is passed in by the caller
@@ -62,9 +67,18 @@ export interface PartitionResult {
   /** tasks / batches — higher means more parallel. 1 = fully serial, N = fully parallel. */
   parallelism_factor: number;
   conflict_edges: ConflictEdge[];
-  /** Tasks with no derivable footprint (no target_symbols/target_paths). Kept
-   *  visible, never dropped from the task set — see the module header. */
+  /** Tasks with no derivable footprint at all — neither declared
+   *  (target_symbols/target_paths) nor inferred from intent text against the
+   *  CAS. Kept visible, never dropped from the task set — see the module
+   *  header. */
   unpartitionable?: string[];
+  /** Per-task provenance of the footprint actually used for partitioning:
+   *  'declared' when the task stated target_symbols/target_paths itself,
+   *  'inferred' when those were empty and `inferFootprintFromIntent` found a
+   *  match in the CAS instead. Absent entries had no footprint at all (see
+   *  `unpartitionable`). Kept separate and honest so callers never mistake a
+   *  heuristic guess for an authoritative declaration. */
+  footprint_source?: Record<string, 'declared' | 'inferred'>;
 }
 
 export interface PartitionOptions {
@@ -95,6 +109,12 @@ export interface PartitionCasEdge {
 export interface PartitionCas {
   nodes: PartitionCasNode[];
   edges: PartitionCasEdge[];
+  /** Optional known file list for the repo (relative paths). Used by
+   *  `inferFootprintFromIntent` to match file-path-looking tokens in
+   *  free-text intent against real files. Additive/optional so existing CAS
+   *  fixtures without a file list keep working — inference then falls back
+   *  to symbol-name matching only. */
+  files?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +144,93 @@ function oneHopCallGraph(cas: PartitionCas, symbolIds: Set<string>): Set<string>
 }
 
 // ---------------------------------------------------------------------------
+// Intent-inference (deterministic heuristic — NOT AI/NLP)
+// ---------------------------------------------------------------------------
+
+/** Result of a best-effort attempt to derive a footprint from free-text
+ *  intent when a task declares none. Always empty (never guessed) when the
+ *  intent text mentions no entity that actually exists in the CAS. */
+export interface InferredFootprint {
+  symbols: string[];
+  paths: string[];
+}
+
+/**
+ * Deterministically extract candidate identifiers from a task's free-text
+ * `intent` and keep only the ones that match a REAL entity in the CAS (node
+ * id/name, or a known file path). This is string/pattern matching against
+ * ground truth — no NLP, no embeddings, no AI. Precision over recall: a
+ * plausible-looking token that doesn't resolve to anything real is dropped,
+ * not guessed at. See the module header for why AI-based semantic inference
+ * is intentionally a separate, deeper follow-on.
+ *
+ * Candidate extraction, in order:
+ *  1. Backtick / `code`-span tokens (`` `getUser` ``) — explicit code
+ *     mentions the author bothered to mark up; highest-confidence source.
+ *  2. CamelCase / PascalCase / snake_case identifier-looking tokens anywhere
+ *     in the text (e.g. "getUser", "render_profile") — the common case for
+ *     unmarked intent like "refactor getUser to be non-null".
+ *  3. File-path-looking tokens (contain a `/` or end in a known extension,
+ *     e.g. "src/app.ts") — matched against `cas.files` when present.
+ * Every candidate is matched case-sensitively against `cas.nodes[].name`,
+ * `cas.nodes[].id`, and `cas.files` — never fuzzy, never partial — so the
+ * false-positive rate is bounded by "this exact name happens to also appear
+ * in the CAS for an unrelated reason," which is rare for real identifiers.
+ * False negatives (a real target described only in plain English, e.g. "fix
+ * the login bug") are expected and intentional: those tasks correctly stay
+ * `unpartitionable` rather than being matched to the wrong thing.
+ */
+export function inferFootprintFromIntent(intent: string, cas: PartitionCas): InferredFootprint {
+  const symbolIds = new Set<string>();
+  const paths = new Set<string>();
+
+  const nodesByName = new Map<string, PartitionCasNode>();
+  const nodesById = new Map<string, PartitionCasNode>();
+  for (const n of cas.nodes) {
+    nodesByName.set(n.name, n);
+    nodesById.set(n.id, n);
+  }
+  const fileSet = new Set(cas.files ?? []);
+
+  const tryMatchSymbol = (token: string) => {
+    const cleaned = token.trim();
+    if (!cleaned) return;
+    const byName = nodesByName.get(cleaned);
+    if (byName) symbolIds.add(byName.id);
+    const byId = nodesById.get(cleaned);
+    if (byId) symbolIds.add(byId.id);
+  };
+
+  const tryMatchPath = (token: string) => {
+    const cleaned = normalizePath(token.trim());
+    if (cleaned && fileSet.has(cleaned)) paths.add(cleaned);
+  };
+
+  // 1. Backtick / `code`-span tokens: `foo`, `` `a/b.ts` ``.
+  const backtickSpans = intent.match(/`([^`]+)`/g) ?? [];
+  for (const span of backtickSpans) {
+    const inner = span.slice(1, -1);
+    tryMatchSymbol(inner);
+    tryMatchPath(inner);
+  }
+
+  // 2. Bare identifier-looking tokens (word chars only, split on
+  //    non-identifier characters — punctuation, whitespace, quotes).
+  const words = intent.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? [];
+  for (const w of words) {
+    tryMatchSymbol(w);
+  }
+
+  // 3. File-path-looking tokens: contain a `/` or a dotted extension.
+  const pathLike = intent.match(/[./\w-]+\/[./\w-]+|[.\w-]+\.[A-Za-z]{1,5}\b/g) ?? [];
+  for (const p of pathLike) {
+    tryMatchPath(p);
+  }
+
+  return { symbols: [...symbolIds], paths: [...paths] };
+}
+
+// ---------------------------------------------------------------------------
 // Footprint computation
 // ---------------------------------------------------------------------------
 
@@ -137,14 +244,36 @@ function normalizePath(p: string): string {
   return p.replace(/\/+$/, '');
 }
 
-function computeFootprint(task: PartitionTask, cas: PartitionCas, includeBlastRadius: boolean): TaskFootprint {
-  const declaredSymbolIds = new Set<string>();
+/** Declared (literal, task-stated) footprint only — no inference, no
+ *  blast-radius. Building block for both `computeFootprint` and the
+ *  unpartitionable/inferred-fallback decision in `partitionTasks`. */
+function declaredSymbolAndPathIds(
+  task: PartitionTask,
+  cas: PartitionCas
+): { symbolIds: Set<string>; paths: Set<string> } {
+  const symbolIds = new Set<string>();
   for (const s of task.target_symbols ?? []) {
-    for (const id of resolveIds(cas, s)) declaredSymbolIds.add(id);
+    for (const id of resolveIds(cas, s)) symbolIds.add(id);
+  }
+  const paths = new Set((task.target_paths ?? []).map(normalizePath));
+  return { symbolIds, paths };
+}
+
+function computeFootprint(
+  task: PartitionTask,
+  cas: PartitionCas,
+  includeBlastRadius: boolean,
+  fallbackToInference: boolean
+): TaskFootprint {
+  let { symbolIds: declaredSymbolIds, paths } = declaredSymbolAndPathIds(task, cas);
+
+  if (fallbackToInference && declaredSymbolIds.size === 0 && paths.size === 0) {
+    const inferred = inferFootprintFromIntent(task.intent, cas);
+    for (const id of inferred.symbols) declaredSymbolIds.add(id);
+    for (const p of inferred.paths) paths.add(normalizePath(p));
   }
 
   const symbols = includeBlastRadius ? oneHopCallGraph(cas, declaredSymbolIds) : declaredSymbolIds;
-  const paths = new Set((task.target_paths ?? []).map(normalizePath));
 
   return { task_id: task.id, symbols, paths };
 }
@@ -153,9 +282,17 @@ function pathsOverlap(a: string, b: string): boolean {
   return a === b || a.startsWith(b + '/') || b.startsWith(a + '/');
 }
 
-/** True footprint (pre-blast-radius) is empty — nothing declared at all. */
+/** True footprint (pre-blast-radius, pre-inference) is empty — nothing
+ *  declared at all by the task itself. */
 function hasNoDeclaredFootprint(task: PartitionTask): boolean {
   return (task.target_symbols?.length ?? 0) === 0 && (task.target_paths?.length ?? 0) === 0;
+}
+
+/** Neither declared NOR inferred — truly nothing to partition on. */
+function hasNoFootprintAtAll(task: PartitionTask, cas: PartitionCas): boolean {
+  if (!hasNoDeclaredFootprint(task)) return false;
+  const inferred = inferFootprintFromIntent(task.intent, cas);
+  return inferred.symbols.length === 0 && inferred.paths.length === 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -242,15 +379,26 @@ export function partitionTasks(
 ): PartitionResult {
   const includeBlastRadius = options.includeBlastRadius ?? true;
 
-  const unpartitionable = tasks.filter(hasNoDeclaredFootprint).map((t) => t.id);
+  // Truly nothing to go on — neither declared nor inferable from intent.
+  const unpartitionable = tasks.filter((t) => hasNoDeclaredFootprint(t) && hasNoFootprintAtAll(t, cas)).map((t) => t.id);
 
-  // Every task still participates in coloring — even one with no declared
+  const footprint_source: Record<string, 'declared' | 'inferred'> = {};
+  for (const t of tasks) {
+    if (!hasNoDeclaredFootprint(t)) {
+      footprint_source[t.id] = 'declared';
+    } else if (!hasNoFootprintAtAll(t, cas)) {
+      footprint_source[t.id] = 'inferred';
+    }
+    // else: no entry — task is unpartitionable, see above.
+  }
+
+  // Every task still participates in coloring — even one with no derivable
   // footprint conflicts with nothing, so it always lands in batch 0 (or
   // wherever it's first tried), which is the correct behavior: we don't drop
   // it, and we don't falsely serialize it against unrelated work either.
-  const declaredFootprints = new Map(tasks.map((t) => [t.id, computeFootprint(t, cas, false)]));
+  const declaredFootprints = new Map(tasks.map((t) => [t.id, computeFootprint(t, cas, false, true)]));
   const expandedFootprints = new Map(
-    tasks.map((t) => [t.id, includeBlastRadius ? computeFootprint(t, cas, true) : declaredFootprints.get(t.id)!])
+    tasks.map((t) => [t.id, includeBlastRadius ? computeFootprint(t, cas, true, true) : declaredFootprints.get(t.id)!])
   );
 
   const conflictEdges: ConflictEdge[] = [];
@@ -284,19 +432,27 @@ export function partitionTasks(
     parallelism_factor,
     conflict_edges: conflictEdges,
     ...(unpartitionable.length > 0 ? { unpartitionable } : {}),
+    footprint_source,
   };
 }
 
 // ---------------------------------------------------------------------------
 // Follow-on (explicitly NOT built here, per the mission's honesty mandate):
 //
-// Auto-inferring a task's footprint (target_symbols/target_paths) from its
-// free-text `intent` alone. That requires either NLP/semantic matching of
-// intent text against the CAS's node names/descriptions, or an AI
-// interpretation pass (mirroring conceptual-conflict.ts's optional,
-// pluggable `InvariantInterpreter` pattern: deterministic core untouched,
-// AI-flavored inference layered on top and OFF by default). Declared
-// footprints are the reachable, valuable core; intent-inference is a
-// separate, harder follow-on and is intentionally out of scope for this
-// module.
+// `inferFootprintFromIntent` above is DETERMINISTIC string/pattern matching
+// against real CAS entity names and files — it closes the common case
+// ("refactor getUser to be non-null" -> matches the real getUser node) but
+// it is bounded by what the intent text literally names. It cannot resolve
+// intent that only describes behavior in plain English with no identifier
+// mentioned at all (e.g. "fix the bug where users get logged out early") —
+// those tasks correctly stay `unpartitionable`.
+//
+// A deeper follow-on is AI/semantic inference: an LLM pass that reads the
+// intent, understands what it means, and proposes candidate CAS entities
+// even when no literal name is present — mirroring conceptual-conflict.ts's
+// optional, pluggable `InvariantInterpreter` pattern (deterministic core
+// untouched, AI-flavored inference layered on top and OFF by default). That
+// carries real precision risk (an LLM can propose a plausible-but-wrong
+// target) and needs its own confidence/verification story before it can
+// safely widen a batch's parallelism — intentionally out of scope here.
 // ---------------------------------------------------------------------------

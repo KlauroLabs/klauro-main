@@ -19,7 +19,8 @@
 
 import * as fs from 'node:fs';
 
-import { loadRedactionRules, redactInFlightDiff, type InFlightDiffFile } from './security';
+import { loadRedactionRules, redactInFlightDiff, redactInFlightChanges, type InFlightDiffFile } from './security';
+import type { SymbolChange } from './conceptual-conflict';
 
 /** Response shape from `POST /v1/coordination/in-flight` (remote-analyzer-service.ts). */
 export interface PublishInFlightResult {
@@ -28,6 +29,10 @@ export interface PublishInFlightResult {
   agent_id: string;
   kept_files: number;
   dropped_files: number;
+  /** Count of ambiently-captured `SymbolChange` entries kept after redaction (0 if none were supplied). */
+  kept_changes: number;
+  /** Count of ambiently-captured `SymbolChange` entries dropped by redaction (secret-pattern / `.klauroignore`). */
+  dropped_changes: number;
 }
 
 export class InFlightPublishError extends Error {
@@ -50,6 +55,18 @@ export interface PublishInFlightOptions {
  * payload to the remote coordination service's in-flight endpoint. The raw
  * (pre-redaction) diff never leaves this function — only `kept` is
  * serialized into the request body.
+ *
+ * `changes` (optional) is the ambiently-captured `SymbolChange[]` from
+ * `in-flight-capture.ts`'s `captureInFlightChanges` — the same field carried
+ * on same-machine `InFlightSnapshot.changes` (types.ts). It is passed through
+ * the IDENTICAL redaction gate as the diff files (`redactInFlightChanges`,
+ * security.ts — same secret-pattern/`.klauroignore` rules, matched against
+ * each change's `file`) before being serialized, so a remote agent's ambient
+ * conceptual-conflict changes get the same "never leaves the machine if the
+ * originating file is secret-shaped" guarantee as the raw diff. Omitting
+ * `changes` (older callers, or a capture that produced nothing) is a no-op —
+ * the request body simply carries no `changes` field, exactly like before
+ * this parameter existed.
  */
 export async function publishInFlight(
   baseUrl: string,
@@ -59,10 +76,11 @@ export async function publishInFlight(
   projectRoot: string,
   diffFiles: InFlightDiffFile[],
   options: PublishInFlightOptions = {},
-  extra: { baseCommit?: string; branch?: string } = {}
+  extra: { baseCommit?: string; branch?: string; changes?: SymbolChange[] } = {}
 ): Promise<PublishInFlightResult> {
   const rules = await loadRedactionRules(projectRoot);
   const { kept, dropped } = redactInFlightDiff(diffFiles, rules, { diffOnly: options.diffOnly });
+  const { kept: keptChanges, dropped: droppedChanges } = redactInFlightChanges(extra.changes ?? [], rules);
 
   let response: Response;
   try {
@@ -79,6 +97,7 @@ export async function publishInFlight(
         base_commit: extra.baseCommit,
         branch: extra.branch,
         diff_context: JSON.stringify({ files: kept, dropped_count: dropped.length }),
+        ...(extra.changes !== undefined ? { changes: keptChanges } : {}),
       }),
     });
   } catch (err) {
@@ -100,6 +119,8 @@ export async function publishInFlight(
     agent_id: agentId,
     kept_files: kept.length,
     dropped_files: dropped.length,
+    kept_changes: keptChanges.length,
+    dropped_changes: droppedChanges.length,
   };
 }
 
@@ -124,6 +145,12 @@ export interface InFlightWatcherOptions extends PublishInFlightOptions {
  * not reimplement diff computation (that's `remote-source.ts`'s
  * `buildBranchDiffContext`, outside this workstream's editable file set); it
  * only owns the debounce + redact + publish plumbing.
+ *
+ * `buildChanges` (optional) mirrors `buildDiff` for the ambient
+ * `SymbolChange[]` capture (`in-flight-capture.ts`'s `captureInFlightChanges`)
+ * — caller-supplied for the same reason: this module doesn't own git/AST
+ * diffing, only the debounce + redact + publish plumbing. Omitting it
+ * publishes no `changes` field, exactly like before this hook existed.
  */
 export function startInFlightWatcher(
   projectRoot: string,
@@ -132,7 +159,8 @@ export function startInFlightWatcher(
   workspaceId: string,
   agentId: string,
   buildDiff: () => Promise<InFlightDiffFile[]> | InFlightDiffFile[],
-  options: InFlightWatcherOptions = {}
+  options: InFlightWatcherOptions = {},
+  buildChanges?: () => Promise<SymbolChange[]> | SymbolChange[]
 ): { stop: () => void } {
   const debounceMs = options.debounceMs ?? 2000;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -142,7 +170,10 @@ export function startInFlightWatcher(
     if (stopped) return;
     void (async () => {
       try {
-        const diffFiles = await buildDiff();
+        const [diffFiles, changes] = await Promise.all([
+          buildDiff(),
+          buildChanges ? buildChanges() : Promise.resolve(undefined),
+        ]);
         const result = await publishInFlight(
           baseUrl,
           token,
@@ -151,7 +182,7 @@ export function startInFlightWatcher(
           projectRoot,
           diffFiles,
           { diffOnly: options.diffOnly, orgId: options.orgId },
-          { baseCommit: options.baseCommit, branch: options.branch }
+          { baseCommit: options.baseCommit, branch: options.branch, changes }
         );
         options.onPublished?.(result);
       } catch (err) {

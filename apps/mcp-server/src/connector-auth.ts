@@ -82,7 +82,7 @@ export function authConfigPath(): string {
 }
 
 export function normalizeServerUrl(serverUrl?: string): string {
-  return (serverUrl || process.env.KLAURO_API_URL || process.env.KLAURO_ANALYZER_URL || DEFAULT_KLAURO_CLOUD_URL).replace(/\/+$/, '');
+  return (serverUrl || process.env.KLAURO_API_URL || process.env.KLAURO_ANALYZER_URL || process.env.KLAURO_URL || DEFAULT_KLAURO_CLOUD_URL).replace(/\/+$/, '');
 }
 
 export function loadStoredConnectorAuth(): StoredConnectorAuth {

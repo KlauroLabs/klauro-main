@@ -79,6 +79,17 @@ export interface ConceptualConflict {
   severity: 'high' | 'medium' | 'low';
   agents: string[];
   symbol: string;
+  /**
+   * BOTH sides of the conflicting pair's symbol_ids, additive to `symbol`
+   * (kept for backward compat — existing consumers reading `.symbol` are
+   * unaffected). `symbol` only ever named one side (e.g. duplicate-work's
+   * both-add case has two distinct symbol_ids for the same logical name;
+   * contract-divergence has the changed symbol plus the caller being edited).
+   * `symbol_ids` carries every symbol_id involved in this specific finding,
+   * in the order the detector discovered them. Always non-empty and always
+   * includes `symbol` as its first element.
+   */
+  symbol_ids?: string[];
   file?: string;
   /** Human-readable WHY it's incoherent — not just "these overlap". */
   explanation: string;
@@ -224,6 +235,7 @@ function detectContractDivergence(
             severity: 'high',
             agents: [agentA.agent_id, agentB.agent_id],
             symbol: changeA.symbol_id,
+            symbol_ids: [changeA.symbol_id, changeB.symbol_id],
             file: changeA.file,
             explanation:
               `${agentA.agent_id} changed ${changeA.name}'s contract (${shapeNotes.join(', ')}) ` +
@@ -303,6 +315,7 @@ function detectDuplicateWork(states: AgentInFlightState[]): ConceptualConflict[]
             severity: 'medium',
             agents: [a.agent_id, b.agent_id],
             symbol: changeA.symbol_id,
+            symbol_ids: [changeA.symbol_id, changeB.symbol_id],
             file: changeA.file,
             explanation:
               `${a.agent_id} ("${a.intent}") and ${b.agent_id} ("${b.intent}") are both ` +
@@ -364,6 +377,7 @@ function detectStructuralDivergence(states: AgentInFlightState[]): ConceptualCon
             severity: 'high',
             agents: [agentA.agent_id, agentB.agent_id],
             symbol: changeA.symbol_id,
+            symbol_ids: [changeA.symbol_id, changeB.symbol_id],
             file: changeA.file,
             explanation:
               `${agentA.agent_id} is ${changeA.change_kind === 'split' ? 'splitting' : changeA.change_kind === 'delete' ? 'deleting' : changeA.change_kind === 'move' ? 'moving' : 'renaming'} ` +
@@ -426,6 +440,7 @@ function detectBehaviorDrift(states: AgentInFlightState[]): ConceptualConflict[]
             severity: 'medium',
             agents: [a.agent_id, b.agent_id],
             symbol: changeA.symbol_id,
+            symbol_ids: [changeA.symbol_id, changeB.symbol_id],
             file: changeA.file,
             explanation:
               `${a.agent_id} adds an early-return/guard to ${changeA.name}'s body while ${b.agent_id} ` +
@@ -488,6 +503,7 @@ function detectInvariantConflicts(
               severity: 'medium',
               agents: [agentA.agent_id, agentB.agent_id],
               symbol: changeA.symbol_id,
+              symbol_ids: [changeA.symbol_id, changeB.symbol_id],
               file: changeA.file,
               explanation:
                 `${agentA.agent_id}'s intent asserts ${changeA.name} is now "${assertion.invariant}", ` +

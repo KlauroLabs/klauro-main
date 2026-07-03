@@ -8,6 +8,7 @@ import type { AddressInfo } from 'node:net';
 
 import { InFlightPublishError, publishInFlight, startInFlightWatcher } from './in-flight-sync';
 import type { InFlightDiffFile } from './security';
+import type { SymbolChange } from './conceptual-conflict';
 
 async function freshProjectDir(withIgnore?: string): Promise<string> {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'klauro-inflight-test-'));
@@ -146,6 +147,86 @@ test('publishInFlight throws InFlightPublishError on network failure', async () 
     () => publishInFlight('http://127.0.0.1:1', undefined, 'ws-test', 'agent-a', projectDir, [{ path: 'a.ts', content: 'x' }]),
     InFlightPublishError
   );
+  await fsp.rm(projectDir, { recursive: true, force: true });
+});
+
+test('publishInFlight carries ambient SymbolChange[] through to the request body intact', async () => {
+  const projectDir = await freshProjectDir();
+  const server = await startThrowawayServer(() => ({ status: 200, body: { status: 'success' } }));
+
+  const changes: SymbolChange[] = [
+    {
+      symbol_id: 'sym:src/foo.ts:bar',
+      name: 'bar',
+      file: 'src/foo.ts',
+      change_kind: 'return_type',
+      before: { return_type: 'string' },
+      after: { return_type: 'string | null' },
+    },
+  ];
+
+  const result = await publishInFlight(
+    server.baseUrl,
+    undefined,
+    'ws-test',
+    'agent-a',
+    projectDir,
+    [{ path: 'src/foo.ts', content: 'x' }],
+    {},
+    { changes }
+  );
+
+  assert.equal(result.kept_changes, 1);
+  assert.equal(result.dropped_changes, 0);
+  assert.equal(server.requests.length, 1);
+  assert.deepEqual(server.requests[0].body.changes, changes);
+
+  await server.close();
+  await fsp.rm(projectDir, { recursive: true, force: true });
+});
+
+test('publishInFlight redacts ambient SymbolChange[] whose file is secret-shaped — never sent over the wire', async () => {
+  const projectDir = await freshProjectDir();
+  const server = await startThrowawayServer(() => ({ status: 200, body: { status: 'success' } }));
+
+  const secretSignature = 'const API_TOKEN = "sk-do-not-leak-this"';
+  const changes: SymbolChange[] = [
+    {
+      symbol_id: 'sym:.env:API_TOKEN',
+      name: 'API_TOKEN',
+      file: '.env',
+      change_kind: 'add',
+      after: { signature: secretSignature },
+    },
+    {
+      symbol_id: 'sym:src/safe.ts:baz',
+      name: 'baz',
+      file: 'src/safe.ts',
+      change_kind: 'add',
+      after: { signature: 'function baz(): void' },
+    },
+  ];
+
+  const result = await publishInFlight(
+    server.baseUrl,
+    undefined,
+    'ws-test',
+    'agent-a',
+    projectDir,
+    [],
+    {},
+    { changes }
+  );
+
+  assert.equal(result.kept_changes, 1);
+  assert.equal(result.dropped_changes, 1);
+
+  const rawBodySent = server.requests[0].rawBody;
+  assert.ok(!rawBodySent.includes(secretSignature), 'secret-shaped change signature must not appear on the wire');
+  assert.ok(!rawBodySent.includes('.env'), '.env path should not even be named in the published changes payload');
+  assert.ok(rawBodySent.includes('src/safe.ts'), 'the non-secret change should still be published');
+
+  await server.close();
   await fsp.rm(projectDir, { recursive: true, force: true });
 });
 

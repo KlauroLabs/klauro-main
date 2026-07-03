@@ -220,6 +220,19 @@ Analyze proposed files as a synthetic new codebase. The output is still normal C
 
 **Returns:** Advisory status, preview id, private preview URL, proposed analysis id, detected graph summary, required checks, and greenfield readiness warnings.
 
+### `get_greenfield_architecture_guidance`
+
+Use existing analyzed repositories as memory before creating a new codebase. Answers "has something like this already been built here" before an agent starts a greenfield slice.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `plan_text` | string | yes | Natural-language new-project goal or agent plan |
+| `proposed_files` | array | no | Optional proposed file bundle (`path`, `content`, `status`: `added`/`modified`/`deleted`) to review before `preview_greenfield_codebase` |
+| `reference_paths` | string[] | no | Existing analyzed repositories to use as memory. Omit to use all stored analyses |
+| `limit` | number | no | Maximum overlap matches to return |
+
+**Returns:** Architecture options, duplicate-capability warnings drawn from the reference repositories, first-file guidance, suggested tests, and next MCP preview steps.
+
 ### `get_greenfield_build_context`
 
 Guide a zero-repo or growing greenfield build. This is the MCP surface agents should use when the user asks for a new project that does not have a repository yet, or when a new project already has an initial slice and the agent needs to continue without duplicating architecture or domain concepts.
@@ -604,6 +617,18 @@ List persisted WAS-compliant Workspace analyses.
 
 **Returns:** Array of Workspace analysis metadata with id, name, timestamps, project count, deployable count, integration-link count, and storage file.
 
+### `run_cross_codebase_analysis`
+
+Deprecated name for `run_workspace_analysis`. Same behavior and parameters -- builds a WAS-compliant Workspace analysis from completed CAS outputs. Kept for backward compatibility; prefer `run_workspace_analysis`.
+
+### `get_cross_codebase_analysis`
+
+Deprecated name for `get_workspace_analysis`. Same behavior and parameters -- loads a persisted WAS-compliant Workspace analysis by id or name. Kept for backward compatibility; prefer `get_workspace_analysis`.
+
+### `list_cross_codebase_analyses`
+
+Deprecated name for `list_workspace_analyses`. Same behavior and parameters. Kept for backward compatibility; prefer `list_workspace_analyses`.
+
 ### `save_workspace_graph`
 
 Build and persist a multi-repository workspace graph.
@@ -835,6 +860,16 @@ Run the agent-context-ready readiness doctor for Codex, Claude, and other coding
 | `path` | string | yes | Project path |
 
 **Returns:** Pass/warn/fail status, `agent_context_ready` boolean, readiness report, freshness report, test discovery evidence, runtime event contract, runtime SDK package proof, golden snapshot comparison, and recommended first MCP tools.
+
+### `get_server_version`
+
+Diagnostic: report the running Klauro MCP server's version and whether a newer build is available. Call this FIRST whenever a tool you expect (from docs, a changelog, or another agent's output) appears to be missing — that almost always means the MCP connection is a stale/pre-release build, not that the feature does not exist. Always available, requires no analysis, never throws.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `server_url` | string | no | Override for the release-manifest host. Defaults to the stored login server, `KLAURO_URL`, or the public Klauro cloud URL |
+
+**Returns:** `current_version`, `latest_version` (or `null` if the manifest was unreachable), `up_to_date`, `update_command` (`klauro update`), and a `note` explaining the status -- including a reminder that the MCP client must be restarted after updating since MCP servers do not hot-reload.
 
 ### `get_agent_default_config`
 
@@ -1201,6 +1236,18 @@ Progressive disclosure. Get nodes, edges, entry points, and exit points at a spe
 - `node_refs` - Map of external node IDs to `{ name, type, level }` for deduplication
 - `entry_points` - Limited entry points (id, type, name, source_node)
 - `exit_points` - Limited exit points (id, type, name, source_node)
+
+### `query_graph`
+
+Cypher-lite query over the code graph. Supports `MATCH (a)[-[:TYPE]->(b)] [WHERE a.field = 'value'] RETURN a|b` -- e.g. `MATCH (a)-[:CALLS]->(b) WHERE b.name = 'save' RETURN a` (callers of `save`), or `MATCH (n) WHERE n.type = 'function' RETURN n`. Queryable fields: `name`, `type`, `id`, `file`, `qualified_name`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `query` | string | yes | Cypher-lite query |
+| `limit` | number | no | Max nodes per `RETURN` variable (default 200) |
+
+**Returns:** Matched nodes per requested `RETURN` variable.
 
 ---
 
@@ -1706,7 +1753,69 @@ Architectural self-regulation / cohesion check: is what you're about to build (o
 
 **Returns:** Freshness-stamped. Pattern-conflict/overlap findings (the same concern — e.g. entry-to-repository data access — handled by two competing structural patterns in different places) and engineering-principle violations (layering skips, single-responsibility/ownership breaks, coupling hotspots), each grounded in file/node evidence. `is_cohesive` is true only when there are no conflicts and no error-severity principle violations.
 
-<!-- TODO(orchestrator): docs/mcp/TOOLS.md is missing entries for several tools that ARE registered in server.ts and pre-date this session, incl. get_paradigm_conformance, get_product_map, query_graph, get_data_lineage (only 1 passing mention, no full entry), get_user_journeys, get_clones, get_communities, get_dead_code, get_adrs/manage_adr, get_cross_codebase_analysis/list_cross_codebase_analyses/run_cross_codebase_analysis, get_greenfield_architecture_guidance, install_gauntlet_watcher/list_gauntlet_watchers/stop_gauntlet_watcher, diff_behavior. This is a pre-existing documentation gap (not this session's drift) too large to safely author from scratch in this pass — needs a dedicated doc sweep grepping each tool's real inputSchema/description in server.ts. -->
+### `get_user_journeys`
+
+Deterministic end-to-end user journeys composed from entry points, call chains, and terminal effects. Each journey shows why a path exists via its terminal entities (e.g. "Create work order -> WorkOrder created").
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `journey_id` | string | no | Specific journey ID for full detail (steps, security boundaries, covering tests) |
+| `kind` | string | no | Filter by journey kind: `user-facing`, `system`, or `scheduled` |
+| `limit` | number | no | Max results when listing (default 25) |
+| `offset` | number | no | Skip first N results (default 0) |
+| `format` | string | no | `json` (default) or `markdown` for a human-readable journey brief |
+| `include_steps` | boolean | no | Include the compact step chain (`node_id`, `name`, `layer`, `depth`) per journey in the list form (default true) |
+
+**Returns:** With `journey_id`: full journey detail with steps, security boundaries, and covering tests. Without: paginated journey summaries with a human-readable title/headline and the compact step chain per journey.
+
+### `get_paradigm_conformance`
+
+Statistically detected codebase paradigms (service-mediated data access, entry-service-repository layering, guarded HTTP entry points, single-owner entity writes) with adoption rates, evidence files, and file-level deviations. Norms only emerge when at least 70% of comparable code follows the shape, so repos without a norm produce no noise.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `paradigm` | string | no | Specific paradigm name for full detail, e.g. `guarded-http-entry-points` |
+
+**Returns:** With `paradigm`: full detail including every deviation. Without: per-paradigm summaries with up to 3 sample deviations.
+
+### `get_data_lineage`
+
+Deterministic per-entity data lineage: which code writes and reads each data entity, which external services receive it, which security boundaries the data crosses and whether they are guarded, and which user journeys carry it. Entities are ranked by exposure (sensitive fields + unguarded paths + external transfer first).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `entity_id` | string | no | Specific data entity ID for full lineage detail |
+| `sensitive_only` | boolean | no | Only return entities with sensitive fields |
+| `limit` | number | no | Max results when listing (default 25) |
+| `offset` | number | no | Skip first N results (default 0) |
+
+**Returns:** With `entity_id`: full lineage detail for one entity. Without: ranked summaries.
+
+### `diff_behavior`
+
+Behavior-level diff between the current analysis and a prior snapshot: journeys added/removed/changed (matched by entry signature plus terminal entities, not ids), security boundary changes and newly unguarded entries, capability additions and possible duplicates, data lineage exposure changes for sensitive entities, and paradigm deviations introduced or resolved. Risk flags appear first, e.g. a new journey that writes an entity without crossing the auth boundary.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `snapshot` | string | no | Snapshot id to diff against, or `previous` for the most recent prior snapshot (default) |
+
+**Returns:** Journey diffs, security boundary changes, capability diffs, data lineage exposure changes, and paradigm deviation changes, with risk flags surfaced first.
+
+### `get_product_map`
+
+What this codebase actually does, in one call -- read this instead of skimming READMEs and directory trees to orient: system identity, capabilities ordered by criticality and linked to the user journeys and entities they serve, sensitive data and exposure highlights, conventions with open deviations, and health (tests, implementation gaps, top risks), each with coverage caveats so you know what the analysis is sure about.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `section` | string | no | Return only one section: `identity`, `capabilities`, `journeys`, `data`, `conventions`, `health`, or `coverage_caveats` |
+| `format` | string | no | `json` (default) or `markdown` for a compact product brief |
+
+**Returns:** The requested section, or the full product map (identity, capabilities, journeys, data, conventions, health, coverage caveats) when `section` is omitted.
 
 ### `simulate_runtime_telemetry`
 
@@ -1873,6 +1982,20 @@ Read-only preflight: does a proposed (not-yet-claimed) set of paths/symbols/capa
 
 **Returns:** `verdict`, `kind`, `evidence`, `with_claim` (the colliding claim, if any), `edit_lock_conflicts` (soft edit-lock hits on the proposed paths), `collisions` (full `CollisionReport`: duplicates, overlaps, drifts, blast-radius intersections), `active_grants`/`queued_grants`, `overlapping_grant_holders` (with intent + lease status), and `free_scope_hint` (paths/symbols not currently held). Use this to decide whether to call `claim_work` at all.
 
+### `check_conceptual_conflicts`
+
+Catches semantic incoherence that textual/merge conflicts cannot — two changes that each compile, pass review, and merge cleanly on their own, but are jointly incoherent (the canonical case: one agent retypes `getUser(): User|null -> User` while another agent edits a caller doing `if (!getUser())`). This call is ambient: it captures the caller's own git working-tree diff automatically (the workspace is treated as the caller's repo path; TS/JS files get full before/after signature diffing via the TypeScript compiler API), merges it with any explicitly passed `changes`, persists the merged report so other agents' checks can detect conflicts even if this agent never calls it again, and immediately returns only the conflicts that involve the caller.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `workspace` | string | yes | Workspace or project id/path |
+| `agent_id` | string | yes | Your stable agent/session id |
+| `agent_kind` | string | no | `claude`, `cursor`, `codex`, `human`, or `other` |
+| `intent` | string | yes | Short description of the work you are about to do |
+| `changes` | array | yes | The symbol changes you are about to make (or are making): each `{ symbol_id, name, file, change_kind: signature\|return_type\|nullability\|param\|rename\|split\|move\|delete\|body\|add, before?, after? }`, with `before`/`after` shape (`signature`, `return_type`, `nullable`, `name`, `split_into`, `body_tags`) where known |
+
+**Returns:** `status: "reported"`, `ambient_changes_captured` count, `other_agents_considered` count, and `conflicts` -- filtered to ones involving this agent: `contract-divergence` (signature/return-type/nullability change vs. a caller assuming the old contract), `duplicate-work` (overlapping intent on the same/similar symbol), `structural-divergence` (rename/split/move/delete vs. a new reference to the old structure), or `behavior-drift` (a guard/early-return added vs. code assuming unconditional execution). Ambient capture is same-machine/single-repo and TS/JS-only for full signature diffing; other languages get an honest unknown-change flag rather than a fabricated diff.
+
 ### `get_in_flight_changes`
 
 Which active agents currently have a claim/edit-lock touching a given path, and their stated intent — answers "who is changing this and why" in a shared workspace.
@@ -1894,6 +2017,18 @@ Start (or confirm) live local-peer awareness for a workspace: same-machine claim
 | `workspace` | string | yes | Workspace or project id/path |
 
 **Returns:** `status: "watching"`, `workspace`, and a note that MCP has no server-push transport (stdio) — poll `get_active_agents`/`get_in_flight_changes`/`check_collision` for deltas, or use HTTP `GET /v1/coordination/state?workspace=&since=` for cross-machine polling. See `../COORDINATION-FABRIC.md` for the HTTP `/v1/coordination/*` routes (`claim`, `release`, `heartbeat`, `state`, `stream`, `in-flight`) and the `/v1/telemetry/ingest` route used by telemetry fusion.
+
+### `plan_intent_merge`
+
+Reconcile the end of a shared editing session by INTENT rather than by textual 3-way diff. Git only asks "do the lines overlap?" — two textually-disjoint changes can merge silently even when jointly incoherent, and two changes on the same lines can conflict mechanically even when perfectly compatible in intent (e.g. one agent adding retry, another adding logging, to the same function body). Reuses the same persisted conceptual-conflict state that `check_conceptual_conflicts`/`check_collision` populate, so call one of those at least once per agent first (or pass `states` explicitly).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `workspace` | string | yes | Workspace or project id/path |
+| `agent_id` | string | yes | Your stable agent/session id (excluded from the "other agents" lookup; included if you also pass it in `states`) |
+| `states` | array | no | Explicit agent states to plan a merge over: `{ agent_id, intent, changes: SymbolChange[] }`. Omit to use every other active agent's persisted conceptual-conflict state for `workspace` plus your own ambient working-tree changes |
+
+**Returns:** A `MergePlan` with `auto_mergeable` (compatible intents that compose, with a rationale naming both agents' intents), `needs_resolution` (a genuine conceptual conflict was detected -- not auto-merged even though it would pass a textual merge cleanly), `duplicate_work` (the fleet did the same thing twice; keep one), and a summary count. Plus `agents_considered`.
 
 ### `get_analysis_facts`
 
@@ -2061,6 +2196,64 @@ TODO/FIXME/HACK tracking across the codebase.
 | `path` | string | yes | Project path |
 
 **Returns:** Counts by type/priority/category, tech debt items, blocking items, hotspot files.
+
+### `get_communities`
+
+Louvain functional modules: clusters of tightly call-connected functions/classes, discovered by community detection over the call graph. Surfaces de-facto modules an agent should treat as a unit.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+
+**Returns:** Communities with member nodes and internal cohesion.
+
+### `get_clones`
+
+Near-duplicate (copy-paste) function/method groups via MinHash + Jaccard over structure-normalized code -- catches renamed clones (Type-2). A refactor and divergence-risk signal.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `threshold` | number | no | Minimum estimated Jaccard similarity to report (0-1, default 0.8) |
+
+**Returns:** Pairs of the two similar functions and an estimated similarity score.
+
+### `get_dead_code`
+
+Functions/methods with zero callers in the call graph, excluding entry points and tests. Surfaces unreachable or unused code (and exported-but-uncalled API surface) for cleanup or review.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+
+**Returns:** Dead-code candidates with location and reason.
+
+### `get_adrs`
+
+List Architecture Decision Records persisted for this project across sessions: the decisions, their status, context, and consequences.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+
+**Returns:** Stored ADRs for the project.
+
+### `manage_adr`
+
+Create or update an Architecture Decision Record (persisted across sessions).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `title` | string | yes | Short decision title |
+| `decision` | string | yes | The decision made |
+| `context` | string | no | Why the decision was needed |
+| `consequences` | string | no | Resulting trade-offs |
+| `status` | string | no | `proposed`, `accepted`, `deprecated`, or `superseded` |
+| `supersedes` | string | no | id of an ADR this replaces |
+| `id` | string | no | Existing ADR id to update (omit to create a new ADR) |
+
+**Returns:** The saved/updated ADR.
 
 ---
 
@@ -2348,3 +2541,48 @@ Poll for recent changes from a watch session. Use this to check if new analyses 
 - `changes` - Array of analysis results since the timestamp
 - `pending_files` - Files waiting to be analyzed (max 20)
 - `analysis_in_progress` - Boolean
+
+### `install_gauntlet_watcher`
+
+Install a watcher on a repository that automatically runs the incremental-change gauntlet whenever the code changes -- measuring Klauro's advantage on understanding each change (quality/token/speed delta over time). The watcher is persisted and auto-resumes when the gauntlet UI server restarts.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `repo_path` | string | yes | Absolute path to the repository to watch (must have a stored analysis) |
+
+**Returns:** The installed watcher record.
+
+### `list_gauntlet_watchers`
+
+List installed gauntlet watchers with their live status, recent changes, and how many incremental gauntlet runs each has produced.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| (none) | | | |
+
+**Returns:** Array of gauntlet watcher records with status and run history.
+
+### `stop_gauntlet_watcher`
+
+Stop and disable an installed gauntlet watcher by id.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | yes | Gauntlet watcher id from `list_gauntlet_watchers` |
+
+**Returns:** The updated (stopped) watcher record.
+
+### `run_incremental_gauntlet`
+
+Run the incremental-change gauntlet for one repository on demand: projects Klauro vs. every competitor arm on understanding a change and records the quality/token/speed delta. Returns the record and appends it to the repo's incremental history.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `repo_name` | string | yes | Analysis name of the repository |
+| `files_changed` | number | no | Number of files changed (for change-magnitude) |
+| `nodes_added` | number | no | Nodes added |
+| `nodes_modified` | number | no | Nodes modified |
+| `nodes_deleted` | number | no | Nodes deleted |
+| `risk_level` | string | no | Risk level for the change |
+
+**Returns:** `record` (the new incremental gauntlet run) and `history_length` (total records retained, up to 20).

@@ -98,3 +98,81 @@ test('getCodingContext does not signal truncation for a low-fanout node under th
   assert.equal(connected.callees_total, 2);
   assert.equal(connected.truncated, false);
 });
+
+// Builds a CAS where the same callee/caller node is reachable both via a plain
+// graph edge AND via a method_call record (a real shape: an analyzer can emit
+// a `uses`/`calls` edge for a call site as well as a richer method_call record
+// for the same call). Before the dedup fix, getCallees/getCallers (and
+// therefore getCodingContext's connected_code) listed such a node twice.
+function buildDualPathCas(): CASOutput {
+  const callerId = 'function_src/a.ts_caller_0';
+  const calleeId = 'function_src/b.ts_callee_0';
+  const nodes: CASNode[] = [
+    { id: callerId, name: 'caller', type: 'function', source: { file: 'src/a.ts', line: 1 }, metadata: {} } as CASNode,
+    { id: calleeId, name: 'callee', type: 'function', source: { file: 'src/b.ts', line: 1 }, metadata: {} } as CASNode,
+  ];
+  const edges: CASEdge[] = [
+    { id: 'edge_1', source: callerId, target: calleeId, type: 'calls' },
+  ];
+  const method_calls = [
+    {
+      id: 'mc_1',
+      caller_node: callerId,
+      target_node: calleeId,
+      call_details: { method_name: 'callee' },
+    },
+  ] as unknown as CASOutput['method_calls'];
+
+  return {
+    cas_version: '1.11.0',
+    analysis_timestamp: new Date().toISOString(),
+    analysis_id: 'analysis-dual-path-test',
+    system: { id: 'system-test', name: 'dual-path-test', type: 'service', root_path: '/tmp/dual-path' },
+    nodes,
+    edges,
+    method_calls,
+    analyzer_contributions: [],
+  } as unknown as CASOutput;
+}
+
+test('getCodingContext connected_code.callees is deduplicated when a node is reachable via both an edge and a method_call record', () => {
+  const cas = buildDualPathCas();
+  const context: any = getCodingContext(cas, 'function_src/a.ts_caller_0');
+
+  const calleeIds = context.connected_code.callees.map((c: any) => c.id);
+  assert.equal(calleeIds.length, 1, `expected exactly one deduped callee, got: ${JSON.stringify(calleeIds)}`);
+  assert.equal(context.connected_code.callees_total, 1);
+});
+
+test('getCodingContext connected_code.callers is deduplicated when a node is reachable via both an edge and a method_call record', () => {
+  const cas = buildDualPathCas();
+  const context: any = getCodingContext(cas, 'function_src/b.ts_callee_0');
+
+  const callerIds = context.connected_code.callers.map((c: any) => c.id);
+  assert.equal(callerIds.length, 1, `expected exactly one deduped caller, got: ${JSON.stringify(callerIds)}`);
+  assert.equal(context.connected_code.callers_total, 1);
+});
+
+test('getCodingContext degrades gracefully (never a bare error) when the target is missing from a fresh analysis', () => {
+  const cas = buildHighFanoutCas({ callerCount: 1, calleeCount: 1 });
+  const context: any = getCodingContext(cas, 'thisSymbolDoesNotExistAnywhere');
+
+  assert.ok(typeof context.error === 'string' && context.error.length > 0);
+  assert.equal(context.target, 'thisSymbolDoesNotExistAnywhere');
+  assert.ok(Array.isArray(context.near_matches));
+  assert.ok(typeof context.analysis_age_hint === 'string' && context.analysis_age_hint.length > 0);
+  assert.ok(Array.isArray(context.next_steps) && context.next_steps.length > 0);
+  // Must nudge toward the staleness-check tool and (if the tool itself seems
+  // broken) get_server_version — never a dead end.
+  assert.ok(context.next_steps.some((s: string) => s.includes('get_analysis_freshness')));
+  assert.ok(context.next_steps.some((s: string) => s.includes('get_server_version')));
+});
+
+test('getCodingContext offers near-name matches for a typo close to a real node name', () => {
+  const cas = buildHighFanoutCas({ callerCount: 2, calleeCount: 2 });
+  // "Hubb" is a one-character-off typo of the real node name "Hub".
+  const context: any = getCodingContext(cas, 'Hubb');
+
+  assert.ok(typeof context.error === 'string');
+  assert.ok(context.near_matches.some((m: any) => m.name === 'Hub'), `expected a near match for "Hub", got: ${JSON.stringify(context.near_matches)}`);
+});

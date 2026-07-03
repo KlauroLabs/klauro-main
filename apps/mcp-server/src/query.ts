@@ -519,6 +519,12 @@ export function getExternalServices(cas: CASOutput) {
 
 export function getCallers(cas: CASOutput, nodeId: string, maxDepth: number = 2, limit: number = 50) {
   const visited = new Set<string>();
+  // Tracks node ids already pushed into `callers` (independent of `visited`,
+  // which gates *traversal from* a node). A node can be reached both via a
+  // graph edge and via a method_call record at the same depth (e.g. a normal
+  // call edge plus a duplicate method-call record for the same call site) —
+  // without this set the same caller would be pushed twice.
+  const pushed = new Set<string>();
   const callers: Array<{ node_id: string; name: string; type: string; depth: number; via: string }> = [];
   const nodesById = new Map(cas.nodes.map(node => [node.id, node]));
   const incomingEdges = new Map<string, typeof cas.edges>();
@@ -539,9 +545,10 @@ export function getCallers(cas: CASOutput, nodeId: string, maxDepth: number = 2,
 
     for (const edge of incomingEdges.get(currentId) || []) {
       if (callers.length >= limit) break;
-      if (!visited.has(edge.source)) {
+      if (!visited.has(edge.source) && !pushed.has(edge.source)) {
         const sourceNode = nodesById.get(edge.source);
         if (sourceNode) {
+          pushed.add(sourceNode.id);
           callers.push({
             node_id: sourceNode.id,
             name: sourceNode.name,
@@ -556,9 +563,10 @@ export function getCallers(cas: CASOutput, nodeId: string, maxDepth: number = 2,
 
     for (const mc of incomingMethodCalls.get(currentId) || []) {
       if (callers.length >= limit) break;
-      if (mc.caller_node && !visited.has(mc.caller_node)) {
+      if (mc.caller_node && !visited.has(mc.caller_node) && !pushed.has(mc.caller_node)) {
         const callerNode = nodesById.get(mc.caller_node);
         if (callerNode) {
+          pushed.add(callerNode.id);
           callers.push({
             node_id: callerNode.id,
             name: callerNode.name,
@@ -578,6 +586,9 @@ export function getCallers(cas: CASOutput, nodeId: string, maxDepth: number = 2,
 
 export function getCallees(cas: CASOutput, nodeId: string, maxDepth: number = 2, limit: number = 50) {
   const visited = new Set<string>();
+  // See matching comment in getCallers: a node reachable via both a graph
+  // edge and a method_call record at the same depth must only be pushed once.
+  const pushed = new Set<string>();
   const callees: Array<{ node_id: string; name: string; type: string; depth: number; via: string }> = [];
   const nodesById = new Map(cas.nodes.map(node => [node.id, node]));
   const outgoingEdges = new Map<string, typeof cas.edges>();
@@ -598,9 +609,10 @@ export function getCallees(cas: CASOutput, nodeId: string, maxDepth: number = 2,
 
     for (const edge of outgoingEdges.get(currentId) || []) {
       if (callees.length >= limit) break;
-      if (!visited.has(edge.target)) {
+      if (!visited.has(edge.target) && !pushed.has(edge.target)) {
         const targetNode = nodesById.get(edge.target);
         if (targetNode) {
+          pushed.add(targetNode.id);
           callees.push({
             node_id: targetNode.id,
             name: targetNode.name,
@@ -615,9 +627,10 @@ export function getCallees(cas: CASOutput, nodeId: string, maxDepth: number = 2,
 
     for (const mc of outgoingMethodCalls.get(currentId) || []) {
       if (callees.length >= limit) break;
-      if (mc.target_node && !visited.has(mc.target_node)) {
+      if (mc.target_node && !visited.has(mc.target_node) && !pushed.has(mc.target_node)) {
         const targetNode = nodesById.get(mc.target_node);
         if (targetNode) {
+          pushed.add(targetNode.id);
           callees.push({
             node_id: targetNode.id,
             name: targetNode.name,
@@ -2037,6 +2050,104 @@ export function getLibraries(cas: CASOutput, opts: { query?: string; limit?: num
   return { total, offset, limit, libraries: summarized };
 }
 
+/**
+ * Levenshtein edit distance, used only for short identifier-length strings
+ * (fuzzy near-name matching below) — not intended for long text.
+ */
+function levenshteinDistance(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const prev = new Array(n + 1);
+  const curr = new Array(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+    }
+    for (let j = 0; j <= n; j++) prev[j] = curr[j];
+  }
+  return prev[n];
+}
+
+/**
+ * Builds a graceful (never a bare/dead-end) "target not found" result shared by
+ * getCodingContext and getInterfaceSignature. Agents were hitting a bare
+ * `{ error: "Target not found: X" }` even for real, currently-exported symbols
+ * whenever the analysis was stale (the symbol was renamed/added/moved since the
+ * CAS was generated) — with no signal that staleness, not a bad guess, was the
+ * likely cause, and no path forward. This instead: (a) states the target wasn't
+ * found in the *current* analysis (framing it as CAS-relative, not absolute),
+ * (b) surfaces an analysis-age hint derived from cas.analysis_timestamp so an
+ * agent can judge staleness risk without a separate freshness call (this
+ * function only has the CAS, not project-path/git access, so it can't run the
+ * full get_analysis_freshness git-diff scan itself — it nudges toward that tool
+ * instead of guessing), (c) points at get_server_version if the tool/analysis
+ * itself seems unavailable, and (d) offers fuzzy near-name matches against real
+ * node names so a typo or slightly-stale name still gets somewhere useful.
+ */
+function buildTargetNotFoundResult(cas: CASOutput, target: string, toolName: string) {
+  const query = target.trim();
+  const queryLower = query.toLowerCase();
+
+  // Near-name matches: prefer substring hits (cheap, high precision for partial/
+  // renamed identifiers), then fall back to edit-distance for typos, scored over
+  // named nodes only (searching all ~tens-of-thousands of nodes by full edit
+  // distance would be wasteful; substring first keeps this cheap in the common case).
+  const namedNodes = cas.nodes.filter(n => typeof n.name === 'string' && n.name.length > 0);
+  const substringMatches = namedNodes.filter(n => n.name.toLowerCase().includes(queryLower) || queryLower.includes(n.name.toLowerCase()));
+
+  const scored = (substringMatches.length > 0 ? substringMatches : namedNodes)
+    .map(n => ({
+      node: n,
+      distance: substringMatches.length > 0 ? 0 : levenshteinDistance(queryLower, n.name.toLowerCase()),
+    }))
+    .filter(({ node, distance }) => substringMatches.includes(node) || distance <= Math.max(2, Math.ceil(queryLower.length * 0.4)))
+    .sort((a, b) => a.distance - b.distance || a.node.name.length - b.node.name.length)
+    .slice(0, 5)
+    .map(({ node }) => ({
+      id: node.id,
+      name: node.name,
+      type: node.type,
+      file: node.source?.file,
+    }));
+
+  // Analysis-age hint: this function only has the CAS payload (no project path
+  // or git access), so it can't run the real staleness scan (see
+  // get_analysis_freshness / getFreshAnalysisForAgent for that). It surfaces the
+  // one staleness-relevant fact it does have — how old the stored analysis is —
+  // so an agent isn't left guessing whether "not found" means "doesn't exist" or
+  // "analysis predates this symbol".
+  let analysisAgeHint: string | undefined;
+  if (cas.analysis_timestamp) {
+    const analyzedAt = new Date(cas.analysis_timestamp);
+    if (!Number.isNaN(analyzedAt.getTime())) {
+      const ageMs = Date.now() - analyzedAt.getTime();
+      const ageMinutes = Math.max(0, Math.round(ageMs / 60000));
+      analysisAgeHint = ageMinutes < 5
+        ? `Analysis is recent (${ageMinutes}m old); "${target}" likely does not exist under this name, or is defined somewhere this analysis doesn't cover.`
+        : `Analysis was generated ${ageMinutes}m ago. If "${target}" was added, renamed, or moved since then, this analysis won't know about it — call get_analysis_freshness (or re-run analyze_codebase) before concluding it doesn't exist.`;
+    }
+  }
+
+  return {
+    error: `Target not found in the current analysis: ${target}`,
+    target,
+    near_matches: scored,
+    analysis_age_hint: analysisAgeHint,
+    next_steps: [
+      'Call get_analysis_freshness on this project path to check whether the analysis is stale relative to source files, and re-run analyze_codebase if so.',
+      scored.length > 0
+        ? 'Review near_matches below — one of them may be the renamed/actual target.'
+        : 'Try search_nodes with a broader or partial query to locate the target by name or description.',
+      `If ${toolName} itself seems to be missing or misbehaving (not just this target), call get_server_version to confirm the server/tool version in use.`,
+    ],
+  };
+}
+
 export function getCodingContext(
   cas: CASOutput,
   target: string,
@@ -2074,7 +2185,7 @@ export function getCodingContext(
   }
 
   if (!targetNode) {
-    return { error: `Target not found: ${target}` };
+    return buildTargetNotFoundResult(cas, target, 'get_coding_context');
   }
 
   const determineLayer = (node: CASNode): 'entry' | 'business' | 'data' | 'infrastructure' => {

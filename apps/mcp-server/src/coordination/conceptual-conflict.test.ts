@@ -55,6 +55,10 @@ test('contract-divergence: nullability retype + concurrent caller edit', () => {
   assert.equal(found[0].severity, 'high');
   assert.equal(found[0].passes_textual_merge, true);
   assert.deepEqual([...found[0].agents].sort(), ['agent-a', 'agent-b']);
+  // symbol_ids is additive: both sides of the pair (the changed symbol AND
+  // the caller being edited), with `symbol` preserved as the first/primary.
+  assert.deepEqual(found[0].symbol_ids, ['sym:getUser', 'sym:renderProfile']);
+  assert.equal(found[0].symbol_ids![0], found[0].symbol);
 });
 
 test('duplicate-work: two agents add the same symbol with overlapping intent', () => {
@@ -89,6 +93,9 @@ test('duplicate-work: two agents add the same symbol with overlapping intent', (
   const found = conflicts.filter((c) => c.kind === 'duplicate-work');
   assert.equal(found.length, 1);
   assert.equal(found[0].passes_textual_merge, true);
+  // symbol_ids carries BOTH distinct symbol_ids from the both-add case, which
+  // `symbol` alone (a single string) cannot represent.
+  assert.deepEqual(found[0].symbol_ids, ['sym:retryBilling', 'sym:retryBillingV2']);
 });
 
 test('structural-divergence: split render while a new caller references the old form', () => {

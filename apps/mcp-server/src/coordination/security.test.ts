@@ -11,10 +11,12 @@ import {
   isVisibleToRequester,
   loadRedactionRules,
   readSecurityAudit,
+  redactInFlightChanges,
   redactInFlightDiff,
   TenantMismatchError,
   type InFlightDiffFile,
 } from './security';
+import type { SymbolChange } from './conceptual-conflict';
 
 async function freshProjectDir(withIgnore?: string): Promise<string> {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'klauro-security-test-'));
@@ -114,6 +116,81 @@ test('redactInFlightDiff diffOnly mode strips full-file content but keeps patch'
   assert.equal(kept.length, 1);
   assert.equal(kept[0].content, undefined);
   assert.equal(kept[0].patch, '@@ -1 +1 @@\n-old\n+new');
+});
+
+// ---------------------------------------------------------------------------
+// redactInFlightChanges (ambient in-flight capture cross-machine gate)
+// ---------------------------------------------------------------------------
+
+test('redactInFlightChanges drops a change whose file is secret-shaped, by reason=secret-pattern', async () => {
+  const projectDir = await freshProjectDir();
+  const rules = await loadRedactionRules(projectDir);
+
+  const changes: SymbolChange[] = [
+    {
+      symbol_id: 'sym:.env:DB_PASSWORD',
+      name: 'DB_PASSWORD',
+      file: '.env',
+      change_kind: 'add',
+      after: { signature: 'const DB_PASSWORD = "hunter2-do-not-leak"' },
+    },
+    {
+      symbol_id: 'sym:src/safe.ts:foo',
+      name: 'foo',
+      file: 'src/safe.ts',
+      change_kind: 'signature',
+      before: { signature: 'function foo(): void' },
+      after: { signature: 'function foo(x: number): void' },
+    },
+  ];
+
+  const { kept, dropped } = redactInFlightChanges(changes, rules);
+
+  assert.equal(kept.length, 1);
+  assert.equal(kept[0].file, 'src/safe.ts');
+  assert.equal(dropped.length, 1);
+  assert.equal(dropped[0].file, '.env');
+  assert.equal(dropped[0].reason, 'secret-pattern');
+
+  // The secret-shaped change's signature text must never appear anywhere in
+  // the dropped-list output (only path/reason/pattern, matching redactInFlightDiff).
+  const serializedDropped = JSON.stringify(dropped);
+  assert.ok(!serializedDropped.includes('hunter2-do-not-leak'));
+});
+
+test('redactInFlightChanges also drops changes matched by a project .klauroignore glob', async () => {
+  const projectDir = await freshProjectDir('build/**\n');
+  const rules = await loadRedactionRules(projectDir);
+
+  const changes: SymbolChange[] = [
+    { symbol_id: 'sym:build/out.ts:x', name: 'x', file: 'build/out.ts', change_kind: 'add' },
+    { symbol_id: 'sym:src/keep.ts:y', name: 'y', file: 'src/keep.ts', change_kind: 'add' },
+  ];
+
+  const { kept, dropped } = redactInFlightChanges(changes, rules);
+  assert.equal(kept.length, 1);
+  assert.equal(kept[0].file, 'src/keep.ts');
+  assert.equal(dropped.length, 1);
+  assert.equal(dropped[0].reason, 'klauroignore');
+});
+
+test('redactInFlightChanges keeps a normal change untouched', async () => {
+  const projectDir = await freshProjectDir();
+  const rules = await loadRedactionRules(projectDir);
+
+  const change: SymbolChange = {
+    symbol_id: 'sym:src/util.ts:bar',
+    name: 'bar',
+    file: 'src/util.ts',
+    change_kind: 'return_type',
+    before: { return_type: 'string' },
+    after: { return_type: 'string | null' },
+  };
+
+  const { kept, dropped } = redactInFlightChanges([change], rules);
+  assert.equal(kept.length, 1);
+  assert.deepEqual(kept[0], change);
+  assert.equal(dropped.length, 0);
 });
 
 // ---------------------------------------------------------------------------

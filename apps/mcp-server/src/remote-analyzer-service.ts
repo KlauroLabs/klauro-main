@@ -13,7 +13,7 @@ import { AccountHttpError, AccountStore } from './account-store';
 import { getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind } from './coordination';
 import { appendClaim, getActiveClaims, getPresence, getStoreDir, readClaimLog } from './coordination/local-store';
 import { deriveActiveClaims } from './coordination/presence';
-import { appendSecurityAudit, assertSameTenant, getSecurityStoreDir, TenantMismatchError } from './coordination/security';
+import { appendSecurityAudit, assertSameTenant, defaultSecretDenyPatterns, getSecurityStoreDir, redactInFlightChanges, TenantMismatchError } from './coordination/security';
 import { detectConceptualConflicts, type AgentInFlightState, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
 import { ingestAndPersist } from './telemetry-fusion';
 import { getAnalysis } from './analyzer';
@@ -513,10 +513,23 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
       // same per-workspace coordination store dir, read back reduced to
       // latest-per-(workspace,agent_id) the same way /coordination/state
       // reduces claims.jsonl to the active set.
+      //
+      // `changes` (optional, Fabric-v2 §1.7 cross-machine ambient capture):
+      // the same `SymbolChange[]` shape as same-machine `InFlightSnapshot.changes`
+      // (types.ts), produced client-side by `in-flight-capture.ts`'s
+      // `captureInFlightChanges` and already redacted once by the publishing
+      // client (`in-flight-sync.ts`'s `publishInFlight`, via
+      // `redactInFlightChanges`). The server applies the SAME redaction gate
+      // again here as defense-in-depth (§WS-F hard gate: security must not
+      // depend solely on a well-behaved client) — using only the built-in
+      // secret-pattern deny-list (`defaultSecretDenyPatterns`), since the
+      // server has no checkout of the project to read a `.klauroignore` from;
+      // the client-side pass already applied `.klauroignore` on top of that.
       if (request.method === 'POST' && route === '/v1/coordination/in-flight') {
         const body = await readJsonBody<{
           workspace: string; agent_id: string; org_id?: string;
           base_commit?: string; branch?: string; diff_context: string;
+          changes?: SymbolChange[];
         }>(request, maxBodyBytes);
         if (!body.workspace || !body.agent_id) {
           writeJson(response, 400, { status: 'error', error: 'workspace and agent_id are required' });
@@ -541,6 +554,17 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           throw err;
         }
 
+        let redactedChanges: SymbolChange[] | undefined;
+        let droppedChangeCount = 0;
+        if (Array.isArray(body.changes) && body.changes.length > 0) {
+          const { kept, dropped } = redactInFlightChanges(body.changes, {
+            secretPatterns: defaultSecretDenyPatterns(),
+            ignorePatterns: [],
+          });
+          redactedChanges = kept;
+          droppedChangeCount = dropped.length;
+        }
+
         const snapshot: InFlightSnapshotRecord = {
           workspace: body.workspace,
           agent_id: body.agent_id,
@@ -549,6 +573,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           branch: body.branch,
           diff_context: body.diff_context,
           updated_at: new Date().toISOString(),
+          ...(redactedChanges !== undefined ? { changes: redactedChanges } : {}),
         };
         await appendInFlightSnapshot(body.workspace, snapshot);
         broadcastCoordinationEvent(body.workspace, 'in-flight', {
@@ -556,6 +581,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           base_commit: snapshot.base_commit,
           branch: snapshot.branch,
           updated_at: snapshot.updated_at,
+          changes_count: redactedChanges?.length,
         });
         await appendSecurityAudit(getSecurityStoreDir(body.workspace), {
           ts: snapshot.updated_at,
@@ -569,6 +595,8 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           workspace: body.workspace,
           agent_id: body.agent_id,
           bytes: body.diff_context.length,
+          changes_kept: redactedChanges?.length ?? 0,
+          changes_dropped: droppedChangeCount,
         });
         writeJson(response, 200, { status: 'success' });
         return;
@@ -981,6 +1009,13 @@ interface InFlightSnapshotRecord {
   branch?: string;
   diff_context: string;
   updated_at: string;
+  /**
+   * Ambiently-captured, already-redacted `SymbolChange[]` (Fabric-v2 §1.7
+   * cross-machine ambient capture) — mirrors same-machine
+   * `InFlightSnapshot.changes` (types.ts). Optional/additive: an older
+   * publisher, or one whose capture produced nothing, simply omits it.
+   */
+  changes?: SymbolChange[];
 }
 
 /**

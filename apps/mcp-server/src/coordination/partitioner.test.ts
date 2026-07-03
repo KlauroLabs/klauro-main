@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { partitionTasks } from './partitioner';
+import { inferFootprintFromIntent, partitionTasks } from './partitioner';
 import type { PartitionCas, PartitionTask } from './partitioner';
 
 const cas: PartitionCas = {
@@ -128,6 +128,58 @@ test('parallelism_factor > 1 on a mixed conflicting+disjoint task set', () => {
   ];
   const result = partitionTasks(tasks, cas, { includeBlastRadius: true });
   assert.ok(result.parallelism_factor > 1, `expected > 1, got ${result.parallelism_factor}`);
+});
+
+test('a task with only an intent (no declared symbols) is partitioned by inferred footprint, not unpartitionable', () => {
+  const tasks: PartitionTask[] = [
+    { id: 't1', intent: 'refactor getUser to be non-null' },
+    { id: 't2', intent: 'add logging to getUser', target_symbols: ['sym:getUser'] },
+  ];
+  const result = partitionTasks(tasks, cas, { includeBlastRadius: false });
+
+  // Not dropped into unpartitionable — the heuristic found the real getUser node.
+  assert.equal(result.unpartitionable, undefined);
+  assert.equal(result.footprint_source?.t1, 'inferred');
+  assert.equal(result.footprint_source?.t2, 'declared');
+
+  // And it actually conflicts with the other task that explicitly targets getUser —
+  // proof the inferred footprint was wired into real conflict detection, not just labeled.
+  assert.equal(result.batches.length, 2, 't1 (inferred getUser) and t2 (declared getUser) must conflict');
+  const edge = result.conflict_edges.find(
+    (e) => (e.a === 't1' && e.b === 't2') || (e.a === 't2' && e.b === 't1')
+  );
+  assert.ok(edge, 'expected a conflict edge between t1 and t2');
+  assert.equal(edge!.reason, 'symbol');
+});
+
+test('inferFootprintFromIntent matches real CAS symbols mentioned in free text', () => {
+  const inferred = inferFootprintFromIntent('refactor getUser to be non-null', cas);
+  assert.deepEqual(inferred.symbols, ['sym:getUser']);
+  assert.deepEqual(inferred.paths, []);
+});
+
+test('inferFootprintFromIntent matches backtick-quoted symbols and file paths', () => {
+  const casWithFiles: PartitionCas = { ...cas, files: ['src/app.ts', 'src/other.ts'] };
+  const inferred = inferFootprintFromIntent('touch up `renderProfile` and also `src/app.ts`', casWithFiles);
+  assert.deepEqual(inferred.symbols, ['sym:renderProfile']);
+  assert.deepEqual(inferred.paths, ['src/app.ts']);
+});
+
+test('inferFootprintFromIntent finds nothing for vague intent mentioning no real entity', () => {
+  const inferred = inferFootprintFromIntent('fix the bug where users get logged out early', cas);
+  assert.deepEqual(inferred.symbols, []);
+  assert.deepEqual(inferred.paths, []);
+});
+
+test('a task whose intent matches nothing real still lands in unpartitionable', () => {
+  const tasks: PartitionTask[] = [
+    { id: 't1', intent: 'fix the bug where users get logged out early' },
+    { id: 't2', intent: 'edit formatCurrency', target_symbols: ['sym:formatCurrency'] },
+  ];
+  const result = partitionTasks(tasks, cas);
+  assert.deepEqual(result.unpartitionable, ['t1']);
+  assert.equal(result.footprint_source?.t1, undefined);
+  assert.equal(result.footprint_source?.t2, 'declared');
 });
 
 test('resolves target_symbols by bare name as well as node id', () => {
