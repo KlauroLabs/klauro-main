@@ -59,6 +59,8 @@ import { arbitrate, detectCollisions, getGrants, heartbeatGrant, releaseGrant, r
 import { attributeChange, appendClaim, checkEditLock, getActiveClaims, getPresence, readClaimLog, watch } from './coordination/local-store';
 import { deriveActiveClaims } from './coordination/presence';
 import { detectConceptualConflicts, type AgentInFlightState, type ConceptualConflict, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
+import { captureInFlightChanges } from './coordination/in-flight-capture';
+import { planIntentMerge } from './coordination/intent-merge';
 import { loadPersistedRuntimeFacts } from './telemetry-fusion';
 
 const SERVER_INSTRUCTIONS = `Klauro serves a precomputed analysis of this repository — call graph, routes, data flows, entry points, conventions, and tests, queryable directly. Default to it over grep/Read: a query returns real call sites and blast radius, not guesses. The value is the sequence below; each tool's own description has the detail.
@@ -79,7 +81,9 @@ Cross-repo work (ui -> api -> worker is one product): run_workspace_analysis, th
 
 Coordinate before you act (multi-agent workspaces — awareness first, never a lockout): before starting any non-trivial edit, call claim_work with the workspace, your agent_id, and the paths/symbols/capability you're about to touch. The fabric makes you AWARE of who else is here and what they intend, so you coordinate — it never blocks work you need. Disjoint work always runs free in parallel (block-time -> 0 for non-overlapping scope). If the verdict is "granted", proceed immediately: heartbeat_work periodically while working so the lease doesn't expire, and release_work the moment you're done or handing off (this instantly frees the scope and promotes the next queued agent, if any). If the verdict is "queued" — meaning another agent's grant genuinely overlaps your scope — you get full awareness in the response, not a dead end: the holder's agent_id, their stated intent, and their lease_status (active/near_expiry/expired), plus an "options" array. If the work is FUNGIBLE (interchangeable with something else), take redirect_hint/free_scope_hint and go do disjoint work instead. If the work is NON-fungible (you specifically need that symbol), you are never denied: wait_and_heartbeat_poll, proceed_with_awareness_if_compatible once you've read the holder's intent and judged the changes compatible, or take_over_stale_lease if their lease_status shows near_expiry/expired. If the verdict is "duplicate", you already hold this exact grant. Use check_collision for the same awareness read-only (no grant taken; surfaces overlapping_grant_holders with intent + lease_status even before you claim) and get_active_agents to see every live grant holder's intent + lease_status plus the queue. Contention is resolved by informed coordination, not lockout — the invariant "one grant per symbol" governs simultaneous blind writes, not your right to reach work you need. Use get_in_flight_changes to see who is touching a specific path and why. This only has value if you actually call it — treat it as mandatory for shared workspaces, not optional bookkeeping.
 
-Catch what textual merge can't (semantic incoherence, not just overlap): claim_work/check_collision catch PATH and SYMBOL overlap — two agents touching the same lines. They cannot catch two changes that each merge cleanly on their own but are jointly incoherent (you retype getUser(): User|null -> User while another agent concurrently edits a caller still doing "if (!getUser())"; git sees two valid disjoint diffs and merges them — the bug ships). That is what check_conceptual_conflicts is for. Call it whenever your edit changes a symbol's CONTRACT (signature/return-type/nullability/params) or STRUCTURE (rename/split/move/delete) — not for routine body edits. Report your own intent + changes (SymbolChange[] with before/after shape); it persists your report AND immediately checks you against every other agent who has already reported, returning contract-divergence/duplicate-work/structural-divergence/behavior-drift findings that involve you. This is fleet-coherence, not textual safety — the two are complementary, run both. Note it is agent-reported (you must call it) because the live coordination store doesn't carry per-symbol before/after detail ambiently; check_collision will also surface these findings for free once you've reported via check_conceptual_conflicts.
+Catch what textual merge can't (semantic incoherence, not just overlap — now AMBIENT, not opt-in): claim_work/check_collision catch PATH and SYMBOL overlap — two agents touching the same lines. They cannot catch two changes that each merge cleanly on their own but are jointly incoherent (you retype getUser(): User|null -> User while another agent concurrently edits a caller still doing "if (!getUser())"; git sees two valid disjoint diffs and merges them — the bug ships). That is what check_conceptual_conflicts/check_collision are for, and the fabric now SEES what others are changing automatically: every call to either tool ambiently captures your own git working-tree diff (TS/JS files get full before/after signature diffing — signature/return-type/nullability/params — other languages degrade honestly to an unrecognized-change flag) and folds it into your persisted state with zero self-reporting required. Passing your own changes: SymbolChange[] explicitly still works and is merged on top (useful for languages ambient capture can't syntactically diff, or to add before/after detail ambient capture couldn't infer) — but you no longer have to. Conceptual conflicts surface automatically the moment you call either tool; this is fleet-coherence, not textual safety — the two are complementary, run both.
+
+When finishing overlapping work, reconcile by intent, not by textual diff: call plan_intent_merge to get a single MergePlan across everyone touching this workspace — compatible work composes automatically (auto_mergeable, with a rationale naming both intents), only genuine incoherence needs you (needs_resolution — check_conceptual_conflicts findings that would pass a textual merge but shouldn't be auto-merged), and duplicated effort is flagged once instead of kept twice (duplicate_work). It reuses whatever you and others already reported via check_conceptual_conflicts/check_collision — no extra bookkeeping if you were already calling those.
 
 Trust, then verify: every result is stamped to a commit/branch. If get_file_nodes returns nothing for a file you can see on disk, it is likely on an unmerged branch — re-analyze or read that one file. On any tool error, fall back to reading. Don't lean on a single tool; no one view is the whole picture.`;
 
@@ -236,7 +240,7 @@ const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
   { label: 'Dependencies', tools: ['get_dependencies', 'get_libraries'] },
   { label: 'Change history', tools: ['get_changes_since', 'get_changes_between', 'get_changes_for_node', 'get_changes_for_file', 'get_changes_for_entry_point', 'get_change_summary', 'get_hot_spots', 'get_analysis_at', 'get_analysis_snapshots'] },
   { label: 'Watch mode', tools: ['start_watch', 'stop_watch', 'get_watch_status', 'list_watches', 'poll_watch_changes', 'install_gauntlet_watcher', 'list_gauntlet_watchers', 'stop_gauntlet_watcher', 'run_incremental_gauntlet'] },
-  { label: 'Multi-agent coordination', tools: ['claim_work', 'release_work', 'heartbeat_work', 'get_active_agents', 'check_collision', 'check_conceptual_conflicts', 'get_in_flight_changes', 'subscribe_workspace'] },
+  { label: 'Multi-agent coordination', tools: ['claim_work', 'release_work', 'heartbeat_work', 'get_active_agents', 'check_collision', 'check_conceptual_conflicts', 'get_in_flight_changes', 'plan_intent_merge', 'subscribe_workspace'] },
 ];
 
 function buildGatewayDescription(registry: Map<string, RegisteredToolEntry>, profile: ToolProfile): string {
@@ -463,39 +467,75 @@ async function describeGrantHolders(
 }
 
 /**
- * Wiring for `check_conceptual_conflicts` (§1.7 SPEC-COORDINATION-FABRIC-V2).
+ * Wiring for `check_conceptual_conflicts` / `check_collision` (§1.7
+ * SPEC-COORDINATION-FABRIC-V2, "ambient in-flight capture").
  *
- * HONEST DESIGN NOTE: `detectConceptualConflicts` (coordination/conceptual-conflict.ts,
- * committed + 7/7 tested) needs `AgentInFlightState[]` — per-agent
- * `{agent_id, intent, changes: SymbolChange[]}` where each SymbolChange carries
- * BEFORE/AFTER signature/return_type/nullability/body-tag detail. The live
- * coordination store does NOT capture that shape today:
- *   - `WorkClaim.scope` (local-store.ts / grant-manager.ts) is only
- *     `{repo, paths, symbols, capability}` — bare symbol ids, no before/after.
- *   - `InFlightSnapshot` (in-flight-sync.ts / remote-analyzer-service.ts
- *     `/v1/coordination/in-flight`) is a diff-context string plus
- *     `touched.{entities,routes,contracts,symbols}` — again just names, no
- *     per-symbol shape diffing.
- * So full conceptual-conflict detection cannot be auto-derived from ambient
- * state today. The reachable, honest design is AGENT-REPORTED changes: an
- * agent calls `check_conceptual_conflicts` with its OWN `changes:
- * SymbolChange[]` (what it's about to edit, with before/after shape), which
- * this wiring persists as a `__conceptual__` JSON marker embedded in a
- * `WorkClaim.intent` string — the exact same technique grant-manager.ts uses
- * for its `__grant__` marker — appended to the SAME same-machine claim log
- * local-store.ts already owns (`appendClaim`/`readClaimLog`). No new store,
- * no edits to coordination/*.ts. Reading back, every OTHER agent's most
- * recent `__conceptual__` marker (LWW via `deriveActiveClaims`, so a stale
- * report from an agent that has since released/expired is excluded) is
- * decoded into an `AgentInFlightState` and passed to the pure detector
- * alongside the requester's own reported state and the workspace CAS.
+ * UPDATED (Fabric-v2 #2): conceptual-conflict detection is no longer
+ * exclusively agent-reported. `coordination/in-flight-capture.ts`'s
+ * `captureInFlightChanges()` derives a `SymbolChange[]` AMBIENTLY from an
+ * agent's actual git working-tree diff (`git diff --name-status HEAD` +
+ * before/after content via `git show`), with full syntactic before/after
+ * signature diffing for TypeScript/JavaScript files (functions, methods,
+ * arrow-function bindings: signature/return-type/nullability/params) and an
+ * honest "unknown-change" fallback (`body`/`delete`, no fabricated shape) for
+ * every other language and for deletes we can't otherwise diff. See that
+ * module's header for the full scope statement.
  *
- * FOLLOW-ON (not built here): auto-capturing per-symbol before/after diffs
- * into `InFlightSnapshot` (e.g. from a real AST diff of the working tree)
- * would let `check_collision`/`detectCollisions` surface conceptual conflicts
- * ambiently, without requiring the agent to self-report. That is real,
- * valuable follow-on work — flagged, not faked here.
+ * `ambientChangesForWorkspace` below calls this treating `workspace` as the
+ * agent's own repo working tree (the common case: `workspace` is a repo path)
+ * — best-effort, silently empty if `workspace` isn't a git repo or the
+ * capture throws for any reason, so a non-git workspace id degrades to
+ * exactly today's agent-reported-only behavior. The ambient changes are
+ * MERGED with (not a replacement for) whatever the agent explicitly reports:
+ * `check_conceptual_conflicts` still accepts a `changes` argument as a
+ * conscious top-up/override (e.g. it can carry before/after detail for a
+ * non-TS/JS language this module can't syntactically diff), and
+ * `check_collision` still accepts `changes` for the same reason. But an agent
+ * that calls EITHER tool with no `changes` at all is no longer silent to the
+ * fleet: its ambient TS/JS contract changes are captured and persisted the
+ * same way a self-report would be, so OTHER agents' next check sees them —
+ * "the fabric now sees what others are changing — conceptual conflicts
+ * surface automatically."
+ *
+ * Persistence mechanism is unchanged from the original design: a
+ * `__conceptual__` JSON marker embedded in a `WorkClaim.intent` string (the
+ * same technique grant-manager.ts uses for its `__grant__` marker), appended
+ * to the SAME same-machine claim log local-store.ts already owns
+ * (`appendClaim`/`readClaimLog`). No new store, no edits to coordination/
+ * store modules beyond the additive `InFlightSnapshot.changes` field in
+ * types.ts.
+ *
+ * HONEST REMAINING SCOPE: this is still a same-machine, single-repo capture —
+ * it reads `workspace` as one git working tree, not a fleet-wide remote view
+ * of every agent's checkout. Cross-machine ambient capture (each remote
+ * agent's diff arriving via `POST /v1/coordination/in-flight` populating its
+ * own `InFlightSnapshot.changes`) is real, valuable follow-on work in
+ * remote-analyzer-service.ts (out of this workstream's owned files) — flagged,
+ * not faked here.
  */
+
+/**
+ * Best-effort ambient `SymbolChange[]` for `workspace`, treating it as the
+ * calling agent's own repo path. Returns `[]` (never throws) when `workspace`
+ * is not a readable git working tree, when `baseRef` doesn't resolve, or when
+ * capture otherwise fails — callers merge this with agent-reported `changes`
+ * rather than depending on it exclusively.
+ */
+async function ambientChangesForWorkspace(workspace: string): Promise<SymbolChange[]> {
+  try {
+    return await captureInFlightChanges({ repoPath: workspace });
+  } catch {
+    return [];
+  }
+}
+
+/** Merge agent-reported and ambiently-captured changes, de-duplicating by symbol_id (reported wins on conflict — it's the more authoritative, conscious signal). */
+function mergeChanges(reported: SymbolChange[], ambient: SymbolChange[]): SymbolChange[] {
+  const bySymbol = new Map<string, SymbolChange>();
+  for (const c of ambient) bySymbol.set(c.symbol_id, c);
+  for (const c of reported) bySymbol.set(c.symbol_id, c);
+  return [...bySymbol.values()];
+}
 const CONCEPTUAL_CLAIM_TTL_MS = 30 * 60 * 1000; // 30 min — long enough to outlive a typical edit session.
 
 interface ConceptualMarker {
@@ -554,11 +594,15 @@ async function reportConceptualChanges(
 }
 
 /**
- * All OTHER agents' currently-active (LWW + non-expired) reported conceptual
- * states for a workspace, excluding `excludeAgentId`. Best-effort: agents that
- * never called `check_conceptual_conflicts` simply contribute nothing (empty
- * `changes`), which is expected — this is opt-in self-reporting, not ambient
- * capture (see the design note above).
+ * All OTHER agents' currently-active (LWW + non-expired) conceptual states
+ * for a workspace, excluding `excludeAgentId`. Per Fabric-v2 #2, this is no
+ * longer purely agent-reported: any active agent that has EVER reported via
+ * `check_conceptual_conflicts` (or had ambient changes persisted for it via
+ * `check_collision`) contributes its `__conceptual__` marker's changes, and —
+ * additive on top — the caller's own current ambient capture for `workspace`
+ * is folded into the requesting agent's own contribution by the tool handlers
+ * below, so a fleet where nobody has ever self-reported still sees each
+ * other's ambient TS/JS contract changes rather than empty `changes` arrays.
  */
 async function otherAgentConceptualStates(
   workspace: string,
@@ -4620,7 +4664,7 @@ function registerTools(server: McpServer) {
     'check_collision',
     {
       title: 'Check Collision',
-      description: 'Read-only preflight: does a proposed (not-yet-claimed) set of paths/symbols/capability collide with any other active agent or held GRANT in the workspace? Runs the same duplicate/overlap/blast-radius detectors as claim_work plus the live grant holders/queue, but takes no grant. Overlapping holders are returned WITH awareness context (intent + lease_status), never just a bare yes/no — so you can judge whether to wait, take over a stale lease, or proceed with awareness before ever calling claim_work. Pass agent_id + intent (+ optionally `changes`, see check_conceptual_conflicts) to ALSO run the conceptual-conflict detectors (contract-divergence/duplicate-work/structural-divergence/behavior-drift) against every other agent who has reported changes via check_conceptual_conflicts — textual/path overlap and semantic incoherence in one call. Without `changes` this still runs duplicate-work detection against other agents\' reported intents; for full contract-divergence detection call check_conceptual_conflicts directly with your own changes[].',
+      description: 'Read-only preflight: does a proposed (not-yet-claimed) set of paths/symbols/capability collide with any other active agent or held GRANT in the workspace? Runs the same duplicate/overlap/blast-radius detectors as claim_work plus the live grant holders/queue, but takes no grant. Overlapping holders are returned WITH awareness context (intent + lease_status), never just a bare yes/no — so you can judge whether to wait, take over a stale lease, or proceed with awareness before ever calling claim_work. Pass agent_id + intent to ALSO run the conceptual-conflict detectors (contract-divergence/duplicate-work/structural-divergence/behavior-drift): this AMBIENTLY captures your own git working-tree diff (workspace treated as your repo path) — TS/JS files get full before/after signature diffing, zero self-reporting needed — and folds it in automatically against every other agent\'s persisted state (self-reported or itself ambient). Pass `changes` too if you want to add explicit SymbolChange[] on top (e.g. for a language ambient capture can\'t diff).',
       inputSchema: {
         workspace: z.string().describe('Workspace or project id/path'),
         paths: z.array(z.string()).optional(),
@@ -4667,18 +4711,22 @@ function registerTools(server: McpServer) {
       let conceptualConflicts: ConceptualConflict[] | undefined;
       let conceptualNote: string | undefined;
       if (agent_id) {
-        const requesterChanges: SymbolChange[] = Array.isArray(changes) ? changes : [];
+        const reportedChanges: SymbolChange[] = Array.isArray(changes) ? changes : [];
+        const ambientChanges = await ambientChangesForWorkspace(workspace);
+        const requesterChanges = mergeChanges(reportedChanges, ambientChanges);
         const requesterState: AgentInFlightState = { agent_id, intent: intent || 'preflight-check', changes: requesterChanges };
         const others = await otherAgentConceptualStates(workspace, agent_id);
-        if (others.length > 0) {
+        if (others.length > 0 || ambientChanges.length > 0) {
           const cas = await conceptualConflictCasForWorkspace(workspace);
           const allConflicts = detectConceptualConflicts([requesterState, ...others], cas);
           conceptualConflicts = allConflicts.filter((c) => c.agents.includes(agent_id));
           if (requesterChanges.length === 0) {
-            conceptualNote = 'No changes[] supplied, so only intent-overlap (duplicate-work) detection ran. Pass changes: SymbolChange[] (or call check_conceptual_conflicts) for contract-divergence/structural-divergence/behavior-drift detection.';
+            conceptualNote = 'No changes[] supplied and no ambient TS/JS changes detected, so only intent-overlap (duplicate-work) detection ran. Pass changes: SymbolChange[] (or call check_conceptual_conflicts) for contract-divergence/structural-divergence/behavior-drift detection.';
+          } else if (ambientChanges.length > 0) {
+            conceptualNote = `Ambient capture found ${ambientChanges.length} change(s) in your working tree (git diff vs HEAD) and folded them in automatically — no self-report required.`;
           }
         } else {
-          conceptualNote = 'No other agent has reported conceptual changes yet (call check_conceptual_conflicts to report yours and let others detect conflicts with you).';
+          conceptualNote = 'No other agent has reported or ambiently surfaced conceptual changes yet (call check_conceptual_conflicts, or just edit files — ambient capture picks up TS/JS contract changes automatically).';
         }
       }
 
@@ -4708,7 +4756,7 @@ function registerTools(server: McpServer) {
     'check_conceptual_conflicts',
     {
       title: 'Check Conceptual Conflicts',
-      description: 'THE FABRIC\'S CROWN-JEWEL DETECTOR (§1.7 SPEC-COORDINATION-FABRIC-V2): catches semantic incoherence textual/merge conflicts CANNOT — two changes that each compile, pass review, and merge cleanly on their own, but are JOINTLY incoherent. Report your OWN intent + changes (SymbolChange[]: {symbol_id, name, file, change_kind: signature|return_type|nullability|param|rename|split|move|delete|body|add, before?, after?}) BEFORE/WHILE editing a symbol whose blast radius might overlap others. This call (a) persists your report so OTHER agents\' checks can detect conflicts with you, and (b) immediately runs detectConceptualConflicts against every other agent who has already reported, returning only the conflicts that involve YOU: contract-divergence (you or someone else changed a signature/return-type/nullability while the other edits a caller that assumes the old contract — the canonical case: retyping getUser(): User|null -> User while another agent edits a caller doing `if (!getUser())`), duplicate-work (overlapping intent on the same/similarly-named symbol), structural-divergence (a rename/split/move/delete vs. a new reference to the old structure), behavior-drift (heuristic: a guard/early-return added to a body vs. code appended assuming unconditional execution). HONEST LIMITATION: this is agent-reported, not ambient — the live coordination store (WorkClaim.scope, InFlightSnapshot.touched) does not carry per-symbol before/after shape, so conflicts are only found against agents who ALSO called this tool. Call check_collision for path/capability overlap awareness; call this whenever your edit changes a symbol\'s CONTRACT or STRUCTURE, not just its body.',
+      description: 'THE FABRIC\'S CROWN-JEWEL DETECTOR (§1.7 SPEC-COORDINATION-FABRIC-V2): catches semantic incoherence textual/merge conflicts CANNOT — two changes that each compile, pass review, and merge cleanly on their own, but are JOINTLY incoherent. NOW AMBIENT: this call captures your OWN git working-tree diff automatically (workspace treated as your repo path; TS/JS files get full before/after signature diffing — signature/return-type/nullability/params — via the TypeScript compiler API, zero self-reporting required) and merges it with any `changes` (SymbolChange[]: {symbol_id, name, file, change_kind: signature|return_type|nullability|param|rename|split|move|delete|body|add, before?, after?}) you explicitly pass (useful for languages ambient capture can\'t syntactically diff, or extra detail). This call (a) persists the MERGED report so OTHER agents\' checks can detect conflicts with you even if you never call this again, and (b) immediately runs detectConceptualConflicts against every other agent\'s persisted state (self-reported or itself ambient), returning only the conflicts that involve YOU: contract-divergence (you or someone else changed a signature/return-type/nullability while the other edits a caller that assumes the old contract — the canonical case: retyping getUser(): User|null -> User while another agent edits a caller doing `if (!getUser())`), duplicate-work (overlapping intent on the same/similarly-named symbol), structural-divergence (a rename/split/move/delete vs. a new reference to the old structure), behavior-drift (heuristic: a guard/early-return added to a body vs. code appended assuming unconditional execution). REMAINING HONEST LIMITATION: ambient capture is same-machine/single-repo (this process\'s own git working tree) and TS/JS-only for full signature diffing; other languages get an honest unknown-change flag, not a fabricated diff. Call check_collision for path/capability overlap awareness; call this whenever your edit changes a symbol\'s CONTRACT or STRUCTURE, not just its body.',
       inputSchema: {
         workspace: z.string().describe('Workspace or project id/path'),
         agent_id: z.string().describe('Your stable agent/session id'),
@@ -4739,7 +4787,13 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ workspace, agent_id, agent_kind, intent, changes }: any) => withErrorHandling(async () => {
-      const requesterChanges: SymbolChange[] = Array.isArray(changes) ? changes : [];
+      const reportedChanges: SymbolChange[] = Array.isArray(changes) ? changes : [];
+      const ambientChanges = await ambientChangesForWorkspace(workspace);
+      const requesterChanges = mergeChanges(reportedChanges, ambientChanges);
+      // Persist the MERGED view — ambient TS/JS contract changes ride along
+      // with (or stand in for) the agent's own report, so other agents' next
+      // check_collision/check_conceptual_conflicts sees them without that
+      // agent ever having to self-report them.
       await reportConceptualChanges(workspace, agent_id, (agent_kind as AgentKind) || 'other', intent, requesterChanges);
 
       const others = await otherAgentConceptualStates(workspace, agent_id);
@@ -4752,10 +4806,11 @@ function registerTools(server: McpServer) {
         status: 'reported',
         workspace,
         agent_id,
+        ambient_changes_captured: ambientChanges.length,
         other_agents_considered: others.length,
         conflicts,
         note: others.length === 0
-          ? 'No other agent has reported conceptual changes yet for this workspace; your report is now persisted so THEIR next check_conceptual_conflicts/check_collision call can detect conflicts with you.'
+          ? 'No other agent has reported or ambiently surfaced conceptual changes yet for this workspace; your report (self-reported + ambient) is now persisted so THEIR next check_conceptual_conflicts/check_collision call can detect conflicts with you.'
           : undefined,
       });
     })
@@ -4778,6 +4833,68 @@ function registerTools(server: McpServer) {
         attribution.attributions = attribution.attributions.filter((a) => a.agent_id !== exclude_self);
       }
       return json(attribution);
+    })
+  );
+
+  server.registerTool(
+    'plan_intent_merge',
+    {
+      title: 'Plan Intent Merge',
+      description: 'THE ART OF MERGE (Fabric-v2 #1, §1.7 SPEC-COORDINATION-FABRIC-V2 primitive 5): when agents finish overlapping work, reconcile by INTENT rather than by textual 3-way diff. Git only asks "do the lines overlap?" — two changes that are textually disjoint merge silently even when they are jointly incoherent (see check_conceptual_conflicts), and two changes on the same lines conflict mechanically even when they are perfectly compatible in intent (e.g. one agent adding retry and another adding logging to the same function body). This tool answers the higher-level question for every symbol touched by the fleet: do the changes COHERE? It reuses the SAME persisted conceptual-conflict state check_conceptual_conflicts/check_collision already populate (each active agent\'s self-reported + ambiently-captured changes for this workspace) — call check_conceptual_conflicts/check_collision at least once per agent first so their changes are on record, or pass `states` explicitly to plan a merge without touching persisted state. Returns a MergePlan: auto_mergeable (compatible intents that compose, with a rationale naming both agents\' intents — includes symbols only one agent touched), needs_resolution (a genuine conceptual conflict was detected — NOT auto-merged even though it would pass a textual merge cleanly; a human or agent must decide), duplicate_work (the fleet did the same thing twice; keep one), and a summary count. Use this at the end of a shared editing session to get a single reconciliation verdict instead of re-deriving it from a pile of individual conflict findings.',
+      inputSchema: {
+        workspace: z.string().describe('Workspace or project id/path'),
+        agent_id: z.string().describe('Your stable agent/session id (excluded from "other agents" lookup; included if you pass it in `states`)'),
+        states: z.array(z.object({
+          agent_id: z.string(),
+          intent: z.string(),
+          changes: z.array(z.object({
+            symbol_id: z.string(),
+            name: z.string(),
+            file: z.string(),
+            change_kind: z.enum(['signature', 'return_type', 'nullability', 'param', 'rename', 'split', 'move', 'delete', 'body', 'add']),
+            before: z.object({
+              signature: z.string().optional(),
+              return_type: z.string().optional(),
+              nullable: z.boolean().optional(),
+              name: z.string().optional(),
+              split_into: z.array(z.string()).optional(),
+              body_tags: z.array(z.enum(['early-return', 'guard', 'appends-after', 'other'])).optional(),
+            }).optional(),
+            after: z.object({
+              signature: z.string().optional(),
+              return_type: z.string().optional(),
+              nullable: z.boolean().optional(),
+              name: z.string().optional(),
+              split_into: z.array(z.string()).optional(),
+              body_tags: z.array(z.enum(['early-return', 'guard', 'appends-after', 'other'])).optional(),
+            }).optional(),
+          })),
+        })).optional().describe('Explicit agent states to plan a merge over. Omit to use every OTHER active agent\'s persisted conceptual-conflict state for `workspace` (from check_conceptual_conflicts/check_collision) plus your own ambient working-tree changes.'),
+      } as any,
+    } as any,
+    async ({ workspace, agent_id, states }: any) => withErrorHandling(async () => {
+      const cas = await conceptualConflictCasForWorkspace(workspace);
+
+      let planStates: AgentInFlightState[];
+      if (Array.isArray(states) && states.length > 0) {
+        planStates = states as AgentInFlightState[];
+      } else {
+        const others = await otherAgentConceptualStates(workspace, agent_id);
+        const ambientChanges = await ambientChangesForWorkspace(workspace);
+        planStates = ambientChanges.length > 0
+          ? [{ agent_id, intent: 'ambient working-tree changes', changes: ambientChanges }, ...others]
+          : others;
+      }
+
+      const plan = planIntentMerge(planStates, cas);
+      return json({
+        workspace,
+        agents_considered: [...new Set(planStates.map((s) => s.agent_id))],
+        plan,
+        note: planStates.length === 0
+          ? 'No agent states found (none passed explicitly, no persisted conceptual-conflict state, no ambient changes). Call check_conceptual_conflicts/check_collision first, or pass `states` explicitly.'
+          : undefined,
+      });
     })
   );
 

@@ -6,6 +6,8 @@
  * data passed in by a caller (see arbiter.ts / collision.ts / presence.ts).
  */
 
+import type { SymbolChange } from './conceptual-conflict';
+
 /** Kind of agent holding a claim or presence entry (WS-C). */
 export type AgentKind = 'claude' | 'cursor' | 'codex' | 'human' | 'other';
 
@@ -70,6 +72,20 @@ export interface InFlightSnapshot {
   updated_at: string;
   /** Organization scope (§WS-F tenancy). Optional/additive — see `TenantScoped` in security.ts. */
   org_id?: string;
+  /**
+   * Ambiently-captured per-symbol before/after changes (Fabric-v2 #2, §1.7:
+   * "ambient in-flight capture"), produced by
+   * `coordination/in-flight-capture.ts`'s `captureInFlightChanges()` from the
+   * agent's actual git working-tree diff — NOT agent-self-reported. Optional
+   * and additive: a snapshot with no `changes` (older publisher, or a
+   * non-TS/JS-only diff that only produced unknown-change entries) simply
+   * contributes nothing extra to conceptual-conflict detection, exactly like
+   * before this field existed. Imports `SymbolChange` from
+   * `conceptual-conflict.ts` rather than redefining it, so this snapshot's
+   * `changes` can be fed directly into `detectConceptualConflicts` alongside
+   * (or instead of) an agent's self-reported `check_conceptual_conflicts` call.
+   */
+  changes?: SymbolChange[];
 }
 
 /** A minimal CAS call/data edge, enough for blast-radius overlap (matches CASEdge shape). */
@@ -140,3 +156,21 @@ export interface CollisionReport {
   drifts: DriftFinding[];
   blast_intersections: BlastIntersectionFinding[];
 }
+
+// ---------------------------------------------------------------------------
+// Intent-aware merge (Fabric-v2 #1, §1.7 SPEC-COORDINATION-FABRIC-V2
+// primitive 5, "the art of merge"). The real shapes (`MergePlan`,
+// `AutoMergeableEntry`, `NeedsResolutionEntry`, `DuplicateWorkEntry`,
+// `MergePlanSummary`) live in `coordination/intent-merge.ts`, which — like
+// `conceptual-conflict.ts` — is kept transport/IO-free and defines its own
+// types rather than this pure-data module reaching into it. Re-exported here
+// purely so callers that already `import type { ... } from './types'` for
+// every other coordination-fabric shape have one place to find this one too.
+// ---------------------------------------------------------------------------
+export type {
+  MergePlan,
+  AutoMergeableEntry,
+  NeedsResolutionEntry,
+  DuplicateWorkEntry,
+  MergePlanSummary,
+} from './intent-merge';
