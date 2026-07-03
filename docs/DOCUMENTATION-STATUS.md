@@ -111,7 +111,8 @@ Priority order:
    `/dist/latest.json` versioning works, and the `klauro doctor` mcp-registration check
    (`mcp-registration-doctor.ts`, already wired into `environment-doctor.ts`) that verifies
    the MCP server is actually registered and loadable in the detected client. This is a real
-   product surface (v1.0.2 shipped per the user's own memory) with no corresponding doc.
+   product surface (v1.0.2 shipped per the user's own memory at the time this row was written;
+   v1.0.5 is the latest release as of commit `006956a9`, 2026-07-02) with no corresponding doc.
 2. **Freshness guarantee product doc** — write this *after* `SPEC-FRESHNESS.md`'s wiring
    gap closes (currently only ~15 of ~191 tools call the refresh gate, and
    `resolve_agent_analysis` still doesn't act on the freshness it reports). Writing it now
