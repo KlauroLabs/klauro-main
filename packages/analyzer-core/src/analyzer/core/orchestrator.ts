@@ -12379,7 +12379,32 @@ export class AnalyzerOrchestrator {
     return filled.slice(0, 5);
   }
 
+  /**
+   * Hash/id-shaped tokens (content hashes, uuids, random ids, base36 blobs)
+   * are never legitimate domain vocabulary — they're plumbing artifacts that
+   * leak in from near-empty/unclassifiable repos (e.g. a generated entity or
+   * file-content hash surviving as a "write terminal" name). Composing
+   * "<hash>-management" from one of these is dishonest: it looks like a real
+   * domain label but is actually noise. Reject anything that looks
+   * hash/id-shaped before it ever reaches domain composition.
+   */
+  private isHashOrIdShapedToken(token: string): boolean {
+    const normalized = (token || '').toLowerCase();
+    if (normalized.length < 8) return false;
+    // Canonical UUID (with or without dashes).
+    if (/^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/.test(normalized)) return true;
+    // Long pure-hex string (>=12 hex chars) — content hash / commit sha / hex id.
+    if (normalized.length >= 12 && /^[0-9a-f]+$/.test(normalized)) return true;
+    // Long alphanumeric blob with no vowels and a digit somewhere: random
+    // base36/base62-ish id (e.g. "8f3k29xz1q"), not an English word.
+    if (normalized.length >= 10 && /^[0-9a-z]+$/.test(normalized) && /[0-9]/.test(normalized) && !/[aeiou]/.test(normalized)) {
+      return true;
+    }
+    return false;
+  }
+
   private isGenericDomainToken(token: string): boolean {
+    if (this.isHashOrIdShapedToken(token)) return true;
     return new Set([
       'app', 'application', 'api', 'service', 'server', 'client', 'web', 'ui',
       'services', 'controllers', 'handlers', 'modules', 'frontend', 'backend',
