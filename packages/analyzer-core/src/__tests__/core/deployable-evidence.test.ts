@@ -141,6 +141,63 @@ describe('collectDeployableEvidence', () => {
     expect(serverEntry!.root_path).toBe('src');
   });
 
+  test('Tier 2: a server with many HTTP routes yields ONE server-entry deployable, not one per route', () => {
+    projectPath = tempProject();
+    // Regression lock for the over-count bug: collectServerEntries used to
+    // dedupe by `${rootPath}::${routePath}`, so every route on the same
+    // server process became its own "deployable" (432 for ~4 real apps on
+    // truckspy). A server that serves 400 routes is ONE deployable.
+    const routeCount = 25;
+    const entryPoints: CASEntryPoint[] = Array.from({ length: routeCount }, (_, i) => ({
+      id: `entry_${i}`,
+      source_node: `node_${i}`,
+      type: 'http',
+      name: `GET /route-${i}`,
+      trigger: { method: 'GET', path: `/route-${i}` },
+      handler: { node_id: `node_${i}`, method_name: `route${i}`, file: 'src/server.ts', line: 10 + i },
+    }));
+
+    const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints, exitPoints: [] });
+    const serverEntries = result.filter(item => item.kind === 'server-entry');
+    expect(serverEntries).toHaveLength(1);
+    expect(serverEntries[0].root_path).toBe('src');
+  });
+
+  test('Tier 2: HTTP routes under different roots still yield separate server-entry deployables', () => {
+    projectPath = tempProject();
+    const entryPoints: CASEntryPoint[] = [
+      {
+        id: 'entry_a1',
+        source_node: 'node_a1',
+        type: 'http',
+        name: 'GET /a/one',
+        trigger: { method: 'GET', path: '/a/one' },
+        handler: { node_id: 'node_a1', method_name: 'one', file: 'apps/api/src/server.ts', line: 1 },
+      },
+      {
+        id: 'entry_a2',
+        source_node: 'node_a2',
+        type: 'http',
+        name: 'GET /a/two',
+        trigger: { method: 'GET', path: '/a/two' },
+        handler: { node_id: 'node_a2', method_name: 'two', file: 'apps/api/src/server.ts', line: 2 },
+      },
+      {
+        id: 'entry_b1',
+        source_node: 'node_b1',
+        type: 'http',
+        name: 'GET /b/one',
+        trigger: { method: 'GET', path: '/b/one' },
+        handler: { node_id: 'node_b1', method_name: 'one', file: 'apps/web/src/server.ts', line: 1 },
+      },
+    ];
+
+    const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints, exitPoints: [] });
+    const serverEntries = result.filter(item => item.kind === 'server-entry');
+    expect(serverEntries).toHaveLength(2);
+    expect(new Set(serverEntries.map(e => e.root_path))).toEqual(new Set(['apps/api/src', 'apps/web/src']));
+  });
+
   test('Tier 3: package.json contributes package identity', () => {
     projectPath = tempProject();
     fs.writeJsonSync(path.join(projectPath, 'package.json'), { name: 'my-lib', version: '2.0.0' });

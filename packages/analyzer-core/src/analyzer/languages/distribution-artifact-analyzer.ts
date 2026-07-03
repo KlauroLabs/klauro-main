@@ -223,8 +223,9 @@ function parseServiceUnit(file: string, content: string): ParsedDistributionArti
 }
 
 function parseInstaller(file: string, content: string): ParsedDistributionArtifact {
-  const productName = firstRegex(content, /^\s*Name\s+"([^"]+)"/m)
-    || firstRegex(content, /VIAddVersionKey\s+"ProductName"\s+"([^"]+)"/i)
+  const rawName = firstRegex(content, /^\s*Name\s+"([^"]+)"/m)
+    || firstRegex(content, /VIAddVersionKey\s+"ProductName"\s+"([^"]+)"/i);
+  const productName = (rawName && resolveTemplateVar(rawName, content))
     || productNameFromFile(file);
   return {
     kind: 'installer',
@@ -275,8 +276,9 @@ function installerBinaryNamesFromText(text: string): string[] {
 
 function parseScript(file: string, content: string, kind: DistributionArtifactKind): ParsedDistributionArtifact | undefined {
   if (!looksLikeDistributionScript(content) && !/install|installer|release|manifest|deploy/i.test(file)) return undefined;
-  const productName = firstRegex(content, /APP_NAME[:=]\s*["']?([^"'\n]+)["']?/)
-    || firstRegex(content, /ProductName["']?\s*[,=]\s*["']([^"']+)["']/i)
+  const rawName = firstRegex(content, /APP_NAME[:=]\s*["']?([^"'\n]+)["']?/)
+    || firstRegex(content, /ProductName["']?\s*[,=]\s*["']([^"']+)["']/i);
+  const productName = (rawName && resolveTemplateVar(rawName, content))
     || productNameFromFile(file);
   const role = /installer/i.test(file) || /\b(makensis|msiexec|dmg|pkgbuild|create-dmg)\b/i.test(content)
     ? 'installer'
@@ -375,8 +377,37 @@ function scriptPlatforms(file: string, content: string): string[] {
 
 function productNameFromFile(file: string): string | undefined {
   const base = path.basename(file).replace(/\.(nsi|wxs|sh|bash|zsh|ps1|bat|cmd)$/i, '');
-  const clean = base.replace(/[-_]*(installer|install|release|manifest|build|deploy)[-_]*/gi, ' ').trim();
+  // Strip installer/setup/build/etc. only as whole word-boundary tokens
+  // (prefix/suffix/standalone segment), never mid-word — an unanchored
+  // version of this regex turned "Uninstall.bat" into "Un" by matching
+  // "install" inside "Uninstall".
+  const clean = base
+    .split(/[-_\s]+/)
+    .filter(token => token.length > 0 && !/^(installer|install|uninstall|uninstaller|setup|release|manifest|build|deploy)$/i.test(token))
+    .join(' ')
+    .trim();
   return clean || undefined;
+}
+
+/** Resolve a `${VAR}` NSIS/shell-style template reference against `!define VAR value`
+ *  (or `set VAR=value` / `VAR=value`) directives found in the same file. Returns
+ *  undefined if the variable has no resolvable definition, so callers can drop
+ *  the unresolved name instead of leaking raw template text like
+ *  "${APPNAMEANDVERSION}" into a deployable name. */
+function resolveTemplateVar(value: string, content: string): string | undefined {
+  const match = value.match(/^\$\{([A-Za-z0-9_]+)\}$/);
+  if (!match) return isUnresolvedTemplateText(value) ? undefined : value;
+  const varName = match[1];
+  const defineMatch = content.match(new RegExp(`^\\s*!define\\s+${escapeRegex(varName)}\\s+"?([^"\\n\\r]+?)"?\\s*$`, 'm'))
+    || content.match(new RegExp(`^\\s*(?:set\\s+)?${escapeRegex(varName)}\\s*=\\s*"?([^"\\n\\r]+?)"?\\s*$`, 'mi'));
+  const resolved = defineMatch?.[1]?.trim();
+  if (!resolved || isUnresolvedTemplateText(resolved)) return undefined;
+  return resolved;
+}
+
+/** True if `value` still contains unresolved `${...}` template text. */
+function isUnresolvedTemplateText(value: string): boolean {
+  return /\$\{[A-Za-z0-9_]+\}/.test(value);
 }
 
 function productNameFromService(description: string): string | undefined {
@@ -385,12 +416,14 @@ function productNameFromService(description: string): string | undefined {
 }
 
 function cleanBinaryName(value: string): string {
-  return value
-    .replace(/^\$?\{?/, '')
-    .replace(/\}?$/, '')
+  const cleaned = value
     .replace(/\.exe$/i, '')
     .replace(/^.*[\\/]/, '')
     .trim();
+  // Unresolved NSIS/shell template text (e.g. "${APPNAMEANDVERSION}") is not
+  // a real binary name — drop it rather than partially stripping the braces
+  // and leaking the raw variable name.
+  return isUnresolvedTemplateText(cleaned) ? '' : cleaned;
 }
 
 function isDistributionNoiseToken(value: string): boolean {

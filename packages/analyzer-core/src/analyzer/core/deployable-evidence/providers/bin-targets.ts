@@ -126,10 +126,18 @@ function extractPortFromEntryPoint(entry: CASEntryPoint): number | undefined {
   return match ? Number(match[1]) : undefined;
 }
 
-/** Server-bootstrap / port-binding entry points already flagged by framework analyzers as CASEntryPoint type === 'http'. */
+/**
+ * Server-bootstrap / port-binding entry points already flagged by framework
+ * analyzers as CASEntryPoint type === 'http'.
+ *
+ * A single running server process can expose hundreds of HTTP routes, but it
+ * is still ONE deployable — the process that binds the port, not each route
+ * handler. Dedupe by root_path alone (one server-entry per app root) instead
+ * of by root_path::routePath, which previously emitted one "deployable" per
+ * route (e.g. 432 for a ~4-app repo with ~400 total routes).
+ */
 function collectServerEntries(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const out: DeployableEvidence[] = [];
-  const seen = new Set<string>();
+  const byRoot = new Map<string, DeployableEvidence>();
   const entryPoints = (ctx.cas.entry_points || []) as CASEntryPoint[];
 
   for (const entry of entryPoints) {
@@ -137,25 +145,39 @@ function collectServerEntries(ctx: EvidenceCollectionContext): DeployableEvidenc
     const handlerFile = entry.handler?.file;
     if (!handlerFile) continue;
     const rootPath = path.dirname(handlerFile);
-    const dedupeKey = `${rootPath}::${entry.trigger?.path || entry.name}`;
-    if (seen.has(dedupeKey)) continue;
-    seen.add(dedupeKey);
 
     const port = extractPortFromEntryPoint(entry);
-    out.push({
-      root_path: rootPath,
-      name: entry.name || handlerFile,
-      tier: 2,
-      kind: 'server-entry',
-      evidence: [
-        `HTTP entry point: ${entry.name} (${handlerFile}${entry.handler?.line ? `:${entry.handler.line}` : ''})`,
-        ...(entry.trigger?.path ? [`route: ${entry.trigger.method || 'ALL'} ${entry.trigger.path}`] : []),
-      ],
-      ports: port ? [port] : undefined,
-    });
+    const routeEvidence = entry.trigger?.path
+      ? `route: ${entry.trigger.method || 'ALL'} ${entry.trigger.path}`
+      : undefined;
+
+    const existing = byRoot.get(rootPath);
+    if (!existing) {
+      byRoot.set(rootPath, {
+        root_path: rootPath,
+        name: entry.name || handlerFile,
+        tier: 2,
+        kind: 'server-entry',
+        evidence: [
+          `HTTP entry point: ${entry.name} (${handlerFile}${entry.handler?.line ? `:${entry.handler.line}` : ''})`,
+          ...(routeEvidence ? [routeEvidence] : []),
+        ],
+        ports: port ? [port] : undefined,
+      });
+      continue;
+    }
+
+    // Same app root, another route: fold in as additional evidence/ports
+    // rather than a new deployable.
+    if (routeEvidence && !existing.evidence.includes(routeEvidence) && existing.evidence.length < 10) {
+      existing.evidence.push(routeEvidence);
+    }
+    if (port && !(existing.ports || []).includes(port)) {
+      existing.ports = [...(existing.ports || []), port];
+    }
   }
 
-  return out;
+  return [...byRoot.values()];
 }
 
 function collect(ctx: EvidenceCollectionContext): DeployableEvidence[] {
