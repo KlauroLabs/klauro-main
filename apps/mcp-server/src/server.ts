@@ -55,6 +55,7 @@ import { pruneKlauroStorage } from './storage-maintenance';
 import { resolveWorkspaceInputPaths, type WorkspaceSkippedInput } from './workspace-inputs';
 import { RESPONSE_BUDGET_BYTES, boundToolPayload, boundToolText, serializeToolResponse } from './response-budget';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
+import { loadStoredConnectorAuth, normalizeServerUrl } from './connector-auth';
 import { arbitrate, detectCollisions, getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind, type CasEdgeRef, type WasCapabilityRef, type WorkClaim } from './coordination';
 import { attributeChange, appendClaim, checkEditLock, getActiveClaims, getPresence, readClaimLog, watch } from './coordination/local-store';
 import { deriveActiveClaims } from './coordination/presence';
@@ -146,6 +147,7 @@ export const CORE_TOOL_NAMES = [
   'get_product_map',
   'get_user_journeys',
   'run_answer_pack',
+  'get_server_version',
 ];
 
 const GATEWAY_TOOL_NAME = 'klauro_query';
@@ -229,7 +231,7 @@ function enforceResponseBudget(
 
 const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
   { label: 'Analysis management', tools: ['analyze_codebase', 'get_analysis_focus_profiles', 'get_description_enrichment_targets', 'generate_element_description', 'get_element_description', 'get_analysis_phases', 'run_analysis_layer', 'initialize_klauro_project', 'get_klauro_project_config', 'get_upload_manifest', 'get_agent_revision_tracks', 'get_github_import_plan', 'analyze_codebase_remote', 'sync_codebase_remote', 'list_analyses', 'validate_cas_contract', 'get_storage_health', 'get_storage_maintenance_report', 'prune_storage_artifacts', 'preview_codebase_iteration', 'get_greenfield_architecture_guidance', 'get_greenfield_build_context', 'preview_greenfield_codebase', 'get_preview_analysis', 'compare_analysis_iterations', 'get_analysis_freshness', 'get_test_discovery_evidence', 'save_cas_golden_snapshot', 'compare_cas_golden_snapshot'] },
-  { label: 'System understanding and agent workflow', tools: ['get_summary', 'get_system_overview', 'get_architecture_context', 'list_answer_packs', 'get_mcp_demo_flow', 'get_cross_repo_links', 'run_workspace_analysis', 'resolve_workspace_analysis', 'get_workspace_summary', 'get_workspace_analysis', 'get_workspace_agent_context', 'get_workspace_freshness', 'validate_was_contract', 'get_workspace_health', 'get_workspace_risk_context', 'get_workspace_capability_map', 'get_workspace_entity_map', 'get_workspace_workflow', 'list_workspace_analyses', 'run_cross_codebase_analysis', 'get_cross_codebase_analysis', 'list_cross_codebase_analyses', 'save_workspace_graph', 'get_workspace_graph', 'list_workspace_graphs', 'verify_workspace_link', 'get_agent_bootstrap', 'get_agent_context', 'get_agent_project_map', 'get_agent_doctor', 'get_agent_default_config', 'install_agent_default_config', 'get_capability_memory', 'get_idiom_aware_agent_context', 'open_agent_workbench', 'preflight_agent_change', 'get_codebase_agent_rules', 'explain_change_shape', 'evaluate_analysis_truth', 'get_semantic_map', 'get_framework_depth_report', 'get_integration_depth_report', 'get_cross_repo_contracts', 'get_runtime_instrumentation_plan', 'get_runtime_event_contract', 'get_runtime_sdk_package', 'evaluate_agent_task_proof', 'evaluate_agent_readiness', 'run_agentic_benchmark', 'get_agentic_benchmark_report', 'get_agent_performance_proof', 'run_agent_quality_benchmark', 'run_agent_idiom_benchmark', 'run_machine_agent_proof', 'run_incremental_value_benchmark', 'get_patterns', 'get_codebase_idioms', 'get_idiom_examples', 'validate_codebase_idioms', 'get_pattern_instances', 'get_perspectives'] },
+  { label: 'System understanding and agent workflow', tools: ['get_summary', 'get_system_overview', 'get_architecture_context', 'list_answer_packs', 'get_mcp_demo_flow', 'get_cross_repo_links', 'run_workspace_analysis', 'resolve_workspace_analysis', 'get_workspace_summary', 'get_workspace_analysis', 'get_workspace_agent_context', 'get_workspace_freshness', 'validate_was_contract', 'get_workspace_health', 'get_workspace_risk_context', 'get_workspace_capability_map', 'get_workspace_entity_map', 'get_workspace_workflow', 'list_workspace_analyses', 'run_cross_codebase_analysis', 'get_cross_codebase_analysis', 'list_cross_codebase_analyses', 'save_workspace_graph', 'get_workspace_graph', 'list_workspace_graphs', 'verify_workspace_link', 'get_agent_bootstrap', 'get_agent_context', 'get_agent_project_map', 'get_agent_doctor', 'get_server_version', 'get_agent_default_config', 'install_agent_default_config', 'get_capability_memory', 'get_idiom_aware_agent_context', 'open_agent_workbench', 'preflight_agent_change', 'get_codebase_agent_rules', 'explain_change_shape', 'evaluate_analysis_truth', 'get_semantic_map', 'get_framework_depth_report', 'get_integration_depth_report', 'get_cross_repo_contracts', 'get_runtime_instrumentation_plan', 'get_runtime_event_contract', 'get_runtime_sdk_package', 'evaluate_agent_task_proof', 'evaluate_agent_readiness', 'run_agentic_benchmark', 'get_agentic_benchmark_report', 'get_agent_performance_proof', 'run_agent_quality_benchmark', 'run_agent_idiom_benchmark', 'run_machine_agent_proof', 'run_incremental_value_benchmark', 'get_patterns', 'get_codebase_idioms', 'get_idiom_examples', 'validate_codebase_idioms', 'get_pattern_instances', 'get_perspectives'] },
   { label: 'Navigation and search', tools: ['semantic_search', 'get_embedding_status', 'get_node', 'get_file_nodes', 'get_level'] },
   { label: 'Entry points, routes, and call graph', tools: ['get_entry_points', 'get_exit_points', 'get_route_table', 'get_external_services', 'get_callers', 'get_callees', 'get_call_chain', 'get_method_calls', 'get_interface_signature'] },
   { label: 'Component hierarchy', tools: ['get_component_parents', 'get_component_children', 'get_component_metrics', 'get_shared_components'] },
@@ -2366,6 +2368,50 @@ function registerTools(server: McpServer) {
     } as any,
     async ({ path, task, detail }: any) => withErrorHandling(async () => {
       return json(await agentProjectMap.resolveAgentAnalysis({ path, task: task || {}, detail }));
+    })
+  );
+
+  server.registerTool(
+    'get_server_version',
+    {
+      title: 'Get Server Version',
+      description: 'Diagnostic: report the running Klauro MCP server\'s version and whether a newer build is available. Call this FIRST whenever a tool you expect (e.g. one mentioned in docs, changelog, or another agent\'s output) appears to be missing — that almost always means this MCP connection is a stale/pre-release build, not that the feature does not exist. Always available, no analysis required, never throws.',
+      inputSchema: {
+        server_url: z.string().optional().describe('Optional override for the release-manifest host; defaults to the stored login server, KLAURO_URL, or the public Klauro cloud URL.'),
+      } as any,
+    } as any,
+    async ({ server_url }: any) => withErrorHandling(async () => {
+      const identity = getBuildIdentity();
+      const currentVersion = identity.version;
+      const auth = loadStoredConnectorAuth();
+      const resolvedServerUrl = normalizeServerUrl(server_url || auth.defaultServerUrl || process.env.KLAURO_URL);
+
+      let latestVersion: string | null = null;
+      try {
+        const response = await fetch(`${resolvedServerUrl}/dist/latest.json`, { headers: { 'cache-control': 'no-cache' } });
+        if (response.ok) {
+          const manifest = await response.json().catch(() => null) as { version?: string } | null;
+          latestVersion = manifest?.version || null;
+        }
+      } catch {
+        // best-effort; unreachable manifest is not an error for this diagnostic tool
+        latestVersion = null;
+      }
+
+      const upToDate = latestVersion ? currentVersion === latestVersion : null;
+      const note = latestVersion === null
+        ? 'Could not reach the release manifest.'
+        : upToDate
+          ? 'On the latest version.'
+          : `This MCP server is running ${currentVersion} but ${latestVersion} is available. The human should run \`klauro update\` and RESTART the MCP client (Claude Code / IDE) to load the new server — MCP servers do not hot-reload.`;
+
+      return json({
+        current_version: currentVersion,
+        latest_version: latestVersion,
+        up_to_date: upToDate,
+        update_command: 'klauro update',
+        note,
+      });
     })
   );
 
