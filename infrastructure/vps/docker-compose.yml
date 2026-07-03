@@ -11,6 +11,10 @@ services:
       - "8787"
     volumes:
       - /opt/klauro/data:/data
+      # Release artifacts (tarball + latest.json) live on the host; the api
+      # serves /dist/klauro-latest.tgz and /dist/latest.json from here. Without
+      # this mount the container can't see them → tarball 404 + version:null.
+      - /opt/klauro/downloads:/opt/klauro/downloads:ro
     logging:
       driver: json-file
       options:
