@@ -6363,7 +6363,12 @@ export class AnalyzerOrchestrator {
   }
 
   private buildRouteTable(entryPoints: CASEntryPoint[]): CASRouteTableEntry[] {
-    const httpEntryPoints = entryPoints.filter(ep => ep.type === 'http');
+    // `type: 'http'` also covers non-route HTTP entry points some frameworks emit,
+    // e.g. NestJS's `app.listen()` bootstrap entry ("HTTP Server: port 3000") which
+    // has no method/path — it represents the server starting, not an endpoint. Only
+    // entries with an actual trigger.path are real routes; without this guard those
+    // bootstrap entries leak into the route table as fabricated-looking `GET /` rows.
+    const httpEntryPoints = entryPoints.filter(ep => ep.type === 'http' && ep.trigger?.path != null);
 
     return httpEntryPoints.map(ep => {
       const metadata = ep.metadata || {};

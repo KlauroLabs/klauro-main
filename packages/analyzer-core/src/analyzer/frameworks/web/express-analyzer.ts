@@ -133,10 +133,22 @@ export class ExpressAnalyzer extends BaseAnalyzer {
 
       for (const file of jsFiles) {
         const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
+        // Match default (`import express from 'express'`), namespace
+        // (`import * as express from 'express'`), and destructured
+        // (`import { Router } from 'express'`) ES import forms, plus CJS
+        // `require('express')`. The namespace form is a very common
+        // TypeScript pattern (esModuleInterop off / older tsconfig) that a
+        // default-import-only regex silently misses, which previously caused
+        // canAnalyze to return false for real Express apps using it.
         const importsExpress =
-          /^\s*import\s+express\b.*\bfrom\s+['"]express['"]/m.test(content) ||
+          /^\s*import\s+(?:\*\s+as\s+)?\w+\b.*\bfrom\s+['"]express['"]/m.test(content) ||
+          /^\s*import\s*\{[^}]*\}\s*from\s+['"]express['"]/m.test(content) ||
           /^\s*(?:const|let|var)\s+\w+\s*=\s*require\(\s*['"]express['"]\s*\)/m.test(content);
-        if (importsExpress && /\bexpress\s*\(\s*\)|\bexpress\s*\.\s*Router\s*\(/.test(content)) {
+        // Confirms actual Express usage beyond just importing the module:
+        // calling the default/namespace import as a function (`express()`),
+        // `express.Router()`, or a destructured bare `Router()` call (which
+        // pairs with the `import { Router } from 'express'` form above).
+        if (importsExpress && /\bexpress\s*\(\s*\)|\bexpress\s*\.\s*Router\s*\(|\bRouter\s*\(\s*\)/.test(content)) {
           return true;
         }
       }

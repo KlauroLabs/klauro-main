@@ -138,3 +138,81 @@ describe('NestJS controller discovery in a Dockerfile-only monorepo app', () => 
     expect(routeTableEntry).toBeDefined();
   }, 30_000);
 });
+
+/**
+ * Regression test for a real data-quality bug found on zerac-api: the NestJS
+ * analyzer emits a `type: 'http'` entry point for the app's `app.listen()`
+ * bootstrap call (e.g. "HTTP Server: port 3000") to represent the server
+ * starting — this entry has no `trigger.method`/`trigger.path` and no
+ * `handler`, since it isn't a route. `buildRouteTable` in orchestrator.ts
+ * filtered entry_points by `type === 'http'` alone, so this non-route entry
+ * leaked into `route_table` as a fabricated-looking row: `GET /` with
+ * `handler: "HTTP Server: port 3000"` — on a real Nx monorepo with 4 apps,
+ * this produced 4 bogus route_table rows (327 total instead of 323 real
+ * routes). Fix: `buildRouteTable` now also requires `ep.trigger?.path != null`.
+ */
+describe('route_table excludes non-route http entry points (NestJS bootstrap listener)', () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-bootstrap-route-leak-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  const write = async (relative: string, content: string) => {
+    const full = path.join(root, relative);
+    await fs.ensureDir(path.dirname(full));
+    await fs.writeFile(full, content);
+  };
+
+  it('keeps the real controller route in route_table but drops the app.listen() bootstrap entry', async () => {
+    await write('package.json', JSON.stringify({
+      name: 'bootstrap-leak-app',
+      dependencies: { '@nestjs/core': '^10.0.0', '@nestjs/common': '^10.0.0', '@nestjs/platform-express': '^10.0.0' },
+    }));
+
+    await write('src/main.ts', [
+      "import { NestFactory } from '@nestjs/core';",
+      "import { AppModule } from './app.module';",
+      'async function bootstrap() {',
+      '  const app = await NestFactory.create(AppModule);',
+      '  await app.listen(3000);',
+      '}',
+      'bootstrap();',
+    ].join('\n'));
+
+    await write('src/app.controller.ts', [
+      "import { Controller, Get } from '@nestjs/common';",
+      '@Controller()',
+      'export class AppController {',
+      '  @Get()',
+      '  getData() {',
+      "    return { message: 'ok' };",
+      '  }',
+      '}',
+    ].join('\n'));
+
+    const orchestrator = createPipelineOrchestrator();
+    const output = await orchestrator.orchestrateAnalysis(root);
+
+    const httpEntryPoints = (output.entry_points || []).filter(ep => ep.type === 'http');
+    // The bootstrap "HTTP Server: port 3000" entry point is still a valid
+    // entry point in its own right (the app does have an HTTP server) — it
+    // just should not be misrepresented as a route.
+    const bootstrapEntry = httpEntryPoints.find(ep => ep.id.startsWith('entry_http_server'));
+    expect(bootstrapEntry).toBeDefined();
+    expect(bootstrapEntry?.trigger?.path).toBeUndefined();
+
+    const routeTable = (output as any).route_table || [];
+    const bogusBootstrapRow = routeTable.find((r: any) =>
+      r.source_node === bootstrapEntry?.source_node
+    );
+    expect(bogusBootstrapRow).toBeUndefined();
+
+    const realRoute = routeTable.find((r: any) => r.method === 'GET' && r.path === '/');
+    expect(realRoute).toBeDefined();
+  }, 30_000);
+});
