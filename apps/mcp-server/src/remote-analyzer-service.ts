@@ -18,7 +18,7 @@ import { detectConceptualConflicts, type AgentInFlightState, type ConflictCas, t
 import { partitionTasks, type PartitionCas, type PartitionTask } from './coordination/partitioner';
 import { ingestAndPersist } from './telemetry-fusion';
 import { getAnalysis } from './analyzer';
-import { buildSummary, getProductMap } from './query';
+import { buildSummary, getProductMap, getFlowConcepts, getArchitecturalConflicts, getParadigmConformance, getPerspectives } from './query';
 
 const DEFAULT_PORT = 8787;
 const DEFAULT_MAX_BODY_BYTES = 100 * 1024 * 1024;
@@ -950,6 +950,56 @@ async function handleAccountApi(
           analysis_id: project.analysis_id,
           summary,
           product_map: productMap,
+        },
+      };
+    } catch (error) {
+      return {
+        statusCode: 200,
+        body: {
+          status: 'no_analysis',
+          project_id: project.id,
+          analysis_id: project.analysis_id,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+  }
+
+  const projectConceptualMatch = route.match(/^\/api\/projects\/([^/]+)\/conceptual$/);
+  if (projectConceptualMatch && request.method === 'GET') {
+    if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
+    const project = await accounts.getProjectForUser(userId, decodeURIComponent(projectConceptualMatch[1]));
+    if (!project) throw new AccountHttpError(404, 'Project not found');
+    if (!project.analysis_id) {
+      return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
+    }
+    try {
+      const cas = await getAnalysis(workspacePath(dataDir, project.analysis_id));
+      const url = new URL(request.url || '', 'http://localhost');
+      const target = url.searchParams.get('target') || undefined;
+      const flowConcepts = getFlowConcepts(cas, { target, maxFlows: 20 });
+      const architectural = getArchitecturalConflicts(cas, { limit: 25 });
+      const paradigms = getParadigmConformance(cas);
+      const perspectives = getPerspectives(cas);
+      const capabilities = (cas.system_capabilities || []).map(capability => ({
+        id: capability.id,
+        name: capability.name,
+        category: capability.category,
+        criticality: capability.criticality,
+      }));
+      return {
+        statusCode: 200,
+        body: {
+          status: 'ready',
+          project_id: project.id,
+          analysis_id: project.analysis_id,
+          capabilities,
+          flows: flowConcepts,
+          structural: {
+            architectural,
+            paradigms,
+            perspectives,
+          },
         },
       };
     } catch (error) {

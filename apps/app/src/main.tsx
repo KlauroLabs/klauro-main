@@ -25,9 +25,13 @@ import {
   addWorkspaceMember,
   apiBaseUrl,
   AppStateData,
+  ConceptualResponse,
   createProject,
   createWorkspace,
+  FlowConcept,
+  FlowStep,
   getProjectAnalysis,
+  getProjectConceptual,
   loadAppData,
   Project,
   ProjectAnalysisResponse,
@@ -358,6 +362,7 @@ function RepoOverview(props: { token: string; workspace: Workspace; project: Pro
   const [analysisError, setAnalysisError] = useState('');
   const [reanalyzing, setReanalyzing] = useState(false);
   const [reanalyzeError, setReanalyzeError] = useState('');
+  const [tab, setTab] = useState<'overview' | 'conceptual'>('overview');
 
   useEffect(() => {
     setAnalysis(null);
@@ -403,51 +408,278 @@ function RepoOverview(props: { token: string; workspace: Workspace; project: Pro
         </div>
         {reanalyzeError && <p className="error">{reanalyzeError}</p>}
       </div>
-      <div className="metric-strip">
-        <Metric label="Capabilities" value={capabilities.length ? String(capabilities.length) : props.project.analysis_id ? 'Available' : 'Pending'} hint="Core business domains" />
-        <Metric label="Entry points" value={String(latest?.nodes || 0)} hint="Known graph nodes" />
-        <Metric label="Contributors" value={String(props.members.length || '-')} hint="Workspace users" />
-        <Metric label="Analysis" value={latest?.source || 'Not run'} hint={latest ? relativeTime(latest.generated_at) : 'Awaiting run'} />
-        {productMap?.health.score !== undefined && (
-          <Metric label="Health" value={`${productMap.health.score}`} hint={productMap.health.status || 'System complexity'} />
-        )}
+      <div className="repo-tabs">
+        <button className={`repo-tab${tab === 'overview' ? ' active' : ''}`} onClick={() => setTab('overview')}>Overview</button>
+        <button className={`repo-tab${tab === 'conceptual' ? ' active' : ''}`} onClick={() => setTab('conceptual')}>Conceptual</button>
       </div>
-      {!props.project.analysis_id && (
-        <EmptyState text="No analysis attached to this project yet. Click Re-Analyze to run Klauro on this repository and populate real capabilities, entities, and health." />
-      )}
-      {props.project.analysis_id && analysisError && (
-        <EmptyState text={`Could not load the analysis for this project: ${analysisError}`} />
-      )}
-      {props.project.analysis_id && analysis?.status === 'no_analysis' && (
-        <EmptyState text="This project has an analysis_id, but no stored analysis was found for it yet. Click Re-Analyze to generate one." />
-      )}
-      <section className="repo-section">
-        <h2>Capabilities <span>Core business functions or infrastructure</span></h2>
-        {capabilities.length ? (
-          <div className="data-grid">
-            {capabilities.slice(0, 12).map(capability => <CapabilityCell key={capability.name} capability={capability} />)}
+      {tab === 'overview' && (
+        <>
+          <div className="metric-strip">
+            <Metric label="Capabilities" value={capabilities.length ? String(capabilities.length) : props.project.analysis_id ? 'Available' : 'Pending'} hint="Core business domains" />
+            <Metric label="Entry points" value={String(latest?.nodes || 0)} hint="Known graph nodes" />
+            <Metric label="Contributors" value={String(props.members.length || '-')} hint="Workspace users" />
+            <Metric label="Analysis" value={latest?.source || 'Not run'} hint={latest ? relativeTime(latest.generated_at) : 'Awaiting run'} />
+            {productMap?.health.score !== undefined && (
+              <Metric label="Health" value={`${productMap.health.score}`} hint={productMap.health.status || 'System complexity'} />
+            )}
           </div>
-        ) : (
-          <EmptyState text={props.project.analysis_id ? 'Analysis attached but no capabilities were detected yet.' : 'Run analysis to discover this repository’s real capabilities.'} />
-        )}
-      </section>
-      <section className="repo-section">
-        <h2>Critical Flows <span>Analysis-backed revision paths</span></h2>
-        <div className="flow-list">
-          {props.revisions.length ? props.revisions.slice(0, 4).map(revision => <RevisionFlow key={`${revision.analysis_revision}-${revision.generated_at}`} revision={revision} />) : <EmptyState text="No analyzed revisions yet. Re-analyze this project to populate critical flows from CAS." />}
-        </div>
-      </section>
-      <section className="repo-section">
-        <h2>Key Entities <span>Sensitive/high-exposure data entities from CAS</span></h2>
-        {entityNames.length ? (
-          <div className="entity-grid">
-            {(productMap?.data.exposure_highlights || []).slice(0, 8).map(highlight => <EntityCard key={highlight.entity} name={highlight.entity} detail={`${highlight.sensitive_fields.length} sensitive field(s), ${highlight.unguarded_paths} unguarded path(s)`} />)}
-          </div>
-        ) : (
-          <EmptyState text={props.project.analysis_id ? 'No sensitive data entities were flagged by analysis.' : 'Available after CAS analysis is attached to this project.'} />
-        )}
-      </section>
+          {!props.project.analysis_id && (
+            <EmptyState text="No analysis attached to this project yet. Click Re-Analyze to run Klauro on this repository and populate real capabilities, entities, and health." />
+          )}
+          {props.project.analysis_id && analysisError && (
+            <EmptyState text={`Could not load the analysis for this project: ${analysisError}`} />
+          )}
+          {props.project.analysis_id && analysis?.status === 'no_analysis' && (
+            <EmptyState text="This project has an analysis_id, but no stored analysis was found for it yet. Click Re-Analyze to generate one." />
+          )}
+          <section className="repo-section">
+            <h2>Capabilities <span>Core business functions or infrastructure</span></h2>
+            {capabilities.length ? (
+              <div className="data-grid">
+                {capabilities.slice(0, 12).map(capability => <CapabilityCell key={capability.name} capability={capability} />)}
+              </div>
+            ) : (
+              <EmptyState text={props.project.analysis_id ? 'Analysis attached but no capabilities were detected yet.' : 'Run analysis to discover this repository’s real capabilities.'} />
+            )}
+          </section>
+          <section className="repo-section">
+            <h2>Critical Flows <span>Analysis-backed revision paths</span></h2>
+            <div className="flow-list">
+              {props.revisions.length ? props.revisions.slice(0, 4).map(revision => <RevisionFlow key={`${revision.analysis_revision}-${revision.generated_at}`} revision={revision} />) : <EmptyState text="No analyzed revisions yet. Re-analyze this project to populate critical flows from CAS." />}
+            </div>
+          </section>
+          <section className="repo-section">
+            <h2>Key Entities <span>Sensitive/high-exposure data entities from CAS</span></h2>
+            {entityNames.length ? (
+              <div className="entity-grid">
+                {(productMap?.data.exposure_highlights || []).slice(0, 8).map(highlight => <EntityCard key={highlight.entity} name={highlight.entity} detail={`${highlight.sensitive_fields.length} sensitive field(s), ${highlight.unguarded_paths} unguarded path(s)`} />)}
+              </div>
+            ) : (
+              <EmptyState text={props.project.analysis_id ? 'No sensitive data entities were flagged by analysis.' : 'Available after CAS analysis is attached to this project.'} />
+            )}
+          </section>
+        </>
+      )}
+      {tab === 'conceptual' && (
+        <ConceptualView token={props.token} project={props.project} />
+      )}
     </div>
+  );
+}
+
+function ConceptualView(props: { token: string; project: Project }) {
+  const [data, setData] = useState<ConceptualResponse | null>(null);
+  const [error, setError] = useState('');
+  const [selectedFlowId, setSelectedFlowId] = useState<string | null>(null);
+  const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setData(null);
+    setError('');
+    setSelectedFlowId(null);
+    setSelectedStepId(null);
+    if (!props.project.analysis_id) return;
+    let cancelled = false;
+    getProjectConceptual(props.token, props.project.id)
+      .then(result => { if (!cancelled) setData(result); })
+      .catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load conceptual layer'); });
+    return () => { cancelled = true; };
+  }, [props.token, props.project.id, props.project.analysis_id]);
+
+  if (!props.project.analysis_id) {
+    return <EmptyState text="No analysis attached yet. Re-analyze to compute the conceptual layer (capabilities, flows, steps, structural perspectives)." />;
+  }
+  if (error) {
+    return <EmptyState text={`Could not load the conceptual layer: ${error}`} />;
+  }
+  if (!data) {
+    return <EmptyState text="Loading conceptual layer…" />;
+  }
+  if (data.status === 'no_analysis') {
+    return <EmptyState text={`No stored analysis found yet${data.error ? `: ${data.error}` : '.'} Re-analyze to generate it.`} />;
+  }
+
+  const flows = data.flows?.flows || [];
+  const capabilitiesById = new Map((data.capabilities || []).map(capability => [capability.id, capability]));
+  const selectedFlow = flows.find(flow => flow.flow_id === selectedFlowId) || null;
+  const selectedStep = selectedFlow?.steps.find(step => step.step_id === selectedStepId) || null;
+
+  return (
+    <div className="conceptual-view">
+      <section className="repo-section">
+        <h2>Capability → Flow → Step → Function <span>The behavioral hierarchy — what the system does, as it runs</span></h2>
+        {data.flows?.gaps && data.flows.gaps.length > 0 && (
+          <div className="gap-banner">{data.flows.gaps.join(' ')}</div>
+        )}
+        {flows.length ? (
+          <div className="conceptual-columns">
+            <div className="concept-column">
+              <div className="concept-column-label">Flows ({flows.length})</div>
+              <div className="concept-list">
+                {flows.map(flow => {
+                  const capability = flow.capability_id ? capabilitiesById.get(flow.capability_id) : undefined;
+                  return (
+                    <button
+                      key={flow.flow_id}
+                      className={`concept-item${selectedFlowId === flow.flow_id ? ' active' : ''}`}
+                      onClick={() => { setSelectedFlowId(flow.flow_id); setSelectedStepId(null); }}
+                    >
+                      <strong>{flow.name}</strong>
+                      {capability ? <span className="concept-sub">{capability.name}</span> : <span className="concept-sub gap">no capability link</span>}
+                      <span className="concept-meta">{flow.steps.length} step{flow.steps.length === 1 ? '' : 's'}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="concept-column">
+              <div className="concept-column-label">Steps {selectedFlow ? `(${selectedFlow.steps.length})` : ''}</div>
+              {selectedFlow ? (
+                <div className="concept-list">
+                  {selectedFlow.steps.map(step => (
+                    <button
+                      key={step.step_id}
+                      className={`concept-item${selectedStepId === step.step_id ? ' active' : ''}`}
+                      onClick={() => setSelectedStepId(step.step_id)}
+                    >
+                      <strong>{step.order + 1}. {step.name}</strong>
+                      <span className="concept-sub">{step.description}</span>
+                      <span className="concept-meta">{stepMappingLabel(step)}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : <EmptyState text="Select a flow to see its ordered steps." />}
+            </div>
+            <div className="concept-column concept-detail">
+              <div className="concept-column-label">Contract</div>
+              {selectedStep ? (
+                <ContractCard title={selectedStep.name} contract={selectedStep.contract} functions={selectedStep.functions} />
+              ) : selectedFlow ? (
+                <ContractCard title={`${selectedFlow.name} (flow-level)`} contract={selectedFlow.contract} entities={selectedFlow.entities} />
+              ) : (
+                <EmptyState text="Select a flow, then a step, to see its Input / Logic / Side-effects / Output / Constraints." />
+              )}
+            </div>
+          </div>
+        ) : (
+          <EmptyState text="No flows could be derived from this analysis (no entry points, or none traceable to steps)." />
+        )}
+      </section>
+      <StructuralPerspectivePanel structural={data.structural} />
+    </div>
+  );
+}
+
+function stepMappingLabel(step: FlowStep): string {
+  if (step.functions.length === 0) return 'no function ref (gap)';
+  if (step.functions.length > 1) return `1:many — ${step.functions.length} functions`;
+  const fn = step.functions[0];
+  if (fn.section) return `sub-section — lines ${fn.section.start_line}-${fn.section.end_line}${fn.section.label ? ` (${fn.section.label})` : ''}`;
+  return '1:1 function';
+}
+
+function ContractCard(props: { title: string; contract: FlowConcept['contract']; functions?: FlowStep['functions']; entities?: string[] }) {
+  const { contract } = props;
+  return (
+    <div className="contract-card">
+      <h3>{props.title}</h3>
+      <ContractRow label="Input" values={contract.input} emptyText="no inputs derived" />
+      <ContractRow label="Logic" values={contract.logic ? [contract.logic] : []} emptyText="no logic summary" />
+      <ContractRow label="Side-effects: state changes" values={contract.side_effects.state_changes} emptyText="none observed (gap or side-effect-free)" />
+      <ContractRow label="Side-effects: external integrations" values={contract.side_effects.external_integrations} emptyText="none observed" />
+      <ContractRow label="Output" values={contract.output} emptyText="no outputs derived" />
+      <ContractRow label="Constraints" values={contract.constraints} emptyText="none derived (no guard clauses/invariants found)" />
+      {props.entities && props.entities.length > 0 && (
+        <ContractRow label="Entities touched" values={props.entities} emptyText="" />
+      )}
+      {props.functions && props.functions.length > 0 && (
+        <div className="contract-row">
+          <div className="contract-row-label">Function(s)</div>
+          <div className="contract-row-values">
+            {props.functions.map(fn => (
+              <span key={fn.function_id} className="function-chip">
+                {fn.function_id}{fn.section ? ` [${fn.section.start_line}-${fn.section.end_line}]` : ''}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ContractRow({ label, values, emptyText }: { label: string; values: string[]; emptyText: string }) {
+  if (!values.length) {
+    return emptyText ? (
+      <div className="contract-row">
+        <div className="contract-row-label">{label}</div>
+        <div className="contract-row-values gap">{emptyText}</div>
+      </div>
+    ) : null;
+  }
+  return (
+    <div className="contract-row">
+      <div className="contract-row-label">{label}</div>
+      <div className="contract-row-values">{values.map((value, index) => <span key={`${value}-${index}`} className="value-chip">{value}</span>)}</div>
+    </div>
+  );
+}
+
+function StructuralPerspectivePanel({ structural }: { structural: ConceptualResponse['structural'] }) {
+  if (!structural) return null;
+  const { architectural, paradigms, perspectives } = structural;
+  const conflicts = (architectural?.conflicts || []) as Array<Record<string, unknown>>;
+  const violations = (architectural?.violations || []) as Array<Record<string, unknown>>;
+  return (
+    <section className="repo-section">
+      <h2>Structural Perspectives <span>How the system is built — architecture and paradigm, the same code seen from another angle</span></h2>
+      <div className="structural-grid">
+        <div className="panel structural-card">
+          <h3>Architectural conflicts</h3>
+          {architectural?.analysis_version_notice && <p className="subtle">{architectural.analysis_version_notice}</p>}
+          {conflicts.length || violations.length ? (
+            <ul className="structural-list">
+              {conflicts.slice(0, 8).map((conflict, index) => (
+                <li key={`conflict-${index}`}>
+                  <span className={`severity-dot severity-${conflict.severity as string}`} />
+                  {String(conflict.description || conflict.name || 'Conflict')}
+                </li>
+              ))}
+              {violations.slice(0, 8).map((violation, index) => (
+                <li key={`violation-${index}`}>
+                  <span className="severity-dot severity-medium" />
+                  {String(violation.description || violation.principle || 'Principle violation')}
+                </li>
+              ))}
+            </ul>
+          ) : <EmptyState text="No architectural conflicts or principle violations detected." />}
+        </div>
+        <div className="panel structural-card">
+          <h3>Paradigm conformance</h3>
+          {paradigms?.analysis_version_notice && <p className="subtle">{paradigms.analysis_version_notice}</p>}
+          {paradigms?.paradigms.length ? (
+            <ul className="structural-list">
+              {paradigms.paradigms.map(paradigm => (
+                <li key={paradigm.paradigm}>
+                  <strong>{paradigm.paradigm}</strong> — {paradigm.description || 'No description.'}
+                  <span className="concept-meta">{paradigm.deviation_count} deviation{paradigm.deviation_count === 1 ? '' : 's'}</span>
+                </li>
+              ))}
+            </ul>
+          ) : <EmptyState text="No paradigm conformance data on this analysis." />}
+        </div>
+        <div className="panel structural-card">
+          <h3>Perspectives</h3>
+          {perspectives && perspectives.length ? (
+            <ul className="structural-list">
+              {perspectives.slice(0, 8).map((perspective, index) => (
+                <li key={index}>{typeof perspective === 'string' ? perspective : JSON.stringify(perspective)}</li>
+              ))}
+            </ul>
+          ) : <EmptyState text="No additional perspectives recorded for this analysis." />}
+        </div>
+      </div>
+    </section>
   );
 }
 

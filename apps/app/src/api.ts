@@ -95,6 +95,92 @@ export interface ProjectAnalysisResponse {
   error?: string;
 }
 
+export interface ILSOContract {
+  input: string[];
+  logic: string;
+  side_effects: {
+    state_changes: string[];
+    external_integrations: string[];
+  };
+  output: string[];
+  constraints: string[];
+}
+
+export interface FlowStep {
+  step_id: string;
+  order: number;
+  name: string;
+  description: string;
+  contract: ILSOContract;
+  functions: Array<{
+    function_id: string;
+    section?: { start_line: number; end_line: number; label?: string };
+  }>;
+}
+
+export interface FlowConcept {
+  flow_id: string;
+  name: string;
+  intent: string;
+  entry_point: string;
+  capability_id?: string;
+  entities: string[];
+  contract: ILSOContract;
+  steps: FlowStep[];
+  gaps?: string[];
+}
+
+export interface ConceptualCapability {
+  id: string;
+  name: string;
+  category: string;
+  criticality: string;
+}
+
+export interface ArchitecturalConflict {
+  severity: 'low' | 'medium' | 'high';
+  [key: string]: unknown;
+}
+
+export interface ParadigmSummary {
+  paradigm: string;
+  description: string;
+  adoption: unknown;
+  deviation_count: number;
+  deviations_by_severity: Record<string, number>;
+  sample_deviations: unknown[];
+}
+
+export interface ConceptualResponse {
+  status: 'ready' | 'no_analysis';
+  project_id: string;
+  analysis_id?: string;
+  error?: string;
+  capabilities?: ConceptualCapability[];
+  flows?: {
+    flows: FlowConcept[];
+    total: number;
+    gaps?: string[];
+  };
+  structural?: {
+    architectural: {
+      total?: number;
+      violations_by_severity?: Record<string, number>;
+      conflicts?: ArchitecturalConflict[];
+      violations?: unknown[];
+      analysis_version_notice?: string;
+      [key: string]: unknown;
+    };
+    paradigms: {
+      total: number;
+      total_deviations: number;
+      paradigms: ParadigmSummary[];
+      analysis_version_notice?: string;
+    };
+    perspectives: unknown[];
+  };
+}
+
 const configuredBase = import.meta.env.VITE_KLAURO_API_URL as string | undefined;
 // app.klauro.com is a static host with no /api/* routes of its own — the API
 // lives on mcp.klauro.com. If a build ever ships without VITE_KLAURO_API_URL
@@ -197,6 +283,11 @@ export function addWorkspaceMember(token: string, workspaceId: string, input: { 
 
 export function getProjectAnalysis(token: string, projectId: string): Promise<ProjectAnalysisResponse> {
   return apiRequest(`/api/projects/${encodeURIComponent(projectId)}/analysis`, token);
+}
+
+export function getProjectConceptual(token: string, projectId: string, target?: string): Promise<ConceptualResponse> {
+  const query = target ? `?target=${encodeURIComponent(target)}` : '';
+  return apiRequest(`/api/projects/${encodeURIComponent(projectId)}/conceptual${query}`, token);
 }
 
 export interface AnalyzeProjectResult {

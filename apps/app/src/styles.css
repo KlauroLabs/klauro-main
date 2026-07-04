@@ -181,6 +181,45 @@ button { color: inherit; cursor: pointer; }
 .entity-card p { color: var(--muted); font-size: 13px; }
 .empty-state { color: var(--faint); border: 1px dashed var(--stroke-strong); border-radius: 12px; padding: 24px; line-height: 1.5; }
 
+.repo-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--stroke); margin: 24px 0 4px; }
+.repo-tab { border: 0; background: transparent; color: var(--muted); padding: 10px 4px; margin-right: 20px; font-weight: 700; font-size: 14px; border-bottom: 2px solid transparent; }
+.repo-tab.active { color: var(--text); border-bottom-color: var(--brand); }
+
+.gap-banner { border: 1px dashed var(--stroke-strong); border-radius: 8px; padding: 10px 14px; color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+
+.conceptual-columns { display: grid; grid-template-columns: 1fr 1fr 1.3fr; gap: 12px; align-items: start; }
+.concept-column { border: 1px solid var(--stroke-strong); border-radius: 12px; padding: 14px; min-height: 120px; }
+.concept-column-label { color: var(--faint); font-size: 11px; font-weight: 750; text-transform: uppercase; margin-bottom: 10px; }
+.concept-list { display: grid; gap: 6px; }
+.concept-item { width: 100%; text-align: left; border: 1px solid var(--stroke); border-radius: 8px; padding: 10px 12px; background: rgba(32,33,42,0.35); display: grid; gap: 3px; }
+.concept-item.active { border-color: var(--brand); background: rgba(230,65,75,0.08); }
+.concept-item strong { font-size: 13px; color: var(--text); }
+.concept-sub { color: var(--muted); font-size: 12px; }
+.concept-sub.gap { color: var(--faint); font-style: italic; }
+.concept-meta { color: var(--faint); font-size: 11px; }
+
+.contract-card h3 { margin: 0 0 12px; font-size: 15px; }
+.contract-row { margin-bottom: 12px; }
+.contract-row-label { color: var(--faint); font-size: 11px; font-weight: 750; text-transform: uppercase; margin-bottom: 6px; }
+.contract-row-values { display: flex; flex-wrap: wrap; gap: 6px; }
+.contract-row-values.gap { color: var(--faint); font-style: italic; font-size: 12px; }
+.value-chip, .function-chip { border: 1px solid var(--stroke-strong); border-radius: 6px; padding: 3px 8px; font-size: 12px; color: var(--muted); }
+.function-chip { font-family: ui-monospace, SFMono-Regular, monospace; color: var(--purple); }
+
+.structural-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.structural-card { padding: 18px; min-height: 160px; }
+.structural-card h3 { margin: 0 0 10px; font-size: 15px; }
+.structural-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 13px; color: var(--muted); }
+.structural-list strong { color: var(--text); }
+.severity-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+.severity-dot.severity-low { background: var(--green); }
+.severity-dot.severity-medium { background: #f0c419; }
+.severity-dot.severity-high { background: var(--brand-soft); }
+
+@media (max-width: 1100px) {
+  .conceptual-columns, .structural-grid { grid-template-columns: 1fr; }
+}
+
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.66); display: grid; place-items: center; padding: 20px; z-index: 10; }
 .modal-card { width: min(640px, 100%); position: relative; background: var(--panel-strong); border: 1px solid var(--stroke-strong); border-radius: 12px; padding: 24px; }
 .auth-card { width: min(860px, 100%); }
