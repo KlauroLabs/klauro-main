@@ -286,6 +286,8 @@ const LEAD_PROJECTS = [
   '~/dev/personal/cleanmusic',
   '~/dev/clients/outcode/hoggan', // no manifest — graceful-handling stress test
   '~/dev/clients/outcode/truckspy', // PHP+JS
+  '~/dev/unravl/proof-of-concept', // Klauro's own 14GB self-repo — the exact target that OOM'd the driver in the 2026-07-03/04 re-validation; keep it as a standing large-repo/heap-guard regression check
+  '~/dev/openclaw', // second largest corpus repo (76k+ nodes) — large-repo heap-guard cross-check alongside the self-repo
   // v1.0.13 monorepo-scope leads: Nx / pnpm-workspace backends with Dockerfile-only
   // cicd dirs alongside real app packages — the exact isPackageBoundaryManifest case.
   '~/dev/zerac/zerac-ui', // Nx monorepo (nx.json), apps/user-ui + apps/admin-ui, no Dockerfiles
@@ -451,9 +453,47 @@ async function main() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Heap guard: re-exec with a raised --max-old-space-size before doing any work.
+//
+// A large repo's CAS response (e.g. Klauro's own 14GB proof-of-concept
+// self-repo) can OOM V8 during response buffering/JSON.parse in
+// product-analysis.ts — a fatal allocation failure, not a catchable JS
+// exception, so no amount of try/catch in analyzeProject/analyzeWorkspace can
+// save the process once it happens. Node's default heap ceiling (~4GB on this
+// machine) is comfortably smaller than a single huge-repo CAS payload can
+// require once chunks + concatenated buffer + utf8 string + parsed object are
+// briefly co-resident. Raise the ceiling unconditionally by re-exec'ing this
+// same script as a child with --max-old-space-size set, unless the caller
+// already set one (respect an explicit override) or has opted out via
+// CORPUS_SWEEP_NO_REEXEC (useful under a debugger/profiler).
+const SWEEP_MIN_HEAP_MB = 8192;
+
+function currentMaxOldSpaceMb(): number | null {
+  const opts = process.env.NODE_OPTIONS || '';
+  const fromEnv = opts.match(/--max-old-space-size=(\d+)/);
+  if (fromEnv) return Number(fromEnv[1]);
+  const fromArgv = process.execArgv.find((a) => a.startsWith('--max-old-space-size='));
+  if (fromArgv) return Number(fromArgv.split('=')[1]);
+  return null;
+}
+
+function reexecWithLargerHeap(): void {
+  const { spawnSync } = require('child_process') as typeof import('child_process');
+  const nodeArgs = [`--max-old-space-size=${SWEEP_MIN_HEAP_MB}`, ...process.execArgv, __filename, ...process.argv.slice(2)];
+  console.error(`[corpus-sweep] re-exec with --max-old-space-size=${SWEEP_MIN_HEAP_MB} (was ${currentMaxOldSpaceMb() ?? 'default ~4096'})`);
+  const result = spawnSync(process.execPath, nodeArgs, { stdio: 'inherit', env: process.env });
+  process.exit(result.status ?? 1);
+}
+
 if (require.main === module) {
-  main().catch((err) => {
-    console.error('[corpus-sweep] FATAL', err);
-    process.exit(1);
-  });
+  const current = currentMaxOldSpaceMb();
+  if (process.env.CORPUS_SWEEP_NO_REEXEC !== '1' && (current === null || current < SWEEP_MIN_HEAP_MB)) {
+    reexecWithLargerHeap();
+  } else {
+    main().catch((err) => {
+      console.error('[corpus-sweep] FATAL', err);
+      process.exit(1);
+    });
+  }
 }

@@ -61,12 +61,29 @@ function postJson(url: string, body: unknown): Promise<any> {
     const req = transport(
       { hostname: u.hostname, port: u.port || (isHttps ? 443 : 80), path: u.pathname, method: 'POST', headers },
       (res: any) => {
-        const chunks: Buffer[] = [];
-        res.on('data', (c) => chunks.push(c));
+        let chunks: Buffer[] | null = [];
+        res.on('data', (c: Buffer) => chunks!.push(c));
         res.on('end', () => {
-          const text = Buffer.concat(chunks).toString('utf8');
-          if ((res.statusCode || 0) >= 400) return reject(new Error(`analyze ${res.statusCode}: ${text.slice(0, 200)}`));
-          try { resolve(JSON.parse(text)); } catch (e) { reject(e); }
+          // Large CAS payloads (huge repos, e.g. Klauro's own 14GB self-repo) can
+          // make chunks+concatenated-buffer+utf8-string+parsed-object all live at
+          // once, tripling/quadrupling peak memory over the wire size and risking
+          // a V8 OOM that a try/catch cannot recover from (fatal allocation
+          // failure, not a JS exception). Drop each intermediate reference as soon
+          // as the next stage is built so only one large representation is ever
+          // live at a time; the driver process is also started with a raised
+          // --max-old-space-size (see run() below) so a single oversized repo
+          // can't take the whole sweep down.
+          const buf = Buffer.concat(chunks!);
+          chunks = null; // release the chunk array before building the string
+          const text = buf.toString('utf8');
+          const statusCode = res.statusCode || 0;
+          if (statusCode >= 400) return reject(new Error(`analyze ${statusCode}: ${text.slice(0, 200)}`));
+          try {
+            const parsed = JSON.parse(text);
+            resolve(parsed);
+          } catch (e) {
+            reject(e);
+          }
         });
       },
     );

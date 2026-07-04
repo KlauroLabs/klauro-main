@@ -493,3 +493,187 @@ in the harness itself" precedent set in the earlier zerac
   `product-analysis.ts:65` error, untouched).
 - Full stderr log for this run (all 42 repo results + the OOM crash):
   `scratchpad/corpus-sweep-v1.0.13-stderr.log`.
+
+## Harness-robustness fix + name-corruption re-verification (2026-07-04)
+
+**Task:** fix the sweep-driver OOM found in the 2026-07-03/04 re-validation
+above (§ "Harness notes") so the self-repo (and other large repos) can be
+swept without crashing the process, then use the now-available JSON dump to
+re-verify v1.0.11 Finding 2 (hash/name-corrupted deployable names) at the
+string level, which the prior session flagged as unconfirmed.
+
+### Harness OOM: root cause + fix
+
+**Root cause.** `analyzeForBench()`'s `postJson()` in
+`apps/mcp-server/src/gauntlet/product-analysis.ts` buffers the entire HTTP
+response into an array of `Buffer` chunks, then does
+`Buffer.concat(chunks).toString('utf8')`, then `JSON.parse(text)`. For a
+large repo's CAS (Klauro's own 14 GB `proof-of-concept` self-repo works out to
+39,298 nodes / 104 deployables / 1,334 entry points once serialized to JSON),
+the chunk array, the concatenated buffer, the UTF-8 string, and the parsed
+object can all be simultaneously live in memory — 3-4x the wire size at peak
+— against Node's default `--max-old-space-size` heap ceiling (~4096 MB on
+this machine). This is a V8 fatal allocation failure (`JavaScript heap out of
+memory`), not a catchable `Error`, so it happens **underneath** the
+`try/catch` in `analyzeProject`/`analyzeWorkspace` in `corpus-sweep.ts` and
+takes down the whole driver process instead of being recorded as one repo's
+failure.
+
+**Fix (two parts, both defense-in-depth — the first is the one that actually
+matters for a fatal OOM):**
+
+1. **Raise the driver's heap ceiling unconditionally.** `corpus-sweep.ts`'s
+   `require.main === module` entry point now checks
+   `currentMaxOldSpaceMb()` (reads `NODE_OPTIONS`/`process.execArgv` for an
+   existing `--max-old-space-size`) and, unless the caller already set one at
+   least `SWEEP_MIN_HEAP_MB` (8192 MB) or set
+   `CORPUS_SWEEP_NO_REEXEC=1`, re-execs itself as a child process via
+   `spawnSync(process.execPath, ['--max-old-space-size=8192', ...])` with
+   `stdio: 'inherit'`. This means running the sweep via `npx tsx
+   corpus-sweep.ts` (no special invocation needed) always gets the raised
+   ceiling — nobody has to remember a `NODE_OPTIONS` incantation.
+2. **Reduce peak memory in the parse path.** In `product-analysis.ts`'s
+   `postJson()`, the chunk array reference is explicitly dropped (`chunks =
+   null`) immediately after `Buffer.concat`, before the UTF-8 string is
+   built, so the chunk array can be GC'd before the string exists rather than
+   staying live through the whole chain. This doesn't fix the fundamental
+   scaling problem (still buffer → string → parsed-object, no true
+   streaming) but trims one of the three-to-four co-resident copies.
+
+A true streaming JSON parser (e.g. `stream-json`) was considered but not
+added — no such dependency exists in this repo, and raising the heap ceiling
+to 8 GB (well within the 32 GB physical RAM on this machine) is sufficient to
+clear the observed failure by a wide margin (the self-repo's response is
+nowhere near 8 GB even accounting for the 3-4x multiplier). If future repos
+in the corpus grow to genuinely require true streaming, that's a clean
+follow-up, not blocking today's fix.
+
+### Proof: the previously-OOMing repo now completes
+
+Added `unravl/proof-of-concept` (the exact repo that OOM'd) and `openclaw`
+(76k+ nodes, the corpus's second-largest single repo) to `LEAD_PROJECTS` in
+`corpus-sweep.ts` as standing large-repo/heap-guard regression targets, then
+ran `CORPUS_SWEEP_ONLY_LEADS=1 npx tsx
+apps/mcp-server/src/gauntlet/corpus-sweep.ts` end-to-end.
+
+**Result: 11 lead projects analyzed (0 crashed), 3 lead workspaces analyzed
+(0 crashed).** The self-repo completed in 99.4s:
+
+```
+[corpus-sweep] lead project: /Users/michaelshattuck/dev/unravl/proof-of-concept (manifests=package.json)
+[corpus-sweep]   -> crashed=false nodes=39298 domain=codebase-analysis deployables=104 entryPoints=1334 routes=1 time=99403ms
+[corpus-sweep] lead project: /Users/michaelshattuck/dev/openclaw (manifests=package.json)
+[corpus-sweep]   -> crashed=false nodes=76307 domain=fleet-management deployables=48 entryPoints=402 routes=43 time=139567ms
+...
+[corpus-sweep] DONE. report written to /var/folders/.../T/klauro-corpus-sweep-report.json
+[corpus-sweep] summary: 11 projects analyzed (0 crashed), 3 workspaces analyzed (0 crashed)
+```
+
+Also swept in the same run without incident: `kadra.ai`, `kontinuum`,
+`cleanmusic`, `hoggan`, `truckspy` (82,896 nodes), `zerac-ui`, `soon-bos`,
+`finance-context-ts`, `soon-link`, plus the `money`/`zerac`/`soon` lead
+workspaces (28 sub-repos total). Full JSON report retained at
+`/var/folders/5_/5xzp0rq57cs_m_2f263y1p8r0000gp/T/klauro-corpus-sweep-report.json`
+for this session.
+
+`npx tsc --noEmit` (via `apps/mcp-server`, `NODE_OPTIONS='--max-old-space-size=8192'`)
+is clean for both changed files — no new errors in `corpus-sweep.ts` or
+`product-analysis.ts`.
+
+**Honest caveat:** this was a leads-only run (`CORPUS_SWEEP_ONLY_LEADS=1`),
+not the full ~100-repo discovery sweep — the leads list already includes the
+two largest repos in the corpus (this self-repo and `openclaw`) plus the
+prior session's monorepo targets, so it directly proves the OOM fix on the
+exact failure case without re-running the full multi-hour discovery pass.
+The fix (heap ceiling) is not repo-specific, so there's no reason to expect
+the full discovery sweep to behave differently, but that full run was not
+re-executed this session.
+
+### Name-corruption re-verification (v1.0.11 Finding 2) — result: MOSTLY PASS, one new finding
+
+With the JSON dump now available, inspected `deployable_evidence[].name`
+across all 14 lead-run repos/workspaces directly from the report:
+
+```
+kadra.ai            -> app, Shell Script: install.sh, GET /v1/settings, kadra-monorepo, api, kadra, kadra-api, kadra-mcp
+kontinuum            -> Docker image definition: Dockerfile, hosted mcp allowlist smoke, kontinuum entrypoint, hosted, ...
+cleanmusic           -> Docker image definition: backend/Dockerfile, Release Script: deploy.sh, POST /register, GET /health, app, android, app, chromaprint_jni
+hoggan               -> Installer: Install.nsi, UAC_AdminOnly example, UAC_ModeSelection example, UAC_Tests, Installer: Install.bat, Installer: Uninstall.bat, Batch Script: Install.bat, Batch Script: Uninstall.bat
+truckspy             -> Docker image definition: .../nginx/prod/Dockerfile, ..., DELETE /{id}/api-token, DELETE /companies/{companyId}/carrierids/{carrierId}, ...
+proof-of-concept     -> Docker image definition: apps/api/Dockerfile, Release Script: deploy.sh, Powershell Script: install.ps1, Shell Script: install.sh, Release Script: release.sh, build-installer, actix-web-app
+openclaw             -> Docker image definition: Dockerfile, Docker image definition: scripts/docker/.../Dockerfile (×4), icon, claude auth status
+zerac-ui             -> @zerac-ui/source, b4d1b9a5fa2fab1c   <-- SEE BELOW
+soon-bos             -> Docker image definition: apps/bos-api/Dockerfile, ..., apps, alphaclaw vm, soon-bos
+finance-context-ts   -> Docker image definition: ExtAPI.Dockerfile, Docker image definition: Scheduler.Dockerfile, ..., DELETE /sync/front/:connectionId/v1, ...
+soon-link            -> Docker image definition: packages/backend/Dockerfile, Docker image definition: packages/frontend/Dockerfile, soon-link
+money (workspace)    -> arb_engine, rust-arb-bot
+zerac (workspace)    -> internal-api, mcp-api, user-api, admin-api, admin-ui, client-ui, user-ui, agent, agent, agent
+soon (workspace)     -> bos-api, soon-sync-proxy, ext-web-api, soon-ui, backend, frontend, api, bos-web, ext-api, api
+```
+
+**No `Un`-style truncation** (the original hoggan `Uninstall.bat` → `"Un"`
+Finding 2 shape) anywhere — `hoggan` now reads full, legible names
+(`Installer: Install.nsi`, `Installer: Uninstall.bat`, etc.). **No
+`${VAR}`/template-literal leaks** in any name. **No hash-shaped
+_domain_ labels** (consistent with Finding 3 above).
+
+**However: one hash-shaped _deployable name_ found — `zerac-ui`'s second
+deployable is literally `b4d1b9a5fa2fab1c`.** Traced this to ground rather
+than waving it through:
+
+- `b4d1b9a5fa2fab1c` is exactly `sha256(path.resolve('~/dev/zerac/zerac-ui')).digest('hex').slice(0, 16)`
+  — verified by recomputing it directly (`node -e "console.log(crypto.createHash('sha256')...`).
+- This is the `project_id` the harness computes in
+  `product-analysis.ts:96`, which flows into
+  `apps/mcp-server/src/remote-analyzer-service.ts`'s `handleAnalyze` as
+  `analysisId = request.project_id || makeAnalysisId(...)` (line ~1155),
+  which becomes the on-disk **workspace directory name** via
+  `workspacePath(dataDir, analysisId)` → `safeName(analysisId)` (line
+  ~1497-1501) — i.e. the real orchestrator runs with `projectPath` pointing
+  at a directory literally named after the hash, not `zerac-ui`.
+- `zerac-ui`'s repo root has a `Procfile` (`web: npm run start:user`).
+  `packages/analyzer-core/src/analyzer/core/deployable-evidence/providers/deploy-manifests.ts`'s
+  `collectProcfile` (~line 285) computes `dir = path.dirname(file)`; for a
+  root-level Procfile, `dir === '.'`, so the provider falls back to `name:
+  path.basename(dir) === '.' ? path.basename(projectPath) : path.basename(dir)`
+  — and `path.basename(projectPath)` is now the hash-named workspace
+  directory's basename, not `"zerac-ui"`.
+- **This is NOT the harness's fault alone and not fully covered by the
+  v1.0.11 fix.** `makeAnalysisId()`'s hash-based workspace-naming fallback
+  (`request.project_id || makeAnalysisId(request.project_path || ...)`) is
+  used on **every** `handleAnalyze` call in `remote-analyzer-service.ts`
+  (lines ~1076, ~1155, ~1193), not just the bench harness's explicit
+  `project_id`. Any real end-user repo with a root-level Procfile (or the
+  sibling `collectSimplePaasManifests` path at ~line 360, same fallback
+  shape) would hit the same `path.basename(projectPath)`-resolves-to-a-hash
+  outcome in production, because the analyzer's actual working directory is
+  always a hash-named workspace dir server-side, not the user's real repo
+  path. Confidence: high on the mechanism (traced concretely through
+  `product-analysis.ts:96` → `remote-analyzer-service.ts` `handleAnalyze`/
+  `workspacePath`/`makeAnalysisId` → `deploy-manifests.ts` `collectProcfile`,
+  and independently reproduced the exact hash locally); this is a **new,
+  distinct instance of the "hash-shaped tokens leak into labels" bug class**,
+  not a recurrence of the specific text-parsing bug v1.0.11's
+  `productNameFromFile` fix targeted (that fix hardened NSIS/shell-script
+  product-name text cleanup; it never touched the
+  "root-relative-manifest falls back to `path.basename(projectPath)`"
+  pattern used by `collectProcfile`/`collectSimplePaasManifests` and
+  structurally similar fallbacks elsewhere in `deploy-manifests.ts`,
+  `bin-targets.ts`, `native.ts`, and `mobile.ts`).
+
+**Verdict for Finding 2 re-verification: PASS on the originally-reported
+shape (no truncation, no template leaks, no runaway garbage names across 14
+repos/workspaces); FAIL on a related-but-distinct hash-name shape found this
+session** (`zerac-ui` → `b4d1b9a5fa2fab1c`), rooted in
+`makeAnalysisId`/workspace-directory naming interacting with any
+deployable-evidence provider whose name fallback is
+`path.basename(projectPath)` for a root-relative manifest. Recommend a
+follow-up fix scoped to `remote-analyzer-service.ts`: thread the real
+`request.project_path`'s basename (or `snapshot.project_name`) through to
+`analyzeProjectIncremental`/the deployable-evidence providers as the
+"display" project name, separate from the hash-named workspace directory
+used purely for on-disk isolation — so `path.basename(projectPath)` fallbacks
+never resolve to a cache-key hash. Not fixed in this session (out of the
+claimed scope: this task was harness-robustness + re-verification, not a
+product-code fix); filed here as the concrete, traced finding plus a spawned
+follow-up task.
