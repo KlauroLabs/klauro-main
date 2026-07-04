@@ -1188,6 +1188,7 @@ export class AnalyzerOrchestrator {
     logTiming('frameworkAnalyzers', phaseStart);
 
     phaseStart = Date.now();
+    this.dedupeUtilNodeDuplicates(allNodes, allEdges);
     this.applyCanonicalOrdering(allNodes, allEdges, allEntryPoints, allExitPoints, allLibraries);
     this.linkRouteHandlers(allNodes, allEdges, allEntryPoints);
     this.linkHookUsageFetchers(allNodes, allEdges);
@@ -19181,6 +19182,98 @@ export class AnalyzerOrchestrator {
         existingEdgeIds.add(edgeId);
         break;
       }
+    }
+  }
+
+  /**
+   * Collapse duplicate declaration nodes in place, in particular the `*_util`
+   * nodes react-analyzer.ts's analyzeUtils/extractUtils emits for EVERY
+   * FunctionDeclaration/VariableDeclarator in any file whose path merely looks
+   * util-ish (`/services/`, `/api/`, `.util.`, `.service.`, ...). That pass runs
+   * independently of typescript-javascript-analyzer.ts, which already emits the
+   * canonical `variable_`/`function_`/`class_` node for the same declaration (via
+   * generateId('util', ...) vs the TS analyzer's own id scheme — two different ID
+   * SHAPES for the same source construct). Each analyzer's cross-file reference
+   * resolver (findNodeIdByNameIndexed / nodesByName) only sees that analyzer's own
+   * contribution, so the two nodes never converge on their own: whichever one a
+   * consumer (get_callers, search_nodes, get_node) happens to land on, the OTHER
+   * one silently owns zero or a subset of the edges. This was the root cause behind
+   * exported consts in service/util-like files (e.g. API_CONFIG, API_ENDPOINTS,
+   * STORAGE_KEYS in a typical ui/src/services/*.config.ts) showing 0 incoming
+   * `references`/`calls` edges on the `util_`-shaped duplicate while the real
+   * traffic landed on the `variable_`-shaped twin instead.
+   *
+   * Dedupe key is (source file, name) — not the node id — so it is agnostic to
+   * whichever id-generation scheme produced either node. When both a `*_util` node
+   * and a non-util node exist for the same (file, name), the non-util node is
+   * canonical (richer type: 'variable'/'function'/'class'/'service'/... vs the
+   * generic 'constant_util'/'function_util'); the util node is removed and ANY
+   * edge referencing it (source or target) is redirected onto the canonical node
+   * id so no signal is dropped even if some edge did resolve to the util shape.
+   * If two `*_util` nodes collide (no canonical twin), the first one wins and
+   * later ones are merged into it — never silently doubling a symbol's edges.
+   */
+  private dedupeUtilNodeDuplicates(nodes: CASNode[], edges: CASEdge[]): void {
+    const isUtilNode = (n: CASNode) => typeof n.type === 'string' && n.type.endsWith('_util');
+    // react-analyzer.ts stores an ABSOLUTE path in source.file for every node it
+    // emits (built via path.join(projectPath, relativeFile) — see analyzeUtils/
+    // withSource({ file: fullPath, ... })), while every other analyzer (e.g.
+    // typescript-javascript-analyzer.ts) stores the workspace-RELATIVE path. The
+    // same declaration can therefore carry two different `source.file` strings
+    // depending on which analyzer produced the node, which would silently defeat
+    // a naive (file, name) dedupe key. Normalize to the relative suffix — the
+    // path segment starting at the first `src/` (or `/src/`) component, which is
+    // present in both forms — so the key matches regardless of which analyzer's
+    // absolute-vs-relative convention produced it. Falls back to the raw value
+    // when no `src/` segment is found rather than losing the signal entirely.
+    const normalizeFile = (file: string | undefined): string => {
+      if (!file) return '';
+      const idx = file.indexOf('src/');
+      if (idx === -1) return file;
+      // Prefer a `/src/` boundary (avoids matching a mid-segment substring like
+      // `resrc/`), but tolerate a leading `src/` with no preceding slash too.
+      const boundaryIdx = file.lastIndexOf('/src/');
+      return boundaryIdx !== -1 ? file.slice(boundaryIdx + 1) : file.slice(idx);
+    };
+    const keyOf = (n: CASNode) => `${normalizeFile(n.source?.file)}::${n.name}`;
+
+    const canonicalByKey = new Map<string, CASNode>();
+    for (const node of nodes) {
+      if (isUtilNode(node)) continue;
+      const key = keyOf(node);
+      if (!canonicalByKey.has(key)) canonicalByKey.set(key, node);
+    }
+
+    const redirect = new Map<string, string>(); // dropped util node id -> surviving node id
+    const removals = new Set<string>(); // node ids to drop
+
+    for (const node of nodes) {
+      if (!isUtilNode(node)) continue;
+      const key = keyOf(node);
+      let survivor = canonicalByKey.get(key);
+      if (!survivor) {
+        // No non-util twin — first util node with this key becomes canonical so
+        // duplicate util-only declarations (e.g. two util passes over the same
+        // file) still collapse to one node instead of silently fragmenting edges.
+        canonicalByKey.set(key, node);
+        continue;
+      }
+      if (survivor.id === node.id) continue;
+      redirect.set(node.id, survivor.id);
+      removals.add(node.id);
+    }
+
+    if (removals.size === 0) return;
+
+    for (const edge of edges) {
+      const newSource = redirect.get(edge.source);
+      if (newSource) edge.source = newSource;
+      const newTarget = redirect.get(edge.target);
+      if (newTarget) edge.target = newTarget;
+    }
+
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      if (removals.has(nodes[i].id)) nodes.splice(i, 1);
     }
   }
 

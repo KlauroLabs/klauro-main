@@ -4282,3 +4282,107 @@ describe('orchestrator technologies.languages[].files (real file count, not AST-
     expect(result.languages[0].files).toBe(42);
   });
 });
+
+// Regression coverage for the 2026-07-04 references-idshapes bug: react-analyzer.ts's
+// analyzeUtils/extractUtils emits a `*_util` node (via generateNodeId('util', ...)) for
+// EVERY FunctionDeclaration/VariableDeclarator in any file whose path merely looks
+// util-ish (/services/, /api/, .util., .service., ...), completely independent of
+// typescript-javascript-analyzer.ts's own canonical node for the same declaration. The
+// two nodes have different ID SHAPES and react-analyzer.ts's node carries an ABSOLUTE
+// source.file (built via path.join(projectPath, file)) while the TS analyzer's node
+// carries a workspace-RELATIVE source.file — so a naive (file, name) key would miss the
+// match too. Real-world symptom: get_callers on an exported const in a service/util file
+// (e.g. API_CONFIG in ui/src/services/api.config.ts) returned 0 consumers when a caller
+// happened to land on the util-shaped duplicate, even though the TS-analyzer's real node
+// for the same declaration had the correct incoming reference edges all along.
+describe('orchestrator dedupeUtilNodeDuplicates (2026-07-04 references-idshapes)', () => {
+  function node(partial: Partial<CASNode>): CASNode {
+    return {
+      id: partial.id || 'node_1',
+      name: partial.name || 'thing',
+      type: partial.type || 'variable',
+      source: partial.source,
+      ...partial,
+    } as CASNode;
+  }
+
+  it('drops a util-shaped duplicate node and redirects its edges onto the canonical node, matching across absolute vs relative source.file', () => {
+    const canonical = node({
+      id: 'variable_src_services_api_config_ts_API_CONFIG_0',
+      name: 'API_CONFIG',
+      type: 'variable',
+      source: { file: 'src/services/api.config.ts', line: 1 },
+    });
+    const utilDup = node({
+      id: 'util_src_services_api_config_ts_API_CONFIG_6b657974',
+      name: 'API_CONFIG',
+      type: 'constant_util',
+      // react-analyzer.ts's real-world shape: ABSOLUTE path with a project-root prefix.
+      source: { file: '/Users/dev/project/ui/src/services/api.config.ts', line: 1 },
+    });
+    const consumerCallsUtil: CASEdge = {
+      id: 'reference_consumer_util',
+      source: 'method_consumer_0',
+      target: utilDup.id,
+      type: 'references',
+    } as CASEdge;
+
+    const nodes = [canonical, utilDup];
+    const edges = [consumerCallsUtil];
+
+    orch.dedupeUtilNodeDuplicates(nodes, edges);
+
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0].id).toBe(canonical.id);
+    // The edge that used to target the dropped util node must be redirected onto the
+    // canonical node — evidence is preserved, not dropped.
+    expect(edges[0].target).toBe(canonical.id);
+  });
+
+  it('leaves distinct util nodes for genuinely different declarations untouched', () => {
+    const a = node({ id: 'variable_a', name: 'FOO', source: { file: 'src/a.ts' } });
+    const b = node({
+      id: 'util_b',
+      name: 'BAR',
+      type: 'function_util',
+      source: { file: '/abs/project/src/b.ts' },
+    });
+    const nodes = [a, b];
+    const edges: CASEdge[] = [];
+
+    orch.dedupeUtilNodeDuplicates(nodes, edges);
+
+    expect(nodes).toHaveLength(2);
+    expect(nodes.map((n: CASNode) => n.id).sort()).toEqual(['util_b', 'variable_a']);
+  });
+
+  it('collapses two util-only nodes for the same (file, name) with no canonical twin, keeping the first as survivor', () => {
+    const utilA = node({
+      id: 'util_first',
+      name: 'HELPER',
+      type: 'function_util',
+      source: { file: 'src/helpers.ts' },
+    });
+    const utilB = node({
+      id: 'util_second',
+      name: 'HELPER',
+      type: 'function_util',
+      source: { file: '/abs/project/src/helpers.ts' },
+    });
+    const edgeIntoSecond: CASEdge = {
+      id: 'edge_1',
+      source: 'caller_1',
+      target: utilB.id,
+      type: 'references',
+    } as CASEdge;
+
+    const nodes = [utilA, utilB];
+    const edges = [edgeIntoSecond];
+
+    orch.dedupeUtilNodeDuplicates(nodes, edges);
+
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0].id).toBe(utilA.id);
+    expect(edges[0].target).toBe(utilA.id);
+  });
+});
