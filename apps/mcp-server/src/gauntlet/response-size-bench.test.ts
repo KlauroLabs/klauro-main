@@ -17,7 +17,7 @@ test('response-size-bench: default (compact) tool responses stay under target by
     return;
   }
 
-  assert.ok(report.results.length === 3, `expected 3 tool results, got ${report.results.length}`);
+  assert.ok(report.results.length === 4, `expected 4 tool results, got ${report.results.length}`);
 
   for (const result of report.results) {
     assert.ok(

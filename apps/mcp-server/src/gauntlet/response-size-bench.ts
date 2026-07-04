@@ -46,6 +46,15 @@ export const RESPONSE_SIZE_BUDGETS: ResponseSizeBudget[] = [
   { tool: 'get_summary', budget_bytes: 1500 * 4 },
   { tool: 'search_nodes', budget_bytes: 1000 * 4 },
   { tool: 'resolve_agent_analysis', budget_bytes: 1000 * 4 },
+  // get_flow_concepts had NO default cap on flows returned (one per entry
+  // point) — measured 1,133 flows / ~1.87MB / ~467k tokens on this repo
+  // before query.ts's DEFAULT_MAX_FLOWS=15 fix. 15 capped flows measure
+  // ~14.2k tokens on this repo (each flow carries a full I/L/S/O contract
+  // per flow AND per step, so this is real signal, not filler) — 16000 tok
+  // budget gives modest headroom while still catching any regression back
+  // toward "all entry points" by default (a regression would blow past this
+  // by 1-2 orders of magnitude, not marginally).
+  { tool: 'get_flow_concepts', budget_bytes: 16000 * 4 },
 ];
 
 function byteSize(value: unknown): number {
@@ -80,6 +89,11 @@ export async function runResponseSizeBench(projectPath: string): Promise<Respons
   // resolve_agent_analysis — default detail is compact.
   const resolved = await agentProjectMap.resolveAgentAnalysis({ path: projectPath });
   results.push(budgetResult('resolve_agent_analysis', byteSize(resolved)));
+
+  // get_flow_concepts — default (no maxFlows passed) must stay capped at
+  // DEFAULT_MAX_FLOWS, not silently return one flow per entry point.
+  const flowConcepts = query.getFlowConcepts(cas, {});
+  results.push(budgetResult('get_flow_concepts', byteSize(flowConcepts)));
 
   return { path: projectPath, skipped: false, results };
 }

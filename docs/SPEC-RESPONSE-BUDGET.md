@@ -1,6 +1,31 @@
 # Klauro — Spec: Default-Compact Responses for High-Traffic Onboarding Tools
 
 > **Status: PARTIALLY IMPLEMENTED** as of e1780f62 (2026-07-02) — detail/compact defaults + get_coding_context truncation signal shipped; replay-amplification measured.
+>
+> **2026-07-04 update:** audited the remaining high-traffic tools this spec didn't cover
+> (`get_flow_concepts`, `get_route_table`, `get_callers`, `get_agent_context`). Found and fixed the
+> single largest offender measured to date: `get_flow_concepts` had **no default cap** on flows
+> returned when `target` was omitted (one flow per entry point, each carrying a full I/L/S/O
+> contract per flow+step) — measured **1,133 flows / ~1.87MB / ~467k tokens** on this repo's own
+> analysis, dwarfing every response measured in §2. Fixed with `DEFAULT_MAX_FLOWS = 15` in
+> `query.ts`'s `getFlowConcepts` (only applied when `target` is omitted — a targeted lookup is
+> already narrow) plus explicit `total_available`/`truncated` fields and a `gaps` hint (no silent
+> drop); the one internal caller that needs every flow for correctness
+> (`conceptIndexForWorkspace` in `server.ts`, used by the coordination fabric) now explicitly passes
+> `maxFlows: entry_points.length` to opt out. Measured after fix: 15 flows / ~20KB / ~5k tokens on
+> this repo — still real signal (each flow keeps its full contract), not filler. `get_route_table`
+> and `get_callers`/`get_callees` were already properly paginated (explicit `limit`/`offset`/`total`/
+> `truncated`) from earlier work — no changes needed. Also fixed a smaller `get_agent_context`
+> inconsistency: `compactMinimalArchitectureContext`'s `inventory_counts` was the only field in that
+> compaction tier left unbounded (sibling profiles all cap it via `compactNonZeroCounts`) and
+> `buildRiskContextForAgent`'s `repo_top_risks` duplicated the target/scoped risk that `top_risks`/
+> `target_risk` already carried whenever it also ranked repo-wide — both fixed at the source so every
+> profile benefits. New/updated tests: `query.test.ts` (3 new `getFlowConcepts` cases: default cap,
+> explicit override, target bypasses cap), `agent-workflow.test.ts` (1 new `repo_top_risks` dedup
+> case), `response-size-bench.ts`/`.test.ts` (added `get_flow_concepts` to the tracked budgets, now 4
+> tools). `npx tsc --noEmit` clean both packages; analyzer-core jest 850/850, node 132/132;
+> mcp-server suite green (see feedback file for exact count). Feedback:
+> `~/.klauro/agent-feedback/2026-07-04-token-efficiency.md`.
 
 > **Audience:** builder agents. Investigation done 2026-07-02 via Klauro MCP tools (dogfooded on
 > `proof-of-concept` itself, a 33,932-node / 33,078-edge analyzed repo) + source read confirmation.

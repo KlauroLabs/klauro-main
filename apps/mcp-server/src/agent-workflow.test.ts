@@ -307,6 +307,41 @@ test('agent context exposes compact risk context for broad tasks before a node i
   });
 });
 
+test('agent context risk_context.repo_top_risks excludes the target/scoped risks already shown in top_risks (no duplication)', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    // Add a second, independent high-risk node so repo-wide risk ranking has
+    // more than the one node the target already scopes to.
+    (cas as any).change_risks.push({
+      node_id: 'auth-service',
+      risk_level: 'high',
+      risk_factors: [{ factor: 'security-sensitive', severity: 'high', details: 'Handles auth tokens.' }],
+      downstream_impact: { direct_callers: [], transitive_callers: [], affected_call_chains: [], affected_entry_points: [] },
+      test_protection: { has_direct_tests: false, has_integration_tests: false, test_ids: [] },
+      stability_context: { recent_churn: false, commit_count_30d: 0, bug_fix_density: 0 },
+      recommendations: [],
+    });
+    (cas as any).change_risk_summary.high_risk_nodes.push('auth-service');
+
+    const context: any = await getAgentContext(cas, workspace, {
+      task_type: 'modify',
+      target: 'UsersService',
+    });
+
+    const rc = context.work_context.risk_context;
+    assert.equal(rc.target_risk?.name, 'UsersService');
+    assert.ok(rc.top_risks.some((r: any) => r.node_id === 'users-service'));
+    // The target's own risk (users-service) must not be repeated in
+    // repo_top_risks now that it's already surfaced via top_risks/target_risk.
+    assert.ok(
+      !rc.repo_top_risks.some((r: any) => r.node_id === 'users-service'),
+      `expected users-service to be excluded from repo_top_risks, got: ${JSON.stringify(rc.repo_top_risks)}`,
+    );
+    // The other repo-wide risk should still be visible as background.
+    assert.ok(rc.repo_top_risks.some((r: any) => r.node_id === 'auth-service'));
+  });
+});
+
 test('agent context prioritizes documentation files for documentation tasks', async () => {
   await withWorkspace(async workspace => {
     fs.mkdirSync(path.join(workspace, 'docs', 'mcp'), { recursive: true });

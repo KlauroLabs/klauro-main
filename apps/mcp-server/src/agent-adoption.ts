@@ -2614,7 +2614,7 @@ function compactMinimalArchitectureContext(context: any) {
       confidence: pattern.confidence,
       guidance: pattern.guidance,
     })) : [],
-    inventory_counts: context.inventory_counts || {},
+    inventory_counts: compactNonZeroCounts(context.inventory_counts, 8),
     inventory_examples: compactSmallArchitectureInventory(context.inventory_examples, 2),
     relevant_inventory: compactSmallArchitectureInventory(context.relevant_inventory, 2),
     pattern_decision_matrix: Array.isArray(context.pattern_decision_matrix) ? context.pattern_decision_matrix.slice(0, 4).map((item: any) => ({
@@ -3787,10 +3787,21 @@ function buildRiskContextForAgent(
     .slice(0, options.limit || 6)
     .map(risk => compactChangeRiskForAgent(risk, nodeById.get(risk.node_id)));
 
+  // Excludes node_ids already surfaced in `scopedRisks`/`target_risk` — without
+  // this, a target's own high-risk entry (or a file-scoped risk) gets
+  // duplicated verbatim into repo_top_risks whenever it also ranks in the
+  // repo-wide top-N, which it very often does (that's *why* it's scoped in).
+  // repo_top_risks is meant to be "other repo-wide risks for background",
+  // not a re-list of what top_risks already showed.
+  const scopedNodeIds = new Set(uniqueRisks([
+    ...(targetRisk ? [targetRisk] : []),
+    ...fileRisks,
+  ]).map(risk => risk.node_id));
   const repoTopRisks = uniqueRisks([
     ...summaryRiskIds.map((id: string) => riskByNode.get(id)).filter(Boolean),
     ...risks,
   ])
+    .filter(risk => !scopedNodeIds.has(risk.node_id))
     .sort((left, right) => changeRiskRank(right) - changeRiskRank(left))
     .slice(0, options.limit || 6)
     .map(risk => compactChangeRiskForAgent(risk, nodeById.get(risk.node_id)));

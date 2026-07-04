@@ -2681,24 +2681,55 @@ export function getInterfaceSignature(
   };
 }
 
+// getFlowConcepts has no default cap on the number of flows returned when
+// `target` is omitted — one flow per entry point, each carrying a full
+// I/L/S/O + Constraints contract per flow AND per step. On a repo with
+// hundreds/thousands of entry points (this repo: 1,133) that is ~467k
+// tokens in a single uncapped response — silently, since the only signal
+// was an undocumented "default: all" in the tool description. This default
+// keeps the common "browse a handful of flows" case cheap while an agent
+// that genuinely wants everything can still ask for it explicitly via
+// max_flows (a large explicit value, or Infinity-ish via a big number) —
+// never silent, always paginated with total/truncated/hint.
+const DEFAULT_MAX_FLOWS = 15;
+
 /**
  * getFlowConcepts — the FLOW -> STEP tier of the conceptual understanding
  * layer (docs/SPEC-CONCEPTUAL-LAYER.md), thin query-layer wrapper over
  * computeFlowConcepts (packages/analyzer-core/src/analyzer/core/flow-concepts.ts).
  * `target` filters to entry points matching an id/name/route-path substring;
- * omitted returns all derivable flows (bounded by maxFlows).
+ * omitted returns the top DEFAULT_MAX_FLOWS derivable flows (explicit
+ * `maxFlows` overrides the default; pass a value >= the real entry_points
+ * count to get everything).
  */
 export function getFlowConcepts(
   cas: CASOutput,
   opts: { target?: string; maxDepth?: number; maxFunctionsPerFlow?: number; maxFlows?: number; includeStructural?: boolean } = {}
 ) {
+  // Only apply the default cap when browsing all flows (no target filter).
+  // A targeted lookup ("flows touching this entry point") is already
+  // naturally narrow and an explicit ask — don't second-guess it.
+  const effectiveMaxFlows = opts.maxFlows && opts.maxFlows > 0
+    ? opts.maxFlows
+    : (opts.target ? undefined : DEFAULT_MAX_FLOWS);
+
   const computeOpts: ComputeFlowConceptsOptions = {
     target: opts.target,
     maxDepth: opts.maxDepth,
     maxFunctionsPerFlow: opts.maxFunctionsPerFlow,
-    maxFlows: opts.maxFlows,
+    // Probe one extra so we can report truncation honestly without a
+    // second full compute pass just to learn the true total.
+    maxFlows: effectiveMaxFlows ? effectiveMaxFlows + 1 : undefined,
   };
-  const flows = computeFlowConcepts(cas, computeOpts);
+  const probedFlows = computeFlowConcepts(cas, computeOpts);
+  const truncated = effectiveMaxFlows !== undefined && probedFlows.length > effectiveMaxFlows;
+  const flows = truncated ? probedFlows.slice(0, effectiveMaxFlows) : probedFlows;
+  // True total when we didn't truncate is just what we got; when we did,
+  // it's at least effectiveMaxFlows+1 (we don't re-probe uncapped here —
+  // entry_points.length is the authoritative upper bound for "all flows").
+  const totalFlowsAvailable = truncated
+    ? Math.max(probedFlows.length, (cas.entry_points || []).length)
+    : flows.length;
 
   const gaps: string[] = [];
   if (!cas.entry_points || cas.entry_points.length === 0) {
@@ -2706,6 +2737,12 @@ export function getFlowConcepts(
   }
   if (opts.target && flows.length === 0) {
     gaps.push(`No entry point matched target "${opts.target}" — check get_entry_points/get_route_table for valid ids/paths.`);
+  }
+  if (truncated) {
+    gaps.push(
+      `Showing ${flows.length}/${totalFlowsAvailable} flows (default cap ${DEFAULT_MAX_FLOWS} when browsing all entry points). ` +
+      `Pass max_flows to see more, or target to narrow to a specific entry point/route/name.`
+    );
   }
 
   // Cross-link each flow/step to the STRUCTURAL perspectives (architectural
@@ -2735,7 +2772,13 @@ export function getFlowConcepts(
 
   return {
     flows: flowsOut,
+    // total = count returned (unchanged meaning/back-compat with prior
+    // callers that read `.total` as "how many flows are in `flows`").
+    // `total_available`/`truncated` are additive fields carrying the honest
+    // "is there more" signal instead of a silent drop.
     total: flows.length,
+    total_available: totalFlowsAvailable,
+    truncated,
     gaps: gaps.length ? gaps : undefined,
   };
 }

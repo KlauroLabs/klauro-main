@@ -675,7 +675,12 @@ async function conceptualConflictCasForWorkspace(workspace: string): Promise<Con
 async function conceptIndexForWorkspace(workspace: string): Promise<ConceptIndex> {
   try {
     const cas = await getAnalysis(workspace);
-    const { flows } = query.getFlowConcepts(cas as any);
+    // Internal coordination-fabric index, not an agent-facing token cost —
+    // needs every flow to be a correct concept index, so explicitly opt out
+    // of getFlowConcepts' default browse-cap (query.ts DEFAULT_MAX_FLOWS)
+    // rather than silently losing coverage for entry points beyond it.
+    const allEntryPoints = (cas.entry_points || []).length;
+    const { flows } = query.getFlowConcepts(cas as any, allEntryPoints > 0 ? { maxFlows: allEntryPoints } : {});
     return buildConceptIndex(flows);
   } catch {
     return buildConceptIndex([]);
@@ -3879,7 +3884,7 @@ function registerTools(server: McpServer) {
         target: z.string().optional().describe('Restrict to entry points matching this id, name, or route path substring (e.g. "/orders" or "createOrder"); omit for all derivable flows'),
         max_depth: z.number().optional().describe('Bound on forward call-chain traversal depth from the entry point (default 6)'),
         max_functions_per_flow: z.number().optional().describe('Cap on distinct functions traced per flow, deduped (default 40)'),
-        max_flows: z.number().optional().describe('Cap on number of flows returned (default: all matching entry points)'),
+        max_flows: z.number().optional().describe('Cap on number of flows returned (default 15 when target is omitted — each flow carries a full I/L/S/O contract per flow+step, so "all entry points" can be very large on big repos; response reports total_available/truncated so you know when to raise this. When target is set the result is already narrow and uncapped by default.)'),
       } as any,
     } as any,
     async ({ path, target, max_depth, max_functions_per_flow, max_flows }: any) => withErrorHandling(async () => {

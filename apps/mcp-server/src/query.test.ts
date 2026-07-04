@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { CASOutput, CASNode, CASEdge } from '../../../packages/analyzer-core/src/types/cas.types';
-import { getCodingContext } from './query';
+import type { CASOutput, CASNode, CASEdge, CASEntryPoint } from '../../../packages/analyzer-core/src/types/cas.types';
+import { getCodingContext, getFlowConcepts } from './query';
 
 // Builds a synthetic CAS with a single high-fanout "hub" node that has more
 // callers/callees than the default display limit, plus a handful of
@@ -175,4 +175,78 @@ test('getCodingContext offers near-name matches for a typo close to a real node 
 
   assert.ok(typeof context.error === 'string');
   assert.ok(context.near_matches.some((m: any) => m.name === 'Hub'), `expected a near match for "Hub", got: ${JSON.stringify(context.near_matches)}`);
+});
+
+// Builds a CAS with `entryPointCount` independent traceable entry points
+// (each a small function with its own name/route), so getFlowConcepts has
+// one candidate flow per entry point when no `target` filter is given —
+// the shape that produced 1,133 flows (~1.87MB / ~467k tokens) on the real
+// proof-of-concept repo before the default flow cap was added.
+function buildManyEntryPointsCas(entryPointCount: number): CASOutput {
+  const nodes: CASNode[] = [];
+  const entry_points: CASEntryPoint[] = [];
+
+  for (let i = 0; i < entryPointCount; i++) {
+    const nodeId = `function_src/handlers/handler${i}.ts_handler${i}_0`;
+    nodes.push({
+      id: nodeId,
+      name: `handler${i}`,
+      type: 'function',
+      source: { file: `src/handlers/handler${i}.ts`, line: 1 },
+      metadata: {},
+    } as CASNode);
+    entry_points.push({
+      id: `entry_${i}`,
+      type: 'http_route',
+      name: `handler${i}`,
+      source_node: nodeId,
+      trigger: { method: 'GET', path: `/handler${i}` },
+    } as unknown as CASEntryPoint);
+  }
+
+  return {
+    cas_version: '1.11.0',
+    analysis_timestamp: new Date().toISOString(),
+    analysis_id: 'analysis-many-entry-points-test',
+    system: { id: 'system-test', name: 'many-entry-points-test', type: 'service', root_path: '/tmp/many-entry-points' },
+    nodes,
+    edges: [],
+    entry_points,
+    analyzer_contributions: [],
+  } as unknown as CASOutput;
+}
+
+test('getFlowConcepts defaults to a bounded number of flows (not one per entry point) when no target is given', () => {
+  const cas = buildManyEntryPointsCas(200);
+  const result: any = getFlowConcepts(cas, {});
+
+  // Default cap (15) must kick in, not "all 200 entry points".
+  assert.ok(result.flows.length <= 15, `expected <= 15 flows by default, got ${result.flows.length}`);
+  assert.equal(result.total, result.flows.length);
+  assert.equal(result.truncated, true);
+  assert.ok(result.total_available >= 200, `expected total_available to reflect the real entry point count, got ${result.total_available}`);
+  assert.ok(
+    (result.gaps || []).some((g: string) => g.includes('max_flows')),
+    `expected a gap explaining the default cap, got: ${JSON.stringify(result.gaps)}`,
+  );
+});
+
+test('getFlowConcepts returns every flow when max_flows is explicitly raised past the real count', () => {
+  const cas = buildManyEntryPointsCas(20);
+  const result: any = getFlowConcepts(cas, { maxFlows: 20 });
+
+  assert.equal(result.flows.length, 20);
+  assert.equal(result.total, 20);
+  assert.equal(result.truncated, false);
+});
+
+test('getFlowConcepts does not apply the default browse-cap when target narrows to a specific entry point', () => {
+  const cas = buildManyEntryPointsCas(200);
+  const result: any = getFlowConcepts(cas, { target: 'handler5' });
+
+  // A targeted lookup is already narrow (matches only entry points whose
+  // id/name/route contains "handler5" — here just one), so it should not
+  // additionally get capped/truncated by the all-flows default.
+  assert.equal(result.truncated, false);
+  assert.ok(result.flows.length >= 1);
 });
