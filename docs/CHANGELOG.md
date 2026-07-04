@@ -5,6 +5,36 @@ agent-feedback reports (`~/.klauro/agent-feedback/*.md`) — nothing is asserted
 Where an item was still in flight at the time this entry was written, it is marked **pending
 final verify** rather than presented as done.
 
+## v1.0.18 — Call-graph blast-radius + fabric proven at scale (2026-07-04)
+
+From the "prove it" campaign. A with-vs-without-Klauro impact benchmark exposed real tool gaps
+(honest negative on small comprehension tasks); the flagship one is now fixed.
+
+### Fixed
+- **`get_callers` now tracks cross-file references to exported constants and interface properties**,
+  not just function calls — the core of blast-radius analysis on the most common JS/TS pattern. Root
+  cause was a dead-path footgun: the live `TreeSitterTSExtractor` only walked `call_expression`. Added
+  a distinct `references` edge (never fabricated). Before: `get_callers(TIER_RATE_LIMITS)` on soon-lens
+  = 1 (file only); after = 4 (the real cross-file consumers, matching grep).
+- Import-source-gated call resolution (imported *local* functions no longer mislabeled external).
+- `assess_change_risk` returns an explicit `{unsupported, reason, suggested_node_id}` on unsupported
+  node types instead of a misleading whole-repo dump.
+- `get_configuration(affecting_node_id)` surfaces directly-branched-on `process.env` flags via the new
+  references edges.
+- 882 analyzer-core jest; full mcp-server suite 1,288 (0 failures) on this tree.
+
+### Proven
+- **Fabric fleet-ready at scale** (`docs/FABRIC-FLEET-PROVEN.md`): a real N-process (8→64) concurrent
+  stress harness, verified by replaying the on-disk claim log — **0 double-grants across 960+ real
+  processes**, perfect shared-file correctness, conceptual-conflict precision 1.0. Honest limits:
+  same-machine only (cross-machine tier untested), no crash-recovery test.
+- Verification breadth closed: full mcp-server suite 1,288/0-fail, corpus 42 repos/0 crashes, live prod
+  functional smoke PASS.
+
+### Deferred (honest)
+- `search_nodes` conceptual-query recall (needs an eval harness); `get_security_overview`
+  enforced-but-conditionally-disabled state (schema change). Not patched speculatively.
+
 ## v1.0.17 — Stop analyzing the legacy reference tree as live code (2026-07-04)
 
 Follow-up from v1.0.16's file-count fix. Verifying the "875 of ~1,240 files" gap (verify-first) showed
