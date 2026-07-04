@@ -106,6 +106,45 @@ describe('SymfonyAnalyzer', () => {
       ]);
     });
 
+    it('composes the full path purely from routes.yaml prefix when the controller has no class-level route attribute', async () => {
+      // Regression: FOSRestBundle convention controllers often carry no class-level
+      // #[Rest\Route(...)] at all — the full mount path comes entirely from the
+      // routes.yaml resource/prefix mapping. Confirmed against a real repo
+      // (truckspy's CustomerApiTokenController), which has only method-level
+      // #[Rest\Get("/{id}/api-token")] attributes and is mounted at /api/customer
+      // solely via config/routes.yaml.
+      await writeFile('config/routes.yaml', [
+        'Customer:',
+        '  resource:',
+        '    path: ../src/Controller/Api/Customer',
+        '    namespace: App\\Controller\\Api\\Customer',
+        '  type: attribute',
+        '  prefix: /api/customer',
+      ].join('\n'));
+
+      await writeFile('src/Controller/Api/Customer/CustomerApiTokenController.php', [
+        '<?php',
+        'namespace App\\Controller\\Api\\Customer;',
+        'use FOS\\RestBundle\\Controller\\Annotations as Rest;',
+        '',
+        'class CustomerApiTokenController',
+        '{',
+        '    #[Rest\\Get("/{id}/api-token")]',
+        '    public function detail(): array',
+        '    {',
+        '    }',
+        '}',
+      ].join('\n'));
+
+      const contribution = await analyze();
+      const entries = httpEntries(contribution);
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0].trigger.method).toBe('GET');
+      expect(entries[0].trigger.path).toBe('/api/customer/{id}/api-token');
+      expect(entries[0].handler.method_name).toBe('detail');
+    });
+
     it('applies YAML resource prefixes from routes.yaml to attribute controllers', async () => {
       await writeFile('config/routes.yaml', [
         'Web:',

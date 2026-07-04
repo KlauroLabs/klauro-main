@@ -179,36 +179,21 @@ const EXCLUDED_FILES = new Set([
   '.pypirc',
 ]);
 
-const SOURCE_EXTENSIONS = new Set([
-  '.ts',
-  '.tsx',
-  '.js',
-  '.jsx',
-  '.mjs',
-  '.cjs',
-  '.py',
-  '.java',
-  '.cs',
-  '.go',
-  '.rs',
-  '.php',
-  '.dart',
-  '.json',
+// Extensions carried into the remote snapshot even though they aren't a registered
+// programming-language source extension or a named manifest in language-registry.ts.
+// Several framework analyzers read plain, non-manifest-named config files by glob
+// (e.g. Symfony's config/routes*.yaml + config/packages/security.yaml for route-prefix
+// and access_control composition; container/CI YAML for topology). Without this
+// allowlist those files are silently dropped from every remote (analyzeForBench /
+// production) analysis even though a direct, on-disk analyzer run picks them up fine —
+// found via a route composition audit: truckspy's config/routes.yaml prefix mapping
+// never reached the server, so Symfony route paths reported only the local fragment
+// (e.g. "/{id}/api-token" instead of "/api/customer/{id}/api-token").
+const EXTRA_INCLUDED_EXTENSIONS = new Set([
   '.yaml',
   '.yml',
   '.toml',
-  '.xml',
-  '.prisma',
-  '.graphql',
-  '.gql',
-  '.md',
-  '.txt',
-  '.sql',
-  '.html',
-  '.css',
-  '.scss',
-  '.vue',
-  '.svelte',
+  '.ini',
 ]);
 
 const IMPORTANT_EXTENSIONLESS = new Set([
@@ -550,7 +535,11 @@ async function shouldIncludeRelativePath(
   // analyzable source/manifest — so the snapshot we send to the product can never
   // drift behind the languages the analyzer supports (the stale hardcoded list
   // dropped Kotlin/.kt, Ruby/.rb, C# .csproj manifests, Swift, C++, etc.).
-  return isRegisteredSourceExtension(base) || isRegisteredManifest(base) || IMPORTANT_EXTENSIONLESS.has(base);
+  if (isRegisteredSourceExtension(base) || isRegisteredManifest(base) || IMPORTANT_EXTENSIONLESS.has(base)) {
+    return true;
+  }
+  const ext = base.slice(base.lastIndexOf('.'));
+  return EXTRA_INCLUDED_EXTENSIONS.has(ext);
 }
 
 function listGitChanges(root: string): Array<{ path: string; status: 'added' | 'modified' | 'deleted' }> {

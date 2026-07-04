@@ -139,6 +139,35 @@ test('shared source snapshot rejects uncommitted git changes', async () => {
   });
 });
 
+test('source snapshot carries plain (non-manifest-named) config YAML files framework analyzers depend on', async () => {
+  // Regression for a route-composition bug: Symfony's config/routes.yaml (resource
+  // prefixes) and config/packages/security.yaml (access_control) are plain .yaml
+  // files with no registered source extension or manifest basename, so the remote
+  // snapshot gate silently dropped them — the server-side analysis then reported
+  // only the controller-local route fragment (e.g. "/{id}/api-token") instead of
+  // the true composed path ("/api/customer/{id}/api-token"). Direct on-disk
+  // analyzer runs never showed this because they read the files straight off disk.
+  await withFixtureWorkspace(async workspace => {
+    spawnSync('git', ['init'], { cwd: workspace.repo, encoding: 'utf8' });
+    fs.mkdirSync(path.join(workspace.repo, 'config', 'packages'), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace.repo, 'config', 'routes.yaml'),
+      'Customer:\n  resource:\n    path: ../src/Controller/Api/Customer\n  type: attribute\n  prefix: /api/customer\n'
+    );
+    fs.writeFileSync(
+      path.join(workspace.repo, 'config', 'packages', 'security.yaml'),
+      'security:\n  access_control:\n    - { path: ^/api/customer/, roles: ROLE_USER }\n'
+    );
+    spawnSync('git', ['add', '-A'], { cwd: workspace.repo, encoding: 'utf8' });
+    spawnSync('git', ['commit', '-m', 'add symfony config'], { cwd: workspace.repo, encoding: 'utf8' });
+
+    const snapshot = await buildSourceSnapshot(workspace.repo);
+    const paths = snapshot.files.map(file => file.path);
+    assert.ok(paths.includes('config/routes.yaml'), 'config/routes.yaml should be in the snapshot');
+    assert.ok(paths.includes('config/packages/security.yaml'), 'config/packages/security.yaml should be in the snapshot');
+  });
+});
+
 test('analyzer is one product (hosted) — no local/remote mode field at all', () => {
   // One product: analysis goes to the hosted service (heavy work + AI on the VPS),
   // production by default. There is no analyzer.mode. See docs/KLAURO-PRODUCT-MODEL.md.
