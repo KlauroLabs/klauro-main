@@ -27,8 +27,13 @@ interface ArchitectureLibraryRule {
   category: ArchitectureLibraryCategory;
   packageManagers: string[];
   packages: string[];
-  usagePatterns: Array<{ label: string; pattern: RegExp; exitType?: CASExitPoint['type']; action?: string }>;
+  usagePatterns: Array<{ label: string; pattern: RegExp; exitType?: CASExitPoint['type']; action?: string; requiresImportEvidence?: boolean }>;
   agentGuidance: string;
+  /** Other rule names whose usage-pattern symbols this rule's patterns may collide with
+   * (e.g. TypeORM's bare `EntityManager`/`Repository<` also match MikroORM). When a rule
+   * lists conflictsWith, requiresImportEvidence patterns are gated on real per-file import
+   * source, never on bare symbol/dependency presence alone. */
+  conflictsWith?: string[];
 }
 
 interface ArchitecturalLibraryAnalyzerOptions {
@@ -55,10 +60,21 @@ interface UsageHit {
 
 const RULES: ArchitectureLibraryRule[] = [
   rule('typeorm', 'TypeORM', 'orm', ['npm'], ['typeorm'], [
-    usage('repository access', /\b(getRepository|Repository<|DataSource|EntityManager)\b/, 'database', 'query'),
-    usage('entity decorators', /\b@(Entity|Column|PrimaryGeneratedColumn|ManyToOne|OneToMany)\b/),
-    usage('migration', /\b(MigrationInterface|QueryRunner)\b/),
-  ], 'Preserve repository/entity/migration boundaries and avoid bypassing TypeORM repositories with ad hoc SQL unless the repo already does that.'),
+    // Bare `EntityManager` / `getRepository` / `DataSource` also appear verbatim in
+    // MikroORM (@mikro-orm/core) and other ORMs, so this pattern is gated on the file
+    // actually importing from 'typeorm' (see requiresImportEvidence handling below),
+    // not just the symbol name or the package being declared anywhere in the repo.
+    usage('repository access', /\b(getRepository|Repository<|DataSource|EntityManager)\b/, 'database', 'query', true),
+    usage('entity decorators', /\b@(Entity|Column|PrimaryGeneratedColumn|ManyToOne|OneToMany)\b/, undefined, undefined, true),
+    usage('migration', /\b(MigrationInterface|QueryRunner)\b/, undefined, undefined, true),
+  ], 'Preserve repository/entity/migration boundaries and avoid bypassing TypeORM repositories with ad hoc SQL unless the repo already does that.', ['mikro-orm']),
+  rule('mikro-orm', 'MikroORM', 'orm', ['npm'], ['@mikro-orm/core', '@mikro-orm/nestjs', '@mikro-orm/postgresql', '@mikro-orm/mysql', '@mikro-orm/sqlite', '@mikro-orm/mongodb'], [
+    // `EntityManager` / `EntityRepository<` / `getRepository` collide with TypeORM's
+    // symbols of the same name, so this too is gated on real import-source evidence.
+    usage('repository access', /\b(getRepository|EntityRepository<|EntityManager)\b/, 'database', 'query', true),
+    usage('entity decorators', /\b@(Entity|Property|PrimaryKey|ManyToOne|OneToMany|ManyToMany)\b/, undefined, undefined, true),
+    usage('migration', /\b(Migration|MikroORM\.init)\b/, undefined, undefined, true),
+  ], 'Preserve repository/entity/migration boundaries and avoid bypassing MikroORM repositories/EntityManager with ad hoc SQL unless the repo already does that.', ['typeorm']),
   rule('sequelize', 'Sequelize', 'orm', ['npm'], ['sequelize'], [
     usage('model definition', /\b(Model\.init|sequelize\.define|DataTypes\.)\b/),
     usage('query', /\b(findAll|findOne|create|update|destroy)\s*\(/, 'database', 'query'),
@@ -400,6 +416,7 @@ export class ArchitecturalLibraryAnalyzer extends BaseAnalyzer {
 
   private async findUsages(projectPath: string, files: string[], rule: ArchitectureLibraryRule): Promise<UsageHit[]> {
     const usages: UsageHit[] = [];
+    const needsImportEvidence = rule.usagePatterns.some(pattern => pattern.requiresImportEvidence);
     for (const relativeFile of files) {
       const absoluteFile = path.join(projectPath, relativeFile);
       let content = '';
@@ -409,9 +426,22 @@ export class ArchitecturalLibraryAnalyzer extends BaseAnalyzer {
         continue;
       }
       if (!this.fileMayUseRule(content, rule)) continue;
+
+      // Import-source evidence: does this file actually import from one of the rule's
+      // packages? Computed once per file, reused for every requiresImportEvidence pattern
+      // below — this is what prevents a bare shared symbol name (e.g. EntityManager,
+      // used verbatim by both typeorm and @mikro-orm/core) from being attributed to a
+      // specific framework it wasn't actually imported from.
+      const fileImportsRulePackage = needsImportEvidence
+        ? this.extractImports(content).some(importSource => rule.packages.some(
+            pkg => importSource === pkg || importSource.startsWith(`${pkg}/`)
+          ))
+        : false;
+
       const lines = content.split(/\r?\n/);
       lines.forEach((line, index) => {
         for (const pattern of rule.usagePatterns) {
+          if (pattern.requiresImportEvidence && !fileImportsRulePackage) continue;
           pattern.pattern.lastIndex = 0;
           if (pattern.pattern.test(line)) {
             usages.push({
@@ -837,11 +867,12 @@ function rule(
   packageManagers: string[],
   packages: string[],
   usagePatterns: ArchitectureLibraryRule['usagePatterns'],
-  agentGuidance: string
+  agentGuidance: string,
+  conflictsWith?: string[]
 ): ArchitectureLibraryRule {
-  return { name, displayName, category, packageManagers, packages, usagePatterns, agentGuidance };
+  return { name, displayName, category, packageManagers, packages, usagePatterns, agentGuidance, conflictsWith };
 }
 
-function usage(label: string, pattern: RegExp, exitType?: CASExitPoint['type'], action?: string) {
-  return { label, pattern, exitType, action };
+function usage(label: string, pattern: RegExp, exitType?: CASExitPoint['type'], action?: string, requiresImportEvidence?: boolean) {
+  return { label, pattern, exitType, action, requiresImportEvidence };
 }
