@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { inferFootprintFromIntent, partitionTasks } from './partitioner';
+import { inferFootprintFromIntent, partitionTasks, groupTasksByConcept } from './partitioner';
 import type { PartitionCas, PartitionTask } from './partitioner';
 
 const cas: PartitionCas = {
@@ -189,4 +189,60 @@ test('resolves target_symbols by bare name as well as node id', () => {
   ];
   const result = partitionTasks(tasks, cas, { includeBlastRadius: false });
   assert.equal(result.batches.length, 2, 'same symbol referenced by name vs id must still conflict');
+});
+
+test('groupTasksByConcept groups tasks by flow_id (preferred over capability_id)', () => {
+  const tasks: PartitionTask[] = [
+    { id: 't1', intent: 'charge step work', flow_id: 'flow::checkout' },
+    { id: 't2', intent: 'persist step work', flow_id: 'flow::checkout' },
+    { id: 't3', intent: 'refund flow work', flow_id: 'flow::refund' },
+    { id: 't4', intent: 'no concept declared at all' },
+  ];
+  const groups = groupTasksByConcept(tasks);
+  assert.equal(groups.length, 2);
+  const checkout = groups.find((g) => g.concept_id === 'flow::checkout');
+  const refund = groups.find((g) => g.concept_id === 'flow::refund');
+  assert.ok(checkout && refund);
+  assert.equal(checkout!.kind, 'flow');
+  assert.deepEqual(checkout!.task_ids.sort(), ['t1', 't2']);
+  assert.deepEqual(refund!.task_ids, ['t3']);
+  // t4 has no flow_id/capability_id — correctly omitted, never guessed.
+});
+
+test('groupTasksByConcept falls back to capability_id when flow_id is absent', () => {
+  const tasks: PartitionTask[] = [
+    { id: 't1', intent: 'work a', capability_id: 'cap::billing' },
+    { id: 't2', intent: 'work b', capability_id: 'cap::billing' },
+  ];
+  const groups = groupTasksByConcept(tasks);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].kind, 'capability');
+  assert.equal(groups[0].concept_id, 'cap::billing');
+  assert.deepEqual(groups[0].task_ids.sort(), ['t1', 't2']);
+});
+
+test('partitionTasks surfaces concept_groups alongside file/symbol batches (conceptually-disjoint flows)', () => {
+  const tasks: PartitionTask[] = [
+    { id: 't1', intent: 'checkout: charge', target_symbols: ['sym:formatCurrency'], flow_id: 'flow::checkout' },
+    { id: 't2', intent: 'checkout: persist', target_symbols: ['sym:unrelatedUtil'], flow_id: 'flow::checkout' },
+    { id: 't3', intent: 'refund flow', target_symbols: ['sym:billingHandler'], flow_id: 'flow::refund' },
+  ];
+  const result = partitionTasks(tasks, cas, { includeBlastRadius: false });
+  // File/symbol-level: all three are disjoint symbols, so they land fully parallel.
+  assert.equal(result.batches.length, 1);
+  // Conceptual grouping is a SEPARATE, additive signal on top:
+  assert.ok(result.concept_groups);
+  const checkoutGroup = result.concept_groups!.find((g) => g.concept_id === 'flow::checkout');
+  const refundGroup = result.concept_groups!.find((g) => g.concept_id === 'flow::refund');
+  assert.deepEqual(checkoutGroup!.task_ids.sort(), ['t1', 't2']);
+  assert.deepEqual(refundGroup!.task_ids, ['t3']);
+});
+
+test('partitionTasks omits concept_groups entirely when no task declares flow_id/capability_id', () => {
+  const tasks: PartitionTask[] = [
+    { id: 't1', intent: 'add formatCurrency', target_symbols: ['sym:formatCurrency'] },
+    { id: 't2', intent: 'add unrelatedUtil', target_symbols: ['sym:unrelatedUtil'] },
+  ];
+  const result = partitionTasks(tasks, cas, { includeBlastRadius: false });
+  assert.equal(result.concept_groups, undefined);
 });

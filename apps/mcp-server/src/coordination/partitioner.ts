@@ -48,6 +48,21 @@ export interface PartitionTask {
   target_symbols?: string[];
   /** Files the task will touch. */
   target_paths?: string[];
+  /**
+   * Optional conceptual coordinates (§4 SPEC-CONCEPTUAL-LAYER.md, "the
+   * fabric's conceptual vocabulary"): the flow/capability this task's work
+   * belongs to. Purely additive — this module stays transport/IO-free and
+   * does not import `conceptual-scope.ts`'s `ConceptIndex`/derivation logic
+   * (that needs a real CAS + flow-concepts pass); callers who already have
+   * that mapping (server.ts, via `deriveConceptualCoordinate`) pass the
+   * resolved ids straight in here. When present, `partitionByConcept`
+   * (below) uses these ids to additionally batch by CONCEPTUAL blast radius
+   * (different flows/capabilities => different batches allowed to run in
+   * parallel even when partitionTasks' file/symbol coloring alone wouldn't
+   * have separated them this cleanly) — see that function's doc.
+   */
+  flow_id?: string;
+  capability_id?: string;
 }
 
 /** One batch of mutually non-conflicting tasks — all run fully parallel. */
@@ -79,6 +94,27 @@ export interface PartitionResult {
    *  `unpartitionable`). Kept separate and honest so callers never mistake a
    *  heuristic guess for an authoritative declaration. */
   footprint_source?: Record<string, 'declared' | 'inferred'>;
+  /**
+   * Conceptual blast-radius grouping (§4 SPEC-CONCEPTUAL-LAYER.md): tasks
+   * grouped by `flow_id` (falling back to `capability_id` when no flow_id is
+   * set), for tasks that declared either. Purely informational/additive on
+   * top of `batches` — it does NOT change the file/symbol coloring above,
+   * it answers a DIFFERENT question ("which tasks are conceptually disjoint
+   * — different flows/capabilities entirely — and so safe to route to
+   * separate agents/waves even before file-level analysis"). Only present
+   * when at least one task declared a `flow_id`/`capability_id`; tasks with
+   * neither are omitted here (they simply aren't groupable conceptually,
+   * same honesty stance as `unpartitionable` above). */
+  concept_groups?: ConceptGroup[];
+}
+
+/** One flow/capability's worth of conceptually co-located tasks. */
+export interface ConceptGroup {
+  /** 'flow' when grouped by flow_id, 'capability' when only capability_id was
+   *  available (no flow_id declared). */
+  kind: 'flow' | 'capability';
+  concept_id: string;
+  task_ids: string[];
 }
 
 export interface PartitionOptions {
@@ -426,6 +462,7 @@ export function partitionTasks(
   const batches: WorkBatch[] = colored.map((task_ids, batch_index) => ({ batch_index, task_ids }));
 
   const parallelism_factor = batches.length === 0 ? 0 : tasks.length / batches.length;
+  const conceptGroups = groupTasksByConcept(tasks);
 
   return {
     batches,
@@ -433,7 +470,40 @@ export function partitionTasks(
     conflict_edges: conflictEdges,
     ...(unpartitionable.length > 0 ? { unpartitionable } : {}),
     footprint_source,
+    ...(conceptGroups.length > 0 ? { concept_groups: conceptGroups } : {}),
   };
+}
+
+/**
+ * Group tasks by conceptual blast radius: same `flow_id` (preferred, finer
+ * granularity) or same `capability_id` (fallback, when no flow_id is set) go
+ * in the same group. Tasks with neither are omitted — never guessed. This is
+ * the "partition by capability/flow so parallel batches are conceptually
+ * disjoint" primitive from §4: two batches with DIFFERENT concept_ids are
+ * working on entirely different flows/capabilities and can be routed to
+ * separate agents/waves with maximal confidence, independent of whatever
+ * file/symbol coloring `batches` above computed.
+ */
+export function groupTasksByConcept(tasks: PartitionTask[]): ConceptGroup[] {
+  const byFlow = new Map<string, string[]>();
+  const byCapability = new Map<string, string[]>();
+
+  for (const t of tasks) {
+    if (t.flow_id) {
+      const list = byFlow.get(t.flow_id) ?? [];
+      list.push(t.id);
+      byFlow.set(t.flow_id, list);
+    } else if (t.capability_id) {
+      const list = byCapability.get(t.capability_id) ?? [];
+      list.push(t.id);
+      byCapability.set(t.capability_id, list);
+    }
+  }
+
+  const groups: ConceptGroup[] = [];
+  for (const [concept_id, task_ids] of byFlow) groups.push({ kind: 'flow', concept_id, task_ids });
+  for (const [concept_id, task_ids] of byCapability) groups.push({ kind: 'capability', concept_id, task_ids });
+  return groups;
 }
 
 // ---------------------------------------------------------------------------

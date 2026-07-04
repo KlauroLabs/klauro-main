@@ -240,6 +240,30 @@ export async function releaseEdit(workspaceId: string, agentId: string): Promise
 }
 
 /**
+ * Release EVERY active claim held by `agentId` — by `agent_id`, regardless of
+ * claim_id scheme (a `claim`ed work-claim `<ws>:<agent>`, an `announce`d
+ * edit-lock `edit-lock:<ws>:<agent>`, or anything else). "An agent finished /
+ * `fab.ts release <agent>`" both mean "drop all my claims"; the old path only
+ * released the edit-lock id, so `claim`ed work lingered as active until TTL and
+ * polluted the awareness view (and produced false overlap conflicts against a
+ * peer that was actually done). Returns the released entries (empty if the
+ * agent held nothing active).
+ */
+export async function releaseAgent(workspaceId: string, agentId: string): Promise<ClaimLogEntry[]> {
+  const active = await getActiveClaims(workspaceId);
+  const mine = active.filter((c) => c.agent_id === agentId);
+  const now = new Date().toISOString();
+  const released: ClaimLogEntry[] = [];
+  for (const c of mine) {
+    const { seq: _priorSeq, ...rest } = c;
+    released.push(
+      await appendClaim(workspaceId, { ...rest, status: 'released', heartbeat_at: now })
+    );
+  }
+  return released;
+}
+
+/**
  * Same-machine silent-clobber guard: does any OTHER active agent hold an
  * edit-lock (or any active claim) whose paths path-prefix-overlap `paths`?
  * Pass `excludeAgent` to exclude the calling agent's own claims.

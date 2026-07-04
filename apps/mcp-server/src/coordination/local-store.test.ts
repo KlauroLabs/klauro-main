@@ -12,6 +12,7 @@ import {
   getActiveClaims,
   getPresence,
   readClaimLog,
+  releaseAgent,
   releaseEdit,
   watch,
 } from './local-store';
@@ -190,6 +191,33 @@ test('watch fires on a new append (sub-second local peer awareness)', async () =
     // Trigger a change after the watcher is attached.
     void appendClaim('ws-test', makeClaim({ claim_id: 'trigger', agent_id: 'agent-watch' }));
   });
+
+  await fsp.rm(dir, { recursive: true, force: true });
+});
+
+test('releaseAgent clears ALL of an agent\'s active claims regardless of claim_id scheme', async () => {
+  const dir = await freshCoordDir();
+  // Same agent holds a `claim`-style work-claim AND an `announce`-style edit-lock,
+  // under two different claim_id schemes — the exact fab.ts claim/release mismatch.
+  await appendClaim('ws-test', makeClaim({ claim_id: 'ws-test:agent-a', agent_id: 'agent-a' }));
+  await announceEdit('ws-test', 'agent-a', ['src/bar.ts']);
+  // A second, unrelated agent must be untouched.
+  await appendClaim('ws-test', makeClaim({ claim_id: 'ws-test:agent-b', agent_id: 'agent-b' }));
+
+  const before = await getActiveClaims('ws-test');
+  assert.equal(before.filter((c) => c.agent_id === 'agent-a').length, 2);
+
+  const released = await releaseAgent('ws-test', 'agent-a');
+  assert.equal(released.length, 2, 'both of agent-a\'s active claims are released');
+  assert.ok(released.every((e) => e.status === 'released'));
+
+  const after = await getActiveClaims('ws-test');
+  assert.equal(after.filter((c) => c.agent_id === 'agent-a').length, 0, 'agent-a fully cleared');
+  assert.equal(after.filter((c) => c.agent_id === 'agent-b').length, 1, 'agent-b untouched');
+
+  // Idempotent: releasing again frees nothing.
+  const again = await releaseAgent('ws-test', 'agent-a');
+  assert.equal(again.length, 0);
 
   await fsp.rm(dir, { recursive: true, force: true });
 });

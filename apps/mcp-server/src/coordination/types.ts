@@ -15,6 +15,43 @@ export type AgentKind = 'claude' | 'cursor' | 'codex' | 'human' | 'other';
 export type WorkClaimStatus = 'active' | 'released' | 'superseded' | 'expired';
 
 /**
+ * Conceptual coordinates for a claim's scope (§4 SPEC-CONCEPTUAL-LAYER.md,
+ * "conceptual vocabulary for the fabric"): the FLOW/STEP/CAPABILITY/ENTITY an
+ * agent is working within, alongside (never instead of) its file paths and
+ * symbols. Entirely optional/additive — every field here may be omitted, and
+ * a claim with none of them behaves exactly as it did before this type
+ * existed (pure file/symbol coordination).
+ *
+ * Two provenances populate this:
+ *  - DECLARED: the caller names its own flow/step/capability/entity directly
+ *    (e.g. "I own the Charge step of the Checkout flow").
+ *  - DERIVED: `conceptual-scope.ts`'s `deriveConceptualCoordinate` maps the
+ *    claim's declared paths/symbols onto a real FlowConcept/FlowStep via
+ *    `getFlowConcepts`, so a plain file-based claim auto-acquires conceptual
+ *    coordinates without the caller having to know flow vocabulary at all.
+ *    DETERMINISTIC-FIRST: derived coordinates always come from a real
+ *    flow-concepts mapping — never guessed when no flow claims the file.
+ */
+export interface ConceptualCoordinate {
+  /** SystemCapability id (WAS/CAS system_capabilities), e.g. "cap::checkout". */
+  capability_id?: string;
+  /** FlowConcept id (packages/analyzer-core .../flow-concepts.ts), e.g. "flow::ep_checkout_post". */
+  flow_id?: string;
+  /** FlowStep id within that flow, e.g. "ep_checkout_post::step2". */
+  step_id?: string;
+  /** Data entity name(s) this work touches the CONSTRAINTS of (invariants,
+   *  validation rules) — a conceptual conflict can exist across two agents in
+   *  DIFFERENT files if both touch the same entity's constraints (§4: "same
+   *  entity's constraints" case, semantic overlap textual diff can't see). */
+  entities?: string[];
+  /** How this coordinate was populated: 'declared' when the caller named it
+   *  directly, 'derived' when `conceptual-scope.ts` mapped it from
+   *  paths/symbols via getFlowConcepts. Absent on hand-built claims from
+   *  before this field existed. */
+  source?: 'declared' | 'derived';
+}
+
+/**
  * The unit of "announced intent" an agent registers before acting.
  * Last-writer-wins per `claim_id`, ordered by the monotonic `seq` (presence.ts).
  */
@@ -29,6 +66,9 @@ export interface WorkClaim {
     paths: string[];
     symbols: string[];
     capability?: string;
+    /** Optional conceptual coordinates, additive to paths/symbols/capability
+     *  above — see `ConceptualCoordinate`. */
+    concept?: ConceptualCoordinate;
   };
   intent: string;
   status: WorkClaimStatus;
@@ -52,6 +92,7 @@ export interface AgentPresence {
     paths: string[];
     symbols: string[];
     capability?: string;
+    concept?: ConceptualCoordinate;
   };
   base_commit?: string;
 }

@@ -15,7 +15,7 @@ import {
   getActiveClaims,
   announceEdit,
   checkEditLock,
-  releaseEdit,
+  releaseAgent,
 } from '../src/coordination/local-store';
 
 const WS = process.env.FAB_WS || 'deployable-detection-build';
@@ -69,8 +69,8 @@ async function main() {
       break;
     }
     case 'release': {
-      await releaseEdit(WS, agentId);
-      console.log(`released ${agentId}`);
+      const rel = await releaseAgent(WS, agentId);
+      console.log(`released ${agentId} (${rel.length} claim${rel.length === 1 ? '' : 's'})`);
       break;
     }
     default:

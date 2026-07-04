@@ -29,7 +29,7 @@
 import { arbitrate } from './arbiter';
 import { appendClaim, getStoreDir, readClaimLog, type ClaimLogEntry } from './local-store';
 import { deriveActiveClaims, isExpired, reduceClaimLog } from './presence';
-import type { AgentKind, ConflictKind, WorkClaim } from './types';
+import type { AgentKind, ConceptualCoordinate, ConflictKind, WorkClaim } from './types';
 
 export type GrantVerdict = 'granted' | 'queued' | 'denied';
 
@@ -37,7 +37,7 @@ export interface GrantRequest {
   workspace_id: string;
   agent_id: string;
   agent_kind: AgentKind;
-  scope: { repo: string; paths: string[]; symbols: string[]; capability?: string };
+  scope: { repo: string; paths: string[]; symbols: string[]; capability?: string; concept?: ConceptualCoordinate };
   intent: string;
   ttl_ms?: number;
 }
