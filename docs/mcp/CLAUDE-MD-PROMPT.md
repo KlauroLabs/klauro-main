@@ -94,6 +94,40 @@ S|val-stop
 Do not expand beyond the `F` files unless the capsule is contradictory,
 validation proves a concrete missing file, or the source proves the target moved.
 
+### Understand at Every Level (Capability -> Flow -> Step -> Function)
+
+Klauro understands this codebase at every level of a single hierarchy, not just
+files and functions:
+
+- **Capability** — a top-level "what it does," from `get_summary`.
+- **Flow** — how a capability's request/job actually moves, as an ordered set of
+  **Steps** (Validate -> Charge -> Persist -> Notify), from `get_flow_concepts`.
+- **Step** — maps to Function(s): 1:1, 1:many, or a sub-section of one function.
+- **Function** — the concrete code node, from `get_coding_context` / `get_call_chain`.
+
+Every level answers the same shape of question — **Input, Logic, Side-effects
+(state_changes vs external_integrations), Output, Constraints** (business
+rules/invariants/guards) — so comprehension is uniform whether you're looking at
+one function or a whole capability. Orient wide (`get_summary`), narrow through
+named flows/steps (`get_flow_concepts`), then drill a specific step or node
+(`get_coding_context`, `get_call_chain`). Think in flows and steps, not just files.
+
+### Coordinate at the Concept Level — Parallel Is the Default
+
+When more than one agent can work this codebase, default to running them in
+parallel through the fabric — this is not a special mode for when work
+collides, it is the normal way to work here. Split fannable work across
+agents and have each one announce its scope through `claim_work` /
+`check_collision` in **concept** terms — "I own the *Charge* step of the
+*Checkout* flow," "I'm changing the *Order* entity's constraints" — not file
+paths or line ranges. Two agents on the same flow but different steps is safe
+and expected; the fabric is ambient awareness (dedup, conceptual-conflict
+detection, fleet visibility) that runs alongside every agent, not a gate you
+wait on. You do not need to fear many agents on this codebase at once:
+announce your concept-level scope and the fabric keeps the fleet coherent, so
+adding agents makes the work faster, not riskier. Treat serial, one-agent-at-
+a-time work as the exception that needs a reason.
+
 ### Progressive Availability
 
 Klauro's deterministic structure (call graph, routes, entry points, file nodes,

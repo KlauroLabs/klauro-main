@@ -188,7 +188,7 @@ export function buildCodebaseAgentRules(
       primary_domain: summary.primary_domain,
       description: summary.description,
     },
-    default_agent_rule: 'Ask Klauro for target, file_read_plan, idioms, invariants, and validation checks before broad source exploration or edits.',
+    default_agent_rule: 'Ask Klauro for target, file_read_plan, idioms, invariants, and validation checks before broad source exploration or edits. Think in levels (Capability -> Flow -> Step -> Function): get_summary for the capability, get_flow_concepts for its named flows/steps, get_coding_context/get_call_chain to drill a step into concrete code. In multi-agent workspaces, default to parallel work coordinated through the fabric at this same concept level (flow/step/capability), not files/lines — it is ambient awareness, not a lock, so more agents working at once is safe, not risky.',
     architecture_rules: architectureRules(summary, overview),
     capability_rules: capabilityMemory.matched_capabilities.map((capability: any) => ({
       id: capability.id,

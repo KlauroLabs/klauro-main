@@ -54,6 +54,8 @@ export function buildAgentBootstrapPrompt(
   sections.push(start.default_rule);
   sections.push(plan.rule);
   sections.push('For edit/debug/review work, prefer `get_agent_context` with `task.response_profile="capsule-only"`, read `K15`, and execute `K5` before broad file reads. Use `first-turn` only when capsule-only leaves a concrete gap.');
+  sections.push('Understand at every level, not just files: this codebase is Capability -> Flow -> Step -> Function. `get_summary` names the capabilities; `get_flow_concepts` breaks one into named flows as ordered steps (Validate -> Charge -> Persist -> Notify), each with Input/Logic/Side-effects(state_changes vs external_integrations)/Output/Constraints; `get_coding_context`/`get_call_chain` drill a step into its concrete function(s) — 1:1, 1:many, or a sub-section. Orient wide, narrow through flows/steps, then edit.');
+  sections.push('Coordinate at the concept level, and default to parallel: in a multi-agent workspace, splitting work across agents and running it concurrently through the fabric is the normal mode here, not a fallback for conflicts. Announce scope via `claim_work`/`check_collision` in flow/step/capability terms ("I own the Persist step of the Checkout flow"), not files/lines. The fabric is always-on ambient awareness, not a lock — disjoint work runs free, and even same-flow-different-step work is safe. You do not need to fear many agents on this codebase at once.');
 
   sections.push('');
   sections.push('## System');

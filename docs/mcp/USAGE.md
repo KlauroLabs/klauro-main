@@ -297,7 +297,43 @@ Rule of thumb: **the facts are the product; the prose is flavor.** Act on the
 structure first, and only re-fetch for prose when the narrative is the actual thing
 you need.
 
-### 9. Navigate Progressively
+### 9a. Understand at Every Level: Capability -> Flow -> Step -> Function
+
+`get_summary` names the capabilities; drill into how one actually works with
+`get_flow_concepts` — a named flow per entry point, broken into ordered semantic
+steps (Validate -> Charge -> Persist -> Notify), not a raw function chain. Each
+flow and each step carries the same contract: **Input, Logic, Side-effects**
+(split into `state_changes` — DB/cache writes — vs `external_integrations` —
+API/webhook/SDK/queue calls), **Output**, and **Constraints** (business
+rules/invariants/guards, deterministically extracted, never fabricated). A step
+maps to function(s) 1:1, 1:many, or a sub-section (line range) of one large
+function — drill that far down with `get_coding_context` or `get_call_chain`.
+
+```
+get_summary (capability) -> get_flow_concepts (flow, ordered steps) -> get_coding_context / get_call_chain (concrete function)
+```
+
+Use this path to think in flows and steps, not just files: "what does the
+Checkout flow do, what are its steps, what does the Persist step touch" is
+answerable directly, instead of reconstructed by hand from file reads.
+
+### 9b. Coordinate at the Concept Level — Parallel by Default
+
+In a multi-agent workspace, default to splitting fannable work across agents and
+running them concurrently through the fabric — this is the normal way to work
+here, not a fallback reserved for when work happens to collide. Each agent
+announces its scope via `claim_work`/`check_collision` in the same conceptual
+vocabulary as the hierarchy above: "I own the Persist step of the Checkout
+flow," "I'm changing the Order entity's constraints," not "editing file X lines
+40-60." Two agents on the same flow but different steps is safe and expected;
+the fabric's job is to catch real conceptual overlap (semantic conflicts a
+textual merge would miss — see `check_conceptual_conflicts`), not to gate
+disjoint work. The fabric is always-on ambient awareness, not a lock: you do not
+need to fear many agents working this codebase at once, because announcing
+concept-level scope keeps the fleet coherent as it grows. Treat one-agent-at-a-
+time serial work as the exception that needs a reason.
+
+### 10. Navigate Progressively
 
 Use `get_level` to explore the codebase top-down:
 
@@ -308,7 +344,7 @@ Use `get_level` to explore the codebase top-down:
 
 Each call returns the available levels with node counts, so you always know what's above and below. Cross-level edges show how the current level connects to others.
 
-### 10. Drill Into Specifics
+### 11. Drill Into Specifics
 
 From there, drill into targeted areas:
 
@@ -317,6 +353,7 @@ From there, drill into targeted areas:
 - **Find specific code**: `search_nodes` with query text (defaults to hybrid lexical + semantic mode; pass `mode` to force `lexical`, `semantic`, or `hybrid`)
 - **Find code by description**: `semantic_search` with a natural-language query when the symbol name is unknown; `get_embedding_status` to confirm the index exists
 - **Trace execution**: `get_callers` / `get_callees` / `get_call_chain` (use `chain_id` for full detail)
+- **Understand a capability's named flows and steps**: `get_flow_concepts` — ordered steps with I/L/S/O + Constraints per flow, tied to concrete functions; the middle rung between `get_summary` and `get_coding_context`/`get_call_chain`
 - **Assess safety**: `assess_change_risk` before modifying code
 - **Check test coverage**: `find_tests`, `get_test_summary`, `get_flow_coverage` (use `chain_id` for per-flow detail)
 - **Review security**: `get_security_overview`

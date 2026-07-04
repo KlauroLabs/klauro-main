@@ -1,10 +1,22 @@
 # Documentation Status
 
-Audit date: 2026-07-02. Scope: every `.md` file in the repo except `.agents/` (evidence/
-handoff working files, not product docs), `.claude/worktrees/` (a stale parallel worktree
-copy), fixture repos under `apps/mcp-server/fixtures/`, and generated benchmark reports
-under `apps/mcp-server/.klauro-*/`. This file is the living index; update it when docs
+Audit date: 2026-07-02, addendum 2026-07-03. Scope: every `.md` file in the repo except
+`.agents/` (evidence/ handoff working files, not product docs), `.claude/worktrees/` (a stale
+parallel worktree copy), fixture repos under `apps/mcp-server/fixtures/`, and generated benchmark
+reports under `apps/mcp-server/.klauro-*/`. This file is the living index; update it when docs
 change materially rather than letting it drift.
+
+**2026-07-03 addendum:** the conceptual-understanding-layer work landed two new docs this
+session — `docs/SPEC-CONCEPTUAL-LAYER.md` (the master model: Capability→Flow→Step→Function,
+I/L/S/O + Constraints, structural perspectives, status/roadmap) and `docs/RAISE-DECK.md`
+(fundraising narrative, reframed this pass to lead with the conceptual layer as the moat — see
+its own §3). `docs/CHANGELOG.md` was created this pass (previously absent) with a v1.0.12 entry
+covering this session's conceptual-layer shipment; several sub-items are marked "pending final
+verify" because their build claims (`edgelink`, `structural-unify`, `fabric-proof`) were still
+active in the parallel work-fabric with no completion feedback file at write time.
+`docs/FABRIC-FLEET-PROOF.md` does **not** yet exist in the repo — if the `fabric-proof` claim
+lands after this pass, this row should be added and the CHANGELOG's "pending final verify" note
+resolved.
 
 ## Inventory
 
@@ -23,6 +35,9 @@ change materially rather than letting it drift.
 | `docs/KLAURO-ANALYSIS-FLOW.md` | Analysis flow model | current | |
 | `docs/KLAURO-PRODUCT-MODEL.md` | Authoritative product model | current | |
 | `docs/PRODUCT-RUNTIME.md` | Runtime weight budget | current | |
+| `docs/SPEC-CONCEPTUAL-LAYER.md` | Conceptual understanding layer master spec (Capability→Flow→Step→Function, I/L/S/O+Constraints, structural perspectives) | **new this pass** | status marked DESIGN by its own header even though `get_flow_concepts` is now built and tested; roadmap section (§6) is the accurate up-to-date status pointer, not the header |
+| `docs/RAISE-DECK.md` | Fundraising raise narrative | **updated this pass** | reframed §1/§3/§5/§7 to lead with the conceptual layer as the moat (fabric repositioned as its highest-leverage application); tool count corrected 197→199 live, with the delta explicitly attributed to uncommitted in-progress work, not a released version |
+| `docs/CHANGELOG.md` | Release changelog | **created this pass (was absent)** | v1.0.12 entry (in-progress, not yet released) plus a backfilled v1.0.11 entry; several v1.0.12 sub-items marked "pending final verify" |
 | `docs/SECURITY-PRIVACY.md` | Data inventory & egress | current | |
 | `docs/SPEC-COORDINATION-FABRIC.md` | Coordination fabric build spec | current, correct as a design spec (per task instructions, not to be edited) | now has a companion user-facing doc: `docs/COORDINATION-FABRIC.md` |
 | `docs/SPEC-FRESHNESS.md` | Always-fresh-on-read spec | current, correct as a design spec (not edited) | **not yet implemented**: `getFreshAnalysisForAgent` still gates only ~15 of ~191 tools, `resolve_agent_analysis` still does not act on the freshness it reports (verified live: function still named `getFreshAnalysisForAgent`, spec's proposed rename/widening has not landed) |
