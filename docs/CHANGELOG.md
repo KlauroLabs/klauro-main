@@ -5,6 +5,44 @@ agent-feedback reports (`~/.klauro/agent-feedback/*.md`) — nothing is asserted
 Where an item was still in flight at the time this entry was written, it is marked **pending
 final verify** rather than presented as done.
 
+## v1.0.13 — Backend flow accuracy (2026-07-04)
+
+Three analyzer-correctness fixes found by dogfooding the v1.0.12 conceptual layer on real repos —
+together they turn flows from frontend-shallow into honest end-to-end backend traces, especially on
+monorepos. Full suite green (56/56 jest suites, **839** tests; tsc clean both packages).
+
+### Fixed
+
+- **Monorepo blindness** (`orchestrator.ts`, `language-registry.ts`). `discoverProjectRoots` treated
+  any directory containing a `Dockerfile`/`Containerfile` as an independent nested project, so in
+  Nx/Turborepo/pnpm-workspace monorepos every `apps/*` (Dockerfile, deps hoisted, no nested
+  `package.json`) was misclassified and **excluded from analysis entirely** — every backend
+  controller silently invisible. New `isPackageBoundaryManifest()` excludes deploy-tooling manifests
+  from defining a boundary. zerac-api: `entry_points` **12 → 519**, HTTP routes **0 → 327** (323/327
+  resolved to real controller methods), `get_flow_concepts` **257 multi-step flows** now rooted at
+  real HTTP routes instead of a synthetic file-level fallback.
+  Source: `~/.klauro/agent-feedback/2026-07-04-route-entrypoints.md`.
+- **DI-injected call resolution** (`typescript-javascript-analyzer.ts`). `this.<field>.<method>()`
+  where `<field>` is a constructor-injected dependency fell through to a name-guessing heuristic
+  instead of type resolution. New `resolveDiFieldCall()` resolves field → declared type → class →
+  method (evidence-gated; ambiguous cases fan out tagged, never guessed). zerac-api: **+788** real
+  service→repo call edges; on this repo, services like `OrganizationsService.findAll` went 0 → real
+  callers. (Honest byproduct: `AnalysisRepository.create` correctly stayed 0 callers — it is genuine
+  dead code here.) Source: `~/.klauro/agent-feedback/2026-07-04-callgraph-di.md`.
+- **Fabricated DB side-effects** (`typescript-javascript-analyzer.ts`). `isRepositoryCall` treated
+  ORM method names (`findAll`/`persist`/`flush`/…) as DB-repository calls regardless of receiver,
+  inventing `exit_db_*` side-effects on plain service methods — corrupting the I/L/S/O `side_effects`
+  contract flows surface. Now receiver-gated on real repository/ORM type evidence. zerac-api: 9
+  confirmed fabrications removed, 140 real DB accesses correctly (re)attributed.
+  Source: `~/.klauro/agent-feedback/2026-07-04-repocall-fix.md`.
+
+### Added
+
+- **One-stop deploy** (`infrastructure/vps/deploy.sh`, `npm run deploy`): build → sync → rebuild →
+  fail-loud verify (`/health`, `/dist` version, tarball HTTP), with a guard that refuses to ship a
+  `docker-compose.yml` missing the `/opt/klauro/downloads` mount. `--with-release[=…]` chains the
+  version cut; `--skip-app-build`/`--no-verify` flags.
+
 ## v1.0.12 — Conceptual understanding layer (2026-07-04, live on `mcp.klauro.com`)
 
 Cut and deployed 2026-07-04 (bumped from v1.0.11 `5292d01f`; tagged `v1.0.12`). Live-verified:
