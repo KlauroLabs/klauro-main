@@ -455,7 +455,15 @@ export class AnalyzerOrchestrator {
       // covering it (e.g. NestJS controllers under apps/* silently unanalyzed).
       const matches = (await this.getManifestFiles(projectPath)).filter(isPackageBoundaryManifest);
       for (const match of matches) {
-        const absolutePath = path.join(projectPath, path.dirname(match));
+        const relativeDir = path.dirname(match).replace(/\\/g, '/');
+        // A manifest under an excluded reference path (e.g. `legacy/` when this
+        // is the Klauro self-project) must not be promoted to a project root —
+        // isIgnoredInventoryDirectory already skips walking into that directory
+        // for the inventory/manifest scan itself, but without this guard a
+        // manifest that still surfaced there (e.g. via a workspace glob member
+        // matched below) would get its own dedicated analyzer pass anyway.
+        if (this.isExcludedLegacyReferencePath(relativeDir, projectPath)) continue;
+        const absolutePath = path.join(projectPath, relativeDir);
         rootSet.add(absolutePath);
         manifestRootAbsolutePaths.add(absolutePath);
       }
@@ -478,10 +486,29 @@ export class AnalyzerOrchestrator {
       // get their OWN dedicated nested pass (no package.json for canAnalyze()
       // to read there), so getAnalyzerScopeFilters must not wall them off the
       // way it does for genuine manifest-owning nested roots.
+      //
+      // IMPORTANT: this glob resolution (`resolveWorkspaceGlobMembers`) is
+      // completely independent of the directory-walk exclusion logic
+      // (isIgnoredInventoryDirectory / isExcludedLegacyReferencePath) used by
+      // collectSourceInventoryFiles — it globs the filesystem directly via
+      // `glob`, so a workspace member declared in package.json#workspaces
+      // (e.g. a repo with `"workspaces": ["apps/*", "packages/*", "legacy/*"]`)
+      // bypasses the legacy-reference exclusion entirely and gets promoted to
+      // a first-class project root even when this IS the Klauro self-project
+      // and `legacy/` should never be analyzed as real product surface. Found
+      // via a real self-analysis file-walk-coverage audit: `legacy/web` (whose
+      // own package.json happens to be named "klauro-frontend", itself an
+      // unrelated false-positive-prone name match) was silently promoted to a
+      // full project root and its ~100 files parsed as if they were live
+      // product code. Filter every candidate through the same exclusion check
+      // used by the directory walk before it can become a root.
       const globMembers = discoverWorkspaceGlobRootsWithoutManifest(
         projectPath,
         (absoluteDir) => manifestRootAbsolutePaths.has(absoluteDir),
-      );
+      ).filter((absoluteDir) => {
+        const relativeDir = path.relative(projectPath, absoluteDir).replace(/\\/g, '/');
+        return !this.isExcludedLegacyReferencePath(relativeDir, projectPath);
+      });
       for (const member of globMembers) {
         rootSet.add(member);
       }

@@ -218,3 +218,66 @@ describe('NestJS controller discovery in a workspace-glob-only member (no packag
     expect(output).toBeDefined();
   }, 30_000);
 });
+
+/**
+ * Regression for a real self-analysis file-walk-coverage gap: discoverProjectRoots
+ * finds nested roots two ways — (1) walking for package-boundary manifests, which
+ * correctly skips `legacy/` via isExcludedLegacyReferencePath when this is the
+ * Klauro self-project (covered by a test in orchestrator-internals.test.ts), and
+ * (2) resolving package.json#workspaces glob patterns directly via `globSync`
+ * (discoverWorkspaceGlobRootsWithoutManifest / resolveWorkspaceGlobMembers), which
+ * had NO awareness of the legacy exclusion at all. The real proof-of-concept repo's
+ * root package.json declares `"workspaces": ["apps/*", "packages/*", "legacy/*"]`,
+ * so `legacy/*` members were glob-promoted straight to full project roots and
+ * analyzed as live product code — about 100 legacy TS/TSX files wrongly parsed on
+ * self-analysis. Making it worse: legacy/web's own package.json happened to be
+ * named "klauro-frontend", which the isKlauroSelfProject heuristic also matches,
+ * so even a per-root re-check of "is this the self project" would have misfired.
+ * This test must live here (not orchestrator-internals.test.ts) because it
+ * exercises the real `globSync` — that file's shared jest.mock('glob', ...) setup
+ * stubs `globSync` out entirely, silently no-oping the vulnerable code path.
+ */
+describe('legacy npm-workspace glob members are excluded from Klauro self-project discovery', () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-legacy-workspace-glob-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  const write = async (relative: string, content: string) => {
+    const full = path.join(root, relative);
+    await fs.ensureDir(path.dirname(full));
+    await fs.writeFile(full, content);
+  };
+
+  it('does not promote a legacy/* workspace-glob member to a project root, even when its package.json name matches the klauro-self heuristic', async () => {
+    await write('package.json', JSON.stringify({
+      name: '@klauro/monorepo',
+      workspaces: ['apps/*', 'packages/*', 'legacy/*'],
+    }));
+    await write('apps/mcp-server/package.json', JSON.stringify({ name: '@klauro/mcp-server' }));
+    await write('apps/mcp-server/src/server.ts', 'export const server = true;');
+
+    // legacy/web's OWN package.json name coincidentally matches the klauro-self
+    // regex too (the real repo's legacy/web is named "klauro-frontend") — this is
+    // exactly what let it slip past exclusion once glob-promoted to a root.
+    await write('legacy/web/package.json', JSON.stringify({ name: 'klauro-frontend' }));
+    await write('legacy/web/src/App.tsx', 'export function App() { return null; }');
+
+    const orchestrator = new AnalyzerOrchestrator() as any;
+    const roots: string[] = await orchestrator.discoverProjectRoots(root);
+    const relativeRoots = roots.map((r: string) => path.relative(root, r).replace(/\\/g, '/'));
+
+    expect(relativeRoots).toContain('apps/mcp-server');
+    expect(relativeRoots).not.toContain('legacy/web');
+    expect(relativeRoots.some((r: string) => r === 'legacy' || r.startsWith('legacy/'))).toBe(false);
+
+    const inventory = await orchestrator.getSourceFileInventory(root);
+    expect(inventory.files).not.toContain('legacy/web/package.json');
+    expect(inventory.files.some((file: string) => file.startsWith('legacy/'))).toBe(false);
+  });
+});

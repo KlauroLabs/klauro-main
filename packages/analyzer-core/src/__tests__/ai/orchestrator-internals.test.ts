@@ -288,6 +288,12 @@ describe('source inventory analyzer detection', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  // Regression for the workspace-glob variant of this exclusion (a repo whose root
+  // package.json declares `"workspaces": [..., "legacy/*"]`) lives in
+  // workspace-globs.test.ts, which unmocks `glob`/`fs`/`fs-extra` — required because
+  // discoverWorkspaceGlobRootsWithoutManifest calls the real `globSync`, which this
+  // file's global jest.mock('glob', ...) (see __tests__/setup.ts) stubs out entirely.
 });
 
 describe('architecture and capability inference', () => {
