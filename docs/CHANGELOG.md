@@ -5,6 +5,23 @@ agent-feedback reports (`~/.klauro/agent-feedback/*.md`) — nothing is asserted
 Where an item was still in flight at the time this entry was written, it is marked **pending
 final verify** rather than presented as done.
 
+## v1.0.19 — Blast-radius completeness: dedupe phantom util-node twins (2026-07-04)
+
+The v1.0.18 `get_callers` fix was real but incomplete on real repos — the right-shape re-benchmark
+found it still returned 0 consumers for service/config consts. Root cause (a duplicate-node footgun):
+`react-analyzer`'s `analyzeUtils` emits a phantom `util_<hash>` twin node (absolute path) for the same
+declaration `typescript-javascript-analyzer` emits as `variable_…` (relative path); each analyzer's
+resolver saw only its own, so `get_callers` landing on the twin got 0 incoming edges. Fixed with
+`dedupeUtilNodeDuplicates` (merge by normalized `source.file`+name, redirect edges to the survivor).
+Verified fresh: `API_CONFIG` 2 nodes→1, **0→4 incoming references = grep**; `API_ENDPOINTS` 22,
+`STORAGE_KEYS` 16; `TIER_RATE_LIMITS` unchanged. 885 analyzer-core jest.
+
+**Impact verdict (`docs/IMPACT-BENCHMARK.md`, right-shape re-benchmark):** decisive wins where grep
+structurally can't compete — entity lifecycle (`get_data_lineage`: 57 categorized readers/writers,
+cross-language, one call) and unfamiliar-repo orientation (`get_summary`). Blast-radius (`get_callers`)
+now complete on TS after this fix. Honest open edges: PHP has no identifier-reference machinery yet
+(standalone feature); exact token-savings needs a real (non-sandbox) environment to measure.
+
 ## v1.0.18 — Call-graph blast-radius + fabric proven at scale (2026-07-04)
 
 From the "prove it" campaign. A with-vs-without-Klauro impact benchmark exposed real tool gaps

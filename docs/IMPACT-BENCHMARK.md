@@ -194,3 +194,123 @@ returning a silent whole-repo dump instead of erroring on an unsupported node ty
 reproducible bugs worth fixing before the next benchmark attempt. Re-run this same task set after
 fixing them, and also add 2-3 edit/modify-shaped tasks (where Klauro's modification-checklist and
 test-discovery are more likely to show a real advantage) to get a fairer overall picture.
+
+---
+
+# Right-Shape Re-benchmark (v1.0.18)
+
+**Date:** 2026-07-04
+**Status:** Honest, small-N re-run. Mixed result — real wins, and one of the original bugs
+reproduces unchanged even after the "fixed" `get_callers`/references-edge work shipped in v1.0.18.
+
+## Why this re-run exists
+
+The first benchmark above (dated the same day, run before this one) drew a clean negative verdict,
+but on the wrong task shape: small, familiar TypeScript repos, read-only comprehension questions
+("is X actually used", "where is Y handled") — exactly where grep is cheap and complete. That is not
+where a precomputed structural graph is supposed to pay for itself. This re-run deliberately moves to
+the shape the mandate specifies: **blast-radius / change-safety / entity-lifecycle on large or
+unfamiliar repos**, using the `get_callers` cross-file-reference fix that shipped after the first
+benchmark (v1.0.18).
+
+## Methodology
+
+Same adaptation as the first benchmark and for the same reason: `claude -p` subprocesses report "Not
+logged in" inside this sandbox, so true independent-arm subprocess trials were not possible. I acted as
+both arms myself, sequentially, per task:
+
+- **Ground truth first, independently of either arm.** For every task I ran exhaustive grep passes
+  myself before looking at what either arm would report, so the "correct answer" was fixed before
+  either arm's output could bias it.
+- **Baseline arm:** grep/find/read only, real commands, real wall-clock (`date +%s.%N` bracketing).
+- **Klauro arm:** only `mcp__klauro__*` tools, in the sequence a disciplined agent would use
+  (`resolve_agent_analysis` once per repo, then `search_nodes`/`get_callers`/`get_data_lineage`/
+  `get_coding_context`/`get_summary`/`assess_change_risk`/`query_graph` as each task required).
+- Tool-call counts are exact (every call in this transcript). Wall-clock is real elapsed time for that
+  arm's command/tool sequence. **No token counts are reported** — this single-acting-agent setup
+  cannot honestly produce independent per-arm token totals, so, as in the first benchmark, only
+  tool-call count and wall-clock are claimed, and completeness-vs-ground-truth is the primary metric.
+
+## Repos
+
+Both far larger/less familiar than the first benchmark's repos, both with fresh Klauro analyses
+already present (age <1h, 0 files changed since analysis — best case for Klauro, not a stale-analysis
+excuse):
+
+| Repo | Language | Size | Freshness |
+|---|---|---|---|
+| `~/dev/clients/outcode/truckspy` | Symfony/PHP + Angular | 82,898 nodes, 128,446 edges, 820 entry points | fresh, 56m old, 0 changed |
+| `~/dev/zerac/zerac-api` | NestJS/TypeScript monorepo | 12,821 nodes, 12,543 edges, 524 entry points | fresh, 58m old, 0 changed |
+
+## Tasks and results
+
+| ID | Repo | Task type | Question | Baseline calls / time | Baseline completeness | Klauro calls / time | Klauro completeness | Correct? |
+|---|---|---|---|---|---|---|---|---|
+| r1 | truckspy | blast-radius | Every file that references `App\Entity\Vehicle` (a core entity class) | 4 greps / ~0.2s | 194/194 files (100%) | 4 calls (`search_nodes`, `get_callers`, `get_coding_context`, `get_data_lineage`) / ~31s | 1/194 files (0.5%) | baseline yes / Klauro no |
+| r2 | truckspy | entity-lifecycle | Every reader/writer of the `Trip` entity across the whole monorepo (backend + Angular UI + SOAP client) | 2 greps / ~0.2s | ~67 files, no lifecycle categorization, no cross-language coverage without more passes | 2 calls (`search_nodes` then `get_data_lineage`) / ~13s | 57 writers + reader(s) + auth-boundary + journey data, cross-language (PHP, TS/Angular, SOAP client), lifecycle-tagged (created/updated/deleted/read) in one payload | both technically correct; Klauro's answer is categorically richer |
+| r3 | zerac-api | blast-radius / change-safety | Every consumer of the exported `AUTH0_ADMIN_M2M_REQUESTED_SCOPES` const | 1 grep / ~0.04s | 2/2 real consumer files (100%) | 3 calls (`search_nodes`, `get_callers`, `query_graph`) / ~11s | 0/2 (0%) | baseline yes / Klauro no |
+| r4 | zerac-api | unfamiliar-repo orientation | What does this repo do, its architecture, and its top capabilities? | README read + 4 commands / ~5s | Reasonable but manually assembled: module names only, no ranked capabilities, no entity list, no entry-point breakdown | 1 call (`get_summary`) / <1s | Full structured answer: primary domain, 10 architectural patterns w/ confidence, 39 ranked capabilities, 41 DB entities, entry points by type (http/cli/route/schedule/test), architecture type | both reasonable; Klauro's answer is materially more complete for the same or less effort |
+
+## The honest aggregate
+
+- **On the two blast-radius tasks (r1, r3), Klauro lost outright, badly, on completeness** — 0.5% and
+  0% of real consumers found, using more tool calls and more wall-clock than grep. This is exactly the
+  scenario the mandate expected Klauro to win, and it did not. Both failures are for the **same
+  underlying reason**, and it is the **exact bug already reported in the first benchmark
+  (`~/.klauro/agent-feedback/2026-07-04-impact-benchmark.md`, gap #2) as unfixed**: `get_callers`
+  tracks function-call edges but not cross-file references to plain exported variables/constants
+  (PHP entity classes referenced via `use` imports; a TS `export const` referenced via ES import). The
+  v1.0.18 `get_callers` fix evidently improved some cross-file case (per the mission brief) but did
+  **not** cover this specific, very common pattern — an exported entity class or `const` consumed
+  elsewhere. This is not a new bug; it is the same one, still open, now reproduced on two different
+  languages (PHP, TypeScript) and two different repos.
+- **On the entity-lifecycle task (r2), Klauro won decisively** — one `get_data_lineage` call
+  (after one `search_nodes` call to resolve the entity_id) produced a cross-language,
+  lifecycle-categorized, auth-boundary-annotated answer that grep would need many more passes to even
+  partially reconstruct, and grep's reconstruction still wouldn't have the lifecycle/journey semantics
+  at all. This is the strongest, most defensible Klauro win in this run.
+- **On the orientation task (r4), Klauro won on completeness-per-effort** — one call replaced a
+  README read plus several `ls`/`find`/`cat` commands, and returned a strictly more complete,
+  structured answer (ranked capabilities, entity list, entry-point type breakdown) than the manually
+  assembled baseline view.
+- **Silent-wrong compounding on r3:** `assess_change_risk` called on the same `AUTH0_ADMIN_M2M_REQUESTED_SCOPES`
+  variable node returned `risk: null` plus ~100 unrelated high-risk nodes from across the whole
+  zerac-api repo — reproducing gap #4 from the first benchmark's feedback, verbatim, on a different
+  repo. `query_graph` (`MATCH (a)-[:imports]->(b) WHERE b.name = '...'`) also returned zero rows for
+  the same symbol, either because the edge type name is wrong (`imports` is a guess; the tool's own
+  docs do not enumerate valid edge type strings) or because the underlying edge genuinely does not
+  exist — either way it is not a usable escape hatch for this task shape today.
+- **`get_call_chain`'s entry_point_id namespace is not the same ID space `search_nodes`/`get_route_table`
+  return.** Calling it with the `route_...` node_id from `search_nodes` (type=route) returned an empty
+  chain list (`total: 0`) with no error explaining the ID mismatch — a minor but real usability gap
+  that cost one wasted call while exploring a 5th/6th task candidate (this task was dropped from the
+  final table rather than force-fit, in the interest of not padding the task count with a broken call).
+
+## The strongest defensible claim from this run
+
+**On entity lifecycle across a polyglot monorepo, Klauro answers in 2 calls what grep cannot fully
+answer at all** (r2): one `get_data_lineage` call returned 57 categorized writers plus readers,
+external-recipient fan-out, and auth-boundary guard status for the `Trip` entity across PHP backend,
+Angular frontend, and a SOAP client library — lifecycle semantics and cross-language reach that no
+number of additional grep passes would produce, because grep has no concept of "lifecycle:created" vs
+"lifecycle:updated" or of which HTTP boundaries guard a given entity's flow.
+
+**But the mandate's headline claim — "Klauro finds all consumers via one `get_callers` call while grep
+misses aliased/interface refs" — is not supported by this run.** On both blast-radius tasks (r1, r3),
+`get_callers` found at most the containing file and missed 100% of real cross-file consumers that a
+single grep found instantly. This is the same open bug from the first benchmark, not a new one, and it
+is the single most damaging gap for the "change-safety before I edit" use case specifically because
+`get_coding_context`'s `modification_checklist` on r1 said *"1 callers still work correctly"* — a
+confident, wrong answer, not an honest "incomplete."
+
+## Verdict
+
+Klauro's value shows clearly and defensibly on **one** of the four task shapes tested here — entity
+lifecycle/data-flow tracing across a polyglot monorepo (`get_data_lineage`) — and shows a smaller,
+real win on unfamiliar-repo orientation (`get_summary`). It does **not** yet show on blast-radius for
+plain exported constants/entity classes, which is arguably the single highest-value "don't break
+production" scenario and the one most explicitly named in the mission. The `get_callers` gap reported
+in the first benchmark on 2026-07-04 is confirmed still open in this v1.0.18 re-run, now reproduced on
+a second, larger, differently-shaped repo and a second language. Do not claim the blast-radius
+completeness advantage as a general Klauro strength until this specific gap (function-call edges only,
+no plain-variable/entity-class reference edges) is fixed and re-verified with a new task set.
