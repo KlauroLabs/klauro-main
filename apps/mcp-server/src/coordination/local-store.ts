@@ -66,6 +66,41 @@ function getLogPath(workspaceId: string): string {
   return path.join(getStoreDir(workspaceId), 'claims.jsonl');
 }
 
+/** Root directory containing ALL workspaces' coordination stores (parent of `getStoreDir`). */
+function getCoordRoot(): string {
+  return process.env.KLAURO_COORD_DIR || path.join(os.homedir(), '.klauro', 'coordination');
+}
+
+/**
+ * Diagnostic for the "release found nothing" case: is `agentId` actually
+ * active under some OTHER workspace_id at this same `KLAURO_COORD_DIR`? This
+ * is how a wrong-`FAB_WS`/wrong-`KLAURO_COORD_DIR` mistake gets caught instead
+ * of silently reported as "released 0 claims" (indistinguishable from
+ * legitimately having nothing left to release). Best-effort: scans sibling
+ * workspace directories under the same coordination root.
+ */
+export async function findAgentInOtherWorkspaces(
+  agentId: string,
+  excludeWorkspaceId: string
+): Promise<string[]> {
+  const root = getCoordRoot();
+  let dirents: string[];
+  try {
+    dirents = (await fsp.readdir(root, { withFileTypes: true }))
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+  } catch {
+    return [];
+  }
+  const found: string[] = [];
+  for (const wsId of dirents) {
+    if (wsId === excludeWorkspaceId) continue;
+    const active = await getActiveClaims(wsId);
+    if (active.some((c) => c.agent_id === agentId)) found.push(wsId);
+  }
+  return found;
+}
+
 function getLockPath(workspaceId: string): string {
   return getLogPath(workspaceId) + '.lock';
 }
@@ -79,6 +114,14 @@ function ensureDirSync(dir: string): void {
  * exists), retrying until free or a stale lock is reclaimed. Returns a release
  * function. This only guards the read-length+append critical section for `seq`
  * assignment — it is held for microseconds, not for the life of the process.
+ *
+ * IMPORTANT for callers composing multi-step read-decide-append sequences
+ * (e.g. grant-manager.ts's requestGrant/releaseGrant/advanceQueue): a
+ * SEPARATE `withLock` acquisition per step does NOT make the overall sequence
+ * atomic — two concurrent callers can each pass their own read-decide step
+ * before either appends, both observing "no conflict yet" and both being
+ * granted overlapping scope. Use the exported `withWorkspaceLock` to wrap the
+ * ENTIRE read + decide + append(s) sequence in one lock acquisition instead.
  */
 async function withLock<T>(workspaceId: string, fn: () => Promise<T>): Promise<T> {
   const lockPath = getLockPath(workspaceId);
@@ -138,6 +181,56 @@ export async function readClaimLog(workspaceId: string): Promise<ClaimLogEntry[]
 }
 
 /**
+ * Append one entry to the log while already holding the workspace lock.
+ * Internal — callers must be running inside `withLock`/`withWorkspaceLock`.
+ * Factored out so multi-entry operations (like `releaseAgent`) can read the
+ * log, decide what to append, and append — all under one lock acquisition,
+ * with no gap in which a concurrent process's append can land unseen.
+ */
+async function appendClaimLocked(
+  workspaceId: string,
+  claim: Omit<WorkClaim, 'seq'> & { seq?: number },
+  existing: ClaimLogEntry[]
+): Promise<ClaimLogEntry> {
+  const nextSeq = existing.reduce((max, e) => Math.max(max, e.seq), 0) + 1;
+  const entry: ClaimLogEntry = {
+    ...claim,
+    seq: claim.seq ?? nextSeq,
+    logged_at: new Date().toISOString(),
+  };
+  const logPath = getLogPath(workspaceId);
+  await fsp.appendFile(logPath, JSON.stringify(entry) + '\n', 'utf8');
+  existing.push(entry); // keep the in-lock snapshot current for subsequent appends in this critical section
+  return entry;
+}
+
+/**
+ * Public escape hatch for callers OUTSIDE this module that need to compose a
+ * read-decide-append(s) sequence as ONE atomic critical section against the
+ * same per-workspace lockfile `appendClaim`/`releaseAgent` use — e.g.
+ * grant-manager.ts's `requestGrant` must read the active-grant set, decide
+ * whether the requested scope conflicts, and append the grant/queue entry,
+ * all without a concurrent `requestGrant` call being able to interleave its
+ * own read in the gap (which would let two overlapping grants both see "no
+ * conflict" and both get appended — the exact invariant this fabric exists to
+ * enforce). `fn` receives the current log (safe to append to logically; use
+ * `appendClaimWithLog` to actually persist an entry and keep the passed-in
+ * array current for any further appends within the same `fn` call).
+ */
+export async function withWorkspaceLock<T>(
+  workspaceId: string,
+  fn: (ctx: { log: ClaimLogEntry[]; append: (claim: Omit<WorkClaim, 'seq'> & { seq?: number }) => Promise<ClaimLogEntry> }) => Promise<T>
+): Promise<T> {
+  const dir = getStoreDir(workspaceId);
+  ensureDirSync(dir);
+  return withLock(workspaceId, async () => {
+    const log = await readClaimLog(workspaceId);
+    const append = (claim: Omit<WorkClaim, 'seq'> & { seq?: number }) => appendClaimLocked(workspaceId, claim, log);
+    return fn({ log, append });
+  });
+}
+
+/**
  * Append one claim entry to the workspace's log with the next monotonic `seq`,
  * assigning `seq` under the lockfile so concurrent writers never collide.
  * Returns the stored entry (with `seq` and `logged_at` filled in).
@@ -150,15 +243,7 @@ export async function appendClaim(
   ensureDirSync(dir);
   return withLock(workspaceId, async () => {
     const existing = await readClaimLog(workspaceId);
-    const nextSeq = existing.reduce((max, e) => Math.max(max, e.seq), 0) + 1;
-    const entry: ClaimLogEntry = {
-      ...claim,
-      seq: claim.seq ?? nextSeq,
-      logged_at: new Date().toISOString(),
-    };
-    const logPath = getLogPath(workspaceId);
-    await fsp.appendFile(logPath, JSON.stringify(entry) + '\n', 'utf8');
-    return entry;
+    return appendClaimLocked(workspaceId, claim, existing);
   });
 }
 
@@ -250,17 +335,33 @@ export async function releaseEdit(workspaceId: string, agentId: string): Promise
  * agent held nothing active).
  */
 export async function releaseAgent(workspaceId: string, agentId: string): Promise<ClaimLogEntry[]> {
-  const active = await getActiveClaims(workspaceId);
-  const mine = active.filter((c) => c.agent_id === agentId);
-  const now = new Date().toISOString();
-  const released: ClaimLogEntry[] = [];
-  for (const c of mine) {
-    const { seq: _priorSeq, ...rest } = c;
-    released.push(
-      await appendClaim(workspaceId, { ...rest, status: 'released', heartbeat_at: now })
+  const dir = getStoreDir(workspaceId);
+  ensureDirSync(dir);
+  // CRITICAL: read-the-active-set, decide-what's-mine, and append-the-releases
+  // must happen under ONE lock acquisition. Doing the read outside the lock
+  // (as a plain `getActiveClaims` call followed by separate `appendClaim`
+  // calls) left a window where a concurrent `claim` append — in flight but not
+  // yet on disk when this function took its snapshot — would be invisible to
+  // `mine`, so nothing for that claim_id got released. The claim then landed
+  // AFTER this call returned "released N claims", leaving it active until TTL
+  // with `fab.ts release` having already reported success. Repro:
+  // local-store.test.ts "releaseAgent is race-safe against a concurrent
+  // appendClaim for the same agent".
+  return withLock(workspaceId, async () => {
+    const existing = await readClaimLog(workspaceId);
+    const active = deriveActiveClaims(existing, Date.now()).filter(
+      (c) => c.workspace_id === workspaceId && c.agent_id === agentId
     );
-  }
-  return released;
+    const now = new Date().toISOString();
+    const released: ClaimLogEntry[] = [];
+    for (const c of active) {
+      const { seq: _priorSeq, ...rest } = c;
+      released.push(
+        await appendClaimLocked(workspaceId, { ...rest, status: 'released', heartbeat_at: now }, existing)
+      );
+    }
+    return released;
+  });
 }
 
 /**

@@ -16,6 +16,8 @@ import {
   announceEdit,
   checkEditLock,
   releaseAgent,
+  findAgentInOtherWorkspaces,
+  getStoreDir,
 } from '../src/coordination/local-store';
 
 const WS = process.env.FAB_WS || 'deployable-detection-build';
@@ -70,7 +72,22 @@ async function main() {
     }
     case 'release': {
       const rel = await releaseAgent(WS, agentId);
-      console.log(`released ${agentId} (${rel.length} claim${rel.length === 1 ? '' : 's'})`);
+      console.log(`released ${agentId} (${rel.length} claim${rel.length === 1 ? '' : 's'}) workspace="${WS}" dir=${getStoreDir(WS)}`);
+      if (rel.length === 0) {
+        // 0-released is ambiguous: "nothing left to release" (fine) vs. "you
+        // targeted the wrong FAB_WS/KLAURO_COORD_DIR and your real claim is
+        // still active elsewhere" (silent failure — the bug this CLI must
+        // never let recur). Actively check sibling workspaces and surface it
+        // instead of letting the caller believe release succeeded.
+        const elsewhere = await findAgentInOtherWorkspaces(agentId, WS);
+        if (elsewhere.length > 0) {
+          console.error(
+            `WARNING: no active claim for "${agentId}" under workspace "${WS}", but it IS active under: ${elsewhere.join(', ')}. ` +
+              `You likely have the wrong FAB_WS (or KLAURO_COORD_DIR) set — re-run with FAB_WS=<one of the above>.`
+          );
+          process.exitCode = 1;
+        }
+      }
       break;
     }
     default:

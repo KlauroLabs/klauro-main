@@ -27,7 +27,7 @@
  */
 
 import { arbitrate } from './arbiter';
-import { appendClaim, getStoreDir, readClaimLog, type ClaimLogEntry } from './local-store';
+import { readClaimLog, withWorkspaceLock, type ClaimLogEntry } from './local-store';
 import { deriveActiveClaims, isExpired, reduceClaimLog } from './presence';
 import type { AgentKind, ConceptualCoordinate, ConflictKind, WorkClaim } from './types';
 
@@ -105,12 +105,18 @@ function grantClaimId(workspaceId: string, grantId: string): string {
   return `grant:${workspaceId}:${grantId}`;
 }
 
-/** All non-expired grant-manager claims (both granted and queued kinds), LWW-reduced. */
-async function readGrantClaims(
+/**
+ * All non-expired grant-manager claims (both granted and queued kinds),
+ * LWW-reduced. PURE — operates on an already-read `log` (typically the
+ * lock-held snapshot from `withWorkspaceLock`) rather than reading from disk
+ * itself, so callers can derive this repeatedly against one consistent
+ * in-memory snapshot inside one atomic critical section.
+ */
+function grantClaimsFromLog(
+  log: ClaimLogEntry[],
   workspaceId: string,
   nowMs: number
-): Promise<Array<{ claim: WorkClaim; marker: GrantMarker['__grant__'] }>> {
-  const log = await readClaimLog(workspaceId);
+): Array<{ claim: WorkClaim; marker: GrantMarker['__grant__'] }> {
   const active = deriveActiveClaims(log, nowMs).filter((c) => c.workspace_id === workspaceId);
   const out: Array<{ claim: WorkClaim; marker: GrantMarker['__grant__'] }> = [];
   for (const claim of active) {
@@ -120,24 +126,41 @@ async function readGrantClaims(
   return out;
 }
 
-/** Currently-active (granted, non-expired) grants for a workspace, as `WorkClaim`s + markers. */
+/** Currently-active (granted, non-expired) grants, as `WorkClaim`s + markers. Pure. */
+function activeGrantClaimsFromLog(
+  log: ClaimLogEntry[],
+  workspaceId: string,
+  nowMs: number
+): Array<{ claim: WorkClaim; marker: GrantMarker['__grant__'] }> {
+  return grantClaimsFromLog(log, workspaceId, nowMs).filter((e) => e.marker.kind === 'granted');
+}
+
+/** Currently-queued grant requests, ordered FIFO by `queued_at`. Pure. */
+function queuedGrantClaimsFromLog(
+  log: ClaimLogEntry[],
+  workspaceId: string,
+  nowMs: number
+): Array<{ claim: WorkClaim; marker: GrantMarker['__grant__'] }> {
+  return grantClaimsFromLog(log, workspaceId, nowMs)
+    .filter((e) => e.marker.kind === 'queued')
+    .sort((a, b) => Date.parse(a.marker.queued_at ?? a.claim.created_at) - Date.parse(b.marker.queued_at ?? b.claim.created_at));
+}
+
+/** Non-lock-held convenience wrappers for read-only callers (getGrants after advanceQueue already ran). */
 async function readActiveGrantClaims(
   workspaceId: string,
   nowMs: number
 ): Promise<Array<{ claim: WorkClaim; marker: GrantMarker['__grant__'] }>> {
-  const all = await readGrantClaims(workspaceId, nowMs);
-  return all.filter((e) => e.marker.kind === 'granted');
+  const log = await readClaimLog(workspaceId);
+  return activeGrantClaimsFromLog(log, workspaceId, nowMs);
 }
 
-/** Currently-queued grant requests for a workspace, ordered FIFO by `queued_at`. */
 async function readQueuedGrantClaims(
   workspaceId: string,
   nowMs: number
 ): Promise<Array<{ claim: WorkClaim; marker: GrantMarker['__grant__'] }>> {
-  const all = await readGrantClaims(workspaceId, nowMs);
-  return all
-    .filter((e) => e.marker.kind === 'queued')
-    .sort((a, b) => Date.parse(a.marker.queued_at ?? a.claim.created_at) - Date.parse(b.marker.queued_at ?? b.claim.created_at));
+  const log = await readClaimLog(workspaceId);
+  return queuedGrantClaimsFromLog(log, workspaceId, nowMs);
 }
 
 function toActiveGrant(claim: WorkClaim, marker: GrantMarker['__grant__']): ActiveGrant {
@@ -221,104 +244,116 @@ function conflictKindFor(overlap: { symbols: string[]; paths: string[] }): Confl
  * - No conflict           → GRANT immediately.
  * - Conflict, same scope+agent (duplicate) → return the existing grant (idempotent).
  * - Conflict, different agent → QUEUE (FIFO) behind the holder.
+ *
+ * CONCURRENCY: the entire read-active-set + decide + append sequence runs
+ * inside ONE `withWorkspaceLock` critical section. Previously each step
+ * (`advanceQueue`, `readActiveGrantClaims`, the final `appendClaim`) took its
+ * own independent lock, so two `requestGrant` calls for overlapping scope
+ * could each complete their "is there a conflict?" read before either had
+ * appended anything — both would see no conflict and both would be granted,
+ * violating the "at most one active grant per symbol" invariant this module
+ * exists to enforce. Reproduced 100/100 in a concurrent-race test before this
+ * fix (see grant-manager.test.ts "concurrent requestGrant for overlapping
+ * scope never double-grants").
  */
 export async function requestGrant(req: GrantRequest): Promise<GrantResult> {
-  // Reconcile first: a holder's lease may have lapsed since the last release
-  // or heartbeat with nobody calling releaseGrant (expiry is read-time-only,
-  // per spec — no background timer). Advancing here means a queued agent is
-  // promoted the moment *anyone* next looks, not only on an explicit release.
-  await advanceQueue(req.workspace_id);
+  return withWorkspaceLock(req.workspace_id, async ({ log, append }) => {
+    const nowMs = Date.now();
 
-  const nowMs = Date.now();
-  const activeGrants = await readActiveGrantClaims(req.workspace_id, nowMs);
+    // Reconcile first: a holder's lease may have lapsed since the last release
+    // or heartbeat with nobody calling releaseGrant (expiry is read-time-only,
+    // per spec — no background timer). Advancing here means a queued agent is
+    // promoted the moment *anyone* next looks, not only on an explicit release.
+    // Runs against the SAME in-lock `log`/`append` so promotions from this
+    // reconciliation are visible to the conflict check immediately below.
+    await advanceQueueLocked(req.workspace_id, log, append, nowMs);
 
-  // Idempotent duplicate: same agent already holds a grant with the identical scope.
-  const existingSameAgent = activeGrants.find(
-    (e) =>
-      e.claim.agent_id === req.agent_id &&
-      e.claim.scope.repo === req.scope.repo &&
-      sameStringSet(e.claim.scope.paths, req.scope.paths) &&
-      sameStringSet(e.claim.scope.symbols, req.scope.symbols)
-  );
-  if (existingSameAgent) {
+    let activeGrants = activeGrantClaimsFromLog(log, req.workspace_id, nowMs);
+
+    // Idempotent duplicate: same agent already holds a grant with the identical scope.
+    const existingSameAgent = activeGrants.find(
+      (e) =>
+        e.claim.agent_id === req.agent_id &&
+        e.claim.scope.repo === req.scope.repo &&
+        sameStringSet(e.claim.scope.paths, req.scope.paths) &&
+        sameStringSet(e.claim.scope.symbols, req.scope.symbols)
+    );
+    if (existingSameAgent) {
+      return {
+        verdict: 'granted',
+        grant_id: existingSameAgent.marker.grant_id,
+        lease_expires_at: toActiveGrant(existingSameAgent.claim, existingSameAgent.marker)
+          .lease_expires_at,
+      };
+    }
+
+    // Use the shared arbiter for capability-duplicate detection; symbol/path overlap
+    // is checked directly below since arbiter.arbitrate needs a WorkClaim[] and
+    // we want conflict details keyed to grants (not generic claims).
+    const asClaim = scopeAsClaim('__grant_probe__', req.agent_id, req.scope);
+    const asClaims = activeGrants.map((e) => e.claim);
+    const arbResult = arbitrate(asClaim, asClaims, [], []);
+    void arbResult; // capability-path is not used by grants today (no capability dedupe requested); kept for parity/future use.
+
+    const conflicting = findConflictingActiveGrant(req.scope, activeGrants, req.agent_id);
+    if (!conflicting) {
+      const grantId = newGrantId();
+      const now = new Date(nowMs).toISOString();
+      const ttlMs = req.ttl_ms ?? DEFAULT_GRANT_TTL_MS;
+      await append({
+        claim_id: grantClaimId(req.workspace_id, grantId),
+        workspace_id: req.workspace_id,
+        agent_id: req.agent_id,
+        agent_kind: req.agent_kind,
+        scope: req.scope,
+        intent: encodeIntent({ __grant__: { kind: 'granted', grant_id: grantId, intent: req.intent } }),
+        status: 'active',
+        created_at: now,
+        ttl_ms: ttlMs,
+        heartbeat_at: now,
+      });
+      return {
+        verdict: 'granted',
+        grant_id: grantId,
+        lease_expires_at: new Date(nowMs + ttlMs).toISOString(),
+      };
+    }
+
+    // Conflict with another agent's active grant → queue behind the holder.
+    const queued = queuedGrantClaimsFromLog(log, req.workspace_id, nowMs);
+    const grantId = newGrantId();
+    const queuedAt = new Date(nowMs).toISOString();
+    await append({
+      claim_id: grantClaimId(req.workspace_id, grantId),
+      workspace_id: req.workspace_id,
+      agent_id: req.agent_id,
+      agent_kind: req.agent_kind,
+      scope: req.scope,
+      intent: encodeIntent({
+        __grant__: { kind: 'queued', grant_id: grantId, intent: req.intent, queued_at: queuedAt },
+      }),
+      status: 'active',
+      created_at: queuedAt,
+      ttl_ms: QUEUE_TTL_MS,
+      heartbeat_at: queuedAt,
+    });
+
+    const position =
+      queued.filter((e) => Date.parse(e.marker.queued_at ?? e.claim.created_at) < nowMs).length + 1;
+
     return {
-      verdict: 'granted',
-      grant_id: existingSameAgent.marker.grant_id,
-      lease_expires_at: toActiveGrant(existingSameAgent.claim, existingSameAgent.marker)
-        .lease_expires_at,
+      verdict: 'queued',
+      queue_position: position,
+      conflict: {
+        holder_agent_id: conflicting.holder.agent_id,
+        overlapping_symbols: conflicting.overlap.symbols,
+        overlapping_paths: conflicting.overlap.paths,
+        kind: conflictKindFor(conflicting.overlap),
+      },
+      redirect_hint:
+        'Scope conflicts with an in-progress grant; consider disjoint symbols/paths, or wait for the queue to advance.',
     };
-  }
-
-  // Use the shared arbiter for capability-duplicate detection; symbol/path overlap
-  // is checked directly below since arbiter.arbitrate needs a WorkClaim[] and
-  // we want conflict details keyed to grants (not generic claims).
-  const asClaim = scopeAsClaim('__grant_probe__', req.agent_id, req.scope);
-  const asClaims = activeGrants.map((e) => e.claim);
-  const arbResult = arbitrate(asClaim, asClaims, [], []);
-  void arbResult; // capability-path is not used by grants today (no capability dedupe requested); kept for parity/future use.
-
-  const conflicting = findConflictingActiveGrant(req.scope, activeGrants, req.agent_id);
-  if (!conflicting) {
-    return grantNow(req, nowMs);
-  }
-
-  // Conflict with another agent's active grant → queue behind the holder.
-  const queued = await readQueuedGrantClaims(req.workspace_id, nowMs);
-  const grantId = newGrantId();
-  const queuedAt = new Date(nowMs).toISOString();
-  await appendClaim(req.workspace_id, {
-    claim_id: grantClaimId(req.workspace_id, grantId),
-    workspace_id: req.workspace_id,
-    agent_id: req.agent_id,
-    agent_kind: req.agent_kind,
-    scope: req.scope,
-    intent: encodeIntent({
-      __grant__: { kind: 'queued', grant_id: grantId, intent: req.intent, queued_at: queuedAt },
-    }),
-    status: 'active',
-    created_at: queuedAt,
-    ttl_ms: QUEUE_TTL_MS,
-    heartbeat_at: queuedAt,
   });
-
-  const position =
-    queued.filter((e) => Date.parse(e.marker.queued_at ?? e.claim.created_at) < nowMs).length + 1;
-
-  return {
-    verdict: 'queued',
-    queue_position: position,
-    conflict: {
-      holder_agent_id: conflicting.holder.agent_id,
-      overlapping_symbols: conflicting.overlap.symbols,
-      overlapping_paths: conflicting.overlap.paths,
-      kind: conflictKindFor(conflicting.overlap),
-    },
-    redirect_hint:
-      'Scope conflicts with an in-progress grant; consider disjoint symbols/paths, or wait for the queue to advance.',
-  };
-}
-
-async function grantNow(req: GrantRequest, nowMs: number): Promise<GrantResult> {
-  const grantId = newGrantId();
-  const now = new Date(nowMs).toISOString();
-  const ttlMs = req.ttl_ms ?? DEFAULT_GRANT_TTL_MS;
-  await appendClaim(req.workspace_id, {
-    claim_id: grantClaimId(req.workspace_id, grantId),
-    workspace_id: req.workspace_id,
-    agent_id: req.agent_id,
-    agent_kind: req.agent_kind,
-    scope: req.scope,
-    intent: encodeIntent({ __grant__: { kind: 'granted', grant_id: grantId, intent: req.intent } }),
-    status: 'active',
-    created_at: now,
-    ttl_ms: ttlMs,
-    heartbeat_at: now,
-  });
-  return {
-    verdict: 'granted',
-    grant_id: grantId,
-    lease_expires_at: new Date(nowMs + ttlMs).toISOString(),
-  };
 }
 
 function sameStringSet(a: string[], b: string[]): boolean {
@@ -333,49 +368,60 @@ function sameStringSet(a: string[], b: string[]): boolean {
  * request whose scope no longer conflicts with any remaining active grant is
  * promoted to `granted` (its claim is superseded by a new granted-kind claim
  * under the SAME grant_id, so its `grant_id` stays stable for the caller).
+ *
+ * CONCURRENCY: release + queue-advancement run inside ONE `withWorkspaceLock`
+ * critical section (same reasoning as `requestGrant` above) — a concurrent
+ * `requestGrant` cannot interleave between "mark released" and "promote the
+ * next queued entry", which would otherwise risk a promoted grant briefly
+ * appearing to conflict with a fresh request that read between the two steps.
  */
 export async function releaseGrant(
   workspaceId: string,
   agentId: string,
   grantId: string
 ): Promise<void> {
-  const nowMs = Date.now();
-  const log = await readClaimLog(workspaceId);
-  const prior = [...log]
-    .reverse()
-    .find((e) => e.claim_id === grantClaimId(workspaceId, grantId) && e.agent_id === agentId);
-  if (!prior) return; // nothing to release (already gone/unknown grant).
+  await withWorkspaceLock(workspaceId, async ({ log, append }) => {
+    const nowMs = Date.now();
+    const prior = [...log]
+      .reverse()
+      .find((e) => e.claim_id === grantClaimId(workspaceId, grantId) && e.agent_id === agentId);
+    if (!prior) return; // nothing to release (already gone/unknown grant).
 
-  const now = new Date(nowMs).toISOString();
-  await appendClaim(workspaceId, {
-    claim_id: grantClaimId(workspaceId, grantId),
-    workspace_id: workspaceId,
-    agent_id: agentId,
-    agent_kind: prior.agent_kind,
-    scope: prior.scope,
-    intent: prior.intent,
-    status: 'released',
-    created_at: prior.created_at,
-    ttl_ms: prior.ttl_ms,
-    heartbeat_at: now,
+    const now = new Date(nowMs).toISOString();
+    await append({
+      claim_id: grantClaimId(workspaceId, grantId),
+      workspace_id: workspaceId,
+      agent_id: agentId,
+      agent_kind: prior.agent_kind,
+      scope: prior.scope,
+      intent: prior.intent,
+      status: 'released',
+      created_at: prior.created_at,
+      ttl_ms: prior.ttl_ms,
+      heartbeat_at: now,
+    });
+
+    await advanceQueueLocked(workspaceId, log, append, nowMs);
   });
-
-  await advanceQueue(workspaceId);
 }
 
 /**
  * Promote queued requests (FIFO) whose scope no longer conflicts with any
- * remaining active grant. Called after a release and opportunistically after
- * expiry-driven reads settle (expiry itself needs no timer: `deriveActiveClaims`
- * already excludes lease-expired grants from `activeGrants` at read time, so
- * the very next `requestGrant`/`getGrants`/`advanceQueue` call sees the freed
- * scope). May promote more than one queued entry per call if multiple are
+ * remaining active grant. PURE side-effecting core: operates against the
+ * in-lock `log`/`append` passed by the caller's `withWorkspaceLock` critical
+ * section — this must NEVER be called outside a lock, since it reads-then-
+ * decides-then-appends and that sequence is exactly what must stay atomic.
+ * May promote more than one queued entry per call if multiple are
  * simultaneously conflict-free.
  */
-async function advanceQueue(workspaceId: string): Promise<void> {
-  const nowMs = Date.now();
-  let activeGrants = await readActiveGrantClaims(workspaceId, nowMs);
-  const queued = await readQueuedGrantClaims(workspaceId, nowMs);
+async function advanceQueueLocked(
+  workspaceId: string,
+  log: ClaimLogEntry[],
+  append: (claim: Omit<WorkClaim, 'seq'> & { seq?: number }) => Promise<ClaimLogEntry>,
+  nowMs: number
+): Promise<void> {
+  let activeGrants = activeGrantClaimsFromLog(log, workspaceId, nowMs);
+  const queued = queuedGrantClaimsFromLog(log, workspaceId, nowMs);
 
   for (const entry of queued) {
     // No agent-exclusion here: the invariant is "at most one active grant per
@@ -390,7 +436,7 @@ async function advanceQueue(workspaceId: string): Promise<void> {
     // Promote: same grant_id, kind flips to 'granted', fresh lease starts now.
     const now = new Date().toISOString();
     const ttlMs = entry.claim.ttl_ms === QUEUE_TTL_MS ? DEFAULT_GRANT_TTL_MS : entry.claim.ttl_ms;
-    const granted = await appendClaim(workspaceId, {
+    const granted = await append({
       claim_id: entry.claim.claim_id,
       workspace_id: workspaceId,
       agent_id: entry.claim.agent_id,
@@ -417,25 +463,27 @@ export async function heartbeatGrant(
   workspaceId: string,
   grantId: string
 ): Promise<{ ok: boolean; lease_expires_at?: string }> {
-  const nowMs = Date.now();
-  const activeGrants = await readActiveGrantClaims(workspaceId, nowMs);
-  const found = activeGrants.find((e) => e.marker.grant_id === grantId);
-  if (!found) return { ok: false };
+  return withWorkspaceLock(workspaceId, async ({ log, append }) => {
+    const nowMs = Date.now();
+    const activeGrants = activeGrantClaimsFromLog(log, workspaceId, nowMs);
+    const found = activeGrants.find((e) => e.marker.grant_id === grantId);
+    if (!found) return { ok: false };
 
-  const now = new Date(nowMs).toISOString();
-  await appendClaim(workspaceId, {
-    claim_id: found.claim.claim_id,
-    workspace_id: workspaceId,
-    agent_id: found.claim.agent_id,
-    agent_kind: found.claim.agent_kind,
-    scope: found.claim.scope,
-    intent: found.claim.intent,
-    status: 'active',
-    created_at: found.claim.created_at,
-    ttl_ms: found.claim.ttl_ms,
-    heartbeat_at: now,
+    const now = new Date(nowMs).toISOString();
+    await append({
+      claim_id: found.claim.claim_id,
+      workspace_id: workspaceId,
+      agent_id: found.claim.agent_id,
+      agent_kind: found.claim.agent_kind,
+      scope: found.claim.scope,
+      intent: found.claim.intent,
+      status: 'active',
+      created_at: found.claim.created_at,
+      ttl_ms: found.claim.ttl_ms,
+      heartbeat_at: now,
+    });
+    return { ok: true, lease_expires_at: new Date(nowMs + found.claim.ttl_ms).toISOString() };
   });
-  return { ok: true, lease_expires_at: new Date(nowMs + found.claim.ttl_ms).toISOString() };
 }
 
 /** Current active + queued grants for a workspace (read-only projection). */
@@ -447,8 +495,12 @@ export async function getGrants(
 }> {
   // Reconcile lapsed leases against the queue before reporting, same reasoning
   // as requestGrant: expiry is read-time-only, so a poller must trigger the
-  // same advancement a fresh request would.
-  await advanceQueue(workspaceId);
+  // same advancement a fresh request would. Runs its own atomic critical
+  // section (read + promote); the subsequent plain read below is then
+  // consistent because promotions have already been durably appended.
+  await withWorkspaceLock(workspaceId, async ({ log, append }) => {
+    await advanceQueueLocked(workspaceId, log, append, Date.now());
+  });
 
   const nowMs = Date.now();
   const activeGrants = await readActiveGrantClaims(workspaceId, nowMs);

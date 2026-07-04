@@ -213,6 +213,61 @@ describe('grant-manager', () => {
     await assertNoActiveOverlap(ws);
   });
 
+  it('8. concurrent requestGrant for overlapping scope never double-grants (real bug repro)', async () => {
+    // Real bug: requestGrant's read-active-set -> decide -> append sequence
+    // used to take its own `withLock` per internal step (advanceQueue's read,
+    // the conflict-check read, the final append), NOT one atomic critical
+    // section. Two concurrent requestGrant calls for overlapping scope could
+    // each pass the conflict check (both seeing "no conflict yet") before
+    // either had appended — both got granted, violating the module's core
+    // invariant. Reproduced 100/100 before the fix (unlocked
+    // read-decide-append); this asserts it can no longer happen across many
+    // trials of a genuine concurrent race (both requests started in the same
+    // tick, no ordering constraint between them).
+    for (let i = 0; i < 25; i++) {
+      const ws = freshWorkspaceId();
+      const scope = { repo: 'r', paths: ['src/shared.ts'], symbols: ['sym:Shared'] };
+      const [r1, r2] = await Promise.all([
+        requestGrant(req({ workspace_id: ws, agent_id: 'agent-race-1', scope, intent: 'race1' })),
+        requestGrant(req({ workspace_id: ws, agent_id: 'agent-race-2', scope, intent: 'race2' })),
+      ]);
+      // Exactly one of the two racing requests must be granted; the other queued.
+      const verdicts = [r1.verdict, r2.verdict].sort();
+      assert.deepEqual(
+        verdicts,
+        ['granted', 'queued'],
+        `trial ${i}: expected exactly one granted + one queued, got ${JSON.stringify(verdicts)}`
+      );
+      await assertNoActiveOverlap(ws);
+    }
+  });
+
+  it('9. releaseGrant is race-safe against a concurrent requestGrant for the same agent', async () => {
+    // Second real-world angle on the same root cause: an agent's OWN release
+    // racing a fresh claim for a DIFFERENT scope must never corrupt the log
+    // (lost update / torn append) — the invariant must hold after every trial.
+    for (let i = 0; i < 20; i++) {
+      const ws = freshWorkspaceId();
+      const r1 = await requestGrant(
+        req({ workspace_id: ws, agent_id: 'agent-a', scope: { repo: 'r', paths: [], symbols: ['sym:Foo'] } })
+      );
+      assert.equal(r1.verdict, 'granted');
+
+      await Promise.all([
+        releaseGrant(ws, 'agent-a', r1.grant_id!),
+        requestGrant(
+          req({ workspace_id: ws, agent_id: 'agent-b', scope: { repo: 'r', paths: [], symbols: ['sym:Bar'] } })
+        ),
+      ]);
+
+      await assertNoActiveOverlap(ws);
+      const { active } = await getGrants(ws);
+      // agent-a released; agent-b's disjoint-scope request must have landed granted
+      // regardless of interleaving (never lost).
+      assert.ok(active.some((g) => g.agent_id === 'agent-b'), `trial ${i}: agent-b's grant must not be lost`);
+    }
+  });
+
   it('7. fuzz: interleaved requests/releases never violate the invariant', async () => {
     const ws = freshWorkspaceId();
     const agents = ['agent-a', 'agent-b', 'agent-c', 'agent-d', 'agent-e'];
