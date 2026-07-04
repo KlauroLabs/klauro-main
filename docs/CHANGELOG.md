@@ -5,6 +5,38 @@ agent-feedback reports (`~/.klauro/agent-feedback/*.md`) — nothing is asserted
 Where an item was still in flight at the time this entry was written, it is marked **pending
 final verify** rather than presented as done.
 
+## v1.0.15 — Fleet hardening: fabric race-safety, honest analysis, token efficiency (2026-07-04)
+
+A six-agent parallel "make it flawless" wave (coordinated through the fabric one of them was
+simultaneously hardening). Every agent reproduced-before-coding and several found bugs worse than
+the one they were sent after. Full gate green: tsc both packages, analyzer-core 855 jest + 132 node,
+mcp-server coordination/query/registration/response 173.
+
+### Fixed
+
+- **Fabric race-safety (found a bug worse than the target).** `grant-manager`'s own "one grant per
+  symbol" invariant was violated **100/100** under a concurrent-request repro (both callers passed
+  the conflict check before either wrote — the enforcement path agents rely on). `releaseAgent` had a
+  matching TOCTOU (unlocked read then append → silent no-op release). Both fixed with an atomic
+  `withWorkspaceLock` critical section (0/100 post-fix). `fab release` against the wrong `FAB_WS` now
+  warns + exits non-zero instead of silently "succeeding."
+- **Fabricated route rows.** `buildRouteTable` emitted fake `GET /` rows from NestJS `app.listen()`
+  bootstraps; now requires `trigger.path` (zerac-api 327→323, 0 bogus, all real routes still resolve).
+- **Express under-detection.** `canAnalyze` missed `import * as express` and destructured `Router` →
+  a real Express repo went 0→3 routes, resolving to real handlers.
+- **Dead-registration footgun consolidated.** Three analyzer-registration lists → one live path
+  (`analyzer.ts` `createOrchestrator`); the other two (unused `frameworks/index.ts` helpers,
+  never-bootstrapped legacy NestJS `cas-analyzer.service.ts`) marked/removed. Found `McpToolRegistrationAnalyzer`
+  **silently dead** (registered only in a dead list → never ran in prod despite green tests); wired
+  live + added a guard test that fails if any analyzer isn't in the live path.
+- **Token blow-up.** Untargeted `get_flow_concepts` returned one flow per entry point — measured
+  **1,133 flows / ~467,618 tokens** in a single response. Now capped at 15 (untargeted) with explicit
+  `total_available`/`truncated`/`gaps` — **>92× smaller (467k→5k), full I/L/S/O preserved**. Plus
+  `get_agent_context` bounded counts + de-duplicated risk context.
+- **Corpus-harness OOM.** A 39k-node CAS caused a V8 *fatal* (uncatchable, under the try/catch);
+  fixed via heap re-exec + early buffer release. Self-repo (39,298 nodes) + openclaw (76,307) now
+  sweep clean.
+
 ## v1.0.14 — Fastify + scheduled-job coverage (2026-07-04)
 
 Closes the last residual from the v1.0.13 corpus re-validation (`finance-context-ts` under-detected).
