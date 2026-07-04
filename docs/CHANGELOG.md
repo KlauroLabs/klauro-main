@@ -5,6 +5,36 @@ agent-feedback reports (`~/.klauro/agent-feedback/*.md`) — nothing is asserted
 Where an item was still in flight at the time this entry was written, it is marked **pending
 final verify** rather than presented as done.
 
+## v1.0.16 — Correctness wave 2: honest identity, coverage, evidence-gating (2026-07-04)
+
+A second parallel wave off the adversarial analysis audit. Every agent reproduced-before-coding and
+several disproved their own premise. Full gate green: tsc both packages, analyzer-core 877 jest,
+touched mcp-server suites; node-http validated on real repos.
+
+### Fixed / Added
+
+- **Hash names never leak into identity, and the REAL name is recovered.** Production analyses write
+  the source to a hash-named workspace dir; `path.basename(projectPath)` fallbacks echoed that hash
+  into `deployable_evidence[].name`, `system.name`, idiom `claim` text, and container `service_aliases`.
+  Now: a `safeDeployableName` guard (never emit a hash) **plus** a real `displayName` threaded
+  end-to-end (remote-analyzer-service → orchestrator → 24 evidence-provider fallback sites) so the name
+  is *correct*, not just a placeholder. zerac-ui: `b4d1b9a5fa2fab1c` → `@zerac-ui/source` / `zerac-ui`.
+- **Honest file counts.** `technologies.languages[].files` was an AST-node count (5.9–15.7× inflated);
+  now a distinct-source-file count (zerac-api 11,668 → 759, exact vs ground truth), with monorepo
+  abs/relative double-count fixed.
+- **Raw Node `http.createServer` analyzer** — previously invisible; now surfaces real routes as entry
+  points (kontinuum 0→161, soon-bos 0→5). Evidence-based; dynamic dispatch honestly partial, never faked.
+- **ORM attribution import-gated** — MikroORM `EntityManager` was mislabeled "TypeORM" by bare-symbol
+  regex; now attributed by real import source (added a MikroORM rule; zerac-api 20 nodes corrected).
+- **Production snapshot dropped config YAML** — `remote-source.ts` excluded non-manifest `.yaml`/`.yml`
+  (`config/routes.yaml`, `security.yaml`) that Symfony/container-topology/gorouter/Kemal analyzers read;
+  now included (dead misleading `SOURCE_EXTENSIONS` set removed).
+
+### Known follow-ups (honest)
+- File-walk coverage shortfall on large repos (this repo parses ~875 of ~1,240 files) — a separate,
+  pre-existing gap surfaced by the file-count fix.
+- soon-bos raw-HTTP routing is dynamic; node-http resolves 5 of ~228 (honest partial).
+
 ## v1.0.15 — Fleet hardening: fabric race-safety, honest analysis, token efficiency (2026-07-04)
 
 A six-agent parallel "make it flawless" wave (coordinated through the fabric one of them was
