@@ -89,6 +89,7 @@ import { isLanguageBuiltinName, isLanguageBuiltinExitPoint, isLanguageBuiltinDom
 import { buildProductMap } from './product-map';
 import { relativizeProjectPaths } from './relativize-project-paths';
 import { isRegisteredManifest, isRegisteredSourceExtension, isPackageBoundaryManifest } from './language-registry';
+import { discoverWorkspaceGlobRootsWithoutManifest } from './workspace-globs';
 import { CallGraphBuilder } from './call-graph-builder';
 import { DomainExtractor } from './domain-extractor';
 import { WorkflowDetector } from './workflow-detector';
@@ -237,6 +238,7 @@ export const KLAURO_SELF_CAPABILITY_DESCRIPTIONS: Readonly<Record<string, string
 interface DetectedAnalyzerCacheEntry {
   expiresAt: number;
   projectRoots: string[];
+  manifestOwningProjectRoots: string[];
   analyzerRootEntries: Array<[string, string]>;
   analyzers: AnalyzerRegistration[];
 }
@@ -309,6 +311,16 @@ export interface OrchestrateAnalysisOptions {
 export class AnalyzerOrchestrator {
   private analyzers: Map<string, AnalyzerRegistration> = new Map();
   private projectRoots: string[] = [];
+  // Subset of projectRoots that own their own package-boundary manifest
+  // (package.json, Cargo.toml, ...) as opposed to being discovered purely via
+  // a workspace-manifest glob (pnpm-workspace.yaml `apps/*`, etc.) with no
+  // manifest of their own. Only manifest-owning roots can ever get a
+  // dedicated nested analyzer pass (canAnalyze() reads that directory's own
+  // manifest) — see getAnalyzerScopeFilters, which must not exclude a
+  // glob-only root from the root-scoped pass, since no nested pass will ever
+  // cover it otherwise (the exact failure mode the Dockerfile-boundary fix
+  // addressed, reintroduced via a different discovery path).
+  private manifestOwningProjectRoots: Set<string> = new Set();
   private analyzerRootMap: Map<string, string> = new Map();
   private manifestFileCache: Map<string, string[]> = new Map();
   private nestedRepoIgnoreCache: Map<string, string[]> = new Map();
@@ -412,6 +424,8 @@ export class AnalyzerOrchestrator {
   private async discoverProjectRoots(projectPath: string): Promise<string[]> {
     const rootSet = new Set<string>();
     rootSet.add(projectPath);
+    const manifestRootAbsolutePaths = new Set<string>();
+    manifestRootAbsolutePaths.add(projectPath);
 
     try {
       // Package-boundary manifests only (package.json, pom.xml, Cargo.toml, ...) —
@@ -425,10 +439,38 @@ export class AnalyzerOrchestrator {
       for (const match of matches) {
         const absolutePath = path.join(projectPath, path.dirname(match));
         rootSet.add(absolutePath);
+        manifestRootAbsolutePaths.add(absolutePath);
       }
     } catch {
     }
 
+    try {
+      // A pnpm/turbo/nx workspace can declare members (`apps/*`, `packages/*`)
+      // via a workspace-manifest glob even when a member directory has NO
+      // package.json of its own (deps hoisted to the root). Those members are
+      // invisible to the manifest walk above, so consult the workspace globs
+      // directly. Evidence-gated: only a directory a glob pattern actually
+      // matches counts — never inferred from folder naming. Skip anything
+      // that already has its own boundary manifest (already added above) to
+      // avoid double-counting the same root through two mechanisms.
+      //
+      // These glob-only members are added to rootSet (so they're scoped into
+      // the root-scoped framework pass rather than silently missed) but
+      // deliberately NOT added to manifestRootAbsolutePaths — they can never
+      // get their OWN dedicated nested pass (no package.json for canAnalyze()
+      // to read there), so getAnalyzerScopeFilters must not wall them off the
+      // way it does for genuine manifest-owning nested roots.
+      const globMembers = discoverWorkspaceGlobRootsWithoutManifest(
+        projectPath,
+        (absoluteDir) => manifestRootAbsolutePaths.has(absoluteDir),
+      );
+      for (const member of globMembers) {
+        rootSet.add(member);
+      }
+    } catch {
+    }
+
+    this.manifestOwningProjectRoots = manifestRootAbsolutePaths;
     return Array.from(rootSet).sort((a, b) => a.length - b.length);
   }
 
@@ -814,6 +856,7 @@ export class AnalyzerOrchestrator {
     const cached = this.detectedAnalyzerCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
       this.projectRoots = [...cached.projectRoots];
+      this.manifestOwningProjectRoots = new Set(cached.manifestOwningProjectRoots);
       this.analyzerRootMap = new Map(cached.analyzerRootEntries);
       return [...cached.analyzers];
     }
@@ -833,6 +876,7 @@ export class AnalyzerOrchestrator {
     this.detectedAnalyzerCache.set(cacheKey, {
       expiresAt: Date.now() + 60_000,
       projectRoots: [...this.projectRoots],
+      manifestOwningProjectRoots: [...this.manifestOwningProjectRoots],
       analyzerRootEntries: [...this.analyzerRootMap.entries()],
       analyzers: [...ordered],
     });
@@ -4314,8 +4358,18 @@ export class AnalyzerOrchestrator {
       return [];
     }
 
+    // Only exclude OTHER project roots that own their own package-boundary
+    // manifest (package.json, Cargo.toml, ...): those are the only roots that
+    // can ever get a dedicated nested analyzer pass, since canAnalyze() reads
+    // that directory's own manifest. A root discovered purely via a
+    // workspace-manifest glob (pnpm-workspace.yaml `apps/*` etc.) with no
+    // manifest of its own can NEVER pass canAnalyze() there, so excluding it
+    // here would wall it off from every pass with nothing left to cover it —
+    // the same silent-drop failure mode the Dockerfile-boundary fix addressed
+    // for deploy/build-tooling-only directories, reintroduced via a different
+    // discovery path if this weren't filtered.
     return this.projectRoots
-      .filter(root => root !== matchedRoot)
+      .filter(root => root !== matchedRoot && this.manifestOwningProjectRoots.has(root))
       .map(root => path.relative(matchedRoot, root).replace(/\\/g, '/'))
       .filter(relativeRoot =>
         relativeRoot &&
