@@ -62,7 +62,14 @@ import { deriveActiveClaims } from './coordination/presence';
 import { detectConceptualConflicts, type AgentInFlightState, type ConceptualConflict, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
 import { captureInFlightChanges } from './coordination/in-flight-capture';
 import { planIntentMerge } from './coordination/intent-merge';
-import { partitionTasks, type PartitionCas, type PartitionTask } from './coordination/partitioner';
+import { partitionTasks, groupTasksByConcept, type PartitionCas, type PartitionTask } from './coordination/partitioner';
+import {
+  buildConceptIndex,
+  deriveConceptualCoordinate,
+  compareConceptualCoordinates,
+  type ConceptIndex,
+} from './coordination/conceptual-scope';
+import type { ConceptualCoordinate } from './coordination/types';
 import { loadPersistedRuntimeFacts } from './telemetry-fusion';
 
 const SERVER_INSTRUCTIONS = `Klauro serves a precomputed analysis of this repository — call graph, routes, data flows, entry points, conventions, and tests, queryable directly. Default to it over grep/Read: a query returns real call sites and blast radius, not guesses. The value is the sequence below; each tool's own description has the detail.
@@ -73,13 +80,17 @@ Progressive availability (don't wait): structural facts — call graph, routes, 
 
 Find (instead of grep): search_nodes / semantic_search rank nodes by name+meaning with file:line and risk flags. get_route_table for routes (method/path/handler/auth); get_entry_points and get_exit_points for CLI, events, and queues; get_file_nodes for what a file defines.
 
-Understand before editing (highest value): get_coding_context(target) returns the node plus conventions, layer boundaries, callers, callees, and the exact tests to run — one call instead of read-file + trace-callers + find-tests. get_callers shows each call site's actual arguments; get_call_chain traces a request end to end; get_data_lineage tracks an entity's reads and writes; get_intent / get_conventions / get_modification_guide explain why it exists and how to change it safely. Before changing an entity, call get_interface_signature to see its full contract — Input (params/entry points it requires), Logic (its caller/callee blackbox wiring), Side-effects (external systems/entities it touches), Output (return type/produced entities) — and blast radius in one call, at function/flow/capability/project/workspace level, instead of joining entry_points + exit_points + data_lineage + get_callers by hand.
+Understand before editing (highest value): get_coding_context(target) returns the node plus conventions, layer boundaries, callers, callees, and the exact tests to run — one call instead of read-file + trace-callers + find-tests. get_callers shows each call site's actual arguments; get_call_chain traces a request end to end; get_data_lineage tracks an entity's reads and writes; get_intent / get_conventions / get_modification_guide explain why it exists and how to change it safely. Before changing an entity, call get_interface_signature to see its full contract — Input (params/entry points it requires), Logic (its caller/callee blackbox wiring), Side-effects (external systems/entities it touches), Output (return type/produced entities) — and blast radius in one call, at function/flow/capability/project/workspace level, instead of joining entry_points + exit_points + data_lineage + get_callers by hand. For the ordered steps a request/job actually moves through (not just one entity's contract), call get_flow_concepts — a named flow per entry point, each step tied to concrete functions (1:1/1:many/sub-section) with its own I/L/S/O + Constraints; use this to coordinate work at the flow/step level ("I own the Persist step of the Checkout flow") instead of file/function.
+
+Think in levels, not just files (Capability -> Flow -> Step -> Function): get_summary names the capabilities; get_flow_concepts breaks each into named flows as ordered steps, each step carrying its own Input/Logic/Side-effects(state_changes vs external_integrations)/Output/Constraints; get_coding_context/get_call_chain drill a step down to its concrete function(s) — 1:1, 1:many, or a sub-section of one function. Every level answers the same shape of question, so "what does this do, what does it touch, what rule must hold" is answerable uniformly from one function up to a whole capability — orient wide with get_summary, then narrow through get_flow_concepts before you ever drop to a single file.
 
 Stay cohesive as the system grows (self-regulation, mandatory before non-trivial additions): lead with the comprehension layer — get_product_map, get_paradigm_conformance, get_patterns — to learn HOW this system is actually built (its layering norm, its dominant design patterns) before writing code that assumes a different shape. Then, before adding a new handler/module/data-access path, call get_architectural_conflicts to check whether what you're about to build would introduce a competing pattern for a concern this codebase already has a norm for (e.g. calling a repository directly where every other handler goes through a service), or an engineering-principle break (layering skip, split ownership of an entity's writes, a new coupling hotspot). A clean is_cohesive:true doesn't mean skip design judgment, but a conflict/violation is a direct signal to align with the existing shape instead of adding a second way to do the same thing — keeping a codebase built by many agents cohesive by construction, not by cleanup after the fact.
 
 Change, then verify: assess_change_risk and get_error_contracts before; validate_agent_change after, to surface ripple (e.g. a dropped DTO field breaking its service and entity) instead of finding it one compile error at a time.
 
 Cross-repo work (ui -> api -> worker is one product): run_workspace_analysis, then get_workspace_summary / get_workspace_capability_map / get_cross_repo_links.
+
+Default to parallel, through the fabric (not a fallback for when work collides): when a task can fan out, split it and run agents concurrently as the normal posture — each one announcing its flow/step/capability scope through the fabric, always, even when the scopes are obviously disjoint. The fabric is always-on ambient awareness (dedup, conceptual coherence, fleet visibility), not a lock you reach for only on conflict. Serial, one-agent-at-a-time work is the exception that needs a reason; parallel-plus-fabric is the default. You no longer need to fear dozens of agents on the same codebase at once — announce your concept-level scope and the fabric keeps the fleet aware and coherent, so you can go faster, not slower, as more agents join.
 
 Coordinate before you act (multi-agent workspaces — awareness first, never a lockout): before starting any non-trivial edit, call claim_work with the workspace, your agent_id, and the paths/symbols/capability you're about to touch. The fabric makes you AWARE of who else is here and what they intend, so you coordinate — it never blocks work you need. Disjoint work always runs free in parallel (block-time -> 0 for non-overlapping scope). If the verdict is "granted", proceed immediately: heartbeat_work periodically while working so the lease doesn't expire, and release_work the moment you're done or handing off (this instantly frees the scope and promotes the next queued agent, if any). If the verdict is "queued" — meaning another agent's grant genuinely overlaps your scope — you get full awareness in the response, not a dead end: the holder's agent_id, their stated intent, and their lease_status (active/near_expiry/expired), plus an "options" array. If the work is FUNGIBLE (interchangeable with something else), take redirect_hint/free_scope_hint and go do disjoint work instead. If the work is NON-fungible (you specifically need that symbol), you are never denied: wait_and_heartbeat_poll, proceed_with_awareness_if_compatible once you've read the holder's intent and judged the changes compatible, or take_over_stale_lease if their lease_status shows near_expiry/expired. If the verdict is "duplicate", you already hold this exact grant. Use check_collision for the same awareness read-only (no grant taken; surfaces overlapping_grant_holders with intent + lease_status even before you claim) and get_active_agents to see every live grant holder's intent + lease_status plus the queue. Contention is resolved by informed coordination, not lockout — the invariant "one grant per symbol" governs simultaneous blind writes, not your right to reach work you need. Use get_in_flight_changes to see who is touching a specific path and why. This only has value if you actually call it — treat it as mandatory for shared workspaces, not optional bookkeeping.
 
@@ -236,11 +247,11 @@ const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
   { label: 'Analysis management', tools: ['analyze_codebase', 'get_analysis_focus_profiles', 'get_description_enrichment_targets', 'generate_element_description', 'get_element_description', 'get_analysis_phases', 'run_analysis_layer', 'initialize_klauro_project', 'get_klauro_project_config', 'get_upload_manifest', 'get_agent_revision_tracks', 'get_github_import_plan', 'analyze_codebase_remote', 'sync_codebase_remote', 'list_analyses', 'validate_cas_contract', 'get_storage_health', 'get_storage_maintenance_report', 'prune_storage_artifacts', 'preview_codebase_iteration', 'get_greenfield_architecture_guidance', 'get_greenfield_build_context', 'preview_greenfield_codebase', 'get_preview_analysis', 'compare_analysis_iterations', 'get_analysis_freshness', 'get_test_discovery_evidence', 'save_cas_golden_snapshot', 'compare_cas_golden_snapshot'] },
   { label: 'System understanding and agent workflow', tools: ['get_summary', 'get_system_overview', 'get_architecture_context', 'list_answer_packs', 'get_mcp_demo_flow', 'get_cross_repo_links', 'run_workspace_analysis', 'resolve_workspace_analysis', 'get_workspace_summary', 'get_workspace_analysis', 'get_workspace_agent_context', 'get_workspace_freshness', 'validate_was_contract', 'get_workspace_health', 'get_workspace_risk_context', 'get_workspace_capability_map', 'get_workspace_entity_map', 'get_workspace_workflow', 'list_workspace_analyses', 'run_cross_codebase_analysis', 'get_cross_codebase_analysis', 'list_cross_codebase_analyses', 'save_workspace_graph', 'get_workspace_graph', 'list_workspace_graphs', 'verify_workspace_link', 'get_agent_bootstrap', 'get_agent_context', 'get_agent_project_map', 'get_agent_doctor', 'get_server_version', 'get_agent_default_config', 'install_agent_default_config', 'get_capability_memory', 'get_idiom_aware_agent_context', 'open_agent_workbench', 'preflight_agent_change', 'get_codebase_agent_rules', 'explain_change_shape', 'evaluate_analysis_truth', 'get_semantic_map', 'get_framework_depth_report', 'get_integration_depth_report', 'get_cross_repo_contracts', 'get_runtime_instrumentation_plan', 'get_runtime_event_contract', 'get_runtime_sdk_package', 'evaluate_agent_task_proof', 'evaluate_agent_readiness', 'run_agentic_benchmark', 'get_agentic_benchmark_report', 'get_agent_performance_proof', 'run_agent_quality_benchmark', 'run_agent_idiom_benchmark', 'run_machine_agent_proof', 'run_incremental_value_benchmark', 'get_patterns', 'get_codebase_idioms', 'get_idiom_examples', 'validate_codebase_idioms', 'get_pattern_instances', 'get_perspectives'] },
   { label: 'Navigation and search', tools: ['semantic_search', 'get_embedding_status', 'get_node', 'get_file_nodes', 'get_level'] },
-  { label: 'Entry points, routes, and call graph', tools: ['get_entry_points', 'get_exit_points', 'get_route_table', 'get_external_services', 'get_callers', 'get_callees', 'get_call_chain', 'get_method_calls', 'get_interface_signature'] },
+  { label: 'Entry points, routes, and call graph', tools: ['get_entry_points', 'get_exit_points', 'get_route_table', 'get_external_services', 'get_callers', 'get_callees', 'get_call_chain', 'get_method_calls', 'get_interface_signature', 'get_flow_concepts'] },
   { label: 'Component hierarchy', tools: ['get_component_parents', 'get_component_children', 'get_component_metrics', 'get_shared_components'] },
   { label: 'Coding context and conventions', tools: ['get_conventions', 'get_modification_guide', 'get_pattern_examples', 'find_similar_code', 'get_comments', 'get_error_contracts', 'get_framework_guidance', 'get_usage_examples', 'get_configuration'] },
   { label: 'Intent, data, and risk', tools: ['get_intent', 'get_data_entities', 'get_security_overview', 'get_behavioral_invariants', 'validate_behavioral_invariants', 'get_stability', 'get_flow_coverage'] },
-  { label: 'Workflows, capabilities, and runtime', tools: ['get_workflows', 'get_paradigm_conformance', 'get_architectural_conflicts', 'get_data_lineage', 'diff_behavior', 'get_flow_graph', 'get_runtime_static_links', 'simulate_runtime_telemetry', 'correlate_runtime_event', 'record_runtime_event', 'ingest_telemetry', 'get_runtime_observations', 'get_operational_priorities', 'get_runtime_trace', 'get_analysis_facts', 'get_domain_concepts'] },
+  { label: 'Workflows, capabilities, and runtime', tools: ['get_workflows', 'get_paradigm_conformance', 'get_architectural_conflicts', 'get_unified_perspectives', 'get_data_lineage', 'diff_behavior', 'get_flow_graph', 'get_runtime_static_links', 'simulate_runtime_telemetry', 'correlate_runtime_event', 'record_runtime_event', 'ingest_telemetry', 'get_runtime_observations', 'get_operational_priorities', 'get_runtime_trace', 'get_analysis_facts', 'get_domain_concepts'] },
   { label: 'Behaviors, testing, data, and health', tools: ['get_behaviors', 'get_lifecycle_hooks', 'get_test_summary', 'get_database_schema', 'get_implementation_health', 'get_system_health', 'get_documentation_coverage', 'get_todos'] },
   { label: 'Dependencies', tools: ['get_dependencies', 'get_libraries'] },
   { label: 'Change history', tools: ['get_changes_since', 'get_changes_between', 'get_changes_for_node', 'get_changes_for_file', 'get_changes_for_entry_point', 'get_change_summary', 'get_hot_spots', 'get_analysis_at', 'get_analysis_snapshots'] },
@@ -637,6 +648,37 @@ async function conceptualConflictCasForWorkspace(workspace: string): Promise<Con
     };
   } catch {
     return { nodes: [], edges: [] };
+  }
+}
+
+/**
+ * ALWAYS-ON conceptual vocabulary for the fabric (§4 SPEC-CONCEPTUAL-LAYER.md).
+ *
+ * POSTURE: this is not a collision-only special mode — the fabric represents
+ * every active agent's flow/step/capability scope BY DEFAULT, whether or not
+ * it overlaps anyone else's. Ambient capture (`ambientChangesForWorkspace`,
+ * already unconditional for every `check_collision`/`check_conceptual_conflicts`
+ * call regardless of whether a collision is found) is mirrored here for
+ * conceptual coordinates: `deriveConceptualCoordinate` runs for EVERY claim/
+ * caller that supplies paths/symbols, disjoint or not, because awareness has
+ * value with zero overlap — dedup visibility, conceptual coherence across the
+ * fleet, standing readiness to notice the moment two agents' scopes DO
+ * converge. Overlap/conflict classification (`compareConceptualCoordinates`)
+ * is a strict SUBSET filter applied on top of this always-computed
+ * representation, never a gate on whether the representation happens at all.
+ *
+ * Best-effort/degrading: a `workspace` with no analyzable CAS, or one whose
+ * CAS has no entry_points to root flows from, yields an empty index — every
+ * claim then simply carries no concept (honest degrade to file/symbol-only
+ * coordination, exactly today's behavior), never a fabricated coordinate.
+ */
+async function conceptIndexForWorkspace(workspace: string): Promise<ConceptIndex> {
+  try {
+    const cas = await getAnalysis(workspace);
+    const { flows } = query.getFlowConcepts(cas as any);
+    return buildConceptIndex(flows);
+  } catch {
+    return buildConceptIndex([]);
   }
 }
 
@@ -1583,7 +1625,7 @@ function registerTools(server: McpServer) {
     'get_summary',
     {
       title: 'Get Summary',
-      description: 'Get condensed intelligence summary of an analyzed codebase. Includes system purpose, flow graph highlights (top 15 capabilities by score), architecture summary, database entities, entry point breakdown, node/edge counts, and analyzer contributions. This is the first tool to call to orient on a codebase. Progressive availability: structural fields (entry points, counts, entities, flow highlights) are always final; the prose system purpose and capability descriptions may still be enriching — check ai_enrichment (pending = deterministic text now; re-call in a few seconds only if you need the richer narrative). Never block on pending prose; orient on the structure and proceed.',
+      description: 'Get condensed intelligence summary of an analyzed codebase. Includes system purpose, flow graph highlights (top 15 capabilities by score), architecture summary, database entities, entry point breakdown, node/edge counts, and analyzer contributions. This is the first tool to call to orient on a codebase — the top of the Capability -> Flow -> Step -> Function hierarchy; drill a named capability into its flows with get_flow_concepts, then a flow/step into concrete code with get_coding_context/get_call_chain. Progressive availability: structural fields (entry points, counts, entities, flow highlights) are always final; the prose system purpose and capability descriptions may still be enriching — check ai_enrichment (pending = deterministic text now; re-call in a few seconds only if you need the richer narrative). Never block on pending prose; orient on the structure and proceed.',
       inputSchema: {
         path: z.string().describe('Project path (must be previously analyzed)'),
         track: TRACK_PARAM,
@@ -3827,13 +3869,50 @@ function registerTools(server: McpServer) {
     })
   );
 
+  server.registerTool(
+    'get_flow_concepts',
+    {
+      title: 'Get Flow Concepts',
+      description: 'High-level named flows (the behavioral conceptual layer over the call graph, docs/SPEC-CONCEPTUAL-LAYER.md) — each flow = an ordered set of semantic steps (Validate -> Process -> Persist -> Call External -> Respond), not a raw function chain. Each flow and each step carries the full I/L/S/O + Constraints contract: input, logic, side_effects split into state_changes (DB/cache writes) vs external_integrations (API/webhook/SDK/queue calls), output, and constraints (business rules/guards/invariants deterministically extracted from guard clauses, validation, and data-entity invariants — never fabricated). Each step ties back to concrete function_ids, 1:1, 1:many, or a sub-section (line-range) of a single large function. Flows link to capability_id when a system_capabilities entry references the same entry point, and list the data entities touched. Deterministic-first (composed from entry_points, call edges, exit_points, data_lineage, data_entities.invariants) — omits (not fabricates) whatever cannot be derived, with reasons in gaps. Powers the UI capability->flow->step->function hierarchy, agent work-alignment (coordinate at flow/step level, not file/function), and the coordination fabric. Sits between get_summary (names the capability) and get_coding_context/get_call_chain (drills a step into its concrete function) — the middle rung of the level-drilling path, and the concept-level vocabulary the fabric uses for claims ("I own the Persist step of the Checkout flow") when multiple agents work this codebase at once.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        target: z.string().optional().describe('Restrict to entry points matching this id, name, or route path substring (e.g. "/orders" or "createOrder"); omit for all derivable flows'),
+        max_depth: z.number().optional().describe('Bound on forward call-chain traversal depth from the entry point (default 6)'),
+        max_functions_per_flow: z.number().optional().describe('Cap on distinct functions traced per flow, deduped (default 40)'),
+        max_flows: z.number().optional().describe('Cap on number of flows returned (default: all matching entry points)'),
+      } as any,
+    } as any,
+    async ({ path, target, max_depth, max_functions_per_flow, max_flows }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(query.getFlowConcepts(cas, { target, maxDepth: max_depth, maxFunctionsPerFlow: max_functions_per_flow, maxFlows: max_flows }));
+    })
+  );
+
+  server.registerTool(
+    'get_unified_perspectives',
+    {
+      title: 'Get Unified Perspectives',
+      description: 'ONE call that sees the code from every angle at once (docs/SPEC-CONCEPTUAL-LAYER.md §3/§6): the BEHAVIORAL hierarchy (capabilities/flows/steps, same data as get_flow_concepts) cross-referenced with the STRUCTURAL perspectives (architectural conflicts + paradigm conformance, same data as get_architectural_conflicts/get_paradigm_conformance) — each side annotated with links into the other instead of three siloed tool calls. Every flow/step carries `structural.layers` (the architectural layer(s) its functions sit in, e.g. entry/business/data/presentation — derived deterministically from the same node classification flow segmentation already uses) and `structural.paradigm_deviations` (paradigm-norm deviations whose evidence node lands inside that step, if any). Every architectural conflict / principle violation carries `flow_links` (flow_ids/step_ids/capability_ids whose traced function set actually contains the conflict\'s evidence node — e.g. "this layering violation sits on the Persist step of the Checkout flow"). Links are only asserted when real node-id/file membership supports them — never guessed by name similarity; omitted otherwise (see cross_links_summary + gaps). Additive/composed only: get_architectural_conflicts, get_paradigm_conformance, and get_flow_concepts remain independently callable with unchanged behavior — use this tool when you want the cross-referenced view in one call instead of joining them by hand.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        target: z.string().optional().describe('Restrict flows to entry points matching this id, name, or route path substring; omit for all derivable flows'),
+        max_flows: z.number().optional().describe('Cap on number of flows included (default 10, since this composes flow + architectural + paradigm passes in one call)'),
+        severity: z.enum(['low', 'medium', 'high']).optional().describe('Minimum severity filter for architectural conflicts'),
+      } as any,
+    } as any,
+    async ({ path, target, max_flows, severity }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(query.getUnifiedPerspectives(cas, { target, maxFlows: max_flows, severity }));
+    })
+  );
+
   // -- Agentic Coding Tools --
 
   server.registerTool(
     'get_coding_context',
     {
       title: 'Get Coding Context',
-      description: 'THE essential tool for AI coding. Returns everything needed to start coding in a specific area: target node details, conventions, patterns, layer boundaries, modification checklist, and connected code. Call this before writing ANY code.',
+      description: 'THE essential tool for AI coding. Returns everything needed to start coding in a specific area: target node details, conventions, patterns, layer boundaries, modification checklist, and connected code. Call this before writing ANY code. This is the bottom rung of the level-drilling path (get_summary -> get_flow_concepts -> here): use it once you have a concrete target — a step from get_flow_concepts, or a node from search — to resolve it down to the actual function(s)/sub-section.',
       inputSchema: {
         path: z.string().describe('Project path'),
         target: z.string().describe('Node ID, file path, or search query to find the target'),
@@ -4606,7 +4685,7 @@ function registerTools(server: McpServer) {
     'claim_work',
     {
       title: 'Claim Work',
-      description: 'Request a symbol/path-level GRANT before starting non-trivial changes. ENFORCED (not advisory): at most one active grant per overlapping symbol/path in a workspace at a time — but this governs simultaneous BLIND writes, not your right to reach work you need (§1.6 SPEC-COORDINATION-FABRIC-V2: awareness is the primitive, never a dead end). Returns verdict "granted" (grant_id + lease_expires_at — proceed; heartbeat_work to keep it alive, release_work when done), "queued" (another agent holds a conflicting grant — you get FULL awareness: the holder\'s agent_id + their stated intent + lease_status [active/near_expiry/expired], plus queue_position, plus an `options` array [\'wait_and_heartbeat_poll\', \'take_over_stale_lease\' (only if lease is near_expiry/expired), \'proceed_with_awareness_if_compatible\', \'redirect_to_free_scope\'] plus redirect_hint/free_scope_hint for when the work is fungible), or "duplicate" (you already hold an identical grant). Disjoint work is never queued: block-time is 0 for non-overlapping scope. Overlapping work is resolved by awareness + negotiation, never lockout.',
+      description: 'Request a symbol/path-level GRANT before starting non-trivial changes. ENFORCED (not advisory): at most one active grant per overlapping symbol/path in a workspace at a time — but this governs simultaneous BLIND writes, not your right to reach work you need (§1.6 SPEC-COORDINATION-FABRIC-V2: awareness is the primitive, never a dead end). Returns verdict "granted" (grant_id + lease_expires_at — proceed; heartbeat_work to keep it alive, release_work when done), "queued" (another agent holds a conflicting grant — you get FULL awareness: the holder\'s agent_id + their stated intent + lease_status [active/near_expiry/expired], plus queue_position, plus an `options` array [\'wait_and_heartbeat_poll\', \'take_over_stale_lease\' (only if lease is near_expiry/expired), \'proceed_with_awareness_if_compatible\', \'redirect_to_free_scope\'] plus redirect_hint/free_scope_hint for when the work is fungible), or "duplicate" (you already hold an identical grant). Disjoint work is never queued: block-time is 0 for non-overlapping scope. Overlapping work is resolved by awareness + negotiation, never lockout. CONCEPTUAL VOCABULARY (§4 SPEC-CONCEPTUAL-LAYER.md, additive): pass flow_id/step_id/capability_id/entities to declare the FLOW step or ENTITY you own ("the Charge step of Checkout") alongside/instead of paths/symbols — higher-signal and human-legible. Even if you only pass paths/symbols, the fabric ALWAYS attempts to derive your conceptual coordinates from them (via real flow-concepts, never guessed) and represents them in `concept` on the response, whether or not anyone else is around — awareness is on by default for every claim, not just colliding ones. `concept_awareness` separately reports any OTHER active agent working the SAME flow (different step = informational, safe, both proceed; same step or same entity constraints = a conceptual heads-up, still never a hard stop — enforcement stays limited to the literal path/symbol grant above).',
       inputSchema: {
         workspace: z.string().describe('Workspace or project id/path to coordinate within'),
         agent_id: z.string().describe('Stable identifier for the calling agent/session'),
@@ -4615,21 +4694,71 @@ function registerTools(server: McpServer) {
         paths: z.array(z.string()).optional().describe('File/dir paths this work will touch'),
         symbols: z.array(z.string()).optional().describe('Symbol/node ids this work will touch'),
         capability: z.string().optional().describe('Capability or feature name this work implements'),
+        flow_id: z.string().optional().describe('Conceptual coordinate: the flow (see get_flow_concepts) this work belongs to. Declared value always wins over any auto-derived one.'),
+        step_id: z.string().optional().describe('Conceptual coordinate: the specific step within flow_id this work owns.'),
+        capability_id: z.string().optional().describe('Conceptual coordinate: the SystemCapability id this work realizes (distinct from the free-text `capability` name field above).'),
+        entities: z.array(z.string()).optional().describe('Conceptual coordinate: data entity name(s) whose CONSTRAINTS this work touches — enables cross-file conceptual-conflict detection even when paths/symbols are disjoint.'),
         ttl_ms: z.number().optional().describe('Grant TTL in ms before it is considered stale (default 5 minutes)'),
         base_commit: z.string().optional(),
         branch: z.string().optional(),
         claim_id: z.string().optional().describe('Deprecated/unused by the enforced grant path; kept for backward-compat request shape.'),
       } as any,
     } as any,
-    async ({ workspace, agent_id, intent, agent_kind, paths, symbols, capability, ttl_ms, base_commit, branch }: any) => withErrorHandling(async () => {
+    async ({ workspace, agent_id, intent, agent_kind, paths, symbols, capability, flow_id, step_id, capability_id, entities, ttl_ms, base_commit, branch }: any) => withErrorHandling(async () => {
+      // ALWAYS-ON conceptual representation (§4): derive coordinates from
+      // paths/symbols via real flow-concepts regardless of whether this claim
+      // collides with anyone — awareness has value at zero overlap too
+      // (dedup visibility, fleet coherence, standing readiness). Declared
+      // fields always win over derived ones.
+      const declaredConcept: ConceptualCoordinate | undefined =
+        flow_id || step_id || capability_id || (entities && entities.length)
+          ? { flow_id, step_id, capability_id, entities, source: 'declared' as const }
+          : undefined;
+      const conceptIndex = await conceptIndexForWorkspace(workspace);
+      const derivedConcept = declaredConcept
+        ? undefined
+        : deriveConceptualCoordinate({ scope: { paths: paths || [], symbols: symbols || [] } }, conceptIndex);
+      const concept = declaredConcept ?? derivedConcept;
+
       const result = await requestGrant({
         workspace_id: workspace,
         agent_id,
         agent_kind: (agent_kind as AgentKind) || 'other',
-        scope: { repo: workspace, paths: paths || [], symbols: symbols || [], capability },
+        scope: { repo: workspace, paths: paths || [], symbols: symbols || [], capability, concept },
         intent,
         ttl_ms,
       });
+
+      // Conceptual awareness against every OTHER currently-active agent —
+      // computed unconditionally (not gated on the grant verdict above),
+      // because same-flow awareness is valuable even when the literal
+      // path/symbol grant was cleanly "granted" with zero collision.
+      const conceptAwareness: Array<{
+        agent_id: string;
+        intent: string;
+        verdict: 'awareness' | 'conceptual_conflict';
+        reason: string;
+        shared_flow_id?: string;
+        shared_step_id?: string;
+        shared_entities?: string[];
+      }> = [];
+      if (concept) {
+        const others = await getActiveClaims(workspace);
+        for (const other of others) {
+          if (other.agent_id === agent_id || !other.scope.concept) continue;
+          const cmp = compareConceptualCoordinates(concept, other.scope.concept);
+          if (cmp.verdict === 'unrelated') continue;
+          conceptAwareness.push({
+            agent_id: other.agent_id,
+            intent: other.intent,
+            verdict: cmp.verdict,
+            reason: cmp.reason,
+            shared_flow_id: cmp.shared_flow_id,
+            shared_step_id: cmp.shared_step_id,
+            shared_entities: cmp.shared_entities,
+          });
+        }
+      }
 
       let freeHint: { free_paths: string[]; free_symbols: string[] } | undefined;
       let holder: GrantHolderContext | undefined;
@@ -4677,6 +4806,10 @@ function registerTools(server: McpServer) {
         free_scope_hint: freeHint,
         base_commit,
         branch,
+        // Conceptual vocabulary (§4): always populated when derivable, whether
+        // or not this claim collided with anyone — see the tool description.
+        concept,
+        concept_awareness: conceptAwareness.length ? conceptAwareness : undefined,
       });
     })
   );
@@ -4741,7 +4874,7 @@ function registerTools(server: McpServer) {
     'check_collision',
     {
       title: 'Check Collision',
-      description: 'Read-only preflight: does a proposed (not-yet-claimed) set of paths/symbols/capability collide with any other active agent or held GRANT in the workspace? Runs the same duplicate/overlap/blast-radius detectors as claim_work plus the live grant holders/queue, but takes no grant. Overlapping holders are returned WITH awareness context (intent + lease_status), never just a bare yes/no — so you can judge whether to wait, take over a stale lease, or proceed with awareness before ever calling claim_work. Pass agent_id + intent to ALSO run the conceptual-conflict detectors (contract-divergence/duplicate-work/structural-divergence/behavior-drift): this AMBIENTLY captures your own git working-tree diff (workspace treated as your repo path) — TS/JS files get full before/after signature diffing, zero self-reporting needed — and folds it in automatically against every other agent\'s persisted state (self-reported or itself ambient). Pass `changes` too if you want to add explicit SymbolChange[] on top (e.g. for a language ambient capture can\'t diff).',
+      description: 'Read-only preflight: does a proposed (not-yet-claimed) set of paths/symbols/capability collide with any other active agent or held GRANT in the workspace? Runs the same duplicate/overlap/blast-radius detectors as claim_work plus the live grant holders/queue, but takes no grant. Overlapping holders are returned WITH awareness context (intent + lease_status), never just a bare yes/no — so you can judge whether to wait, take over a stale lease, or proceed with awareness before ever calling claim_work. Pass agent_id + intent to ALSO run the conceptual-conflict detectors (contract-divergence/duplicate-work/structural-divergence/behavior-drift): this AMBIENTLY captures your own git working-tree diff (workspace treated as your repo path) — TS/JS files get full before/after signature diffing, zero self-reporting needed — and folds it in automatically against every other agent\'s persisted state (self-reported or itself ambient). Pass `changes` too if you want to add explicit SymbolChange[] on top (e.g. for a language ambient capture can\'t diff). CONCEPTUAL VOCABULARY (§4): `concept` in the response is ALWAYS populated (from your declared flow_id/step_id/capability_id/entities, or auto-derived from paths/symbols via real flow-concepts) whether or not anything collides — the fabric represents flow/step scope for every check, not only overlapping ones. `concept_awareness` lists any other active agent sharing your flow (different step = informational/safe) or entity constraints (a real conceptual-conflict heads-up) — advisory only, never a gate.',
       inputSchema: {
         workspace: z.string().describe('Workspace or project id/path'),
         paths: z.array(z.string()).optional(),
@@ -4750,19 +4883,61 @@ function registerTools(server: McpServer) {
         agent_id: z.string().optional().describe('Your agent_id, to also run conceptual-conflict detection against other agents\' reported changes'),
         intent: z.string().optional().describe('Your stated intent, used by the conceptual-conflict duplicate-work detector'),
         changes: z.array(z.any()).optional().describe('Optional SymbolChange[] (see check_conceptual_conflicts) for full contract-divergence/structural-divergence detection'),
+        flow_id: z.string().optional().describe('Conceptual coordinate: declare the flow this proposed work belongs to (wins over auto-derivation).'),
+        step_id: z.string().optional().describe('Conceptual coordinate: declare the specific step within flow_id.'),
+        capability_id: z.string().optional().describe('Conceptual coordinate: the SystemCapability id this proposed work realizes.'),
+        entities: z.array(z.string()).optional().describe('Conceptual coordinate: data entity name(s) whose constraints this proposed work touches.'),
       } as any,
     } as any,
-    async ({ workspace, paths, symbols, capability, agent_id, intent, changes }: any) => withErrorHandling(async () => {
+    async ({ workspace, paths, symbols, capability, agent_id, intent, changes, flow_id, step_id, capability_id, entities }: any) => withErrorHandling(async () => {
       const active = await getActiveClaims(workspace);
       const casEdges = await casEdgesForWorkspace(workspace);
       const editLockConflicts = paths?.length ? await checkEditLock(workspace, paths) : [];
+
+      // ALWAYS-ON conceptual representation (§4) — computed unconditionally,
+      // same posture as claim_work: awareness has value even with zero
+      // path/symbol overlap.
+      const declaredConcept: ConceptualCoordinate | undefined =
+        flow_id || step_id || capability_id || (entities && entities.length)
+          ? { flow_id, step_id, capability_id, entities, source: 'declared' as const }
+          : undefined;
+      const conceptIndex = await conceptIndexForWorkspace(workspace);
+      const concept =
+        declaredConcept ?? deriveConceptualCoordinate({ scope: { paths: paths || [], symbols: symbols || [] } }, conceptIndex);
+      const conceptAwareness: Array<{
+        agent_id: string;
+        intent: string;
+        verdict: 'awareness' | 'conceptual_conflict';
+        reason: string;
+        shared_flow_id?: string;
+        shared_step_id?: string;
+        shared_entities?: string[];
+      }> = [];
+      if (concept) {
+        for (const other of active) {
+          if (agent_id && other.agent_id === agent_id) continue;
+          if (!other.scope.concept) continue;
+          const cmp = compareConceptualCoordinates(concept, other.scope.concept);
+          if (cmp.verdict === 'unrelated') continue;
+          conceptAwareness.push({
+            agent_id: other.agent_id,
+            intent: other.intent,
+            verdict: cmp.verdict,
+            reason: cmp.reason,
+            shared_flow_id: cmp.shared_flow_id,
+            shared_step_id: cmp.shared_step_id,
+            shared_entities: cmp.shared_entities,
+          });
+        }
+      }
+
       const probe: WorkClaim = {
         claim_id: '__probe__',
         seq: 0,
         workspace_id: workspace,
         agent_id: '__probe__',
         agent_kind: 'other',
-        scope: { repo: workspace, paths: paths || [], symbols: symbols || [], capability },
+        scope: { repo: workspace, paths: paths || [], symbols: symbols || [], capability, concept },
         intent: 'preflight-check',
         status: 'active',
         created_at: new Date().toISOString(),
@@ -4825,6 +5000,10 @@ function registerTools(server: McpServer) {
         },
         conceptual_conflicts: conceptualConflicts,
         conceptual_conflicts_note: conceptualNote,
+        // Conceptual vocabulary (§4): always populated when derivable, whether
+        // or not this proposed scope collides with anything else.
+        concept,
+        concept_awareness: conceptAwareness.length ? conceptAwareness : undefined,
       });
     })
   );
@@ -4979,13 +5158,15 @@ function registerTools(server: McpServer) {
     'plan_parallel_work',
     {
       title: 'Plan Parallel Work',
-      description: 'THE ACCELERANT (P6, §1.5 SPEC-COORDINATION-FABRIC-V2): given a pending task list, compute the MAXIMALLY-PARALLEL non-conflicting batching up front — the automated version of the decompose -> disjoint-claims -> fan-out loop a human orchestrator runs by hand. Everything else in this coordination group (claim_work/check_collision/check_conceptual_conflicts) reacts to overlap AFTER agents are already mid-flight; this tool runs BEFORE any agent starts, so a fleet can be routed to avoid most collisions rather than merely surviving them. Pass `tasks` with each task\'s declared `target_symbols`/`target_paths` when known; when a task declares neither, pass `path` (the repo) so the CAS-backed heuristic (`inferFootprintFromIntent`) can match real identifiers/file mentions in its free-text `intent` — deterministic pattern matching against ground truth, not AI, and a task matching nothing real stays visible in `unpartitionable` rather than being silently dropped or guessed at. THE GRAPH-AWARE ADVANTAGE: with `path` supplied and `include_blast_radius` left at its default (true), two tasks whose LITERAL targets are disjoint but whose CAS call-graph blast radii intersect (one edits a function, the other edits a real caller or callee of it) are still separated into different batches — a file/path-only partitioner cannot see this. Returns `batches` (each an array of task_ids meant to run FULLY PARALLEL, in fixed greedy-coloring order), `parallelism_factor` (tasks / batches — higher is more parallel), `conflict_edges` (each with a\'symbol\'/\'path\'/\'blast-radius\' reason), `footprint_source` (declared vs inferred per task id), `unpartitionable` (tasks with no derivable footprint at all, still included in a batch, never dropped), and a human-readable `summary` line. Call this before dispatching parallel work to a fleet of agents whenever you have more than one pending task for the same workspace.',
+      description: 'THE ACCELERANT (P6, §1.5 SPEC-COORDINATION-FABRIC-V2): given a pending task list, compute the MAXIMALLY-PARALLEL non-conflicting batching up front — the automated version of the decompose -> disjoint-claims -> fan-out loop a human orchestrator runs by hand. Everything else in this coordination group (claim_work/check_collision/check_conceptual_conflicts) reacts to overlap AFTER agents are already mid-flight; this tool runs BEFORE any agent starts, so a fleet can be routed to avoid most collisions rather than merely surviving them. Pass `tasks` with each task\'s declared `target_symbols`/`target_paths` when known; when a task declares neither, pass `path` (the repo) so the CAS-backed heuristic (`inferFootprintFromIntent`) can match real identifiers/file mentions in its free-text `intent` — deterministic pattern matching against ground truth, not AI, and a task matching nothing real stays visible in `unpartitionable` rather than being silently dropped or guessed at. THE GRAPH-AWARE ADVANTAGE: with `path` supplied and `include_blast_radius` left at its default (true), two tasks whose LITERAL targets are disjoint but whose CAS call-graph blast radii intersect (one edits a function, the other edits a real caller or callee of it) are still separated into different batches — a file/path-only partitioner cannot see this. CONCEPTUAL BATCHING (§4 SPEC-CONCEPTUAL-LAYER.md): pass each task\'s `flow_id`/`capability_id` (declared, or read off get_flow_concepts) to additionally group tasks by CONCEPTUAL blast radius — `concept_groups` in the response clusters tasks by the flow/capability they belong to, a second, coarser-grained disjointness signal on top of the file/symbol `batches` (different flows are conceptually disjoint even before any file-level analysis runs). Returns `batches` (each an array of task_ids meant to run FULLY PARALLEL, in fixed greedy-coloring order), `parallelism_factor` (tasks / batches — higher is more parallel), `conflict_edges` (each with a\'symbol\'/\'path\'/\'blast-radius\' reason), `footprint_source` (declared vs inferred per task id), `unpartitionable` (tasks with no derivable footprint at all, still included in a batch, never dropped), `concept_groups` (tasks clustered by flow_id/capability_id, when declared), and a human-readable `summary` line. Call this before dispatching parallel work to a fleet of agents whenever you have more than one pending task for the same workspace.',
       inputSchema: {
         tasks: z.array(z.object({
           id: z.string(),
           intent: z.string(),
           target_symbols: z.array(z.string()).optional().describe('Node ids (preferred) or bare symbol names this task will edit'),
           target_paths: z.array(z.string()).optional().describe('Relative file paths this task will edit'),
+          flow_id: z.string().optional().describe('Conceptual coordinate: the flow (see get_flow_concepts) this task\'s work belongs to, for conceptual batching in `concept_groups`.'),
+          capability_id: z.string().optional().describe('Conceptual coordinate: the capability this task realizes, used as a fallback grouping key when flow_id is absent.'),
         })).describe('Pending tasks to partition into maximally-parallel non-conflicting batches'),
         path: z.string().optional().describe('Repo path, to load the CAS for blast-radius expansion and intent->footprint inference. Omit to partition on declared footprints only (reduced fidelity, noted in the response).'),
         include_blast_radius: z.boolean().optional().describe('Expand each task footprint by one hop of CAS call-graph edges before computing conflicts. Default true.'),
@@ -4997,6 +5178,8 @@ function registerTools(server: McpServer) {
         intent: t.intent,
         target_symbols: t.target_symbols,
         target_paths: t.target_paths,
+        flow_id: t.flow_id,
+        capability_id: t.capability_id,
       }));
 
       const cas = path ? await partitionCasForPath(path) : { nodes: [], edges: [] };
@@ -5006,7 +5189,10 @@ function registerTools(server: McpServer) {
       const batchSummaries = result.batches.map(
         (b) => `batch ${b.batch_index + 1} runs [${b.task_ids.join(', ')}] in parallel`
       );
-      const summary = `${partitionTasksInput.length} tasks -> ${result.batches.length} parallel batch${result.batches.length === 1 ? '' : 'es'}, factor ${result.parallelism_factor.toFixed(2)}; ${batchSummaries.join('; ')}`;
+      const conceptSummary = result.concept_groups?.length
+        ? ` | ${result.concept_groups.length} conceptual group(s): ${result.concept_groups.map((g) => `${g.kind}:${g.concept_id}=[${g.task_ids.join(', ')}]`).join('; ')}`
+        : '';
+      const summary = `${partitionTasksInput.length} tasks -> ${result.batches.length} parallel batch${result.batches.length === 1 ? '' : 'es'}, factor ${result.parallelism_factor.toFixed(2)}; ${batchSummaries.join('; ')}${conceptSummary}`;
 
       return json({
         ...result,

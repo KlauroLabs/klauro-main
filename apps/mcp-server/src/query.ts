@@ -10,6 +10,8 @@ import { findNearClones } from '../../../packages/analyzer-core/src/analyzer/cor
 import { isAuthenticationGuardName } from '../../../packages/analyzer-core/src/analyzer/core/guard-classification';
 import { buildProductMap } from '../../../packages/analyzer-core/src/analyzer/core/product-map';
 import { buildTerminalSignal } from '../../../packages/analyzer-core/src/analyzer/core/terminal-signal';
+import { computeFlowConcepts, type ComputeFlowConceptsOptions } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
+import { computeFlowStructuralLinks, computeConflictBehavioralLinks } from '../../../packages/analyzer-core/src/analyzer/core/structural-cross-links';
 import type { CASProductMap } from '../../../packages/analyzer-core/src/types/cas.types';
 import {
   displayJourneySteps,
@@ -1024,7 +1026,7 @@ export function getParadigmConformance(
  */
 export function getArchitecturalConflicts(
   cas: CASOutput,
-  opts: { severity?: 'low' | 'medium' | 'high'; limit?: number; offset?: number } = {}
+  opts: { severity?: 'low' | 'medium' | 'high'; limit?: number; offset?: number; includeFlowLinks?: boolean } = {}
 ) {
   const notice = cas.architectural_conflicts === undefined && cas.principle_violations === undefined
     ? analysisVersionNotice(cas, 'architectural conflicts')
@@ -1046,13 +1048,41 @@ export function getArchitecturalConflicts(
   const violationsByPrinciple: Record<string, number> = {};
   for (const v of violations) violationsByPrinciple[v.principle] = (violationsByPrinciple[v.principle] || 0) + 1;
 
+  // Cross-link to the BEHAVIORAL hierarchy (docs/SPEC-CONCEPTUAL-LAYER.md
+  // §3/§6): which flow(s)/step(s)/capability(ies) each conflict/violation's
+  // evidence actually sits on, deterministically, via node-id/file
+  // membership in the traced flow function sets. Opt-out (includeFlowLinks:
+  // false) since it requires computing flows; on by default because flows
+  // are cheap at the default bounded traversal depth and this is exactly the
+  // point of the unification. Silently degrades to no links (never throws)
+  // when entry_points are absent — existing callers see identical output
+  // plus an empty flow_links, not a behavior change.
+  const includeFlowLinks = opts.includeFlowLinks !== false;
+  let conflictLinks = new Map<string, ReturnType<typeof computeConflictBehavioralLinks>['conflicts'] extends Map<string, infer V> ? V : never>();
+  let violationLinks = new Map<string, ReturnType<typeof computeConflictBehavioralLinks>['violations'] extends Map<string, infer V> ? V : never>();
+  if (includeFlowLinks && (cas.entry_points || []).length > 0) {
+    const flows = computeFlowConcepts(cas);
+    const linked = computeConflictBehavioralLinks(cas, flows, conflicts, violations);
+    conflictLinks = linked.conflicts;
+    violationLinks = linked.violations;
+  }
+
+  const conflictsPage = conflicts.slice(offset, offset + limit).map(c => ({
+    ...c,
+    flow_links: conflictLinks.get(c.id) || undefined,
+  }));
+  const violationsPage = violations.slice(0, limit).map(v => ({
+    ...v,
+    flow_links: violationLinks.get(v.id) || undefined,
+  }));
+
   return {
     total_conflicts: conflicts.length,
     total_principle_violations: violations.length,
     principle_violations_by_severity: violationsBySeverity,
     principle_violations_by_principle: violationsByPrinciple,
-    conflicts: conflicts.slice(offset, offset + limit),
-    principle_violations: violations.slice(0, limit),
+    conflicts: conflictsPage,
+    principle_violations: violationsPage,
     is_cohesive: conflicts.length === 0 && violations.filter(v => v.severity === 'error').length === 0,
     analysis_version_notice: notice,
   };
@@ -1744,6 +1774,62 @@ export function getPatternInstances(cas: CASOutput, patternId: string, opts: { v
 
 export function getPerspectives(cas: CASOutput) {
   return cas.perspectives || [];
+}
+
+/**
+ * getUnifiedPerspectives — ONE call that returns the code seen from every
+ * angle at once (docs/SPEC-CONCEPTUAL-LAYER.md §3/§6): BEHAVIORAL
+ * (capabilities/flows/steps, from get_flow_concepts) cross-referenced with
+ * STRUCTURAL (architectural conflicts + paradigm conformance, from
+ * get_architectural_conflicts/get_paradigm_conformance) — each perspective
+ * annotated with links into the other, not siloed tool-by-tool. Purely a
+ * composition over the three existing accessors (does not change or
+ * duplicate their own outputs; get_architectural_conflicts,
+ * get_paradigm_conformance, and get_flow_concepts remain independently
+ * callable and unaffected). `target` narrows flows the same way
+ * get_flow_concepts does (entry point id/name/route substring); omitted
+ * returns all derivable flows (bounded by maxFlows, default small since this
+ * composes three passes in one call).
+ */
+export function getUnifiedPerspectives(
+  cas: CASOutput,
+  opts: { target?: string; maxFlows?: number; severity?: 'low' | 'medium' | 'high' } = {}
+) {
+  const flowResult = getFlowConcepts(cas, {
+    target: opts.target,
+    maxFlows: opts.maxFlows ?? 10,
+    includeStructural: true,
+  });
+  const architectural = getArchitecturalConflicts(cas, { severity: opts.severity, includeFlowLinks: true });
+  const paradigms = getParadigmConformance(cas);
+
+  const gaps: string[] = [...(flowResult.gaps || [])];
+  if ((cas.architectural_conflicts === undefined) && (cas.principle_violations === undefined)) {
+    gaps.push('No architectural_conflicts/principle_violations on this analysis — structural perspective is incomplete.');
+  }
+  if (cas.paradigm_conformance === undefined) {
+    gaps.push('No paradigm_conformance on this analysis — paradigm perspective is incomplete.');
+  }
+
+  return {
+    behavioral: {
+      flows: flowResult.flows,
+      total: flowResult.total,
+    },
+    structural: {
+      architectural_conflicts: architectural.conflicts,
+      principle_violations: architectural.principle_violations,
+      is_cohesive: architectural.is_cohesive,
+      paradigms: paradigms.paradigms,
+    },
+    cross_links_summary: {
+      flows_with_layer: flowResult.flows.filter((f: any) => (f.structural?.layers?.length || 0) > 0).length,
+      flows_with_paradigm_deviations: flowResult.flows.filter((f: any) => (f.structural?.paradigm_deviations?.length || 0) > 0).length,
+      conflicts_linked_to_flows: architectural.conflicts.filter((c: any) => c.flow_links).length,
+      violations_linked_to_flows: architectural.principle_violations.filter((v: any) => v.flow_links).length,
+    },
+    gaps: gaps.length ? gaps : undefined,
+  };
 }
 
 export function findTests(cas: CASOutput, opts: { nodeId?: string; filePath?: string; limit?: number; offset?: number }) {
@@ -2591,6 +2677,65 @@ export function getInterfaceSignature(
       truncated: anyTruncated,
     },
     purpose,
+    gaps: gaps.length ? gaps : undefined,
+  };
+}
+
+/**
+ * getFlowConcepts — the FLOW -> STEP tier of the conceptual understanding
+ * layer (docs/SPEC-CONCEPTUAL-LAYER.md), thin query-layer wrapper over
+ * computeFlowConcepts (packages/analyzer-core/src/analyzer/core/flow-concepts.ts).
+ * `target` filters to entry points matching an id/name/route-path substring;
+ * omitted returns all derivable flows (bounded by maxFlows).
+ */
+export function getFlowConcepts(
+  cas: CASOutput,
+  opts: { target?: string; maxDepth?: number; maxFunctionsPerFlow?: number; maxFlows?: number; includeStructural?: boolean } = {}
+) {
+  const computeOpts: ComputeFlowConceptsOptions = {
+    target: opts.target,
+    maxDepth: opts.maxDepth,
+    maxFunctionsPerFlow: opts.maxFunctionsPerFlow,
+    maxFlows: opts.maxFlows,
+  };
+  const flows = computeFlowConcepts(cas, computeOpts);
+
+  const gaps: string[] = [];
+  if (!cas.entry_points || cas.entry_points.length === 0) {
+    gaps.push('No entry_points on this analysis — flows cannot be rooted; re-run analyze_codebase or widen scope.');
+  }
+  if (opts.target && flows.length === 0) {
+    gaps.push(`No entry point matched target "${opts.target}" — check get_entry_points/get_route_table for valid ids/paths.`);
+  }
+
+  // Cross-link each flow/step to the STRUCTURAL perspectives (architectural
+  // layer + paradigm-deviation membership, docs/SPEC-CONCEPTUAL-LAYER.md
+  // §3/§6) — on by default (includeStructural: false to opt out). Purely
+  // additive: `structural` is a new field on each flow/step; existing
+  // consumers reading name/contract/functions see no change.
+  const includeStructural = opts.includeStructural !== false;
+  let flowsOut = flows;
+  if (includeStructural && flows.length > 0) {
+    const linksByFlow = computeFlowStructuralLinks(cas, flows);
+    if ((cas.paradigm_conformance || []).length === 0) {
+      gaps.push('No paradigm_conformance on this analysis — step/flow paradigm_deviations will be empty (layer is still derived structurally).');
+    }
+    flowsOut = flows.map(flow => {
+      const linked = linksByFlow.get(flow.flow_id);
+      return {
+        ...flow,
+        structural: linked?.flow,
+        steps: flow.steps.map(step => ({
+          ...step,
+          structural: linked?.steps.get(step.step_id),
+        })),
+      };
+    });
+  }
+
+  return {
+    flows: flowsOut,
+    total: flows.length,
     gaps: gaps.length ? gaps : undefined,
   };
 }
