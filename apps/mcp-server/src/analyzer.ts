@@ -75,7 +75,8 @@ import {
   ZustandAnalyzer,
   TanStackQueryAnalyzer,
   ReqwestAnalyzer,
-  architectureLibraryAnalyzerDefinitions
+  architectureLibraryAnalyzerDefinitions,
+  McpToolRegistrationAnalyzer
 } from '../../../packages/analyzer-core/src/analyzer/libraries';
 import { TRPCAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/trpc-analyzer';
 import { GraphQLAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/graphql-analyzer';
@@ -443,6 +444,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
     { id: 'openapi', name: 'OpenAPI/Swagger Analyzer', type: 'library', version: '1.0.0', detectPatterns: { files: ['openapi.json', 'openapi.yaml', 'openapi.yml', 'swagger.json', 'swagger.yaml'], content: [/openapi\s*:/, /"openapi"\s*:/, /swagger\s*:/] }, analyzer: new OpenAPIAnalyzer() },
     { id: 'efcore', name: 'EF Core Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['Microsoft.EntityFrameworkCore'], content: [/:\s*DbContext/, /DbSet</] }, requires: ['csharp'], analyzer: new EFCoreAnalyzer() },
     { id: 'cron', name: 'Scheduled Job (Cron) Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['cron', 'node-cron', '@nestjs/schedule'] }, requires: ['typescript-javascript'], analyzer: new CronAnalyzer() },
+    { id: 'mcp-tool-registration', name: 'MCP Tool Registration Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@modelcontextprotocol/sdk'], content: [/\.registerTool\s*\(/, /\.setRequestHandler\s*\(/] }, requires: ['typescript-javascript'], analyzer: new McpToolRegistrationAnalyzer() },
     ...architectureLibraryAnalyzerDefinitions().map(definition => ({
       id: definition.id,
       name: definition.name,

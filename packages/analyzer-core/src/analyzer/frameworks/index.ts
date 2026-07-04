@@ -1,3 +1,15 @@
+// NOT a registration path. The single source of truth for which analyzers run
+// against a real repo is createOrchestrator() in apps/mcp-server/src/analyzer.ts
+// — that is the only list wired into the deployed product
+// (analyzer-server / remote-analyzer-service.ts) and into analyzeForBench.
+// FRAMEWORK_ANALYZERS below is consumed only as benchmark-grid metadata by
+// apps/mcp-server/src/gauntlet/full-grid.ts (which frameworks exist, for
+// coverage-matrix reporting) — it never drives real analysis. getFrameworkAnalyzer
+// and detectFrameworkFromFiles have no callers anywhere in the codebase; they
+// are dead helper code left over from an earlier detection design. Adding a new
+// analyzer here does NOT make it run in production — register it in
+// apps/mcp-server/src/analyzer.ts instead. See scripts/verify-live-analyzer-registration.ts
+// for the guard that enforces this.
 export * from './web';
 export * from './testing';
 export * from './mobile';
@@ -35,8 +47,6 @@ import {
 } from './web';
 
 import { JestAnalyzer, CypressAnalyzer } from './testing';
-
-import { BaseAnalyzer } from '../core/base-analyzer';
 
 export interface FrameworkAnalyzerInfo {
   name: string;
@@ -218,113 +228,9 @@ export const FRAMEWORK_ANALYZERS: FrameworkAnalyzerInfo[] = [
   }
 ];
 
-export function getFrameworkAnalyzer(
-  language: string,
-  detectedFrameworks: string[]
-): typeof BaseAnalyzer | null {
-  const sortedAnalyzers = [...FRAMEWORK_ANALYZERS].sort((a, b) => b.priority - a.priority);
-
-  for (const analyzerInfo of sortedAnalyzers) {
-    if (!analyzerInfo.languages.includes(language.toLowerCase())) {
-      continue;
-    }
-
-    const frameworkMatch = analyzerInfo.frameworks.some(fw =>
-      detectedFrameworks.some(detected =>
-        detected.toLowerCase().includes(fw.toLowerCase()) ||
-        fw.toLowerCase().includes(detected.toLowerCase())
-      )
-    );
-
-    if (frameworkMatch) {
-      return analyzerInfo.analyzer;
-    }
-  }
-
-  return null;
-}
-
-export async function detectFrameworkFromFiles(
-  projectPath: string,
-  files: string[]
-): Promise<string[]> {
-  const detectedFrameworks: string[] = [];
-
-  if (files.some(f => f.endsWith('.jsx') || f.endsWith('.tsx'))) {
-    if (files.some(f => f.includes('next.config'))) {
-      detectedFrameworks.push('nextjs');
-    } else {
-      detectedFrameworks.push('react');
-    }
-  }
-
-  if (files.some(f => f.endsWith('.vue'))) {
-    detectedFrameworks.push('vue');
-  }
-
-  if (files.some(f => f === 'angular.json' || f.includes('@angular'))) {
-    detectedFrameworks.push('@angular/core');
-  }
-
-  if (files.some(f => f === 'manage.py')) {
-    detectedFrameworks.push('django');
-  }
-
-  if (files.some(f => f === 'Package.swift' || f.endsWith('.swift'))) {
-    detectedFrameworks.push('vapor');
-  }
-
-  if (files.some(f => f === 'cpanfile' || f.endsWith('.pl') || f.endsWith('.pm'))) {
-    detectedFrameworks.push('mojolicious');
-  }
-
-  if (files.some(f => f === 'pubspec.yaml' || f.endsWith('.dart'))) {
-    detectedFrameworks.push('go_router');
-  }
-
-  if (files.some(f => f === 'build.sbt' || f.endsWith('.scala'))) {
-    detectedFrameworks.push('http4s');
-  }
-
-  if (files.some(f => f === 'shard.yml' || f.endsWith('.cr'))) {
-    detectedFrameworks.push('kemal');
-  }
-
-  if (files.some(f => f === 'Project.toml' || f.endsWith('.jl'))) {
-    detectedFrameworks.push('Genie');
-  }
-
-  if (files.some(f => f === 'deps.edn' || f === 'project.clj' || f.endsWith('.clj') || f.endsWith('.cljs') || f.endsWith('.cljc'))) {
-    detectedFrameworks.push('compojure');
-  }
-
-  if (files.some(f => f === 'dune-project' || f === 'dune' || f.endsWith('.ml'))) {
-    detectedFrameworks.push('dream');
-  }
-
-  if (files.some(f => f === 'sfdx-project.json' || f.endsWith('.cls'))) {
-    detectedFrameworks.push('apex-rest');
-  }
-
-  if (files.some(f => f === 'artisan' || f.includes('laravel'))) {
-    detectedFrameworks.push('laravel/framework');
-  }
-
-  if (files.some(f => f.includes('pom.xml') || f.includes('build.gradle'))) {
-    detectedFrameworks.push('spring-boot');
-  }
-
-  if (files.some(f => f.includes('.test.') || f.includes('.spec.'))) {
-    detectedFrameworks.push('jest');
-  }
-
-  if (files.some(f => f.includes('cypress.config') || f.includes('cypress/'))) {
-    detectedFrameworks.push('cypress');
-  }
-
-  if (files.some(f => f.includes('nest-cli.json') || f.includes('@nestjs'))) {
-    detectedFrameworks.push('@nestjs/core');
-  }
-
-  return detectedFrameworks;
-}
+// getFrameworkAnalyzer() and detectFrameworkFromFiles() were removed here —
+// dead code with zero callers anywhere in the codebase (a duplicate,
+// never-invoked detection path from an earlier design; real detection is
+// AnalyzerOrchestrator.detectPatterns-based, driven by the live registration
+// list in apps/mcp-server/src/analyzer.ts). BaseAnalyzer import removed with
+// them.

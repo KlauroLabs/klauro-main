@@ -1,3 +1,17 @@
+// NOT a registration path for the real product. This NestJS service belongs to
+// packages/analyzer-core's `main.ts` -> AppModule NestJS app, which is never
+// bootstrapped in production or CI: the deployed analyzer service
+// (apps/mcp-server/Dockerfile.analyzer, `npm run analyzer-server`) runs
+// apps/mcp-server/src/remote-analyzer-service.ts, which uses
+// getOrchestrator()/createOrchestrator() from apps/mcp-server/src/analyzer.ts
+// — THAT is the single source of truth for which analyzers actually run.
+// This file's own `registerAnalyzers()` (below) is a second, independently
+// maintained analyzer list that drifts from the live one — it previously held
+// McpToolRegistrationAnalyzer as its ONLY registration anywhere, meaning that
+// analyzer silently never ran against a real repo (fixed: now also registered
+// in apps/mcp-server/src/analyzer.ts). Do not add a new analyzer here without
+// also adding it to the live list; see
+// scripts/verify-live-analyzer-registration.ts for the guard that checks this.
 import { Injectable, Logger } from '@nestjs/common';
 import { AnalyzerOrchestrator, CASOutput, AnalyzerRegistration } from '../core/orchestrator';
 import { BaseAnalyzer, AnalysisContext } from '../core/base-analyzer';
